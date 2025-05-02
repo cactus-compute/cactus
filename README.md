@@ -103,6 +103,7 @@ Gemma 1B INT8:
 - iPhone 13 Pro: ~30 toks/sec 
 - Galaxy S21: ~14 toks/sec 
 - Google Pixel 6a: ~14 toks/sec 
+- Galaxy S24 plus: ~20 toks/sec 
 
 SmollLM 135m INT8: 
 - iPhone 13 Pro: ~180 toks/sec
