@@ -102,12 +102,14 @@ we created a little chat app for demo, you can try other models and report your 
 Gemma 1B INT8:
 - iPhone 16 Pro Max: ~45 toks/sec
 - iPhone 13 Pro: ~30 toks/sec
+- Galaxy A14: ~6 toks/sec
 - Galaxy S24 plus: ~20 toks/sec 
 - Galaxy S21: ~14 toks/sec 
 - Google Pixel 6a: ~14 toks/sec 
 
 SmollLM 135m INT8: 
 - iPhone 13 Pro: ~180 toks/sec
+- Galaxy A14: ~30 toks/sec
 - Galaxy S21: ~42 toks/sec
 - Google Pixel 6a: ~38 toks/sec
 - Huawei P60 Lite (Gran's phone) ~8toks/sec
