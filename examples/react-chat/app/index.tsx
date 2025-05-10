@@ -3,7 +3,8 @@ import { KeyboardAvoidingView, Platform, ScrollView, View, Text } from 'react-na
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Header from '@/components/Header';
 import { stopWords } from '@/utils/constants';
-import { initLlamaContext } from '@/utils/modelUtils';
+import { initLlamaContext } from '@/utils/newModelUtils';
+// import { initLlamaContext } from '@/utils/modelUtils';
 import { LlamaContext } from 'cactus-react-native';
 import { Message, MessageBubble } from '@/components/Message';
 import { MessageField } from '@/components/MessageField';
@@ -14,7 +15,7 @@ export default function HomeScreen() {
   const [message, setMessage] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isModelLoaded, setIsModelLoaded] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [downloadProgress, setDownloadProgress] = useState(0.0);
   
   const handleSendMessage = async () => {
     setIsGenerating(true);
@@ -27,7 +28,7 @@ export default function HomeScreen() {
   useEffect(() => {
     const initializeContext = async () => {
       context = await initLlamaContext((progress) => {
-        setDownloadProgress(Math.round(progress * 10000) / 100);
+        setDownloadProgress(progress);
       });
       if (context) {
         setIsModelLoaded(true);
