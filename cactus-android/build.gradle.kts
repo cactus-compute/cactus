@@ -5,7 +5,6 @@ plugins {
     signing
 }
 
-import com.android.build.api.dsl.AndroidSourceDirectorySet
 
 android {
     namespace = "com.cactus.android"
