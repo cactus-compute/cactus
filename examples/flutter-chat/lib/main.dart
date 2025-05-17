@@ -44,8 +44,7 @@ class _MyAppState extends State<MyApp> {
 
     try {
       final params = CactusInitParams(
-        modelUrl: 'https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q8_0.gguf', 
-        modelFilename: 'SmolLM2-360M-Instruct.gguf', 
+        modelPath: 'assets/smollm2-360m-instruct-q8_0.gguf',
         onInitProgress: (progress, status, isError) {
           setState(() {
             _downloadProgress = progress;
