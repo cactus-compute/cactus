@@ -108,8 +108,8 @@ These are day-to-day usage scores, not a controlled testing.
 | iPhone 15                     | -                        | 25                          | -                          |
 | iPhone 14 Pro Max             | -                        | 25                          | -                          |
 | iPhone 13 Pro                 | 30                       | -                           | -                          |
-| OnePlus 12                    | 30                       | -                           | -                          |
 | Galaxy S25 Ultra              | 25                       | -                           | -                          |
+| OnePlus 11                    | 23                       | -                           | 64                         |
 | iPhone 12 mini                | 22                       | -                           | -                          |
 | Redmi K70 Ultra               | 21                       | -                           | -                          |
 | Xiaomi 13                     | 21                       | -                           | -                          |
