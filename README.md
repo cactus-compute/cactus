@@ -181,7 +181,7 @@ We welcome contributions! Here's how you can help:
 | Realme GT2                    |            16            |             -               |             -              |
 | Google Pixel 6a               |            14            |             -               |             -              |
 
-##
+## ![Demo](https://img.shields.io/badge/Demo-grey.svg?style=for-the-badge)
 
 We created a demo chat app we use for benchmarking:
 
