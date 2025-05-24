@@ -96,22 +96,22 @@ Cactus backend is written in C/C++, layered on top of GGML/GGUF to support model
 N/B: Should have `CMake` installed, or install with `brew install cmake` (on macOS) or standard package managers on Linux.
 
 *   **Language Models:**
-    1.  Navigate to the example directory: `cd example/cpp-llm`
+    1.  Navigate to the example directory: `cd examples/cpp-llm`
     2.  Make the build script executable (only needs to be done once): `chmod +x build.sh`
     3.  Run the example: `./build.sh` (This will download the Qwen 3 model)
-    4.  Play with models and prompts in `example/cpp-llm/main.cpp`. 
+    4.  Alter model and prompts by modifying `examples/cpp-llm/main.cpp`. 
 
 *   **Vision-Language Models:**
-    1.  Navigate to the example directory: `cd example/cpp-vlm`
+    1.  Navigate to the example directory: `cd examples/cpp-vlm`
     2.  Make the build script executable (only needs to be done once): `chmod +x build.sh`
-    3.  Run the example: `./build.sh` (This will download the SmolVLM model)
-    4.  Play with models and prompts in `example/cpp-vlm/main.cpp`.
+    3.  Run the example: `./build.sh` (This will download the [SmolVLM model](https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF))
+    4.  Alter model, image, and prompts by modifying `examples/cpp-vlm/main.cpp`.
 
 *   **Text-to-Speech:**
-    1.  Navigate to the example directory: `cd example/cpp-tts`
+    1.  Navigate to the example directory: `cd examples/cpp-tts`
     2.  Make the build script executable (only needs to be done once): `chmod +x build.sh`
     3.  Run the example: `./build.sh` (This will download the OuteTTS model)
-    4.  Play with models and prompts in `example/cpp-tts/main.cpp`.
+    4.  Alter model and prompts by modifying `examples/cpp-tts/main.cpp`.
 
 ## ![Docs](https://img.shields.io/badge/Documentations-grey.svg?style=for-the-badge)
 
