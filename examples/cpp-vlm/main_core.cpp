@@ -61,12 +61,12 @@ int main(int argc, char **argv) {
     params.image.push_back("../image.jpg"); 
     params.prompt = "USER: <__image__>\nDescribe this image in detail.\nASSISTANT:";
     
-    params.n_predict = 100;
-    params.n_ctx = 2048;
-    params.n_batch = 512;
-    params.cpuparams.n_threads = 4;
-    params.use_mmap = true;
-    params.warmup = false;
+    params.n_predict = 100;           // Maximum number of tokens to generate in the output (response length)
+    params.n_ctx = 2048;              // Context window size: how many tokens (prompt + response) the model can consider at once
+    params.n_batch = 512;             // Batch size: number of tokens to process in parallel (affects speed and memory use)
+    params.cpuparams.n_threads = 4;   // Number of CPU threads to use for computation (parallelism; set to number of CPU cores for speed)
+    params.use_mmap = true;           // Use memory-mapped file I/O for loading the model (can reduce RAM usage for large models)
+    params.warmup = false;            // Whether to run a model "warm-up" before actual inference (often set true for benchmarking, false for normal runs)
 
     cactus::cactus_context ctx;
     assert(ctx.loadModel(params) && "Model loading failed");
