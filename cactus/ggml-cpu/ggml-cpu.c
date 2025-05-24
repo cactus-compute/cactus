@@ -1,5 +1,8 @@
 #define _CRT_SECURE_NO_DEPRECATE // Disables "unsafe" warnings on Windows
 #define _USE_MATH_DEFINES // For M_PI on MSVC
+#define _GNU_SOURCE
+
+#include <sched.h>
 
 #include "ggml-backend-impl.h"
 #include "ggml-backend.h"
