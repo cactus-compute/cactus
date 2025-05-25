@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart'; 
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:typed_data';
+import 'package:image_picker/image_picker.dart';
 
 import 'package:cactus/cactus.dart';
 
@@ -29,6 +30,7 @@ class _MyAppState extends State<MyApp> {
   double? _downloadProgress; 
   String? _imagePathForNextMessage;
   String? _stagedAssetPath;
+  final ImagePicker _picker = ImagePicker();
 
   final ScrollController _scrollController = ScrollController(); 
 
@@ -215,7 +217,7 @@ class _MyAppState extends State<MyApp> {
       final completionParams = CactusCompletionParams(
         messages: currentChatHistoryForCompletion, 
         imagePath: imagePathToSend,
-        stopSequences: ['<|im_end|>'], 
+        stopSequences: ['<|im_end|>', '<end_of_utterance>'], 
         temperature: 0.7,
         topK: 10,
         topP: 0.9,
@@ -224,7 +226,7 @@ class _MyAppState extends State<MyApp> {
             return false; 
           }
 
-          if (token == '<|im_end|>') {
+          if (token == '<|im_end|>' || token == '<end_of_utterance>') {
             return false;
           }
           
@@ -244,7 +246,12 @@ class _MyAppState extends State<MyApp> {
         },
       );
 
+      final startTime = DateTime.now();
       final result = await _cactusContext!.completion(completionParams);
+      final endTime = DateTime.now();
+      final duration = endTime.difference(startTime).inMicroseconds;
+      final tokPerSec = result.tokensPredicted / (duration / 1000000);
+      print("Tokens per second: $tokPerSec, duration: $duration, tokensPredicted: ${result.tokensPredicted}, tokensEvaluated: ${result.tokensEvaluated}");
 
       String finalCleanText = result.text;
       if (finalCleanText.trim().isEmpty && currentAssistantResponse.trim().isNotEmpty) {
@@ -252,6 +259,8 @@ class _MyAppState extends State<MyApp> {
       } else {
         if (finalCleanText.endsWith('<|im_end|>')) {
           finalCleanText = finalCleanText.substring(0, finalCleanText.length - '<|im_end|>'.length).trim();
+        } else if (finalCleanText.endsWith('<end_of_utterance>')) {
+          finalCleanText = finalCleanText.substring(0, finalCleanText.length - '<end_of_utterance>'.length).trim();
         } else {
           finalCleanText = finalCleanText.trim();
         }
@@ -405,6 +414,7 @@ class _MyAppState extends State<MyApp> {
                             IconButton(
                               icon: const Icon(Icons.clear),
                               onPressed: () {
+
                                 setState(() {
                                   _imagePathForNextMessage = null;
                                   _stagedAssetPath = null;
@@ -420,19 +430,18 @@ class _MyAppState extends State<MyApp> {
                           icon: Icon(Icons.image, color: _stagedAssetPath != null ? Theme.of(context).primaryColor : null),
                           onPressed: _isLoading ? null : () async {
                             if (_stagedAssetPath == null) {
-                              const String assetPath = 'assets/image.jpg';
                               try {
-                                final ByteData assetData = await rootBundle.load(assetPath);
-                                final Directory tempDir = await getTemporaryDirectory();
-                                final String tempFilePath = '${tempDir.path}/temp_chat_image.jpg'; 
-                                final File tempFile = File(tempFilePath);
-                                await tempFile.writeAsBytes(assetData.buffer.asUint8List(), flush: true);
-                                setState(() {
-                                  _imagePathForNextMessage = tempFilePath;
-                                  _stagedAssetPath = assetPath;
-                                });
+                                // Pick image from gallery
+                                final XFile? pickedImage = await _picker.pickImage(source: ImageSource.gallery);
+                                
+                                if (pickedImage != null) {
+                                  setState(() {
+                                    _imagePathForNextMessage = pickedImage.path;
+                                    _stagedAssetPath = pickedImage.path;
+                                  });
+                                }
                               } catch (e) {
-                                print("Error staging image from asset: $e");
+                                print("Error picking image: $e");
                               }
                             } else {
                               setState(() {
