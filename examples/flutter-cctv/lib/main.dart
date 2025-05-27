@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'new/screens/home_screen.dart';
+import 'screens/home_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -24,7 +24,7 @@ class _MyAppState extends State<MyApp> {
 }
 
 // TODO:
-// Add model loader
-// Add model inference
+// ✅ Add timer debug class with timer between steps
+// ✅ Add model loader
+// ✅ Add model inference
 // Write inference results to screen
-// Add timer debug class with timer between steps
