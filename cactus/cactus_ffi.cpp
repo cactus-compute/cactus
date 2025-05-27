@@ -2,6 +2,8 @@
 #include "cactus.h"
 #include "common.h"
 #include "llama.h"
+#include "llama-chat.h" // For llama_chat_message and llama_chat_apply_template
+#include "json.hpp"     // For nlohmann::json
 
 #include <string>
 #include <vector>
@@ -54,6 +56,28 @@ static char* safe_strdup(const std::string& str) {
     return new_str; 
 }
 
+// Helper function to parse chat messages from JSON string to a temporary structure
+// This temporary structure holds std::string to manage memory easily before converting to const char*
+static std::vector<std::pair<std::string, std::string>> parse_raw_chat_messages_from_json(const std::string& json_str) {
+    std::vector<std::pair<std::string, std::string>> raw_messages;
+    try {
+        nlohmann::json parsed_json = nlohmann::json::parse(json_str);
+        if (parsed_json.is_array()) {
+            for (const auto& item : parsed_json) {
+                if (item.is_object() && item.contains("role") && item.contains("content")) {
+                    raw_messages.push_back({item["role"].get<std::string>(), item["content"].get<std::string>()});
+                } else {
+                    LOG_WARNING("[FFI parse_raw_chat_messages_from_json] Skipping malformed message object in JSON array.");
+                }
+            }
+        }
+    } catch (const nlohmann::json::parse_error& e) {
+        LOG_ERROR("[FFI parse_raw_chat_messages_from_json] JSON parse error: %s. Input: %s", e.what(), json_str.substr(0, 200).c_str());
+    } catch (const std::exception& e) {
+        LOG_ERROR("[FFI parse_raw_chat_messages_from_json] General exception during JSON parsing: %s", e.what());
+    }
+    return raw_messages;
+}
 
 extern "C" {
 
@@ -316,6 +340,9 @@ CACTUS_FFI_EXPORT int cactus_completion_c(
         context->loadPrompt();
 
         // --- Streaming loop --- 
+        int64_t generation_start_time_us = llama_time_us(); // Record start time
+        context->generation_time_us = 0; // Reset time for current completion
+
         while (context->has_next_token && !context->is_interrupted) {
             const cactus::completion_token_output token_with_probs = context->doCompletion();
 
@@ -337,6 +364,9 @@ CACTUS_FFI_EXPORT int cactus_completion_c(
             }
         }
 
+        int64_t generation_end_time_us = llama_time_us(); // Record end time
+        context->generation_time_us = generation_end_time_us - generation_start_time_us;
+
         // --- Fill final result struct --- 
         result->text = safe_strdup(context->generated_text);
         result->tokens_predicted = context->num_tokens_predicted;
@@ -346,6 +376,7 @@ CACTUS_FFI_EXPORT int cactus_completion_c(
         result->stopped_word = context->stopped_word;
         result->stopped_limit = context->stopped_limit;
         result->stopping_word = safe_strdup(context->stopping_word);
+        result->generation_time_us = context->generation_time_us;
         // TODO: Populate timings 
 
         context->is_predicting = false;
@@ -658,41 +689,191 @@ int cactus_synthesize_speech_c(
  */
 CACTUS_FFI_EXPORT char* cactus_get_formatted_chat_c(
     cactus_context_handle_t handle,
-    const char* messages_json,
-    const char* override_chat_template,
-    const char* image_path
+    const char* messages_json_c_str,
+    const char* override_chat_template_c_str,
+    const char* image_path_c_str
 ) {
-    if (!handle || !messages_json) {
-        // LOG_ERROR("[FFI] Invalid arguments: handle or messages_json is null.");
+    if (!handle || !messages_json_c_str) {
+        LOG_ERROR("[FFI cactus_get_formatted_chat_c] Invalid arguments: handle or messages_json is null.");
         return nullptr; 
     }
-    // Ensure context and ctx are valid, though not strictly used by this simplified placeholder
-    // cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
-    // if (!context || !context->ctx) { 
-    //     // LOG_ERROR("[FFI] Context or ctx is null.");
-    //     return nullptr;
-    // }
 
-    // --- THIS IS STILL A SIMPLIFIED PLACEHOLDER ---
-    // A real implementation needs to parse messages_json, integrate image_path 
-    // (if provided) into the content of the last message if appropriate (e.g., by adding <__image__> tag),
-    // and then apply a chat template (e.g., via llama_chat_apply_template using override_chat_template
-    // or context->params.chat_template).
+    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
+    if (!context) { 
+        LOG_ERROR("[FFI cactus_get_formatted_chat_c] Context is null.");
+        return nullptr;
+    }
+
+    std::string messages_json_std_str = messages_json_c_str;
+    std::vector<std::pair<std::string, std::string>> raw_messages = parse_raw_chat_messages_from_json(messages_json_std_str);
+
+    if (raw_messages.empty() && !messages_json_std_str.empty() && messages_json_std_str != "[]") {
+        LOG_ERROR("[FFI cactus_get_formatted_chat_c] Failed to parse any messages from non-empty JSON. Returning original JSON.");
+        return safe_strdup(messages_json_std_str);
+    }
+
+    std::string image_path_std_str = image_path_c_str ? image_path_c_str : "";
+
+    std::vector<std::string> string_data_holder;
+    string_data_holder.reserve(raw_messages.size() * 2 + (image_path_std_str.empty() ? 0 : 1)); // +1 for potentially modified content
     
-    // For now, just pass through messages_json. 
-    // The image_path argument to this FFI function is noted, but the actual image handling 
-    // for completion is driven by `params.imagePath` in `CactusContext.completion` (Dart) which sets 
-    // `cCompParams.ref.image_path` for `cactus_completion_c`, which in turn sets `context->params.image`.
-    // `cactus_context::loadPrompt` will then use `context->params.image` and `context->params.prompt` (this string).
-    // If `context->params.image` is set, `loadPrompt` will prepend "<__image__>\n" to the prompt if it's not found.
-    // This revised placeholder aims to provide a cleaner prompt string to `loadPrompt`.
+    std::vector<llama_chat_message> llama_messages_objs;
+    llama_messages_objs.reserve(raw_messages.size());
 
-    std::string result_prompt_std_str = messages_json; // Directly use messages_json
+    for (size_t i = 0; i < raw_messages.size(); ++i) {
+        const auto& raw_msg_pair = raw_messages[i];
+        
+        string_data_holder.push_back(raw_msg_pair.first); // role string
+        std::string content_str = raw_msg_pair.second;   // content string
 
-    // The override_chat_template and image_path are ignored by this simplified placeholder.
-    // A full implementation would use them.
+        // If it's the last message, user role, and image path is present, modify content string
+        if (i == raw_messages.size() - 1 && strcmp(string_data_holder.back().c_str(), "user") == 0 && !image_path_std_str.empty()) {
+            if (content_str.find("<__image__>") == std::string::npos) {
+                content_str = "<__image__>\n" + content_str;
+                LOG_INFO("[FFI cactus_get_formatted_chat_c] Prepended <__image__> tag to last user message content string.");
+            }
+        }
+        string_data_holder.push_back(content_str); // (potentially modified) content string
 
-    return safe_strdup(result_prompt_std_str);
+        llama_chat_message l_msg_obj;
+        l_msg_obj.role = string_data_holder[string_data_holder.size() - 2].c_str();
+        l_msg_obj.content = string_data_holder.back().c_str();
+        llama_messages_objs.push_back(l_msg_obj);
+    }
+
+    std::string chat_template_str;
+    if (override_chat_template_c_str && override_chat_template_c_str[0] != '\0') {
+        chat_template_str = override_chat_template_c_str;
+        LOG_INFO("[FFI cactus_get_formatted_chat_c] Using override template: '%s'", chat_template_str.c_str());
+    } else if (!context->params.chat_template.empty()) {
+        chat_template_str = context->params.chat_template;
+        LOG_INFO("[FFI cactus_get_formatted_chat_c] Using context template: '%s'", chat_template_str.c_str());
+    } else {
+        LOG_INFO("[FFI cactus_get_formatted_chat_c] No chat template override or init param; will pass nullptr to llama_chat_apply_template (model default).");
+        // chat_template_str remains empty, c_template_for_api will be nullptr
+    }
+
+    std::string formatted_prompt_std_str;
+    try {
+        // Max buffer size for the formatted prompt. 
+        // Consider context->n_ctx (max tokens) * avg chars/token + template overhead.
+        size_t buffer_size = context->n_ctx * 10 + 1024; // Increased multiplier and base overhead
+        if (buffer_size < 4096) buffer_size = 4096;
+        std::vector<char> buf(buffer_size);
+
+        const char* c_template_for_api = chat_template_str.empty() ? nullptr : chat_template_str.c_str();
+        
+        LOG_INFO("[FFI cactus_get_formatted_chat_c] Applying template. C Template string ptr: %p, Messages count: %zu", 
+                 (void*)c_template_for_api, llama_messages_objs.size());
+        if(c_template_for_api) {
+             LOG_INFO("[FFI cactus_get_formatted_chat_c] Template string content: '%s'", c_template_for_api);
+        }
+
+        int n_written = llama_chat_apply_template(
+            c_template_for_api,
+            llama_messages_objs.empty() ? nullptr : llama_messages_objs.data(),
+            llama_messages_objs.size(),
+            true, // add_assistant_role
+            buf.data(),
+            static_cast<int32_t>(buf.size()) 
+        );
+
+        if (n_written < 0) {
+            LOG_ERROR("[FFI cactus_get_formatted_chat_c] llama_chat_apply_template returned error code: %d. This usually means the template is malformed or incompatible.", n_written);
+            nlohmann::json messages_json_array = nlohmann::json::array();
+            for(const auto& msg_obj : llama_messages_objs) {
+                messages_json_array.push_back({{"role", msg_obj.role ? msg_obj.role : ""}, {"content", msg_obj.content ? msg_obj.content : ""}});
+            }
+            formatted_prompt_std_str = messages_json_array.dump();
+        } else if ((size_t)n_written >= buf.size()) { 
+            LOG_ERROR("[FFI cactus_get_formatted_chat_c] llama_chat_apply_template output truncated or buffer too small. n_written: %d, buf_size: %zu. Template might be too verbose or messages too long.", n_written, buf.size());
+            nlohmann::json messages_json_array = nlohmann::json::array();
+            for(const auto& msg_obj : llama_messages_objs) {
+                messages_json_array.push_back({{"role", msg_obj.role ? msg_obj.role : ""}, {"content", msg_obj.content ? msg_obj.content : ""}});
+            }
+            formatted_prompt_std_str = messages_json_array.dump();
+        } else {
+            formatted_prompt_std_str.assign(buf.data(), n_written);
+            LOG_INFO("[FFI cactus_get_formatted_chat_c] Applied chat template successfully. Result starts with: '%s' (Length: %zu)", formatted_prompt_std_str.substr(0,200).c_str(), formatted_prompt_std_str.length());
+        }
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("[FFI cactus_get_formatted_chat_c] Exception during llama_chat_apply_template or surrounding logic: %s. Falling back to JSON.", e.what());
+        nlohmann::json messages_json_array = nlohmann::json::array();
+        for(const auto& msg_obj : llama_messages_objs) {
+             messages_json_array.push_back({{"role", msg_obj.role ? msg_obj.role : ""}, {"content", msg_obj.content ? msg_obj.content : ""}});
+        }
+        formatted_prompt_std_str = messages_json_array.dump();
+    }
+    
+    if (formatted_prompt_std_str.empty() && !messages_json_std_str.empty()){
+        LOG_WARNING("[FFI cactus_get_formatted_chat_c] Formatted prompt is empty despite processing, returning original JSON string as fallback.");
+        return safe_strdup(messages_json_std_str);
+    }
+    
+    return safe_strdup(formatted_prompt_std_str);
 }
+
+CACTUS_FFI_EXPORT void cactus_free_formatted_chat_result_members_c(cactus_formatted_chat_result_c_t* result) {
+    if (result) {
+        if (result->prompt) free(result->prompt);
+        if (result->grammar) free(result->grammar);
+        // Initialize to safe defaults to prevent double free if called again
+        result->prompt = nullptr;
+        result->grammar = nullptr;
+    }
+}
+
+// +++ Benchmarking FFI Functions +++
+/**
+ * @brief Benchmarks the model performance using the C FFI.
+ * The caller is responsible for freeing the returned JSON string using cactus_free_string_c.
+ *
+ * @param handle Handle to the cactus context.
+ * @param pp Prompt processing tokens.
+ * @param tg Text generation iterations.
+ * @param pl Parallel tokens to predict.
+ * @param nr Number of repetitions.
+ * @return JSON string with benchmark results, or nullptr on error.
+ */
+CACTUS_FFI_EXPORT char* cactus_bench_c(
+    cactus_context_handle_t handle,
+    int32_t pp,
+    int32_t tg,
+    int32_t pl,
+    int32_t nr
+) {
+    if (!handle) {
+        LOG_ERROR("[FFI cactus_bench_c] Invalid context handle.");
+        return nullptr;
+    }
+    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
+    if (!context->ctx) {
+        LOG_ERROR("[FFI cactus_bench_c] Internal LLaMA context (ctx) is NULL.");
+        return nullptr;
+    }
+
+    try {
+        std::string result_str = context->bench(pp, tg, pl, nr);
+        if (result_str.empty() || result_str == "[]") {
+             LOG_WARNING("[FFI cactus_bench_c] Benchmarking returned empty or '[]' result.");
+            return safe_strdup("[]"); 
+        }
+        return safe_strdup(result_str.c_str());
+    } catch (const std::exception& e) {
+        LOG_ERROR("[FFI cactus_bench_c] Exception: %s", e.what());
+        return nullptr;
+    } catch (...) {
+        LOG_ERROR("[FFI cactus_bench_c] Unknown exception.");
+        return nullptr;
+    }
+}
+// --- End Benchmarking FFI Functions ---
+
+
+// +++ LoRA Adapter Management FFI Functions +++
+// CACTUS_FFI_EXPORT int cactus_apply_lora_adapters_c(...); // Placeholder for actual LoRA functions
+// ... other LoRA related C FFI functions ...
+// --- End LoRA Adapter Management FFI Functions ---
 
 } // extern "C" 

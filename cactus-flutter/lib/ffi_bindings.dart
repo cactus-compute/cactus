@@ -118,6 +118,9 @@ final class CactusCompletionResultC extends Struct {
   @Bool()
   external bool stopped_limit;
   external Pointer<Utf8> stopping_word;
+
+  @Int64()
+  external int generation_time_us;
 }
 
 final class CactusVocoderModelParamsC extends Struct {

@@ -178,6 +178,11 @@ class CactusCompletionResult {
   /// Otherwise, this will be an empty string.
   final String stoppingWord;
 
+  /// Total time spent in the native token generation phase for this completion, in microseconds.
+  /// This can be used to calculate tokens per second: `tokensPredicted / (generationTimeUs / 1000000.0)`.
+  /// A value of 0 might indicate that timing was not available or an error occurred.
+  final int generationTimeUs;
+
   // TODO: Consider adding timing information if available from native layer (e.g., prompt eval time, token gen time)
   // final double promptEvalTimeSeconds;
   // final double tokenGenerationTimeSeconds;
@@ -192,10 +197,20 @@ class CactusCompletionResult {
     required this.stoppedWord,
     required this.stoppedLimit,
     required this.stoppingWord,
+    this.generationTimeUs = 0, // Default to 0 if not provided
   });
+
+  /// Calculates the approximate tokens per second for the generation phase.
+  /// Returns 0.0 if [generationTimeUs] is 0 or [tokensPredicted] is 0.
+  double get tokensPerSecond {
+    if (generationTimeUs <= 0 || tokensPredicted <= 0) {
+      return 0.0;
+    }
+    return tokensPredicted / (generationTimeUs / 1000000.0);
+  }
 
   @override
   String toString() {
-    return 'CactusCompletionResult(text: ${text.length > 50 ? "${text.substring(0, 50)}..." : text}, tokensPredicted: $tokensPredicted, tokensEvaluated: $tokensEvaluated, stoppedEos: $stoppedEos, stoppedWord: $stoppedWord, stoppedLimit: $stoppedLimit, stoppingWord: $stoppingWord, truncated: $truncated)';
+    return 'CactusCompletionResult(text: ${text.length > 50 ? "${text.substring(0, 50)}..." : text}, tokensPredicted: $tokensPredicted, tokensEvaluated: $tokensEvaluated, stoppedEos: $stoppedEos, stoppedWord: $stoppedWord, stoppedLimit: $stoppedLimit, stoppingWord: $stoppingWord, truncated: $truncated, generationTimeUs: $generationTimeUs, tokensPerSecond: ${tokensPerSecond.toStringAsFixed(2)})';
   }
 } 

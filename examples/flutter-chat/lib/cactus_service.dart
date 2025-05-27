@@ -141,6 +141,7 @@ class CactusService {
         finalMessages[finalMessages.length - 1] = ChatMessage(
           role: 'assistant',
           content: finalCleanText.isNotEmpty ? finalCleanText : "(No further response)",
+          tokensPerSecond: result.tokensPerSecond,
         );
         chatMessages.value = finalMessages;
       }

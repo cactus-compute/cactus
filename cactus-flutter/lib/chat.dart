@@ -16,11 +16,16 @@ class ChatMessage {
   /// The textual content of the message.
   final String content;
 
+  /// Optional. The speed of token generation for this message, if it's from the assistant.
+  /// Measured in tokens per second. Will be null for user messages or if not applicable.
+  final double? tokensPerSecond;
+
   /// Creates a new chat message.
   ///
   /// [role] is the role of the entity sending the message (e.g., 'system', 'user', 'assistant').
   /// [content] is the textual content of the message.
-  ChatMessage({required this.role, required this.content});
+  /// [tokensPerSecond] is optional and used for assistant messages to display generation speed.
+  ChatMessage({required this.role, required this.content, this.tokensPerSecond});
 
   /// Converts the [ChatMessage] to a JSON-compatible map.
   ///

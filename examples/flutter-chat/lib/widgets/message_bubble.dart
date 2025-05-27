@@ -22,9 +22,25 @@ class MessageBubble extends StatelessWidget {
               : (isUser ? Colors.blue[100] : Colors.green[100]),
           borderRadius: BorderRadius.circular(12.0),
         ),
-        child: Text(
-          message.content,
-          style: TextStyle(color: isSystem ? Colors.red[900] : Colors.black),
+        child: Column(
+          crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          children: [
+            Text(
+              message.content,
+              style: TextStyle(color: isSystem ? Colors.red[900] : Colors.black),
+            ),
+            if (!isUser && !isSystem && message.tokensPerSecond != null && message.tokensPerSecond! > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 4.0),
+                child: Text(
+                  '${message.tokensPerSecond!.toStringAsFixed(2)} t/s',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Colors.grey[600],
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );

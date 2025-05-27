@@ -478,6 +478,7 @@ class CactusContext {
         stoppedWord: cResult.ref.stopped_word,
         stoppedLimit: cResult.ref.stopped_limit,
         stoppingWord: cResult.ref.stopping_word.toDartString(),
+        generationTimeUs: cResult.ref.generation_time_us,
       );
 
       return result;

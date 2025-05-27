@@ -155,6 +155,8 @@ struct cactus_context {
     std::string stopping_word;       /**< Word that triggered stopping */
     bool incomplete = false;         /**< Incomplete UTF-8 character */
 
+    int64_t generation_time_us = 0;  /**< Total time spent in token generation for the last completion in microseconds */
+
     std::vector<common_adapter_lora_info> lora; /**< LoRA adapters */
 
 
