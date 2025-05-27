@@ -15,7 +15,7 @@ class InferenceService {
 
   bool _isProcessing = false;
   String _resultText = 'No results';
-  final int _framesToSkip = 30;
+  final int _framesToSkip = 0;
   int _frameCount = 0;
   CactusContext? _cactusContext;
   File? _lastProcessedImageFile;
