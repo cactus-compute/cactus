@@ -47,9 +47,6 @@ class CactusService {
       final params = CactusInitParams(
         modelPath: effectiveModelPath,
         mmprojPath: effectiveMmprojPath,
-        gpuLayers: 0, // Ensure GPU layers is 0 to disable GPU for the main model
-        warmup: true,
-        mmprojUseGpu: false, // Disable GPU for the multimodal projector
         onInitProgress: (progress, status, isError) {
           statusMessage.value = "Native Init: $status";
           if (isError) {

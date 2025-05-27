@@ -172,7 +172,7 @@ class CactusInitParams {
     this.contextSize = 512,
     this.batchSize = 512,
     this.ubatchSize = 512,
-    this.gpuLayers,
+    this.gpuLayers = 0,
     this.threads = 4,
     this.useMmap = true,
     this.useMlock = false,
@@ -184,7 +184,7 @@ class CactusInitParams {
     this.cacheTypeV,
     this.onInitProgress,
     this.warmup = false,
-    this.mmprojUseGpu = true,
+    this.mmprojUseGpu = false,
     this.mainGpu = 0,
   }) {
     if (modelPath == null && modelUrl == null) {

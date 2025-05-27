@@ -224,7 +224,7 @@ class CactusContext {
       cParams.ref.n_ctx = params.contextSize;
       cParams.ref.n_batch = params.batchSize;
       cParams.ref.n_ubatch = params.ubatchSize;
-      cParams.ref.n_gpu_layers = params.gpuLayers ?? -1;
+      cParams.ref.n_gpu_layers = params.gpuLayers ?? 0;
       cParams.ref.n_threads = params.threads;
       cParams.ref.use_mmap = params.useMmap;
       cParams.ref.use_mlock = params.useMlock;
