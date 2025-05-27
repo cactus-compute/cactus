@@ -356,16 +356,18 @@ completion_token_output cactus_context::nextToken()
         const int n_discard = (n_to_shift_count > 0) ? n_to_shift_count / 2 : 0;
 
         if (n_discard > 0) {
+            // LOG_VERBOSE("KV Cache shifting temporarily disabled for debugging.");
+            /* 
             llama_kv_self_seq_rm(ctx, 0, params.n_keep + 1, params.n_keep + 1 + n_discard);
             llama_kv_self_seq_add(ctx, 0, params.n_keep + 1 + n_discard, n_total_in_kv, -n_discard);
             
-            // Shift the embd vector by removing n_discard elements after n_keep+1
             embd.erase(embd.begin() + params.n_keep + 1, embd.begin() + params.n_keep + 1 + n_discard);
             
             n_past -= n_discard;
 
             LOG_VERBOSE("Context shifted: n_discard: %d, new n_past: %zu, new embd.size: %zu", 
                         n_discard, n_past, embd.size());
+            */
         }
     }
 

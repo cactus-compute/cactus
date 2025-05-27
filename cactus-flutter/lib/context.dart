@@ -401,22 +401,28 @@ class CactusContext {
     Pointer<bindings.CactusCompletionParamsC> cCompParams = nullptr;
     Pointer<bindings.CactusCompletionResultC> cResult = nullptr;
     Pointer<Utf8> promptC = nullptr;
-    Pointer<Utf8> imagePathC = nullptr;
+    Pointer<Utf8> imagePathForCompletionParamsC = nullptr;
     Pointer<Utf8> grammarC = nullptr;
     Pointer<Pointer<Utf8>> stopSequencesC = nullptr;
 
     try {
-      // --- Prompt Formatting: Use new _getFormattedChat method ---
-      final String formattedPromptString = await _getFormattedChat(params.messages, params.chatTemplate);
-      // --- End Prompt Formatting ---
-
+      // Pass params.imagePath to _getFormattedChat
+      final String formattedPromptString = await _getFormattedChat(params.messages, params.chatTemplate, params.imagePath);
+      
       cCompParams = calloc<bindings.CactusCompletionParamsC>();
       cResult = calloc<bindings.CactusCompletionResultC>();
       promptC = formattedPromptString.toNativeUtf8(allocator: calloc);
       grammarC = params.grammar?.toNativeUtf8(allocator: calloc) ?? nullptr;
 
+      // image_path in cactus_completion_params_c is still needed for the native completion function
+      // if it does further processing with the image beyond just templating (e.g., loading pixel data).
+      // If all image handling is done by cactus_get_formatted_chat_c and the image is embedded
+      // as a token/placeholder, then params.imagePath might not be strictly needed here for the C FFI call to cactus_completion_c.
+      // However, the current FFI struct `cactus_completion_params_c` includes `image_path`.
+      // So we continue to pass it. The C++ `cactus_completion_c` should know whether to use it
+      // if the prompt already contains image info from `cactus_get_formatted_chat_c`.
       if (params.imagePath != null && params.imagePath!.isNotEmpty) {
-        imagePathC = params.imagePath!.toNativeUtf8(allocator: calloc);
+        imagePathForCompletionParamsC = params.imagePath!.toNativeUtf8(allocator: calloc);
       }
 
       if (params.stopSequences != null && params.stopSequences!.isNotEmpty) {
@@ -433,7 +439,7 @@ class CactusContext {
       }
 
       cCompParams.ref.prompt = promptC;
-      cCompParams.ref.image_path = imagePathC ?? nullptr;
+      cCompParams.ref.image_path = imagePathForCompletionParamsC ?? nullptr;
       cCompParams.ref.n_predict = params.maxPredictedTokens;
       cCompParams.ref.n_threads = params.threads;
       cCompParams.ref.seed = params.seed;
@@ -483,7 +489,7 @@ class CactusContext {
       _currentOnNewTokenCallback = null; 
 
       if (promptC != nullptr) calloc.free(promptC);
-      if (imagePathC != nullptr) calloc.free(imagePathC);
+      if (imagePathForCompletionParamsC != nullptr) calloc.free(imagePathForCompletionParamsC);
       if (grammarC != nullptr) calloc.free(grammarC);
       if (stopSequencesC != nullptr) {
         for (int i = 0; i < (params.stopSequences?.length ?? 0); i++) {
@@ -511,9 +517,10 @@ class CactusContext {
   }
 
   // +++ New Helper Method +++
-  Future<String> _getFormattedChat(List<ChatMessage> messages, String? overrideChatTemplate) async {
+  Future<String> _getFormattedChat(List<ChatMessage> messages, String? overrideChatTemplate, String? imagePath) async {
     Pointer<Utf8> messagesJsonC = nullptr;
     Pointer<Utf8> overrideChatTemplateC = nullptr;
+    Pointer<Utf8> imagePathC = nullptr;
     Pointer<Utf8> formattedPromptC = nullptr;
     try {
       final messagesJsonString = jsonEncode(messages.map((m) => m.toJson()).toList());
@@ -522,24 +529,34 @@ class CactusContext {
       if (overrideChatTemplate != null && overrideChatTemplate.isNotEmpty) {
         overrideChatTemplateC = overrideChatTemplate.toNativeUtf8(allocator: calloc);
       } else {
-        // If no override, pass nullptr to let native use context's default (from init) or model's default
         overrideChatTemplateC = nullptr;
       }
 
-      formattedPromptC = bindings.getFormattedChat(_handle, messagesJsonC, overrideChatTemplateC);
+      if (imagePath != null && imagePath.isNotEmpty) {
+        imagePathC = imagePath.toNativeUtf8(allocator: calloc);
+      } else {
+        imagePathC = nullptr;
+      }
+
+      formattedPromptC = bindings.getFormattedChat(
+        _handle, 
+        messagesJsonC, 
+        overrideChatTemplateC ?? nullptr,
+        imagePathC ?? nullptr
+      );
 
       if (formattedPromptC == nullptr) {
-        throw CactusOperationException("ChatFormatting", "Native chat formatting returned null. Ensure 'cactus_get_formatted_chat_c' is implemented correctly in native code.");
+        throw CactusOperationException("ChatFormatting", "Native chat formatting returned null. Ensure 'cactus_get_formatted_chat_c' is implemented correctly in native code and handles parameters.");
       }
       final formattedPrompt = formattedPromptC.toDartString();
       return formattedPrompt;
     } catch (e) {
-      // Log or handle the error appropriately
       if (e is CactusException) rethrow;
       throw CactusOperationException("ChatFormatting", "Error during _getFormattedChat: ${e.toString()}", e);
     } finally {
       if (messagesJsonC != nullptr) calloc.free(messagesJsonC);
       if (overrideChatTemplateC != nullptr) calloc.free(overrideChatTemplateC);
+      if (imagePathC != nullptr) calloc.free(imagePathC);
       if (formattedPromptC != nullptr) bindings.freeString(formattedPromptC);
     }
   }

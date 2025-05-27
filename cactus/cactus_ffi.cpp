@@ -222,17 +222,39 @@ void cactus_free_context_c(cactus_context_handle_t handle) {
  *         -3: Exception occurred during completion.
  *         -4: Unknown exception occurred.
  */
-int cactus_completion_c(
+CACTUS_FFI_EXPORT int cactus_completion_c(
     cactus_context_handle_t handle,
     const cactus_completion_params_c_t* params,
-    cactus_completion_result_c_t* result 
+    cactus_completion_result_c_t* result // Output parameter
 ) {
-    if (!handle || !params || !params->prompt || !result) {
-        return -1; 
+    if (!handle || !params || !result) {
+        // LOG_ERROR("[FFI] Invalid arguments to cactus_completion_c: handle, params, or result is null.");
+        return CACTUS_COMPLETION_ERROR_INVALID_ARGUMENTS; // Or a specific error code for invalid args
     }
-    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
 
-    // Ensure result is zero-initialized
+    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
+    if (!context) { // Should not happen if handle is valid from init, but good practice
+        // LOG_ERROR("[FFI] Catastrophic: context handle is non-null but maps to null internal context.");
+        return CACTUS_COMPLETION_ERROR_UNKNOWN; // Or a more specific critical error
+    }
+
+    // CRITICAL CHECK: Ensure the internal llama_context (ctx) is not null before proceeding.
+    if (!context->ctx) {
+        // LOG_ERROR("[FFI] cactus_completion_c called but internal LLaMA context (ctx) is NULL.");
+        if (result) { // Still try to populate part of the result if possible
+            result->text = nullptr;
+            result->stopping_word = nullptr;
+            result->tokens_predicted = 0;
+            result->tokens_evaluated = 0;
+            result->truncated = false;
+            result->stopped_eos = false;
+            result->stopped_word = false;
+            result->stopped_limit = true; // Indicate failure due to limit/error
+        }
+        return CACTUS_COMPLETION_ERROR_NULL_CONTEXT;
+    }
+
+    // Initialize result fields to safe defaults
     memset(result, 0, sizeof(cactus_completion_result_c_t));
 
     try {
@@ -616,49 +638,55 @@ int cactus_synthesize_speech_c(
  * @param messages_json A JSON string representing an array of chat messages (e.g., [{"role": "user", "content": "Hello"}]).
  * @param override_chat_template An optional chat template string to use. If NULL or empty,
  *                               the template from context initialization or the model's default will be used.
+ * @param image_path An optional image path to include in the formatted prompt.
  * @return A newly allocated C string containing the fully formatted prompt. Caller must free using cactus_free_string_c.
  *         Returns an empty string on failure.
  */
-char* cactus_get_formatted_chat_c(
+CACTUS_FFI_EXPORT char* cactus_get_formatted_chat_c(
     cactus_context_handle_t handle,
     const char* messages_json,
-    const char* override_chat_template
+    const char* override_chat_template,
+    const char* image_path
 ) {
     if (!handle || !messages_json) {
-        std::cerr << "Error: Invalid arguments to cactus_get_formatted_chat_c (handle or messages_json is null)." << std::endl;
-        return safe_strdup(""); // Return empty string on error to avoid crashing Dart side
+        // LOG_ERROR("[FFI] Invalid arguments: handle or messages_json is null.");
+        return nullptr; 
     }
-
     cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
-    if (!context->ctx) { // Ensure the underlying llama_context is initialized
-        std::cerr << "Error: cactus_context not fully initialized (llama_context is null) in cactus_get_formatted_chat_c." << std::endl;
-        return safe_strdup("");
+    if (!context || !context->ctx) { 
+        // LOG_ERROR("[FFI] Context or ctx is null.");
+        return nullptr;
     }
 
-    try {
-        std::string messages_std_string(messages_json);
-        std::string template_to_use_std_string;
-
-        if (override_chat_template && strlen(override_chat_template) > 0) {
-            template_to_use_std_string = override_chat_template;
-        } else if (!context->params.chat_template.empty()) {
-            template_to_use_std_string = context->params.chat_template;
-        }
-
-        std::string formatted_prompt_std_string = context->getFormattedChat(
-            messages_std_string,
-            template_to_use_std_string
-        );
-        
-        return safe_strdup(formatted_prompt_std_string);
-
-    } catch (const std::exception& e) {
-        std::cerr << "Exception in cactus_get_formatted_chat_c: " << e.what() << std::endl;
-        return safe_strdup(""); 
-    } catch (...) {
-        std::cerr << "Unknown exception in cactus_get_formatted_chat_c." << std::endl;
-        return safe_strdup("");
+    std::string template_name_str = override_chat_template ? override_chat_template : "";
+    
+    // If override_chat_template was not provided (i.e., template_name_str is empty),
+    // and if context->params.chat_template (which is std::string) is not empty, then use it.
+    if (template_name_str.empty() && !context->params.chat_template.empty()) {
+        template_name_str = context->params.chat_template;
     }
+
+    std::string image_path_str = image_path ? image_path : "";
+    std::string messages_json_std_str = messages_json;
+    std::string result_prompt_std_str;
+
+    // --- C++ Core Templating Logic (Placeholder) ---
+    // The C++ core should parse messages_json_std_str and use template_name_str
+    // along with image_path_str to produce the final prompt.
+    // This involves integrating with llama.cpp's templating or custom logic.
+    // For multimodal, it must inject image tokens (e.g., <image>) correctly.
+    // Example: result_prompt_std_str = context->cpp_format_chat_with_image_logic(...);
+    // LOG_INFO("[FFI] Formatting chat. Template: '%s', Image: '%s'", template_name_str.c_str(), image_path_str.c_str());
+
+    // Simplified placeholder for FFI plumbing demonstration:
+    if (!image_path_str.empty()) {
+        result_prompt_std_str = "[IMAGE_PATH:" + image_path_str + "] " + messages_json_std_str;
+    } else {
+        result_prompt_std_str = messages_json_std_str;
+    }
+    // End Placeholder ---
+
+    return safe_strdup(result_prompt_std_str);
 }
 
 } // extern "C" 

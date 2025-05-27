@@ -53,7 +53,13 @@ void cactus_context::rewind() {
     incomplete = false;
     n_remain = 0;
     n_past = 0;
-    embd.clear(); 
+    embd.clear();
+
+    if (ctx) { // Ensure ctx is not null before clearing
+        llama_kv_self_clear(ctx);
+        LOG_VERBOSE("KV cache (self) cleared in rewind.");
+    }
+
     if (ctx_sampling) {
         common_sampler_reset(ctx_sampling);
     }

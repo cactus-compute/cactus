@@ -30,6 +30,14 @@
   #endif
 #endif
 
+// Completion Result Codes
+#define CACTUS_COMPLETION_OK 0                        // Success
+#define CACTUS_COMPLETION_ERROR_UNKNOWN 1             // General, unspecified error
+#define CACTUS_COMPLETION_ERROR_INVALID_ARGUMENTS 2   // Invalid arguments passed to the function
+#define CACTUS_COMPLETION_ERROR_CONTEXT_FAILED 3      // Error during llama_eval or other core context operation
+#define CACTUS_COMPLETION_ERROR_NULL_CONTEXT 4        // The internal llama_context (ctx) is NULL when completion is attempted
+// Add other specific error codes here as needed, incrementing the values.
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -254,13 +262,15 @@ CACTUS_FFI_EXPORT int cactus_synthesize_speech_c(
  * @param messages_json A JSON string representing an array of chat messages (e.g., [{"role": "user", "content": "Hello"}]).
  * @param override_chat_template An optional chat template string to use. If NULL or empty,
  *                               the template from context initialization or the model's default will be used.
+ * @param image_path An optional path to an image file to be included in the prompt (for multimodal models).
  * @return A newly allocated C string containing the fully formatted prompt. Caller must free using cactus_free_string_c.
- *         Returns an empty string on failure.
+ *         Returns NULL on failure or if inputs are invalid.
  */
 CACTUS_FFI_EXPORT char* cactus_get_formatted_chat_c(
     cactus_context_handle_t handle,
     const char* messages_json,
-    const char* override_chat_template
+    const char* override_chat_template,
+    const char* image_path
 );
 
 

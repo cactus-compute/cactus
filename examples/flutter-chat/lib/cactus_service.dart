@@ -77,9 +77,7 @@ class CactusService {
     }
 
     String currentAssistantResponse = "";
-    final userMessageContent = imagePathForNextMessage.value != null
-        ? "<__image__>\n$userInput"
-        : userInput;
+    final userMessageContent = userInput; 
 
     final userMessage = ChatMessage(
       role: 'user',
@@ -90,10 +88,10 @@ class CactusService {
     updatedMessages.add(userMessage);
     updatedMessages.add(ChatMessage(role: 'assistant', content: currentAssistantResponse));
     chatMessages.value = updatedMessages;
-    isLoading.value = true; // Use general loading for message processing
+    isLoading.value = true;
 
     final String? imagePathToSend = imagePathForNextMessage.value;
-    imagePathForNextMessage.value = null; // Clear after sending
+    imagePathForNextMessage.value = null;
     stagedAssetPath.value = null;
 
     try {
@@ -112,7 +110,7 @@ class CactusService {
         topK: 10,
         topP: 0.9,
         onNewToken: (String token) {
-          if (!isLoading.value) return false; // Check isLoading, not mounted (service has no mount status)
+          if (!isLoading.value) return false;
 
           if (token == '<|im_end|>') return false;
 
