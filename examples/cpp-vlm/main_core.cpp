@@ -41,11 +41,11 @@ bool downloadFile(const std::string& url, const std::string& filepath, const std
 }
 
 int main(int argc, char **argv) {
-    const std::string model_url = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/SmolVLM-500M-Instruct-Q8_0.gguf";
-    const std::string model_filename = "SmolVLM-500M-Instruct-Q8_0.gguf";
-    
-    const std::string mmproj_url = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
-    const std::string mmproj_filename = "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
+    const std::string model_url = "https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/SmolVLM-256M-Instruct-Q8_0.gguf";
+    const std::string model_filename = "SmolVLM-256M.gguf";
+
+    const std::string mmproj_url = "https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf";
+    const std::string mmproj_filename = "mmproj-SmolVLM-256M.gguf";
 
     if (!downloadFile(model_url, model_filename, "VLM model")) {
         return 1;

@@ -19,36 +19,22 @@ class CactusService {
   final ValueNotifier<String?> imagePathForNextMessage = ValueNotifier(null);
   final ValueNotifier<String?> stagedAssetPath = ValueNotifier(null); // For image picker display
 
-  // Model and MMProj URLs and filenames (consider making these configurable)
-  static const String _modelUrl = 'https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/SmolVLM-256M-Instruct-Q8_0.gguf';
-  static const String _modelFilename = 'SmolVLM-256M-Instruct-Q8_0.gguf';
-  static const String _mmprojUrl = 'https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf';
-  static const String _mmprojFilename = "mmproj-SmolVLM-256M-Instruct-Q8_0.gguf";
-
-  Future<void> initialize() async {
+ Future<void> initialize() async {
     isLoading.value = true;
     initError.value = null;
     statusMessage.value = 'Initializing plugin...';
-    downloadProgress.value = null;
+    downloadProgress.value = null; 
 
+    // Cactus usage 
     try {
-      final Directory appDocDir = await getApplicationDocumentsDirectory();
-      final String effectiveModelPath = '${appDocDir.path}/$_modelFilename';
-      final String effectiveMmprojPath = '${appDocDir.path}/$_mmprojFilename';
-
-      // Download main model if needed
-      await _downloadFileIfNeeded(_modelUrl, effectiveModelPath, "Main Model");
-      // Download multimodal projector if needed
-      await _downloadFileIfNeeded(_mmprojUrl, effectiveMmprojPath, "MM Projector");
-
-      statusMessage.value = 'Initializing native context...';
-      downloadProgress.value = null;
-
       final params = CactusInitParams(
-        modelPath: effectiveModelPath,
-        mmprojPath: effectiveMmprojPath,
+        modelUrl: 'https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/SmolVLM-256M-Instruct-Q8_0.gguf', 
+        mmprojUrl: 'https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf',
+
         onInitProgress: (progress, status, isError) {
-          statusMessage.value = "Native Init: $status";
+          statusMessage.value = status; 
+          downloadProgress.value = progress; 
+
           if (isError) {
             initError.value = status;
             isLoading.value = false;
@@ -57,45 +43,30 @@ class CactusService {
       );
 
       _cactusContext = await CactusContext.init(params);
-      isLoading.value = false;
-      statusMessage.value = 'Cactus initialized successfully!';
+      
+      if (initError.value == null) { 
+        isLoading.value = false;
+        statusMessage.value = 'Cactus initialized successfully!';
+        await runBenchmark();
+      } else {
+        statusMessage.value = 'Initialization failed: ${initError.value}';
+      }
 
-      await runBenchmark(); // Run benchmark after successful initialization
     } on CactusModelPathException catch (e) {
       initError.value = "Model Error: ${e.message}";
-      statusMessage.value = 'Failed to load model.';
+      statusMessage.value = 'Failed to load model: ${e.message}';
       isLoading.value = false;
       debugPrint("Cactus Model Path Exception: ${e.toString()}");
     } on CactusInitializationException catch (e) {
       initError.value = "Initialization Error: ${e.message}";
-      statusMessage.value = 'Failed to initialize native context.';
+      statusMessage.value = 'Failed to initialize context: ${e.message}';
       isLoading.value = false;
       debugPrint("Cactus Initialization Exception: ${e.toString()}");
     } catch (e) {
-      if (initError.value == null) {
-        initError.value = "An unexpected error occurred during initialization: ${e.toString()}";
-      }
-      statusMessage.value = 'Initialization failed.';
+      initError.value ??= "An unexpected error occurred: ${e.toString()}";
+      statusMessage.value = 'Initialization failed: ${initError.value}';
       isLoading.value = false;
       debugPrint("Generic Exception during Cactus Init: ${e.toString()}");
-    }
-  }
-
-  Future<void> _downloadFileIfNeeded(String url, String filePath, String fileDescription) async {
-    final file = File(filePath);
-    if (!await file.exists()) {
-      statusMessage.value = 'Downloading $fileDescription...';
-      downloadProgress.value = 0.0;
-      await downloadModel(
-        url,
-        filePath,
-        onProgress: (progress, status) {
-          downloadProgress.value = progress;
-          statusMessage.value = "$fileDescription: $status";
-        },
-      );
-    } else {
-      statusMessage.value = '$fileDescription found locally.';
     }
   }
 
@@ -136,7 +107,7 @@ class CactusService {
       final completionParams = CactusCompletionParams(
         messages: currentChatHistoryForCompletion,
         imagePath: imagePathToSend,
-        stopSequences: ['<|im_end|>'],
+        stopSequences: ['<|im_end|>', '<end_of_utterance>'],
         temperature: 0.7,
         topK: 10,
         topP: 0.9,
@@ -161,15 +132,10 @@ class CactusService {
       );
 
       final result = await _cactusContext!.completion(completionParams);
-      String finalCleanText = result.text;
-      if (finalCleanText.trim().isEmpty && currentAssistantResponse.trim().isNotEmpty) {
+      String finalCleanText = result.text.trim(); 
+      
+      if (finalCleanText.isEmpty && currentAssistantResponse.trim().isNotEmpty) {
         finalCleanText = currentAssistantResponse.trim();
-      } else {
-        if (finalCleanText.endsWith('<|im_end|>')) {
-          finalCleanText = finalCleanText.substring(0, finalCleanText.length - '<|im_end|>'.length).trim();
-        } else {
-          finalCleanText = finalCleanText.trim();
-        }
       }
 
       final List<ChatMessage> finalMessages = List.from(chatMessages.value);

@@ -40,11 +40,11 @@ bool downloadFile(const std::string& url, const std::string& filepath, const std
 }
 
 int main(int argc, char **argv) {
-    const std::string model_url_str = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/SmolVLM-500M-Instruct-Q8_0.gguf";
-    const std::string model_filename_str = "SmolVLM-500M-Instruct-Q8_0.gguf";
+    const std::string model_url_str = "https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/SmolVLM-256M-Instruct-Q8_0.gguf";
+    const std::string model_filename_str = "SmolVLM-256M.gguf";
 
-    const std::string mmproj_url_str = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
-    const std::string mmproj_filename_str = "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
+    const std::string mmproj_url_str = "https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf";
+    const std::string mmproj_filename_str = "mmproj-SmolVLM-256M.gguf";
 
     if (!downloadFile(model_url_str, model_filename_str, "VLM model")) {
         return 1;
@@ -59,6 +59,7 @@ int main(int argc, char **argv) {
     params.mmproj_path = mmproj_filename_str.c_str();
     params.n_ctx = 2048;
     params.n_batch = 512;
+    params.n_gpu_layers = 10;
     params.use_mmap = true;
     params.use_mlock = true;
     params.warmup = false; 
