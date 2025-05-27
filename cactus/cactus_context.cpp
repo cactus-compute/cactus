@@ -55,9 +55,35 @@ void cactus_context::rewind() {
     n_past = 0;
     embd.clear();
 
-    if (ctx) { // Ensure ctx is not null before clearing
+    if (ctx) {
         llama_kv_self_clear(ctx);
         LOG_VERBOSE("KV cache (self) cleared in rewind.");
+    }
+
+    if (ctx_mtmd != nullptr) {
+        LOG_VERBOSE("Freeing existing mtmd_context in rewind.");
+        mtmd_free(ctx_mtmd);
+        ctx_mtmd = nullptr;
+    }
+
+    if (!this->params.mmproj.path.empty() && this->model != nullptr) {
+        LOG_VERBOSE("Re-initializing mtmd_context in rewind for mmproj: %s", this->params.mmproj.path.c_str());
+        struct mtmd_context_params mtmd_params_rewind = mtmd_context_params_default();
+        mtmd_params_rewind.use_gpu = this->params.mmproj_use_gpu;
+        mtmd_params_rewind.n_threads = this->params.cpuparams.n_threads; 
+        mtmd_params_rewind.verbosity = this->params.verbosity > 0 ? LM_GGML_LOG_LEVEL_INFO : LM_GGML_LOG_LEVEL_ERROR;
+        
+        ctx_mtmd = mtmd_init_from_file(this->params.mmproj.path.c_str(), this->model, mtmd_params_rewind);
+
+        if (ctx_mtmd == nullptr) {
+            LOG_ERROR("Failed to re-initialize mtmd_context in rewind with mmproj: %s", this->params.mmproj.path.c_str());
+        } else {
+            LOG_INFO("mtmd_context re-initialized successfully in rewind.");
+        }
+    } else if (ctx_mtmd != nullptr) {
+        LOG_WARNING("mtmd_context was non-null in rewind but no mmproj path found in params to re-initialize. Ensuring it is null.");
+        mtmd_free(ctx_mtmd);
+        ctx_mtmd = nullptr;
     }
 
     if (ctx_sampling) {
