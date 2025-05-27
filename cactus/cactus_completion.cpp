@@ -110,14 +110,15 @@ void cactus_context::loadPrompt() {
 
         if (tokenize_res != 0) {
             LOG_ERROR("mtmd_tokenize failed with code %d. Check prompt markers and image count.", tokenize_res);
-            mtmd_input_chunks_free(chunks);
+            if(chunks) mtmd_input_chunks_free(chunks);
             goto text_only_prompt;
         }
 
+        // Restore this loop
         // Feed text tokens from chunks to the sampler
         if (ctx_sampling) {
             for (size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i) {
-                const mtmd_input_chunk *chunk = mtmd_input_chunks_get(chunks, i);
+                const mtmd_input_chunk *chunk = mtmd_input_chunks_get(chunks, i); // Renamed back to chunk
                 if (mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_TEXT) {
                     size_t n_text_tokens = 0;
                     const llama_token *text_tokens = mtmd_input_chunk_get_tokens_text(chunk, &n_text_tokens);
@@ -130,20 +131,21 @@ void cactus_context::loadPrompt() {
             LOG_WARNING("ctx_sampling is null, cannot accept prompt tokens into sampler for multimodal input.");
         }
 
-        // Get number of tokens/positions from chunks *before* freeing them.
         this->num_prompt_tokens = static_cast<size_t>(mtmd_helper_get_n_pos(chunks));
 
         llama_pos new_n_past = 0;
         int eval_res = mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, (llama_pos)this->n_past, 0, params.n_batch, true, &new_n_past);
-        mtmd_input_chunks_free(chunks); 
+        if(chunks) mtmd_input_chunks_free(chunks);
 
         if (eval_res == 0) {
             this->n_past = static_cast<size_t>(new_n_past);
             LOG_INFO("mtmd_helper_eval_chunks successful. n_past updated to: %zu, num_prompt_tokens: %zu", this->n_past, this->num_prompt_tokens);
         } else {
-            LOG_ERROR("mtmd_helper_eval_chunks failed with code %d.", eval_res);
+            LOG_ERROR("mtmd_helper_eval_chunks failed with code %d. Aborting prompt load.", eval_res);
             this->n_past = 0; 
             this->num_prompt_tokens = 0;
+            this->has_next_token = false; // Prevent subsequent nextToken call
+            return; // Exit loadPrompt immediately
         }
         // TODO: Revisit how to correctly update sampler state after mtmd_helper_eval_chunks.
 
