@@ -260,16 +260,30 @@ CACTUS_FFI_EXPORT int cactus_completion_c(
     try {
         context->rewind();
 
+        // Set prompt for the context
         if (params->prompt) {
             context->params.prompt = params->prompt;
+        } else {
+            context->params.prompt = ""; // Ensure it's not uninitialized
         }
 
+        // Set image path for the context
         if (params->image_path && params->image_path[0] != '\0') {
             context->params.image.clear();
             context->params.image.push_back(params->image_path);
         } else {
             context->params.image.clear();
         }
+
+        // +++ Add Logging Here +++
+        LOG_INFO("[FFI cactus_completion_c] After rewind and param setup:");
+        LOG_INFO("[FFI cactus_completion_c]   Prompt: '%s'", context->params.prompt.c_str());
+        if (!context->params.image.empty()) {
+            LOG_INFO("[FFI cactus_completion_c]   Image[0]: '%s'", context->params.image[0].c_str());
+        } else {
+            LOG_INFO("[FFI cactus_completion_c]   Image: (empty)");
+        }
+        // +++ End Logging +++
 
         if (params->n_threads > 0) {
              context->params.cpuparams.n_threads = params->n_threads;
@@ -652,39 +666,31 @@ CACTUS_FFI_EXPORT char* cactus_get_formatted_chat_c(
         // LOG_ERROR("[FFI] Invalid arguments: handle or messages_json is null.");
         return nullptr; 
     }
-    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
-    if (!context || !context->ctx) { 
-        // LOG_ERROR("[FFI] Context or ctx is null.");
-        return nullptr;
-    }
+    // Ensure context and ctx are valid, though not strictly used by this simplified placeholder
+    // cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
+    // if (!context || !context->ctx) { 
+    //     // LOG_ERROR("[FFI] Context or ctx is null.");
+    //     return nullptr;
+    // }
 
-    std::string template_name_str = override_chat_template ? override_chat_template : "";
+    // --- THIS IS STILL A SIMPLIFIED PLACEHOLDER ---
+    // A real implementation needs to parse messages_json, integrate image_path 
+    // (if provided) into the content of the last message if appropriate (e.g., by adding <__image__> tag),
+    // and then apply a chat template (e.g., via llama_chat_apply_template using override_chat_template
+    // or context->params.chat_template).
     
-    // If override_chat_template was not provided (i.e., template_name_str is empty),
-    // and if context->params.chat_template (which is std::string) is not empty, then use it.
-    if (template_name_str.empty() && !context->params.chat_template.empty()) {
-        template_name_str = context->params.chat_template;
-    }
+    // For now, just pass through messages_json. 
+    // The image_path argument to this FFI function is noted, but the actual image handling 
+    // for completion is driven by `params.imagePath` in `CactusContext.completion` (Dart) which sets 
+    // `cCompParams.ref.image_path` for `cactus_completion_c`, which in turn sets `context->params.image`.
+    // `cactus_context::loadPrompt` will then use `context->params.image` and `context->params.prompt` (this string).
+    // If `context->params.image` is set, `loadPrompt` will prepend "<__image__>\n" to the prompt if it's not found.
+    // This revised placeholder aims to provide a cleaner prompt string to `loadPrompt`.
 
-    std::string image_path_str = image_path ? image_path : "";
-    std::string messages_json_std_str = messages_json;
-    std::string result_prompt_std_str;
+    std::string result_prompt_std_str = messages_json; // Directly use messages_json
 
-    // --- C++ Core Templating Logic (Placeholder) ---
-    // The C++ core should parse messages_json_std_str and use template_name_str
-    // along with image_path_str to produce the final prompt.
-    // This involves integrating with llama.cpp's templating or custom logic.
-    // For multimodal, it must inject image tokens (e.g., <image>) correctly.
-    // Example: result_prompt_std_str = context->cpp_format_chat_with_image_logic(...);
-    // LOG_INFO("[FFI] Formatting chat. Template: '%s', Image: '%s'", template_name_str.c_str(), image_path_str.c_str());
-
-    // Simplified placeholder for FFI plumbing demonstration:
-    if (!image_path_str.empty()) {
-        result_prompt_std_str = "[IMAGE_PATH:" + image_path_str + "] " + messages_json_std_str;
-    } else {
-        result_prompt_std_str = messages_json_std_str;
-    }
-    // End Placeholder ---
+    // The override_chat_template and image_path are ignored by this simplified placeholder.
+    // A full implementation would use them.
 
     return safe_strdup(result_prompt_std_str);
 }

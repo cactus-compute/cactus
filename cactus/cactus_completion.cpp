@@ -57,27 +57,28 @@ void cactus_context::truncatePrompt(std::vector<llama_token> &prompt_tokens) {
  * Otherwise, it processes as a text-only prompt.
  */
 void cactus_context::loadPrompt() {
+    // +++ Add Logging Here +++
+    LOG_INFO("[loadPrompt] Entry. Current prompt: '%s'", this->params.prompt.c_str());
+    if (!this->params.image.empty()) {
+        LOG_INFO("[loadPrompt] Entry. Current image[0]: '%s'", this->params.image[0].c_str());
+    } else {
+        LOG_INFO("[loadPrompt] Entry. Current image: (empty)");
+    }
+    // +++ End Logging +++
+
     // Automatically prepend <__image__> tag if an image is provided and the tag is missing.
     if (!this->params.image.empty() && !this->params.image[0].empty()) {
         if (this->params.prompt.find("<__image__>") == std::string::npos) {
             this->params.prompt = "<__image__>\n" + this->params.prompt;
-            LOG_INFO("Automatically prepended <__image__> tag to prompt in CactusContext::loadPrompt().");
+            LOG_INFO("[loadPrompt] Automatically prepended <__image__> tag. New prompt: '%s'", this->params.prompt.c_str());
         }
     }
 
-    // Ensure embd is clear for this new prompt load, n_past should be 0 (typically after rewind)
-    // rewind() clears embd and sets n_past to 0.
-    // If loadPrompt is called without rewind, existing n_past and embd state might interfere.
-    // For now, assume loadPrompt is for a fresh start or after rewind.
     embd.clear(); 
-    n_past = 0; // Explicitly reset n_past here for the current prompt loading logic.
-                // If this function could be part of a longer conversation turn, 
-                // n_past management would need to be more sophisticated.
+    n_past = 0; 
 
-    // Check if multimodal context is available and prompt is not empty
     if (ctx_mtmd != nullptr && !params.image.empty() && !params.prompt.empty()) {
-        LOG_INFO("Multimodal prompt detected. Using libmtmd.");
-
+        LOG_INFO("[loadPrompt] Taking MULTIMODAL path."); // Path taken log
         mtmd_input_text input_text;
         input_text.text = params.prompt.c_str(); 
         input_text.add_special = true; 
@@ -107,6 +108,7 @@ void cactus_context::loadPrompt() {
 
         int tokenize_res = mtmd_tokenize(ctx_mtmd, chunks, &input_text, bitmaps_array, n_bitmaps);
         mtmd_bitmap_free(bitmap);
+        LOG_INFO("[loadPrompt] mtmd_tokenize result: %d", tokenize_res); // Log tokenize_res
 
         if (tokenize_res != 0) {
             LOG_ERROR("mtmd_tokenize failed with code %d. Check prompt markers and image count.", tokenize_res);
@@ -136,12 +138,13 @@ void cactus_context::loadPrompt() {
         llama_pos new_n_past = 0;
         int eval_res = mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, (llama_pos)this->n_past, 0, params.n_batch, true, &new_n_past);
         if(chunks) mtmd_input_chunks_free(chunks);
+        LOG_INFO("[loadPrompt] mtmd_helper_eval_chunks result: %d. New n_past: %lld", eval_res, (long long)new_n_past); // Log eval_res
 
         if (eval_res == 0) {
             this->n_past = static_cast<size_t>(new_n_past);
-            LOG_INFO("mtmd_helper_eval_chunks successful. n_past updated to: %zu, num_prompt_tokens: %zu", this->n_past, this->num_prompt_tokens);
+            LOG_INFO("[loadPrompt] mtmd_helper_eval_chunks successful. n_past updated to: %zu, num_prompt_tokens: %zu", this->n_past, this->num_prompt_tokens);
         } else {
-            LOG_ERROR("mtmd_helper_eval_chunks failed with code %d. Aborting prompt load.", eval_res);
+            LOG_ERROR("[loadPrompt] mtmd_helper_eval_chunks failed with code %d. Aborting prompt load.", eval_res);
             this->n_past = 0; 
             this->num_prompt_tokens = 0;
             this->has_next_token = false; // Prevent subsequent nextToken call
@@ -150,7 +153,7 @@ void cactus_context::loadPrompt() {
         // TODO: Revisit how to correctly update sampler state after mtmd_helper_eval_chunks.
 
     } else {
-
+        LOG_INFO("[loadPrompt] Taking TEXT-ONLY path."); // Path taken log
 text_only_prompt:
         LOG_INFO("No image or mtmd_context not available/prompt not suitable. Processing as text-only prompt.");
         std::vector<llama_token> prompt_tokens_text = ::common_tokenize(ctx, params.prompt, true, true);
