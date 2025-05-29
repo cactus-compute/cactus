@@ -6,6 +6,7 @@ import 'image_converter.dart';
 import 'dart:io';
 import 'dart:math';
 import 'package:path_provider/path_provider.dart';
+import 'package:flutter/foundation.dart';
 
 class InferenceService {
   // Singleton implementation
@@ -96,14 +97,14 @@ class InferenceService {
     final random = Random();
     final randomQuestion = _userInputs[random.nextInt(_userInputs.length)];
 
-    final result = await _cactusContext!.completion(
-      CactusCompletionParams(
-        messages: [
-          ChatMessage(role: 'system', content: 'You are a helpful assistant.'),
-          ChatMessage(role: 'user', content: randomQuestion)
-        ],
-      ),
+    final CactusCompletionParams completionParams = CactusCompletionParams(
+      messages: [
+        ChatMessage(role: 'system', content: 'You are a helpful assistant.'),
+        ChatMessage(role: 'user', content: randomQuestion)
+      ],
     );
+
+    final result = await compute(_cactusContext!.completion, completionParams);
     timer.log('Inference complete: ${result.text}');
     _resultText = result.text;
     return result.text;
