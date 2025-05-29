@@ -120,17 +120,17 @@ class InferenceService {
     _lastProcessedImageFile = imageFile;
     timer.log('Image converted and saved (${imageFile.lengthSync() / 1024 / 1024} Mb)');
 
-    final result = await _cactusContext!.completion(
-      CactusCompletionParams(
-        messages: [
-          ChatMessage(role: 'system', content: 'You are an image analyst. Your task is to provide short, concise descriptions of the scene in the frame.'),
-          ChatMessage(role: 'user', content: '<__image__>Describe the frame.')
-        ],
-        imagePath: imageFile.path,
-        maxPredictedTokens: 20,
-        stopSequences: ['<end_of_utterance>'],
-      ),
+    final CactusCompletionParams completionParams = CactusCompletionParams(
+      messages: [
+        ChatMessage(role: 'system', content: 'You are an image analyst. Your task is to provide short, concise descriptions of the scene in the frame.'),
+        ChatMessage(role: 'user', content: '<__image__>Describe the frame.')
+      ],
+      imagePath: imageFile.path,
+      maxPredictedTokens: 20,
+      stopSequences: ['<end_of_utterance>'],
     );
+
+    final result = await compute(_cactusContext!.completion, completionParams);
     timer.log('Inference complete: ${result.text}');
     return result.text;
   }
