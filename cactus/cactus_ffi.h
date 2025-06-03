@@ -163,6 +163,39 @@ typedef struct cactus_formatted_chat_result_c {
 // --- End Advanced Chat Formatting FFI Definitions ---
 
 
+// +++ Speech-to-Text (STT) FFI Definitions +++
+
+// Forward declare or include a definition for cactus_stt_context_t
+// If cactus::STT is defined in a C++ header that C can't parse,
+// then cactus_stt_context_t should be an opaque pointer.
+typedef struct cactus_stt_context cactus_stt_context_t;
+
+// Initializes an STT context with the specified model.
+// model_path: Path to the ggml Whisper model file.
+// language: Language code (e.g., "en").
+// Returns a pointer to the STT context, or nullptr on failure.
+CACTUS_FFI_EXPORT cactus_stt_context_t* cactus_stt_init(const char* model_path, const char* language);
+
+// Processes a chunk of audio data.
+// ctx: Pointer to the STT context.
+// samples: Pointer to an array of float audio samples (PCM 32-bit, 16kHz, mono).
+// num_samples: Number of samples in the array.
+// Returns true on success, false on failure.
+CACTUS_FFI_EXPORT bool cactus_stt_process_audio(cactus_stt_context_t* ctx, const float* samples, uint32_t num_samples);
+
+// Retrieves the full transcription result.
+// ctx: Pointer to the STT context.
+// The caller is responsible for freeing the returned string using cactus_free_string_c().
+// Returns a C-string with the transcription, or nullptr on failure or if no transcription is ready.
+CACTUS_FFI_EXPORT char* cactus_stt_get_transcription(cactus_stt_context_t* ctx);
+
+// Frees the STT context and associated resources.
+// ctx: Pointer to the STT context.
+CACTUS_FFI_EXPORT void cactus_stt_free(cactus_stt_context_t* ctx);
+
+// --- End Speech-to-Text (STT) FFI Definitions ---
+
+
 CACTUS_FFI_EXPORT cactus_init_params_c_t cactus_default_init_params_c();
 
 /**

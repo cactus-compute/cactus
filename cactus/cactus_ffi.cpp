@@ -1,5 +1,6 @@
 #include "cactus_ffi.h"
 #include "cactus.h"
+#include "cactus_stt.h" // The C++ STT wrapper
 #include "common.h"
 #include "llama.h"
 #include "llama-chat.h" // For llama_chat_message and llama_chat_apply_template
@@ -13,6 +14,8 @@
 #include <sstream> 
 #include <iostream> 
 #include <cstdio> // For printf
+#include <vector> // For std::vector in STT FFI
+#include <new>    // For std::nothrow in STT FFI
 
 // Bring symbols from the cactus namespace into the current scope for unqualified lookup.
 // This will allow the 'log' call within the LOG_INFO macro to find 'cactus::log'.
@@ -823,6 +826,78 @@ CACTUS_FFI_EXPORT void cactus_free_formatted_chat_result_members_c(cactus_format
         result->grammar = nullptr;
     }
 }
+
+// +++ Speech-to-Text (STT) FFI Implementations +++
+
+// Define the opaque struct declared in the header
+struct cactus_stt_context {
+    cactus::STT* instance;
+};
+
+CACTUS_FFI_EXPORT cactus_stt_context_t* cactus_stt_init(const char* model_path, const char* language) {
+    if (!model_path || !language) {
+        // Consider logging an error here if a logging mechanism is available
+        return nullptr;
+    }
+    cactus_stt_context_t* ctx = new (std::nothrow) cactus_stt_context_t;
+    if (!ctx) {
+        // Allocation failure for the context struct
+        return nullptr;
+    }
+    ctx->instance = new (std::nothrow) cactus::STT();
+    if (!ctx->instance) {
+        // Allocation failure for the STT instance
+        delete ctx;
+        return nullptr;
+    }
+    // Assuming "en" and use_gpu=true as defaults if not passed or if complex logic is avoided in FFI layer
+    // The prompt implies language is a parameter, so we use it. GPU usage is true by default in C++ impl.
+    if (!ctx->instance->initialize(model_path, language)) {
+        delete ctx->instance;
+        delete ctx;
+        return nullptr;
+    }
+    return ctx;
+}
+
+CACTUS_FFI_EXPORT bool cactus_stt_process_audio(cactus_stt_context_t* ctx, const float* samples, uint32_t num_samples) {
+    if (!ctx || !ctx->instance || !samples) {
+        return false;
+    }
+    if (!ctx->instance->isInitialized()) {
+        // Or handle error, e.g., log "STT context not initialized"
+        return false;
+    }
+    // Create a std::vector from the raw pointer and size.
+    // This involves a copy, which might be a performance consideration for very large chunks.
+    // Alternative: Modify cactus::STT::processAudio to accept const float* and size directly.
+    std::vector<float> audio_vector(samples, samples + num_samples);
+    return ctx->instance->processAudio(audio_vector);
+}
+
+CACTUS_FFI_EXPORT char* cactus_stt_get_transcription(cactus_stt_context_t* ctx) {
+    if (!ctx || !ctx->instance || !ctx->instance->isInitialized()) {
+        return nullptr;
+    }
+    std::string transcription = ctx->instance->getTranscription();
+    // Caller must free this string using cactus_free_string_c.
+    // strdup will return nullptr if transcription.c_str() is null (not possible for std::string)
+    // or if memory allocation fails.
+    // If transcription is empty, strdup("") correctly returns a pointer to a null-terminated empty string.
+    char* c_transcription = strdup(transcription.c_str());
+    return c_transcription;
+}
+
+CACTUS_FFI_EXPORT void cactus_stt_free(cactus_stt_context_t* ctx) {
+    if (ctx) {
+        if (ctx->instance) {
+            delete ctx->instance; // This will call STT::~STT() which calls cleanup()
+        }
+        delete ctx;
+    }
+}
+
+// --- End Speech-to-Text (STT) FFI Implementations ---
 
 // +++ Benchmarking FFI Functions +++
 /**
