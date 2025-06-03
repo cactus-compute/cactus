@@ -897,6 +897,20 @@ CACTUS_FFI_EXPORT void cactus_stt_free(cactus_stt_context_t* ctx) {
     }
 }
 
+CACTUS_FFI_EXPORT void cactus_stt_set_user_vocabulary(cactus_stt_context_t* ctx, const char* vocabulary) {
+    if (!ctx || !ctx->instance) {
+        // Optional: Log error if context or instance is null
+        // fprintf(stderr, "cactus_stt_set_user_vocabulary: STT context or instance is null.\n");
+        return;
+    }
+    if (!vocabulary) {
+        // Treat null vocabulary as a request to clear/reset the vocabulary
+        ctx->instance->setUserVocabulary("");
+        return;
+    }
+    ctx->instance->setUserVocabulary(vocabulary);
+}
+
 // --- End Speech-to-Text (STT) FFI Implementations ---
 
 // +++ Benchmarking FFI Functions +++

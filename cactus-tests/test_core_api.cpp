@@ -1,10 +1,14 @@
 #include "test_core_api.h"
 #include "../cactus/cactus.h"
+#include "../cactus/cactus_stt.h" // For STT tests
 #include <iostream>
 #include <string>
 #include <vector>
 #include <cassert>
-#include <cstring> 
+#include <cstring> // For strcmp
+
+// Test hook from cactus_stt.cpp
+extern const char* g_last_initial_prompt_for_test;
 
 // Test basic model loading and initialization
 void test_model_loading() {
@@ -291,4 +295,60 @@ void test_kv_cache_type() {
     assert(caught_exception && "Expected std::runtime_error was not thrown for invalid KV cache type");
 
     std::cout << "KV cache type conversion test passed" << std::endl;
-} 
+}
+
+// --- STT Test Cases ---
+
+void test_stt_set_user_vocabulary_stores_vocabulary() {
+    std::cout << "Testing STT_SetUserVocabulary_StoresVocabulary..." << std::endl;
+    cactus::STT stt;
+    std::string vocab = "expected vocabulary, custom words";
+    stt.setUserVocabulary(vocab);
+    assert(stt.getUserVocabularyForTest() == vocab && "User vocabulary not stored correctly.");
+    std::cout << "STT_SetUserVocabulary_StoresVocabulary test passed" << std::endl;
+}
+
+void test_stt_set_user_vocabulary_empty_clears_vocabulary() {
+    std::cout << "Testing STT_SetUserVocabulary_EmptyClearsVocabulary..." << std::endl;
+    cactus::STT stt;
+    stt.setUserVocabulary("initial vocabulary"); // Set some initial
+    stt.setUserVocabulary("");                   // Clear it
+    assert(stt.getUserVocabularyForTest().empty() && "User vocabulary not cleared by empty string.");
+    std::cout << "STT_SetUserVocabulary_EmptyClearsVocabulary test passed" << std::endl;
+}
+
+void test_stt_process_audio_uses_vocabulary() {
+    std::cout << "Testing STT_ProcessAudio_UsesVocabularyAsInitialPrompt..." << std::endl;
+    cactus::STT stt;
+    // Initialize STT - assuming dummy_model.gguf allows initialization
+    // We won't check transcription quality, just that the prompt is passed.
+    bool initialized = stt.initialize("../dummy_model.gguf", "en", false); // use_gpu=false
+    assert(initialized && "STT initialization failed for vocabulary test. Ensure dummy_model.gguf exists.");
+
+    std::string vocab = "my custom prompt for STT";
+    stt.setUserVocabulary(vocab);
+
+    std::vector<float> dummy_samples = {0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f}; // Minimal audio
+    stt.processAudio(dummy_samples); // This will trigger the test hook
+
+    assert(g_last_initial_prompt_for_test != nullptr && "g_last_initial_prompt_for_test was not set.");
+    if (g_last_initial_prompt_for_test) { // Defensive check
+      assert(strcmp(g_last_initial_prompt_for_test, vocab.c_str()) == 0 && "User vocabulary was not used as initial_prompt.");
+    }
+    std::cout << "STT_ProcessAudio_UsesVocabularyAsInitialPrompt test passed" << std::endl;
+}
+
+void test_stt_process_audio_no_vocabulary_prompt_is_null() {
+    std::cout << "Testing STT_ProcessAudio_NoVocabulary_InitialPromptIsNull..." << std::endl;
+    cactus::STT stt;
+    bool initialized = stt.initialize("../dummy_model.gguf", "en", false);
+    assert(initialized && "STT initialization failed for no-vocabulary test. Ensure dummy_model.gguf exists.");
+
+    stt.setUserVocabulary(""); // Ensure it's empty
+
+    std::vector<float> dummy_samples = {0.0f, 0.1f, 0.2f};
+    stt.processAudio(dummy_samples);
+
+    assert(g_last_initial_prompt_for_test == nullptr && "initial_prompt was not null when no vocabulary was set.");
+    std::cout << "STT_ProcessAudio_NoVocabulary_InitialPromptIsNull test passed" << std::endl;
+}

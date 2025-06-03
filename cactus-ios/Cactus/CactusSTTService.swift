@@ -19,8 +19,16 @@ public class CactusSTTService: NSObject, AudioInputManagerDelegate {
     private let audioInputManager: iOSAudioInputManager
     private var transcriptionHandler: ((String?, Error?) -> Void)?
     private var modelPath: String?
-    private var isSTTInitialized: Bool = false
+    // private var isSTTInitialized: Bool = false // Replaced by checking sttContext
     private var isCapturingVoice: Bool = false
+
+    // Pointer to the native STT context
+    private var sttContext: UnsafeMutablePointer<cactus_stt_context_t>? = nil
+
+    /// Returns true if the STT service has been initialized with a model.
+    public var isInitialized: Bool {
+        return sttContext != nil
+    }
 
     /// Initializes a new `CactusSTTService`.
     ///
@@ -42,22 +50,28 @@ public class CactusSTTService: NSObject, AudioInputManagerDelegate {
         self.modelPath = modelPath
         print("[CactusSTTService] Initializing STT with model: \(modelPath)")
 
-        // Placeholder for C FFI call
-        // let result = cactus_stt_init_ffi((modelPath as NSString).utf8String)
-        // if result == 0 { // Assuming 0 is success
-        //     self.isSTTInitialized = true
-        //     print("[CactusSTTService] STT initialized successfully.")
-        //     completion(nil)
-        // } else {
-        //     let error = STTError.initializationFailed("Failed to initialize STT engine with code \(result).")
-        //     print("[CactusSTTService] STT initialization error: \(error.localizedDescription)")
-        //     completion(error)
-        // }
+        if self.sttContext != nil {
+            cactus_stt_free(self.sttContext)
+            self.sttContext = nil
+        }
 
-        // Simulate successful initialization for now
-        self.isSTTInitialized = true
-        print("[CactusSTTService] STT initialized successfully (Placeholder).")
-        completion(nil)
+        // Assuming language "en" for now, or make it a parameter
+        if let modelPathCString = modelPath.cString(using: .utf8),
+           let languageCString = "en".cString(using: .utf8) {
+            self.sttContext = cactus_stt_init(modelPathCString, languageCString)
+            if self.sttContext != nil {
+                print("[CactusSTTService] STT initialized successfully.")
+                completion(nil)
+            } else {
+                let error = STTError.initializationFailed("cactus_stt_init returned null.")
+                print("[CactusSTTService] STT initialization error: \(error.localizedDescription)")
+                completion(error)
+            }
+        } else {
+            let error = STTError.initializationFailed("Failed to convert modelPath or language to C string.")
+            print("[CactusSTTService] STT initialization error: \(error.localizedDescription)")
+            completion(error)
+        }
     }
 
     /// Starts capturing audio from the microphone and processes it for speech-to-text.
@@ -67,7 +81,7 @@ public class CactusSTTService: NSObject, AudioInputManagerDelegate {
     /// Transcription results or errors are delivered through the `transcriptionHandler`.
     /// - Parameter transcriptionHandler: A closure called with the transcription string or an error.
     public func startVoiceCapture(transcriptionHandler: @escaping (String?, Error?) -> Void) {
-        guard isSTTInitialized else {
+        guard isInitialized else { // Use the new isInitialized computed property
             transcriptionHandler(nil, STTError.notInitialized)
             return
         }
@@ -118,34 +132,32 @@ public class CactusSTTService: NSObject, AudioInputManagerDelegate {
     ///   - filePath: The local file system path to the audio file.
     ///   - completion: A closure called with the transcription string or an error.
     public func processAudioFile(filePath: String, completion: @escaping (String?, Error?) -> Void) {
-        guard isSTTInitialized else {
+        guard let context = self.sttContext else {
             completion(nil, STTError.notInitialized)
             return
         }
         print("[CactusSTTService] Processing audio file: \(filePath)")
 
-        var pathForFFI = filePath
-        if filePath.hasPrefix("file://"), let url = URL(string: filePath) {
-            pathForFFI = url.path
+        // Note: The FFI's cactus_stt_process_audio expects raw float samples.
+        // This function currently does not read the file and convert it to samples.
+        // For now, we will just call getTranscription, assuming audio might have been
+        // processed by other means or this is a placeholder for a more complex flow.
+        // To truly process a file, one would need to:
+        // 1. Read audio file (e.g., using AVFoundation)
+        // 2. Convert to required format (PCM 32-bit float, 16kHz, mono)
+        // 3. Call cactus_stt_process_audio with the sample buffer
+        // 4. Then call cactus_stt_get_transcription
+
+        if let cTranscription = cactus_stt_get_transcription(context) {
+            let transcription = String(cString: cTranscription)
+            cactus_free_string_c(UnsafeMutablePointer(mutating: cTranscription)) // Free the C string
+            print("[CactusSTTService] Transcription retrieved: \(transcription)")
+            completion(transcription, nil)
+        } else {
+            let error = STTError.processingFailed("cactus_stt_get_transcription returned null.")
+            print("[CactusSTTService] STT processing error: \(error.localizedDescription)")
+            completion(nil, error)
         }
-
-        // Placeholder for C FFI call
-        // let cTranscription = cactus_stt_process_file_ffi((pathForFFI as NSString).utf8String)
-        // if let cTrans = cTranscription {
-        //     let transcription = String(cString: cTrans)
-        //     cactus_stt_free_string_ffi(cTrans) // Important: manage memory from C
-        //     print("[CactusSTTService] Transcription successful: \(transcription)")
-        //     completion(transcription, nil)
-        // } else {
-        //     let error = STTError.processingFailed("STT processing returned null.")
-        //     print("[CactusSTTService] STT processing error: \(error.localizedDescription)")
-        //     completion(nil, error)
-        // }
-
-        // Simulate successful processing for now
-        let placeholderTranscription = "Placeholder transcription for file: \(pathForFFI)"
-        print("[CactusSTTService] Transcription successful (Placeholder): \(placeholderTranscription)")
-        completion(placeholderTranscription, nil)
     }
 
     /// Releases resources used by the STT engine.
@@ -155,12 +167,16 @@ public class CactusSTTService: NSObject, AudioInputManagerDelegate {
     /// - Parameter completion: A closure called upon completion, passing an optional `Error` if release failed.
     public func releaseSTT(completion: @escaping (Error?) -> Void) {
         print("[CactusSTTService] Releasing STT resources.")
-        // Placeholder for C FFI call
-        // cactus_stt_release_ffi()
-        self.isSTTInitialized = false
+        if let context = self.sttContext {
+            cactus_stt_free(context)
+            self.sttContext = nil
+            print("[CactusSTTService] STT resources released.")
+            completion(nil)
+        } else {
+            print("[CactusSTTService] STT already released or not initialized.")
+            completion(nil) // Or an error if preferred for trying to release a null context
+        }
         self.modelPath = nil
-        print("[CactusSTTService] STT resources released (Placeholder).")
-        completion(nil)
     }
 
     // MARK: - AudioInputManagerDelegate (Public for protocol conformance, internal use)
@@ -212,26 +228,30 @@ public class CactusSTTService: NSObject, AudioInputManagerDelegate {
 
     // MARK: - User-Specific Adaptation (Placeholder)
 
-    /// Sets user-specific vocabulary to potentially bias the STT engine.
-    ///
-    /// **Note:** This is currently a placeholder implementation. The actual biasing
-    /// of the STT engine via C FFI calls is not yet implemented.
-    ///
-    /// - Parameters:
-    ///   - vocabulary: An array of words or phrases to suggest to the STT engine.
-    ///   - completion: A closure called upon completion. Currently always returns `nil` for the error.
-    public func setUserVocabulary(vocabulary: [String], completion: @escaping (Error?) -> Void) {
-        // TODO: Implement once core C++ FFI functionality is available.
-        // This would involve:
-        // 1. Converting the [String] to a JSON string.
-        // 2. Calling an FFI function like `cactus_stt_set_vocabulary_ffi(self.stt_ctx_pointer, vocabJsonCString)`.
-        // For now, just log that it's a placeholder and complete.
-        print("[CactusSTTService] setUserVocabulary called with \(vocabulary.count) items. This feature is a placeholder and not yet implemented at the core C++ level.")
+    /**
+     Sets a user-specific vocabulary string to guide the STT engine.
 
-        // Optionally, return a specific "not implemented" error if desired:
-        // completion(STTError.featureNotImplemented("setUserVocabulary"))
-        // For now, completing with nil to indicate "success" for the placeholder.
-        completion(nil)
+     This can improve accuracy for uncommon words, names, or specific contexts by providing an "initial prompt" to the underlying Whisper model.
+
+     - Parameter vocabulary: The string containing words or phrases for context.
+     - Parameter completion: A callback indicating success or failure.
+                             `error` will be non-nil if an issue occurred.
+    */
+    public func setUserVocabulary(vocabulary: String, completion: @escaping (Error?) -> Void) {
+        guard let context = self.sttContext else {
+            print("[CactusSTTService] STT context not initialized. Cannot set vocabulary.")
+            completion(STTError.notInitialized)
+            return
+        }
+
+        if let cVocabulary = vocabulary.cString(using: .utf8) {
+            cactus_stt_set_user_vocabulary(context, cVocabulary)
+            print("[CactusSTTService] User vocabulary set to: \(vocabulary)")
+            completion(nil)
+        } else {
+            print("[CactusSTTService] Error converting vocabulary string to C string.")
+            completion(STTError.processingFailed("Failed to convert vocabulary to C string"))
+        }
     }
 }
 

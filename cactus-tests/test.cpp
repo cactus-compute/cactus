@@ -25,6 +25,12 @@ int main() {
         test_benchmarking();
         test_jinja_chat_formatting();
         test_kv_cache_type();
+
+        // STT Core API Tests
+        test_stt_set_user_vocabulary_stores_vocabulary();
+        test_stt_set_user_vocabulary_empty_clears_vocabulary();
+        test_stt_process_audio_uses_vocabulary();
+        test_stt_process_audio_no_vocabulary_prompt_is_null();
         
         // Call FFI API tests
         test_ffi_init_free_context();

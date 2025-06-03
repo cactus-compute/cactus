@@ -7,6 +7,7 @@ class AudioInputModule: RCTEventEmitter {
 
   private var audioRecorder: AVAudioRecorder?
   private var audioFilename: URL?
+  private var sttContext: UnsafeMutableRawPointer? // To store the cactus_stt_context_t*
 
   override init() {
     super.init()
@@ -118,26 +119,47 @@ class AudioInputModule: RCTEventEmitter {
 
   @objc
   func initSTT(_ modelPath: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
-    // TODO: Call actual C++ FFI function for STT initialization
-    // e.g., let success = cactus_stt_init_ffi(modelPath)
-    // For now, simulate success
     print("[AudioInputModule] initSTT called with modelPath: \(modelPath)")
-    // Assuming cactus_stt_init_ffi would be a C function linked into the project:
-    // let result = cactus_stt_init_ffi((modelPath as NSString).utf8String)
-    // if result == 0 {
-    //   resolve("STT initialized successfully")
-    // } else {
-    //   reject("stt_init_failed", "Failed to initialize STT model", nil)
-    // }
-    resolve("STT initialized successfully (placeholder)")
+    // Assuming language "en" for now, this should ideally be a parameter
+    if let modelPathCStr = modelPath.cString(using: .utf8),
+       let langCStr = "en".cString(using: .utf8) {
+      if self.sttContext != nil {
+        RN_STT_free(self.sttContext)
+        self.sttContext = nil
+      }
+      self.sttContext = RN_STT_init(modelPathCStr, langCStr)
+      if self.sttContext != nil {
+        resolve("STT initialized successfully")
+      } else {
+        reject("stt_init_failed", "Failed to initialize STT model (RN_STT_init returned null)", nil)
+      }
+    } else {
+      reject("stt_init_failed", "Failed to convert modelPath or language to C string", nil)
+    }
+  }
+
+  @objc
+  func setUserVocabulary(_ vocabulary: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard let context = self.sttContext else {
+      reject("STT_ERROR", "STT not initialized. Call initSTT first.", nil)
+      return
+    }
+    if let vocabularyCString = vocabulary.cString(using: .utf8) {
+      RN_STT_setUserVocabulary(context, vocabularyCString)
+      print("[AudioInputModule] User vocabulary set to: \(vocabulary)")
+      resolve(nil)
+    } else {
+      reject("VOCAB_ERROR", "Failed to convert vocabulary to C string.", nil)
+    }
   }
 
   @objc
   func processAudioFile(_ filePath: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
-    // TODO: Call actual C++ FFI function for STT processing
-    // e.g., let transcription = cactus_stt_process_file_ffi(filePath)
-    // For now, simulate success with placeholder transcription
     print("[AudioInputModule] processAudioFile called with filePath: \(filePath)")
+    guard let context = self.sttContext else {
+      reject("STT_ERROR", "STT not initialized. Call initSTT first.", nil)
+      return
+    }
 
     // Guard against file URLs if a direct path is expected by C++
     var pathForFFI = filePath
@@ -147,25 +169,29 @@ class AudioInputModule: RCTEventEmitter {
         }
     }
 
-    // Assuming cactus_stt_process_file_ffi would be a C function:
-    // let cTranscription = cactus_stt_process_file_ffi((pathForFFI as NSString).utf8String)
-    // if cTranscription != nil {
-    //   let transcription = String(cString: cTranscription!)
-    //   cactus_stt_free_string_ffi(cTranscription) // Assuming memory management function
-    //   resolve(transcription)
-    // } else {
-    //   reject("stt_process_failed", "Failed to process audio file", nil)
-    // }
-    resolve("Placeholder transcription for \(pathForFFI)")
+    if let filePathCString = pathForFFI.cString(using: .utf8) {
+        if let cTranscription = RN_STT_processAudioFile(context, filePathCString) {
+            let transcription = String(cString: cTranscription)
+            RN_STT_free_string(UnsafeMutablePointer(mutating: cTranscription)) // Free the C string
+            resolve(transcription)
+        } else {
+            reject("stt_process_failed", "Failed to process audio file or no transcription produced.", nil)
+        }
+    } else {
+        reject("PATH_ERROR", "Failed to convert file path to C string.", nil)
+    }
   }
 
   @objc
   func releaseSTT(_ resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
-    // TODO: Call actual C++ FFI function for STT release
-    // e.g., cactus_stt_release_ffi()
     print("[AudioInputModule] releaseSTT called")
-    // cactus_stt_release_ffi()
-    resolve("STT released successfully (placeholder)")
+    if let context = self.sttContext {
+      RN_STT_free(context)
+      self.sttContext = nil
+      resolve("STT released successfully")
+    } else {
+      resolve("STT already released or not initialized")
+    }
   }
 
 }

@@ -14,6 +14,7 @@
 #include "ggml.h"
 #include "cactus.h"
 #include "jni-utils.h"
+#include "cactus_ffi.h" // For STT FFI functions
 #define UNUSED(x) (void)(x)
 #define TAG "CACTUS_ANDROID_JNI"
 
@@ -1253,48 +1254,96 @@ Java_com_cactus_LlamaContext_unsetLog(JNIEnv *env, jobject thiz) {
 
 // STT JNI Methods
 
-// Placeholder for STT context or similar structure if needed
-// static cactus_stt_context* stt_ctx = nullptr; // Example
-
-JNIEXPORT void JNICALL
+JNIEXPORT jlong JNICALL
 Java_com_cactus_CactusModule_nativeInitSTT(
     JNIEnv *env,
-    jobject thiz, /* this is a reference to the CactusModule instance */
-    jstring model_path_str,
+    jobject thiz, // this is a reference to the CactusModule instance
+    jstring model_path_jstr,
+    jstring language_jstr, // Added language parameter
     jobject promise) {
     UNUSED(thiz);
 
-    const char *model_path_chars = env->GetStringUTFChars(model_path_str, nullptr);
-    LOGI("nativeInitSTT called with modelPath: %s", model_path_chars);
+    const char *model_path_cstr = env->GetStringUTFChars(model_path_jstr, nullptr);
+    const char *language_cstr = env->GetStringUTFChars(language_jstr, nullptr);
 
-    // TODO: Implement actual STT initialization using cactus C++ library
-    // Example:
-    // if (stt_ctx != nullptr) {
-    //   // Clean up existing context if any
-    //   // cactus_stt_free(stt_ctx);
-    //   stt_ctx = nullptr;
-    // }
-    // stt_ctx = cactus_stt_init(model_path_chars);
-    // if (stt_ctx == nullptr) {
-    //   jniutils::rejectPromise(env, promise, "E_STT_INIT", "Failed to initialize STT model");
-    //   env->ReleaseStringUTFChars(model_path_str, model_path_chars);
-    //   return;
-    // }
+    if (!model_path_cstr || !language_cstr) {
+        if (model_path_cstr) env->ReleaseStringUTFChars(model_path_jstr, model_path_cstr);
+        if (language_cstr) env->ReleaseStringUTFChars(language_jstr, language_cstr);
+        jniutils::rejectPromise(env, promise, "E_STT_INIT_PARAMS", "Model path or language is null.");
+        return 0; // Return 0 for invalid context pointer
+    }
+    LOGI("nativeInitSTT called with modelPath: %s, language: %s", model_path_cstr, language_cstr);
 
-    env->ReleaseStringUTFChars(model_path_str, model_path_chars);
-    jniutils::resolvePromise(env, promise, NULL); // Resolve with null or some status map
+    cactus_stt_context_t* stt_ctx = cactus_stt_init(model_path_cstr, language_cstr);
+
+    env->ReleaseStringUTFChars(model_path_jstr, model_path_cstr);
+    env->ReleaseStringUTFChars(language_jstr, language_cstr);
+
+    if (stt_ctx == nullptr) {
+      jniutils::rejectPromise(env, promise, "E_STT_INIT_FAILED", "cactus_stt_init returned null");
+      return 0;
+    }
+
+    // Promise is resolved by Java side with the context pointer
+    return reinterpret_cast<jlong>(stt_ctx);
 }
 
 JNIEXPORT void JNICALL
-Java_com_cactus_CactusModule_nativeProcessAudioFile(
+Java_com_cactus_CactusModule_nativeSetUserVocabulary(
     JNIEnv *env,
-    jobject thiz,
-    jstring file_path_str,
+    jobject thiz, /* this is a reference to the CactusModule instance */
+    jlong stt_context_ptr, // Added context pointer parameter
+    jstring vocabulary_jstr,
     jobject promise) {
     UNUSED(thiz);
 
+    if (stt_context_ptr == 0) {
+        jniutils::rejectPromise(env, promise, "E_STT_NO_CTX", "STT context pointer is null. Call initSTT first.");
+        return;
+    }
+    cactus_stt_context_t* stt_ctx = reinterpret_cast<cactus_stt_context_t*>(static_cast<intptr_t>(stt_context_ptr));
+
+    const char* vocabulary_cstr = nullptr;
+    if (vocabulary_jstr != nullptr) {
+        vocabulary_cstr = env->GetStringUTFChars(vocabulary_jstr, nullptr);
+        if (vocabulary_cstr == nullptr) {
+            jniutils::rejectPromise(env, promise, "E_JNI_STR_CONVERSION", "Failed to convert vocabulary Java string to C string.");
+            return;
+        }
+    }
+
+    cactus_stt_set_user_vocabulary(stt_ctx, vocabulary_cstr);
+    LOGI("nativeSetUserVocabulary called with vocabulary: %s for context: %p", vocabulary_cstr ? vocabulary_cstr : "NULL (cleared)", stt_ctx);
+
+    if (vocabulary_jstr != nullptr && vocabulary_cstr != nullptr) {
+        env->ReleaseStringUTFChars(vocabulary_jstr, vocabulary_cstr);
+    }
+
+    jniutils::resolvePromise(env, promise, NULL);
+}
+
+
+JNIEXPORT jstring JNICALL // Changed return type to jstring
+Java_com_cactus_CactusModule_nativeProcessAudioFile(
+    JNIEnv *env,
+    jobject thiz,
+    jlong stt_context_ptr, // Added context pointer parameter
+    jstring file_path_str, // Assuming file path is still passed for now, though direct audio buffer is better
+    jobject promise) { // Promise is used for async result or error
+    UNUSED(thiz);
+
+    if (stt_context_ptr == 0) {
+        jniutils::rejectPromise(env, promise, "E_STT_NO_CTX", "STT context pointer is null. Call initSTT first.");
+        return nullptr;
+    }
+    cactus_stt_context_t* stt_ctx = reinterpret_cast<cactus_stt_context_t*>(static_cast<intptr_t>(stt_context_ptr));
+
     const char *file_path_chars = env->GetStringUTFChars(file_path_str, nullptr);
-    LOGI("nativeProcessAudioFile called with filePath: %s", file_path_chars);
+    if (!file_path_chars) {
+        jniutils::rejectPromise(env, promise, "E_JNI_PATH_STR_CONVERSION", "Failed to convert file path Java string to C string.");
+        return nullptr;
+    }
+    LOGI("nativeProcessAudioFile called with filePath: %s for context: %p", file_path_chars, stt_ctx);
 
     // TODO: Implement actual audio file processing and STT
     // Example:
@@ -1307,36 +1356,47 @@ Java_com_cactus_CactusModule_nativeProcessAudioFile(
     // if (transcription == nullptr) {
     //   jniutils::rejectPromise(env, promise, "E_STT_PROCESS", "Failed to process audio file");
     //   env->ReleaseStringUTFChars(file_path_str, file_path_chars);
-    //   return;
+    //   return nullptr;
     // }
-    // jobject result = createWriteableMap(env);
-    // putString(env, result, "transcription", transcription);
-    // jniutils::resolvePromise(env, promise, result);
+    // const char* transcription_cstr = ... result from cactus_stt_get_transcription ...
+    // jstring transcription_jstr = env->NewStringUTF(transcription_cstr);
+    // cactus_free_string_c((char*)transcription_cstr);
+    // jniutils::resolvePromise(env, promise, transcription_jstr); // Resolve with string
+    // env->ReleaseStringUTFChars(file_path_str, file_path_chars);
+    // return transcription_jstr; // Or null if promise handles result
 
-    // Placeholder:
-    jobject result = createWriteableMap(env);
-    putString(env, result, "transcription", "Placeholder transcription");
-    jniutils::resolvePromise(env, promise, result);
+    // Placeholder: Actual audio processing from file path needs implementation
+    // For now, just get whatever current transcription might be (likely empty)
+    const char* temp_transcription = cactus_stt_get_transcription(stt_ctx);
+    jstring transcription_jstr = env->NewStringUTF(temp_transcription ? temp_transcription : "");
+    if (temp_transcription) {
+        cactus_free_string_c((char*)temp_transcription);
+    }
 
+    // Resolve promise with this string (Java side might then put it in a map if needed)
+    jclass promiseClass = env->FindClass("com/facebook/react/bridge/Promise");
+    jmethodID resolveMethod = env->GetMethodID(promiseClass, "resolve", "(Ljava/lang/Object;)V");
+    env->CallVoidMethod(promise, resolveMethod, transcription_jstr);
 
     env->ReleaseStringUTFChars(file_path_str, file_path_chars);
+    return transcription_jstr; // Returning it here as well, though promise is primary for RN
 }
 
 JNIEXPORT void JNICALL
 Java_com_cactus_CactusModule_nativeReleaseSTT(
     JNIEnv *env,
     jobject thiz,
+    jlong stt_context_ptr, // Added context pointer parameter
     jobject promise) {
     UNUSED(thiz);
 
-    LOGI("nativeReleaseSTT called");
+    LOGI("nativeReleaseSTT called for context: %p", reinterpret_cast<void*>(static_cast<intptr_t>(stt_context_ptr)));
 
-    // TODO: Implement actual STT context release
-    // Example:
-    // if (stt_ctx != nullptr) {
-    //   cactus_stt_free(stt_ctx);
-    //   stt_ctx = nullptr;
-    // }
+    if (stt_context_ptr != 0) {
+       cactus_stt_context_t* stt_ctx = reinterpret_cast<cactus_stt_context_t*>(static_cast<intptr_t>(stt_context_ptr));
+       cactus_stt_free(stt_ctx);
+       LOGI("Freed STT context: %p", stt_ctx);
+    }
 
     jniutils::resolvePromise(env, promise, NULL); // Resolve with null or status
 }

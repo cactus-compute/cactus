@@ -355,19 +355,40 @@ async function transcribeAudioFile(filePath: string) {
 }
 
 // 5. Set User-Specific Vocabulary (Placeholder)
-async function adaptVocabulary() {
-  try {
-    await voiceToText.setUserVocabulary(["custom word", "Cactus AI", "transcript"]);
-    console.log("User vocabulary set (Note: This is currently a placeholder).");
-  } catch (e) {
-    console.error('Error setting user vocabulary:', e);
-  }
-}
+// This section is replaced by the one below.
 
 // 6. Release STT resources when no longer needed (e.g., on component unmount)
 // voiceToText.release();
 
 ```
+
+### Setting User-Specific Vocabulary (Initial Prompt)
+
+You can provide a string of custom vocabulary or context to improve transcription accuracy for specific terms. This is often referred to as setting an 'initial prompt'.
+
+```typescript
+import { VoiceToText } from 'cactus-react'; // Or your specific import
+
+// ... Assuming voiceToText instance is created and STT is initialized:
+// const voiceToText = new VoiceToText();
+// await voiceToText.initSTT('path/to/your/model.gguf'); // Language defaults to 'en' or as per your initSTT
+
+const customVocabulary = "EyeRIS Doctor Smith patient zero"; // Example as a single string
+try {
+  // Ensure STT is initialized in voiceToText before calling this
+  if (voiceToText.modelPath) { // modelPath is set in VoiceToText after successful initSTT
+    await voiceToText.setUserVocabulary(customVocabulary);
+    console.log("User vocabulary set.");
+  } else {
+    console.log("STT not initialized, cannot set vocabulary.");
+  }
+} catch (e) {
+  console.error("Failed to set user vocabulary", e);
+}
+
+// Proceed with voice processing...
+```
+**Note:** The Android implementation for STT features, including `setUserVocabulary`, is currently facing integration challenges due to issues with locating the core Java Native Module. Functionality on Android may be limited until these are resolved.
 
 ### Required Permissions
 

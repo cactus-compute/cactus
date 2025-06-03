@@ -25,6 +25,9 @@
 
 // Option 2: If headers are at the root of the framework's include path (less common for XCFrameworks)
 // #import "cactus_stt_ffi.h"
+// Assuming cactus_ffi.h will be made available to the build system,
+// for example, by being a public header in the XCFramework.
+#include "cactus_ffi.h"
 
 // For now, this is a placeholder. The actual import path depends on how `cactus.xcframework`
 // exposes its C headers. If the framework uses a module map (`module.modulemap`),

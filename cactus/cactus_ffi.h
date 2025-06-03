@@ -193,6 +193,18 @@ CACTUS_FFI_EXPORT char* cactus_stt_get_transcription(cactus_stt_context_t* ctx);
 // ctx: Pointer to the STT context.
 CACTUS_FFI_EXPORT void cactus_stt_free(cactus_stt_context_t* ctx);
 
+/**
+ * @brief Sets a user-specific vocabulary (initial prompt) for the STT context.
+ *
+ * This string is passed to the underlying STT engine (Whisper) to guide transcription,
+ * which can improve accuracy for specific terms, names, or contexts.
+ *
+ * @param ctx Pointer to the STT context, obtained from `cactus_stt_init`.
+ * @param vocabulary A UTF-8 encoded C-string containing the vocabulary/prompt.
+ *                   Pass NULL or an empty string to clear any previously set vocabulary.
+ */
+CACTUS_FFI_EXPORT void cactus_stt_set_user_vocabulary(cactus_stt_context_t* ctx, const char* vocabulary);
+
 // --- End Speech-to-Text (STT) FFI Definitions ---
 
 

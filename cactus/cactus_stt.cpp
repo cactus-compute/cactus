@@ -4,9 +4,16 @@
 #include <cstdio> // For fprintf, stderr
 #include <vector>
 
+// Test hook for capturing initial_prompt
+// This should ideally be guarded by a compile-time flag (e.g., #ifdef ENABLE_TEST_HOOKS)
+// For simplicity here, it's always included. Ensure it's not used in production builds
+// if this approach is maintained.
+const char* g_last_initial_prompt_for_test = nullptr;
+
+
 namespace cactus {
 
-STT::STT() : ctx_(nullptr), language_("en") {
+STT::STT() : ctx_(nullptr), language_("en"), user_vocabulary_("") {
     // Constructor: Initialize members
 }
 
@@ -56,12 +63,28 @@ bool STT::processAudio(const std::vector<float>& samples) {
     // However, explicitly setting it ensures the desired language is used.
     wparams.language = language_.c_str();
 
+    // Apply user vocabulary if provided
+    if (!user_vocabulary_.empty()) {
+        wparams.initial_prompt = user_vocabulary_.c_str();
+    } else {
+        // Explicitly set to nullptr if no user_vocabulary_ is set,
+        // aligning with typical whisper.cpp default behavior for initial_prompt.
+        wparams.initial_prompt = nullptr;
+    }
+
+    // Test Hook: Capture the initial_prompt that will be used.
+    g_last_initial_prompt_for_test = wparams.initial_prompt;
+
     // Disable printing progress to stderr from whisper.cpp
     // wparams.print_progress = false;
     // wparams.print_special = false;
     // wparams.print_realtime = false;
     // wparams.print_timestamps = false;
 
+    // Original logic for applying user vocabulary is now handled above before the test hook.
+    // if (!user_vocabulary_.empty()) {
+    //     wparams.initial_prompt = user_vocabulary_.c_str();
+    // }
 
     if (whisper_full(ctx_, wparams, samples.data(), samples.size()) != 0) {
         fprintf(stderr, "STT: Failed to process audio\n");
@@ -86,6 +109,10 @@ std::string STT::getTranscription() {
         }
     }
     return full_text;
+}
+
+void STT::setUserVocabulary(const std::string& vocabulary) {
+    user_vocabulary_ = vocabulary;
 }
 
 // (Optional Advanced) Get individual text segments with timestamps.

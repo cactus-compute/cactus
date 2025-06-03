@@ -39,6 +39,22 @@ class ViewController: UIViewController {
         return label
     }()
 
+    lazy var vocabularyTextField: UITextField = {
+        let textField = UITextField()
+        textField.placeholder = "Enter STT vocabulary (optional)"
+        textField.borderStyle = .roundedRect
+        textField.translatesAutoresizingMaskIntoConstraints = false
+        return textField
+    }()
+
+    lazy var setVocabularyButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.setTitle("Set Vocabulary", for: .normal)
+        button.addTarget(self, action: #selector(setVocabularyButtonTapped), for: .touchUpInside)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .white
@@ -52,13 +68,22 @@ class ViewController: UIViewController {
         view.addSubview(recordButton)
         view.addSubview(transcriptionTextView)
         view.addSubview(statusLabel)
+        view.addSubview(vocabularyTextField)
+        view.addSubview(setVocabularyButton)
 
         NSLayoutConstraint.activate([
             statusLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
             statusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
 
-            recordButton.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 20),
+            vocabularyTextField.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 20),
+            vocabularyTextField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            vocabularyTextField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+
+            setVocabularyButton.topAnchor.constraint(equalTo: vocabularyTextField.bottomAnchor, constant: 10),
+            setVocabularyButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+            recordButton.topAnchor.constraint(equalTo: setVocabularyButton.bottomAnchor, constant: 20),
             recordButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             recordButton.widthAnchor.constraint(equalToConstant: 200),
             recordButton.heightAnchor.constraint(equalToConstant: 50),
@@ -95,14 +120,27 @@ class ViewController: UIViewController {
                     self.recordButton.isEnabled = true
                     print("STT Initialized Successfully")
 
-                    // Optional: Call setUserVocabulary if needed
-                    // self.cactusSTTService?.setUserVocabulary(vocabulary: ["custom word", "Cactus AI"], completion: { vocabError in
-                    //     if let vocabError = vocabError {
-                    //         print("Error setting vocab (placeholder): \(vocabError.localizedDescription)")
-                    //     } else {
-                    //         print("User vocabulary set (placeholder).")
-                    //     }
-                    // })
+                    // Vocabulary is now set via its own button.
+                }
+            }
+        }
+    }
+
+    @objc private func setVocabularyButtonTapped() {
+        guard let sttService = cactusSTTService, sttService.isInitialized else {
+            statusLabel.text = "STT Service not initialized. Cannot set vocabulary."
+            print("STT Service not initialized or not ready for setting vocabulary.")
+            return
+        }
+        let vocabulary = vocabularyTextField.text ?? ""
+        sttService.setUserVocabulary(vocabulary: vocabulary) { [weak self] error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    self?.statusLabel.text = "Vocab Error: \(error.localizedDescription)"
+                    print("Error setting STT vocabulary: \(error.localizedDescription)")
+                } else {
+                    self?.statusLabel.text = "STT vocabulary set: \(vocabulary.isEmpty ? "Cleared" : vocabulary)"
+                    print("STT vocabulary set to: \(vocabulary.isEmpty ? "Cleared" : vocabulary)")
                 }
             }
         }

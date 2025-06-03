@@ -33,13 +33,31 @@ public:
     // struct Segment { std::string text; int64_t t0; int64_t t1; };
     // std::vector<Segment> getSegments();
 
+    /**
+     * @brief Sets a user-specific vocabulary (initial prompt) for STT processing.
+     *
+     * The provided string will be used as the `initial_prompt` in `whisper_full_params`
+     * to guide the transcription process.
+     *
+     * @param vocabulary The vocabulary/prompt string. An empty string will clear any
+     *                   previously set vocabulary.
+     */
+    void setUserVocabulary(const std::string& vocabulary);
+
     bool isInitialized() const;
+
+    /**
+     * @brief Gets the currently set user vocabulary. (For testing purposes)
+     * @return A const reference to the internal user vocabulary string.
+     */
+    const std::string& getUserVocabularyForTest() const { return user_vocabulary_; }
 
 private:
     void cleanup();
 
     whisper_context* ctx_ = nullptr;
     std::string language_ = "en";
+    std::string user_vocabulary_;
     // Potentially add members for whisper_full_params if customization is needed beyond defaults.
     // Or, create whisper_full_params on the stack in processAudio.
 };

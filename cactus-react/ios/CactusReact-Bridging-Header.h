@@ -19,4 +19,11 @@
 // But typically, for React Native native modules, this specific import in the bridging header
 // for the module itself is not required, as `RCT_EXTERN_MODULE` handles the discovery.
 
+// STT FFI Function Declarations for Swift
+void* RN_STT_init(const char* model_path, const char* language);
+void RN_STT_free(void* stt_context_ptr);
+void RN_STT_setUserVocabulary(void* stt_context_ptr, const char* vocabulary);
+const char* RN_STT_processAudioFile(void* stt_context_ptr, const char* file_path);
+void RN_STT_free_string(char* str_ptr);
+
 #endif /* CactusReact_Bridging_Header_h */

@@ -207,9 +207,9 @@ For a complete working example, check out the [Flutter example app](https://gith
 
 ## Voice-to-Text (STT)
 
-The `CactusContext` class (or a dedicated STT service class if you've structured it that way) provides an interface for speech-to-text functionality using the device microphone. The following examples assume STT methods are part of `CactusContext` or accessible through it.
+The `cactus` package provides an `STTService` (or a similar service, like `CactusService` in the example app which internally uses `STTService`) for speech-to-text functionality. This service uses the device microphone and interacts with the native STT engine.
 
-_Note: The STT methods in `CactusContext` like `setUserVocabulary`, `startVoiceCapture`, and `stopVoiceCapture` are currently placeholders as demonstrated in the example app's `CactusService`. The core C++ functionality for STT is not yet fully integrated into the FFI layer for these specific methods. The examples below show how they would be used once implemented._
+_Note: While the FFI bindings for STT methods like `setUserVocabulary`, `startVoiceCapture`, and `stopVoiceCapture` are in place, the underlying native STT implementation (especially on Android regarding the Java bridge) might have limitations or ongoing integration work. The examples below show the intended usage._
 
 ### Basic STT Usage
 
@@ -259,12 +259,17 @@ async void toggleRecording() async {
     return;
   }
 
-  // Optional: Set user-specific vocabulary (currently a placeholder)
+  // Optional: Set user-specific vocabulary
+  // This should be done after STTService is initialized and before starting a recording session
+  // for the vocabulary to take effect for that session.
+  // Assuming `sttService` is an initialized instance of STTService or CactusService.
   try {
-    await cactusContext!.setUserVocabulary(["custom word", "Cactus AI", "Flutter"]);
-    print("User vocabulary set (Note: This is currently a placeholder).");
+    // Example:
+    // final String customVocabulary = "Flux capacitor, DeLorean, Dr. Emmett Brown";
+    // await sttService.setUserVocabulary(customVocabulary);
+    // print("User vocabulary set for STT.");
   } catch (e) {
-    print("Error setting user vocabulary (placeholder): $e");
+    print("Failed to set user vocabulary for STT: $e");
   }
 
   if (isRecording) {
@@ -321,6 +326,27 @@ async void toggleRecording() async {
 //  setState(() { isRecording = _cactusService.isRecording.value; });
 // });
 
+```
+
+#### `Future<void> setUserVocabulary(String vocabulary)`
+
+Sets a user-specific vocabulary string to guide the STT engine. This can improve accuracy for uncommon words, names, or specific contexts by providing an "initial prompt".
+
+- `vocabulary`: The string containing words or phrases for context. An empty string will clear/reset the vocabulary.
+
+**Example:**
+```dart
+// Assuming `sttService` is an initialized instance of STTService
+// (or CactusService from the example app, which wraps STTService)
+// await sttService.initSTT(...); // Ensure STT is initialized
+
+final String customVocabulary = "Flux capacitor calibration procedure, DeLorean time machine";
+try {
+  await sttService.setUserVocabulary(customVocabulary);
+  print("User vocabulary set for STT.");
+} catch (e) {
+  print("Failed to set user vocabulary for STT: $e");
+}
 ```
 
 ### Required Permissions

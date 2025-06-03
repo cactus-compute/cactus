@@ -66,14 +66,15 @@ class MyViewController: UIViewController {
                     self.recordButton.isEnabled = true
                     print("STT Initialized Successfully")
 
-                    // Optional: Set user-specific vocabulary (currently a placeholder)
-                    self.cactusSTTService?.setUserVocabulary(vocabulary: ["custom word", "Cactus AI"]) { vocabError in
-                        if let vocabError = vocabError {
-                            print("Error setting vocab (placeholder): \(vocabError.localizedDescription)")
-                        } else {
-                            print("User vocabulary set (placeholder).")
-                        }
-                    }
+                    // Optional: Set user-specific vocabulary
+                    // Example:
+                    // self.cactusSTTService?.setUserVocabulary(vocabulary: "MyCustom Jargon, AnotherName") { success, errorMsg in
+                    //     if success {
+                    //         print("User vocabulary set successfully.")
+                    //     } else {
+                    //         print("Failed to set user vocabulary: \(errorMsg ?? "Unknown error")")
+                    //     }
+                    // }
                 }
             }
         }
@@ -149,6 +150,46 @@ class MyViewController: UIViewController {
     func setupMyUI() { /* ... Your UI setup code ... */ }
 }
 ```
+
+### `CactusSTTService` API Details
+
+#### `initSTT(modelPath: String, completion: @escaping (Error?) -> Void)`
+Initializes the STT engine. (Already documented in the example above)
+
+#### `setUserVocabulary(vocabulary: String, completion: @escaping (Error?) -> Void)`
+
+Sets a user-specific vocabulary string to guide the STT engine. This can improve accuracy for uncommon words, names, or specific contexts by providing an "initial prompt".
+
+- `vocabulary`: The string containing words or phrases for context. An empty string can be used to clear/reset the vocabulary.
+- `completion`: A callback indicating success or failure. `error` will be non-nil if an issue occurred.
+
+**Example:**
+```swift
+let sttService = CactusSTTService()
+// ... ensure sttService.initSTT(...) has been called and completed successfully ...
+
+let customVocab = "ACME Corp Project Chimera Zylon-5"
+sttService.setUserVocabulary(vocabulary: customVocab) { error in
+    if let error = error {
+        print("Failed to set user vocabulary: \(error.localizedDescription)")
+    } else {
+        print("Successfully set user vocabulary for STT.")
+    }
+}
+```
+
+#### `startVoiceCapture(transcriptionHandler: @escaping (String?, Error?) -> Void)`
+Starts audio capture and processing. (Already documented in the example above)
+
+#### `stopVoiceCapture()`
+Stops audio capture. (Already documented in the example above)
+
+#### `processAudioFile(filePath: String, completion: @escaping (String?, Error?) -> Void)`
+Processes a pre-existing audio file. (Already documented in the example above)
+
+#### `releaseSTT(completion: @escaping (Error?) -> Void)`
+Releases STT resources. (Already documented in the example above)
+
 
 ### Required Permissions
 

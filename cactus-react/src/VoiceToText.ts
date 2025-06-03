@@ -245,27 +245,34 @@ export class VoiceToText {
   }
 
   /**
-   * Sets user-specific vocabulary to potentially bias STT.
-   * NOTE: This feature is currently a placeholder and does not affect STT results
-   * as the core C++ implementation for vocabulary adaptation is not yet available.
-   * @param vocabulary A list of words or phrases to bias towards.
-   * @returns A promise that resolves when the operation is (notionally) complete.
+   * Sets a user-specific vocabulary (initial prompt) to guide the STT engine.
+   * This can improve transcription accuracy for specific terms or contexts.
+   * @param vocabulary A string containing words or phrases.
+   * @returns A promise that resolves when the vocabulary is set, or rejects on error.
+   * @remarks The Android native implementation for STT is currently facing integration issues.
    */
-  async setUserVocabulary(vocabulary: string[]): Promise<void> {
-    // TODO: Implement once core C++/native module functionality is available.
-    // This would involve:
-    // 1. Converting the string[] to a JSON string.
-    // 2. Calling a native module method like:
-    //    if (Platform.OS === 'ios') {
-    //      await (this.nativeAudioModule as AudioInputModuleIOS).setUserVocabulary(JSON.stringify(vocabulary));
-    //    } else if (Platform.OS === 'android') {
-    //      await (this.nativeAudioModule as CactusModuleAndroid).setUserVocabulary(JSON.stringify(vocabulary));
-    //    }
-    console.log(
-      `[VoiceToText] setUserVocabulary called with ${vocabulary.length} items. ` +
-      `This feature is a placeholder and not yet implemented at the native module or core C++ level.`
-    );
-    return Promise.resolve();
+  async setUserVocabulary(vocabulary: string): Promise<void> {
+    if (!this.modelPath) {
+      throw new Error('STT model not initialized. Call initSTT(modelPath) first.');
+    }
+    if (Platform.OS === 'ios') {
+      // Assuming AudioInputModuleIOS will have setUserVocabulary exposed from native
+      const module = this.nativeAudioModule as AudioInputModuleIOS & { setUserVocabulary?: (vocab: string) => Promise<void> };
+      if (module.setUserVocabulary) {
+        return module.setUserVocabulary(vocabulary);
+      } else {
+        throw new Error('setUserVocabulary not implemented in AudioInputModule for iOS');
+      }
+    } else if (Platform.OS === 'android') {
+      // Assuming CactusModuleAndroid will have setUserVocabulary exposed from native
+      const module = this.nativeAudioModule as CactusModuleAndroid & { setUserVocabulary?: (vocab: string) => Promise<void> };
+      if (module.setUserVocabulary) {
+        return module.setUserVocabulary(vocabulary);
+      } else {
+        throw new Error('setUserVocabulary not implemented in CactusModule for Android');
+      }
+    }
+    throw new Error('setUserVocabulary not implemented for this platform.');
   }
 }
 

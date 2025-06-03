@@ -24,6 +24,7 @@ const App = () => {
   const [transcribedText, setTranscribedText] = useState('');
   const [sttError, setSttError] = useState('');
   const [sttModelPath, setSttModelPath] = useState<string | null>(null); // Example model path
+  const [sttVocabulary, setSttVocabulary] = useState(''); // For user vocabulary input
 
   // Listener subscriptions
   let onAudioDataSubscription: EmitterSubscription | null = null;
@@ -110,9 +111,12 @@ const App = () => {
     }
 
     // Optional: Call setUserVocabulary if needed
-    // vtt.setUserVocabulary(["custom word", "Cactus AI"])
-    //   .then(() => console.log("User vocabulary set (placeholder)"))
-    //   .catch(e => console.error("Error setting user vocabulary:", e));
+    // Example:
+    // if (vtt) {
+    //   vtt.setUserVocabulary("custom word, Cactus AI") // Pass as a single string
+    //     .then(() => console.log("User vocabulary set"))
+    //     .catch(e => console.error("Error setting user vocabulary:", e));
+    // }
 
 
     return () => {
@@ -189,6 +193,9 @@ const App = () => {
         setTranscribedText(''); // Clear previous transcription
         setSttError('');
         console.log('Starting recording...');
+        // Note: setUserVocabulary is now called via its own button.
+        // If needed before every recording, you could call it here,
+        // but that might be less user-friendly than a dedicated "Set" button.
         await voiceToText.start();
         setIsRecording(true);
         console.log('Recording started.');
@@ -196,6 +203,29 @@ const App = () => {
         console.error('Failed to start recording:', e);
         setSttError(e.message || 'Failed to start recording');
       }
+    }
+  };
+
+  const handleSetVocabulary = async () => {
+    if (!voiceToText) {
+      setSttError('VoiceToText service not available.');
+      return;
+    }
+    if (!voiceToText.modelPath) { // Check if STT is initialized (modelPath is set in VoiceToText upon init)
+        setSttError('STT is not initialized. Initialize STT before setting vocabulary.');
+        return;
+    }
+    try {
+      console.log(`Setting STT vocabulary to: "${sttVocabulary}"`);
+      await voiceToText.setUserVocabulary(sttVocabulary); // Method updated to take string
+      console.log('STT vocabulary set successfully via VoiceToText.');
+      alert('STT Vocabulary Set!');
+      // Reminder: Android native part for this call is likely not fully functional
+      // due to earlier identified issues with finding/updating CactusModule.java.
+    } catch (e: any) {
+      console.error('Failed to set STT vocabulary:', e);
+      setSttError(e.message || 'Failed to set STT vocabulary');
+      alert(`Error setting vocabulary: ${e.message}`);
     }
   };
 
@@ -211,6 +241,23 @@ const App = () => {
           {isRecording ? 'Stop Recording' : 'Start Recording'}
         </Text>
       </TouchableOpacity>
+
+      <Text style={styles.label}>Custom STT Vocabulary (Optional):</Text>
+      <TextInput
+        style={styles.vocabularyInput}
+        value={sttVocabulary}
+        onChangeText={setSttVocabulary}
+        placeholder="e.g., specific names, jargon"
+      />
+      <TouchableOpacity
+        style={[styles.button, styles.buttonSmall]}
+        onPress={handleSetVocabulary}
+        disabled={!voiceToText || !sttModelPath}
+      >
+        <Text style={styles.buttonText}>Set STT Vocabulary</Text>
+      </TouchableOpacity>
+
+      <Text style={styles.label}>Transcription:</Text>
       <TextInput
         style={styles.textInput}
         value={transcribedText}
@@ -274,6 +321,29 @@ const styles = StyleSheet.create({
     marginTop: 10,
     textAlign: 'center',
   },
+  label: {
+    fontSize: 16,
+    fontWeight: '500',
+    marginTop: 15,
+    marginBottom: 5,
+    alignSelf: 'flex-start',
+  },
+  vocabularyInput: {
+    width: '100%',
+    height: 50,
+    borderColor: '#ced4da',
+    borderWidth: 1,
+    borderRadius: 5,
+    paddingHorizontal: 10,
+    backgroundColor: 'white',
+    marginBottom: 10,
+  },
+  buttonSmall: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    marginBottom: 15,
+    backgroundColor: '#5cb85c', // A distinct color for this button
+  }
 });
 
 export default App;

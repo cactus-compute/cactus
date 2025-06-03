@@ -15,6 +15,7 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final CactusService _cactusService = CactusService();
   final TextEditingController _promptController = TextEditingController();
+  final TextEditingController _vocabularyController = TextEditingController(); // For STT Vocabulary
   final ScrollController _scrollController = ScrollController();
 
   @override
@@ -32,6 +33,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _cactusService.chatMessages.removeListener(_scrollToBottom);
     _cactusService.transcribedText.removeListener(_onTranscribedTextChanged);
     _cactusService.sttError.removeListener(_onSttError);
+    _vocabularyController.dispose(); // Dispose vocabulary controller
     _cactusService.dispose();
     _promptController.dispose();
     _scrollController.dispose();
@@ -171,6 +173,46 @@ class _ChatScreenState extends State<ChatScreen> {
       padding: const EdgeInsets.all(8.0),
       child: Column(
         children: [
+          // STT Vocabulary Input Area
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _vocabularyController,
+                    decoration: const InputDecoration(
+                      hintText: 'Enter STT vocabulary (e.g., names, jargon)',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: () {
+                    final String vocabulary = _vocabularyController.text.trim();
+                    if (vocabulary.isNotEmpty) {
+                      // Assuming CactusService has a method that internally calls sttService.setUserVocabulary
+                      // Or directly if sttService is exposed and method is public.
+                      // Based on previous finding: `_cactusService.setSttUserVocabulary`
+                      // For now, let's assume direct access or a similar method in CactusService
+                       _cactusService.sttService.setUserVocabulary(vocabulary);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('STT vocabulary set: $vocabulary')),
+                      );
+                    } else {
+                       _cactusService.sttService.setUserVocabulary(""); // Clear if empty
+                       ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('STT vocabulary cleared.')),
+                      );
+                    }
+                  },
+                  child: const Text('Set Vocab'),
+                ),
+              ],
+            ),
+          ),
           ValueListenableBuilder<String?>(
             valueListenable: _cactusService.stagedAssetPath, // Listen to the staged asset path
             builder: (context, stagedAssetPathValue, _) {
@@ -291,8 +333,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _toggleRecording() async {
-    // Optionally call setUserVocabulary before starting
-    // await _cactusService.setSttUserVocabulary(["custom word", "Cactus AI"]);
+    // Vocabulary is now set via the TextField and Button.
+    // The call to _cactusService.sttService.setUserVocabulary() happens when the "Set Vocab" button is pressed.
+    // So, no need to call it directly here unless a different flow is desired.
 
     if (!_cactusService.isRecording.value) {
       bool granted = await _cactusService.requestMicrophonePermissions();

@@ -1,9 +1,69 @@
 #import "Cactus.h"
 #import "CactusContext.h"
+#include "cactus_ffi.h" // For STT FFI functions
 
 #ifdef RCT_NEW_ARCH_ENABLED
 #import "CactusSpec.h"
 #endif
+
+// STT Context Management - simple global for now, like in JNI.
+// Proper multi-instance would need a dictionary or similar.
+static cactus_stt_context_t* g_stt_context_ios = nullptr;
+
+// C-style functions to be called from Swift via Bridging Header
+extern "C" {
+    void* RN_STT_init(const char* model_path, const char* language) {
+        if (g_stt_context_ios != nullptr) {
+            cactus_stt_free(g_stt_context_ios);
+            g_stt_context_ios = nullptr;
+        }
+        g_stt_context_ios = cactus_stt_init(model_path, language);
+        return g_stt_context_ios; // Return as void* to Swift
+    }
+
+    void RN_STT_free(void* stt_context_ptr) {
+        if (stt_context_ptr && stt_context_ptr == g_stt_context_ios) {
+            cactus_stt_free(g_stt_context_ios);
+            g_stt_context_ios = nullptr;
+        }
+    }
+
+    void RN_STT_setUserVocabulary(void* stt_context_ptr, const char* vocabulary) {
+        if (!stt_context_ptr || stt_context_ptr != g_stt_context_ios) {
+            // Optional: Log error if context is null or doesn't match global
+            return;
+        }
+        cactus_stt_set_user_vocabulary(g_stt_context_ios, vocabulary);
+    }
+
+    // Placeholder for processAudioFile - Swift side will handle file reading if needed,
+    // or this would take raw audio samples if design changes.
+    // For now, let's assume it takes a path and returns a transcription string.
+    const char* RN_STT_processAudioFile(void* stt_context_ptr, const char* file_path) {
+        if (!stt_context_ptr || stt_context_ptr != g_stt_context_ios || !file_path) {
+            return nullptr;
+        }
+        // This is a simplified placeholder. Actual processing would involve:
+        // 1. Reading audio file into float samples (not done here).
+        // 2. Calling cactus_stt_process_audio().
+        // 3. Calling cactus_stt_get_transcription().
+        // For now, just return a placeholder or empty string if context is valid.
+        // This example returns a new string that Swift side would need to free.
+        // Or, modify to return a static string for placeholder.
+        // Let's return what getTranscription would return (might be empty if no audio processed)
+        const char* transcription = cactus_stt_get_transcription(g_stt_context_ios);
+        // The FFI `cactus_stt_get_transcription` returns a string that must be freed by `cactus_free_string_c`.
+        // The Swift side will be responsible for this.
+        return transcription;
+    }
+
+    void RN_STT_free_string(char* str_ptr) {
+        if (str_ptr) {
+            cactus_free_string_c(str_ptr);
+        }
+    }
+} // extern "C"
+
 
 @implementation Cactus
 

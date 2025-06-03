@@ -71,6 +71,39 @@ class CactusSTTService {
     }
   }
 
+  /// Sets a user-specific vocabulary (initial prompt) to guide the STT engine.
+  ///
+  /// This can improve transcription accuracy for specific terms or contexts.
+  /// Throws an [Exception] if the STT service is not initialized or
+  /// if setting the vocabulary fails at the native level (e.g., string conversion error).
+  ///
+  /// - Parameter vocabulary: A [String] containing words or phrases.
+  void setUserVocabulary(String vocabulary) {
+    if (!isInitialized) {
+      print("CactusSTTService: Cannot set user vocabulary, STT not initialized.");
+      // Consider throwing an exception or returning a status
+      return;
+    }
+
+    Pointer<Utf8> vocabUtf8 = nullptr;
+    try {
+      vocabUtf8 = vocabulary.toNativeUtf8();
+      // Assuming _sttContext is Pointer<cactus_stt_context_t>
+      // and cactus_stt_set_user_vocabulary expects Pointer<cactus_stt_context_t>, Pointer<Utf8>
+      // The actual type for _sttContext in the binding might be Pointer<Void> or a specific Opaque type
+      // depending on how ffigen interprets cactus_stt_context_t from cactus_ffi.h.
+      // Let's assume the generated binding function will handle the specific context pointer type.
+      _bindings.cactus_stt_set_user_vocabulary(_sttContext, vocabUtf8.cast());
+      print("CactusSTTService: User vocabulary set to: $vocabulary");
+    } catch (e) {
+      print('Exception during setUserVocabulary: $e');
+    } finally {
+      if (vocabUtf8 != nullptr) {
+        malloc.free(vocabUtf8);
+      }
+    }
+  }
+
   /// Processes a chunk of audio data for transcription.
   ///
   /// [audioSamples]: A list of float audio samples (PCM 32-bit, 16kHz, mono).
