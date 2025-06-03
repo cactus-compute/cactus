@@ -219,7 +219,177 @@ try {
 
 ## Example App
 
-For a complete working example, check out the [React Native example app](https://github.com/cactus-compute/cactus/tree/main/examples/react-example) in the repository.
+For a complete working example, check out the [React Native example app](https://github.com/cactus-compute/cactus/tree/main/examples/react-example) in the repository. (Note: This link might need updating if a specific voice chat example is added, e.g., `examples/react-native-voice-chat/`).
+
+## Voice-to-Text (STT)
+
+The `VoiceToText` class provides an interface for speech-to-text functionality using the device microphone.
+
+### Basic STT Usage
+
+```typescript
+import { VoiceToText } from 'cactus-react-native';
+import { Platform, PermissionsAndroid } from 'react-native'; // For Android permissions
+
+const voiceToText = new VoiceToText();
+
+// 1. Initialize the STT Engine (e.g., with a model path)
+//    Ensure the model file exists at the specified path on the device.
+//    This path can be from your app's assets, documents directory, or cache.
+const modelPath = Platform.OS === 'ios' ? 'path/to/your_stt_model.bin' : '/data/user/0/com.yourapp/files/your_stt_model.bin';
+// Note: Actual model path will vary based on how you bundle/download it.
+
+async function initSTTEngine() {
+  try {
+    // Make sure the model path is correct and the model file is accessible
+    // You might need to bundle the model with your app or download it first.
+    // For this example, we assume `modelPath` is valid.
+    await voiceToText.initSTT(modelPath);
+    console.log('STT Engine Initialized');
+  } catch (e) {
+    console.error('Failed to initialize STT:', e);
+  }
+}
+
+// Call initialization (e.g., in your component's useEffect or an init function)
+// initSTTEngine();
+
+
+// 2. Request Microphone Permissions
+async function requestMicPermission() {
+  if (Platform.OS === 'android') {
+    try {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        {
+          title: 'Microphone Permission',
+          message: 'This app needs access to your microphone for voice transcription.',
+          buttonPositive: 'OK',
+        },
+      );
+      return granted === PermissionsAndroid.RESULTS.GRANTED;
+    } catch (err) {
+      console.warn(err);
+      return false;
+    }
+  } else if (Platform.OS === 'ios') {
+    return await voiceToText.requestPermissions();
+  }
+  return false;
+}
+
+// 3. Start and Stop Voice Capture
+let currentTranscription = '';
+let sttError = '';
+
+// Setup event listeners (typically in useEffect or similar)
+// This requires access to the NativeEventEmitter instance used by VoiceToText,
+// or VoiceToText should expose its own event handling mechanism.
+// The example App.tsx in `examples/react-native-voice-chat` shows direct NativeEventEmitter usage.
+// For simplicity here, we assume VoiceToText might have its own event subscription methods
+// or you'd adapt the direct NativeEventEmitter pattern.
+
+// voiceToText.on('onTranscription', (event) => { // Hypothetical event listener on VoiceToText
+//   if (event.transcription) {
+//     currentTranscription = event.transcription;
+//     console.log('Transcription:', currentTranscription);
+//   }
+// });
+// voiceToText.on('onError', (error) => {
+//    sttError = error.message || JSON.stringify(error);
+//    console.error('STT Error:', sttError);
+// });
+
+
+async function toggleRecording(isRecordingCurrently: boolean) {
+  const hasPermission = await requestMicPermission();
+  if (!hasPermission) {
+    console.error('Microphone permission denied.');
+    sttError = 'Microphone permission denied.';
+    return;
+  }
+
+  // Ensure STT is initialized before starting
+  // if (!voiceToText.isInitialized()) { // Assuming an isInitialized() method
+  //   await initSTTEngine(); // Or handle error if init failed previously
+  // }
+
+
+  if (isRecordingCurrently) {
+    try {
+      await voiceToText.stop();
+      console.log('Recording stopped.');
+      // Transcription result might come via an event or be part of the stop() promise.
+      // If `voiceToText.stop()` returns the final audio path, `voiceToText.processAudio(path)`
+      // would be called, and its result (or an event it triggers) would provide the transcription.
+    } catch (e) {
+      console.error('Failed to stop recording:', e);
+      sttError = 'Failed to stop: ' + (e as Error).message;
+    }
+  } else {
+    try {
+      currentTranscription = ''; // Clear previous
+      sttError = '';
+      await voiceToText.start();
+      console.log('Recording started...');
+    } catch (e) {
+      console.error('Failed to start recording:', e);
+      sttError = 'Failed to start: ' + (e as Error).message;
+    }
+  }
+  // Update your UI state for isRecording, currentTranscription, sttError
+}
+
+// 4. Process a pre-existing audio file
+async function transcribeAudioFile(filePath: string) {
+  try {
+    // Ensure STT is initialized
+    // if (!voiceToText.isInitialized()) { await initSTTEngine(); }
+    const transcription = await voiceToText.processAudio(filePath);
+    console.log('File Transcription:', transcription);
+    currentTranscription = transcription;
+  } catch (e) {
+    console.error('Failed to process audio file:', e);
+    sttError = 'File processing error: ' + (e as Error).message;
+  }
+}
+
+// 5. Set User-Specific Vocabulary (Placeholder)
+async function adaptVocabulary() {
+  try {
+    await voiceToText.setUserVocabulary(["custom word", "Cactus AI", "transcript"]);
+    console.log("User vocabulary set (Note: This is currently a placeholder).");
+  } catch (e) {
+    console.error('Error setting user vocabulary:', e);
+  }
+}
+
+// 6. Release STT resources when no longer needed (e.g., on component unmount)
+// voiceToText.release();
+
+```
+
+### Required Permissions
+
+**Android (`AndroidManifest.xml`):**
+You need to add the `RECORD_AUDIO` permission to your `android/app/src/main/AndroidManifest.xml`:
+```xml
+<manifest ...>
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    ...
+</manifest>
+```
+
+**iOS (`Info.plist`):**
+Add the `NSMicrophoneUsageDescription` key to your `ios/[YourAppName]/Info.plist` file with a description of why your app needs microphone access:
+```xml
+<key>NSMicrophoneUsageDescription</key>
+<string>This app uses the microphone to capture your voice for transcription.</string>
+```
+
+Make sure to handle permission requests appropriately within your app flow. The examples above show basic permission requests.
+
+## Example App
 
 This example demonstrates:
 - Loading and initializing models

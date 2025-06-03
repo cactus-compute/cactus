@@ -1251,4 +1251,94 @@ Java_com_cactus_LlamaContext_unsetLog(JNIEnv *env, jobject thiz) {
     llama_log_set(cactus_log_callback_default, NULL);
 }
 
+// STT JNI Methods
+
+// Placeholder for STT context or similar structure if needed
+// static cactus_stt_context* stt_ctx = nullptr; // Example
+
+JNIEXPORT void JNICALL
+Java_com_cactus_CactusModule_nativeInitSTT(
+    JNIEnv *env,
+    jobject thiz, /* this is a reference to the CactusModule instance */
+    jstring model_path_str,
+    jobject promise) {
+    UNUSED(thiz);
+
+    const char *model_path_chars = env->GetStringUTFChars(model_path_str, nullptr);
+    LOGI("nativeInitSTT called with modelPath: %s", model_path_chars);
+
+    // TODO: Implement actual STT initialization using cactus C++ library
+    // Example:
+    // if (stt_ctx != nullptr) {
+    //   // Clean up existing context if any
+    //   // cactus_stt_free(stt_ctx);
+    //   stt_ctx = nullptr;
+    // }
+    // stt_ctx = cactus_stt_init(model_path_chars);
+    // if (stt_ctx == nullptr) {
+    //   jniutils::rejectPromise(env, promise, "E_STT_INIT", "Failed to initialize STT model");
+    //   env->ReleaseStringUTFChars(model_path_str, model_path_chars);
+    //   return;
+    // }
+
+    env->ReleaseStringUTFChars(model_path_str, model_path_chars);
+    jniutils::resolvePromise(env, promise, NULL); // Resolve with null or some status map
+}
+
+JNIEXPORT void JNICALL
+Java_com_cactus_CactusModule_nativeProcessAudioFile(
+    JNIEnv *env,
+    jobject thiz,
+    jstring file_path_str,
+    jobject promise) {
+    UNUSED(thiz);
+
+    const char *file_path_chars = env->GetStringUTFChars(file_path_str, nullptr);
+    LOGI("nativeProcessAudioFile called with filePath: %s", file_path_chars);
+
+    // TODO: Implement actual audio file processing and STT
+    // Example:
+    // if (stt_ctx == nullptr) {
+    //   jniutils::rejectPromise(env, promise, "E_STT_NO_CTX", "STT model not initialized");
+    //   env->ReleaseStringUTFChars(file_path_str, file_path_chars);
+    //   return;
+    // }
+    // const char* transcription = cactus_stt_process_file(stt_ctx, file_path_chars);
+    // if (transcription == nullptr) {
+    //   jniutils::rejectPromise(env, promise, "E_STT_PROCESS", "Failed to process audio file");
+    //   env->ReleaseStringUTFChars(file_path_str, file_path_chars);
+    //   return;
+    // }
+    // jobject result = createWriteableMap(env);
+    // putString(env, result, "transcription", transcription);
+    // jniutils::resolvePromise(env, promise, result);
+
+    // Placeholder:
+    jobject result = createWriteableMap(env);
+    putString(env, result, "transcription", "Placeholder transcription");
+    jniutils::resolvePromise(env, promise, result);
+
+
+    env->ReleaseStringUTFChars(file_path_str, file_path_chars);
+}
+
+JNIEXPORT void JNICALL
+Java_com_cactus_CactusModule_nativeReleaseSTT(
+    JNIEnv *env,
+    jobject thiz,
+    jobject promise) {
+    UNUSED(thiz);
+
+    LOGI("nativeReleaseSTT called");
+
+    // TODO: Implement actual STT context release
+    // Example:
+    // if (stt_ctx != nullptr) {
+    //   cactus_stt_free(stt_ctx);
+    //   stt_ctx = nullptr;
+    // }
+
+    jniutils::resolvePromise(env, promise, NULL); // Resolve with null or status
+}
+
 } // extern "C"

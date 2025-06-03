@@ -23,11 +23,15 @@ class _ChatScreenState extends State<ChatScreen> {
     _cactusService.initialize();
     // Listen to ValueNotifiers to rebuild UI when they change
     _cactusService.chatMessages.addListener(_scrollToBottom);
+    _cactusService.transcribedText.addListener(_onTranscribedTextChanged);
+    _cactusService.sttError.addListener(_onSttError);
   }
 
   @override
   void dispose() {
     _cactusService.chatMessages.removeListener(_scrollToBottom);
+    _cactusService.transcribedText.removeListener(_onTranscribedTextChanged);
+    _cactusService.sttError.removeListener(_onSttError);
     _cactusService.dispose();
     _promptController.dispose();
     _scrollController.dispose();
@@ -235,10 +239,70 @@ class _ChatScreenState extends State<ChatScreen> {
                   );
                 }
               ),
+              // Microphone Button
+              ValueListenableBuilder<bool>(
+                valueListenable: _cactusService.isRecording,
+                builder: (context, isRecording, child) {
+                  return IconButton(
+                    icon: Icon(isRecording ? Icons.mic_off : Icons.mic, color: isRecording ? Colors.red : null),
+                    onPressed: currentIsLoading ? null : _toggleRecording,
+                    tooltip: isRecording ? 'Stop Recording' : 'Start Recording',
+                  );
+                }
+              ),
             ],
+          ),
+          // Display STT Error if any
+          ValueListenableBuilder<String?>(
+            valueListenable: _cactusService.sttError,
+            builder: (context, error, child) {
+              if (error != null && error.isNotEmpty) {
+                return Padding(
+                  padding: const EdgeInsets.only(top: 8.0),
+                  child: Text(error, style: const TextStyle(color: Colors.red)),
+                );
+              }
+              return const SizedBox.shrink();
+            }
           ),
         ],
       ),
     );
+  }
+
+  void _onTranscribedTextChanged() {
+    final newText = _cactusService.transcribedText.value;
+    if (newText != null && newText.isNotEmpty) {
+      _promptController.text = newText;
+      // Optionally send message directly after transcription:
+      // _sendMessage();
+      // _cactusService.transcribedText.value = null; // Clear after use
+    }
+  }
+
+  void _onSttError() {
+    final error = _cactusService.sttError.value;
+    if (error != null && error.isNotEmpty) {
+      // Optionally show a dialog or a more prominent error message
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error, style: const TextStyle(color: Colors.white)), backgroundColor: Colors.red)
+      );
+    }
+  }
+
+  Future<void> _toggleRecording() async {
+    // Optionally call setUserVocabulary before starting
+    // await _cactusService.setSttUserVocabulary(["custom word", "Cactus AI"]);
+
+    if (!_cactusService.isRecording.value) {
+      bool granted = await _cactusService.requestMicrophonePermissions();
+      if (granted) {
+        _cactusService.startVoiceCapture();
+      } else {
+        _cactusService.sttError.value = "Microphone permission denied.";
+      }
+    } else {
+      _cactusService.stopVoiceCapture();
+    }
   }
 } 
