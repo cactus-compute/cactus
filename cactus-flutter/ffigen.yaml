@@ -4,12 +4,12 @@ description: |
   Bindings for Cactus.
 
   Regenerate bindings with `dart run ffigen --config ffigen.yaml`.
-output: 'lib/cactus_bindings_generated.dart'
+output: 'lib/cactus_bindings_generated.dart' # This is where the generated bindings will go.
 headers:
   entry-points:
-    - 'src/cactus.h'
+    - '../../cactus/cactus_ffi.h' # Adjusted path to the FFI header
   include-directives:
-    - 'src/cactus.h'
+    - '../../cactus/cactus_ffi.h' # Ensure this is also correct
 preamble: |
   // ignore_for_file: always_specify_types
   // ignore_for_file: camel_case_types
@@ -17,3 +17,28 @@ preamble: |
 comments:
   style: any
   length: full
+
+functions:
+  include: # Specify only the functions needed to reduce generated code
+    - cactus_stt_init
+    - cactus_stt_process_audio
+    - cactus_stt_get_transcription
+    - cactus_stt_free
+    - cactus_free_string_c # Used by STT for freeing transcription results
+    # Add other FFI functions used by the Flutter app here if any
+
+# Structs can be included explicitly if needed, but ffigen often
+# discovers them from function signatures. For opaque pointers like
+# cactus_stt_context_t (typedef struct cactus_stt_context* cactus_stt_context_t;),
+# ffigen will typically generate a Dart Pointer<Opaque> type, which is correct.
+# If cactus_stt_context were a struct with members to be accessed in Dart,
+# you would list it under a 'structs: include:' filter.
+# Example:
+# structs:
+#   include:
+#     - cactus_stt_context # If it were a struct with accessible members
+
+# Ensure that CACTUS_API is handled correctly by ffigen.
+# By default, ffigen processes common macros like __attribute__((visibility("default")))
+# and __declspec(dllexport) which CACTUS_API resolves to.
+# No special config for CACTUS_API should be needed unless issues arise.

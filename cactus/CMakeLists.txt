@@ -13,6 +13,7 @@ set(CACTUS_CORE_SOURCES
     cactus_lora.cpp
     cactus_ffi.cpp
     cactus_tts.cpp
+    cactus_stt.cpp # Add the new STT implementation file
     mtmd.cpp
     mtmd-helper.cpp
     clip.cpp
