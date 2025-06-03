@@ -203,7 +203,145 @@ try {
 
 ## Example App
 
-(Consider adding a link to a simple example Flutter application in your repository if you create one. This greatly helps users get started.)
+For a complete working example, check out the [Flutter example app](https://github.com/cactus-compute/cactus/tree/main/examples/flutter-chat) in the repository.
+
+## Voice-to-Text (STT)
+
+The `CactusContext` class (or a dedicated STT service class if you've structured it that way) provides an interface for speech-to-text functionality using the device microphone. The following examples assume STT methods are part of `CactusContext` or accessible through it.
+
+_Note: The STT methods in `CactusContext` like `setUserVocabulary`, `startVoiceCapture`, and `stopVoiceCapture` are currently placeholders as demonstrated in the example app's `CactusService`. The core C++ functionality for STT is not yet fully integrated into the FFI layer for these specific methods. The examples below show how they would be used once implemented._
+
+### Basic STT Usage
+
+```dart
+import 'package:cactus/cactus.dart';
+// For Android permissions, you might need a package like `permission_handler`.
+// import 'package:permission_handler/permission_handler.dart';
+
+
+// Assuming `cactusContext` is already initialized as shown in "Initialize a Model"
+
+// 1. Request Microphone Permissions (Conceptual)
+//    Actual permission handling should use a plugin like `permission_handler`.
+//    The `CactusContext` might not directly handle UI permission dialogs.
+Future<bool> requestMicPermission() async {
+  // --- Using permission_handler (recommended for real apps) ---
+  // var status = await Permission.microphone.status;
+  // if (!status.isGranted) {
+  //   status = await Permission.microphone.request();
+  // }
+  // return status.isGranted;
+
+  // --- Placeholder for direct call if CactusContext offered it (less common) ---
+  // return await cactusContext?.requestMicrophonePermission() ?? false;
+
+  print("Placeholder: Microphone permission request would happen here.");
+  return true; // Assume granted for example
+}
+
+// 2. Start and Stop Voice Capture
+String currentTranscription = '';
+String sttError = '';
+bool isRecording = false;
+
+// In your UI logic:
+async void toggleRecording() async {
+  if (cactusContext == null) {
+    sttError = "CactusContext not initialized.";
+    // Update UI
+    return;
+  }
+
+  final hasPermission = await requestMicPermission();
+  if (!hasPermission) {
+    sttError = "Microphone permission denied.";
+    // Update UI
+    return;
+  }
+
+  // Optional: Set user-specific vocabulary (currently a placeholder)
+  try {
+    await cactusContext!.setUserVocabulary(["custom word", "Cactus AI", "Flutter"]);
+    print("User vocabulary set (Note: This is currently a placeholder).");
+  } catch (e) {
+    print("Error setting user vocabulary (placeholder): $e");
+  }
+
+  if (isRecording) {
+    try {
+      // await cactusContext!.stopVoiceCapture(); // Assuming this method exists
+      print('Recording stopped (Placeholder).');
+      // After stopping, you'd typically get the transcription via a callback or Future
+      // For example, if stopVoiceCapture returned the result:
+      // currentTranscription = await cactusContext!.stopVoiceCapture();
+      // Or, if it relies on an event/stream listened to elsewhere:
+      // currentTranscription = "Transcription from event (placeholder)";
+      isRecording = false;
+      // Update UI
+    } catch (e) {
+      sttError = 'Failed to stop recording: $e';
+      isRecording = false;
+      // Update UI
+    }
+  } else {
+    try {
+      currentTranscription = ''; // Clear previous
+      sttError = '';
+      // await cactusContext!.startVoiceCapture(
+      //   onTranscription: (textChunk) {
+      //     currentTranscription += textChunk;
+      //     // Update UI with partial transcription
+      //   },
+      //   onError: (error) {
+      //     sttError = 'STT Error: $error';
+      //     isRecording = false;
+      //     // Update UI
+      //   }
+      // );
+      print('Recording started (Placeholder)...');
+      isRecording = true;
+      // Update UI
+    } catch (e) {
+      sttError = 'Failed to start recording: $e';
+      isRecording = false;
+      // Update UI
+    }
+  }
+}
+
+// In a real app, you would get transcription results from callbacks or a stream
+// provided by `startVoiceCapture` or `stopVoiceCapture`.
+// For example, if `CactusService` in the example app were updated:
+// _cactusService.transcribedText.addListener(() {
+//   setState(() {
+//     currentTranscription = _cactusService.transcribedText.value ?? '';
+//   });
+// });
+// _cactusService.isRecording.addListener(() {
+//  setState(() { isRecording = _cactusService.isRecording.value; });
+// });
+
+```
+
+### Required Permissions
+
+**Android (`android/app/src/main/AndroidManifest.xml`):**
+Add the `RECORD_AUDIO` permission:
+```xml
+<manifest ...>
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    ...
+</manifest>
+```
+
+**iOS (`ios/Runner/Info.plist`):**
+Add the `NSMicrophoneUsageDescription` key with a reason:
+```xml
+<key>NSMicrophoneUsageDescription</key>
+<string>This app uses the microphone to capture your voice for transcription.</string>
+```
+
+Ensure you use a package like `permission_handler` in your Flutter app to properly request these permissions from the user at runtime.
 
 ## License
 

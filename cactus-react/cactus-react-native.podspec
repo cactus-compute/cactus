@@ -26,8 +26,10 @@ Pod::Spec.new do |s|
   s.platforms    = { :ios => "13.0", :tvos => "13.0" }
   s.source       = { :git => "https://github.com/cactus-compute/cactus.git", :tag => "#{s.version}" }
 
-  s.source_files = "#{ios_path}/**/*.{h,m,mm}"
+  s.source_files = "#{ios_path}/**/*.{h,m,mm,swift}"
   s.vendored_frameworks = "#{ios_path}/cactus.xcframework"
+
+  s.swift_version = '5.0' # Specify Swift version
 
   s.dependency "React-Core"
 

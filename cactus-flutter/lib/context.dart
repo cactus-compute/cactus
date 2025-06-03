@@ -827,4 +827,33 @@ class CactusContext {
     }
   }
   // --- End Model Information and Validation ---
+
+  // +++ User-Specific Adaptation (Placeholder) +++
+  /// Sets user-specific vocabulary to potentially bias STT.
+  ///
+  /// NOTE: This feature is currently a placeholder and does not affect STT results
+  /// as the core C++ implementation for vocabulary adaptation is not yet available.
+  ///
+  /// [vocabulary] A list of words or phrases to bias towards.
+  Future<void> setUserVocabulary(List<String> vocabulary) async {
+    // TODO: Implement once core C++ functionality is available.
+    // This would involve:
+    // 1. Converting the List<String> to a JSON string.
+    // 2. Calling an FFI function like `cactus_stt_set_vocabulary_ffi(_handle, vocabularyJsonC)`.
+    // For now, just log that it's a placeholder.
+    print('[CactusContext] setUserVocabulary called with ${vocabulary.length} items. This feature is a placeholder and not yet implemented at the core C++ level.');
+    // Example of how it might look:
+    // final String vocabularyJson = jsonEncode(vocabulary);
+    // Pointer<Utf8> vocabularyJsonC = nullptr;
+    // try {
+    //   vocabularyJsonC = vocabularyJson.toNativeUtf8(allocator: calloc);
+    //   // Assuming an FFI function like:
+    //   // bindings.sttSetUserVocabulary(_handle, vocabularyJsonC);
+    //   // Check status if the FFI function returns one.
+    // } finally {
+    //   if (vocabularyJsonC != nullptr) calloc.free(vocabularyJsonC);
+    // }
+    return Future.value(); // Immediately return as it's a placeholder
+  }
+  // --- End User-Specific Adaptation ---
 } 

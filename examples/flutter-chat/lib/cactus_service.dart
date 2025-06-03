@@ -19,6 +19,17 @@ class CactusService {
   final ValueNotifier<String?> imagePathForNextMessage = ValueNotifier(null);
   final ValueNotifier<String?> stagedAssetPath = ValueNotifier(null); // For image picker display
 
+  // STT Related ValueNotifiers
+  /// Notifies listeners with the latest transcribed text from STT.
+  /// Null if no transcription is available or if an error occurred.
+  final ValueNotifier<String?> transcribedText = ValueNotifier(null);
+  /// Notifies listeners about the current recording state (true if recording, false otherwise).
+  final ValueNotifier<bool> isRecording = ValueNotifier(false);
+  /// Notifies listeners of any errors that occur during STT operations.
+  /// Null if no error has occurred.
+  final ValueNotifier<String?> sttError = ValueNotifier(null);
+
+
  Future<void> initialize() async {
     isLoading.value = true;
     initError.value = null;
@@ -216,5 +227,129 @@ class CactusService {
     benchResult.dispose();
     imagePathForNextMessage.dispose();
     stagedAssetPath.dispose();
+    // Dispose STT ValueNotifiers
+    transcribedText.dispose();
+    isRecording.dispose();
+    sttError.dispose();
   }
+
+  // --- STT Methods ---
+
+  /// Placeholder method to request microphone permissions.
+  ///
+  /// In a real application, this should use a permission handling plugin
+  /// like `permission_handler` to manage platform-specific permission requests.
+  /// This current implementation is a placeholder and assumes permission is granted.
+  ///
+  /// Returns `true` as a placeholder, indicating permission is assumed to be granted.
+  Future<bool> requestMicrophonePermissions() async {
+    // Directly call a permission handler.
+    // For simplicity, assuming cactus_flutter might expose a permission handler or
+    // one would use a package like `permission_handler`.
+    // This is a conceptual placeholder for where permission request logic would go.
+    // In a real app, integrate with `permission_handler` package for robust permissions.
+    // For now, let's assume the plugin or OS handles it implicitly on first use,
+    // or this method would use a specific permission plugin.
+    // Returning true for now as a placeholder.
+    debugPrint("[CactusService] Requesting microphone permissions (Placeholder - assuming granted or handled by OS/plugin).");
+    // Example using a hypothetical permission method on _cactusContext if it existed:
+    // return await _cactusContext?.requestMicrophonePermission() ?? false;
+    return true; // Placeholder
+  }
+
+  /// Starts voice capture for STT.
+  ///
+  /// This is a placeholder implementation that simulates starting a recording.
+  /// It sets [isRecording] to true and updates [statusMessage].
+  /// Actual STT functionality (model initialization, audio capture, processing)
+  /// would be handled by methods on `_cactusContext` if available.
+  ///
+  /// If `_cactusContext` is null or if already recording, an error is set on [sttError].
+  Future<void> startVoiceCapture() async {
+    if (_cactusContext == null) {
+      sttError.value = 'STT Error: CactusContext not initialized.';
+      return;
+    }
+    if (isRecording.value) {
+      sttError.value = 'STT Error: Already recording.';
+      return;
+    }
+
+    sttError.value = null;
+    transcribedText.value = null; // Clear previous transcription
+
+    // Optional: Call setUserVocabulary if needed
+    // await setSttUserVocabulary(["example", "custom word"]);
+
+    // Assuming CactusContext has startVoiceCapture which handles STT model init, audio recording,
+    // and provides transcription via a callback or stream that updates transcribedText.
+    // For this example, we'll simulate it.
+    // In a real scenario, _cactusContext.startVoiceCapture might take a handler.
+    // e.g. await _cactusContext.startVoiceCapture(
+    //        modelPath: "path/to/stt_model.gguf", // This might be part of CactusContext.init too
+    //        onTranscription: (text) { transcribedText.value = text; },
+    //        onError: (error) { sttError.value = error.toString(); isRecording.value = false; }
+    //      );
+
+    // Placeholder implementation:
+    isRecording.value = true;
+    statusMessage.value = "Voice recording started...";
+    debugPrint("[CactusService] Voice capture started (Simulated).");
+
+    // Simulate receiving transcription after some time
+    // In a real app, this would come from the STT engine.
+    // For now, let's assume stopVoiceCapture will "finalize" a dummy transcription.
+  }
+
+  /// Stops the current voice capture.
+  ///
+  /// This is a placeholder implementation that simulates stopping a recording
+  /// and producing a dummy transcription. It sets [isRecording] to false,
+  /// updates [statusMessage], and sets a placeholder value for [transcribedText].
+  ///
+  /// If not currently recording, this method does nothing.
+  Future<void> stopVoiceCapture() async {
+    if (!isRecording.value) {
+      // sttError.value = 'STT Error: Not recording.'; // Or just ignore
+      return;
+    }
+    // In a real scenario, this would signal the native layer to stop recording
+    // and finalize transcription.
+    // e.g. await _cactusContext.stopVoiceCapture();
+
+    // Placeholder implementation:
+    isRecording.value = false;
+    statusMessage.value = "Voice recording stopped. Processing...";
+    debugPrint("[CactusService] Voice capture stopped (Simulated).");
+
+    // Simulate a delay for "processing" and then set a dummy transcription
+    await Future.delayed(const Duration(seconds: 1));
+    if (sttError.value == null) { // Only set transcription if no error occurred during "recording"
+        transcribedText.value = "Hello world, this is a dummy transcription."; // Placeholder
+        statusMessage.value = "Transcription received.";
+    } else {
+        statusMessage.value = "Transcription failed: ${sttError.value}";
+    }
+  }
+
+  /// Sets user-specific vocabulary for STT (Placeholder).
+  ///
+  /// This method calls the placeholder `setUserVocabulary` on the `_cactusContext`.
+  /// The underlying feature is not yet implemented in the core C++ library.
+  ///
+  /// - Parameter vocabulary: A list of words or phrases to suggest for STT biasing.
+  Future<void> setSttUserVocabulary(List<String> vocabulary) async {
+    if (_cactusContext == null) {
+      sttError.value = 'STT Error: CactusContext not initialized for setUserVocabulary.';
+      return;
+    }
+    try {
+      await _cactusContext!.setUserVocabulary(vocabulary); // Calling the placeholder
+      debugPrint("[CactusService] setUserVocabulary called (placeholder).");
+    } catch (e) {
+      sttError.value = "Error calling setUserVocabulary: ${e.toString()}";
+      debugPrint("[CactusService] Error in setUserVocabulary: ${e.toString()}");
+    }
+  }
+  // --- End STT Methods ---
 } 

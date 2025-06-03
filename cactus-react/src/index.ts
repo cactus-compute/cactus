@@ -24,6 +24,9 @@ import type { CactusMessagePart, CactusOAICompatibleMessage } from './chat'
 import { ModelDownloader } from './modelDownloader'
 import { formatChat } from './chat'
 import { Tools, injectToolsIntoMessages, parseAndExecuteTool, updateMessagesWithToolCall } from './tools'
+import { VoiceToText } from './VoiceToText'
+import type { VoiceToTextEventHandler } from './VoiceToText'
+
 export type {
   NativeContextParams,
   NativeLlamaContext,
@@ -43,9 +46,10 @@ export type {
   // Deprecated
   SchemaGrammarConverterPropOrder,
   SchemaGrammarConverterBuiltinRule,
+  VoiceToTextEventHandler,
 }
 
-export { SchemaGrammarConverter, convertJsonSchemaToGrammar, Tools }
+export { SchemaGrammarConverter, convertJsonSchemaToGrammar, Tools, VoiceToText }
 
 const EVENT_ON_INIT_CONTEXT_PROGRESS = '@Cactus_onInitContextProgress'
 const EVENT_ON_TOKEN = '@Cactus_onToken'
