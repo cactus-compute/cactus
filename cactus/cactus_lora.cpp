@@ -1,24 +1,17 @@
 #include "cactus.h"
-#include "common.h" // For common_set_adapter_lora
-#include "llama.h"  // For llama_adapter_lora_init
+#include "common.h"
+#include "llama.h"
 #include <vector>
 #include <string>
 
 namespace cactus {
 
-/**
- * @brief Applies LoRA adapters to the model
- * 
- * @param lora_adapters Vector of LoRA adapter information
- * @return 0 on success, negative on failure
- */
 int cactus_context::applyLoraAdapters(std::vector<common_adapter_lora_info> lora_adapters) {
     if (!ctx || !model) {
         LOG_ERROR("Context or model not initialized for applying LoRA adapters.");
         return -1;
     }
 
-    // Initialize adapter pointers
     for (auto &la : lora_adapters) {
         if (la.path.empty()) {
             LOG_WARNING("Skipping LoRA adapter with empty path.");
@@ -34,33 +27,23 @@ int cactus_context::applyLoraAdapters(std::vector<common_adapter_lora_info> lora
 
     this->lora = lora_adapters; 
 
-    common_set_adapter_lora(ctx, this->lora); 
+    common_set_adapter_lora(ctx, this->lora);
     LOG_INFO("Applied %zu LoRA adapters.", this->lora.size());
     return 0;
 }
 
-/**
- * @brief Removes all LoRA adapters from the model
- */
 void cactus_context::removeLoraAdapters() {
-     // Ensure context is valid
     if (!ctx) {
         LOG_ERROR("Context not initialized, cannot remove LoRA adapters.");
         return;
     }
-    this->lora.clear(); 
-    common_set_adapter_lora(ctx, this->lora); 
+    this->lora.clear();
+    common_set_adapter_lora(ctx, this->lora);
     LOG_INFO("Removed all LoRA adapters.");
 }
 
-
-/**
- * @brief Gets information about currently loaded LoRA adapters
- * 
- * @return Vector of LoRA adapter information
- */
 std::vector<common_adapter_lora_info> cactus_context::getLoadedLoraAdapters() {
     return this->lora;
 }
 
-} // namespace cactus 
+} // namespace cactus

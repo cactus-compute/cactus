@@ -15,11 +15,11 @@ include_directories(
 
 add_subdirectory(../../cactus ${CMAKE_BINARY_DIR}/cactus_core_build)
 
-add_executable(test_vision_language
+add_executable(cactus_embedding
     main.cpp
 )
 
-target_link_libraries(test_vision_language
+target_link_libraries(cactus_embedding
     PRIVATE
     cactus_core_lib
 )

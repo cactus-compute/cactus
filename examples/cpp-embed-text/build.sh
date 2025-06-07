@@ -5,4 +5,4 @@ make
 
 ln -sf ../../../cactus/ggml-llama.metallib default.metallib
 
-./test_vision_language
+./cactus_embedding

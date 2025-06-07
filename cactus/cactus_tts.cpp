@@ -1,850 +1,470 @@
-#define _USE_MATH_DEFINES 
 #include "cactus.h"
 #include "common.h"
-#include "llama.h"
-#include "ggml.h"
-#include "log.h" 
-#include "json.hpp" 
-
-#include <fstream>
 #include <vector>
 #include <string>
-#include <cmath> 
-#include <algorithm> 
-#include <thread> 
-#include <map>  
-#include <regex>  
+#include <regex>
+#include <sstream>
 #include <iomanip>
-#include <limits> 
+#include <map>
+#include <algorithm>
+#include <cmath>
+#include <thread>
 
 namespace cactus {
 
-// Namespace for internal TTS helper functions adapted from tts.cpp
-namespace tts_internal {
+static const std::string default_audio_text = "<|text_start|>the<|text_sep|>overall<|text_sep|>package<|text_sep|>from<|text_sep|>just<|text_sep|>two<|text_sep|>people<|text_sep|>is<|text_sep|>pretty<|text_sep|>remarkable<|text_sep|>sure<|text_sep|>i<|text_sep|>have<|text_sep|>some<|text_sep|>critiques<|text_sep|>about<|text_sep|>some<|text_sep|>of<|text_sep|>the<|text_sep|>gameplay<|text_sep|>aspects<|text_sep|>but<|text_sep|>its<|text_sep|>still<|text_sep|>really<|text_sep|>enjoyable<|text_sep|>and<|text_sep|>it<|text_sep|>looks<|text_sep|>lovely<|text_sep|>";
 
-    // --- Text processing maps (from tts.cpp) ---
-    static const std::map<int, std::string> ones = {
-        {0, "zero"}, {1, "one"}, {2, "two"}, {3, "three"}, {4, "four"},
-        {5, "five"}, {6, "six"}, {7, "seven"}, {8, "eight"}, {9, "nine"},
-        {10, "ten"}, {11, "eleven"}, {12, "twelve"}, {13, "thirteen"}, {14, "fourteen"},
-        {15, "fifteen"}, {16, "sixteen"}, {17, "seventeen"}, {18, "eighteen"}, {19, "nineteen"}
-    };
+static const std::string default_audio_data = R"(<|audio_start|>
+the<|t_0.08|><|code_start|><|257|><|740|><|636|><|913|><|788|><|1703|><|code_end|>
+overall<|t_0.36|><|code_start|><|127|><|201|><|191|><|774|><|700|><|532|><|1056|><|557|><|798|><|298|><|1741|><|747|><|1662|><|1617|><|1702|><|1527|><|368|><|1588|><|1049|><|1008|><|1625|><|747|><|1576|><|728|><|1019|><|1696|><|1765|><|code_end|>
+package<|t_0.56|><|code_start|><|935|><|584|><|1319|><|627|><|1016|><|1491|><|1344|><|1117|><|1526|><|1040|><|239|><|1435|><|951|><|498|><|723|><|1180|><|535|><|789|><|1649|><|1637|><|78|><|465|><|1668|><|901|><|595|><|1675|><|117|><|1009|><|1667|><|320|><|840|><|79|><|507|><|1762|><|1508|><|1228|><|1768|><|802|><|1450|><|1457|><|232|><|639|><|code_end|>)";
 
-    static const std::map<int, std::string> tens = {
-        {2, "twenty"}, {3, "thirty"}, {4, "forty"}, {5, "fifty"},
-        {6, "sixty"}, {7, "seventy"}, {8, "eighty"}, {9, "ninety"}
-    };
+static const std::map<int, std::string> ones = {
+    {0, "zero"}, {1, "one"}, {2, "two"}, {3, "three"}, {4, "four"},
+    {5, "five"}, {6, "six"}, {7, "seven"}, {8, "eight"}, {9, "nine"},
+    {10, "ten"}, {11, "eleven"}, {12, "twelve"}, {13, "thirteen"}, {14, "fourteen"},
+    {15, "fifteen"}, {16, "sixteen"}, {17, "seventeen"}, {18, "eighteen"}, {19, "nineteen"}
+};
 
-    enum outetts_version { 
-        OUTETTS_V0_2,
-        OUTETTS_V0_3,
-    };
+static const std::map<int, std::string> tens = {
+    {2, "twenty"}, {3, "thirty"}, {4, "forty"}, {5, "fifty"},
+    {6, "sixty"}, {7, "seventy"}, {8, "eighty"}, {9, "ninety"}
+};
 
-    struct wav_header { 
-        char riff[4] = {'R', 'I', 'F', 'F'};
-        uint32_t chunk_size;
-        char wave[4] = {'W', 'A', 'V', 'E'};
-        char fmt[4] = {'f', 'm', 't', ' '};
-        uint32_t fmt_chunk_size = 16;
-        uint16_t audio_format = 1; 
-        uint16_t num_channels = 1; 
-        uint32_t sample_rate; 
-        uint32_t byte_rate;
-        uint16_t block_align;
-        uint16_t bits_per_sample = 16;
-        char data[4] = {'d', 'a', 't', 'a'};
-        uint32_t data_size;
-    };
+static std::string convert_less_than_thousand(int num) {
+    std::string result;
 
-    static bool save_wav16(const std::string & fname, const std::vector<float> & audio_data, int sample_rate) {
-        std::ofstream file(fname, std::ios::binary);
-        if (!file) {
-            LOG_ERROR("Failed to open file '%s' for writing.", fname.c_str());
-            return false;
+    if (num >= 100) {
+        result += ones.at(num / 100) + " hundred ";
+        num %= 100;
+    }
+
+    if (num >= 20) {
+        result += tens.at(num / 10);
+        if (num % 10 > 0) {
+            result += "-" + ones.at(num % 10);
+        }
+    } else if (num > 0) {
+        result += ones.at(num);
+    }
+
+    return result;
+}
+
+static std::string number_to_words(const std::string & number_str) {
+    try {
+        size_t decimal_pos = number_str.find('.');
+        std::string integer_part = number_str.substr(0, decimal_pos);
+
+        int int_number = std::stoi(integer_part);
+        std::string result;
+
+        if (int_number == 0) {
+            result = "zero";
+        } else {
+            if (int_number >= 1000000000) {
+                int billions = int_number / 1000000000;
+                result += convert_less_than_thousand(billions) + " billion ";
+                int_number %= 1000000000;
+            }
+
+            if (int_number >= 1000000) {
+                int millions = int_number / 1000000;
+                result += convert_less_than_thousand(millions) + " million ";
+                int_number %= 1000000;
+            }
+
+            if (int_number >= 1000) {
+                int thousands = int_number / 1000;
+                result += convert_less_than_thousand(thousands) + " thousand ";
+                int_number %= 1000;
+            }
+
+            if (int_number > 0) {
+                result += convert_less_than_thousand(int_number);
+            }
         }
 
-        wav_header header;
-        header.sample_rate = sample_rate;
-        header.num_channels = 1; 
-        header.bits_per_sample = 16;
-        header.byte_rate = header.sample_rate * header.num_channels * (header.bits_per_sample / 8);
-        header.block_align = header.num_channels * (header.bits_per_sample / 8);
-        header.data_size = audio_data.size() * (header.bits_per_sample / 8); 
-        header.chunk_size = 36 + header.data_size;
-
-        file.write(reinterpret_cast<const char*>(&header), sizeof(header));
-
-        for (const auto & sample : audio_data) {
-            int16_t pcm_sample = static_cast<int16_t>(std::clamp(sample * 32767.0f, -32768.0f, 32767.0f));
-            file.write(reinterpret_cast<const char*>(&pcm_sample), sizeof(pcm_sample));
+        if (decimal_pos != std::string::npos) {
+            result += " point";
+            std::string decimal_part = number_str.substr(decimal_pos + 1);
+            for (char digit : decimal_part) {
+                result += " " + ones.at(digit - '0');
+            }
         }
-        if (!file.good()) {
-            LOG_ERROR("Error writing WAV data to '%s'.", fname.c_str());
-            return false;
+
+        return result;
+    } catch (const std::exception& e) {
+        return " ";
+    }
+}
+
+static std::string replace_numbers_with_words(const std::string & input_text) {
+    std::regex number_pattern(R"(\d+(\.\d+)?)");
+    std::string result;
+    auto it = std::sregex_iterator(input_text.begin(), input_text.end(), number_pattern);
+    auto end = std::sregex_iterator();
+
+    size_t last_pos = 0;
+    for (std::sregex_iterator i = it; i != end; ++i) {
+        const std::smatch& match = *i;
+        result.append(input_text, last_pos, match.position() - last_pos);
+        result.append(number_to_words(match.str()));
+        last_pos = match.position() + match.length();
+    }
+    result.append(input_text, last_pos);
+
+    return result;
+}
+
+static std::string process_text(const std::string & text, const tts_type tts_type = TTS_OUTETTS_V0_2) {
+    std::string processed_text = replace_numbers_with_words(text);
+
+    std::transform(processed_text.begin(), processed_text.end(),
+                  processed_text.begin(), ::tolower);
+
+    std::regex special_chars(R"([-_/,\.\\])");
+    processed_text = std::regex_replace(processed_text, special_chars, " ");
+
+    std::regex non_alpha(R"([^a-z\s])");
+    processed_text = std::regex_replace(processed_text, non_alpha, "");
+
+    std::regex multiple_spaces(R"(\s+)");
+    processed_text = std::regex_replace(processed_text, multiple_spaces, " ");
+
+    processed_text = std::regex_replace(processed_text, std::regex(R"(^\s+|\s+$)"), "");
+
+    std::string separator = (tts_type == TTS_OUTETTS_V0_3) ? "<|space|>" : "<|text_sep|>";
+    processed_text = std::regex_replace(processed_text, std::regex(R"(\s)"), separator);
+
+    return processed_text;
+}
+
+static void fill_hann_window(int length, bool periodic, float * output) {
+    int offset = -1;
+    if (periodic) {
+        offset = 0;
+    }
+    for (int i = 0; i < length; i++) {
+        output[i] = 0.5 * (1.0 - cosf((2.0 * M_PI * i) / (length + offset)));
+    }
+}
+
+static void twiddle(float * real, float * imag, int k, int N) {
+    float angle = 2 * M_PI * k / N;
+    *real = cos(angle);
+    *imag = sin(angle);
+}
+
+static void irfft(int n, const float * inp_cplx, float * out_real) {
+    int N = n / 2 + 1;
+
+    std::vector<float> real_input(N);
+    std::vector<float> imag_input(N);
+    for (int i = 0; i < N; ++i) {
+        real_input[i] = inp_cplx[2 * i];
+        imag_input[i] = inp_cplx[2 * i + 1];
+    }
+
+    std::vector<float> real_output(n);
+    std::vector<float> imag_output(n);
+
+    for (int k = 0; k < n; ++k) {
+        real_output[k] = 0.0f;
+        imag_output[k] = 0.0f;
+        for (int m = 0; m < N; ++m) {
+            float twiddle_real;
+            float twiddle_imag;
+
+            twiddle(&twiddle_real, &twiddle_imag, k * m, n);
+
+            real_output[k] += real_input[m] * twiddle_real - imag_input[m] * twiddle_imag;
+            imag_output[k] += real_input[m] * twiddle_imag + imag_input[m] * twiddle_real;
         }
-        LOG_INFO("Audio saved to %s", fname.c_str());
+    }
+
+    for (int i = 0; i < n; ++i) {
+        out_real[i] = real_output[i] / N;
+    }
+}
+
+static void fold(const std::vector<float> & data, int64_t n_out, int64_t n_win, int64_t n_hop, int64_t n_pad, std::vector<float> & output) {
+    int64_t output_height = n_out;
+    int64_t kernel_w = n_win;
+    int64_t stride_w = n_hop;
+    int64_t width    = n_out;
+
+    output.resize(width, 0.0f);
+
+    int64_t col_idx = 0;
+    for (int64_t w_col = 0; w_col < width; ++w_col) {
+        int64_t start = w_col * stride_w - n_pad;
+        int64_t end   = start + kernel_w;
+
+        for (int64_t w_im = start; w_im < end; ++w_im) {
+            if (w_im >= 0 && w_im < output_height && col_idx < (int64_t) data.size()) {
+                output[w_im] += data[col_idx];
+            }
+            col_idx++;
+        }
+    }
+
+    output.resize(n_out - 2 * n_pad);
+}
+
+static std::vector<float> embd_to_audio(
+        const float * embd,
+        const int n_codes,
+        const int n_embd,
+        const int n_thread) {
+    const int n_fft = 1280;
+    const int n_hop = 320;
+    const int n_win = 1280;
+    const int n_pad = (n_win - n_hop)/2;
+    const int n_out = (n_codes - 1)*n_hop + n_win;
+
+    std::vector<float> hann(n_fft);
+
+    fill_hann_window(hann.size(), true, hann.data());
+
+    int n_spec = n_embd*n_codes;
+
+    std::vector<float> E (n_spec);
+    std::vector<float> S (n_spec);
+    std::vector<float> ST(n_spec);
+
+    for (int l = 0; l < n_codes; ++l) {
+        for (int k = 0; k < n_embd; ++k) {
+            E[k*n_codes + l] = embd[l*n_embd + k];
+        }
+    }
+
+    for (int k = 0; k < n_embd/2; ++k) {
+        for (int l = 0; l < n_codes; ++l) {
+            float mag = E[(k           )*n_codes + l];
+            float phi = E[(k + n_embd/2)*n_codes + l];
+
+            mag = exp(mag);
+
+            if (mag > 1e2) {
+                mag = 1e2;
+            }
+            S[2*(k*n_codes + l) + 0] = mag*cosf(phi);
+            S[2*(k*n_codes + l) + 1] = mag*sinf(phi);
+        }
+    }
+
+    for (int l = 0; l < n_codes; ++l) {
+        for (int k = 0; k < n_embd/2; ++k) {
+            ST[l*n_embd + 2*k + 0] = S[2*(k*n_codes + l) + 0];
+            ST[l*n_embd + 2*k + 1] = S[2*(k*n_codes + l) + 1];
+        }
+    }
+
+    std::vector<float> res  (n_codes*n_fft);
+    std::vector<float> hann2(n_codes*n_fft);
+
+    std::vector<std::thread> workers(n_thread);
+    for (int i = 0; i < n_thread; ++i) {
+        workers[i] = std::thread([&, i]() {
+            for (int l = i; l < n_codes; l += n_thread) {
+                irfft(n_fft, ST.data() + l*n_embd, res.data() + l*n_fft);
+                for (int j = 0; j < n_fft; ++j) {
+                    res  [l*n_fft + j] *= hann[j];
+                    hann2[l*n_fft + j]  = hann[j] * hann[j];
+                }
+            }
+        });
+    }
+    for (int i = 0; i < n_thread; ++i) {
+        workers[i].join();
+    }
+
+    std::vector<float> audio;
+    std::vector<float> env;
+
+    fold(res,   n_out, n_win, n_hop, n_pad, audio);
+    fold(hann2, n_out, n_win, n_hop, n_pad, env);
+
+    for (size_t i = 0; i < audio.size(); ++i) {
+        audio[i] /= env[i];
+    }
+
+    return audio;
+}
+
+bool cactus_context::initVocoder(const std::string &vocoder_model_path) {
+    if (vocoder_wrapper != nullptr) {
         return true;
     }
     
-    // --- DSP and Vocoder functions (adapted from tts.cpp) ---
-    static void fill_hann_window(int length, bool periodic, float * output) {
+    common_params vocoder_params = params;
+    vocoder_params.model.path = vocoder_model_path;
+    vocoder_params.embedding = true;
+    vocoder_params.n_ubatch = vocoder_params.n_batch;
 
-        int offset = -1;
-        if (periodic) {
-            offset = 0;
-        }
-        for (int i = 0; i < length; i++) {
-            output[i] = 0.5f * (1.0f - cosf((2.0f * M_PI * i) / (length + offset)));
-        }
+    cactus_context_vocoder *wrapper = new cactus_context_vocoder{
+        .init_result = common_init_from_params(vocoder_params),
+    };
+
+    wrapper->model = wrapper->init_result.model.get();
+    wrapper->ctx = wrapper->init_result.context.get();
+
+    if (wrapper->model == nullptr || wrapper->ctx == nullptr) {
+        LOG_ERROR("Failed to load vocoder model: %s", vocoder_model_path.c_str());
+        delete wrapper;
+        return false;
     }
 
-    // very poor-man fft helper
-    static void twiddle(float * real, float * imag, int k, int N) {
-        float angle = 2.0f * M_PI * k / N;
-        *real = cosf(angle);
-        *imag = sinf(angle);
-    }
-
-    static void irfft(int n, const float * inp_cplx, float * out_real) {
-        int N = n / 2 + 1;
-
-        std::vector<float> real_input(N);
-        std::vector<float> imag_input(N);
-        for (int i = 0; i < N; ++i) {
-            real_input[i] = inp_cplx[2 * i];
-            imag_input[i] = inp_cplx[2 * i + 1];
-        }
-
-        std::vector<float> real_output(n);
-        std::vector<float> imag_output(n);
-
-        for (int k_loop = 0; k_loop < n; ++k_loop) { 
-            real_output[k_loop] = 0.0f;
-            imag_output[k_loop] = 0.0f;
-            for (int m = 0; m < N; ++m) {
-                float twiddle_real;
-                float twiddle_imag;
-
-                twiddle(&twiddle_real, &twiddle_imag, k_loop * m, n);
-
-                real_output[k_loop] += real_input[m] * twiddle_real - imag_input[m] * twiddle_imag;
-                imag_output[k_loop] += real_input[m] * twiddle_imag + imag_input[m] * twiddle_real;
-            }
-        }
-
-        for (int i = 0; i < n; ++i) {
-            out_real[i] = real_output[i] / N;
-        }
-    }
-
-    static void fold(
-        const std::vector<float> & data, // Input data (e.g., STFT frames after iFFT and windowing)
-        int64_t n_out,                   // Expected total output samples (before final padding removal)
-        int64_t n_win,                   // Window length used for STFT/iSTFT
-        int64_t n_hop,                   // Hop length used for STFT/iSTFT
-        int64_t n_pad,                   // Padding applied on each side of the frames (e.g. (n_win - n_hop)/2)
-        std::vector<float> & output      // Output folded audio
-    ) {
-        output.assign(n_out, 0.0f);
-        int64_t current_data_ptr = 0;
-
-        // Calculate num_frames based on data size and window length. This assumes data is concatenated frames.
-        int num_frames = (n_win > 0) ? (data.size() / n_win) : 0;
-
-        if (n_win > 0 && data.size() % n_win != 0) {
-            LOG_WARNING("Fold: data size (%zu) is not a multiple of window length (%lld). Results might be incorrect.", data.size(), (long long)n_win);
-        }
-
-        for (int frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
-            int64_t frame_output_start_pos = frame_idx * n_hop; 
-
-            for (int i = 0; i < n_win; ++i) {
-                int64_t target_idx = frame_output_start_pos + i;
-
-                if (target_idx < n_out && current_data_ptr < (int64_t)data.size()) {
-                     output[target_idx] += data[current_data_ptr];
-                }
-                current_data_ptr++;
-            }
-        }
-
-        if (n_out > 2 * n_pad) {
-             std::vector<float> temp_output(output.begin() + n_pad, output.begin() + (n_out - n_pad) );
-             output = temp_output;
-        } else if (n_out > 0) { 
-            LOG_WARNING("Fold: n_out (%lld) <= 2*n_pad (%lld), cannot trim padding. Output might be empty or incorrect.", (long long)n_out, (long long)(2*n_pad));
-        }
-    }
-
-
-    static std::vector<float> embeddings_to_audio_samples(
-        const float * embeddings_ptr,     // Pointer to the flat embedding data
-        int num_frames,                   // Number of frames (n_codes in tts.cpp)
-        int frame_embedding_dim,          // Dimension of embedding per frame (n_embd in tts.cpp)
-        llama_model * vocoder_model,      // Vocoder model (not directly used in original tts.cpp's embd_to_audio, but good to have if params are from it)
-        llama_context * vocoder_ctx,      // Vocoder context (similarly, not directly used by original)
-        int n_threads,
-        int& out_sample_rate
-    ) {
-        LOG_INFO("embeddings_to_audio_samples: num_frames=%d, frame_embedding_dim=%d", num_frames, frame_embedding_dim);
-
-        const int n_fft = 1280;
-        const int n_hop = 320;
-        const int n_win = n_fft;
-        const int n_pad = (n_win - n_hop) / 2;
-        const int64_t n_out_padded = (num_frames > 0) ? (static_cast<int64_t>(num_frames - 1) * n_hop + n_win) : 0;
-
-        if (num_frames == 0 || frame_embedding_dim == 0) {
-            LOG_WARNING("embeddings_to_audio_samples: No frames or zero embedding dimension. Returning empty audio.");
-            out_sample_rate = 24000; 
-            return {};
-        }
-        
-        out_sample_rate = 24000; 
-
-        std::vector<float> hann_window_coeffs(n_fft);
-        fill_hann_window(n_fft, true, hann_window_coeffs.data()); // Now defined before this call
-
-        int half_embedding_dim = frame_embedding_dim / 2;
-        if (frame_embedding_dim % 2 != 0) {
-            LOG_WARNING("Frame embedding dimension %d is not even. Vocoding might be incorrect.", frame_embedding_dim);
-        }
-
-        std::vector<float> complex_spectrum_ST(num_frames * frame_embedding_dim);
-
-        for (int frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
-            for (int k = 0; k < half_embedding_dim; ++k) {
-                float mag_log = embeddings_ptr[frame_idx * frame_embedding_dim + k];
-                float phi     = embeddings_ptr[frame_idx * frame_embedding_dim + k + half_embedding_dim];
-                float mag = expf(mag_log);
-                mag = std::min(mag, 100.0f);
-                complex_spectrum_ST[frame_idx * frame_embedding_dim + 2 * k + 0] = mag * cosf(phi);
-                complex_spectrum_ST[frame_idx * frame_embedding_dim + 2 * k + 1] = mag * sinf(phi);
-            }
-        }
-
-        std::vector<float> all_ifft_frames_windowed(num_frames * n_fft);
-        std::vector<float> hann_squared_frames(num_frames * n_fft);
-
-        std::vector<std::thread> workers(n_threads);
-        for (int thread_idx = 0; thread_idx < n_threads; ++thread_idx) {
-            workers[thread_idx] = std::thread([&, thread_idx]() {
-
-                for (int frame_idx = thread_idx; frame_idx < num_frames; frame_idx += n_threads) {
-                    const float* current_frame_complex_spectrum = complex_spectrum_ST.data() + frame_idx * frame_embedding_dim;
-                    float* current_frame_ifft_output = all_ifft_frames_windowed.data() + frame_idx * n_fft;
-                    irfft(n_fft, current_frame_complex_spectrum, current_frame_ifft_output); 
-                    float* current_frame_hann_sq_output = hann_squared_frames.data() + frame_idx * n_fft;
-
-                    for (int j = 0; j < n_fft; ++j) {
-                        current_frame_ifft_output[j] *= hann_window_coeffs[j];
-                        current_frame_hann_sq_output[j] = hann_window_coeffs[j] * hann_window_coeffs[j];
-                    }
-                }
-            });
-        }
-        for (int i = 0; i < n_threads; ++i) {
-            if(workers[i].joinable()) workers[i].join();
-        }
-
-        std::vector<float> audio_signal_folded;
-        std::vector<float> window_energy_folded;
-
-        fold(all_ifft_frames_windowed, n_out_padded, n_win, n_hop, n_pad, audio_signal_folded); 
-        fold(hann_squared_frames,      n_out_padded, n_win, n_hop, n_pad, window_energy_folded);
-
-        if (audio_signal_folded.size() != window_energy_folded.size()) {
-            LOG_ERROR("embeddings_to_audio_samples: Mismatch in folded signal size (%zu) and window energy size (%zu). Cannot normalize.", 
-                      audio_signal_folded.size(), window_energy_folded.size());
-            return {};
-        }
-
-        for (size_t i = 0; i < audio_signal_folded.size(); ++i) {
-            if (window_energy_folded[i] > 1e-8f) { 
-                audio_signal_folded[i] /= window_energy_folded[i];
-            } else {
-                audio_signal_folded[i] = 0.0f;
-            }
-        }
-        LOG_INFO("Audio synthesized with %zu samples. Sample rate: %d Hz.", audio_signal_folded.size(), out_sample_rate);
-        return audio_signal_folded;
-    }
-
-    // --- Text processing functions (adapted from tts.cpp) ---
-    static std::string convert_less_than_thousand(int num) {
-        std::string result;
-        if (num == 0) { 
-            return ""; 
-        }
-
-        if (num >= 100) {
-            result += ones.at(num / 100) + " hundred";
-            num %= 100;
-            if (num > 0) result += " "; // Add space if there are tens/ones following
-        }
-
-        if (num >= 20) {
-            result += tens.at(num / 10);
-            if (num % 10 > 0) {
-                result += "-" + ones.at(num % 10);
-            }
-        } else if (num > 0) {
-            result += ones.at(num);
-        }
-        return result;
-    }
-
-    static std::string number_to_words(const std::string & number_str) {
-        try {
-            size_t decimal_pos = number_str.find('.');
-            std::string integer_part_str = number_str.substr(0, decimal_pos);
-            if (integer_part_str.empty() && decimal_pos != std::string::npos) { // Case like ".5"
-                integer_part_str = "0";
-            }
-            if (integer_part_str.empty() && decimal_pos == std::string::npos) { // Empty string
-                return "";
-            }
-
-            long long ll_number = std::stoll(integer_part_str); // Use long long for larger numbers
-            std::string result_words;
-
-            if (ll_number == 0) {
-                result_words = "zero";
-            } else {
-                std::string temp_res;
-                if (ll_number < 0) { // Handle negative numbers
-                    temp_res += "minus ";
-                    ll_number = -ll_number;
-                }
-
-                if (ll_number >= 1000000000000LL) { // Trillions
-                    long long trillions = ll_number / 1000000000000LL;
-                    temp_res += convert_less_than_thousand(static_cast<int>(trillions)) + " trillion"; // Cast carefully
-                    ll_number %= 1000000000000LL;
-                    if (ll_number > 0) temp_res += " ";
-                }
-                if (ll_number >= 1000000000) { // Billions
-                    int billions = static_cast<int>(ll_number / 1000000000);
-                    temp_res += convert_less_than_thousand(billions) + " billion";
-                    ll_number %= 1000000000;
-                    if (ll_number > 0) temp_res += " ";
-                }
-                if (ll_number >= 1000000) { // Millions
-                    int millions = static_cast<int>(ll_number / 1000000);
-                    temp_res += convert_less_than_thousand(millions) + " million";
-                    ll_number %= 1000000;
-                    if (ll_number > 0) temp_res += " ";
-                }
-                if (ll_number >= 1000) { // Thousands
-                    int thousands = static_cast<int>(ll_number / 1000);
-                    temp_res += convert_less_than_thousand(thousands) + " thousand";
-                    ll_number %= 1000;
-                    if (ll_number > 0) temp_res += " ";
-                }
-                if (ll_number > 0) {
-                    temp_res += convert_less_than_thousand(static_cast<int>(ll_number));
-                }
-                result_words = temp_res;
-            }
-
-            // Handle decimal part
-            if (decimal_pos != std::string::npos) {
-                result_words += " point";
-                std::string decimal_part_str = number_str.substr(decimal_pos + 1);
-                for (char digit : decimal_part_str) {
-                    if (digit >= '0' && digit <= '9') {
-                        result_words += " " + ones.at(digit - '0');
-                    } else {
-                        // Handle non-digit characters in decimal part if necessary, or ignore
-                    }
-                }
-            }
-            // Remove trailing space if any from parts
-            if (!result_words.empty() && result_words.back() == ' ') {
-                result_words.pop_back();
-            }
-            return result_words;
-        } catch (const std::out_of_range& oor) {
-            LOG_WARNING("Number out of range for stoll: %s", number_str.c_str());
-            return number_str; // Return original number string if conversion fails
-        } catch (const std::invalid_argument& ia) {
-            LOG_WARNING("Invalid argument for stoll: %s", number_str.c_str());
-            return number_str; // Return original number string if conversion fails
-        }
-    }
-
-    static std::string replace_numbers_with_words(const std::string & input_text) {
-        std::regex number_pattern(R"(([-+]?\d*\.\d+)|([-+]?\d+))"); // Improved regex for numbers
-        std::string result;
-        std::string temp_input = input_text;
-        std::smatch match;
-
-        while (std::regex_search(temp_input, match, number_pattern)) {
-            result += match.prefix().str(); // Add text before the number
-            result += number_to_words(match.str(0)); // Convert number and add
-            temp_input = match.suffix().str(); // Continue with text after the number
-        }
-        result += temp_input; // Add any remaining text
-        return result;
-    }
-
-    // Based on: https://github.com/edwko/OuteTTS/blob/a613e79c489d8256dd657ea9168d78de75895d82/outetts/version/v1/prompt_processor.py#L39
-    std::string process_input_text(const std::string & text, outetts_version tts_version) {
-        // For now I skipped text romanization as I am unsure how to handle
-        // uroman and MeCab implementations in C++
-        // maybe something like https://github.com/anyascii/anyascii/ could work.
-        // currently only English would be supported in this function
-        LOG_INFO("Original text for processing: '%s'", text.c_str());
-
-        std::string processed_text = replace_numbers_with_words(text);
-        LOG_INFO("Text after number replacement: '%s'", processed_text.c_str());
-
-        std::transform(processed_text.begin(), processed_text.end(),
-                    processed_text.begin(), ::tolower);
-        LOG_INFO("Text after tolower: '%s'", processed_text.c_str());
-
-        std::regex special_chars(R"([-_/,\.\\])"); // Original regex had double backslash for . and \ which is not needed in raw string literal for single chars.
-        processed_text = std::regex_replace(processed_text, special_chars, " ");
-        LOG_INFO("Text after special_chars replacement: '%s'", processed_text.c_str());
-
-        std::regex non_alpha(R"([^a-z\s])");
-        processed_text = std::regex_replace(processed_text, non_alpha, "");
-        LOG_INFO("Text after non_alpha replacement: '%s'", processed_text.c_str());
-
-        std::regex multiple_spaces(R"(\s+)");
-        processed_text = std::regex_replace(processed_text, multiple_spaces, " ");
-        LOG_INFO("Text after multiple_spaces collapse: '%s'", processed_text.c_str());
-
-        // Trim leading and trailing whitespace
-        processed_text = std::regex_replace(processed_text, std::regex(R"(^\s+|\s+$)"), "");
-        LOG_INFO("Text after trim: '%s'", processed_text.c_str());
-
-        std::string separator = (tts_version == OUTETTS_V0_3) ? "<|space|>" : "<|text_sep|>";
-        processed_text = std::regex_replace(processed_text, std::regex(R"(\s)"), separator);
-        LOG_INFO("Final processed text: '%s' with separator '%s'", processed_text.c_str(), separator.c_str());
-
-        return processed_text;
-    }
+    wrapper->type = TTS_OUTETTS_V0_2;
+    vocoder_wrapper = wrapper;
+    has_vocoder = true;
     
-    // --- Speaker, Version, and Prompt helpers (adapted from tts.cpp) ---
-    static nlohmann::ordered_json load_speaker_embedding_json(const std::string & speaker_file_path) {
-        LOG_INFO("Attempting to load speaker file: %s", speaker_file_path.c_str());
-        std::ifstream file(speaker_file_path);
-        if (!file) {
-            LOG_ERROR("Failed to open speaker file: %s", speaker_file_path.c_str());
-            return nlohmann::ordered_json(); // Return empty/null json on failure
-        }
-        try {
-            return nlohmann::ordered_json::parse(file);
-        } catch (const nlohmann::json::parse_error& e) {
-            LOG_ERROR("Failed to parse speaker JSON from %s: %s", speaker_file_path.c_str(), e.what());
-            return nlohmann::ordered_json();
-        }
-    }
-
-    static outetts_version determine_tts_version(llama_model* model, const nlohmann::ordered_json& speaker_json) {
-        if (!speaker_json.is_null() && speaker_json.contains("version")) {
-            std::string version = speaker_json["version"].get<std::string>();
-            if (version == "0.2") {
-                return OUTETTS_V0_2;
-            } else if (version == "0.3") {
-                return OUTETTS_V0_3;
-            } else {
-                LOG_WARNING("Unsupported speaker version '%s' in JSON. Checking model template.", version.c_str());
-            }
-        }
-
-        if (model) {
-            const char *chat_template = llama_model_chat_template(model, nullptr);
-            if (chat_template && std::string(chat_template) == "outetts-0.3") {
-                LOG_INFO("Determined TTS version OUTETTS_V0_3 from model chat template.");
-                return OUTETTS_V0_3;
-            }
-        }
-        LOG_INFO("Defaulting TTS version to OUTETTS_V0_2.");
-        return OUTETTS_V0_2; 
-    }
-
-    static std::string get_speaker_audio_text(const nlohmann::ordered_json& speaker_json, outetts_version tts_version) {
-        if (speaker_json.is_null() || !speaker_json.contains("words")) {
-            LOG_WARNING("Speaker JSON is null or does not contain 'words' field.");
-            return "<|text_start|>"; 
-        }
-        std::string audio_text = "<|text_start|>";
-        std::string separator = (tts_version == OUTETTS_V0_3) ? "<|space|>" : "<|text_sep|>";
-        try {
-            for (const auto &word_item : speaker_json["words"]) {
-                if (word_item.contains("word")) {
-                    audio_text += word_item["word"].get<std::string>() + separator;
-                } else {
-                    LOG_WARNING("Speaker JSON 'words' item missing 'word' field.");
-                }
-            }
-        } catch (const nlohmann::json::exception& e) {
-            LOG_ERROR("Error processing speaker JSON for audio_text: %s", e.what());
-            return "<|text_start|>"; // Fallback
-        }
-        // Remove last separator if added
-        if (!audio_text.empty() && audio_text.length() > separator.length() && audio_text.rfind(separator) == audio_text.length() - separator.length()) {
-             audio_text = audio_text.substr(0, audio_text.length() - separator.length());
-        }
-        return audio_text;
-    }
-
-    static std::string get_speaker_audio_data(const nlohmann::ordered_json& speaker_json, outetts_version tts_version) {
-        if (speaker_json.is_null() || !speaker_json.contains("words")) {
-            LOG_WARNING("Speaker JSON is null or does not contain 'words' field for audio_data.");
-            return "<|audio_start|>\n"; 
-        }
-        std::string audio_data = "<|audio_start|>\n";
-        std::string code_start_token = (tts_version == OUTETTS_V0_3) ? "" : "<|code_start|>";
-        std::string code_end_token = (tts_version == OUTETTS_V0_3) ? "<|space|>" : "<|code_end|>";
-
-        try {
-            for (const auto &word_item : speaker_json["words"]) {
-                if (word_item.contains("word") && word_item.contains("duration") && word_item.contains("codes")) {
-                    std::string word_text = word_item["word"].get<std::string>();
-                    double duration = word_item["duration"].get<double>();
-                    std::vector<int> codes = word_item["codes"].get<std::vector<int>>();
-
-                    std::ostringstream word_entry;
-                    word_entry << word_text << "<|t_" << std::fixed << std::setprecision(2)
-                            << duration << "|>" << code_start_token;
-                    for (const auto &code_val : codes) {
-                        word_entry << "<|" << code_val << "|>";
-                    }
-                    word_entry << code_end_token << "\n";
-                    audio_data += word_entry.str();
-                } else {
-                     LOG_WARNING("Speaker JSON 'words' item missing required fields (word, duration, codes).");
-                }
-            }
-        } catch (const nlohmann::json::exception& e) {
-            LOG_ERROR("Error processing speaker JSON for audio_data: %s", e.what());
-            return "<|audio_start|>\n"; 
-        }
-        return audio_data;
-    }
-
-    static void prompt_add_token(std::vector<llama_token>& prompt, llama_token token) {
-        prompt.push_back(token);
-    }
-
-    static void prompt_add_tokens(std::vector<llama_token>& prompt, const std::vector<llama_token>& tokens) {
-        prompt.insert(prompt.end(), tokens.begin(), tokens.end());
-    }
-
-    static void prompt_add_string(std::vector<llama_token>& prompt, const llama_vocab * vocab, const std::string & txt, bool add_bos, bool special_tokens) {
-        if (!vocab) {
-            LOG_ERROR("Cannot add string to prompt: vocab is null.");
-            return;
-        }
-        std::vector<llama_token> tmp = common_tokenize(vocab, txt, add_bos, special_tokens);
-        prompt_add_tokens(prompt, tmp);
-    }
-
-    static void prompt_initialize(std::vector<llama_token>& prompt, const llama_vocab * vocab) {
-        prompt.clear();
-        prompt_add_string(prompt, vocab, "<|im_start|>\n", true, true);
-    }
-
-    static std::vector<llama_token> prepare_guide_tokens(const llama_vocab * vocab, const std::string & str, outetts_version tts_version) {
-        if (!vocab) {
-            LOG_ERROR("Cannot prepare guide tokens: vocab is null.");
-            return {};
-        }
-        const std::string& delimiter = (tts_version == OUTETTS_V0_3 ? "<|space|>" : "<|text_sep|>");
-        std::vector<llama_token> result_tokens;
-        size_t start_pos = 0;
-        size_t end_pos = str.find(delimiter);
-
-        std::vector<llama_token> newline_token_vec = common_tokenize(vocab, "\n", false, true);
-        if (!newline_token_vec.empty()) {
-            result_tokens.push_back(newline_token_vec[0]);
-        }
-
-        while (end_pos != std::string::npos) {
-            std::string current_word = str.substr(start_pos, end_pos - start_pos);
-            if (!current_word.empty()) {
-                std::vector<llama_token> tmp_tokens = common_tokenize(vocab, current_word, false, true);
-                if (!tmp_tokens.empty()) {
-                    result_tokens.push_back(tmp_tokens[0]);
-                }
-            }
-            start_pos = end_pos + delimiter.length();
-            end_pos = str.find(delimiter, start_pos);
-        }
-
-        // Add the last part
-        std::string last_word = str.substr(start_pos);
-        if (!last_word.empty()) {
-            std::vector<llama_token> tmp_tokens = common_tokenize(vocab, last_word, false, true);
-            if (!tmp_tokens.empty()) {
-                result_tokens.push_back(tmp_tokens[0]);
-            }
-        }
-        return result_tokens;
-    }
-   
-} // namespace tts_internal
-
-
-bool cactus_context::loadVocoderModel(const common_params_vocoder &vocoder_params) {
-    if (this->vocoder_model != nullptr) {
-        LOG_INFO("Vocoder model already loaded. Freeing existing model.");
-        if (this->vocoder_ctx) llama_free(this->vocoder_ctx);
-        llama_model_free(this->vocoder_model);
-        this->vocoder_model = nullptr;
-        this->vocoder_ctx = nullptr;
-    }
-
-    LOG_INFO("Loading vocoder model from: %s", vocoder_params.model.path.c_str());
-    if (vocoder_params.model.path.empty()) {
-        LOG_ERROR("Vocoder model path is empty.");
-        return false;
-    }
-
-    auto mparams = llama_model_default_params();
-
-    // Vocoders might not need extensive GPU offloading or specific settings like main LLMs.
-    // These params might need to be adjusted based on the vocoder model's requirements.
-    // For now, use defaults and allow common_params to override if necessary via main params.
-    mparams.n_gpu_layers = params.n_gpu_layers;
-    mparams.main_gpu     = params.main_gpu;
-    mparams.split_mode   = params.split_mode;
-
-    this->vocoder_model = llama_model_load_from_file(vocoder_params.model.path.c_str(), mparams);
-    if (this->vocoder_model == nullptr) {
-        LOG_ERROR("Failed to load vocoder model from '%s'", vocoder_params.model.path.c_str());
-        return false;
-    }
-
-    auto cparams = llama_context_default_params();
-
-    // Context size for vocoders is usually small or fixed.
-    // This might need to be determined from model metadata or tts.cpp example.
-    // Max codes generated by primary TTS model is params.n_predict.
-    // Vocoder context and batch size should accommodate this.
-    int max_codes = params.n_predict > 0 ? params.n_predict : 768; 
-    cparams.n_ctx   = max_codes > 0 ? (uint32_t)max_codes : 1024;
-    cparams.n_batch = max_codes > 0 ? (uint32_t)max_codes : 1024; 
-    cparams.n_ubatch = max_codes > 0 ? (uint32_t)max_codes : 1024; 
-    cparams.attention_type = LLAMA_ATTENTION_TYPE_NON_CAUSAL;
-    cparams.embeddings = true; 
-    cparams.n_threads = params.cpuparams.n_threads;
-    cparams.n_threads_batch = params.cpuparams.n_threads;
-
-
-    this->vocoder_ctx = llama_init_from_model(this->vocoder_model, cparams);
-    if (this->vocoder_ctx == nullptr) {
-        LOG_ERROR("Failed to create context for vocoder model '%s'", vocoder_params.model.path.c_str());
-        llama_model_free(this->vocoder_model);
-        this->vocoder_model = nullptr;
-        return false;
-    }
-
-    LOG_INFO("Vocoder model '%s' loaded successfully.", vocoder_params.model.path.c_str());
+    LOG_INFO("Vocoder initialized successfully with model: %s", vocoder_model_path.c_str());
     return true;
 }
 
-bool cactus_context::synthesizeSpeech(const std::string& text, const std::string& output_wav_path, const std::string& speaker_id_or_path) {
-    if (!this->ctx || !this->model) {
-        LOG_ERROR("Primary TTS model or context not loaded. Cannot synthesize speech.");
-        return false;
+bool cactus_context::isVocoderEnabled() const {
+    return has_vocoder && vocoder_wrapper != nullptr;
+}
+
+void cactus_context::releaseVocoder() {
+    if (vocoder_wrapper != nullptr) {
+        delete vocoder_wrapper;
+        vocoder_wrapper = nullptr;
     }
-    if (!this->vocoder_model || !this->vocoder_ctx) {
-         LOG_ERROR("Vocoder model and context must be loaded via loadVocoderModel() first.");
-        return false;
+    has_vocoder = false;
+}
+
+tts_type cactus_context::getTTSType() const {
+    if (vocoder_wrapper == nullptr) {
+        return TTS_UNKNOWN;
     }
-
-    nlohmann::ordered_json speaker_json;
-    std::string actual_speaker_file_path = speaker_id_or_path;
-    if (actual_speaker_file_path.empty()) actual_speaker_file_path = params.vocoder.speaker_file;
-
-    if (!actual_speaker_file_path.empty()) {
-        speaker_json = tts_internal::load_speaker_embedding_json(actual_speaker_file_path);
-
-        if (speaker_json == nullptr || speaker_json.is_null()) {
-            LOG_ERROR("Failed to load speaker data from: %s", actual_speaker_file_path.c_str());
+    
+    if (vocoder_wrapper->type != TTS_UNKNOWN) {
+        return vocoder_wrapper->type;
+    }
+    
+    if (model) {
+        const char *chat_template = llama_model_chat_template(model, nullptr);
+        if (chat_template && std::string(chat_template) == "outetts-0.3") {
+            return TTS_OUTETTS_V0_3;
         }
     }
-    
-    tts_internal::outetts_version tts_version = tts_internal::determine_tts_version(this->model, speaker_json);
-    std::string processed_text = tts_internal::process_input_text(text, tts_version);
-    const llama_vocab * vocab = llama_model_get_vocab(this->model);
+    return TTS_OUTETTS_V0_2;
+}
 
-    if (!vocab) { LOG_ERROR("Failed to get vocabulary from primary TTS model."); return false; }
+std::string cactus_context::getFormattedAudioCompletion(const std::string &speaker_json_str, const std::string &text_to_speak) {
+    if (!isVocoderEnabled()) {
+        throw std::runtime_error("Vocoder is not enabled but audio completion is requested");
+    }
     
-    llama_batch batch = llama_batch_init(params.n_batch, 0, 1);
-    std::vector<llama_token> prompt_tokens;
-    tts_internal::prompt_initialize(prompt_tokens, vocab);
+    std::string audio_text = default_audio_text;
+    std::string audio_data = default_audio_data;
 
-    if (!speaker_json.is_null() && speaker_json.contains("words")) {
-        std::string speaker_audio_text_str = tts_internal::get_speaker_audio_text(speaker_json, tts_version);
-        if (!speaker_audio_text_str.empty()) {
-            tts_internal::prompt_add_string(prompt_tokens, vocab, speaker_audio_text_str, true, true);
+    const tts_type type = getTTSType();
+    if (type == TTS_UNKNOWN) {
+        LOG_ERROR("Unknown TTS version");
+        return "";
+    }
+
+    if (type == TTS_OUTETTS_V0_3) {
+        audio_text = std::regex_replace(audio_text, std::regex(R"(<\|text_sep\|>)"), "<|space|>");
+        audio_data = std::regex_replace(audio_data, std::regex(R"(<\|code_start\|>)"), "");
+        audio_data = std::regex_replace(audio_data, std::regex(R"(<\|code_end\|>)"), "<|space|>");
+    }
+
+    return "<|im_start|>\n" + audio_text + process_text(text_to_speak, type) + "<|text_end|>\n" + audio_data + "\n";
+}
+
+std::vector<llama_token> cactus_context::getAudioCompletionGuideTokens(const std::string &text_to_speak) {
+    if (!model) {
+        LOG_ERROR("Model not loaded for guide token generation");
+        return {};
+    }
+    
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    const tts_type type = getTTSType();
+    std::string clean_text = process_text(text_to_speak, type);
+
+    const std::string& delimiter = (type == TTS_OUTETTS_V0_3 ? "<|space|>" : "<|text_sep|>");
+
+    std::vector<llama_token> result;
+    size_t start = 0;
+    size_t end = clean_text.find(delimiter);
+
+    result.push_back(common_tokenize(vocab, "\n", false, true)[0]);
+
+    while (end != std::string::npos) {
+        std::string current_word = clean_text.substr(start, end - start);
+        auto tmp = common_tokenize(vocab, current_word, false, true);
+        if (!tmp.empty()) {
+            result.push_back(tmp[0]);
         }
+        start = end + delimiter.length();
+        end = clean_text.find(delimiter, start);
     }
 
-    tts_internal::prompt_add_string(prompt_tokens, vocab, processed_text, true, true);
-    std::vector<llama_token> guide_tokens;
-
-    if (params.vocoder.use_guide_tokens) {
-        guide_tokens = tts_internal::prepare_guide_tokens(vocab, processed_text, tts_version);
-    }
-
-    tts_internal::prompt_add_string(prompt_tokens, vocab, "\n<|audio_start|>\n", true, true);
-
-    if (prompt_tokens.empty()) { LOG_ERROR("Failed to tokenize prompt."); llama_batch_free(batch); return false; }
-    LOG_INFO("Prompt tokenized into %zu tokens.", prompt_tokens.size());
-
-    for (size_t i = 0; i < prompt_tokens.size(); ++i) {
-        llama_batch_add(&batch, prompt_tokens[i], i, {0}, false);
-    }
-
-    // Ensure logits are requested for the last token of the initial prompt
-    if (batch.n_tokens > 0) {
-        batch.logits[batch.n_tokens - 1] = true;
+    std::string current_word = clean_text.substr(start);
+    auto tmp = common_tokenize(vocab, current_word, false, true);
+    if (!tmp.empty()) {
+        result.push_back(tmp[0]);
     }
     
-    llama_kv_self_clear(this->ctx);
-    if (llama_decode(this->ctx, batch) != 0) {
-        LOG_ERROR("llama_decode failed for initial prompt processing.");
-        llama_batch_free(batch);
-        return false; 
+    return result;
+}
+
+std::vector<float> cactus_context::decodeAudioTokens(const std::vector<llama_token> &tokens) {
+    if (!isVocoderEnabled()) {
+        throw std::runtime_error("Vocoder is not enabled but audio decoding is requested");
     }
     
-    std::vector<float> tts_model_output_embeddings; 
-    std::vector<llama_token> generated_codes;
-    int n_max_codes = params.n_predict > 0 ? params.n_predict : 768;
-    int eos_token = llama_vocab_eos(vocab); // Correct non-deprecated version
-
-    if (!this->ctx_sampling) { LOG_ERROR("Sampling context not initialized."); llama_batch_free(batch); return false; }
+    std::vector<llama_token> tokens_audio = tokens;
+    tts_type type = getTTSType();
     
-    common_sampler_reset(this->ctx_sampling);
-
-    bool next_token_uses_guide_token = true; 
-    llama_token word_separator_token_id = -1; 
-    const std::string separator_str = (tts_version == tts_internal::OUTETTS_V0_3) ? "<|space|>" : "<|text_sep|>";
-    std::vector<llama_token> sep_tokens = common_tokenize(vocab, separator_str, false, true);
-    
-    if (!sep_tokens.empty()) {
-        word_separator_token_id = sep_tokens[0];
-        LOG_INFO("Using token ID %d for word separator '%s'", word_separator_token_id, separator_str.c_str());
+    if (type == TTS_OUTETTS_V0_3 || type == TTS_OUTETTS_V0_2) {
+        tokens_audio.erase(std::remove_if(tokens_audio.begin(), tokens_audio.end(), 
+            [](llama_token t) { return t < 151672 || t > 155772; }), tokens_audio.end());
+        
+        for (auto & token : tokens_audio) {
+            token -= 151672;
+        }
     } else {
-        LOG_WARNING("Could not tokenize word separator '%s'. Guide token logic might be impaired.", separator_str.c_str());
+        LOG_ERROR("Unsupported audio token type");
+        return std::vector<float>();
     }
-
-
-    for (int i = 0; i < n_max_codes; ++i) {
-        llama_token id = common_sampler_sample(this->ctx_sampling, this->ctx, batch.n_tokens - 1);
-
-        if (params.vocoder.use_guide_tokens && !guide_tokens.empty() && next_token_uses_guide_token &&
-            !llama_vocab_is_control(vocab, id) && !llama_vocab_is_eog(vocab, id)) {
-            id = guide_tokens[0];
-            guide_tokens.erase(guide_tokens.begin());
-        }
-        
-        next_token_uses_guide_token = (id == word_separator_token_id);
-
-        common_sampler_accept(this->ctx_sampling, id, true);
-
-        if (id == eos_token) { LOG_INFO("EOS token encountered during code generation."); break; }
-        generated_codes.push_back(id);
-
-        batch.n_tokens = 0; 
-        llama_batch_add(&batch, id, prompt_tokens.size() + i, {0}, true);
-        
-        if (llama_decode(this->ctx, batch) != 0) {
-            LOG_ERROR("llama_decode failed during code generation loop.");
-            llama_batch_free(batch);
-            return false; 
-        }
+    
+    const int n_codes = tokens_audio.size();
+    if (n_codes == 0) {
+        LOG_WARNING("No valid audio tokens found");
+        return std::vector<float>();
     }
-
-    if (!generated_codes.empty()) {
-        LOG_INFO("Generated %zu raw tokens before filtering.", generated_codes.size());
-        
-        // Filter codes to keep only actual audio codes from the OuteTTS range
-        const llama_token audio_code_min = 151672;
-        const llama_token audio_code_max = 155772; // As per original tts.cpp
-
-        std::vector<llama_token> filtered_codes;
-        for (llama_token code : generated_codes) {
-            if (code >= audio_code_min && code <= audio_code_max) {
-                filtered_codes.push_back(code - audio_code_min); // Offset immediately
-            }
-        }
-        generated_codes = filtered_codes; // Replace with filtered and offset codes
-
-        LOG_INFO("Filtered and offset to %zu audio codes.", generated_codes.size());
+    
+    llama_batch batch = llama_batch_init(n_codes, 0, 1);
+    for (size_t i = 0; i < tokens_audio.size(); ++i) {
+        llama_batch_add(&batch, tokens_audio[i], i, { 0 }, true);
     }
-
-    if (!generated_codes.empty()) {
-        LOG_INFO("Processing %zu audio codes with vocoder model.", generated_codes.size());
-        llama_batch vocoder_batch = llama_batch_init(generated_codes.size(), 0, 1);
-        for(size_t i=0; i < generated_codes.size(); ++i) {
-            llama_batch_add(&vocoder_batch, generated_codes[i], i, {0}, true);
-        }
-
-        if (!this->vocoder_model || !this->vocoder_ctx) {
-             LOG_ERROR("Vocoder model not loaded.");
-             llama_batch_free(batch);
-             llama_batch_free(vocoder_batch);
-             return false;
-        }
-        
-        llama_kv_self_clear(this->vocoder_ctx);
-        if (llama_decode(this->vocoder_ctx, vocoder_batch) != 0) {
-             LOG_ERROR("llama_decode failed for vocoder model processing codes.");
-             llama_batch_free(batch);
-             llama_batch_free(vocoder_batch);
-             return false; 
-        }
-
-        const float * vocoder_embeddings_output = llama_get_embeddings(this->vocoder_ctx);
-        if (!vocoder_embeddings_output) {
-             LOG_ERROR("Failed to get embeddings from vocoder model.");
-             llama_batch_free(batch);
-             llama_batch_free(vocoder_batch);
-             return false;
-        }
-        
-        int n_embd_vocoder = llama_model_n_embd(this->vocoder_model);
-        tts_model_output_embeddings.assign(vocoder_embeddings_output, vocoder_embeddings_output + generated_codes.size() * n_embd_vocoder);
-        LOG_INFO("Successfully extracted %zu embedding values.", tts_model_output_embeddings.size());
-        llama_batch_free(vocoder_batch);
-    } else { LOG_WARNING("No codes generated or all codes were filtered out."); }
-
-    if (tts_model_output_embeddings.empty() && !generated_codes.empty()) {
-        LOG_ERROR("No embeddings generated from vocoder model, though there were codes.");
+    
+    if (batch.n_tokens != n_codes) {
+        LOG_ERROR("batch.n_tokens != n_codes: %d != %d", batch.n_tokens, n_codes);
         llama_batch_free(batch);
-        return false;
+        return std::vector<float>();
     }
-
-    int vocoder_sample_rate = 24000;
-    std::vector<float> audio_samples = tts_internal::embeddings_to_audio_samples(
-        tts_model_output_embeddings.data(),
-        generated_codes.size(), // This is now the size of filtered_codes
-        llama_model_n_embd(this->vocoder_model),
-        this->vocoder_model, this->vocoder_ctx,
-        params.cpuparams.n_threads, vocoder_sample_rate
-    );
-
-    if (audio_samples.empty()) {
-        LOG_ERROR("Failed to generate audio samples from embeddings.");
+    
+    if (llama_encode(vocoder_wrapper->ctx, batch) != 0) {
+        LOG_ERROR("llama_encode() failed");
         llama_batch_free(batch);
-        return false;
+        return std::vector<float>();
     }
-    if (!tts_internal::save_wav16(output_wav_path, audio_samples, vocoder_sample_rate)) {
-        LOG_ERROR("Failed to save audio samples to file.");
-        llama_batch_free(batch);
-        return false;
-    }
-
-    LOG_INFO("Speech synthesized successfully to '%s'.", output_wav_path.c_str());
+    
+    llama_synchronize(vocoder_wrapper->ctx);
+    const int n_embd = llama_model_n_embd(vocoder_wrapper->model);
+    const float * embd = llama_get_embeddings(vocoder_wrapper->ctx);
+    
+    std::vector<float> audio_output = embd_to_audio(embd, n_codes, n_embd, params.cpuparams.n_threads);
+    
     llama_batch_free(batch);
-    return true;
+    return audio_output;
 }
 
 } // namespace cactus 
