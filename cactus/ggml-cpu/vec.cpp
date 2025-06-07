@@ -2,12 +2,6 @@
 
 #include <cassert>
 
-#if defined(_MSC_VER)
-// disable "possible loss of data" to avoid hundreds of casts
-// we should just be careful :)
-#pragma warning(disable: 4244 4267)
-#endif
-
 // precomputed gelu table for f16 (128 KB)
 lm_ggml_fp16_t lm_ggml_table_gelu_f16[1 << 16];
 

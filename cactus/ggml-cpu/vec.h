@@ -428,6 +428,7 @@ inline static void lm_ggml_vec_exp_f16 (const int n, lm_ggml_fp16_t * y, const l
 static const float GELU_COEF_A     = 0.044715f;
 static const float GELU_QUICK_COEF = -1.702f;
 static const float SQRT_2_OVER_PI  = 0.79788456080286535587989211986876f;
+static const float SQRT_2_INV      = 0.70710678118654752440084436210484f;
 
 inline static float lm_ggml_gelu_f32(float x) {
     return 0.5f*x*(1.0f + tanhf(SQRT_2_OVER_PI*x*(1.0f + GELU_COEF_A*x*x)));
@@ -437,6 +438,14 @@ inline static void lm_ggml_vec_gelu_f16(const int n, lm_ggml_fp16_t * y, const l
     const uint16_t * i16 = (const uint16_t *) x;
     for (int i = 0; i < n; ++i) {
         y[i] = lm_ggml_table_gelu_f16[i16[i]];
+    }
+}
+
+inline static void lm_ggml_vec_gelu_erf_f16(const int n, lm_ggml_fp16_t * y, const lm_ggml_fp16_t * x) {
+    for (int i = 0; i < n; ++i) {
+        float xi = LM_GGML_FP16_TO_FP32(x[i]);
+        float res = 0.5f*xi*(1.0f + erff(xi*SQRT_2_INV));
+        y[i] = LM_GGML_FP32_TO_FP16(res);
     }
 }
 
@@ -462,6 +471,13 @@ inline static void lm_ggml_vec_gelu_f32(const int n, float * y, const float * x)
     }
 }
 #endif
+
+inline static void lm_ggml_vec_gelu_erf_f32(const int n, float * y, const float * x) {
+    for (int i = 0; i < n; ++i) {
+        float xi = x[i];
+        y[i] = 0.5f*xi*(1.0f + erff(xi*SQRT_2_INV));
+    }
+}
 
 inline static float lm_ggml_gelu_quick_f32(float x) {
     return x*(1.0f/(1.0f+expf(GELU_QUICK_COEF*x)));

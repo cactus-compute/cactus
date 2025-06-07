@@ -13,45 +13,10 @@ set(CACTUS_CORE_SOURCES
     cactus_lora.cpp
     cactus_ffi.cpp
     cactus_tts.cpp
-    mtmd.cpp
-    mtmd-helper.cpp
-    clip.cpp
-    llama.cpp
-    llama-context.cpp
-    llama-model.cpp
-    llama-chat.cpp
-    llama-sampling.cpp
-    llama-grammar.cpp
-    llama-vocab.cpp
-    llama-arch.cpp
-    llama-kv-cache.cpp
-    llama-model-loader.cpp
-    llama-impl.cpp
-    llama-mmap.cpp
-    llama-memory.cpp
-    llama-io.cpp
-    llama-cparams.cpp
-    llama-hparams.cpp
-    llama-batch.cpp
-    llama-adapter.cpp
-    llama-graph.cpp
     ggml.c
     ggml-alloc.c
     ggml-backend.cpp
-    ggml-quants.c
-    ggml-opt.cpp
-    ggml-threading.cpp
     ggml-backend-reg.cpp
-    gguf.cpp
-    common.cpp
-    chat.cpp
-    log.cpp
-    sampling.cpp
-    json-schema-to-grammar.cpp
-    unicode.cpp
-    unicode-data.cpp
-    cactus_bench.cpp
-    cactus_chat.cpp
     ggml-cpu/amx/amx.cpp
     ggml-cpu/amx/mmq.cpp
     ggml-cpu/ggml-cpu.c
@@ -64,6 +29,46 @@ set(CACTUS_CORE_SOURCES
     ggml-cpu/sgemm.cpp
     ggml-cpu/vec.cpp
     ggml-cpu/ops.cpp
+    ggml-metal.m
+    ggml-opt.cpp
+    ggml-threading.cpp
+    ggml-quants.c
+    gguf.cpp
+    log.cpp
+    llama-impl.cpp
+    llama-grammar.cpp
+    llama-sampling.cpp
+    llama-vocab.cpp
+    llama-adapter.cpp
+    llama-chat.cpp
+    llama-context.cpp
+    llama-kv-cache.cpp
+    llama-arch.cpp
+    llama-batch.cpp
+    llama-cparams.cpp
+    llama-hparams.cpp
+    llama.cpp
+    llama-model.cpp
+    llama-model-loader.cpp
+    llama-model-saver.cpp
+    llama-mmap.cpp
+    llama-vocab.cpp
+    llama-memory.cpp
+    llama-io.cpp
+    llama-graph.cpp
+    sampling.cpp
+    unicode-data.cpp
+    unicode.cpp
+    common.cpp
+    chat.cpp
+    json-schema-to-grammar.cpp
+    minja/minja.hpp
+    minja/chat-template.hpp
+    json.hpp
+    tools/mtmd/mtmd.cpp
+    tools/mtmd/mtmd-audio.cpp
+    tools/mtmd/clip.cpp
+    tools/mtmd/mtmd-helper.cpp
 )
 
 if(APPLE)
@@ -75,6 +80,8 @@ add_library(cactus_core_lib OBJECT ${CACTUS_CORE_SOURCES})
 target_include_directories(cactus_core_lib PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/ggml-cpu>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/minja>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/mtmd>
 )
 
 # Add compile option for non-MSVC to suppress stb_image.h warnings

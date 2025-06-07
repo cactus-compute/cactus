@@ -8,19 +8,6 @@
 
 #include <float.h>
 
-#if defined(_MSC_VER)
-// disable "possible loss of data" to avoid hundreds of casts
-// we should just be careful :)
-#pragma warning(disable: 4244 4267)
-
-// disable POSIX deprecation warnings
-// these functions are never going away, anyway
-#pragma warning(disable: 4996)
-
-// unreachable code because of multiple instances of code after LM_GGML_ABORT
-#pragma warning(disable: 4702)
-#endif
-
 // lm_ggml_compute_forward_dup
 
 static void lm_ggml_compute_forward_dup_same_cont(
@@ -2696,6 +2683,109 @@ static void lm_ggml_compute_forward_gelu(
         case LM_GGML_TYPE_F16:
             {
                 lm_ggml_compute_forward_gelu_f16(params, dst);
+            } break;
+        default:
+            {
+                LM_GGML_ABORT("fatal error");
+            }
+    }
+}
+
+// lm_ggml_compute_forward_gelu_erf
+
+static void lm_ggml_compute_forward_gelu_erf_f32(
+        const lm_ggml_compute_params * params,
+        lm_ggml_tensor * dst) {
+
+    const lm_ggml_tensor * src0 = dst->src[0];
+
+    assert(lm_ggml_is_contiguous_1(src0));
+    assert(lm_ggml_is_contiguous_1(dst));
+    assert(lm_ggml_are_same_shape(src0, dst));
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int nc = src0->ne[0];
+    const int nr = lm_ggml_nrows(src0);
+
+    // rows per thread
+    const int dr = (nr + nth - 1)/nth;
+
+    // row range for this thread
+    const int ir0 = dr*ith;
+    const int ir1 = MIN(ir0 + dr, nr);
+
+    for (int i1 = ir0; i1 < ir1; i1++) {
+        lm_ggml_vec_gelu_erf_f32(nc,
+                (float *) ((char *) dst->data  + i1*( dst->nb[1])),
+                (float *) ((char *) src0->data + i1*(src0->nb[1])));
+
+#ifndef NDEBUG
+        for (int k = 0; k < nc; k++) {
+            const float x = ((float *) ((char *) dst->data + i1*( dst->nb[1])))[k];
+            LM_GGML_UNUSED(x);
+            assert(!isnan(x));
+            assert(!isinf(x));
+        }
+#endif
+    }
+}
+
+static void lm_ggml_compute_forward_gelu_erf_f16(
+    const lm_ggml_compute_params * params,
+    lm_ggml_tensor * dst) {
+
+    const lm_ggml_tensor * src0 = dst->src[0];
+
+    assert(lm_ggml_is_contiguous_1(src0));
+    assert(lm_ggml_is_contiguous_1(dst));
+    assert(lm_ggml_are_same_shape(src0, dst));
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int nc = src0->ne[0];
+    const int nr = lm_ggml_nrows(src0);
+
+    // rows per thread
+    const int dr = (nr + nth - 1)/nth;
+
+    // row range for this thread
+    const int ir0 = dr*ith;
+    const int ir1 = MIN(ir0 + dr, nr);
+
+    for (int i1 = ir0; i1 < ir1; i1++) {
+        lm_ggml_vec_gelu_erf_f16(nc,
+                (lm_ggml_fp16_t *) ((char *) dst->data  + i1*( dst->nb[1])),
+                (lm_ggml_fp16_t *) ((char *) src0->data + i1*(src0->nb[1])));
+
+#ifndef NDEBUG
+        for (int k = 0; k < nc; k++) {
+            const lm_ggml_fp16_t x = ((lm_ggml_fp16_t *) ((char *) dst->data + i1*( dst->nb[1])))[k];
+            const float v = LM_GGML_FP16_TO_FP32(x);
+            LM_GGML_UNUSED(v);
+            assert(!isnan(v));
+            assert(!isinf(v));
+        }
+#endif
+    }
+}
+
+static void lm_ggml_compute_forward_gelu_erf(
+        const lm_ggml_compute_params * params,
+        lm_ggml_tensor * dst) {
+
+    const lm_ggml_tensor * src0 = dst->src[0];
+
+    switch (src0->type) {
+        case LM_GGML_TYPE_F32:
+            {
+                lm_ggml_compute_forward_gelu_erf_f32(params, dst);
+            } break;
+        case LM_GGML_TYPE_F16:
+            {
+                lm_ggml_compute_forward_gelu_erf_f16(params, dst);
             } break;
         default:
             {
@@ -7761,6 +7851,10 @@ void lm_ggml_compute_forward_unary(
         case LM_GGML_UNARY_OP_GELU:
             {
                 lm_ggml_compute_forward_gelu(params, dst);
+            } break;
+        case LM_GGML_UNARY_OP_GELU_ERF:
+            {
+                lm_ggml_compute_forward_gelu_erf(params, dst);
             } break;
         case LM_GGML_UNARY_OP_GELU_QUICK:
             {

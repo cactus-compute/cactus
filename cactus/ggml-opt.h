@@ -37,13 +37,16 @@ extern "C" {
     // ====== Dataset ======
 
     LM_GGML_API lm_ggml_opt_dataset_t lm_ggml_opt_dataset_init(
-            int64_t ne_datapoint, // number of elements per datapoint
-            int64_t ne_label,     // number of elements per label
-            int64_t ndata,        // total number of datapoints/labels
-            int64_t ndata_shard); // number of datapoints/labels per shard (unit at which the dataset is shuffled/copied)
+            enum lm_ggml_type type_data,    // the type for the internal data tensor
+            enum lm_ggml_type type_label,   // the type for the internal labels tensor
+            int64_t        ne_datapoint, // number of elements per datapoint
+            int64_t        ne_label,     // number of elements per label
+            int64_t        ndata,        // total number of datapoints/labels
+            int64_t        ndata_shard); // number of datapoints/labels per shard (unit at which the dataset is shuffled/copied)
     LM_GGML_API void lm_ggml_opt_dataset_free(lm_ggml_opt_dataset_t dataset);
 
     // get underlying tensors that store the data
+    LM_GGML_API int64_t              lm_ggml_opt_dataset_ndata (lm_ggml_opt_dataset_t dataset);
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_opt_dataset_data  (lm_ggml_opt_dataset_t dataset); // shape = [ne_datapoint, ndata]
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_opt_dataset_labels(lm_ggml_opt_dataset_t dataset); // shape = [nd_label,     ndata]
 
@@ -56,13 +59,19 @@ extern "C" {
             struct lm_ggml_tensor * data_batch,   // shape = [ne_datapoint, ndata_batch]
             struct lm_ggml_tensor * labels_batch, // shape = [ne_label,     ndata_batch]
             int64_t              ibatch);
+    LM_GGML_API void lm_ggml_opt_dataset_get_batch_host(
+            lm_ggml_opt_dataset_t   dataset,
+            void               * data_batch,
+            size_t               nb_data_batch,
+            void               * labels_batch,
+            int64_t              ibatch);
 
     // ====== Model / Context ======
 
     enum lm_ggml_opt_build_type {
-        LM_GGML_OPT_BUILD_TYPE_FORWARD,
-        LM_GGML_OPT_BUILD_TYPE_GRAD,
-        LM_GGML_OPT_BUILD_TYPE_OPT,
+        LM_GGML_OPT_BUILD_TYPE_FORWARD = 10,
+        LM_GGML_OPT_BUILD_TYPE_GRAD    = 20,
+        LM_GGML_OPT_BUILD_TYPE_OPT     = 30,
     };
 
     // parameters that control which optimizer is used and how said optimizer tries to find the minimal loss
@@ -81,20 +90,22 @@ extern "C" {
     // userdata can be used to pass arbitrary data
     typedef struct lm_ggml_opt_optimizer_params (*lm_ggml_opt_get_optimizer_params)(void * userdata);
 
-    // returns the default optimizer params (constant)
+    // returns the default optimizer params (constant, hard-coded values)
     // userdata is not used
     LM_GGML_API struct lm_ggml_opt_optimizer_params lm_ggml_opt_get_default_optimizer_params(void * userdata);
+
+    // casts userdata to lm_ggml_opt_optimizer_params and returns it
+    LM_GGML_API struct lm_ggml_opt_optimizer_params lm_ggml_opt_get_constant_optimizer_params(void * userdata);
 
     // parameters for initializing a new optimization context
     struct lm_ggml_opt_params {
         lm_ggml_backend_sched_t backend_sched; // defines which backends are used to construct the compute graphs
 
-        struct lm_ggml_context * ctx_compute; // created in user code, holds non-static tensors
-
-        // the forward graph is defined by inputs and outputs
-        // those tensors and all tensors inbetween are not intended to be reusable between multiple optimization contexts
-        struct lm_ggml_tensor * inputs;
-        struct lm_ggml_tensor * outputs;
+        // by default the forward graph needs to be reconstructed for each eval
+        // if ctx_compute, inputs, and outputs are set the graphs are instead allocated statically
+        struct lm_ggml_context * ctx_compute;
+        struct lm_ggml_tensor  * inputs;
+        struct lm_ggml_tensor  * outputs;
 
         enum lm_ggml_opt_loss_type  loss_type;
         enum lm_ggml_opt_build_type build_type;
@@ -107,12 +118,9 @@ extern "C" {
 
     // get parameters for an optimization context with defaults set where possible
     // parameters for which no sensible defaults exist are supplied as arguments to this function
-    LM_GGML_API lm_ggml_opt_params lm_ggml_opt_default_params(
-            lm_ggml_backend_sched_t      backend_sched,
-            struct lm_ggml_context     * ctx_compute,
-            struct lm_ggml_tensor      * inputs,
-            struct lm_ggml_tensor      * outputs,
-            enum lm_ggml_opt_loss_type   loss_type);
+    LM_GGML_API struct lm_ggml_opt_params lm_ggml_opt_default_params(
+            lm_ggml_backend_sched_t    backend_sched,
+            enum lm_ggml_opt_loss_type loss_type);
 
     LM_GGML_API lm_ggml_opt_context_t lm_ggml_opt_init(struct lm_ggml_opt_params params);
     LM_GGML_API void lm_ggml_opt_free(lm_ggml_opt_context_t opt_ctx);
@@ -120,7 +128,10 @@ extern "C" {
     // set gradients to zero, initilize loss, and optionally reset the optimizer
     LM_GGML_API void lm_ggml_opt_reset(lm_ggml_opt_context_t opt_ctx, bool optimizer);
 
+    LM_GGML_API bool lm_ggml_opt_static_graphs(lm_ggml_opt_context_t opt_ctx); // whether the graphs are allocated_statically
+
     // get underlying tensors that store data
+    // if not using static graphs these pointers become invalid with the next call to lm_ggml_opt_alloc
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_opt_inputs(  lm_ggml_opt_context_t opt_ctx); // forward graph input tensor
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_opt_outputs( lm_ggml_opt_context_t opt_ctx); // forward graph output tensor
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_opt_labels(  lm_ggml_opt_context_t opt_ctx); // labels to compare outputs against
@@ -128,11 +139,12 @@ extern "C" {
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_opt_pred(    lm_ggml_opt_context_t opt_ctx); // predictions made by outputs
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_opt_ncorrect(lm_ggml_opt_context_t opt_ctx); // number of matching predictions between outputs and labels
 
+    // get the gradient accumulator for a node from the forward graph
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_opt_grad_acc(lm_ggml_opt_context_t opt_ctx, struct lm_ggml_tensor * node);
 
     // ====== Optimization Result ======
 
-    LM_GGML_API lm_ggml_opt_result_t lm_ggml_opt_result_init();
+    LM_GGML_API lm_ggml_opt_result_t lm_ggml_opt_result_init(void);
     LM_GGML_API void lm_ggml_opt_result_free(lm_ggml_opt_result_t result);
     LM_GGML_API void lm_ggml_opt_result_reset(lm_ggml_opt_result_t result);
 
@@ -144,11 +156,20 @@ extern "C" {
 
     // ====== Computation ======
 
-    // do forward pass, increment result if not NULL
-    LM_GGML_API void lm_ggml_opt_forward(lm_ggml_opt_context_t opt_ctx, lm_ggml_opt_result_t result);
+    // if not using static graphs, this function must be called prior to lm_ggml_opt_alloc
+    LM_GGML_API void lm_ggml_opt_prepare_alloc(
+        lm_ggml_opt_context_t    opt_ctx,
+        struct lm_ggml_context * ctx_compute,
+        struct lm_ggml_cgraph  * gf,
+        struct lm_ggml_tensor  * inputs,
+        struct lm_ggml_tensor  * outputs);
 
-    // do forward pass, increment result if not NULL, do backward pass
-    LM_GGML_API void lm_ggml_opt_forward_backward(lm_ggml_opt_context_t opt_ctx, lm_ggml_opt_result_t result);
+    // allocate the next graph for evaluation, either forward or forward + backward
+    // must be called exactly once prior to calling lm_ggml_opt_eval
+    LM_GGML_API void lm_ggml_opt_alloc(lm_ggml_opt_context_t opt_ctx, bool backward);
+
+    // do forward pass, increment result if not NULL, do backward pass if allocated
+    LM_GGML_API void lm_ggml_opt_eval(lm_ggml_opt_context_t opt_ctx, lm_ggml_opt_result_t result);
 
     // ############################################################################
     // ## The high-level functions start here. They do not depend on any private ##
@@ -200,9 +221,9 @@ extern "C" {
     // fit model defined by inputs and outputs to dataset
     LM_GGML_API void lm_ggml_opt_fit(
             lm_ggml_backend_sched_t            backend_sched,  // backend scheduler for constructing the compute graphs
-            lm_ggml_context                  * ctx_compute,    // context with temporarily allocated tensors to calculate the outputs
-            lm_ggml_tensor                   * inputs,         // input tensor with shape [ne_datapoint, ndata_batch]
-            lm_ggml_tensor                   * outputs,        // output tensor, must have shape [ne_label, ndata_batch] if labels are used
+            struct lm_ggml_context           * ctx_compute,    // context with temporarily allocated tensors to calculate the outputs
+            struct lm_ggml_tensor            * inputs,         // input tensor with shape [ne_datapoint, ndata_batch]
+            struct lm_ggml_tensor            * outputs,        // output tensor, must have shape [ne_label, ndata_batch] if labels are used
             lm_ggml_opt_dataset_t              dataset,        // dataset with data and optionally also labels
             enum lm_ggml_opt_loss_type         loss_type,      // loss to minimize
             lm_ggml_opt_get_optimizer_params   get_opt_pars,   // callback to get optimizer params, userdata is pointer to epoch (of type int64_t)

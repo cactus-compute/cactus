@@ -536,6 +536,7 @@ extern "C" {
         LM_GGML_UNARY_OP_HARDSWISH,
         LM_GGML_UNARY_OP_HARDSIGMOID,
         LM_GGML_UNARY_OP_EXP,
+        LM_GGML_UNARY_OP_GELU_ERF,
 
         LM_GGML_UNARY_OP_COUNT,
     };
@@ -673,10 +674,14 @@ extern "C" {
     LM_GGML_API bool lm_ggml_is_3d        (const struct lm_ggml_tensor * tensor);
     LM_GGML_API int  lm_ggml_n_dims       (const struct lm_ggml_tensor * tensor); // returns 1 for scalars
 
+    // returns whether the tensor elements can be iterated over with a flattened index (no gaps, no permutation)
     LM_GGML_API bool lm_ggml_is_contiguous  (const struct lm_ggml_tensor * tensor);
     LM_GGML_API bool lm_ggml_is_contiguous_0(const struct lm_ggml_tensor * tensor); // same as lm_ggml_is_contiguous()
     LM_GGML_API bool lm_ggml_is_contiguous_1(const struct lm_ggml_tensor * tensor); // contiguous for dims >= 1
     LM_GGML_API bool lm_ggml_is_contiguous_2(const struct lm_ggml_tensor * tensor); // contiguous for dims >= 2
+
+    // returns whether the tensor elements are allocated as one contiguous block of memory (no gaps, but permutation ok)
+    LM_GGML_API bool lm_ggml_is_contiguously_allocated(const struct lm_ggml_tensor * tensor);
 
     // true for tensor that is stored in memory as CxWxHxN and has been permuted to WxHxCxN
     LM_GGML_API bool lm_ggml_is_contiguous_channels(const struct lm_ggml_tensor * tensor);
@@ -764,7 +769,7 @@ extern "C" {
     // Tensor flags
     LM_GGML_API void lm_ggml_set_input(struct lm_ggml_tensor * tensor);
     LM_GGML_API void lm_ggml_set_output(struct lm_ggml_tensor * tensor);
-    LM_GGML_API void lm_ggml_set_param(struct lm_ggml_context * ctx, struct lm_ggml_tensor * tensor);
+    LM_GGML_API void lm_ggml_set_param(struct lm_ggml_tensor * tensor);
     LM_GGML_API void lm_ggml_set_loss(struct lm_ggml_tensor * tensor);
 
     //
@@ -934,7 +939,7 @@ extern "C" {
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_repeat_back(
             struct lm_ggml_context * ctx,
             struct lm_ggml_tensor  * a,
-            struct lm_ggml_tensor  * b);
+            struct lm_ggml_tensor  * b); // sum up values that are adjacent in dims > 0 instead of repeated with same stride
 
     // concat a and b along dim
     // used in stable-diffusion
@@ -1017,6 +1022,16 @@ extern "C" {
             struct lm_ggml_tensor  * a);
 
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_gelu_inplace(
+            struct lm_ggml_context * ctx,
+            struct lm_ggml_tensor  * a);
+
+    // GELU using erf (error function) when possible
+    // some backends may fallback to approximation based on Abramowitz and Stegun formula
+    LM_GGML_API struct lm_ggml_tensor * lm_ggml_gelu_erf(
+            struct lm_ggml_context * ctx,
+            struct lm_ggml_tensor  * a);
+
+    LM_GGML_API struct lm_ggml_tensor * lm_ggml_gelu_erf_inplace(
             struct lm_ggml_context * ctx,
             struct lm_ggml_tensor  * a);
 
@@ -2045,15 +2060,14 @@ extern "C" {
 
     LM_GGML_API void lm_ggml_build_forward_expand(struct lm_ggml_cgraph * cgraph, struct lm_ggml_tensor * tensor);
     LM_GGML_API void lm_ggml_build_backward_expand(
-        struct lm_ggml_context * ctx_static,  // context for static gradients (loss + gradient accumulation)
-        struct lm_ggml_context * ctx_compute, // context for gradient computation
-        struct lm_ggml_cgraph  * cgraph,
-        bool                  accumulate); // whether or not gradients should be accumulated, requires static allocation of tensors in ctx_static
+        struct lm_ggml_context *  ctx,        // context for gradient computation
+        struct lm_ggml_cgraph  *  cgraph,
+        struct lm_ggml_tensor  ** grad_accs);
 
     // graph allocation in a context
     LM_GGML_API struct lm_ggml_cgraph * lm_ggml_new_graph       (struct lm_ggml_context * ctx); // size = LM_GGML_DEFAULT_GRAPH_SIZE, grads = false
     LM_GGML_API struct lm_ggml_cgraph * lm_ggml_new_graph_custom(struct lm_ggml_context * ctx, size_t size, bool grads);
-    LM_GGML_API struct lm_ggml_cgraph * lm_ggml_graph_dup       (struct lm_ggml_context * ctx, struct lm_ggml_cgraph * cgraph);
+    LM_GGML_API struct lm_ggml_cgraph * lm_ggml_graph_dup       (struct lm_ggml_context * ctx, struct lm_ggml_cgraph * cgraph, bool force_grads);
     LM_GGML_API void                 lm_ggml_graph_cpy       (struct lm_ggml_cgraph * src, struct lm_ggml_cgraph * dst);
     LM_GGML_API void                 lm_ggml_graph_reset     (struct lm_ggml_cgraph * cgraph); // set regular grads + optimizer momenta to 0, set loss grad to 1
     LM_GGML_API void                 lm_ggml_graph_clear     (struct lm_ggml_cgraph * cgraph);

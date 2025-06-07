@@ -4,6 +4,7 @@
 
 #include <climits>
 #include <cstdarg>
+#include <cinttypes>
 #include <string>
 #include <map>
 #include <sstream>
@@ -15,22 +16,26 @@
 #define KEY_FTYPE               "general.file_type"
 #define KEY_NAME                "general.name"
 #define KEY_DESCRIPTION         "general.description"
-#define KEY_MINICPMV_VERSION    "clip.minicpmv_version"
+#define KEY_PROJ_TYPE           "clip.projector_type"
+#define KEY_HAS_AUDIO_ENC       "clip.has_audio_encoder"
+#define KEY_HAS_VISION_ENC      "clip.has_vision_encoder"
 #define KEY_USE_GELU            "clip.use_gelu"
 #define KEY_USE_SILU            "clip.use_silu"
-#define KEY_N_EMBD              "clip.vision.embedding_length"
-#define KEY_N_FF                "clip.vision.feed_forward_length"
-#define KEY_N_BLOCK             "clip.vision.block_count"
-#define KEY_N_HEAD              "clip.vision.attention.head_count"
-#define KEY_LAYER_NORM_EPS      "clip.vision.attention.layer_norm_epsilon"
-#define KEY_PROJ_DIM            "clip.vision.projection_dim"
+
+#define KEY_N_EMBD              "clip.%s.embedding_length"
+#define KEY_N_FF                "clip.%s.feed_forward_length"
+#define KEY_N_BLOCK             "clip.%s.block_count"
+#define KEY_PROJ_DIM            "clip.%s.projection_dim"
+#define KEY_N_HEAD              "clip.%s.attention.head_count"
+#define KEY_LAYER_NORM_EPS      "clip.%s.attention.layer_norm_epsilon"
+
+// vision-specific
 #define KEY_IMAGE_SIZE          "clip.vision.image_size"
 #define KEY_PATCH_SIZE          "clip.vision.patch_size"
 #define KEY_IMAGE_MEAN          "clip.vision.image_mean"
 #define KEY_IMAGE_STD           "clip.vision.image_std"
 #define KEY_FEATURE_LAYER       "clip.vision.feature_layer"
 #define KEY_PROJ_SCALE_FACTOR   "clip.vision.projector.scale_factor"
-#define KEY_PROJ_TYPE           "clip.projector_type"
 #define KEY_SPATIAL_MERGE_SIZE  "clip.vision.spatial_merge_size"
 
 #define KEY_MM_PATCH_MERGE_TYPE   "clip.vision.mm_patch_merge_type"
@@ -38,6 +43,11 @@
 #define KEY_IMAGE_CROP_RESOLUTION "clip.vision.image_crop_resolution"
 #define KEY_WIN_ATTN_PATTERN      "clip.vision.n_wa_pattern"
 #define KEY_ATTN_WINDOW_SIZE      "clip.vision.window_size"
+#define KEY_MINICPMV_VERSION      "clip.minicpmv_version"
+
+// audio-specific
+#define KEY_A_NUM_MEL_BINS      "clip.audio.num_mel_bins"
+#define KEY_A_PROJ_STACK_FACTOR "clip.audio.projector.stack_factor"
 
 
 //
@@ -94,6 +104,12 @@
 #define TN_GLM_ADAPTER_GATE     "adapter.linear.gate.%s"
 #define TN_GLM_ADAPTER_D_4H_2_H "adapter.linear.dense_4h_to_h.%s"
 
+// ultravox
+#define TN_CONV1D       "a.conv1d.%d.%s"
+#define TN_MM_AUDIO_MLP "mm.a.mlp.%d.%s"
+#define TN_MM_NORM_PRE  "mm.a.norm_pre.%s"
+#define TN_MM_NORM_MID  "mm.a.norm_mid.%s"
+
 // align x to upper multiple of n
 #define CLIP_ALIGN(x, n) ((((x) + (n) - 1) / (n)) * (n))
 
@@ -109,7 +125,9 @@ enum projector_type {
     PROJECTOR_TYPE_IDEFICS3,
     PROJECTOR_TYPE_PIXTRAL,
     PROJECTOR_TYPE_QWEN25VL,
+    PROJECTOR_TYPE_ULTRAVOX,
     PROJECTOR_TYPE_INTERNVL,
+    PROJECTOR_TYPE_LLAMA4,
     PROJECTOR_TYPE_UNKNOWN,
 };
 
@@ -124,7 +142,9 @@ static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
     { PROJECTOR_TYPE_GEMMA3,    "gemma3"},
     { PROJECTOR_TYPE_IDEFICS3,  "idefics3"},
     { PROJECTOR_TYPE_PIXTRAL,   "pixtral"},
+    { PROJECTOR_TYPE_ULTRAVOX,  "ultravox"},
     { PROJECTOR_TYPE_INTERNVL,  "internvl"},
+    { PROJECTOR_TYPE_LLAMA4,    "llama4"},
 };
 
 static projector_type clip_projector_type_from_string(const std::string & str) {
@@ -144,8 +164,10 @@ struct clip_image_u8 {
     std::vector<uint8_t> buf;
 };
 
-// RGB float32 image (NHWC)
-// Memory layout: RGBRGBRGB...
+// For images, buf.size() == nx*ny*3
+//     Memory layout: RGBRGBRGB...
+// For audio, only one channel is used, buf.size() == nx*ny
+//     nx will be n_frames and ny will be n_mel
 struct clip_image_f32 {
     int nx;
     int ny;
@@ -157,7 +179,7 @@ struct clip_image_f32 {
 // logging
 //
 
-static void clip_log_callback_default(enum ggml_log_level level, const char * text, void * user_data) {
+static void clip_log_callback_default(enum lm_ggml_log_level level, const char * text, void * user_data) {
     (void) level;
     (void) user_data;
     fputs(text, stderr);
@@ -165,14 +187,14 @@ static void clip_log_callback_default(enum ggml_log_level level, const char * te
 }
 
 struct clip_logger_state {
-    ggml_log_level verbosity_thold;
-    ggml_log_callback log_callback;
+    lm_ggml_log_level verbosity_thold;
+    lm_ggml_log_callback log_callback;
     void * log_callback_user_data;
 };
 
 extern struct clip_logger_state g_logger_state;
 
-static void clip_log_internal_v(enum ggml_log_level level, const char * format, va_list args) {
+static void clip_log_internal_v(enum lm_ggml_log_level level, const char * format, va_list args) {
     if (format == NULL) {
         return;
     }
@@ -192,7 +214,7 @@ static void clip_log_internal_v(enum ggml_log_level level, const char * format, 
     va_end(args_copy);
 }
 
-static void clip_log_internal(enum ggml_log_level level, const char * format, ...) {
+static void clip_log_internal(enum lm_ggml_log_level level, const char * format, ...) {
     va_list args;
     va_start(args, format);
     clip_log_internal_v(level, format, args);
@@ -205,11 +227,11 @@ static void clip_log_internal(enum ggml_log_level level, const char * format, ..
             clip_log_internal((level), __VA_ARGS__); \
         } \
     } while (0)
-#define LOG_INF(...) LOG_TMPL(GGML_LOG_LEVEL_INFO,  __VA_ARGS__)
-#define LOG_WRN(...) LOG_TMPL(GGML_LOG_LEVEL_WARN,  __VA_ARGS__)
-#define LOG_ERR(...) LOG_TMPL(GGML_LOG_LEVEL_ERROR, __VA_ARGS__)
-#define LOG_DBG(...) LOG_TMPL(GGML_LOG_LEVEL_DEBUG, __VA_ARGS__)
-#define LOG_CNT(...) LOG_TMPL(GGML_LOG_LEVEL_CONT,  __VA_ARGS__)
+#define LOG_INF(...) LOG_TMPL(LM_GGML_LOG_LEVEL_INFO,  __VA_ARGS__)
+#define LOG_WRN(...) LOG_TMPL(LM_GGML_LOG_LEVEL_WARN,  __VA_ARGS__)
+#define LOG_ERR(...) LOG_TMPL(LM_GGML_LOG_LEVEL_ERROR, __VA_ARGS__)
+#define LOG_DBG(...) LOG_TMPL(LM_GGML_LOG_LEVEL_DEBUG, __VA_ARGS__)
+#define LOG_CNT(...) LOG_TMPL(LM_GGML_LOG_LEVEL_CONT,  __VA_ARGS__)
 
 //
 // cpp wrappers
@@ -239,9 +261,20 @@ struct clip_image_u8_batch {
 
 struct clip_image_f32_batch {
     std::vector<clip_image_f32_ptr> entries;
+    bool is_audio = false;
+
+    // for llava-uhd style models, we need to know the grid size
+    // note: entries.size() == grid_x * grid_y + 1 (one overview image)
+    int grid_x = 0;
+    int grid_y = 0;
 
     clip_image_f32_batch clone() const {
-        clip_image_f32_batch new_batch;
+        clip_image_f32_batch new_batch{
+            /* entries  */ {},
+            /* is_audio */ is_audio,
+            /* grid_x   */ grid_x,
+            /* grid_y   */ grid_y,
+        };
         new_batch.entries.reserve(entries.size());
         for (const auto & entry : entries) {
             new_batch.entries.emplace_back(new clip_image_f32(*entry));
@@ -260,10 +293,10 @@ static std::string string_format(const char * fmt, ...) {
     va_start(ap, fmt);
     va_copy(ap2, ap);
     int size = vsnprintf(NULL, 0, fmt, ap);
-    GGML_ASSERT(size >= 0 && size < INT_MAX); // NOLINT
+    LM_GGML_ASSERT(size >= 0 && size < INT_MAX); // NOLINT
     std::vector<char> buf(size + 1);
     int size2 = vsnprintf(buf.data(), size + 1, fmt, ap2);
-    GGML_ASSERT(size2 == size);
+    LM_GGML_ASSERT(size2 == size);
     va_end(ap2);
     va_end(ap);
     return std::string(buf.data(), buf.size());
@@ -304,47 +337,47 @@ static std::vector<std::string> string_split_str(std::string s, const std::strin
 // gguf utils
 //
 
-static std::string gguf_data_to_str(enum gguf_type type, const void * data, int i) {
+static std::string lm_gguf_data_to_str(enum lm_gguf_type type, const void * data, int i) {
     switch (type) {
-        case GGUF_TYPE_UINT8:   return std::to_string(((const uint8_t  *)data)[i]);
-        case GGUF_TYPE_INT8:    return std::to_string(((const int8_t   *)data)[i]);
-        case GGUF_TYPE_UINT16:  return std::to_string(((const uint16_t *)data)[i]);
-        case GGUF_TYPE_INT16:   return std::to_string(((const int16_t  *)data)[i]);
-        case GGUF_TYPE_UINT32:  return std::to_string(((const uint32_t *)data)[i]);
-        case GGUF_TYPE_INT32:   return std::to_string(((const int32_t  *)data)[i]);
-        case GGUF_TYPE_UINT64:  return std::to_string(((const uint64_t *)data)[i]);
-        case GGUF_TYPE_INT64:   return std::to_string(((const int64_t  *)data)[i]);
-        case GGUF_TYPE_FLOAT32: return std::to_string(((const float    *)data)[i]);
-        case GGUF_TYPE_FLOAT64: return std::to_string(((const double   *)data)[i]);
-        case GGUF_TYPE_BOOL:    return ((const bool *)data)[i] ? "true" : "false";
+        case LM_GGUF_TYPE_UINT8:   return std::to_string(((const uint8_t  *)data)[i]);
+        case LM_GGUF_TYPE_INT8:    return std::to_string(((const int8_t   *)data)[i]);
+        case LM_GGUF_TYPE_UINT16:  return std::to_string(((const uint16_t *)data)[i]);
+        case LM_GGUF_TYPE_INT16:   return std::to_string(((const int16_t  *)data)[i]);
+        case LM_GGUF_TYPE_UINT32:  return std::to_string(((const uint32_t *)data)[i]);
+        case LM_GGUF_TYPE_INT32:   return std::to_string(((const int32_t  *)data)[i]);
+        case LM_GGUF_TYPE_UINT64:  return std::to_string(((const uint64_t *)data)[i]);
+        case LM_GGUF_TYPE_INT64:   return std::to_string(((const int64_t  *)data)[i]);
+        case LM_GGUF_TYPE_FLOAT32: return std::to_string(((const float    *)data)[i]);
+        case LM_GGUF_TYPE_FLOAT64: return std::to_string(((const double   *)data)[i]);
+        case LM_GGUF_TYPE_BOOL:    return ((const bool *)data)[i] ? "true" : "false";
         default:                return string_format("unknown type %d", type);
     }
 }
 
-static std::string gguf_kv_to_str(const struct gguf_context * ctx_gguf, int i) {
-    const enum gguf_type type = gguf_get_kv_type(ctx_gguf, i);
+static std::string lm_gguf_kv_to_str(const struct lm_gguf_context * ctx_gguf, int i) {
+    const enum lm_gguf_type type = lm_gguf_get_kv_type(ctx_gguf, i);
 
     switch (type) {
-        case GGUF_TYPE_STRING:
-            return gguf_get_val_str(ctx_gguf, i);
-        case GGUF_TYPE_ARRAY:
+        case LM_GGUF_TYPE_STRING:
+            return lm_gguf_get_val_str(ctx_gguf, i);
+        case LM_GGUF_TYPE_ARRAY:
             {
-                const enum gguf_type arr_type = gguf_get_arr_type(ctx_gguf, i);
-                int arr_n = gguf_get_arr_n(ctx_gguf, i);
-                const void * data = arr_type == GGUF_TYPE_STRING ? nullptr : gguf_get_arr_data(ctx_gguf, i);
+                const enum lm_gguf_type arr_type = lm_gguf_get_arr_type(ctx_gguf, i);
+                int arr_n = lm_gguf_get_arr_n(ctx_gguf, i);
+                const void * data = arr_type == LM_GGUF_TYPE_STRING ? nullptr : lm_gguf_get_arr_data(ctx_gguf, i);
                 std::stringstream ss;
                 ss << "[";
                 for (int j = 0; j < arr_n; j++) {
-                    if (arr_type == GGUF_TYPE_STRING) {
-                        std::string val = gguf_get_arr_str(ctx_gguf, i, j);
+                    if (arr_type == LM_GGUF_TYPE_STRING) {
+                        std::string val = lm_gguf_get_arr_str(ctx_gguf, i, j);
                         // escape quotes
                         string_replace_all(val, "\\", "\\\\");
                         string_replace_all(val, "\"", "\\\"");
                         ss << '"' << val << '"';
-                    } else if (arr_type == GGUF_TYPE_ARRAY) {
+                    } else if (arr_type == LM_GGUF_TYPE_ARRAY) {
                         ss << "???";
                     } else {
-                        ss << gguf_data_to_str(arr_type, data, j);
+                        ss << lm_gguf_data_to_str(arr_type, data, j);
                     }
                     if (j < arr_n - 1) {
                         ss << ", ";
@@ -354,7 +387,71 @@ static std::string gguf_kv_to_str(const struct gguf_context * ctx_gguf, int i) {
                 return ss.str();
             }
         default:
-            return gguf_data_to_str(type, gguf_get_val_data(ctx_gguf, i), 0);
+            return lm_gguf_data_to_str(type, lm_gguf_get_val_data(ctx_gguf, i), 0);
+    }
+}
+
+//
+// debugging
+//
+
+static void print_tensor_shape(lm_ggml_tensor * t) {
+    printf("%s.shape = [", t->name);
+    for (int i = 0; i < lm_ggml_n_dims(t); ++i) {
+        printf("%" PRId64, t->ne[i]);
+        if (i < lm_ggml_n_dims(t) - 1) {
+            printf(", ");
+        }
+    }
+    printf("]\n");
+}
+
+static void print_tensor_data(lm_ggml_tensor * t, uint8_t * data, int64_t n) {
+    lm_ggml_type type = t->type;
+    int64_t * ne = t->ne;
+    size_t * nb = t->nb;
+    for (int64_t i3 = 0; i3 < ne[3]; i3++) {
+        printf("%s.data: [\n", t->name);
+        for (int64_t i2 = 0; i2 < ne[2]; i2++) {
+            if (i2 == n && ne[2] > 2*n) {
+                printf("     ..., \n");
+                i2 = ne[2] - n;
+            }
+            printf("     [\n");
+            for (int64_t i1 = 0; i1 < ne[1]; i1++) {
+                if (i1 == n && ne[1] > 2*n) {
+                    printf("      ..., \n");
+                    i1 = ne[1] - n;
+                }
+                printf("      [");
+                for (int64_t i0 = 0; i0 < ne[0]; i0++) {
+                    if (i0 == n && ne[0] > 2*n) {
+                        printf("..., ");
+                        i0 = ne[0] - n;
+                    }
+                    size_t i = i3 * nb[3] + i2 * nb[2] + i1 * nb[1] + i0 * nb[0];
+                    float v;
+                    if (type == LM_GGML_TYPE_F16) {
+                        v = lm_ggml_fp16_to_fp32(*(lm_ggml_fp16_t *) &data[i]);
+                    } else if (type == LM_GGML_TYPE_F32) {
+                        v = *(float *) &data[i];
+                    } else if (type == LM_GGML_TYPE_I32) {
+                        v = (float) *(int32_t *) &data[i];
+                    } else if (type == LM_GGML_TYPE_I16) {
+                        v = (float) *(int16_t *) &data[i];
+                    } else if (type == LM_GGML_TYPE_I8) {
+                        v = (float) *(int8_t *) &data[i];
+                    } else {
+                        LM_GGML_ABORT("fatal error");
+                    }
+                    printf("%8.4f", v);
+                    if (i0 < ne[0] - 1) printf(", ");
+                }
+                printf("],\n");
+            }
+            printf("     ],\n");
+        }
+        printf("    ]\n");
     }
 }
 

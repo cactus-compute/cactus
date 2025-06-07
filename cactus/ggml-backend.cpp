@@ -56,7 +56,7 @@ size_t lm_ggml_backend_buft_get_max_size(lm_ggml_backend_buffer_type_t buft) {
     return SIZE_MAX;
 }
 
-size_t lm_ggml_backend_buft_get_alloc_size(lm_ggml_backend_buffer_type_t buft, struct lm_ggml_tensor * tensor) {
+size_t lm_ggml_backend_buft_get_alloc_size(lm_ggml_backend_buffer_type_t buft, const struct lm_ggml_tensor * tensor) {
     // get_alloc_size is optional, defaults to lm_ggml_nbytes
     if (buft->iface.get_alloc_size) {
         size_t size = buft->iface.get_alloc_size(buft, tensor);
@@ -152,7 +152,7 @@ size_t lm_ggml_backend_buffer_get_max_size(lm_ggml_backend_buffer_t buffer) {
     return lm_ggml_backend_buft_get_max_size(lm_ggml_backend_buffer_get_type(buffer));
 }
 
-size_t lm_ggml_backend_buffer_get_alloc_size(lm_ggml_backend_buffer_t buffer, struct lm_ggml_tensor * tensor) {
+size_t lm_ggml_backend_buffer_get_alloc_size(lm_ggml_backend_buffer_t buffer, const struct lm_ggml_tensor * tensor) {
     return lm_ggml_backend_buft_get_alloc_size(lm_ggml_backend_buffer_get_type(buffer), tensor);
 }
 
@@ -674,6 +674,8 @@ struct lm_ggml_backend_sched {
     char * context_buffer;
     size_t context_buffer_size;
 
+    bool op_offload;
+
     int debug;
 };
 
@@ -766,7 +768,7 @@ static int lm_ggml_backend_sched_backend_id_from_cur(lm_ggml_backend_sched_t sch
         if (tensor->op != LM_GGML_OP_ROPE && src->buffer != NULL && src->buffer->usage == LM_GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
             int src_backend_id = lm_ggml_backend_sched_backend_from_buffer(sched, src, tensor);
             // check if a backend with higher prio wants to offload the op
-            if (src_backend_id == sched->n_backends - 1 && lm_ggml_backend_buffer_is_host(src->buffer)) {
+            if (sched->op_offload && src_backend_id == sched->n_backends - 1 && lm_ggml_backend_buffer_is_host(src->buffer)) {
                 for (int b = 0; b < src_backend_id; b++) {
                     if (lm_ggml_backend_supports_op(sched->backends[b], tensor) && lm_ggml_backend_offload_op(sched->backends[b], tensor)) {
                         SET_CAUSE(tensor, "1.off");
@@ -1109,7 +1111,7 @@ static void lm_ggml_backend_sched_split_graph(lm_ggml_backend_sched_t sched, str
 
             const int node_backend_id = tensor_backend_id(node);
 
-            assert(node_backend_id != -1); // all nodes should be assigned by now
+            assert(node_backend_id != -1); // all nodes should be assigned by now, this can happen if there is no CPU fallback
 
             // check if we should start a new split based on the sources of the current node
             bool need_new_split = false;
@@ -1452,7 +1454,8 @@ lm_ggml_backend_sched_t lm_ggml_backend_sched_new(
         lm_ggml_backend_buffer_type_t * bufts,
         int n_backends,
         size_t graph_size,
-        bool parallel) {
+        bool parallel,
+        bool op_offload) {
     LM_GGML_ASSERT(n_backends > 0);
     LM_GGML_ASSERT(n_backends <= LM_GGML_SCHED_MAX_BACKENDS);
     LM_GGML_ASSERT(lm_ggml_backend_dev_type(lm_ggml_backend_get_device(backends[n_backends - 1])) == LM_GGML_BACKEND_DEVICE_TYPE_CPU);
@@ -1497,6 +1500,7 @@ lm_ggml_backend_sched_t lm_ggml_backend_sched_new(
     }
 
     sched->galloc = lm_ggml_gallocr_new_n(sched->bufts, n_backends);
+    sched->op_offload = op_offload;
 
     lm_ggml_backend_sched_reset(sched);
 

@@ -3,7 +3,7 @@
 
 #include "ggml-quants.h"
 #include "ggml-impl.h"
-#include "ggml-cpu-impl.h"
+#include "ggml-cpu/ggml-cpu-impl.h"
 #include "ggml-cpu.h"
 
 #include <math.h>
@@ -18,12 +18,6 @@
 #define GROUP_MAX_EPS_IQ2_S 1e-8f
 #define GROUP_MAX_EPS_IQ1_M 1e-7f
 #define GROUP_MAX_EPS_IQ1_S 1e-12f
-
-#if defined(_MSC_VER)
-// disable "possible loss of data" to avoid warnings for hundreds of casts
-// we should just be careful :)
-#pragma warning(disable: 4244 4267)
-#endif
 
 #define UNUSED LM_GGML_UNUSED
 

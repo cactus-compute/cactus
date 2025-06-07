@@ -24,7 +24,7 @@ typedef std::unique_ptr<lm_gguf_context, lm_gguf_context_deleter> lm_gguf_contex
 
 struct lm_ggml_gallocr_deleter { void operator()(lm_ggml_gallocr_t galloc) { lm_ggml_gallocr_free(galloc); } };
 
-typedef std::unique_ptr<lm_ggml_gallocr_t, lm_ggml_gallocr_deleter> lm_ggml_gallocr_ptr;
+typedef std::unique_ptr<lm_ggml_gallocr, lm_ggml_gallocr_deleter> lm_ggml_gallocr_ptr;
 
 // ggml-backend
 

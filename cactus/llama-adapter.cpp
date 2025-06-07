@@ -253,6 +253,9 @@ static void llama_adapter_lora_init_impl(llama_model & model, const char * path_
     std::vector<lm_ggml_backend_buffer_type_t> buft_extra;
     {
         auto * cpu_dev = lm_ggml_backend_dev_by_type(LM_GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (!cpu_dev) {
+            throw std::runtime_error(format("%s: no CPU backend found", __func__));
+        }
         auto * cpu_reg = lm_ggml_backend_dev_backend_reg(cpu_dev);
 
         auto lm_ggml_backend_dev_get_extra_bufts_fn = (lm_ggml_backend_dev_get_extra_bufts_t)
@@ -291,6 +294,9 @@ static void llama_adapter_lora_init_impl(llama_model & model, const char * path_
                 LLAMA_LOG_WARN("%s: lora for '%s' cannot use buft '%s', fallback to CPU\n", __func__, model_tensor->name, lm_ggml_backend_buft_name(buft));
 
                 auto * cpu_dev = lm_ggml_backend_dev_by_type(LM_GGML_BACKEND_DEVICE_TYPE_CPU);
+                if (!cpu_dev) {
+                    throw std::runtime_error(format("%s: no CPU backend found", __func__));
+                }
                 buft = lm_ggml_backend_dev_buffer_type(cpu_dev);
 
                 break;

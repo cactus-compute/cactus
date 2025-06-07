@@ -3,18 +3,11 @@
 #pragma once
 
 #include "common.h"
+#include <chrono>
 #include <string>
 #include <vector>
-#include "minja/chat-template.hpp"
-#include "minja/minja.hpp"
 
-typedef minja::chat_template common_chat_template;
-
-struct common_chat_templates {
-    bool has_explicit_template; // Model had builtin template or template overridde was specified.
-    std::unique_ptr<common_chat_template> template_default; // always set (defaults to chatml)
-    std::unique_ptr<common_chat_template> template_tool_use;
-};
+struct common_chat_templates;
 
 struct common_chat_tool_call {
     std::string name;
@@ -79,6 +72,7 @@ struct common_chat_templates_inputs {
     common_chat_tool_choice tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
     bool parallel_tool_calls = false;
     bool extract_reasoning     = true;
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
 };
 
 struct common_chat_params {

@@ -6,6 +6,7 @@
 
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <sstream>
 
@@ -66,7 +67,6 @@ enum llama_example {
     LLAMA_EXAMPLE_COMMON,
     LLAMA_EXAMPLE_SPECULATIVE,
     LLAMA_EXAMPLE_MAIN,
-    LLAMA_EXAMPLE_INFILL,
     LLAMA_EXAMPLE_EMBEDDING,
     LLAMA_EXAMPLE_PERPLEXITY,
     LLAMA_EXAMPLE_RETRIEVAL,
@@ -76,7 +76,7 @@ enum llama_example {
     LLAMA_EXAMPLE_SERVER,
     LLAMA_EXAMPLE_CVECTOR_GENERATOR,
     LLAMA_EXAMPLE_EXPORT_LORA,
-    LLAMA_EXAMPLE_LLAVA,
+    LLAMA_EXAMPLE_MTMD,
     LLAMA_EXAMPLE_LOOKUP,
     LLAMA_EXAMPLE_PARALLEL,
     LLAMA_EXAMPLE_TTS,
@@ -96,6 +96,7 @@ enum common_sampler_type {
     COMMON_SAMPLER_TYPE_XTC         = 8,
     COMMON_SAMPLER_TYPE_INFILL      = 9,
     COMMON_SAMPLER_TYPE_PENALTIES   = 10,
+    COMMON_SAMPLER_TYPE_TOP_N_SIGMA = 11,
 };
 
 // dimensionality reduction methods, used by cvector-generator
@@ -161,6 +162,7 @@ struct common_params_sampling {
     std::vector<enum common_sampler_type> samplers = {
         COMMON_SAMPLER_TYPE_PENALTIES,
         COMMON_SAMPLER_TYPE_DRY,
+        COMMON_SAMPLER_TYPE_TOP_N_SIGMA,
         COMMON_SAMPLER_TYPE_TOP_K,
         COMMON_SAMPLER_TYPE_TYPICAL_P,
         COMMON_SAMPLER_TYPE_TOP_P,
@@ -217,7 +219,6 @@ enum common_reasoning_format {
 };
 
 struct common_params {
-    bool vocab_only               = false;
     int32_t n_predict             =    -1; // new tokens to predict
     int32_t n_ctx                 =  4096; // context size
     int32_t n_batch               =  2048; // logical batch size for prompt processing (must be >=32 to use BLAS)
@@ -322,29 +323,26 @@ struct common_params {
     bool flash_attn        = false; // flash attention
     bool no_perf           = false; // disable performance metrics
     bool ctx_shift         = true;  // context shift on inifinite text generation
+    bool swa_full          = false; // use full-size SWA cache (https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
 
     bool input_prefix_bos  = false; // prefix BOS to user inputs, preceding input_prefix
-    bool logits_all        = false; // return logits for all tokens in the batch
     bool use_mmap          = true;  // use mmap for faster loads
     bool use_mlock         = false; // use mlock to keep model in memory
     bool verbose_prompt    = false; // print prompt tokens before generation
     bool display_prompt    = true;  // print prompt before generation
-    bool dump_kv_cache     = false; // dump the KV cache contents for debugging purposes
     bool no_kv_offload     = false; // disable KV offloading
     bool warmup            = true;  // warmup run
     bool check_tensors     = false; // validate tensor data
+    bool no_op_offload     = false; // globally disable offload host tensor operations to device
 
     bool single_turn       = false; // single turn chat conversation
-
-    llama_progress_callback progress_callback = nullptr;
-    void * progress_callback_user_data = nullptr;
 
     lm_ggml_type cache_type_k = LM_GGML_TYPE_F16; // KV cache data type for the K
     lm_ggml_type cache_type_v = LM_GGML_TYPE_F16; // KV cache data type for the V
 
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 
-    // multimodal models (see examples/llava)
+    // multimodal models (see tools/mtmd)
     struct common_params_model mmproj;
     bool mmproj_use_gpu = true;     // use GPU for multimodal model
     bool no_mmproj = false;         // explicitly disable multimodal model
@@ -370,6 +368,7 @@ struct common_params {
     bool use_jinja = false;                                                                                 // NOLINT
     bool enable_chat_template = true;
     common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
+    bool prefill_assistant = true;                                                                          // if true, any trailing assistant message will be prefilled into the response
 
     std::vector<std::string> api_keys;
 
@@ -413,13 +412,14 @@ struct common_params {
 
     bool process_output = false; // collect data for the output tensor
     bool compute_ppl    = true;  // whether to compute perplexity
+    bool parse_special  = false; // whether to parse special tokens during imatrix tokenization
 
     // cvector-generator params
     int n_pca_batch = 100;
     int n_pca_iterations = 1000;
     dimre_method cvector_dimre_method = DIMRE_METHOD_PCA;
-    std::string cvector_positive_file = "examples/cvector-generator/positive.txt";
-    std::string cvector_negative_file = "examples/cvector-generator/negative.txt";
+    std::string cvector_positive_file = "tools/cvector-generator/positive.txt";
+    std::string cvector_negative_file = "tools/cvector-generator/negative.txt";
 
     bool spm_infill = false; // suffix/prefix/middle pattern for infill
 
@@ -428,6 +428,11 @@ struct common_params {
 
     // common params
     std::string out_file; // output filename for all example programs
+    // optional callback for model loading progress and cancellation:
+    // called with a progress value between 0.0 and 1.0.
+    // return false from callback to abort model loading or true to continue
+    llama_progress_callback load_progress_callback = NULL;
+    void *                  load_progress_callback_user_data = NULL;
 };
 
 // call once at the start of a program if it uses libcommon
@@ -505,10 +510,9 @@ static bool string_starts_with(const std::string & str,
     return str.rfind(prefix, 0) == 0;
 }
 
-static bool string_ends_with(const std::string & str,
-                               const std::string & suffix) {  // While we wait for C++20's std::string::ends_with...
-    return str.size() >= suffix.size() && str.compare(str.size()-suffix.size(), suffix.size(), suffix) == 0;
-}
+// While we wait for C++20's std::string::ends_with...
+bool string_ends_with(const std::string_view & str, const std::string_view & suffix);
+size_t string_find_partial_stop(const std::string_view & str, const std::string_view & stop);
 
 bool string_parse_kv_override(const char * data, std::vector<llama_model_kv_override> & overrides);
 void string_process_escapes(std::string & input);
@@ -618,16 +622,6 @@ std::string common_detokenize(
                                   bool   special = true);
 
 //
-// KV cache utils
-//
-
-// Dump the KV cache view with the number of sequences per cell.
-void common_kv_cache_dump_view(const llama_kv_cache_view & view, int row_size = 80);
-
-// Dump the KV cache view showing individual sequences in each cell (long output).
-void common_kv_cache_dump_view_seqs(const llama_kv_cache_view & view, int row_size = 40);
-
-//
 // Embedding utils
 //
 
@@ -668,3 +662,9 @@ const char * const LLM_KV_SPLIT_COUNT         = "split.count";
 const char * const LLM_KV_SPLIT_TENSORS_COUNT = "split.tensors.count";
 
 }
+
+//
+// training utils
+//
+
+lm_ggml_opt_dataset_t common_opt_dataset_init(struct llama_context * ctx, const std::vector<llama_token> & tokens, int64_t stride);

@@ -299,10 +299,10 @@ bool lm_gguf_read_emplace_helper(const struct lm_gguf_reader & gr, std::vector<s
                 return false;
             }
         } catch (std::length_error &) {
-            fprintf(stderr, "%s: encountered length_error while reading value for key '%s'\n", __func__, key.c_str());
+            LM_GGML_LOG_ERROR("%s: encountered length_error while reading value for key '%s'\n", __func__, key.c_str());
             return false;
         } catch (std::bad_alloc &) {
-            fprintf(stderr, "%s: encountered bad_alloc error while reading value for key '%s'\n", __func__, key.c_str());
+            LM_GGML_LOG_ERROR("%s: encountered bad_alloc error while reading value for key '%s'\n", __func__, key.c_str());
             return false;
         }
         kv.emplace_back(key, value);
@@ -328,14 +328,14 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
         ok = ok && gr.read(magic, 4);
 
         if (!ok) {
-            fprintf(stderr, "%s: failed to read magic\n", __func__);
+            LM_GGML_LOG_ERROR("%s: failed to read magic\n", __func__);
             lm_gguf_free(ctx);
             return nullptr;
         }
 
         for (uint32_t i = 0; i < magic.size(); i++) {
             if (magic[i] != LM_GGUF_MAGIC[i]) {
-                fprintf(stderr, "%s: invalid magic characters: '%c%c%c%c', expected 'GGUF'\n", __func__, magic[0], magic[1], magic[2], magic[3]);
+                LM_GGML_LOG_ERROR("%s: invalid magic characters: '%c%c%c%c', expected 'GGUF'\n", __func__, magic[0], magic[1], magic[2], magic[3]);
                 lm_gguf_free(ctx);
                 return nullptr;
             }
@@ -348,11 +348,11 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
 
     if (ok && gr.read(ctx->version)) {
         if (ctx->version == 1) {
-            fprintf(stderr, "%s: GGUFv1 is no longer supported, please use a more up-to-date version\n", __func__);
+            LM_GGML_LOG_ERROR("%s: GGUFv1 is no longer supported, please use a more up-to-date version\n", __func__);
             ok = false;
         }
         if (ctx->version > LM_GGUF_VERSION) {
-            fprintf(stderr, "%s: this GGUF file is version %" PRIu32 " but this software only supports up to version %d\n",
+            LM_GGML_LOG_ERROR("%s: this GGUF file is version %" PRIu32 " but this software only supports up to version %d\n",
                 __func__, ctx->version, LM_GGUF_VERSION);
             ok = false;
         }
@@ -363,7 +363,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
     if (ok && gr.read(n_tensors)) {
         static_assert(sizeof(size_t) <= 8 && sizeof(lm_gguf_tensor_info) >= 2, "int64_t insufficient for indexing");
         if (n_tensors < 0 || n_tensors > int64_t(SIZE_MAX/sizeof(lm_gguf_tensor_info))) {
-            fprintf(stderr, "%s: number of tensors is %" PRIi64 " but must be in [0, %zu]\n",
+            LM_GGML_LOG_ERROR("%s: number of tensors is %" PRIi64 " but must be in [0, %zu]\n",
                 __func__, n_tensors, SIZE_MAX/sizeof(lm_gguf_tensor_info));
             ok = false;
         }
@@ -374,7 +374,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
     if (ok && gr.read(n_kv)) {
         static_assert(sizeof(size_t) <= 8 && sizeof(lm_gguf_tensor_info) >= 2, "int64_t insufficient for indexing");
         if (n_kv < 0 || n_kv > int64_t(SIZE_MAX/sizeof(lm_gguf_kv))) {
-            fprintf(stderr, "%s: number of key value pairs is %" PRIi64 " but must be in [0, %zu]\n",
+            LM_GGML_LOG_ERROR("%s: number of key value pairs is %" PRIi64 " but must be in [0, %zu]\n",
                     __func__, n_kv, SIZE_MAX/sizeof(lm_gguf_kv));
             ok = false;
         }
@@ -383,7 +383,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
     }
 
     if (!ok) {
-        fprintf(stderr, "%s: failed to read header\n", __func__);
+        LM_GGML_LOG_ERROR("%s: failed to read header\n", __func__);
         lm_gguf_free(ctx);
         return nullptr;
     }
@@ -399,15 +399,15 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
             try {
                 ok = ok && gr.read(key);
             } catch (std::length_error &) {
-                fprintf(stderr, "%s: encountered length_error while reading key %" PRIi64 "\n", __func__, i);
+                LM_GGML_LOG_ERROR("%s: encountered length_error while reading key %" PRIi64 "\n", __func__, i);
                 ok = false;
             } catch (std::bad_alloc &) {
-                fprintf(stderr, "%s: encountered bad_alloc error while reading key %" PRIi64 "\n", __func__, i);
+                LM_GGML_LOG_ERROR("%s: encountered bad_alloc error while reading key %" PRIi64 "\n", __func__, i);
                 ok = false;
             }
             for (size_t j = 0; ok && j < ctx->kv.size(); ++j) {
                 if (key == ctx->kv[j].key) {
-                    fprintf(stderr, "%s: duplicate key '%s' for tensors %zu and %" PRIi64 " \n", __func__, key.c_str(), j, i);
+                    LM_GGML_LOG_ERROR("%s: duplicate key '%s' for tensors %zu and %" PRIi64 " \n", __func__, key.c_str(), j, i);
                     ok = false;
                 }
             }
@@ -441,14 +441,14 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
                 case LM_GGUF_TYPE_ARRAY:
                 default:
                     {
-                        fprintf(stderr, "%s: key '%s' has invalid GGUF type %d\n", __func__, key.c_str(), type);
+                        LM_GGML_LOG_ERROR("%s: key '%s' has invalid GGUF type %d\n", __func__, key.c_str(), type);
                         ok = false;
                     } break;
             }
         }
 
         if (!ok) {
-            fprintf(stderr, "%s: failed to read key-value pairs\n", __func__);
+            LM_GGML_LOG_ERROR("%s: failed to read key-value pairs\n", __func__);
             lm_gguf_free(ctx);
             return nullptr;
         }
@@ -458,7 +458,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
         ctx->alignment = alignment_idx == -1 ? LM_GGUF_DEFAULT_ALIGNMENT : lm_gguf_get_val_u32(ctx, alignment_idx);
 
         if (ctx->alignment == 0 || (ctx->alignment & (ctx->alignment - 1)) != 0) {
-            fprintf(stderr, "%s: alignment %zu is not a power of 2\n", __func__, ctx->alignment);
+            LM_GGML_LOG_ERROR("%s: alignment %zu is not a power of 2\n", __func__, ctx->alignment);
             lm_gguf_free(ctx);
             return nullptr;
         }
@@ -474,14 +474,14 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
             try {
                 ok = ok && gr.read(name);
             } catch (std::length_error &) {
-                fprintf(stderr, "%s: encountered length_error while reading tensor name %" PRIi64 "\n", __func__, i);
+                LM_GGML_LOG_ERROR("%s: encountered length_error while reading tensor name %" PRIi64 "\n", __func__, i);
                 ok = false;
             } catch (std::bad_alloc &) {
-                fprintf(stderr, "%s: encountered bad_alloc error while reading tensor name %" PRIi64 "\n", __func__, i);
+                LM_GGML_LOG_ERROR("%s: encountered bad_alloc error while reading tensor name %" PRIi64 "\n", __func__, i);
                 ok = false;
             }
             if (name.length() >= LM_GGML_MAX_NAME) {
-                fprintf(stderr, "%s: tensor name %" PRIi64 " is too long: %zu >= %d\n", __func__, i, name.length(), LM_GGML_MAX_NAME);
+                LM_GGML_LOG_ERROR("%s: tensor name %" PRIi64 " is too long: %zu >= %d\n", __func__, i, name.length(), LM_GGML_MAX_NAME);
                 ok = false;
                 break;
             }
@@ -490,7 +490,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
             // make sure there are no duplicate tensor names
             for (int64_t j = 0; ok && j < i; ++j) {
                 if (strcmp(info.t.name, ctx->info[j].t.name) == 0) {
-                    fprintf(stderr, "%s: duplicate tensor name '%s' for tensors %" PRIi64 " and %" PRIi64 "\n", __func__, info.t.name, j, i);
+                    LM_GGML_LOG_ERROR("%s: duplicate tensor name '%s' for tensors %" PRIi64 " and %" PRIi64 "\n", __func__, info.t.name, j, i);
                     ok = false;
                     break;
                 }
@@ -505,7 +505,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
             uint32_t n_dims = -1;
             ok = ok && gr.read(n_dims);
             if (n_dims > LM_GGML_MAX_DIMS) {
-                fprintf(stderr, "%s: tensor '%s' has invalid number of dimensions: %" PRIu32 " > %" PRIu32 "\n",
+                LM_GGML_LOG_ERROR("%s: tensor '%s' has invalid number of dimensions: %" PRIu32 " > %" PRIu32 "\n",
                     __func__, info.t.name, n_dims, LM_GGML_MAX_DIMS);
                 ok = false;
                 break;
@@ -518,7 +518,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
 
                 // check that all ne are non-negative
                 if (info.t.ne[j] < 0) {
-                    fprintf(stderr, "%s: tensor '%s' dimension %" PRIu32 " has invalid number of elements: %" PRIi64 " < 0\n",
+                    LM_GGML_LOG_ERROR("%s: tensor '%s' dimension %" PRIu32 " has invalid number of elements: %" PRIi64 " < 0\n",
                         __func__, info.t.name, j, info.t.ne[j]);
                     ok = false;
                     break;
@@ -530,7 +530,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
                        (INT64_MAX/info.t.ne[2] <= info.t.ne[0]*info.t.ne[1]) ||
                        (INT64_MAX/info.t.ne[3] <= info.t.ne[0]*info.t.ne[1]*info.t.ne[2]))) {
 
-                fprintf(stderr, "%s: total number of elements in tensor '%s' with shape "
+                LM_GGML_LOG_ERROR("%s: total number of elements in tensor '%s' with shape "
                     "(%" PRIi64 ", %" PRIi64 ", %" PRIi64 ", %" PRIi64 ") is >= %" PRIi64 "\n",
                     __func__, info.t.name, info.t.ne[0], info.t.ne[1], info.t.ne[2], info.t.ne[3], INT64_MAX);
                 ok = false;
@@ -547,7 +547,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
 
             // check that tensor type is within defined range
             if (info.t.type < 0 || info.t.type >= LM_GGML_TYPE_COUNT) {
-                fprintf(stderr, "%s: tensor '%s' has invalid ggml type %d (%s)\n",
+                LM_GGML_LOG_ERROR("%s: tensor '%s' has invalid ggml type %d (%s)\n",
                     __func__, info.t.name, info.t.type, lm_ggml_type_name(info.t.type));
                 ok = false;
                 break;
@@ -557,7 +557,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
 
             // check that row size is divisible by block size
             if (blck_size == 0 || info.t.ne[0] % blck_size != 0) {
-                fprintf(stderr, "%s: tensor '%s' of type %d (%s) has %" PRId64 " elements per row, "
+                LM_GGML_LOG_ERROR("%s: tensor '%s' of type %d (%s) has %" PRId64 " elements per row, "
                     "not a multiple of block size (%" PRId64 ")\n",
                     __func__, info.t.name, (int) info.t.type, lm_ggml_type_name(info.t.type), info.t.ne[0], blck_size);
                 ok = false;
@@ -582,7 +582,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
     }
 
     if (!ok) {
-        fprintf(stderr, "%s: failed to read tensor info\n", __func__);
+        LM_GGML_LOG_ERROR("%s: failed to read tensor info\n", __func__);
         lm_gguf_free(ctx);
         return nullptr;
     }
@@ -590,7 +590,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
 
     // we require the data section to be aligned, so take into account any padding
     if (fseek(file, LM_GGML_PAD(ftell(file), ctx->alignment), SEEK_SET) != 0) {
-        fprintf(stderr, "%s: failed to seek to beginning of data section\n", __func__);
+        LM_GGML_LOG_ERROR("%s: failed to seek to beginning of data section\n", __func__);
         lm_gguf_free(ctx);
         return nullptr;
     }
@@ -604,9 +604,9 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
         for (size_t i = 0; i < ctx->info.size(); ++i) {
             const lm_gguf_tensor_info & ti = ctx->info[i];
             if (ti.offset != ctx->size) {
-                fprintf(stderr, "%s: tensor '%s' has offset %" PRIu64 ", expected %zu\n",
+                LM_GGML_LOG_ERROR("%s: tensor '%s' has offset %" PRIu64 ", expected %zu\n",
                     __func__, ti.t.name, ti.offset, ctx->size);
-                fprintf(stderr, "%s: failed to read tensor data\n", __func__);
+                LM_GGML_LOG_ERROR("%s: failed to read tensor data\n", __func__);
                 lm_gguf_free(ctx);
                 return nullptr;
             }
@@ -634,7 +634,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
 
         *params.ctx = lm_ggml_init(pdata);
         if (*params.ctx == nullptr) {
-            fprintf(stderr, "%s: failed to initialize ggml context for storing tensors\n", __func__);
+            LM_GGML_LOG_ERROR("%s: failed to initialize ggml context for storing tensors\n", __func__);
             lm_gguf_free(ctx);
             return nullptr;
         }
@@ -656,7 +656,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
             ok = ok && gr.read(data->data, ctx->size);
 
             if (!ok) {
-                fprintf(stderr, "%s: failed to read tensor data binary blob\n", __func__);
+                LM_GGML_LOG_ERROR("%s: failed to read tensor data binary blob\n", __func__);
                 lm_ggml_free(ctx_data);
                 *params.ctx = nullptr;
                 lm_gguf_free(ctx);
@@ -689,7 +689,7 @@ struct lm_gguf_context * lm_gguf_init_from_file_impl(FILE * file, struct lm_gguf
         }
 
         if (!ok) {
-            fprintf(stderr, "%s: failed to create tensors\n", __func__);
+            LM_GGML_LOG_ERROR("%s: failed to create tensors\n", __func__);
             lm_ggml_free(ctx_data);
             *params.ctx = nullptr;
             lm_gguf_free(ctx);
@@ -706,7 +706,7 @@ struct lm_gguf_context * lm_gguf_init_from_file(const char * fname, struct lm_gg
     FILE * file = lm_ggml_fopen(fname, "rb");
 
     if (!file) {
-        fprintf(stderr, "%s: failed to open GGUF file '%s'\n", __func__, fname);
+        LM_GGML_LOG_ERROR("%s: failed to open GGUF file '%s'\n", __func__, fname);
         return nullptr;
     }
 
@@ -1305,7 +1305,7 @@ bool lm_gguf_write_to_file(const struct lm_gguf_context * ctx, const char * fnam
     FILE * file = lm_ggml_fopen(fname, "wb");
 
     if (!file) {
-        fprintf(stderr, "%s: failed to open file '%s' for writing GGUF data\n", __func__, fname);
+        LM_GGML_LOG_ERROR("%s: failed to open file '%s' for writing GGUF data\n", __func__, fname);
         return false;
     }
 

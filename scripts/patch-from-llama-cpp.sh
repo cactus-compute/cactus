@@ -1,16 +1,15 @@
 # !/bin/bash -e
-# N/B: chat-template.hpp and minja.hpp are diverged
 
-# fetch llama.cpp at a fixed commit instead of using a submodule
-LLAMA_CPP_COMMIT=ceda28ef8e310a8dee60bf275077a3eedae8e36c
+LLAMA_CPP_COMMIT=b775345d788ac16260e7eef49e11fe57ee5677f7
 LLAMA_CPP_DIR=llama.cpp
 
-# clean up any previous copy
 rm -rf "$LLAMA_CPP_DIR"
 
-# shallow‑clone and checkout the wanted commit
 git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$LLAMA_CPP_DIR"
 (cd "$LLAMA_CPP_DIR" && git fetch --depth 1 origin $LLAMA_CPP_COMMIT && git checkout $LLAMA_CPP_COMMIT)
+
+git submodule init
+git submodule update --recursive
 
 cp ./llama.cpp/include/llama.h ./cactus/llama.h
 cp ./llama.cpp/include/llama-cpp.h ./cactus/llama-cpp.h
@@ -78,6 +77,8 @@ cp ./llama.cpp/src/llama-kv-cache.h ./cactus/llama-kv-cache.h
 cp ./llama.cpp/src/llama-kv-cache.cpp ./cactus/llama-kv-cache.cpp
 cp ./llama.cpp/src/llama-model-loader.h ./cactus/llama-model-loader.h
 cp ./llama.cpp/src/llama-model-loader.cpp ./cactus/llama-model-loader.cpp
+cp ./llama.cpp/src/llama-model-saver.h ./cactus/llama-model-saver.h
+cp ./llama.cpp/src/llama-model-saver.cpp ./cactus/llama-model-saver.cpp
 cp ./llama.cpp/src/llama-model.h ./cactus/llama-model.h
 cp ./llama.cpp/src/llama-model.cpp ./cactus/llama-model.cpp
 cp ./llama.cpp/src/llama-adapter.h ./cactus/llama-adapter.h
@@ -128,7 +129,17 @@ cp ./llama.cpp/common/chat.cpp ./cactus/chat.cpp
 cp ./llama.cpp/common/minja/minja.hpp ./cactus/minja/minja.hpp
 cp ./llama.cpp/common/minja/chat-template.hpp ./cactus/minja/chat-template.hpp
 
-# List of files to process
+cp ./llama.cpp/tools/mtmd/mtmd.h ./cactus/tools/mtmd/mtmd.h
+cp ./llama.cpp/tools/mtmd/mtmd.cpp ./cactus/tools/mtmd/mtmd.cpp
+cp ./llama.cpp/tools/mtmd/clip.h ./cactus/tools/mtmd/clip.h
+cp ./llama.cpp/tools/mtmd/clip.cpp ./cactus/tools/mtmd/clip.cpp
+cp ./llama.cpp/tools/mtmd/clip-impl.h ./cactus/tools/mtmd/clip-impl.h
+cp ./llama.cpp/tools/mtmd/mtmd-helper.cpp ./cactus/tools/mtmd/mtmd-helper.cpp
+cp ./llama.cpp/tools/mtmd/mtmd-audio.h ./cactus/tools/mtmd/mtmd-audio.h
+cp ./llama.cpp/tools/mtmd/mtmd-audio.cpp ./cactus/tools/mtmd/mtmd-audio.cpp
+cp ./llama.cpp/tools/mtmd/miniaudio.h ./cactus/tools/mtmd/miniaudio.h
+cp ./llama.cpp/common/stb_image.h ./cactus/tools/mtmd/stb_image.h
+
 files_add_lm_prefix=(
   "./cactus/llama-impl.h"
   "./cactus/llama-impl.cpp"
@@ -152,6 +163,8 @@ files_add_lm_prefix=(
   "./cactus/llama-kv-cache.cpp"
   "./cactus/llama-model-loader.h"
   "./cactus/llama-model-loader.cpp"
+  "./cactus/llama-model-saver.h"
+  "./cactus/llama-model-saver.cpp"
   "./cactus/llama-model.h"
   "./cactus/llama-model.cpp"
   "./cactus/llama-mmap.h"
@@ -224,12 +237,19 @@ files_add_lm_prefix=(
   "./cactus/ggml-cpu/simd-mappings.h"
   "./cactus/ggml-cpu/ops.h"
   "./cactus/ggml-cpu/ops.cpp"
+  "./cactus/tools/mtmd/mtmd.h"
+  "./cactus/tools/mtmd/mtmd.cpp"
+  "./cactus/tools/mtmd/clip.h"
+  "./cactus/tools/mtmd/clip.cpp"
+  "./cactus/tools/mtmd/clip-impl.h"
+  "./cactus/tools/mtmd/mtmd-helper.cpp"
+  "./cactus/tools/mtmd/mtmd-audio.h"
+  "./cactus/tools/mtmd/mtmd-audio.cpp"
 )
 
-# Loop through each file and run the sed commands
 OS=$(uname)
 for file in "${files_add_lm_prefix[@]}"; do
-  # Add prefix to avoid redefinition with other libraries using ggml like whisper.rn
+
   if [ "$OS" = "Darwin" ]; then
     sed -i '' 's/GGML_/LM_GGML_/g' $file
     sed -i '' 's/ggml_/lm_ggml_/g' $file
@@ -251,8 +271,8 @@ files_iq_add_lm_prefix=(
   "./cactus/ggml.c"
 )
 
-for file in "${files_iq_add_lm_prefix[@]}"; do
-  # Add prefix to avoid redefinition with other libraries using ggml like whisper.rn
+for file in "${files_iq_add_lm_prefix[@]}"; do 
+
   if [ "$OS" = "Darwin" ]; then
     sed -i '' 's/iq2xs_init_impl/lm_iq2xs_init_impl/g' $file
     sed -i '' 's/iq2xs_free_impl/lm_iq2xs_free_impl/g' $file
@@ -268,25 +288,21 @@ done
 
 echo "Replacement completed successfully!"
 
-# yarn --cwd example
-
 # Apply patch
-patch -p0 -d ./cactus < ./cactus/patches/common.h.patch
-patch -p0 -d ./cactus < ./cactus/patches/common.cpp.patch
-patch -p0 -d ./cactus < ./cactus/patches/chat.h.patch
-patch -p0 -d ./cactus < ./cactus/patches/chat.cpp.patch
-patch -p0 -d ./cactus < ./cactus/patches/log.cpp.patch
-patch -p0 -d ./cactus < ./cactus/patches/ggml-metal.m.patch
-patch -p0 -d ./cactus < ./cactus/patches/ggml.c.patch
-patch -p0 -d ./cactus < ./cactus/patches/ggml-quants.c.patch
-patch -p0 -d ./cactus < ./cactus/patches/llama-mmap.cpp.patch
+patch -p0 -d ./cactus < ./scripts/patches/common.h.patch
+patch -p0 -d ./cactus < ./scripts/patches/common.cpp.patch
+patch -p0 -d ./cactus < ./scripts/patches/chat.h.patch
+patch -p0 -d ./cactus < ./scripts/patches/chat.cpp.patch
+patch -p0 -d ./cactus < ./scripts/patches/log.cpp.patch
+patch -p0 -d ./cactus < ./scripts/patches/ggml-metal.m.patch
+patch -p0 -d ./cactus < ./scripts/patches/ggml.c.patch
+patch -p0 -d ./cactus < ./scripts/patches/ggml-quants.c.patch
+patch -p0 -d ./cactus < ./scripts/patches/llama-mmap.cpp.patch
 rm -rf ./cactus/*.orig
 
 if [ "$OS" = "Darwin" ]; then
-  # Build metallib (~2.6MB)
-  cd llama.cpp/ggml/src/ggml-metal
 
-  # Create a symbolic link to ggml-common.h in the current directory
+  cd llama.cpp/ggml/src/ggml-metal
   ln -sf ../ggml-common.h .
 
   xcrun --sdk iphoneos metal -c ggml-metal.metal -o ggml-metal.air -DGGML_METAL_USE_BF16=1
@@ -299,12 +315,10 @@ if [ "$OS" = "Darwin" ]; then
   rm ggml-metal.air
   mv ./ggml-llama.metallib ../../../../cactus/ggml-llama-sim.metallib
 
-  # Remove the symbolic link
   rm ggml-common.h
 
   cd -
-  
-fi
 
-# after we're finished, remove the temporary clone to keep the tree clean
-rm -rf "$LLAMA_CPP_DIR"
+  cd example/ios
+  echo export NODE_BINARY=$(command -v node) > .xcode.env.local
+fi

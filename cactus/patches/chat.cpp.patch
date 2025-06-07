@@ -1,13 +1,18 @@
---- chat.cpp.orig	2025-03-13 13:05:47
-+++ chat.cpp	2025-03-13 13:02:10
-@@ -1,18 +1,8 @@
+--- chat.cpp.orig	2025-05-23 11:00:02
++++ chat.cpp	2025-05-23 11:01:09
+@@ -1,8 +1,6 @@
  #include "chat.h"
  #include "json-schema-to-grammar.h"
  #include "log.h"
 -#include "minja/chat-template.hpp"
 -#include "minja/minja.hpp"
- 
+
  #include <optional>
+
+@@ -14,14 +12,6 @@
+     auto res = ss.str();
+     return res;
+ }
 -
 -typedef minja::chat_template common_chat_template;
 -
@@ -16,6 +21,6 @@
 -    std::unique_ptr<common_chat_template> template_default; // always set (defaults to chatml)
 -    std::unique_ptr<common_chat_template> template_tool_use;
 -};
- 
+
  struct templates_params {
      json messages;
