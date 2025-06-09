@@ -1,5 +1,5 @@
 import { Platform } from "react-native";
-import { initLlama, LlamaContext } from "cactus-react-native-2";
+import { initLlama, LlamaContext } from "cactus-react-native-3";
 import RNFS from 'react-native-fs';
 
 const modelUrl = 'https://huggingface.co/QuantFactory/SmolLM-135M-GGUF/resolve/main/SmolLM-135M.Q6_K.gguf';

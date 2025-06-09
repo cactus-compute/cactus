@@ -1,6 +1,19 @@
 #import "CactusContext.h"
 #import <Metal/Metal.h>
 
+// Internal C++ headers - only for implementation, not exposed to framework consumers
+#include <string>
+#include <vector>
+#include <iostream>
+#include "cactus.h"
+#include "llama.h"
+#include "llama-impl.h"
+#include "ggml.h"
+#include "gguf.h"
+#include "common.h"
+#include "sampling.h"
+#include "json-schema-to-grammar.h"
+
 @implementation CactusContext
 
 + (void)toggleNativeLog:(BOOL)enabled onEmitLog:(void (^)(NSString *level, NSString *text))onEmitLog {

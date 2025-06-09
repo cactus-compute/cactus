@@ -13,7 +13,7 @@ base_optimizer_flags = "-O3 -DNDEBUG"
 ios_path = 'ios'
 
 Pod::Spec.new do |s|
-  s.name         = "cactus-react-native-3"
+  s.name         = "cactus-react-native-4"
   s.version      = package["version"]
   s.summary      = package["description"]
   s.homepage     = package["homepage"]
@@ -26,13 +26,17 @@ Pod::Spec.new do |s|
   s.source_files = "#{ios_path}/**/*.{h,m,mm}"
   s.vendored_frameworks = "#{ios_path}/cactus.xcframework"
 
+  # Make internal headers available for implementation but not consumers
+  s.preserve_paths = "../cactus/*.{h,hpp}", "../cactus/minja/*.hpp", "../cactus/tools/mtmd/*.h"
+
   s.dependency "React-Core"
 
   s.compiler_flags = base_compiler_flags
   s.pod_target_xcconfig = {
     "OTHER_LDFLAGS" => base_ld_flags,
     "OTHER_CFLAGS" => base_optimizer_flags,
-    "OTHER_CPLUSPLUSFLAGS" => base_optimizer_flags + " -std=c++17"
+    "OTHER_CPLUSPLUSFLAGS" => base_optimizer_flags + " -std=c++17",
+    "HEADER_SEARCH_PATHS" => "$(PODS_TARGET_SRCROOT)/../cactus $(PODS_TARGET_SRCROOT)/../cactus/minja $(PODS_TARGET_SRCROOT)/../cactus/tools/mtmd"
   }
 
   # Don't install the dependencies when we run `pod install` in the old architecture.

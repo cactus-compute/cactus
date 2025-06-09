@@ -1,17 +1,7 @@
 #ifdef __cplusplus
-  #if __has_include(<cactus/llama.h>)
-    #import <cactus/llama.h>
-    #import <cactus/llama-impl.h>
-    #import <cactus/ggml.h>
-    #import <cactus/cactus.h>
-    #import <cactus/json-schema-to-grammar.h>
-  #else
-    #import "llama.h"
-    #import "llama-impl.h"
-    #import "ggml.h"
-    #import "cactus.h"
-    #import "json-schema-to-grammar.h"
-  #endif
+namespace cactus {
+    struct cactus_context;
+}
 #endif
 
 
