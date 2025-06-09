@@ -1,5 +1,5 @@
 {
-  "name": "cactus-react-native",
+  "name": "cactus-react-native-2",
   "version": "0.0.1",
   "description": "Run AI models locally on mobile devices",
   "main": "lib/commonjs/index",
@@ -62,7 +62,7 @@
     "@types/jest": "^28.1.2",
     "@types/react": "~17.0.21",
     "@types/react-native": "0.70.0",
-    "@types/react-native-fs": "^2.13.0",
+    
     "commitlint": "^17.0.2",
     "eslint": "^8.4.1",
     "jest": "^28.1.1",
@@ -71,7 +71,7 @@
     "react": "18.2.0",
     "react-native": "0.72.3",
     "react-native-builder-bob": "^0.37.0",
-    "react-native-fs": "^2.20.0",
+    
     "release-it": "^15.0.0",
     "typedoc": "^0.24.7",
     "typedoc-plugin-markdown": "^3.15.3",
