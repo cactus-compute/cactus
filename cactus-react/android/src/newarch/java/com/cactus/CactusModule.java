@@ -77,47 +77,119 @@ public class CactusModule extends NativeCactusSpec {
     cactus.stopCompletion(id, promise);
   }
 
-  @ReactMethod
-  public void tokenize(double id, final String text, final Promise promise) {
+  @Override
+  public void tokenize(double id, String text, Promise promise) {
     cactus.tokenize(id, text, promise);
   }
 
-  @ReactMethod
-  public void detokenize(double id, final ReadableArray tokens, final Promise promise) {
+  @Override
+  public void tokenize(double id, String text, ReadableArray mediaPaths, Promise promise) {
+    cactus.tokenize(id, text, mediaPaths, promise);
+  }
+
+  @Override
+  public void detokenize(double id, ReadableArray tokens, Promise promise) {
     cactus.detokenize(id, tokens, promise);
   }
 
-  @ReactMethod
-  public void embedding(double id, final String text, final ReadableMap params, final Promise promise) {
+  @Override
+  public void embedding(double id, String text, ReadableMap params, Promise promise) {
     cactus.embedding(id, text, params, promise);
   }
 
-  @ReactMethod
-  public void bench(double id, final double pp, final double tg, final double pl, final double nr, final Promise promise) {
+  @Override
+  public void bench(double id, double pp, double tg, double pl, double nr, Promise promise) {
     cactus.bench(id, pp, tg, pl, nr, promise);
   }
 
-  @ReactMethod
-  public void applyLoraAdapters(double id, final ReadableArray loraAdapters, final Promise promise) {
+  @Override
+  public void applyLoraAdapters(double id, ReadableArray loraAdapters, Promise promise) {
     cactus.applyLoraAdapters(id, loraAdapters, promise);
   }
 
-  @ReactMethod
-  public void removeLoraAdapters(double id, final Promise promise) {
+  @Override
+  public void removeLoraAdapters(double id, Promise promise) {
     cactus.removeLoraAdapters(id, promise);
   }
 
-  @ReactMethod
-  public void getLoadedLoraAdapters(double id, final Promise promise) {
+  @Override
+  public void getLoadedLoraAdapters(double id, Promise promise) {
     cactus.getLoadedLoraAdapters(id, promise);
   }
 
-  @ReactMethod
+  // New Multimodal Methods
+  @Override
+  public void initMultimodal(double id, String mmprojPath, boolean useGpu, Promise promise) {
+    cactus.initMultimodal(id, mmprojPath, useGpu, promise);
+  }
+
+  @Override
+  public void isMultimodalEnabled(double id, Promise promise) {
+    cactus.isMultimodalEnabled(id, promise);
+  }
+
+  @Override
+  public void isMultimodalSupportVision(double id, Promise promise) {
+    cactus.isMultimodalSupportVision(id, promise);
+  }
+
+  @Override
+  public void isMultimodalSupportAudio(double id, Promise promise) {
+    cactus.isMultimodalSupportAudio(id, promise);
+  }
+
+  @Override
+  public void releaseMultimodal(double id, Promise promise) {
+    cactus.releaseMultimodal(id, promise);
+  }
+
+  @Override
+  public void multimodalCompletion(double id, String prompt, ReadableArray mediaPaths, ReadableMap params, Promise promise) {
+    cactus.multimodalCompletion(id, prompt, mediaPaths, params, promise);
+  }
+
+  // New TTS/Vocoder Methods
+  @Override
+  public void initVocoder(double id, String vocoderModelPath, Promise promise) {
+    cactus.initVocoder(id, vocoderModelPath, promise);
+  }
+
+  @Override
+  public void isVocoderEnabled(double id, Promise promise) {
+    cactus.isVocoderEnabled(id, promise);
+  }
+
+  @Override
+  public void getTTSType(double id, Promise promise) {
+    cactus.getTTSType(id, promise);
+  }
+
+  @Override
+  public void getFormattedAudioCompletion(double id, String speakerJsonStr, String textToSpeak, Promise promise) {
+    cactus.getFormattedAudioCompletion(id, speakerJsonStr, textToSpeak, promise);
+  }
+
+  @Override
+  public void getAudioCompletionGuideTokens(double id, String textToSpeak, Promise promise) {
+    cactus.getAudioCompletionGuideTokens(id, textToSpeak, promise);
+  }
+
+  @Override
+  public void decodeAudioTokens(double id, ReadableArray tokens, Promise promise) {
+    cactus.decodeAudioTokens(id, tokens, promise);
+  }
+
+  @Override
+  public void releaseVocoder(double id, Promise promise) {
+    cactus.releaseVocoder(id, promise);
+  }
+
+  @Override
   public void releaseContext(double id, Promise promise) {
     cactus.releaseContext(id, promise);
   }
 
-  @ReactMethod
+  @Override
   public void releaseAllContexts(Promise promise) {
     cactus.releaseAllContexts(promise);
   }

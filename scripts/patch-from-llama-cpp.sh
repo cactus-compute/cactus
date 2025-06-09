@@ -8,9 +8,6 @@ rm -rf "$LLAMA_CPP_DIR"
 git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$LLAMA_CPP_DIR"
 (cd "$LLAMA_CPP_DIR" && git fetch --depth 1 origin $LLAMA_CPP_COMMIT && git checkout $LLAMA_CPP_COMMIT)
 
-git submodule init
-git submodule update --recursive
-
 cp ./llama.cpp/include/llama.h ./cactus/llama.h
 cp ./llama.cpp/include/llama-cpp.h ./cactus/llama-cpp.h
 
@@ -289,15 +286,15 @@ done
 echo "Replacement completed successfully!"
 
 # Apply patch
-patch -p0 -d ./cactus < ./scripts/patches/common.h.patch
-patch -p0 -d ./cactus < ./scripts/patches/common.cpp.patch
-patch -p0 -d ./cactus < ./scripts/patches/chat.h.patch
-patch -p0 -d ./cactus < ./scripts/patches/chat.cpp.patch
-patch -p0 -d ./cactus < ./scripts/patches/log.cpp.patch
-patch -p0 -d ./cactus < ./scripts/patches/ggml-metal.m.patch
-patch -p0 -d ./cactus < ./scripts/patches/ggml.c.patch
-patch -p0 -d ./cactus < ./scripts/patches/ggml-quants.c.patch
-patch -p0 -d ./cactus < ./scripts/patches/llama-mmap.cpp.patch
+patch -p0 -d ./cactus < ./cactus/patches/common.h.patch
+patch -p0 -d ./cactus < ./cactus/patches/common.cpp.patch
+patch -p0 -d ./cactus < ./cactus/patches/chat.h.patch
+patch -p0 -d ./cactus < ./cactus/patches/chat.cpp.patch
+patch -p0 -d ./cactus < ./cactus/patches/log.cpp.patch
+patch -p0 -d ./cactus < ./cactus/patches/ggml-metal.m.patch
+patch -p0 -d ./cactus < ./cactus/patches/ggml.c.patch
+patch -p0 -d ./cactus < ./cactus/patches/ggml-quants.c.patch
+patch -p0 -d ./cactus < ./cactus/patches/llama-mmap.cpp.patch
 rm -rf ./cactus/*.orig
 
 if [ "$OS" = "Darwin" ]; then
@@ -319,6 +316,6 @@ if [ "$OS" = "Darwin" ]; then
 
   cd -
 
-  cd example/ios
-  echo export NODE_BINARY=$(command -v node) > .xcode.env.local
+  # cd example/ios
+  # echo export NODE_BINARY=$(command -v node) > .xcode.env.local
 fi

@@ -1,8 +1,6 @@
 #include "chat.h"
 #include "json-schema-to-grammar.h"
 #include "log.h"
-#include "minja/chat-template.hpp"
-#include "minja/minja.hpp"
 
 #include <optional>
 
@@ -14,14 +12,6 @@ static std::string format_time(const std::chrono::system_clock::time_point & now
     auto res = ss.str();
     return res;
 }
-
-typedef minja::chat_template common_chat_template;
-
-struct common_chat_templates {
-    bool has_explicit_template; // Model had builtin template or template overridde was specified.
-    std::unique_ptr<common_chat_template> template_default; // always set (defaults to chatml)
-    std::unique_ptr<common_chat_template> template_tool_use;
-};
 
 struct templates_params {
     json messages;

@@ -84,6 +84,11 @@ public class CactusModule extends ReactContextBaseJavaModule {
   }
 
   @ReactMethod
+  public void tokenize(double id, final String text, final ReadableArray mediaPaths, final Promise promise) {
+    cactus.tokenize(id, text, mediaPaths, promise);
+  }
+
+  @ReactMethod
   public void detokenize(double id, final ReadableArray tokens, final Promise promise) {
     cactus.detokenize(id, tokens, promise);
   }
@@ -111,6 +116,71 @@ public class CactusModule extends ReactContextBaseJavaModule {
   @ReactMethod
   public void getLoadedLoraAdapters(double id, final Promise promise) {
     cactus.getLoadedLoraAdapters(id, promise);
+  }
+
+  @ReactMethod
+  public void initMultimodal(double id, final String mmprojPath, final boolean useGpu, final Promise promise) {
+    cactus.initMultimodal(id, mmprojPath, useGpu, promise);
+  }
+
+  @ReactMethod
+  public void isMultimodalEnabled(double id, final Promise promise) {
+    cactus.isMultimodalEnabled(id, promise);
+  }
+
+  @ReactMethod
+  public void isMultimodalSupportVision(double id, final Promise promise) {
+    cactus.isMultimodalSupportVision(id, promise);
+  }
+
+  @ReactMethod
+  public void isMultimodalSupportAudio(double id, final Promise promise) {
+    cactus.isMultimodalSupportAudio(id, promise);
+  }
+
+  @ReactMethod
+  public void releaseMultimodal(double id, final Promise promise) {
+    cactus.releaseMultimodal(id, promise);
+  }
+
+  @ReactMethod
+  public void multimodalCompletion(double id, final String prompt, final ReadableArray mediaPaths, final ReadableMap params, final Promise promise) {
+    cactus.multimodalCompletion(id, prompt, mediaPaths, params, promise);
+  }
+
+  @ReactMethod
+  public void initVocoder(double id, final String vocoderModelPath, final Promise promise) {
+    cactus.initVocoder(id, vocoderModelPath, promise);
+  }
+
+  @ReactMethod
+  public void isVocoderEnabled(double id, final Promise promise) {
+    cactus.isVocoderEnabled(id, promise);
+  }
+
+  @ReactMethod
+  public void getTTSType(double id, final Promise promise) {
+    cactus.getTTSType(id, promise);
+  }
+
+  @ReactMethod
+  public void getFormattedAudioCompletion(double id, final String speakerJsonStr, final String textToSpeak, final Promise promise) {
+    cactus.getFormattedAudioCompletion(id, speakerJsonStr, textToSpeak, promise);
+  }
+
+  @ReactMethod
+  public void getAudioCompletionGuideTokens(double id, final String textToSpeak, final Promise promise) {
+    cactus.getAudioCompletionGuideTokens(id, textToSpeak, promise);
+  }
+
+  @ReactMethod
+  public void decodeAudioTokens(double id, final ReadableArray tokens, final Promise promise) {
+    cactus.decodeAudioTokens(id, tokens, promise);
+  }
+
+  @ReactMethod
+  public void releaseVocoder(double id, final Promise promise) {
+    cactus.releaseVocoder(id, promise);
   }
 
   @ReactMethod

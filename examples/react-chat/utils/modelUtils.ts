@@ -1,6 +1,5 @@
-import { initLlama, LlamaContext } from "cactus-react-native-2";
 import { Platform } from "react-native";
-import { downloadModelIfNotExists } from "cactus-react-native-2";
+import { initLlama, LlamaContext, downloadModelIfNotExists } from "cactus-react-native";
 
 const modelUrl = 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf';
 

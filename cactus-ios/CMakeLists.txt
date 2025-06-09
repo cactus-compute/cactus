@@ -24,7 +24,6 @@ set(SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../cactus)
 # Define public headers
 set(PUBLIC_HEADERS
     ${SOURCE_DIR}/cactus.h
-    ${SOURCE_DIR}/cactus_ffi.h
     ${SOURCE_DIR}/llama.h
     ${SOURCE_DIR}/llama-impl.h
     ${SOURCE_DIR}/ggml.h
@@ -38,11 +37,15 @@ add_library(cactus SHARED
     ${SOURCE_DIR}/cactus_utils.cpp
     ${SOURCE_DIR}/cactus_embedding.cpp
     ${SOURCE_DIR}/cactus_lora.cpp
-    ${SOURCE_DIR}/cactus_ffi.cpp
+    ${SOURCE_DIR}/cactus_tokenization.cpp
+    ${SOURCE_DIR}/cactus_multimodal.cpp
     ${SOURCE_DIR}/cactus_tts.cpp
-    ${SOURCE_DIR}/mtmd.cpp
-    ${SOURCE_DIR}/mtmd-helper.cpp
-    ${SOURCE_DIR}/clip.cpp
+    ${SOURCE_DIR}/cactus_bench.cpp
+    ${SOURCE_DIR}/cactus_chat.cpp
+    ${SOURCE_DIR}/tools/mtmd/mtmd.cpp
+    ${SOURCE_DIR}/tools/mtmd/mtmd-audio.cpp
+    ${SOURCE_DIR}/tools/mtmd/clip.cpp
+    ${SOURCE_DIR}/tools/mtmd/mtmd-helper.cpp
     ${SOURCE_DIR}/llama.cpp
     ${SOURCE_DIR}/llama-mmap.cpp
     ${SOURCE_DIR}/llama-memory.cpp
@@ -51,6 +54,7 @@ add_library(cactus SHARED
     ${SOURCE_DIR}/llama-hparams.cpp
     ${SOURCE_DIR}/llama-model.cpp
     ${SOURCE_DIR}/llama-model-loader.cpp
+    ${SOURCE_DIR}/llama-model-saver.cpp
     ${SOURCE_DIR}/llama-kv-cache.cpp
     ${SOURCE_DIR}/llama-context.cpp
     ${SOURCE_DIR}/llama-chat.cpp
@@ -77,8 +81,6 @@ add_library(cactus SHARED
     ${SOURCE_DIR}/json-schema-to-grammar.cpp
     ${SOURCE_DIR}/unicode.cpp
     ${SOURCE_DIR}/unicode-data.cpp
-    ${SOURCE_DIR}/cactus_bench.cpp
-    ${SOURCE_DIR}/cactus_chat.cpp
     ${SOURCE_DIR}/ggml-cpu/amx/amx.cpp
     ${SOURCE_DIR}/ggml-cpu/amx/mmq.cpp
     ${SOURCE_DIR}/ggml-cpu/ggml-cpu.c
@@ -92,6 +94,8 @@ add_library(cactus SHARED
     ${SOURCE_DIR}/ggml-cpu/vec.cpp
     ${SOURCE_DIR}/ggml-cpu/ops.cpp
     ${SOURCE_DIR}/ggml-metal.m
+    ${SOURCE_DIR}/minja/minja.hpp
+    ${SOURCE_DIR}/minja/chat-template.hpp
     ${SOURCE_DIR}/json.hpp
 )
 
@@ -100,6 +104,8 @@ target_include_directories(cactus
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../cactus>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../cactus/ggml-cpu>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../cactus/minja>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../cactus/tools/mtmd>
         $<INSTALL_INTERFACE:include>
 )
 

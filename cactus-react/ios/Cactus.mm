@@ -237,9 +237,28 @@ RCT_EXPORT_METHOD(tokenize:(double)contextId
         reject(@"llama_error", @"Context not found", nil);
         return;
     }
-    NSMutableArray *tokens = [context tokenize:text];
+    NSArray *tokens = [context tokenize:text];
     resolve(@{ @"tokens": tokens });
-    [tokens release];
+}
+
+RCT_EXPORT_METHOD(tokenize:(double)contextId
+                  text:(NSString *)text
+                  mediaPaths:(NSArray *)mediaPaths
+                  withResolver:(RCTPromiseResolveBlock)resolve
+                  withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    
+    if (mediaPaths && [mediaPaths count] > 0) {
+        resolve([context tokenize:text withMediaPaths:mediaPaths]);
+    } else {
+        NSArray *tokens = [context tokenize:text];
+        resolve(@{ @"tokens": tokens });
+    }
 }
 
 RCT_EXPORT_METHOD(detokenize:(double)contextId
@@ -342,6 +361,118 @@ RCT_EXPORT_METHOD(getLoadedLoraAdapters:(double)contextId
     resolve([context getLoadedLoraAdapters]);
 }
 
+RCT_EXPORT_METHOD(initMultimodal:(double)contextId
+                 mmprojPath:(NSString *)mmprojPath
+                 useGpu:(BOOL)useGpu
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    @try {
+        BOOL result = [context initMultimodal:mmprojPath useGpu:useGpu];
+        resolve(@(result));
+    } @catch (NSException *exception) {
+        reject(@"llama_cpp_error", exception.reason, nil);
+    }
+}
+
+RCT_EXPORT_METHOD(isMultimodalEnabled:(double)contextId
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    resolve(@([context isMultimodalEnabled]));
+}
+
+RCT_EXPORT_METHOD(isMultimodalSupportVision:(double)contextId
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    resolve(@([context isMultimodalSupportVision]));
+}
+
+RCT_EXPORT_METHOD(isMultimodalSupportAudio:(double)contextId
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    resolve(@([context isMultimodalSupportAudio]));
+}
+
+RCT_EXPORT_METHOD(releaseMultimodal:(double)contextId
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    [context releaseMultimodal];
+    resolve(nil);
+}
+
+RCT_EXPORT_METHOD(multimodalCompletion:(double)contextId
+                 prompt:(NSString *)prompt
+                 mediaPaths:(NSArray *)mediaPaths
+                 completionParams:(NSDictionary *)completionParams
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    if ([context isPredicting]) {
+        reject(@"llama_error", @"Context is busy", nil);
+        return;
+    }
+    dispatch_async(llamaDQueue, ^{
+        @try {
+            @autoreleasepool {
+                NSDictionary* completionResult = [context multimodalCompletion:prompt
+                    withMediaPaths:mediaPaths
+                    params:completionParams
+                    onToken:^(NSMutableDictionary *tokenResult) {
+                        if (![completionParams[@"emit_partial_completion"] boolValue]) return;
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            [self sendEventWithName:@"@Cactus_onToken"
+                                body:@{
+                                    @"contextId": [NSNumber numberWithDouble:contextId],
+                                    @"tokenResult": tokenResult
+                                }
+                            ];
+                            [tokenResult release];
+                        });
+                    }
+                ];
+                resolve(completionResult);
+            }
+        } @catch (NSException *exception) {
+            reject(@"llama_cpp_error", exception.reason, nil);
+            [context stopCompletion];
+        }
+    });
+}
+
 RCT_EXPORT_METHOD(releaseContext:(double)contextId
                  withResolver:(RCTPromiseResolveBlock)resolve
                  withRejecter:(RCTPromiseRejectBlock)reject)
@@ -368,6 +499,116 @@ RCT_EXPORT_METHOD(releaseAllContexts:(RCTPromiseResolveBlock)resolve
     resolve(nil);
 }
 
+// New TTS/Vocoder Methods
+RCT_EXPORT_METHOD(initVocoder:(double)contextId
+                 vocoderModelPath:(NSString *)vocoderModelPath
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    @try {
+        BOOL result = [context initVocoder:vocoderModelPath];
+        resolve(@(result));
+    } @catch (NSException *exception) {
+        reject(@"llama_cpp_error", exception.reason, nil);
+    }
+}
+
+RCT_EXPORT_METHOD(isVocoderEnabled:(double)contextId
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    resolve(@([context isVocoderEnabled]));
+}
+
+RCT_EXPORT_METHOD(getTTSType:(double)contextId
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    resolve(@{ @"type": @([context getTTSType]) });
+}
+
+RCT_EXPORT_METHOD(getFormattedAudioCompletion:(double)contextId
+                 speakerJsonStr:(NSString *)speakerJsonStr
+                 textToSpeak:(NSString *)textToSpeak
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    @try {
+        NSString *result = [context getFormattedAudioCompletion:speakerJsonStr textToSpeak:textToSpeak];
+        resolve(@{ @"formatted_prompt": result });
+    } @catch (NSException *exception) {
+        reject(@"llama_cpp_error", exception.reason, nil);
+    }
+}
+
+RCT_EXPORT_METHOD(getAudioCompletionGuideTokens:(double)contextId
+                 textToSpeak:(NSString *)textToSpeak
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    @try {
+        NSArray *tokens = [context getAudioCompletionGuideTokens:textToSpeak];
+        resolve(@{ @"tokens": tokens });
+    } @catch (NSException *exception) {
+        reject(@"llama_cpp_error", exception.reason, nil);
+    }
+}
+
+RCT_EXPORT_METHOD(decodeAudioTokens:(double)contextId
+                 tokens:(NSArray *)tokens
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    @try {
+        NSArray *audioData = [context decodeAudioTokens:tokens];
+        resolve(@{ @"audio_data": audioData });
+    } @catch (NSException *exception) {
+        reject(@"llama_cpp_error", exception.reason, nil);
+    }
+}
+
+RCT_EXPORT_METHOD(releaseVocoder:(double)contextId
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    [context releaseVocoder];
+    resolve(nil);
+}
 
 - (void)invalidate {
     if (llamaContexts == nil) {

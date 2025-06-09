@@ -49,6 +49,13 @@
 #include <unistd.h>
 #endif
 
+// build info
+int LLAMA_BUILD_NUMBER = 0;
+char const *LLAMA_COMMIT = "unknown";
+char const *LLAMA_COMPILER = "unknown";
+char const *LLAMA_BUILD_TARGET = "unknown";
+
+
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
@@ -1081,6 +1088,7 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
         mparams.n_gpu_layers = params.n_gpu_layers;
     }
 
+    mparams.vocab_only      = params.vocab_only;
     mparams.main_gpu        = params.main_gpu;
     mparams.split_mode      = params.split_mode;
     mparams.tensor_split    = params.tensor_split;
@@ -1104,6 +1112,11 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
 
     mparams.progress_callback           = params.load_progress_callback;
     mparams.progress_callback_user_data = params.load_progress_callback_user_data;
+
+    if (params.progress_callback != nullptr) {
+        mparams.progress_callback = params.progress_callback;
+        mparams.progress_callback_user_data = params.progress_callback_user_data;
+    }
 
     return mparams;
 }

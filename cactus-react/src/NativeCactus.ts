@@ -278,10 +278,32 @@ export type NativeCompletionResult = {
 
 export type NativeTokenizeResult = {
   tokens: Array<number>
+  // New multimodal support
+  has_media?: boolean
+  bitmap_hashes?: Array<string>
+  chunk_pos?: Array<number>
+  chunk_pos_media?: Array<number>
 }
 
 export type NativeEmbeddingResult = {
   embedding: Array<number>
+}
+
+// New TTS/Audio types
+export type NativeTTSType = {
+  type: number // TTS_UNKNOWN = -1, TTS_OUTETTS_V0_2 = 1, TTS_OUTETTS_V0_3 = 2
+}
+
+export type NativeAudioCompletionResult = {
+  formatted_prompt: string
+}
+
+export type NativeAudioTokensResult = {
+  tokens: Array<number>
+}
+
+export type NativeAudioDecodeResult = {
+  audio_data: Array<number> // Float array of audio samples
 }
 
 export type NativeLlamaContext = {
@@ -385,8 +407,14 @@ export interface Spec extends TurboModule {
     contextId: number,
     params: NativeCompletionParams,
   ): Promise<NativeCompletionResult>
+  multimodalCompletion(
+    contextId: number,
+    prompt: string,
+    mediaPaths: string[],
+    params: NativeCompletionParams,
+  ): Promise<NativeCompletionResult>
   stopCompletion(contextId: number): Promise<void>
-  tokenize(contextId: number, text: string): Promise<NativeTokenizeResult>
+  tokenize(contextId: number, text: string, mediaPaths?: string[]): Promise<NativeTokenizeResult>
   detokenize(contextId: number, tokens: number[]): Promise<string>
   embedding(
     contextId: number,
@@ -409,6 +437,39 @@ export interface Spec extends TurboModule {
   getLoadedLoraAdapters(
     contextId: number,
   ): Promise<Array<{ path: string; scaled?: number }>>
+
+  // New Multimodal Methods
+  initMultimodal(
+    contextId: number,
+    mmprojPath: string,
+    useGpu?: boolean,
+  ): Promise<boolean>
+  isMultimodalEnabled(contextId: number): Promise<boolean>
+  isMultimodalSupportVision(contextId: number): Promise<boolean>
+  isMultimodalSupportAudio(contextId: number): Promise<boolean>
+  releaseMultimodal(contextId: number): Promise<void>
+
+  // New TTS/Vocoder Methods
+  initVocoder(
+    contextId: number,
+    vocoderModelPath: string,
+  ): Promise<boolean>
+  isVocoderEnabled(contextId: number): Promise<boolean>
+  getTTSType(contextId: number): Promise<NativeTTSType>
+  getFormattedAudioCompletion(
+    contextId: number,
+    speakerJsonStr: string,
+    textToSpeak: string,
+  ): Promise<NativeAudioCompletionResult>
+  getAudioCompletionGuideTokens(
+    contextId: number,
+    textToSpeak: string,
+  ): Promise<NativeAudioTokensResult>
+  decodeAudioTokens(
+    contextId: number,
+    tokens: number[],
+  ): Promise<NativeAudioDecodeResult>
+  releaseVocoder(contextId: number): Promise<void>
 
   releaseContext(contextId: number): Promise<void>
 
