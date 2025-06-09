@@ -1,21 +1,6 @@
 #import "CactusContext.h"
 #import <Metal/Metal.h>
 
-// Include C++ headers only in implementation file
-#if __has_include(<cactus/llama.h>)
-  #import <cactus/llama.h>
-  #import <cactus/llama-impl.h>
-  #import <cactus/ggml.h>
-  #import <cactus/cactus.h>
-  #import <cactus/json-schema-to-grammar.h>
-#else
-  #import "llama.h"
-  #import "llama-impl.h"
-  #import "ggml.h"
-  #import "cactus.h"
-  #import "json-schema-to-grammar.h"
-#endif
-
 @implementation CactusContext
 
 + (void)toggleNativeLog:(BOOL)enabled onEmitLog:(void (^)(NSString *level, NSString *text))onEmitLog {

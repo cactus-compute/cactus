@@ -8,12 +8,13 @@ if ! command -v cmake &> /dev/null; then
 fi
 
 function cp_headers() {
-  # Create the public Headers directory
   mkdir -p "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers"
-  
-  # ONLY copy the public-facing Objective-C headers
-  cp "$ROOT_DIR/cactus-react/ios/Cactus.h" "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers/"
-  cp "$ROOT_DIR/cactus-react/ios/CactusContext.h" "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers/"
+  cp "$ROOT_DIR/cactus/"*.h "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers/"
+  cp "$ROOT_DIR/cactus/"*.hpp "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers/"
+
+  mkdir -p "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers/minja"
+  cp "$ROOT_DIR/cactus/minja/"*.hpp "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers/minja/"
+  sed -i '' 's/<json.hpp>/"..\/json.hpp"/g' "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers/minja/"*.hpp
 }
 
 function build_framework() {

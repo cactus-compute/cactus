@@ -104,7 +104,6 @@ target_include_directories(cactus
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../cactus>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../cactus/ggml-cpu>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../cactus/minja>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../cactus/tools/mtmd>
         $<INSTALL_INTERFACE:include>
 )
