@@ -21,10 +21,12 @@ add_definitions(
 # Set the source directory to the cactus directory
 set(SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../cactus)
 
-# Define public headers - only expose what React Native consumers need
+# Define public headers
 set(PUBLIC_HEADERS
-    # No internal C++ headers should be exposed
-    # React Native consumers only interact through Objective-C bridge
+    ${SOURCE_DIR}/cactus.h
+    ${SOURCE_DIR}/llama.h
+    ${SOURCE_DIR}/llama-impl.h
+    ${SOURCE_DIR}/ggml.h
 )
 
 # Create library target

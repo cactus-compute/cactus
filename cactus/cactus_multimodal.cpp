@@ -1,5 +1,7 @@
 #include "cactus.h"
 #include "common.h"
+#include "tools/mtmd/mtmd.h"
+#include "tools/mtmd/clip.h"
 #include <vector>
 #include <string>
 #include <fstream>

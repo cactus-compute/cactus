@@ -8,10 +8,13 @@ if ! command -v cmake &> /dev/null; then
 fi
 
 function cp_headers() {
-  # Create Headers directory but don't copy internal C++ headers
-  # React Native consumers only need the Objective-C bridge interface
   mkdir -p "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers"
-  # No internal headers copied - proper encapsulation
+  cp "$ROOT_DIR/cactus/"*.h "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers/"
+  cp "$ROOT_DIR/cactus/"*.hpp "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers/"
+
+  mkdir -p "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers/minja"
+  cp "$ROOT_DIR/cactus/minja/"*.hpp "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers/minja/"
+  sed -i '' 's/<json.hpp>/"..\/json.hpp"/g' "$ROOT_DIR/cactus-ios/cactus.xcframework/$1/cactus.framework/Headers/minja/"*.hpp
 }
 
 function build_framework() {

@@ -1,19 +1,6 @@
 #import "CactusContext.h"
 #import <Metal/Metal.h>
 
-// Internal C++ headers - only for implementation, not exposed to framework consumers
-#include <string>
-#include <vector>
-#include <iostream>
-#include "cactus.h"
-#include "llama.h"
-#include "llama-impl.h"
-#include "ggml.h"
-#include "gguf.h"
-#include "common.h"
-#include "sampling.h"
-#include "json-schema-to-grammar.h"
-
 @implementation CactusContext
 
 + (void)toggleNativeLog:(BOOL)enabled onEmitLog:(void (^)(NSString *level, NSString *text))onEmitLog {
@@ -95,7 +82,7 @@
     BOOL isAsset = [params[@"is_model_asset"] boolValue];
     NSString *path = modelPath;
     if (isAsset) path = [[NSBundle mainBundle] pathForResource:modelPath ofType:nil];
-    defaultParams.model = [path UTF8String];
+    defaultParams.model.path = [path UTF8String];
 
     NSString *chatTemplate = params[@"chat_template"];
     if (chatTemplate) {
@@ -723,39 +710,13 @@
     
     cactus::cactus_tokenize_result tokenize_result = llama->tokenize([text UTF8String], media_paths_vector);
     
-    NSMutableDictionary *result = [[NSMutableDictionary alloc] init];
-    
-    // Add tokens array
+    // Return just the tokens array to match the method signature
     NSMutableArray *tokens = [[NSMutableArray alloc] init];
     for (const auto &tok : tokenize_result.tokens) {
         [tokens addObject:@(tok)];
     }
-    result[@"tokens"] = tokens;
     
-    // Add media info if present
-    result[@"has_media"] = @(tokenize_result.has_media);
-    
-    if (tokenize_result.has_media) {
-        NSMutableArray *bitmap_hashes = [[NSMutableArray alloc] init];
-        for (const auto &hash : tokenize_result.bitmap_hashes) {
-            [bitmap_hashes addObject:[NSString stringWithUTF8String:hash.c_str()]];
-        }
-        result[@"bitmap_hashes"] = bitmap_hashes;
-        
-        NSMutableArray *chunk_pos = [[NSMutableArray alloc] init];
-        for (const auto &pos : tokenize_result.chunk_pos) {
-            [chunk_pos addObject:@(pos)];
-        }
-        result[@"chunk_pos"] = chunk_pos;
-        
-        NSMutableArray *chunk_pos_media = [[NSMutableArray alloc] init];
-        for (const auto &pos : tokenize_result.chunk_pos_media) {
-            [chunk_pos_media addObject:@(pos)];
-        }
-        result[@"chunk_pos_media"] = chunk_pos_media;
-    }
-    
-    return result;
+    return tokens;
 }
 
 - (NSString *)detokenize:(NSArray *)tokens {

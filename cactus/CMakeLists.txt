@@ -17,7 +17,6 @@ set(CACTUS_CORE_SOURCES
     cactus_tts.cpp
     cactus_bench.cpp
     cactus_chat.cpp
-    cactus_build_info.cpp
     ggml.c
     ggml-alloc.c
     ggml-backend.cpp
