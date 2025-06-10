@@ -1,90 +1,144 @@
-import { useState, useEffect } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, View, Text } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { KeyboardAvoidingView, Platform, ScrollView, View, Text, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Header from '@/components/Header';
-import { stopWords } from '@/utils/constants';
-import { initLlamaContext } from '@/utils/modelUtils';
-import { LlamaContext } from 'cactus-react-native-3';
-import { Message, MessageBubble } from '@/components/Message';
-import { MessageField } from '@/components/MessageField';
-let context: LlamaContext | null = null;
+import { cactus, Message } from '../cactus';
+import { Header, MessageBubble, MessageField, LoadingScreen } from '../components';
 
 export default function HomeScreen() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [message, setMessage] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isModelLoaded, setIsModelLoaded] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0.0);
-  
-  const handleSendMessage = async () => {
-    setIsGenerating(true);
-    const updatedMessages: Message[] = [...messages, { role: 'user', content: message }];
-    setMessages(updatedMessages);
-    setMessage('');
-    await getLLMcompletion(updatedMessages);
-  }
+  const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [initProgress, setInitProgress] = useState(0);
+  const [currentFile, setCurrentFile] = useState('');
+  const [conversationLength, setConversationLength] = useState(0);
 
   useEffect(() => {
-    const initializeContext = async () => {
-      context = await initLlamaContext((progress) => {
-        setDownloadProgress(progress);
-      });
-      if (context) {
-        setIsModelLoaded(true);
+    const initializeCactus = async () => {
+      try {
+        await cactus.initialize((progress, file) => {
+          setInitProgress(progress);
+          setCurrentFile(file);
+        });
+        setIsInitialized(true);
+      } catch (error) {
+        console.error('Failed to initialize Cactus:', error);
+        Alert.alert('Error', 'Failed to initialize VLM context');
       }
     };
-    initializeContext();
+
+    initializeCactus();
   }, []);
 
-  const getLLMcompletion = async (messages: Message[]) => {
-    if (!context) {
-      console.error('Model not yet loaded');
-      return;
-    }
-    let _llmResponse = ''
-    setMessages(prev => [...prev, { role: 'assistant', content: _llmResponse }]);
-    await context.completion(
-      {
-        messages: messages,
-        n_predict: 512,
-        stop: stopWords,
-      },
-      (data: any) => { // streaming partial completion callback
-        if (data.token) {
-          _llmResponse += data.token;
-          setMessages(prev => [
-            ...prev.slice(0, prev.length - 1), 
-            { role: 'assistant', content: prev[prev.length - 1].content + data.token }]
-          );
-        }
-      }
-    );
+  const handleSendMessage = async () => {
+    if (!message.trim() && attachedImages.length === 0) return;
 
-    setIsGenerating(false);
-  } 
+    const userMessage: Message = {
+      role: 'user',
+      content: message,
+      images: attachedImages.length > 0 ? attachedImages : undefined
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setMessage('');
+    setAttachedImages([]);
+    setIsGenerating(true);
+
+    try {
+      const response = await cactus.generateResponse(userMessage);
+      
+      const assistantMessage: Message = {
+        role: 'assistant',
+        content: response,
+      };
+
+      setMessages(prev => [...prev, assistantMessage]);
+      setConversationLength(cactus.getConversationLength());
+    } catch (error) {
+      console.error('Error generating response:', error);
+      Alert.alert('Error', 'Failed to generate response');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleAttachImage = () => {
+    const demoImageUri = cactus.getDemoImageUri();
+    if (demoImageUri.startsWith('file://') || demoImageUri.startsWith('/')) {
+      setAttachedImages(prev => [...prev, demoImageUri]);
+    } else {
+      Alert.alert('Please wait', 'Demo image is still downloading...');
+    }
+  };
+
+  const handleRemoveImage = (index: number) => {
+    setAttachedImages(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleClearConversation = () => {
+    Alert.alert(
+      'Clear Conversation',
+      'Are you sure you want to clear the conversation history?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Clear', 
+          style: 'destructive',
+          onPress: () => {
+            cactus.clearConversation();
+            setMessages([]);
+            setConversationLength(0);
+            console.log('Conversation cleared');
+          }
+        }
+      ]
+    );
+  };
+
+  if (!isInitialized) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+        <Header />
+        <LoadingScreen progress={initProgress} currentFile={currentFile} />
+      </SafeAreaView>
+    );
+  }
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#CCCCCC' }}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <Header />
-        <ScrollView style={{ flex: 1, backgroundColor: '#FFFFFF', width: '100%', padding: '2%'}}>
-          {
-            isModelLoaded ? (
-              messages.map((message, index) => <MessageBubble message={message} key={index} />)
-            ) : (
-              <View style={{ alignItems: 'center' }}>
-                <Text>Hold tight... downloading model ({downloadProgress}%)</Text>
-              </View>
-            )
-          }
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+      <Header 
+        onClearConversation={handleClearConversation}
+        conversationLength={conversationLength}
+      />
+      <KeyboardAvoidingView 
+        style={{ flex: 1 }} 
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <ScrollView 
+          style={{ flex: 1, padding: 16 }}
+          contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end' }}
+        >
+          {messages.map((msg, index) => (
+            <MessageBubble key={index} message={msg} />
+          ))}
+          {isGenerating && (
+            <View style={{ padding: 16, alignItems: 'center' }}>
+              <Text style={{ color: '#666' }}>Generating response...</Text>
+            </View>
+          )}
         </ScrollView>
-        <MessageField 
-          message={message} 
-          setMessage={setMessage} 
-          handleSendMessage={handleSendMessage} 
-          isGenerating={isGenerating} 
+        
+        <MessageField
+          message={message}
+          setMessage={setMessage}
+          onSendMessage={handleSendMessage}
+          isGenerating={isGenerating}
+          attachedImages={attachedImages}
+          onAttachImage={handleAttachImage}
+          onRemoveImage={handleRemoveImage}
         />
-        </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
