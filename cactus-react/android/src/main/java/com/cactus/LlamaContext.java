@@ -220,9 +220,13 @@ public class LlamaContext {
   }
 
   public WritableMap completion(ReadableMap params) {
+    Log.d(NAME, "🔵 ANDROID: completion() called");
     if (!params.hasKey("prompt")) {
       throw new IllegalArgumentException("Missing required parameter: prompt");
     }
+
+    Log.d(NAME, "📝 ANDROID: prompt length = " + params.getString("prompt").length());
+    Log.d(NAME, "🧮 ANDROID: context ptr = " + this.context);
 
     double[][] logit_bias = new double[0][0];
     if (params.hasKey("logit_bias")) {
@@ -237,6 +241,7 @@ public class LlamaContext {
       }
     }
 
+    Log.d(NAME, "🚀 ANDROID: About to call doCompletion native method...");
     WritableMap result = doCompletion(
       this.context,
       // String prompt,
@@ -313,9 +318,12 @@ public class LlamaContext {
         params.hasKey("emit_partial_completion") ? params.getBoolean("emit_partial_completion") : false
       )
     );
+    Log.d(NAME, "✅ ANDROID: doCompletion returned successfully");
     if (result.hasKey("error")) {
+      Log.e(NAME, "❌ ANDROID: doCompletion returned error: " + result.getString("error"));
       throw new IllegalStateException(result.getString("error"));
     }
+    Log.d(NAME, "📤 ANDROID: completion() returning result");
     return result;
   }
 

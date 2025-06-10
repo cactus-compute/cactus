@@ -13,7 +13,7 @@ base_optimizer_flags = "-O3 -DNDEBUG"
 ios_path = 'ios'
 
 Pod::Spec.new do |s|
-  s.name         = "cactus-react-native-5"
+  s.name         = "cactus-react-native"
   s.version      = package["version"]
   s.summary      = package["description"]
   s.homepage     = package["homepage"]

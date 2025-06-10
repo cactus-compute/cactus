@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
-import { LlamaContext, multimodalCompletion, initLlama, initMultimodal } from 'cactus-react-native-3';
-import type { CactusOAICompatibleMessage } from 'cactus-react-native-3';
+import { LlamaContext, multimodalCompletion, initLlama, initMultimodal } from 'cactus-react-native';
+import type { CactusOAICompatibleMessage } from 'cactus-react-native';
 import RNFS from 'react-native-fs';
 
 export interface Message {
@@ -23,6 +23,7 @@ class CactusManager {
   private isInitialized = false;
   private conversationHistory: CactusOAICompatibleMessage[] = [];
   private demoImagePath: string | null = null;
+  private lastInteractionWasMultimodal = false;
 
   async downloadFile(url: string, fileName: string, progressCallback: (progress: number, file: string) => void): Promise<string> {
     const documentsPath = RNFS.DocumentDirectoryPath;
@@ -129,47 +130,70 @@ class CactusManager {
       throw new Error('Cactus context not initialized');
     }
 
-    // Add user message to conversation history
+    console.log('🚀 generateResponse called');
+
+    const isCurrentlyMultimodal = !!(userMessage.images && userMessage.images.length > 0);
+    
+    // Clear conversation history when switching between modes to prevent context bleeding
+    if (this.lastInteractionWasMultimodal !== isCurrentlyMultimodal) {
+      console.log(`🔄 Switching from ${this.lastInteractionWasMultimodal ? 'multimodal' : 'text'} to ${isCurrentlyMultimodal ? 'multimodal' : 'text'} mode - clearing history`);
+      this.conversationHistory = [];
+    }
+
+    this.lastInteractionWasMultimodal = isCurrentlyMultimodal;
+
     if (userMessage.images && userMessage.images.length > 0) {
       // For multimodal messages, use the demo image path
       const localImagePaths = userMessage.images.map(() => this.demoImagePath!).filter(Boolean);
       
-      console.log('Using multimodal completion with local images:', localImagePaths);
+      console.log('🖼️ Using multimodal completion with local images:', localImagePaths);
       
-      // Build conversation context from history
-      let conversationContext = '';
-      this.conversationHistory.forEach(msg => {
-        conversationContext += `${msg.role === 'user' ? 'Human' : 'Assistant'}: ${msg.content}\n`;
+      // Add user message to conversation history first
+      this.conversationHistory.push({
+        role: 'user',
+        content: userMessage.content
       });
-      conversationContext += `Human: ${userMessage.content}`;
-      
-      const result = await multimodalCompletion(
+
+      // Use proper chat template formatting for multimodal - get formatted prompt first
+      const formattedPrompt = await this.context.getFormattedChat(
+        this.conversationHistory,
+        undefined, // Let the model use its default chat template
+        { jinja: true }
+      );
+
+      // Extract prompt string from formatted result
+      const promptString = typeof formattedPrompt === 'string' ? formattedPrompt : formattedPrompt.prompt;
+
+      console.log('📝 Formatted multimodal prompt:', promptString.substring(0, 100) + '...');
+
+      // Use multimodal completion with properly formatted prompt
+      const multimodalResult = await multimodalCompletion(
         this.context.id,
-        conversationContext,
+        promptString,
         localImagePaths,
         {
-          prompt: conversationContext,
+          prompt: promptString,
           n_predict: 256,
           stop: stopWords,
-          emit_partial_completion: false
+          temperature: 0.3, // Slightly higher to reduce repetition but still focused
+          top_p: 0.9,
+          penalty_repeat: 1.1, // Prevent repetitive outputs
+          emit_partial_completion: false,
         }
       );
 
-      const responseText = result.text || 'No response generated';
+      const responseText = multimodalResult.text || 'No response generated';
       
-      // Add both user and assistant messages to history
-      this.conversationHistory.push({
-        role: 'user',
-        content: userMessage.content + (userMessage.images ? ' [image attached]' : '')
-      });
+      // Add assistant response to history
       this.conversationHistory.push({
         role: 'assistant', 
         content: responseText
       });
 
+      console.log('🖼️ Multimodal completion finished');
       return responseText;
     } else {
-      // For text-only messages, use proper chat template formatting
+      // For text-only messages, use pure text completion to avoid visual interference
       
       // Add user message to conversation history
       this.conversationHistory.push({
@@ -177,30 +201,45 @@ class CactusManager {
         content: userMessage.content
       });
 
-      console.log('Using chat template completion for text-only message');
-      console.log('Conversation history length:', this.conversationHistory.length);
+      console.log('🔤 Using pure text completion (no image context)');
+      console.log('📊 Conversation history length:', this.conversationHistory.length);
+      console.log('🏁 About to call context.completion...');
 
-      const result = await this.context.completion({
-        messages: this.conversationHistory,
-        n_predict: 256,
-        stop: stopWords
-      });
+      try {
+        // Use text-only completion with explicit empty image array to prevent visual context
+        const result = await this.context.completion({
+          messages: this.conversationHistory,
+          n_predict: 256,
+          stop: stopWords,
+          temperature: 0.7, // Higher temperature for creative text responses
+          top_p: 0.9,
+          penalty_repeat: 1.05, // Light repetition penalty for text
+        });
 
-      const responseText = result.text || 'No response generated';
-      
-      // Add assistant response to history
-      this.conversationHistory.push({
-        role: 'assistant',
-        content: responseText
-      });
+        console.log('✅ Text completion successful, result received');
+        console.log('📝 Response length:', result.text?.length || 0);
 
-      return responseText;
+        const responseText = result.text || 'No response generated';
+        
+        // Add assistant response to history
+        this.conversationHistory.push({
+          role: 'assistant',
+          content: responseText
+        });
+
+        console.log('💾 Text response added to history');
+        return responseText;
+      } catch (error) {
+        console.error('❌ Text completion failed:', error);
+        throw error;
+      }
     }
   }
 
   clearConversation(): void {
     this.conversationHistory = [];
-    console.log('Conversation history cleared');
+    this.lastInteractionWasMultimodal = false;
+    console.log('Conversation history cleared and interaction mode reset');
   }
 
   getDemoImageUri(): string {

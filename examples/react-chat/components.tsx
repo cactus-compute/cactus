@@ -27,7 +27,7 @@ export const Header = ({ onClearConversation, conversationLength }: {
         }}
       >
         <Text style={{ color: 'white', fontSize: 12, fontWeight: '600' }}>
-          Clear ({String(conversationLength)})
+          Clear ({conversationLength?.toString() || '0'})
         </Text>
       </TouchableOpacity>
     )}
@@ -67,7 +67,7 @@ export const MessageBubble = ({ message }: { message: Message }) => (
       color: message.role === 'user' ? 'white' : 'black',
       fontSize: 16,
     }}>
-      {String(message.content || '')}
+      {message.content?.toString() || ''}
     </Text>
   </View>
 );
@@ -123,7 +123,7 @@ export const MessageField = ({
                 alignItems: 'center',
               }}
             >
-              <Text style={{ color: 'white', fontSize: 16, fontWeight: 'bold' }}>{"×"}</Text>
+              <Text style={{ color: 'white', fontSize: 16, fontWeight: 'bold' }}>×</Text>
             </TouchableOpacity>
           </View>
         ))}
@@ -143,7 +143,7 @@ export const MessageField = ({
           alignItems: 'center',
         }}
       >
-        <Text style={{ color: 'white', fontSize: 16 }}>{"📷"}</Text>
+        <Text style={{ color: 'white', fontSize: 16 }}>📷</Text>
       </TouchableOpacity>
 
       {/* Text Input */}
@@ -196,7 +196,7 @@ export const LoadingScreen = ({ progress, currentFile }: { progress: number; cur
       {(progress * 100).toFixed(1)}%
     </Text>
     <Text style={{ fontSize: 14, color: '#666', textAlign: 'center' }}>
-      {String(currentFile || 'Loading...')}
+      {currentFile?.toString() || 'Loading...'}
     </Text>
   </View>
 ); 

@@ -13,6 +13,7 @@ import com.facebook.react.bridge.LifecycleEventListener;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.Arguments;
 
 import java.util.HashMap;
@@ -248,23 +249,31 @@ public class Cactus implements LifecycleEventListener {
   }
 
   public void completion(double id, final ReadableMap params, final Promise promise) {
+    Log.d(NAME, "🟢 BRIDGE: completion() method called with contextId=" + (int)id);
     final int contextId = (int) id;
     AsyncTask task = new AsyncTask<Void, Void, WritableMap>() {
       private Exception exception;
 
       @Override
       protected WritableMap doInBackground(Void... voids) {
+        Log.d(NAME, "⚡ BRIDGE: AsyncTask doInBackground starting...");
         try {
           LlamaContext context = contexts.get(contextId);
           if (context == null) {
+            Log.e(NAME, "❌ BRIDGE: Context not found for id=" + contextId);
             throw new Exception("Context not found");
           }
+          Log.d(NAME, "✅ BRIDGE: Context found, checking if predicting...");
           if (context.isPredicting()) {
+            Log.e(NAME, "❌ BRIDGE: Context is busy (predicting)");
             throw new Exception("Context is busy");
           }
+          Log.d(NAME, "🚀 BRIDGE: About to call context.completion()...");
           WritableMap result = context.completion(params);
+          Log.d(NAME, "✅ BRIDGE: context.completion() returned successfully");
           return result;
         } catch (Exception e) {
+          Log.e(NAME, "❌ BRIDGE: Exception in doInBackground: " + e.getMessage());
           exception = e;
         }
         return null;
@@ -272,14 +281,19 @@ public class Cactus implements LifecycleEventListener {
 
       @Override
       protected void onPostExecute(WritableMap result) {
+        Log.d(NAME, "📤 BRIDGE: onPostExecute called");
         if (exception != null) {
+          Log.e(NAME, "❌ BRIDGE: Rejecting promise with exception: " + exception.getMessage());
           promise.reject(exception);
           return;
         }
+        Log.d(NAME, "✅ BRIDGE: Resolving promise with result");
         promise.resolve(result);
         tasks.remove(this);
+        Log.d(NAME, "🏁 BRIDGE: completion() finished successfully");
       }
     }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    Log.d(NAME, "📋 BRIDGE: AsyncTask queued for execution");
     tasks.put(task, "completion-" + contextId);
   }
 

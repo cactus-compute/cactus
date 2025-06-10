@@ -1,6 +1,6 @@
 {
-  "name": "cactus-react-native-5",
-  "version": "0.0.3",
+  "name": "cactus-react-native",
+  "version": "0.1.0",
   "description": "Run AI models locally on mobile devices",
   "main": "lib/commonjs/index",
   "module": "lib/module/index",
