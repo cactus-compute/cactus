@@ -5,4 +5,4 @@ make
 
 ln -sf ../../../cactus/ggml-llama.metallib default.metallib
 
-./cactus_llm
+./cactus_vlm_ffi

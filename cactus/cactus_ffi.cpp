@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <sstream>
 #include <iostream>
+#include <climits>
 
 static std::vector<std::string> c_str_array_to_vector(const char** arr, int count) {
     std::vector<std::string> vec;
@@ -188,6 +189,115 @@ int cactus_completion_c(
 
     } catch (const std::exception& e) {
         std::cerr << "Error during completion: " << e.what() << std::endl;
+        context->is_predicting = false;
+        context->is_interrupted = true;
+        return -3;
+    } catch (...) {
+        context->is_predicting = false;
+        context->is_interrupted = true;
+        return -4;
+    }
+}
+
+int cactus_multimodal_completion_c(
+    cactus_context_handle_t handle,
+    const cactus_completion_params_c_t* params,
+    const char** media_paths,
+    int media_count,
+    cactus_completion_result_c_t* result
+) {
+    if (!handle || !params || !result) {
+        return -1; // Invalid arguments
+    }
+    
+    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
+    memset(result, 0, sizeof(cactus_completion_result_c_t));
+
+    try {
+        // Rewind context for new generation
+        context->rewind();
+
+        // Set up parameters
+        context->params.prompt = params->prompt ? params->prompt : "";
+        if (params->n_threads > 0) {
+            context->params.cpuparams.n_threads = params->n_threads;
+        }
+        context->params.n_predict = params->n_predict;
+        context->params.sampling.seed = params->seed;
+        context->params.sampling.temp = params->temperature;
+        context->params.sampling.top_k = params->top_k;
+        context->params.sampling.top_p = params->top_p;
+        context->params.sampling.min_p = params->min_p;
+        context->params.sampling.typ_p = params->typical_p;
+        context->params.sampling.penalty_last_n = params->penalty_last_n;
+        context->params.sampling.penalty_repeat = params->penalty_repeat;
+        context->params.sampling.penalty_freq = params->penalty_freq;
+        context->params.sampling.penalty_present = params->penalty_present;
+        context->params.sampling.mirostat = params->mirostat;
+        context->params.sampling.mirostat_tau = params->mirostat_tau;
+        context->params.sampling.mirostat_eta = params->mirostat_eta;
+        context->params.sampling.ignore_eos = params->ignore_eos;
+        context->params.sampling.n_probs = params->n_probs;
+        context->params.antiprompt = c_str_array_to_vector(params->stop_sequences, params->stop_sequence_count);
+        if (params->grammar) {
+            context->params.sampling.grammar = params->grammar;
+        }
+
+        // Initialize sampling
+        if (!context->initSampling()) {
+            return -2;
+        }
+
+        // Begin completion
+        context->beginCompletion();
+
+        // Load prompt with media if provided
+        if (media_paths && media_count > 0) {
+            std::vector<std::string> media_vec;
+            for (int i = 0; i < media_count; ++i) {
+                if (media_paths[i]) {
+                    media_vec.push_back(media_paths[i]);
+                }
+            }
+            context->loadPrompt(media_vec);
+        } else {
+            context->loadPrompt();
+        }
+
+        // Generate tokens
+        while (context->has_next_token && !context->is_interrupted) {
+            const cactus::completion_token_output token_with_probs = context->doCompletion();
+            
+            if (token_with_probs.tok == -1 && !context->has_next_token) {
+                break;
+            }
+            
+            if (token_with_probs.tok != -1 && params->token_callback) {
+                std::string token_text = common_token_to_piece(context->ctx, token_with_probs.tok);
+                
+                bool continue_completion = params->token_callback(token_text.c_str());
+                if (!continue_completion) {
+                    context->is_interrupted = true;
+                    break;
+                }
+            }
+        }
+
+        // Set results
+        result->text = safe_strdup(context->generated_text);
+        result->tokens_predicted = context->num_tokens_predicted;
+        result->tokens_evaluated = context->num_prompt_tokens;
+        result->truncated = context->truncated;
+        result->stopped_eos = context->stopped_eos;
+        result->stopped_word = context->stopped_word;
+        result->stopped_limit = context->stopped_limit;
+        result->stopping_word = safe_strdup(context->stopping_word);
+
+        context->is_predicting = false;
+        return 0;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error during multimodal completion: " << e.what() << std::endl;
         context->is_predicting = false;
         context->is_interrupted = true;
         return -3;
@@ -808,6 +918,45 @@ char* cactus_get_formatted_chat_c(cactus_context_handle_t handle, const char* me
     }
 }
 
+cactus_chat_result_c_t cactus_get_formatted_chat_with_jinja_c(
+    cactus_context_handle_t handle, 
+    const char* messages,
+    const char* chat_template,
+    const char* json_schema,
+    const char* tools,
+    bool parallel_tool_calls,
+    const char* tool_choice
+) {
+    cactus_chat_result_c_t result = {nullptr, nullptr, nullptr, nullptr, false};
+    
+    if (!handle || !messages) {
+        return result;
+    }
+    
+    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
+    try {
+        std::string template_str = chat_template ? chat_template : "";
+        std::string schema_str = json_schema ? json_schema : "";
+        std::string tools_str = tools ? tools : "";
+        std::string tool_choice_str = tool_choice ? tool_choice : "";
+        
+        common_chat_params chat_result = context->getFormattedChatWithJinja(
+            messages, template_str, schema_str, tools_str, parallel_tool_calls, tool_choice_str
+        );
+        
+        result.prompt = safe_strdup(chat_result.prompt);
+        result.json_schema = safe_strdup(schema_str);
+        result.tools = safe_strdup(tools_str);
+        result.tool_choice = safe_strdup(tool_choice_str);
+        result.parallel_tool_calls = parallel_tool_calls;
+        
+        return result;
+    } catch (const std::exception& e) {
+        std::cerr << "Error formatting chat with Jinja: " << e.what() << std::endl;
+        return result;
+    }
+}
+
 void cactus_rewind_c(cactus_context_handle_t handle) {
     if (!handle) {
         return;
@@ -832,6 +981,105 @@ bool cactus_init_sampling_c(cactus_context_handle_t handle) {
     } catch (const std::exception& e) {
         std::cerr << "Error initializing sampling: " << e.what() << std::endl;
         return false;
+    }
+}
+
+void cactus_begin_completion_c(cactus_context_handle_t handle) {
+    if (!handle) {
+        return;
+    }
+    
+    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
+    try {
+        context->beginCompletion();
+    } catch (const std::exception& e) {
+        std::cerr << "Error beginning completion: " << e.what() << std::endl;
+    }
+}
+
+void cactus_end_completion_c(cactus_context_handle_t handle) {
+    if (!handle) {
+        return;
+    }
+    
+    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
+    try {
+        context->endCompletion();
+    } catch (const std::exception& e) {
+        std::cerr << "Error ending completion: " << e.what() << std::endl;
+    }
+}
+
+void cactus_load_prompt_c(cactus_context_handle_t handle) {
+    if (!handle) {
+        return;
+    }
+    
+    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
+    try {
+        context->loadPrompt();
+    } catch (const std::exception& e) {
+        std::cerr << "Error loading prompt: " << e.what() << std::endl;
+    }
+}
+
+void cactus_load_prompt_with_media_c(cactus_context_handle_t handle, const char** media_paths, int media_count) {
+    if (!handle) {
+        return;
+    }
+    
+    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
+    try {
+        std::vector<std::string> media_vec;
+        if (media_paths && media_count > 0) {
+            for (int i = 0; i < media_count; ++i) {
+                if (media_paths[i]) {
+                    media_vec.push_back(media_paths[i]);
+                }
+            }
+        }
+        context->loadPrompt(media_vec);
+    } catch (const std::exception& e) {
+        std::cerr << "Error loading prompt with media: " << e.what() << std::endl;
+    }
+}
+
+int cactus_do_completion_step_c(cactus_context_handle_t handle, char** token_text) {
+    if (!handle || !token_text) {
+        return -1;
+    }
+    
+    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
+    try {
+        cactus::completion_token_output token_output = context->doCompletion();
+        
+        if (token_output.tok == -1) {
+            *token_text = safe_strdup("");
+            return -1;
+        }
+        
+        std::string token_str = cactus::tokens_to_output_formatted_string(context->ctx, token_output.tok);
+        *token_text = safe_strdup(token_str);
+        return token_output.tok;
+    } catch (const std::exception& e) {
+        std::cerr << "Error doing completion step: " << e.what() << std::endl;
+        *token_text = safe_strdup("");
+        return -1;
+    }
+}
+
+size_t cactus_find_stopping_strings_c(cactus_context_handle_t handle, const char* text, size_t last_token_size, int stop_type) {
+    if (!handle || !text) {
+        return SIZE_MAX;
+    }
+    
+    cactus::cactus_context* context = reinterpret_cast<cactus::cactus_context*>(handle);
+    try {
+        cactus::stop_type type = static_cast<cactus::stop_type>(stop_type);
+        return context->findStoppingStrings(text, last_token_size, type);
+    } catch (const std::exception& e) {
+        std::cerr << "Error finding stopping strings: " << e.what() << std::endl;
+        return SIZE_MAX;
     }
 }
 
@@ -922,6 +1170,20 @@ void cactus_free_lora_adapters_c(cactus_lora_adapters_c_t* adapters) {
         free(adapters->adapters);
         adapters->adapters = nullptr;
         adapters->count = 0;
+    }
+}
+
+void cactus_free_chat_result_members_c(cactus_chat_result_c_t* result) {
+    if (result) {
+        cactus_free_string_c(result->prompt);
+        cactus_free_string_c(result->json_schema);
+        cactus_free_string_c(result->tools);
+        cactus_free_string_c(result->tool_choice);
+        result->prompt = nullptr;
+        result->json_schema = nullptr;
+        result->tools = nullptr;
+        result->tool_choice = nullptr;
+        result->parallel_tool_calls = false;
     }
 }
 
