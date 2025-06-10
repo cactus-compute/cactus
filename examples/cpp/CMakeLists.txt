@@ -15,11 +15,14 @@ include_directories(
 
 add_subdirectory(../../cactus ${CMAKE_BINARY_DIR}/cactus_core_build)
 
-add_executable(test_vision_language
-    main.cpp
-)
+# Create separate executables for each example
+add_executable(cactus_vlm main_vlm.cpp)
+add_executable(cactus_embed main_embed.cpp)
+add_executable(cactus_llm main_llm.cpp)
+add_executable(cactus_tts main_tts.cpp)
 
-target_link_libraries(test_vision_language
-    PRIVATE
-    cactus_core_lib
-)
+# Link each executable to the core library
+target_link_libraries(cactus_vlm PRIVATE cactus_core_lib)
+target_link_libraries(cactus_embed PRIVATE cactus_core_lib)
+target_link_libraries(cactus_llm PRIVATE cactus_core_lib)
+target_link_libraries(cactus_tts PRIVATE cactus_core_lib)
