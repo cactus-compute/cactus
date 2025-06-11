@@ -5,7 +5,6 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 export LEFTHOOK=0 
 
-# Remove node_modules if they still exist
 [ -d node_modules ] && rm -rf node_modules
 [ -d lib ] && rm -rf lib 
 

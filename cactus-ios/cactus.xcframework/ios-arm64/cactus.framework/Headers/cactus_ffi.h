@@ -127,6 +127,15 @@ CACTUS_FFI_EXPORT int cactus_completion_c(
     cactus_completion_result_c_t* result
 );
 
+// **MULTIMODAL COMPLETION**
+CACTUS_FFI_EXPORT int cactus_multimodal_completion_c(
+    cactus_context_handle_t handle,
+    const cactus_completion_params_c_t* params,
+    const char** media_paths,
+    int media_count,
+    cactus_completion_result_c_t* result
+);
+
 CACTUS_FFI_EXPORT void cactus_stop_completion_c(cactus_context_handle_t handle);
 
 CACTUS_FFI_EXPORT cactus_token_array_c_t cactus_tokenize_c(cactus_context_handle_t handle, const char* text);
@@ -207,9 +216,38 @@ CACTUS_FFI_EXPORT cactus_lora_adapters_c_t cactus_get_loaded_lora_adapters_c(cac
 CACTUS_FFI_EXPORT bool cactus_validate_chat_template_c(cactus_context_handle_t handle, bool use_jinja, const char* name);
 CACTUS_FFI_EXPORT char* cactus_get_formatted_chat_c(cactus_context_handle_t handle, const char* messages, const char* chat_template);
 
+// **ADVANCED: Chat with Jinja and Tools Support**
+typedef struct {
+    char* prompt;
+    char* json_schema;
+    char* tools;
+    char* tool_choice;
+    bool parallel_tool_calls;
+} cactus_chat_result_c_t;
+
+CACTUS_FFI_EXPORT cactus_chat_result_c_t cactus_get_formatted_chat_with_jinja_c(
+    cactus_context_handle_t handle, 
+    const char* messages,
+    const char* chat_template,
+    const char* json_schema,
+    const char* tools,
+    bool parallel_tool_calls,
+    const char* tool_choice
+);
+
 // **HIGH PRIORITY: Context Management**
 CACTUS_FFI_EXPORT void cactus_rewind_c(cactus_context_handle_t handle);
 CACTUS_FFI_EXPORT bool cactus_init_sampling_c(cactus_context_handle_t handle);
+
+// **COMPLETION CONTROL**
+CACTUS_FFI_EXPORT void cactus_begin_completion_c(cactus_context_handle_t handle);
+CACTUS_FFI_EXPORT void cactus_end_completion_c(cactus_context_handle_t handle);
+CACTUS_FFI_EXPORT void cactus_load_prompt_c(cactus_context_handle_t handle);
+CACTUS_FFI_EXPORT void cactus_load_prompt_with_media_c(cactus_context_handle_t handle, const char** media_paths, int media_count);
+
+// **TOKEN PROCESSING**
+CACTUS_FFI_EXPORT int cactus_do_completion_step_c(cactus_context_handle_t handle, char** token_text);
+CACTUS_FFI_EXPORT size_t cactus_find_stopping_strings_c(cactus_context_handle_t handle, const char* text, size_t last_token_size, int stop_type);
 
 // **HIGH PRIORITY: Model Information**
 CACTUS_FFI_EXPORT int32_t cactus_get_n_ctx_c(cactus_context_handle_t handle);
@@ -221,6 +259,7 @@ CACTUS_FFI_EXPORT int64_t cactus_get_model_params_c(cactus_context_handle_t hand
 // Memory management functions
 CACTUS_FFI_EXPORT void cactus_free_bench_result_members_c(cactus_bench_result_c_t* result);
 CACTUS_FFI_EXPORT void cactus_free_lora_adapters_c(cactus_lora_adapters_c_t* adapters);
+CACTUS_FFI_EXPORT void cactus_free_chat_result_members_c(cactus_chat_result_c_t* result);
 
 #ifdef __cplusplus
 }

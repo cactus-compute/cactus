@@ -70,11 +70,21 @@ class _ChatScreenState extends State<ChatScreen> {
       appBar: AppBar(
         title: const Text('Cactus Flutter Chat'),
         actions: [
+          ValueListenableBuilder<List<ChatMessage>>(
+            valueListenable: _cactusService.chatMessages,
+            builder: (context, chatMessages, child) {
+              return IconButton(
+                icon: const Icon(Icons.clear_all),
+                onPressed: chatMessages.isEmpty ? null : () => _cactusService.clearConversation(),
+                tooltip: 'Clear Conversation',
+              );
+            }
+          ),
           ValueListenableBuilder<bool>(
             valueListenable: _cactusService.isBenchmarking,
             builder: (context, isBenchmarking, child) {
               return IconButton(
-                icon: const Icon(Icons.memory), // Benchmark icon
+                icon: const Icon(Icons.memory),
                 onPressed: isBenchmarking || _cactusService.isLoading.value ? null : () => _cactusService.runBenchmark(),
                 tooltip: 'Run Benchmark',
               );

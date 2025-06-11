@@ -24,6 +24,7 @@ set(SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../cactus)
 # Define public headers
 set(PUBLIC_HEADERS
     ${SOURCE_DIR}/cactus.h
+    ${SOURCE_DIR}/cactus_ffi.h
     ${SOURCE_DIR}/llama.h
     ${SOURCE_DIR}/llama-impl.h
     ${SOURCE_DIR}/ggml.h
@@ -42,6 +43,7 @@ add_library(cactus SHARED
     ${SOURCE_DIR}/cactus_tts.cpp
     ${SOURCE_DIR}/cactus_bench.cpp
     ${SOURCE_DIR}/cactus_chat.cpp
+    ${SOURCE_DIR}/cactus_ffi.cpp
     ${SOURCE_DIR}/tools/mtmd/mtmd.cpp
     ${SOURCE_DIR}/tools/mtmd/mtmd-audio.cpp
     ${SOURCE_DIR}/tools/mtmd/clip.cpp

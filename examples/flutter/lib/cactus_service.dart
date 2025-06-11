@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/foundation.dart'; // For ValueNotifier
-import 'package:flutter/services.dart'; // For rootBundle
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:cactus/cactus.dart';
 
@@ -19,7 +19,9 @@ class CactusService {
   final ValueNotifier<String?> imagePathForNextMessage = ValueNotifier(null);
   final ValueNotifier<String?> stagedAssetPath = ValueNotifier(null); // For image picker display
 
- Future<void> initialize() async {
+  bool _lastInteractionWasMultimodal = false;
+
+  Future<void> initialize() async {
     isLoading.value = true;
     initError.value = null;
     statusMessage.value = 'Initializing plugin...';
@@ -52,11 +54,6 @@ class CactusService {
         statusMessage.value = 'Initialization failed: ${initError.value}';
       }
 
-    } on CactusModelPathException catch (e) {
-      initError.value = "Model Error: ${e.message}";
-      statusMessage.value = 'Failed to load model: ${e.message}';
-      isLoading.value = false;
-      debugPrint("Cactus Model Path Exception: ${e.toString()}");
     } on CactusInitializationException catch (e) {
       initError.value = "Initialization Error: ${e.message}";
       statusMessage.value = 'Failed to initialize context: ${e.message}';
@@ -76,42 +73,43 @@ class CactusService {
       return;
     }
 
-    String currentAssistantResponse = "";
-    final userMessageContent = userInput; 
-
-    final userMessage = ChatMessage(
-      role: 'user',
-      content: userMessageContent,
-    );
-
-    final List<ChatMessage> updatedMessages = List.from(chatMessages.value);
-    updatedMessages.add(userMessage);
-    updatedMessages.add(ChatMessage(role: 'assistant', content: currentAssistantResponse));
-    chatMessages.value = updatedMessages;
-    isLoading.value = true;
-
+    final userMessage = ChatMessage(role: 'user', content: userInput);
     final String? imagePathToSend = imagePathForNextMessage.value;
+    bool isCurrentlyMultimodal = imagePathToSend != null;
+
     imagePathForNextMessage.value = null;
     stagedAssetPath.value = null;
 
+    List<ChatMessage> workingHistory = List.from(chatMessages.value);
+    
+    if (_lastInteractionWasMultimodal != isCurrentlyMultimodal) {
+      debugPrint("Mode switch: ${_lastInteractionWasMultimodal ? 'multimodal' : 'text'} -> ${isCurrentlyMultimodal ? 'multimodal' : 'text'}, clearing history");
+      workingHistory.clear();
+    }
+    _lastInteractionWasMultimodal = isCurrentlyMultimodal;
+
+    workingHistory.add(userMessage);
+    workingHistory.add(ChatMessage(role: 'assistant', content: ''));
+    chatMessages.value = workingHistory;
+    isLoading.value = true;
+
+    String currentAssistantResponse = "";
+
     try {
-      List<ChatMessage> currentChatHistoryForCompletion = List.from(chatMessages.value);
-      if (currentChatHistoryForCompletion.isNotEmpty &&
-          currentChatHistoryForCompletion.last.role == 'assistant' &&
-          currentChatHistoryForCompletion.last.content.isEmpty) {
-        currentChatHistoryForCompletion.removeLast();
+      List<ChatMessage> completionHistory = List.from(workingHistory);
+      if (completionHistory.isNotEmpty && completionHistory.last.role == 'assistant' && completionHistory.last.content.isEmpty) {
+        completionHistory.removeLast();
       }
 
       final completionParams = CactusCompletionParams(
-        messages: currentChatHistoryForCompletion,
-        imagePath: imagePathToSend,
+        messages: completionHistory,
         stopSequences: ['<|im_end|>', '<end_of_utterance>'],
-        temperature: 0.7,
+        temperature: isCurrentlyMultimodal ? 0.3 : 0.7,
         topK: 10,
         topP: 0.9,
+        penaltyRepeat: isCurrentlyMultimodal ? 1.1 : 1.05,
         onNewToken: (String token) {
           if (!isLoading.value) return false;
-
           if (token == '<|im_end|>') return false;
 
           if (token.isNotEmpty) {
@@ -129,9 +127,17 @@ class CactusService {
         },
       );
 
-      final result = await _cactusContext!.completion(completionParams);
-      String finalCleanText = result.text.trim(); 
+      CactusCompletionResult result;
       
+      if (isCurrentlyMultimodal) {
+        debugPrint("Using multimodal completion");
+        result = await _cactusContext!.multimodalCompletion(completionParams, [imagePathToSend]);
+      } else {
+        debugPrint("Using text-only completion");
+        result = await _cactusContext!.completion(completionParams);
+      }
+
+      String finalCleanText = result.text.trim();
       if (finalCleanText.isEmpty && currentAssistantResponse.trim().isNotEmpty) {
         finalCleanText = currentAssistantResponse.trim();
       }
@@ -140,11 +146,11 @@ class CactusService {
       if (finalMessages.isNotEmpty && finalMessages.last.role == 'assistant') {
         finalMessages[finalMessages.length - 1] = ChatMessage(
           role: 'assistant',
-          content: finalCleanText.isNotEmpty ? finalCleanText : "(No further response)",
-          tokensPerSecond: result.tokensPerSecond,
+          content: finalCleanText.isNotEmpty ? finalCleanText : "(No response generated)",
         );
         chatMessages.value = finalMessages;
       }
+
     } on CactusCompletionException catch (e) {
       _addErrorMessageToChat("Completion Error: ${e.message}");
       debugPrint("Cactus Completion Exception: ${e.toString()}");
@@ -203,6 +209,12 @@ class CactusService {
   void clearStagedImage() {
     imagePathForNextMessage.value = null;
     stagedAssetPath.value = null;
+  }
+
+  void clearConversation() {
+    chatMessages.value = [];
+    _lastInteractionWasMultimodal = false;
+    debugPrint("Conversation history cleared and interaction mode reset");
   }
 
   void dispose() {

@@ -3,11 +3,8 @@ cmake_minimum_required(VERSION 3.10)
 project(cactus)
 
 set(CMAKE_CXX_STANDARD 17)
-
-# Use cactus as the C++ source directory
 set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../../../../cactus)
 
-# Include directories to match cactus core structure
 include_directories(${SOURCE_DIR})
 include_directories(${SOURCE_DIR}/ggml-cpu)
 include_directories(${SOURCE_DIR}/minja)
@@ -127,7 +124,6 @@ function(build_library target_name cpu_flags)
 
 endfunction()
 
-# Default target (no specific CPU features)
 build_library("cactus" "")
 
 if (${ANDROID_ABI} STREQUAL "arm64-v8a")

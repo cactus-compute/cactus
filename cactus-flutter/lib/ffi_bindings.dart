@@ -8,8 +8,7 @@ typedef CactusContextHandle = Pointer<CactusContextOpaque>;
 
 final class CactusInitParamsC extends Struct {
   external Pointer<Utf8> model_path;
-  external Pointer<Utf8> mmproj_path;
-  external Pointer<Utf8> chat_template; 
+  external Pointer<Utf8> chat_template;
 
   @Int32()
   external int n_ctx;
@@ -37,18 +36,11 @@ final class CactusInitParamsC extends Struct {
   external Pointer<Utf8> cache_type_v;
 
   external Pointer<NativeFunction<Void Function(Float)>> progress_callback;
-  @Bool()
-  external bool warmup;
-  @Bool()
-  external bool mmproj_use_gpu;
-  @Int32()
-  external int main_gpu;
 }
 
+// STRUCT: cactus_completion_params_c_t (matches C++ exactly)
 final class CactusCompletionParamsC extends Struct {
   external Pointer<Utf8> prompt;
-  external Pointer<Utf8> image_path;
-
   @Int32()
   external int n_predict;
   @Int32()
@@ -83,7 +75,7 @@ final class CactusCompletionParamsC extends Struct {
   external bool ignore_eos;
   @Int32()
   external int n_probs;
-  external Pointer<Pointer<Utf8>> stop_sequences; 
+  external Pointer<Pointer<Utf8>> stop_sequences;
   @Int32()
   external int stop_sequence_count;
   external Pointer<Utf8> grammar;
@@ -91,18 +83,21 @@ final class CactusCompletionParamsC extends Struct {
   external Pointer<NativeFunction<Bool Function(Pointer<Utf8>)>> token_callback;
 }
 
+// STRUCT: cactus_token_array_c_t (matches C++ exactly)
 final class CactusTokenArrayC extends Struct {
   external Pointer<Int32> tokens;
   @Int32()
   external int count;
 }
 
+// STRUCT: cactus_float_array_c_t (matches C++ exactly)
 final class CactusFloatArrayC extends Struct {
-  external Pointer<Float> values; 
+  external Pointer<Float> values;
   @Int32()
   external int count;
 }
 
+// STRUCT: cactus_completion_result_c_t (matches C++ exactly)
 final class CactusCompletionResultC extends Struct {
   external Pointer<Utf8> text;
   @Int32()
@@ -118,35 +113,77 @@ final class CactusCompletionResultC extends Struct {
   @Bool()
   external bool stopped_limit;
   external Pointer<Utf8> stopping_word;
-
-  @Int64()
-  external int generation_time_us;
 }
 
-final class CactusVocoderModelParamsC extends Struct {
-  external Pointer<Utf8> path;
-}
-
-final class CactusVocoderLoadParamsC extends Struct {
-  external CactusVocoderModelParamsC model_params;
-
-  external Pointer<Utf8> speaker_file;
+// STRUCT: cactus_tokenize_result_c_t (matches C++ exactly)
+final class CactusTokenizeResultC extends Struct {
+  external CactusTokenArrayC tokens;
   @Bool()
-  external bool use_guide_tokens;
+  external bool has_media;
+  external Pointer<Pointer<Utf8>> bitmap_hashes;
+  @Int32()
+  external int bitmap_hash_count;
+  external Pointer<Size> chunk_positions;
+  @Int32()
+  external int chunk_position_count;
+  external Pointer<Size> chunk_positions_media;
+  @Int32()
+  external int chunk_position_media_count;
 }
 
-final class CactusSynthesizeSpeechParamsC extends Struct {
-  external Pointer<Utf8> text_input;
-  external Pointer<Utf8> output_wav_path;
-  external Pointer<Utf8> speaker_id;
+// STRUCT: cactus_lora_adapter_c_t (matches C++ exactly)
+final class CactusLoraAdapterC extends Struct {
+  external Pointer<Utf8> path;
+  @Float()
+  external double scale;
 }
 
+// STRUCT: cactus_lora_adapters_c_t (matches C++ exactly)
+final class CactusLoraAdaptersC extends Struct {
+  external Pointer<CactusLoraAdapterC> adapters;
+  @Int32()
+  external int count;
+}
+
+// STRUCT: cactus_bench_result_c_t (matches C++ exactly)
+final class CactusBenchResultC extends Struct {
+  external Pointer<Utf8> model_name;
+  @Int64()
+  external int model_size;
+  @Int64()
+  external int model_params;
+  @Double()
+  external double pp_avg;
+  @Double()
+  external double pp_std;
+  @Double()
+  external double tg_avg;
+  @Double()
+  external double tg_std;
+}
+
+// STRUCT: cactus_chat_result_c_t (matches C++ exactly)
+final class CactusChatResultC extends Struct {
+  external Pointer<Utf8> prompt;
+  external Pointer<Utf8> json_schema;
+  external Pointer<Utf8> tools;
+  external Pointer<Utf8> tool_choice;
+  @Bool()
+  external bool parallel_tool_calls;
+}
+
+// =============================================================================
+// FUNCTION TYPE DEFINITIONS (matches C++ exactly)
+// =============================================================================
+
+// Basic context management
 typedef InitContextNative = CactusContextHandle Function(Pointer<CactusInitParamsC> params);
 typedef InitContextDart = CactusContextHandle Function(Pointer<CactusInitParamsC> params);
 
 typedef FreeContextNative = Void Function(CactusContextHandle handle);
 typedef FreeContextDart = void Function(CactusContextHandle handle);
 
+// Completion functions
 typedef CompletionNative = Int32 Function(
     CactusContextHandle handle,
     Pointer<CactusCompletionParamsC> params,
@@ -156,47 +193,162 @@ typedef CompletionDart = int Function(
     Pointer<CactusCompletionParamsC> params,
     Pointer<CactusCompletionResultC> result);
 
+typedef MultimodalCompletionNative = Int32 Function(
+    CactusContextHandle handle,
+    Pointer<CactusCompletionParamsC> params,
+    Pointer<Pointer<Utf8>> media_paths,
+    Int32 media_count,
+    Pointer<CactusCompletionResultC> result);
+typedef MultimodalCompletionDart = int Function(
+    CactusContextHandle handle,
+    Pointer<CactusCompletionParamsC> params,
+    Pointer<Pointer<Utf8>> media_paths,
+    int media_count,
+    Pointer<CactusCompletionResultC> result);
+
 typedef StopCompletionNative = Void Function(CactusContextHandle handle);
 typedef StopCompletionDart = void Function(CactusContextHandle handle);
 
+// Tokenization functions
 typedef TokenizeNative = CactusTokenArrayC Function(CactusContextHandle handle, Pointer<Utf8> text);
 typedef TokenizeDart = CactusTokenArrayC Function(CactusContextHandle handle, Pointer<Utf8> text);
 
 typedef DetokenizeNative = Pointer<Utf8> Function(CactusContextHandle handle, Pointer<Int32> tokens, Int32 count);
 typedef DetokenizeDart = Pointer<Utf8> Function(CactusContextHandle handle, Pointer<Int32> tokens, int count);
 
+typedef TokenizeWithMediaNative = CactusTokenizeResultC Function(
+    CactusContextHandle handle, Pointer<Utf8> text, Pointer<Pointer<Utf8>> media_paths, Int32 media_count);
+typedef TokenizeWithMediaDart = CactusTokenizeResultC Function(
+    CactusContextHandle handle, Pointer<Utf8> text, Pointer<Pointer<Utf8>> media_paths, int media_count);
+
+// Embedding functions
 typedef EmbeddingNative = CactusFloatArrayC Function(CactusContextHandle handle, Pointer<Utf8> text);
 typedef EmbeddingDart = CactusFloatArrayC Function(CactusContextHandle handle, Pointer<Utf8> text);
 
-typedef _GetFormattedChatNative = Pointer<Utf8> Function(
-    CactusContextHandle handle,
-    Pointer<Utf8> messagesJson,
-    Pointer<Utf8> overrideChatTemplate,
-    Pointer<Utf8> imagePath);
+// Guide tokens
+typedef SetGuideTokensNative = Void Function(CactusContextHandle handle, Pointer<Int32> tokens, Int32 count);
+typedef SetGuideTokensDart = void Function(CactusContextHandle handle, Pointer<Int32> tokens, int count);
+
+// Multimodal functions
+typedef InitMultimodalNative = Int32 Function(CactusContextHandle handle, Pointer<Utf8> mmproj_path, Bool use_gpu);
+typedef InitMultimodalDart = int Function(CactusContextHandle handle, Pointer<Utf8> mmproj_path, bool use_gpu);
+
+typedef IsMultimodalEnabledNative = Bool Function(CactusContextHandle handle);
+typedef IsMultimodalEnabledDart = bool Function(CactusContextHandle handle);
+
+typedef SupportsVisionNative = Bool Function(CactusContextHandle handle);
+typedef SupportsVisionDart = bool Function(CactusContextHandle handle);
+
+typedef SupportsAudioNative = Bool Function(CactusContextHandle handle);
+typedef SupportsAudioDart = bool Function(CactusContextHandle handle);
+
+typedef ReleaseMultimodalNative = Void Function(CactusContextHandle handle);
+typedef ReleaseMultimodalDart = void Function(CactusContextHandle handle);
+
+// TTS/Vocoder functions
+typedef InitVocoderNative = Int32 Function(CactusContextHandle handle, Pointer<Utf8> vocoder_model_path);
+typedef InitVocoderDart = int Function(CactusContextHandle handle, Pointer<Utf8> vocoder_model_path);
+
+typedef IsVocoderEnabledNative = Bool Function(CactusContextHandle handle);
+typedef IsVocoderEnabledDart = bool Function(CactusContextHandle handle);
+
+typedef GetTTSTypeNative = Int32 Function(CactusContextHandle handle);
+typedef GetTTSTypeDart = int Function(CactusContextHandle handle);
+
+typedef GetFormattedAudioCompletionNative = Pointer<Utf8> Function(
+    CactusContextHandle handle, Pointer<Utf8> speaker_json_str, Pointer<Utf8> text_to_speak);
+typedef GetFormattedAudioCompletionDart = Pointer<Utf8> Function(
+    CactusContextHandle handle, Pointer<Utf8> speaker_json_str, Pointer<Utf8> text_to_speak);
+
+typedef GetAudioCompletionGuideTokensNative = CactusTokenArrayC Function(
+    CactusContextHandle handle, Pointer<Utf8> text_to_speak);
+typedef GetAudioCompletionGuideTokensDart = CactusTokenArrayC Function(
+    CactusContextHandle handle, Pointer<Utf8> text_to_speak);
+
+typedef DecodeAudioTokensNative = CactusFloatArrayC Function(
+    CactusContextHandle handle, Pointer<Int32> tokens, Int32 count);
+typedef DecodeAudioTokensDart = CactusFloatArrayC Function(
+    CactusContextHandle handle, Pointer<Int32> tokens, int count);
+
+typedef ReleaseVocoderNative = Void Function(CactusContextHandle handle);
+typedef ReleaseVocoderDart = void Function(CactusContextHandle handle);
+
+// LoRA functions
+typedef BenchNative = CactusBenchResultC Function(CactusContextHandle handle, Int32 pp, Int32 tg, Int32 pl, Int32 nr);
+typedef BenchDart = CactusBenchResultC Function(CactusContextHandle handle, int pp, int tg, int pl, int nr);
+
+typedef ApplyLoraAdaptersNative = Int32 Function(CactusContextHandle handle, Pointer<CactusLoraAdaptersC> adapters);
+typedef ApplyLoraAdaptersDart = int Function(CactusContextHandle handle, Pointer<CactusLoraAdaptersC> adapters);
+
+typedef RemoveLoraAdaptersNative = Void Function(CactusContextHandle handle);
+typedef RemoveLoraAdaptersDart = void Function(CactusContextHandle handle);
+
+typedef GetLoadedLoraAdaptersNative = CactusLoraAdaptersC Function(CactusContextHandle handle);
+typedef GetLoadedLoraAdaptersDart = CactusLoraAdaptersC Function(CactusContextHandle handle);
+
+// Chat template functions
+typedef ValidateChatTemplateNative = Bool Function(CactusContextHandle handle, Bool use_jinja, Pointer<Utf8> name);
+typedef ValidateChatTemplateDart = bool Function(CactusContextHandle handle, bool use_jinja, Pointer<Utf8> name);
+
+typedef GetFormattedChatNative = Pointer<Utf8> Function(
+    CactusContextHandle handle, Pointer<Utf8> messages, Pointer<Utf8> chat_template);
 typedef GetFormattedChatDart = Pointer<Utf8> Function(
-    CactusContextHandle handle,
-    Pointer<Utf8> messagesJson,
-    Pointer<Utf8> overrideChatTemplate,
-    Pointer<Utf8> imagePath);
+    CactusContextHandle handle, Pointer<Utf8> messages, Pointer<Utf8> chat_template);
 
-typedef LoadVocoderNative = Int32 Function(
-    CactusContextHandle handle,
-    Pointer<CactusVocoderLoadParamsC> params
-);
-typedef LoadVocoderDart = int Function(
-    CactusContextHandle handle,
-    Pointer<CactusVocoderLoadParamsC> params
-);
+typedef GetFormattedChatWithJinjaNative = CactusChatResultC Function(
+    CactusContextHandle handle, Pointer<Utf8> messages, Pointer<Utf8> chat_template,
+    Pointer<Utf8> json_schema, Pointer<Utf8> tools, Bool parallel_tool_calls, Pointer<Utf8> tool_choice);
+typedef GetFormattedChatWithJinjaDart = CactusChatResultC Function(
+    CactusContextHandle handle, Pointer<Utf8> messages, Pointer<Utf8> chat_template,
+    Pointer<Utf8> json_schema, Pointer<Utf8> tools, bool parallel_tool_calls, Pointer<Utf8> tool_choice);
 
-typedef SynthesizeSpeechNative = Int32 Function(
-    CactusContextHandle handle,
-    Pointer<CactusSynthesizeSpeechParamsC> params
-);
-typedef SynthesizeSpeechDart = int Function(
-    CactusContextHandle handle,
-    Pointer<CactusSynthesizeSpeechParamsC> params
-);
+// Context management functions
+typedef RewindNative = Void Function(CactusContextHandle handle);
+typedef RewindDart = void Function(CactusContextHandle handle);
 
+typedef InitSamplingNative = Bool Function(CactusContextHandle handle);
+typedef InitSamplingDart = bool Function(CactusContextHandle handle);
+
+typedef BeginCompletionNative = Void Function(CactusContextHandle handle);
+typedef BeginCompletionDart = void Function(CactusContextHandle handle);
+
+typedef EndCompletionNative = Void Function(CactusContextHandle handle);
+typedef EndCompletionDart = void Function(CactusContextHandle handle);
+
+typedef LoadPromptNative = Void Function(CactusContextHandle handle);
+typedef LoadPromptDart = void Function(CactusContextHandle handle);
+
+typedef LoadPromptWithMediaNative = Void Function(
+    CactusContextHandle handle, Pointer<Pointer<Utf8>> media_paths, Int32 media_count);
+typedef LoadPromptWithMediaDart = void Function(
+    CactusContextHandle handle, Pointer<Pointer<Utf8>> media_paths, int media_count);
+
+// Token processing functions
+typedef DoCompletionStepNative = Int32 Function(CactusContextHandle handle, Pointer<Pointer<Utf8>> token_text);
+typedef DoCompletionStepDart = int Function(CactusContextHandle handle, Pointer<Pointer<Utf8>> token_text);
+
+typedef FindStoppingStringsNative = Size Function(
+    CactusContextHandle handle, Pointer<Utf8> text, Size last_token_size, Int32 stop_type);
+typedef FindStoppingStringsDart = int Function(
+    CactusContextHandle handle, Pointer<Utf8> text, int last_token_size, int stop_type);
+
+// Model information functions
+typedef GetNCtxNative = Int32 Function(CactusContextHandle handle);
+typedef GetNCtxDart = int Function(CactusContextHandle handle);
+
+typedef GetNEmbdNative = Int32 Function(CactusContextHandle handle);
+typedef GetNEmbdDart = int Function(CactusContextHandle handle);
+
+typedef GetModelDescNative = Pointer<Utf8> Function(CactusContextHandle handle);
+typedef GetModelDescDart = Pointer<Utf8> Function(CactusContextHandle handle);
+
+typedef GetModelSizeNative = Int64 Function(CactusContextHandle handle);
+typedef GetModelSizeDart = int Function(CactusContextHandle handle);
+
+typedef GetModelParamsNative = Int64 Function(CactusContextHandle handle);
+typedef GetModelParamsDart = int Function(CactusContextHandle handle);
+
+// Memory management functions
 typedef FreeStringNative = Void Function(Pointer<Utf8> str);
 typedef FreeStringDart = void Function(Pointer<Utf8> str);
 
@@ -209,13 +361,26 @@ typedef FreeFloatArrayDart = void Function(CactusFloatArrayC arr);
 typedef FreeCompletionResultMembersNative = Void Function(Pointer<CactusCompletionResultC> result);
 typedef FreeCompletionResultMembersDart = void Function(Pointer<CactusCompletionResultC> result);
 
+typedef FreeTokenizeResultNative = Void Function(Pointer<CactusTokenizeResultC> result);
+typedef FreeTokenizeResultDart = void Function(Pointer<CactusTokenizeResultC> result);
+
+typedef FreeBenchResultMembersNative = Void Function(Pointer<CactusBenchResultC> result);
+typedef FreeBenchResultMembersDart = void Function(Pointer<CactusBenchResultC> result);
+
+typedef FreeLoraAdaptersNative = Void Function(Pointer<CactusLoraAdaptersC> adapters);
+typedef FreeLoraAdaptersDart = void Function(Pointer<CactusLoraAdaptersC> adapters);
+
+typedef FreeChatResultMembersNative = Void Function(Pointer<CactusChatResultC> result);
+typedef FreeChatResultMembersDart = void Function(Pointer<CactusChatResultC> result);
+
+// =============================================================================
+// DYNAMIC LIBRARY LOADING
+// =============================================================================
+
 String _getLibraryPath() {
-  const String libName = 'cactus'; 
-  if (Platform.isIOS) {
-    return '$libName.framework/$libName'; 
-  }
-  if (Platform.isMacOS) {
-    return '$libName.framework/$libName'; 
+  const String libName = 'cactus';
+  if (Platform.isIOS || Platform.isMacOS) {
+    return '$libName.framework/$libName';
   }
   if (Platform.isAndroid) {
     return 'lib$libName.so';
@@ -225,6 +390,11 @@ String _getLibraryPath() {
 
 final DynamicLibrary cactusLib = DynamicLibrary.open(_getLibraryPath());
 
+// =============================================================================
+// FUNCTION BINDINGS (exactly matching C++ FFI function names)
+// =============================================================================
+
+// Basic context management
 final initContext = cactusLib
     .lookup<NativeFunction<InitContextNative>>('cactus_init_context_c')
     .asFunction<InitContextDart>();
@@ -233,14 +403,20 @@ final freeContext = cactusLib
     .lookup<NativeFunction<FreeContextNative>>('cactus_free_context_c')
     .asFunction<FreeContextDart>();
 
+// Completion functions
 final completion = cactusLib
     .lookup<NativeFunction<CompletionNative>>('cactus_completion_c')
     .asFunction<CompletionDart>();
+
+final multimodalCompletion = cactusLib
+    .lookup<NativeFunction<MultimodalCompletionNative>>('cactus_multimodal_completion_c')
+    .asFunction<MultimodalCompletionDart>();
 
 final stopCompletion = cactusLib
     .lookup<NativeFunction<StopCompletionNative>>('cactus_stop_completion_c')
     .asFunction<StopCompletionDart>();
 
+// Tokenization functions
 final tokenize = cactusLib
     .lookup<NativeFunction<TokenizeNative>>('cactus_tokenize_c')
     .asFunction<TokenizeDart>();
@@ -249,14 +425,156 @@ final detokenize = cactusLib
     .lookup<NativeFunction<DetokenizeNative>>('cactus_detokenize_c')
     .asFunction<DetokenizeDart>();
 
+final tokenizeWithMedia = cactusLib
+    .lookup<NativeFunction<TokenizeWithMediaNative>>('cactus_tokenize_with_media_c')
+    .asFunction<TokenizeWithMediaDart>();
+
+// Embedding functions
 final embedding = cactusLib
     .lookup<NativeFunction<EmbeddingNative>>('cactus_embedding_c')
     .asFunction<EmbeddingDart>();
 
+// Guide tokens
+final setGuideTokens = cactusLib
+    .lookup<NativeFunction<SetGuideTokensNative>>('cactus_set_guide_tokens_c')
+    .asFunction<SetGuideTokensDart>();
+
+// Multimodal functions
+final initMultimodal = cactusLib
+    .lookup<NativeFunction<InitMultimodalNative>>('cactus_init_multimodal_c')
+    .asFunction<InitMultimodalDart>();
+
+final isMultimodalEnabled = cactusLib
+    .lookup<NativeFunction<IsMultimodalEnabledNative>>('cactus_is_multimodal_enabled_c')
+    .asFunction<IsMultimodalEnabledDart>();
+
+final supportsVision = cactusLib
+    .lookup<NativeFunction<SupportsVisionNative>>('cactus_supports_vision_c')
+    .asFunction<SupportsVisionDart>();
+
+final supportsAudio = cactusLib
+    .lookup<NativeFunction<SupportsAudioNative>>('cactus_supports_audio_c')
+    .asFunction<SupportsAudioDart>();
+
+final releaseMultimodal = cactusLib
+    .lookup<NativeFunction<ReleaseMultimodalNative>>('cactus_release_multimodal_c')
+    .asFunction<ReleaseMultimodalDart>();
+
+// TTS/Vocoder functions
+final initVocoder = cactusLib
+    .lookup<NativeFunction<InitVocoderNative>>('cactus_init_vocoder_c')
+    .asFunction<InitVocoderDart>();
+
+final isVocoderEnabled = cactusLib
+    .lookup<NativeFunction<IsVocoderEnabledNative>>('cactus_is_vocoder_enabled_c')
+    .asFunction<IsVocoderEnabledDart>();
+
+final getTTSType = cactusLib
+    .lookup<NativeFunction<GetTTSTypeNative>>('cactus_get_tts_type_c')
+    .asFunction<GetTTSTypeDart>();
+
+final getFormattedAudioCompletion = cactusLib
+    .lookup<NativeFunction<GetFormattedAudioCompletionNative>>('cactus_get_formatted_audio_completion_c')
+    .asFunction<GetFormattedAudioCompletionDart>();
+
+final getAudioCompletionGuideTokens = cactusLib
+    .lookup<NativeFunction<GetAudioCompletionGuideTokensNative>>('cactus_get_audio_completion_guide_tokens_c')
+    .asFunction<GetAudioCompletionGuideTokensDart>();
+
+final decodeAudioTokens = cactusLib
+    .lookup<NativeFunction<DecodeAudioTokensNative>>('cactus_decode_audio_tokens_c')
+    .asFunction<DecodeAudioTokensDart>();
+
+final releaseVocoder = cactusLib
+    .lookup<NativeFunction<ReleaseVocoderNative>>('cactus_release_vocoder_c')
+    .asFunction<ReleaseVocoderDart>();
+
+// Benchmarking and LoRA functions
+final bench = cactusLib
+    .lookup<NativeFunction<BenchNative>>('cactus_bench_c')
+    .asFunction<BenchDart>();
+
+final applyLoraAdapters = cactusLib
+    .lookup<NativeFunction<ApplyLoraAdaptersNative>>('cactus_apply_lora_adapters_c')
+    .asFunction<ApplyLoraAdaptersDart>();
+
+final removeLoraAdapters = cactusLib
+    .lookup<NativeFunction<RemoveLoraAdaptersNative>>('cactus_remove_lora_adapters_c')
+    .asFunction<RemoveLoraAdaptersDart>();
+
+final getLoadedLoraAdapters = cactusLib
+    .lookup<NativeFunction<GetLoadedLoraAdaptersNative>>('cactus_get_loaded_lora_adapters_c')
+    .asFunction<GetLoadedLoraAdaptersDart>();
+
+// Chat template functions
+final validateChatTemplate = cactusLib
+    .lookup<NativeFunction<ValidateChatTemplateNative>>('cactus_validate_chat_template_c')
+    .asFunction<ValidateChatTemplateDart>();
+
 final getFormattedChat = cactusLib
-    .lookup<NativeFunction<_GetFormattedChatNative>>('cactus_get_formatted_chat_c')
+    .lookup<NativeFunction<GetFormattedChatNative>>('cactus_get_formatted_chat_c')
     .asFunction<GetFormattedChatDart>();
 
+final getFormattedChatWithJinja = cactusLib
+    .lookup<NativeFunction<GetFormattedChatWithJinjaNative>>('cactus_get_formatted_chat_with_jinja_c')
+    .asFunction<GetFormattedChatWithJinjaDart>();
+
+// Context management functions
+final rewind = cactusLib
+    .lookup<NativeFunction<RewindNative>>('cactus_rewind_c')
+    .asFunction<RewindDart>();
+
+final initSampling = cactusLib
+    .lookup<NativeFunction<InitSamplingNative>>('cactus_init_sampling_c')
+    .asFunction<InitSamplingDart>();
+
+final beginCompletion = cactusLib
+    .lookup<NativeFunction<BeginCompletionNative>>('cactus_begin_completion_c')
+    .asFunction<BeginCompletionDart>();
+
+final endCompletion = cactusLib
+    .lookup<NativeFunction<EndCompletionNative>>('cactus_end_completion_c')
+    .asFunction<EndCompletionDart>();
+
+final loadPrompt = cactusLib
+    .lookup<NativeFunction<LoadPromptNative>>('cactus_load_prompt_c')
+    .asFunction<LoadPromptDart>();
+
+final loadPromptWithMedia = cactusLib
+    .lookup<NativeFunction<LoadPromptWithMediaNative>>('cactus_load_prompt_with_media_c')
+    .asFunction<LoadPromptWithMediaDart>();
+
+// Token processing functions
+final doCompletionStep = cactusLib
+    .lookup<NativeFunction<DoCompletionStepNative>>('cactus_do_completion_step_c')
+    .asFunction<DoCompletionStepDart>();
+
+final findStoppingStrings = cactusLib
+    .lookup<NativeFunction<FindStoppingStringsNative>>('cactus_find_stopping_strings_c')
+    .asFunction<FindStoppingStringsDart>();
+
+// Model information functions
+final getNCtx = cactusLib
+    .lookup<NativeFunction<GetNCtxNative>>('cactus_get_n_ctx_c')
+    .asFunction<GetNCtxDart>();
+
+final getNEmbd = cactusLib
+    .lookup<NativeFunction<GetNEmbdNative>>('cactus_get_n_embd_c')
+    .asFunction<GetNEmbdDart>();
+
+final getModelDesc = cactusLib
+    .lookup<NativeFunction<GetModelDescNative>>('cactus_get_model_desc_c')
+    .asFunction<GetModelDescDart>();
+
+final getModelSize = cactusLib
+    .lookup<NativeFunction<GetModelSizeNative>>('cactus_get_model_size_c')
+    .asFunction<GetModelSizeDart>();
+
+final getModelParams = cactusLib
+    .lookup<NativeFunction<GetModelParamsNative>>('cactus_get_model_params_c')
+    .asFunction<GetModelParamsDart>();
+
+// Memory management functions
 final freeString = cactusLib
     .lookup<NativeFunction<FreeStringNative>>('cactus_free_string_c')
     .asFunction<FreeStringDart>();
@@ -273,169 +591,18 @@ final freeCompletionResultMembers = cactusLib
     .lookup<NativeFunction<FreeCompletionResultMembersNative>>('cactus_free_completion_result_members_c')
     .asFunction<FreeCompletionResultMembersDart>();
 
-final loadVocoder = cactusLib
-    .lookup<NativeFunction<LoadVocoderNative>>('cactus_load_vocoder_c')
-    .asFunction<LoadVocoderDart>();
+final freeTokenizeResult = cactusLib
+    .lookup<NativeFunction<FreeTokenizeResultNative>>('cactus_free_tokenize_result_c')
+    .asFunction<FreeTokenizeResultDart>();
 
-final synthesizeSpeech = cactusLib
-    .lookup<NativeFunction<SynthesizeSpeechNative>>('cactus_synthesize_speech_c')
-    .asFunction<SynthesizeSpeechDart>();
+final freeBenchResultMembers = cactusLib
+    .lookup<NativeFunction<FreeBenchResultMembersNative>>('cactus_free_bench_result_members_c')
+    .asFunction<FreeBenchResultMembersDart>();
 
-// +++ LoRA Adapter Management FFI Definitions +++
-final class CactusLoraAdapterInfoC extends Struct {
-  external Pointer<Utf8> path;
-  @Float()
-  external double scale; // Dart double for C float
-}
+final freeLoraAdapters = cactusLib
+    .lookup<NativeFunction<FreeLoraAdaptersNative>>('cactus_free_lora_adapters_c')
+    .asFunction<FreeLoraAdaptersDart>();
 
-typedef ApplyLoraAdaptersNative = Int32 Function(
-    CactusContextHandle handle,
-    Pointer<CactusLoraAdapterInfoC> adapters,
-    Int32 count);
-typedef ApplyLoraAdaptersDart = int Function(
-    CactusContextHandle handle,
-    Pointer<CactusLoraAdapterInfoC> adapters,
-    int count);
-
-typedef RemoveLoraAdaptersNative = Void Function(CactusContextHandle handle);
-typedef RemoveLoraAdaptersDart = void Function(CactusContextHandle handle);
-
-typedef GetLoadedLoraAdaptersNative = Pointer<CactusLoraAdapterInfoC> Function(
-    CactusContextHandle handle,
-    Pointer<Int32> count);
-typedef GetLoadedLoraAdaptersDart = Pointer<CactusLoraAdapterInfoC> Function(
-    CactusContextHandle handle,
-    Pointer<Int32> count);
-
-typedef FreeLoraAdaptersArrayNative = Void Function(
-    Pointer<CactusLoraAdapterInfoC> adapters,
-    Int32 count);
-typedef FreeLoraAdaptersArrayDart = void Function(
-    Pointer<CactusLoraAdapterInfoC> adapters,
-    int count);
-// --- End LoRA FFI Definitions ---
-
-
-// +++ Benchmarking FFI Definitions +++
-typedef BenchNative = Pointer<Utf8> Function(
-    CactusContextHandle handle,
-    Int32 pp,
-    Int32 tg,
-    Int32 pl,
-    Int32 nr);
-typedef BenchDart = Pointer<Utf8> Function(
-    CactusContextHandle handle,
-    int pp,
-    int tg,
-    int pl,
-    int nr);
-// --- End Benchmarking FFI Definitions ---
-
-
-// +++ Advanced Chat Formatting FFI Definitions +++
-final class CactusFormattedChatResultC extends Struct {
-  external Pointer<Utf8> prompt;
-  external Pointer<Utf8> grammar;
-  // Add other fields here if they were added to the C struct
-}
-
-typedef GetFormattedChatJinjaNative = Int32 Function(
-    CactusContextHandle handle,
-    Pointer<Utf8> messages_json,
-    Pointer<Utf8> override_chat_template,
-    Pointer<Utf8> json_schema,
-    Pointer<Utf8> tools_json,
-    Bool parallel_tool_calls,
-    Pointer<Utf8> tool_choice,
-    Pointer<CactusFormattedChatResultC> result);
-typedef GetFormattedChatJinjaDart = int Function(
-    CactusContextHandle handle,
-    Pointer<Utf8> messages_json,
-    Pointer<Utf8> override_chat_template,
-    Pointer<Utf8> json_schema,
-    Pointer<Utf8> tools_json,
-    bool parallel_tool_calls,
-    Pointer<Utf8> tool_choice,
-    Pointer<CactusFormattedChatResultC> result);
-
-typedef FreeFormattedChatResultMembersNative = Void Function(
-    Pointer<CactusFormattedChatResultC> result);
-typedef FreeFormattedChatResultMembersDart = void Function(
-    Pointer<CactusFormattedChatResultC> result);
-// --- End Advanced Chat Formatting FFI Definitions ---
-
-
-// +++ Model Information and Validation FFI Definitions +++
-typedef ValidateModelChatTemplateNative = Bool Function(
-    CactusContextHandle handle,
-    Bool use_jinja,
-    Pointer<Utf8> name);
-typedef ValidateModelChatTemplateDart = bool Function(
-    CactusContextHandle handle,
-    bool use_jinja,
-    Pointer<Utf8> name);
-
-final class CactusModelMetaC extends Struct {
-  external Pointer<Utf8> desc;
-  @Int64()
-  external int size;
-  @Int64()
-  external int n_params;
-}
-
-typedef GetModelMetaNative = Void Function(
-    CactusContextHandle handle,
-    Pointer<CactusModelMetaC> meta);
-typedef GetModelMetaDart = void Function(
-    CactusContextHandle handle,
-    Pointer<CactusModelMetaC> meta);
-
-typedef FreeModelMetaMembersNative = Void Function(
-    Pointer<CactusModelMetaC> meta);
-typedef FreeModelMetaMembersDart = void Function(
-    Pointer<CactusModelMetaC> meta);
-// --- End Model Information and Validation FFI Definitions ---
-
-// +++ LoRA Lookups +++
-final applyLoraAdapters = cactusLib
-    .lookup<NativeFunction<ApplyLoraAdaptersNative>>('cactus_apply_lora_adapters_c')
-    .asFunction<ApplyLoraAdaptersDart>();
-
-final removeLoraAdapters = cactusLib
-    .lookup<NativeFunction<RemoveLoraAdaptersNative>>('cactus_remove_lora_adapters_c')
-    .asFunction<RemoveLoraAdaptersDart>();
-
-final getLoadedLoraAdapters = cactusLib
-    .lookup<NativeFunction<GetLoadedLoraAdaptersNative>>('cactus_get_loaded_lora_adapters_c')
-    .asFunction<GetLoadedLoraAdaptersDart>();
-
-final freeLoraAdaptersArray = cactusLib
-    .lookup<NativeFunction<FreeLoraAdaptersArrayNative>>('cactus_free_lora_adapters_array_c')
-    .asFunction<FreeLoraAdaptersArrayDart>();
-
-// +++ Benchmarking Lookup +++
-final bench = cactusLib
-    .lookup<NativeFunction<BenchNative>>('cactus_bench_c')
-    .asFunction<BenchDart>();
-
-// +++ Advanced Chat Formatting Lookups +++
-final getFormattedChatJinja = cactusLib
-    .lookup<NativeFunction<GetFormattedChatJinjaNative>>('cactus_get_formatted_chat_jinja_c')
-    .asFunction<GetFormattedChatJinjaDart>();
-
-final freeFormattedChatResultMembers = cactusLib
-    .lookup<NativeFunction<FreeFormattedChatResultMembersNative>>('cactus_free_formatted_chat_result_members_c')
-    .asFunction<FreeFormattedChatResultMembersDart>();
-
-// +++ Model Info/Validation Lookups +++
-final validateModelChatTemplate = cactusLib
-    .lookup<NativeFunction<ValidateModelChatTemplateNative>>('cactus_validate_model_chat_template_c')
-    .asFunction<ValidateModelChatTemplateDart>();
-
-final getModelMeta = cactusLib
-    .lookup<NativeFunction<GetModelMetaNative>>('cactus_get_model_meta_c')
-    .asFunction<GetModelMetaDart>();
-
-final freeModelMetaMembers = cactusLib
-    .lookup<NativeFunction<FreeModelMetaMembersNative>>('cactus_free_model_meta_members_c')
-    .asFunction<FreeModelMetaMembersDart>();
+final freeChatResultMembers = cactusLib
+    .lookup<NativeFunction<FreeChatResultMembersNative>>('cactus_free_chat_result_members_c')
+    .asFunction<FreeChatResultMembersDart>();
