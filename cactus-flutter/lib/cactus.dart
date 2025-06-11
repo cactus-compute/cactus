@@ -14,8 +14,8 @@ export './context.dart';
 export './model_downloader.dart';
 export './structs.dart';
 
-export 'grammar.dart';    // Grammar generation system
-export 'tools.dart';      // Tool calling framework
+export 'grammar.dart';   
+export 'tools.dart'; 
 
 
 
