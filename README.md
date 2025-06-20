@@ -77,7 +77,7 @@ Cactus is a lightweight, high-performance framework for running AI models on mob
     return result.text;
     }
     ```
-  To learn more, see the [Flutter Docs]([docs/flutter.md](https://github.com/cactus-compute/cactus/blob/main/docs/flutter.md)). It covers chat design, embeddings, multimodal models, text-to-speech, and more.
+  To learn more, see the [Flutter Docs](https://github.com/cactus-compute/cactus/blob/main/docs/flutter.md). It covers chat design, embeddings, multimodal models, text-to-speech, and more.
 
 ## ![React Native](https://img.shields.io/badge/React%20Native-grey.svg?style=for-the-badge&logo=react&logoColor=%2361DAFB)
 
@@ -118,7 +118,7 @@ Cactus is a lightweight, high-performance framework for running AI models on mob
 
     console.log(result.text);
     ```
- To learn more, see the [React Docs]([docs/react.md](https://github.com/cactus-compute/cactus/blob/main/docs/react.md)). It covers chat design, embeddings, multimodal models, text-to-speech, and more.
+ To learn more, see the [React Docs](https://github.com/cactus-compute/cactus/blob/main/docs/react.md). It covers chat design, embeddings, multimodal models, text-to-speech, and more.
 
 ## ![C++](https://img.shields.io/badge/C%2B%2B-grey.svg?style=for-the-badge&logo=c%2B%2B&logoColor=white)
 
@@ -194,7 +194,7 @@ Cactus backend is written in C/C++ and can run directly on any ARM/X86/Raspberry
         return 0;
     }
     ```
- To learn more, see the [C++ Docs]([docs/cpp.md](https://github.com/cactus-compute/cactus/blob/main/docs/cpp.md)). It covers chat design, embeddings, multimodal models, text-to-speech, and more.
+ To learn more, see the [C++ Docs](https://github.com/cactus-compute/cactus/blob/main/docs/cpp.md). It covers chat design, embeddings, multimodal models, text-to-speech, and more.
 
 
 ## ![Using this Repo & Example Apps](https://img.shields.io/badge/Using_Repo_And_Examples-grey.svg?style=for-the-badge)
