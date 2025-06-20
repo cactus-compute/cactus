@@ -8,7 +8,7 @@ A GGML-based C++ library for running Large Language Models (LLMs) and Vision Lan
 
 ```bash
 git clone https://github.com/your-org/cactus.git
-cd cactus
+cd cactus/cactus
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
