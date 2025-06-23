@@ -1,29 +1,29 @@
 import 'dart:async';
 import 'dart:ffi';
-import 'dart:io'; 
 
 import 'package:ffi/ffi.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:universal_io/io.dart';
 
+import './completion.dart';
 import './ffi_bindings.dart' as bindings;
 import './init_params.dart';
-import './completion.dart';
 import './model_downloader.dart';
 
 // Internal callback management, not part of public API.
 bool Function(String)? _currentOnNewTokenCallback;
 
-@pragma('vm:entry-point') 
+@pragma('vm:entry-point')
 // Internal FFI dispatcher, not part of public API.
 bool _staticTokenCallbackDispatcher(Pointer<Utf8> tokenC) {
   if (_currentOnNewTokenCallback != null) {
     try {
       return _currentOnNewTokenCallback!(tokenC.toDartString());
     } catch (e) {
-      return false; 
+      return false;
     }
   }
-  return true; 
+  return true;
 }
 
 /// Manages a loaded AI model instance and provides methods for interaction.
@@ -31,14 +31,15 @@ bool _staticTokenCallbackDispatcher(Pointer<Utf8> tokenC) {
 /// Use [CactusContext.init] to create and initialize a context.
 /// Always call [free] when the context is no longer needed to release native resources.
 class CactusContext {
-  final bindings.CactusContextHandle _handle; // Internal handle, not documented for public API.
+  final bindings.CactusContextHandle
+      _handle; // Internal handle, not documented for public API.
 
   // Private constructor, users should use CactusContext.init().
-  CactusContext._(this._handle, String? userProvidedTemplate) 
-    // : _chatTemplate = (userProvidedTemplate != null && userProvidedTemplate.isNotEmpty) 
-    //                   ? userProvidedTemplate 
-    //                   : defaultChatMLTemplate
-    ;
+  CactusContext._(this._handle, String? userProvidedTemplate)
+  // : _chatTemplate = (userProvidedTemplate != null && userProvidedTemplate.isNotEmpty)
+  //                   ? userProvidedTemplate
+  //                   : defaultChatMLTemplate
+  ;
 
   /// Initializes a new [CactusContext] with the given [params].
   ///
@@ -53,45 +54,49 @@ class CactusContext {
     String effectiveModelPath;
 
     if (params.modelUrl != null) {
-      params.onInitProgress?.call(null, 'Resolving model path from URL...', false);
+      params.onInitProgress
+          ?.call(null, 'Resolving model path from URL...', false);
       try {
         final Directory appDocDir = await getApplicationDocumentsDirectory();
-        String filename = params.modelFilename ?? params.modelUrl!.split('/').last;
+        String filename =
+            params.modelFilename ?? params.modelUrl!.split('/').last;
         if (filename.contains('?')) {
           filename = filename.split('?').first;
         }
         if (filename.isEmpty) {
-           filename = "downloaded_model.gguf"; 
+          filename = "downloaded_model.gguf";
         }
         effectiveModelPath = '${appDocDir.path}/$filename';
 
         final modelFile = File(effectiveModelPath);
         final bool fileExists = await modelFile.exists();
 
-        params.onInitProgress?.call(null, 
-          fileExists 
-            ? 'Model found at $effectiveModelPath.' 
-            : 'Model not found locally. Preparing to download from ${params.modelUrl} to $effectiveModelPath.',
-          false
-        );
+        params.onInitProgress?.call(
+            null,
+            fileExists
+                ? 'Model found at $effectiveModelPath.'
+                : 'Model not found locally. Preparing to download from ${params.modelUrl} to $effectiveModelPath.',
+            false);
 
         if (!fileExists) {
           await downloadModel(
             params.modelUrl!,
             effectiveModelPath,
-            onProgress: (progress, status) { 
+            onProgress: (progress, status) {
               params.onInitProgress?.call(progress, status, false);
             },
           );
           params.onInitProgress?.call(1.0, 'Model download complete.', false);
         }
       } catch (e) {
-        params.onInitProgress?.call(null, 'Error during model download/path resolution: $e', true);
+        params.onInitProgress?.call(
+            null, 'Error during model download/path resolution: $e', true);
         throw Exception('Failed to prepare model from URL: $e');
       }
     } else if (params.modelPath != null) {
       effectiveModelPath = params.modelPath!;
-      params.onInitProgress?.call(null, 'Using provided model path: $effectiveModelPath', false);
+      params.onInitProgress
+          ?.call(null, 'Using provided model path: $effectiveModelPath', false);
       if (!await File(effectiveModelPath).exists()) {
         final msg = 'Provided modelPath does not exist: $effectiveModelPath';
         params.onInitProgress?.call(null, msg, true);
@@ -103,20 +108,24 @@ class CactusContext {
       throw ArgumentError(msg);
     }
 
-    params.onInitProgress?.call(null, 'Initializing native context with model: $effectiveModelPath', false);
+    params.onInitProgress?.call(null,
+        'Initializing native context with model: $effectiveModelPath', false);
     final cParams = calloc<bindings.CactusInitParamsC>();
     final modelPathC = effectiveModelPath.toNativeUtf8(allocator: calloc);
-    final chatTemplateForC = (params.chatTemplate != null && params.chatTemplate!.isNotEmpty) 
-                              ? params.chatTemplate!.toNativeUtf8(allocator: calloc) 
-                              : nullptr;
-    final cacheTypeKC = params.cacheTypeK?.toNativeUtf8(allocator: calloc) ?? nullptr;
-    final cacheTypeVC = params.cacheTypeV?.toNativeUtf8(allocator: calloc) ?? nullptr;
+    final chatTemplateForC =
+        (params.chatTemplate != null && params.chatTemplate!.isNotEmpty)
+            ? params.chatTemplate!.toNativeUtf8(allocator: calloc)
+            : nullptr;
+    final cacheTypeKC =
+        params.cacheTypeK?.toNativeUtf8(allocator: calloc) ?? nullptr;
+    final cacheTypeVC =
+        params.cacheTypeV?.toNativeUtf8(allocator: calloc) ?? nullptr;
 
     Pointer<NativeFunction<Void Function(Float)>> progressCallbackC = nullptr;
 
     try {
       cParams.ref.model_path = modelPathC;
-      cParams.ref.chat_template = chatTemplateForC; 
+      cParams.ref.chat_template = chatTemplateForC;
       cParams.ref.n_ctx = params.nCtx;
       cParams.ref.n_batch = params.nBatch;
       cParams.ref.n_ubatch = params.nUbatch;
@@ -130,22 +139,24 @@ class CactusContext {
       cParams.ref.flash_attn = params.flashAttn;
       cParams.ref.cache_type_k = cacheTypeKC;
       cParams.ref.cache_type_v = cacheTypeVC;
-      cParams.ref.progress_callback = progressCallbackC; 
+      cParams.ref.progress_callback = progressCallbackC;
 
       final handle = bindings.initContext(cParams);
 
       if (handle == nullptr) {
-        const msg = 'Failed to initialize native cactus context. Check native logs for details.';
+        const msg =
+            'Failed to initialize native cactus context. Check native logs for details.';
         params.onInitProgress?.call(null, msg, true);
         throw Exception(msg);
       }
-      final context = CactusContext._(handle, params.chatTemplate); 
-      params.onInitProgress?.call(1.0, 'CactusContext initialized successfully.', false);
+      final context = CactusContext._(handle, params.chatTemplate);
+      params.onInitProgress
+          ?.call(1.0, 'CactusContext initialized successfully.', false);
       return context;
-    } catch(e) {
+    } catch (e) {
       final msg = 'Error during native context initialization: $e';
       params.onInitProgress?.call(null, msg, true);
-      rethrow; 
+      rethrow;
     } finally {
       calloc.free(modelPathC);
       if (chatTemplateForC != nullptr) calloc.free(chatTemplateForC);
@@ -173,7 +184,8 @@ class CactusContext {
         bindings.freeTokenArray(cTokenArray);
         return [];
       }
-      final dartTokens = List<int>.generate(cTokenArray.count, (i) => cTokenArray.tokens[i]);
+      final dartTokens =
+          List<int>.generate(cTokenArray.count, (i) => cTokenArray.tokens[i]);
       bindings.freeTokenArray(cTokenArray);
       return dartTokens;
     } finally {
@@ -192,12 +204,13 @@ class CactusContext {
     }
 
     try {
-      final resultCPtr = bindings.detokenize(_handle, tokensCPtr, tokens.length);
+      final resultCPtr =
+          bindings.detokenize(_handle, tokensCPtr, tokens.length);
       if (resultCPtr == nullptr) {
-        return ""; 
+        return "";
       }
       final resultString = resultCPtr.toDartString();
-      bindings.freeString(resultCPtr); 
+      bindings.freeString(resultCPtr);
       return resultString;
     } finally {
       calloc.free(tokensCPtr);
@@ -205,11 +218,11 @@ class CactusContext {
   }
 
   /// Generates an embedding (a list of float values) for the given [text].
-  /// 
+  ///
   /// The model must have been initialized with [CactusInitParams.embedding] set to true.
-  /// The nature of the embedding (e.g., pooling strategy) is determined by 
+  /// The nature of the embedding (e.g., pooling strategy) is determined by
   /// [CactusInitParams.poolingType] and [CactusInitParams.embdNormalize].
-  /// 
+  ///
   /// Returns an empty list if the input text is empty or embedding generation fails.
   List<double> embedding(String text) {
     if (text.isEmpty) return [];
@@ -221,7 +234,8 @@ class CactusContext {
         bindings.freeFloatArray(cFloatArray);
         return [];
       }
-      final dartEmbeddings = List<double>.generate(cFloatArray.count, (i) => cFloatArray.values[i]);
+      final dartEmbeddings = List<double>.generate(
+          cFloatArray.count, (i) => cFloatArray.values[i]);
       bindings.freeFloatArray(cFloatArray);
       return dartEmbeddings;
     } finally {
@@ -231,49 +245,51 @@ class CactusContext {
 
   /// Performs text or chat completion based on the provided [params].
   ///
-  /// This is an asynchronous operation. For streaming results, use the 
+  /// This is an asynchronous operation. For streaming results, use the
   /// [CactusCompletionParams.onNewToken] callback.
   ///
   /// Throws an [Exception] if the native completion call fails.
-  Future<CactusCompletionResult> completion(CactusCompletionParams params) async {
-    
-
+  Future<CactusCompletionResult> completion(
+      CactusCompletionParams params) async {
     StringBuffer promptBuffer = StringBuffer();
     // This prompt formatting logic is based on a standard ChatML structure.
     // If a custom chat_template was provided during init, the native side would handle it.
     // This Dart-side formatting is a fallback or default if the native side doesn't use the template for prompt construction.
     for (var message in params.messages) {
-      if (message.role == 'system' || message.role == 'user' || message.role == 'assistant') {
+      if (message.role == 'system' ||
+          message.role == 'user' ||
+          message.role == 'assistant') {
         promptBuffer.write('<|im_start|>');
         promptBuffer.write(message.role);
         promptBuffer.write('\\n');
         promptBuffer.write(message.content);
         promptBuffer.write('<|im_end|>\\n');
-      } else {
-  
-      }
+      } else {}
     }
     promptBuffer.write('<|im_start|>assistant\\n');
-    
+
     final String formattedPrompt = promptBuffer.toString();
 
     final cCompParams = calloc<bindings.CactusCompletionParamsC>();
     final cResult = calloc<bindings.CactusCompletionResultC>();
-    final promptC = formattedPrompt.toNativeUtf8(allocator: calloc); 
+    final promptC = formattedPrompt.toNativeUtf8(allocator: calloc);
     final grammarC = params.grammar?.toNativeUtf8(allocator: calloc) ?? nullptr;
 
     Pointer<Pointer<Utf8>> stopSequencesC = nullptr;
     if (params.stopSequences != null && params.stopSequences!.isNotEmpty) {
       stopSequencesC = calloc<Pointer<Utf8>>(params.stopSequences!.length);
       for (int i = 0; i < params.stopSequences!.length; i++) {
-        stopSequencesC[i] = params.stopSequences![i].toNativeUtf8(allocator: calloc);
+        stopSequencesC[i] =
+            params.stopSequences![i].toNativeUtf8(allocator: calloc);
       }
     }
 
-    Pointer<NativeFunction<Bool Function(Pointer<Utf8>)>> tokenCallbackC = nullptr;
-    _currentOnNewTokenCallback = params.onNewToken; 
+    Pointer<NativeFunction<Bool Function(Pointer<Utf8>)>> tokenCallbackC =
+        nullptr;
+    _currentOnNewTokenCallback = params.onNewToken;
     if (params.onNewToken != null) {
-      tokenCallbackC = Pointer.fromFunction<Bool Function(Pointer<Utf8>)>(_staticTokenCallbackDispatcher, false);
+      tokenCallbackC = Pointer.fromFunction<Bool Function(Pointer<Utf8>)>(
+          _staticTokenCallbackDispatcher, false);
     } else {
       tokenCallbackC = nullptr;
     }
@@ -305,7 +321,8 @@ class CactusContext {
       final status = bindings.completion(_handle, cCompParams, cResult);
 
       if (status != 0) {
-        throw Exception('Native completion call failed with status: $status. Check native logs.');
+        throw Exception(
+            'Native completion call failed with status: $status. Check native logs.');
       }
 
       final result = CactusCompletionResult(
@@ -321,7 +338,7 @@ class CactusContext {
 
       return result;
     } finally {
-      _currentOnNewTokenCallback = null; 
+      _currentOnNewTokenCallback = null;
 
       calloc.free(promptC);
       if (grammarC != nullptr) calloc.free(grammarC);
@@ -331,17 +348,17 @@ class CactusContext {
         }
         calloc.free(stopSequencesC);
       }
-      bindings.freeCompletionResultMembers(cResult); 
+      bindings.freeCompletionResultMembers(cResult);
       calloc.free(cCompParams);
       calloc.free(cResult);
     }
   }
 
   /// Asynchronously requests the current completion operation to stop.
-  /// 
+  ///
   /// This provides a way to interrupt a long-running generation.
   /// The actual stopping is handled by the native side and may not be immediate.
   void stopCompletion() {
     bindings.stopCompletion(_handle);
   }
-} 
+}

@@ -1,10 +1,7 @@
-import 'package:flutter/material.dart';
 import 'dart:async';
-import 'dart:convert'; 
-import 'dart:io'; 
-import 'package:path_provider/path_provider.dart'; 
 
 import 'package:cactus/cactus.dart';
+import 'package:flutter/material.dart';
 
 void main() {
   runApp(const MyApp());
@@ -20,13 +17,13 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   CactusContext? _cactusContext;
   final TextEditingController _promptController = TextEditingController();
-  List<ChatMessage> _chatMessages = []; 
+  List<ChatMessage> _chatMessages = [];
   bool _isLoading = true;
-  String _statusMessage = 'Initializing...'; 
+  String _statusMessage = 'Initializing...';
   String _initError = '';
-  double? _downloadProgress; 
+  double? _downloadProgress;
 
-  final ScrollController _scrollController = ScrollController(); 
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
@@ -39,48 +36,45 @@ class _MyAppState extends State<MyApp> {
       _isLoading = true;
       _initError = '';
       _statusMessage = 'Initializing plugin...';
-      _downloadProgress = null; 
+      _downloadProgress = null;
     });
 
     try {
       final params = CactusInitParams(
-        modelPath: 'assets/smollm2-360m-instruct-q8_0.gguf',
-        onInitProgress: (progress, status, isError) {
-          setState(() {
-            _downloadProgress = progress;
-            _statusMessage = status;
-            if (isError) {
-              _initError = status;
-              _isLoading = false;
-            }
-          });
+        modelUrl:
+            'https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf',
+        nCtx: 512,
+        nThreads: 4,
+        onInitProgress: (progress, message, isError) {
+          print(
+            'Init Progress: $message (${progress != null ? (progress * 100).toStringAsFixed(1) + '%' : 'N/A'})',
+          );
         },
       );
 
       _cactusContext = await CactusContext.init(params);
-      
+
       setState(() {
         _isLoading = false;
       });
-
     } catch (e) {
       if (mounted) {
         setState(() {
           if (_initError.isEmpty) {
-             _initError = "Failed to initialize Cactus: $e";
+            _initError = "Failed to initialize Cactus: $e";
           }
           _statusMessage = '';
           _isLoading = false;
         });
       }
-    } 
+    }
   }
 
   @override
   void dispose() {
     _cactusContext?.free();
     _promptController.dispose();
-    _scrollController.dispose(); 
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -90,7 +84,12 @@ class _MyAppState extends State<MyApp> {
 
     if (_cactusContext == null) {
       setState(() {
-        _chatMessages.add(ChatMessage(role: 'system', content: 'Error: CactusContext not initialized.'));
+        _chatMessages.add(
+          ChatMessage(
+            role: 'system',
+            content: 'Error: CactusContext not initialized.',
+          ),
+        );
       });
       return;
     }
@@ -99,7 +98,9 @@ class _MyAppState extends State<MyApp> {
 
     setState(() {
       _chatMessages.add(ChatMessage(role: 'user', content: userInput));
-      _chatMessages.add(ChatMessage(role: 'assistant', content: currentAssistantResponse)); 
+      _chatMessages.add(
+        ChatMessage(role: 'assistant', content: currentAssistantResponse),
+      );
       _isLoading = true;
     });
     _promptController.clear();
@@ -108,15 +109,17 @@ class _MyAppState extends State<MyApp> {
     try {
       List<ChatMessage> currentChatHistoryForCompletion = [];
       if (_chatMessages.isNotEmpty) {
-        final end = _chatMessages.last.role == 'assistant' && _chatMessages.last.content.isEmpty 
-                    ? _chatMessages.length - 1 
-                    : _chatMessages.length;
+        final end =
+            _chatMessages.last.role == 'assistant' &&
+                    _chatMessages.last.content.isEmpty
+                ? _chatMessages.length - 1
+                : _chatMessages.length;
         currentChatHistoryForCompletion = _chatMessages.sublist(0, end);
       }
-      
+
       final completionParams = CactusCompletionParams(
-        messages: currentChatHistoryForCompletion, 
-        stopSequences: ['<|im_end|>'], 
+        messages: currentChatHistoryForCompletion,
+        stopSequences: ['<|im_end|>'],
         temperature: 0.7,
         topK: 10,
         topP: 0.9,
@@ -128,17 +131,18 @@ class _MyAppState extends State<MyApp> {
           if (token == '<|im_end|>') {
             return false;
           }
-          
+
           if (token.isNotEmpty) {
             currentAssistantResponse += token;
             setState(() {
-              if (_chatMessages.isNotEmpty && _chatMessages.last.role == 'assistant') {
+              if (_chatMessages.isNotEmpty &&
+                  _chatMessages.last.role == 'assistant') {
                 _chatMessages[_chatMessages.length - 1] = ChatMessage(
-                  role: 'assistant', 
+                  role: 'assistant',
                   content: currentAssistantResponse,
                 );
-                _scrollToBottom(); 
-              } 
+                _scrollToBottom();
+              }
             });
           }
           return true;
@@ -148,31 +152,37 @@ class _MyAppState extends State<MyApp> {
       final result = await _cactusContext!.completion(completionParams);
 
       String finalCleanText = result.text;
-      if (finalCleanText.trim().isEmpty && currentAssistantResponse.trim().isNotEmpty) {
-        finalCleanText = currentAssistantResponse; 
+      if (finalCleanText.trim().isEmpty &&
+          currentAssistantResponse.trim().isNotEmpty) {
+        finalCleanText = currentAssistantResponse;
       } else {
         if (finalCleanText.endsWith('<|im_end|>')) {
-          finalCleanText = finalCleanText.substring(0, finalCleanText.length - '<|im_end|>'.length);
+          finalCleanText = finalCleanText.substring(
+            0,
+            finalCleanText.length - '<|im_end|>'.length,
+          );
         }
       }
-      
+
       if (_chatMessages.isNotEmpty && _chatMessages.last.role == 'assistant') {
-         _chatMessages[_chatMessages.length - 1] = ChatMessage(
+        _chatMessages[_chatMessages.length - 1] = ChatMessage(
           role: 'assistant',
           content: finalCleanText.trim(),
         );
       }
-      setState((){});
-
+      setState(() {});
     } catch (e) {
       setState(() {
-        if (_chatMessages.isNotEmpty && _chatMessages.last.role == 'assistant') {
-           _chatMessages[_chatMessages.length - 1] = ChatMessage(
-             role: 'assistant',
-             content: "Error: $e",
-           );
+        if (_chatMessages.isNotEmpty &&
+            _chatMessages.last.role == 'assistant') {
+          _chatMessages[_chatMessages.length - 1] = ChatMessage(
+            role: 'assistant',
+            content: "Error: $e",
+          );
         } else {
-           _chatMessages.add(ChatMessage(role: 'system', content: "Error during completion: $e"));
+          _chatMessages.add(
+            ChatMessage(role: 'system', content: "Error during completion: $e"),
+          );
         }
       });
     } finally {
@@ -201,24 +211,23 @@ class _MyAppState extends State<MyApp> {
 
     return MaterialApp(
       home: Scaffold(
-        appBar: AppBar(
-          title: const Text('Cactus Flutter Chat'), 
-        ),
-        body: Column( 
+        appBar: AppBar(title: const Text('Cactus Flutter Chat')),
+        body: Column(
           children: [
-            if (_isLoading && _chatMessages.isEmpty && _initError.isEmpty) 
+            if (_isLoading && _chatMessages.isEmpty && _initError.isEmpty)
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.all(20.0),
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      if (_downloadProgress != null && _downloadProgress! < 1.0) 
+                      if (_downloadProgress != null && _downloadProgress! < 1.0)
                         LinearProgressIndicator(
                           value: _downloadProgress,
                           minHeight: 10,
                         )
-                      else if (_downloadProgress == null || _downloadProgress! >= 1.0)
+                      else if (_downloadProgress == null ||
+                          _downloadProgress! >= 1.0)
                         const CircularProgressIndicator(),
                       const SizedBox(height: 20),
                       Text(
@@ -239,9 +248,9 @@ class _MyAppState extends State<MyApp> {
                     style: const TextStyle(color: Colors.red, fontSize: 16),
                     textAlign: TextAlign.center,
                   ),
-                )
+                ),
               ),
-            
+
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
@@ -252,15 +261,29 @@ class _MyAppState extends State<MyApp> {
                   bool isUser = message.role == 'user';
                   bool isSystem = message.role == 'system';
                   return Align(
-                    alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+                    alignment:
+                        isUser ? Alignment.centerRight : Alignment.centerLeft,
                     child: Container(
                       margin: const EdgeInsets.symmetric(vertical: 4.0),
-                      padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12.0,
+                        vertical: 8.0,
+                      ),
                       decoration: BoxDecoration(
-                        color: isSystem ? Colors.red[100] : (isUser ? Colors.blue[100] : Colors.green[100]),
+                        color:
+                            isSystem
+                                ? Colors.red[100]
+                                : (isUser
+                                    ? Colors.blue[100]
+                                    : Colors.green[100]),
                         borderRadius: BorderRadius.circular(12.0),
                       ),
-                      child: Text(message.content, style: TextStyle(color: isSystem ? Colors.red[900] : Colors.black)),
+                      child: Text(
+                        message.content,
+                        style: TextStyle(
+                          color: isSystem ? Colors.red[900] : Colors.black,
+                        ),
+                      ),
                     ),
                   );
                 },
@@ -286,10 +309,17 @@ class _MyAppState extends State<MyApp> {
                       ),
                     ),
                     IconButton(
-                      icon: _isLoading && !(_chatMessages.isEmpty && _isLoading)
-                          ? const SizedBox(width:24, height:24, child:CircularProgressIndicator(strokeWidth: 2,))
-                          : const Icon(Icons.send),
-                      onPressed: _isLoading ? null : _sendMessage, 
+                      icon:
+                          _isLoading && !(_chatMessages.isEmpty && _isLoading)
+                              ? const SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                              : const Icon(Icons.send),
+                      onPressed: _isLoading ? null : _sendMessage,
                     ),
                   ],
                 ),

@@ -14,7 +14,8 @@ dependencies:
   http: ^1.0.0
   path_provider: ^2.0.0
 
-  cactus: ^0.0.3
+  cactus:
+    path: ../../cactus-flutter
 
   cupertino_icons: ^1.0.8
 

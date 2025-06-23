@@ -33,7 +33,8 @@ dependencies:
   shared_preferences: ^2.2.3
   cupertino_icons: ^1.0.8
   path_provider: ^2.1.1
-  cactus: ^0.0.2
+  cactus:
+    path: ../../cactus-flutter
 
 dev_dependencies:
   flutter_test:
