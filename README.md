@@ -20,6 +20,9 @@ The fastest cross-platform framework for deploying AI locally on phones.
 - Chat templates with Jinja2 support and token streaming.
 
 [CLICK TO JOIN OUR DISCORD!](https://discord.gg/bNurx3AXTJ)
+<br/>
+<br/>
+[CLICK TO VISUALISE AND QUERY REPO](https://repomapr.com/cactus-compute/cactus)
 
 ## ![Flutter](https://img.shields.io/badge/Flutter-grey.svg?style=for-the-badge&logo=Flutter&logoColor=white)
 
