@@ -8,7 +8,7 @@
 
 <br/>
 
-Cross-platform framework for running LLM/VLM/TTS model locally on phones.
+Cross-platform framework for running LLM/VLM/TTS models locally in any smartphone app.
 
 - Available in Flutter and React-Native for cross-platform developers.
 - Supports any GGUF model you can find on Huggingface; Qwen, Gemma, Llama, DeepSeek etc.
@@ -22,6 +22,9 @@ Cross-platform framework for running LLM/VLM/TTS model locally on phones.
 <br/>
 <br/>
 [CLICK TO VISUALISE AND QUERY REPO](https://repomapr.com/cactus-compute/cactus)
+
+[![Download App](https://img.shields.io/badge/Try_iOS_Demo-grey?style=for-the-badge&logo=apple&logoColor=white)](https://apps.apple.com/gb/app/cactus-chat/id6744444212)
+[![Download App](https://img.shields.io/badge/Try_Android_Demo-grey?style=for-the-badge&logo=android&logoColor=white)](https://play.google.com/store/apps/details?id=com.rshemetsubuser.myapp&pcampaignid=web_share)
 
 ## ![Flutter](https://img.shields.io/badge/Flutter-grey.svg?style=for-the-badge&logo=Flutter&logoColor=white)
 
@@ -237,7 +240,7 @@ First, clone the repo with `git clone https://github.com/cactus-compute/cactus.g
 
 ## ![Demo](https://img.shields.io/badge/Demo-grey.svg?style=for-the-badge)
 
-| <img src="assets/ChatDemo.gif" alt="Chat Demo" width="250"/> | <a href="https://apps.apple.com/gb/app/cactus-chat/id6744444212"><img alt="Download iOS App" src="https://img.shields.io/badge/Download_iOS_App-grey?style=for-the-badge&logo=apple&logoColor=white" height="25"/></a><br/><a href="https://play.google.com/store/apps/details?id=com.rshemetsubuser.myapp&pcampaignid=web_share"><img alt="Download Android App" src="https://img.shields.io/badge/Download_Android_App-grey?style=for-the-badge&logo=android&logoColor=white" height="25"/></a> |
+| <img src="assets/ChatDemo.gif" alt="Chat Demo" width="250"/> | <a href="https://apps.apple.com/gb/app/cactus-chat/id6744444212"><img alt="Download iOS App" src="https://img.shields.io/badge/Try_iOS_Demo-grey?style=for-the-badge&logo=apple&logoColor=white" height="25"/></a><br/><a href="https://play.google.com/store/apps/details?id=com.rshemetsubuser.myapp&pcampaignid=web_share"><img alt="Download Android App" src="https://img.shields.io/badge/Try_Android_Demo-grey?style=for-the-badge&logo=android&logoColor=white" height="25"/></a> |
 | --- | --- |
 
 | <img src="assets/VLMDemo.gif" alt="VLM Demo" width="220"/> | <img src="assets/EmbeddingDemo.gif" alt="Embedding Demo" width="220"/> |
