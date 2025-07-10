@@ -237,28 +237,11 @@ First, clone the repo with `git clone https://github.com/cactus-compute/cactus.g
 
 ## ![Demo](https://img.shields.io/badge/Demo-grey.svg?style=for-the-badge)
 
-<div style="display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
-  <div style="flex: 1; min-width: 200px; max-width: 300px;">
-    <img src="assets/ChatDemo.gif" alt="Chat Demo" style="width: 100%; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-  </div>
-  <div style="flex: 1; min-width: 150px; display: flex; flex-direction: column; gap: 10px; align-items: center;">
-    <a href="https://apps.apple.com/gb/app/cactus-chat/id6744444212">
-      <img alt="Download iOS App" src="https://img.shields.io/badge/Download_iOS_App-grey?style=for-the-badge&logo=apple&logoColor=white" height="25">
-    </a>
-    <a href="https://play.google.com/store/apps/details?id=com.rshemetsubuser.myapp&pcampaignid=web_share">
-      <img alt="Download Android App" src="https://img.shields.io/badge/Download_Android_App-grey?style=for-the-badge&logo=android&logoColor=white" height="25">
-    </a>
-  </div>
-</div>
+| <img src="assets/ChatDemo.gif" alt="Chat Demo" width="250"/> | <a href="https://apps.apple.com/gb/app/cactus-chat/id6744444212"><img alt="Download iOS App" src="https://img.shields.io/badge/Download_iOS_App-grey?style=for-the-badge&logo=apple&logoColor=white" height="25"/></a><br/><a href="https://play.google.com/store/apps/details?id=com.rshemetsubuser.myapp&pcampaignid=web_share"><img alt="Download Android App" src="https://img.shields.io/badge/Download_Android_App-grey?style=for-the-badge&logo=android&logoColor=white" height="25"/></a> |
+| --- | --- |
 
-<div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 15px;">
-  <div style="flex: 1; min-width: 180px; max-width: 250px;">
-    <img src="assets/VLMDemo.gif" alt="VLM Demo" style="width: 100%; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1);">
-  </div>
-  <div style="flex: 1; min-width: 180px; max-width: 250px;">
-    <img src="assets/EmbeddingDemo.gif" alt="Embedding Demo" style="width: 100%; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1);">
-  </div>
-</div>
+| <img src="assets/VLMDemo.gif" alt="VLM Demo" width="220"/> | <img src="assets/EmbeddingDemo.gif" alt="Embedding Demo" width="220"/> |
+| --- | --- |
 
 ## ![Recommendations](https://img.shields.io/badge/Our_Recommendations-grey.svg?style=for-the-badge)
 We provide a colleaction of recommended models on our [HuggingFace Page](https://huggingface.co/Cactus-Compute?sort_models=alphabetical#models)
