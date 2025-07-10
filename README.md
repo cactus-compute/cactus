@@ -8,7 +8,7 @@
 
 <br/>
 
-Cross-platform framework for running LLM/VLM/TTS models locally in any smartphone app.
+Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
 
 - Available in Flutter and React-Native for cross-platform developers.
 - Supports any GGUF model you can find on Huggingface; Qwen, Gemma, Llama, DeepSeek etc.
