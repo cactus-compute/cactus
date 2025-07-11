@@ -21,7 +21,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
 [CLICK TO JOIN OUR DISCORD!](https://discord.gg/bNurx3AXTJ)
 <br/>
 <br/>
-[CLICK TO VISUALISE AND QUERY REPO](https://repomapr.com/cactus-compute/
+[CLICK TO VISUALISE AND QUERY REPO](https://repomapr.com/cactus-compute/)
 
 ## ![Flutter](https://img.shields.io/badge/Flutter-grey.svg?style=for-the-badge&logo=Flutter&logoColor=white)
 
