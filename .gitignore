@@ -121,6 +121,7 @@ ios/.bundle/
 *.mode1v3
 *.mode2v3
 *.perspectivev3
+xcuserdata
 
 # iOS Framework binaries
 *.framework/cactus
