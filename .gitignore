@@ -98,6 +98,7 @@ flutter/example/ios
 
 # === Kotlin ===
 .gradle/
+.kotlin/
 
 # === Metro/React Native cache ===
 .cache/
