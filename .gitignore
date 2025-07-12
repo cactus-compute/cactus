@@ -96,6 +96,9 @@ flutter/android/src/main/jniLibs
 flutter/example/android 
 flutter/example/ios
 
+# === Kotlin ===
+.gradle/
+
 # === Metro/React Native cache ===
 .cache/
 react-native-packager-cache-*/
