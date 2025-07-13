@@ -7,7 +7,7 @@
 #include <algorithm>
 
 #include "utils.h"
-#include "../../cactus/cactus.h"
+#include "../../cpp/cactus.h"
 
 float cosineSimilarity(const std::vector<float>& a, const std::vector<float>& b) {
     if (a.size() != b.size()) {

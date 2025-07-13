@@ -5,8 +5,8 @@
 #include <chrono>
 
 #include "utils.h"
-#include "../../cactus/cactus_ffi.h"
-#include "../../cactus/json.hpp"
+#include "../../cpp/cactus_ffi.h"
+#include "../../cpp/json.hpp"
 using json = nlohmann::ordered_json;
 
 std::chrono::high_resolution_clock::time_point first_token_time;

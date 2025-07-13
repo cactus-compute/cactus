@@ -13,7 +13,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-add_subdirectory(../../cactus ${CMAKE_BINARY_DIR}/cactus_core_build)
+add_subdirectory(../../cpp ${CMAKE_BINARY_DIR}/cactus_core_build)
 
 # Create separate executables for each example
 add_executable(cactus_vlm main_vlm.cpp)

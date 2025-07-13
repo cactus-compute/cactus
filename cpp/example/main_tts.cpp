@@ -8,7 +8,7 @@
 #include <thread>
 
 #include "utils.h"
-#include "../../cactus/cactus.h"
+#include "../../cpp/cactus.h"
 
 void writeWavFile(const std::string& filename, const std::vector<float>& audio_data, int sample_rate = 24000) {
     std::ofstream file(filename, std::ios::binary);

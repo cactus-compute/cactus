@@ -10,10 +10,10 @@
 #include <iomanip>
 
 #include "utils.h"
-#include "../../cactus/cactus.h"
+#include "../../cpp/cactus.h"
 
 // Include nlohmann json for proper JSON handling
-#include "../../cactus/json.hpp"
+#include "../../cpp/json.hpp"
 using json = nlohmann::ordered_json;
 
 struct GenerationResult {

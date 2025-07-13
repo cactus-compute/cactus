@@ -5,7 +5,7 @@
 #include <ctime>
 
 #include "utils.h"
-#include "../../cactus/cactus.h"
+#include "../../cpp/cactus.h"
 
 int main(int argc, char **argv) {
     const std::string model_filename = "SmolVLM-256M.gguf";

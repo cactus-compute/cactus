@@ -5,7 +5,7 @@
 #include <ctime>
 
 #include "utils.h"
-#include "../../cactus/cactus_ffi.h"
+#include "../../cpp/cactus_ffi.h"
 
 bool prompt_and_respond_ffi(cactus_context_handle_t handle, const std::string& prompt, const std::vector<std::string>& media_paths = {}, int max_tokens = 50) {
     std::cout << "\n" << std::string(80, '=') << std::endl;
