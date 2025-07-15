@@ -99,7 +99,9 @@ flutter/example/ios
 # === Kotlin ===
 .gradle/
 .kotlin/
-kotlin/library/libs
+kotlin/library/libs/ios/cactus.xcframework
+kotlin/library/libs/android/jniLibs
+kotlin/example/iosApp/iosApp/Frameworks
 
 # === Metro/React Native cache ===
 .cache/
