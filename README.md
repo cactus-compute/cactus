@@ -170,6 +170,86 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     ```
 N/B: See the [React Docs](https://github.com/cactus-compute/cactus/blob/main/react) for more.
 
+## ![Kotlin Multiplatform](https://img.shields.io/badge/Kotlin_Multiplatform-grey.svg?style=for-the-badge&logo=kotlin&logoColor=white)
+
+1.  **Add Maven Dependency:**
+    Add to your KMP project's `build.gradle.kts`:
+    ```kotlin
+    kotlin {
+        sourceSets {
+            commonMain {
+                dependencies {
+                    implementation("com.cactus:library:0.2.0")
+                }
+            }
+        }
+    }
+    ```
+
+2. **Platform Setup:**
+    - **Android:** Works automatically - native libraries included.
+    - **iOS:** In Xcode: File → Add Package Dependencies → Paste `https://github.com/cactus-compute/cactus` → Click Add
+
+3. **Kotlin Multiplatform Text Completion**
+    ```kotlin
+    import com.cactus.Cactus
+    import com.cactus.CactusInitParams
+    import com.cactus.CactusCompletionParams
+    
+    val cactus = Cactus()
+    cactus.initialize(CactusInitParams(
+        modelPath = "/path/to/model.gguf",
+        nCtx = 2048,
+        nGpuLayers = -1
+    ))
+
+    val params = CactusCompletionParams(
+        prompt = "Hello!",
+        nPredict = 100,
+        temperature = 0.7
+    )
+    val result = cactus.completion(params)
+    ```
+
+4. **Kotlin Multiplatform Embedding**
+    ```kotlin
+    import com.cactus.Cactus
+    import com.cactus.CactusInitParams
+    
+    val cactus = Cactus()
+    cactus.initialize(CactusInitParams(
+        modelPath = "/path/to/model.gguf",
+        nCtx = 2048,
+        embedding = true
+    ))
+
+    val embedding = cactus.embedding("Your text to embed")
+    ```
+
+5. **Kotlin Multiplatform VLM**
+    ```kotlin
+    import com.cactus.Cactus
+    import com.cactus.CactusInitParams
+    import com.cactus.CactusCompletionParams
+    
+    val cactus = Cactus()
+    cactus.initialize(CactusInitParams(
+        modelPath = "/path/to/vision-model.gguf",
+        nCtx = 2048
+    ))
+    
+    cactus.initMultimodal("/path/to/mmproj.gguf", useGpu = true)
+
+    val params = CactusCompletionParams(
+        prompt = "Describe this image",
+        nPredict = 200,
+        temperature = 0.3
+    )
+    val result = cactus.multimodalCompletion(params, listOf("/path/to/image.jpg"))
+    ```
+
+  N/B: See the [Kotlin Docs](https://github.com/cactus-compute/cactus/blob/main/kotlin) for more.
+
 ## ![C++](https://img.shields.io/badge/C%2B%2B-grey.svg?style=for-the-badge&logo=c%2B%2B&logoColor=white)
 
 Cactus backend is written in C/C++ and can run directly on phones, smart tvs, watches, speakers, cameras, laptops etc. See the [C++ Docs](https://github.com/cactus-compute/cactus/blob/main/cpp) for more.
