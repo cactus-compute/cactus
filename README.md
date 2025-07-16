@@ -10,12 +10,10 @@
 
 Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
 
-- Available in Flutter and React-Native for cross-platform developers.
+- Available in Flutter, React-Native and Kotlin Multiplatform.
 - Supports any GGUF model you can find on Huggingface; Qwen, Gemma, Llama, DeepSeek etc.
 - Run LLMs, VLMs, Embedding Models, TTS models and more.
 - Accommodates from FP32 to as low as 2-bit quantized models, for efficiency and less device strain. 
-- MCP tool-calls to make AI performant and helpful (set reminder, gallery search, reply messages) etc.
-- Fallback to massive cloud models for complex tasks and upon device failures. 
 - Chat templates with Jinja2 support and token streaming.
 
 [CLICK TO JOIN OUR DISCORD!](https://discord.gg/bNurx3AXTJ)
