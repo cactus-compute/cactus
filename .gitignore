@@ -105,6 +105,7 @@ kotlin/example/iosApp/iosApp
 kotlin/example/iosApp/Frameworks
 kotlin/example/iosApp/iosApp.xcodeproj/Frameworks
 kotlin/library/src/commonMain/resources/ios/cactus.xcframework
+kotlin/library/src/commonMain/resources/android/jniLibs
 
 # === Metro/React Native cache ===
 .cache/
