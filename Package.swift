@@ -17,7 +17,7 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: packageName,
-            path: "./kotlin/library/build/XCFrameworks/debug/\(packageName).xcframework"
+            path: "./kotlin/library/build/XCFrameworks/release/\(packageName).xcframework"
         )
         ,
     ]
