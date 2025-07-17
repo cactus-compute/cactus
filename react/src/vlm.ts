@@ -114,16 +114,16 @@ export class CactusVLM {
     return result;
   }
 
-  private async _handleLocalCompletion(
+  private _handleLocalCompletion = async(
     messages: CactusOAICompatibleMessage[],
     params: VLMCompletionParams,
     callback?: (data: any) => void,
-  ): Promise<NativeCompletionResult> {
+  ): Promise<NativeCompletionResult> => {
     const { newMessages, requiresReset } =
       this.conversationHistoryManager.processNewMessages(messages);
 
     if (requiresReset) {
-      await this.rewind();
+      this.context?.rewind();
       this.conversationHistoryManager.reset();
     }
 

@@ -91,16 +91,16 @@ export class CactusLM {
     return { lm: null, error: new Error('Failed to initialize CactusLM after all retries') };
   }
 
-  async completion(
+  completion = async (
     messages: CactusOAICompatibleMessage[],
     params: CompletionParams = {},
     callback?: (data: any) => void,
-  ): Promise<NativeCompletionResult> {
+  ): Promise<NativeCompletionResult> => {
     const { newMessages, requiresReset } =
       this.conversationHistoryManager.processNewMessages(messages);
 
     if (requiresReset) {
-      await this.rewind();
+      this.context?.rewind();
       this.conversationHistoryManager.reset();
     }
 
@@ -169,8 +169,7 @@ export class CactusLM {
     };
   }
 
-  async rewind(): Promise<void> {
-    // @ts-ignore
+  rewind = async (): Promise<void> => {
     return this.context?.rewind()
   }
 

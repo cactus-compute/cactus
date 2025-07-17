@@ -471,7 +471,6 @@ export class LlamaContext {
   }
 
   async rewind(): Promise<void> {
-    // @ts-ignore
     return (Cactus as any).rewind(this.id)
   }
 }

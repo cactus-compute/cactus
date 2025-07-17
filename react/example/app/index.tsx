@@ -46,7 +46,7 @@ export default function HomeScreen() {
     setIsGenerating(true);
 
     try {
-      const response = await cactus.generateResponse([]);
+      const response = await cactus.generateResponse(newMessages);
       
       const assistantMessage: Message = {
         role: 'assistant',
