@@ -89,15 +89,12 @@ class CactusManager {
     this.isInitialized = true;
   }
 
-  async generateResponse( userMessage: Message): Promise<string> {
+  async generateResponse( messages: Message[]): Promise<string> {
     if (!this.vlm) {
       throw new Error('Cactus VLM not initialized');
     }
 
-    const messages = [
-      { role: 'system', content: 'You are a helpful AI assistant. Always provide neat, straightforward, short and relevant responses. Be concise and direct.' },
-      { role: 'user', content: userMessage.content }
-    ];
+    const userMessage = messages[messages.length - 1];
     
     const params = {
       images: userMessage.images,

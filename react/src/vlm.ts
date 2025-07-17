@@ -12,6 +12,7 @@ import type {
 } from './index'
 import { Telemetry } from './telemetry'
 import { setCactusToken, getTextCompletion, getVisionCompletion } from './remote'
+import { ConversationHistoryManager } from './utils'
 
 interface CactusVLMReturn {
   vlm: CactusVLM | null
@@ -29,9 +30,11 @@ export type VLMCompletionParams = Omit<CompletionParams, 'prompt'> & {
 
 export class CactusVLM {
   private context: LlamaContext
-  
+  protected conversationHistoryManager: ConversationHistoryManager
+
   private constructor(context: LlamaContext) {
     this.context = context
+    this.conversationHistoryManager = new ConversationHistoryManager()
   }
 
   static async init(
@@ -116,21 +119,42 @@ export class CactusVLM {
     params: VLMCompletionParams,
     callback?: (data: any) => void,
   ): Promise<NativeCompletionResult> {
+    const { newMessages, requiresReset } =
+      this.conversationHistoryManager.processNewMessages(messages);
+
+    if (requiresReset) {
+      await this.rewind();
+      this.conversationHistoryManager.reset();
+    }
+
+    if (newMessages.length === 0) {
+      console.warn('No messages to complete!');
+    }
+
+    let result: NativeCompletionResult;
+
     if (params.images && params.images.length > 0) {
-      const formattedPrompt = await this.context.getFormattedChat(messages)
+      const formattedPrompt = await this.context.getFormattedChat(newMessages)
       const prompt =
         typeof formattedPrompt === 'string'
           ? formattedPrompt
           : formattedPrompt.prompt
-      return await multimodalCompletion(
+      result = await multimodalCompletion(
         this.context.id,
         prompt,
         params.images,
         { ...params, prompt, emit_partial_completion: !!callback },
       )
     } else {
-      return await this.context.completion({ messages, ...params }, callback)
+      result = await this.context.completion({ messages: newMessages, ...params }, callback)
     }
+
+    this.conversationHistoryManager.update(newMessages, {
+      role: 'assistant',
+      content: result.content || result.text,
+    });
+
+    return result;
   }
 
   private async _handleRemoteCompletion(

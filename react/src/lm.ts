@@ -9,6 +9,7 @@ import type {
 } from './index'
 import { Telemetry } from './telemetry'
 import { setCactusToken, getVertexAIEmbedding } from './remote'
+import { ConversationHistoryManager } from './utils'
 
 interface CactusLMReturn {
   lm: CactusLM | null
@@ -16,10 +17,12 @@ interface CactusLMReturn {
 }
 
 export class CactusLM {
-  private context: LlamaContext
+  protected context: LlamaContext
+  protected conversationHistoryManager: ConversationHistoryManager
 
-  private constructor(context: LlamaContext) {
+  protected constructor(context: LlamaContext) {
     this.context = context
+    this.conversationHistoryManager = new ConversationHistoryManager()
   }
 
   static async init(
@@ -93,7 +96,26 @@ export class CactusLM {
     params: CompletionParams = {},
     callback?: (data: any) => void,
   ): Promise<NativeCompletionResult> {
-    return await this.context.completion({ messages, ...params }, callback);
+    const { newMessages, requiresReset } =
+      this.conversationHistoryManager.processNewMessages(messages);
+
+    if (requiresReset) {
+      await this.rewind();
+      this.conversationHistoryManager.reset();
+    }
+
+    if (newMessages.length === 0) {
+      console.warn('No messages to complete!');
+    }
+
+    const result = await this.context.completion({ messages: newMessages, ...params }, callback);
+
+    this.conversationHistoryManager.update(newMessages, {
+      role: 'assistant',
+      content: result.content,
+    });
+
+    return result;
   }
 
   async embedding(
@@ -136,11 +158,11 @@ export class CactusLM {
     return result;
   }
 
-  private async _handleLocalEmbedding(text: string, params?: EmbeddingParams): Promise<NativeEmbeddingResult> {
+  protected async _handleLocalEmbedding(text: string, params?: EmbeddingParams): Promise<NativeEmbeddingResult> {
     return this.context.embedding(text, params);
   }
 
-  private async _handleRemoteEmbedding(text: string): Promise<NativeEmbeddingResult> {
+  protected async _handleRemoteEmbedding(text: string): Promise<NativeEmbeddingResult> {
     const embeddingValues = await getVertexAIEmbedding(text);
     return {
       embedding: embeddingValues,

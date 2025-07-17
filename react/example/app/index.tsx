@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, View, Text, Alert } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, View, Text, Alert, Button } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { cactus, Message } from '../cactus';
 import { Header, MessageBubble, MessageField, LoadingScreen } from '../components';
 
 export default function HomeScreen() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>([
+    { role: 'system', content: 'You are a helpful AI assistant. Always provide neat, straightforward, short and relevant responses. Be concise and direct.' }
+  ]);
   const [message, setMessage] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
@@ -37,13 +39,14 @@ export default function HomeScreen() {
       images: attachedImages.length > 0 ? attachedImages : undefined
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
     setMessage('');
     setAttachedImages([]);
     setIsGenerating(true);
 
     try {
-      const response = await cactus.generateResponse(userMessage);
+      const response = await cactus.generateResponse([]);
       
       const assistantMessage: Message = {
         role: 'assistant',
