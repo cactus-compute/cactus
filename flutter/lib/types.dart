@@ -7,11 +7,16 @@ class ChatMessage {
   final double? tokensPerSecond;
 
   ChatMessage({required this.role, required this.content, this.tokensPerSecond});
+  @override
+  bool operator ==(Object other) => other is ChatMessage && role == other.role && content == other.content;
+  
+  @override
+  int get hashCode => role.hashCode ^ content.hashCode;
 
   Map<String, String> toJson() => {
-        'role': role,
-        'content': content,
-      };
+    'role': role,
+    'content': content,
+  };
 }
 
 class CactusException implements Exception {

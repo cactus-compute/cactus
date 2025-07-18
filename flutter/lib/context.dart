@@ -271,8 +271,6 @@ class _CactusIsolateWorker {
     if (params.responseFormat != null || params.jinja == true) {
       final result = await _getFormattedChatAdvanced(params);
       return result.prompt;
-    } else if (_shouldUseContinuationMode(params, mediaPaths)) {
-      return await _buildConversationTurnPrompt(params.messages.last, params.chatTemplate);
     } else {
       return await _getFormattedChat(params.messages, params.chatTemplate);
     }
@@ -546,44 +544,6 @@ class _CactusIsolateWorker {
       calloc.free(finalTemplateC);
       if (jsonSchemaC != null) calloc.free(jsonSchemaC);
     }
-  }
-
-  bool _shouldUseContinuationMode(CactusCompletionParams params, List<String> mediaPaths) {
-    if (params.messages.isEmpty) return false;
-    if (mediaPaths.isNotEmpty) return false;
-    if (params.messages.length == 1) return false;
-    
-    final lastMessage = params.messages.last;
-    if (lastMessage.role != 'user') return false;
-    
-    final hasConversationHistory = params.messages.length >= 2 &&
-        params.messages.any((m) => m.role == 'assistant');
-    
-    return hasConversationHistory;
-  }
-
-  Future<String> _buildConversationTurnPrompt(ChatMessage message, String? chatTemplate) async {
-    final escaped = message.content.replaceAll('"', '\\"');
-    final jsonStr = '[{"role":"${message.role}","content":"$escaped"}]';
-    final formatted = await _getFormattedChatFromJson(jsonStr, chatTemplate: chatTemplate);
-
-    final idx = formatted.indexOf('<|im_start|>assistant');
-    if (idx != -1) {
-      return '${formatted.substring(0, idx)}<|im_start|>assistant\n';
-    }
-    return formatted;
-  }
-
-  Future<String> _getFormattedChatFromJson(String messagesJson, {String? chatTemplate}) async {
-    final messagesJsonC = messagesJson.toNativeUtf8(allocator: calloc);
-    final chatTemplateC = chatTemplate?.toNativeUtf8(allocator: calloc) ?? nullptr;
-    final formattedPromptC = bindings.getFormattedChat(_handle, messagesJsonC, chatTemplateC);
-    if (formattedPromptC == nullptr) throw CactusException("Native chat formatting returned null.");
-    final prompt = formattedPromptC.toDartString();
-    bindings.freeString(formattedPromptC);
-    calloc.free(messagesJsonC);
-    if (chatTemplateC != nullptr) calloc.free(chatTemplateC);
-    return prompt;
   }
 }
 

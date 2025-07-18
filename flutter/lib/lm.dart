@@ -4,10 +4,12 @@ import './types.dart';
 import './context.dart';
 import './telemetry.dart';
 import './remote.dart';
+import './utils.dart';
 
 class CactusLM {
   CactusContext? _context;
   CactusInitParams? _initParams;
+  final ConversationHistoryManager _historyManager = ConversationHistoryManager();
 
   CactusLM._();
 
@@ -61,10 +63,16 @@ class CactusLM {
     CactusTokenCallback? onToken,
   }) async {
     if (_context == null) throw CactusException('CactusLM not initialized');
+
+    final processed = _historyManager.processNewMessages(messages);
+    if (processed.requiresReset) {
+      _context!.rewind();
+      _historyManager.reset();
+    }
     
     final result = await _context!.completion(
       CactusCompletionParams(
-        messages: messages,
+        messages: processed.newMessages,
         maxPredictedTokens: maxTokens,
         temperature: temperature,
         topK: topK,
@@ -74,6 +82,8 @@ class CactusLM {
       ),
     );
     
+    _historyManager.update(processed.newMessages, ChatMessage(role: 'assistant', content: result.text));
+
     return result;
   }
 
