@@ -49,7 +49,7 @@ class CactusService {
     try {
       final systemPrompt = ChatMessage(role: 'system', content: 'You are a helpful AI assistant. Always provide neat, straightforward, short and relevant responses. Be concise and direct.');
       final conversationMessages = [systemPrompt, ...messages.value.where((m) => m.content.isNotEmpty).toList()];
-      
+
       final result = await model!.completion(
         conversationMessages,
         imagePaths: _stagedImagePath != null ? [_stagedImagePath!] : [],

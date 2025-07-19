@@ -117,8 +117,6 @@ class CactusVLM {
       _context!.rewind();
       _historyManager.reset();
     }
-
-    print('New messages: ${processed.newMessages}');
     
     final result = await _context!.completion(
       CactusCompletionParams(
@@ -218,7 +216,6 @@ class CactusVLM {
 
   Future<void> rewind() async {
     if (_context == null) throw CactusException('CactusVLM not initialized');
-    print('Rewinding VLM');
     _context!.rewind();
   }
 
