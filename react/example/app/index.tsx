@@ -4,9 +4,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { cactus, Message } from '../cactus';
 import { Header, MessageBubble, MessageField, LoadingScreen } from '../components';
 
+const systemPrompt = 'You are a helpful AI assistant. Always provide neat, straightforward, short and relevant responses. Be concise and direct.';
+
 export default function HomeScreen() {
   const [messages, setMessages] = useState<Message[]>([
-    { role: 'system', content: 'You are a helpful AI assistant. Always provide neat, straightforward, short and relevant responses. Be concise and direct.' }
+    { role: 'system', content: systemPrompt }
   ]);
   const [message, setMessage] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -87,7 +89,6 @@ export default function HomeScreen() {
           onPress: () => {
             cactus.clearConversation();
             setMessages([]);
-            console.log('Conversation cleared');
           }
         }
       ]

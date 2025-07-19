@@ -254,7 +254,6 @@ export class LlamaContext {
         return this.completion(params, callback);
     }
     if (recursionCount >= recursionLimit) {
-        // console.log(`Recursion limit reached (${recursionCount}/${recursionLimit}), returning default completion`)
         return this.completion({
             ...params,
             jinja: true, 
@@ -264,14 +263,12 @@ export class LlamaContext {
 
     const messages = [...params.messages]; // avoid mutating the original messages
 
-    // console.log('Calling completion...')
     const result = await this.completion({
         ...params, 
         messages: messages,
         jinja: true, 
         tools: params.tools.getSchemas()
     }, callback);
-    // console.log('Completion result:', result);
     
     const {toolCalled, toolName, toolInput, toolOutput} = 
         await parseAndExecuteTool(result, params.tools);
@@ -293,8 +290,6 @@ export class LlamaContext {
         } as CactusOAICompatibleMessage;
         
         messages.push(toolMessage);
-        
-        // console.log('Messages being sent to next completion:', JSON.stringify(messages, null, 2));
         
         return await this.completionWithTools(
             {...params, messages: messages}, 

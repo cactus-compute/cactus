@@ -56,22 +56,18 @@ export class Tools {
 
 export async function parseAndExecuteTool(result: NativeCompletionResult, tools: Tools): Promise<{toolCalled: boolean, toolName?: string, toolInput?: any, toolOutput?: any}> {
   if (!result.tool_calls || result.tool_calls.length === 0) {
-      // console.log('No tool calls found');
       return {toolCalled: false};
   }
   
   try {
       const toolCall = result.tool_calls[0];
       if (!toolCall) {
-        // console.log('No tool call found');
         return {toolCalled: false};
       }
       const toolName = toolCall.function.name;
       const toolInput = JSON.parse(toolCall.function.arguments);
       
-      // console.log('Calling tool:', toolName, toolInput);
       const toolOutput = await tools.execute(toolName, toolInput);
-      // console.log('Tool called result:', toolOutput);
       
       return {
           toolCalled: true,
@@ -80,7 +76,6 @@ export async function parseAndExecuteTool(result: NativeCompletionResult, tools:
           toolOutput
       };
   } catch (error) {
-      // console.error('Error parsing tool call:', error);
       return {toolCalled: false};
   }
 }

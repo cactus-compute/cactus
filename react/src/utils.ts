@@ -15,12 +15,10 @@ export class ConversationHistoryManager {
   public processNewMessages(
     fullMessageHistory: CactusOAICompatibleMessage[]
   ): ProcessedMessages {
-    console.log('processing new messages', fullMessageHistory);
     let divergent = fullMessageHistory.length < this.history.length;
     if (!divergent) {
       for (let i = 0; i < this.history.length; i++) {
         if (JSON.stringify(this.history[i]) !== JSON.stringify(fullMessageHistory[i])) {
-          console.log('Divergent!', this.history[i], fullMessageHistory[i]);
           divergent = true;
           break;
         }
@@ -28,7 +26,6 @@ export class ConversationHistoryManager {
     }
 
     if (divergent) {
-      console.log('Requires reset!', this.history, fullMessageHistory);
       // If diverged, the caller must reset the model and send the full history.
       return { newMessages: fullMessageHistory, requiresReset: true };
     }
@@ -52,7 +49,6 @@ export class ConversationHistoryManager {
    * Resets the internal history.
    */
   public reset() {
-    console.log('resetting history!');
     this.history = [];
   }
 }
