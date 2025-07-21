@@ -461,7 +461,7 @@ export class LlamaContext {
   }
 
   async rewind(): Promise<void> {
-    return (Cactus as any).rewind(this.id)
+    return Cactus.rewind(this.id)
   }
 }
 

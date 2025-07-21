@@ -204,7 +204,6 @@ export class CactusVLM {
   }
 
   async rewind(): Promise<void> {
-    // @ts-ignore
     return this.context?.rewind()
   }
 

@@ -473,6 +473,27 @@ RCT_EXPORT_METHOD(multimodalCompletion:(double)contextId
     });
 }
 
+RCT_EXPORT_METHOD(rewind:(double)contextId
+                 withResolver:(RCTPromiseResolveBlock)resolve
+                 withRejecter:(RCTPromiseRejectBlock)reject)
+{
+    CactusContext *context = llamaContexts[[NSNumber numberWithDouble:contextId]];
+    if (context == nil) {
+        reject(@"llama_error", @"Context not found", nil);
+        return;
+    }
+    if ([context isPredicting]) {
+        reject(@"llama_error", @"Context is busy", nil);
+        return;
+    }
+    @try {
+        [context rewind];
+        resolve(nil);
+    } @catch (NSException *exception) {
+        reject(@"llama_cpp_error", exception.reason, nil);
+    }
+}
+
 RCT_EXPORT_METHOD(releaseContext:(double)contextId
                  withResolver:(RCTPromiseResolveBlock)resolve
                  withRejecter:(RCTPromiseRejectBlock)reject)

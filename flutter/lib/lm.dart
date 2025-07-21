@@ -4,7 +4,7 @@ import './types.dart';
 import './context.dart';
 import './telemetry.dart';
 import './remote.dart';
-import './utils.dart';
+import './chat.dart';
 
 class CactusLM {
   CactusContext? _context;

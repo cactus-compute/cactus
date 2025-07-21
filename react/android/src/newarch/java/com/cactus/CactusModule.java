@@ -190,6 +190,11 @@ public class CactusModule extends NativeCactusSpec {
   }
 
   @ReactMethod
+  public void rewind(double id, Promise promise) {
+    cactus.rewind(id, promise);
+  }
+
+  @ReactMethod
   public void releaseContext(double id, Promise promise) {
     cactus.releaseContext(id, promise);
   }

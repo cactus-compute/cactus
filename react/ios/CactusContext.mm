@@ -962,6 +962,10 @@
     llama->releaseVocoder();
 }
 
+- (void)rewind {
+    llama->rewind();
+}
+
 - (void)invalidate {
     delete llama;
     // llama_backend_free();

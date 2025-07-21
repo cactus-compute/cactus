@@ -74,6 +74,7 @@
 - (NSArray *)decodeAudioTokens:(NSArray *)tokens;
 - (NSDictionary *)getDeviceInfo;
 - (void)releaseVocoder;
+- (void)rewind;
 
 - (void)invalidate;
 

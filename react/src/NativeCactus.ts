@@ -309,6 +309,7 @@ export interface Spec extends TurboModule {
   ): Promise<NativeAudioDecodeResult>
   getDeviceInfo(contextId: number): Promise<NativeDeviceInfo>
   releaseVocoder(contextId: number): Promise<void>
+  rewind(contextId: number): Promise<void>
   releaseContext(contextId: number): Promise<void>
   releaseAllContexts(): Promise<void>
 }

@@ -598,6 +598,41 @@ public class Cactus implements LifecycleEventListener {
     tasks.put(task, "getLoadedLoraAdapters-" + contextId);
   }
 
+  public void rewind(double id, Promise promise) {
+    final int contextId = (int) id;
+    AsyncTask task = new AsyncTask<Void, Void, Void>() {
+      private Exception exception;
+
+      @Override
+      protected Void doInBackground(Void... voids) {
+        try {
+          LlamaContext context = contexts.get(contextId);
+          if (context == null) {
+            throw new Exception("Context not found");
+          }
+          if (context.isPredicting()) {
+            throw new Exception("Context is busy");
+          }
+          context.rewind();
+        } catch (Exception e) {
+          exception = e;
+        }
+        return null;
+      }
+
+      @Override
+      protected void onPostExecute(Void result) {
+        if (exception != null) {
+          promise.reject(exception);
+          return;
+        }
+        promise.resolve(null);
+        tasks.remove(this);
+      }
+    }.executeOnExecutor(singleThreadExecutor);
+    tasks.put(task, "rewind-" + contextId);
+  }
+
   public void releaseContext(double id, Promise promise) {
     final int contextId = (int) id;
     AsyncTask task = new AsyncTask<Void, Void, Void>() {

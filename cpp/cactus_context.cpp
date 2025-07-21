@@ -41,6 +41,9 @@ void cactus_context::rewind() {
     audio_tokens.clear();
     if (ctx_sampling) {
     }
+    if (ctx) {
+        llama_kv_self_clear(ctx);
+    }
 }
 
 bool cactus_context::initSampling() {

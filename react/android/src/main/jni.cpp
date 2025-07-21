@@ -1340,6 +1340,17 @@ Java_com_cactus_LlamaContext_getLoadedLoraAdapters(
 }
 
 JNIEXPORT void JNICALL
+Java_com_cactus_LlamaContext_rewind(
+        JNIEnv *env, jobject thiz, jlong context_ptr) {
+    UNUSED(env);
+    UNUSED(thiz);
+    auto llama = context_map[(long) context_ptr];
+    if (llama != nullptr) {
+        llama->rewind();
+    }
+}
+
+JNIEXPORT void JNICALL
 Java_com_cactus_LlamaContext_freeContext(
         JNIEnv *env, jobject thiz, jlong context_ptr) {
     UNUSED(env);

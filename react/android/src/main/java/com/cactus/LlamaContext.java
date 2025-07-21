@@ -398,6 +398,10 @@ public class LlamaContext {
     return getLoadedLoraAdapters(this.context);
   }
 
+  public void rewind() {
+    rewind(this.context);
+  }
+
   public void release() {
     freeContext(context);
   }
@@ -747,6 +751,7 @@ public class LlamaContext {
   protected static native int applyLoraAdapters(long contextPtr, ReadableArray loraAdapters);
   protected static native void removeLoraAdapters(long contextPtr);
   protected static native WritableArray getLoadedLoraAdapters(long contextPtr);
+  protected static native void rewind(long contextPtr);
   protected static native void freeContext(long contextPtr);
   protected static native void setupLog(NativeLogCallback logCallback);
   protected static native void unsetLog();
