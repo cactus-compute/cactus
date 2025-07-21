@@ -7,9 +7,10 @@ import type {
   EmbeddingParams,
   NativeEmbeddingResult,
 } from './index'
+
 import { Telemetry } from './telemetry'
 import { setCactusToken, getVertexAIEmbedding } from './remote'
-import { ConversationHistoryManager } from './utils'
+import { ConversationHistoryManager } from './chat'
 
 interface CactusLMReturn {
   lm: CactusLM | null

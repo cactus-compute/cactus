@@ -3,16 +3,15 @@ import {
   initMultimodal,
   multimodalCompletion,
   LlamaContext,
+  type ContextParams,
+  type CompletionParams,
+  type CactusOAICompatibleMessage,
+  type NativeCompletionResult,
 } from './index'
-import type {
-  ContextParams,
-  CompletionParams,
-  CactusOAICompatibleMessage,
-  NativeCompletionResult,
-} from './index'
+
 import { Telemetry } from './telemetry'
 import { setCactusToken, getTextCompletion, getVisionCompletion } from './remote'
-import { ConversationHistoryManager } from './utils'
+import { ConversationHistoryManager } from './chat'
 
 interface CactusVLMReturn {
   vlm: CactusVLM | null

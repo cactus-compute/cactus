@@ -6,7 +6,7 @@ export type CactusMessagePart = {
 
 export type CactusOAICompatibleMessage = {
   role: string
-  content?: string | CactusMessagePart[] | any // any for check invalid content type
+  content?: string | CactusMessagePart[] | any 
 }
 
 export function formatChat(
@@ -41,4 +41,45 @@ export function formatChat(
     chat.push({ role, content })
   })
   return chat
+}
+
+export interface ProcessedMessages {
+  newMessages: CactusOAICompatibleMessage[];
+  requiresReset: boolean;
+}
+
+export class ConversationHistoryManager {
+  private history: CactusOAICompatibleMessage[] = [];
+
+  public processNewMessages(
+    fullMessageHistory: CactusOAICompatibleMessage[]
+  ): ProcessedMessages {
+    let divergent = fullMessageHistory.length < this.history.length;
+    if (!divergent) {
+      for (let i = 0; i < this.history.length; i++) {
+        if (JSON.stringify(this.history[i]) !== JSON.stringify(fullMessageHistory[i])) {
+          divergent = true;
+          break;
+        }
+      }
+    }
+
+    if (divergent) {
+      return { newMessages: fullMessageHistory, requiresReset: true };
+    }
+
+    const newMessages = fullMessageHistory.slice(this.history.length);
+    return { newMessages, requiresReset: false };
+  }
+
+  public update(
+    newMessages: CactusOAICompatibleMessage[],
+    assistantResponse: CactusOAICompatibleMessage
+  ) {
+    this.history.push(...newMessages, assistantResponse);
+  }
+
+  public reset() {
+    this.history = [];
+  }
 }

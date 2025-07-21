@@ -31,10 +31,7 @@ export class CactusTTS {
       speakerJsonStr,
       textToSpeak,
     )
-    // This part is simplified. In a real scenario, the tokens from 
-    // the main model would be generated and passed to decodeAudioTokens.
-    // For now, we are assuming a direct path which may not be fully functional
-    // without the main model's token output for TTS.
+    // To-DO: Fix
     const tokens = (await this.context.tokenize(formatted_prompt)).tokens
     return decodeAudioTokens(this.context.id, tokens)
   }

@@ -1,6 +1,7 @@
 import { NativeEventEmitter, DeviceEventEmitter, Platform } from 'react-native'
 import type { DeviceEventEmitterStatic } from 'react-native'
 import Cactus from './NativeCactus'
+
 import type {
   NativeContextParams,
   NativeLlamaContext,
@@ -20,15 +21,13 @@ import type {
   NativeAudioDecodeResult,
   NativeDeviceInfo,
 } from './NativeCactus'
-import type {
-  SchemaGrammarConverterPropOrder,
-  SchemaGrammarConverterBuiltinRule,
-} from './grammar'
-import { SchemaGrammarConverter, convertJsonSchemaToGrammar } from './grammar'
+
+
 import type { CactusMessagePart, CactusOAICompatibleMessage } from './chat'
 import { formatChat } from './chat'
 import { Tools, parseAndExecuteTool } from './tools'
 import { Telemetry, type TelemetryParams } from './telemetry'
+
 export type {
   NativeContextParams,
   NativeLlamaContext,
@@ -45,13 +44,9 @@ export type {
   CactusOAICompatibleMessage,
   JinjaFormattedChatResult,
   NativeAudioDecodeResult,
-
-  // Deprecated
-  SchemaGrammarConverterPropOrder,
-  SchemaGrammarConverterBuiltinRule,
 }
 
-export { SchemaGrammarConverter, convertJsonSchemaToGrammar, Tools }
+export {Tools }
 export * from './remote'
 
 const EVENT_ON_INIT_CONTEXT_PROGRESS = '@Cactus_onInitContextProgress'
