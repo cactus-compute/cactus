@@ -96,6 +96,17 @@ flutter/android/src/main/jniLibs
 flutter/example/android 
 flutter/example/ios
 
+# === Kotlin ===
+.gradle/
+.kotlin/
+kotlin/library/libs/ios/cactus.xcframework
+kotlin/library/libs/android/jniLibs
+kotlin/example/iosApp/iosApp
+kotlin/example/iosApp/Frameworks
+kotlin/example/iosApp/iosApp.xcodeproj/Frameworks
+kotlin/library/src/commonMain/resources/ios/cactus.xcframework
+kotlin/library/src/commonMain/resources/android/jniLibs
+
 # === Metro/React Native cache ===
 .cache/
 react-native-packager-cache-*/
@@ -116,6 +127,7 @@ ios/.bundle/
 *.mode1v3
 *.mode2v3
 *.perspectivev3
+xcuserdata
 
 # iOS Framework binaries
 *.framework/cactus
