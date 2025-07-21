@@ -1,0 +1,30 @@
+name: Test and generate react docs
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '16'
+
+      - name: Install React dependencies
+        run: npm install
+        working-directory: ./react
+
+      - name: Generate documentation
+        run: npm run docgen
+        working-directory: ./react
