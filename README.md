@@ -177,7 +177,7 @@ N/B: See the [React Docs](https://github.com/cactus-compute/cactus/blob/main/rea
         sourceSets {
             commonMain {
                 dependencies {
-                    implementation("com.cactus:library:0.2.1")
+                    implementation("com.cactus:library:0.2.4")
                 }
             }
         }
