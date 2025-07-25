@@ -123,7 +123,7 @@
     const { lm, error } = await CactusLM.init({
         model: '/पथ/to/model.gguf',
         n_ctx: 2048,
-        embedding: True,
+        embedding: true,
     });
 
     const text = 'एम्बेड करने के लिए आपका टेक्स्ट';
