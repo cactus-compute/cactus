@@ -123,7 +123,7 @@ Plattformübergreifendes Framework zur lokalen Bereitstellung von LLM/VLM/TTS-Mo
     const { lm, error } = await CactusLM.init({
         model: '/pfad/zum/model.gguf',
         n_ctx: 2048,
-        embedding: True,
+        embedding: true,
     });
 
     const text = 'Ihr Text zum Einbetten';
