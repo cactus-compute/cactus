@@ -6,6 +6,9 @@
   <img alt="Google for Startups" src="https://img.shields.io/badge/Google_For_Startups-4285F4?style=for-the-badge&logo=google&logoColor=white" height="18" style="vertical-align:middle;border-radius:4px;">
 </span>
 
+## 🌍 Translations
+
+🇬🇧 English | 🇪🇸 [Español](README.es.md) | 🇫🇷 [Français](README.fr.md) | 🇨🇳 [中文](README.zh.md) | 🇯🇵 [日本語](README.ja.md) | 🇮🇳 [हिंदी](README.hi.md) | 🇩🇪 [Deutsch](README.de.md)
 <br/>
 
 Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
