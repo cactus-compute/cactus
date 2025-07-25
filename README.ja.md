@@ -123,7 +123,7 @@
     const { lm, error } = await CactusLM.init({
         model: '/パス/to/model.gguf',
         n_ctx: 2048,
-        embedding: True,
+        embedding: true,
     });
 
     const text = '埋め込みするテキスト';
