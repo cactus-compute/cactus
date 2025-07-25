@@ -123,7 +123,7 @@
     const { lm, error } = await CactusLM.init({
         model: '/路径/到/model.gguf',
         n_ctx: 2048,
-        embedding: True,
+        embedding: true,
     });
 
     const text = '您要嵌入的文本';
