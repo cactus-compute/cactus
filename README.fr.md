@@ -123,7 +123,7 @@ Framework multiplateforme pour déployer des modèles LLM/VLM/TTS localement dan
     const { lm, error } = await CactusLM.init({
         model: '/chemin/vers/model.gguf',
         n_ctx: 2048,
-        embedding: True,
+        embedding: true,
     });
 
     const text = 'Votre texte à incorporer';
