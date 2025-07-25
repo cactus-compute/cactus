@@ -123,7 +123,7 @@ Framework multiplataforma para desplegar modelos LLM/VLM/TTS localmente en tu ap
     const { lm, error } = await CactusLM.init({
         model: '/ruta/a/model.gguf',
         n_ctx: 2048,
-        embedding: True,
+        embedding: true,
     });
 
     const text = 'Tu texto para embedder';
