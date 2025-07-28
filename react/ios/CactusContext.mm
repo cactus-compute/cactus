@@ -417,7 +417,7 @@
 - (NSDictionary *)completion:(NSDictionary *)params
     onToken:(void (^)(NSMutableDictionary * tokenResult))onToken
 {
-    llama->rewind();
+    // llama->rewind();
 
     //llama_reset_timings(llama->ctx);
 
@@ -877,7 +877,7 @@
         @throw [NSException exceptionWithName:@"LlamaException" reason:@"Multimodal is not enabled" userInfo:nil];
     }
     
-    llama->rewind();
+    // llama->rewind();
     
     llama->params.prompt = [prompt UTF8String];
     llama->params.sampling.seed = params[@"seed"] ? [params[@"seed"] intValue] : -1;

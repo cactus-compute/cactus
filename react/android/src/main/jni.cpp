@@ -706,7 +706,7 @@ Java_com_cactus_LlamaContext_doCompletion(
     UNUSED(thiz);
     auto llama = context_map[(long) context_ptr];
 
-    llama->rewind();
+    // llama->rewind();
 
     //llama_reset_timings(llama->ctx);
 
