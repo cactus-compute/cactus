@@ -50,7 +50,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     final lm = await CactusLM.init(
         modelUrl: 'huggingface/gguf/link',
         contextSize: 2048,
-        generateEmbeddings: true,
+        generateEmbeddings: True,
     );
 
     final text = 'Your text to embed';
@@ -127,7 +127,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     });
 
     const text = 'Your text to embed';
-    const params = { normalize: true };
+    const params = { normalize: True };
     const result = await lm.embedding(text, params);
     ```
 
