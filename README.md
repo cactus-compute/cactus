@@ -6,6 +6,9 @@
   <img alt="Google for Startups" src="https://img.shields.io/badge/Google_For_Startups-4285F4?style=for-the-badge&logo=google&logoColor=white" height="18" style="vertical-align:middle;border-radius:4px;">
 </span>
 
+## 🌍 Translations
+
+🇬🇧 English | 🇪🇸 [Español](docs/README.es.md) | 🇫🇷 [Français](docs/README.fr.md) | 🇨🇳 [中文](docs/README.zh.md) | 🇯🇵 [日本語](docs/README.ja.md) | 🇮🇳 [हिंदी](docs/README.hi.md) | 🇩🇪 [Deutsch](docs/README.de.md)
 <br/>
 
 Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
@@ -47,7 +50,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     final lm = await CactusLM.init(
         modelUrl: 'huggingface/gguf/link',
         contextSize: 2048,
-        generateEmbeddings: true,
+        generateEmbeddings: True,
     );
 
     final text = 'Your text to embed';
@@ -124,7 +127,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     });
 
     const text = 'Your text to embed';
-    const params = { normalize: true };
+    const params = { normalize: True };
     const result = await lm.embedding(text, params);
     ```
 
