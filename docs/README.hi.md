@@ -8,7 +8,7 @@
 
 ## 🌍 अनुवाद
 
-🇬🇧 [English](README.md) | 🇪🇸 [Español](README.es.md) | 🇫🇷 [Français](README.fr.md) | 🇨🇳 [中文](README.zh.md) | 🇯🇵 [日本語](README.ja.md) | 🇮🇳 हिंदी
+🇬🇧 [English](../README.md) | 🇪🇸 [Español](README.es.md) | 🇫🇷 [Français](README.fr.md) | 🇨🇳 [中文](README.zh.md) | 🇯🇵 [日本語](README.ja.md) | 🇮🇳 हिंदी
 <br/>
 
 आपके ऐप में LLM/VLM/TTS मॉडल्स को स्थानीय रूप से तैनात करने के लिए क्रॉस-प्लेटफॉर्म फ्रेमवर्क।

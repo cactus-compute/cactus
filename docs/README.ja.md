@@ -8,7 +8,7 @@
 
 ## 🌍 翻訳
 
-🇬🇧 [English](README.md) | 🇪🇸 [Español](README.es.md) | 🇫🇷 [Français](README.fr.md) | 🇨🇳 [中文](README.zh.md) | 🇯🇵 日本語 | 🇮🇳 [हिंदी](README.hi.md)
+🇬🇧 [English](../README.md) | 🇪🇸 [Español](README.es.md) | 🇫🇷 [Français](README.fr.md) | 🇨🇳 [中文](README.zh.md) | 🇯🇵 日本語 | 🇮🇳 [हिंदी](README.hi.md)
 <br/>
 
 アプリ内でLLM/VLM/TTSモデルをローカル展開するためのクロスプラットフォームフレームワーク。

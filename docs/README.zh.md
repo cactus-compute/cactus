@@ -8,7 +8,7 @@
 
 ## 🌍 翻译
 
-🇬🇧 [English](README.md) | 🇪🇸 [Español](README.es.md) | 🇫🇷 [Français](README.fr.md) | 🇨🇳 中文 | 🇯🇵 [日本語](README.ja.md) | 🇮🇳 [हिंदी](README.hi.md)
+🇬🇧 [English](../README.md) | 🇪🇸 [Español](README.es.md) | 🇫🇷 [Français](README.fr.md) | 🇨🇳 中文 | 🇯🇵 [日本語](README.ja.md) | 🇮🇳 [हिंदी](README.hi.md)
 <br/>
 
 在您的应用中本地部署LLM/VLM/TTS模型的跨平台框架。

@@ -8,7 +8,7 @@
 
 ## 🌍 Traductions
 
-🇬🇧 [English](README.md) | 🇪🇸 [Español](README.es.md) | 🇫🇷 Français | 🇨🇳 [中文](README.zh.md) | 🇯🇵 [日本語](README.ja.md) | 🇮🇳 [हिंदी](README.hi.md)
+🇬🇧 [English](../README.md) | 🇪🇸 [Español](README.es.md) | 🇫🇷 Français | 🇨🇳 [中文](README.zh.md) | 🇯🇵 [日本語](README.ja.md) | 🇮🇳 [हिंदी](README.hi.md)
 <br/>
 
 Framework multiplateforme pour déployer des modèles LLM/VLM/TTS localement dans votre application.

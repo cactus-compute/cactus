@@ -8,7 +8,7 @@
 
 ## 🌍 Übersetzungen
 
-🇬🇧 [English](README.md) | 🇪🇸 [Español](README.es.md) | 🇫🇷 [Français](README.fr.md) | 🇨🇳 [中文](README.zh.md) | 🇯🇵 [日本語](README.ja.md) | 🇮🇳 [हिंदी](README.hi.md) | 🇩🇪 Deutsch
+🇬🇧 [English](../README.md) | 🇪🇸 [Español](README.es.md) | 🇫🇷 [Français](README.fr.md) | 🇨🇳 [中文](README.zh.md) | 🇯🇵 [日本語](README.ja.md) | 🇮🇳 [हिंदी](README.hi.md) | 🇩🇪 Deutsch
 <br/>
 
 Plattformübergreifendes Framework zur lokalen Bereitstellung von LLM/VLM/TTS-Modellen in Ihrer App.
