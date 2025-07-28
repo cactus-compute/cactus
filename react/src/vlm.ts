@@ -266,4 +266,8 @@ export class CactusVLM {
   async release(): Promise<void> {
     return this.context.release()
   }
+
+  async stopCompletion(): Promise<void> {
+    return await this.context.stopCompletion()
+  }
 } 

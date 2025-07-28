@@ -82,4 +82,8 @@ export class ConversationHistoryManager {
   public reset() {
     this.history = [];
   }
+
+  public getMessages(): CactusOAICompatibleMessage[] {
+    return this.history;
+  }
 }

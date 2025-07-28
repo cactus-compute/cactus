@@ -204,4 +204,9 @@ export class CactusLM {
   async release(): Promise<void> {
     return this.context.release()
   }
+
+  async stopCompletion(): Promise<void> {
+    return await this.context.stopCompletion()
+  }
+
 } 
