@@ -31,6 +31,13 @@ export class CactusVLM {
   private context: LlamaContext
   protected conversationHistoryManager: ConversationHistoryManager
 
+  // see CactusLM for detailed docs
+  private static _initCache: Map<string, Promise<CactusVLMReturn>> = new Map();
+
+  private static getCacheKey(params: VLMContextParams, cactusToken?: string, retryOptions?: { maxRetries?: number; delayMs?: number }): string {
+    return JSON.stringify({ params, cactusToken, retryOptions });
+  }
+
   private constructor(context: LlamaContext) {
     this.context = context
     this.conversationHistoryManager = new ConversationHistoryManager()
@@ -40,34 +47,83 @@ export class CactusVLM {
     params: VLMContextParams,
     onProgress?: (progress: number) => void,
     cactusToken?: string,
+    retryOptions?: { maxRetries?: number; delayMs?: number },
   ): Promise<CactusVLMReturn> {
     if (cactusToken) {
       setCactusToken(cactusToken);
     }
 
-    const configs = [
-      params,
-      { ...params, n_gpu_layers: 0 } 
-    ];
-
-    for (const config of configs) {
-      try {
-        const context = await initLlama(config, onProgress)
-        await initMultimodal(context.id, params.mmproj, false)
-        return {vlm: new CactusVLM(context), error: null}
-      } catch (e) {
-        Telemetry.error(e as Error, {
-          n_gpu_layers: config.n_gpu_layers ?? null,
-          n_ctx: config.n_ctx ?? null,
-          model: config.model ?? null,
-        });
-        if (configs.indexOf(config) === configs.length - 1) {
-          return {vlm: null, error: e as Error}
-        }
-      }
+    const key = CactusVLM.getCacheKey(params, cactusToken, retryOptions);
+    if (CactusVLM._initCache.has(key)) {
+      return CactusVLM._initCache.get(key)!;
     }
 
-    return {vlm: null, error: new Error('Failed to initialize CactusVLM')}
+    const initPromise = (async () => {
+      const maxRetries = retryOptions?.maxRetries ?? 3;
+      const delayMs = retryOptions?.delayMs ?? 1000;
+
+      const configs = [
+        params,
+        { ...params, n_gpu_layers: 0 } 
+      ];
+
+      const sleep = (ms: number): Promise<void> => {
+        return new Promise(resolve => {
+          const start = Date.now();
+          const wait = () => {
+            if (Date.now() - start >= ms) {
+              resolve();
+            } else {
+              Promise.resolve().then(wait);
+            }
+          };
+          wait();
+        });
+      };
+
+      for (const config of configs) {
+        let lastError: Error | null = null;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          try {
+            const context = await initLlama(config, onProgress)
+            await initMultimodal(context.id, params.mmproj, false)
+            return {vlm: new CactusVLM(context), error: null}
+          } catch (e) {
+            lastError = e as Error;
+            const isLastConfig = configs.indexOf(config) === configs.length - 1;
+            const isLastAttempt = attempt === maxRetries;
+
+            Telemetry.error(e as Error, {
+              n_gpu_layers: config.n_gpu_layers ?? null,
+              n_ctx: config.n_ctx ?? null,
+              model: config.model ?? null,
+            });
+
+            if (!isLastAttempt) {
+              const delay = delayMs * Math.pow(2, attempt - 1);
+              await sleep(delay);
+            } else if (!isLastConfig) {
+              break;
+            }
+          }
+        }
+
+        if (configs.indexOf(config) === configs.length - 1 && lastError) {
+          return {vlm: null, error: lastError}
+        }
+      }
+
+      return {vlm: null, error: new Error('Failed to initialize CactusVLM')}
+    })();
+
+    CactusVLM._initCache.set(key, initPromise);
+
+    const result = await initPromise;
+    if (result.error) {
+      CactusVLM._initCache.delete(key); 
+    }
+    return result;
   }
 
   async completion(
