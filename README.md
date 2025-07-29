@@ -36,7 +36,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     import 'package:cactus/cactus.dart';
 
     final lm = await CactusLM.init(
-        modelUrl: 'huggingface/gguf/link',
+        modelUrl: 'https://huggingface.co/Cactus-Compute/Qwen3-600m-Instruct-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf',
         contextSize: 2048,
     );
 
@@ -48,7 +48,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     import 'package:cactus/cactus.dart';
 
     final lm = await CactusLM.init(
-        modelUrl: 'huggingface/gguf/link',
+        modelUrl: 'https://huggingface.co/Cactus-Compute/Qwen3-600m-Instruct-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf',
         contextSize: 2048,
         generateEmbeddings: True,
     );
@@ -61,8 +61,8 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     import 'package:cactus/cactus.dart';
 
     final vlm = await CactusVLM.init(
-        modelUrl: 'huggingface/gguf/link',
-        mmprojUrl: 'huggingface/gguf/mmproj/link',
+        modelUrl: 'https://huggingface.co/Cactus-Compute/SmolVLM2-500m-Instruct-GGUF/resolve/main/SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
+        mmprojUrl: 'https://huggingface.co/Cactus-Compute/SmolVLM2-500m-Instruct-GGUF/resolve/main/mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
     );
 
     final messages = [ChatMessage(role: 'user', content: 'Describe this image')];
@@ -79,7 +79,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     import 'package:cactus/cactus.dart';
 
     final lm = await CactusLM.init(
-        modelUrl: 'huggingface/gguf/link',
+        modelUrl: 'https://huggingface.co/Cactus-Compute/Qwen3-600m-Instruct-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf',
         contextSize: 2048,
         cactusToken: 'enterprise_token_here', 
     );
@@ -108,7 +108,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     import { CactusLM } from 'cactus-react-native';
     
     const { lm, error } = await CactusLM.init({
-        model: '/path/to/model.gguf',
+        model: '/path/to/model.gguf', // this is a local model file inside the app sandbox
         n_ctx: 2048,
     });
 
@@ -121,7 +121,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     import { CactusLM } from 'cactus-react-native';
     
     const { lm, error } = await CactusLM.init({
-        model: '/path/to/model.gguf',
+        model: '/path/to/model.gguf', // local model file inside the app sandbox
         n_ctx: 2048,
         embedding: True,
     });
@@ -136,8 +136,8 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     import { CactusVLM } from 'cactus-react-native';
 
     const { vlm, error } = await CactusVLM.init({
-        model: '/path/to/vision-model.gguf',
-        mmproj: '/path/to/mmproj.gguf',
+        model: '/path/to/vision-model.gguf', // local model file inside the app sandbox
+        mmproj: '/path/to/mmproj.gguf', // local model file inside the app sandbox
     });
 
     const messages = [{ role: 'user', content: 'Describe this image' }];
@@ -155,7 +155,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     import { CactusLM } from 'cactus-react-native';
 
     const { lm, error } = await CactusLM.init({
-        model: '/path/to/model.gguf',
+        model: '/path/to/model.gguf', // local model file inside the app sandbox
         n_ctx: 2048,
     }, undefined, 'enterprise_token_here');
 
