@@ -6,7 +6,9 @@ export type CactusMessagePart = {
 
 export type CactusOAICompatibleMessage = {
   role: string
-  content?: string | CactusMessagePart[] | any 
+  content?: string | CactusMessagePart[] | any
+  tool_calls?: any[]
+  tool_call_id?: string
 }
 
 export function formatChat(

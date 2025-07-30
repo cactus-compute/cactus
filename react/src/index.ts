@@ -27,7 +27,6 @@ import type { CactusMessagePart, CactusOAICompatibleMessage } from './chat'
 import { formatChat } from './chat'
 import { Tools, parseAndExecuteTool } from './tools'
 import { Telemetry, type TelemetryParams } from './telemetry'
-import type { AgentReturn, AgentCompletionParams } from './agent'
 export type {
   NativeContextParams,
   NativeLlamaContext,
@@ -44,8 +43,6 @@ export type {
   CactusOAICompatibleMessage,
   JinjaFormattedChatResult,
   NativeAudioDecodeResult,
-  AgentReturn,
-  AgentCompletionParams,
 }
 
 export * from './remote'
@@ -667,4 +664,4 @@ export const getDeviceInfo = async (contextId: number): Promise<NativeDeviceInfo
 export { CactusLM } from './lm';
 export { CactusVLM } from './vlm';
 export { CactusTTS } from './tts';
-export { Agent } from './agent';
+export { CactusAgent } from './agent';
