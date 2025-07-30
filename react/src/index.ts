@@ -44,8 +44,11 @@ export type {
   JinjaFormattedChatResult,
   NativeAudioDecodeResult,
 }
-
 export * from './remote'
+export {
+  Tools, 
+  parseAndExecuteTool
+} from './tools'
 
 const EVENT_ON_INIT_CONTEXT_PROGRESS = '@Cactus_onInitContextProgress'
 const EVENT_ON_TOKEN = '@Cactus_onToken'
