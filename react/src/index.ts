@@ -46,15 +46,7 @@ export type {
   NativeAudioDecodeResult,
   AgentReturn,
   AgentCompletionParams,
-
-  // Deprecated
-  SchemaGrammarConverterPropOrder,
-  SchemaGrammarConverterBuiltinRule,
 }
-
-export { SchemaGrammarConverter, convertJsonSchemaToGrammar, Tools, parseAndExecuteTool }
-
-export {Tools }
 
 export * from './remote'
 
