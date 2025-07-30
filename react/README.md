@@ -737,11 +737,10 @@ The `CactusAgent` class extends `CactusLM` with built-in tool calling capabiliti
 import { CactusAgent } from 'cactus-react-native';
 
 const { agent, error } = await CactusAgent.init({
-  model: '/path/to/model.gguf', // we recommend models like the Qwen 3 family here (e.g. 0.6B)
+  model: '/path/to/model.gguf', // we recommend Qwen 3 family, 0.6B is great
   n_ctx: 2048,
 });
 
-// Define a tool
 const weatherTool = agent.addTool(
   (location: string) => `Weather in ${location}: 72°F, sunny`,
   'Get current weather for a location',
@@ -750,7 +749,6 @@ const weatherTool = agent.addTool(
   }
 );
 
-// Use with tool calling
 const messages = [{ role: 'user', content: 'What\'s the weather in NYC?' }];
 const result = await agent.completionWithTools(messages, {
   n_predict: 200,

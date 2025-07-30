@@ -3,7 +3,7 @@ import type { NativeCompletionResult } from "./NativeCactus";
 interface Parameter {
   type: string,
   description: string,
-  required?: boolean // parameter is optional if not specified
+  required?: boolean 
 }
 
 interface Tool {

@@ -1,5 +1,4 @@
 import { Platform } from 'react-native'
-// Import package.json to get version
 const packageJson = require('../package.json');
 import { PROJECT_ID } from './projectId';
 

@@ -31,7 +31,6 @@ export class CactusVLM {
   private context: LlamaContext
   protected conversationHistoryManager: ConversationHistoryManager
 
-  // see CactusLM for detailed docs
   private static _initCache: Map<string, Promise<CactusVLMReturn>> = new Map();
 
   private static getCacheKey(params: VLMContextParams, cactusToken?: string, retryOptions?: { maxRetries?: number; delayMs?: number }): string {

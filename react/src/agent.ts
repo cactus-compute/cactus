@@ -1,4 +1,5 @@
 import { CactusLM } from './lm'
+
 import type {
   ContextParams,
   CompletionParams,
@@ -6,6 +7,7 @@ import type {
   NativeCompletionResult,
   TokenData,
 } from './index'
+
 import { Tools } from './tools'
 
 interface Parameter {
@@ -17,7 +19,7 @@ interface Parameter {
 interface CactusAgentReturn {
   agent: CactusAgent | null
   error: Error | null
-  lm: CactusAgent | null // Required for compatibility with CactusLMReturn
+  lm: CactusAgent | null
 }
 
 export interface AgentCompletionParams extends CompletionParams {

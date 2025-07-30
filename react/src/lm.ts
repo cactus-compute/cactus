@@ -23,8 +23,6 @@ export class CactusLM {
   protected context: LlamaContext
   protected conversationHistoryManager: ConversationHistoryManager
 
-  // the initPromise enables a "async singleton" initialization pattern which
-  // protects against a race condition in the event of multiple init attempts
   private static _initCache: Map<string, Promise<CactusLMReturn>> = new Map();
 
   private static getCacheKey(params: ContextParams, cactusToken?: string, retryOptions?: { maxRetries?: number; delayMs?: number }): string {
@@ -49,7 +47,6 @@ export class CactusLM {
 
     const key = CactusLM.getCacheKey(params, cactusToken, retryOptions);
     if (CactusLM._initCache.has(key)) {
-      // concurrent initialization calls with the same params all get the same cached Promise
       return CactusLM._initCache.get(key)!;
     }
 
@@ -114,7 +111,7 @@ export class CactusLM {
 
     const result = await initPromise;
     if (result.error) {
-      CactusLM._initCache.delete(key); // Reset on failure to allow retries
+      CactusLM._initCache.delete(key); 
     }
     return result;
   }

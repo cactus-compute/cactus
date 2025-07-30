@@ -150,24 +150,32 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
 
     const response = await vlm.completion(messages, params);
     ```
-5. **React-Native Cloud Fallback**
+5. **React-Native Agents**
+    
     ```typescript
-    import { CactusLM } from 'cactus-react-native';
+    import { CactusAgent } from 'cactus-react-native';
 
-    const { lm, error } = await CactusLM.init({
-        model: '/path/to/model.gguf', // local model file inside the app sandbox
+    // we recommend Qwen 3 family, 0.6B is great
+    const { agent, error } = await CactusAgent.init({
+        model: '/path/to/model.gguf', 
         n_ctx: 2048,
-    }, undefined, 'enterprise_token_here');
+    });
 
-    const messages = [{ role: 'user', content: 'Hello!' }];
-    const params = { n_predict: 100, temperature: 0.7 };
-    const response = await lm.completion(messages, params);
+    const weatherTool = agent.addTool(
+        (location: string) => `Weather in ${location}: 72°F, sunny`,
+        'Get current weather for a location',
+        {
+            location: { type: 'string', description: 'City name', required: true }
+        }
+    );
 
-    // local (default): strictly only run on-device
-    // localfirst: fallback to cloud if device fails
-    // remotefirst: primarily remote, run local if API fails
-    // remote: strictly run on cloud 
-    const embedding = await lm.embedding('Your text', undefined, 'localfirst');
+    const messages = [{ role: 'user', content: 'What\'s the weather in NYC?' }];
+    const result = await agent.completionWithTools(messages, {
+    n_predict: 200,
+    temperature: 0.7,
+    });
+
+    await agent.release();
     ```
 N/B: See the [React Docs](https://github.com/cactus-compute/cactus/blob/main/react) for more.
 
