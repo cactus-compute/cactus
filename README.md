@@ -177,7 +177,10 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
 
     await agent.release();
     ```
-N/B: See the [React Docs](https://github.com/cactus-compute/cactus/blob/main/react) for more.
+
+Get started with an [example app](https://github.com/cactus-compute/example-react-agents/) built using `CactusAgent`.
+
+See the [React Docs](https://github.com/cactus-compute/cactus/blob/main/react) for more.
 
 ## ![Kotlin Multiplatform](https://img.shields.io/badge/Kotlin_Multiplatform-grey.svg?style=for-the-badge&logo=kotlin&logoColor=white)
 
