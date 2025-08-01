@@ -170,9 +170,9 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     );
 
     const messages = [{ role: 'user', content: 'What\'s the weather in NYC?' }];
-    const result = await agent.completionWithTools(messages, {
-    n_predict: 200,
-    temperature: 0.7,
+      const result = await agent.completionWithTools(messages, {
+      n_predict: 200,
+      temperature: 0.7,
     });
 
     await agent.release();
