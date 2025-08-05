@@ -50,7 +50,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     final lm = await CactusLM.init(
         modelUrl: 'https://huggingface.co/Cactus-Compute/Qwen3-600m-Instruct-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf',
         contextSize: 2048,
-        generateEmbeddings: True,
+        generateEmbeddings: true,
     );
 
     final text = 'Your text to embed';
@@ -123,11 +123,11 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     const { lm, error } = await CactusLM.init({
         model: '/path/to/model.gguf', // local model file inside the app sandbox
         n_ctx: 2048,
-        embedding: True,
+        embedding: true,
     });
 
     const text = 'Your text to embed';
-    const params = { normalize: True };
+    const params = { normalize: true };
     const result = await lm.embedding(text, params);
     ```
 
@@ -330,7 +330,7 @@ First, clone the repo with `git clone https://github.com/cactus-compute/cactus.g
 5. **Contributing**
     - To contribute a bug fix, create a branch after making your changes with `git checkout -b <branch-name>` and submit a PR. 
     - To contribute a feature, please raise as issue first so it can be discussed, to avoid intersecting with someone else.
-    - [Join our discord](https://discord.gg/SdZjmfWQ)
+    - [Join our discord](https://discord.gg/bNurx3AXTJ)
 
 ## ![Performance](https://img.shields.io/badge/Performance-grey.svg?style=for-the-badge)
 
