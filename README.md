@@ -330,7 +330,7 @@ First, clone the repo with `git clone https://github.com/cactus-compute/cactus.g
 5. **Contributing**
     - To contribute a bug fix, create a branch after making your changes with `git checkout -b <branch-name>` and submit a PR. 
     - To contribute a feature, please raise as issue first so it can be discussed, to avoid intersecting with someone else.
-    - [Join our discord](https://discord.gg/SdZjmfWQ)
+    - [Join our discord](https://discord.gg/bNurx3AXTJ)
 
 ## ![Performance](https://img.shields.io/badge/Performance-grey.svg?style=for-the-badge)
 
