@@ -27,12 +27,7 @@ export interface AgentCompletionParams extends CompletionParams {
 }
 
 export class CactusAgent extends CactusLM {
-  private tools: Tools
-
-  protected constructor(context: any) {
-    super(context)
-    this.tools = new Tools()
-  }
+  private tools!: Tools
 
   static async init(
     params: ContextParams,

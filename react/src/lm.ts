@@ -22,16 +22,38 @@ interface CactusLMReturn {
 export class CactusLM {
   protected context: LlamaContext
   protected conversationHistoryManager: ConversationHistoryManager
-
+  private initParams: ContextParams
   private static _initCache: Map<string, Promise<CactusLMReturn>> = new Map();
 
   private static getCacheKey(params: ContextParams, cactusToken?: string, retryOptions?: { maxRetries?: number; delayMs?: number }): string {
     return JSON.stringify({ params, cactusToken, retryOptions });
   }
 
-  protected constructor(context: LlamaContext) {
+  protected constructor(context: LlamaContext, initParams: ContextParams) {
     this.context = context
+    this.initParams = initParams
     this.conversationHistoryManager = new ConversationHistoryManager()
+  }
+
+  private static isContextNotFoundError(e: unknown): boolean {
+    const message = String((e as any)?.message ?? e ?? '')
+    return /context not found/i.test(message)
+  }
+
+  private async reinit(): Promise<void> {
+    const newContext = await initLlama(this.initParams)
+    this.context = newContext
+    this.conversationHistoryManager.reset()
+  }
+
+  private async run<T>(op: () => Promise<T>): Promise<T> {
+    try {
+      return await op()
+    } catch (e) {
+      if (!CactusLM.isContextNotFoundError(e)) throw e
+      await this.reinit()
+      return await op()
+    }
   }
 
   static async init(
@@ -79,7 +101,7 @@ export class CactusLM {
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
           try {
             const context = await initLlama(config, onProgress);
-            return { lm: new CactusLM(context), error: null };
+            return { lm: new CactusLM(context, config), error: null };
           } catch (e) {
             lastError = e as Error;
             const isLastConfig = configs.indexOf(config) === configs.length - 1;
@@ -110,9 +132,8 @@ export class CactusLM {
     CactusLM._initCache.set(key, initPromise);
 
     const result = await initPromise;
-    if (result.error) {
-      CactusLM._initCache.delete(key); 
-    }
+    // Cache only while in-flight; never cache resolved instances
+    CactusLM._initCache.delete(key);
     return result;
   }
 
@@ -125,7 +146,7 @@ export class CactusLM {
       this.conversationHistoryManager.processNewMessages(messages);
 
     if (requiresReset) {
-      this.context?.rewind();
+      await this.run(() => this.context.rewind())
       this.conversationHistoryManager.reset();
     }
 
@@ -133,7 +154,9 @@ export class CactusLM {
       console.warn('No messages to complete!');
     }
 
-    const result = await this.context.completion({ messages: newMessages, ...params }, callback);
+    const result = await this.run(() =>
+      this.context.completion({ messages: newMessages, ...params }, callback),
+    )
 
     this.conversationHistoryManager.update(newMessages, {
       role: 'assistant',
@@ -184,7 +207,7 @@ export class CactusLM {
   }
 
   protected async _handleLocalEmbedding(text: string, params?: EmbeddingParams): Promise<NativeEmbeddingResult> {
-    return this.context.embedding(text, params);
+    return this.run(() => this.context.embedding(text, params))
   }
 
   protected async _handleRemoteEmbedding(text: string): Promise<NativeEmbeddingResult> {
@@ -195,15 +218,21 @@ export class CactusLM {
   }
 
   rewind = async (): Promise<void> => {
-    return this.context?.rewind()
+    return this.run(() => this.context.rewind())
   }
 
   async release(): Promise<void> {
-    return this.context.release()
+    try {
+      return await this.context.release()
+    } catch (e) {
+      // Treat missing context as already released
+      if (CactusLM.isContextNotFoundError(e)) return
+      throw e
+    }
   }
 
   async stopCompletion(): Promise<void> {
-    return await this.context.stopCompletion()
+    return await this.run(() => this.context.stopCompletion())
   }
 
 } 
