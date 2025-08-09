@@ -115,36 +115,69 @@ suspend fun parseAndExecuteTool(
     }
 
     try {
-        // Extract JSON from the response (it might be wrapped with thinking tags or other text)
-        val jsonStart = modelResponse.indexOf("{")
-        val jsonEnd = modelResponse.lastIndexOf("}")
-
-        if (jsonStart == -1 || jsonEnd == -1 || jsonStart >= jsonEnd) {
-            return ToolCallResult(toolCalled = false)
-        }
-
-        val jsonPart = modelResponse.substring(jsonStart, jsonEnd + 1)
-
         val json = Json { ignoreUnknownKeys = true }
-        val response = json.decodeFromString<ModelResponse>(jsonPart)
-
-        if (response.tool_calls.isNullOrEmpty()) {
-            return ToolCallResult(toolCalled = false)
+        
+        // Try multiple extraction methods to handle different model response formats
+        val possibleJsonBlocks = extractJsonBlocks(modelResponse)
+        
+        for (jsonBlock in possibleJsonBlocks) {
+            try {
+                val response = json.decodeFromString<ModelResponse>(jsonBlock)
+                
+                if (!response.tool_calls.isNullOrEmpty()) {
+                    val toolCall = response.tool_calls.first()
+                    val toolName = toolCall.name
+                    val toolInput = toolCall.arguments
+                    
+                    val toolOutput = tools.execute(toolName, toolInput)
+                    
+                    return ToolCallResult(
+                        toolCalled = true,
+                        toolName = toolName,
+                        toolInput = toolInput,
+                        toolOutput = toolOutput.toString()
+                    )
+                }
+            } catch (e: Exception) {
+                // Continue to next JSON block if this one fails
+                continue
+            }
         }
-
-        val toolCall = response.tool_calls.first()
-        val toolName = toolCall.name
-        val toolInput = toolCall.arguments
-
-        val toolOutput = tools.execute(toolName, toolInput)
-
-        return ToolCallResult(
-            toolCalled = true,
-            toolName = toolName,
-            toolInput = toolInput,
-            toolOutput = toolOutput.toString()
-        )
+        
+        return ToolCallResult(toolCalled = false)
     } catch (error: Exception) {
         return ToolCallResult(toolCalled = false)
     }
+}
+
+private fun extractJsonBlocks(response: String): List<String> {
+    val jsonBlocks = mutableListOf<String>()
+    
+    // Method 1: Extract from markdown code blocks (```json ... ```)
+    val markdownRegex = Regex("```json\\s*(.+?)\\s*```", RegexOption.DOT_MATCHES_ALL)
+    markdownRegex.findAll(response).forEach { match ->
+        jsonBlocks.add(match.groupValues[1].trim())
+    }
+    
+    // Method 2: Extract from plain JSON blocks ({ ... })
+    val jsonStart = response.indexOf("{")
+    val jsonEnd = response.lastIndexOf("}")
+    
+    if (jsonStart != -1 && jsonEnd != -1 && jsonStart < jsonEnd) {
+        val jsonBlock = response.substring(jsonStart, jsonEnd + 1)
+        if (!jsonBlocks.contains(jsonBlock)) {
+            jsonBlocks.add(jsonBlock)
+        }
+    }
+    
+    // Method 3: Find all individual JSON objects in the response
+    val allJsonRegex = Regex("\\{[^{}]*\"tool_calls\"[^{}]*\\[[^\\]]*\\][^{}]*\\}", RegexOption.DOT_MATCHES_ALL)
+    allJsonRegex.findAll(response).forEach { match ->
+        val jsonBlock = match.value.trim()
+        if (!jsonBlocks.contains(jsonBlock)) {
+            jsonBlocks.add(jsonBlock)
+        }
+    }
+    
+    return jsonBlocks
 }
