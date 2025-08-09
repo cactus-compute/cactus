@@ -279,13 +279,52 @@ fun App() {
                         Text("AI Agent with Tools - Mode: $currentGpuMode", style = MaterialTheme.typography.titleMedium)
                         Spacer(modifier = Modifier.height(8.dp))
 
+                        // GPU Mode Selection
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        addLog("Switching to CPU mode (GPU=0)...")
+                                        agent.unload()
+                                        agent = CactusAgent(gpuLayers = 0)
+                                        currentGpuMode = "CPU"
+                                        addLog("Switched to CPU mode")
+                                    }
+                                }
+                            ) { Text("CPU Mode") }
+
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        addLog("Switching to GPU mode (GPU=99)...")
+                                        agent.unload()
+                                        agent = CactusAgent(gpuLayers = 99)
+                                        currentGpuMode = "GPU"
+                                        addLog("Switched to GPU mode")
+                                    }
+                                }
+                            ) { Text("GPU Mode") }
+
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        addLog("Downloading Agent model...")
+                                        val success =agent.download()
+                                        addLog(if (success) "Agent model downloaded" else "Agent download failed")
+                                    }
+                                }
+                            ) { Text("Download") }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
                                     scope.launch {
                                         addLog("Setting up Agent with tools...")
-                                        agent = CactusAgent(gpuLayers = 0)
-
+                                        val success = agent.init()
+                                        addLog(if (success) "Agent model loaded in $currentGpuMode mode" else "Agent load failed")
                                         agent.addTool(
                                             "get_weather",
                                             WeatherTool(),
@@ -298,7 +337,6 @@ fun App() {
                                                 )
                                             )
                                         )
-
                                         addLog("Agent created")
                                     }
                                 }
@@ -333,7 +371,7 @@ fun App() {
                                         }
                                     }
                                 }
-                            ) { Text("Ask Weather") }
+                            ) { Text("Weather") }
                         }
                     }
                 }
