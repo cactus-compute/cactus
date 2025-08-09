@@ -116,10 +116,10 @@ suspend fun parseAndExecuteTool(
 
     try {
         val json = Json { ignoreUnknownKeys = true }
-        
+
         // Try multiple extraction methods to handle different model response formats
         val possibleJsonBlocks = extractJsonBlocks(modelResponse)
-        
+
         for (jsonBlock in possibleJsonBlocks) {
             try {
                 val response = json.decodeFromString<ModelResponse>(jsonBlock)
@@ -128,9 +128,9 @@ suspend fun parseAndExecuteTool(
                     val toolCall = response.tool_calls.first()
                     val toolName = toolCall.name
                     val toolInput = toolCall.arguments
-                    
+
                     val toolOutput = tools.execute(toolName, toolInput)
-                    
+
                     return ToolCallResult(
                         toolCalled = true,
                         toolName = toolName,
@@ -143,7 +143,7 @@ suspend fun parseAndExecuteTool(
                 continue
             }
         }
-        
+
         return ToolCallResult(toolCalled = false)
     } catch (error: Exception) {
         return ToolCallResult(toolCalled = false)
@@ -152,32 +152,32 @@ suspend fun parseAndExecuteTool(
 
 private fun extractJsonBlocks(response: String): List<String> {
     val jsonBlocks = mutableListOf<String>()
-    
-    // Method 1: Extract from markdown code blocks (```json ... ```)
-    val markdownRegex = Regex("```json\\s*(.+?)\\s*```", RegexOption.DOT_MATCHES_ALL)
-    markdownRegex.findAll(response).forEach { match ->
-        jsonBlocks.add(match.groupValues[1].trim())
-    }
-    
-    // Method 2: Extract from plain JSON blocks ({ ... })
-    val jsonStart = response.indexOf("{")
-    val jsonEnd = response.lastIndexOf("}")
-    
-    if (jsonStart != -1 && jsonEnd != -1 && jsonStart < jsonEnd) {
-        val jsonBlock = response.substring(jsonStart, jsonEnd + 1)
-        if (!jsonBlocks.contains(jsonBlock)) {
-            jsonBlocks.add(jsonBlock)
+
+    if (response.contains("\"tool_calls\"")) {
+        var braceCount = 0
+        var startIndex = -1
+        var endIndex = -1
+
+        for (i in response.indices) {
+            when (response[i]) {
+                '{' -> {
+                    if (braceCount == 0) startIndex = i
+                    braceCount++
+                }
+                '}' -> {
+                    braceCount--
+                    if (braceCount == 0 && startIndex != -1) {
+                        endIndex = i
+                        val candidate = response.substring(startIndex, endIndex + 1)
+                        if (candidate.contains("\"tool_calls\"") && !jsonBlocks.contains(candidate)) {
+                            jsonBlocks.add(candidate)
+                        }
+                        startIndex = -1
+                    }
+                }
+            }
         }
     }
-    
-    // Method 3: Find all individual JSON objects in the response
-    val allJsonRegex = Regex("\\{[^{}]*\"tool_calls\"[^{}]*\\[[^\\]]*\\][^{}]*\\}", RegexOption.DOT_MATCHES_ALL)
-    allJsonRegex.findAll(response).forEach { match ->
-        val jsonBlock = match.value.trim()
-        if (!jsonBlocks.contains(jsonBlock)) {
-            jsonBlocks.add(jsonBlock)
-        }
-    }
-    
+
     return jsonBlocks
 }
