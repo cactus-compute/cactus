@@ -117,7 +117,6 @@ suspend fun parseAndExecuteTool(
     try {
         val json = Json { ignoreUnknownKeys = true }
 
-        // Try multiple extraction methods to handle different model response formats
         val possibleJsonBlocks = extractJsonBlocks(modelResponse)
 
         for (jsonBlock in possibleJsonBlocks) {
@@ -139,7 +138,6 @@ suspend fun parseAndExecuteTool(
                     )
                 }
             } catch (e: Exception) {
-                // Continue to next JSON block if this one fails
                 continue
             }
         }
