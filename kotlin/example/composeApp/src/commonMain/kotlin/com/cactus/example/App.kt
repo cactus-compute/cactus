@@ -11,6 +11,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.cactus.CactusAgent
 import com.cactus.CactusLM
 import com.cactus.CactusVLM
 import com.cactus.CactusSTT
@@ -18,6 +19,7 @@ import com.cactus.CactusSTT
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
+import com.cactus.Parameter
 
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import kmp_app_template.composeapp.generated.resources.Res
@@ -28,6 +30,7 @@ fun App() {
     var lm by remember { mutableStateOf(CactusLM()) }
     var vlm by remember { mutableStateOf(CactusVLM()) }
     val stt = remember { CactusSTT() }
+    var agent by remember { mutableStateOf(CactusAgent()) }
     
     var logs by remember { mutableStateOf(listOf<String>()) }
     var currentGpuMode by remember { mutableStateOf("CPU") }
@@ -267,6 +270,73 @@ fun App() {
                         }
                     }
                 }
+
+                // Agent with Tools Section
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("AI Agent with Tools - Mode: $currentGpuMode", style = MaterialTheme.typography.titleMedium)
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        addLog("Setting up Agent with tools...")
+                                        agent = CactusAgent(gpuLayers = 0)
+
+                                        agent.addTool(
+                                            "get_weather",
+                                            WeatherTool(),
+                                            "Get current weather for a location",
+                                            mapOf(
+                                                "location" to Parameter(
+                                                    "string",
+                                                    "The city or location",
+                                                    true
+                                                )
+                                            )
+                                        )
+
+                                        addLog("Agent created")
+                                    }
+                                }
+                            ) { Text("Setup Tools") }
+
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        agent.let { ag ->
+                                            addLog("Agent: What's the weather in New York?")
+                                            if (!ag.isLoaded()) {
+                                                addLog("Agent not loaded, loading now...")
+                                                val loaded = ag.init()
+                                                addLog(if (loaded) "Agent loaded" else "Agent load failed")
+                                            }
+                                            val result = ag.completionWithTools(
+                                                message = """
+                                                    [
+                                                        {"role": "user", "content": "What's the weather in New York?"}
+                                                    ]
+                                                """.trimIndent(),
+                                                maxTokens = 200,
+                                                temperature = 0.1f,
+                                                callback = { token ->
+                                                    // Optional: show real-time generation
+                                                }
+                                            )
+                                            addLog("Agent response: ${result.content}")
+                                            result.toolCalls?.let { calls ->
+                                                addLog("Tools used: ${calls.joinToString(", ") { it }}")
+                                            }
+                                        }
+                                    }
+                                }
+                            ) { Text("Ask Weather") }
+                        }
+                    }
+                }
                 
 
                 
@@ -291,4 +361,4 @@ fun App() {
             }
         }
     }
-} 
+}
