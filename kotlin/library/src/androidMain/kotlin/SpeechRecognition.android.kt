@@ -319,15 +319,67 @@ actual suspend fun performSpeechRecognition(params: SpeechRecognitionParams): Sp
 actual suspend fun recognizeSpeechFromFile(audioFilePath: String, params: SpeechRecognitionParams): SpeechRecognitionResult? = withContext(Dispatchers.IO) {
     return@withContext try {
         if (!isModelReady || model == null) return@withContext null
-        
+
+        val audioFile = File(audioFilePath)
+        if (!audioFile.exists()) {
+            println("Audio file does not exist: $audioFilePath")
+            return@withContext null
+        }
+
         val recognizer = Recognizer(model, 16000.0f)
-        SpeechRecognitionResult(
-            text = "File processed offline",
-            confidence = 0.9f,
-            isPartial = false,
-            alternatives = emptyList()
-        )
+        val audioData = audioFile.readBytes()
+
+        // Process audio data in chunks
+        var offset = 0
+        val chunkSize = 4000 // Process in 4KB chunks
+        var finalResult = ""
+
+        while (offset < audioData.size) {
+            val remainingBytes = audioData.size - offset
+            val currentChunkSize = minOf(chunkSize, remainingBytes)
+            val chunk = audioData.copyOfRange(offset, offset + currentChunkSize)
+
+            if (recognizer.acceptWaveForm(chunk, currentChunkSize)) {
+                val result = recognizer.result
+                try {
+                    val json = JSONObject(result)
+                    val text = json.optString("text", "")
+                    if (text.isNotEmpty()) {
+                        finalResult = if (finalResult.isEmpty()) text else "$finalResult $text"
+                    }
+                } catch (e: Exception) {
+                    println("Error parsing recognition result: $e")
+                }
+            }
+
+            offset += currentChunkSize
+        }
+
+        // Get final result
+        val finalJson = recognizer.finalResult
+        try {
+            val json = JSONObject(finalJson)
+            val text = json.optString("text", "")
+            if (text.isNotEmpty()) {
+                finalResult = if (finalResult.isEmpty()) text else "$finalResult $text"
+            }
+        } catch (e: Exception) {
+            println("Error parsing final result: $e")
+        }
+
+        if (finalResult.isNotEmpty()) {
+            SpeechRecognitionResult(
+                text = finalResult.trim(),
+                confidence = 0.9f,
+                isPartial = false,
+                alternatives = emptyList()
+            )
+        } else {
+            null
+        }
+
     } catch (e: Exception) {
+        println("Failed to recognize speech from file: $e")
         null
     }
 }
