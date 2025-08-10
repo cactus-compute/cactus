@@ -267,6 +267,44 @@ fun App() {
                                     }
                                 }
                             ) { Text("Listen") }
+
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        if (!stt.isReady()) {
+                                            addLog("Setting up STT first...")
+                                            val downloadSuccess = stt.download()
+                                            if (downloadSuccess) {
+                                                val initSuccess = stt.init()
+                                                if (!initSuccess) {
+                                                    addLog("STT initialization failed")
+                                                    return@launch
+                                                }
+                                            } else {
+                                                addLog("STT download failed")
+                                                return@launch
+                                            }
+                                        }
+
+                                        addLog("Transcribing audio file...")
+                                        val result = withContext(Dispatchers.Default) {
+                                            try {
+                                                @OptIn(ExperimentalResourceApi::class)
+                                                val audioBytes = Res.readBytes("files/audio.wav")
+                                                val audioPath = saveAudioToTempFile(audioBytes)
+                                                if (audioPath != null) {
+                                                    stt.transcribeFile(audioPath)
+                                                } else {
+                                                    null
+                                                }
+                                            } catch (e: Exception) {
+                                                null
+                                            }
+                                        }
+                                        addLog("STT: ${result?.text ?: "No speech detected"}")
+                                    }
+                                }
+                            ) { Text("File") }
                         }
                     }
                 }

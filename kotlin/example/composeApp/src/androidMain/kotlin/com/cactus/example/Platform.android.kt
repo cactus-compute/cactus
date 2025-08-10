@@ -18,4 +18,19 @@ actual suspend fun saveImageToTempFile(imageBytes: ByteArray): String? {
             null
         }
     }
-} 
+}
+
+actual suspend fun saveAudioToTempFile(audioBytes: ByteArray): String? {
+    return withContext(Dispatchers.IO) {
+        try {
+            val context = CactusContextInitializer.getApplicationContext()
+            val tempFile = File(context.cacheDir, "temp_audio.wav")
+
+            tempFile.writeBytes(audioBytes)
+
+            tempFile.absolutePath
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
