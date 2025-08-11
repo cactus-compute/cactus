@@ -2,6 +2,15 @@ package com.cactus
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.double
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
 data class Parameter(
@@ -178,4 +187,25 @@ private fun extractJsonBlocks(response: String): List<String> {
     }
 
     return jsonBlocks
+}
+
+private fun convertJsonElementsToAny(jsonElements: Map<String, JsonElement>): Map<String, Any> {
+    return jsonElements.mapValues { (_, jsonElement) ->
+        convertJsonElementToAny(jsonElement)
+    }
+}
+
+private fun convertJsonElementToAny(jsonElement: JsonElement): Any {
+    if (jsonElement !is JsonPrimitive) {
+        return jsonElement.toString()
+    }
+
+    val primitive = jsonElement.jsonPrimitive
+
+    return when {
+        primitive.booleanOrNull != null -> primitive.boolean
+        primitive.intOrNull != null -> primitive.int
+        primitive.doubleOrNull != null -> primitive.double
+        else -> primitive.content
+    }
 }
