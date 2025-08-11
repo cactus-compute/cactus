@@ -13,8 +13,8 @@ class CactusVLM {
   CactusVLM._();
 
   static Future<CactusVLM> init({
-    required String modelUrl,
-    required String mmprojUrl,
+    required String modelPath,
+    required String mmprojPath,
     String? modelFilename,
     String? mmprojFilename,
     String? chatTemplate,
@@ -31,6 +31,8 @@ class CactusVLM {
     }
     
     final initParams = CactusInitParams(
+      modelPath: modelPath,
+      mmprojPath: mmprojPath,
       modelFilename: modelFilename,
       mmprojFilename: mmprojFilename,
       chatTemplate: chatTemplate,
