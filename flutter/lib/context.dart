@@ -51,32 +51,24 @@ class CactusContext {
   }
   
   static Future<CactusInitParams> _resolveParams(CactusInitParams params) async {
-    final appDocDir = await getApplicationDocumentsDirectory();
     
     String? modelPath = params.modelPath;
     String? mmprojPath = params.mmprojPath;
-    
-    if (params.modelUrl?.isNotEmpty == true) {
-      final filename = params.modelFilename ?? (params.modelUrl!.split('/').last.isEmpty ? "downloaded_model.gguf" : params.modelUrl!.split('/').last);
-      modelPath = '${appDocDir.path}/$filename';
-      if (!await File(modelPath).exists()) {
-        params.onInitProgress?.call(0.0, "Downloading model...", false);
-        await _downloadModel(params.modelUrl!, modelPath, onProgress: (p, s) => params.onInitProgress?.call(p, "Model: $s", false));
-        params.onInitProgress?.call(1.0, "Model download complete.", false);
-      }
+
+    if (modelPath == null || mmprojPath == null) {
+      throw CactusException('You need to specify modelPath and mmprojPath in init');
+    }
+
+    if ( !await File(modelPath).exists()) {
+      throw CactusException('Specified Model Path does not exist, Please download model to Path before initializing');
+    }
+
+      //We want to remove this and have this throw a natural error
+    if (!await File(mmprojPath).exists()) {
+      throw CactusException('Specified Model Path does not exist, Please download model to Path before initializing');
     }
     
-    if (params.mmprojUrl?.isNotEmpty == true) {
-      final filename = params.mmprojFilename ?? (params.mmprojUrl!.split('/').last.isEmpty ? "downloaded_mmproj.gguf" : params.mmprojUrl!.split('/').last);
-      mmprojPath = '${appDocDir.path}/$filename';
-      if (!await File(mmprojPath).exists()) {
-        params.onInitProgress?.call(0.0, "Downloading mmproj...", false);
-        await _downloadModel(params.mmprojUrl!, mmprojPath, onProgress: (p, s) => params.onInitProgress?.call(p, "MMProj: $s", false));
-        params.onInitProgress?.call(1.0, "MMProj download complete.", false);
-      }
-    }
-    
-    if (modelPath?.isEmpty != false) throw ArgumentError('No modelPath or modelUrl provided');
+    if (modelPath?.isEmpty != false) throw ArgumentError('No modelPath or modelUrl provided, Please download model before initializing');
     params.onInitProgress?.call(null, "Initializing...", false);
     
     return CactusInitParams(
@@ -727,37 +719,5 @@ class _SendableCompletionParams {
       jinja: jinja,
       // onNewToken will be set separately in the isolate
     );
-  }
-}
-
-Future<void> _downloadModel(String url, String filePath, {Function(double, String)? onProgress}) async {
-  final client = HttpClient();
-  try {
-    final request = await client.getUrl(Uri.parse(url));
-    final response = await request.close();
-
-    if (response.statusCode != 200) {
-      throw Exception('Failed to download model: ${response.statusCode}');
-    }
-
-    final file = File(filePath);
-    final sink = file.openWrite();
-    
-    final contentLength = response.contentLength;
-    int downloaded = 0;
-
-    await for (final chunk in response) {
-      sink.add(chunk);
-      downloaded += chunk.length;
-      
-      if (contentLength > 0 && onProgress != null) {
-        final progress = downloaded / contentLength;
-        onProgress(progress, '${(progress * 100).toStringAsFixed(1)}%');
-      }
-    }
-    
-    await sink.close();
-  } finally {
-    client.close();
   }
 }
