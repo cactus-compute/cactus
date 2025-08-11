@@ -31,7 +31,6 @@ class CactusLM {
     }
     
     final initParams = CactusInitParams(
-      modelUrl: modelUrl,
       modelFilename: modelFilename,
       chatTemplate: chatTemplate,
       contextSize: contextSize,

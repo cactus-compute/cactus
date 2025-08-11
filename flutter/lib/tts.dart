@@ -19,7 +19,6 @@ class CactusTTS {
     final tts = CactusTTS._();
     
     tts._context = await CactusContext.init(CactusInitParams(
-      modelUrl: modelUrl,
       modelFilename: modelFilename,
       contextSize: contextSize,
       gpuLayers: gpuLayers,

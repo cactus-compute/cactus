@@ -587,10 +587,8 @@ class _SendableInitParams {
   factory _SendableInitParams.fromOriginal(CactusInitParams original) {
     return _SendableInitParams(
       modelPath: original.modelPath,
-      modelUrl: original.modelUrl,
       modelFilename: original.modelFilename,
       mmprojPath: original.mmprojPath,
-      mmprojUrl: original.mmprojUrl,
       mmprojFilename: original.mmprojFilename,
       chatTemplate: original.chatTemplate,
       contextSize: original.contextSize,

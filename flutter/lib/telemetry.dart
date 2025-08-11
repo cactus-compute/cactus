@@ -139,7 +139,7 @@ class CactusTelemetry {
       deviceModel: model,
       telemetryPayload: payload,
       timestamp: DateTime.now().toIso8601String(),
-      modelFilename: _getFilename(options.modelPath ?? options.modelUrl),
+      modelFilename: _getFilename(options.modelPath),
       nCtx: options.contextSize,
       nGpuLayers: options.gpuLayers,
     );
@@ -166,7 +166,7 @@ class CactusTelemetry {
       deviceModel: model,
       errorPayload: errorPayload,
       timestamp: DateTime.now().toIso8601String(),
-      modelFilename: _getFilename(options.modelPath ?? options.modelUrl),
+      modelFilename: _getFilename(options.modelPath),
       nCtx: options.contextSize,
       nGpuLayers: options.gpuLayers,
     );

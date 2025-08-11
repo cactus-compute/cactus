@@ -71,10 +71,8 @@ typedef CactusCompletionResult = CactusResult;
 
 class CactusInitParams {
   final String? modelPath;
-  final String? modelUrl;
   final String? modelFilename;
   final String? mmprojPath;
-  final String? mmprojUrl;
   final String? mmprojFilename;
   final String? chatTemplate;
   final int contextSize;
@@ -94,10 +92,8 @@ class CactusInitParams {
 
   CactusInitParams({
     this.modelPath,
-    this.modelUrl,
     this.modelFilename,
     this.mmprojPath,
-    this.mmprojUrl,
     this.mmprojFilename,
     this.chatTemplate,
     this.contextSize = 2048,
