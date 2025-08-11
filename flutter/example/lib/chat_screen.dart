@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import '../cactus_service.dart';
 import 'package:cactus/cactus.dart';
 import 'message_bubble.dart';
 
 class ChatScreen extends StatefulWidget {
   final CactusService cactusService;
-  
+
   const ChatScreen({super.key, required this.cactusService});
 
   @override
@@ -15,6 +16,7 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final urlController = TextEditingController();
   bool _hasImage = false;
 
   @override
@@ -46,7 +48,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _sendMessage() {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
-    
+
     widget.cactusService.sendMessage(text);
     _controller.clear();
     _hasImage = false;
@@ -68,10 +70,13 @@ class _ChatScreenState extends State<ChatScreen> {
             builder: (context, messages, _) {
               return IconButton(
                 icon: const Icon(Icons.clear_all),
-                onPressed: messages.isEmpty ? null : () {
-                  widget.cactusService.clearConversation();
-                  setState(() => _hasImage = false);
-                },
+                onPressed:
+                    messages.isEmpty
+                        ? null
+                        : () {
+                          widget.cactusService.clearConversation();
+                          setState(() => _hasImage = false);
+                        },
               );
             },
           ),
@@ -170,10 +175,7 @@ class _ChatScreenState extends State<ChatScreen> {
           Row(
             children: [
               IconButton(
-                icon: Icon(
-                  Icons.image,
-                  color: _hasImage ? Colors.blue : null,
-                ),
+                icon: Icon(Icons.image, color: _hasImage ? Colors.blue : null),
                 onPressed: isLoading ? null : _addImage,
               ),
               Expanded(
@@ -188,13 +190,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
               IconButton(
-                icon: isLoading
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.send),
+                icon:
+                    isLoading
+                        ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                        : const Icon(Icons.send),
                 onPressed: isLoading ? null : _sendMessage,
               ),
             ],
@@ -203,4 +206,4 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
-} 
+}

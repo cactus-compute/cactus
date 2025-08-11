@@ -17,27 +17,31 @@ class MessageBubble extends StatelessWidget {
         margin: const EdgeInsets.symmetric(vertical: 4.0),
         padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
         decoration: BoxDecoration(
-          color: isSystem
-              ? Colors.red[100]
-              : (isUser ? Colors.blue[100] : Colors.green[100]),
+          color:
+              isSystem
+                  ? Colors.red[100]
+                  : (isUser ? Colors.blue[100] : Colors.green[100]),
           borderRadius: BorderRadius.circular(12.0),
         ),
         child: Column(
-          crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          crossAxisAlignment:
+              isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
             Text(
               message.content,
-              style: TextStyle(color: isSystem ? Colors.red[900] : Colors.black),
+              style: TextStyle(
+                color: isSystem ? Colors.red[900] : Colors.black,
+              ),
             ),
-            if (!isUser && !isSystem && message.tokensPerSecond != null && message.tokensPerSecond! > 0)
+            if (!isUser &&
+                !isSystem &&
+                message.tokensPerSecond != null &&
+                message.tokensPerSecond! > 0)
               Padding(
                 padding: const EdgeInsets.only(top: 4.0),
                 child: Text(
                   '${message.tokensPerSecond!.toStringAsFixed(2)} t/s',
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: Colors.grey[600],
-                  ),
+                  style: TextStyle(fontSize: 10, color: Colors.grey[600]),
                 ),
               ),
           ],
@@ -45,4 +49,4 @@ class MessageBubble extends StatelessWidget {
       ),
     );
   }
-} 
+}
