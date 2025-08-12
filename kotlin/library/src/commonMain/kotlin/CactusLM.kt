@@ -8,6 +8,7 @@ class CactusLM(
 ) {
     private var handle: Long? = null
     private var lastDownloadedFilename: String? = null
+    private val historyManager = ConversationHistoryManager()
     
     suspend fun download(
         url: String = "https://huggingface.co/Cactus-Compute/Qwen3-600m-Instruct-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf",
@@ -32,9 +33,15 @@ class CactusLM(
         temperature: Float = 0.7f,
         topP: Float = 0.9f
     ): String? {
-        return handle?.let { h ->
-            generateCompletion(h, prompt, maxTokens, temperature, topP)
+        val processedMessages = historyManager.processNewMessages(listOf(ChatMessage(prompt, "user")))
+        if (processedMessages.requiresReset) {
+            historyManager.reset()
         }
+        val response = handle?.let { h ->
+            generateCompletion(h, prompt, maxTokens, temperature, topP)
+        } ?: ""
+        historyManager.update(processedMessages.newMessages, ChatMessage(response, "assistant"))
+        return response
     }
     
     fun unload() {
