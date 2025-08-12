@@ -142,6 +142,7 @@ class CactusContext {
   Future<List<LoraAdapterInfo>> getLoadedLoraAdapters() => _sendCommand(['getLoadedLoraAdapters']);
   Future<void> stopCompletion() => _sendCommand(['stopCompletion']);
   Future<void> rewind() => _sendCommand(['rewind']);
+  Future<({String prompt, String? grammar})> formatChatWithTools(List<ChatMessage> messages, String toolsJson, {String? chatTemplate}) => _sendCommand(['formatChatWithTools', messages, toolsJson, chatTemplate]);
 
   Future<T> _sendCommand<T>(dynamic command) async {
     final replyPort = ReceivePort();
@@ -293,6 +294,7 @@ class _CactusIsolateWorker {
       case 'getLoadedLoraAdapters': return _getLoadedLoraAdapters();
       case 'stopCompletion': return _stopCompletion();
       case 'rewind': return _rewind();
+      case 'formatChatWithTools': return _formatChatWithTools(message[1], message[2], message[3]);
       default: throw ArgumentError('Unknown command: $cmd');
     }
   }
@@ -542,7 +544,28 @@ class _CactusIsolateWorker {
       calloc.free(resultCPtr);
       calloc.free(messagesC);
       calloc.free(finalTemplateC);
-      if (jsonSchemaC != null) calloc.free(jsonSchemaC);
+      calloc.free(jsonSchemaC);
+    }
+  }
+
+  Future<({String prompt, String? grammar})> _formatChatWithTools(List<ChatMessage> messages, String toolsJson, String? chatTemplate) async {
+    final finalTemplate = chatTemplate ?? 'chatml';
+    final messagesC = jsonEncode(messages.map((m) => m.toJson()).toList()).toNativeUtf8(allocator: calloc);
+    final finalTemplateC = finalTemplate.toNativeUtf8(allocator: calloc);
+    final toolsC = toolsJson.toNativeUtf8(allocator: calloc);
+
+    final resultC = bindings.getFormattedChatWithJinja(_handle, messagesC, finalTemplateC, nullptr, toolsC, false, nullptr);
+    final resultCPtr = calloc<bindings.CactusChatResultC>()..ref = resultC;
+    try {
+      final promptString = resultC.prompt.toDartString();
+      final grammar = resultC.json_schema.toDartString();
+      return (prompt: promptString, grammar: grammar.isEmpty ? null : grammar);
+    } finally {
+      bindings.freeChatResultMembers(resultCPtr);
+      calloc.free(resultCPtr);
+      calloc.free(messagesC);
+      calloc.free(finalTemplateC);
+      calloc.free(toolsC);
     }
   }
 }

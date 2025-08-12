@@ -7,5 +7,7 @@ export './types.dart';
 export './context.dart';
 export './telemetry.dart';
 export './bindings.dart';
+export './agent.dart';
+export './tools.dart';
 
 export './context.dart' show CactusContext;
