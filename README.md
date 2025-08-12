@@ -8,7 +8,7 @@
 
 ## 🌍 Translations
 
-🇬🇧 English | 🇪🇸 [Español](docs/README.es.md) | 🇫🇷 [Français](docs/README.fr.md) | 🇨🇳 [中文](docs/README.zh.md) | 🇯🇵 [日本語](docs/README.ja.md) | 🇮🇳 [हिंदी](docs/README.hi.md) | 🇩🇪 [Deutsch](docs/README.de.md)
+🇬🇧 English | 🇪🇸 [Español](docs/README.es.md) | 🇫🇷 [Français](docs/README.fr.md) | 🇨🇳 [中文](docs/README.zh.md) | 🇯🇵 [日本語](docs/README.ja.md) | 🇮🇳 [हिंदी](docs/README.hi.md) | 🇩🇪 [Deutsch](docs/README.de.md) | 🇰🇷 [한국어](docs/README.ko.md)
 <br/>
 
 Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
