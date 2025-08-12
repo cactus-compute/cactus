@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:io';
+
+import 'package:path_provider/path_provider.dart';
 
 import './types.dart';
 import './context.dart';
@@ -10,10 +13,111 @@ class CactusLM {
   CactusContext? _context;
   CactusInitParams? _initParams;
   final ConversationHistoryManager _historyManager = ConversationHistoryManager();
+  String? _lastDownloadedFilename;
 
   CactusLM._();
 
-  static Future<CactusLM> init({
+  factory CactusLM() => CactusLM._();
+
+  Future<bool> download({
+    required String modelUrl,
+    String? modelFilename,
+    CactusProgressCallback? onProgress,
+  }) async {
+    try {
+      final actualFilename = modelFilename ?? modelUrl.split('/').last;
+      if (actualFilename.isEmpty) {
+        throw ArgumentError('Cannot determine filename from URL and no filename provided');
+      }
+
+      final downloadParams = CactusInitParams(
+        modelUrl: modelUrl,
+        modelFilename: actualFilename,
+        onInitProgress: onProgress,
+      );
+
+      try {
+        final tempContext = await CactusContext.init(downloadParams);
+        tempContext.release();
+        _lastDownloadedFilename = actualFilename;
+        return true;
+      } catch (e) {
+        final appDocDir = await getApplicationDocumentsDirectory();
+        final modelPath = '${appDocDir.path}/$actualFilename';
+        final file = File(modelPath);
+        if (await file.exists()) {
+          _lastDownloadedFilename = actualFilename;
+          return true;
+        }
+        rethrow;
+      }
+    } catch (e) {
+      if (onProgress != null) {
+        onProgress(null, "Download failed: ${e.toString()}", true);
+      }
+      return false;
+    }
+  }
+
+  Future<bool> init({
+    String? modelFilename,
+    String? chatTemplate,
+    int contextSize = 2048,
+    int gpuLayers = 0,
+    int threads = 4,
+    bool generateEmbeddings = false,
+    CactusProgressCallback? onProgress,
+    String? cactusToken,
+  }) async {
+    if (cactusToken != null) {
+      setCactusToken(cactusToken);
+    }
+
+    final filename = modelFilename ?? _lastDownloadedFilename;
+    if (filename == null) {
+      throw ArgumentError('No model filename provided and no model was previously downloaded');
+    }
+
+    final appDocDir = await getApplicationDocumentsDirectory();
+    final modelPath = '${appDocDir.path}/$filename';
+    
+    final file = File(modelPath);
+    if (!await file.exists()) {
+      throw ArgumentError('Model file does not exist at path: $modelPath');
+    }
+
+    final initParams = CactusInitParams(
+      modelPath: modelPath,
+      chatTemplate: chatTemplate,
+      contextSize: contextSize,
+      gpuLayers: gpuLayers,
+      threads: threads,
+      generateEmbeddings: generateEmbeddings,
+      onInitProgress: onProgress,
+    );
+
+    _initParams = initParams;
+    
+    try {
+      _context = await CactusContext.init(initParams);
+      return true;
+    } catch (e) {
+      CactusTelemetry.error(e, initParams);
+      if (onProgress != null) {
+        onProgress(null, "Initialization failed: ${e.toString()}", true);
+      }
+      return false;
+    }
+  }
+
+  bool isLoaded() => _context != null;
+
+  void unload() {
+    dispose();
+  }
+
+  @Deprecated('Use download() and init() separately instead')
+  static Future<CactusLM> initLegacy({
     required String modelUrl,
     String? modelFilename,
     String? chatTemplate,

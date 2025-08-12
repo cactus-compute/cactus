@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:io';
+
+import 'package:path_provider/path_provider.dart';
 
 import './types.dart';
 import './context.dart';
@@ -9,10 +12,128 @@ import './chat.dart';
 class CactusVLM {
   CactusContext? _context;
   final ConversationHistoryManager _historyManager = ConversationHistoryManager();
+  String? _lastDownloadedModelFilename;
+  String? _lastDownloadedMmprojFilename;
   
   CactusVLM._();
 
-  static Future<CactusVLM> init({
+  factory CactusVLM() => CactusVLM._();
+
+  Future<bool> download({
+    required String modelUrl,
+    required String mmprojUrl,
+    String? modelFilename,
+    String? mmprojFilename,
+    CactusProgressCallback? onProgress,
+  }) async {
+    try {
+      final actualModelFilename = modelFilename ?? modelUrl.split('/').last;
+      final actualMmprojFilename = mmprojFilename ?? mmprojUrl.split('/').last;
+      
+      if (actualModelFilename.isEmpty || actualMmprojFilename.isEmpty) {
+        throw ArgumentError('Cannot determine filenames from URLs and no filenames provided');
+      }
+
+      final downloadParams = CactusInitParams(
+        modelUrl: modelUrl,
+        modelFilename: actualModelFilename,
+        mmprojUrl: mmprojUrl,
+        mmprojFilename: actualMmprojFilename,
+        onInitProgress: onProgress,
+      );
+
+      try {
+        final tempContext = await CactusContext.init(downloadParams);
+        tempContext.release();
+        _lastDownloadedModelFilename = actualModelFilename;
+        _lastDownloadedMmprojFilename = actualMmprojFilename;
+        return true;
+      } catch (e) {
+        final appDocDir = await getApplicationDocumentsDirectory();
+        final modelPath = '${appDocDir.path}/$actualModelFilename';
+        final mmprojPath = '${appDocDir.path}/$actualMmprojFilename';
+        final modelFile = File(modelPath);
+        final mmprojFile = File(mmprojPath);
+        
+        if (await modelFile.exists() && await mmprojFile.exists()) {
+          _lastDownloadedModelFilename = actualModelFilename;
+          _lastDownloadedMmprojFilename = actualMmprojFilename;
+          return true;
+        }
+        rethrow;
+      }
+    } catch (e) {
+      if (onProgress != null) {
+        onProgress(null, "Download failed: ${e.toString()}", true);
+      }
+      return false;
+    }
+  }
+
+  Future<bool> init({
+    String? modelFilename,
+    String? mmprojFilename,
+    String? chatTemplate,
+    int contextSize = 2048,
+    int gpuLayers = 0,
+    int threads = 4,
+    CactusProgressCallback? onProgress,
+    String? cactusToken,
+  }) async {
+    if (cactusToken != null) {
+      setCactusToken(cactusToken);
+    }
+
+    final actualModelFilename = modelFilename ?? _lastDownloadedModelFilename;
+    final actualMmprojFilename = mmprojFilename ?? _lastDownloadedMmprojFilename;
+    
+    if (actualModelFilename == null || actualMmprojFilename == null) {
+      throw ArgumentError('No model or mmproj filenames provided and no files were previously downloaded');
+    }
+
+    final appDocDir = await getApplicationDocumentsDirectory();
+    final modelPath = '${appDocDir.path}/$actualModelFilename';
+    final mmprojPath = '${appDocDir.path}/$actualMmprojFilename';
+    
+    final modelFile = File(modelPath);
+    final mmprojFile = File(mmprojPath);
+    if (!await modelFile.exists()) {
+      throw ArgumentError('Model file does not exist at path: $modelPath');
+    }
+    if (!await mmprojFile.exists()) {
+      throw ArgumentError('MMProj file does not exist at path: $mmprojPath');
+    }
+
+    final initParams = CactusInitParams(
+      modelPath: modelPath,
+      mmprojPath: mmprojPath,
+      chatTemplate: chatTemplate,
+      contextSize: contextSize,
+      gpuLayers: gpuLayers,
+      threads: threads,
+      onInitProgress: onProgress,
+    );
+    
+    try {
+      _context = await CactusContext.init(initParams);
+      return true;
+    } catch (e) {
+      CactusTelemetry.error(e, initParams);
+      if (onProgress != null) {
+        onProgress(null, "Initialization failed: ${e.toString()}", true);
+      }
+      return false;
+    }
+  }
+
+  bool isLoaded() => _context != null;
+
+  void unload() {
+    dispose();
+  }
+
+  @Deprecated('Use download() and init() separately instead')
+  static Future<CactusVLM> initLegacy({
     required String modelUrl,
     required String mmprojUrl,
     String? modelFilename,
