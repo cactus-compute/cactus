@@ -191,6 +191,48 @@ final result = await tts.generate(
 tts.dispose();
 ```
 
+### CactusAgent (Agentic Tool Calling)
+
+```dart
+final agent = await CactusAgent.init(
+  modelUrl: 'https://huggingface.co/model.gguf',
+  contextSize: 2048,
+  gpuLayers: 0, // GPU layers (0 = CPU only)
+  generateEmbeddings: true, // Enable embeddings
+);
+
+agent!.addTool(
+    'get_weather',
+    WeatherTool(),
+    'Get current weather information for a location',
+    {
+      'location': Parameter(
+        type: 'string',
+        description: 'The location to get weather for',
+        required: true,
+      ),
+    },
+  );
+
+final result = await agent.completionWithTools([
+  ChatMessage(role: 'system', content: 'You are helpful.'),
+  ChatMessage(role: 'user', content: 'What is AI?'),
+], maxTokens: 200, temperature: 0.7);
+
+agent.dispose();
+```
+
+### Tools
+```
+class WeatherTool extends ToolExecutor {
+  @override
+  Future<dynamic> execute(Map<String, dynamic> args) async {
+    final location = args['location'] as String? ?? 'unknown';
+    return 'The weather in $location is sunny, 72°F';
+  }
+}
+```
+
 ## Advanced Usage
 
 ### Embeddings & Similarity
