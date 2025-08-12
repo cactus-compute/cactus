@@ -16,26 +16,52 @@ class CactusService {
 
   Future<void> initialize() async {
     try {
-      model = await CactusVLM.init(
+      model = CactusVLM();
+      
+      status.value = 'Starting download...';
+      final downloadSuccess = await model!.download(
         modelUrl: 'https://huggingface.co/Cactus-Compute/SmolVLM2-500m-Instruct-GGUF/resolve/main/SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
         mmprojUrl: 'https://huggingface.co/Cactus-Compute/SmolVLM2-500m-Instruct-GGUF/resolve/main/mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
-        // cactusToken: 'contact founders@cactuscompute.com for enterprise token',
         onProgress: (progress, statusText, isError) {
           status.value = statusText;
           if (isError) error.value = statusText;
         },
       );
       
+      if (!downloadSuccess) {
+        throw CactusException('Failed to download models');
+      }
+      
+      // Initialize phase
+      status.value = 'Initializing model...';
+      final initSuccess = await model!.init(
+        threads: 4,
+        contextSize: 2048,
+        gpuLayers: 0, // Set to higher value if you have GPU
+        onProgress: (progress, statusText, isError) {
+          status.value = statusText;
+          if (isError) error.value = statusText;
+        },
+        // cactusToken: 'contact founders@cactuscompute.com for enterprise token',
+      );
+      
+      if (!initSuccess) {
+        throw CactusException('Failed to initialize model');
+      }
+      
       status.value = 'Ready!';
       isLoading.value = false;
     } on CactusException catch (e) {
       error.value = e.message;
       isLoading.value = false;
+    } catch (e) {
+      error.value = 'Unexpected error: $e';
+      isLoading.value = false;
     }
   }
 
   Future<void> sendMessage(String text) async {
-    if (model == null) return;
+    if (model == null || !model!.isLoaded()) return;
     
     isLoading.value = true;
     
@@ -103,7 +129,7 @@ class CactusService {
   }
 
   void dispose() {
-    model?.dispose();
+    model?.unload();
     messages.dispose();
     isLoading.dispose();
     status.dispose();
