@@ -94,6 +94,36 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     final embedding = await lm.embedding('Your text', mode: 'localfirst');
     ```
 
+6. **Flutter Agentic Tools**
+    ```dart
+    import 'package:cactus/cactus.dart';
+
+    final agent = await CactusAgent.init(
+        modelUrl: 'https://huggingface.co/Cactus-Compute/Qwen3-600m-Instruct-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf',
+    );
+
+    agent!.addTool(
+        'tool_name',
+        Tool(),
+        'Tool info',
+        {
+        'parameter': Parameter(
+            type: 'string',
+            description: 'The parameter you need!',
+            required: true,
+        ),
+        },
+    );
+
+    final messages = [ChatMessage(role: 'user', content: 'Hello!')];
+
+    final response = await agent.completionWithTools(
+        messages, 
+        maxTokens: 200,
+        temperature: 0.3,
+    );
+    ```
+
   N/B: See the [Flutter Docs](https://github.com/cactus-compute/cactus/blob/main/flutter) for more.
 
 ## ![React Native](https://img.shields.io/badge/React%20Native-grey.svg?style=for-the-badge&logo=react&logoColor=%2361DAFB)
