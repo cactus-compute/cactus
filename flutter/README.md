@@ -18,17 +18,18 @@ dependencies:
 ```dart
 import 'package:cactus/cactus.dart';
 
-  final lm = await CactusLM.init(
+final lm = CactusLM();
+await lm.download(
   modelUrl: 'https://huggingface.co/model.gguf',
-    contextSize: 2048,
-  );
+);
+await lm.init(contextSize: 2048);
 
-  final result = await lm.completion([
+final result = await lm.completion([
   ChatMessage(role: 'user', content: 'Hello!')
-  ], maxTokens: 100, temperature: 0.7);
+], maxTokens: 100, temperature: 0.7);
 
 print(result.text);
-  lm.dispose();
+lm.dispose();
 ```
 
 ### Streaming Chat
@@ -55,14 +56,16 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _initModel() async {
-      _lm = await CactusLM.init(
+    final lm = CactusLM();
+    await lm.download(
       modelUrl: 'https://huggingface.co/model.gguf',
-      contextSize: 2048,
-        onProgress: (progress, status, isError) {
+      onProgress: (progress, status, isError) {
         print('$status ${progress != null ? '${(progress * 100).toInt()}%' : ''}');
-        },
-      );
-      setState(() => _isLoading = false);
+      },
+    );
+    await lm.init(contextSize: 2048);
+    _lm = lm;
+    setState(() => _isLoading = false);
   }
 
   Future<void> _sendMessage() async {
@@ -142,8 +145,11 @@ class _ChatScreenState extends State<ChatScreen> {
 ### CactusLM (Language Model)
 
 ```dart
-final lm = await CactusLM.init(
+final lm = CactusLM();
+await lm.download(
   modelUrl: 'https://huggingface.co/model.gguf',
+);
+await lm.init(
   contextSize: 2048,
   gpuLayers: 0, // GPU layers (0 = CPU only)
   generateEmbeddings: true, // Enable embeddings
@@ -161,11 +167,12 @@ lm.dispose();
 ### CactusVLM (Vision Language Model)
 
 ```dart
-final vlm = await CactusVLM.init(
+final vlm = CactusVLM();
+await vlm.download(
   modelUrl: 'https://huggingface.co/model.gguf',
   mmprojUrl: 'https://huggingface.co/mmproj.gguf',
-  contextSize: 2048,
 );
+await vlm.init(contextSize: 2048);
 
 final result = await vlm.completion([
   ChatMessage(role: 'user', content: 'Describe this image')
@@ -177,10 +184,11 @@ vlm.dispose();
 ### CactusTTS (Text-to-Speech)
 
 ```dart
-final tts = await CactusTTS.init(
+final tts = CactusTTS();
+await tts.download(
   modelUrl: 'https://huggingface.co/tts-model.gguf',
-  contextSize: 1024,
 );
+await tts.init(contextSize: 1024);
 
 final result = await tts.generate(
   'Hello world!',
@@ -194,14 +202,17 @@ tts.dispose();
 ### CactusAgent (Agentic Tool Calling)
 
 ```dart
-final agent = await CactusAgent.init(
+final agent = CactusAgent();
+await agent.download(
   modelUrl: 'https://huggingface.co/model.gguf',
+);
+await agent.init(
   contextSize: 2048,
   gpuLayers: 0, // GPU layers (0 = CPU only)
   generateEmbeddings: true, // Enable embeddings
 );
 
-agent!.addTool(
+agent.addTool(
     'get_weather',
     WeatherTool(),
     'Get current weather information for a location',
@@ -238,10 +249,11 @@ class WeatherTool extends ToolExecutor {
 ### Embeddings & Similarity
 
 ```dart
-final lm = await CactusLM.init(
+final lm = CactusLM();
+await lm.download(
   modelUrl: 'https://huggingface.co/model.gguf',
-  generateEmbeddings: true,
 );
+await lm.init(generateEmbeddings: true);
 
 final embedding1 = await lm.embedding('machine learning');
 final embedding2 = await lm.embedding('artificial intelligence');
@@ -263,20 +275,22 @@ print('Similarity: $similarity');
 ### Cloud Fallback
 
 ```dart
-final lm = await CactusLM.init(
+final lm = CactusLM();
+await lm.download(
   modelUrl: 'https://huggingface.co/model.gguf',
-  cactusToken: 'your_enterprise_token',
 );
+await lm.init(cactusToken: 'your_enterprise_token');
 
 // Try local first, fallback to cloud if local fails
 final embedding = await lm.embedding('text', mode: 'localfirst');
 
 // Vision models also support cloud fallback
-final vlm = await CactusVLM.init(
+final vlm = CactusVLM();
+await vlm.download(
   modelUrl: 'https://huggingface.co/model.gguf',
   mmprojUrl: 'https://huggingface.co/mmproj.gguf',
-  cactusToken: 'your_enterprise_token',
 );
+await vlm.init(cactusToken: 'your_enterprise_token');
 
 final result = await vlm.completion([
   ChatMessage(role: 'user', content: 'Describe image')
@@ -290,7 +304,10 @@ class ModelManager {
   CactusLM? _lm;
   
   Future<void> initialize() async {
-    _lm = await CactusLM.init(modelUrl: 'https://huggingface.co/model.gguf');
+    final lm = CactusLM();
+    await lm.download(modelUrl: 'https://huggingface.co/model.gguf');
+    await lm.init();
+    _lm = lm;
   }
   
   Future<String> complete(String prompt) async {
@@ -310,12 +327,14 @@ class ModelManager {
 ### Image Analysis
 
 ```dart
-final vlm = await CactusVLM.init(
+final vlm = CactusVLM();
+await vlm.download(
   modelUrl: 'https://huggingface.co/model.gguf',
   mmprojUrl: 'https://huggingface.co/mmproj.gguf',
 );
+await vlm.init();
 
-    final result = await vlm.completion([
+final result = await vlm.completion([
   ChatMessage(role: 'user', content: 'What do you see?')
 ], imagePaths: ['/path/to/image.jpg'], maxTokens: 200);
 
@@ -345,10 +364,13 @@ class _VisionChatState extends State<VisionChat> {
   }
 
   Future<void> _initVLM() async {
-      _vlm = await CactusVLM.init(
+    final vlm = CactusVLM();
+    await vlm.download(
       modelUrl: 'https://huggingface.co/model.gguf',
       mmprojUrl: 'https://huggingface.co/mmproj.gguf',
     );
+    await vlm.init();
+    _vlm = vlm;
   }
 
   Future<void> _pickImage() async {
@@ -396,13 +418,15 @@ class _VisionChatState extends State<VisionChat> {
 
 ```dart
 try {
-  final lm = await CactusLM.init(
+  final lm = CactusLM();
+  await lm.download(
     modelUrl: 'https://huggingface.co/model.gguf',
     onProgress: (progress, status, isError) {
       print('Status: $status');
       if (isError) print('Error: $status');
     },
   );
+  await lm.init();
   
   final result = await lm.completion([
     ChatMessage(role: 'user', content: 'Hello')
@@ -419,8 +443,11 @@ try {
 
 ```dart
 // For better performance
-final lm = await CactusLM.init(
+final lm = CactusLM();
+await lm.download(
   modelUrl: 'https://huggingface.co/model.gguf',
+);
+await lm.init(
   contextSize: 2048,     // Smaller context = faster
   gpuLayers: 20,         // Use GPU acceleration
   threads: 4,            // Optimize for your device
@@ -439,33 +466,56 @@ final result = await lm.completion(messages,
 
 ### CactusLM
 
-#### `CactusLM.init()`
+#### `CactusLM()` Constructor
 
-Initialize a language model for text completion and embeddings.
+Create a new language model instance.
 
 ```dart
-static Future<CactusLM> init({
-  required String modelUrl,        // HuggingFace model URL or local path
-  String? modelFilename,           // Custom filename for cached model
-  String? chatTemplate,            // Custom chat template (Jinja2 format)
-  int contextSize = 2048,          // Context window size in tokens
-  int gpuLayers = 0,              // Number of layers to run on GPU (0 = CPU only)
-  int threads = 4,                // Number of CPU threads to use
-  bool generateEmbeddings = false, // Enable embedding generation
-  CactusProgressCallback? onProgress, // Download/init progress callback
-  String? cactusToken,            // Enterprise token for cloud features
+final lm = CactusLM();
+```
+
+#### `download()`
+
+Download a model from a URL or prepare a local model file.
+
+```dart
+Future<bool> download({
+  required String modelUrl,           // HuggingFace model URL or local path
+  String? modelFilename,              // Custom filename for cached model
+  CactusProgressCallback? onProgress, // Download progress callback
 })
 ```
 
 **Parameters:**
 - `modelUrl`: URL to GGUF model on HuggingFace or local file path
-- `modelFilename`: Override the cached filename (useful for versioning)
+- `modelFilename`: Override the cached filename (useful for versioning)  
+- `onProgress`: Callback for download progress and status updates
+
+#### `init()`
+
+Initialize the downloaded model for inference.
+
+```dart
+Future<bool> init({
+  String? modelFilename,           // Filename of previously downloaded model
+  String? chatTemplate,            // Custom chat template (Jinja2 format)
+  int contextSize = 2048,          // Context window size in tokens
+  int gpuLayers = 0,              // Number of layers to run on GPU (0 = CPU only)
+  int threads = 4,                // Number of CPU threads to use
+  bool generateEmbeddings = false, // Enable embedding generation
+  CactusProgressCallback? onProgress, // Init progress callback
+  String? cactusToken,            // Enterprise token for cloud features
+})
+```
+
+**Parameters:**
+- `modelFilename`: Specify which downloaded model to use (if multiple)
 - `chatTemplate`: Custom Jinja2 chat template for formatting conversations
 - `contextSize`: Maximum tokens the model can process (affects memory usage)
 - `gpuLayers`: Higher values = faster inference but more GPU memory usage
 - `threads`: Optimize based on your device's CPU cores
 - `generateEmbeddings`: Must be `true` to use `embedding()` method
-- `onProgress`: Callback for download progress and initialization status
+- `onProgress`: Callback for initialization progress and status
 - `cactusToken`: Required for cloud fallback features
 
 #### `completion()`
@@ -524,16 +574,36 @@ void dispose()                                    // Clean up resources
 
 ### CactusVLM
 
-#### `CactusVLM.init()`
+#### `CactusVLM()` Constructor
 
-Initialize a vision-language model for image and text processing.
+Create a new vision-language model instance.
 
 ```dart
-static Future<CactusVLM> init({
+final vlm = CactusVLM();
+```
+
+#### `download()`
+
+Download vision-language model and projection model.
+
+```dart
+Future<bool> download({
   required String modelUrl,       // Main model URL
   required String mmprojUrl,      // Vision projection model URL
   String? modelFilename,          // Custom filename for main model
   String? mmprojFilename,         // Custom filename for vision model
+  CactusProgressCallback? onProgress, // Progress callback
+})
+```
+
+#### `init()`
+
+Initialize the downloaded vision-language model.
+
+```dart
+Future<bool> init({
+  String? modelFilename,          // Main model filename
+  String? mmprojFilename,         // Vision model filename
   String? chatTemplate,           // Custom chat template
   int contextSize = 2048,         // Context window size
   int gpuLayers = 0,             // GPU layers for acceleration
@@ -546,7 +616,7 @@ static Future<CactusVLM> init({
 **Parameters:**
 - `modelUrl`: URL to main vision-language model (GGUF format)
 - `mmprojUrl`: URL to corresponding vision projection model
-- All other parameters same as `CactusLM.init()`
+- All other parameters same as `CactusLM`
 
 #### `completion()`
 
@@ -581,14 +651,33 @@ Future<bool> get isMultimodalEnabled   // Check if multimodal features work
 
 ### CactusTTS
 
-#### `CactusTTS.init()`
+#### `CactusTTS()` Constructor
 
-Initialize a text-to-speech model.
+Create a new text-to-speech model instance.
 
 ```dart
-static Future<CactusTTS> init({
+final tts = CactusTTS();
+```
+
+#### `download()`
+
+Download a text-to-speech model.
+
+```dart
+Future<bool> download({
   required String modelUrl,       // TTS model URL
   String? modelFilename,          // Custom cached filename
+  CactusProgressCallback? onProgress, // Progress callback
+})
+```
+
+#### `init()`
+
+Initialize the downloaded TTS model.
+
+```dart
+Future<bool> init({
+  String? modelFilename,          // TTS model filename
   int contextSize = 2048,         // Context size
   int gpuLayers = 0,             // GPU acceleration
   int threads = 4,               // CPU threads

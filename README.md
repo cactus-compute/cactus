@@ -35,10 +35,12 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     ```dart
     import 'package:cactus/cactus.dart';
 
-    final lm = await CactusLM.init(
+    final lm = await CactusLM.download(
         modelUrl: 'https://huggingface.co/Cactus-Compute/Qwen3-600m-Instruct-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf',
         contextSize: 2048,
     );
+
+    lm.init()
 
     final messages = [ChatMessage(role: 'user', content: 'Hello!')];
     final response = await lm.completion(messages, maxTokens: 100, temperature: 0.7);
@@ -47,11 +49,12 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     ```dart
     import 'package:cactus/cactus.dart';
 
-    final lm = await CactusLM.init(
+    final lm = await CactusLM.download(
         modelUrl: 'https://huggingface.co/Cactus-Compute/Qwen3-600m-Instruct-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf',
         contextSize: 2048,
         generateEmbeddings: true,
     );
+    lm.init()
 
     final text = 'Your text to embed';
     final result = await lm.embedding(text);
@@ -60,10 +63,12 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     ```dart
     import 'package:cactus/cactus.dart';
 
-    final vlm = await CactusVLM.init(
+    final vlm = await CactusVLM.download(
         modelUrl: 'https://huggingface.co/Cactus-Compute/SmolVLM2-500m-Instruct-GGUF/resolve/main/SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
         mmprojUrl: 'https://huggingface.co/Cactus-Compute/SmolVLM2-500m-Instruct-GGUF/resolve/main/mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
     );
+
+    vlm.init()
 
     final messages = [ChatMessage(role: 'user', content: 'Describe this image')];
 
@@ -78,11 +83,13 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     ```dart
     import 'package:cactus/cactus.dart';
 
-    final lm = await CactusLM.init(
+    final lm = await CactusLM.download(
         modelUrl: 'https://huggingface.co/Cactus-Compute/Qwen3-600m-Instruct-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf',
         contextSize: 2048,
         cactusToken: 'enterprise_token_here', 
     );
+
+    lm.init()
 
     final messages = [ChatMessage(role: 'user', content: 'Hello!')];
     final response = await lm.completion(messages, maxTokens: 100, temperature: 0.7);
@@ -98,9 +105,11 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     ```dart
     import 'package:cactus/cactus.dart';
 
-    final agent = await CactusAgent.init(
+    final agent = await CactusAgent.download(
         modelUrl: 'https://huggingface.co/Cactus-Compute/Qwen3-600m-Instruct-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf',
     );
+
+    agent.init()
 
     agent!.addTool(
         'tool_name',
