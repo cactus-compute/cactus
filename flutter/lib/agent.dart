@@ -50,27 +50,16 @@ class CactusAgent {
         throw ArgumentError('Cannot determine filename from URL and no filename provided');
       }
 
-      final downloadParams = CactusInitParams(
+      final success = await CactusContext.downloadModels(
         modelUrl: modelUrl,
-        modelFilename: actualFilename,
-        onInitProgress: onProgress,
+        modelFilename: modelFilename,
+        onProgress: onProgress,
       );
 
-      try {
-        final tempContext = await CactusContext.init(downloadParams);
-        tempContext.release();
+      if (success) {
         _lastDownloadedFilename = actualFilename;
-        return true;
-      } catch (e) {
-        final appDocDir = await getApplicationDocumentsDirectory();
-        final modelPath = '${appDocDir.path}/$actualFilename';
-        final file = File(modelPath);
-        if (await file.exists()) {
-          _lastDownloadedFilename = actualFilename;
-          return true;
-        }
-        rethrow;
       }
+      return success;
     } catch (e) {
       if (onProgress != null) {
         onProgress(null, "Download failed: ${e.toString()}", true);
@@ -117,6 +106,9 @@ class CactusAgent {
     );
     
     try {
+      if (onProgress != null) {
+        onProgress(null, "Initializing...", false);
+      }
       _context = await CactusContext.init(initParams);
       return true;
     } catch (e) {
@@ -218,11 +210,6 @@ class CactusAgent {
     return result;
   }
 
-  void unload() {
-    _context?.release();
-    _context = null;
-  }
-
   bool isLoaded() => _context != null;
 
   void addTool(
@@ -232,5 +219,10 @@ class CactusAgent {
     Map<String, Parameter> parameters,
   ) {
     _tools.add(name, function, description, parameters);
+  }
+
+  void dispose() {
+    _context?.release();
+    _context = null;
   }
 }

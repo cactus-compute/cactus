@@ -35,7 +35,11 @@ class CactusContext {
     debugPrint('Starting CactusContext.init...');
     final context = CactusContext._();
     context.initParams = params;
-    final resolvedParams = await _resolveParams(params);
+    
+    // Validate that we have local file paths for initialization
+    if (params.modelPath?.isEmpty != false) {
+      throw ArgumentError('No modelPath provided. Use CactusContext.downloadModels() first to download files.');
+    }
     
     debugPrint('Spawning isolate...');
     final mainReceivePort = ReceivePort();
@@ -44,51 +48,65 @@ class CactusContext {
     mainReceivePort.close();
     debugPrint('Isolate spawned, sending init command...');
     
-    final result = await context._sendCommand(['init', _SendableInitParams.fromOriginal(resolvedParams)]);
+    final result = await context._sendCommand(['init', _SendableInitParams.fromOriginal(params)]);
     debugPrint('Init command result: $result');
     if (result is Exception) throw result;
     return context;
   }
-  
-  static Future<CactusInitParams> _resolveParams(CactusInitParams params) async {
+
+  static Future<bool> downloadModels({
+    required String modelUrl,
+    String? mmprojUrl,
+    String? modelFilename,
+    String? mmprojFilename,
+    CactusProgressCallback? onProgress,
+  }) async {
     final appDocDir = await getApplicationDocumentsDirectory();
     
-    String? modelPath = params.modelPath;
-    String? mmprojPath = params.mmprojPath;
-    
-    if (params.modelUrl?.isNotEmpty == true) {
-      final filename = params.modelFilename ?? (params.modelUrl!.split('/').last.isEmpty ? "downloaded_model.gguf" : params.modelUrl!.split('/').last);
-      modelPath = '${appDocDir.path}/$filename';
-      if (!await File(modelPath).exists()) {
-        params.onInitProgress?.call(0.0, "Downloading model...", false);
-        await _downloadModel(params.modelUrl!, modelPath, onProgress: (p, s) => params.onInitProgress?.call(p, "Model: $s", false));
-        params.onInitProgress?.call(1.0, "Model download complete.", false);
-      }
-    }
-    
-    if (params.mmprojUrl?.isNotEmpty == true) {
-      final filename = params.mmprojFilename ?? (params.mmprojUrl!.split('/').last.isEmpty ? "downloaded_mmproj.gguf" : params.mmprojUrl!.split('/').last);
-      mmprojPath = '${appDocDir.path}/$filename';
-      if (!await File(mmprojPath).exists()) {
-        params.onInitProgress?.call(0.0, "Downloading mmproj...", false);
-        await _downloadModel(params.mmprojUrl!, mmprojPath, onProgress: (p, s) => params.onInitProgress?.call(p, "MMProj: $s", false));
-        params.onInitProgress?.call(1.0, "MMProj download complete.", false);
-      }
-    }
-    
-    if (modelPath?.isEmpty != false) throw ArgumentError('No modelPath or modelUrl provided');
-    params.onInitProgress?.call(null, "Initializing...", false);
-    
-    return CactusInitParams(
-      modelPath: modelPath, mmprojPath: mmprojPath, chatTemplate: params.chatTemplate,
-      contextSize: params.contextSize, batchSize: params.batchSize, ubatchSize: params.ubatchSize,
-      gpuLayers: params.gpuLayers, threads: params.threads, useMmap: params.useMmap, useMlock: params.useMlock,
-      generateEmbeddings: params.generateEmbeddings, poolingType: params.poolingType, normalizeEmbeddings: params.normalizeEmbeddings,
-      useFlashAttention: params.useFlashAttention, cacheTypeK: params.cacheTypeK, cacheTypeV: params.cacheTypeV,
-      onInitProgress: params.onInitProgress,
-    );
-  }
+    final actualModelFilename = modelFilename ?? (modelUrl.split('/').last.isEmpty ? "downloaded_model.gguf" : modelUrl.split('/').last);
+    final modelPath = '${appDocDir.path}/$actualModelFilename';
 
+    String? mmprojPath;
+    if (mmprojUrl != null && mmprojUrl.isNotEmpty) {
+      final actualMmprojFilename = mmprojFilename ?? (mmprojUrl.split('/').last.isEmpty ? "downloaded_mmproj.gguf" : mmprojUrl.split('/').last);
+      mmprojPath = '${appDocDir.path}/$actualMmprojFilename';
+    }
+    
+    final modelExists = await File(modelPath).exists();
+    final mmprojExists = mmprojPath == null || (await File(mmprojPath).exists());
+
+    if (modelExists && mmprojExists) {
+      onProgress?.call(1.0, "Files already exist", false);
+      return true;
+    }
+    
+    final downloadingMmproj = mmprojUrl != null && mmprojUrl.isNotEmpty;
+
+    if (!modelExists) {
+      onProgress?.call(0.0, "Downloading model...", false);
+      await _downloadModel(
+        modelUrl, 
+        modelPath, 
+        onProgress: (p, s) {
+          final progress = downloadingMmproj ? p * 0.5 : p;
+          onProgress?.call(progress, "Model: $s", false);
+        }
+      );
+      onProgress?.call(downloadingMmproj ? 0.5 : 1.0, "Model download complete.", false);
+    }
+    
+    if (downloadingMmproj && !mmprojExists) {
+      onProgress?.call(0.5, "Downloading mmproj...", false);
+      await _downloadModel(
+        mmprojUrl, 
+        mmprojPath!, 
+        onProgress: (p, s) => onProgress?.call(0.5 + (p * 0.5), "MMProj: $s", false)
+      );
+      onProgress?.call(1.0, "MMProj download complete.", false);
+    }
+    return true;
+  }
+  
   Future<CactusCompletionResult> completion(CactusCompletionParams params, {List<String> mediaPaths = const []}) async {
     _checkDisposed();
     final replyPort = ReceivePort();

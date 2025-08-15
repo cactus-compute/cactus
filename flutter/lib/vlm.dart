@@ -34,34 +34,18 @@ class CactusVLM {
         throw ArgumentError('Cannot determine filenames from URLs and no filenames provided');
       }
 
-      final downloadParams = CactusInitParams(
+      await CactusContext.downloadModels(
         modelUrl: modelUrl,
-        modelFilename: actualModelFilename,
         mmprojUrl: mmprojUrl,
+        modelFilename: actualModelFilename,
         mmprojFilename: actualMmprojFilename,
-        onInitProgress: onProgress,
+        onProgress: onProgress,
       );
-
-      try {
-        final tempContext = await CactusContext.init(downloadParams);
-        tempContext.release();
-        _lastDownloadedModelFilename = actualModelFilename;
-        _lastDownloadedMmprojFilename = actualMmprojFilename;
-        return true;
-      } catch (e) {
-        final appDocDir = await getApplicationDocumentsDirectory();
-        final modelPath = '${appDocDir.path}/$actualModelFilename';
-        final mmprojPath = '${appDocDir.path}/$actualMmprojFilename';
-        final modelFile = File(modelPath);
-        final mmprojFile = File(mmprojPath);
-        
-        if (await modelFile.exists() && await mmprojFile.exists()) {
-          _lastDownloadedModelFilename = actualModelFilename;
-          _lastDownloadedMmprojFilename = actualMmprojFilename;
-          return true;
-        }
-        rethrow;
-      }
+      
+      _lastDownloadedModelFilename = actualModelFilename;
+      _lastDownloadedMmprojFilename = actualMmprojFilename;
+      
+      return true;
     } catch (e) {
       if (onProgress != null) {
         onProgress(null, "Download failed: ${e.toString()}", true);
@@ -115,6 +99,9 @@ class CactusVLM {
     );
     
     try {
+      if (onProgress != null) {
+        onProgress(null, "Initializing...", false);
+      }
       _context = await CactusContext.init(initParams);
       return true;
     } catch (e) {
@@ -127,51 +114,6 @@ class CactusVLM {
   }
 
   bool isLoaded() => _context != null;
-
-  void unload() {
-    dispose();
-  }
-
-  @Deprecated('Use download() and init() separately instead')
-  static Future<CactusVLM> initLegacy({
-    required String modelUrl,
-    required String mmprojUrl,
-    String? modelFilename,
-    String? mmprojFilename,
-    String? chatTemplate,
-    int contextSize = 2048,
-    int gpuLayers = 0,
-    int threads = 4,
-    CactusProgressCallback? onProgress,
-    String? cactusToken,
-  }) async {
-    final vlm = CactusVLM._();
-    
-    if (cactusToken != null) {
-      setCactusToken(cactusToken);
-    }
-    
-    final initParams = CactusInitParams(
-      modelUrl: modelUrl,
-      modelFilename: modelFilename,
-      mmprojUrl: mmprojUrl,
-      mmprojFilename: mmprojFilename,
-      chatTemplate: chatTemplate,
-      contextSize: contextSize,
-      gpuLayers: gpuLayers,
-      threads: threads,
-      onInitProgress: onProgress,
-    );
-    
-    try {
-      vlm._context = await CactusContext.init(initParams);
-    } catch (e) {
-      CactusTelemetry.error(e, initParams);
-      rethrow;
-    }
-    
-    return vlm;
-  }
 
   Future<CactusCompletionResult> completion(
     List<ChatMessage> messages, {

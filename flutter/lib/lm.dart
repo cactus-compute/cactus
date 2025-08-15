@@ -30,27 +30,15 @@ class CactusLM {
         throw ArgumentError('Cannot determine filename from URL and no filename provided');
       }
 
-      final downloadParams = CactusInitParams(
+      final success = await CactusContext.downloadModels(
         modelUrl: modelUrl,
-        modelFilename: actualFilename,
-        onInitProgress: onProgress,
+        modelFilename: modelFilename,
+        onProgress: onProgress,
       );
-
-      try {
-        final tempContext = await CactusContext.init(downloadParams);
-        tempContext.release();
+      if (success) {
         _lastDownloadedFilename = actualFilename;
-        return true;
-      } catch (e) {
-        final appDocDir = await getApplicationDocumentsDirectory();
-        final modelPath = '${appDocDir.path}/$actualFilename';
-        final file = File(modelPath);
-        if (await file.exists()) {
-          _lastDownloadedFilename = actualFilename;
-          return true;
-        }
-        rethrow;
       }
+      return success;
     } catch (e) {
       if (onProgress != null) {
         onProgress(null, "Download failed: ${e.toString()}", true);
@@ -99,6 +87,9 @@ class CactusLM {
     _initParams = initParams;
     
     try {
+      if (onProgress != null) {
+        onProgress(null, "Initializing...", false);
+      }
       _context = await CactusContext.init(initParams);
       return true;
     } catch (e) {
@@ -111,51 +102,6 @@ class CactusLM {
   }
 
   bool isLoaded() => _context != null;
-
-  void unload() {
-    dispose();
-  }
-
-  @Deprecated('Use download() and init() separately instead')
-  static Future<CactusLM> initLegacy({
-    required String modelUrl,
-    String? modelFilename,
-    String? chatTemplate,
-    int contextSize = 2048,
-    int gpuLayers = 0,
-    int threads = 4,
-    bool generateEmbeddings = false,
-    CactusProgressCallback? onProgress,
-    String? cactusToken,
-  }) async {
-    final lm = CactusLM._();
-    
-    if (cactusToken != null) {
-      setCactusToken(cactusToken);
-    }
-    
-    final initParams = CactusInitParams(
-      modelUrl: modelUrl,
-      modelFilename: modelFilename,
-      chatTemplate: chatTemplate,
-      contextSize: contextSize,
-      gpuLayers: gpuLayers,
-      threads: threads,
-      generateEmbeddings: generateEmbeddings,
-      onInitProgress: onProgress,
-    );
-
-    lm._initParams = initParams;
-    
-    try {
-      lm._context = await CactusContext.init(initParams);
-    } catch (e) {
-      CactusTelemetry.error(e, initParams);
-      rethrow;
-    }
-    
-    return lm;
-  }
 
   Future<CactusCompletionResult> completion(
     List<ChatMessage> messages, {
@@ -241,6 +187,11 @@ class CactusLM {
     return result;
   }
 
+  void dispose() {
+    _context?.release();
+    _context = null;
+  }
+
   Future<List<double>> _handleLocalEmbedding(String text) async {
     if (_context == null) throw CactusException('CactusLM not initialized');
     return await _context!.embedding(text);
@@ -283,10 +234,5 @@ class CactusLM {
   Future<void> stopCompletion() async {
     if (_context == null) throw CactusException('CactusLM not initialized');
     await _context!.stopCompletion();
-  }
-
-  void dispose() {
-    _context?.release();
-    _context = null;
   }
 } 
