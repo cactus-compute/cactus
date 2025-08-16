@@ -1,5 +1,18 @@
 import type { NativeCompletionResult } from "./NativeCactus";
 
+export type OpenAIToolSchema = {
+  type: "function",
+  function: {
+    name: string,
+    description: string,
+    parameters: {
+      type: "object", 
+      properties: {[key: string]: Parameter},
+      required: string[]
+    }
+  }
+}
+
 interface Parameter {
   type: string,
   description: string,
@@ -32,7 +45,7 @@ export class Tools {
       return func;
     }
   
-  getSchemas() {
+  getSchemas(): OpenAIToolSchema[] {
       return Array.from(this.tools.entries()).map(([name, { description, parameters, required }]) => ({
         type: "function",
         function: {

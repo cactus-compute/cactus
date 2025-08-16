@@ -11,7 +11,7 @@ import type {
 } from './index'
 
 import { Telemetry } from './telemetry'
-import { setCactusToken, getVertexAIEmbedding } from './remote'
+import { setCactusToken, getVertexAIEmbedding, getTextCompletion } from './remote'
 import { ConversationHistoryManager } from './chat'
 
 interface CactusLMReturn {
@@ -139,7 +139,50 @@ export class CactusLM {
 
   completion = async (
     messages: CactusOAICompatibleMessage[],
-    params: CompletionParams = {},
+    params: CompletionParams & { mode?: string } = {},
+    callback?: (data: any) => void,
+  ): Promise<NativeCompletionResult> => {
+    const mode = params.mode || 'local';
+
+    let result: NativeCompletionResult;
+    let lastError: Error | null = null;
+
+    if (mode === 'remote') {
+      result = await this._handleRemoteCompletion(messages, callback);
+    } else if (mode === 'local') {
+      result = await this._handleLocalCompletion(messages, params, callback);
+    } else if (mode === 'localfirst') {
+      try {
+        result = await this._handleLocalCompletion(messages, params, callback);
+      } catch (e) {
+        lastError = e as Error;
+        try {
+          result = await this._handleRemoteCompletion(messages, callback);
+        } catch (remoteError) {
+          throw lastError;
+        }
+      }
+    } else if (mode === 'remotefirst') {
+      try {
+        result = await this._handleRemoteCompletion(messages, callback);
+      } catch (e) {
+        lastError = e as Error;
+        try {
+          result = await this._handleLocalCompletion(messages, params, callback);
+        } catch (localError) {
+          throw lastError;
+        }
+      }
+    } else {
+      throw new Error('Invalid mode: ' + mode + '. Must be "local", "remote", "localfirst", or "remotefirst"');
+    }
+
+    return result;
+  }
+
+  private _handleLocalCompletion = async(
+    messages: CactusOAICompatibleMessage[],
+    params: CompletionParams,
     callback?: (data: any) => void,
   ): Promise<NativeCompletionResult> => {
     const { newMessages, requiresReset } =
@@ -164,6 +207,46 @@ export class CactusLM {
     });
 
     return result;
+  }
+
+  private async _handleRemoteCompletion(
+    messages: CactusOAICompatibleMessage[],
+    callback?: (data: any) => void,
+  ): Promise<NativeCompletionResult> {
+    const prompt = messages.map((m) => `${m.role}: ${m.content}`).join('\n');
+    
+    const responseText = await getTextCompletion(messages);
+    
+    if (callback) {
+      for (let i = 0; i < responseText.length; i++) {
+        callback({ token: responseText[i] });
+      }
+    }
+    
+    return {
+      text: responseText,
+      reasoning_content: '',
+      tool_calls: [],
+      content: responseText,
+      tokens_predicted: responseText.split(' ').length,
+      tokens_evaluated: prompt.split(' ').length,
+      truncated: false,
+      stopped_eos: true,
+      stopped_word: '',
+      stopped_limit: 0,
+      stopping_word: '',
+      tokens_cached: 0,
+      timings: {
+        prompt_n: prompt.split(' ').length,
+        prompt_ms: 0,
+        prompt_per_token_ms: 0,
+        prompt_per_second: 0,
+        predicted_n: responseText.split(' ').length,
+        predicted_ms: 0,
+        predicted_per_token_ms: 0,
+        predicted_per_second: 0,
+      },
+    };
   }
 
   async embedding(

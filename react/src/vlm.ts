@@ -221,9 +221,9 @@ export class CactusVLM {
     
     let responseText: string;
     if (imagePath) {
-      responseText = await getVisionCompletion(prompt, imagePath);
+      responseText = await getVisionCompletion(messages, imagePath);
     } else {
-      responseText = await getTextCompletion(prompt);
+      responseText = await getTextCompletion(messages);
     }
     
     if (callback) {
