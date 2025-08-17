@@ -8,7 +8,7 @@
 
 ## 🌍 Translations
 
-🇬🇧 English | 🇪🇸 [Español](docs/README.es.md) | 🇫🇷 [Français](docs/README.fr.md) | 🇨🇳 [中文](docs/README.zh.md) | 🇯🇵 [日本語](docs/README.ja.md) | 🇮🇳 [हिंदी](docs/README.hi.md) | 🇩🇪 [Deutsch](docs/README.de.md) | 🇰🇷 [한국어](docs/README.ko.md)
+🇬🇧 English | 🇪🇸 [Español](docs/README.es.md) | 🇫🇷 [Français](docs/README.fr.md) | 🇨🇳 [中文](docs/README.zh.md) | 🇯🇵 [日本語](docs/README.ja.md) | 🇮🇳 [हिंदी](docs/README.hi.md) | 🇩🇪 [Deutsch](docs/README.de.md) | 🇰🇷 [한국어](docs/README.ko.md) | 🇹🇷 [Türkçe](docs/README.tr.md)
 <br/>
 
 Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
@@ -16,7 +16,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
 - Available in Flutter, React-Native and Kotlin Multiplatform.
 - Supports any GGUF model you can find on Huggingface; Qwen, Gemma, Llama, DeepSeek etc.
 - Run LLMs, VLMs, Embedding Models, TTS models and more.
-- Accommodates from FP32 to as low as 2-bit quantized models, for efficiency and less device strain. 
+- Accommodates from FP32 to as low as 2-bit quantized models, for efficiency and less device strain.
 - Chat templates with Jinja2 support and token streaming.
 
 [CLICK TO JOIN OUR DISCORD!](https://discord.gg/bNurx3AXTJ)
@@ -73,7 +73,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     final messages = [ChatMessage(role: 'user', content: 'Describe this image')];
 
     final response = await vlm.completion(
-        messages, 
+        messages,
         imagePaths: ['/absolute/path/to/image.jpg'],
         maxTokens: 200,
         temperature: 0.3,
@@ -86,7 +86,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     final lm = await CactusLM.download(
         modelUrl: 'https://huggingface.co/Cactus-Compute/Qwen3-600m-Instruct-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf',
         contextSize: 2048,
-        cactusToken: 'enterprise_token_here', 
+        cactusToken: 'enterprise_token_here',
     );
 
     lm.init()
@@ -97,7 +97,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     // local (default): strictly only run on-device
     // localfirst: fallback to cloud if device fails
     // remotefirst: primarily remote, run local if API fails
-    // remote: strictly run on cloud 
+    // remote: strictly run on cloud
     final embedding = await lm.embedding('Your text', mode: 'localfirst');
     ```
 
@@ -127,7 +127,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     final messages = [ChatMessage(role: 'user', content: 'Hello!')];
 
     final response = await agent.completionWithTools(
-        messages, 
+        messages,
         maxTokens: 200,
         temperature: 0.3,
     );
@@ -145,7 +145,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
 2. **React-Native Text Completion**
     ```typescript
     import { CactusLM } from 'cactus-react-native';
-    
+
     const { lm, error } = await CactusLM.init({
         model: '/path/to/model.gguf', // this is a local model file inside the app sandbox
         n_ctx: 2048,
@@ -158,7 +158,7 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
 3. **React-Native Embedding**
     ```typescript
     import { CactusLM } from 'cactus-react-native';
-    
+
     const { lm, error } = await CactusLM.init({
         model: '/path/to/model.gguf', // local model file inside the app sandbox
         n_ctx: 2048,
@@ -190,13 +190,13 @@ Cross-platform framework for deploying LLM/VLM/TTS models locally in your app.
     const response = await vlm.completion(messages, params);
     ```
 5. **React-Native Agents**
-    
+
     ```typescript
     import { CactusAgent } from 'cactus-react-native';
 
     // we recommend Qwen 3 family, 0.6B is great
     const { agent, error } = await CactusAgent.init({
-        model: '/path/to/model.gguf', 
+        model: '/path/to/model.gguf',
         n_ctx: 2048,
     });
 
@@ -245,20 +245,20 @@ See the [React Docs](https://github.com/cactus-compute/cactus/blob/main/react) f
     ```kotlin
     import com.cactus.CactusLM
     import kotlinx.coroutines.runBlocking
-    
+
     runBlocking {
         val lm = CactusLM(
             threads = 4,
             contextSize = 2048,
             gpuLayers = 0 // Set to 99 for full GPU offload
         )
-        
+
         val downloadSuccess = lm.download(
             url = "path/to/hugginface/gguf",
             filename = "model_filename.gguf"
         )
         val initSuccess = lm.init("qwen3-600m.gguf")
-        
+
         val result = lm.completion(
             prompt = "Hello!",
             maxTokens = 100,
@@ -271,24 +271,24 @@ See the [React Docs](https://github.com/cactus-compute/cactus/blob/main/react) f
     ```kotlin
     import com.cactus.CactusSTT
     import kotlinx.coroutines.runBlocking
-    
+
     runBlocking {
         val stt = CactusSTT(
             language = "en-US",
             sampleRate = 16000,
             maxDuration = 30
         )
-        
+
         // Only supports default Vosk STT model for Android & Apple FOundation Model
         val downloadSuccess = stt.download()
         val initSuccess = stt.init()
-        
+
         val result = stt.transcribe()
         result?.let { sttResult ->
             println("Transcribed: ${sttResult.text}")
             println("Confidence: ${sttResult.confidence}")
         }
-        
+
         // Or transcribe from audio file
         val fileResult = stt.transcribeFile("/path/to/audio.wav")
     }
@@ -298,14 +298,14 @@ See the [React Docs](https://github.com/cactus-compute/cactus/blob/main/react) f
     ```kotlin
     import com.cactus.CactusVLM
     import kotlinx.coroutines.runBlocking
-    
+
     runBlocking {
         val vlm = CactusVLM(
             threads = 4,
             contextSize = 2048,
             gpuLayers = 0 // Set to 99 for full GPU offload
         )
-        
+
         val downloadSuccess = vlm.download(
             modelUrl = "path/to/hugginface/gguf",
             mmprojUrl = "path/to/hugginface/mmproj/gguf",
@@ -313,7 +313,7 @@ See the [React Docs](https://github.com/cactus-compute/cactus/blob/main/react) f
             mmprojFilename = "mmproj_filename.gguf"
         )
         val initSuccess = vlm.init("smolvlm2-500m.gguf", "mmproj-smolvlm2-500m.gguf")
-        
+
         val result = vlm.completion(
             prompt = "Describe this image",
             imagePath = "/path/to/image.jpg",
@@ -344,7 +344,7 @@ First, clone the repo with `git clone https://github.com/cactus-compute/cactus.g
 
 2. **React Native**
     - Build the Android JNILibs with `scripts/build-react-android.sh`.
-    - Build the Flutter Plugin with `scripts/build-react.sh`.
+    - Build the React Plugin with `scripts/build-react.sh`.
     - Navigate to the example app with `cd react/example`.
     - Setup your simulator via Xcode or Android Studio, [walkthrough](https://medium.com/@daspinola/setting-up-android-and-ios-emulators-22d82494deda) if you have not done this before.
     - Always start app with this combo `yarn && yarn ios` or `yarn && yarn android`.
@@ -367,13 +367,13 @@ First, clone the repo with `git clone https://github.com/cactus-compute/cactus.g
     - Try different models and make changes as desired.
 
 5. **Contributing**
-    - To contribute a bug fix, create a branch after making your changes with `git checkout -b <branch-name>` and submit a PR. 
+    - To contribute a bug fix, create a branch after making your changes with `git checkout -b <branch-name>` and submit a PR.
     - To contribute a feature, please raise as issue first so it can be discussed, to avoid intersecting with someone else.
     - [Join our discord](https://discord.gg/bNurx3AXTJ)
 
 ## ![Performance](https://img.shields.io/badge/Performance-grey.svg?style=for-the-badge)
 
-| Device                        |  Gemma3 1B Q4 (toks/sec) |    Qwen3 4B Q4 (toks/sec)   |  
+| Device                        |  Gemma3 1B Q4 (toks/sec) |    Qwen3 4B Q4 (toks/sec)   |
 |:------------------------------|:------------------------:|:---------------------------:|
 | iPhone 16 Pro Max             |            54            |             18              |
 | iPhone 16 Pro                 |            54            |             18              |
