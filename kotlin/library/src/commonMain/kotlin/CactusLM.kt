@@ -32,15 +32,53 @@ class CactusLM(
         maxTokens: Int = 512,
         temperature: Float = 0.7f,
         topP: Float = 0.9f
-    ): String? {
+    ): CactusCompletionResult? {
         val processedMessages = historyManager.processNewMessages(listOf(ChatMessage(prompt, "user")))
         if (processedMessages.requiresReset) {
             historyManager.reset()
         }
-        val response = handle?.let { h ->
+        val response = (handle?.let { h ->
             generateCompletion(h, prompt, maxTokens, temperature, topP)
-        } ?: ""
-        historyManager.update(processedMessages.newMessages, ChatMessage(response, "assistant"))
+        } ?: CactusCompletionResult(
+            text = "",
+            tokensPredicted = 0,
+            tokensEvaluated = 0,
+            truncated = false,
+            stoppedEos = false,
+            stoppedWord = false,
+            stoppedLimit = false,
+            stoppingWord = ""
+        )) as CactusCompletionResult
+
+        historyManager.update(processedMessages.newMessages, ChatMessage(response.text, "assistant"))
+        return response
+    }
+    
+    suspend fun streamingCompletion(
+        prompt: String,
+        maxTokens: Int = 512,
+        temperature: Float = 0.7f,
+        topP: Float = 0.9f,
+        onNewToken: (String) -> Boolean = { true }
+    ): CactusCompletionResult? {
+        val processedMessages = historyManager.processNewMessages(listOf(ChatMessage(prompt, "user")))
+        if (processedMessages.requiresReset) {
+            historyManager.reset()
+        }
+        val response = (handle?.let { h ->
+            generateStreamingCompletion(h, prompt, maxTokens, temperature, topP, onNewToken)
+        } ?: CactusCompletionResult(
+            text = "",
+            tokensPredicted = 0,
+            tokensEvaluated = 0,
+            truncated = false,
+            stoppedEos = false,
+            stoppedWord = false,
+            stoppedLimit = false,
+            stoppingWord = ""
+        )) as CactusCompletionResult
+
+        historyManager.update(processedMessages.newMessages, ChatMessage(response.text, "assistant"))
         return response
     }
     
@@ -56,5 +94,6 @@ class CactusLM(
 
 expect suspend fun downloadModel(url: String, filename: String): Boolean
 expect suspend fun loadModel(path: String, threads: Int, contextSize: Int, batchSize: Int, gpuLayers: Int): Long?
-expect suspend fun generateCompletion(handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float): String?
+expect suspend fun generateCompletion(handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float): CactusCompletionResult?
+expect suspend fun generateStreamingCompletion(handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float, onNewToken: (String) -> Boolean): CactusCompletionResult?
 expect fun unloadModel(handle: Long) 

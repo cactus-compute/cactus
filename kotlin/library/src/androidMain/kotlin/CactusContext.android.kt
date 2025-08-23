@@ -279,6 +279,20 @@ actual object CactusContext {
     actual suspend fun completion(handle: CactusContextHandle, params: CactusCompletionParams): CactusCompletionResult = withContext(Dispatchers.Default) {
         val cParams = CactusCompletionParamsC()
 
+        // Create token callback if provided
+        val tokenCallback = params.onNewToken?.let { callback ->
+            object : TokenCallback {
+                override fun apply(token: String): Boolean {
+                    return try {
+                        callback(token)
+                    } catch (e: Exception) {
+                        Log.e("CactusCompletion", "Token callback error: ${e.message}", e)
+                        false
+                    }
+                }
+            }
+        }
+
         cParams.apply {
             prompt = params.prompt
             n_predict = params.nPredict
@@ -301,7 +315,7 @@ actual object CactusContext {
             stop_sequences = Pointer.NULL
             stop_sequence_count = 0
             grammar = if (params.grammar.isNullOrEmpty()) null else params.grammar
-            token_callback = null
+            token_callback = tokenCallback
         }
 
         val result = CactusCompletionResultC()
@@ -358,6 +372,20 @@ actual object CactusContext {
     }
     
     actual suspend fun multimodalCompletion(handle: CactusContextHandle, params: CactusCompletionParams, mediaPaths: List<String>): CactusCompletionResult = withContext(Dispatchers.Default) {
+        // Create token callback if provided
+        val tokenCallback = params.onNewToken?.let { callback ->
+            object : TokenCallback {
+                override fun apply(token: String): Boolean {
+                    return try {
+                        callback(token)
+                    } catch (e: Exception) {
+                        Log.e("CactusCompletion", "Token callback error: ${e.message}", e)
+                        false
+                    }
+                }
+            }
+        }
+
         val cParams = CactusCompletionParamsC().apply {
             prompt = params.prompt
             n_predict = params.nPredict
@@ -380,7 +408,7 @@ actual object CactusContext {
             stop_sequences = Pointer.NULL
             stop_sequence_count = 0
             grammar = if (params.grammar.isNullOrEmpty()) null else params.grammar
-            token_callback = null
+            token_callback = tokenCallback
         }
         val result = CactusCompletionResultC()
         result.write()  

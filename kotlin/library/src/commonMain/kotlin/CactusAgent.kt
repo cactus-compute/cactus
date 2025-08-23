@@ -48,9 +48,9 @@ class CactusAgent(
         temperature: Float = 0.7f,
         topP: Float = 0.9f
     ): String? {
-        return handle?.let { h ->
+        return (handle?.let { h ->
             generateCompletion(h, prompt, maxTokens, temperature, topP)
-        }
+        } as CactusCompletionResult?)?.text
     }
 
     fun unload() {
@@ -109,7 +109,7 @@ class CactusAgent(
 
         // Generate completion using the formatted prompt
         val modelResponse = handle?.let { h ->
-            val response = generateCompletion(h, formattedPromptResult.prompt, maxTokens, temperature, topP)
+            val response = generateCompletion(h, formattedPromptResult.prompt, maxTokens, temperature, topP)?.text ?: ""
             response
         }
 

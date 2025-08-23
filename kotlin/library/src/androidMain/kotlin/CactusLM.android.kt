@@ -96,7 +96,7 @@ actual suspend fun loadModel(path: String, threads: Int, contextSize: Int, batch
     }
 }
 
-actual suspend fun generateCompletion(handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float): String? {
+actual suspend fun generateCompletion(handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float): CactusCompletionResult? {
     return withContext(Dispatchers.Default) {
         try {
             Log.d("CactusLM", "Generating completion for prompt: ${prompt.take(50)}...")
@@ -110,9 +110,32 @@ actual suspend fun generateCompletion(handle: Long, prompt: String, maxTokens: I
             Log.d("CactusLM", "Calling CactusContext.completion...")
             val result = CactusContext.completion(handle, params)
             Log.d("CactusLM", "Completion result: ${result.text?.take(50)}...")
-            result.text
+            result
         } catch (e: Exception) {
             Log.e("CactusLM", "Exception generating completion: ${e.message}", e)
+            null
+        }
+    }
+}
+
+actual suspend fun generateStreamingCompletion(handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float, onNewToken: (String) -> Boolean): CactusCompletionResult? {
+    return withContext(Dispatchers.Default) {
+        try {
+            Log.d("CactusLM", "Generating streaming completion for prompt: ${prompt.take(50)}...")
+            val params = CactusCompletionParams(
+                prompt = prompt,
+                nPredict = maxTokens,
+                temperature = temperature.toDouble(),
+                topP = topP.toDouble(),
+                onNewToken = onNewToken
+            )
+            
+            Log.d("CactusLM", "Calling CactusContext.completion with streaming...")
+            val result = CactusContext.completion(handle, params)
+            Log.d("CactusLM", "Streaming completion finished: ${result.text?.take(50)}...")
+            result
+        } catch (e: Exception) {
+            Log.e("CactusLM", "Exception generating streaming completion: ${e.message}", e)
             null
         }
     }

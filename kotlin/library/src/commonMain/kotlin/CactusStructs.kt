@@ -38,7 +38,8 @@ data class CactusCompletionParams(
     val ignoreEos: Boolean = false,
     val nProbs: Int = 0,
     val stopSequences: List<String> = emptyList(),
-    val grammar: String? = null
+    val grammar: String? = null,
+    val onNewToken: ((String) -> Boolean)? = null
 )
 
 data class CactusCompletionResult(

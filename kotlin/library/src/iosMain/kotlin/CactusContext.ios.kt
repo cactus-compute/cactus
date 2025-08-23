@@ -37,6 +37,10 @@ actual object CactusContext {
 
     actual suspend fun completion(handle: CactusContextHandle, params: CactusCompletionParams): CactusCompletionResult = withContext(Dispatchers.Default) {
         return@withContext memScoped {
+            // Note: Token callback temporarily disabled for staticCFunction issue
+            // TODO: Implement proper non-capturing callback for streaming
+            val tokenCallback: CPointer<CFunction<(CPointer<ByteVar>?) -> Boolean>>? = null
+
             val cParams = cValue<cactus_completion_params_c_t> {
                 prompt = params.prompt.cstr.ptr
                 n_predict = params.nPredict
@@ -59,7 +63,7 @@ actual object CactusContext {
                 stop_sequences = null
                 stop_sequence_count = 0
                 grammar = params.grammar?.cstr?.ptr
-                token_callback = null
+                token_callback = tokenCallback
             }
 
             val cResult = alloc<cactus_completion_result_c_t>()
@@ -82,6 +86,10 @@ actual object CactusContext {
 
     actual suspend fun multimodalCompletion(handle: CactusContextHandle, params: CactusCompletionParams, mediaPaths: List<String>): CactusCompletionResult = withContext(Dispatchers.Default) {
         return@withContext memScoped {
+            // Note: Token callback temporarily disabled for staticCFunction issue
+            // TODO: Implement proper non-capturing callback for streaming
+            val tokenCallback: CPointer<CFunction<(CPointer<ByteVar>?) -> Boolean>>? = null
+
             val cParams = cValue<cactus_completion_params_c_t> {
                 prompt = params.prompt.cstr.ptr
                 n_predict = params.nPredict
@@ -104,7 +112,7 @@ actual object CactusContext {
                 stop_sequences = null
                 stop_sequence_count = 0
                 grammar = params.grammar?.cstr?.ptr
-                token_callback = null
+                token_callback = tokenCallback
             }
 
             val cMediaPaths = mediaPaths.map { it.cstr.ptr }.toCValues()

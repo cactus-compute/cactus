@@ -73,7 +73,7 @@ actual suspend fun loadModel(path: String, threads: Int, contextSize: Int, batch
     }
 }
 
-actual suspend fun generateCompletion(handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float): String? {
+actual suspend fun generateCompletion(handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float): CactusCompletionResult? {
     return withContext(Dispatchers.Default) {
         try {
             val params = CactusCompletionParams(
@@ -84,7 +84,26 @@ actual suspend fun generateCompletion(handle: Long, prompt: String, maxTokens: I
             )
             
             val result = CactusContext.completion(handle, params)
-            result.text
+            result
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
+
+actual suspend fun generateStreamingCompletion(handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float, onNewToken: (String) -> Boolean): CactusCompletionResult? {
+    return withContext(Dispatchers.Default) {
+        try {
+            val params = CactusCompletionParams(
+                prompt = prompt,
+                nPredict = maxTokens,
+                temperature = temperature.toDouble(),
+                topP = topP.toDouble(),
+                onNewToken = onNewToken
+            )
+            
+            val result = CactusContext.completion(handle, params)
+            result
         } catch (e: Exception) {
             null
         }
