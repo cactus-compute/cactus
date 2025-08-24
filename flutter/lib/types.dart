@@ -5,8 +5,10 @@ class ChatMessage {
   final String role;
   final String content;
   final double? tokensPerSecond;
+  final int? ttft;
+  final int? tokens;
 
-  ChatMessage({required this.role, required this.content, this.tokensPerSecond});
+  ChatMessage({required this.role, required this.content, this.tokensPerSecond, this.ttft, this.tokens});
   @override
   bool operator ==(Object other) => other is ChatMessage && role == other.role && content == other.content;
   
