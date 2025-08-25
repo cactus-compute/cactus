@@ -106,4 +106,7 @@ export class CactusAgent extends CactusLM {
 
     return result
   }
+  isJinjaSupported(): boolean {
+    return this.context.isJinjaSupported();
+  }
 }

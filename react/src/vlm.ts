@@ -269,4 +269,8 @@ export class CactusVLM {
   async stopCompletion(): Promise<void> {
     return await this.context.stopCompletion()
   }
+
+  isJinjaSupported(): boolean {
+    return this.context.isJinjaSupported();
+  }
 } 

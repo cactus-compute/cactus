@@ -318,4 +318,7 @@ export class CactusLM {
     return await this.run(() => this.context.stopCompletion())
   }
 
+  isJinjaSupported(): boolean {
+    return this.context.isJinjaSupported();
+  }
 } 
