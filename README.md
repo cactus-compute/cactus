@@ -407,4 +407,4 @@ First, clone the repo with `git clone https://github.com/cactus-compute/cactus.g
 | --- | --- |
 
 ## ![Recommendations](https://img.shields.io/badge/Our_Recommendations-grey.svg?style=for-the-badge)
-We provide a colleaction of recommended models on our [HuggingFace Page](https://huggingface.co/Cactus-Compute?sort_models=alphabetical#models)
+We provide a collection of recommended models on our [HuggingFace Page](https://huggingface.co/Cactus-Compute?sort_models=alphabetical#models)
