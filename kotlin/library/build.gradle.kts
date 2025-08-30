@@ -51,6 +51,27 @@ kotlin {
                                "-framework", "Metal", "-framework", "MetalKit",
                                "-framework", "cactus", "-F", frameworkPath.absolutePath)
                 }
+                
+                val vosk by creating {
+                    defFile(project.file("src/nativeInterop/cinterop/vosk.def"))
+                    packageName("com.vosk.native")
+                    
+                    val voskArchPath = when (iosTarget.name) {
+                        "iosArm64" -> "ios-arm64_armv7_armv7s"
+                        "iosX64" -> "ios-arm64_x86_64-simulator"
+                        "iosSimulatorArm64" -> "ios-arm64_x86_64-simulator"
+                        else -> "ios-arm64_armv7_armv7s"
+                    }
+                    
+                    val voskLibPath = project.file("src/commonMain/resources/ios/libvosk.xcframework/$voskArchPath")
+                    val voskHeaderPath = project.file("src/nativeInterop/cinterop")
+                    
+                    includeDirs(voskHeaderPath)
+                    compilerOpts("-I", voskHeaderPath.absolutePath)
+                    
+                    // Link the static library
+                    extraOpts("-libraryPath", voskLibPath.absolutePath)
+                }
             }
         }
     }
@@ -106,6 +127,19 @@ tasks.register("embedNativeLibrary") {
                 
                 println("Embedded native library and Metal shaders for $archPath")
             }
+            
+            // Copy Vosk model files to the framework
+            val targetFrameworkDir = file("$xcframeworkDir/$archPath/cactus.framework")
+            copy {
+                from("src/commonMain/resources/ios") {
+                    include("vosk-model-small-en-us-0.15/**")
+                    include("vosk-model-spk-0.4/**")
+                    include("10001-90210-01803.wav")
+                }
+                into(targetFrameworkDir)
+            }
+            
+            println("Embedded Vosk models for $archPath")
         }
     }
 }

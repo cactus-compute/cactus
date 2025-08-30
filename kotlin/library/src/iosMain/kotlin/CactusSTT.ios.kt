@@ -66,8 +66,8 @@ actual suspend fun performSTT(language: String, maxDuration: Int): STTResult? {
             return null
         }
         
-        if (!isOnDeviceRecognitionAvailable()) {
-            println("On-device speech recognition not supported on this device")
+        if (!isVoskModelLoaded()) {
+            println("Vosk model not loaded on this device")
             return STTResult(
                 text = "",
                 confidence = 0.0f,

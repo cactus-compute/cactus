@@ -1,0 +1,3 @@
+headers = vosk_api.h
+staticLibraries = libvosk.a
+libraryPaths = .
