@@ -1,0 +1,56 @@
+#!/bin/bash -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+ANDROID_DIR="$PROJECT_ROOT/android"
+
+ANDROID_PLATFORM=${ANDROID_PLATFORM:-android-21}
+CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:-Release}
+BUILD_DIR="$ANDROID_DIR/build"
+
+if [ -z "$ANDROID_NDK_HOME" ]; then
+    if [ -n "$ANDROID_HOME" ]; then
+        ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME/ndk/"* 2>/dev/null | sort -V | tail -1)
+    elif [ -d "$HOME/Library/Android/sdk" ]; then
+        ANDROID_NDK_HOME=$(ls -d "$HOME/Library/Android/sdk/ndk/"* 2>/dev/null | sort -V | tail -1)
+    fi
+fi
+
+if [ -z "$ANDROID_NDK_HOME" ] || [ ! -d "$ANDROID_NDK_HOME" ]; then
+    echo "Error: Android NDK not found."
+    echo "Set ANDROID_NDK_HOME or install NDK via Android SDK Manager"
+    exit 1
+fi
+
+echo "Using NDK: $ANDROID_NDK_HOME"
+CMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+
+if ! command -v cmake &> /dev/null; then
+    echo "Error: cmake not found, please install it"
+    exit 1
+fi
+
+n_cpu=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+
+ABI="arm64-v8a"
+
+echo "Building Cactus for Android ($ABI)..."
+echo "Build type: $CMAKE_BUILD_TYPE"
+echo "Using $n_cpu CPU cores"
+echo "Android CMakeLists.txt: $ANDROID_DIR/CMakeLists.txt"
+
+cmake -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
+      -DANDROID_ABI="$ABI" \
+      -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+      -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
+      -S "$ANDROID_DIR" \
+      -B "$BUILD_DIR"
+
+cmake --build "$BUILD_DIR" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu"
+
+cp "$BUILD_DIR/lib/libcactus.so" "$ANDROID_DIR/" 2>/dev/null || \
+   cp "$BUILD_DIR/libcactus.so" "$ANDROID_DIR" 2>/dev/null || \
+   { echo "Error: Could not find libcactus.so"; exit 1; }
+
+echo "Build complete!"
+echo "Library location: $ANDROID_DIR/$ABI/libcactus.so"
