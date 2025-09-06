@@ -136,7 +136,7 @@ python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m-i8/ --precision I
 - Python tools for porting Torch/JAX cactus.
 
 Preliminary results: 
-- Qwen3-4B-INT421 - 21 t/s on IPhone 16 Pro NPU
+- Qwen3-4B-INT4 on iPhone 16 Pro NPU = 21 t/s
 
 ## Footer
 While Cactus can be used for all Apple devices including Macbooks, for computers/AMD/Intel/Nvidia generally, 
