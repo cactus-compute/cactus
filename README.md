@@ -7,7 +7,8 @@ Cactus is designed bottom-up for resource-constrained arm-based devices first, g
 Example: 
 - Model: Qwen3-INT8-600m
 - File size: 370-420mb
-- CPU: 16-20 toks/sec on Pixel 6a, Galaxy S21 and iPhone 11 Pro.
+- 16-20 toks/sec on Pixel 6a, Galaxy S21 and iPhone 11 Pro.
+- 50-70 toks/sec on Pixel 9, Galaxy S25, iPhone 16
 
 ## Architecture 
 Cactus exposes 4 levels of abstraction.
