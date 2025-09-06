@@ -1,14 +1,14 @@
 <img src="assets/banner.jpg" alt="Logo" style="border-radius: 30px; width: 100%;">
 
-An energy-efficient high-performance AI inference framework for phones, wearables and AI-native hardware.
+Energy-efficient & fast AI inference framework for phones, wearables and AI-native hardware.
 Budget and mid-range phones control over 70% of the market, yet frameworks today optimise for the high-end phones with advanced chips.
 
-Cactus is designed bottom-up for resource-constrained arm-based devices first, giving it robust performance in the real world. 
+Cactus is designed bottom-up with no dependencies, for resource-constrained arm-based devices. 
 
-Example: 
+Example (CPU-only): 
 - Model: Qwen3-600m-INT8
 - File size: 370-420mb
-- 16-20 t/s on Pixel 6a, Galaxy S21, iPhone 11 Pro.
+- 16-20 t/s on Pixel 6a, Galaxy S21, iPhone 11 Pro
 - 50-70 t/s on Pixel 9, Galaxy S25, iPhone 16
 
 ## Architecture 
