@@ -40,7 +40,7 @@ bool test_ffi() {
     
     const char* messages = R"([
         {"role": "system", "content": "You are a helpful assistant. Be concise and friendly in your responses."},
-        {"role": "user", "content": "/nothink Tell me a short Joke."}
+        {"role": "user", "content": "Tell me a short Joke."}
     ])";
     
     const char* options = R"({
@@ -190,7 +190,7 @@ bool test_incremental_processing() {
     
     const char* first_messages = R"([
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "/nothink My name is Henry Ndubuaku"}
+        {"role": "user", "content": "My name is Henry Ndubuaku"}
     ])";
     
     const char* options = R"({
@@ -207,9 +207,9 @@ bool test_incremental_processing() {
     
     const char* second_messages = R"([
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "/nothink My name is Henry Ndubuaku"},
+        {"role": "user", "content": "My name is Henry Ndubuaku"},
         {"role": "assistant", "content": "Nice to meet you, Henry! How can I help you today?"},
-        {"role": "user", "content": "/nothink What is my name?"}
+        {"role": "user", "content": "What is my name?"}
     ])";
     
     int result2 = cactus_complete(model, second_messages, response2, sizeof(response2), options, nullptr, nullptr);
