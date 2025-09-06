@@ -32,8 +32,8 @@ Cactus exposes 4 levels of abstraction.
 └─────────────────┘
 ```
 
-Cactus Graph is a general numerical framework graph that runs on Cactus Kernels.
-Great for implementing custom models and general computing, like JAX for phones.
+Cactus Graph is a general numerical computing framework that runs on Cactus Kernels.
+Great for implementing custom models and scientific computing, like JAX for phones.
 
 ```cpp
 #include cactus.h
@@ -130,11 +130,14 @@ python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m-i8/ --precision I
 ```
 
 ## Roadmap:
-- Gemma, SmolVLM, Liquid, Kitten, Vosk and other excellent <2B models.
-- SMMLA, NPU & DSP for high-end phones (Qwen3-4B-INT4 hits 21 t/s on IPhone 16 Pro max NPU)
-- INT4 support for 1B+ models though not bullish on quantization and size.
-- Python tools for porting any Torch/JAX model to cactus.
+- Gemma, SmolVLM, Liquid, Kitten, Vosk etc.
+- SMMLA, NPU & DSP for high-end phones.
+- INT4 support for 1B+ models.
+- Python tools for porting Torch/JAX cactus.
+
+Preliminary results: 
+- Qwen3-4B-INT421 - 21 t/s on IPhone 16 Pro NPU
 
 ## Footer
-You can use Cactus for all Apple devices including Macbooks, though for computers/AMD/Intel/Nvidia generally, 
+While Cactus can be used for all Apple devices including Macbooks, for computers/AMD/Intel/Nvidia generally, 
 please use HuggingFace, Llama.cpp, Ollama, vLLM, MLX. They're built for those, support x86, and are all great! 
