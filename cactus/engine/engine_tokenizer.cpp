@@ -479,7 +479,7 @@ std::string BPETokenizer::apply_template_substitutions(const std::string& templa
         }
         
         if (add_generation_prompt) {
-            message_part += "<|im_start|>assistant: ";
+            message_part += "<|im_start|>assistant\n";
         }
         
         size_t start = result.find("{% for message in messages %}");
@@ -500,7 +500,7 @@ std::string BPETokenizer::apply_template_substitutions(const std::string& templa
         }
         
         if (add_generation_prompt) {
-            formatted_messages += "<|im_start|>assistant: ";
+            formatted_messages += "<|im_start|>assistant\n";
         }
         
         result = formatted_messages;
@@ -526,7 +526,7 @@ std::string BPETokenizer::format_chat_prompt(const std::vector<ChatMessage>& mes
     }
     
     if (add_generation_prompt) {
-        formatted += "<|im_start|>assistant: ";
+        formatted += "<|im_start|>assistant\n";
     }
     
     return formatted;

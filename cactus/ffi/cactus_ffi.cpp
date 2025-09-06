@@ -19,9 +19,6 @@ struct CactusModel {
     std::string model_path;
     std::unordered_map<std::string, std::vector<uint32_t>> stop_sequence_cache;
     
-    std::vector<ChatMessage> conversation_history;
-    size_t processed_message_count;
-    
     std::atomic<bool> should_stop;
     
     CactusModel() : should_stop(false) {}
@@ -135,29 +132,6 @@ static void parse_options_json(const std::string& json,
     }
 }
 
-static std::vector<ChatMessage> get_new_messages(const std::vector<ChatMessage>& current_messages, 
-                                                 const std::vector<ChatMessage>& stored_messages) {
-    if (stored_messages.empty()) {
-        return current_messages;
-    }
-    
-    if (current_messages.size() <= stored_messages.size()) {
-        return {};
-    }
-    
-    for (size_t i = 0; i < stored_messages.size(); i++) {
-        if (i >= current_messages.size() || 
-            current_messages[i].role != stored_messages[i].role ||
-            current_messages[i].content != stored_messages[i].content) {
-            return {};
-        }
-    }
-    
-    return std::vector<ChatMessage>(
-        current_messages.begin() + stored_messages.size(),
-        current_messages.end()
-    );
-}
 
 static std::unordered_set<uint32_t> get_stop_tokens(CactusModel* wrapper, const std::vector<std::string>& stop_sequences) {
     std::unordered_set<uint32_t> stop_tokens;
@@ -198,7 +172,6 @@ cactus_model_t cactus_init(const char* model_path, size_t context_size) {
         auto* wrapper = new CactusModel();
         wrapper->model = std::make_unique<Model>();
         wrapper->model_path = model_path;
-        wrapper->processed_message_count = 0;
         
         if (!wrapper->model->init(model_path, context_size)) {
             last_error_message = "Failed to initialize model from: " + std::string(model_path);
@@ -264,6 +237,8 @@ int cactus_complete(
         auto* tokenizer = wrapper->model->get_tokenizer();
         wrapper->should_stop = false;
         
+        wrapper->model->reset_cache();
+        
         auto messages = parse_messages_json(messages_json);
         if (messages.empty()) {
             std::string error_json = "{\"success\":false,\"error\":\"No messages provided\"}";
@@ -277,25 +252,10 @@ int cactus_complete(
         parse_options_json(options_json ? options_json : "", 
                           temperature, top_p, top_k, max_tokens, stop_sequences);
         
-        std::vector<ChatMessage> new_messages = get_new_messages(messages, wrapper->conversation_history);
-        size_t reused_messages = wrapper->conversation_history.size();
-        
-        std::vector<uint32_t> tokens_to_process;
-        size_t prompt_tokens;
-        
-        if (!new_messages.empty()) {
-            std::string new_prompt = tokenizer->format_chat_prompt(new_messages, true);
-            tokens_to_process = tokenizer->encode(new_prompt);
-            prompt_tokens = wrapper->conversation_history.size() > 0 ? tokens_to_process.size() : tokens_to_process.size();
-        } else if (wrapper->conversation_history.empty()) {
-            std::string full_prompt = tokenizer->format_chat_prompt(messages, true);
-            tokens_to_process = tokenizer->encode(full_prompt);
-            prompt_tokens = tokens_to_process.size();
-        } else {
-            std::string full_prompt = tokenizer->format_chat_prompt(messages, true);
-            tokens_to_process = tokenizer->encode(full_prompt);
-            prompt_tokens = tokens_to_process.size();
-        }
+        // Always process all messages fresh
+        std::string full_prompt = tokenizer->format_chat_prompt(messages, true);
+        std::vector<uint32_t> tokens_to_process = tokenizer->encode(full_prompt);
+        size_t prompt_tokens = tokens_to_process.size();
         
         std::unordered_set<uint32_t> stop_tokens = get_stop_tokens(wrapper, stop_sequences);
         
@@ -372,8 +332,7 @@ int cactus_complete(
         json_response << "\"tokens_per_second\":" << std::fixed << std::setprecision(2) << tokens_per_second << ",";
         json_response << "\"prefill_tokens\":" << prompt_tokens << ",";
         json_response << "\"decode_tokens\":" << completion_tokens << ",";
-        json_response << "\"total_tokens\":" << (prompt_tokens + completion_tokens) << ",";
-        json_response << "\"reused_messages\":" << reused_messages;
+        json_response << "\"total_tokens\":" << (prompt_tokens + completion_tokens);
         json_response << "}";
         
         std::string result = json_response.str();
@@ -384,9 +343,6 @@ int cactus_complete(
         }
         
         std::strcpy(response_buffer, result.c_str());
-        
-        wrapper->conversation_history = messages;
-        wrapper->processed_message_count = messages.size();
         
         return static_cast<int>(result.length());
         
@@ -415,8 +371,6 @@ void cactus_reset(cactus_model_t model) {
     
     auto* wrapper = static_cast<CactusModel*>(model);
     wrapper->model->reset_cache();
-    wrapper->conversation_history.clear();
-    wrapper->processed_message_count = 0;
 }
 
 void cactus_stop(cactus_model_t model) {
