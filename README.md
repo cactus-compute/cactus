@@ -2,13 +2,14 @@
 
 An energy-efficient high-performance AI inference framework for phones, wearables and AI-native hardware.
 Budget and mid-range phones control over 70% of the market, yet frameworks today optimise for the high-end phones with advanced chips.
+
 Cactus is designed bottom-up for resource-constrained arm-based devices first, giving it robust performance in the real world. 
 
 Example: 
 - Model: Qwen3-INT8-600m
 - File size: 370-420mb
-- 16-20 toks/sec on Pixel 6a, Galaxy S21 and iPhone 11 Pro.
-- 50-70 toks/sec on Pixel 9, Galaxy S25, iPhone 16
+- 16-20 t/sec on Pixel 6a, Galaxy S21 and iPhone 11 Pro.
+- 50-70 t/sec on Pixel 9, Galaxy S25, iPhone 16
 
 ## Architecture 
 Cactus exposes 4 levels of abstraction.
