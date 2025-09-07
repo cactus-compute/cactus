@@ -15,119 +15,227 @@ void KVCache::init(size_t layers, size_t max_seq, size_t kv_heads, size_t dim, P
     precision = model_precision;
     element_size = PrecisionTraits::size_of(precision);
     
-    size_t elements_per_token = num_kv_heads * head_dim;
-    bytes_per_page = tokens_per_page * elements_per_token * element_size;
-    
-    size_t max_pages_needed = (max_seq_len + tokens_per_page - 1) / tokens_per_page;
-    size_t total_pages = max_pages_needed * num_layers * 2;
-    
-    page_pool.resize(total_pages);
-    for (size_t i = 0; i < total_pages; ++i) {
-        page_pool[i].data.resize(bytes_per_page, 0);
-        page_pool[i].in_use = false;
-        page_pool[i].ref_count = 0;
-        free_pages.push_back(i);
+    if (window_size > max_seq_len) {
+        window_size = max_seq_len;
     }
     
-    layer_tables.resize(num_layers);
+    size_t total_window = window_size + sink_size;
+    if ((total_window & (total_window - 1)) == 0) {
+        use_fast_indexing = true;
+        buffer_mask = total_window - 1;
+    } else {
+        use_fast_indexing = false;
+        buffer_mask = 0;
+    }
+    
+    size_t elements_per_token = num_kv_heads * head_dim;
+    size_t bytes_per_token = elements_per_token * element_size;
+    size_t buffer_size = total_window * bytes_per_token;
+    
+    layer_caches.resize(num_layers);
+    for (size_t i = 0; i < num_layers; ++i) {
+        layer_caches[i].keys.resize(buffer_size, 0);
+        layer_caches[i].values.resize(buffer_size, 0);
+        layer_caches[i].start_idx = 0;
+        layer_caches[i].end_idx = 0;
+        layer_caches[i].total_seen = 0;
+    }
+    
     continuous_keys.resize(num_layers);
     continuous_values.resize(num_layers);
     
-    size_t continuous_buffer_size = max_seq_len * elements_per_token * element_size;
-    for (size_t i = 0; i < num_layers; ++i) {
-        continuous_keys[i].resize(continuous_buffer_size, 0);
-        continuous_values[i].resize(continuous_buffer_size, 0);
-    }
-    
     current_seq_len = 0;
+    total_seq_len = 0;
+}
+
+void KVCache::set_window_size(size_t window, size_t sink) {
+    window_size = window;
+    sink_size = sink;
+    
+    if (window_size > max_seq_len) {
+        window_size = max_seq_len;
+    }
 }
 
 void KVCache::reset() {
     current_seq_len = 0;
+    total_seq_len = 0;
     
-    for (auto& table : layer_tables) {
-        for (size_t page_idx : table.key_pages) {
-            free_page(page_idx);
-        }
-        for (size_t page_idx : table.value_pages) {
-            free_page(page_idx);
-        }
-        table.key_pages.clear();
-        table.value_pages.clear();
+    for (auto& cache : layer_caches) {
+        std::fill(cache.keys.begin(), cache.keys.end(), 0);
+        std::fill(cache.values.begin(), cache.values.end(), 0);
+        cache.start_idx = 0;
+        cache.end_idx = 0;
+        cache.total_seen = 0;
     }
     
-    for (auto& k : continuous_keys) {
-        std::fill(k.begin(), k.end(), 0);
-    }
-    for (auto& v : continuous_values) {
-        std::fill(v.begin(), v.end(), 0);
-    }
+    continuous_keys.clear();
+    continuous_values.clear();
+    continuous_keys.resize(num_layers);
+    continuous_values.resize(num_layers);
 }
 
-size_t KVCache::allocate_page() {
-    if (free_pages.empty()) {
-        throw std::runtime_error("KV cache page pool exhausted");
+size_t KVCache::get_circular_index(size_t logical_idx, size_t start, size_t buffer_size) const {
+    if (use_fast_indexing) {
+        return (start + logical_idx) & buffer_mask;
     }
-    
-    size_t page_idx = free_pages.back();
-    free_pages.pop_back();
-    
-    page_pool[page_idx].in_use = true;
-    page_pool[page_idx].ref_count = 1;
-    
-    return page_idx;
+    return (start + logical_idx) % buffer_size;
 }
 
-void KVCache::free_page(size_t page_idx) {
-    if (page_idx >= page_pool.size()) {
+void KVCache::slide_window(size_t layer) {
+    auto& cache = layer_caches[layer];
+    size_t elements_per_token = num_kv_heads * head_dim;
+    size_t bytes_per_token = elements_per_token * element_size;
+    size_t buffer_capacity = (window_size + sink_size);
+    
+    if (current_seq_len <= buffer_capacity) {
         return;
     }
     
-    page_pool[page_idx].ref_count--;
-    if (page_pool[page_idx].ref_count <= 0) {
-        page_pool[page_idx].in_use = false;
-        page_pool[page_idx].ref_count = 0;
-        std::fill(page_pool[page_idx].data.begin(), page_pool[page_idx].data.end(), 0);
-        free_pages.push_back(page_idx);
+    size_t tokens_to_remove = current_seq_len - buffer_capacity;
+    
+    size_t sink_bytes = sink_size * bytes_per_token;
+    std::vector<uint8_t> sink_keys(sink_bytes);
+    std::vector<uint8_t> sink_values(sink_bytes);
+    
+    for (size_t i = 0; i < sink_size; ++i) {
+        size_t src_idx = get_circular_index(i, cache.start_idx, buffer_capacity) * bytes_per_token;
+        std::memcpy(sink_keys.data() + i * bytes_per_token, 
+                   cache.keys.data() + src_idx, bytes_per_token);
+        std::memcpy(sink_values.data() + i * bytes_per_token,
+                   cache.values.data() + src_idx, bytes_per_token);
+    }
+    
+    cache.start_idx = (cache.start_idx + tokens_to_remove) % buffer_capacity;
+    current_seq_len = buffer_capacity;
+    
+    for (size_t i = 0; i < sink_size; ++i) {
+        size_t dest_idx = get_circular_index(i, cache.start_idx, buffer_capacity) * bytes_per_token;
+        std::memcpy(cache.keys.data() + dest_idx,
+                   sink_keys.data() + i * bytes_per_token, bytes_per_token);
+        std::memcpy(cache.values.data() + dest_idx,
+                   sink_values.data() + i * bytes_per_token, bytes_per_token);
     }
 }
 
-size_t KVCache::get_num_pages_needed(size_t seq_len) const {
-    return (seq_len + tokens_per_page - 1) / tokens_per_page;
+void KVCache::copy_to_circular_buffer(LayerCache& cache, const void* new_data, size_t new_tokens, bool is_key) {
+    size_t elements_per_token = num_kv_heads * head_dim;
+    size_t bytes_per_token = elements_per_token * element_size;
+    size_t buffer_capacity = window_size + sink_size;
+    
+    const uint8_t* src = static_cast<const uint8_t*>(new_data);
+    std::vector<uint8_t>& buffer = is_key ? cache.keys : cache.values;
+    
+    for (size_t i = 0; i < new_tokens; ++i) {
+        size_t dest_idx = get_circular_index(cache.end_idx + i, cache.start_idx, buffer_capacity) * bytes_per_token;
+        std::memcpy(buffer.data() + dest_idx, src + i * bytes_per_token, bytes_per_token);
+    }
 }
 
 void KVCache::materialize_continuous_buffer(size_t layer) {
     if (layer >= num_layers) return;
     
-    const auto& table = layer_tables[layer];
+    auto& cache = layer_caches[layer];
     size_t elements_per_token = num_kv_heads * head_dim;
     size_t bytes_per_token = elements_per_token * element_size;
+    size_t buffer_capacity = window_size + sink_size;
     
-    for (size_t page_idx = 0; page_idx < table.key_pages.size(); ++page_idx) {
-        size_t start_token = page_idx * tokens_per_page;
-        size_t tokens_in_page = std::min(tokens_per_page, current_seq_len - start_token);
-        size_t bytes_to_copy = tokens_in_page * bytes_per_token;
+    size_t required_size = current_seq_len * bytes_per_token;
+    if (continuous_keys[layer].size() < required_size) {
+        continuous_keys[layer].resize(required_size);
+        continuous_values[layer].resize(required_size);
+    }
+    
+    for (size_t i = 0; i < current_seq_len; ++i) {
+        size_t src_idx = get_circular_index(i, cache.start_idx, buffer_capacity) * bytes_per_token;
+        size_t dest_idx = i * bytes_per_token;
         
-        if (start_token < current_seq_len) {
-            const auto& key_page = page_pool[table.key_pages[page_idx]];
-            const auto& value_page = page_pool[table.value_pages[page_idx]];
-            
-            std::memcpy(continuous_keys[layer].data() + start_token * bytes_per_token,
-                       key_page.data.data(), bytes_to_copy);
-            std::memcpy(continuous_values[layer].data() + start_token * bytes_per_token,
-                       value_page.data.data(), bytes_to_copy);
-        }
+        std::memcpy(continuous_keys[layer].data() + dest_idx,
+                   cache.keys.data() + src_idx, bytes_per_token);
+        std::memcpy(continuous_values[layer].data() + dest_idx,
+                   cache.values.data() + src_idx, bytes_per_token);
     }
 }
 
 void* KVCache::get_key_ptr(size_t layer) {
+    if (current_seq_len == 0) return nullptr;
+    
+    auto& cache = layer_caches[layer];
+    size_t buffer_capacity = window_size + sink_size;
+    size_t elements_per_token = num_kv_heads * head_dim;
+    size_t bytes_per_token = elements_per_token * element_size;
+    
+    if (cache.start_idx == 0 || cache.start_idx + current_seq_len <= buffer_capacity) {
+        return cache.keys.data() + cache.start_idx * bytes_per_token;
+    }
+    
     materialize_continuous_buffer(layer);
     return continuous_keys[layer].data();
 }
 
 void* KVCache::get_value_ptr(size_t layer) {
+    if (current_seq_len == 0) return nullptr;
+    
+    auto& cache = layer_caches[layer];
+    size_t buffer_capacity = window_size + sink_size;
+    size_t elements_per_token = num_kv_heads * head_dim;
+    size_t bytes_per_token = elements_per_token * element_size;
+    
+    if (cache.start_idx == 0 || cache.start_idx + current_seq_len <= buffer_capacity) {
+        return cache.values.data() + cache.start_idx * bytes_per_token;
+    }
+    
     materialize_continuous_buffer(layer);
     return continuous_values[layer].data();
+}
+
+KVCache::CircularView KVCache::get_circular_view(const LayerCache& cache, bool is_key) const {
+    CircularView view;
+    view.total_len = current_seq_len;
+    
+    if (current_seq_len == 0) {
+        view.ptr1 = nullptr;
+        view.ptr2 = nullptr;
+        view.len1 = 0;
+        view.len2 = 0;
+        return view;
+    }
+    
+    size_t buffer_capacity = window_size + sink_size;
+    size_t elements_per_token = num_kv_heads * head_dim;
+    size_t bytes_per_token = elements_per_token * element_size;
+    const std::vector<uint8_t>& buffer = is_key ? cache.keys : cache.values;
+    
+    if (cache.start_idx + current_seq_len <= buffer_capacity) {
+        view.ptr1 = const_cast<uint8_t*>(buffer.data()) + cache.start_idx * bytes_per_token;
+        view.ptr2 = nullptr;
+        view.len1 = current_seq_len;
+        view.len2 = 0;
+    } else {
+        size_t first_part_len = buffer_capacity - cache.start_idx;
+        size_t second_part_len = current_seq_len - first_part_len;
+        
+        view.ptr1 = const_cast<uint8_t*>(buffer.data()) + cache.start_idx * bytes_per_token;
+        view.ptr2 = const_cast<uint8_t*>(buffer.data());
+        view.len1 = first_part_len;
+        view.len2 = second_part_len;
+    }
+    
+    return view;
+}
+
+KVCache::CircularView KVCache::get_key_view(size_t layer) {
+    if (layer >= num_layers) {
+        return CircularView{nullptr, nullptr, 0, 0, 0};
+    }
+    return get_circular_view(layer_caches[layer], true);
+}
+
+KVCache::CircularView KVCache::get_value_view(size_t layer) {
+    if (layer >= num_layers) {
+        return CircularView{nullptr, nullptr, 0, 0, 0};
+    }
+    return get_circular_view(layer_caches[layer], false);
 }
 
 void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_nodes, 
@@ -138,16 +246,11 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
     size_t elements_per_token = kv_heads * dim;
     size_t bytes_per_token = elements_per_token * element_size;
     
+    total_seq_len += seq_len;
+    current_seq_len = new_seq_len;
+    
     for (size_t layer_idx = 0; layer_idx < layers; layer_idx++) {
-        auto& table = layer_tables[layer_idx];
-        
-        size_t old_pages = get_num_pages_needed(old_seq_len);
-        size_t new_pages = get_num_pages_needed(new_seq_len);
-        
-        for (size_t i = old_pages; i < new_pages; ++i) {
-            table.key_pages.push_back(allocate_page());
-            table.value_pages.push_back(allocate_page());
-        }
+        auto& cache = layer_caches[layer_idx];
         
         void* k_output = gb->get_output(k_nodes[layer_idx]);
         void* v_output = gb->get_output(v_nodes[layer_idx]);
@@ -162,30 +265,22 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
                 uint8_t* k_src = static_cast<uint8_t*>(k_output) + old_seq_len * bytes_per_token;
                 uint8_t* v_src = static_cast<uint8_t*>(v_output) + old_seq_len * bytes_per_token;
                 
-                for (size_t token_idx = 0; token_idx < seq_len; ++token_idx) {
-                    size_t global_token_idx = old_seq_len + token_idx;
-                    size_t page_idx = global_token_idx / tokens_per_page;
-                    size_t token_in_page = global_token_idx % tokens_per_page;
-                    
-                    if (page_idx < table.key_pages.size()) {
-                        auto& key_page = page_pool[table.key_pages[page_idx]];
-                        auto& value_page = page_pool[table.value_pages[page_idx]];
-                        
-                        size_t page_offset = token_in_page * bytes_per_token;
-                        
-                        std::memcpy(key_page.data.data() + page_offset,
-                                   k_src + token_idx * bytes_per_token,
-                                   bytes_per_token);
-                        std::memcpy(value_page.data.data() + page_offset,
-                                   v_src + token_idx * bytes_per_token,
-                                   bytes_per_token);
-                    }
+                copy_to_circular_buffer(cache, k_src, seq_len, true);
+                copy_to_circular_buffer(cache, v_src, seq_len, false);
+                
+                cache.end_idx = (cache.end_idx + seq_len) % (window_size + sink_size);
+                cache.total_seen += seq_len;
+                
+                if (current_seq_len > window_size + sink_size) {
+                    slide_window(layer_idx);
                 }
             }
         }
     }
     
-    current_seq_len = new_seq_len;
+    if (current_seq_len > window_size + sink_size) {
+        current_seq_len = window_size + sink_size;
+    }
 }
 
 }

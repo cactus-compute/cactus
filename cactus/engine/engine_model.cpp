@@ -83,6 +83,18 @@ bool Model::init(const std::string& model_folder, size_t context_size, const std
             break;
     }
     kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, config_.attention_head_dim, cache_precision);
+    
+    size_t window_size = std::min(context_size, size_t(1024));
+    size_t sink_size = 4;
+    const char* env_window = std::getenv("CACTUS_KV_WINDOW_SIZE");
+    const char* env_sink = std::getenv("CACTUS_KV_SINK_SIZE");
+    if (env_window) {
+        window_size = std::stoul(env_window);
+    }
+    if (env_sink) {
+        sink_size = std::stoul(env_sink);
+    }
+    kv_cache_.set_window_size(window_size, sink_size);
     cache_k_output_nodes_.resize(config_.num_layers);
     cache_v_output_nodes_.resize(config_.num_layers);
     
@@ -161,14 +173,28 @@ size_t Model::build_attention(CactusGraph* gb, size_t normalized_input, uint32_t
     size_t final_v = v_proj_4d;
     
     if (use_cache && !kv_cache_.is_empty()) {
-        size_t cache_k_node = gb->input({1, kv_cache_.current_seq_len, config_.attention_kv_heads, config_.attention_head_dim}, kv_cache_.precision);
-        size_t cache_v_node = gb->input({1, kv_cache_.current_seq_len, config_.attention_kv_heads, config_.attention_head_dim}, kv_cache_.precision);
+        auto k_view = kv_cache_.get_key_view(layer_idx);
+        auto v_view = kv_cache_.get_value_view(layer_idx);
         
-        gb->set_input(cache_k_node, kv_cache_.get_key_ptr(layer_idx), kv_cache_.precision);
-        gb->set_input(cache_v_node, kv_cache_.get_value_ptr(layer_idx), kv_cache_.precision);
-        
-        final_k = gb->concat(cache_k_node, k_proj_4d, 1);
-        final_v = gb->concat(cache_v_node, v_proj_4d, 1);
+        if (k_view.ptr2 == nullptr && v_view.ptr2 == nullptr) {
+            size_t cache_k_node = gb->input({1, kv_cache_.current_seq_len, config_.attention_kv_heads, config_.attention_head_dim}, kv_cache_.precision);
+            size_t cache_v_node = gb->input({1, kv_cache_.current_seq_len, config_.attention_kv_heads, config_.attention_head_dim}, kv_cache_.precision);
+            
+            gb->set_input(cache_k_node, k_view.ptr1, kv_cache_.precision);
+            gb->set_input(cache_v_node, v_view.ptr1, kv_cache_.precision);
+            
+            final_k = gb->concat(cache_k_node, k_proj_4d, 1);
+            final_v = gb->concat(cache_v_node, v_proj_4d, 1);
+        } else {
+            size_t cache_k_node = gb->input({1, kv_cache_.current_seq_len, config_.attention_kv_heads, config_.attention_head_dim}, kv_cache_.precision);
+            size_t cache_v_node = gb->input({1, kv_cache_.current_seq_len, config_.attention_kv_heads, config_.attention_head_dim}, kv_cache_.precision);
+            
+            gb->set_input(cache_k_node, kv_cache_.get_key_ptr(layer_idx), kv_cache_.precision);
+            gb->set_input(cache_v_node, kv_cache_.get_value_ptr(layer_idx), kv_cache_.precision);
+            
+            final_k = gb->concat(cache_k_node, k_proj_4d, 1);
+            final_v = gb->concat(cache_v_node, v_proj_4d, 1);
+        }
     }
     
     if (use_cache) {
@@ -219,7 +245,7 @@ size_t Model::forward(const std::vector<uint32_t>& tokens, bool use_cache) {
     
     auto seq_len = static_cast<size_t>(tokens.size());
     
-    size_t position_offset = kv_cache_.current_seq_len;
+    size_t position_offset = use_cache ? kv_cache_.get_total_seq_len() : 0;
     
     auto backend = config_.default_backend == Config::Backend::CPU 
         ? ComputeBackend::CPU 
