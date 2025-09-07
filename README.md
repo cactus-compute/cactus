@@ -84,7 +84,7 @@ int result = cactus_complete(model, messages, response, sizeof(response), option
 This makes it easy to write Cactus bindings for any language. 
 Header files are self-documenting for each but documentation contributions are welcome.
 
-## SDKS for using Cactus in your apps
+## Using Cactus in your apps
 Cactus SDKs run 500k+ weekly inference tasks in production today, try them!
 
 <a href="https://github.com/cactus-compute/cactus-flutter" target="_blank">
@@ -112,7 +112,7 @@ Cactus SDKs run 500k+ weekly inference tasks in production today, try them!
 ## Contributing or Using the Repo
 You can run these codes directly on Macbooks with Apple chips due to their design.
 Performance gain is observed in mobile devices but for testing during development,
-Vanilla M3 CPU-only can run Qwen3 600m INT8 at ~55 toks/sec, use the following: 
+Vanilla M3 CPU-only can run Qwen3-600m-INT8 at ~60 toks/sec, use the following: 
 
 1. **Generate weights from HuggingFace model:**
 ```bash
