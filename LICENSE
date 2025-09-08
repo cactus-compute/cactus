@@ -1,35 +1,39 @@
 Copyright (c) 2025 Cactus Compute, Inc. All Rights Reserved.
 
-This software, the Cactus Mobile SDK (the "Software"), is proprietary and is protected by copyright law. The source code is provided for evaluation, educational, and personal non-commercial use only.
+This license agreement applies to the Cactus C++ Framework and the Cactus Mobile SDKs (for React Native, Kotlin Multiplatform, Flutter), collectively referred to as "the Software". The source code is provided for evaluation, educational, and personal non-commercial use only, as defined below.
 
-This Software is designed to be used in conjunction with the open-source Cactus C++ Framework, which is licensed separately under the Apache License 2.0. This license agreement applies ONLY to the Software and not to the underlying Cactus C++ Framework.
 
----
-**1. Grant of License for Non-Commercial Use**
+## 1. Definitions
 
-The copyright holder grants you a non-exclusive, non-transferable, royalty-free license to use, copy, and modify the Software for the following purposes ONLY:
+**"Commercial Use"** is defined as any use of the Software that is intended for or directed toward commercial advantage or monetary compensation. This includes, but is not limited to:
+  * Use in any application, product, or service that is sold, licensed, or offered for a fee.
+  * Use in any application, product, or service that contains advertising or uses in-app purchases.
+  * Use in the internal business operations, tooling, or testing processes of a for-profit entity.
+  * Use to provide services, support, or consulting to a paying client.
 
-* **Personal Use:** For your own personal projects that are not monetized in any way, directly or indirectly.
-* **Educational Use:** For teaching, learning, and academic research purposes.
-* **Evaluation:** For testing and evaluating the Software's performance and features in a non-production environment before purchasing a commercial license.
+**"Non-Commercial Use"** is defined as use for the following purposes only:
+  * **Personal / Hobbyist Use:** For your own personal projects that are not monetized in any way, directly or indirectly.
+  * **Educational Use:** For teaching, learning, and academic research purposes by students and faculty of academic institutions.
+  * **Evaluation:** For testing and evaluating the Software's performance and features in a non-production environment before purchasing a commercial license.
 
-**2. Restrictions and Commercial Use**
 
-All rights not expressly granted in Section 1 are reserved by the copyright holder. You are explicitly PROHIBITED from using the Software for any "Commercial Purpose" without a separate, written commercial license agreement from Cactus Compute, Inc.
+## 2. Grant of License for Non-Commercial Use
 
-A "Commercial Purpose" is defined as any use of the Software that is intended for or directed toward commercial advantage or monetary compensation. This includes, but is not limited to:
+Cactus Compute, Inc. ("the Copyright Holder") grants you a non-exclusive, non-transferable, royalty-free license to use, copy, and modify the Software for **Non-Commercial Use ONLY**. All rights not expressly granted in this section are reserved by the Copyright Holder.
 
-* Use in any application or service that is sold, licensed, or offered for a fee.
-* Use in any application or service that contains advertising.
-* Use in any application or service that utilizes in-app purchases.
-* Use in the internal business operations of a for-profit entity.
-* Use in any application or service provided on behalf of a paying client.
 
-You are also explicitly prohibited from redistributing or sublicensing the Software or any modifications of it.
+## 3. Restrictions and Commercial Licensing
 
-**3. No Warranty**
+Use of the Software for any **Commercial Use** is strictly prohibited without a separate, written commercial license agreement from the Copyright Holder.
+
+You are also explicitly prohibited from:
+  * Redistributing or sublicensing the Software or any modifications of it.
+  * Removing or altering any copyright, trademark, or other proprietary notices in the Software.
+  * Using the Software in any way that violates applicable law.
+
+To purchase a commercial license, please contact us at **founders@cactuscompute.com** or visit **www.cactuscompute.com**.
+
+
+## 4. No Warranty
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
----
-To purchase a commercial license for Cactus, please visit www.cactuscompute.com or contact us at founders@cactuscompute.com.
