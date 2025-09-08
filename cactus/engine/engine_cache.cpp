@@ -3,9 +3,35 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <arm_neon.h>
 
 namespace cactus {
 namespace engine {
+
+inline void simd_memcpy(void* dst, const void* src, size_t size) {
+    uint8_t* d = static_cast<uint8_t*>(dst);
+    const uint8_t* s = static_cast<const uint8_t*>(src);
+    
+    while (size >= 64) {
+        uint8x16x4_t data = vld4q_u8(s);
+        vst4q_u8(d, data);
+        d += 64;
+        s += 64;
+        size -= 64;
+    }
+    
+    while (size >= 16) {
+        uint8x16_t data = vld1q_u8(s);
+        vst1q_u8(d, data);
+        d += 16;
+        s += 16;
+        size -= 16;
+    }
+    
+    if (size > 0) {
+        std::memcpy(d, s, size);
+    }
+}
 
 void KVCache::init(size_t layers, size_t max_seq, size_t kv_heads, size_t dim, Precision model_precision) {
     num_layers = layers;
@@ -98,23 +124,44 @@ void KVCache::slide_window(size_t layer) {
     std::vector<uint8_t> sink_keys(sink_bytes);
     std::vector<uint8_t> sink_values(sink_bytes);
     
-    for (size_t i = 0; i < sink_size; ++i) {
-        size_t src_idx = get_circular_index(i, cache.start_idx, buffer_capacity) * bytes_per_token;
-        std::memcpy(sink_keys.data() + i * bytes_per_token, 
-                   cache.keys.data() + src_idx, bytes_per_token);
-        std::memcpy(sink_values.data() + i * bytes_per_token,
-                   cache.values.data() + src_idx, bytes_per_token);
+    if (cache.start_idx + sink_size <= buffer_capacity) {
+        simd_memcpy(sink_keys.data(), 
+                   cache.keys.data() + cache.start_idx * bytes_per_token,
+                   sink_bytes);
+        simd_memcpy(sink_values.data(),
+                   cache.values.data() + cache.start_idx * bytes_per_token,
+                   sink_bytes);
+    } else {
+        size_t first_part = buffer_capacity - cache.start_idx;
+        size_t first_bytes = first_part * bytes_per_token;
+        size_t second_bytes = sink_bytes - first_bytes;
+        
+        simd_memcpy(sink_keys.data(), cache.keys.data() + cache.start_idx * bytes_per_token, first_bytes);
+        simd_memcpy(sink_keys.data() + first_bytes, cache.keys.data(), second_bytes);
+        
+        simd_memcpy(sink_values.data(), cache.values.data() + cache.start_idx * bytes_per_token, first_bytes);
+        simd_memcpy(sink_values.data() + first_bytes, cache.values.data(), second_bytes);
     }
     
     cache.start_idx = (cache.start_idx + tokens_to_remove) % buffer_capacity;
     current_seq_len = buffer_capacity;
     
-    for (size_t i = 0; i < sink_size; ++i) {
-        size_t dest_idx = get_circular_index(i, cache.start_idx, buffer_capacity) * bytes_per_token;
-        std::memcpy(cache.keys.data() + dest_idx,
-                   sink_keys.data() + i * bytes_per_token, bytes_per_token);
-        std::memcpy(cache.values.data() + dest_idx,
-                   sink_values.data() + i * bytes_per_token, bytes_per_token);
+    size_t new_sink_start = cache.start_idx;
+    if (new_sink_start + sink_size <= buffer_capacity) {
+        simd_memcpy(cache.keys.data() + new_sink_start * bytes_per_token,
+                   sink_keys.data(), sink_bytes);
+        simd_memcpy(cache.values.data() + new_sink_start * bytes_per_token,
+                   sink_values.data(), sink_bytes);
+    } else {
+        size_t first_part = buffer_capacity - new_sink_start;
+        size_t first_bytes = first_part * bytes_per_token;
+        size_t second_bytes = sink_bytes - first_bytes;
+        
+        simd_memcpy(cache.keys.data() + new_sink_start * bytes_per_token, sink_keys.data(), first_bytes);
+        simd_memcpy(cache.keys.data(), sink_keys.data() + first_bytes, second_bytes);
+        
+        simd_memcpy(cache.values.data() + new_sink_start * bytes_per_token, sink_values.data(), first_bytes);
+        simd_memcpy(cache.values.data(), sink_values.data() + first_bytes, second_bytes);
     }
 }
 
@@ -126,9 +173,16 @@ void KVCache::copy_to_circular_buffer(LayerCache& cache, const void* new_data, s
     const uint8_t* src = static_cast<const uint8_t*>(new_data);
     std::vector<uint8_t>& buffer = is_key ? cache.keys : cache.values;
     
-    for (size_t i = 0; i < new_tokens; ++i) {
-        size_t dest_idx = get_circular_index(cache.end_idx + i, cache.start_idx, buffer_capacity) * bytes_per_token;
-        std::memcpy(buffer.data() + dest_idx, src + i * bytes_per_token, bytes_per_token);
+    size_t total_bytes = new_tokens * bytes_per_token;
+    size_t write_pos = cache.end_idx;
+    size_t first_chunk_tokens = std::min(new_tokens, buffer_capacity - write_pos);
+    size_t first_chunk_bytes = first_chunk_tokens * bytes_per_token;
+    
+    simd_memcpy(buffer.data() + write_pos * bytes_per_token, src, first_chunk_bytes);
+    
+    if (first_chunk_tokens < new_tokens) {
+        size_t remaining_bytes = total_bytes - first_chunk_bytes;
+        simd_memcpy(buffer.data(), src + first_chunk_bytes, remaining_bytes);
     }
 }
 
@@ -146,14 +200,33 @@ void KVCache::materialize_continuous_buffer(size_t layer) {
         continuous_values[layer].resize(required_size);
     }
     
-    for (size_t i = 0; i < current_seq_len; ++i) {
-        size_t src_idx = get_circular_index(i, cache.start_idx, buffer_capacity) * bytes_per_token;
-        size_t dest_idx = i * bytes_per_token;
+    size_t wrap_point = buffer_capacity - cache.start_idx;
+    
+    if (current_seq_len <= wrap_point) {
+        size_t total_bytes = current_seq_len * bytes_per_token;
+        simd_memcpy(continuous_keys[layer].data(),
+                   cache.keys.data() + cache.start_idx * bytes_per_token,
+                   total_bytes);
+        simd_memcpy(continuous_values[layer].data(),
+                   cache.values.data() + cache.start_idx * bytes_per_token,
+                   total_bytes);
+    } else {
+        size_t first_part_bytes = wrap_point * bytes_per_token;
+        size_t second_part_bytes = (current_seq_len - wrap_point) * bytes_per_token;
         
-        std::memcpy(continuous_keys[layer].data() + dest_idx,
-                   cache.keys.data() + src_idx, bytes_per_token);
-        std::memcpy(continuous_values[layer].data() + dest_idx,
-                   cache.values.data() + src_idx, bytes_per_token);
+        simd_memcpy(continuous_keys[layer].data(),
+                   cache.keys.data() + cache.start_idx * bytes_per_token,
+                   first_part_bytes);
+        simd_memcpy(continuous_keys[layer].data() + first_part_bytes,
+                   cache.keys.data(),
+                   second_part_bytes);
+        
+        simd_memcpy(continuous_values[layer].data(),
+                   cache.values.data() + cache.start_idx * bytes_per_token,
+                   first_part_bytes);
+        simd_memcpy(continuous_values[layer].data() + first_part_bytes,
+                   cache.values.data(),
+                   second_part_bytes);
     }
 }
 

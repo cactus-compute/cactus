@@ -40,14 +40,14 @@ bool test_ffi() {
     
     const char* messages = R"([
         {"role": "system", "content": "You are a helpful assistant. Be concise and friendly in your responses."},
-        {"role": "user", "content": "Tell me a short Joke."}
+        {"role": "user", "content": "WHay is ypur name?"}
     ])";
     
     const char* options = R"({
         "temperature": 0.8,
         "top_p": 0.95,
         "top_k": 20,
-        "max_tokens": 512,
+        "max_tokens": 128,
         "stop_sequences": ["<|im_end|>"]
     })";
     
