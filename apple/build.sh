@@ -103,14 +103,12 @@ function build_static_library() {
 
     cmake --build "$BUILD_DIR" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu"
 
-    # Copy device static library
     mkdir -p "$APPLE_DIR"
     cp "$BUILD_DIR/libcactus.a" "$APPLE_DIR/libcactus-device.a" || \
        { echo "Error: Could not find device libcactus.a"; exit 1; }
 
     echo "Device static library built: $APPLE_DIR/libcactus-device.a"
     
-    # Build for iOS Simulator
     echo "Building static library for iOS simulator..."
     BUILD_DIR_SIM="$APPLE_DIR/build-static-simulator"
     
@@ -133,7 +131,6 @@ function build_static_library() {
 
     cmake --build "$BUILD_DIR_SIM" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu"
 
-    # Copy simulator static library
     cp "$BUILD_DIR_SIM/libcactus.a" "$APPLE_DIR/libcactus-simulator.a" || \
        { echo "Error: Could not find simulator libcactus.a"; exit 1; }
 
@@ -141,17 +138,9 @@ function build_static_library() {
 }
 
 function build_framework() {
-    # Parameters:
-    # $1: system_name (iOS)
-    # $2: architectures
-    # $3: sysroot
-    # $4: output_path
-    # $5: build_dir
-
     echo "Building framework for $4..."
     cd "$5"
 
-    # Configure CMake for framework
     cmake -S "$ROOT_DIR/apple" \
         -B . \
         -GXcode \
@@ -164,10 +153,8 @@ function build_framework() {
         -DCMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH=NO \
         -DCMAKE_IOS_INSTALL_COMBINED=YES
 
-    # Build
     cmake --build . --config "$CMAKE_BUILD_TYPE" -j "$n_cpu"
 
-    # Setup framework directory
     DEST_DIR="$ROOT_DIR/apple/cactus.xcframework/$4"
     FRAMEWORK_SRC="$CMAKE_BUILD_TYPE-$3/cactus.framework"
     FRAMEWORK_DEST="$DEST_DIR/cactus.framework"
@@ -175,7 +162,6 @@ function build_framework() {
     rm -rf "$DEST_DIR"
     mkdir -p "$DEST_DIR"
 
-    # Copy the built framework to the destination
     if [ -d "$FRAMEWORK_SRC" ]; then
         cp -R "$FRAMEWORK_SRC" "$FRAMEWORK_DEST"
         echo "Framework copied from $FRAMEWORK_SRC to $FRAMEWORK_DEST"
@@ -186,10 +172,8 @@ function build_framework() {
         exit 1
     fi
 
-    # Copy headers
     cp_headers $4
 
-    # Clean up build directory
     rm -rf ./*
     cd "$ROOT_DIR"
 }
@@ -197,27 +181,21 @@ function build_framework() {
 function build_xcframework() {
     echo "Building XCFramework..."
     
-    # Clean previous XCFramework
     rm -rf "$ROOT_DIR/apple/cactus.xcframework"
     rm -rf "$ROOT_DIR/apple/build-ios" "$ROOT_DIR/apple/build-ios-simulator"
     mkdir -p "$ROOT_DIR/apple/build-ios" "$ROOT_DIR/apple/build-ios-simulator"
 
-    # Build iOS frameworks (ARM64 only)
     build_framework "iOS" "arm64" "iphoneos" "ios-arm64" "$ROOT_DIR/apple/build-ios"
     
-    # Build iOS Simulator framework (ARM64 for Apple Silicon Macs)
     build_framework "iOS" "arm64" "iphonesimulator" "ios-arm64-simulator" "$ROOT_DIR/apple/build-ios-simulator"
 
-    # Create XCFramework Info.plist
     create_xcframework_info_plist
 
-    # Clean up build directories
     rm -rf "$ROOT_DIR/apple/build-ios" "$ROOT_DIR/apple/build-ios-simulator"
     
     echo "XCFramework built: $ROOT_DIR/apple/cactus.xcframework"
 }
 
-# Main build process
 t0=$(date +%s)
 
 if [ "$BUILD_STATIC" = "true" ]; then

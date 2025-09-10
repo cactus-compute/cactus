@@ -36,12 +36,9 @@ if(NOT COMMON_SOURCES)
     message(FATAL_ERROR "No source files found! Check SOURCE_DIR: ${SOURCE_DIR}")
 endif()
 
-# Create library based on BUILD_SHARED_LIBS flag
 if(BUILD_SHARED_LIBS)
-    # Build dynamic framework for XCFramework
     add_library(cactus SHARED ${COMMON_SOURCES})
     
-    # Set framework properties for iOS/macOS
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         set_target_properties(cactus PROPERTIES
             FRAMEWORK TRUE
@@ -54,7 +51,6 @@ if(BUILD_SHARED_LIBS)
         )
     endif()
 else()
-    # Build static library
     add_library(cactus STATIC ${COMMON_SOURCES})
 endif()
 
