@@ -13,5 +13,7 @@ android/arm64-v8a/
 
 # Apple build artifacts
 apple/build/
+apple/build-static/
+apple/*.xcframework
 apple/libcactus.a
 *.a

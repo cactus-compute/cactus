@@ -44,7 +44,13 @@ add_library(
     ${COMMON_SOURCES}
 )
 
-target_include_directories(cactus PRIVATE 
+add_library(
+    cactus_static
+    STATIC
+    ${COMMON_SOURCES}
+)
+
+set(COMMON_INCLUDE_DIRS
     ${SOURCE_DIR}
     ${SOURCE_DIR}/engine
     ${SOURCE_DIR}/graph
@@ -52,13 +58,19 @@ target_include_directories(cactus PRIVATE
     ${SOURCE_DIR}/ffi
 )
 
+target_include_directories(cactus PRIVATE ${COMMON_INCLUDE_DIRS})
+target_include_directories(cactus_static PRIVATE ${COMMON_INCLUDE_DIRS})
+
 target_link_libraries(cactus ${LOG_LIB} android)
 
-target_compile_definitions(cactus PRIVATE 
+set(COMMON_COMPILE_DEFINITIONS
     PLATFORM_CPU_ONLY=1
 )
 
-target_compile_options(cactus PRIVATE 
+target_compile_definitions(cactus PRIVATE ${COMMON_COMPILE_DEFINITIONS})
+target_compile_definitions(cactus_static PRIVATE ${COMMON_COMPILE_DEFINITIONS})
+
+set(COMMON_COMPILE_OPTIONS
     -pthread
     -Wall
     -Wextra
@@ -70,30 +82,49 @@ target_compile_options(cactus PRIVATE
     -ftree-vectorize
 )
 
+target_compile_options(cactus PRIVATE ${COMMON_COMPILE_OPTIONS})
+target_compile_options(cactus_static PRIVATE ${COMMON_COMPILE_OPTIONS})
+
 if (${CMAKE_BUILD_TYPE} STREQUAL "Debug")
     target_compile_options(cactus PRIVATE -DCACTUS_ANDROID_ENABLE_LOGGING)
+    target_compile_options(cactus_static PRIVATE -DCACTUS_ANDROID_ENABLE_LOGGING)
 endif ()
 
-target_compile_options(cactus PRIVATE -O3 -DNDEBUG)
+set(OPTIMIZATION_OPTIONS
+    -O3
+    -DNDEBUG
+    -ffunction-sections
+    -fdata-sections
+)
+
+target_compile_options(cactus PRIVATE ${OPTIMIZATION_OPTIONS})
+target_compile_options(cactus_static PRIVATE ${OPTIMIZATION_OPTIONS})
+
 target_compile_options(cactus PRIVATE -fvisibility=hidden -fvisibility-inlines-hidden)
-target_compile_options(cactus PRIVATE -ffunction-sections -fdata-sections)
 
 if (${ANDROID_ABI} STREQUAL "arm64-v8a")
-    target_compile_options(cactus PRIVATE 
-        -march=armv8.2-a+fp16+simd+dotprod 
+    set(ARM_OPTIONS
+        -march=armv8.2-a+fp16+simd+dotprod
     )
-    target_compile_definitions(cactus PRIVATE 
+    set(ARM_DEFINITIONS
         __ARM_NEON=1
         __ARM_FEATURE_FP16_VECTOR_ARITHMETIC=1
-        __ARM_FEATURE_DOTPROD=1 
+        __ARM_FEATURE_DOTPROD=1
     )
+    
+    target_compile_options(cactus PRIVATE ${ARM_OPTIONS})
+    target_compile_options(cactus_static PRIVATE ${ARM_OPTIONS})
+    
+    target_compile_definitions(cactus PRIVATE ${ARM_DEFINITIONS})
+    target_compile_definitions(cactus_static PRIVATE ${ARM_DEFINITIONS})
 else()
     message(FATAL_ERROR "Unsupported Android ABI: ${ANDROID_ABI}. Cactus only supports arm64-v8a due to ARM NEON requirements.")
 endif()
 
 target_link_options(cactus PRIVATE -Wl,--gc-sections)
 target_link_options(cactus PRIVATE -Wl,--exclude-libs,ALL)
-target_link_options(cactus PRIVATE -flto)  
+target_link_options(cactus PRIVATE -flto)
+target_link_options(cactus PRIVATE -Wl,-z,max-page-size=16384)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)

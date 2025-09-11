@@ -36,7 +36,23 @@ if(NOT COMMON_SOURCES)
     message(FATAL_ERROR "No source files found! Check SOURCE_DIR: ${SOURCE_DIR}")
 endif()
 
-add_library(cactus STATIC ${COMMON_SOURCES})
+if(BUILD_SHARED_LIBS)
+    add_library(cactus SHARED ${COMMON_SOURCES})
+    
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        set_target_properties(cactus PROPERTIES
+            FRAMEWORK TRUE
+            FRAMEWORK_VERSION A
+            MACOSX_FRAMEWORK_IDENTIFIER com.cactuscompute.cactus
+            VERSION 1.0.0
+            SOVERSION 1.0.0
+            PUBLIC_HEADER "${SOURCE_DIR}/ffi/cactus_ffi.h;${SOURCE_DIR}/engine/engine.h;${SOURCE_DIR}/graph/graph.h;${SOURCE_DIR}/kernel/kernel.h;${SOURCE_DIR}/cactus.h"
+            MACOSX_FRAMEWORK_INFO_PLIST "${CMAKE_SOURCE_DIR}/Info.plist"
+        )
+    endif()
+else()
+    add_library(cactus STATIC ${COMMON_SOURCES})
+endif()
 
 target_include_directories(cactus PUBLIC 
     ${SOURCE_DIR}
