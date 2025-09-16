@@ -400,11 +400,44 @@ int cactus_complete(
         
         std::string response_text = tokenizer->decode(generated_tokens);
         
+        std::string regular_response = response_text;
+        std::string tool_calls_json = "";
+        size_t tool_calls_pos = response_text.find("\"tool_calls\"");
+        if (tool_calls_pos != std::string::npos) {
+            size_t json_start = response_text.rfind('{', tool_calls_pos);
+            if (json_start != std::string::npos) {
+                std::string json_part = response_text.substr(json_start);
+                size_t tc_pos = json_part.find("\"tool_calls\"");
+                if (tc_pos != std::string::npos) {
+                    size_t colon_pos = json_part.find(':', tc_pos);
+                    if (colon_pos != std::string::npos) {
+                        size_t bracket_pos = json_part.find('[', colon_pos);
+                        if (bracket_pos != std::string::npos) {
+                            int bracket_count = 1;
+                            size_t end_pos = bracket_pos + 1;
+                            while (end_pos < json_part.length() && bracket_count > 0) {
+                                if (json_part[end_pos] == '[') bracket_count++;
+                                else if (json_part[end_pos] == ']') bracket_count--;
+                                end_pos++;
+                            }
+                            if (bracket_count == 0) {
+                                tool_calls_json = json_part.substr(bracket_pos, end_pos - bracket_pos);
+                                regular_response = response_text.substr(0, json_start);
+                                while (!regular_response.empty() && (regular_response.back() == ' ' || regular_response.back() == '\n' || regular_response.back() == '\r' || regular_response.back() == '\t')) {
+                                    regular_response.pop_back();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         std::ostringstream json_response;
         json_response << "{";
         json_response << "\"success\":true,";
         json_response << "\"response\":\"";
-        for (char c : response_text) {
+        for (char c : regular_response) {
             if (c == '"') json_response << "\\\"";
             else if (c == '\n') json_response << "\\n";
             else if (c == '\r') json_response << "\\r";
@@ -413,6 +446,9 @@ int cactus_complete(
             else json_response << c;
         }
         json_response << "\",";
+        if (!tool_calls_json.empty()) {
+            json_response << "\"tool_calls\":" << tool_calls_json << ",";
+        }
         json_response << "\"time_to_first_token_ms\":" << std::fixed << std::setprecision(2) << time_to_first_token << ",";
         json_response << "\"total_time_ms\":" << std::fixed << std::setprecision(2) << total_time_ms << ",";
         json_response << "\"tokens_per_second\":" << std::fixed << std::setprecision(2) << tokens_per_second << ",";
