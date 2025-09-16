@@ -136,7 +136,7 @@ Cactus SDKs run 500k+ weekly inference tasks in production today, try them!
 ## Contributing or Using the Repo
 You can run these codes directly on Macbooks with Apple chips due to their design.
 Performance gain is observed in mobile devices but for testing during development,
-Vanilla M3 CPU-only can run Qwen3-600m-INT8 at ~60 toks/sec, use the following: 
+Vanilla M3 CPU-only can run Qwen3-600m-INT8 at 60-70 toks/sec, use the following: 
 
 1. **Generate weights from HuggingFace model:**
 ```bash
