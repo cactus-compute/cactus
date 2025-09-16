@@ -93,7 +93,14 @@ bool BPETokenizer::load_vocabulary_mmap(const std::string& vocab_file, const std
         std::string first, second;
         if (iss >> first >> second) {
             std::string merged = first + second;
-            merge_rules_.emplace_back(first, second, merged, priority++);
+            merge_rules_.emplace_back(first, second, merged, priority);
+            
+            std::string key = first + "\x00" + second; 
+            auto it = merge_map_.find(key);
+            if (it == merge_map_.end() || priority < it->second) {
+                merge_map_[key] = priority;
+            }
+            priority++;
         }
     }
     
@@ -363,23 +370,23 @@ std::vector<std::string> BPETokenizer::byte_level_split(const std::string& text)
 }
 
 
-std::pair<int, int> BPETokenizer::find_best_merge(const std::vector<std::string>& tokens) const {
-    std::pair<int, int> best_merge = {-1, -1};
+std::pair<int, uint32_t> BPETokenizer::find_best_merge_fast(const std::vector<std::string>& tokens) const {
+    int best_pos = -1;
     uint32_t best_priority = UINT32_MAX;
     
+    // Look for the best merge in a single pass using hash map
     for (size_t i = 0; i < tokens.size() - 1; ++i) {
-        for (const auto& rule : merge_rules_) {
-            if (tokens[i] == rule.first && tokens[i + 1] == rule.second) {
-                if (rule.priority < best_priority) {
-                    best_priority = rule.priority;
-                    best_merge = {static_cast<int>(i), static_cast<int>(i + 1)};
-                }
-                break;
+        std::string key = tokens[i] + "\x00" + tokens[i + 1];
+        auto it = merge_map_.find(key);
+        if (it != merge_map_.end()) {
+            if (it->second < best_priority) {
+                best_priority = it->second;
+                best_pos = static_cast<int>(i);
             }
         }
     }
     
-    return best_merge;
+    return {best_pos, best_priority};
 }
 
 std::vector<std::string> BPETokenizer::apply_bpe(const std::vector<std::string>& tokens) const {
@@ -387,16 +394,20 @@ std::vector<std::string> BPETokenizer::apply_bpe(const std::vector<std::string>&
     
     std::vector<std::string> current_tokens = tokens;
     
+    
     while (true) {
-        auto merge_pos = find_best_merge(current_tokens);
-        if (merge_pos.first == -1) break;
+        auto [merge_pos, priority] = find_best_merge_fast(current_tokens);
+        if (merge_pos == -1) break;
+        
         
         std::vector<std::string> new_tokens;
+        new_tokens.reserve(current_tokens.size() - 1);  // Pre-allocate
+        
         for (int i = 0; i < static_cast<int>(current_tokens.size()); ++i) {
-            if (i == merge_pos.first) {
+            if (i == merge_pos) {
                 std::string merged = current_tokens[i] + current_tokens[i + 1];
                 new_tokens.push_back(merged);
-                i++;
+                i++;  // Skip next token
             } else {
                 new_tokens.push_back(current_tokens[i]);
             }
@@ -410,7 +421,9 @@ std::vector<std::string> BPETokenizer::apply_bpe(const std::vector<std::string>&
 std::vector<uint32_t> BPETokenizer::encode(const std::string& text) const {
     if (text.empty()) return {};
     
+    
     auto text_segments = split_with_special_tokens(text);
+    
     
     std::vector<uint32_t> token_ids;
     
@@ -421,6 +434,7 @@ std::vector<uint32_t> BPETokenizer::encode(const std::string& text) const {
         } else {
             auto chars = byte_level_split(segment);
             auto bpe_tokens = apply_bpe(chars);
+            
             
             for (const auto& token : bpe_tokens) {
                 auto it = token_to_id_.find(token);

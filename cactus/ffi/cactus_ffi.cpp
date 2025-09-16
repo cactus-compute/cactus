@@ -295,6 +295,7 @@ int cactus_complete(
         
         wrapper->model->reset_cache();
         
+        
         auto messages = parse_messages_json(messages_json);
         if (messages.empty()) {
             std::string error_json = "{\"success\":false,\"error\":\"No messages provided\"}";
@@ -308,10 +309,12 @@ int cactus_complete(
         parse_options_json(options_json ? options_json : "", 
                           temperature, top_p, top_k, max_tokens, stop_sequences);
         
+        
         std::vector<ToolFunction> tools;
         if (tools_json && strlen(tools_json) > 0) {
             tools = parse_tools_json(tools_json);
         }
+        
         
         std::string full_prompt;
         if (!tools.empty()) {
@@ -334,23 +337,16 @@ int cactus_complete(
             full_prompt = tokenizer->format_chat_prompt(messages, true);
         }
         
-        std::cout << "\n[DEBUG] Full prompt:" << std::endl;
-        std::cout << full_prompt << std::endl;
         
         std::vector<uint32_t> tokens_to_process = tokenizer->encode(full_prompt);
         size_t prompt_tokens = tokens_to_process.size();
         
-        std::cout << "[DEBUG] Prompt token count: " << prompt_tokens << std::endl;
-        std::cout << "[DEBUG] First 10 tokens: ";
-        for (size_t i = 0; i < std::min(size_t(10), tokens_to_process.size()); i++) {
-            std::cout << tokens_to_process[i] << " ";
-        }
-        std::cout << std::endl;
         
         std::unordered_set<uint32_t> stop_tokens = get_stop_tokens(wrapper, stop_sequences);
         
         std::vector<uint32_t> generated_tokens;
         double time_to_first_token = 0.0;
+        
         
         uint32_t next_token;
         if (tokens_to_process.empty()) {

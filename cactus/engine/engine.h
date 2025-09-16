@@ -83,6 +83,7 @@ private:
     std::unordered_map<std::string, uint32_t> token_to_id_;
     std::vector<std::string> id_to_token_;
     std::vector<MergeRule> merge_rules_;
+    std::unordered_map<std::string, uint32_t> merge_map_;  
 
     uint32_t vocab_size_;
     uint32_t unk_token_id_;
@@ -96,7 +97,7 @@ private:
     size_t merges_mmap_size_;
 
     std::vector<std::string> apply_bpe(const std::vector<std::string>& tokens) const;
-    std::pair<int, int> find_best_merge(const std::vector<std::string>& tokens) const;
+    std::pair<int, uint32_t> find_best_merge_fast(const std::vector<std::string>& tokens) const;
     
     std::string bytes_to_unicode(const std::string& text) const;
     std::string unicode_to_bytes(const std::string& text) const;
