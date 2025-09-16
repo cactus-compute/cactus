@@ -475,12 +475,15 @@ void cactus_attention_f16(
                             block_max = std::max(block_max, score);
                         }
                         
-                        float scale_correction = expf(running_max - block_max);
-                        running_sum *= scale_correction;
-                        
-                        for (size_t i = 0; i < output_accum_low.size() / 2; ++i) {
-                            output_accum_low[i] = vmulq_n_f32(output_accum_low[i], scale_correction);
-                            output_accum_high[i] = vmulq_n_f32(output_accum_high[i], scale_correction);
+                        if (block_max > -std::numeric_limits<float>::infinity()) {
+                            float scale_correction = expf(running_max - block_max);
+                            running_sum *= scale_correction;
+                            
+                            for (size_t i = 0; i < output_accum_low.size() / 2; ++i) {
+                                output_accum_low[i] = vmulq_n_f32(output_accum_low[i], scale_correction);
+                                output_accum_high[i] = vmulq_n_f32(output_accum_high[i], scale_correction);
+                            }
+                            running_max = block_max;
                         }
                         
                         float block_sum = 0.0f;
@@ -514,7 +517,6 @@ void cactus_attention_f16(
                         }
                         
                         running_sum += block_sum;
-                        running_max = block_max;
                     }
                     
                     if (running_sum > 0.0f) {

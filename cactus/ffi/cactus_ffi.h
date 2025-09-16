@@ -28,6 +28,7 @@ CACTUS_FFI_EXPORT int cactus_complete(
     char* response_buffer,
     size_t buffer_size,
     const char* options_json,
+    const char* tools_json,
     cactus_token_callback callback,
     void* user_data
 );

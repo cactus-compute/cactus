@@ -460,7 +460,58 @@ void BPETokenizer::load_chat_template(const std::string& template_file) {
     has_chat_template_ = !chat_template_.empty();
 }
 
-std::string BPETokenizer::apply_template_substitutions(const std::string& template_str, const std::vector<ChatMessage>& messages, bool add_generation_prompt) const {
+std::string BPETokenizer::apply_template_substitutions(const std::string& template_str, const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+    
+    if (!tools_json.empty()) {
+        std::string result;
+        
+        result += "<|im_start|>system\n";
+        
+        bool has_system_msg = false;
+        for (const auto& msg : messages) {
+            if (msg.role == "system") {
+                result += msg.content;
+                result += "\n\n";
+                has_system_msg = true;
+                break;
+            }
+        }
+        
+        result += "Respond in JSON format, either with `tool_call` (a request to call tools) or with `response` reply to the user's request\n";
+        result += "You can call any of the following tools to satisfy the user's requests: [\n";
+        result += tools_json;
+        result += "\n]\n";
+        result += "Example tool call syntax:\n";
+        result += "{\n";
+        result += "  \"tool_calls\": [\n";
+        result += "    {\n";
+        result += "      \"name\": \"tool_name\",\n";
+        result += "      \"arguments\": {\n";
+        result += "        \"arg1\": \"some_value\"\n";
+        result += "      },\n";
+        result += "      \"id\": \"call_1___\"\n";
+        result += "    }\n";
+        result += "  ]\n";
+        result += "}";
+        result += "<|im_end|>\n";
+        
+        for (const auto& msg : messages) {
+            if (msg.role == "system" && has_system_msg) {
+                continue; 
+            } else if (msg.role == "user") {
+                result += "<|im_start|>user\n" + msg.content + "<|im_end|>\n";
+            } else if (msg.role == "assistant") {
+                result += "<|im_start|>assistant\n" + msg.content + "<|im_end|>\n";
+            }
+        }
+        
+        if (add_generation_prompt) {
+            result += "<|im_start|>assistant\n";
+        }
+        
+        return result;
+    }
+    
     std::string result = template_str;
     
     if (result.find("{% for message in messages %}") != std::string::npos) {
@@ -509,9 +560,9 @@ std::string BPETokenizer::apply_template_substitutions(const std::string& templa
     return result;
 }
 
-std::string BPETokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt) const {
+std::string BPETokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
     if (has_chat_template_ && !chat_template_.empty()) {
-        return apply_template_substitutions(chat_template_, messages, add_generation_prompt);
+        return apply_template_substitutions(chat_template_, messages, add_generation_prompt, tools_json);
     }
     
     std::string formatted;

@@ -71,7 +71,7 @@ public:
     std::string decode(const std::vector<uint32_t>& tokens) const;
     
     std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const;
-    std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const;
+    std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "") const;
 
     uint32_t get_vocab_size() const { return vocab_size_; }
     uint32_t get_unk_token() const { return unk_token_id_; }
@@ -116,7 +116,11 @@ private:
     bool has_chat_template_;
     std::string chat_template_;
     void load_chat_template(const std::string& template_file);
-    std::string apply_template_substitutions(const std::string& template_str, const std::vector<ChatMessage>& messages, bool add_generation_prompt) const;
+    std::string apply_template_substitutions(const std::string& template_str, const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json = "") const;
+    
+    std::unordered_map<std::string, uint32_t> tool_tokens_;
+    bool has_tool_support_;
+    void load_tokenizer_config(const std::string& config_file);
 };
 
 

@@ -78,7 +78,31 @@ const char* options = R"({
 })";
 
 char response[1024];
-int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr, nullptr);
+int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr, nullptr, nullptr);
+```
+
+With tool support:
+```cpp
+const char* tools = R"([
+    {
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather for a location",
+            "parameters": {
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "City name",
+                        "required": true
+                    }
+                },
+                "required": ["location"]
+            }
+        }
+    }
+])";
+
+int result = cactus_complete(model, messages, response, sizeof(response), options, tools, nullptr, nullptr);
 ```
 
 This makes it easy to write Cactus bindings for any language. 

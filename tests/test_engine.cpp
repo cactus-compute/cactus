@@ -57,7 +57,7 @@ bool test_ffi() {
     char response[2048];
 
     std::cout << "\n=== Streaming ===" << std::endl;
-    int result = cactus_complete(model, messages, response, sizeof(response), options, 
+    int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr,
                                 streaming_callback, &stream_data);
     
     std::cout << "\n=== End of Stream ===\n" << std::endl;
@@ -167,7 +167,7 @@ bool test_generation_control() {
     };
     
     int result = cactus_complete(model, messages, response, sizeof(response), 
-                                options, control_callback, &control_data);
+                                options, nullptr, control_callback, &control_data);
     
     std::cout << "\n[Test complete]" << std::endl;
     std::cout << "Generated " << control_data.token_count << " tokens" << std::endl;
@@ -202,7 +202,7 @@ bool test_incremental_processing() {
     })";
     
     std::cout << "\n=== Incremental Processing Test ===" << std::endl;
-    int result1 = cactus_complete(model, first_messages, response1, sizeof(response1), options, nullptr, nullptr);
+    int result1 = cactus_complete(model, first_messages, response1, sizeof(response1), options, nullptr, nullptr, nullptr);
     std::cout << "Response 1: " << response1 << "\n" << std::endl;
     
     const char* second_messages = R"([
@@ -212,12 +212,78 @@ bool test_incremental_processing() {
         {"role": "user", "content": "What is my name?"}
     ])";
     
-    int result2 = cactus_complete(model, second_messages, response2, sizeof(response2), options, nullptr, nullptr);
+    int result2 = cactus_complete(model, second_messages, response2, sizeof(response2), options, nullptr, nullptr, nullptr);
     std::cout << "Response 2: " << response2 << "\n" << std::endl;
     
     cactus_destroy(model);
     
     return result1 > 0 && result2 > 0;
+}
+
+bool test_ffi_with_tools() {
+    const char* model_path = "../../weights/qwen3-600m-i8";
+    cactus_model_t model = cactus_init(model_path, 2048);
+    
+    if (!model) {
+        std::cerr << "Failed to initialize model for tools test" << std::endl;
+        return false;
+    }
+    
+    const char* messages = R"([
+        {"role": "system", "content": "You are a helpful assistant that can use tools."},
+        {"role": "user", "content": "What's the weather in San Francisco?"}
+    ])";
+    
+    const char* tools = R"([
+        {
+            "function": {
+                "name": "get_weather",
+                "description": "Get weather for a location",
+                "parameters": {
+                    "properties": {
+                        "location": {
+                            "type": "string",
+                            "description": "City name",
+                            "required": true
+                        }
+                    },
+                    "required": ["location"]
+                }
+            }
+        }
+    ])";
+    
+    const char* options = R"({
+        "temperature": 0.1,
+        "top_p": 0.95,
+        "top_k": 20,
+        "max_tokens": 512,
+        "stop_sequences": ["<|im_end|>", "}"]
+    })";
+    
+    StreamingTestData stream_data;
+    stream_data.token_count = 0;
+    
+    char response[4096];
+    
+    std::cout << "User: What's the weather in San Francisco?" << std::endl;
+    std::cout << "Assistant: ";
+    
+    int result = cactus_complete(model, messages, response, sizeof(response), options, tools,
+                                streaming_callback, &stream_data);
+    
+    std::cout << "\n\n=== Tool Response ===" << std::endl;
+    std::cout << "Final Response JSON:\n" << response << "\n" << std::endl;
+    
+    std::string response_str(response);
+    bool has_tool_mention = response_str.find("tool_call") != std::string::npos ||
+                            response_str.find("get_weather") != std::string::npos ||
+                            response_str.find("San Francisco") != std::string::npos;
+    
+    std::cout << "Tool recognition: " << (has_tool_mention ? "PASSED" : "FAILED") << std::endl;
+    
+    cactus_destroy(model);
+    return result > 0 && stream_data.token_count > 0;
 }
 
 int main() {
@@ -226,6 +292,7 @@ int main() {
     runner.run_test("text_embeddings", test_embeddings());
     runner.run_test("generation_control", test_generation_control());
     runner.run_test("incremental_processing", test_incremental_processing());
+    runner.run_test("ffi_with_tools", test_ffi_with_tools());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

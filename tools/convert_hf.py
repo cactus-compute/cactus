@@ -364,6 +364,10 @@ def convert_hf_tokenizer(tokenizer, output_dir):
             f.write(tokenizer.chat_template)
         chat_template_data["chat_template"] = tokenizer.chat_template
     
+    tokenizer_full_config = {}
+    added_tokens_decoder = {}
+    tool_tokens = {}
+    
     try:
         config_path = None
         if hasattr(tokenizer, 'name_or_path'):
@@ -371,17 +375,55 @@ def convert_hf_tokenizer(tokenizer, output_dir):
             try:
                 config_path = hf_hub_download(repo_id=tokenizer.name_or_path, filename="tokenizer_config.json")
                 with open(config_path, 'r') as f:
-                    config_data = json.load(f)
-                    if 'chat_template' in config_data and not chat_template_data:
+                    tokenizer_full_config = json.load(f)
+                    
+                    if 'chat_template' in tokenizer_full_config and not chat_template_data:
                         chat_template_output = output_dir / "chat_template.jinja2"
                         with open(chat_template_output, 'w', encoding='utf-8') as f:
-                            f.write(config_data['chat_template'])
-                        chat_template_data["chat_template"] = config_data['chat_template']
-            except Exception:
+                            f.write(tokenizer_full_config['chat_template'])
+                        chat_template_data["chat_template"] = tokenizer_full_config['chat_template']
+                    
+                    if 'added_tokens_decoder' in tokenizer_full_config:
+                        added_tokens_decoder = tokenizer_full_config['added_tokens_decoder']
+                        
+                        print("  Extracting special tokens from tokenizer_config.json...")
+                        for token_id_str, token_info in added_tokens_decoder.items():
+                            content = token_info.get('content', '')
+                            token_id = int(token_id_str)
+                            
+                            tool_related = ['<tool_call>', '</tool_call>', 
+                                          '<tool_response>', '</tool_response>',
+                                          '<tools>', '</tools>',
+                                          '<think>', '</think>']
+                            
+                            if any(x == content for x in tool_related):
+                                tool_tokens[token_id] = token_info
+                                print(f"    Found tool token: {content} (ID: {token_id})")
+                                special_tokens[token_id] = content
+                                
+            except Exception as e:
+                print(f"  Note: Could not load full tokenizer config: {e}")
                 pass
     except Exception:
         pass
     
+    tokenizer_full_config_output = output_dir / "tokenizer_config.json"
+    with open(tokenizer_full_config_output, 'w', encoding='utf-8') as f:
+        full_config = {
+            "vocab_size": len(vocab),
+            "model_max_length": getattr(tokenizer, 'model_max_length', 131072),
+            **special_token_ids,
+            "special_tokens": special_tokens,
+            "additional_special_tokens": additional_special_tokens,
+            "tool_tokens": tool_tokens,
+            "added_tokens_decoder": added_tokens_decoder,
+            "chat_template": chat_template_data.get("chat_template", None),
+            "has_tool_support": len(tool_tokens) > 0
+        }
+        json.dump(full_config, f, indent=2, ensure_ascii=False)
+        print(f"  Saved full tokenizer config with {len(tool_tokens)} tool tokens")
+    
+    # Keep backward compatibility
     special_tokens_output = output_dir / "special_tokens.json"
     with open(special_tokens_output, 'w', encoding='utf-8') as f:
         json.dump({
@@ -404,6 +446,9 @@ def convert_hf_tokenizer(tokenizer, output_dir):
             f.write("has_chat_template=true\n")
         else:
             f.write("has_chat_template=false\n")
+        if len(tool_tokens) > 0:
+            f.write(f"has_tool_support=true\n")
+            f.write(f"tool_token_count={len(tool_tokens)}\n")
     
 
 def convert_hf_to_cactus(model_name, output_dir, precision='INT8', cache_dir=None, args=None):

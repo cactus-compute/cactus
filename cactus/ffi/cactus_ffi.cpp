@@ -77,6 +77,61 @@ static std::vector<ChatMessage> parse_messages_json(const std::string& json) {
     return messages;
 }
 
+struct ToolFunction {
+    std::string name;
+    std::string description;
+    std::unordered_map<std::string, std::string> parameters;
+};
+
+static std::vector<ToolFunction> parse_tools_json(const std::string& json) {
+    std::vector<ToolFunction> tools;
+    
+    if (json.empty()) return tools;
+    
+    size_t pos = json.find('[');
+    if (pos == std::string::npos) return tools;
+    
+    pos = json.find("\"function\"", pos);
+    while (pos != std::string::npos) {
+        ToolFunction tool;
+        
+        size_t name_pos = json.find("\"name\"", pos);
+        if (name_pos != std::string::npos) {
+            size_t name_start = json.find('\"', name_pos + 6) + 1;
+            size_t name_end = json.find('\"', name_start);
+            tool.name = json.substr(name_start, name_end - name_start);
+        }
+        
+        size_t desc_pos = json.find("\"description\"", pos);
+        if (desc_pos != std::string::npos) {
+            size_t desc_start = json.find('\"', desc_pos + 13) + 1;
+            size_t desc_end = json.find('\"', desc_start);
+            tool.description = json.substr(desc_start, desc_end - desc_start);
+        }
+        
+        size_t params_pos = json.find("\"parameters\"", pos);
+        if (params_pos != std::string::npos) {
+            size_t params_start = json.find('{', params_pos);
+            if (params_start != std::string::npos) {
+                int brace_count = 1;
+                size_t params_end = params_start + 1;
+                while (params_end < json.length() && brace_count > 0) {
+                    if (json[params_end] == '{') brace_count++;
+                    else if (json[params_end] == '}') brace_count--;
+                    params_end++;
+                }
+                tool.parameters["schema"] = json.substr(params_start, params_end - params_start);
+            }
+        }
+        
+        tools.push_back(tool);
+        
+        pos = json.find("\"function\"", name_pos);
+    }
+    
+    return tools;
+}
+
 static void parse_options_json(const std::string& json, 
                                float& temperature, float& top_p, 
                                size_t& top_k, size_t& max_tokens,
@@ -204,6 +259,7 @@ int cactus_complete(
     char* response_buffer,
     size_t buffer_size,
     const char* options_json,
+    const char* tools_json,
     cactus_token_callback callback,
     void* user_data
 ) {
@@ -252,10 +308,44 @@ int cactus_complete(
         parse_options_json(options_json ? options_json : "", 
                           temperature, top_p, top_k, max_tokens, stop_sequences);
         
-        // Always process all messages fresh
-        std::string full_prompt = tokenizer->format_chat_prompt(messages, true);
+        std::vector<ToolFunction> tools;
+        if (tools_json && strlen(tools_json) > 0) {
+            tools = parse_tools_json(tools_json);
+        }
+        
+        std::string full_prompt;
+        if (!tools.empty()) {
+            std::string formatted_tools_json;
+            for (size_t i = 0; i < tools.size(); i++) {
+                if (i > 0) formatted_tools_json += ",\n";
+                formatted_tools_json += "  {\n";
+                formatted_tools_json += "    \"type\": \"function\",\n";
+                formatted_tools_json += "    \"function\": {\n";
+                formatted_tools_json += "      \"name\": \"" + tools[i].name + "\",\n";
+                formatted_tools_json += "      \"description\": \"" + tools[i].description + "\"";
+                if (tools[i].parameters.find("schema") != tools[i].parameters.end()) {
+                    formatted_tools_json += ",\n      \"parameters\": " + tools[i].parameters.at("schema");
+                }
+                formatted_tools_json += "\n    }\n  }";
+            }
+            
+            full_prompt = tokenizer->format_chat_prompt(messages, true, formatted_tools_json);
+        } else {
+            full_prompt = tokenizer->format_chat_prompt(messages, true);
+        }
+        
+        std::cout << "\n[DEBUG] Full prompt:" << std::endl;
+        std::cout << full_prompt << std::endl;
+        
         std::vector<uint32_t> tokens_to_process = tokenizer->encode(full_prompt);
         size_t prompt_tokens = tokens_to_process.size();
+        
+        std::cout << "[DEBUG] Prompt token count: " << prompt_tokens << std::endl;
+        std::cout << "[DEBUG] First 10 tokens: ";
+        for (size_t i = 0; i < std::min(size_t(10), tokens_to_process.size()); i++) {
+            std::cout << tokens_to_process[i] << " ";
+        }
+        std::cout << std::endl;
         
         std::unordered_set<uint32_t> stop_tokens = get_stop_tokens(wrapper, stop_sequences);
         
