@@ -491,7 +491,8 @@ std::string BPETokenizer::apply_template_substitutions(const std::string& templa
             }
         }
         
-        result += "Respond in JSON format, either with `tool_call` (a request to call tools) or with `response` reply to the user's request\n";
+        result += "You can respond normally to the user's request. If you need to call tools, respond with a JSON object containing `tool_calls`.\n";
+        result += "Only call tools when they are necessary to fulfill the user's request.\n";
         result += "You can call any of the following tools to satisfy the user's requests: [\n";
         result += tools_json;
         result += "\n]\n";
