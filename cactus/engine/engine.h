@@ -59,25 +59,44 @@ struct ChatMessage {
     std::string content;
 };
 
-class BPETokenizer {
+class Tokenizer {
+public:
+    virtual ~Tokenizer() = default;
+    
+    virtual std::vector<uint32_t> encode(const std::string& text) const = 0;
+    virtual std::string decode(const std::vector<uint32_t>& tokens) const = 0;
+    
+    virtual std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const = 0;
+    virtual std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "") const = 0;
+    
+    virtual uint32_t get_vocab_size() const = 0;
+    virtual uint32_t get_unk_token() const = 0;
+    virtual uint32_t get_bos_token() const = 0;
+    virtual uint32_t get_eos_token() const = 0;
+    virtual bool has_chat_template() const = 0;
+    
+    virtual bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) = 0;
+};
+
+class BPETokenizer : public Tokenizer {
 public:
     BPETokenizer();
     ~BPETokenizer();
 
     bool load_vocabulary_mmap(const std::string& vocab_file, const std::string& merges_file);
-    bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file);
+    bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) override;
 
-    std::vector<uint32_t> encode(const std::string& text) const;
-    std::string decode(const std::vector<uint32_t>& tokens) const;
+    std::vector<uint32_t> encode(const std::string& text) const override;
+    std::string decode(const std::vector<uint32_t>& tokens) const override;
     
-    std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const;
-    std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "") const;
+    std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const override;
+    std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "") const override;
 
-    uint32_t get_vocab_size() const { return vocab_size_; }
-    uint32_t get_unk_token() const { return unk_token_id_; }
-    uint32_t get_bos_token() const { return bos_token_id_; }
-    uint32_t get_eos_token() const { return eos_token_id_; }
-    bool has_chat_template() const { return has_chat_template_; }
+    uint32_t get_vocab_size() const override { return vocab_size_; }
+    uint32_t get_unk_token() const override { return unk_token_id_; }
+    uint32_t get_bos_token() const override { return bos_token_id_; }
+    uint32_t get_eos_token() const override { return eos_token_id_; }
+    bool has_chat_template() const override { return has_chat_template_; }
 
 private:
     std::unordered_map<std::string, uint32_t> token_to_id_;
@@ -122,6 +141,64 @@ private:
     std::unordered_map<std::string, uint32_t> tool_tokens_;
     bool has_tool_support_;
     void load_tokenizer_config(const std::string& config_file);
+};
+
+class SPTokenizer : public Tokenizer {
+public:
+    SPTokenizer();
+    ~SPTokenizer();
+
+    bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) override;
+
+    std::vector<uint32_t> encode(const std::string& text) const override;
+    std::string decode(const std::vector<uint32_t>& tokens) const override;
+    
+    std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const override;
+    std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "") const override;
+
+    uint32_t get_vocab_size() const override { return vocab_size_; }
+    uint32_t get_unk_token() const override { return unk_token_id_; }
+    uint32_t get_bos_token() const override { return bos_token_id_; }
+    uint32_t get_eos_token() const override { return eos_token_id_; }
+    bool has_chat_template() const override { return has_chat_template_; }
+
+private:
+    struct TrieNode {
+        std::unordered_map<char32_t, std::unique_ptr<TrieNode>> children;
+        int32_t token_id = -1;
+        float score = 0.0f;
+    };
+    
+    std::unique_ptr<TrieNode> trie_root_;
+    std::unordered_map<std::string, uint32_t> token_to_id_;
+    std::vector<std::string> id_to_token_;
+    std::vector<float> token_scores_;
+    
+    uint32_t vocab_size_;
+    uint32_t unk_token_id_;
+    uint32_t bos_token_id_;
+    uint32_t eos_token_id_;
+    uint32_t pad_token_id_;
+    
+    void* vocab_mmap_ptr_;
+    size_t vocab_mmap_size_;
+    
+    void build_trie();
+    std::vector<std::pair<std::string, uint32_t>> tokenize_with_trie(const std::string& text) const;
+    std::string preprocess_text(const std::string& text) const;
+    std::string postprocess_text(const std::string& text) const;
+    std::vector<std::string> split_by_unicode_spaces(const std::string& text) const;
+    
+    void cleanup_mmap();
+    
+    std::unordered_map<std::string, uint32_t> special_tokens_;
+    std::vector<std::string> split_with_special_tokens(const std::string& text) const;
+    void load_special_tokens(const std::string& config_file);
+    
+    bool has_chat_template_;
+    std::string chat_template_;
+    void load_chat_template(const std::string& template_file);
+    std::string apply_template_substitutions(const std::string& template_str, const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json = "") const;
 };
 
 
@@ -194,7 +271,7 @@ public:
     ~Model();
 
     const Config& get_config() const { return config_; }
-    BPETokenizer* get_tokenizer() const { return tokenizer_.get(); }
+    Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
 
     bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "");
     uint32_t generate(const std::vector<uint32_t>& tokens, float temperature = 0.6f, float top_p = 0.95f, 
@@ -216,7 +293,7 @@ private:
                                   ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
     void update_kv_cache(CactusGraph* gb, size_t seq_len);
     Config config_;
-    std::unique_ptr<BPETokenizer> tokenizer_;
+    std::unique_ptr<Tokenizer> tokenizer_;
 
     void* graph_handle_;
     bool initialized_;

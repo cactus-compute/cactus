@@ -14,7 +14,7 @@ namespace engine {
 
 
 Model::Model() 
-    : tokenizer_(std::make_unique<BPETokenizer>()), 
+    : tokenizer_(nullptr), 
       graph_handle_(nullptr),
       initialized_(false),
       attention_scale_(0.0f) {
@@ -23,7 +23,7 @@ Model::Model()
 
 Model::Model(const Config& config) 
     : config_(config),
-      tokenizer_(std::make_unique<BPETokenizer>()),
+      tokenizer_(nullptr),
       graph_handle_(nullptr),
       initialized_(false),
       attention_scale_(0.0f) {
@@ -51,6 +51,27 @@ bool Model::init(const std::string& model_folder, size_t context_size, const std
     std::string vocab_file = model_folder + "/vocab.txt";
     std::string merges_file = model_folder + "/merges.txt";
     std::string tokenizer_config_file = model_folder + "/tokenizer_config.txt";
+    
+    std::ifstream merges_check(merges_file);
+    bool has_merges = false;
+    if (merges_check.is_open()) {
+        std::string line;
+        int line_count = 0;
+        while (std::getline(merges_check, line) && line_count < 10) {
+            if (!line.empty() && line[0] != '#') {
+                has_merges = true;
+                break;
+            }
+            line_count++;
+        }
+        merges_check.close();
+    }
+    
+    if (has_merges) {
+        tokenizer_ = std::make_unique<BPETokenizer>();
+    } else {
+        tokenizer_ = std::make_unique<SPTokenizer>();
+    }
     
     if (!tokenizer_->load_vocabulary_with_config(vocab_file, merges_file, tokenizer_config_file)) {
         return false;

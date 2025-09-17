@@ -158,6 +158,7 @@ Vanilla M3 CPU-only can run Qwen3-600m-INT8 at 60-70 toks/sec, use the following
 1. **Generate weights from HuggingFace model:**
 ```bash
 python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m-i8/ --precision INT8
+python3 tools/convert_hf.py google/gemma-3-270m weights/gemma3-270m-i8/ --precision INT8
 ```
 
 2. **Build and test:**

@@ -374,7 +374,6 @@ std::pair<int, uint32_t> BPETokenizer::find_best_merge_fast(const std::vector<st
     int best_pos = -1;
     uint32_t best_priority = UINT32_MAX;
     
-    // Look for the best merge in a single pass using hash map
     for (size_t i = 0; i < tokens.size() - 1; ++i) {
         std::string key = tokens[i] + "\x00" + tokens[i + 1];
         auto it = merge_map_.find(key);
@@ -401,13 +400,13 @@ std::vector<std::string> BPETokenizer::apply_bpe(const std::vector<std::string>&
         
         
         std::vector<std::string> new_tokens;
-        new_tokens.reserve(current_tokens.size() - 1);  // Pre-allocate
+        new_tokens.reserve(current_tokens.size() - 1);  
         
         for (int i = 0; i < static_cast<int>(current_tokens.size()); ++i) {
             if (i == merge_pos) {
                 std::string merged = current_tokens[i] + current_tokens[i + 1];
                 new_tokens.push_back(merged);
-                i++;  // Skip next token
+                i++; 
             } else {
                 new_tokens.push_back(current_tokens[i]);
             }

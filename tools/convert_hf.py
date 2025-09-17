@@ -282,18 +282,55 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
     return model_config
 
 def convert_hf_tokenizer(tokenizer, output_dir):
-    
+    is_sentencepiece = False
+    tokenizer_model_path = None
+
+    if hasattr(tokenizer, 'vocab_file'):
+        vocab_file = tokenizer.vocab_file
+        if vocab_file and vocab_file.endswith('.model'):
+            is_sentencepiece = True
+            tokenizer_model_path = vocab_file
+
+    if not is_sentencepiece and hasattr(tokenizer, 'sp_model'):
+        is_sentencepiece = True
+        try:
+            from huggingface_hub import hf_hub_download
+            tokenizer_model_path = hf_hub_download(
+                repo_id=tokenizer.name_or_path,
+                filename="tokenizer.model"
+            )
+        except:
+            pass
+
+    if is_sentencepiece and tokenizer_model_path:
+        import shutil
+        dest_path = output_dir / "tokenizer.model"
+        try:
+            shutil.copy2(tokenizer_model_path, dest_path)
+            print(f"  Copied SentencePiece model to {dest_path.name}")
+        except Exception as e:
+            print(f"  Warning: Could not copy tokenizer.model: {e}")
+
     vocab = tokenizer.get_vocab()
-    
+
     id_to_token = [""] * len(vocab)
     for token, token_id in vocab.items():
         if token_id < len(id_to_token):
             id_to_token[token_id] = token
-    
+
     vocab_output = output_dir / "vocab.txt"
-    with open(vocab_output, 'w', encoding='utf-8') as f:
-        for token in id_to_token:
-            f.write(token + '\n')
+
+    if is_sentencepiece:
+        with open(vocab_output, 'w', encoding='utf-8') as f:
+            for token_id, token in enumerate(id_to_token):
+                if token:
+                    f.write(f"{token_id}\t{token}\n")
+        print(f"  Saved SentencePiece vocabulary (ID\\ttoken format)")
+    else:
+        with open(vocab_output, 'w', encoding='utf-8') as f:
+            for token in id_to_token:
+                f.write(token + '\n')
+        print(f"  Saved BPE vocabulary (line-by-line format)")
     
     
     merges_output = output_dir / "merges.txt"
@@ -407,23 +444,7 @@ def convert_hf_tokenizer(tokenizer, output_dir):
     except Exception:
         pass
     
-    tokenizer_full_config_output = output_dir / "tokenizer_config.json"
-    with open(tokenizer_full_config_output, 'w', encoding='utf-8') as f:
-        full_config = {
-            "vocab_size": len(vocab),
-            "model_max_length": getattr(tokenizer, 'model_max_length', 131072),
-            **special_token_ids,
-            "special_tokens": special_tokens,
-            "additional_special_tokens": additional_special_tokens,
-            "tool_tokens": tool_tokens,
-            "added_tokens_decoder": added_tokens_decoder,
-            "chat_template": chat_template_data.get("chat_template", None),
-            "has_tool_support": len(tool_tokens) > 0
-        }
-        json.dump(full_config, f, indent=2, ensure_ascii=False)
-        print(f"  Saved full tokenizer config with {len(tool_tokens)} tool tokens")
     
-    # Keep backward compatibility
     special_tokens_output = output_dir / "special_tokens.json"
     with open(special_tokens_output, 'w', encoding='utf-8') as f:
         json.dump({
@@ -442,6 +463,12 @@ def convert_hf_tokenizer(tokenizer, output_dir):
         for key, value in special_token_ids.items():
             f.write(f"{key}={value}\n")
         f.write(f"model_max_length={getattr(tokenizer, 'model_max_length', 131072)}\n")
+
+        if is_sentencepiece:
+            f.write("tokenizer_type=sentencepiece\n")
+        else:
+            f.write("tokenizer_type=bpe\n")
+
         if chat_template_data:
             f.write("has_chat_template=true\n")
         else:
@@ -475,7 +502,6 @@ def convert_hf_to_cactus(model_name, output_dir, precision='INT8', cache_dir=Non
     
     config = convert_hf_model_weights(model, output_dir, precision, args)
     
-    # INT8 wweights use fp16 activations nonetheless.
     if precision == 'INT8':
         config['precision'] = "FP16"
     else:
