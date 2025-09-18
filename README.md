@@ -1,6 +1,8 @@
 <img src="assets/banner.jpg" alt="Logo" style="border-radius: 30px; width: 100%;">
 
-Energy-efficient AI inference framework & kernels for phones & AI-native hardware. Budget and mid-range phones control over 70% of the market, but frameworks today optimise for the highend phones with advanced chips. Cactus is designed bottom-up with no dependencies for all mobile devices. 
+Energy-efficient AI inference framework & kernels for phones & AI-native hardware. 
+Budget and mid-range phones control over 70% of the market, but frameworks today optimise for the highend phones. 
+Cactus is designed bottom-up with no dependencies for all mobile devices. 
 
 Example (CPU-only): 
 - Model: Qwen3-600m-INT8
@@ -55,8 +57,8 @@ graph.hard_reset();
 
 ```
 
-Cactus Engine is an transformer inference engine built on top of Cactus Graphs.
-It is abstracted via the minimalist Cactus Foreign Function Interface.
+Cactus Engine is a transformer inference engine built on top of Cactus Graphs.
+It is abstracted via Cactus Foreign Function Interface.
 
 ```cpp
 #include cactus.h
@@ -106,7 +108,7 @@ int result = cactus_complete(model, messages, response, sizeof(response), option
 ```
 
 This makes it easy to write Cactus bindings for any language. 
-Header files are self-documenting for each but documentation contributions are welcome.
+Header files are self-documenting but documentation contributions are welcome.
 
 ## Using Cactus in your apps
 Cactus SDKs run 500k+ weekly inference tasks in production today, try them!
