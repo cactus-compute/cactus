@@ -10,21 +10,22 @@ Energy-efficient kernels & inference engine for phones & tiny AI-native devices.
 
 ## Performance 
 
+LLama.cpp is the fastest of the older frameworks, so we benchmark against llama.cpp on Qwen3-INT8-0.6B
+
 | Framework | Configuration | iPhone 13 Pro | Pixel 6a
 |-----------|--------------|------------------------|---------------|
 | Cactus | CPU only | 38-40 toks/sec | 15-18 toks/sec | 
 | Llama.cpp | CPU only | 20-24 toks/sec | 10-13 toks/sec |
 | Llama.cpp | CPU + GPU | 33-37 toks/sec | N/A |
 
-*LLama.cpp is the fastest of the older frameworks
+## File Size Comparison
 
-## File Size
-
-- Model: Qwen3-600m-INT8
-- Executorch size: 944mb
-- GGUF size: 800mb
-- ONNX/tfliet/MLX size: ~640mb
-- Cactus compressed size: 420mb 
+| Format | Size (Qwen3-0.6B-INT8) |
+|--------|------------------------|
+| Cactus Compressed | **420 MB** |
+| ONNX/TFLite/MLX | 600 MB |
+| GGUF | 800 MB |
+| Executorch | 944 MB |
 
 ## Design 
 ```
