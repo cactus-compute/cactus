@@ -26,10 +26,6 @@ Energy-efficient kernels & inference engine for phones & tiny AI-native devices.
 - ONNX/tfliet/MLX size: ~640mb
 - Cactus compressed size: 420mb 
 
-## Limitlations
-While Cactus can be used for all Apple devices including Macbooks, for computers/AMD/Intel/Nvidia generally, 
-please use HuggingFace, Llama.cpp, Ollama, vLLM, MLX. They're built for those, support x86, and are all great! 
-
 ## Design 
 ```
 ┌─────────────────┐
@@ -174,3 +170,7 @@ python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m-i8/ --precision I
 - SMMLA, NPU & DSP for high-end phones.
 - INT4 support for 1B+ models.
 - Python tools for porting Torch/JAX to cactus.
+
+## Limitlations
+While Cactus can be used for all Apple devices including Macbooks, for computers/AMD/Intel/Nvidia generally, 
+please use HuggingFace, Llama.cpp, Ollama, vLLM, MLX. They're built for those, support x86, and are all great! 
