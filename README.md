@@ -1,17 +1,36 @@
 <img src="assets/banner.jpg" alt="Logo" style="border-radius: 30px; width: 100%;">
 
-Energy-efficient AI inference framework & kernels for phones & AI-native hardware. 
-Budget and mid-range phones control over 70% of the market, but frameworks today optimise for the highend phones. 
-Cactus is designed bottom-up with no dependencies for all mobile devices. 
+Energy-efficient kernels & inference engine for phones & tiny AI-native devices. 
 
-Example (CPU-only): 
+## Why Cactus?
+- Phones run on battery, GPUs drain energy and heat the devices. 
+- 70% of phones today don't ship NPUs which most frameworks optimse for. 
+- Cactus is optimsed for old and new ARM-CPU first, with NPU/DSP/ISP coming.
+- Fast on all phones & ARM-devices with negligible battery drain and heating.
+
+## Performance 
+
+| Framework | Configuration | iPhone 13 Pro | Pixel 6a
+|-----------|--------------|------------------------|---------------|
+| Cactus | CPU only | 38-40 toks/sec | 15-18 toks/sec | 
+| Llama.cpp | CPU only | 20-24 toks/sec | 10-13 toks/sec |
+| Llama.cpp | CPU + GPU | 33-37 toks/sec | N/A |
+
+*LLama.cpp is the fastest of the older frameworks
+
+## File Size
+
 - Model: Qwen3-600m-INT8
-- File size: 370-420mb
-- 16-20 t/s on Pixel 6a, Galaxy S21, iPhone 11 Pro
-- 50-70 t/s on Pixel 9, Galaxy S25, iPhone 16
+- Executorch size: 944mb
+- GGUF size: 800mb
+- ONNX/tfliet/MLX size: ~640mb
+- Cactus compressed size: 420mb 
 
-## Architecture 
-Cactus exposes 4 levels of abstraction.
+## Limitlations
+While Cactus can be used for all Apple devices including Macbooks, for computers/AMD/Intel/Nvidia generally, 
+please use HuggingFace, Llama.cpp, Ollama, vLLM, MLX. They're built for those, support x86, and are all great! 
+
+## Design 
 ```
 ┌─────────────────┐
 │   Cactus FFI    │ ←── OpenAI compatible C API for integration  
@@ -30,6 +49,7 @@ Cactus exposes 4 levels of abstraction.
 └─────────────────┘
 ```
 
+## Cactus Graph & Kernels
 Cactus Graph is a general numerical computing framework that runs on Cactus Kernels.
 Great for implementing custom models and scientific computing, like JAX for phones.
 
@@ -57,8 +77,10 @@ graph.hard_reset();
 
 ```
 
+## Cactus Engine & APIs
 Cactus Engine is a transformer inference engine built on top of Cactus Graphs.
-It is abstracted via Cactus Foreign Function Interface.
+It is abstracted via Cactus Foreign Function Interface APIs.
+Header files are self-documenting but documentation contributions are welcome.
 
 ```cpp
 #include cactus.h
@@ -107,9 +129,6 @@ const char* tools = R"([
 int result = cactus_complete(model, messages, response, sizeof(response), options, tools, nullptr, nullptr);
 ```
 
-This makes it easy to write Cactus bindings for any language. 
-Header files are self-documenting but documentation contributions are welcome.
-
 ## Using Cactus in your apps
 Cactus SDKs run 500k+ weekly inference tasks in production today, try them!
 
@@ -136,8 +155,7 @@ Cactus SDKs run 500k+ weekly inference tasks in production today, try them!
 </a>
 
 ## Contributing or Using the Repo
-You can run these codes directly on Macbooks with Apple chips due to their design.
-Performance gain is observed in mobile devices but for testing during development,
+You can run these codes directly on M-series Macbooks since they are ARM-based.
 Vanilla M3 CPU-only can run Qwen3-600m-INT8 at 60-70 toks/sec, use the following: 
 
 1. **Generate weights from HuggingFace model:**
@@ -155,11 +173,4 @@ python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m-i8/ --precision I
 - Gemma, SmolVLM, Liquid, Kitten, Vosk etc.
 - SMMLA, NPU & DSP for high-end phones.
 - INT4 support for 1B+ models.
-- Python tools for porting Torch/JAX cactus.
-
-Preliminary results: 
-- Qwen3-4B-INT4 on iPhone 16 Pro NPU = 21 t/s
-
-## Footer
-While Cactus can be used for all Apple devices including Macbooks, for computers/AMD/Intel/Nvidia generally, 
-please use HuggingFace, Llama.cpp, Ollama, vLLM, MLX. They're built for those, support x86, and are all great! 
+- Python tools for porting Torch/JAX to cactus.
