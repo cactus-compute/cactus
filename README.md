@@ -22,10 +22,11 @@ LLama.cpp is the fastest possible alternative, so we benchmark against llama.cpp
 
 | Format | Size (Qwen3-0.6B-INT8) |
 |--------|------------------------|
-| Cactus Compressed | **420 MB** |
+| Cactus | 420 MB |
 | ONNX/TFLite/MLX | 600 MB |
 | GGUF | 800 MB |
 | Executorch | 944 MB |
+*Cactus is compressed
 
 ## Design 
 ```
@@ -134,7 +135,7 @@ Cactus SDKs run 500k+ weekly inference tasks in production today, try them!
 </a> <a href="https://github.com/cactus-compute/cactus-react" target="_blank">
   <img alt="React Native" src="https://img.shields.io/badge/React%20Native-grey.svg?style=for-the-badge&logo=react&logoColor=%2361DAFB">
 </a> <a href="https://github.com/cactus-compute/cactus-kotlin" target="_blank">
-  <img alt="Kotlin Multiplatform" src="https://img.shields.io/badge/Kotlin_Multiplatform-grey.svg?style=for-the-badge&logo=kotlin&logoColor=white">
+  <img alt="Kotlin MP" src="https://img.shields.io/badge/Kotlin_Multiplatform-grey.svg?style=for-the-badge&logo=kotlin&logoColor=white">
 </a>
 
 ## Getting started
