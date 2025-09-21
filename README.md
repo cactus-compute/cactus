@@ -10,7 +10,7 @@ Energy-efficient kernels & inference engine for phones & tiny AI-native devices.
 
 ## Performance 
 
-LLama.cpp is the fastest of the older frameworks, so we benchmark against llama.cpp on Qwen3-INT8-0.6B
+LLama.cpp is the fastest possible alternative, so we benchmark against llama.cpp on Qwen3-INT8-0.6B
 
 | Framework | Configuration | iPhone 13 Pro | Pixel 6a
 |-----------|--------------|------------------------|---------------|
