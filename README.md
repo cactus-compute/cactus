@@ -1,6 +1,6 @@
 <img src="assets/banner.jpg" alt="Logo" style="border-radius: 30px; width: 100%;">
 
-Energy-efficient kernels & inference engine for phones & tiny AI-native devices. 
+Energy-efficient kernels & inference engine for phones. 
 
 ## Why Cactus?
 - Phones run on battery, GPUs drain energy and heat the devices. 
