@@ -6,7 +6,7 @@ Energy-efficient kernels & inference engine for phones.
 - Phones run on battery, GPUs drain energy and heat the devices. 
 - 70% of phones today don't ship NPUs which most frameworks optimse for. 
 - Cactus is optimsed for old and new ARM-CPU first, with NPU/DSP/ISP coming.
-- Fast on all phones & ARM-devices with negligible battery drain and heating.
+- Fast on all phones with negligible battery drain and heating.
 
 ## Performance 
 
