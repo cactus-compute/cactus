@@ -28,16 +28,16 @@ echo "Static library: $BUILD_STATIC"
 echo "XCFramework: $BUILD_XCFRAMEWORK"
 
 function cp_headers() {
-    mkdir -p "$ROOT_DIR/apple/cactus.xcframework/$1/cactus.framework/Headers"
-    cp "$ROOT_DIR/cactus/ffi/"*.h "$ROOT_DIR/apple/cactus.xcframework/$1/cactus.framework/Headers/" 2>/dev/null || true
-    cp "$ROOT_DIR/cactus/engine/"*.h "$ROOT_DIR/apple/cactus.xcframework/$1/cactus.framework/Headers/" 2>/dev/null || true
-    cp "$ROOT_DIR/cactus/graph/"*.h "$ROOT_DIR/apple/cactus.xcframework/$1/cactus.framework/Headers/" 2>/dev/null || true
-    cp "$ROOT_DIR/cactus/kernel/"*.h "$ROOT_DIR/apple/cactus.xcframework/$1/cactus.framework/Headers/" 2>/dev/null || true
-    cp "$ROOT_DIR/cactus/"*.h "$ROOT_DIR/apple/cactus.xcframework/$1/cactus.framework/Headers/" 2>/dev/null || true
+    mkdir -p "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers"
+    cp "$ROOT_DIR/cactus/ffi/"*.h "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
+    cp "$ROOT_DIR/cactus/engine/"*.h "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
+    cp "$ROOT_DIR/cactus/graph/"*.h "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
+    cp "$ROOT_DIR/cactus/kernel/"*.h "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
+    cp "$ROOT_DIR/cactus/"*.h "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
 }
 
-function create_xcframework_info_plist() {
-    cat > "$ROOT_DIR/apple/cactus.xcframework/Info.plist" << 'EOF'
+function create_ios_xcframework_info_plist() {
+    cat > "$ROOT_DIR/apple/cactus-ios.xcframework/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -69,6 +69,36 @@ function create_xcframework_info_plist() {
 			<string>ios</string>
 			<key>SupportedPlatformVariant</key>
 			<string>simulator</string>
+		</dict>
+	</array>
+	<key>CFBundlePackageType</key>
+	<string>XFWK</string>
+	<key>XCFrameworkFormatVersion</key>
+	<string>1.0</string>
+</dict>
+</plist>
+EOF
+}
+
+function create_macos_xcframework_info_plist() {
+    cat > "$ROOT_DIR/apple/cactus-macos.xcframework/Info.plist" << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AvailableLibraries</key>
+	<array>
+		<dict>
+			<key>LibraryIdentifier</key>
+			<string>macos-arm64</string>
+			<key>LibraryPath</key>
+			<string>cactus.framework</string>
+			<key>SupportedArchitectures</key>
+			<array>
+				<string>arm64</string>
+			</array>
+			<key>SupportedPlatform</key>
+			<string>macos</string>
 		</dict>
 	</array>
 	<key>CFBundlePackageType</key>
@@ -155,45 +185,72 @@ function build_framework() {
 
     cmake --build . --config "$CMAKE_BUILD_TYPE" -j "$n_cpu"
 
-    DEST_DIR="$ROOT_DIR/apple/cactus.xcframework/$4"
-    FRAMEWORK_SRC="$CMAKE_BUILD_TYPE-$3/cactus.framework"
+    DEST_DIR="$ROOT_DIR/apple/$6/$4"
+    
+    # Try different possible framework locations
+    FRAMEWORK_SRC=""
+    if [ -d "$CMAKE_BUILD_TYPE-$3/cactus.framework" ]; then
+        FRAMEWORK_SRC="$CMAKE_BUILD_TYPE-$3/cactus.framework"
+    elif [ -d "$CMAKE_BUILD_TYPE/cactus.framework" ]; then
+        FRAMEWORK_SRC="$CMAKE_BUILD_TYPE/cactus.framework"
+    else
+        # Find the framework in any subdirectory
+        FRAMEWORK_SRC=$(find . -name "cactus.framework" -type d | head -n 1)
+    fi
+    
     FRAMEWORK_DEST="$DEST_DIR/cactus.framework"
 
     rm -rf "$DEST_DIR"
     mkdir -p "$DEST_DIR"
 
-    if [ -d "$FRAMEWORK_SRC" ]; then
+    if [ -n "$FRAMEWORK_SRC" ] && [ -d "$FRAMEWORK_SRC" ]; then
         cp -R "$FRAMEWORK_SRC" "$FRAMEWORK_DEST"
         echo "Framework copied from $FRAMEWORK_SRC to $FRAMEWORK_DEST"
     else
-        echo "Error: Expected framework not found at $FRAMEWORK_SRC"
+        echo "Error: Framework not found in build directory"
         echo "Available files:"
         find . -name "*.framework" -o -name "libcactus*" 2>/dev/null || true
         exit 1
     fi
 
-    cp_headers $4
+    cp_headers $6 $4
 
     rm -rf ./*
     cd "$ROOT_DIR"
 }
 
-function build_xcframework() {
-    echo "Building XCFramework..."
+function build_ios_xcframework() {
+    echo "Building iOS XCFramework..."
     
-    rm -rf "$ROOT_DIR/apple/cactus.xcframework"
+    rm -rf "$ROOT_DIR/apple/cactus-ios.xcframework"
     rm -rf "$ROOT_DIR/apple/build-ios" "$ROOT_DIR/apple/build-ios-simulator"
     mkdir -p "$ROOT_DIR/apple/build-ios" "$ROOT_DIR/apple/build-ios-simulator"
 
-    build_framework "iOS" "arm64" "iphoneos" "ios-arm64" "$ROOT_DIR/apple/build-ios"
+    build_framework "iOS" "arm64" "iphoneos" "ios-arm64" "$ROOT_DIR/apple/build-ios" "cactus-ios.xcframework"
     
-    build_framework "iOS" "arm64" "iphonesimulator" "ios-arm64-simulator" "$ROOT_DIR/apple/build-ios-simulator"
+    build_framework "iOS" "arm64" "iphonesimulator" "ios-arm64-simulator" "$ROOT_DIR/apple/build-ios-simulator" "cactus-ios.xcframework"
 
-    create_xcframework_info_plist
+    create_ios_xcframework_info_plist
 
     rm -rf "$ROOT_DIR/apple/build-ios" "$ROOT_DIR/apple/build-ios-simulator"
     
-    echo "XCFramework built: $ROOT_DIR/apple/cactus.xcframework"
+    echo "iOS XCFramework built: $ROOT_DIR/apple/cactus-ios.xcframework"
+}
+
+function build_macos_xcframework() {
+    echo "Building macOS XCFramework..."
+    
+    rm -rf "$ROOT_DIR/apple/cactus-macos.xcframework"
+    rm -rf "$ROOT_DIR/apple/build-macos"
+    mkdir -p "$ROOT_DIR/apple/build-macos"
+
+    build_framework "Darwin" "arm64" "macosx" "macos-arm64" "$ROOT_DIR/apple/build-macos" "cactus-macos.xcframework"
+
+    create_macos_xcframework_info_plist
+
+    rm -rf "$ROOT_DIR/apple/build-macos"
+    
+    echo "macOS XCFramework built: $ROOT_DIR/apple/cactus-macos.xcframework"
 }
 
 t0=$(date +%s)
@@ -203,7 +260,8 @@ if [ "$BUILD_STATIC" = "true" ]; then
 fi
 
 if [ "$BUILD_XCFRAMEWORK" = "true" ]; then
-    build_xcframework
+    build_ios_xcframework
+    build_macos_xcframework
 fi
 
 t1=$(date +%s)
@@ -212,12 +270,14 @@ echo "Build complete!"
 echo "Total time: $((t1 - t0)) seconds"
 
 if [ "$BUILD_STATIC" = "true" ]; then
-    rm -rf "$APPLE_DIR/build-static-device" "$APPLE_DIR/build-static-simulator"
+    rm -rf "$APPLE_DIR/build-static-device" "$APPLE_DIR/build-static-simulator" "$APPLE_DIR/build-static-macos"
     echo "Static libraries:"
     echo "  Device: $APPLE_DIR/libcactus-device.a"
     echo "  Simulator: $APPLE_DIR/libcactus-simulator.a"
 fi
 
 if [ "$BUILD_XCFRAMEWORK" = "true" ]; then
-    echo "XCFramework: $APPLE_DIR/cactus.xcframework"
+    echo "XCFrameworks:"
+    echo "  iOS: $APPLE_DIR/cactus-ios.xcframework"
+    echo "  macOS: $APPLE_DIR/cactus-macos.xcframework"
 fi
