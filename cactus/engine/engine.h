@@ -206,21 +206,16 @@ private:
 struct KVCache {
     static constexpr size_t DEFAULT_WINDOW_SIZE = 1024;
     static constexpr size_t DEFAULT_SINK_SIZE = 4;
-    
+
     struct LayerCache {
         std::vector<uint8_t> keys;
         std::vector<uint8_t> values;
-        size_t start_idx = 0;
-        size_t end_idx = 0;
-        size_t total_seen = 0;
     };
-    
+
     std::vector<LayerCache> layer_caches;
-    std::vector<std::vector<uint8_t>> continuous_keys;
-    std::vector<std::vector<uint8_t>> continuous_values;
-    
-    size_t window_size = DEFAULT_WINDOW_SIZE;
-    size_t sink_size = DEFAULT_SINK_SIZE;
+
+    size_t window_size = DEFAULT_WINDOW_SIZE;  
+    size_t sink_size = DEFAULT_SINK_SIZE;    
     size_t current_seq_len = 0;
     size_t total_seq_len = 0;
     size_t max_seq_len = 2048;
@@ -229,39 +224,30 @@ struct KVCache {
     size_t num_layers = 0;
     Precision precision;
     size_t element_size = 4;
-    size_t buffer_mask = 0;
-    bool use_fast_indexing = false;
-    
+
     void set_window_size(size_t window, size_t sink = DEFAULT_SINK_SIZE);
     size_t get_effective_seq_len() const { return current_seq_len; }
     size_t get_total_seq_len() const { return total_seq_len; }
-    
+
     void init(size_t num_layers, size_t max_seq, size_t num_kv_heads, size_t head_dim, Precision model_precision);
     void reset();
-    void update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_nodes, 
-                          const std::vector<size_t>& v_nodes, size_t seq_len, 
+    void update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_nodes,
+                          const std::vector<size_t>& v_nodes, size_t seq_len,
                           size_t num_layers, size_t kv_heads, size_t head_dim);
     bool is_empty() const { return current_seq_len == 0; }
     void* get_key_ptr(size_t layer);
     void* get_value_ptr(size_t layer);
-    
+
     struct CircularView {
         void* ptr1;
-        void* ptr2;
+        void* ptr2;  
         size_t len1;
-        size_t len2;
+        size_t len2; 
         size_t total_len;
     };
-    
+
     CircularView get_key_view(size_t layer);
     CircularView get_value_view(size_t layer);
-    
-private:
-    void slide_window(size_t layer);
-    void materialize_continuous_buffer(size_t layer);
-    size_t get_circular_index(size_t logical_idx, size_t start, size_t buffer_size) const;
-    void copy_to_circular_buffer(LayerCache& cache, const void* new_data, size_t new_tokens, bool is_key);
-    CircularView get_circular_view(const LayerCache& cache, bool is_key) const;
 };
 
 class Model {

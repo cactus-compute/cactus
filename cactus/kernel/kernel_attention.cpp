@@ -206,7 +206,7 @@ void cactus_attention_f32(
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }
-    
+
     constexpr size_t VECTOR_WIDTH = 4;
     constexpr size_t TILE_Q = 4;
     constexpr size_t TILE_K = 8;
@@ -257,6 +257,11 @@ void cactus_attention_f32(
                                 for (size_t kv_idx = 0; kv_idx < (kv_end - kv_start); ++kv_idx) {
                                     const size_t kv_pos = kv_start + kv_idx;
                                     const float* k_vec = K_base + kv_pos * kv_seq_stride + kv_head_idx * head_dim;
+
+                                    if (kv_idx + 1 < (kv_end - kv_start)) {
+                                        const float* next_k_vec = K_base + (kv_pos + 1) * kv_seq_stride + kv_head_idx * head_dim;
+                                        __builtin_prefetch(next_k_vec + dim_block, 0, 1);
+                                    }
 
                                     float32x4_t k_vec_low = vld1q_f32(&k_vec[dim_block]);
                                     float32x4_t k_vec_high = vld1q_f32(&k_vec[dim_block + VECTOR_WIDTH]);
@@ -348,6 +353,11 @@ void cactus_attention_f32(
                             if (attn_weight == 0.0f) continue;
 
                             const float* v_vec = V_base + kv_pos * kv_seq_stride + kv_head_idx * head_dim;
+
+                            if (kv_pos + 1 < kv_seq_len) {
+                                const float* next_v_vec = V_base + (kv_pos + 1) * kv_seq_stride + kv_head_idx * head_dim;
+                                __builtin_prefetch(next_v_vec, 0, 1);
+                            }
 
                             size_t dim_aligned = (head_dim / VECTOR_WIDTH) * VECTOR_WIDTH;
                             float32x4_t weight_vec = vdupq_n_f32(attn_weight);
