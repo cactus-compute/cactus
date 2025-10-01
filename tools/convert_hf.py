@@ -13,13 +13,18 @@ except ImportError:
     print("Please install required packages: pip install torch transformers")
     sys.exit(1)
 
-def save_tensor_with_header(tensor, output_path, precision='FP32', transpose=False, stats_tracker=None, args=None):
+def save_tensor_with_header(tensor, output_path, precision='FP32', transpose=False, stats_tracker=None, args=None, model_type=None):
     if isinstance(tensor, torch.Tensor):
         data = tensor.detach().cpu().numpy()
     else:
         data = np.array(tensor)
-    
+
     original_data = data.copy()
+
+    if model_type == 'gemma' and 'norm' in str(output_path):
+        data = data + 1.0
+        original_data = data.copy()
+        
     mean_val = np.mean(original_data)
     std_val = np.std(original_data)
     min_val = np.min(original_data)
@@ -171,6 +176,15 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
     
     tie_word_embeddings = getattr(config, 'tie_word_embeddings', False)
     
+    model_type_str = getattr(config, 'model_type', '').lower()
+    if 'gemma' in model_type_str:
+        detected_model_type = 'gemma'
+    elif 'qwen' in model_type_str:
+        detected_model_type = 'qwen'
+    else:
+        detected_model_type = 'qwen'
+        print(f"  Warning: Unknown model type '{model_type_str}', defaulting to 'qwen'")
+
     model_config = {
         'vocab_size': getattr(config, 'vocab_size', 0),
         'hidden_dim': getattr(config, 'hidden_size', 0),
@@ -181,7 +195,8 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         'context_length': getattr(config, 'max_position_embeddings', getattr(config, 'max_sequence_length', 0)),
         'rope_theta': getattr(config, 'rope_theta', 10000.0),
         'attention_head_dim': getattr(config, 'head_dim', getattr(config, 'hidden_size', 0) // getattr(config, 'num_attention_heads', 1)),
-        'tie_word_embeddings': tie_word_embeddings
+        'tie_word_embeddings': tie_word_embeddings,
+        'model_type': detected_model_type
     }
     
     embed_names = ['model.embed_tokens.weight', 'embed_tokens.weight', 'embeddings.weight', 'transformer.wte.weight']
@@ -190,7 +205,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
     for name in embed_names:
         if name in state_dict:
             embedding_tensor = state_dict[name]
-            save_tensor_with_header(embedding_tensor, output_dir / "token_embeddings.weights", precision, transpose=False, stats_tracker=quantization_stats, args=args)
+            save_tensor_with_header(embedding_tensor, output_dir / "token_embeddings.weights", precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
             embedding_found = True
             break
     
@@ -202,14 +217,14 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         for name in output_names:
             if name in state_dict:
                 tensor = state_dict[name]
-                save_tensor_with_header(tensor, output_dir / "output_weight.weights", precision, transpose=False, stats_tracker=quantization_stats, args=args)
+                save_tensor_with_header(tensor, output_dir / "output_weight.weights", precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                 break
     
     output_norm_names = ['model.norm.weight', 'norm.weight', 'final_layernorm.weight', 'transformer.ln_f.weight']
     for name in output_norm_names:
         if name in state_dict:
             tensor = state_dict[name]
-            save_tensor_with_header(tensor, output_dir / "output_norm.weights", precision, stats_tracker=quantization_stats, args=args)
+            save_tensor_with_header(tensor, output_dir / "output_norm.weights", precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
             break
     
     num_layers = model_config['num_layers']
@@ -238,6 +253,9 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             (['mlp.up_proj.weight'], precision, f'layer_{i}_ffn_up.weights', False),
             (['mlp.down_proj.weight', 'mlp.c_proj.weight'], precision, f'layer_{i}_ffn_down.weights', False),
             (['post_attention_layernorm.weight', 'ln_2.weight'], precision, f'layer_{i}_post_attn_norm.weights', False),
+            # Gemma3 specific layer norms 
+            (['pre_feedforward_layernorm.weight'], precision, f'layer_{i}_pre_ffn_norm.weights', False),
+            (['post_feedforward_layernorm.weight'], precision, f'layer_{i}_post_ffn_norm.weights', False),
         ]
         
         for name_patterns, tensor_precision, output_name, should_transpose in weight_patterns:
@@ -246,7 +264,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 full_name = layer_prefix + pattern
                 if full_name in state_dict:
                     tensor = state_dict[full_name]
-                    save_tensor_with_header(tensor, output_dir / output_name, tensor_precision, transpose=should_transpose, stats_tracker=quantization_stats, args=args)
+                    save_tensor_with_header(tensor, output_dir / output_name, tensor_precision, transpose=should_transpose, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                     found = True
                     break
             
@@ -259,9 +277,9 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                     k_weight = combined_weight[:, hidden_size:2*hidden_size]
                     v_weight = combined_weight[:, 2*hidden_size:]
                     
-                    save_tensor_with_header(q_weight, output_dir / f'layer_{i}_attn_q.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args)
-                    save_tensor_with_header(k_weight, output_dir / f'layer_{i}_attn_k.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args)
-                    save_tensor_with_header(v_weight, output_dir / f'layer_{i}_attn_v.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args)
+                    save_tensor_with_header(q_weight, output_dir / f'layer_{i}_attn_q.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                    save_tensor_with_header(k_weight, output_dir / f'layer_{i}_attn_k.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                    save_tensor_with_header(v_weight, output_dir / f'layer_{i}_attn_v.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                     found = True
             
     

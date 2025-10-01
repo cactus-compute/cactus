@@ -290,7 +290,8 @@ size_t CactusGraph::sample(size_t logits, float temperature, float top_p, size_t
     params.top_p = top_p;
     params.top_k = top_k;
     params.random_seed = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-    
+    params.output_precision = Precision::FP32;
+
     std::vector<size_t> output_shape = {1};
     return add_node(OpType::SAMPLE, {logits}, output_shape, params);
 }

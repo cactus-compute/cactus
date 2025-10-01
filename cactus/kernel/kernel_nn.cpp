@@ -153,11 +153,69 @@ void cactus_gelu_f32(const float* input, float* output, size_t num_elements) {
         });
 }
 
+void cactus_gelu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
+    const float sqrt_2_over_pi = 0.7978845608028654f;
+    const float coeff = 0.044715f;
+
+    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+        [&](size_t start_idx, size_t end_idx) {
+            constexpr size_t SIMD_WIDTH = 8;
+            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
+
+            const float32x4_t half = vdupq_n_f32(0.5f);
+            const float32x4_t one = vdupq_n_f32(1.0f);
+            const float32x4_t sqrt_2_pi_vec = vdupq_n_f32(sqrt_2_over_pi);
+            const float32x4_t coeff_vec = vdupq_n_f32(coeff);
+
+            for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
+                float16x8_t x_f16 = vld1q_f16(&input[i]);
+
+                float32x4_t x_low = vcvt_f32_f16(vget_low_f16(x_f16));
+                float32x4_t x_high = vcvt_f32_f16(vget_high_f16(x_f16));
+
+                float32x4_t x_cubed_low = vmulq_f32(vmulq_f32(x_low, x_low), x_low);
+                float32x4_t x_cubed_high = vmulq_f32(vmulq_f32(x_high, x_high), x_high);
+
+                float32x4_t inner_low = vmlaq_f32(x_low, coeff_vec, x_cubed_low);
+                float32x4_t inner_high = vmlaq_f32(x_high, coeff_vec, x_cubed_high);
+                inner_low = vmulq_f32(sqrt_2_pi_vec, inner_low);
+                inner_high = vmulq_f32(sqrt_2_pi_vec, inner_high);
+
+                float tanh_vals[8];
+                vst1q_f32(&tanh_vals[0], inner_low);
+                vst1q_f32(&tanh_vals[4], inner_high);
+                for (int j = 0; j < 8; j++) {
+                    tanh_vals[j] = tanhf(tanh_vals[j]);
+                }
+                float32x4_t tanh_low = vld1q_f32(&tanh_vals[0]);
+                float32x4_t tanh_high = vld1q_f32(&tanh_vals[4]);
+
+                float32x4_t one_plus_tanh_low = vaddq_f32(one, tanh_low);
+                float32x4_t one_plus_tanh_high = vaddq_f32(one, tanh_high);
+                float32x4_t gelu_low = vmulq_f32(vmulq_f32(half, x_low), one_plus_tanh_low);
+                float32x4_t gelu_high = vmulq_f32(vmulq_f32(half, x_high), one_plus_tanh_high);
+
+                float16x4_t gelu_low_f16 = vcvt_f16_f32(gelu_low);
+                float16x4_t gelu_high_f16 = vcvt_f16_f32(gelu_high);
+                float16x8_t gelu_f16 = vcombine_f16(gelu_low_f16, gelu_high_f16);
+
+                vst1q_f16(&output[i], gelu_f16);
+            }
+
+            for (size_t i = vectorized_end; i < end_idx; ++i) {
+                float x = static_cast<float>(input[i]);
+                float inner = sqrt_2_over_pi * (x + coeff * x * x * x);
+                float gelu = 0.5f * x * (1.0f + tanhf(inner));
+                output[i] = static_cast<__fp16>(gelu);
+            }
+        });
+}
+
 void cactus_gelu_int8(const int8_t* input, int8_t* output, size_t num_elements,
                       float input_scale, float output_scale) {
     const float sqrt_2_over_pi = 0.7978845608028654f;
     const float coeff = 0.044715f;
-    
+
     CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
         [&](size_t start_idx, size_t end_idx) {
             for (size_t i = start_idx; i < end_idx; ++i) {
@@ -402,7 +460,6 @@ void kernel_softmax_f16_single(const __fp16* input, __fp16* output, size_t vocab
         sum += exp_val;
     }
     
-    // Pass 3: Normalize (F16 computation)
     const float inv_sum = 1.0f / sum;
     const float16x8_t inv_sum_vec_f16 = vdupq_n_f16(static_cast<__fp16>(inv_sum));
     
@@ -570,7 +627,7 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
 void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size,
                        float temperature, float top_p, size_t top_k, size_t random_seed) {
     std::vector<__fp16> filtered_logits(vocab_size);
-    
+
     if (temperature > 0) {
         __fp16 inv_temp = static_cast<__fp16>(1.0f / temperature);
         float16x8_t inv_temp_vec = vdupq_n_f16(inv_temp);
@@ -586,18 +643,35 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
     } else {
         std::memcpy(filtered_logits.data(), logits, vocab_size * sizeof(__fp16));
     }
-    
+
+    static std::vector<uint32_t> token_history;
+    static const size_t MAX_HISTORY = 128; 
+    static const float REPETITION_PENALTY = 1.1f;
+
+    if (!token_history.empty() && REPETITION_PENALTY != 1.0f) {
+        const __fp16 penalty_inv = static_cast<__fp16>(1.0f / REPETITION_PENALTY);
+        const __fp16 penalty = static_cast<__fp16>(REPETITION_PENALTY);
+
+        for (uint32_t prev_token : token_history) {
+            if (prev_token < vocab_size) {
+                filtered_logits[prev_token] = (filtered_logits[prev_token] > static_cast<__fp16>(0))
+                    ? static_cast<__fp16>(filtered_logits[prev_token] * penalty_inv)
+                    : static_cast<__fp16>(filtered_logits[prev_token] * penalty);
+            }
+        }
+    }
+
     if (top_k > 0) {
         std::vector<std::pair<__fp16, size_t>> logit_pairs;
         logit_pairs.reserve(vocab_size);
         for (size_t i = 0; i < vocab_size; ++i) {
             logit_pairs.emplace_back(filtered_logits[i], i);
         }
-        std::partial_sort(logit_pairs.begin(), 
+        std::partial_sort(logit_pairs.begin(),
                          logit_pairs.begin() + std::min(top_k, vocab_size),
                          logit_pairs.end(),
                          [](const auto& a, const auto& b) { return a.first > b.first; });
-        
+
         if (top_k < vocab_size) {
             __fp16 kth_value = logit_pairs[top_k - 1].first;
             __fp16 neg_inf = static_cast<__fp16>(-std::numeric_limits<float>::infinity());
@@ -608,7 +682,7 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
             }
         }
     }
-    
+
     if (top_p > 0.0f && top_p < 1.0f) {
         std::vector<std::pair<__fp16, size_t>> sorted_logits;
         sorted_logits.reserve(vocab_size);
@@ -618,9 +692,9 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
                 sorted_logits.emplace_back(filtered_logits[i], i);
             }
         }
-        std::sort(sorted_logits.begin(), sorted_logits.end(), 
+        std::sort(sorted_logits.begin(), sorted_logits.end(),
                   [](const auto& a, const auto& b) { return a.first > b.first; });
-        
+
         __fp16 max_logit = sorted_logits.empty() ? static_cast<__fp16>(0.0f) : sorted_logits[0].first;
         std::vector<float> temp_probs;
         temp_probs.reserve(sorted_logits.size());
@@ -630,20 +704,24 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
             temp_probs.push_back(prob);
             sum += prob;
         }
-        
+
         for (float& prob : temp_probs) {
             prob /= sum;
         }
-        
+
         float cumulative_prob = 0.0f;
         std::vector<bool> indices_to_remove(sorted_logits.size(), false);
+        bool threshold_reached = false;
         for (size_t i = 0; i < sorted_logits.size(); ++i) {
             cumulative_prob += temp_probs[i];
-            if (cumulative_prob > top_p) {
+            if (cumulative_prob > top_p && i > 0) { 
+                threshold_reached = true;
+            }
+            if (threshold_reached) {
                 indices_to_remove[i] = true;
             }
         }
-        
+
         if (!indices_to_remove.empty()) {
             for (size_t i = 1; i < indices_to_remove.size(); ++i) {
                 indices_to_remove[i] = indices_to_remove[i-1] || indices_to_remove[i];
@@ -675,36 +753,48 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
             sum += probs[i];
         }
     }
-    
+
     if (sum == 0.0f) {
         output[0] = 0;
         return;
     }
-    
+
     for (size_t i = 0; i < vocab_size; ++i) {
         probs[i] /= sum;
     }
-    
+
     uint32_t actual_seed = (random_seed == 0) ? std::random_device{}() : random_seed;
     std::mt19937 gen(actual_seed);
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
     float sample = dist(gen);
-    
+
     float cumulative = 0.0f;
     for (size_t i = 0; i < vocab_size; ++i) {
         cumulative += probs[i];
         if (cumulative >= sample) {
             output[0] = static_cast<uint32_t>(i);
+            token_history.push_back(output[0]);
+            if (token_history.size() > MAX_HISTORY) {
+                token_history.erase(token_history.begin());
+            }
             return;
         }
     }
-    
+
     for (size_t i = vocab_size; i > 0; --i) {
         if (probs[i-1] > 0.0f) {
             output[0] = static_cast<uint32_t>(i-1);
+            token_history.push_back(output[0]);
+            if (token_history.size() > MAX_HISTORY) {
+                token_history.erase(token_history.begin());
+            }
             return;
         }
     }
-    
+
     output[0] = 0;
+    token_history.push_back(output[0]);
+    if (token_history.size() > MAX_HISTORY) {
+        token_history.erase(token_history.begin());
+    }
 }

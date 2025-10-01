@@ -77,6 +77,7 @@ void cactus_divide_broadcast_f32(const float* a, const float* b, float* output,
 
 
 void cactus_scalar_op_int8(const int8_t* input, int8_t* output, size_t num_elements, float scalar_value, ScalarOpType op_type);
+void cactus_scalar_op_f16(const __fp16* input, __fp16* output, size_t num_elements, float scalar_value, ScalarOpType op_type);
 void cactus_scalar_op_f32(const float* input, float* output, size_t num_elements, float scalar_value, ScalarOpType op_type);
 
 
@@ -168,7 +169,7 @@ void cactus_silu_int8(const int8_t* input, int8_t* output, size_t num_elements,
                       float input_scale, float output_scale);
 
 void cactus_gelu_f32(const float* input, float* output, size_t num_elements);
-
+void cactus_gelu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 void cactus_gelu_int8(const int8_t* input, int8_t* output, size_t num_elements,
                       float input_scale, float output_scale);
 

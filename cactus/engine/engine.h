@@ -27,13 +27,16 @@ struct Config {
     float layer_norm_eps = 1e-6f;
     float rope_theta = 1000000.0f;
     bool tie_word_embeddings = true;
-    
+
+    enum class ModelType {QWEN = 0, GEMMA = 1};
+    ModelType model_type = ModelType::QWEN;
+
     enum class Activation {GELU = 0, SILU = 1};
     Activation activation = Activation::SILU;
-    
+
     enum class Backend {CPU = 0, NPU = 1};
     Backend default_backend = Backend::CPU;
-    
+
     enum class Precision {INT8 = 0, FP16 = 1, FP32 = 2};
     Precision precision = Precision::FP32;
     
@@ -254,29 +257,29 @@ class Model {
 public:
     Model();
     explicit Model(const Config& config);
-    ~Model();
+    virtual ~Model();
 
     const Config& get_config() const { return config_; }
     Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
 
     bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "");
-    uint32_t generate(const std::vector<uint32_t>& tokens, float temperature = 0.6f, float top_p = 0.95f, 
+    uint32_t generate(const std::vector<uint32_t>& tokens, float temperature = 0.6f, float top_p = 0.95f,
                       size_t top_k = 20, const std::string& profile_file = "");
-    
+
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true);
-    
+
     void reset_cache() { kv_cache_.reset(); }
     void set_cache_window(size_t window_size, size_t sink_size = 4) { kv_cache_.set_window_size(window_size, sink_size); }
-    
-private:
-    size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false);
-    void load_weights_to_graph(CactusGraph* gb);
-    size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx, 
-                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
-    size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx, 
-                    ComputeBackend backend) const;
-    size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx, 
-                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+
+protected:
+    virtual size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) = 0;
+    virtual void load_weights_to_graph(CactusGraph* gb) = 0;
+    virtual size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) = 0;
+    virtual size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                    ComputeBackend backend) const = 0;
+    virtual size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) = 0;
     void update_kv_cache(CactusGraph* gb, size_t seq_len);
     Config config_;
     std::unique_ptr<Tokenizer> tokenizer_;
@@ -284,39 +287,19 @@ private:
     void* graph_handle_;
     bool initialized_;
     float attention_scale_;
-    
-private:
+
+protected:
     KVCache kv_cache_;
     std::vector<size_t> cache_k_output_nodes_;
     std::vector<size_t> cache_v_output_nodes_;
-    
-    
+
     std::string embedding_file_path_;
     size_t embedding_node_id_;
     std::string model_folder_path_;
-    
-    
-    struct WeightNodeIDs {
-        size_t output_weight;
-        size_t output_norm_weight;
-        
-        struct LayerWeights {
-            size_t attn_q_weight;
-            size_t attn_k_weight;
-            size_t attn_v_weight;
-            size_t attn_output_weight;
-            size_t input_layernorm_weight;
-            size_t attn_q_norm_weight;
-            size_t attn_k_norm_weight;
-            size_t ffn_gate_weight;
-            size_t ffn_up_weight;
-            size_t ffn_down_weight;
-            size_t post_attention_layernorm_weight;
-        };
-        
-        std::vector<LayerWeights> layers;
-    } mutable weight_nodes_;
+    size_t output_weight_node_id_;
 };
+
+std::unique_ptr<Model> create_model(const std::string& model_folder);
 
 }
 }

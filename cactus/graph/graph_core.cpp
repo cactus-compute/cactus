@@ -126,12 +126,15 @@ void dispatch_unary_op(OpType op, const T* input, T* output, size_t count, float
     
     if constexpr (std::is_same_v<T, int8_t>) {
         cactus_scalar_op_int8(input, output, count, param, scalar_op);
+    } else if constexpr (std::is_same_v<T, __fp16>) {
+        cactus_scalar_op_f16(input, output, count, param, scalar_op);
     } else {
         cactus_scalar_op_f32(input, output, count, param, scalar_op);
     }
 }
 
 template void dispatch_unary_op<int8_t>(OpType, const int8_t*, int8_t*, size_t, float);
+template void dispatch_unary_op<__fp16>(OpType, const __fp16*, __fp16*, size_t, float);
 template void dispatch_unary_op<float>(OpType, const float*, float*, size_t, float);
 
 void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -274,12 +277,16 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
             const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
             
             if (input.precision == Precision::INT8) {
-                dispatch_unary_op<int8_t>(node.op_type, input.data_as<int8_t>(), 
-                                         node.output_buffer.data_as<int8_t>(), 
+                dispatch_unary_op<int8_t>(node.op_type, input.data_as<int8_t>(),
+                                         node.output_buffer.data_as<int8_t>(),
                                          node.output_buffer.total_size, node.params.scalar);
+            } else if (input.precision == Precision::FP16) {
+                dispatch_unary_op<__fp16>(node.op_type, input.data_as<__fp16>(),
+                                        node.output_buffer.data_as<__fp16>(),
+                                        node.output_buffer.total_size, node.params.scalar);
             } else {
-                dispatch_unary_op<float>(node.op_type, input.data_as<float>(), 
-                                        node.output_buffer.data_as<float>(), 
+                dispatch_unary_op<float>(node.op_type, input.data_as<float>(),
+                                        node.output_buffer.data_as<float>(),
                                         node.output_buffer.total_size, node.params.scalar);
             }
             break;
@@ -306,16 +313,20 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
         }
         case OpType::GELU: {
             const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-            
+
             if (input.precision == Precision::INT8) {
-                cactus_gelu_int8(input.data_as<int8_t>(), 
-                                node.output_buffer.data_as<int8_t>(), 
+                cactus_gelu_int8(input.data_as<int8_t>(),
+                                node.output_buffer.data_as<int8_t>(),
                                 node.output_buffer.total_size,
                                 input.quantization_scale,
                                 node.output_buffer.quantization_scale);
+            } else if (input.precision == Precision::FP16) {
+                cactus_gelu_f16(input.data_as<__fp16>(),
+                               node.output_buffer.data_as<__fp16>(),
+                               node.output_buffer.total_size);
             } else {
-                cactus_gelu_f32(input.data_as<float>(), 
-                               node.output_buffer.data_as<float>(), 
+                cactus_gelu_f32(input.data_as<float>(),
+                               node.output_buffer.data_as<float>(),
                                node.output_buffer.total_size);
             }
             break;

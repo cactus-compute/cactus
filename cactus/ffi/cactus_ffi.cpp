@@ -225,9 +225,15 @@ const char* cactus_get_last_error() {
 cactus_model_t cactus_init(const char* model_path, size_t context_size) {
     try {
         auto* wrapper = new CactusModel();
-        wrapper->model = std::make_unique<Model>();
+        wrapper->model = create_model(model_path);
         wrapper->model_path = model_path;
-        
+
+        if (!wrapper->model) {
+            last_error_message = "Failed to create model from: " + std::string(model_path);
+            delete wrapper;
+            return nullptr;
+        }
+
         if (!wrapper->model->init(model_path, context_size)) {
             last_error_message = "Failed to initialize model from: " + std::string(model_path);
             delete wrapper;
@@ -352,7 +358,7 @@ int cactus_complete(
         if (tokens_to_process.empty()) {
             next_token = wrapper->model->generate({}, temperature, top_p, top_k);
         } else {
-            next_token = wrapper->model->generate(tokens_to_process, temperature, top_p, top_k);
+            next_token = wrapper->model->generate(tokens_to_process, temperature, top_p, top_k, "profile.txt");
         }
         
         auto token_end = std::chrono::high_resolution_clock::now();
