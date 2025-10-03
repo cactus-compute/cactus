@@ -4,6 +4,12 @@ project(CactusTests LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+if(APPLE)
+    set(CMAKE_OSX_ARCHITECTURES "arm64")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -pthread -Wall -Wextra -pedantic -O3")
+else()
+endif()
+
 set(CACTUS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../cactus)
 set(CACTUS_BUILD_DIR ${CACTUS_ROOT}/build)
 
