@@ -78,8 +78,8 @@ void benchmark_binary_elementwise_ops(TestUtils::TestRunner& runner, const Bench
             fixture.set_input_data(input_a, data_a, precision);
             fixture.set_input_data(input_b, data_b, precision);
             
-            size_t result = op_func(fixture.graph(), input_a, input_b);
-            
+            op_func(fixture.graph(), input_a, input_b);
+
             double time_ms = time_operation<T>([&]() {
                 fixture.execute();
             }, config.iterations);
@@ -119,8 +119,8 @@ void benchmark_scalar_ops(TestUtils::TestRunner& runner, const BenchmarkConfig& 
             setup_random_data(data_a);
             fixture.set_input_data(input_a, data_a, precision);
             
-            size_t result = op_func(fixture.graph(), input_a);
-            
+            op_func(fixture.graph(), input_a);
+
             double time_ms = time_operation<T>([&]() {
                 fixture.execute();
             }, config.iterations);
@@ -154,8 +154,8 @@ void benchmark_matmul_ops(TestUtils::TestRunner& runner, const BenchmarkConfig& 
                 fixture.set_input_data(input_a, data_a, precision);
                 fixture.set_input_data(input_b, data_b, precision);
                 
-                size_t result = fixture.graph().matmul(input_a, input_b, false, backend);
-                
+                fixture.graph().matmul(input_a, input_b, false, backend);
+
                 double time_ms = time_operation<T>([&]() {
                     fixture.execute();
                 }, config.iterations);
@@ -192,8 +192,8 @@ void benchmark_unary_ops(TestUtils::TestRunner& runner, const BenchmarkConfig& c
             setup_random_data(data_a);
             fixture.set_input_data(input_a, data_a, precision);
             
-            size_t result = op_func(fixture.graph(), input_a);
-            
+            op_func(fixture.graph(), input_a);
+
             double time_ms = time_operation<T>([&]() {
                 fixture.execute();
             }, config.iterations);
@@ -230,8 +230,8 @@ void benchmark_reduction_ops(TestUtils::TestRunner& runner, const BenchmarkConfi
             setup_random_data(data_a);
             fixture.set_input_data(input_a, data_a, precision);
             
-            size_t result = op_func(fixture.graph(), input_a);
-            
+            op_func(fixture.graph(), input_a);
+
             double time_ms = time_operation<T>([&]() {
                 fixture.execute();
             }, config.iterations);
@@ -259,8 +259,8 @@ void benchmark_advanced_ops(TestUtils::TestRunner& runner, const BenchmarkConfig
         setup_random_data(data_a);
         fixture.set_input_data(input_a, data_a, precision);
         
-        size_t result = fixture.graph().softmax(input_a, -1);
-        
+        fixture.graph().softmax(input_a, -1);
+
         double time_ms = time_operation<T>([&]() {
             fixture.execute();
         }, config.iterations);
@@ -291,8 +291,8 @@ void benchmark_rms_norm(TestUtils::TestRunner& runner, const BenchmarkConfig& co
         graph.set_input(input_a, const_cast<void*>(static_cast<const void*>(data_a.data())), precision);
         graph.set_input(weight, const_cast<void*>(static_cast<const void*>(weight_data.data())), Precision::FP32);
         
-        size_t result = graph.rms_norm(input_a, weight);
-        
+        graph.rms_norm(input_a, weight);
+
         double time_ms = time_operation<T>([&]() {
             graph.execute();
         }, config.iterations);
@@ -308,7 +308,6 @@ void benchmark_rms_norm(TestUtils::TestRunner& runner, const BenchmarkConfig& co
 
 template<typename T>
 void benchmark_rope(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
-    // RoPE typically works on float data (rotary position embeddings)
     if constexpr (!std::is_same_v<T, float>) {
     }
     
@@ -328,8 +327,8 @@ void benchmark_rope(TestUtils::TestRunner& runner, const BenchmarkConfig& config
         setup_random_data(data_a);
         fixture.set_input_data(input_a, data_a, Precision::FP32);
         
-        size_t result = fixture.graph().rope(input_a, 10000.0f);
-        
+        fixture.graph().rope(input_a, 10000.0f);
+
         double time_ms = time_operation<float>([&]() {
             fixture.execute();
         }, config.iterations);
@@ -368,13 +367,12 @@ void benchmark_attention(TestUtils::TestRunner& runner, const BenchmarkConfig& c
         graph.set_input(value, const_cast<void*>(static_cast<const void*>(v_data.data())), precision);
         
         float scale = 1.0f / sqrtf(static_cast<float>(head_dim));
-        size_t result = graph.attention(query, key, value, scale);
+        graph.attention(query, key, value, scale);
         
         double time_ms = time_operation<T>([&]() {
             graph.execute();
         }, config.iterations);
         
-        // Attention is roughly O(seq_len^2 * head_dim) operations
         double gflops = calculate_gflops(2ULL * batch_size * num_heads * seq_len * seq_len * head_dim, time_ms);
         
         runner.log_performance("Attention " + std::to_string(seq_len) + "x" + std::to_string(num_heads) + "x" + std::to_string(head_dim) + " " + prec_str,
@@ -415,8 +413,8 @@ void benchmark_embedding_ops(TestUtils::TestRunner& runner, BenchmarkConfig& con
                 
                 size_t embeddings_id = graph.input({vocab_size, embedding_dim}, precision);
                 size_t indices_id = graph.input({seq_len}, Precision::INT8);
-                size_t result_id = graph.embedding(embeddings_id, indices_id);
-                
+                graph.embedding(embeddings_id, indices_id);
+
                 graph.set_input(embeddings_id, embeddings_data.data(), precision);
                 graph.set_input(indices_id, indices_data.data(), Precision::INT8);
                 
@@ -469,8 +467,8 @@ void benchmark_mmap_embedding(TestUtils::TestRunner& runner, BenchmarkConfig& co
                 }
                 
                 size_t indices_id = graph.input({seq_len}, Precision::INT8);
-                size_t result_id = graph.embedding(temp_file, indices_id);
-                
+                graph.embedding(temp_file, indices_id);
+
                 graph.set_input(indices_id, indices_data.data(), Precision::INT8);
                 
                 double time_ms = time_operation<float>([&]() {
@@ -495,7 +493,6 @@ template<typename T>
 void benchmark_gather_ops(TestUtils::TestRunner& runner, BenchmarkConfig& config) {
     std::string precision_str = precision_to_string(std::is_same_v<T, int8_t> ? Precision::INT8 : Precision::FP32);
     
-    // 1D tensor gather (like selecting attention scores)
     {
         std::vector<size_t> tensor_sizes = {127};
         std::vector<size_t> index_counts = {132};
@@ -521,8 +518,8 @@ void benchmark_gather_ops(TestUtils::TestRunner& runner, BenchmarkConfig& config
                 
                 size_t tensor_id = graph.input({tensor_size}, precision);
                 size_t indices_id = graph.input({index_count}, Precision::INT8);
-                size_t result_id = graph.gather(tensor_id, indices_id);
-                
+                graph.gather(tensor_id, indices_id);
+
                 graph.set_input(tensor_id, tensor_data.data(), precision);
                 graph.set_input(indices_id, indices_data.data(), Precision::INT8);
                 
@@ -540,7 +537,6 @@ void benchmark_gather_ops(TestUtils::TestRunner& runner, BenchmarkConfig& config
         }
     }
     
-    // 3D tensor gather (like selecting feature maps)
     {
         std::vector<std::vector<size_t>> tensor_shapes = {{64, 16, 8}};
         std::vector<size_t> index_counts = {12};
@@ -567,8 +563,8 @@ void benchmark_gather_ops(TestUtils::TestRunner& runner, BenchmarkConfig& config
                 
                 size_t tensor_id = graph.input(shape, precision);
                 size_t indices_id = graph.input({index_count}, Precision::INT8);
-                size_t result_id = graph.gather(tensor_id, indices_id);
-                
+                graph.gather(tensor_id, indices_id);
+
                 graph.set_input(tensor_id, tensor_data.data(), precision);
                 graph.set_input(indices_id, indices_data.data(), Precision::INT8);
                 

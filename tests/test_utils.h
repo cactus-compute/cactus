@@ -40,16 +40,18 @@ namespace TestUtils {
     class TestFixture {
     public:
         TestFixture(const std::string& test_name = "");
-        ~TestFixture();
-        
+        ~TestFixture() {
+            graph_.hard_reset();
+        }
+
         CactusGraph& graph() { return graph_; }
-        
+
         size_t create_input(const std::vector<size_t>& shape, Precision precision = Precision::INT8);
         void set_input_data(size_t input_id, const std::vector<T>& data, Precision precision);
         void execute();
         T* get_output(size_t node_id);
         bool verify_output(size_t node_id, const std::vector<T>& expected, float tolerance = 1e-6f);
-        
+
     private:
         CactusGraph graph_;
     };
@@ -90,12 +92,7 @@ double TestUtils::time_function(Func&& func, int iterations) {
 
 template<typename T>
 TestUtils::TestFixture<T>::TestFixture(const std::string& test_name) {
-    // No runner needed - just provide utilities
-}
-
-template<typename T>
-TestUtils::TestFixture<T>::~TestFixture() {
-    graph_.hard_reset();
+    (void)test_name;
 }
 
 template<typename T>

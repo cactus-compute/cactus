@@ -157,12 +157,13 @@ namespace TestUtils {
         return passed_count_ == total_count_;
     }
     
-    bool test_basic_operation(const std::string& op_name, 
+    bool test_basic_operation(const std::string& op_name,
                              std::function<size_t(CactusGraph&, size_t, size_t)> op_func,
                              const std::vector<int8_t>& data_a,
                              const std::vector<int8_t>& data_b,
                              const std::vector<int8_t>& expected,
                              const std::vector<size_t>& shape) {
+        (void)op_name;  
         CactusGraph graph;
         
         size_t input_a = graph.input(shape, Precision::INT8);
@@ -193,6 +194,7 @@ namespace TestUtils {
                               float scalar,
                               const std::vector<int8_t>& expected,
                               const std::vector<size_t>& shape) {
+        (void)op_name;  
         CactusGraph graph;
         
         size_t input_a = graph.input(shape, Precision::INT8);

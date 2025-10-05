@@ -212,6 +212,7 @@ bool test_attention() {
     size_t value = fixture.create_input({1, 2, 1, 4});
     
     size_t attention_result = fixture.graph().attention(query, key, value, 0.5f);
+    (void)attention_result;  
     
     std::vector<int8_t> q_data = {1, 0, 0, 0, 0, 1, 0, 0};
     std::vector<int8_t> k_data = {1, 0, 0, 0, 0, 1, 0, 0};

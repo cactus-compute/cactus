@@ -86,13 +86,15 @@ bool test_embeddings() {
     size_t embedding_dim2 = 0;
     
     Timer timer1;
-    int result1 = cactus_embed(model, text1, embeddings1.data(), 
+    int result1 = cactus_embed(model, text1, embeddings1.data(),
                                embeddings1.size() * sizeof(float), &embedding_dim1);
+    (void)result1; 
     double time1 = timer1.elapsed_ms();
-    
+
     Timer timer2;
-    int result2 = cactus_embed(model, text2, embeddings2.data(), 
+    int result2 = cactus_embed(model, text2, embeddings2.data(),
                                embeddings2.size() * sizeof(float), &embedding_dim2);
+    (void)result2;  
     double time2 = timer2.elapsed_ms();
     
     float dot_product = 0.0f;
@@ -147,6 +149,7 @@ bool test_generation_control() {
     control_data.model = model;
     
     auto control_callback = [](const char* token, uint32_t token_id, void* user_data) {
+        (void)token_id;  
         auto* data = static_cast<ControlData*>(user_data);
         std::cout << token << std::flush;
         data->token_count++;
@@ -262,10 +265,10 @@ bool test_ffi_with_tools() {
 int main() {
     TestUtils::TestRunner runner("Engine Tests");
     runner.run_test("engine_forward_decode_benchmark", test_ffi());  
-    // runner.run_test("text_embeddings", test_embeddings());
-    // runner.run_test("generation_control", test_generation_control());
-    // runner.run_test("incremental_processing", test_incremental_processing());
-    // runner.run_test("ffi_with_tools", test_ffi_with_tools());
+    runner.run_test("text_embeddings", test_embeddings());
+    runner.run_test("generation_control", test_generation_control());
+    runner.run_test("incremental_processing", test_incremental_processing());
+    runner.run_test("ffi_with_tools", test_ffi_with_tools());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
