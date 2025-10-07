@@ -111,42 +111,47 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
 std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
     std::string result;
 
-    if (!tools_json.empty()) {
-        result += "<start_of_turn>system\n";
+    result = "<bos>";
 
-        bool has_system_msg = false;
-        for (const auto& msg : messages) {
-            if (msg.role == "system") {
-                result += msg.content;
+    std::string system_content;
+    bool has_system = false;
+
+    for (const auto& msg : messages) {
+        if (msg.role == "system") {
+            system_content = msg.content;
+            has_system = true;
+            break;
+        }
+    }
+
+    bool first_user_message = true;
+
+    for (const auto& msg : messages) {
+        if (msg.role == "system") {
+            continue;
+        } else if (msg.role == "user") {
+            result += "<start_of_turn>user\n";
+
+            if (first_user_message) {
+                if (has_system) {
+                    result += system_content + "\n\n";
+                }
+
+                if (!tools_json.empty()) {
+                result += "You can call any of the following tools if needed: ";
+                result += tools_json;
                 result += "\n\n";
-                has_system_msg = true;
-                break;
-            }
-        }
+                }
 
-        result += "You can respond normally to the user's request. If you need to call tools, respond with a JSON object containing tool_calls.\n";
-        result += "Available tools: ";
-        result += tools_json;
-        result += "<end_of_turn>\n";
+                first_user_message = false;
+            }
 
-        for (const auto& msg : messages) {
-            if (msg.role == "system" && has_system_msg) {
-                continue; 
-            } else if (msg.role == "user") {
-                result += "<start_of_turn>user\n" + msg.content + "<end_of_turn>\n";
-            } else if (msg.role == "assistant") {
-                result += "<start_of_turn>model\n" + msg.content + "<end_of_turn>\n";
-            }
-        }
-    } else {
-        for (const auto& msg : messages) {
-            if (msg.role == "system") {
-                result += "<start_of_turn>system\n" + msg.content + "<end_of_turn>\n";
-            } else if (msg.role == "user") {
-                result += "<start_of_turn>user\n" + msg.content + "<end_of_turn>\n";
-            } else if (msg.role == "assistant") {
-                result += "<start_of_turn>model\n" + msg.content + "<end_of_turn>\n";
-            }
+            result += msg.content;
+            result += "<end_of_turn>\n";
+        } else if (msg.role == "assistant") {
+            result += "<start_of_turn>model\n";
+            result += msg.content;
+            result += "<end_of_turn>\n";
         }
     }
 
