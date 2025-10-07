@@ -65,20 +65,30 @@ struct ChatMessage {
 class Tokenizer {
 public:
     virtual ~Tokenizer() = default;
-    
+
     virtual std::vector<uint32_t> encode(const std::string& text) const = 0;
     virtual std::string decode(const std::vector<uint32_t>& tokens) const = 0;
-    
-    virtual std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const = 0;
-    virtual std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "") const = 0;
-    
+
+    virtual std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const;
+    virtual std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "") const;
+
     virtual uint32_t get_vocab_size() const = 0;
     virtual uint32_t get_unk_token() const = 0;
     virtual uint32_t get_bos_token() const = 0;
     virtual uint32_t get_eos_token() const = 0;
-    virtual bool has_chat_template() const = 0;
-    
+    virtual bool has_chat_template() const { return has_chat_template_; }
+
     virtual bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) = 0;
+
+protected:
+    enum class ModelType { UNKNOWN, QWEN, GEMMA };
+    ModelType model_type_ = ModelType::UNKNOWN;
+    bool has_chat_template_ = false;
+    std::string chat_template_;
+
+    void detect_model_type(const std::string& config_path);
+    std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
 };
 
 class BPETokenizer : public Tokenizer {
@@ -91,15 +101,11 @@ public:
 
     std::vector<uint32_t> encode(const std::string& text) const override;
     std::string decode(const std::vector<uint32_t>& tokens) const override;
-    
-    std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const override;
-    std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "") const override;
 
     uint32_t get_vocab_size() const override { return vocab_size_; }
     uint32_t get_unk_token() const override { return unk_token_id_; }
     uint32_t get_bos_token() const override { return bos_token_id_; }
     uint32_t get_eos_token() const override { return eos_token_id_; }
-    bool has_chat_template() const override { return has_chat_template_; }
 
 private:
     std::unordered_map<std::string, uint32_t> token_to_id_;
@@ -131,16 +137,13 @@ private:
     mutable std::unordered_map<uint8_t, std::string> byte_to_unicode_;
     mutable std::unordered_map<std::string, uint8_t> unicode_to_byte_;
     void init_byte_mappings() const;
-    
+
     std::unordered_map<std::string, uint32_t> special_tokens_;
     std::vector<std::string> split_with_special_tokens(const std::string& text) const;
     void load_special_tokens(const std::string& config_file);
-    
-    bool has_chat_template_;
-    std::string chat_template_;
+
     void load_chat_template(const std::string& template_file);
-    std::string apply_template_substitutions(const std::string& template_str, const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json = "") const;
-    
+
     std::unordered_map<std::string, uint32_t> tool_tokens_;
     bool has_tool_support_;
     void load_tokenizer_config(const std::string& config_file);
@@ -155,15 +158,11 @@ public:
 
     std::vector<uint32_t> encode(const std::string& text) const override;
     std::string decode(const std::vector<uint32_t>& tokens) const override;
-    
-    std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const override;
-    std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "") const override;
 
     uint32_t get_vocab_size() const override { return vocab_size_; }
     uint32_t get_unk_token() const override { return unk_token_id_; }
     uint32_t get_bos_token() const override { return bos_token_id_; }
     uint32_t get_eos_token() const override { return eos_token_id_; }
-    bool has_chat_template() const override { return has_chat_template_; }
 
 private:
     struct TrieNode {
@@ -193,15 +192,12 @@ private:
     std::vector<std::string> split_by_unicode_spaces(const std::string& text) const;
     
     void cleanup_mmap();
-    
+
     std::unordered_map<std::string, uint32_t> special_tokens_;
     std::vector<std::string> split_with_special_tokens(const std::string& text) const;
     void load_special_tokens(const std::string& config_file);
-    
-    bool has_chat_template_;
-    std::string chat_template_;
+
     void load_chat_template(const std::string& template_file);
-    std::string apply_template_substitutions(const std::string& template_str, const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json = "") const;
 };
 
 

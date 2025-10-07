@@ -12,16 +12,16 @@
 namespace cactus {
 namespace engine {
 
-SPTokenizer::SPTokenizer() 
+SPTokenizer::SPTokenizer()
     : trie_root_(std::make_unique<TrieNode>()),
-      vocab_size_(0), 
+      vocab_size_(0),
       unk_token_id_(3),
-      bos_token_id_(2), 
+      bos_token_id_(2),
       eos_token_id_(1),
       pad_token_id_(0),
-      vocab_mmap_ptr_(nullptr), 
-      vocab_mmap_size_(0),
-      has_chat_template_(false) {
+      vocab_mmap_ptr_(nullptr),
+      vocab_mmap_size_(0) {
+    has_chat_template_ = false;
 }
 
 SPTokenizer::~SPTokenizer() {
@@ -128,7 +128,10 @@ bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, con
 
     std::string template_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/chat_template.jinja2";
     load_chat_template(template_path);
-    
+
+    std::string config_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/config.txt";
+    detect_model_type(config_path);
+
     return true;
 }
 
@@ -473,37 +476,6 @@ void SPTokenizer::load_chat_template(const std::string& template_file) {
     has_chat_template_ = !chat_template_.empty();
 }
 
-std::string SPTokenizer::apply_template_substitutions(const std::string&, const std::vector<ChatMessage>& messages,
-                                                      bool add_generation_prompt, const std::string&) const {
-    std::string result;
-    
-    for (const auto& msg : messages) {
-        if (msg.role == "user") {
-            result += "<start_of_turn>user\n" + msg.content + "<end_of_turn>\n";
-        } else if (msg.role == "model" || msg.role == "assistant") {
-            result += "<start_of_turn>model\n" + msg.content + "<end_of_turn>\n";
-        }
-    }
-    
-    if (add_generation_prompt) {
-        result += "<start_of_turn>model\n";
-    }
-    
-    return result;
-}
-
-std::string SPTokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
-    if (has_chat_template_ && !chat_template_.empty()) {
-        return apply_template_substitutions(chat_template_, messages, add_generation_prompt, tools_json);
-    }
-    
-    return apply_template_substitutions("", messages, add_generation_prompt, tools_json);
-}
-
-std::vector<uint32_t> SPTokenizer::apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt) const {
-    std::string formatted_prompt = format_chat_prompt(messages, add_generation_prompt);
-    return encode(formatted_prompt);
-}
 
 } // namespace engine
 } // namespace cactus

@@ -178,8 +178,8 @@ bool test_incremental_processing() {
         return false;
     }
     
-    char response1[1024];
-    char response2[1024];
+    char response1[2048];
+    char response2[2048];
     
     const char* first_messages = R"([
         {"role": "system", "content": "You are a helpful assistant."},
