@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <iostream>
 #include <atomic>
+#include <cstring>
 
 using namespace cactus::engine;
 

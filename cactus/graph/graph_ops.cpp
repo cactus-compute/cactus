@@ -9,6 +9,7 @@
 #include <mutex>
 #include <cstdlib>
 #include <algorithm>
+#include <cmath>
 
 namespace {
     thread_local std::vector<int8_t> transpose_buffer_int8;
