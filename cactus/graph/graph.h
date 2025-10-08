@@ -124,7 +124,8 @@ struct OpParams {
     float epsilon = 1e-6f;
     int axis = -1;
     bool pretransposed_rhs = false;
-    size_t position_offset = 0; 
+    size_t position_offset = 0;
+    size_t window_size = 0; 
     std::vector<size_t> new_shape;
     std::vector<size_t> permutation;
     Precision output_precision = Precision::INT8;
@@ -216,6 +217,7 @@ public:
     size_t softmax(size_t input, int axis = -1);
     size_t attention(size_t query, size_t key, size_t value, float scale, ComputeBackend backend = ComputeBackend::CPU);
     size_t attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, ComputeBackend backend = ComputeBackend::CPU);
+    size_t attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, size_t window_size, ComputeBackend backend = ComputeBackend::CPU);
     
     size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20);
     

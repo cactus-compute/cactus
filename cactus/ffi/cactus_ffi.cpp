@@ -343,8 +343,14 @@ int cactus_complete(
         } else {
             full_prompt = tokenizer->format_chat_prompt(messages, true);
         }
-        
-        
+
+        if (full_prompt.find("ERROR:") == 0) {
+            std::string error_msg = full_prompt.substr(6); 
+            std::string error_json = "{\"success\":false,\"error\":\"" + error_msg + "\"}";
+            std::strcpy(response_buffer, error_json.c_str());
+            return -1;
+        }
+
         std::vector<uint32_t> tokens_to_process = tokenizer->encode(full_prompt);
         size_t prompt_tokens = tokens_to_process.size();
         
@@ -353,46 +359,52 @@ int cactus_complete(
         
         std::vector<uint32_t> generated_tokens;
         double time_to_first_token = 0.0;
-        
-        
+        std::string decoded_so_far;  
+
+
         uint32_t next_token;
         if (tokens_to_process.empty()) {
             next_token = wrapper->model->generate({}, temperature, top_p, top_k);
         } else {
             next_token = wrapper->model->generate(tokens_to_process, temperature, top_p, top_k, "profile.txt");
         }
-        
+
         auto token_end = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(token_end - start_time);
         time_to_first_token = duration.count() / 1000.0;
-        
+
         if (stop_tokens.count(next_token)) {
             generated_tokens.push_back(next_token);
         } else {
-            if (callback) {
-                std::string token_text = tokenizer->decode({next_token});
-                callback(token_text.c_str(), next_token, user_data);
-            }
             generated_tokens.push_back(next_token);
-            
+
+            if (callback) {
+                std::string full_decoded = tokenizer->decode(generated_tokens);
+                std::string new_text = full_decoded.substr(decoded_so_far.length());
+                decoded_so_far = full_decoded;
+                callback(new_text.c_str(), next_token, user_data);
+            }
+
             for (size_t i = 1; i < max_tokens; i++) {
                 if (wrapper->should_stop) {
                     break;
                 }
-                
+
                 std::vector<uint32_t> single_token = {next_token};
                 next_token = wrapper->model->generate(single_token, temperature, top_p, top_k);
-                
+
                 if (stop_tokens.count(next_token)) {
                     break;
                 }
-                
-                if (callback) {
-                    std::string token_text = tokenizer->decode({next_token});
-                    callback(token_text.c_str(), next_token, user_data);
-                }
-                
+
                 generated_tokens.push_back(next_token);
+
+                if (callback) {
+                    std::string full_decoded = tokenizer->decode(generated_tokens);
+                    std::string new_text = full_decoded.substr(decoded_so_far.length());
+                    decoded_so_far = full_decoded;
+                    callback(new_text.c_str(), next_token, user_data);
+                }
             }
         }
         

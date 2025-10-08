@@ -485,18 +485,18 @@ void compute_fused_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
                 float k_scale = 1.0f / key_buffer.quantization_scale;
                 float v_scale = 1.0f / value_buffer.quantization_scale;
                 float output_scale = 1.0f / node.output_buffer.quantization_scale;
-                cactus_attention_int8(query_buffer.data_as<int8_t>(), key_buffer.data_as<int8_t>(), 
+                cactus_attention_int8(query_buffer.data_as<int8_t>(), key_buffer.data_as<int8_t>(),
                                       value_buffer.data_as<int8_t>(), node.output_buffer.data_as<int8_t>(),
                                       batch_size, seq_len, kv_seq_len, num_q_heads, num_kv_heads, head_dim, node.params.scale, nullptr,
-                                      q_scale, k_scale, v_scale, output_scale, node.params.position_offset);
+                                      q_scale, k_scale, v_scale, output_scale, node.params.position_offset, node.params.window_size);
             } else if (query_buffer.precision == Precision::FP16) {
-                cactus_attention_f16(query_buffer.data_as<__fp16>(), key_buffer.data_as<__fp16>(), 
+                cactus_attention_f16(query_buffer.data_as<__fp16>(), key_buffer.data_as<__fp16>(),
                                      value_buffer.data_as<__fp16>(), node.output_buffer.data_as<__fp16>(),
-                                     batch_size, seq_len, kv_seq_len, num_q_heads, num_kv_heads, head_dim, node.params.scale, nullptr, node.params.position_offset);
+                                     batch_size, seq_len, kv_seq_len, num_q_heads, num_kv_heads, head_dim, node.params.scale, nullptr, node.params.position_offset, node.params.window_size);
             } else if (query_buffer.precision == Precision::FP32) {
-                cactus_attention_f32(query_buffer.data_as<float>(), key_buffer.data_as<float>(), 
+                cactus_attention_f32(query_buffer.data_as<float>(), key_buffer.data_as<float>(),
                                      value_buffer.data_as<float>(), node.output_buffer.data_as<float>(),
-                                     batch_size, seq_len, kv_seq_len, num_q_heads, num_kv_heads, head_dim, node.params.scale, nullptr, node.params.position_offset);
+                                     batch_size, seq_len, kv_seq_len, num_q_heads, num_kv_heads, head_dim, node.params.scale, nullptr, node.params.position_offset, node.params.window_size);
             } else {
                 throw std::runtime_error("Attention operation only supports INT8, FP16, and FP32 precision, got " + 
                                        std::to_string(static_cast<int>(query_buffer.precision)));

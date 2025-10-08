@@ -71,8 +71,9 @@ size_t GemmaModel::build_attention(CactusGraph* gb, size_t normalized_input, uin
     auto k_proj_4d = gb->reshape(k_proj, {1, seq_len, config_.attention_kv_heads, config_.attention_head_dim});
     auto v_proj_4d = gb->reshape(v_proj, {1, seq_len, config_.attention_kv_heads, config_.attention_head_dim});
 
+    bool is_global_attention = ((layer_idx + 1) % 6) == 0;
+
     if (config_.rope_theta > 0) {
-        bool is_global_attention = ((layer_idx + 1) % 6) == 0;
         float rope_freq = is_global_attention ? 1000000.0f : 10000.0f;
 
         q_proj_4d = gb->rope(q_proj_4d, rope_freq, position_offset);
@@ -112,8 +113,8 @@ size_t GemmaModel::build_attention(CactusGraph* gb, size_t normalized_input, uin
         cache_v_output_nodes_[layer_idx] = final_v;
     }
 
-
-    auto attn_output_4d = gb->attention(q_proj_4d, final_k, final_v, attention_scale_, position_offset);
+    size_t window_size = is_global_attention ? 0 : 512;
+    auto attn_output_4d = gb->attention(q_proj_4d, final_k, final_v, attention_scale_, position_offset, window_size);
     auto attn_output = gb->reshape(attn_output_4d, {seq_len, config_.attention_head_dim * config_.attention_heads});
     return gb->matmul(attn_output, layer.attn_output_weight, true, backend);
 }

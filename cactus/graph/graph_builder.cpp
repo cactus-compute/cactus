@@ -248,6 +248,11 @@ size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scal
     return add_node(OpType::ATTENTION, {query, key, value}, {}, params);
 }
 
+size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, size_t window_size, ComputeBackend backend) {
+    OpParams params{.scale = scale, .position_offset = position_offset, .window_size = window_size, .backend = backend};
+    return add_node(OpType::ATTENTION, {query, key, value}, {}, params);
+}
+
 
 size_t CactusGraph::concat(size_t input1, size_t input2, int axis) {
     const auto& buffer1 = get_output_buffer(input1);

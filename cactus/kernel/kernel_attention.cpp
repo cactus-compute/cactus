@@ -25,7 +25,8 @@ void cactus_attention_int8(
     float k_scale,
     float v_scale,
     float output_scale,
-    size_t position_offset
+    size_t position_offset,
+    size_t window_size
 ) {
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
@@ -123,9 +124,14 @@ void cactus_attention_int8(
                                 float attention_score = static_cast<float>(score) * q_scale * k_scale * scale;
 
                                 size_t absolute_q_pos = position_offset + q_pos;
+
                                 if (kv_pos > absolute_q_pos) {
                                     attention_score = -std::numeric_limits<float>::infinity();
-                                } else if (M) {
+                                }
+                                else if (window_size > 0 && kv_pos < absolute_q_pos && (absolute_q_pos - kv_pos) > window_size) {
+                                    attention_score = -std::numeric_limits<float>::infinity();
+                                }
+                                else if (M) {
                                     const int8_t mask_val = M[q_pos * kv_seq_len + kv_pos];
                                     if (mask_val == 0) {
                                         attention_score = -std::numeric_limits<float>::infinity();
@@ -201,7 +207,8 @@ void cactus_attention_f32(
     size_t head_dim,
     float scale,
     const float* mask,
-    size_t position_offset
+    size_t position_offset,
+    size_t window_size
 ) {
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
@@ -304,9 +311,14 @@ void cactus_attention_f32(
                                 float attention_score = score * scale;
 
                                 size_t absolute_q_pos = position_offset + q_pos;
+
                                 if (kv_pos > absolute_q_pos) {
                                     attention_score = -std::numeric_limits<float>::infinity();
-                                } else if (M) {
+                                }
+                                else if (window_size > 0 && kv_pos < absolute_q_pos && (absolute_q_pos - kv_pos) > window_size) {
+                                    attention_score = -std::numeric_limits<float>::infinity();
+                                }
+                                else if (M) {
                                     const float mask_val = M[q_pos * kv_seq_len + kv_pos];
                                     if (mask_val == 0.0f) {
                                         attention_score = -std::numeric_limits<float>::infinity();
@@ -393,7 +405,8 @@ void cactus_attention_f16(
     size_t head_dim,
     float scale,
     const __fp16* mask,
-    size_t position_offset
+    size_t position_offset,
+    size_t window_size
 ) {
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
@@ -477,7 +490,14 @@ void cactus_attention_f16(
                             score *= scale;
                             
                             size_t absolute_q_pos = position_offset + q_pos;
-                            if (kv_pos > absolute_q_pos || (M && static_cast<float>(M[q_pos * kv_seq_len + kv_pos]) == 0.0f)) {
+
+                            if (kv_pos > absolute_q_pos) {
+                                score = -std::numeric_limits<float>::infinity();
+                            }
+                            else if (window_size > 0 && kv_pos < absolute_q_pos && (absolute_q_pos - kv_pos) > window_size) {
+                                score = -std::numeric_limits<float>::infinity();
+                            }
+                            else if (M && static_cast<float>(M[q_pos * kv_seq_len + kv_pos]) == 0.0f) {
                                 score = -std::numeric_limits<float>::infinity();
                             }
                             

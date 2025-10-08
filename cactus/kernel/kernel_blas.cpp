@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <vector>
 #include <cstring>
+#include <cmath>
 
 static inline size_t compute_linear_index(const size_t* coords, const size_t* strides, size_t ndim) {
     size_t index = 0;
@@ -369,15 +370,36 @@ void cactus_add_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num
             constexpr size_t SIMD_WIDTH = 8;
             const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
 
+            constexpr float FP16_MAX = 65500.0f;
+            const float32x4_t max_val = vdupq_n_f32(FP16_MAX);
+            const float32x4_t min_val = vdupq_n_f32(-FP16_MAX);
+
             for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                 float16x8_t a_vec = vld1q_f16(&a[i]);
                 float16x8_t b_vec = vld1q_f16(&b[i]);
-                float16x8_t result_vec = vaddq_f16(a_vec, b_vec);
+
+                float32x4_t a_low = vcvt_f32_f16(vget_low_f16(a_vec));
+                float32x4_t a_high = vcvt_f32_f16(vget_high_f16(a_vec));
+                float32x4_t b_low = vcvt_f32_f16(vget_low_f16(b_vec));
+                float32x4_t b_high = vcvt_f32_f16(vget_high_f16(b_vec));
+
+                float32x4_t result_low = vaddq_f32(a_low, b_low);
+                float32x4_t result_high = vaddq_f32(a_high, b_high);
+
+                result_low = vminq_f32(vmaxq_f32(result_low, min_val), max_val);
+                result_high = vminq_f32(vmaxq_f32(result_high, min_val), max_val);
+
+                float16x4_t result_low_f16 = vcvt_f16_f32(result_low);
+                float16x4_t result_high_f16 = vcvt_f16_f32(result_high);
+                float16x8_t result_vec = vcombine_f16(result_low_f16, result_high_f16);
+
                 vst1q_f16(&output[i], result_vec);
             }
 
             for (size_t i = vectorized_end; i < end_idx; ++i) {
-                output[i] = a[i] + b[i];
+                float result = static_cast<float>(a[i]) + static_cast<float>(b[i]);
+                result = std::fmin(std::fmax(result, -FP16_MAX), FP16_MAX);
+                output[i] = static_cast<__fp16>(result);
             }
         });
 }
@@ -448,12 +470,15 @@ void cactus_add_broadcast_f16(const __fp16* a, const __fp16* b, __fp16* output,
     }
 
     std::vector<size_t> coords(ndim, 0);
+    constexpr float FP16_MAX = 65500.0f;
 
     for (size_t linear_idx = 0; linear_idx < total_elements; ++linear_idx) {
         size_t a_idx = compute_linear_index(coords.data(), a_strides, ndim);
         size_t b_idx = compute_linear_index(coords.data(), b_strides, ndim);
 
-        output[linear_idx] = a[a_idx] + b[b_idx];
+        float result = static_cast<float>(a[a_idx]) + static_cast<float>(b[b_idx]);
+        result = std::fmin(std::fmax(result, -FP16_MAX), FP16_MAX);
+        output[linear_idx] = static_cast<__fp16>(result);
 
         increment_coords(coords.data(), output_shape, ndim);
     }

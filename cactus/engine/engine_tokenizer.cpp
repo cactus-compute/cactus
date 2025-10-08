@@ -109,6 +109,11 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
 }
 
 std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+
+    if (!tools_json.empty()) {
+        return "ERROR: Tool calls are not supported for Gemma models";
+    }
+
     std::string result;
 
     result = "<bos>";
@@ -132,17 +137,8 @@ std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messag
         } else if (msg.role == "user") {
             result += "<start_of_turn>user\n";
 
-            if (first_user_message) {
-                if (has_system) {
-                    result += system_content + "\n\n";
-                }
-
-                if (!tools_json.empty()) {
-                result += "You can call any of the following tools if needed: ";
-                result += tools_json;
-                result += "\n\n";
-                }
-
+            if (first_user_message && has_system) {
+                result += system_content + "\n\n";
                 first_user_message = false;
             }
 
