@@ -133,15 +133,26 @@ bool Model::init(const std::string& model_folder, size_t context_size, const std
 }
 
 
-uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature, float top_p, 
+uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature, float top_p,
                         size_t top_k, const std::string& profile_file) {
+                            
+    if (temperature < 0) {
+        temperature = config_.default_temperature;
+    }
+    if (top_p < 0) {
+        top_p = config_.default_top_p;
+    }
+    if (top_k == 0) {
+        top_k = config_.default_top_k;
+    }
+
     auto final_hidden = forward(tokens, true);
-    
+
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    auto backend = config_.default_backend == Config::Backend::CPU 
-        ? ComputeBackend::CPU 
+    auto backend = config_.default_backend == Config::Backend::CPU
+        ? ComputeBackend::CPU
         : ComputeBackend::NPU;
-    
+
     auto logits_node_id = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
     auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k);
     
@@ -266,7 +277,17 @@ bool Config::from_json(const std::string& config_path) {
             else model_type = ModelType::QWEN;
         }
     }
-    
+
+    if (model_type == ModelType::GEMMA) {
+        default_temperature = 1.0f;
+        default_top_p = 0.95f;
+        default_top_k = 64;
+    } else if (model_type == ModelType::QWEN) {
+        default_temperature = 0.6f;
+        default_top_p = 0.95f;
+        default_top_k = 20;
+    }
+
     return true;
 }
 

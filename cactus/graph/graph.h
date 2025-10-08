@@ -26,7 +26,7 @@ enum class ComputeBackend {
 
 enum class OpType {
     INPUT, PRECISION_CAST,
-    ADD, SUBTRACT, MULTIPLY, DIVIDE,
+    ADD, ADD_CLIPPED, SUBTRACT, MULTIPLY, DIVIDE,
     MATMUL, TRANSPOSE, RESHAPE, GATHER, EMBEDDING,
     SUM, MEAN, VARIANCE, MIN, MAX,
     RMS_NORM, ROPE, SOFTMAX, ATTENTION,
@@ -178,6 +178,7 @@ public:
     size_t precision_cast(size_t input, Precision target_precision);
     
     size_t add(size_t input1, size_t input2);
+    size_t add_clipped(size_t input1, size_t input2);  // For FP16 residual connections (Gemma)
     size_t subtract(size_t input1, size_t input2);
     size_t multiply(size_t input1, size_t input2);
     size_t divide(size_t input1, size_t input2);

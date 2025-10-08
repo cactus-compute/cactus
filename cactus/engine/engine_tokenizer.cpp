@@ -118,30 +118,12 @@ std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messag
 
     result = "<bos>";
 
-    std::string system_content;
-    bool has_system = false;
 
     for (const auto& msg : messages) {
         if (msg.role == "system") {
-            system_content = msg.content;
-            has_system = true;
-            break;
-        }
-    }
-
-    bool first_user_message = true;
-
-    for (const auto& msg : messages) {
-        if (msg.role == "system") {
-            continue;
+            continue;  
         } else if (msg.role == "user") {
             result += "<start_of_turn>user\n";
-
-            if (first_user_message && has_system) {
-                result += system_content + "\n\n";
-                first_user_message = false;
-            }
-
             result += msg.content;
             result += "<end_of_turn>\n";
         } else if (msg.role == "assistant") {

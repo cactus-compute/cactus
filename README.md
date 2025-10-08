@@ -151,27 +151,34 @@ Cactus SDKs run 500k+ weekly inference tasks in production today, try them!
   <img alt="Download Android App" src="https://img.shields.io/badge/Try_Android_Demo-grey?style=for-the-badge&logo=android&logoColor=white">
 </a>
 
-## Contributing or Using the Repo
+## Contributing or using the repo directly
 You can run these codes directly on M-series Macbooks since they are ARM-based.
 Vanilla M3 CPU-only can run Qwen3-600m-INT8 at 60-70 toks/sec, use the following: 
 
 1. **Generate weights from HuggingFace model:**
 ```bash
 python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m-i8/ --precision INT8
-python3 tools/convert_hf.py google/gemma-3-270m weights/gemma3-270m-i8/ --precision INT8
 ```
 
 2. **Build and test:**
 ```bash
-./tests/run.sh # remember to chmod +x any script first time
+./tests/run.sh # chmod +x first time
 
 ```
 
+## Supported models
+- Qwen3
+- Gemma3
+- Llama3 (in dev)
+- LFM2 (in dev)
+- SmolVLM2 (in dev)
+- Whisper (in dev)
+- Nomic (in dev)
+
 ## Roadmap:
-- Gemma, SmolVLM, Liquid, Kitten, Vosk etc.
 - SMMLA, NPU & DSP for high-end phones.
-- INT4 support for 1B+ models.
-- Python tools for porting Torch/JAX to cactus.
+- INT4 support.
+- Python tools for porting any Torch/JAX to cactus.
 
 ## Limitlations
 While Cactus can be used for all Apple devices including Macbooks, for computers/AMD/Intel/Nvidia generally, 

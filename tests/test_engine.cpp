@@ -11,11 +11,8 @@
 const char* g_model_path = "../../weights/qwen3-600m-i8";
 
 const char* g_options = R"({
-        "temperature": 0.6,
-        "top_p": 0.95,
-        "top_k": 20,
-        "max_tokens": 512,
-        "stop_sequences": ["<|im_end|>"]
+        "max_tokens": 256,
+        "stop_sequences": ["<|im_end|>", "<end_of_turn>"]
     })";
 
 struct Timer {

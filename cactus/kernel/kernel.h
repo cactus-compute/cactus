@@ -23,6 +23,7 @@ void cactus_divide_int8(const int8_t* a, const int8_t* b, int8_t* output, size_t
 
 
 void cactus_add_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements);
+void cactus_add_f16_clipped(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements);
 void cactus_subtract_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements);
 void cactus_multiply_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements);
 void cactus_divide_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements);

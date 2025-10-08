@@ -345,7 +345,7 @@ int cactus_complete(
         }
 
         if (full_prompt.find("ERROR:") == 0) {
-            std::string error_msg = full_prompt.substr(6); 
+            std::string error_msg = full_prompt.substr(6);
             std::string error_json = "{\"success\":false,\"error\":\"" + error_msg + "\"}";
             std::strcpy(response_buffer, error_json.c_str());
             return -1;

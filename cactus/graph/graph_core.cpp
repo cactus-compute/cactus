@@ -73,6 +73,15 @@ void dispatch_binary_op(OpType op, const T* lhs, const T* rhs, T* output, size_t
                 cactus_add_f32(lhs, rhs, output, count);
             }
             break;
+        case OpType::ADD_CLIPPED:
+            if constexpr (std::is_same_v<T, int8_t>) {
+                cactus_add_int8(lhs, rhs, output, count);  
+            } else if constexpr (std::is_same_v<T, __fp16>) {
+                cactus_add_f16_clipped(lhs, rhs, output, count);
+            } else {
+                cactus_add_f32(lhs, rhs, output, count); 
+            }
+            break;
         case OpType::SUBTRACT:
             if constexpr (std::is_same_v<T, int8_t>) {
                 cactus_subtract_int8(lhs, rhs, output, count);
@@ -142,6 +151,7 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
         case OpType::INPUT:
             break;
         case OpType::ADD:
+        case OpType::ADD_CLIPPED:
         case OpType::SUBTRACT:
         case OpType::MULTIPLY:
         case OpType::DIVIDE: {
@@ -155,7 +165,8 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
                 if (lhs.precision == Precision::INT8) {
                     switch (node.op_type) {
                         case OpType::ADD:
-                            cactus_add_broadcast_int8(lhs.data_as<int8_t>(), rhs.data_as<int8_t>(), 
+                        case OpType::ADD_CLIPPED:  
+                            cactus_add_broadcast_int8(lhs.data_as<int8_t>(), rhs.data_as<int8_t>(),
                                                      node.output_buffer.data_as<int8_t>(),
                                                      lhs_strides.data(), rhs_strides.data(),
                                                      node.params.broadcast_info.output_shape.data(),
@@ -187,7 +198,8 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
                 } else if (lhs.precision == Precision::FP16) {
                     switch (node.op_type) {
                         case OpType::ADD:
-                            cactus_add_broadcast_f16(lhs.data_as<__fp16>(), rhs.data_as<__fp16>(), 
+                        case OpType::ADD_CLIPPED:  
+                            cactus_add_broadcast_f16(lhs.data_as<__fp16>(), rhs.data_as<__fp16>(),
                                                      node.output_buffer.data_as<__fp16>(),
                                                      lhs_strides.data(), rhs_strides.data(),
                                                      node.params.broadcast_info.output_shape.data(),
@@ -219,7 +231,8 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
                 } else {
                     switch (node.op_type) {
                         case OpType::ADD:
-                            cactus_add_broadcast_f32(lhs.data_as<float>(), rhs.data_as<float>(), 
+                        case OpType::ADD_CLIPPED: 
+                            cactus_add_broadcast_f32(lhs.data_as<float>(), rhs.data_as<float>(),
                                                      node.output_buffer.data_as<float>(),
                                                      lhs_strides.data(), rhs_strides.data(),
                                                      node.params.broadcast_info.output_shape.data(),

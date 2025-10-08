@@ -370,6 +370,25 @@ void cactus_add_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num
             constexpr size_t SIMD_WIDTH = 8;
             const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
 
+            for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
+                float16x8_t a_vec = vld1q_f16(&a[i]);
+                float16x8_t b_vec = vld1q_f16(&b[i]);
+                float16x8_t result_vec = vaddq_f16(a_vec, b_vec);
+                vst1q_f16(&output[i], result_vec);
+            }
+
+            for (size_t i = vectorized_end; i < end_idx; ++i) {
+                output[i] = a[i] + b[i];
+            }
+        });
+}
+
+void cactus_add_f16_clipped(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements) {
+    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::ELEMENT_WISE,
+        [&](size_t start_idx, size_t end_idx) {
+            constexpr size_t SIMD_WIDTH = 8;
+            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
+
             constexpr float FP16_MAX = 65500.0f;
             const float32x4_t max_val = vdupq_n_f32(FP16_MAX);
             const float32x4_t min_val = vdupq_n_f32(-FP16_MAX);

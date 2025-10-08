@@ -39,7 +39,12 @@ struct Config {
 
     enum class Precision {INT8 = 0, FP16 = 1, FP32 = 2};
     Precision precision = Precision::FP32;
-    
+
+    // Default sampling parameters for the model
+    float default_temperature = 0.6f;
+    float default_top_p = 0.95f;
+    size_t default_top_k = 20;
+
     bool from_json(const std::string& json_path);
     std::string to_json() const;
 };
@@ -259,8 +264,8 @@ public:
     Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
 
     bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "");
-    uint32_t generate(const std::vector<uint32_t>& tokens, float temperature = 0.6f, float top_p = 0.95f,
-                      size_t top_k = 20, const std::string& profile_file = "");
+    uint32_t generate(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
+                      size_t top_k = 0, const std::string& profile_file = "");
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true);
 
