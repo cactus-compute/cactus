@@ -13,7 +13,6 @@ enum class Precision;
 namespace cactus {
 namespace engine {
 
-
 struct Config {
     uint32_t vocab_size = 151936;
     uint32_t bos_token_id = 151643;
@@ -40,7 +39,6 @@ struct Config {
     enum class Precision {INT8 = 0, FP16 = 1, FP32 = 2};
     Precision precision = Precision::FP32;
 
-    // Default sampling parameters for the model
     float default_temperature = 0.6f;
     float default_top_p = 0.95f;
     size_t default_top_k = 20;

@@ -8,15 +8,24 @@ Energy-efficient kernels & inference engine for phones.
 - Cactus is optimsed for old and new ARM-CPU first, with NPU/DSP/ISP coming.
 - Fast on all phones with negligible battery drain and heating.
 
-## Performance 
+## Performance (CPU only)
 
-LLama.cpp is the fastest possible alternative, so we benchmark against llama.cpp on Qwen3-INT8-0.6B
+- Speed for various sizes can be estimated proportionally
+- INT4 wiil give 30% gains when merged 
+- GPUs yield gains but drain battery, will be passed on for NPUs
 
-| Framework | Configuration | iPhone 13 Pro | Pixel 6a
-|-----------|--------------|------------------------|---------------|
-| Cactus | CPU only | 38-40 toks/sec | 15-18 toks/sec | 
-| Llama.cpp | CPU only | 20-24 toks/sec | 10-13 toks/sec |
-| Llama.cpp | CPU + GPU | 33-37 toks/sec | N/A |
+| Device                        |  Qwen3-INT8-600m (toks/sec) |  
+|:------------------------------|:------------------------:|
+| iPhone 17 Pro                 | 74 |
+| Galaxy S25 Ultra / 16 Pro     | 58 |
+| iPhone 16 / Galaxy S25 / Nothing 3 | 52 |
+| iPhone 15 Pro                 | 48 |
+| iPhone 14 Pro / OnePlus 13 5G | 47 |
+| Galaxy S24 Ultra / iPhone 15  | 42 |
+| OnePlus Open / Galaxy S23     | 41 |
+| iPhone 13 Pro / OnePlus 12    | 38 |
+| iPhone 13 mini / Redmi K70 Ultra / Xiaomi 13 / OnePlus 11 | 27 |
+| Pixel 6a / Nothing 3a / iPhone X / Galaxy S21 | 16 |
 
 ## File Size Comparison
 
@@ -26,6 +35,19 @@ LLama.cpp is the fastest possible alternative, so we benchmark against llama.cpp
 | ONNX/TFLite/MLX | 600 MB |
 | GGUF | 800 MB |
 | Executorch | 944 MB |
+
+## Battery drain
+
+ - Newer devices have bigger battery 
+ - NPUs aare designed for less drian (2 -10x less)
+
+| Device                        |  Qwen3-INT8-600m (percent/min) |  
+|:------------------------------|:------------------------:|
+| OnePlus 13 5G | 0.33 |
+| Redmi K70 Ultra / OnePlus 12 | 0.41 |
+| Galaxy S25 Ultra / Iphone 17 Pro / Nothing 3 | 0.44 |
+| Galaxy S24 Ultra / Nothing 3a / Pixel 6a | 0.48 |
+| iPhone 16 Pro Max / Xiaomi 13 | 0.50  |
 
 ## Design 
 ```
