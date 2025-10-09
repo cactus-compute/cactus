@@ -6,7 +6,7 @@ Energy-efficient kernels & inference engine for phones.
 - Phones run on battery, GPUs drain energy and heat the devices. 
 - 70% of phones today don't ship NPUs which most frameworks optimse for. 
 - Cactus is optimsed for old and new ARM-CPU first, with NPU/DSP/ISP coming.
-- Fast on all phones with negligible battery drain and heating.
+- Fast on all phones with less battery drain and heating.
 
 ## Performance (CPU only)
 
@@ -39,7 +39,8 @@ Energy-efficient kernels & inference engine for phones.
 ## Battery drain
 
  - Newer devices have bigger battery 
- - NPUs aare designed for less drian (2 -10x less)
+ - NPUs are designed for less drain (2-10x)
+ - Apple Intelligence drain 0.6 percent/min on iPhone 16 Pro Max
 
 | Device                        |  Qwen3-INT8-600m (percent/min) |  
 |:------------------------------|:------------------------:|
@@ -113,9 +114,6 @@ const char* messages = R"([
 ])";
 
 const char* options = R"({
-    "temperature": 0.1,
-    "top_p": 0.95,
-    "top_k": 20,
     "max_tokens": 50,
     "stop_sequences": ["<|im_end|>"]
 })";
@@ -189,13 +187,9 @@ python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m-i8/ --precision I
 ```
 
 ## Supported models
-- Qwen3
-- Gemma3
-- Llama3 (in dev)
-- LFM2 (in dev)
-- SmolVLM2 (in dev)
-- Whisper (in dev)
-- Nomic (in dev)
+- Shipped: Qwen3, Gemma3 
+- In dev: Llama3, LFM2, SmolVLM2, Whisper, Nomic 
+- Coming: Neuphonic, Kitten, 
 
 ## Roadmap:
 - SMMLA, NPU & DSP for high-end phones.
