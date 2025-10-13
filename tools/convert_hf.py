@@ -411,6 +411,49 @@ def convert_hf_tokenizer(tokenizer, output_dir):
             if token_id != tokenizer.unk_token_id:
                 special_tokens[token_id] = token
                 additional_special_tokens.append({"token": token, "id": token_id})
+
+    model_type = getattr(tokenizer, 'name_or_path', '').lower()
+    if 'gemma' in model_type:
+        gemma_special_tokens = {
+            '<start_of_turn>': None,
+            '<end_of_turn>': None,
+            '<start_of_image>': None,
+            '<end_of_image>': None
+        }
+
+        vocab = tokenizer.get_vocab()
+        for token_str in gemma_special_tokens.keys():
+            if token_str in vocab:
+                token_id = vocab[token_str]
+                gemma_special_tokens[token_str] = token_id
+                special_tokens[token_id] = token_str
+                print(f"    Found Gemma special token: {token_str} (ID: {token_id})")
+
+        missing_tokens = [k for k, v in gemma_special_tokens.items() if v is None]
+        if missing_tokens and is_sentencepiece and tokenizer_model_path:
+            try:
+                import sentencepiece as spm
+                sp = spm.SentencePieceProcessor(model_file=tokenizer_model_path)
+                for token_str in missing_tokens:
+                    token_id = sp.piece_to_id(token_str)
+                    if token_id != sp.unk_id():
+                        gemma_special_tokens[token_str] = token_id
+                        special_tokens[token_id] = token_str
+                        print(f"    Found Gemma special token via SentencePiece: {token_str} (ID: {token_id})")
+            except Exception as e:
+                print(f"    Warning: Could not check SentencePiece for Gemma tokens: {e}")
+
+        if gemma_special_tokens['<start_of_turn>'] is None:
+            hardcoded_ids = {
+                '<start_of_turn>': 105,
+                '<end_of_turn>': 106
+            }
+            for token_str, token_id in hardcoded_ids.items():
+                if token_str in gemma_special_tokens and gemma_special_tokens[token_str] is None:
+                    if token_id not in special_tokens:
+                        gemma_special_tokens[token_str] = token_id
+                        special_tokens[token_id] = token_str
+                        print(f"    Using hardcoded Gemma special token: {token_str} (ID: {token_id})")
     
     chat_template_data = {}
     if hasattr(tokenizer, 'chat_template') and tokenizer.chat_template:

@@ -65,6 +65,9 @@ bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, con
                 if (!token.empty() && token[0] == '\t') {
                     token = token.substr(1);
                 }
+                if (token.empty() && (id == 107 || id == 108)) {
+                    token = "\n";
+                }
 
                 token_to_id_[token] = id;
                 if (id >= id_to_token_.size()) {
@@ -139,10 +142,6 @@ void SPTokenizer::build_trie() {
     for (uint32_t id = 0; id < id_to_token_.size(); ++id) {
         const std::string& token = id_to_token_[id];
         if (token.empty()) continue;
-        
-        if (token.size() >= 2 && token[0] == '<' && token[token.size()-1] == '>') {
-            continue;
-        }
         
         std::u32string u32_token;
         size_t pos = 0;

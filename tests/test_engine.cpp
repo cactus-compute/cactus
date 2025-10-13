@@ -180,7 +180,7 @@ bool test_incremental_processing() {
     
     const char* first_messages = R"([
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "My name is Henry Ndubuaku"}
+        {"role": "user", "content": "My name is Henry."}
     ])";
     
     std::cout << "\n=== Incremental Processing Test ===" << std::endl;
@@ -189,7 +189,7 @@ bool test_incremental_processing() {
     
     const char* second_messages = R"([
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "My name is Henry Ndubuaku"},
+        {"role": "user", "content": "My name is Henry."},
         {"role": "assistant", "content": "Nice to meet you, Henry! How can I help you today?"},
         {"role": "user", "content": "What is my name?"}
     ])";
