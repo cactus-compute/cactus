@@ -184,7 +184,7 @@ Use any of the following (270m, 600m, 1B, 1.7B activated params):
 ```bash
 python3 tools/convert_hf.py google/gemma-3-270m-it weights/gemma3-270m-i8/ --precision INT8
 python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m-i8/ --precision INT8
-python3 tools/convert_hf.py google/gemma-3-ib-it weights/gemma3-ib-i8/ --precision INT8
+python3 tools/convert_hf.py google/gemma-3-1b-it weights/gemma3-1b-i8/ --precision INT8
 python3 tools/convert_hf.py Qwen/Qwen3-1.7B weights/qwen3-1.7-i8/ --precision INT8
 ```
 
