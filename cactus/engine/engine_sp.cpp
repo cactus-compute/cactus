@@ -1,13 +1,12 @@
 #include "engine.h"
+#include <cassert>
 #include <fstream>
 #include <sstream>
-#include <algorithm>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <iostream>
-#include <queue>
 
 namespace cactus {
 namespace engine {
@@ -36,6 +35,9 @@ void SPTokenizer::cleanup_mmap() {
 }
 
 bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, const std::string& /*merges_file*/, const std::string& config_file) {
+    std::string config_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/config.txt";
+    detect_model_type(config_path);
+    
     std::ifstream vocab_stream(vocab_file);
     if (!vocab_stream.is_open()) return false;
 
@@ -54,21 +56,33 @@ bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, con
     }
 
     if (is_id_token_format) {
-        std::string line;
+        std::string line = "";
         while (std::getline(vocab_stream, line)) {
+            std::string token = "";
+            uint32_t id = UINT32_MAX;
+
             std::istringstream iss(line);
-            uint32_t id;
-            std::string token;
-
             if (iss >> id) {
-                std::getline(iss, token);
-                if (!token.empty() && token[0] == '\t') {
-                    token = token.substr(1);
+                if (std::getline(iss, token)) {
+                    if (!token.empty() && token[0] == '\t') {
+                        token = token.substr(1);
+                    }
                 }
-                if (token.empty() && (id == 107 || id == 108)) {
-                    token = "\n";
+                
+                if (token.empty()) {
+                    auto last_pos = vocab_stream.tellg();
+                    while (std::getline(vocab_stream, line)) {
+                        if (!line.empty()) {
+                            break;
+                        }
+                        token += '\n';
+                        last_pos = vocab_stream.tellg();
+                    }
+                    vocab_stream.seekg(last_pos);
                 }
-
+            }
+            
+            if (!token.empty() && id != UINT32_MAX) {
                 token_to_id_[token] = id;
                 if (id >= id_to_token_.size()) {
                     id_to_token_.resize(id + 1);
@@ -132,9 +146,6 @@ bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, con
     std::string template_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/chat_template.jinja2";
     load_chat_template(template_path);
 
-    std::string config_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/config.txt";
-    detect_model_type(config_path);
-
     return true;
 }
 
@@ -197,10 +208,13 @@ void SPTokenizer::build_trie() {
 std::string SPTokenizer::preprocess_text(const std::string& text) const {
     if (text.empty()) return text;
 
-    std::string processed;
-    for (size_t i = 0; i < text.length(); i++) {
-        char c = text[i];
+    std::string processed = "";
+    if (model_type_ == ModelType::BERT) {
+        processed = "▁";
+    }
 
+    for (size_t i = text.find_first_not_of(" "); i < text.length(); i++) {
+        char c = text[i];
         if (c == ' ') {
             processed += "▁";
         } else {

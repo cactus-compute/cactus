@@ -14,6 +14,7 @@ endif()
 file(GLOB ENGINE_SOURCES "${SOURCE_DIR}/engine/*.cpp")
 file(GLOB GRAPH_SOURCES "${SOURCE_DIR}/graph/*.cpp")
 file(GLOB KERNEL_SOURCES "${SOURCE_DIR}/kernel/*.cpp")
+file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
 
 set(HEADER_FILES
@@ -23,6 +24,7 @@ set(HEADER_FILES
     ${SOURCE_DIR}/kernel/kernel.h
     ${SOURCE_DIR}/kernel/kernel_utils.h
     ${SOURCE_DIR}/ffi/cactus_ffi.h
+    ${SOURCE_DIR}/models/model.h
 )
 
 set(COMMON_SOURCES
@@ -30,6 +32,7 @@ set(COMMON_SOURCES
     ${GRAPH_SOURCES}
     ${ENGINE_SOURCES}
     ${FFI_SOURCES}
+    ${MODEL_SOURCES}
 )
 
 if(NOT COMMON_SOURCES)
@@ -56,6 +59,7 @@ set(COMMON_INCLUDE_DIRS
     ${SOURCE_DIR}/graph
     ${SOURCE_DIR}/kernel
     ${SOURCE_DIR}/ffi
+    ${SOURCE_DIR}/models
 )
 
 target_include_directories(cactus PRIVATE ${COMMON_INCLUDE_DIRS})

@@ -1,0 +1,20 @@
+name: DCO Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  dco-check:
+    runs-on: ubuntu-latest
+    name: DCO Check
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Check DCO
+        uses: dco-action/check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
