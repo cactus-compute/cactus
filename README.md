@@ -171,7 +171,7 @@ Cactus SDKs run 500k+ weekly inference tasks in production today, try them!
   <img alt="Download Android App" src="https://img.shields.io/badge/Try_Android_Demo-grey?style=for-the-badge&logo=android&logoColor=white">
 </a>
 
-## Contributing or using the repo directly
+## Using this repo
 You can run these codes directly on M-series Macbooks since they are ARM-based.
 Vanilla M3 CPU-only can run Qwen3-600m-INT8 at 60-70 toks/sec, just run the following: 
 
@@ -199,3 +199,7 @@ Simply replace the weight path `tests/test_engine.cpp` with your choice.
 ## Limitlations
 While Cactus can be used for all Apple devices including Macbooks, for computers/AMD/Intel/Nvidia generally, 
 please use HuggingFace, Llama.cpp, Ollama, vLLM, MLX. They're built for those, support x86, and are all great! 
+
+## Contributing
+
+We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
