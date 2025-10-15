@@ -161,7 +161,7 @@ uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature,
     } else {
         gb->execute();
     }
-    
+
     update_kv_cache(gb, tokens.size());
     
     auto* output_ptr = gb->get_output(sampled_token_id);
@@ -274,6 +274,7 @@ bool Config::from_json(const std::string& config_path) {
         }
         else if (key == "model_type") {
             if (value == "gemma" || value == "GEMMA") model_type = ModelType::GEMMA;
+            else if (value == "smol" || value == "SMOL" || value == "Smol") model_type = ModelType::SMOL;
             else model_type = ModelType::QWEN;
         }
     }
@@ -282,6 +283,10 @@ bool Config::from_json(const std::string& config_path) {
         default_temperature = 1.0f;
         default_top_p = 0.95f;
         default_top_k = 64;
+    } else if (model_type == ModelType::SMOL) {
+        default_temperature = 0.2f;
+        default_top_p = 0.95f;
+        default_top_k = 20;
     } else if (model_type == ModelType::QWEN) {
         default_temperature = 0.6f;
         default_top_p = 0.95f;
@@ -308,6 +313,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<QwenModel>(config);
         case Config::ModelType::GEMMA:
             return std::make_unique<GemmaModel>(config);
+        case Config::ModelType::SMOL:
+            return std::make_unique<SmolModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }
