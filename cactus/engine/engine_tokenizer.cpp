@@ -25,6 +25,9 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
             } else if (line.find("gemma") != std::string::npos) {
                 model_type_ = ModelType::GEMMA;
                 break;
+            } else if (line.find("bert") != std::string::npos) {
+                model_type_ = ModelType::BERT;
+                break;
             }
         }
     }

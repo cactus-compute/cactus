@@ -84,7 +84,7 @@ public:
     virtual bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) = 0;
 
 protected:
-    enum class ModelType { UNKNOWN, QWEN, GEMMA };
+    enum class ModelType { UNKNOWN, QWEN, GEMMA, BERT };
     ModelType model_type_ = ModelType::UNKNOWN;
     bool has_chat_template_ = false;
     std::string chat_template_;
