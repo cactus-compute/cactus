@@ -24,7 +24,7 @@ Set up automatic DCO sign-off by running our setup script once after cloning:
 
 ```bash
 # Run once after cloning the repository
-./setup-dco.sh
+./tools/setup-dco.sh
 
 # Then commit normally - sign-off is added automatically
 git commit -m "Your commit message"
