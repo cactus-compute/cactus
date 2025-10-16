@@ -201,7 +201,7 @@ Simply replace the weight path `tests/test_engine.cpp` with your choice.
 - Python tools for porting any Torch/JAX to cactus
 - GPTQ & NPU/DSP/ISP for high-end phones 
 
-## Limitlations
+## Limitations
 While Cactus can be used for all Apple devices including Macbooks, for computers/AMD/Intel/Nvidia generally, 
 please use HuggingFace, Llama.cpp, Ollama, vLLM, MLX. They're built for those, support x86, and are all great! 
 
