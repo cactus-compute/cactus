@@ -192,6 +192,7 @@ python3 tools/convert_hf.py HuggingFaceTB/SmolLM2-1.7B-Instruct weights/smollm2-
 
 # Embedding models
 python3 tools/convert_hf.py Qwen/Qwen3-Embedding-0.6B weights/qwen3-embed-600m-i8/ --precision INT8
+python3 tools/convert_hf.py nomic-ai/nomic-embed-text-v2-moe weights/nomic-i8/ --precision INT8
 ```
 
 Simply replace the weight path `tests/test_engine.cpp` with your choice.

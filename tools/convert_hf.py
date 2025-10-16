@@ -215,6 +215,9 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         if 'embeddings.word_embeddings.weight' in state_dict:
             fused_embedding_tensor = state_dict['embeddings.word_embeddings.weight'] + state_dict.get('embeddings.token_type_embeddings.weight', torch.zeros([1]))
             save_tensor_with_header(fused_embedding_tensor, output_dir / "token_embeddings.weights", precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+            saved_tensor_full_names.add('embeddings.word_embeddings.weight')
+            if 'embeddings.token_type_embeddings.weight' in state_dict:
+                saved_tensor_full_names.add('embeddings.token_type_embeddings.weight')
             embedding_found = True
     
     if embedding_found:
@@ -222,6 +225,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         for name, file_name in embedding_norm_names.items():
             if name in state_dict:
                 save_tensor_with_header(state_dict[name], output_dir / file_name, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                saved_tensor_full_names.add(name)
     
     if not tie_word_embeddings:
         output_names = ['lm_head.weight', 'output.weight', 'transformer.lm_head.weight']
@@ -304,6 +308,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                         for j, ch in enumerate(['q', 'k', 'v']):
                             channel_output_name = output_name.replace('{channel}', ch)
                             save_tensor_with_header(tensor[j], output_dir / channel_output_name, tensor_precision, transpose=should_transpose, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                            saved_tensor_full_names.add(full_name)
                         found = True
                         break
                     elif model_type_str == 'nomic_bert' and pattern.startswith('mlp.experts.') and 'bias' not in pattern:
@@ -315,6 +320,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                             expert_tensor = tensor[expert_idx]
                             expert_output_name = output_name.replace('{channel}', str(expert_idx))
                             save_tensor_with_header(expert_tensor, output_dir / expert_output_name, tensor_precision, transpose=should_transpose, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                            saved_tensor_full_names.add(full_name)
                         found = True
                         break
                     save_tensor_with_header(tensor, output_dir / output_name, tensor_precision, transpose=should_transpose, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
