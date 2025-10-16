@@ -14,8 +14,7 @@ static const char* op_type_names[] = {
     "SCALAR_ADD", "SCALAR_SUBTRACT", "SCALAR_MULTIPLY", "SCALAR_DIVIDE",
     "SCALAR_EXP", "SCALAR_SQRT", "SCALAR_COS", "SCALAR_SIN",
     "SILU", "GELU", "SAMPLE", "CONCAT",
-    "SCATTER_TOPK",
-    "TOPK", "LAYERNORM",
+    "SCATTER_TOPK", "TOPK",
     "INDEX"
 };
 
@@ -300,11 +299,6 @@ size_t CactusGraph::topk(size_t input, size_t k) {
     OpParams params{.top_k = k, .output_precision = Precision::FP32};
 
     return add_node(OpType::TOPK, {input}, output_shape, params);
-}
-
-size_t CactusGraph::layernorm(size_t input, size_t weight, size_t bias, float epsilon) {
-    OpParams params{.epsilon = epsilon};
-    return add_node(OpType::LAYERNORM, {input, weight, bias}, {}, params);
 }
 
 size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scale, bool is_causal, ComputeBackend backend) {

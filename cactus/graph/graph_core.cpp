@@ -377,9 +377,6 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
         case OpType::TOPK:
             compute_topk_node(node, nodes, node_index_map);
             break;
-        case OpType::LAYERNORM:
-            compute_layernorm_node(node, nodes, node_index_map);
-            break;
         case OpType::PRECISION_CAST:
             compute_precision_cast_node(node, nodes, node_index_map);
             break;
