@@ -139,6 +139,8 @@ void cactus_max_axis_int8(const int8_t* input, int8_t* output, size_t outer_size
 float cactus_max_all_f32(const float* data, size_t num_elements);
 void cactus_max_axis_f32(const float* input, float* output, size_t outer_size, size_t axis_size, size_t inner_size);
 
+void cactus_scatter_topk_f32(const float* indices, const float* values, float* output, size_t batch_size, size_t k, size_t num_classes);
+
 void cactus_rms_norm_f16(const __fp16* input, const __fp16* weight, __fp16* output,
                           size_t batch_size, size_t dims, float eps);
                           
@@ -218,4 +220,4 @@ void cactus_fp16_to_int8(const __fp16* src, int8_t* dst, size_t count, float sca
 float cactus_fp16_max_abs(const __fp16* src, size_t count);
 void cactus_int32_to_fp16_scaled(const int32_t* src, __fp16* dst, size_t count, float scale);
 
-#endif 
+#endif

@@ -1,12 +1,8 @@
 #include "graph.h"
 #include "../kernel/kernel.h"
-#include "kernel_utils.h"
 #include <cstring>
 #include <vector>
 #include <stdexcept>
-#include <iostream>
-#include <iomanip>
-#include <thread>
 #include <mutex>
 #include <cstdlib>
 #include <algorithm>
@@ -752,28 +748,12 @@ void compute_scatter_topk_node(GraphNode& node, const std::vector<std::unique_pt
     }
 
     float* output = node.output_buffer.data_as<float>();
-    std::fill(output, output + num_classes * batch_size, 0.0f);
 
     if (indices_buffer.precision != Precision::FP32 || values_buffer.precision != Precision::FP32) {
         throw std::runtime_error("ScatterTopK currently expects FP32 inputs");
     }
 
-    const float* indices_data = indices_buffer.data_as<float>();
-    const float* values_data = values_buffer.data_as<float>();
-
-    size_t total_work = batch_size * top_k;
-    CactusThreading::parallel_for(total_work, CactusThreading::Thresholds::ELEMENT_WISE,
-        [&](size_t start_idx, size_t end_idx) {
-            for (size_t i = start_idx; i < end_idx; ++i) {
-                size_t b = i / top_k;
-                size_t k = i % top_k;
-                size_t expert_index = static_cast<size_t>(indices_data[b * top_k + k] + 0.5f);
-                if (expert_index >= num_classes) {
-                    throw std::runtime_error("ScatterTopK index out of range");
-                }
-                output[expert_index * batch_size + b] = values_data[b * top_k + k];
-            }
-        });
+    cactus_scatter_topk_f32(indices_buffer.data_as<float>(), values_buffer.data_as<float>(), output, batch_size, top_k, num_classes);
 }
 
 void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
