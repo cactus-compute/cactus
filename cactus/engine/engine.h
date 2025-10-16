@@ -25,9 +25,13 @@ struct Config {
     uint32_t attention_head_dim = 128;
     float layer_norm_eps = 1e-6f;
     float rope_theta = 1000000.0f;
+    uint32_t num_experts = 0;
+    uint32_t num_shared_experts = 0;
+    uint32_t num_top_experts = 0;
+    uint32_t moe_every_n_layers = 0;
     bool tie_word_embeddings = true;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, SMOL = 2};
+    enum class ModelType {QWEN = 0, GEMMA = 1, SMOL = 2, NOMIC = 3};
     ModelType model_type = ModelType::QWEN;
 
     enum class Activation {GELU = 0, SILU = 1};
@@ -266,7 +270,7 @@ public:
     uint32_t generate(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
                       size_t top_k = 0, const std::string& profile_file = "");
 
-    std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true);
+    std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, const std::string& profile_file = "");
 
     void reset_cache() { kv_cache_.reset(); }
     void set_cache_window(size_t window_size, size_t sink_size = 4) { kv_cache_.set_window_size(window_size, sink_size); }

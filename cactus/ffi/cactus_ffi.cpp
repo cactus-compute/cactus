@@ -545,7 +545,7 @@ int cactus_embed(
             return -1;
         }
         
-        std::vector<float> embeddings = wrapper->model->get_embeddings(tokens, true);
+        std::vector<float> embeddings = wrapper->model->get_embeddings(tokens, true, "profile.txt");
         
         if (embeddings.size() * sizeof(float) > buffer_size) {
             return -2; 

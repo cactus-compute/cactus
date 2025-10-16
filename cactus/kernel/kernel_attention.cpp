@@ -26,7 +26,8 @@ void cactus_attention_int8(
     float v_scale,
     float output_scale,
     size_t position_offset,
-    size_t window_size
+    size_t window_size,
+    bool is_causal
 ) {
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
@@ -125,7 +126,7 @@ void cactus_attention_int8(
 
                                 size_t absolute_q_pos = position_offset + q_pos;
 
-                                if (kv_pos > absolute_q_pos) {
+                                if (is_causal && kv_pos > absolute_q_pos) {
                                     attention_score = -std::numeric_limits<float>::infinity();
                                 }
                                 else if (window_size > 0 && kv_pos < absolute_q_pos && (absolute_q_pos - kv_pos) > window_size) {
@@ -208,7 +209,8 @@ void cactus_attention_f32(
     float scale,
     const float* mask,
     size_t position_offset,
-    size_t window_size
+    size_t window_size,
+    bool is_causal
 ) {
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
@@ -312,7 +314,7 @@ void cactus_attention_f32(
 
                                 size_t absolute_q_pos = position_offset + q_pos;
 
-                                if (kv_pos > absolute_q_pos) {
+                                if (is_causal && kv_pos > absolute_q_pos) {
                                     attention_score = -std::numeric_limits<float>::infinity();
                                 }
                                 else if (window_size > 0 && kv_pos < absolute_q_pos && (absolute_q_pos - kv_pos) > window_size) {
@@ -406,7 +408,8 @@ void cactus_attention_f16(
     float scale,
     const __fp16* mask,
     size_t position_offset,
-    size_t window_size
+    size_t window_size,
+    bool is_causal
 ) {
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
@@ -491,7 +494,7 @@ void cactus_attention_f16(
                             
                             size_t absolute_q_pos = position_offset + q_pos;
 
-                            if (kv_pos > absolute_q_pos) {
+                            if (is_causal && kv_pos > absolute_q_pos) {
                                 score = -std::numeric_limits<float>::infinity();
                             }
                             else if (window_size > 0 && kv_pos < absolute_q_pos && (absolute_q_pos - kv_pos) > window_size) {

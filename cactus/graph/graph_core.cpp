@@ -165,7 +165,7 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
                 if (lhs.precision == Precision::INT8) {
                     switch (node.op_type) {
                         case OpType::ADD:
-                        case OpType::ADD_CLIPPED:  
+                        case OpType::ADD_CLIPPED:
                             cactus_add_broadcast_int8(lhs.data_as<int8_t>(), rhs.data_as<int8_t>(),
                                                      node.output_buffer.data_as<int8_t>(),
                                                      lhs_strides.data(), rhs_strides.data(),
@@ -198,7 +198,7 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
                 } else if (lhs.precision == Precision::FP16) {
                     switch (node.op_type) {
                         case OpType::ADD:
-                        case OpType::ADD_CLIPPED:  
+                        case OpType::ADD_CLIPPED:
                             cactus_add_broadcast_f16(lhs.data_as<__fp16>(), rhs.data_as<__fp16>(),
                                                      node.output_buffer.data_as<__fp16>(),
                                                      lhs_strides.data(), rhs_strides.data(),
@@ -371,11 +371,23 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
         case OpType::CONCAT:
             compute_fused_node(node, nodes, node_index_map);
             break;
+        case OpType::SCATTER_TOPK:
+            compute_scatter_topk_node(node, nodes, node_index_map);
+            break;
+        case OpType::TOPK:
+            compute_topk_node(node, nodes, node_index_map);
+            break;
+        case OpType::LAYERNORM:
+            compute_layernorm_node(node, nodes, node_index_map);
+            break;
         case OpType::PRECISION_CAST:
             compute_precision_cast_node(node, nodes, node_index_map);
             break;
         case OpType::RESHAPE:
             compute_reshape_node(node, nodes, node_index_map);
+            break;
+        case OpType::INDEX:
+            compute_index_node(node, nodes, node_index_map);
             break;
     }
 }
@@ -439,18 +451,21 @@ void compute_precision_cast_node(GraphNode& node, const std::vector<std::unique_
     
     size_t count = input_node.output_buffer.total_size;
     
+    float input_scale = input_node.output_buffer.quantization_scale;
+    float output_scale = node.output_buffer.quantization_scale;
+    
     if (input_node.output_buffer.precision == Precision::INT8 && node.output_buffer.precision == Precision::FP32) {
-        Quantization::int8_to_fp32(input_node.output_buffer.data_as<int8_t>(), node.output_buffer.data_as<float>(), count);
+        Quantization::int8_to_fp32(input_node.output_buffer.data_as<int8_t>(), node.output_buffer.data_as<float>(), count, input_scale);
     } else if (input_node.output_buffer.precision == Precision::FP32 && node.output_buffer.precision == Precision::INT8) {
-        Quantization::fp32_to_int8(input_node.output_buffer.data_as<float>(), node.output_buffer.data_as<int8_t>(), count);
+        Quantization::fp32_to_int8(input_node.output_buffer.data_as<float>(), node.output_buffer.data_as<int8_t>(), count, output_scale);
     } else if (input_node.output_buffer.precision == Precision::FP16 && node.output_buffer.precision == Precision::FP32) {
         Quantization::fp16_to_fp32(input_node.output_buffer.data_as<__fp16>(), node.output_buffer.data_as<float>(), count);
     } else if (input_node.output_buffer.precision == Precision::FP32 && node.output_buffer.precision == Precision::FP16) {
         Quantization::fp32_to_fp16(input_node.output_buffer.data_as<float>(), node.output_buffer.data_as<__fp16>(), count);
     } else if (input_node.output_buffer.precision == Precision::INT8 && node.output_buffer.precision == Precision::FP16) {
-        Quantization::int8_to_fp16(input_node.output_buffer.data_as<int8_t>(), node.output_buffer.data_as<__fp16>(), count);
+        Quantization::int8_to_fp16(input_node.output_buffer.data_as<int8_t>(), node.output_buffer.data_as<__fp16>(), count, input_scale);
     } else if (input_node.output_buffer.precision == Precision::FP16 && node.output_buffer.precision == Precision::INT8) {
-        Quantization::fp16_to_int8(input_node.output_buffer.data_as<__fp16>(), node.output_buffer.data_as<int8_t>(), count);
+        Quantization::fp16_to_int8(input_node.output_buffer.data_as<__fp16>(), node.output_buffer.data_as<int8_t>(), count, output_scale);
     } else {
         throw std::runtime_error("Unsupported precision conversion from " + 
                                 std::to_string(static_cast<int>(input_node.output_buffer.precision)) + 

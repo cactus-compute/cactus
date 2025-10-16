@@ -33,6 +33,9 @@ enum class OpType {
     SCALAR_ADD, SCALAR_SUBTRACT, SCALAR_MULTIPLY, SCALAR_DIVIDE, SCALAR_EXP, SCALAR_SQRT, SCALAR_COS, SCALAR_SIN,
     SILU, GELU,
     SAMPLE, CONCAT,
+    SCATTER_TOPK,
+    TOPK, LAYERNORM,
+    INDEX,
 };
 
 struct PrecisionTraits {
@@ -125,7 +128,8 @@ struct OpParams {
     int axis = -1;
     bool pretransposed_rhs = false;
     size_t position_offset = 0;
-    size_t window_size = 0; 
+    size_t window_size = 0;
+    bool is_causal = true;  // Default to causal for backward compatibility
     std::vector<size_t> new_shape;
     std::vector<size_t> permutation;
     Precision output_precision = Precision::INT8;
@@ -136,6 +140,9 @@ struct OpParams {
     float top_p = 1.0f;
     size_t top_k = 0;
     size_t random_seed = 0;
+    
+    size_t index_value = 0;  // For INDEX operation
+    size_t num_classes = 0;  // For scatter operations
 };
 
 struct GraphNode {
@@ -162,6 +169,10 @@ void compute_fused_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
 void compute_reshape_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_precision_cast_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_scatter_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 namespace ValidationUtils {
     void validate_tensor_dims(const std::vector<size_t>& shape, size_t required_dims, const std::string& op_name);
@@ -199,6 +210,7 @@ public:
     size_t matmul(size_t input1, size_t input2, bool pretransposed_rhs = false, ComputeBackend backend = ComputeBackend::CPU);
     size_t transpose(size_t input, ComputeBackend backend = ComputeBackend::CPU);
     size_t reshape(size_t input, const std::vector<size_t>& new_shape);
+    size_t index(size_t input, size_t index_value, int dim);
     
     size_t sum(size_t input, int axis);
     size_t mean(size_t input, int axis);
@@ -212,17 +224,20 @@ public:
     void set_quantization_scale(size_t node_id, float scale);
     size_t embedding(const std::string& filename, size_t indices);
     size_t embedding(size_t embedding_tensor, size_t indices);
-    
+
+    size_t layernorm(size_t input, size_t weight, size_t bias, float epsilon = 1e-5f);
+    size_t topk(size_t input, size_t k);
     size_t rms_norm(size_t input, size_t weight, float epsilon = 1e-5f);
     size_t rope(size_t input, float theta, size_t position_offset = 0, ComputeBackend backend = ComputeBackend::CPU);
     size_t softmax(size_t input, int axis = -1);
-    size_t attention(size_t query, size_t key, size_t value, float scale, ComputeBackend backend = ComputeBackend::CPU);
+    size_t attention(size_t query, size_t key, size_t value, float scale, bool is_causal = true, ComputeBackend backend = ComputeBackend::CPU);
     size_t attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, ComputeBackend backend = ComputeBackend::CPU);
     size_t attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, size_t window_size, ComputeBackend backend = ComputeBackend::CPU);
     
     size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20);
     
     size_t concat(size_t input1, size_t input2, int axis = 0);
+    size_t scatter_topk(size_t indices, size_t values, size_t num_classes);
     
     void set_input(size_t node_id, void* data, Precision precision);
     void set_external_input(size_t node_id, void* data, Precision precision);

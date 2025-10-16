@@ -13,7 +13,10 @@ static const char* op_type_names[] = {
     "RMS_NORM", "ROPE", "SOFTMAX", "ATTENTION",
     "SCALAR_ADD", "SCALAR_SUBTRACT", "SCALAR_MULTIPLY", "SCALAR_DIVIDE",
     "SCALAR_EXP", "SCALAR_SQRT", "SCALAR_COS", "SCALAR_SIN",
-    "SILU", "GELU", "SAMPLE", "CONCAT"
+    "SILU", "GELU", "SAMPLE", "CONCAT",
+    "SCATTER_TOPK",
+    "TOPK", "LAYERNORM",
+    "INDEX"
 };
 
 static const char* get_op_name(OpType op) {
@@ -143,6 +146,44 @@ size_t CactusGraph::reshape(size_t input, const std::vector<size_t>& new_shape) 
     return add_node(OpType::RESHAPE, {input}, new_shape, params);
 }
 
+size_t CactusGraph::index(size_t input, size_t index_value, int dim) {
+    const auto& input_buffer = get_output_buffer(input);
+    const auto& shape = input_buffer.shape;
+    
+    if (shape.empty()) {
+        throw std::invalid_argument("Cannot index a scalar tensor");
+    }
+    
+    int actual_dim = dim;
+    if (actual_dim < 0) {
+        actual_dim += static_cast<int>(shape.size());
+    }
+    
+    if (actual_dim < 0 || static_cast<size_t>(actual_dim) >= shape.size()) {
+        throw std::invalid_argument("Index dimension out of bounds");
+    }
+    
+    if (index_value >= shape[actual_dim]) {
+        throw std::invalid_argument("Index value " + std::to_string(index_value) + 
+                                    " out of bounds for dimension " + std::to_string(actual_dim) + 
+                                    " with size " + std::to_string(shape[actual_dim]));
+    }
+    
+    std::vector<size_t> output_shape;
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (static_cast<int>(i) != actual_dim) {
+            output_shape.push_back(shape[i]);
+        }
+    }
+    
+    if (output_shape.empty()) {
+        output_shape = {1};
+    }
+    
+    OpParams params{.axis = actual_dim, .index_value = index_value, .output_precision = input_buffer.precision};
+    return add_node(OpType::INDEX, {input}, output_shape, params);
+}
+
 size_t CactusGraph::sum(size_t input, int axis) {
     const auto& input_buffer = get_output_buffer(input);
     std::vector<size_t> output_shape;
@@ -248,8 +289,26 @@ size_t CactusGraph::softmax(size_t input, int axis) {
     return add_node(OpType::SOFTMAX, {input}, {}, params);
 }
 
-size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scale, ComputeBackend backend) {
-    OpParams params{.scale = scale, .backend = backend};
+size_t CactusGraph::topk(size_t input, size_t k) {
+    const auto& input_buffer = get_output_buffer(input);
+    
+    if (input_buffer.shape.empty()) {
+        throw std::runtime_error("TopK requires non-empty input tensor");
+    }
+    
+    std::vector<size_t> output_shape = {2, input_buffer.shape[0], k};
+    OpParams params{.top_k = k, .output_precision = Precision::FP32};
+
+    return add_node(OpType::TOPK, {input}, output_shape, params);
+}
+
+size_t CactusGraph::layernorm(size_t input, size_t weight, size_t bias, float epsilon) {
+    OpParams params{.epsilon = epsilon};
+    return add_node(OpType::LAYERNORM, {input, weight, bias}, {}, params);
+}
+
+size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scale, bool is_causal, ComputeBackend backend) {
+    OpParams params{.scale = scale, .is_causal = is_causal, .backend = backend};
     return add_node(OpType::ATTENTION, {query, key, value}, {}, params);
 }
 
@@ -291,6 +350,25 @@ size_t CactusGraph::concat(size_t input1, size_t input2, int axis) {
     OpParams params;
     params.axis = axis;
     return add_node(OpType::CONCAT, {input1, input2}, output_shape, params);
+}
+
+size_t CactusGraph::scatter_topk(size_t indices, size_t values, size_t num_classes) {
+    const auto& indices_buffer = get_output_buffer(indices);
+    const auto& values_buffer = get_output_buffer(values);
+
+    if (indices_buffer.shape != values_buffer.shape) {
+        throw std::runtime_error("ScatterTopK requires indices and values with identical shapes");
+    }
+    if (indices_buffer.shape.size() != 2) {
+        throw std::runtime_error("ScatterTopK currently supports 2D tensors [batch, top_k]");
+    }
+    if (indices_buffer.precision != Precision::FP32 || values_buffer.precision != Precision::FP32) {
+        throw std::runtime_error("ScatterTopK expects FP32 indices and values");
+    }
+
+    std::vector<size_t> output_shape = {num_classes, indices_buffer.shape[0]};
+    OpParams params{.output_precision = Precision::FP32, .num_classes = num_classes};
+    return add_node(OpType::SCATTER_TOPK, {indices, values}, output_shape, params);
 }
 
 size_t CactusGraph::sample(size_t logits, float temperature, float top_p, size_t top_k) {
@@ -736,5 +814,3 @@ void CactusGraph::soft_reset() {
     
     next_node_id_ = max_preserved_id + 1;
 }
-
-

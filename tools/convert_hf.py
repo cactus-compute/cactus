@@ -7,7 +7,7 @@ import argparse
 from pathlib import Path
 
 try:
-    from transformers import AutoTokenizer, AutoModelForCausalLM
+    from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModel
     import torch
 except ImportError:
     print("Please install required packages: pip install torch transformers")
@@ -33,7 +33,7 @@ def save_tensor_with_header(tensor, output_path, precision='FP32', transpose=Fal
     
     if precision == 'INT8':
         filename = output_path.name
-        if any(x in filename for x in ['norm']):
+        if any(x in filename for x in ['norm', 'bias']) or (model_type == 'bert' and 'embedding' in filename):
             precision = 'FP16'
     
     if precision == 'INT8':
@@ -166,8 +166,8 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
     
     
     tie_word_embeddings = getattr(config, 'tie_word_embeddings', False)
-    
     model_type_str = getattr(config, 'model_type', '').lower()
+
     if 'gemma' in model_type_str:
         detected_model_type = 'gemma'
     elif 'qwen' in model_type_str:
@@ -177,6 +177,8 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             detected_model_type = 'smol'
         else:
             detected_model_type = 'llama'
+    elif 'bert' in model_type_str:
+        detected_model_type = 'bert'
     else:
         detected_model_type = 'qwen'
         print(f"  Warning: Unknown model type '{model_type_str}', defaulting to 'qwen'")
@@ -187,17 +189,21 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         'num_layers': getattr(config, 'num_hidden_layers', getattr(config, 'num_layers', 0)),
         'attention_heads': getattr(config, 'num_attention_heads', 0),
         'attention_kv_heads': getattr(config, 'num_key_value_heads', getattr(config, 'num_attention_heads', 0)),
-        'ffn_intermediate_dim': getattr(config, 'intermediate_size', 0),
+        'ffn_intermediate_dim': getattr(config, 'intermediate_size', getattr(config, 'n_inner', 0)),
         'context_length': getattr(config, 'max_position_embeddings', getattr(config, 'max_sequence_length', 0)),
-        'rope_theta': getattr(config, 'rope_theta', 10000.0),
+        'rope_theta': getattr(config, 'rope_theta', getattr(config, 'rotary_emb_base', 10000.0)),
         'attention_head_dim': getattr(config, 'head_dim', getattr(config, 'hidden_size', 0) // getattr(config, 'num_attention_heads', 1)),
+        'layer_norm_eps': getattr(config, 'layer_norm_eps', getattr(config, 'layer_norm_epsilon', getattr(config, 'rms_norm_eps', 1e-6))),
+        'num_experts': getattr(config, 'num_experts', 0),
+        'num_shared_experts': getattr(config, 'num_shared_experts', 0),
+        'num_top_experts': getattr(config, 'moe_top_k', getattr(config, 'num_top_experts', 0)),
+        'moe_every_n_layers': getattr(config, 'moe_every_n_layers', 0),
         'tie_word_embeddings': tie_word_embeddings,
         'model_type': detected_model_type
     }
-    
+
     embed_names = ['model.embed_tokens.weight', 'embed_tokens.weight', 'embeddings.weight', 'transformer.wte.weight']
     embedding_found = False
-    embedding_tensor = None
     for name in embed_names:
         if name in state_dict:
             embedding_tensor = state_dict[name]
@@ -205,9 +211,17 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             saved_tensor_full_names.add(name)
             embedding_found = True
             break
+    if model_type_str == 'nomic_bert':
+        if 'embeddings.word_embeddings.weight' in state_dict:
+            fused_embedding_tensor = state_dict['embeddings.word_embeddings.weight'] + state_dict.get('embeddings.token_type_embeddings.weight', torch.zeros([1]))
+            save_tensor_with_header(fused_embedding_tensor, output_dir / "token_embeddings.weights", precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+            embedding_found = True
     
-    if not embedding_found:
-        pass
+    if embedding_found:
+        embedding_norm_names = {'emb_ln.weight': 'embedding_layernorm.weight', 'emb_ln.bias': 'embedding_layernorm.bias'}
+        for name, file_name in embedding_norm_names.items():
+            if name in state_dict:
+                save_tensor_with_header(state_dict[name], output_dir / file_name, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
     
     if not tie_word_embeddings:
         output_names = ['lm_head.weight', 'output.weight', 'transformer.lm_head.weight']
@@ -229,7 +243,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
     num_layers = model_config['num_layers']
     for i in range(num_layers):
         
-        layer_prefixes = [f'model.layers.{i}.', f'layers.{i}.', f'transformer.h.{i}.']
+        layer_prefixes = [f'model.layers.{i}.', f'layers.{i}.', f'transformer.h.{i}.', f'encoder.layers.{i}.']
         
         layer_prefix = None
         for prefix in layer_prefixes:
@@ -239,7 +253,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         
         if not layer_prefix:
             continue
-        
+
         weight_patterns = [
             (['self_attn.q_proj.weight', 'attn.q_proj.weight', 'attn.c_attn.weight'], precision, f'layer_{i}_attn_q.weights', False),
             (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False),
@@ -255,6 +269,23 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             # Gemma3 specific layer norms 
             (['pre_feedforward_layernorm.weight'], precision, f'layer_{i}_pre_ffn_norm.weights', False),
             (['post_feedforward_layernorm.weight'], precision, f'layer_{i}_post_ffn_norm.weights', False),
+            # Nomic BERT specific parameters
+            (['attn.Wqkv.bias'], precision, f'layer_{i}_attn_{{channel}}.bias', False),
+            (['attn.Wqkv.weight'], precision, f'layer_{i}_attn_{{channel}}.weights', False),
+            (['attn.out_proj.bias'], precision, f'layer_{i}_attn_output.bias', False),
+            (['attn.out_proj.weight'], precision, f'layer_{i}_attn_output.weights', False),
+            (['mlp.fc1.bias'], precision, f'layer_{i}_mlp_fc1.bias', False),
+            (['mlp.fc1.weight'], precision, f'layer_{i}_mlp_fc1.weights', False),
+            (['mlp.fc2.bias'], precision, f'layer_{i}_mlp_fc2.bias', False),
+            (['mlp.fc2.weight'], precision, f'layer_{i}_mlp_fc2.weights', False),
+            (['norm1.bias'], precision, f'layer_{i}_norm1.bias', False),
+            (['norm1.weight'], precision, f'layer_{i}_norm1.weights', False),
+            (['norm2.bias'], precision, f'layer_{i}_norm2.bias', False),
+            (['norm2.weight'], precision, f'layer_{i}_norm2.weights', False),
+            (['mlp.experts.bias'], precision, f'layer_{i}_mlp_experts.bias', False),
+            (['mlp.experts.mlp.w1'], precision, f'layer_{i}_mlp_expert_{{channel}}.mlp1.weights', False),
+            (['mlp.experts.mlp.w2'], precision, f'layer_{i}_mlp_expert_{{channel}}.mlp2.weights', True),
+            (['mlp.router.layer.weight'], precision, f'layer_{i}_mlp_router.layer.weights', False),
         ]
         
         for name_patterns, tensor_precision, output_name, should_transpose in weight_patterns:
@@ -263,6 +294,29 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 full_name = layer_prefix + pattern
                 if full_name in state_dict:
                     tensor = state_dict[full_name]
+                    if pattern.startswith('attn.Wqkv.') and model_type_str == 'nomic_bert':
+                        if tensor.ndim == 1:
+                            tensor = tensor.reshape(3, -1)
+                        elif tensor.ndim == 2:
+                            tensor = tensor.reshape(3, -1, tensor.size(-1))
+                        else:
+                            raise ValueError(f"Invalid tensor shape: {tensor.shape}")
+                        for j, ch in enumerate(['q', 'k', 'v']):
+                            channel_output_name = output_name.replace('{channel}', ch)
+                            save_tensor_with_header(tensor[j], output_dir / channel_output_name, tensor_precision, transpose=should_transpose, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                        found = True
+                        break
+                    elif model_type_str == 'nomic_bert' and pattern.startswith('mlp.experts.') and 'bias' not in pattern:
+                        num_experts = model_config['num_experts']
+                        if tensor.ndim != 2:
+                            raise ValueError(f"Invalid tensor shape: {tensor.shape}")
+                        tensor = tensor.reshape(num_experts, -1, tensor.size(-1))
+                        for expert_idx in range(num_experts):
+                            expert_tensor = tensor[expert_idx]
+                            expert_output_name = output_name.replace('{channel}', str(expert_idx))
+                            save_tensor_with_header(expert_tensor, output_dir / expert_output_name, tensor_precision, transpose=should_transpose, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                        found = True
+                        break
                     save_tensor_with_header(tensor, output_dir / output_name, tensor_precision, transpose=should_transpose, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                     saved_tensor_full_names.add(full_name)
                     found = True
@@ -555,12 +609,20 @@ def convert_hf_to_cactus(model_name, output_dir, precision='INT8', cache_dir=Non
             cache_dir=cache_dir,
             trust_remote_code=True
         )
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            cache_dir=cache_dir,
-            trust_remote_code=True,
-            torch_dtype=torch.float32
-        )
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                cache_dir=cache_dir,
+                trust_remote_code=True,
+                dtype=torch.float32
+            )
+        except ValueError:
+            model = AutoModel.from_pretrained(
+                model_name,
+                cache_dir=cache_dir,
+                trust_remote_code=True,
+                dtype=torch.float32
+            )
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
