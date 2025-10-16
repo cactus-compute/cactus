@@ -198,7 +198,7 @@ python3 tools/convert_hf.py nomic-ai/nomic-embed-text-v2-moe weights/nomic-i8/ -
 Simply replace the weight path `tests/test_engine.cpp` with your choice.
 
 ## Roadmap:
-- Llama, Nomic, LFM, SmolVLM, Whisper, Kitten, Neuphonic
+- Llama, LFM, SmolVLM, Whisper, Kitten, Neuphonic
 - Python tools for porting any Torch/JAX to cactus
 - GPTQ & NPU/DSP/ISP for high-end phones 
 
