@@ -68,41 +68,31 @@ def save_tensor_with_header(tensor, output_path, precision='FP32', transpose=Fal
             clipped_min = min_val
             clipped_max = max_val
         
-        # Symmetric quantization: use maximum absolute value for optimal range
         abs_max = max(abs(clipped_min), abs(clipped_max))
         scale = abs_max / 127.0 if abs_max != 0 else 1.0
         
         quantized_data = np.clip(np.round(original_data / scale), qmin, qmax).astype(np.int8)
-        
+
         dequantized_data = quantized_data.astype(np.float32) * scale
         mse_error = np.mean((original_data - dequantized_data) ** 2)
         snr_db = 10 * np.log10(np.var(original_data) / mse_error) if mse_error > 0 else float('inf')
-        
+
         original_flat = original_data.flatten()
         dequantized_flat = dequantized_data.flatten()
         cos_sim = np.dot(original_flat, dequantized_flat) / (np.linalg.norm(original_flat) * np.linalg.norm(dequantized_flat))
-        
-        snr_threshold = args.snr_threshold if args else 30.0
-        if snr_db < snr_threshold:
-            precision = 'FP16'
-            data = data.astype(np.float16)
-            scale = 1.0
-            if stats_tracker:
-                stats_tracker['low_snr_fallbacks'] = stats_tracker.get('low_snr_fallbacks', 0) + 1
-        else:
-            saturated_values = np.sum(np.abs(quantized_data) == 127)
-            saturation_percent = (saturated_values / quantized_data.size) * 100
-            data = quantized_data
-            
-            if stats_tracker:
-                stats_tracker['quantized_tensors'] += 1
-                stats_tracker['quantized_parameters'] += original_data.size
-                stats_tracker['mse_values'].append(mse_error)
-                stats_tracker['snr_values'].append(snr_db)
-                stats_tracker['cos_sim_values'].append(cos_sim)
-                saturation_warning_threshold = args.saturation_warning_threshold if args else 0.1
-                if saturation_percent > saturation_warning_threshold:
-                    stats_tracker['saturation_warnings'] += 1
+        saturated_values = np.sum(np.abs(quantized_data) == 127)
+        saturation_percent = (saturated_values / quantized_data.size) * 100
+        data = quantized_data
+
+        if stats_tracker:
+            stats_tracker['quantized_tensors'] += 1
+            stats_tracker['quantized_parameters'] += original_data.size
+            stats_tracker['mse_values'].append(mse_error)
+            stats_tracker['snr_values'].append(snr_db)
+            stats_tracker['cos_sim_values'].append(cos_sim)
+            saturation_warning_threshold = args.saturation_warning_threshold if args else 0.1
+            if saturation_percent > saturation_warning_threshold:
+                stats_tracker['saturation_warnings'] += 1
     elif precision == 'FP16':
         data = data.astype(np.float16)
         scale = 1.0
