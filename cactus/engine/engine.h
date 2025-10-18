@@ -217,15 +217,19 @@ struct KVCache {
     struct LayerCache {
         std::vector<uint8_t> keys;
         std::vector<uint8_t> values;
+        size_t start_idx = 0;
+        size_t cache_len = 0;
     };
 
     std::vector<LayerCache> layer_caches;
 
-    size_t window_size = DEFAULT_WINDOW_SIZE;  
-    size_t sink_size = DEFAULT_SINK_SIZE;    
+    size_t window_size = DEFAULT_WINDOW_SIZE;
+    size_t sink_size = DEFAULT_SINK_SIZE;
     size_t current_seq_len = 0;
     size_t total_seq_len = 0;
+    size_t cache_start_pos = 0; 
     size_t max_seq_len = 2048;
+    size_t max_cache_size = 0;
     size_t num_kv_heads = 0;
     size_t head_dim = 0;
     size_t num_layers = 0;
@@ -235,6 +239,7 @@ struct KVCache {
     void set_window_size(size_t window, size_t sink = DEFAULT_SINK_SIZE);
     size_t get_effective_seq_len() const { return current_seq_len; }
     size_t get_total_seq_len() const { return total_seq_len; }
+    size_t get_cache_start_pos() const { return cache_start_pos; }
 
     void init(size_t num_layers, size_t max_seq, size_t num_kv_heads, size_t head_dim, Precision model_precision);
     void reset();
