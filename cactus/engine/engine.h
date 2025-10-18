@@ -215,8 +215,11 @@ struct KVCache {
     static constexpr size_t DEFAULT_SINK_SIZE = 4;
 
     struct LayerCache {
-        std::vector<uint8_t> keys;
-        std::vector<uint8_t> values;
+        void* keys_mmap = nullptr;
+        void* values_mmap = nullptr;
+        int keys_fd = -1;
+        int values_fd = -1;
+        size_t mmap_size = 0;
         size_t start_idx = 0;
         size_t cache_len = 0;
     };
@@ -236,7 +239,10 @@ struct KVCache {
     Precision precision;
     size_t element_size = 4;
 
+    std::string cache_dir = "/tmp/cactus_kv_cache";
+
     void set_window_size(size_t window, size_t sink = DEFAULT_SINK_SIZE);
+    void set_cache_dir(const std::string& dir);
     size_t get_effective_seq_len() const { return current_seq_len; }
     size_t get_total_seq_len() const { return total_seq_len; }
     size_t get_cache_start_pos() const { return cache_start_pos; }
