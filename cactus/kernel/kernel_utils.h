@@ -250,10 +250,8 @@ namespace CactusThreading {
         size_t num_row_tiles = (rows + tile_rows - 1) / tile_rows;
         size_t num_col_tiles = (cols + tile_cols - 1) / tile_cols;
         size_t total_tiles = num_row_tiles * num_col_tiles;
-        
-        size_t element_size = tile_rows * tile_cols;
-        size_t threshold = element_size < Thresholds::L1_CACHE_SIZE ? 
-                          Thresholds::SCALAR_BASIC : Thresholds::SCALAR_EXPENSIVE;
+
+        size_t threshold = 4;
         
         parallel_for(total_tiles, threshold, [=](size_t start_tile, size_t end_tile) {
             for (size_t tile_idx = start_tile; tile_idx < end_tile; ++tile_idx) {

@@ -366,7 +366,7 @@ int cactus_complete(
         if (tokens_to_process.empty()) {
             next_token = wrapper->model->generate({}, temperature, top_p, top_k);
         } else {
-            next_token = wrapper->model->generate(tokens_to_process, temperature, top_p, top_k, "profile.txt");
+            next_token = wrapper->model->generate(tokens_to_process, temperature, top_p, top_k);
         }
 
         auto token_end = std::chrono::high_resolution_clock::now();
@@ -545,7 +545,7 @@ int cactus_embed(
             return -1;
         }
         
-        std::vector<float> embeddings = wrapper->model->get_embeddings(tokens, true, "profile.txt");
+        std::vector<float> embeddings = wrapper->model->get_embeddings(tokens, true);
         
         if (embeddings.size() * sizeof(float) > buffer_size) {
             return -2; 
