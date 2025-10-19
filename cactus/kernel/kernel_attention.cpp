@@ -414,13 +414,13 @@ void cactus_attention_f16(
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }
-    
+
     constexpr size_t VECTOR_WIDTH = 8;
-    constexpr size_t BLOCK_SIZE = 64;
+    constexpr size_t BLOCK_SIZE = 64; 
     const size_t head_dim_aligned = (head_dim / VECTOR_WIDTH) * VECTOR_WIDTH;
-    
+
     const size_t group_size = num_q_heads / num_kv_heads;
-    
+
     const size_t q_batch_stride = seq_len * num_q_heads * head_dim;
     const size_t kv_batch_stride = kv_seq_len * num_kv_heads * head_dim;
     const size_t o_batch_stride = seq_len * num_q_heads * head_dim;
@@ -429,24 +429,27 @@ void cactus_attention_f16(
     const size_t o_seq_stride = num_q_heads * head_dim;
     const size_t mask_batch_stride = mask ? seq_len * kv_seq_len : 0;
 
-    CactusThreading::parallel_for(batch_size * num_q_heads, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+    const size_t total_work = batch_size * num_q_heads * seq_len;
+
+    CactusThreading::parallel_for(total_work, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
         [=](size_t start_idx, size_t end_idx) {
             std::vector<float> block_scores(BLOCK_SIZE);
             std::vector<float32x4_t> output_accum_low(head_dim_aligned / VECTOR_WIDTH * 2);
             std::vector<float32x4_t> output_accum_high(head_dim_aligned / VECTOR_WIDTH * 2);
-            
-            for (size_t batch_head_idx = start_idx; batch_head_idx < end_idx; ++batch_head_idx) {
-                const size_t batch_idx = batch_head_idx / num_q_heads;
-                const size_t q_head_idx = batch_head_idx % num_q_heads;
+
+            for (size_t work_idx = start_idx; work_idx < end_idx; ++work_idx) {
+                const size_t batch_idx = work_idx / (num_q_heads * seq_len);
+                const size_t remaining = work_idx % (num_q_heads * seq_len);
+                const size_t q_head_idx = remaining / seq_len;
+                const size_t q_pos = remaining % seq_len;
+
                 const size_t kv_head_idx = q_head_idx / group_size;
-                
+
                 const __fp16* Q_base = queries + batch_idx * q_batch_stride;
                 const __fp16* K_base = keys + batch_idx * kv_batch_stride;
                 const __fp16* V_base = values + batch_idx * kv_batch_stride;
                 __fp16* O_base = output + batch_idx * o_batch_stride;
                 const __fp16* M = mask ? (mask + batch_idx * mask_batch_stride) : nullptr;
-
-                for (size_t q_pos = 0; q_pos < seq_len; ++q_pos) {
                     const __fp16* q_vec = Q_base + q_pos * q_seq_stride + q_head_idx * head_dim;
                     __fp16* o_vec = O_base + q_pos * o_seq_stride + q_head_idx * head_dim;
                     
@@ -467,7 +470,12 @@ void cactus_attention_f16(
                         for (size_t kv_idx = 0; kv_idx < block_size; ++kv_idx) {
                             const size_t kv_pos = kv_block_start + kv_idx;
                             const __fp16* k_vec = K_base + kv_pos * kv_seq_stride + kv_head_idx * head_dim;
-                            
+
+                            if (kv_idx + 1 < block_size) {
+                                const __fp16* next_k_vec = K_base + (kv_pos + 1) * kv_seq_stride + kv_head_idx * head_dim;
+                                __builtin_prefetch(next_k_vec, 0, 1);
+                            }
+
                             float32x4_t score_accum_low = vdupq_n_f32(0.0f);
                             float32x4_t score_accum_high = vdupq_n_f32(0.0f);
                             
@@ -576,7 +584,6 @@ void cactus_attention_f16(
                             o_vec[dim] = static_cast<__fp16>(0.0f);
                         }
                     }
-                }
             }
         });
 }
