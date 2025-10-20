@@ -5,13 +5,11 @@ build
 *.gguf
 weights/
 
-# Android build artifacts
 android/build/
 android/libs/
 android/arm64-v8a/
 *.so
 
-# Apple build artifacts
 apple/build/
 apple/build-static/
 apple/*.xcframework
