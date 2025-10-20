@@ -124,7 +124,7 @@ function build_static_library() {
 
     cmake -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
-          -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
           -DCMAKE_OSX_SYSROOT="$IOS_SDK_PATH" \
           -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
           -DBUILD_SHARED_LIBS=OFF \
@@ -152,7 +152,7 @@ function build_static_library() {
 
     cmake -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
-          -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
           -DCMAKE_OSX_SYSROOT="$IOS_SIM_SDK_PATH" \
           -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
           -DBUILD_SHARED_LIBS=OFF \
@@ -177,7 +177,7 @@ function build_framework() {
         -DCMAKE_SYSTEM_NAME=$1 \
         -DCMAKE_OSX_ARCHITECTURES="$2" \
         -DCMAKE_OSX_SYSROOT=$3 \
-        -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
         -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
         -DBUILD_SHARED_LIBS=ON \
         -DCMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH=NO \
