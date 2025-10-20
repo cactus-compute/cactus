@@ -1,0 +1,6 @@
+# Saved checkpoints and data
+ckpts/
+lora_checkpoints/
+data/
+*.zip
+
