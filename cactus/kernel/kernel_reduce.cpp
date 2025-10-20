@@ -788,22 +788,4 @@ void cactus_max_axis_f32(const float* input, float* output, size_t outer_size, s
             size_t output_idx = outer * inner_size + inner;
             output[output_idx] = max_val;
         });
-}
-
-void cactus_scatter_topk_f32(const float* indices, const float* values, float* output, size_t batch_size, size_t top_k, size_t num_classes) {
-    std::fill(output, output + num_classes * batch_size, 0.0f);
-    
-    size_t total_work = batch_size * top_k;
-    CactusThreading::parallel_for(total_work, CactusThreading::Thresholds::ELEMENT_WISE,
-        [&](size_t start_idx, size_t end_idx) {
-            for (size_t i = start_idx; i < end_idx; ++i) {
-                size_t b = i / top_k;
-                size_t k = i % top_k;
-                size_t expert_index = static_cast<size_t>(indices[b * top_k + k] + 0.5f);
-                if (expert_index >= num_classes) {
-                    throw std::runtime_error("ScatterTopK index out of range");
-                }
-                output[expert_index * batch_size + b] = values[b * top_k + k];
-            }
-        });
-}
+} 

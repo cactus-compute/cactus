@@ -163,20 +163,6 @@ size_t NomicModel::build_moe_mlp(CactusGraph* gb, size_t normalized_h, uint32_t 
     return gb->add(expert_outputs, layer.mlp_experts_bias);
 }
 
-size_t NomicModel::build_layernorm(CactusGraph* gb, size_t input, size_t weight, size_t bias, float epsilon) const {
-    auto mean = gb->mean(input, -1);
-    auto variance = gb->variance(input, -1);
-
-    auto raw_std = gb->scalar_sqrt(variance);
-    auto safe_std = gb->scalar_add(raw_std, epsilon);
-
-    auto residuals = gb->subtract(input, mean);
-    auto normalized = gb->divide(residuals, safe_std);
-
-    auto scaled_normalized = gb->multiply(normalized, weight);
-    return gb->add(scaled_normalized, bias);
-}
-
 size_t NomicModel::build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
                                           ComputeBackend backend, bool use_cache, size_t position_offset) {
     if (use_cache) {
@@ -186,10 +172,10 @@ size_t NomicModel::build_transformer_block(CactusGraph* gb, size_t hidden, uint3
     const auto& layer = weight_nodes_.layers[layer_idx];
     auto attn_output = build_attention(gb, hidden, layer_idx, backend);
     auto residual = gb->add(hidden, attn_output);
-    auto normalized_residual = build_layernorm(gb, residual, layer.ffn_norm_1_weight, layer.ffn_norm_1_bias, config_.layer_norm_eps);
+    auto normalized_residual = gb->layernorm(residual, layer.ffn_norm_1_weight, layer.ffn_norm_1_bias, config_.layer_norm_eps);
     auto mlp_output = build_mlp(gb, normalized_residual, layer_idx, backend);
     auto final_residual = gb->add(normalized_residual, mlp_output);
-    auto normalized_final_residual = build_layernorm(gb, final_residual, layer.ffn_norm_2_weight, layer.ffn_norm_2_bias, config_.layer_norm_eps);
+    auto normalized_final_residual = gb->layernorm(final_residual, layer.ffn_norm_2_weight, layer.ffn_norm_2_bias, config_.layer_norm_eps);
     return normalized_final_residual;
 }
 
@@ -214,7 +200,7 @@ size_t NomicModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) 
     
     size_t hidden = gb->embedding(embedding_node_id_, input_node_id);
     
-    hidden = build_layernorm(gb, hidden, weight_nodes_.embedding_layernorm_weight, weight_nodes_.embedding_layernorm_bias, config_.layer_norm_eps);
+    hidden = gb->layernorm(hidden, weight_nodes_.embedding_layernorm_weight, weight_nodes_.embedding_layernorm_bias, config_.layer_norm_eps);
 
     static std::set<uint32_t> skip_layers = {};
     for (uint32_t layer_idx = 0; layer_idx < config_.num_layers; layer_idx++) {

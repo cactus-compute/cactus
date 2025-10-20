@@ -158,9 +158,7 @@ private:
                                 ComputeBackend backend) const;
 
     size_t build_moe_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
-                            ComputeBackend backend) const;
-
-    size_t build_layernorm(CactusGraph* gb, size_t input, size_t weight, size_t bias, float epsilon) const;
+                        ComputeBackend backend) const;
 
     struct WeightNodeIDs {
         size_t embedding_layernorm_weight;

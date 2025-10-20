@@ -33,7 +33,8 @@ enum class OpType {
     SCALAR_ADD, SCALAR_SUBTRACT, SCALAR_MULTIPLY, SCALAR_DIVIDE, SCALAR_EXP, SCALAR_SQRT, SCALAR_COS, SCALAR_SIN,
     SILU, GELU,
     SAMPLE, CONCAT,
-    SCATTER_TOPK, TOPK,
+    SCATTER_TOPK,
+    TOPK, LAYERNORM,
     INDEX,
 };
 
@@ -128,7 +129,7 @@ struct OpParams {
     bool pretransposed_rhs = false;
     size_t position_offset = 0;
     size_t window_size = 0;
-    bool is_causal = true;
+    bool is_causal = true;  // Default to causal for backward compatibility
     std::vector<size_t> new_shape;
     std::vector<size_t> permutation;
     Precision output_precision = Precision::INT8;
@@ -140,8 +141,8 @@ struct OpParams {
     size_t top_k = 0;
     size_t random_seed = 0;
     
-    size_t index_value = 0;
-    size_t num_classes = 0;
+    size_t index_value = 0;  // For INDEX operation
+    size_t num_classes = 0;  // For scatter operations
 };
 
 struct GraphNode {
@@ -170,6 +171,7 @@ void compute_precision_cast_node(GraphNode& node, const std::vector<std::unique_
 void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_scatter_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 namespace ValidationUtils {
@@ -223,6 +225,7 @@ public:
     size_t embedding(const std::string& filename, size_t indices);
     size_t embedding(size_t embedding_tensor, size_t indices);
 
+    size_t layernorm(size_t input, size_t weight, size_t bias, float epsilon = 1e-5f);
     size_t topk(size_t input, size_t k);
     size_t rms_norm(size_t input, size_t weight, float epsilon = 1e-5f);
     size_t rope(size_t input, float theta, size_t position_offset = 0, ComputeBackend backend = ComputeBackend::CPU);

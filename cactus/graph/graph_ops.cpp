@@ -3,6 +3,9 @@
 #include <cstring>
 #include <vector>
 #include <stdexcept>
+#include <iostream>
+#include <iomanip>
+#include <thread>
 #include <mutex>
 #include <cstdlib>
 #include <algorithm>
@@ -748,12 +751,29 @@ void compute_scatter_topk_node(GraphNode& node, const std::vector<std::unique_pt
     }
 
     float* output = node.output_buffer.data_as<float>();
+    std::fill(output, output + num_classes * batch_size, 0.0f);
 
     if (indices_buffer.precision != Precision::FP32 || values_buffer.precision != Precision::FP32) {
         throw std::runtime_error("ScatterTopK currently expects FP32 inputs");
     }
 
-    cactus_scatter_topk_f32(indices_buffer.data_as<float>(), values_buffer.data_as<float>(), output, batch_size, top_k, num_classes);
+    const float* indices_data = indices_buffer.data_as<float>();
+    const float* values_data = values_buffer.data_as<float>();
+
+    for (size_t b = 0; b < batch_size; ++b) {
+        for (size_t k = 0; k < top_k; ++k) {
+            float raw_index = indices_data[b * top_k + k];
+            if (!std::isfinite(raw_index)) {
+                throw std::runtime_error("ScatterTopK index is not finite");
+            }
+            size_t expert_index = static_cast<size_t>(raw_index + 0.5f);
+            if (expert_index >= num_classes) {
+                throw std::runtime_error("ScatterTopK index out of range");
+            }
+            float weight = values_data[b * top_k + k];
+            output[expert_index * batch_size + b] = weight;
+        }
+    }
 }
 
 void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -801,6 +821,92 @@ void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphN
             idx_out_row[i] = static_cast<float>(indexed_values[i].first);
             val_out_row[i] = indexed_values[i].second;
         }
+    }
+}
+
+void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& weight_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& bias_buffer = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    float epsilon = node.params.epsilon;
+    
+    if (input_buffer.shape.empty()) {
+        throw std::runtime_error("LayerNorm requires non-empty input tensor");
+    }
+    
+    size_t feature_size = input_buffer.shape.back();
+    size_t batch_size = input_buffer.total_size / feature_size;
+    
+    std::vector<float> input_float(input_buffer.total_size);
+    std::vector<float> weight_float(feature_size);
+    std::vector<float> bias_float(feature_size);
+    
+    if (input_buffer.precision == Precision::INT8) {
+        throw std::runtime_error("LayerNorm currently does not support INT8 input");
+    } else if (input_buffer.precision == Precision::FP16) {
+        const __fp16* input_fp16 = input_buffer.data_as<__fp16>();
+        for (size_t i = 0; i < input_buffer.total_size; ++i) {
+            input_float[i] = static_cast<float>(input_fp16[i]);
+        }
+    } else {
+        std::memcpy(input_float.data(), input_buffer.data_as<float>(), input_buffer.total_size * sizeof(float));
+    }
+    
+    if (weight_buffer.precision == Precision::INT8) {
+        throw std::runtime_error("LayerNorm currently does not support INT8 weight");
+    } else if (weight_buffer.precision == Precision::FP16) {
+        const __fp16* weight_fp16 = weight_buffer.data_as<__fp16>();
+        for (size_t i = 0; i < feature_size; ++i) {
+            weight_float[i] = static_cast<float>(weight_fp16[i]);
+        }
+    } else {
+        std::memcpy(weight_float.data(), weight_buffer.data_as<float>(), feature_size * sizeof(float));
+    }
+    
+    if (bias_buffer.precision == Precision::INT8) {
+        throw std::runtime_error("LayerNorm currently does not support INT8 bias");
+    } else if (bias_buffer.precision == Precision::FP16) {
+        const __fp16* bias_fp16 = bias_buffer.data_as<__fp16>();
+        for (size_t i = 0; i < feature_size; ++i) {
+            bias_float[i] = static_cast<float>(bias_fp16[i]);
+        }
+    } else {
+        std::memcpy(bias_float.data(), bias_buffer.data_as<float>(), feature_size * sizeof(float));
+    }
+    
+    std::vector<float> output_float(input_buffer.total_size);
+    for (size_t b = 0; b < batch_size; ++b) {
+        const float* input_row = input_float.data() + b * feature_size;
+        float* output_row = output_float.data() + b * feature_size;
+        
+        float mean = 0.0f;
+        for (size_t i = 0; i < feature_size; ++i) {
+            mean += input_row[i];
+        }
+        mean /= feature_size;
+        
+        float variance = 0.0f;
+        for (size_t i = 0; i < feature_size; ++i) {
+            float diff = input_row[i] - mean;
+            variance += diff * diff;
+        }
+        variance /= feature_size;
+        
+        float std_inv = 1.0f / std::sqrt(variance + epsilon);
+        for (size_t i = 0; i < feature_size; ++i) {
+            output_row[i] = (input_row[i] - mean) * std_inv * weight_float[i] + bias_float[i];
+        }
+    }
+    
+    if (node.output_buffer.precision == Precision::INT8) {
+        throw std::runtime_error("LayerNorm currently does not support INT8 output");
+    } else if (node.output_buffer.precision == Precision::FP16) {
+        __fp16* output_fp16 = node.output_buffer.data_as<__fp16>();
+        for (size_t i = 0; i < input_buffer.total_size; ++i) {
+            output_fp16[i] = static_cast<__fp16>(output_float[i]);
+        }
+    } else {
+        std::memcpy(node.output_buffer.data_as<float>(), output_float.data(), input_buffer.total_size * sizeof(float));
     }
 }
 
