@@ -21,7 +21,7 @@ static void* create_mmap_file(const std::string& filepath, size_t size, int& fd)
         fs::create_directories(dir);
     }
 
-    fd = open(filepath.c_str(), O_RDWR | O_CREAT, 0666);
+    fd = open(filepath.c_str(), O_RDWR | O_CREAT, 0644);
     if (fd < 0) {
         throw std::runtime_error("Failed to open cache file: " + filepath);
     }
