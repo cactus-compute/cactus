@@ -418,35 +418,25 @@ int cactus_complete(
             ((completion_tokens - 1) * 1000.0) / decode_time_ms : 0.0;
         
         std::string response_text = tokenizer->decode(generated_tokens);
-        
+
         std::string regular_response = response_text;
-        std::string tool_calls_json = "";
-        size_t tool_calls_pos = response_text.find("\"tool_calls\"");
-        if (tool_calls_pos != std::string::npos) {
-            size_t json_start = response_text.rfind('{', tool_calls_pos);
+        std::string function_call_json = "";
+        size_t function_call_pos = response_text.find("\"function_call\"");
+        if (function_call_pos != std::string::npos) {
+            size_t json_start = response_text.rfind('{', function_call_pos);
             if (json_start != std::string::npos) {
-                std::string json_part = response_text.substr(json_start);
-                size_t tc_pos = json_part.find("\"tool_calls\"");
-                if (tc_pos != std::string::npos) {
-                    size_t colon_pos = json_part.find(':', tc_pos);
-                    if (colon_pos != std::string::npos) {
-                        size_t bracket_pos = json_part.find('[', colon_pos);
-                        if (bracket_pos != std::string::npos) {
-                            int bracket_count = 1;
-                            size_t end_pos = bracket_pos + 1;
-                            while (end_pos < json_part.length() && bracket_count > 0) {
-                                if (json_part[end_pos] == '[') bracket_count++;
-                                else if (json_part[end_pos] == ']') bracket_count--;
-                                end_pos++;
-                            }
-                            if (bracket_count == 0) {
-                                tool_calls_json = json_part.substr(bracket_pos, end_pos - bracket_pos);
-                                regular_response = response_text.substr(0, json_start);
-                                while (!regular_response.empty() && (regular_response.back() == ' ' || regular_response.back() == '\n' || regular_response.back() == '\r' || regular_response.back() == '\t')) {
-                                    regular_response.pop_back();
-                                }
-                            }
-                        }
+                int brace_count = 1;
+                size_t json_end = json_start + 1;
+                while (json_end < response_text.length() && brace_count > 0) {
+                    if (response_text[json_end] == '{') brace_count++;
+                    else if (response_text[json_end] == '}') brace_count--;
+                    json_end++;
+                }
+                if (brace_count == 0) {
+                    function_call_json = response_text.substr(json_start, json_end - json_start);
+                    regular_response = response_text.substr(0, json_start);
+                    while (!regular_response.empty() && (regular_response.back() == ' ' || regular_response.back() == '\n' || regular_response.back() == '\r' || regular_response.back() == '\t')) {
+                        regular_response.pop_back();
                     }
                 }
             }
@@ -465,8 +455,8 @@ int cactus_complete(
             else json_response << c;
         }
         json_response << "\",";
-        if (!tool_calls_json.empty()) {
-            json_response << "\"tool_calls\":" << tool_calls_json << ",";
+        if (!function_call_json.empty()) {
+            json_response << "\"function_call\":" << function_call_json << ",";
         }
         json_response << "\"time_to_first_token_ms\":" << std::fixed << std::setprecision(2) << time_to_first_token << ",";
         json_response << "\"total_time_ms\":" << std::fixed << std::setprecision(2) << total_time_ms << ",";

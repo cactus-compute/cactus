@@ -201,8 +201,8 @@ bool test_tool_call() {
     }
     
     const char* messages = R"([
-        {"role": "system", "content": "/no_think You are a helpful assistant that can use tools."},
-        {"role": "user", "content": "/no_think What's the weather in San Francisco?"}
+        {"role": "system", "content": "You are a helpful assistant that can use tools."},
+        {"role": "user", "content": "What's the weather in San Francisco?"}
     ])";
     
     const char* tools = R"([
@@ -211,11 +211,11 @@ bool test_tool_call() {
                 "name": "get_weather",
                 "description": "Get weather for a location",
                 "parameters": {
+                    "type": "object",
                     "properties": {
                         "location": {
                             "type": "string",
-                            "description": "City name",
-                            "required": true
+                            "description": "The location to get the weather for, in the format \"City, State, Country\"."
                         }
                     },
                     "required": ["location"]
@@ -239,11 +239,14 @@ bool test_tool_call() {
     std::cout << "Final Response JSON:\n" << response << "\n" << std::endl;
     
     std::string response_str(response);
-    bool has_tool_mention = response_str.find("tool_call") != std::string::npos ||
-                            response_str.find("get_weather") != std::string::npos ||
-                            response_str.find("San Francisco") != std::string::npos;
-    
-    std::cout << "Tool recognition: " << (has_tool_mention ? "PASSED" : "FAILED") << std::endl;
+    bool has_function_call = response_str.find("\"function_call\"") != std::string::npos;
+    bool has_tool_name = response_str.find("get_weather") != std::string::npos;
+    bool has_location = response_str.find("location") != std::string::npos;
+
+    std::cout << "Tool recognition: " << (has_function_call && has_tool_name ? "PASSED ✓" : "FAILED ✗") << std::endl;
+    std::cout << "  - function_call field: " << (has_function_call ? "✓" : "✗") << std::endl;
+    std::cout << "  - get_weather name: " << (has_tool_name ? "✓" : "✗") << std::endl;
+    std::cout << "  - location argument: " << (has_location ? "✓" : "✗") << std::endl;
     
     cactus_destroy(model);
     return result > 0 && stream_data.token_count > 0;
