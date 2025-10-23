@@ -210,181 +210,25 @@ bool test_ffi_with_tools() {
         return false;
     }
     
-        const char* messages = R"([
+    const char* messages = R"([
         {"role": "system", "content": "You are a helpful assistant that can use tools."},
-        {"role": "user", "content": "Instruction: Limit your response to 100 words Set an alarm for 9 a.m"}
+        {"role": "user", "content": "What's the weather in San Francisco?"}
     ])";
     
     const char* tools = R"([
         {
             "function": {
-                "name": "create_note",
-                "description": "Create a new note with the given user text",
+                "name": "get_weather",
+                "description": "Get weather for a location",
                 "parameters": {
                     "properties": {
-                        "text": {
+                        "location": {
                             "type": "string",
-                            "description": "The text of the note"
+                            "description": "City name",
+                            "required": true
                         }
                     },
-                    "required": ["text"]
-                }
-            }
-        },
-        {
-            "function": {
-                "name": "set_timer",
-                "description": "Set a timer for the specified duration, as a sum of the parameters",
-                "parameters": {
-                    "properties": {
-                        "time_hours": {
-                            "type": "number",
-                            "description": "The number of hours on the timer"
-                        },
-                        "time_minutes": {
-                            "type": "number",
-                            "description": "The number of minutes on the timer"
-                        },
-                        "time_seconds": {
-                            "type": "number",
-                            "description": "The number of seconds on the timer"
-                        }
-                    },
-                    "required": []
-                }
-            }
-        },
-        {
-            "function": {
-                "name": "set_alarm",
-                "description": "Set an alarm for a specified time using 24-hour format",
-                "parameters": {
-                    "properties": {
-                        "time_hours": {
-                            "type": "number",
-                            "description": "The hour component of the alarm time in 24 hour format from 0 to 23"
-                        },
-                        "time_minutes": {
-                            "type": "number",
-                            "description": "The minute component of the alarm time from 0 to 59"
-                        }
-                    },
-                    "required": ["time_hours", "time_minutes"]
-                }
-            }
-        },
-        {
-            "function": {
-                "name": "set_timer_absolute",
-                "description": "Set a timer that will end at the specified time such as 12pm or tomorrow at 7am",
-                "parameters": {
-                    "properties": {
-                        "day_offset": {
-                            "type": "string",
-                            "description": "The offset of the day such as tomorrow, today, thursday, or a number of days"
-                        },
-                        "time_hours": {
-                            "type": "number",
-                            "description": "The hour component of the desired end time in 24 hour format"
-                        },
-                        "time_minutes": {
-                            "type": "number",
-                            "description": "The minute component of the desired end time from 0 to 59"
-                        }
-                    },
-                    "required": ["time_hours", "time_minutes"]
-                }
-            }
-        },
-        {
-            "function": {
-                "name": "reminder_absolute",
-                "description": "Create a reminder for the user at a specific time",
-                "parameters": {
-                    "properties": {
-                        "day_offset": {
-                            "type": "string",
-                            "description": "The offset of the day to remind the user at such as tomorrow, today, or thursday"
-                        },
-                        "absolute_time_hour": {
-                            "type": "number",
-                            "description": "The absolute time to remind the user at as a 24 hour hour part such as 17"
-                        },
-                        "absolute_time_minute": {
-                            "type": "number",
-                            "description": "The absolute time to remind the user at as a minute part such as 30"
-                        },
-                        "date_month_day": {
-                            "type": "string",
-                            "description": "The date to remind the user at in month-day format such as 12-31"
-                        },
-                        "date_year": {
-                            "type": "number",
-                            "description": "The year to remind the user at such as 2022"
-                        },
-                        "message": {
-                            "type": "string",
-                            "description": "The message to remind the user such as Buy more milk"
-                        }
-                    },
-                    "required": ["absolute_time_hour", "absolute_time_minute", "message"]
-                }
-            }
-        },
-        {
-            "function": {
-                "name": "reminder_next_time",
-                "description": "Get the next AM/PM agnostic human instance of a given time, for example if 2:45 is given and it is 13:00, the next instance will be 14:45",
-                "parameters": {
-                    "properties": {
-                        "time_hour": {
-                            "type": "number",
-                            "description": "The hour component specified by the user"
-                        },
-                        "time_minute": {
-                            "type": "number",
-                            "description": "The minute component specified by the user"
-                        }
-                    },
-                    "required": ["time_hour", "time_minute"]
-                }
-            }
-        },
-        {
-            "function": {
-                "name": "reminder_relative",
-                "description": "Create a reminder for the user at a relative time such as in 5 minutes",
-                "parameters": {
-                    "properties": {
-                        "relative_time": {
-                            "type": "number",
-                            "description": "The relative time value such as 5 for 5 minutes"
-                        },
-                        "time_unit": {
-                            "type": "string",
-                            "description": "The unit of time: seconds, minutes, hours, days, weeks, months, years"
-                        },
-                        "message": {
-                            "type": "string",
-                            "description": "The reminder message"
-                        }
-                    },
-                    "required": ["relative_time", "time_unit", "message"]
-                }
-            }
-        },
-        {
-            "function": {
-                "name": "evaluate_js",
-                "description": "Evaluate JavaScript code and return the result",
-                "parameters": {
-                    "properties": {
-                        "code": {
-                            "type": "string",
-                            "description": "JavaScript code to evaluate"
-                        }
-                    },
-                    "required": ["code"]
+                    "required": ["location"]
                 }
             }
         }
@@ -414,6 +258,7 @@ bool test_ffi_with_tools() {
     cactus_destroy(model);
     return result > 0 && stream_data.token_count > 0;
 }
+
 
 int main() {
     TestUtils::TestRunner runner("Engine Tests");
