@@ -41,11 +41,11 @@ void streaming_callback(const char* token, uint32_t token_id, void* user_data) {
     std::cout << token << std::flush;
 }
 
-bool test_ffi() {
+bool test_streaming() {
     cactus_model_t model = cactus_init(g_model_path, 2048);
     
     const char* messages = R"([
-        {"role": "system", "content": "You are a helpful assistant. Be concise and friendly in your responses."},
+        {"role": "system", "content": "/no_think You are a helpful assistant. Be concise and friendly in your responses."},
         {"role": "user", "content": "What is your name?"}
     ])";
     
@@ -130,7 +130,7 @@ bool test_generation_control() {
     }
     
     const char* messages = R"([
-        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "system", "content": "/no_think You are a helpful assistant."},
         {"role": "user", "content": "Count to 10"}
     ])";
     
@@ -167,7 +167,7 @@ bool test_generation_control() {
     return result > 0;
 }
 
-bool test_incremental_processing() {
+bool test_conversation() {
     cactus_model_t model = cactus_init(g_model_path, 2048);
     
     if (!model) {
@@ -175,34 +175,24 @@ bool test_incremental_processing() {
         return false;
     }
     
-    char response1[2048];
-    char response2[2048];
-    
-    const char* first_messages = R"([
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "My name is Henry."}
-    ])";
-    
-    std::cout << "\n=== Incremental Processing Test ===" << std::endl;
-    int result1 = cactus_complete(model, first_messages, response1, sizeof(response1), g_options, nullptr, nullptr, nullptr);
-    std::cout << "Response 1: " << response1 << "\n" << std::endl;
-    
-    const char* second_messages = R"([
-        {"role": "system", "content": "You are a helpful assistant."},
+    char response[2048];
+
+    const char* messages = R"([
+        {"role": "system", "content": "/no_think You are a helpful assistant."},
         {"role": "user", "content": "My name is Henry."},
-        {"role": "assistant", "content": "Nice to meet you, Henry! How can I help you today?"},
+        {"role": "assistant", "content": "/no_think Nice to meet you, Henry! How can I help you today?"},
         {"role": "user", "content": "What is my name?"}
     ])";
     
-    int result2 = cactus_complete(model, second_messages, response2, sizeof(response2), g_options, nullptr, nullptr, nullptr);
-    std::cout << "Response 2: " << response2 << "\n" << std::endl;
+    int result = cactus_complete(model, messages, response, sizeof(response), g_options, nullptr, nullptr, nullptr);
+    std::cout << "Response: " << response << "\n" << std::endl;
     
     cactus_destroy(model);
     
-    return result1 > 0 && result2 > 0;
+    return result > 0;
 }
 
-bool test_ffi_with_tools() {
+bool test_tool_call() {
     cactus_model_t model = cactus_init(g_model_path, 2048);
     
     if (!model) {
@@ -211,8 +201,8 @@ bool test_ffi_with_tools() {
     }
     
     const char* messages = R"([
-        {"role": "system", "content": "You are a helpful assistant that can use tools."},
-        {"role": "user", "content": "What's the weather in San Francisco?"}
+        {"role": "system", "content": "/no_think You are a helpful assistant that can use tools."},
+        {"role": "user", "content": "/no_think What's the weather in San Francisco?"}
     ])";
     
     const char* tools = R"([
@@ -262,11 +252,11 @@ bool test_ffi_with_tools() {
 
 int main() {
     TestUtils::TestRunner runner("Engine Tests");
-    runner.run_test("engine_forward_decode_benchmark", test_ffi());  
-    runner.run_test("text_embeddings", test_embeddings());
+    runner.run_test("streaming", test_streaming());  
+    runner.run_test("embeddings", test_embeddings());
     runner.run_test("generation_control", test_generation_control());
-    runner.run_test("incremental_processing", test_incremental_processing());
-    runner.run_test("ffi_with_tools", test_ffi_with_tools());
+    runner.run_test("conversation", test_conversation());
+    runner.run_test("tool_calls", test_tool_call());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

@@ -71,10 +71,10 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
             }
         }
 
-        result += "You can call any of the following tools to satisfy the user's requests: [\n";
+        result += "Generate tool call: [\n";
         result += tools_json;
         result += "\n]\n";
-        result += "Example tool call syntax:\n";
+        result += "Example:\n";
         result += "{\n";
         result += "  \"tool_calls\": [\n";
         result += "    {\n";
@@ -170,7 +170,6 @@ std::string Tokenizer::format_smol_style(const std::vector<ChatMessage>& message
         return "ERROR: Tool calls are currently not supported for Smol models";
     }
 
-    // if first message isn't system, add one
     std::string result;
 
     if (!messages.empty() && messages.front().role != "system") {
