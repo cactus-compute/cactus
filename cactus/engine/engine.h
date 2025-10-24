@@ -6,9 +6,9 @@
 #include <memory>
 #include <cstdint>
 
+#include "../graph/graph.h"
+
 class CactusGraph;
-enum class ComputeBackend;
-enum class Precision;
 
 namespace cactus {
 namespace engine {
@@ -31,7 +31,7 @@ struct Config {
     uint32_t moe_every_n_layers = 0;
     bool tie_word_embeddings = true;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, SMOL = 2, NOMIC = 3};
+    enum class ModelType {QWEN = 0, GEMMA = 1, SMOL = 2, NOMIC = 3, LFM2 = 4};
     ModelType model_type = ModelType::QWEN;
 
     enum class Activation {GELU = 0, SILU = 1};
@@ -46,6 +46,9 @@ struct Config {
     float default_temperature = 0.6f;
     float default_top_p = 0.95f;
     size_t default_top_k = 20;
+
+    std::vector<std::string> layer_types;
+    size_t conv_L_cache = 0;
 
     bool from_json(const std::string& json_path);
     std::string to_json() const;
@@ -88,7 +91,8 @@ public:
     virtual bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) = 0;
 
 protected:
-    enum class ModelType { UNKNOWN, QWEN, GEMMA, SMOL, BERT };
+
+    enum class ModelType { UNKNOWN, QWEN, GEMMA, LFM2 , SMOL, BERT };
     ModelType model_type_ = ModelType::UNKNOWN;
     bool has_chat_template_ = false;
     std::string chat_template_;
@@ -96,6 +100,7 @@ protected:
     void detect_model_type(const std::string& config_path);
     std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_smol_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
 };
 
@@ -208,7 +213,38 @@ private:
     void load_chat_template(const std::string& template_file);
 };
 
+class ConvCache {
+public:
+    struct CircularView {
+        const void* ptr1;
+        size_t len1;
+        const void* ptr2; 
+        size_t len2;
+        size_t total_len; 
+    };
 
+    void init(size_t layers, size_t hidden_dim, size_t window_len, Precision model_precision);
+    CircularView get_window(size_t layer) const;
+    void update(CactusGraph* gb, size_t layer, const size_t latest_token);
+    void reset();
+
+    bool is_empty() const { return num_layers == 0; }
+
+    size_t num_layers = 0;
+    size_t hidden_size = 0;
+    size_t window_size = 0;
+    Precision precision = Precision::FP32;
+    size_t element_size = 4;
+
+private:
+    struct LayerState {
+        std::vector<uint8_t> data;  
+        size_t head = 0; 
+        size_t count = 0; 
+    };
+
+    std::vector<LayerState> layer_states;
+};
 
 struct KVCache {
     static constexpr size_t DEFAULT_WINDOW_SIZE = 1024;
@@ -246,8 +282,8 @@ struct KVCache {
     void* get_value_ptr(size_t layer);
 
     struct CircularView {
-        void* ptr1;
-        void* ptr2;  
+        const void* ptr1;
+        const void* ptr2;  
         size_t len1;
         size_t len2; 
         size_t total_len;
@@ -272,7 +308,7 @@ public:
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, const std::string& profile_file = "");
 
-    void reset_cache() { kv_cache_.reset(); }
+    virtual void reset_cache() { kv_cache_.reset(); }
     void set_cache_window(size_t window_size, size_t sink_size = 4) { kv_cache_.set_window_size(window_size, sink_size); }
 
 protected:
@@ -285,6 +321,8 @@ protected:
     virtual size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
                                   ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) = 0;
     void update_kv_cache(CactusGraph* gb, size_t seq_len);
+    virtual void post_init() {}
+    virtual void post_execute_updates(CactusGraph*, size_t) {}
     Config config_;
     std::unique_ptr<Tokenizer> tokenizer_;
 

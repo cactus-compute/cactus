@@ -180,15 +180,17 @@ Vanilla M3 CPU-only can run Qwen3-600m-INT8 at 60-70 toks/sec, just run the foll
 ```
 
 ## Generating weights from HuggingFace 
-Use any of the following (270m, 360m, 600m, 1B, 1.7B activated params):
+Use any of the (270m, 350m, 360m, 600m, 750m, 1B, 1.2B, 1.7B activated params):
 ```bash
 # Language models
 python3 tools/convert_hf.py google/gemma-3-270m-it weights/gemma3-270m/ --precision INT8
+python3 tools/convert_hf.py LiquidAI/LFM2-350M weights/lfm2-350m/ --precision INT8
 python3 tools/convert_hf.py HuggingFaceTB/SmolLM2-360m-Instruct weights/smollm2-360m/ --precision INT8
-python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m/ --precision INT8
+python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m/ --precision INT8 
+python3 tools/convert_hf.py LiquidAI/LFM2-700M weights/lfm2-700m/ --precision INT8
 python3 tools/convert_hf.py google/gemma-3-1b-it weights/gemma3-1b/ --precision INT8
+python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ --precision INT8
 python3 tools/convert_hf.py Qwen/Qwen3-1.7B weights/qwen3-1.7B/ --precision INT8
-python3 tools/convert_hf.py HuggingFaceTB/SmolLM2-1.7B-Instruct weights/smollm2-1.7B/ --precision INT8
 
 # Embedding models
 python3 tools/convert_hf.py Qwen/Qwen3-Embedding-0.6B weights/qwen3-embed-600m/ --precision INT8

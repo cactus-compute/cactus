@@ -8,9 +8,9 @@
 static const char* op_type_names[] = {
     "INPUT", "PRECISION_CAST",
     "ADD", "ADD_CLIPPED", "SUBTRACT", "MULTIPLY", "DIVIDE",
-    "MATMUL", "TRANSPOSE", "RESHAPE", "GATHER", "EMBEDDING",
+    "MATMUL", "TRANSPOSE", "RESHAPE", "SLICE", "GATHER", "EMBEDDING",
     "SUM", "MEAN", "VARIANCE", "MIN", "MAX",
-    "RMS_NORM", "ROPE", "SOFTMAX", "ATTENTION",
+    "RMS_NORM", "ROPE", "SOFTMAX", "ATTENTION", "CONV1D_CAUSAL",
     "SCALAR_ADD", "SCALAR_SUBTRACT", "SCALAR_MULTIPLY", "SCALAR_DIVIDE",
     "SCALAR_EXP", "SCALAR_SQRT", "SCALAR_COS", "SCALAR_SIN",
     "SILU", "GELU", "SAMPLE", "CONCAT",
@@ -322,6 +322,11 @@ size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scal
     return add_node(OpType::ATTENTION, {query, key, value}, {}, params);
 }
 
+size_t CactusGraph::conv1d_causal(size_t input, size_t weight, size_t, size_t dilation) {
+    OpParams params{.dilation = dilation};
+    return add_node(OpType::CONV1D_CAUSAL, {input, weight}, {}, params);
+}
+
 
 size_t CactusGraph::concat(size_t input1, size_t input2, int axis) {
     const auto& buffer1 = get_output_buffer(input1);
@@ -390,22 +395,30 @@ size_t CactusGraph::sample(size_t logits, float temperature, float top_p, size_t
 }
 
 size_t CactusGraph::scalar_add(size_t input, float value) {
-    OpParams params{.scalar = value, .output_precision = get_output_buffer(input).precision};
+    OpParams params{};
+    params.scalar = value;
+    params.output_precision = get_output_buffer(input).precision;
     return add_node(OpType::SCALAR_ADD, {input}, {}, params);
 }
 
 size_t CactusGraph::scalar_subtract(size_t input, float value) {
-    OpParams params{.scalar = value, .output_precision = get_output_buffer(input).precision};
+    OpParams params{};
+    params.scalar = value;
+    params.output_precision = get_output_buffer(input).precision;
     return add_node(OpType::SCALAR_SUBTRACT, {input}, {}, params);
 }
 
 size_t CactusGraph::scalar_multiply(size_t input, float value) {
-    OpParams params{.scalar = value, .output_precision = get_output_buffer(input).precision};
+    OpParams params{};
+    params.scalar = value;
+    params.output_precision = get_output_buffer(input).precision;
     return add_node(OpType::SCALAR_MULTIPLY, {input}, {}, params);
 }
 
 size_t CactusGraph::scalar_divide(size_t input, float value) {
-    OpParams params{.scalar = value, .output_precision = get_output_buffer(input).precision};
+    OpParams params{};
+    params.scalar = value;
+    params.output_precision = get_output_buffer(input).precision;
     return add_node(OpType::SCALAR_DIVIDE, {input}, {}, params);
 }
 
@@ -453,6 +466,32 @@ size_t CactusGraph::gather(size_t tensor, size_t indices) {
     
     return add_node(OpType::GATHER, {tensor, indices}, output_shape, params);
 }
+
+size_t CactusGraph::slice(size_t input, int axis, size_t start, size_t length) {
+    const auto& input_buffer = get_output_buffer(input);
+    if (input_buffer.shape.empty()) {
+        throw std::runtime_error("Cannot slice a scalar tensor");
+    }
+
+    size_t axis_index = static_cast<size_t>(axis);
+    size_t axis_size = input_buffer.shape[axis_index];
+
+    if (start + length > axis_size) {
+        throw std::runtime_error("Slice range extends beyond axis size");
+    }
+
+    std::vector<size_t> output_shape = input_buffer.shape;
+    output_shape[axis_index] = length;
+
+    OpParams params;
+    params.axis = axis_index;
+    params.slice_start = start;
+    params.slice_length = length;
+    params.output_precision = input_buffer.precision;
+
+    return add_node(OpType::SLICE, {input}, output_shape, params);
+}
+
 
 size_t CactusGraph::mmap_embeddings(const std::string& filename) {
     auto mapped_file = std::make_unique<GraphFile::MappedFile>(filename);
@@ -567,11 +606,12 @@ size_t CactusGraph::embedding(size_t embedding_tensor, size_t indices) {
 }
 
 size_t CactusGraph::precision_cast(size_t input, Precision target_precision) {
-    OpParams params{.output_precision = target_precision};
+    OpParams params{};
+    params.output_precision = target_precision;
     return add_node(OpType::PRECISION_CAST, {input}, {}, params);
 }
 
-void CactusGraph::set_input(size_t node_id, void* data, Precision) {
+void CactusGraph::set_input(size_t node_id, const void* data, Precision) {
     auto& node = *nodes_[node_index_map_[node_id]];
     if (node.op_type != OpType::INPUT) {
         throw std::invalid_argument("Can only set data on input nodes");

@@ -526,6 +526,38 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
         }
     }
     
+    constexpr float min_p = 0.15f;
+    if (min_p > 0.0f) {
+        float max_logit = *std::max_element(filtered_logits.begin(), filtered_logits.end());
+        if (!std::isinf(max_logit)) {
+            std::vector<float> temp_probs(vocab_size);
+            float sum = 0.0f;
+            for (size_t i = 0; i < vocab_size; ++i) {
+                if (!std::isinf(filtered_logits[i])) {
+                    temp_probs[i] = std::exp(filtered_logits[i] - max_logit);
+                    sum += temp_probs[i];
+                } else {
+                    temp_probs[i] = 0.0f;
+                }
+            }
+
+            if (sum > 0.0f) {
+                for (size_t i = 0; i < vocab_size; ++i) {
+                    temp_probs[i] /= sum;
+                }
+
+                float max_prob = *std::max_element(temp_probs.begin(), temp_probs.end());
+                float threshold = max_prob * min_p;
+
+                for (size_t i = 0; i < vocab_size; ++i) {
+                    if (temp_probs[i] < threshold) {
+                        filtered_logits[i] = -std::numeric_limits<float>::infinity();
+                    }
+                }
+            }
+        }
+    }
+
     if (top_p > 0.0f && top_p < 1.0f) {
         std::vector<std::pair<float, size_t>> sorted_logits;
         sorted_logits.reserve(vocab_size);
@@ -534,9 +566,9 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
                 sorted_logits.emplace_back(filtered_logits[i], i);
             }
         }
-        std::sort(sorted_logits.begin(), sorted_logits.end(), 
+        std::sort(sorted_logits.begin(), sorted_logits.end(),
                   [](const auto& a, const auto& b) { return a.first > b.first; });
-        
+
         float max_logit = sorted_logits.empty() ? 0.0f : sorted_logits[0].first;
         std::vector<float> temp_probs;
         temp_probs.reserve(sorted_logits.size());
@@ -546,11 +578,11 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
             temp_probs.push_back(prob);
             sum += prob;
         }
-        
+
         for (float& prob : temp_probs) {
             prob /= sum;
         }
-        
+
         float cumulative_prob = 0.0f;
         std::vector<bool> indices_to_remove(sorted_logits.size(), false);
         for (size_t i = 0; i < sorted_logits.size(); ++i) {
@@ -559,14 +591,14 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
                 indices_to_remove[i] = true;
             }
         }
-        
+
         if (!indices_to_remove.empty()) {
             for (size_t i = 1; i < indices_to_remove.size(); ++i) {
                 indices_to_remove[i] = indices_to_remove[i-1] || indices_to_remove[i];
             }
             indices_to_remove[0] = false;
         }
-        
+
         for (size_t i = 0; i < sorted_logits.size(); ++i) {
             if (indices_to_remove[i]) {
                 filtered_logits[sorted_logits[i].second] = -std::numeric_limits<float>::infinity();

@@ -564,7 +564,7 @@ void cactus_attention_f16(
 
                         for (size_t kv_idx = 0; kv_idx < vec_size; kv_idx += 4) {
                             float32x4_t scores = vld1q_f32(&block_scores[kv_idx]);
-                            float32x4_t inf_mask = vceqq_f32(scores, vdupq_n_f32(-std::numeric_limits<float>::infinity()));
+                            uint32x4_t inf_mask = vceqq_f32(scores, vdupq_n_f32(-std::numeric_limits<float>::infinity()));
 
                             float32x4_t x = vsubq_f32(scores, vdupq_n_f32(block_max));
                             x = vmulq_n_f32(x, 1.442695f); 

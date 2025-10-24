@@ -361,7 +361,9 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
         case OpType::ROPE:
         case OpType::SOFTMAX:
         case OpType::ATTENTION:
+        case OpType::CONV1D_CAUSAL:
         case OpType::GATHER:
+        case OpType::SLICE:
         case OpType::EMBEDDING:
             compute_fused_node(node, nodes, node_index_map);
             break;

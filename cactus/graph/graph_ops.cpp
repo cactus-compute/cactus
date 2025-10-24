@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <cmath>
+#include <assert.h>
 
 namespace {
     thread_local std::vector<int8_t> transpose_buffer_int8;
@@ -245,6 +246,78 @@ void compute_fused_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
                         std::memcpy(output + i * element_size, tensor_data + idx * element_size, bytes_per_element);
                     }
                 }
+            }
+            break;
+        }
+        case OpType::SLICE: {
+            auto* input_node = nodes[node_index_map.at(node.input_ids[0])].get();
+            auto& input_buffer = input_node->output_buffer;
+
+            const size_t axis_index = static_cast<size_t>(node.params.axis);
+
+            const size_t axis_size = input_buffer.shape[axis_index];
+            const size_t slice_start = node.params.slice_start;
+            size_t slice_length = node.params.slice_length;
+
+            if (slice_length == 0) {
+                slice_length = axis_size - slice_start;
+            }
+
+            const size_t element_size = PrecisionTraits::size_of(input_buffer.precision);
+
+            if (axis_index == 0) {
+                size_t inner_elements = 1;
+                for (size_t i = 1; i < input_buffer.shape.size(); ++i) {
+                    inner_elements *= input_buffer.shape[i];
+                }
+
+                auto* base_ptr = static_cast<char*>(input_buffer.get_data());
+                if (!base_ptr) {
+                    throw std::runtime_error("Slice input buffer is not available");
+                }
+
+                const size_t byte_offset = slice_start * inner_elements * element_size;
+
+                node.output_buffer.set_external(base_ptr + byte_offset);
+                node.output_buffer.precision = input_buffer.precision;
+                node.output_buffer.quantization_scale = input_buffer.quantization_scale;
+                break;
+            }
+
+            const char* input_ptr = static_cast<const char*>(input_buffer.get_data());
+            if (!input_ptr) {
+                throw std::runtime_error("Slice input buffer is not available");
+            }
+
+            size_t inner_elements = 1;
+            for (size_t i = axis_index + 1; i < input_buffer.shape.size(); ++i) {
+                inner_elements *= input_buffer.shape[i];
+            }
+
+            size_t outer_elements = 1;
+            for (size_t i = 0; i < axis_index; ++i) {
+                outer_elements *= input_buffer.shape[i];
+            }
+
+            const size_t copy_block_elements = slice_length * inner_elements;
+            const size_t axis_stride_elements = axis_size * inner_elements;
+            const size_t copy_block_bytes = copy_block_elements * element_size;
+            const size_t axis_stride_bytes = axis_stride_elements * element_size;
+
+            node.output_buffer.external_data = nullptr;
+            node.output_buffer.allocate();
+            node.output_buffer.precision = input_buffer.precision;
+            node.output_buffer.quantization_scale = input_buffer.quantization_scale;
+
+            auto* output_ptr = static_cast<char*>(node.output_buffer.get_data());
+            if (!output_ptr) {
+                throw std::runtime_error("Slice output buffer could not be allocated");
+            }
+
+            for (size_t outer = 0; outer < outer_elements; ++outer) {
+                const char* src = input_ptr + outer * axis_stride_bytes + slice_start * inner_elements * element_size;
+                char* dst = output_ptr + outer * copy_block_bytes;
+                std::memcpy(dst, src, copy_block_bytes);
             }
             break;
         }
@@ -508,6 +581,68 @@ void compute_fused_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
             }
             break;
         }
+        case OpType::CONV1D_CAUSAL: {
+            if (node.params.backend == ComputeBackend::NPU) {
+                throw std::runtime_error("NPU causal convolution operation not yet implemented");
+            }
+
+            const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer; 
+            const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer; 
+            auto& Y = node.output_buffer;
+
+            if (X.shape.size() != 3) {
+                throw std::runtime_error("Causal conv requires 3D input [batch, seq_len, in_channels]");
+            }
+            if (W.shape.size() != 3) {
+                throw std::runtime_error("Weight must be 3D");
+            }
+
+            const size_t N     = X.shape[0];
+            const size_t L     = X.shape[1];
+            const size_t C_in  = X.shape[2];
+            const size_t W0    = W.shape[0];
+            const size_t W1    = W.shape[1]; 
+            const size_t K     = W.shape[2];
+            const size_t dil   = node.params.dilation; 
+            if (dil < 1) throw std::runtime_error("dilation must be >= 1");
+
+            size_t M = 1;
+            size_t C_out = 0;
+
+            assert((W1 == 1) && (W0 % C_in == 0) && "Only depthwise causal convolution is supported currently");
+            M = W0 / C_in;
+            C_out = C_in * M;
+            
+            Y.shape = { N, L, C_out };
+            Y.precision = X.precision;
+            
+            if (W.precision == Precision::INT8) {
+                const float w_s   = W.quantization_scale;
+                const size_t W_size = W0 * W1 * K;
+                const int8_t* W_int8 = W.data_as<int8_t>();
+
+                std::vector<__fp16> W_fp16(W_size);
+                for (size_t i = 0; i < W_size; ++i) {
+                    W_fp16[i] = static_cast<__fp16>(W_int8[i] * w_s);
+                }
+
+                cactus_conv1d_causal_depthwise_f16(
+                    X.data_as<__fp16>(), W_fp16.data(), Y.data_as<__fp16>(),
+                    N, L, C_in, K, dil);
+            } else if (W.precision == Precision::FP16) {
+                cactus_conv1d_causal_depthwise_f16(
+                    X.data_as<__fp16>(), W.data_as<__fp16>(), Y.data_as<__fp16>(),
+                    N, L, C_in, K, dil);
+            } else if (W.precision == Precision::FP32) {
+                cactus_conv1d_causal_depthwise_f32(
+                    X.data_as<float>(), W.data_as<float>(), Y.data_as<float>(),
+                    N, L, C_in, K, dil);
+            } else {
+                throw std::runtime_error("Depthwise causal conv supports INT8/FP16/FP32");
+            }
+            break;
+        }
+
         case OpType::CONCAT: {
             const auto& input1_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
             const auto& input2_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;

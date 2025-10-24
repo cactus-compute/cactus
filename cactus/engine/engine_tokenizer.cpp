@@ -25,13 +25,18 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
             } else if (line.find("gemma") != std::string::npos) {
                 model_type_ = ModelType::GEMMA;
                 break;
+            } else if(line.find("lfm2") != std::string::npos) {
+                model_type_ = ModelType::LFM2;
+                break;
             } else if (line.find("smol") != std::string::npos) {
                 model_type_ = ModelType::SMOL;
                 break;
             } else if (line.find("bert") != std::string::npos) {
                 model_type_ = ModelType::BERT;
                 break;
-            }
+            } else {
+                model_type_ = ModelType::UNKNOWN;
+            } 
         }
     }
     file.close();
@@ -48,6 +53,8 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
             return format_qwen_style(messages, add_generation_prompt, tools_json);
         case ModelType::GEMMA:
             return format_gemma_style(messages, add_generation_prompt, tools_json);
+        case ModelType::LFM2:
+            return format_lfm2_style(messages, add_generation_prompt, tools_json);
         case ModelType::SMOL:
             return format_smol_style(messages, add_generation_prompt, tools_json);
         default:
@@ -106,6 +113,30 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
 
     return result;
 }
+
+std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& messages,
+                                         bool add_generation_prompt,
+                                         const std::string& tools_json) const
+{
+    if (!tools_json.empty()) {
+        return "ERROR: Tool calls are not supported for LFM2 models";
+    }
+
+    std::string result = "<|startoftext|>";
+
+    for (const auto& msg : messages) {
+        result += "<|im_start|>" + msg.role + "\n";
+        result += msg.content;
+        result += "<|im_end|>\n";
+    }
+
+    if (add_generation_prompt) {
+        result += "<|im_start|>assistant\n";
+    }
+
+    return result;
+}
+
 
 std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
 

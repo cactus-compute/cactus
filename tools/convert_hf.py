@@ -13,6 +13,11 @@ except ImportError:
     print("Please install required packages: pip install torch transformers")
     sys.exit(1)
 
+try:
+    from huggingface_hub import hf_hub_download  # type: ignore
+except ImportError:
+    hf_hub_download = None  # type: ignore
+
 def save_tensor_with_header(tensor, output_path, precision='FP32', transpose=False, stats_tracker=None, args=None, model_type=None):
     if isinstance(tensor, torch.Tensor):
         data = tensor.detach().cpu().numpy()
@@ -147,6 +152,14 @@ def save_tensor_with_header(tensor, output_path, precision='FP32', transpose=Fal
         with open(scale_path, 'w') as f:
             f.write(f"{scale:.10f}\n")
 
+
+def format_config_value(value):
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if isinstance(value, (list, tuple)):
+        return ','.join(str(v) for v in value)
+    return str(value)
+
 def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
     
     quantization_stats = {
@@ -170,6 +183,8 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
 
     if 'gemma' in model_type_str:
         detected_model_type = 'gemma'
+    elif 'lfm2' in model_type_str:
+        detected_model_type = 'lfm2'
     elif 'qwen' in model_type_str:
         detected_model_type = 'qwen'
     elif 'llama' in model_type_str:
@@ -181,7 +196,8 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         detected_model_type = 'bert'
     else:
         detected_model_type = 'qwen'
-        print(f"  Warning: Unknown model type '{model_type_str}', defaulting to 'qwen'")
+        if model_type_str:
+            print(f"  Warning: Unknown model type '{model_type_str}', defaulting to 'qwen'")
 
     model_config = {
         'vocab_size': getattr(config, 'vocab_size', 0),
@@ -199,9 +215,15 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         'num_top_experts': getattr(config, 'moe_top_k', getattr(config, 'num_top_experts', 0)),
         'moe_every_n_layers': getattr(config, 'moe_every_n_layers', 0),
         'tie_word_embeddings': tie_word_embeddings,
-        'model_type': detected_model_type
+        'model_type': detected_model_type,
+        'layer_norm_eps': getattr(config, 'layer_norm_eps', None) or getattr(config, 'rms_norm_eps', None) or getattr(config, 'norm_eps', 1e-6), 
     }
 
+    if detected_model_type == 'lfm2':
+        layer_types = getattr(config, 'layer_types', [])
+        model_config['layer_types'] = layer_types
+        model_config['conv_L_cache'] = getattr(config, 'conv_L_cache', 0)
+    
     embed_names = ['model.embed_tokens.weight', 'embed_tokens.weight', 'embeddings.weight', 'transformer.wte.weight']
     embedding_found = False
     for name in embed_names:
@@ -236,7 +258,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 saved_tensor_full_names.add(name)
                 break
     
-    output_norm_names = ['model.norm.weight', 'norm.weight', 'final_layernorm.weight', 'transformer.ln_f.weight']
+    output_norm_names = ['model.norm.weight', 'norm.weight', 'final_layernorm.weight', 'transformer.ln_f.weight', 'model.embedding_norm.weight']
     for name in output_norm_names:
         if name in state_dict:
             tensor = state_dict[name]
@@ -245,6 +267,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             break
     
     num_layers = model_config['num_layers']
+    missing_tensors = []
     for i in range(num_layers):
         
         layer_prefixes = [f'model.layers.{i}.', f'layers.{i}.', f'transformer.h.{i}.', f'encoder.layers.{i}.']
@@ -262,17 +285,20 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             (['self_attn.q_proj.weight', 'attn.q_proj.weight', 'attn.c_attn.weight'], precision, f'layer_{i}_attn_q.weights', False),
             (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False),
             (['self_attn.v_proj.weight', 'attn.v_proj.weight'], precision, f'layer_{i}_attn_v.weights', False),
-            (['self_attn.o_proj.weight', 'attn.o_proj.weight', 'attn.c_proj.weight'], precision, f'layer_{i}_attn_output.weights', False),
-            (['input_layernorm.weight', 'ln_1.weight'], precision, f'layer_{i}_input_norm.weights', False),
+            (['self_attn.o_proj.weight', 'attn.o_proj.weight', 'attn.c_proj.weight', 'self_attn.out_proj.weight'], precision, f'layer_{i}_attn_output.weights', False),
+            (['input_layernorm.weight', 'ln_1.weight', 'operator_norm.weight'], precision, f'layer_{i}_input_norm.weights', False),
             (['self_attn.q_norm.weight', 'self_attn.q_layernorm.weight'], precision, f'layer_{i}_attn_q_norm.weights', False),
             (['self_attn.k_norm.weight', 'self_attn.k_layernorm.weight'], precision, f'layer_{i}_attn_k_norm.weights', False),
-            (['mlp.gate_proj.weight', 'mlp.c_fc.weight'], precision, f'layer_{i}_ffn_gate.weights', False),
-            (['mlp.up_proj.weight'], precision, f'layer_{i}_ffn_up.weights', False),
-            (['mlp.down_proj.weight', 'mlp.c_proj.weight'], precision, f'layer_{i}_ffn_down.weights', False),
-            (['post_attention_layernorm.weight', 'ln_2.weight'], precision, f'layer_{i}_post_attn_norm.weights', False),
+            (['mlp.gate_proj.weight', 'mlp.c_fc.weight', 'feed_forward.w1.weight'], precision, f'layer_{i}_ffn_gate.weights', False),
+            (['mlp.up_proj.weight', 'feed_forward.w3.weight'], precision, f'layer_{i}_ffn_up.weights', False),
+            (['mlp.down_proj.weight', 'mlp.c_proj.weight', 'feed_forward.w2.weight'], precision, f'layer_{i}_ffn_down.weights', False),
+            (['post_attention_layernorm.weight', 'ln_2.weight', 'ffn_norm.weight'], precision, f'layer_{i}_post_attn_norm.weights', False),
             # Gemma3 specific layer norms 
             (['pre_feedforward_layernorm.weight'], precision, f'layer_{i}_pre_ffn_norm.weights', False),
             (['post_feedforward_layernorm.weight'], precision, f'layer_{i}_post_ffn_norm.weights', False),
+            (['conv.in_proj.weight'], precision, f'layer_{i}_conv_in_proj.weights', False),
+            (['conv.out_proj.weight'], precision, f'layer_{i}_conv_out_proj.weights', False),
+            (['conv.conv.weight'], precision, f'layer_{i}_conv_depthwise.weights', False),
             # Nomic BERT specific parameters
             (['attn.Wqkv.bias'], precision, f'layer_{i}_attn_{{channel}}.bias', False),
             (['attn.Wqkv.weight'], precision, f'layer_{i}_attn_{{channel}}.weights', False),
@@ -346,7 +372,18 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
     if saved_tensor_full_names != set(state_dict.keys()):
         print(f"Warning: Unsaved tensors: {set(state_dict.keys()) - saved_tensor_full_names}")
             
+        if not found:
+            missing_tensors.append((i, output_name, name_patterns))
     
+    if missing_tensors:
+        missing_report = output_dir / "missing_weights.txt"
+        with open(missing_report, 'w') as fh:
+            fh.write("# Missing tensors during conversion\n")
+            for layer_idx, output_name, patterns in missing_tensors:
+                pattern_list = ', '.join(patterns)
+                fh.write(f"layer={layer_idx}, output={output_name}, patterns=[{pattern_list}]\n")
+        print(f"Warning: {len(missing_tensors)} tensors were not exported. See {missing_report.name} for details.")
+
     if quantization_stats['quantized_tensors'] > 0:
         mse_values = np.array(quantization_stats['mse_values'])
         snr_values = np.array(quantization_stats['snr_values'])
@@ -375,14 +412,14 @@ def convert_hf_tokenizer(tokenizer, output_dir):
 
     if not is_sentencepiece and hasattr(tokenizer, 'sp_model'):
         is_sentencepiece = True
-        try:
-            from huggingface_hub import hf_hub_download
-            tokenizer_model_path = hf_hub_download(
-                repo_id=tokenizer.name_or_path,
-                filename="tokenizer.model"
-            )
-        except:
-            pass
+        if hf_hub_download:
+            try:
+                tokenizer_model_path = hf_hub_download(
+                    repo_id=tokenizer.name_or_path,
+                    filename="tokenizer.model"
+                )
+            except Exception:
+                pass
 
     if is_sentencepiece and tokenizer_model_path:
         import shutil
@@ -392,6 +429,16 @@ def convert_hf_tokenizer(tokenizer, output_dir):
             print(f"  Copied SentencePiece model to {dest_path.name}")
         except Exception as e:
             print(f"  Warning: Could not copy tokenizer.model: {e}")
+
+    tokenizer_json_data = {}
+    tokenizer_json_path = output_dir / "tokenizer.json"
+    try:
+        tokenizer.save_pretrained(output_dir)
+        if tokenizer_json_path.exists():
+            with open(tokenizer_json_path, 'r', encoding='utf-8') as f:
+                tokenizer_json_data = json.load(f)
+    except Exception as e:
+        print(f"  Warning: Could not save tokenizer JSON: {e}")
 
     vocab = tokenizer.get_vocab()
 
@@ -416,37 +463,43 @@ def convert_hf_tokenizer(tokenizer, output_dir):
     
     
     merges_output = output_dir / "merges.txt"
-    try:
-        try:
-            from huggingface_hub import hf_hub_download
-            merges_file = hf_hub_download(repo_id=tokenizer.name_or_path, filename="merges.txt")
-            import shutil
-            shutil.copy2(merges_file, merges_output)
-        except Exception:
-            if hasattr(tokenizer, 'backend_tokenizer') and tokenizer.backend_tokenizer:
-                backend = tokenizer.backend_tokenizer
-                vocab = backend.get_vocab()
-                merges = []
-                
-                if hasattr(backend, 'model'):
-                    model = backend.model
-                    if hasattr(model, 'merges'):
-                        merges = model.merges
-                
-                if merges:
-                    with open(merges_output, 'w', encoding='utf-8') as f:
-                        f.write("#version: 0.2\n")
-                        for merge in merges:
-                            f.write(f"{merge}\n")
-                else:
-                    with open(merges_output, 'w', encoding='utf-8') as f:
-                        f.write("#version: 0.2\n")
-            else:
-                with open(merges_output, 'w', encoding='utf-8') as f:
-                    f.write("#version: 0.2\n")
-    except Exception:
-        with open(merges_output, 'w', encoding='utf-8') as f:
+
+    def write_merges_file(merges_list):
+        with open(merges_output, 'w', encoding='utf-8', newline='') as f:
             f.write("#version: 0.2\n")
+            for merge in merges_list:
+                f.write(f"{' '.join(merge)}\n")
+
+    merges_written = False
+
+    if not is_sentencepiece and tokenizer_json_data:
+        merges_from_json = tokenizer_json_data.get("model", {}).get("merges", []) or []
+        write_merges_file(merges_from_json)
+        merges_written = True
+
+    if not merges_written and hf_hub_download:
+        try:
+            import shutil
+            merges_file = hf_hub_download(repo_id=tokenizer.name_or_path, filename="merges.txt")
+            shutil.copy2(merges_file, merges_output)
+            merges_written = True
+        except Exception:
+            pass
+
+    if not merges_written and hasattr(tokenizer, 'backend_tokenizer') and tokenizer.backend_tokenizer:
+        backend = tokenizer.backend_tokenizer
+        merges = []
+
+        if hasattr(backend, 'model'):
+            model = backend.model
+            if hasattr(model, 'merges'):
+                merges = model.merges
+
+        write_merges_file(merges)
+        merges_written = True
+
+    if not merges_written:
+        write_merges_file([])
     
     
     special_tokens = {}
@@ -532,8 +585,7 @@ def convert_hf_tokenizer(tokenizer, output_dir):
     
     try:
         config_path = None
-        if hasattr(tokenizer, 'name_or_path'):
-            from huggingface_hub import hf_hub_download
+        if hasattr(tokenizer, 'name_or_path') and hf_hub_download:
             try:
                 config_path = hf_hub_download(repo_id=tokenizer.name_or_path, filename="tokenizer_config.json")
                 with open(config_path, 'r') as f:
@@ -613,7 +665,7 @@ def convert_hf_to_cactus(model_name, output_dir, precision='INT8', cache_dir=Non
         tokenizer = AutoTokenizer.from_pretrained(
             model_name, 
             cache_dir=cache_dir,
-            trust_remote_code=True
+            trust_remote_code=True,
         )
         try:
             model = AutoModelForCausalLM.from_pretrained(
@@ -643,11 +695,7 @@ def convert_hf_to_cactus(model_name, output_dir, precision='INT8', cache_dir=Non
     config_path = output_dir / "config.txt"
     with open(config_path, 'w') as f:
         for key, value in config.items():
-            if isinstance(value, bool):
-                value_str = str(value).lower()
-            else:
-                value_str = str(value)
-            f.write(f"{key}={value_str}\n")
+            f.write(f"{key}={format_config_value(value)}\n")
     
     convert_hf_tokenizer(tokenizer, output_dir)
     print(f"\nConversion complete: {output_dir}")
