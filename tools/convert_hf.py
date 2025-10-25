@@ -672,14 +672,12 @@ def convert_hf_to_cactus(model_name, output_dir, precision='INT8', cache_dir=Non
                 model_name,
                 cache_dir=cache_dir,
                 trust_remote_code=True,
-                dtype=torch.float32
             )
         except ValueError:
             model = AutoModel.from_pretrained(
                 model_name,
                 cache_dir=cache_dir,
                 trust_remote_code=True,
-                dtype=torch.float32
             )
     except Exception as e:
         print(f"Error: {e}")

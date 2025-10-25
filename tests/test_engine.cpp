@@ -8,7 +8,7 @@
 #include <thread>
 #include <atomic>
 
-const char* g_model_path = "../../weights/qwen3-600m";
+const char* g_model_path = "../../weights/lfm2-350m";
 
 const char* g_options = R"({
         "max_tokens": 256,
