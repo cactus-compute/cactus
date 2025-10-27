@@ -1,6 +1,6 @@
 <img src="assets/banner.jpg" alt="Logo" style="border-radius: 30px; width: 100%;">
 
-Energy-efficient kernels & inference engine for phones. 
+Fastest kernels & energy-efficient inference engine for phones. 
 
 ## Why Cactus?
 - Phones run on battery, GPUs drain energy and heat the devices. 
@@ -11,7 +11,7 @@ Energy-efficient kernels & inference engine for phones.
 ## Performance (CPU only)
 
 - Speed for various sizes can be estimated proportionally
-- INT4 wiil give 30% gains when merged 
+- INT4 will give 2x gains when merged
 - GPUs yield gains but drain battery, will be passed on for NPUs
 
 | Device                        |  Qwen3-INT8-600m (toks/sec) |  
@@ -28,6 +28,8 @@ Energy-efficient kernels & inference engine for phones.
 | Pixel 6a / Nothing 3a / iPhone X / Galaxy S21 | 17 |
 
 ## File Size Comparison
+
+- INT4 will reduce file size 2x 
 
 | Format | Size (Qwen3-0.6B-INT8) |
 |--------|------------------------|
