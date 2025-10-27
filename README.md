@@ -16,22 +16,22 @@ Energy-efficient kernels & inference engine for phones.
 
 | Device                        |  Qwen3-INT8-600m (toks/sec) |  
 |:------------------------------|:------------------------:|
-| iPhone 17 Pro                 | 74 |
-| Galaxy S25 Ultra / 16 Pro     | 58 |
-| iPhone 16 / Galaxy S25 / Nothing 3 | 52 |
-| iPhone 15 Pro                 | 48 |
-| iPhone 14 Pro / OnePlus 13 5G | 47 |
-| Galaxy S24 Ultra / iPhone 15  | 42 |
-| OnePlus Open / Galaxy S23     | 41 |
-| iPhone 13 Pro / OnePlus 12    | 38 |
-| iPhone 13 mini / Redmi K70 Ultra / Xiaomi 13 / OnePlus 11 | 27 |
-| Pixel 6a / Nothing 3a / iPhone X / Galaxy S21 | 16 |
+| iPhone 17 Pro                 | 75 |
+| Galaxy S25 Ultra / 16 Pro     | 60 |
+| iPhone 16 / Galaxy S25 / Nothing 3 | 53 |
+| iPhone 15 Pro                 | 49 |
+| iPhone 14 Pro / OnePlus 13 5G | 48 |
+| Galaxy S24 Ultra / iPhone 15  | 43 |
+| OnePlus Open / Galaxy S23     | 42 |
+| iPhone 13 Pro / OnePlus 12    | 39 |
+| iPhone 13 mini / Redmi K70 Ultra / Xiaomi 13 / OnePlus 11 | 28 |
+| Pixel 6a / Nothing 3a / iPhone X / Galaxy S21 | 17 |
 
 ## File Size Comparison
 
 | Format | Size (Qwen3-0.6B-INT8) |
 |--------|------------------------|
-| Cactus | 370-420 MB |
+| Cactus | 370MB |
 | ONNX/TFLite/MLX | 600 MB |
 | GGUF | 800 MB |
 | Executorch | 944 MB |
