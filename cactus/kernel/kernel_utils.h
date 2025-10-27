@@ -251,12 +251,12 @@ namespace CactusThreading {
         size_t num_col_tiles = (cols + tile_cols - 1) / tile_cols;
         size_t total_tiles = num_row_tiles * num_col_tiles;
 
-        size_t available_cores = get_thread_pool().num_workers();
-        
         #if defined(__ANDROID__)
-        size_t threshold = std::max(static_cast<size_t>(32), total_tiles / available_cores);
+        size_t element_size = tile_rows * tile_cols;
+        size_t threshold = element_size < Thresholds::L1_CACHE_SIZE ? 
+                          Thresholds::SCALAR_BASIC : Thresholds::SCALAR_EXPENSIVE;
         #else
-        size_t threshold = std::max(static_cast<size_t>(4), total_tiles / (available_cores * 2));
+        size_t threshold = 4;
         #endif
         
         parallel_for(total_tiles, threshold, [=](size_t start_tile, size_t end_tile) {
