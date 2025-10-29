@@ -420,26 +420,50 @@ int cactus_complete(
         std::string response_text = tokenizer->decode(generated_tokens);
 
         std::string regular_response = response_text;
-        std::string function_call_json = "";
-        size_t function_call_pos = response_text.find("\"function_call\"");
-        if (function_call_pos != std::string::npos) {
-            size_t json_start = response_text.rfind('{', function_call_pos);
-            if (json_start != std::string::npos) {
-                int brace_count = 1;
-                size_t json_end = json_start + 1;
-                while (json_end < response_text.length() && brace_count > 0) {
-                    if (response_text[json_end] == '{') brace_count++;
-                    else if (response_text[json_end] == '}') brace_count--;
-                    json_end++;
-                }
-                if (brace_count == 0) {
-                    function_call_json = response_text.substr(json_start, json_end - json_start);
-                    regular_response = response_text.substr(0, json_start);
-                    while (!regular_response.empty() && (regular_response.back() == ' ' || regular_response.back() == '\n' || regular_response.back() == '\r' || regular_response.back() == '\t')) {
-                        regular_response.pop_back();
+        std::vector<std::string> function_calls;
+
+        size_t search_pos = 0;
+        while ((search_pos = response_text.find("\"function_call\"", search_pos)) != std::string::npos) {
+            
+            size_t colon_pos = response_text.find(':', search_pos);
+            if (colon_pos == std::string::npos) break;
+
+            size_t json_start = response_text.find('{', colon_pos);
+            if (json_start == std::string::npos) break;
+
+            int brace_count = 1;
+            size_t json_end = json_start + 1;
+            while (json_end < response_text.length() && brace_count > 0) {
+                if (response_text[json_end] == '{') brace_count++;
+                else if (response_text[json_end] == '}') brace_count--;
+                json_end++;
+            }
+
+            if (brace_count == 0) {
+                std::string function_call = response_text.substr(json_start, json_end - json_start);
+                function_calls.push_back(function_call);
+
+                if (regular_response.find(function_call) != std::string::npos) {
+                    size_t outer_start = response_text.rfind('{', search_pos);
+                    if (outer_start != std::string::npos) {
+                        int outer_brace_count = 1;
+                        size_t outer_end = outer_start + 1;
+                        while (outer_end < response_text.length() && outer_brace_count > 0) {
+                            if (response_text[outer_end] == '{') outer_brace_count++;
+                            else if (response_text[outer_end] == '}') outer_brace_count--;
+                            outer_end++;
+                        }
+                        if (outer_brace_count == 0 && outer_end <= regular_response.length()) {
+                            regular_response = response_text.substr(0, outer_start);
+                            while (!regular_response.empty() && (regular_response.back() == ' ' || regular_response.back() == '\n' || regular_response.back() == '\r' || regular_response.back() == '\t')) {
+                                regular_response.pop_back();
+                            }
+                        }
                     }
                 }
             }
+
+            search_pos = json_end;
         }
         
         std::ostringstream json_response;
@@ -455,8 +479,13 @@ int cactus_complete(
             else json_response << c;
         }
         json_response << "\",";
-        if (!function_call_json.empty()) {
-            json_response << "\"function_call\":" << function_call_json << ",";
+        if (!function_calls.empty()) {
+            json_response << "\"function_calls\":[";
+            for (size_t i = 0; i < function_calls.size(); ++i) {
+                if (i > 0) json_response << ",";
+                json_response << function_calls[i];
+            }
+            json_response << "],";
         }
         json_response << "\"time_to_first_token_ms\":" << std::fixed << std::setprecision(2) << time_to_first_token << ",";
         json_response << "\"total_time_ms\":" << std::fixed << std::setprecision(2) << total_time_ms << ",";
