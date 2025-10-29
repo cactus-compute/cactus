@@ -18,11 +18,11 @@ if [ ! -d "$WEIGHTS_DIR" ] || [ ! -f "$WEIGHTS_DIR/config.txt" ]; then
             echo "Successfully generated Qwen weights"
         else
             echo "Warning: Failed to generate Qwen weights. Tests may fail."
-            echo "Please run manually: python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m-i8/ --precision INT8"
+            echo "Please run manually: python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m/ --precision INT8"
         fi
     else
         echo "Warning: Python3 not found. Cannot generate weights automatically."
-        echo "Please run manually: python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m-i8/ --precision INT8"
+        echo "Please run manually: python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m/ --precision INT8"
     fi
 else
     echo ""

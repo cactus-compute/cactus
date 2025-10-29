@@ -180,30 +180,82 @@ namespace CactusThreading {
         static constexpr size_t L2_CACHE_SIZE = 256 * 1024;
     };
     
+    class TaskHandle {
+    private:
+        std::vector<std::future<void>> futures_;
+        bool auto_wait_;
+        
+    public:
+        TaskHandle(bool auto_wait = true) : auto_wait_(auto_wait) {}
+        
+        ~TaskHandle() {
+            if (auto_wait_) {
+                wait();
+            }
+        }
+        
+        TaskHandle(TaskHandle&&) = default;
+        TaskHandle& operator=(TaskHandle&&) = default;
+        TaskHandle(const TaskHandle&) = delete;
+        TaskHandle& operator=(const TaskHandle&) = delete;
+        
+        void add_future(std::future<void>&& f) {
+            futures_.push_back(std::move(f));
+        }
+        
+        void wait() {
+            for (auto& f : futures_) {
+                if (f.valid()) {
+                    f.wait();
+                }
+            }
+            futures_.clear();
+        }
+        
+        bool is_ready() const {
+            for (const auto& f : futures_) {
+                if (f.valid() && f.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        
+        size_t task_count() const { return futures_.size(); }
+    };
+    
     template<typename WorkFunc>
-    void parallel_for(size_t total_work, size_t threshold, WorkFunc work_func) {
+    TaskHandle parallel_for(size_t total_work, size_t threshold, WorkFunc work_func, bool wait = true) {
         const size_t num_threads = get_optimal_thread_count(total_work, threshold);
+        TaskHandle handle(!wait);  
         
         if (num_threads == 1) {
-            work_func(0, total_work);
-            return;
+            if (wait) {
+                work_func(0, total_work);
+                return handle;
+            }
+            auto& pool = get_thread_pool();
+            handle.add_future(pool.enqueue([work_func, total_work]() {
+                work_func(0, total_work);
+            }));
+            return handle;
         }
         
         auto& pool = get_thread_pool();
-        std::vector<std::future<void>> futures;
         const size_t work_per_thread = total_work / num_threads;
         
         for (size_t t = 0; t < num_threads; ++t) {
-            futures.push_back(pool.enqueue([work_func, t, num_threads, work_per_thread, total_work]() {
+            handle.add_future(pool.enqueue([work_func, t, num_threads, work_per_thread, total_work]() {
                 const size_t start_idx = t * work_per_thread;
                 const size_t end_idx = (t == num_threads - 1) ? total_work : (t + 1) * work_per_thread;
                 work_func(start_idx, end_idx);
             }));
         }
         
-        for (auto& future : futures) {
-            future.wait();
+        if (wait) {
+            handle.wait();
         }
+        return handle;
     }
     
     template<typename WorkFunc>
