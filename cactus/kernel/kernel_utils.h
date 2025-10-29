@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <string>
+#include <cstdio>
 
 constexpr size_t NEON_VECTOR_SIZE = 16;
 
@@ -146,17 +147,37 @@ namespace CactusThreading {
     }
     
     struct Thresholds {
+
+        #if defined(__ANDROID__)
         static constexpr size_t ELEMENT_WISE = 5000;
         static constexpr size_t AXIS_REDUCE = 1000;
         static constexpr size_t ALL_REDUCE = 10000;
-        static constexpr size_t SCALAR_BASIC = 20000;
+        static constexpr size_t SCALAR_BASIC = 30000;
         static constexpr size_t SCALAR_EXPENSIVE = 10000;
+        static constexpr size_t ATTENTION = 512;
+        static constexpr size_t GEMM_TILED = 20000; 
         static constexpr size_t GEMM_SMALL = 64 * 64 * 64;
         static constexpr size_t GEMM_MEDIUM = 256 * 256 * 256;
-        
-        static constexpr size_t L1_CACHE_SIZE = 32 * 1024;
+        static constexpr size_t GEMM_TILE_M = 64;
+        static constexpr size_t GEMM_TILE_N = 64;
+        static constexpr size_t GEMM_TILE_M_SMALL = 32;
+        static constexpr size_t GEMM_TILE_N_SMALL = 32;
+        #else // iOS
+        static constexpr size_t ELEMENT_WISE = 5000;
+        static constexpr size_t AXIS_REDUCE = 1000;
+        static constexpr size_t ALL_REDUCE = 10000;
+        static constexpr size_t SCALAR_BASIC = 5000;
+        static constexpr size_t SCALAR_EXPENSIVE = 2500;
+        static constexpr size_t ATTENTION = 4;
+        static constexpr size_t GEMM_TILED = 4;  
+        static constexpr size_t GEMM_SMALL = 64 * 64 * 64;
+        static constexpr size_t GEMM_MEDIUM = 256 * 256 * 256;
+        static constexpr size_t GEMM_TILE_M = 64;
+        static constexpr size_t GEMM_TILE_N = 64;
+        static constexpr size_t GEMM_TILE_M_SMALL = 32;
+        static constexpr size_t GEMM_TILE_N_SMALL = 32;
+        #endif
         static constexpr size_t L2_CACHE_SIZE = 256 * 1024;
-        static constexpr size_t L3_CACHE_SIZE = 2 * 1024 * 1024;
     };
     
     template<typename WorkFunc>
@@ -251,15 +272,7 @@ namespace CactusThreading {
         size_t num_col_tiles = (cols + tile_cols - 1) / tile_cols;
         size_t total_tiles = num_row_tiles * num_col_tiles;
 
-        #if defined(__ANDROID__)
-        size_t element_size = tile_rows * tile_cols;
-        size_t threshold = element_size < Thresholds::L1_CACHE_SIZE ? 
-                          Thresholds::SCALAR_BASIC : Thresholds::SCALAR_EXPENSIVE;
-        #else
-        size_t threshold = 4;
-        #endif
-        
-        parallel_for(total_tiles, threshold, [=](size_t start_tile, size_t end_tile) {
+        parallel_for(total_tiles, Thresholds::GEMM_TILED, [=](size_t start_tile, size_t end_tile) {
             for (size_t tile_idx = start_tile; tile_idx < end_tile; ++tile_idx) {
                 size_t tile_row = tile_idx / num_col_tiles;
                 size_t tile_col = tile_idx % num_col_tiles;

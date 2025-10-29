@@ -366,7 +366,7 @@ int cactus_complete(
         if (tokens_to_process.empty()) {
             next_token = wrapper->model->generate({}, temperature, top_p, top_k);
         } else {
-            next_token = wrapper->model->generate(tokens_to_process, temperature, top_p, top_k, "profile.txt");
+            next_token = wrapper->model->generate(tokens_to_process, temperature, top_p, top_k);
         }
 
         auto token_end = std::chrono::high_resolution_clock::now();

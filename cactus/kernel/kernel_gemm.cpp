@@ -551,11 +551,6 @@ static void cactus_matmul_int8_to_int32_worker(const int8_t* a, const int8_t* b_
 void cactus_matmul_int8_to_int32(const int8_t* a, const int8_t* b_transposed, int32_t* c,
                                  size_t M, size_t K, size_t N) {
     if (M == 0) return;
-    size_t total_ops = M * K * N;
-    if (total_ops < CactusThreading::Thresholds::GEMM_SMALL) {
-        cactus_matmul_int8_to_int32_worker(a, b_transposed, c, M, K, N, 0, M);
-        return;
-    }
     
     size_t num_threads = CactusThreading::compute_gemm_parallelism(M, K, N, sizeof(int8_t));
     
@@ -564,13 +559,13 @@ void cactus_matmul_int8_to_int32(const int8_t* a, const int8_t* b_transposed, in
         return;
     }
     
-    size_t optimal_tile_m = std::min(static_cast<size_t>(64), (M + 1) / 2 * 2);  
-    size_t optimal_tile_n = std::min(static_cast<size_t>(64), (N + 1) / 2 * 2); 
-    
+    size_t optimal_tile_m = std::min(CactusThreading::Thresholds::GEMM_TILE_M, (M + 1) / 2 * 2);
+    size_t optimal_tile_n = std::min(CactusThreading::Thresholds::GEMM_TILE_N, (N + 1) / 2 * 2);
+
     size_t k_cache_footprint = K * sizeof(int8_t);
     if (k_cache_footprint > CactusThreading::Thresholds::L2_CACHE_SIZE) {
-        optimal_tile_m = 32;
-        optimal_tile_n = 32;
+        optimal_tile_m = CactusThreading::Thresholds::GEMM_TILE_M_SMALL;
+        optimal_tile_n = CactusThreading::Thresholds::GEMM_TILE_N_SMALL;
     }
     
     CactusThreading::parallel_for_2d_tiled(M, N, optimal_tile_m, optimal_tile_n,
@@ -863,13 +858,13 @@ void cactus_matmul_int8_to_int32_i8mm(const int8_t* a, const int8_t* b_transpose
         return;
     }
     
-    size_t optimal_tile_m = std::min(static_cast<size_t>(64), (M + 3) / 4 * 4);  
-    size_t optimal_tile_n = std::min(static_cast<size_t>(64), (N + 3) / 4 * 4);  
-    
+    size_t optimal_tile_m = std::min(CactusThreading::Thresholds::GEMM_TILE_M, (M + 3) / 4 * 4);
+    size_t optimal_tile_n = std::min(CactusThreading::Thresholds::GEMM_TILE_N, (N + 3) / 4 * 4);
+
     size_t k_cache_footprint = K * sizeof(int8_t);
     if (k_cache_footprint > CactusThreading::Thresholds::L2_CACHE_SIZE) {
-        optimal_tile_m = 32;
-        optimal_tile_n = 32;
+        optimal_tile_m = CactusThreading::Thresholds::GEMM_TILE_M_SMALL;
+        optimal_tile_n = CactusThreading::Thresholds::GEMM_TILE_N_SMALL;
     }
     
     memset(c, 0, M * N * sizeof(int32_t));
