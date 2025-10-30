@@ -108,7 +108,11 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
     }
 
     if (add_generation_prompt) {
-        result += "<|im_start|>assistant\n";
+        if (!tools_json.empty()) {
+            result += "<|im_start|>assistant\n</think>\n\n";
+        } else {
+            result += "<|im_start|>assistant\n";
+        }
     }
 
     return result;
