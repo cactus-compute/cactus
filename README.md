@@ -188,7 +188,7 @@ Use any of the (270m, 350m, 360m, 600m, 750m, 1B, 1.2B, 1.7B activated params):
 python3 tools/convert_hf.py google/gemma-3-270m-it weights/gemma3-270m/ --precision INT8
 python3 tools/convert_hf.py LiquidAI/LFM2-350M weights/lfm2-350m/ --precision INT8
 python3 tools/convert_hf.py HuggingFaceTB/SmolLM2-360m-Instruct weights/smollm2-360m/ --precision INT8
-python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m/ --precision INT8 
+python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m-i8/ --precision INT8
 python3 tools/convert_hf.py LiquidAI/LFM2-700M weights/lfm2-700m/ --precision INT8
 python3 tools/convert_hf.py google/gemma-3-1b-it weights/gemma3-1b/ --precision INT8
 python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ --precision INT8
