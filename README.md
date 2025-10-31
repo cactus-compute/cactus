@@ -74,27 +74,27 @@ int result = cactus_complete(model, messages, response, sizeof(response), option
 
 ## Performance (Qwen-0.6B-INT8-CPU)
 
-| Device              | Prefill-1k / decode (toks/sec) | Battery Drain (%/min) |
-|:------------------------------|:--------------------:|:--------------------:|
-| iPhone 17 Pro                 | 420/75               | 0.44                 |
-| Galaxy S25 Ultra              | 336/60               | 0.45                 |
-| iPhone 16 Pro                 | 334/60               | -                    |
-| Nothing 3                     | 296/53               | 0.44                 |
-| iPhone 15 Pro                 | 274/49               | -                    |
-| iPhone 14 Pro                 | 269/48               | -                    |
-| OnePlus 13 5G                 | 268/48               | 0.33                 |
-| Galaxy S24 Ultra              | 240/43               | 0.48                 |
-| iPhone 15                     | 241/43               | -                    |
-| OnePlus Open                  | 235/42               | -                    |
-| Galaxy S23                    | 233/42               | -                    |
-| iPhone 13 Pro                 | 218/39               | -                    |
-| OnePlus 12                    | 216/39               | 0.42                 |
-| iPhone 13 mini                | 156/28               | -                    |
-| Redmi K70 Ultra               | 154/28               | 0.41                 |
-| Xiaomi 13                     | 153/28               | 0.50                 |
-| OnePlus 11                    | 152/28               | -                    |
-| Pixel 6a                      | 95/17                | 0.48                 |
-| Nothing 3a                    | 93/17                | 0.48                 |
+| Device | Prefill-1k (toks/s) | Decode (toks/s) | Battery Drain (%/min) |
+|:-------------------------------|:--------------------:|:----------------:|:---------------------:|
+| iPhone 17 Pro                  | 420                  | 75               | 0.44                  |
+| Galaxy S25 Ultra               | 336                  | 60               | 0.45                  |
+| iPhone 16 Pro                  | 334                  | 60               | -                     |
+| Nothing 3                      | 296                  | 53               | 0.44                  |
+| iPhone 15 Pro                  | 274                  | 49               | -                     |
+| iPhone 14 Pro                  | 269                  | 48               | -                     |
+| OnePlus 13 5G                  | 268                  | 48               | 0.33                  |
+| Galaxy S24 Ultra               | 240                  | 43               | 0.48                  |
+| iPhone 15                      | 241                  | 43               | -                     |
+| OnePlus Open                   | 235                  | 42               | -                     |
+| Galaxy S23                     | 233                  | 42               | -                     |
+| iPhone 13 Pro                  | 218                  | 39               | -                     |
+| OnePlus 12                     | 216                  | 39               | 0.42                  |
+| iPhone 13 mini                 | 156                  | 28               | -                     |
+| Redmi K70 Ultra                | 154                  | 28               | 0.41                  |
+| Xiaomi 13                      | 153                  | 28               | 0.50                  |
+| OnePlus 11                     | 152                  | 28               | -                     |
+| Pixel 6a                       | 95                   | 17               | 0.48                  |
+| Nothing 3a                     | 93                   | 17               | 0.48                  |
 
 ## Performance notes
 
@@ -151,7 +151,6 @@ Then replace the model path in `tests/test_engine.cpp` with your choice.
 - [Kotlin Multiplatform SDK](https://github.com/cactus-compute/cactus-kotlin)
 - [Flutter SDK](https://github.com/cactus-compute/cactus-flutter)
 - [React Native SDK](https://github.com/cactus-compute/cactus-react)
-
 
 ## Try demo apps
 
