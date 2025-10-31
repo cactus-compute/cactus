@@ -1,6 +1,6 @@
 <img src="assets/banner.jpg" alt="Logo" style="border-radius: 30px; width: 100%;">
 
-Fastest kernels & energy-efficient inference engine for both old and new phones. 
+Fastest kernels & energy-efficient inference engine for all ohones: old, new, budget or high-end. 
 
 ```
 ┌─────────────────┐
