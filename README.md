@@ -151,3 +151,10 @@ Then replace the model path in `tests/test_engine.cpp` with your choice.
 - [Kotlin Multiplatform SDK](https://github.com/cactus-compute/cactus-kotlin)
 - [Flutter SDK](https://github.com/cactus-compute/cactus-flutter)
 - [React Native SDK](https://github.com/cactus-compute/cactus-react)
+
+
+## Try demo apps
+
+- [iOS Demo](https://apps.apple.com/gb/app/cactus-chat/id6744444212)
+- [Android Demo](https://play.google.com/store/apps/details?id=com.rshemetsubuser.myapp)
+
