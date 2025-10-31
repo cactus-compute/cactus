@@ -20,9 +20,9 @@ Fastest kernels & energy-efficient inference engine for all phones: old, new, bu
 └─────────────────┘
 ```
 
-## Cactus Graph & Kernels
-Cactus Graph is a general numerical computing framework that runs on Cactus Kernels.
-Great for implementing custom models and scientific computing, like JAX for phones.
+## Cactus Graph 
+Cactus Graph is a general numerical computing framework for implementing 
+any model, like PyTorch for phones.
 
 ```cpp
 #include cactus.h
@@ -48,10 +48,8 @@ graph.hard_reset();
 
 ```
 
-## Cactus Engine & APIs
-Cactus Engine is a transformer inference engine built on top of Cactus Graphs.
-It is abstracted via Cactus Foreign Function Interface APIs.
-Header files are self-documenting but documentation contributions are welcome.
+## Cactus Engine
+Cactus Engine is an AI inference engine built on top of Cactus Graphs.
 
 ```cpp
 #include cactus.h
@@ -60,7 +58,7 @@ cactus_model_t model = cactus_init("path/to/weight/folder", 2048);
 
 const char* messages = R"([
     {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "/nothink My name is Henry Ndubuaku"}
+    {"role": "user", "content": "My name is Henry Ndubuaku"}
 ])";
 
 const char* options = R"({
