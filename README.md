@@ -1,58 +1,7 @@
 <img src="assets/banner.jpg" alt="Logo" style="border-radius: 30px; width: 100%;">
 
-Fastest kernels & energy-efficient inference engine for phones. 
+Fastest kernels & energy-efficient inference engine for both old and new phones. 
 
-## Why Cactus?
-- Phones run on battery, GPUs drain energy and heat the devices. 
-- 70% of phones today don't ship NPUs which most frameworks optimse for. 
-- Cactus is optimsed for old and new ARM-CPU first, with NPU/DSP/ISP coming.
-- Fast on all phones with less battery drain and heating.
-
-## Performance (CPU only)
-
-- Speed for various sizes can be estimated proportionally
-- INT4 will give 2x gains when merged
-- GPUs yield gains but drain battery, will be passed on for NPUs
-
-| Device                        |  Qwen3-INT8-600m (toks/sec) |  
-|:------------------------------|:------------------------:|
-| iPhone 17 Pro                 | 75 |
-| Galaxy S25 Ultra / 16 Pro     | 60 |
-| iPhone 16 / Galaxy S25 / Nothing 3 | 53 |
-| iPhone 15 Pro                 | 49 |
-| iPhone 14 Pro / OnePlus 13 5G | 48 |
-| Galaxy S24 Ultra / iPhone 15  | 43 |
-| OnePlus Open / Galaxy S23     | 42 |
-| iPhone 13 Pro / OnePlus 12    | 39 |
-| iPhone 13 mini / Redmi K70 Ultra / Xiaomi 13 / OnePlus 11 | 28 |
-| Pixel 6a / Nothing 3a / iPhone X / Galaxy S21 | 17 |
-
-## File Size Comparison
-
-- INT4 will reduce file size 2x 
-
-| Format | Size (Qwen3-0.6B-INT8) |
-|--------|------------------------|
-| Cactus | 370MB |
-| ONNX/TFLite/MLX | 600 MB |
-| GGUF | 800 MB |
-| Executorch | 944 MB |
-
-## Battery drain
-
- - Newer devices have bigger battery 
- - NPUs are designed for less drain (2-10x)
- - Apple Intelligence drain 0.6 percent/min on iPhone 16 Pro Max
-
-| Device                        |  Qwen3-INT8-600m (percent/min) |  
-|:------------------------------|:------------------------:|
-| OnePlus 13 5G | 0.33 |
-| Redmi K70 Ultra / OnePlus 12 | 0.41 |
-| Galaxy S25 Ultra / Iphone 17 Pro / Nothing 3 | 0.44 |
-| Galaxy S24 Ultra / Nothing 3a / Pixel 6a | 0.48 |
-| iPhone 16 Pro Max / Xiaomi 13 | 0.50  |
-
-## Design 
 ```
 ┌─────────────────┐
 │   Cactus FFI    │ ←── OpenAI compatible C API for integration  
@@ -107,8 +56,7 @@ Header files are self-documenting but documentation contributions are welcome.
 ```cpp
 #include cactus.h
 
-const char* model_path = "path/to/weight/folder";
-cactus_model_t model = cactus_init(model_path, 2048);
+cactus_model_t model = cactus_init("path/to/weight/folder", 2048);
 
 const char* messages = R"([
     {"role": "system", "content": "You are a helpful assistant."},
@@ -120,91 +68,86 @@ const char* options = R"({
     "stop_sequences": ["<|im_end|>"]
 })";
 
-char response[1024];
+char response[1024]; // 
 int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr, nullptr, nullptr);
 ```
 
-With tool support:
-```cpp
-const char* tools = R"([
-    {
-        "function": {
-            "name": "get_weather",
-            "description": "Get weather for a location",
-            "parameters": {
-                "properties": {
-                    "location": {
-                        "type": "string",
-                        "description": "City name",
-                        "required": true
-                    }
-                },
-                "required": ["location"]
-            }
-        }
-    }
-])";
+## Performance (Qwen-0.6B-INT8-CPU)
 
-int result = cactus_complete(model, messages, response, sizeof(response), options, tools, nullptr, nullptr);
-```
+| Device              | Prefill-1k / decode (toks/sec) | Battery Drain (%/min) |
+|:------------------------------|:--------------------:|:--------------------:|
+| iPhone 17 Pro                 | 420/75               | 0.44                 |
+| Galaxy S25 Ultra              | 336/60               | 0.45                 |
+| iPhone 16 Pro                 | 334/60               | -                    |
+| Nothing 3                     | 296/53               | 0.44                 |
+| iPhone 15 Pro                 | 274/49               | -                    |
+| iPhone 14 Pro                 | 269/48               | -                    |
+| OnePlus 13 5G                 | 268/48               | 0.33                 |
+| Galaxy S24 Ultra              | 240/43               | 0.48                 |
+| iPhone 15                     | 241/43               | -                    |
+| OnePlus Open                  | 235/42               | -                    |
+| Galaxy S23                    | 233/42               | -                    |
+| iPhone 13 Pro                 | 218/39               | -                    |
+| OnePlus 12                    | 216/39               | 0.42                 |
+| iPhone 13 mini                | 156/28               | -                    |
+| Redmi K70 Ultra               | 154/28               | 0.41                 |
+| Xiaomi 13                     | 153/28               | 0.50                 |
+| OnePlus 11                    | 152/28               | -                    |
+| Pixel 6a                      | 95/17                | 0.48                 |
+| Nothing 3a                    | 93/17                | 0.48                 |
 
-## Using Cactus in your apps
-Cactus SDKs run 500k+ weekly inference tasks in production today, try them!
+## Performance notes
 
-<a href="https://github.com/cactus-compute/cactus-flutter" target="_blank">
-  <img alt="Flutter" src="https://img.shields.io/badge/Flutter-grey.svg?style=for-the-badge&logo=Flutter&logoColor=white">
-</a> <a href="https://github.com/cactus-compute/cactus-react" target="_blank">
-  <img alt="React Native" src="https://img.shields.io/badge/React%20Native-grey.svg?style=for-the-badge&logo=react&logoColor=%2361DAFB">
-</a> <a href="https://github.com/cactus-compute/cactus-kotlin" target="_blank">
-  <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin_MP-grey.svg?style=for-the-badge&logo=kotlin&logoColor=white">
-</a>
+- These were collated from real-world runs, not controlled tests.
+- Apple Intelligence drains 0.6 percent/min on iPhone 16 Pro Max
+- Compressed file size is only 394mb (900mb+ in Executorch/GGUF)
 
-## Getting started
-<a href="https://cactuscompute.com/docs" target="_blank">
-  <img alt="Documentation" src="https://img.shields.io/badge/Documentation-4A90E2?style=for-the-badge&logo=gitbook&logoColor=white">
-</a> <a href="https://discord.gg/bNurx3AXTJ" target="_blank">
-  <img alt="Discord" src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white">
-</a>
+## Coming improvements:
 
-## Demo 
-<a href="https://apps.apple.com/gb/app/cactus-chat/id6744444212" target="_blank">
-  <img alt="Download iOS App" src="https://img.shields.io/badge/Try_iOS_Demo-grey?style=for-the-badge&logo=apple&logoColor=white">
-</a> <a href="https://play.google.com/store/apps/details?id=com.rshemetsubuser.myapp&pcampaignid=web_share" target="_blank">
-  <img alt="Download Android App" src="https://img.shields.io/badge/Try_Android_Demo-grey?style=for-the-badge&logo=android&logoColor=white">
-</a>
+- INT4 to 2x speed, while reducing battery drain and file size 2x
+- NPUs to improve energy-efficiency and prefill speed up to 11x
+- VLM and Audio models like LFM-VL, Whisper, KittenTTS, etc. 
 
 ## Using this repo
 You can run these codes directly on M-series Macbooks since they are ARM-based.
-Vanilla M3 CPU-only can run Qwen3-600m-INT8 at 60-70 toks/sec, just run the following: 
+Vanilla M3 CPU-only can run Qwen3-600m-INT8 at 60+ toks/sec, just run the following: 
 
 ```bash
-./tests/run.sh # chmod +x first time
+./tests/run.sh 
 ```
 
 ## Generating weights from HuggingFace 
-Use any of the (270m, 350m, 360m, 600m, 750m, 1B, 1.2B, 1.7B activated params):
-```bash
-# Language models
-python3 tools/convert_hf.py google/gemma-3-270m-it weights/gemma3-270m/ --precision INT8
-python3 tools/convert_hf.py LiquidAI/LFM2-350M weights/lfm2-350m/ --precision INT8
-python3 tools/convert_hf.py HuggingFaceTB/SmolLM2-360m-Instruct weights/smollm2-360m/ --precision INT8
-python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m/ --precision INT8 
-python3 tools/convert_hf.py LiquidAI/LFM2-700M weights/lfm2-700m/ --precision INT8
-python3 tools/convert_hf.py google/gemma-3-1b-it weights/gemma3-1b/ --precision INT8
-python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ --precision INT8
-python3 tools/convert_hf.py Qwen/Qwen3-1.7B weights/qwen3-1.7B/ --precision INT8
 
-# Embedding models
-python3 tools/convert_hf.py Qwen/Qwen3-Embedding-0.6B weights/qwen3-embed-600m/ --precision INT8
-python3 tools/convert_hf.py nomic-ai/nomic-embed-text-v2-moe weights/nomic/ --precision INT8
+Run the following 
+
+```bash
+python3 tools/convert_hf.py <HF_MODEL_PATH> <OUTPUT_DIR> --precision INT8
 ```
 
-Simply replace the weight path `tests/test_engine.cpp` with your choice.
+using any of the following models
 
-## Limitations
-While Cactus can be used for all ARM devices including Macbooks & Qualcomm PCs, for computers/AMD/Intel/Nvidia generally, 
-please use HuggingFace, Llama.cpp, Ollama, vLLM, MLX. They're built for those, support x86, and are all great! 
+- `google/gemma-3-270m-it`
+- `LiquidAI/LFM2-350M`
+- `HuggingFaceTB/SmolLM2-360m-Instruct`
+- `Qwen/Qwen3-0.6B` (supports tool call)
+- `LiquidAI/LFM2-700M`
+- `google/gemma-3-1b-it`
+- `LiquidAI/LFM2-1.2B`
+- `Qwen/Qwen3-1.7B`
+- `Qwen/Qwen3-Embedding-0.6B`
+- `nomic-ai/nomic-embed-text-v2-moe`
 
-## Contributing
+Then replace the model path in `tests/test_engine.cpp` with your choice.
 
-We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+## Resources 
+
+- [C++ Documentation](docs/)
+- [Join Our Discord](https://discord.gg/bNurx3AXTJ)
+- [Website](https://cactuscompute.com)
+- [Contribution Guidelines](CONTRIBUTING.md)
+
+## SDKs for app developers
+
+- [Kotlin Multiplatform SDK](https://github.com/cactus-compute/cactus-kotlin)
+- [Flutter SDK](https://github.com/cactus-compute/cactus-flutter)
+- [React Native SDK](https://github.com/cactus-compute/cactus-react)
