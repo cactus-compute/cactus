@@ -118,24 +118,23 @@ Vanilla M3 CPU-only can run Qwen3-600m-INT8 at 60+ toks/sec, just run the follow
 
 ## Generating weights from HuggingFace 
 
-Run the following 
+Run one of the following 
 
 ```bash
-python3 tools/convert_hf.py <HF_MODEL_PATH> <OUTPUT_DIR> --precision INT8
+# Language models
+python3 tools/convert_hf.py google/gemma-3-270m-it weights/gemma3-270m/ --precision INT8
+python3 tools/convert_hf.py LiquidAI/LFM2-350M weights/lfm2-350m/ --precision INT8
+python3 tools/convert_hf.py HuggingFaceTB/SmolLM2-360m-Instruct weights/smollm2-360m/ --precision INT8
+python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m/ --precision INT8 # supports tool call
+python3 tools/convert_hf.py LiquidAI/LFM2-700M weights/lfm2-700m/ --precision INT8
+python3 tools/convert_hf.py google/gemma-3-1b-it weights/gemma3-1b/ --precision INT8
+python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ --precision INT8
+python3 tools/convert_hf.py Qwen/Qwen3-1.7B weights/qwen3-1.7B/ --precision INT8
+
+# Embedding-only models
+python3 tools/convert_hf.py Qwen/Qwen3-Embedding-0.6B weights/qwen3-embed-600m/ --precision INT8
+python3 tools/convert_hf.py nomic-ai/nomic-embed-text-v2-moe weights/nomic/ --precision INT8
 ```
-
-using any of the following models
-
-- `google/gemma-3-270m-it`
-- `LiquidAI/LFM2-350M`
-- `HuggingFaceTB/SmolLM2-360m-Instruct`
-- `Qwen/Qwen3-0.6B` (supports tool call)
-- `LiquidAI/LFM2-700M`
-- `google/gemma-3-1b-it`
-- `LiquidAI/LFM2-1.2B`
-- `Qwen/Qwen3-1.7B`
-- `Qwen/Qwen3-Embedding-0.6B`
-- `nomic-ai/nomic-embed-text-v2-moe`
 
 Then replace the model path in `tests/test_engine.cpp` with your choice.
 
