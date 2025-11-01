@@ -70,7 +70,6 @@ char response[1024]; //
 int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr, nullptr, nullptr);
 ```
 ```json
-# Example response from Gemma3 270m INT8:
 {
     "success": true,
     "response": "Hi there! I'm just a friendly assistant.",
