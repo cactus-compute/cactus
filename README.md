@@ -69,6 +69,7 @@ const char* options = R"({
 char response[1024]; // 
 int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr, nullptr, nullptr);
 ```
+Example response from Gemma3-270m-INT8
 ```json
 {
     "success": true,
