@@ -69,6 +69,19 @@ const char* options = R"({
 char response[1024]; // 
 int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr, nullptr, nullptr);
 ```
+```json
+// Example response from Gemma3 270m INT8:
+{
+    "success": true,
+    "response": "Hi there! I'm just a friendly assistant.",
+    "time_to_first_token_ms": 45.23,
+    "total_time_ms": 163.67,
+    "tokens_per_second": 168.42,
+    "prefill_tokens": 28,
+    "decode_tokens": 50,
+    "total_tokens": 78
+}
+```
 
 ## Performance (Qwen-0.6B-INT8-CPU)
 

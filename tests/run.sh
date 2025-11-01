@@ -45,7 +45,7 @@ rm -rf build
 mkdir -p build
 cd build
 
-if ! cmake ..; then
+if ! cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF > /dev/null 2>&1; then
     echo "Failed to configure tests"
     exit 1
 fi
