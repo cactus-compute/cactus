@@ -9,7 +9,7 @@
 #include <thread>
 #include <atomic>
 
-const char* g_model_path = "../../weights/qwen3-600m";
+const char* g_model_path = "../../weights/lfm2-350m";
 
 const char* g_options = R"({
         "max_tokens": 256,
@@ -298,6 +298,9 @@ bool test_tool_call() {
     std::cout << "├─ Time to first token: " << std::fixed << std::setprecision(2) << time_to_first_token << " ms" << std::endl;
     std::cout << "├─ Tokens per second: " << std::fixed << std::setprecision(2) << tokens_per_second << std::endl;
     std::cout << "└─ Overall status: " << (has_function_call && has_tool_name ? "PASSED ✓" : "FAILED ✗") << std::endl;
+
+    std::cout << "\n[Full Model Response]" << std::endl;
+    std::cout << response << std::endl;    
     
     cactus_destroy(model);
     return result > 0 && stream_data.token_count > 0;
