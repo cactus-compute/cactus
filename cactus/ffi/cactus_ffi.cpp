@@ -421,50 +421,61 @@ int cactus_complete(
 
     std::string regular_response = response_text;
     std::vector<std::string> function_calls;
+    function_calls.reserve(4); 
 
+    const char* FUNCTION_CALL_MARKER = "\"function_call\"";
+    const size_t MARKER_LEN = 15;
     size_t search_pos = 0;
-        while ((search_pos = response_text.find("\"function_call\"", search_pos)) != std::string::npos) {
-            
-            size_t colon_pos = response_text.find(':', search_pos);
-            if (colon_pos == std::string::npos) break;
 
-            size_t json_start = response_text.find('{', colon_pos);
-            if (json_start == std::string::npos) break;
+    const size_t text_len = response_text.length();
 
-            int brace_count = 1;
-            size_t json_end = json_start + 1;
-            while (json_end < response_text.length() && brace_count > 0) {
-                if (response_text[json_end] == '{') brace_count++;
-                else if (response_text[json_end] == '}') brace_count--;
-                json_end++;
-            }
+    while (search_pos < text_len) {
+        size_t marker_pos = response_text.find(FUNCTION_CALL_MARKER, search_pos);
+        if (marker_pos == std::string::npos) break;
 
-            if (brace_count == 0) {
-                std::string function_call = response_text.substr(json_start, json_end - json_start);
-                function_calls.push_back(function_call);
+        size_t colon_pos = marker_pos + MARKER_LEN;
+        while (colon_pos < text_len && response_text[colon_pos] != ':') colon_pos++;
+        if (colon_pos >= text_len) break;
 
-                if (regular_response.find(function_call) != std::string::npos) {
-                    size_t outer_start = response_text.rfind('{', search_pos);
-                    if (outer_start != std::string::npos) {
-                        int outer_brace_count = 1;
-                        size_t outer_end = outer_start + 1;
-                        while (outer_end < response_text.length() && outer_brace_count > 0) {
-                            if (response_text[outer_end] == '{') outer_brace_count++;
-                            else if (response_text[outer_end] == '}') outer_brace_count--;
-                            outer_end++;
-                        }
-                        if (outer_brace_count == 0 && outer_end <= regular_response.length()) {
-                            regular_response = response_text.substr(0, outer_start);
-                            while (!regular_response.empty() && (regular_response.back() == ' ' || regular_response.back() == '\n' || regular_response.back() == '\r' || regular_response.back() == '\t')) {
-                                regular_response.pop_back();
-                            }
-                        }
+        size_t json_start = colon_pos + 1;
+        while (json_start < text_len && response_text[json_start] != '{') json_start++;
+        if (json_start >= text_len) break;
+
+        int brace_count = 1;
+        size_t json_end = json_start + 1;
+        while (json_end < text_len && brace_count > 0) {
+            char c = response_text[json_end];
+            brace_count += (c == '{') - (c == '}');
+            json_end++;
+        }
+
+        if (brace_count == 0) {
+            function_calls.push_back(response_text.substr(json_start, json_end - json_start));
+
+            size_t outer_start = marker_pos;
+            while (outer_start > 0 && response_text[outer_start] != '{') outer_start--;
+
+            if (outer_start > 0 || response_text[0] == '{') {
+                int outer_brace_count = 1;
+                size_t outer_end = outer_start + 1;
+                while (outer_end < text_len && outer_brace_count > 0) {
+                    char c = response_text[outer_end];
+                    outer_brace_count += (c == '{') - (c == '}');
+                    outer_end++;
+                }
+                if (outer_brace_count == 0) {
+                    regular_response = response_text.substr(0, outer_start);
+                    
+                    size_t last = regular_response.find_last_not_of(" \n\r\t");
+                    if (last != std::string::npos) {
+                        regular_response.erase(last + 1);
                     }
                 }
             }
-
-            search_pos = json_end;
         }
+
+        search_pos = json_end;
+    }
 
         size_t call_pos = 0;
         const std::string CALL_START = "<|tool_call_start|>";
