@@ -419,10 +419,10 @@ int cactus_complete(
         
         std::string response_text = tokenizer->decode(generated_tokens);
 
-        std::string regular_response = response_text;
-        std::vector<std::string> function_calls;
+    std::string regular_response = response_text;
+    std::vector<std::string> function_calls;
 
-        size_t search_pos = 0;
+    size_t search_pos = 0;
         while ((search_pos = response_text.find("\"function_call\"", search_pos)) != std::string::npos) {
             
             size_t colon_pos = response_text.find(':', search_pos);
@@ -464,6 +464,121 @@ int cactus_complete(
             }
 
             search_pos = json_end;
+        }
+
+        size_t call_pos = 0;
+        const std::string CALL_START = "<|tool_call_start|>";
+        const std::string CALL_END = "<|tool_call_end|>";
+        while ((call_pos = response_text.find(CALL_START, call_pos)) != std::string::npos) {
+            size_t call_end = response_text.find(CALL_END, call_pos + CALL_START.size());
+            if (call_end == std::string::npos) break;
+            size_t payload_start = call_pos + CALL_START.size();
+            std::string payload = response_text.substr(payload_start, call_end - payload_start);
+
+            size_t json_start = payload.find('{');
+            if (json_start != std::string::npos) {
+                int brace_count = 1;
+                size_t json_end = json_start + 1;
+                while (json_end < payload.size() && brace_count > 0) {
+                    if (payload[json_end] == '{') brace_count++;
+                    else if (payload[json_end] == '}') brace_count--;
+                    json_end++;
+                }
+                if (brace_count == 0) {
+                    std::string function_call = payload.substr(json_start, json_end - json_start);
+                    function_calls.push_back(function_call);
+
+                    regular_response = response_text.substr(0, call_pos);
+                    if (call_end + CALL_END.size() < response_text.size()) {
+                        regular_response += response_text.substr(call_end + CALL_END.size());
+                    }
+                    response_text = regular_response;
+                    call_pos = 0;
+                    continue;
+                }
+            }
+
+            auto trim = [](std::string s) {
+                size_t b = s.find_first_not_of(" \t\n\r");
+                if (b == std::string::npos) return std::string();
+                size_t e = s.find_last_not_of(" \t\n\r");
+                return s.substr(b, e - b + 1);
+            };
+            std::string core = trim(payload);
+            if (!core.empty()) {
+                if (core.front() == '[' && core.back() == ']') {
+                    core = core.substr(1, core.size() - 2);
+                    core = trim(core);
+                }
+                size_t lp = core.find('(');
+                size_t rp = core.rfind(')');
+                if (lp != std::string::npos && rp != std::string::npos && rp > lp) {
+                    std::string fname = trim(core.substr(0, lp));
+                    std::string args_str = core.substr(lp + 1, rp - lp - 1);
+                    std::vector<std::string> parts;
+                    std::string cur;
+                    bool in_quotes = false;
+                    for (size_t i = 0; i < args_str.size(); ++i) {
+                        char c = args_str[i];
+                        if (c == '"') {
+                            in_quotes = !in_quotes;
+                            cur += c;
+                        } else if (c == ',' && !in_quotes) {
+                            parts.push_back(trim(cur));
+                            cur.clear();
+                        } else {
+                            cur += c;
+                        }
+                    }
+                    if (!cur.empty()) parts.push_back(trim(cur));
+
+                    auto json_escape = [](const std::string& s) {
+                        std::ostringstream o;
+                        for (char ch : s) {
+                            switch (ch) {
+                                case '"': o << "\\\""; break;
+                                case '\\': o << "\\\\"; break;
+                                case '\n': o << "\\n"; break;
+                                case '\r': o << "\\r"; break;
+                                case '\t': o << "\\t"; break;
+                                default: o << ch; break;
+                            }
+                        }
+                        return o.str();
+                    };
+
+                    std::ostringstream args_json;
+                    args_json << "{";
+                    bool first = true;
+                    for (const auto& p : parts) {
+                        if (p.empty()) continue;
+                        size_t eq = p.find('=');
+                        if (eq == std::string::npos) continue;
+                        std::string key = trim(p.substr(0, eq));
+                        std::string val = trim(p.substr(eq + 1));
+                        if (val.size() >= 2 && val.front() == '"' && val.back() == '"') {
+                            val = val.substr(1, val.size() - 2);
+                        }
+                        if (!first) args_json << ",";
+                        first = false;
+                        args_json << "\"" << json_escape(key) << "\":\"" << json_escape(val) << "\"";
+                    }
+                    args_json << "}";
+
+                    std::ostringstream fc;
+                    fc << "{\"name\":\"" << json_escape(fname) << "\",\"arguments\":" << args_json.str() << "}";
+                    function_calls.push_back(fc.str());
+
+                    regular_response = response_text.substr(0, call_pos);
+                    if (call_end + CALL_END.size() < response_text.size()) {
+                        regular_response += response_text.substr(call_end + CALL_END.size());
+                    }
+                    response_text = regular_response;
+                    call_pos = 0;
+                    continue;
+                }
+            }
+            call_pos = call_end + CALL_END.size();
         }
         
         std::ostringstream json_response;

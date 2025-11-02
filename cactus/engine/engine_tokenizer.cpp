@@ -122,15 +122,52 @@ std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& message
                                          bool add_generation_prompt,
                                          const std::string& tools_json) const
 {
-    if (!tools_json.empty()) {
-        return "ERROR: Tool calls are not supported for LFM2 models";
-    }
-
     std::string result = "<|startoftext|>";
 
+    std::string sys_content;
+    bool has_system_msg = false;
     for (const auto& msg : messages) {
+        if (msg.role == "system") {
+            sys_content = msg.content;
+            has_system_msg = true;
+            break;
+        }
+    }
+
+    if (!tools_json.empty()) {
+        if (!sys_content.empty()) {
+            sys_content += "\n";
+        }
+        sys_content += "List of tools: <|tool_list_start|>[";
+        if (!tools_json.empty()) {
+            sys_content += "\n";
+            sys_content += tools_json;
+            sys_content += "\n";
+        }
+        sys_content += "]<|tool_list_end|>";
+        sys_content += "\n\nWhen you need to call a tool, respond with a JSON object in this exact format:\n";
+        sys_content += "{\"function_call\": {\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}}";
+    }
+
+    if (!sys_content.empty()) {
+        result += "<|im_start|>system\n";
+        result += sys_content;
+        result += "<|im_end|>\n";
+    }
+
+    for (const auto& msg : messages) {
+        if (msg.role == "system" && has_system_msg) {
+            has_system_msg = false;
+            continue;
+        }
         result += "<|im_start|>" + msg.role + "\n";
-        result += msg.content;
+        if (msg.role == "tool") {
+            result += "<|tool_response_start|>";
+            result += msg.content;
+            result += "<|tool_response_end|>";
+        } else {
+            result += msg.content;
+        }
         result += "<|im_end|>\n";
     }
 
