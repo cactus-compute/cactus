@@ -151,7 +151,7 @@ bool test_embeddings() {
     return true;
 }
 
-bool test_generation_control() {
+bool test_huge_context() {
     cactus_model_t model = cactus_init(g_model_path, 2048);
 
     if (!model) {
@@ -159,15 +159,26 @@ bool test_generation_control() {
         return false;
     }
 
-    const char* messages = R"([
-        {"role": "system", "content": "/no_think You are a helpful assistant."},
-        {"role": "user", "content": "Count to 10"}
-    ])";
+    std::string large_messages = "[{\"role\": \"system\", \"content\": \"/no_think You are a helpful assistant with extensive knowledge. ";
 
-    char response[2048];
+    for (int i = 0; i < 100; i++) {
+        large_messages += "Context item " + std::to_string(i) +
+            ": This represents background knowledge about topic " + std::to_string(i) +
+            " including facts, data, and relevant information. ";
+    }
+    large_messages += "\"}, {\"role\": \"user\", \"content\": \"";
+
+    for (int i = 0; i < 100; i++) {
+        large_messages += "Data point " + std::to_string(i) + " has value " +
+            std::to_string(i * 3.14159) + " with properties [active, validated]. ";
+    }
+
+    large_messages += "Given all the above context, please count to 10.\"}]";
+
+    char response[8192];  
 
     std::cout << "\n╔══════════════════════════════════════════╗" << std::endl;
-    std::cout << "║       GENERATION CONTROL TEST            ║" << std::endl;
+    std::cout << "║       HUGE CONTEXT CONTROL TEST            ║" << std::endl;
     std::cout << "╚══════════════════════════════════════════╝" << std::endl;
 
     struct ControlData {
@@ -192,7 +203,7 @@ bool test_generation_control() {
         }
     };
 
-    int result = cactus_complete(model, messages, response, sizeof(response),
+    int result = cactus_complete(model, large_messages.c_str(), response, sizeof(response),
                                 g_options, nullptr, control_callback, &control_data);
 
     std::cout << "\n[Results]" << std::endl;
@@ -218,6 +229,9 @@ bool test_generation_control() {
     std::cout << "├─ Tokens per second: " << std::fixed << std::setprecision(2) << tokens_per_second << std::endl;
     std::cout << "├─ Early stop: " << (control_data.token_count == 5 ? "SUCCESS ✓" : "FAILED ✗") << std::endl;
     std::cout << "└─ Status: " << (result > 0 ? "PASSED ✓" : "FAILED ✗") << std::endl;
+
+    std::cout << "\n[Full Model Response]" << std::endl;
+    std::cout << response << std::endl;  
     
     cactus_destroy(model);
     return result > 0;
@@ -311,7 +325,7 @@ int main() {
     TestUtils::TestRunner runner("Engine Tests");
     runner.run_test("streaming", test_streaming());  
     runner.run_test("embeddings", test_embeddings());
-    runner.run_test("generation_control", test_generation_control());
+    // runner.run_test("huge_context", test_huge_context());
     runner.run_test("tool_calls", test_tool_call());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

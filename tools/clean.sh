@@ -28,9 +28,10 @@ remove_if_exists "$PROJECT_ROOT/apple/libcactus.a"
 remove_if_exists "$PROJECT_ROOT/tests/build"
 
 echo ""
-echo "Removing compiled libraries..."
+echo "Removing compiled libraries and frameworks..."
 find "$PROJECT_ROOT" -name "*.so" -type f -delete 2>/dev/null && echo "Removed .so files" || echo "No .so files found"
 find "$PROJECT_ROOT" -name "*.a" -type f -delete 2>/dev/null && echo "Removed .a files" || echo "No .a files found"
+find "$PROJECT_ROOT" -name "*.xcframework" -type d -exec rm -rf {} + 2>/dev/null && echo "Removed .xcframework directories" || echo "No .xcframework directories found"
 
 echo ""
 echo "Clean complete!"
