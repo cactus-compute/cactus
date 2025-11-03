@@ -90,6 +90,90 @@ bool test_streaming() {
     return result > 0 && stream_data.token_count > 0;
 }
 
+bool test_tool_call() {
+    cactus_model_t model = cactus_init(g_model_path, 2048);
+
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize model for tools test" << std::endl;
+        return false;
+    }
+
+    const char* messages = R"([
+        {"role": "system", "content": "You are a helpful assistant that can use tools."},
+        {"role": "user", "content": "What's the weather in San Francisco?"}
+    ])";
+
+    const char* tools = R"([
+        {
+            "function": {
+                "name": "get_weather",
+                "description": "Get weather for a location",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {
+                            "type": "string",
+                            "description": "The location to get the weather for, in the format \"City, State, Country\"."
+                        }
+                    },
+                    "required": ["location"]
+                }
+            }
+        }
+    ])";
+
+    StreamingTestData stream_data;
+    stream_data.token_count = 0;
+
+    char response[4096];
+
+    std::cout << "\n╔══════════════════════════════════════════╗" << std::endl;
+    std::cout << "║          TOOL CALL TEST                  ║" << std::endl;
+    std::cout << "╚══════════════════════════════════════════╝" << std::endl;
+
+    std::cout << "\n[Conversation]" << std::endl;
+    std::cout << "├─ User: What's the weather in San Francisco?" << std::endl;
+    std::cout << "└─ Assistant: ";
+
+    int result = cactus_complete(model, messages, response, sizeof(response), g_options, tools,
+                                streaming_callback, &stream_data);
+
+    std::cout << "\n\n[Tool Call Analysis]" << std::endl;
+
+    std::string response_str(response);
+    bool has_function_call = response_str.find("function_call") != std::string::npos;
+    bool has_tool_name = response_str.find("get_weather") != std::string::npos;
+
+    double time_to_first_token = 0.0;
+    double tokens_per_second = 0.0;
+
+    size_t ttft_pos = response_str.find("\"time_to_first_token_ms\":");
+    if (ttft_pos != std::string::npos) {
+        ttft_pos += 25;
+        time_to_first_token = std::stod(response_str.substr(ttft_pos));
+    }
+
+    size_t tps_pos = response_str.find("\"tokens_per_second\":");
+    if (tps_pos != std::string::npos) {
+        tps_pos += 20;
+        tokens_per_second = std::stod(response_str.substr(tps_pos));
+    }
+
+    std::cout << "├─ Function call detected: " << (has_function_call ? "YES ✓" : "NO ✗") << std::endl;
+    std::cout << "├─ Correct tool selected: " << (has_tool_name ? "YES ✓" : "NO ✗") << std::endl;
+    std::cout << "├─ Total tokens: " << stream_data.token_count << std::endl;
+    std::cout << "├─ Time to first token: " << std::fixed << std::setprecision(2) << time_to_first_token << " ms" << std::endl;
+    std::cout << "├─ Tokens per second: " << std::fixed << std::setprecision(2) << tokens_per_second << std::endl;
+    std::cout << "└─ Overall status: " << (has_function_call && has_tool_name ? "PASSED ✓" : "FAILED ✗") << std::endl;
+
+    std::cout << "\n[Full Model Response]" << std::endl;
+    std::cout << response << std::endl;    
+    
+    cactus_destroy(model);
+    return result > 0 && stream_data.token_count > 0;
+}
+
+
 bool test_embeddings() {
     cactus_model_t model = cactus_init(g_model_path, 2048);
 
@@ -237,96 +321,13 @@ bool test_huge_context() {
     return result > 0;
 }
 
-bool test_tool_call() {
-    cactus_model_t model = cactus_init(g_model_path, 2048);
-
-    if (!model) {
-        std::cerr << "[✗] Failed to initialize model for tools test" << std::endl;
-        return false;
-    }
-
-    const char* messages = R"([
-        {"role": "system", "content": "You are a helpful assistant that can use tools."},
-        {"role": "user", "content": "What's the weather in San Francisco?"}
-    ])";
-
-    const char* tools = R"([
-        {
-            "function": {
-                "name": "get_weather",
-                "description": "Get weather for a location",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "location": {
-                            "type": "string",
-                            "description": "The location to get the weather for, in the format \"City, State, Country\"."
-                        }
-                    },
-                    "required": ["location"]
-                }
-            }
-        }
-    ])";
-
-    StreamingTestData stream_data;
-    stream_data.token_count = 0;
-
-    char response[4096];
-
-    std::cout << "\n╔══════════════════════════════════════════╗" << std::endl;
-    std::cout << "║          TOOL CALL TEST                  ║" << std::endl;
-    std::cout << "╚══════════════════════════════════════════╝" << std::endl;
-
-    std::cout << "\n[Conversation]" << std::endl;
-    std::cout << "├─ User: What's the weather in San Francisco?" << std::endl;
-    std::cout << "└─ Assistant: ";
-
-    int result = cactus_complete(model, messages, response, sizeof(response), g_options, tools,
-                                streaming_callback, &stream_data);
-
-    std::cout << "\n\n[Tool Call Analysis]" << std::endl;
-
-    std::string response_str(response);
-    bool has_function_call = response_str.find("function_call") != std::string::npos;
-    bool has_tool_name = response_str.find("get_weather") != std::string::npos;
-
-    double time_to_first_token = 0.0;
-    double tokens_per_second = 0.0;
-
-    size_t ttft_pos = response_str.find("\"time_to_first_token_ms\":");
-    if (ttft_pos != std::string::npos) {
-        ttft_pos += 25;
-        time_to_first_token = std::stod(response_str.substr(ttft_pos));
-    }
-
-    size_t tps_pos = response_str.find("\"tokens_per_second\":");
-    if (tps_pos != std::string::npos) {
-        tps_pos += 20;
-        tokens_per_second = std::stod(response_str.substr(tps_pos));
-    }
-
-    std::cout << "├─ Function call detected: " << (has_function_call ? "YES ✓" : "NO ✗") << std::endl;
-    std::cout << "├─ Correct tool selected: " << (has_tool_name ? "YES ✓" : "NO ✗") << std::endl;
-    std::cout << "├─ Total tokens: " << stream_data.token_count << std::endl;
-    std::cout << "├─ Time to first token: " << std::fixed << std::setprecision(2) << time_to_first_token << " ms" << std::endl;
-    std::cout << "├─ Tokens per second: " << std::fixed << std::setprecision(2) << tokens_per_second << std::endl;
-    std::cout << "└─ Overall status: " << (has_function_call && has_tool_name ? "PASSED ✓" : "FAILED ✗") << std::endl;
-
-    std::cout << "\n[Full Model Response]" << std::endl;
-    std::cout << response << std::endl;    
-    
-    cactus_destroy(model);
-    return result > 0 && stream_data.token_count > 0;
-}
-
 
 int main() {
     TestUtils::TestRunner runner("Engine Tests");
     runner.run_test("streaming", test_streaming());  
+    runner.run_test("tool_calls", test_tool_call());
     runner.run_test("embeddings", test_embeddings());
     // runner.run_test("huge_context", test_huge_context());
-    runner.run_test("tool_calls", test_tool_call());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
