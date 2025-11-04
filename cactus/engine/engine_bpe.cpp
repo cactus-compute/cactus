@@ -153,13 +153,63 @@ bool BPETokenizer::load_vocabulary_with_config(const std::string& vocab_file, co
         }
     }
 
-    std::string special_tokens_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/special_tokens.json";
+    std::string dir = config_file.substr(0, config_file.find_last_of("/\\"));
+    std::string special_tokens_path = dir + "/special_tokens.json";
     load_special_tokens(special_tokens_path);
 
-    std::string template_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/chat_template.jinja2";
+    try {
+        std::ifstream tok_json(dir + "/tokenizer.json");
+        if (tok_json.is_open()) {
+            std::string content((std::istreambuf_iterator<char>(tok_json)), std::istreambuf_iterator<char>());
+            size_t pos = 0;
+            while (true) {
+                size_t id_key = content.find("\"id\"", pos);
+                if (id_key == std::string::npos) break;
+                size_t id_colon = content.find(':', id_key);
+                if (id_colon == std::string::npos) break;
+                size_t id_end = content.find_first_of(",}\n", id_colon + 1);
+                if (id_end == std::string::npos) break;
+                std::string id_str = content.substr(id_colon + 1, id_end - id_colon - 1);
+                id_str.erase(0, id_str.find_first_not_of(" \t\n\r"));
+                id_str.erase(id_str.find_last_not_of(" \t\n\r") + 1);
+
+                size_t content_key = content.find("\"content\"", id_end);
+                if (content_key == std::string::npos) { pos = id_end; continue; }
+                size_t cont_quote1 = content.find('"', content_key + 9);
+                if (cont_quote1 == std::string::npos) { pos = id_end; continue; }
+                size_t cont_quote2 = content.find('"', cont_quote1 + 1);
+                if (cont_quote2 == std::string::npos) { pos = id_end; continue; }
+                std::string token_content = content.substr(cont_quote1 + 1, cont_quote2 - cont_quote1 - 1);
+
+                size_t special_key = content.find("\"special\"", cont_quote2);
+                if (special_key == std::string::npos) { pos = cont_quote2; continue; }
+                size_t special_colon = content.find(':', special_key);
+                if (special_colon == std::string::npos) { pos = cont_quote2; continue; }
+                size_t special_val_start = content.find_first_not_of(" \t\n\r", special_colon + 1);
+                if (special_val_start == std::string::npos) { pos = cont_quote2; continue; }
+                bool is_special = false;
+                if (content.compare(special_val_start, 4, "true") == 0) {
+                    is_special = true;
+                }
+                if (is_special) {
+                    try {
+                        uint32_t token_id = static_cast<uint32_t>(std::stoul(id_str));
+                        special_tokens_[token_content] = token_id;
+                    } catch (...) {
+                        
+                    }
+                }
+                pos = cont_quote2 + 1;
+            }
+        }
+    } catch (...) {
+        
+    }
+
+    std::string template_path = dir + "/chat_template.jinja2";
     load_chat_template(template_path);
 
-    std::string config_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/config.txt";
+    std::string config_path = dir + "/config.txt";
     detect_model_type(config_path);
 
     return true;

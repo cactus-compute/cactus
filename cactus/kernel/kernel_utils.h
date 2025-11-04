@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <string>
+#include <cstdio>
 
 constexpr size_t NEON_VECTOR_SIZE = 16;
 
@@ -146,43 +147,115 @@ namespace CactusThreading {
     }
     
     struct Thresholds {
+
+        #if defined(__ANDROID__)
         static constexpr size_t ELEMENT_WISE = 5000;
         static constexpr size_t AXIS_REDUCE = 1000;
         static constexpr size_t ALL_REDUCE = 10000;
-        static constexpr size_t SCALAR_BASIC = 20000;
+        static constexpr size_t SCALAR_BASIC = 30000;
         static constexpr size_t SCALAR_EXPENSIVE = 10000;
+        static constexpr size_t ATTENTION = 512;
+        static constexpr size_t GEMM_TILED = 20000; 
         static constexpr size_t GEMM_SMALL = 64 * 64 * 64;
         static constexpr size_t GEMM_MEDIUM = 256 * 256 * 256;
-        
-        static constexpr size_t L1_CACHE_SIZE = 32 * 1024;
+        static constexpr size_t GEMM_TILE_M = 64;
+        static constexpr size_t GEMM_TILE_N = 64;
+        static constexpr size_t GEMM_TILE_M_SMALL = 32;
+        static constexpr size_t GEMM_TILE_N_SMALL = 32;
+        #else // iOS
+        static constexpr size_t ELEMENT_WISE = 5000;
+        static constexpr size_t AXIS_REDUCE = 1000;
+        static constexpr size_t ALL_REDUCE = 10000;
+        static constexpr size_t SCALAR_BASIC = 5000;
+        static constexpr size_t SCALAR_EXPENSIVE = 2500;
+        static constexpr size_t ATTENTION = 4;
+        static constexpr size_t GEMM_TILED = 4;  
+        static constexpr size_t GEMM_SMALL = 64 * 64 * 64;
+        static constexpr size_t GEMM_MEDIUM = 256 * 256 * 256;
+        static constexpr size_t GEMM_TILE_M = 64;
+        static constexpr size_t GEMM_TILE_N = 64;
+        static constexpr size_t GEMM_TILE_M_SMALL = 32;
+        static constexpr size_t GEMM_TILE_N_SMALL = 32;
+        #endif
         static constexpr size_t L2_CACHE_SIZE = 256 * 1024;
-        static constexpr size_t L3_CACHE_SIZE = 2 * 1024 * 1024;
+    };
+    
+    class TaskHandle {
+    private:
+        std::vector<std::future<void>> futures_;
+        bool auto_wait_;
+        
+    public:
+        TaskHandle(bool auto_wait = true) : auto_wait_(auto_wait) {}
+        
+        ~TaskHandle() {
+            if (auto_wait_) {
+                wait();
+            }
+        }
+        
+        TaskHandle(TaskHandle&&) = default;
+        TaskHandle& operator=(TaskHandle&&) = default;
+        TaskHandle(const TaskHandle&) = delete;
+        TaskHandle& operator=(const TaskHandle&) = delete;
+        
+        void add_future(std::future<void>&& f) {
+            futures_.push_back(std::move(f));
+        }
+        
+        void wait() {
+            for (auto& f : futures_) {
+                if (f.valid()) {
+                    f.wait();
+                }
+            }
+            futures_.clear();
+        }
+        
+        bool is_ready() const {
+            for (const auto& f : futures_) {
+                if (f.valid() && f.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        
+        size_t task_count() const { return futures_.size(); }
     };
     
     template<typename WorkFunc>
-    void parallel_for(size_t total_work, size_t threshold, WorkFunc work_func) {
+    TaskHandle parallel_for(size_t total_work, size_t threshold, WorkFunc work_func, bool wait = true) {
         const size_t num_threads = get_optimal_thread_count(total_work, threshold);
+        TaskHandle handle(!wait);  
         
         if (num_threads == 1) {
-            work_func(0, total_work);
-            return;
+            if (wait) {
+                work_func(0, total_work);
+                return handle;
+            }
+            auto& pool = get_thread_pool();
+            handle.add_future(pool.enqueue([work_func, total_work]() {
+                work_func(0, total_work);
+            }));
+            return handle;
         }
         
         auto& pool = get_thread_pool();
-        std::vector<std::future<void>> futures;
         const size_t work_per_thread = total_work / num_threads;
         
         for (size_t t = 0; t < num_threads; ++t) {
-            futures.push_back(pool.enqueue([work_func, t, num_threads, work_per_thread, total_work]() {
+            handle.add_future(pool.enqueue([work_func, t, num_threads, work_per_thread, total_work]() {
                 const size_t start_idx = t * work_per_thread;
                 const size_t end_idx = (t == num_threads - 1) ? total_work : (t + 1) * work_per_thread;
                 work_func(start_idx, end_idx);
             }));
         }
         
-        for (auto& future : futures) {
-            future.wait();
+        if (wait) {
+            handle.wait();
         }
+        return handle;
     }
     
     template<typename WorkFunc>
@@ -251,9 +324,7 @@ namespace CactusThreading {
         size_t num_col_tiles = (cols + tile_cols - 1) / tile_cols;
         size_t total_tiles = num_row_tiles * num_col_tiles;
 
-        size_t threshold = 4;
-        
-        parallel_for(total_tiles, threshold, [=](size_t start_tile, size_t end_tile) {
+        parallel_for(total_tiles, Thresholds::GEMM_TILED, [=](size_t start_tile, size_t end_tile) {
             for (size_t tile_idx = start_tile; tile_idx < end_tile; ++tile_idx) {
                 size_t tile_row = tile_idx / num_col_tiles;
                 size_t tile_col = tile_idx % num_col_tiles;

@@ -49,7 +49,7 @@ void cactus_attention_int8(
     const size_t o_seq_stride = num_q_heads * head_dim;
     const size_t mask_batch_stride = mask ? seq_len * kv_seq_len : 0;
 
-    CactusThreading::parallel_for(batch_size * num_q_heads * seq_len, 512,
+    CactusThreading::parallel_for(batch_size * num_q_heads * seq_len, CactusThreading::Thresholds::ATTENTION,
         [=](size_t start_idx, size_t end_idx) {
             for (size_t work_idx = start_idx; work_idx < end_idx; ++work_idx) {
                 const size_t batch_idx = work_idx / (num_q_heads * seq_len);
@@ -234,7 +234,7 @@ void cactus_attention_f32(
     const size_t o_seq_stride = num_q_heads * head_dim;
     const size_t mask_batch_stride = mask ? seq_len * kv_seq_len : 0;
 
-    CactusThreading::parallel_for(batch_size * num_q_heads * seq_len, 512,
+    CactusThreading::parallel_for(batch_size * num_q_heads * seq_len, CactusThreading::Thresholds::ATTENTION,
         [=](size_t start_idx, size_t end_idx) {
             for (size_t work_idx = start_idx; work_idx < end_idx; ++work_idx) {
                 const size_t batch_idx = work_idx / (num_q_heads * seq_len);
@@ -433,7 +433,7 @@ void cactus_attention_f16(
     const size_t o_seq_stride = num_q_heads * head_dim;
     const size_t mask_batch_stride = mask ? seq_len * kv_seq_len : 0;
 
-    CactusThreading::parallel_for(batch_size * num_q_heads * seq_len, 4,
+    CactusThreading::parallel_for(batch_size * num_q_heads * seq_len, CactusThreading::Thresholds::ATTENTION,
         [=](size_t start_idx, size_t end_idx) {
             std::vector<float> block_scores(BLOCK_SIZE);
             std::vector<float32x4_t> output_accum_low(head_dim_aligned / VECTOR_WIDTH * 2);
