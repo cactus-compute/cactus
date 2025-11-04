@@ -382,9 +382,7 @@ int cactus_complete(
 
         generated_tokens.push_back(next_token);
 
-        if (matches_stop_sequence(generated_tokens, stop_token_sequences)) {
-            // Stop immediately, but keep the token in generated_tokens
-        } else {
+         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
             if (callback) {
                 std::string full_decoded = tokenizer->decode(generated_tokens);
                 std::string new_text = full_decoded.substr(decoded_so_far.length());
