@@ -9,56 +9,45 @@ any model, like PyTorch for phones.
 ```cpp
 #include cactus.h
 
-// Create a Cactus Graph and define the inputs
 CactusGraph graph;
 auto a = graph.input({2, 3}, Precision::FP16);
 auto b = graph.input({3, 4}, Precision::INT8);
 
-// Define the model or computation flow once
 auto x1 = graph.matmul(a, b, false);
 auto x2 = graph.transpose(x1);
 auto result = graph.matmul(b, x2, true);
 
-// Assign data to the inputs
 float a_data[6] = {1.1f, 2.3f, 3.4f, 4.2f, 5.7f, 6.8f};
 float b_data[12] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
 graph.set_input(a, a_data, Precision::FP16);
 graph.set_input(b, b_data, Precision::INT8);
 
-// Execute the graph and retrieve output 
 graph.execute();
 void* output_data = graph.get_output(result);
 
-// Reset graph and run on diffferent input data
 graph.hard_reset(); 
 
 ```
 
 ## Cactus Engine
-Cactus Engine is an AI inference engine built on top of Cactus Graphs.
+Cactus Engine is an AI inference engine with OpenAI-compatible APIs built on top of Cactus Graphs.
 
 ```cpp
 #include cactus.h
 
-// Initialiaze the model with the weight paths
 cactus_model_t model = cactus_init("path/to/weight/folder", 2048);
 
-// Define and maintain your conversation JSON
 const char* messages = R"([
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "My name is Henry Ndubuaku"}
 ])";
 
-// Define your generation options
 const char* options = R"({
     "max_tokens": 50,
     "stop_sequences": ["<|im_end|>"]
 })";
 
-// Create the outout buffer to write your results
 char response[1024];
-
-// Call the Cactus Complete API
 int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr, nullptr, nullptr);
 ```
 Example response from Gemma3-270m-INT8
