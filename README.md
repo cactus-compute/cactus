@@ -154,6 +154,7 @@ Then replace the model path in `tests/test_engine.cpp` with your choice.
 - [Kotlin Multiplatform SDK](https://github.com/cactus-compute/cactus-kotlin)
 - [Flutter SDK](https://github.com/cactus-compute/cactus-flutter)
 - [React Native SDK](https://github.com/cactus-compute/cactus-react)
+- [Swift SDK](https://github.com/mhayes853/swift-cactus)
 
 ## Try demo apps
 
