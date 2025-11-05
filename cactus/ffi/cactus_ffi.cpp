@@ -189,30 +189,25 @@ static void parse_options_json(const std::string& json,
 }
 
 
-static std::unordered_set<uint32_t> get_stop_tokens(CactusModel* wrapper, const std::vector<std::string>& stop_sequences) {
-    std::unordered_set<uint32_t> stop_tokens;
-    auto* tokenizer = wrapper->model->get_tokenizer();
-    
-    stop_tokens.insert(tokenizer->get_eos_token());
-    
+static bool matches_stop_sequence(const std::vector<uint32_t>& generated_tokens,
+                                   const std::vector<std::vector<uint32_t>>& stop_sequences) {
     for (const auto& stop_seq : stop_sequences) {
-        auto cache_it = wrapper->stop_sequence_cache.find(stop_seq);
-        if (cache_it != wrapper->stop_sequence_cache.end()) {
-            
-            for (uint32_t token : cache_it->second) {
-                stop_tokens.insert(token);
+        if (stop_seq.empty()) continue;
+
+        if (generated_tokens.size() >= stop_seq.size()) {
+            bool matches = true;
+            for (size_t i = 0; i < stop_seq.size(); i++) {
+                if (generated_tokens[generated_tokens.size() - stop_seq.size() + i] != stop_seq[i]) {
+                    matches = false;
+                    break;
+                }
             }
-        } else {
-            
-            auto tokens = tokenizer->encode(stop_seq);
-            wrapper->stop_sequence_cache[stop_seq] = tokens;
-            for (uint32_t token : tokens) {
-                stop_tokens.insert(token);
+            if (matches) {
+                return true;
             }
         }
     }
-    
-    return stop_tokens;
+    return false;
 }
 
 extern "C" {
@@ -353,10 +348,22 @@ int cactus_complete(
 
         std::vector<uint32_t> tokens_to_process = tokenizer->encode(full_prompt);
         size_t prompt_tokens = tokens_to_process.size();
-        
-        
-        std::unordered_set<uint32_t> stop_tokens = get_stop_tokens(wrapper, stop_sequences);
-        
+
+        std::vector<std::vector<uint32_t>> stop_token_sequences;
+        uint32_t eos_token = tokenizer->get_eos_token();
+        stop_token_sequences.push_back({eos_token});
+
+        for (const auto& stop_seq : stop_sequences) {
+            auto cache_it = wrapper->stop_sequence_cache.find(stop_seq);
+            if (cache_it != wrapper->stop_sequence_cache.end()) {
+                stop_token_sequences.push_back(cache_it->second);
+            } else {
+                auto tokens = tokenizer->encode(stop_seq);
+                wrapper->stop_sequence_cache[stop_seq] = tokens;
+                stop_token_sequences.push_back(tokens);
+            }
+        }
+
         std::vector<uint32_t> generated_tokens;
         double time_to_first_token = 0.0;
         std::string decoded_so_far;  
@@ -373,11 +380,9 @@ int cactus_complete(
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(token_end - start_time);
         time_to_first_token = duration.count() / 1000.0;
 
-        if (stop_tokens.count(next_token)) {
-            generated_tokens.push_back(next_token);
-        } else {
-            generated_tokens.push_back(next_token);
+        generated_tokens.push_back(next_token);
 
+         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
             if (callback) {
                 std::string full_decoded = tokenizer->decode(generated_tokens);
                 std::string new_text = full_decoded.substr(decoded_so_far.length());
@@ -393,11 +398,11 @@ int cactus_complete(
                 std::vector<uint32_t> single_token = {next_token};
                 next_token = wrapper->model->generate(single_token, temperature, top_p, top_k);
 
-                if (stop_tokens.count(next_token)) {
+                generated_tokens.push_back(next_token);
+
+                if (matches_stop_sequence(generated_tokens, stop_token_sequences)) {
                     break;
                 }
-
-                generated_tokens.push_back(next_token);
 
                 if (callback) {
                     std::string full_decoded = tokenizer->decode(generated_tokens);
