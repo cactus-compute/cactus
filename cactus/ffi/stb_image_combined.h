@@ -3,15 +3,12 @@
 
 #define STBIDEF extern
 
-
-
 typedef struct
 {
    int      (*read)  (void *user,char *data,int size);   // fill 'data' with 'size' bytes.  return number of bytes actually read
    void     (*skip)  (void *user,int n);                 // skip the next 'n' bytes, or 'unget' the last -n bytes if negative
    int      (*eof)   (void *user);                       // returns nonzero if we are at end of file/data
 } stbi_io_callbacks;
-
 
 STBIDEF stbi_uc *stbi_load_from_memory   (stbi_uc           const *buffer, int len   , int *x, int *y, int *channels_in_file, int desired_channels);
 STBIDEF stbi_uc *stbi_load_from_callbacks(stbi_io_callbacks const *clbk  , void *user, int *x, int *y, int *channels_in_file, int desired_channels);
@@ -20,8 +17,6 @@ STBIDEF stbi_uc *stbi_load            (char const *filename, int *x, int *y, int
 STBIDEF stbi_uc *stbi_load_from_file  (FILE *f, int *x, int *y, int *channels_in_file, int desired_channels);
 
 STBIDEF stbi_uc *stbi_load_gif_from_memory(stbi_uc const *buffer, int len, int **delays, int *x, int *y, int *z, int *comp, int req_comp);
-
-
 
 STBIDEF stbi_us *stbi_load_16_from_memory   (stbi_uc const *buffer, int len, int *x, int *y, int *channels_in_file, int desired_channels);
 STBIDEF stbi_us *stbi_load_16_from_callbacks(stbi_io_callbacks const *clbk, void *user, int *x, int *y, int *channels_in_file, int desired_channels);
@@ -35,7 +30,6 @@ STBIDEF stbi_us *stbi_load_from_file_16(FILE *f, int *x, int *y, int *channels_i
    STBIDEF float *stbi_loadf            (char const *filename, int *x, int *y, int *channels_in_file, int desired_channels);
    STBIDEF float *stbi_loadf_from_file  (FILE *f, int *x, int *y, int *channels_in_file, int desired_channels);
 
-
 STBIDEF int    stbi_is_hdr_from_callbacks(stbi_io_callbacks const *clbk, void *user);
 STBIDEF int    stbi_is_hdr_from_memory(stbi_uc const *buffer, int len);
 STBIDEF int      stbi_is_hdr          (char const *filename);
@@ -48,7 +42,6 @@ STBIDEF void stbi_set_unpremultiply_on_load_thread(int flag_true_if_should_unpre
 STBIDEF void stbi_convert_iphone_png_to_rgb_thread(int flag_true_if_should_convert);
 STBIDEF void stbi_set_flip_vertically_on_load_thread(int flag_true_if_should_flip);
 
-
 STBIDEF char *stbi_zlib_decode_malloc_guesssize(const char *buffer, int len, int initial_size, int *outlen);
 STBIDEF char *stbi_zlib_decode_malloc_guesssize_headerflag(const char *buffer, int len, int initial_size, int *outlen, int parse_header);
 STBIDEF char *stbi_zlib_decode_malloc(const char *buffer, int len, int *outlen);
@@ -56,14 +49,6 @@ STBIDEF int   stbi_zlib_decode_buffer(char *obuffer, int olen, const char *ibuff
 
 STBIDEF char *stbi_zlib_decode_noheader_malloc(const char *buffer, int len, int *outlen);
 STBIDEF int   stbi_zlib_decode_noheader_buffer(char *obuffer, int olen, const char *ibuffer, int ilen);
-
-
-
-
-
-
-
-
 
 #include <stdarg.h>
 #include <stddef.h> // ptrdiff_t on osx
@@ -80,10 +65,7 @@ STBIDEF int   stbi_zlib_decode_noheader_buffer(char *obuffer, int olen, const ch
 
 #define STBI_EXTERN extern
 
-
    #define stbi_inline
-
-
 
 #include <stdint.h>
 typedef uint16_t stbi__uint16;
@@ -95,18 +77,13 @@ typedef unsigned char validate_uint32[sizeof(stbi__uint32)==4 ? 1 : -1];
 
 #define STBI_NOTUSED(v)  (void)sizeof(v)
 
-
    #define stbi_lrot(x,y)  (((x) << (y)) | ((x) >> (-(y) & 31)))
-
 
 #define STBI_MALLOC(sz)           malloc(sz)
 #define STBI_REALLOC(p,newsz)     realloc(p,newsz)
 #define STBI_FREE(p)              free(p)
 
 #define STBI_REALLOC_SIZED(p,oldsz,newsz) STBI_REALLOC(p,newsz)
-
-
-
 
 #define STBI_SSE2
 #include <emmintrin.h>
@@ -118,13 +95,9 @@ static int stbi__sse2_available(void)
    return 1;
 }
 
-
-
-
 #define STBI_SIMD_ALIGN(type, name) type name
 
 #define STBI_MAX_DIMENSIONS (1 << 24)
-
 
 typedef struct
 {
@@ -142,7 +115,6 @@ typedef struct
    stbi_uc *img_buffer, *img_buffer_end;
    stbi_uc *img_buffer_original, *img_buffer_original_end;
 } stbi__context;
-
 
 static void stbi__refill_buffer(stbi__context *s);
 
@@ -166,7 +138,6 @@ static void stbi__start_callbacks(stbi__context *s, stbi_io_callbacks *c, void *
    stbi__refill_buffer(s);
    s->img_buffer_original_end = s->img_buffer_end;
 }
-
 
 static int stbi__stdio_read(void *user, char *data, int size)
 {
@@ -199,8 +170,6 @@ static void stbi__start_file(stbi__context *s, FILE *f)
 {
    stbi__start_callbacks(s, &stbi__stdio_callbacks, (void *) f);
 }
-
-
 
 static void stbi__rewind(stbi__context *s)
 {
@@ -253,7 +222,6 @@ static void *stbi__malloc(size_t size)
 {
     return STBI_MALLOC(size);
 }
-
 
 static int stbi__addsizes_valid(int a, int b)
 {
@@ -318,7 +286,6 @@ static int stbi__mul2shorts_valid(int a, int b)
    return a >= SHRT_MIN / b;
 }
 
-
    #define stbi__err(x,y)  stbi__err(x)
 
 #define stbi__errpf(x,y)   ((float *)(size_t) (stbi__err(x,y)?NULL:NULL))
@@ -352,7 +319,6 @@ static void *stbi__load_main(stbi__context *s, int *x, int *y, int *comp, int re
    STBI_NOTUSED(bpc);
 
    if (stbi__jpeg_test(s)) return stbi__jpeg_load(s,x,y,comp,req_comp, ri);
-
 
    return stbi__errpuc("unknown image type", "Image not of any known type, or corrupt");
 }
@@ -439,7 +405,6 @@ static unsigned char *stbi__load_and_postprocess_8bit(stbi__context *s, int *x, 
       ri.bits_per_channel = 8;
    }
 
-
    if (stbi__vertically_flip_on_load) {
       int channels = req_comp ? req_comp : *comp;
       stbi__vertical_flip(result, *x, *y, channels * sizeof(stbi_uc));
@@ -463,7 +428,6 @@ static stbi__uint16 *stbi__load_and_postprocess_16bit(stbi__context *s, int *x, 
       ri.bits_per_channel = 16;
    }
 
-
    if (stbi__vertically_flip_on_load) {
       int channels = req_comp ? req_comp : *comp;
       stbi__vertical_flip(result, *x, *y, channels * sizeof(stbi__uint16));
@@ -472,17 +436,12 @@ static stbi__uint16 *stbi__load_and_postprocess_16bit(stbi__context *s, int *x, 
    return (stbi__uint16 *) result;
 }
 
-
-
-
-
 static FILE *stbi__fopen(char const *filename, char const *mode)
 {
    FILE *f;
    f = fopen(filename, mode);
    return f;
 }
-
 
 STBIDEF stbi_uc *stbi_load(char const *filename, int *x, int *y, int *comp, int req_comp)
 {
@@ -527,8 +486,6 @@ STBIDEF stbi_us *stbi_load_16(char const *filename, int *x, int *y, int *comp, i
    fclose(f);
    return result;
 }
-
-
 
 STBIDEF stbi_us *stbi_load_16_from_memory(stbi_uc const *buffer, int len, int *x, int *y, int *channels_in_file, int desired_channels)
 {
@@ -612,8 +569,6 @@ STBIDEF float *stbi_loadf_from_file(FILE *f, int *x, int *y, int *comp, int req_
    return stbi__loadf_main(&s,x,y,comp,req_comp);
 }
 
-
-
 STBIDEF int stbi_is_hdr_from_memory(stbi_uc const *buffer, int len)
 {
    STBI_NOTUSED(buffer);
@@ -654,8 +609,6 @@ static float stbi__h2l_gamma_i=1.0f/2.2f, stbi__h2l_scale_i=1.0f;
 
 STBIDEF void   stbi_hdr_to_ldr_gamma(float gamma) { stbi__h2l_gamma_i = 1/gamma; }
 STBIDEF void   stbi_hdr_to_ldr_scale(float scale) { stbi__h2l_scale_i = 1/scale; }
-
-
 
 enum
 {
@@ -749,14 +702,12 @@ static int stbi__get16be(stbi__context *s)
 }
 #endif
 
-
 static stbi__uint32 stbi__get32be(stbi__context *s)
 {
    stbi__uint32 z = stbi__get16be(s);
    return (z << 16) + stbi__get16be(s);
 }
 #endif
-
 
 static int stbi__get16le(stbi__context *s)
 {
@@ -766,7 +717,6 @@ static int stbi__get16le(stbi__context *s)
 #endif
 
 #define STBI__BYTECAST(x)  ((stbi_uc) ((x) & 255))  // truncate int to byte without warnings
-
 
 static stbi_uc stbi__compute_y(int r, int g, int b)
 {
@@ -816,7 +766,6 @@ static unsigned char *stbi__convert_format(unsigned char *data, int img_n, int r
    return good;
 }
 #endif
-
 
 static stbi__uint16 stbi__compute_y_16(int r, int g, int b)
 {
@@ -888,9 +837,6 @@ static float   *stbi__ldr_to_hdr(stbi_uc *data, int x, int y, int comp)
    STBI_FREE(data);
    return output;
 }
-
-
-
 
 #define FAST_BITS   9  // larger handles more cases; smaller stomps less cache
 
@@ -1414,8 +1360,6 @@ static void stbi__idct_block(stbi_uc *out, int out_stride, short data[64])
    }
 }
 
-
-
 #define STBI__MARKER_none  0xff
 static stbi_uc stbi__get_marker(stbi__jpeg *j)
 {
@@ -1891,7 +1835,6 @@ static int stbi__decode_jpeg_image(stbi__jpeg *j)
    return 1;
 }
 
-
 typedef stbi_uc *(*resample_row_func)(stbi_uc *out, stbi_uc *in0, stbi_uc *in1,
                                     int w, int hs);
 
@@ -1966,7 +1909,6 @@ static stbi_uc *stbi__resample_row_hv_2(stbi_uc *out, stbi_uc *in_near, stbi_uc 
    return out;
 }
 
-
 static stbi_uc *stbi__resample_row_generic(stbi_uc *out, stbi_uc *in_near, stbi_uc *in_far, int w, int hs)
 {
    int i,j;
@@ -2003,13 +1945,11 @@ static void stbi__YCbCr_to_RGB_row(stbi_uc *out, const stbi_uc *y, const stbi_uc
    }
 }
 
-
 static void stbi__setup_jpeg(stbi__jpeg *j)
 {
    j->idct_block_kernel = stbi__idct_block;
    j->YCbCr_to_RGB_kernel = stbi__YCbCr_to_RGB_row;
    j->resample_row_hv_2_kernel = stbi__resample_row_hv_2;
-
 
 }
 
@@ -2239,8 +2179,6 @@ static int stbi__jpeg_info(stbi__context *s, int *x, int *y, int *comp)
    return result;
 }
 
-
-
 #define STBI__ZFAST_BITS  9 // accelerate all cases in default tables
 #define STBI__ZFAST_MASK  ((1 << STBI__ZFAST_BITS) - 1)
 #define STBI__ZNSYMS 288 // number of symbols in literal/length alphabet
@@ -2315,7 +2253,6 @@ static int stbi__zbuild_huffman(stbi__zhuffman *z, const stbi_uc *sizelist, int 
    }
    return 1;
 }
-
 
 typedef struct
 {
@@ -2706,7 +2643,6 @@ STBIDEF int stbi_zlib_decode_noheader_buffer(char *obuffer, int olen, const char
       return -1;
 }
 
-
 typedef struct
 {
    stbi__uint32 length;
@@ -2736,7 +2672,6 @@ typedef struct
    stbi_uc *idata, *expanded, *out;
    int depth;
 } stbi__png;
-
 
 enum {
    STBI__F_none=0,
@@ -3371,8 +3306,6 @@ static int stbi__png_is16(stbi__context *s)
    return 1;
 }
 
-
-
 typedef struct
 {
    stbi__int16 prefix;
@@ -3870,9 +3803,6 @@ static int stbi__gif_info(stbi__context *s, int *x, int *y, int *comp)
    return stbi__gif_info_raw(s,x,y,comp);
 }
 
-
-
-
 static int stbi__info_main(stbi__context *s, int *x, int *y, int *comp)
 {
    if (stbi__jpeg_info(s, x, y, comp)) return 1;
@@ -3880,9 +3810,6 @@ static int stbi__info_main(stbi__context *s, int *x, int *y, int *comp)
    if (stbi__png_info(s, x, y, comp))  return 1;
 
    if (stbi__gif_info(s, x, y, comp))  return 1;
-
-
-
 
    return stbi__err("unknown image type", "Image not of any known type, or corrupt");
 }
@@ -3966,8 +3893,6 @@ STBIDEF int stbi_is_16_bit_from_callbacks(stbi_io_callbacks const *c, void *user
 
 #endif // STB_IMAGE_IMPLEMENTATION
 
-
-
 #define STBIR_INCLUDE_STB_IMAGE_RESIZE2_H
 
 #include <stddef.h>
@@ -3978,8 +3903,6 @@ typedef uint32_t stbir_uint32;
 typedef uint64_t stbir_uint64;
 
 #define STBIRDEF extern
-
-
 
 typedef enum
 {
@@ -4012,7 +3935,6 @@ typedef enum
 
 } stbir_pixel_layout;
 
-
 STBIRDEF unsigned char * stbir_resize_uint8_srgb( const unsigned char *input_pixels , int input_w , int input_h, int input_stride_in_bytes,
                                                         unsigned char *output_pixels, int output_w, int output_h, int output_stride_in_bytes,
                                                         stbir_pixel_layout pixel_type );
@@ -4024,7 +3946,6 @@ STBIRDEF unsigned char * stbir_resize_uint8_linear( const unsigned char *input_p
 STBIRDEF float * stbir_resize_float_linear( const float *input_pixels , int input_w , int input_h, int input_stride_in_bytes,
                                                   float *output_pixels, int output_w, int output_h, int output_stride_in_bytes,
                                                   stbir_pixel_layout pixel_type );
-
 
 typedef enum
 {
@@ -4060,11 +3981,6 @@ STBIRDEF void *  stbir_resize( const void *input_pixels , int input_w , int inpu
                                      void *output_pixels, int output_w, int output_h, int output_stride_in_bytes,
                                stbir_pixel_layout pixel_layout, stbir_datatype data_type,
                                stbir_edge edge, stbir_filter filter );
-
-
-
-
-
 
 typedef void const * stbir_input_callback( void * optional_output, void const * input_ptr, int num_pixels, int x, int y, void * context );
 
@@ -4103,21 +4019,15 @@ typedef struct STBIR_RESIZE  // use the stbir_resize_init and stbir_override fun
   stbir__info * samplers;
 } STBIR_RESIZE;
 
-
-
 STBIRDEF void stbir_resize_init( STBIR_RESIZE * resize,
                                  const void *input_pixels,  int input_w,  int input_h, int input_stride_in_bytes, // stride can be zero
                                        void *output_pixels, int output_w, int output_h, int output_stride_in_bytes, // stride can be zero
                                  stbir_pixel_layout pixel_layout, stbir_datatype data_type );
 
-
 STBIRDEF void stbir_set_datatypes( STBIR_RESIZE * resize, stbir_datatype input_type, stbir_datatype output_type );
 STBIRDEF void stbir_set_pixel_callbacks( STBIR_RESIZE * resize, stbir_input_callback * input_cb, stbir_output_callback * output_cb );   // no callbacks by default
 STBIRDEF void stbir_set_user_data( STBIR_RESIZE * resize, void * user_data );                                               // pass back STBIR_RESIZE* by default
 STBIRDEF void stbir_set_buffer_ptrs( STBIR_RESIZE * resize, const void * input_pixels, int input_stride_in_bytes, void * output_pixels, int output_stride_in_bytes );
-
-
-
 
 STBIRDEF int stbir_set_pixel_layouts( STBIR_RESIZE * resize, stbir_pixel_layout input_pixel_layout, stbir_pixel_layout output_pixel_layout );  // sets new buffer layouts
 STBIRDEF int stbir_set_edgemodes( STBIR_RESIZE * resize, stbir_edge horizontal_edge, stbir_edge vertical_edge );       // CLAMP by default
@@ -4131,35 +4041,15 @@ STBIRDEF int stbir_set_output_pixel_subrect( STBIR_RESIZE * resize, int subx, in
 
 STBIRDEF int stbir_set_non_pm_alpha_speed_over_quality( STBIR_RESIZE * resize, int non_pma_alpha_speed_over_quality );
 
-
-
 STBIRDEF int stbir_build_samplers( STBIR_RESIZE * resize );
 
 STBIRDEF void stbir_free_samplers( STBIR_RESIZE * resize );
 
-
 STBIRDEF int stbir_resize_extended( STBIR_RESIZE * resize );
-
-
-
 
 STBIRDEF int stbir_build_samplers_with_splits( STBIR_RESIZE * resize, int try_splits );
 
-
-
-
 STBIRDEF int stbir_resize_extended_split( STBIR_RESIZE * resize, int split_start, int split_count );
-
-
-
-
-
-
-
-
-
-
-
 
 #include <assert.h>
 #define STBIR_ASSERT(x) assert(x)
@@ -4168,11 +4058,7 @@ STBIRDEF int stbir_resize_extended_split( STBIR_RESIZE * resize, int split_start
 #define STBIR_MALLOC(size,user_data) ((void)(user_data), malloc(size))
 #define STBIR_FREE(ptr,user_data)    ((void)(user_data), free(ptr))
 
-
 #define stbir__inline __inline__
-
-
-
 
 #pragma STDC FP_CONTRACT OFF
 
@@ -4180,11 +4066,9 @@ STBIRDEF int stbir_resize_extended_split( STBIR_RESIZE * resize, int split_start
 
 #define STBIR__ARRAY_SIZE(a) (sizeof((a))/sizeof((a)[0]))
 
-
 #define STBIR_DEFAULT_FILTER_UPSAMPLE    STBIR_FILTER_CATMULLROM
 
 #define STBIR_DEFAULT_FILTER_DOWNSAMPLE  STBIR_FILTER_MITCHELL
-
 
 #define STBIR__HEADER_FILENAME "stb_image_resize2.h"
 
@@ -4366,7 +4250,6 @@ struct stbir__info
   size_t alloced_total;
 };
 
-
 #define stbir__max_uint8_as_float             255.0f
 #define stbir__max_uint16_as_float            65535.0f
 #define stbir__max_uint8_as_float_inverted    3.9215689e-03f     // (1.0f/255.0f)
@@ -4422,7 +4305,6 @@ typedef union
   float f;
 } stbir__FP32;
 
-
 static const stbir_uint32 fp32_to_srgb8_tab4[104] = {
   0x0073000d, 0x007a000d, 0x0080000d, 0x0087000d, 0x008d000d, 0x0094000d, 0x009a000d, 0x00a1000d,
   0x00a7001a, 0x00b4001a, 0x00c1001a, 0x00ce001a, 0x00da001a, 0x00e7001a, 0x00f4001a, 0x0101001a,
@@ -4466,20 +4348,11 @@ static stbir__inline stbir_uint8 stbir__linear_to_srgb_uchar(float in)
 
 #define STBIR_INPUT_CALLBACK_PADDING 3
 
-
-
-
-
-
-
   #define STBIR_STREAMOUT_PTR( star ) star
   #define STBIR_NO_UNROLL( ptr )
   #define STBIR_NO_UNROLL_LOOP_START
 
 #define STBIR_NO_UNROLL_LOOP_START_INF_FOR STBIR_NO_UNROLL_LOOP_START
-
-
-
 
   #define stbir__simdfX stbir__simdf
   #define stbir__simdiX stbir__simdi
@@ -4510,26 +4383,15 @@ static stbir__inline stbir_uint8 stbir__linear_to_srgb_uchar(float in)
   #define stbir__simdfX_0123to1230 stbir__simdf_0123to1230
   #define stbir__simdfX_0123to2103 stbir__simdf_0123to2103
 
-
-
   typedef union stbir__FP16
   {
     unsigned short u;
   } stbir__FP16;
 
-
-
-
-
-
-
 #define STBIR_SIMD_STREAMOUT_PTR( star ) STBIR_STREAMOUT_PTR( star )
 #define STBIR_SIMD_NO_UNROLL(ptr)
 #define STBIR_SIMD_NO_UNROLL_LOOP_START
 #define STBIR_SIMD_NO_UNROLL_LOOP_START_INF_FOR
-
-
-
 
 #define STBIR_ONLY_PROFILE_GET_SPLIT_INFO
 #define STBIR_ONLY_PROFILE_SET_SPLIT_INFO
@@ -4547,14 +4409,12 @@ static stbir__inline stbir_uint8 stbir__linear_to_srgb_uchar(float in)
 #define STBIR_PROFILE_BUILD_FIRST_START( wh )
 #define STBIR_PROFILE_BUILD_CLEAR( info )
 
-
 #include <math.h>
 #define STBIR_CEILF(x) ceilf(x)
 #define STBIR_FLOORF(x) floorf(x)
 
 #include <string.h>
 #define STBIR_MEMCPY( dest, src, len ) memcpy( dest, src, len )
-
 
 static void stbir_overlapping_memcpy( void * dest, void const * src, size_t bytes )
 {
@@ -4585,7 +4445,6 @@ static void stbir_overlapping_memcpy( void * dest, void const * src, size_t byte
     sd += 4;
   } while ( sd < s_end );
 }
-
 
 static float stbir__filter_trapezoid(float x, float scale, void * user_data)
 {
@@ -4926,8 +4785,6 @@ static void stbir__get_extents( stbir__sampler * samp, stbir__extents * scanline
 
   STBIR_ASSERT( scanline_extents->conservative.n0 <= min_n );
   STBIR_ASSERT( scanline_extents->conservative.n1 >= max_n );
-
-
 
   if ( ( left_margin ) && ( min_left != 0x7fffffff ) )
   {
@@ -5679,8 +5536,6 @@ static void stbir__calculate_filters( stbir__sampler * samp, stbir__sampler * ot
   }
 }
 
-
-
 #define stbir__coder_min_num 1
 #define STB_IMAGE_RESIZE_DO_CODERS
 #include STBIR__HEADER_FILENAME
@@ -5741,14 +5596,11 @@ static void stbir__calculate_filters( stbir__sampler * samp, stbir__sampler * ot
 #define STB_IMAGE_RESIZE_DO_CODERS
 #include STBIR__HEADER_FILENAME
 
-
 static void stbir__fancy_alpha_weight_4ch( float * out_buffer, int width_times_channels )
 {
   float STBIR_STREAMOUT_PTR(*) out = out_buffer;
   float const * end_decode = out_buffer + ( width_times_channels / 4 ) * 7;  // decode buffer aligned to end of out_buffer
   float STBIR_STREAMOUT_PTR(*) decode = (float*)end_decode - width_times_channels;
-
-
 
   while( decode < end_decode )
   {
@@ -5772,8 +5624,6 @@ static void stbir__fancy_alpha_weight_2ch( float * out_buffer, int width_times_c
   float const * end_decode = out_buffer + ( width_times_channels / 2 ) * 3;
   float STBIR_STREAMOUT_PTR(*) decode = (float*)end_decode - width_times_channels;
 
-
-
   STBIR_SIMD_NO_UNROLL_LOOP_START
   while( decode < end_decode )
   {
@@ -5792,7 +5642,6 @@ static void stbir__fancy_alpha_unweight_4ch( float * encode_buffer, int width_ti
   float STBIR_SIMD_STREAMOUT_PTR(*) encode = encode_buffer;
   float STBIR_SIMD_STREAMOUT_PTR(*) input = encode_buffer;
   float const * end_output = encode_buffer + width_times_channels;
-
 
   STBIR_SIMD_NO_UNROLL_LOOP_START
   do {
@@ -5840,7 +5689,6 @@ static void stbir__simple_alpha_weight_4ch( float * decode_buffer, int width_tim
   float STBIR_STREAMOUT_PTR(*) decode = decode_buffer;
   float const * end_decode = decode_buffer + width_times_channels;
 
-
   while( decode < end_decode )
   {
     float alpha = decode[3];
@@ -5856,7 +5704,6 @@ static void stbir__simple_alpha_weight_2ch( float * decode_buffer, int width_tim
 {
   float STBIR_STREAMOUT_PTR(*) decode = decode_buffer;
   float const * end_decode = decode_buffer + width_times_channels;
-
 
   STBIR_SIMD_NO_UNROLL_LOOP_START
   while( decode < end_decode )
@@ -5901,7 +5748,6 @@ static void stbir__simple_alpha_unweight_2ch( float * encode_buffer, int width_t
   } while ( encode < end_output );
 }
 
-
 static void stbir__simple_flip_3ch( float * decode_buffer, int width_times_channels )
 {
   float STBIR_STREAMOUT_PTR(*) decode = decode_buffer;
@@ -5930,8 +5776,6 @@ static void stbir__simple_flip_3ch( float * decode_buffer, int width_times_chann
     decode += 3;
   }
 }
-
-
 
 static void stbir__decode_scanline(stbir__info const * stbir_info, int n, float * output_buffer STBIR_ONLY_PROFILE_GET_SPLIT_INFO )
 {
@@ -6012,9 +5856,6 @@ static void stbir__decode_scanline(stbir__info const * stbir_info, int n, float 
   last_decoded[1] = 0.0f;
 }
 
-
-
-
 #define stbir__1_coeff_only()  \
     float tot;                 \
     tot = decode[0]*hc[0];
@@ -6067,13 +5908,9 @@ static void stbir__decode_scanline(stbir__info const * stbir_info, int n, float 
     ++horizontal_contributors;                    \
     output += 1;
 
-
 #define STBIR__horizontal_channels 1
 #define STB_IMAGE_RESIZE_DO_HORIZONTALS
 #include STBIR__HEADER_FILENAME
-
-
-
 
 #define stbir__1_coeff_only()  \
     float tota,totb,c;         \
@@ -6169,13 +6006,9 @@ static void stbir__decode_scanline(stbir__info const * stbir_info, int n, float 
     ++horizontal_contributors;                    \
     output += 2;
 
-
 #define STBIR__horizontal_channels 2
 #define STB_IMAGE_RESIZE_DO_HORIZONTALS
 #include STBIR__HEADER_FILENAME
-
-
-
 
 #define stbir__1_coeff_only()  \
     float tot0, tot1, tot2, c; \
@@ -6293,12 +6126,9 @@ static void stbir__decode_scanline(stbir__info const * stbir_info, int n, float 
     ++horizontal_contributors;                    \
     output += 3;
 
-
 #define STBIR__horizontal_channels 3
 #define STB_IMAGE_RESIZE_DO_HORIZONTALS
 #include STBIR__HEADER_FILENAME
-
-
 
 #define stbir__1_coeff_only()         \
     float p0,p1,p2,p3,c;              \
@@ -6446,14 +6276,9 @@ static void stbir__decode_scanline(stbir__info const * stbir_info, int n, float 
     ++horizontal_contributors;                    \
     output += 4;
 
-
 #define STBIR__horizontal_channels 4
 #define STB_IMAGE_RESIZE_DO_HORIZONTALS
 #include STBIR__HEADER_FILENAME
-
-
-
-
 
 #define stbir__1_coeff_only()        \
     float tot0, tot1, tot2, tot3, tot4, tot5, tot6, c; \
@@ -6664,12 +6489,9 @@ static void stbir__decode_scanline(stbir__info const * stbir_info, int n, float 
     ++horizontal_contributors;                    \
     output += 7;
 
-
 #define STBIR__horizontal_channels 7
 #define STB_IMAGE_RESIZE_DO_HORIZONTALS
 #include STBIR__HEADER_FILENAME
-
-
 
 #define STBIR__vertical_channels 1
 #define STB_IMAGE_RESIZE_DO_VERTICALS
@@ -6767,7 +6589,6 @@ static STBIR_VERTICAL_SCATTERFUNC * stbir__vertical_scatter_blends[ 8 ] =
   stbir__vertical_scatter_with_1_coeffs_cont,stbir__vertical_scatter_with_2_coeffs_cont,stbir__vertical_scatter_with_3_coeffs_cont,stbir__vertical_scatter_with_4_coeffs_cont,stbir__vertical_scatter_with_5_coeffs_cont,stbir__vertical_scatter_with_6_coeffs_cont,stbir__vertical_scatter_with_7_coeffs_cont,stbir__vertical_scatter_with_8_coeffs_cont
 };
 
-
 static void stbir__encode_scanline( stbir__info const * stbir_info, void *output_buffer_data, float * encode_buffer, int row  STBIR_ONLY_PROFILE_GET_SPLIT_INFO )
 {
   int num_pixels = stbir_info->horizontal.scale_info.output_sub_size;
@@ -6794,7 +6615,6 @@ static void stbir__encode_scanline( stbir__info const * stbir_info, void *output
   if ( stbir_info->out_pixels_cb )
     stbir_info->out_pixels_cb( output_buffer, num_pixels, row, stbir_info->user_data );
 }
-
 
 static float* stbir__get_ring_buffer_entry(stbir__info const * stbir_info, stbir__per_split_info const * split_info, int index )
 {
@@ -7080,7 +6900,6 @@ static void stbir__vertical_scatter_loop( stbir__info const * stbir_info, stbir_
       if ( !stbir_info->vertical_first )
         stbir__resample_horizontal_gather( stbir_info, split_info->vertical_buffer, split_info->decode_buffer  STBIR_ONLY_PROFILE_SET_SPLIT_INFO );
 
-
       if ( ( ( split_info->ring_buffer_last_scanline - split_info->ring_buffer_first_scanline + 1 ) == stbir_info->ring_buffer_num_entries ) &&
            ( out_last_scanline > split_info->ring_buffer_last_scanline ) )
         handle_scanline_for_scatter( stbir_info, split_info );
@@ -7102,7 +6921,6 @@ static void stbir__vertical_scatter_loop( stbir__info const * stbir_info, stbir_
     if ( split_info[y].end_input_y > last_input_y )
       split_info[y].end_input_y = last_input_y;
 }
-
 
 static stbir__kernel_callback * stbir__builtin_kernels[] =   { 0, stbir__filter_trapezoid,  stbir__filter_triangle, stbir__filter_cubic, stbir__filter_catmullrom, stbir__filter_mitchell, stbir__filter_point };
 static stbir__support_callback * stbir__builtin_supports[] = { 0, stbir__support_trapezoid, stbir__support_one,     stbir__support_two,  stbir__support_two,       stbir__support_two,     stbir__support_zeropoint5 };
@@ -7377,7 +7195,6 @@ typedef struct STBIR__V_FIRST_INFO
 
 #define STBIR__V_FIRST_INFO_POINTER 0
 
-
 static int stbir__should_do_vertical_first( float weights_table[STBIR_RESIZE_CLASSIFICATIONS][4], int horizontal_filter_pixel_width, float horizontal_scale, int horizontal_output_size, int vertical_filter_pixel_width, float vertical_scale, int vertical_output_size, int is_gather, STBIR__V_FIRST_INFO * info )
 {
   double v_cost, h_cost;
@@ -7482,7 +7299,6 @@ static stbir__info * stbir__alloc_internal_mem_and_build_samplers( stbir__sample
 
   decode_buffer_size = ( conservative->n1 - conservative->n0 + 1 ) * effective_channels * sizeof(float) + sizeof(float)*STBIR_INPUT_CALLBACK_PADDING; // extra floats for input callback stagger
 
-
   ring_buffer_length_bytes = (size_t)horizontal->scale_info.output_sub_size * (size_t)effective_channels * sizeof(float) + sizeof(float)*STBIR_INPUT_CALLBACK_PADDING; // extra floats for padding
 
   if ( vertical_first )
@@ -7582,7 +7398,6 @@ static stbir__info * stbir__alloc_internal_mem_and_build_samplers( stbir__sample
       size_t both;
       size_t temp_mem_amt;
 
-
       both = (size_t)vertical->gather_prescatter_contributors_size + (size_t)vertical->gather_prescatter_coefficients_size;
 
       temp_mem_amt = (size_t)( decode_buffer_size + ring_buffer_size + vertical_buffer_size ) * (size_t)splits;
@@ -7670,7 +7485,6 @@ static stbir__info * stbir__alloc_internal_mem_and_build_samplers( stbir__sample
       STBIR_ASSERT( info->ring_buffer_num_entries <= info->alloc_ring_buffer_num_entries );
     }
     #undef STBIR__NEXT_PTR
-
 
     if ( info == 0 )
     {
@@ -7973,7 +7787,6 @@ static int stbir__calculate_region_transform( stbir__scale_info * scale_info, in
   return 1;
 }
 
-
 static void stbir__init_and_set_layout( STBIR_RESIZE * resize, stbir_pixel_layout pixel_layout, stbir_datatype data_type )
 {
   resize->input_cb = 0;
@@ -8051,7 +7864,6 @@ STBIRDEF void stbir_set_buffer_ptrs( STBIR_RESIZE * resize, const void * input_p
     stbir__update_info_from_resize( resize->samplers, resize );
 }
 
-
 STBIRDEF int stbir_set_edgemodes( STBIR_RESIZE * resize, stbir_edge horizontal_edge, stbir_edge vertical_edge )       // CLAMP by default
 {
   resize->horizontal_edge = horizontal_edge;
@@ -8083,7 +7895,6 @@ STBIRDEF int stbir_set_pixel_layouts( STBIR_RESIZE * resize, stbir_pixel_layout 
   resize->needs_rebuild = 1;
   return 1;
 }
-
 
 STBIRDEF int stbir_set_non_pm_alpha_speed_over_quality( STBIR_RESIZE * resize, int non_pma_alpha_speed_over_quality )   // sets alpha speed
 {
@@ -8330,7 +8141,6 @@ static int stbir__check_output_stuff( void ** ret_ptr, int * ret_pitch, void * o
   return 1;
 }
 
-
 STBIRDEF unsigned char * stbir_resize_uint8_linear( const unsigned char *input_pixels , int input_w , int input_h, int input_stride_in_bytes,
                                                           unsigned char *output_pixels, int output_w, int output_h, int output_stride_in_bytes,
                                                           stbir_pixel_layout pixel_layout )
@@ -8383,7 +8193,6 @@ STBIRDEF unsigned char * stbir_resize_uint8_srgb( const unsigned char *input_pix
   return (optr) ? optr : output_pixels;
 }
 
-
 STBIRDEF float * stbir_resize_float_linear( const float *input_pixels , int input_w , int input_h, int input_stride_in_bytes,
                                                   float *output_pixels, int output_w, int output_h, int output_stride_in_bytes,
                                                   stbir_pixel_layout pixel_layout )
@@ -8409,7 +8218,6 @@ STBIRDEF float * stbir_resize_float_linear( const float *input_pixels , int inpu
 
   return (optr) ? optr : output_pixels;
 }
-
 
 STBIRDEF void * stbir_resize( const void *input_pixels , int input_w , int input_h, int input_stride_in_bytes,
                                     void *output_pixels, int output_w, int output_h, int output_stride_in_bytes,
@@ -8443,7 +8251,6 @@ STBIRDEF void * stbir_resize( const void *input_pixels , int input_w , int input
   return (optr) ? optr : output_pixels;
 }
 
-
 #undef STBIR_BGR
 #undef STBIR_1CHANNEL
 #undef STBIR_2CHANNEL
@@ -8461,8 +8268,6 @@ STBIRDEF void * stbir_resize( const void *input_pixels , int input_w , int input
 #undef STBIR_ABGR_PM
 #undef STBIR_RA_PM
 #undef STBIR_AR_PM
-
-
 
 /*
 MIT License
