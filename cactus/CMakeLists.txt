@@ -29,6 +29,7 @@ set(HEADER_FILES
     kernel/kernel.h
     kernel/kernel_utils.h
     ffi/cactus_ffi.h
+    ffi/ffi_utils.h
     models/model.h
 )
 

@@ -59,7 +59,6 @@ struct Metrics {
     }
 };
 
-// Base test runner
 template<typename TestFunc>
 bool run_test(const char* title, const char* messages, TestFunc test_logic,
               const char* tools = nullptr, int stop_at = -1) {
@@ -97,7 +96,6 @@ bool run_test(const char* title, const char* messages, TestFunc test_logic,
     return success;
 }
 
-// Helper to escape strings for JSON
 std::string escape_json(const std::string& s) {
     std::ostringstream o;
     for (auto c : s) {
@@ -124,7 +122,7 @@ bool test_streaming() {
     }
 
     const char* messages1 = R"([
-        {"role": "system", "content": "/no_think You are a helpful assistant. Be concise."},
+        {"role": "system", "content": "You are a helpful assistant. Be concise."},
         {"role": "user", "content": "My name is Henry Ndubuaku, how are you?"}
     ])";
 
@@ -159,7 +157,7 @@ bool test_streaming() {
     }
 
     std::string messages2_str = R"([
-        {"role": "system", "content": "/no_think You are a helpful assistant. Be concise."},
+        {"role": "system", "content": "You are a helpful assistant. Be concise."},
         {"role": "user", "content": "My name is Henry Ndubuaku, how are you?"},
         {"role": "assistant", "content": ")" + escape_json(assistant_response) + R"("},
         {"role": "user", "content": "What is my name?"}
