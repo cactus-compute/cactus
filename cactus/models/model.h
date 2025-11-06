@@ -69,6 +69,7 @@ protected:
 
     size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
     void load_weights_to_graph(CactusGraph* gb) override;
+    void post_init() override;
 
 private:
     struct WeightNodeIDs {

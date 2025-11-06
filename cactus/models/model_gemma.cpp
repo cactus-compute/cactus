@@ -13,6 +13,10 @@ GemmaModel::GemmaModel(const Config& config) : Model(config) {
     weight_nodes_.layers.resize(config.num_layers);
 }
 
+void GemmaModel::post_init() {
+    kv_cache_.set_window_size(0, 0); 
+}
+
 void GemmaModel::load_weights_to_graph(CactusGraph* gb) {
     embedding_node_id_ = gb->mmap_embeddings(embedding_file_path_);
     weight_nodes_.output_norm_weight = gb->mmap_weights(model_folder_path_ + "/output_norm.weights");
