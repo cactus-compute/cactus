@@ -24,6 +24,7 @@ set(HEADER_FILES
     ${SOURCE_DIR}/kernel/kernel.h
     ${SOURCE_DIR}/kernel/kernel_utils.h
     ${SOURCE_DIR}/ffi/cactus_ffi.h
+    ${SOURCE_DIR}/ffi/ffi_utils.h
     ${SOURCE_DIR}/models/model.h
 )
 

@@ -420,15 +420,52 @@ std::vector<uint32_t> SPTokenizer::encode(const std::string& text) const {
 
 std::string SPTokenizer::decode(const std::vector<uint32_t>& tokens) const {
     std::string result;
-    
-    for (uint32_t token_id : tokens) {
+
+    if (tokens.size() == 1) {
+        uint32_t token_id = tokens[0];
         if (token_id < id_to_token_.size()) {
-            result += id_to_token_[token_id];
+            std::string token = id_to_token_[token_id];
+
+            size_t pos = 0;
+            while (pos < token.length()) {
+                if (pos + 2 < token.length() &&
+                    static_cast<unsigned char>(token[pos]) == 0xE2 &&
+                    static_cast<unsigned char>(token[pos+1]) == 0x96 &&
+                    static_cast<unsigned char>(token[pos+2]) == 0x81) {
+                    result += ' ';
+                    pos += 3;
+                } else {
+                    result += token[pos];
+                    pos++;
+                }
+            }
+        }
+        return result;
+    }
+
+    for (size_t i = 0; i < tokens.size(); i++) {
+        uint32_t token_id = tokens[i];
+        if (token_id < id_to_token_.size()) {
+            std::string token = id_to_token_[token_id];
+
+            size_t pos = 0;
+            while (pos < token.length()) {
+                if (pos + 2 < token.length() &&
+                    static_cast<unsigned char>(token[pos]) == 0xE2 &&
+                    static_cast<unsigned char>(token[pos+1]) == 0x96 &&
+                    static_cast<unsigned char>(token[pos+2]) == 0x81) {
+                    if (!result.empty()) {
+                        result += ' ';
+                    }
+                    pos += 3;
+                } else {
+                    result += token[pos];
+                    pos++;
+                }
+            }
         }
     }
-    
-    result = postprocess_text(result);
-    
+
     return result;
 }
 

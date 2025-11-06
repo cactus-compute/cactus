@@ -88,13 +88,20 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
                                const std::vector<size_t>& v_nodes, size_t seq_len,
                                size_t layers, size_t kv_heads, size_t dim) {
     size_t old_seq_len = current_seq_len;
-    size_t new_seq_len = old_seq_len + seq_len;
+    size_t new_total_len = old_seq_len + seq_len;
     size_t elements_per_token = kv_heads * dim;
     size_t bytes_per_token = elements_per_token * element_size;
 
-
     total_seq_len += seq_len;
-    current_seq_len = new_seq_len;
+
+    size_t effective_seq_len;
+    bool use_sliding_window = (window_size > 0 && new_total_len > window_size);
+
+    if (use_sliding_window) {
+        effective_seq_len = window_size;
+    } else {
+        effective_seq_len = new_total_len;
+    }
 
     for (size_t layer_idx = 0; layer_idx < layers; layer_idx++) {
         auto& cache = layer_caches[layer_idx];
@@ -106,20 +113,86 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
             const auto& k_buffer = gb->get_output_buffer(k_nodes[layer_idx]);
             const auto& v_buffer = gb->get_output_buffer(v_nodes[layer_idx]);
 
-            size_t expected_elements = new_seq_len * elements_per_token;
+            size_t expected_elements = new_total_len * elements_per_token;
 
             if (k_buffer.total_size == expected_elements && v_buffer.total_size == expected_elements) {
-                size_t total_bytes = new_seq_len * bytes_per_token;
 
-                cache.keys.resize(total_bytes);
-                cache.values.resize(total_bytes);
+                if (!use_sliding_window) {
+                    size_t total_bytes = new_total_len * bytes_per_token;
+                    cache.keys.resize(total_bytes);
+                    cache.values.resize(total_bytes);
+                    std::memcpy(cache.keys.data(), k_output, total_bytes);
+                    std::memcpy(cache.values.data(), v_output, total_bytes);
+                } else {
+                    size_t cache_bytes = window_size * bytes_per_token;
 
-                std::memcpy(cache.keys.data(), k_output, total_bytes);
-                std::memcpy(cache.values.data(), v_output, total_bytes);
+                    if (cache.keys.size() != cache_bytes) {
+                        cache.keys.resize(cache_bytes);
+                        cache.values.resize(cache_bytes);
+                    }
+
+                    size_t sink_bytes = sink_size * bytes_per_token;
+                    size_t remaining_window = window_size - sink_size;
+                    size_t skip_tokens = new_total_len - window_size;
+
+                    std::memcpy(cache.keys.data(), k_output, sink_bytes);
+                    std::memcpy(cache.values.data(), v_output, sink_bytes);
+
+                    const uint8_t* k_src = static_cast<const uint8_t*>(k_output) +
+                                          (sink_size + skip_tokens) * bytes_per_token;
+                    const uint8_t* v_src = static_cast<const uint8_t*>(v_output) +
+                                          (sink_size + skip_tokens) * bytes_per_token;
+                    size_t recent_bytes = remaining_window * bytes_per_token;
+
+                    std::memcpy(cache.keys.data() + sink_bytes, k_src, recent_bytes);
+                    std::memcpy(cache.values.data() + sink_bytes, v_src, recent_bytes);
+                }
+            } else if (seq_len * elements_per_token == k_buffer.total_size &&
+                      seq_len * elements_per_token == v_buffer.total_size) {
+
+                if (!use_sliding_window) {
+                    size_t old_bytes = old_seq_len * bytes_per_token;
+                    size_t new_bytes = seq_len * bytes_per_token;
+                    size_t total_bytes = old_bytes + new_bytes;
+
+                    cache.keys.resize(total_bytes);
+                    cache.values.resize(total_bytes);
+
+                    std::memcpy(cache.keys.data() + old_bytes, k_output, new_bytes);
+                    std::memcpy(cache.values.data() + old_bytes, v_output, new_bytes);
+                } else {
+                    size_t cache_bytes = window_size * bytes_per_token;
+
+                    if (cache.keys.size() != cache_bytes) {
+                        cache.keys.resize(cache_bytes);
+                        cache.values.resize(cache_bytes);
+                    }
+
+                    size_t sink_bytes = sink_size * bytes_per_token;
+                    size_t tokens_to_shift = window_size - sink_size - seq_len;
+
+                    if (tokens_to_shift > 0 && old_seq_len > sink_size) {
+                        size_t shift_src = old_seq_len - tokens_to_shift;
+                        if (shift_src > sink_size) {
+                            std::memmove(cache.keys.data() + sink_bytes,
+                                       cache.keys.data() + shift_src * bytes_per_token,
+                                       tokens_to_shift * bytes_per_token);
+                            std::memmove(cache.values.data() + sink_bytes,
+                                       cache.values.data() + shift_src * bytes_per_token,
+                                       tokens_to_shift * bytes_per_token);
+                        }
+                    }
+
+                    size_t append_offset = (window_size - seq_len) * bytes_per_token;
+                    size_t new_bytes = seq_len * bytes_per_token;
+                    std::memcpy(cache.keys.data() + append_offset, k_output, new_bytes);
+                    std::memcpy(cache.values.data() + append_offset, v_output, new_bytes);
+                }
             }
         }
     }
 
+    current_seq_len = effective_seq_len;
 }
 
 void ConvCache::init(size_t layers, size_t hidden_dim, size_t window_len, Precision model_precision) {

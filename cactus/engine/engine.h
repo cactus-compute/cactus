@@ -247,7 +247,7 @@ private:
 };
 
 struct KVCache {
-    static constexpr size_t DEFAULT_WINDOW_SIZE = 1024;
+    static constexpr size_t DEFAULT_WINDOW_SIZE = 512;
     static constexpr size_t DEFAULT_SINK_SIZE = 4;
 
     struct LayerCache {
