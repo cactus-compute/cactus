@@ -11,18 +11,16 @@
 #include <iostream>
 #include <atomic>
 #include <cstring>
+#include <algorithm>
 
 using namespace cactus::engine;
 
-
-struct CactusModel {
+struct CactusModelHandle {
     std::unique_ptr<Model> model;
-    std::string model_path;
-    std::unordered_map<std::string, std::vector<uint32_t>> stop_sequence_cache;
-    
     std::atomic<bool> should_stop;
-    
-    CactusModel() : should_stop(false) {}
+    std::vector<uint32_t> processed_tokens; 
+
+    CactusModelHandle() : should_stop(false) {}
 };
 
 static std::vector<ChatMessage> parse_messages_json(const std::string& json) {
@@ -195,14 +193,7 @@ static bool matches_stop_sequence(const std::vector<uint32_t>& generated_tokens,
         if (stop_seq.empty()) continue;
 
         if (generated_tokens.size() >= stop_seq.size()) {
-            bool matches = true;
-            for (size_t i = 0; i < stop_seq.size(); i++) {
-                if (generated_tokens[generated_tokens.size() - stop_seq.size() + i] != stop_seq[i]) {
-                    matches = false;
-                    break;
-                }
-            }
-            if (matches) {
+            if (std::equal(stop_seq.rbegin(), stop_seq.rend(), generated_tokens.rbegin())) {
                 return true;
             }
         }
@@ -220,32 +211,22 @@ const char* cactus_get_last_error() {
 
 cactus_model_t cactus_init(const char* model_path, size_t context_size) {
     try {
-        auto* wrapper = new CactusModel();
-        wrapper->model = create_model(model_path);
-        wrapper->model_path = model_path;
+        auto* handle = new CactusModelHandle();
+        handle->model = create_model(model_path);
 
-        if (!wrapper->model) {
+        if (!handle->model) {
             last_error_message = "Failed to create model from: " + std::string(model_path);
-            delete wrapper;
+            delete handle;
             return nullptr;
         }
 
-        if (!wrapper->model->init(model_path, context_size)) {
+        if (!handle->model->init(model_path, context_size)) {
             last_error_message = "Failed to initialize model from: " + std::string(model_path);
-            delete wrapper;
+            delete handle;
             return nullptr;
         }
         
-        auto* tokenizer = wrapper->model->get_tokenizer();
-        std::vector<std::string> common_stops = {
-            "\n\n", "###", "Human:", "Assistant:", "<|end|>", "<|endoftext|>", 
-            "\n---", "User:", "AI:", "</s>", "<s>", "\n\nHuman:", "\n\nAssistant:"
-        };
-        for (const auto& stop_seq : common_stops) {
-            wrapper->stop_sequence_cache[stop_seq] = tokenizer->encode(stop_seq);
-        }
-        
-        return wrapper;
+        return handle;
     } catch (const std::exception& e) {
         last_error_message = std::string(e.what());
         return nullptr;
@@ -291,12 +272,9 @@ int cactus_complete(
     try {
         auto start_time = std::chrono::high_resolution_clock::now();
         
-        auto* wrapper = static_cast<CactusModel*>(model);
-        auto* tokenizer = wrapper->model->get_tokenizer();
-        wrapper->should_stop = false;
-        
-        wrapper->model->reset_cache();
-        
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        auto* tokenizer = handle->model->get_tokenizer();
+        handle->should_stop = false;
         
         auto messages = parse_messages_json(messages_json);
         if (messages.empty()) {
@@ -311,12 +289,10 @@ int cactus_complete(
         parse_options_json(options_json ? options_json : "", 
                           temperature, top_p, top_k, max_tokens, stop_sequences);
         
-        
         std::vector<ToolFunction> tools;
         if (tools_json && strlen(tools_json) > 0) {
             tools = parse_tools_json(tools_json);
         }
-        
         
         std::string full_prompt;
         if (!tools.empty()) {
@@ -346,87 +322,88 @@ int cactus_complete(
             return -1;
         }
 
-        std::vector<uint32_t> tokens_to_process = tokenizer->encode(full_prompt);
+        std::vector<uint32_t> current_prompt_tokens = tokenizer->encode(full_prompt);
+        
+        std::vector<uint32_t> tokens_to_process;
+        bool is_prefix = (current_prompt_tokens.size() >= handle->processed_tokens.size()) &&
+                         std::equal(handle->processed_tokens.begin(), handle->processed_tokens.end(), current_prompt_tokens.begin());
+
+        if (handle->processed_tokens.empty() || !is_prefix) {
+            handle->model->reset_cache();
+            tokens_to_process = current_prompt_tokens;
+        } else {
+            tokens_to_process.assign(current_prompt_tokens.begin() + handle->processed_tokens.size(), current_prompt_tokens.end());
+        }
+        
         size_t prompt_tokens = tokens_to_process.size();
 
         std::vector<std::vector<uint32_t>> stop_token_sequences;
-        uint32_t eos_token = tokenizer->get_eos_token();
-        stop_token_sequences.push_back({eos_token});
-
+        stop_token_sequences.push_back({tokenizer->get_eos_token()});
         for (const auto& stop_seq : stop_sequences) {
-            auto cache_it = wrapper->stop_sequence_cache.find(stop_seq);
-            if (cache_it != wrapper->stop_sequence_cache.end()) {
-                stop_token_sequences.push_back(cache_it->second);
-            } else {
-                auto tokens = tokenizer->encode(stop_seq);
-                wrapper->stop_sequence_cache[stop_seq] = tokens;
-                stop_token_sequences.push_back(tokens);
-            }
+            stop_token_sequences.push_back(tokenizer->encode(stop_seq));
         }
 
         std::vector<uint32_t> generated_tokens;
         double time_to_first_token = 0.0;
-        std::string decoded_so_far;  
-
+        std::string decoded_so_far;
 
         uint32_t next_token;
         if (tokens_to_process.empty()) {
-            next_token = wrapper->model->generate({}, temperature, top_p, top_k);
+            if (handle->processed_tokens.empty()) {
+                 std::string error_json = "{\"success\":false,\"error\":\"Cannot generate from empty prompt\"}";
+                 std::strcpy(response_buffer, error_json.c_str());
+                 return -1;
+            }
+            std::vector<uint32_t> last_token_vec = { handle->processed_tokens.back() };
+            next_token = handle->model->generate(last_token_vec, temperature, top_p, top_k);
         } else {
-            next_token = wrapper->model->generate(tokens_to_process, temperature, top_p, top_k);
+            next_token = handle->model->generate(tokens_to_process, temperature, top_p, top_k);
         }
+        
+        handle->processed_tokens = current_prompt_tokens;
 
         auto token_end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(token_end - start_time);
-        time_to_first_token = duration.count() / 1000.0;
+        time_to_first_token = std::chrono::duration_cast<std::chrono::microseconds>(token_end - start_time).count() / 1000.0;
 
         generated_tokens.push_back(next_token);
+        handle->processed_tokens.push_back(next_token);
 
-         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
+        if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
             if (callback) {
-                std::string full_decoded = tokenizer->decode(generated_tokens);
-                std::string new_text = full_decoded.substr(decoded_so_far.length());
-                decoded_so_far = full_decoded;
+                std::string new_text = tokenizer->decode({next_token});
+                decoded_so_far += new_text;
                 callback(new_text.c_str(), next_token, user_data);
             }
 
             for (size_t i = 1; i < max_tokens; i++) {
-                if (wrapper->should_stop) {
-                    break;
-                }
+                if (handle->should_stop) break;
 
-                std::vector<uint32_t> single_token = {next_token};
-                next_token = wrapper->model->generate(single_token, temperature, top_p, top_k);
-
+                next_token = handle->model->generate({next_token}, temperature, top_p, top_k);
                 generated_tokens.push_back(next_token);
+                handle->processed_tokens.push_back(next_token);
 
-                if (matches_stop_sequence(generated_tokens, stop_token_sequences)) {
-                    break;
-                }
+                if (matches_stop_sequence(generated_tokens, stop_token_sequences)) break;
 
                 if (callback) {
-                    std::string full_decoded = tokenizer->decode(generated_tokens);
-                    std::string new_text = full_decoded.substr(decoded_so_far.length());
-                    decoded_so_far = full_decoded;
+                    std::string new_text = tokenizer->decode({next_token});
+                    decoded_so_far += new_text;
                     callback(new_text.c_str(), next_token, user_data);
                 }
             }
         }
         
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto total_duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-        double total_time_ms = total_duration.count() / 1000.0;
+        double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
         
         size_t completion_tokens = generated_tokens.size();
         double decode_time_ms = total_time_ms - time_to_first_token;
-        double tokens_per_second = completion_tokens > 1 ? 
-            ((completion_tokens - 1) * 1000.0) / decode_time_ms : 0.0;
+        double tokens_per_second = completion_tokens > 1 ? ((completion_tokens - 1) * 1000.0) / decode_time_ms : 0.0;
         
         std::string response_text = tokenizer->decode(generated_tokens);
 
-    std::string regular_response = response_text;
-    std::vector<std::string> function_calls;
-    function_calls.reserve(4); 
+        std::string regular_response = response_text;
+        std::vector<std::string> function_calls;
+        function_calls.reserve(4); 
 
     const char* FUNCTION_CALL_MARKER = "\"function_call\"";
     const size_t MARKER_LEN = 15;
@@ -653,21 +630,22 @@ int cactus_complete(
 
 void cactus_destroy(cactus_model_t model) {
     if (model) {
-        delete static_cast<CactusModel*>(model);
+        delete static_cast<CactusModelHandle*>(model);
     }
 }
 
 void cactus_reset(cactus_model_t model) {
     if (!model) return;
     
-    auto* wrapper = static_cast<CactusModel*>(model);
-    wrapper->model->reset_cache();
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    handle->model->reset_cache();
+    handle->processed_tokens.clear();
 }
 
 void cactus_stop(cactus_model_t model) {
     if (!model) return;
-    auto* wrapper = static_cast<CactusModel*>(model);
-    wrapper->should_stop = true;
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    handle->should_stop = true;
 }
 
 int cactus_embed(
@@ -677,32 +655,20 @@ int cactus_embed(
     size_t buffer_size,
     size_t* embedding_dim
 ) {
-    if (!model) {
-        return -1;
-    }
-    
-    if (!text || !embeddings_buffer || buffer_size == 0) {
-        return -1;
-    }
+    if (!model) return -1;
+    if (!text || !embeddings_buffer || buffer_size == 0) return -1;
     
     try {
-        auto* wrapper = static_cast<CactusModel*>(model);
-        auto* tokenizer = wrapper->model->get_tokenizer();
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        auto* tokenizer = handle->model->get_tokenizer();
         
         std::vector<uint32_t> tokens = tokenizer->encode(text);
+        if (tokens.empty()) return -1;
         
-        if (tokens.empty()) {
-            return -1;
-        }
-        
-        std::vector<float> embeddings = wrapper->model->get_embeddings(tokens, true);
-        
-        if (embeddings.size() * sizeof(float) > buffer_size) {
-            return -2; 
-        }
+        std::vector<float> embeddings = handle->model->get_embeddings(tokens, true);
+        if (embeddings.size() * sizeof(float) > buffer_size) return -2; 
         
         std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
-        
         if (embedding_dim) {
             *embedding_dim = embeddings.size();
         }

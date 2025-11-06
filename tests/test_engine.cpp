@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <cmath>
 #include <vector>
+#include <sstream>
 
 const char* g_model_path = "../../weights/lfm2-350m";
 const char* g_options = R"({"max_tokens": 256, "stop_sequences": ["<|im_end|>", "<end_of_turn>"]})";
@@ -96,18 +97,96 @@ bool run_test(const char* title, const char* messages, TestFunc test_logic,
     return success;
 }
 
+// Helper to escape strings for JSON
+std::string escape_json(const std::string& s) {
+    std::ostringstream o;
+    for (auto c : s) {
+        switch (c) {
+            case '"':  o << "\\\""; break;
+            case '\\': o << "\\\\"; break;
+            case '\n': o << "\\n";  break;
+            case '\r': o << "\\r";  break;
+            default:   o << c;      break;
+        }
+    }
+    return o.str();
+}
+
 bool test_streaming() {
-    const char* messages = R"([
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║" << std::setw(42) << std::left << "      STREAMING & FOLLOW-UP TEST" << "║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    cactus_model_t model = cactus_init(g_model_path, 2048);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize model\n";
+        return false;
+    }
+
+    const char* messages1 = R"([
         {"role": "system", "content": "/no_think You are a helpful assistant. Be concise."},
-        {"role": "user", "content": "What is your name?"}
+        {"role": "user", "content": "My name is Henry Ndubuaku, how are you?"}
     ])";
 
-    return run_test("STREAMING TEST", messages,
-        [](int result, const StreamingData& data, const std::string&, const Metrics& m) {
-            std::cout << "├─ Total tokens: " << data.token_count << std::endl;
-            m.print();
-            return result > 0 && data.token_count > 0;
-        });
+    StreamingData data1;
+    data1.model = model;
+    char response1[4096];
+    
+    std::cout << "\n[Turn 1]\n";
+    std::cout << "User: My name is Henry Ndubuaku, how are you?\n";
+    std::cout << "Assistant: ";
+
+    int result1 = cactus_complete(model, messages1, response1, sizeof(response1),
+                                 g_options, nullptr, stream_callback, &data1);
+
+    std::cout << "\n\n[Results - Turn 1]\n";
+    Metrics metrics1;
+    metrics1.parse(response1);
+    std::cout << "├─ Total tokens: " << data1.token_count << std::endl;
+    metrics1.print();
+
+    bool success1 = result1 > 0 && data1.token_count > 0;
+    std::cout << "└─ Status: " << (success1 ? "PASSED ✓" : "FAILED ✗") << std::endl;
+
+    if (!success1) {
+        cactus_destroy(model);
+        return false;
+    }
+
+    std::string assistant_response;
+    for(const auto& token : data1.tokens) {
+        assistant_response += token;
+    }
+
+    std::string messages2_str = R"([
+        {"role": "system", "content": "/no_think You are a helpful assistant. Be concise."},
+        {"role": "user", "content": "My name is Henry Ndubuaku, how are you?"},
+        {"role": "assistant", "content": ")" + escape_json(assistant_response) + R"("},
+        {"role": "user", "content": "What is my name?"}
+    ])";
+
+    StreamingData data2;
+    data2.model = model;
+    char response2[4096];
+
+    std::cout << "\n[Turn 2]\n";
+    std::cout << "User: What is my name?\n";
+    std::cout << "Assistant: ";
+
+    int result2 = cactus_complete(model, messages2_str.c_str(), response2, sizeof(response2),
+                                 g_options, nullptr, stream_callback, &data2);
+
+    std::cout << "\n\n[Results - Turn 2]\n";
+    Metrics metrics2;
+    metrics2.parse(response2);
+    std::cout << "├─ Total tokens: " << data2.token_count << std::endl;
+    metrics2.print();
+
+    bool success2 = result2 > 0 && data2.token_count > 0;
+    std::cout << "└─ Status: " << (success2 ? "PASSED ✓" : "FAILED ✗") << std::endl;
+
+    cactus_destroy(model);
+    return success1 && success2;
 }
 
 bool test_tool_call() {
