@@ -13,16 +13,16 @@ if [ ! -d "$WEIGHTS_DIR" ] || [ ! -f "$WEIGHTS_DIR/config.txt" ]; then
     echo "============================================="
     cd "$PROJECT_ROOT"
     if command -v python3 &> /dev/null; then
-        echo "Running: LiquidAI/LFM2-350M weights/lfm2-350m/"
-        if python3 LiquidAI/LFM2-350M weights/lfm2-350m/; then
+        echo "Running: python3 tools/convert_hf.py LiquidAI/LFM2-350M weights/lfm2-350m/ --precision INT8"
+        if python3 tools/convert_hf.py LiquidAI/LFM2-350M weights/lfm2-350m/ --precision INT8; then
             echo "Successfully generated Weights"
         else
             echo "Warning: Failed to generate Weights. Tests may fail."
-            echo "Please run manually: LiquidAI/LFM2-350M weights/lfm2-350m/"
+            echo "Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-350M weights/lfm2-350m/ --precision INT8"
         fi
     else
         echo "Warning: Python3 not found. Cannot generate weights automatically."
-        echo "Please run manually: LiquidAI/LFM2-350M weights/lfm2-350m/"
+        echo "Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-350M weights/lfm2-350m/ --precision INT8"
     fi
 else
     echo ""
