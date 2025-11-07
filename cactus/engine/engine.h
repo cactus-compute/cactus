@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "../graph/graph.h"
+#include "../../libs/stb/stb_image_combined.h"
 
 class CactusGraph;
 
