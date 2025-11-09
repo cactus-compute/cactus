@@ -7,7 +7,7 @@
 #include <vector>
 #include <sstream>
 
-const char* g_model_path = "../../weights/lfm2-350m";
+const char* g_model_path = "../../weights/lfm2-1.2b";
 const char* g_options = R"({"max_tokens": 256, "stop_sequences": ["<|im_end|>", "<end_of_turn>"]})";
 
 struct Timer {

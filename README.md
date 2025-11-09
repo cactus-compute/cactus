@@ -64,35 +64,29 @@ Example response from Gemma3-270m-INT8
 }
 ```
 
-## Performance (Qwen-0.6B-INT8-CPU)
+## Real-World Performance (LFM-1.2B-INT8-CPU) (722mb Compressed)
 
 | Device | Prefill-1k (toks/s) | Decode (toks/s) | Battery Drain (%/min) |
 |:-------------------------------|:--------------------:|:----------------:|:---------------------:|
-| iPhone 17 Pro                  | 420                  | 75               | 0.44                  |
-| Galaxy S25 Ultra               | 336                  | 60               | 0.45                  |
-| iPhone 16 Pro                  | 334                  | 60               | -                     |
+| iPhone 17 Pro                  | 420                  | 81               | 0.44                  |
+| Galaxy S25 Ultra               | 336                  | 64               | 0.45                  |
+| iPhone 16 Pro                  | 334                  | 64               | -                     |
 | Nothing 3                      | 296                  | 53               | 0.44                  |
-| iPhone 15 Pro                  | 274                  | 49               | -                     |
-| iPhone 14 Pro                  | 269                  | 48               | -                     |
-| OnePlus 13 5G                  | 268                  | 48               | 0.33                  |
-| Galaxy S24 Ultra               | 240                  | 43               | 0.48                  |
-| iPhone 15                      | 241                  | 43               | -                     |
-| OnePlus Open                   | 235                  | 42               | -                     |
-| Galaxy S23                     | 233                  | 42               | -                     |
-| iPhone 13 Pro                  | 218                  | 39               | -                     |
-| OnePlus 12                     | 216                  | 39               | 0.42                  |
-| iPhone 13 mini                 | 156                  | 28               | -                     |
-| Redmi K70 Ultra                | 154                  | 28               | 0.41                  |
-| Xiaomi 13                      | 153                  | 28               | 0.50                  |
-| OnePlus 11                     | 152                  | 28               | -                     |
+| iPhone 15 Pro                  | 274                  | 57               | -                     |
+| iPhone 14 Pro                  | 269                  | 51               | -                     |
+| OnePlus 13 5G                  | 268                  | 51               | 0.33                  |
+| Galaxy S24 Ultra               | 240                  | 46               | 0.48                  |
+| iPhone 15                      | 241                  | 46               | -                     |
+| OnePlus Open                   | 235                  | 45               | -                     |
+| Galaxy S23                     | 233                  | 45               | -                     |
+| iPhone 13 Pro                  | 218                  | 42               | -                     |
+| OnePlus 12                     | 216                  | 42               | 0.42                  |
+| iPhone 13 mini                 | 156                  | 30               | -                     |
+| Redmi K70 Ultra                | 154                  | 30               | 0.41                  |
+| Xiaomi 13                      | 153                  | 30               | 0.50                  |
+| OnePlus 11                     | 152                  | 30               | -                     |
 | Pixel 6a                       | 95                   | 17               | 0.48                  |
 | Nothing 3a                     | 93                   | 17               | 0.48                  |
-
-## Performance notes
-
-- These were collated from real-world runs, not controlled tests.
-- Apple Intelligence drains 0.6 percent/min on iPhone 16 Pro Max
-- Compressed file size is only 394mb (900mb+ in Executorch/GGUF)
 
 ## Coming improvements:
 

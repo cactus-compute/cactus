@@ -157,7 +157,7 @@ int cactus_complete(
             std::vector<uint32_t> last_token_vec = { handle->processed_tokens.back() };
             next_token = handle->model->generate(last_token_vec, temperature, top_p, top_k);
         } else {
-            next_token = handle->model->generate(tokens_to_process, temperature, top_p, top_k);
+            next_token = handle->model->generate(tokens_to_process, temperature, top_p, top_k, "profile.txt");
         }
         
         handle->processed_tokens = current_prompt_tokens;

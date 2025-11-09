@@ -662,7 +662,6 @@ void compute_fused_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
 
             const size_t N     = X.shape[0];
             const size_t L     = X.shape[1];
-            const size_t C  = X.shape[2];
             const size_t C_out    = W.shape[0];
             const size_t C_in    = W.shape[1]; 
             const size_t K     = W.shape[2];
