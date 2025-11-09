@@ -642,6 +642,54 @@ void compute_fused_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
             }
             break;
         }
+        
+        case OpType::CONV1D_K3: {
+
+            if (node.params.backend == ComputeBackend::NPU) {
+                throw std::runtime_error("NPU causal convolution operation not yet implemented");
+            }
+
+            const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer; 
+            const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer; 
+            auto& Y = node.output_buffer;
+
+            if (X.shape.size() != 3) {
+                throw std::runtime_error("Conv requires 3D input [batch, seq_len, in_channels]");
+            }
+            if (W.shape.size() != 3) {
+                throw std::runtime_error("Weight must be 3D");
+            }
+
+            const size_t N     = X.shape[0];
+            const size_t L     = X.shape[1];
+            const size_t C  = X.shape[2];
+            const size_t C_out    = W.shape[0];
+            const size_t C_in    = W.shape[1]; 
+            const size_t K     = W.shape[2];
+            const size_t stride = node.params.stride;
+
+            Y.shape = { N, L, C_out };
+            Y.precision = X.precision;
+
+            if(K != 3){
+                throw std::runtime_error("Conv1d_k3 only supports kernel of size 3!");
+            }
+
+            if(X.precision == Precision::FP32){
+                cactus_conv1d_f32_k3(X.data_as<float>(), W.data_as<float>(), Y.data_as<float>(), N, L, C_in, C_out, stride);
+            }
+
+            else if(X.precision == Precision::FP16){
+                cactus_conv1d_f16_k3(X.data_as<__fp16>(), W.data_as<__fp16>(), Y.data_as<__fp16>(), N, L, C_in, C_out, stride);
+            }
+
+            else{
+                throw std::runtime_error("Conv1d_k3 only supports FP32 and FP16");
+            }
+
+            break;
+            
+        }
 
         case OpType::CONCAT: {
             const auto& input1_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;

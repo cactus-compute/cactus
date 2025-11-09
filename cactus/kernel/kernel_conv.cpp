@@ -226,3 +226,237 @@ void cactus_conv1d_causal_depthwise_f32(
         }
     }
 }
+
+void cactus_conv1d_f32_k3(
+    const float* input,
+    const float* weight,
+    float* output,
+    size_t N, size_t L,
+    size_t C_in, size_t C_out,
+    size_t stride
+){
+    const size_t out_len = ((L - 1) / stride) + 1;
+
+    const size_t in_bs = C_in * L;
+    const size_t out_bs = C_out * out_len;
+
+    for (size_t n = 0; n < N; ++n) {
+        const float* Xb = input  + n * in_bs;
+        float* Yb = output + n * out_bs;
+
+        for (size_t out_idx = 0; out_idx < out_len; out_idx += 2) {
+            const size_t out_t0  = out_idx;
+            const bool have_t1 = (out_idx + 1) < out_len;
+            const size_t out_t1  = have_t1 ? (out_idx + 1) : 0;
+
+            const size_t t0 = out_t0 * stride;
+            const size_t t1 = have_t1 ? (out_t1 * stride) : 0;
+
+            for (size_t oc = 0; oc < C_out; ++oc) {
+                float32x4_t acc0 = vdupq_n_f32(0.f);
+                float32x4_t acc1 = vdupq_n_f32(0.f);
+
+                const float* Woc = weight + oc * (C_in * 3);
+                size_t ic = 0;
+
+                for (; ic + 8 <= C_in; ic += 8) {
+                    float x0m[8], x00[8], x0p[8];
+                    float x1m[8], x10[8], x1p[8];
+
+                    for (size_t u = 0; u < 8; ++u) {
+                        const size_t ch  = ic + u;
+                        const float* Xc  = Xb + ch * L;
+
+                        const ptrdiff_t tm0 = (ptrdiff_t)t0 - 1;
+                        const ptrdiff_t tp0 = (ptrdiff_t)t0 + 1;
+                        x0m[u] = (tm0 >= 0) ? Xc[tm0] : 0.f;
+                        x00[u] = Xc[t0];
+                        x0p[u] = (tp0 < (ptrdiff_t)L) ? Xc[tp0] : 0.f;
+
+                        if (have_t1) {
+                            const ptrdiff_t tm1 = (ptrdiff_t)t1 - 1;
+                            const ptrdiff_t tp1 = (ptrdiff_t)t1 + 1;
+                            x1m[u] = (tm1 >= 0) ? Xc[tm1] : 0.f;
+                            x10[u] = Xc[t1];
+                            x1p[u] = (tp1 < (ptrdiff_t)L) ? Xc[tp1] : 0.f;
+                        } else {
+                            x1m[u] = x10[u] = x1p[u] = 0.f;
+                        }
+                    }
+
+                    for (size_t u = 0; u < 8; ++u) {
+                        const float* Wc = Woc + (ic + u) * 3;
+
+                        const float32x4_t xv0 = {x0m[u], x00[u], x0p[u], 0.f};
+                        const float32x4_t wv  = {Wc[0], Wc[1], Wc[2], 0.f};
+                        acc0 = vfmaq_f32(acc0, xv0, wv);
+
+                        if (have_t1) {
+                            const float32x4_t xv1 = {x1m[u], x10[u], x1p[u], 0.f};
+                            acc1 = vfmaq_f32(acc1, xv1, wv);
+                        }
+                    }
+                }
+
+                for (; ic < C_in; ++ic) {
+                    const float* Xc = Xb + ic * L;
+                    const float* Wc = Woc + ic * 3;
+
+                    const ptrdiff_t tm0 = (ptrdiff_t)t0 - 1;
+                    const ptrdiff_t tp0 = (ptrdiff_t)t0 + 1;
+
+                    const float x0m = (tm0 >= 0) ? Xc[tm0] : 0.f;
+                    const float x00 = Xc[t0];
+                    const float x0p = (tp0 < (ptrdiff_t)L) ? Xc[tp0] : 0.f;
+
+                    const float32x4_t xv0 = {x0m, x00, x0p, 0.f};
+                    const float32x4_t wv = {Wc[0], Wc[1], Wc[2], 0.f};
+                    acc0 = vfmaq_f32(acc0, xv0, wv);
+
+                    if (have_t1) {
+                        const ptrdiff_t tm1 = (ptrdiff_t)t1 - 1;
+                        const ptrdiff_t tp1 = (ptrdiff_t)t1 + 1;
+
+                        const float x1m = (tm1 >= 0) ? Xc[tm1] : 0.f;
+                        const float x10 = Xc[t1];
+                        const float x1p = (tp1 < (ptrdiff_t)L) ? Xc[tp1] : 0.f;
+
+                        const float32x4_t xv1 = {x1m, x10, x1p, 0.f};
+                        acc1 = vfmaq_f32(acc1, xv1, wv);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void cactus_conv1d_f16_k3(
+    const __fp16* input,
+    const __fp16* weight,
+    __fp16* output,
+    size_t N, size_t L,
+    size_t C_in, size_t C_out,
+    size_t stride
+){
+    const size_t out_len = ((L - 1) / stride) + 1;
+
+    const size_t in_bs  = C_in * L;
+    const size_t out_bs = C_out * out_len;
+
+    for (size_t n = 0; n < N; ++n) {
+        const __fp16* Xb = input  + n * in_bs;
+        __fp16* Yb = output + n * out_bs;
+
+        for (size_t out_idx = 0; out_idx < out_len; out_idx += 2) {
+            const size_t out_t0  = out_idx;
+            const bool   have_t1 = (out_idx + 1) < out_len;
+            const size_t out_t1  = have_t1 ? (out_idx + 1) : out_idx;
+
+            const size_t t0 = out_t0 * stride;
+            const size_t t1 = have_t1 ? (out_t1 * stride) : t0;
+
+            for (size_t oc = 0; oc < C_out; ++oc) {
+                float32x4_t acc0 = vdupq_n_f32(0.f);
+                float32x4_t acc1 = vdupq_n_f32(0.f);
+
+                const __fp16* Woc = weight + oc * (C_in * 3);
+
+                size_t ic = 0;
+
+                for (; ic + 16 <= C_in; ic += 16) {
+                    for (size_t u = 0; u < 16; ++u) {
+                        const __fp16* Xc = Xb + (ic + u) * L;
+                        const __fp16* Wc = Woc + (ic + u) * 3;
+
+                        const float16x8_t wv = {
+                            Wc[0], Wc[1], Wc[2], (__fp16)0,
+                            Wc[0], Wc[1], Wc[2], (__fp16)0
+                        };
+
+                        const ptrdiff_t tm0 = (ptrdiff_t)t0 - 1;
+                        const ptrdiff_t tp0 = (ptrdiff_t)t0 + 1;
+                        const ptrdiff_t tm1 = (ptrdiff_t)t1 - 1;
+                        const ptrdiff_t tp1 = (ptrdiff_t)t1 + 1;
+
+                        const __fp16 x0m = (tm0 >= 0) ? Xc[tm0] : (__fp16)0;
+                        const __fp16 x00 = Xc[t0];
+                        const __fp16 x0p = (tp0 < (ptrdiff_t)L) ? Xc[tp0] : (__fp16)0;
+
+                        __fp16 x1m = 0, x10 = 0, x1p = 0;
+                        if (have_t1) {
+                            x1m = (tm1 >= 0) ? Xc[tm1] : (__fp16)0;
+                            x10 = Xc[t1];
+                            x1p = (tp1 < (ptrdiff_t)L) ? Xc[tp1] : (__fp16)0;
+                        }
+
+                        const float16x8_t xv = {
+                            x0m, x00, x0p, (__fp16)0,
+                            x1m, x10, x1p, (__fp16)0
+                        };
+
+                        const float16x4_t xv0_h = vget_low_f16(xv);
+                        const float16x4_t wv0_h = vget_low_f16(wv);
+                        acc0 = vfmaq_f32(acc0, vcvt_f32_f16(xv0_h), vcvt_f32_f16(wv0_h));
+
+                        if (have_t1) {
+                            const float16x4_t xv1_h = vget_high_f16(xv);
+                            const float16x4_t wv1_h = vget_high_f16(wv);
+                            acc1 = vfmaq_f32(acc1, vcvt_f32_f16(xv1_h), vcvt_f32_f16(wv1_h));
+                        }
+                    }
+                }
+
+                for (; ic < C_in; ++ic) {
+                    const __fp16* Xc = Xb + ic * L;
+                    const __fp16* Wc = Woc + ic * 3;
+
+                    const float16x8_t wv = {
+                        Wc[0], Wc[1], Wc[2], (__fp16)0,
+                        Wc[0], Wc[1], Wc[2], (__fp16)0
+                    };
+
+                    const ptrdiff_t tm0 = (ptrdiff_t)t0 - 1;
+                    const ptrdiff_t tp0 = (ptrdiff_t)t0 + 1;
+                    const ptrdiff_t tm1 = (ptrdiff_t)t1 - 1;
+                    const ptrdiff_t tp1 = (ptrdiff_t)t1 + 1;
+
+                    const __fp16 x0m = (tm0 >= 0) ? Xc[tm0] : (__fp16)0;
+                    const __fp16 x00 = Xc[t0];
+                    const __fp16 x0p = (tp0 < (ptrdiff_t)L) ? Xc[tp0] : (__fp16)0;
+
+                    __fp16 x1m = 0, x10 = 0, x1p = 0;
+                    if (have_t1) {
+                        x1m = (tm1 >= 0) ? Xc[tm1] : (__fp16)0;
+                        x10 = Xc[t1];
+                        x1p = (tp1 < (ptrdiff_t)L) ? Xc[tp1] : (__fp16)0;
+                    }
+
+                    const float16x8_t xv = {
+                        x0m, x00, x0p, (__fp16)0,
+                        x1m, x10, x1p, (__fp16)0
+                    };
+
+                    const float16x4_t xv0_h = vget_low_f16(xv);
+                    const float16x4_t wv0_h = vget_low_f16(wv);
+                    acc0 = vfmaq_f32(acc0, vcvt_f32_f16(xv0_h), vcvt_f32_f16(wv0_h));
+
+                    if (have_t1) {
+                        const float16x4_t xv1_h = vget_high_f16(xv);
+                        const float16x4_t wv1_h = vget_high_f16(wv);
+                        acc1 = vfmaq_f32(acc1, vcvt_f32_f16(xv1_h), vcvt_f32_f16(wv1_h));
+                    }
+                }
+
+                float32x2_t s0 = vadd_f32(vget_low_f32(acc0), vget_high_f32(acc0));
+                float sum0 = vget_lane_f32(s0, 0) + vget_lane_f32(s0, 1);
+
+                __fp16* Yoc = Yb + oc * out_len;
+
+                if (have_t1) {
+                    float32x2_t s1 = vadd_f32(vget_low_f32(acc1), vget_high_f32(acc1));
+                    float sum1 = vget_lane_f32(s1, 0) + vget_lane_f32(s1, 1);
+                }
+            }
+        }
+    }
+}
