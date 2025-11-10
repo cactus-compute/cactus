@@ -6,6 +6,7 @@ import json
 import argparse
 from pathlib import Path
 from typing import Optional
+import re
 
 try:
     from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, AutoModelForImageTextToText, AutoModel
@@ -19,6 +20,14 @@ try:
     from huggingface_hub import hf_hub_download  # type: ignore
 except ImportError:
     hf_hub_download = None  # type: ignore
+
+try:
+    from vlm_architectures import detect_vlm_architecture, get_vision_encoder_patterns, get_projection_patterns
+except ImportError:
+    print("Warning: vlm_architectures module not found, using basic VLM support only")
+    detect_vlm_architecture = None
+    get_vision_encoder_patterns = None
+    get_projection_patterns = None
 
 
 def add_lora_weights(name, tensor, lora_dir_path: Path) -> np.ndarray:
@@ -498,11 +507,22 @@ def convert_hf_model_weights_vlm(model, output_dir, precision='INT8', args=None)
     use_layout_tags = False
 
     model_type_str = _cfg_get(text_cfg, 'model_type', None) or _cfg_get(config, 'model_type', '')
-    if 'smolvlm' in model_type_str:
-        detected_model_type = 'smolvlm'
+    
+    # Use architecture detection module if available
+    if detect_vlm_architecture:
+        detected_model_type = detect_vlm_architecture(config, model_type_str)
     else:
-        detected_model_type = 'smolvlm'
-        print(f"  Warning: Unknown VLM model type '{model_type_str}', defaulting to 'smolvlm'")
+        # Fallback to basic detection
+        model_name_lower = str(model_type_str).lower()
+        if 'smolvlm' in model_name_lower or 'smol' in model_name_lower:
+            detected_model_type = 'smolvlm'
+        elif 'qwen' in model_name_lower and 'vl' in model_name_lower:
+            detected_model_type = 'qwen_vl'
+        elif 'llava' in model_name_lower:
+            detected_model_type = 'llava'
+        else:
+            detected_model_type = 'smolvlm'
+            print(f"  Warning: Unknown VLM model type '{model_type_str}', defaulting to 'smolvlm'")
 
 
     model_config = {
@@ -552,22 +572,48 @@ def convert_hf_model_weights_vlm(model, output_dir, precision='INT8', args=None)
             save_tensor_with_header(tensor, output_dir / "output_norm.weights", precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
             break
 
-    vision_items = [
-        ('model.vision_model.embeddings.patch_embedding.weight', 'vision_patch_embedding.weights'),
-        ('model.vision_model.embeddings.patch_embedding.bias', 'vision_patch_embedding.bias.weights'),
-        ('model.vision_model.embeddings.position_embedding.weight', 'vision_position_embedding.weights'),
-        ('model.vision_model.post_layernorm.weight', 'vision_post_layernorm.weights'),
-        ('model.vision_model.post_layernorm.bias', 'vision_post_layernorm.bias.weights')
-    ]
-    for key, outname in vision_items:
-        if key in state_dict:
-            save_tensor_with_header(state_dict[key], output_dir / outname, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+    # Extract vision encoder weights using architecture-specific patterns
+    if get_vision_encoder_patterns:
+        vision_patterns = get_vision_encoder_patterns(detected_model_type)
+        
+        # Extract embedding weights
+        for key, outname in vision_patterns.get('embeddings', []):
+            if key in state_dict:
+                save_tensor_with_header(state_dict[key], output_dir / outname, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                print(f"  Saved vision embedding: {key} -> {outname}")
+        
+        # Extract pre-norm weights if present
+        for key, outname in vision_patterns.get('pre_norm', []):
+            if key in state_dict:
+                save_tensor_with_header(state_dict[key], output_dir / outname, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+        
+        # Extract post-norm weights
+        for key, outname in vision_patterns.get('post_norm', []):
+            if key in state_dict:
+                save_tensor_with_header(state_dict[key], output_dir / outname, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+    else:
+        # Fallback to basic SmolVLM patterns
+        vision_items = [
+            ('model.vision_model.embeddings.patch_embedding.weight', 'vision_patch_embedding.weights'),
+            ('model.vision_model.embeddings.patch_embedding.bias', 'vision_patch_embedding.bias.weights'),
+            ('model.vision_model.embeddings.position_embedding.weight', 'vision_position_embedding.weights'),
+            ('model.vision_model.post_layernorm.weight', 'vision_post_layernorm.weights'),
+            ('model.vision_model.post_layernorm.bias', 'vision_post_layernorm.bias.weights')
+        ]
+        for key, outname in vision_items:
+            if key in state_dict:
+                save_tensor_with_header(state_dict[key], output_dir / outname, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
 
-    # detect number of vision encoder layers
-    import re
+    # Detect number of vision encoder layers using architecture-specific patterns
     max_v_idx = -1
+    if get_vision_encoder_patterns:
+        vision_patterns = get_vision_encoder_patterns(detected_model_type)
+        layer_pattern = vision_patterns.get('layer_prefix_pattern', r'model\.vision_model\.encoder\.layers\.(\d+)\.')
+    else:
+        layer_pattern = r'model\.vision_model\.encoder\.layers\.(\d+)\.'
+    
     for k in state_dict.keys():
-        m = re.search(r'model\.vision_model\.encoder\.layers\.(\d+)\.', k)
+        m = re.search(layer_pattern, k)
         if m:
             try:
                 idx = int(m.group(1))
@@ -576,50 +622,115 @@ def convert_hf_model_weights_vlm(model, output_dir, precision='INT8', args=None)
             except Exception:
                 pass
     vision_layers = max_v_idx + 1 if max_v_idx >= 0 else 0
+    print(f"  Detected {vision_layers} vision encoder layers for {detected_model_type}")
 
+    # Extract vision encoder layer weights using architecture-specific patterns
     for i_v in range(vision_layers):
-        vpref = f'model.vision_model.encoder.layers.{i_v}.'
-        for fname, out in [
-            (vpref + 'layer_norm1.weight', f'vision_layer_{i_v}_layer_norm1.weights'),
-            (vpref + 'layer_norm1.bias', f'vision_layer_{i_v}_layer_norm1.bias.weights'),
-            (vpref + 'layer_norm2.weight', f'vision_layer_{i_v}_layer_norm2.weights'),
-            (vpref + 'layer_norm2.bias', f'vision_layer_{i_v}_layer_norm2.bias.weights')
-        ]:
-            if fname in state_dict:
-                save_tensor_with_header(state_dict[fname], output_dir / out, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+        if get_vision_encoder_patterns:
+            vision_patterns = get_vision_encoder_patterns(detected_model_type)
+            layer_weights = vision_patterns.get('layer_weights', {})
+            
+            # Determine layer prefix
+            if 'layer_prefix_templates' in vision_patterns:
+                # Try multiple templates (for LLaVA)
+                vpref = None
+                for template in vision_patterns['layer_prefix_templates']:
+                    test_prefix = template.format(i_v)
+                    if any(k.startswith(test_prefix) for k in state_dict.keys()):
+                        vpref = test_prefix
+                        break
+                if not vpref:
+                    continue
+            else:
+                vpref = vision_patterns.get('layer_prefix_template', 'model.vision_model.encoder.layers.{}.').format(i_v)
+            
+            # Extract layer norm weights
+            for rel_name, out_template in layer_weights.get('norm1', []) + layer_weights.get('norm2', []):
+                fname = vpref + rel_name
+                out = out_template.format(i_v)
+                if fname in state_dict:
+                    save_tensor_with_header(state_dict[fname], output_dir / out, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+            
+            # Extract MLP weights
+            for rel_name, out_template in layer_weights.get('mlp', []):
+                fname = vpref + rel_name
+                out = out_template.format(i_v)
+                if fname in state_dict:
+                    save_tensor_with_header(state_dict[fname], output_dir / out, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+            
+            # Extract attention weights (handle combined QKV for Qwen-VL)
+            for rel_name, out_template in layer_weights.get('attn', []):
+                fname = vpref + rel_name
+                
+                if out_template is None:
+                    # Handle combined QKV weights (Qwen-VL style)
+                    if 'in_proj_weight' in rel_name and fname in state_dict:
+                        combined_weight = state_dict[fname]
+                        hidden_size = combined_weight.shape[0] // 3
+                        q_weight = combined_weight[:hidden_size, :]
+                        k_weight = combined_weight[hidden_size:2*hidden_size, :]
+                        v_weight = combined_weight[2*hidden_size:, :]
+                        
+                        save_tensor_with_header(q_weight, output_dir / f'vision_layer_{i_v}_self_attn_q.weights', precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                        save_tensor_with_header(k_weight, output_dir / f'vision_layer_{i_v}_self_attn_k.weights', precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                        save_tensor_with_header(v_weight, output_dir / f'vision_layer_{i_v}_self_attn_v.weights', precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                    elif 'in_proj_bias' in rel_name and fname in state_dict:
+                        combined_bias = state_dict[fname]
+                        hidden_size = combined_bias.shape[0] // 3
+                        q_bias = combined_bias[:hidden_size]
+                        k_bias = combined_bias[hidden_size:2*hidden_size]
+                        v_bias = combined_bias[2*hidden_size:]
+                        
+                        save_tensor_with_header(q_bias, output_dir / f'vision_layer_{i_v}_self_attn_q.bias.weights', precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                        save_tensor_with_header(k_bias, output_dir / f'vision_layer_{i_v}_self_attn_k.bias.weights', precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                        save_tensor_with_header(v_bias, output_dir / f'vision_layer_{i_v}_self_attn_v.bias.weights', precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                else:
+                    out = out_template.format(i_v)
+                    if fname in state_dict:
+                        save_tensor_with_header(state_dict[fname], output_dir / out, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+        else:
+            # Fallback to basic SmolVLM patterns
+            vpref = f'model.vision_model.encoder.layers.{i_v}.'
+            for fname, out in [
+                (vpref + 'layer_norm1.weight', f'vision_layer_{i_v}_layer_norm1.weights'),
+                (vpref + 'layer_norm1.bias', f'vision_layer_{i_v}_layer_norm1.bias.weights'),
+                (vpref + 'layer_norm2.weight', f'vision_layer_{i_v}_layer_norm2.weights'),
+                (vpref + 'layer_norm2.bias', f'vision_layer_{i_v}_layer_norm2.bias.weights'),
+                (vpref + 'mlp.fc1.weight', f'vision_layer_{i_v}_ffn_fc1.weights'),
+                (vpref + 'mlp.fc1.bias', f'vision_layer_{i_v}_ffn_fc1.bias.weights'),
+                (vpref + 'mlp.fc2.weight', f'vision_layer_{i_v}_ffn_fc2.weights'),
+                (vpref + 'mlp.fc2.bias', f'vision_layer_{i_v}_ffn_fc2.bias.weights'),
+                (vpref + 'self_attn.q_proj.weight', f'vision_layer_{i_v}_self_attn_q.weights'),
+                (vpref + 'self_attn.k_proj.weight', f'vision_layer_{i_v}_self_attn_k.weights'),
+                (vpref + 'self_attn.v_proj.weight', f'vision_layer_{i_v}_self_attn_v.weights'),
+                (vpref + 'self_attn.out_proj.weight', f'vision_layer_{i_v}_self_attn_out.weights'),
+                (vpref + 'self_attn.q_proj.bias', f'vision_layer_{i_v}_self_attn_q.bias.weights'),
+                (vpref + 'self_attn.k_proj.bias', f'vision_layer_{i_v}_self_attn_k.bias.weights'),
+                (vpref + 'self_attn.v_proj.bias', f'vision_layer_{i_v}_self_attn_v.bias.weights'),
+                (vpref + 'self_attn.out_proj.bias', f'vision_layer_{i_v}_self_attn_out.bias.weights')
+            ]:
+                if fname in state_dict:
+                    save_tensor_with_header(state_dict[fname], output_dir / out, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
 
-        for fname, out in [
-            (vpref + 'mlp.fc1.weight', f'vision_layer_{i_v}_ffn_fc1.weights'),
-            (vpref + 'mlp.fc1.bias', f'vision_layer_{i_v}_ffn_fc1.bias.weights'),
-            (vpref + 'mlp.fc2.weight', f'vision_layer_{i_v}_ffn_fc2.weights'),
-            (vpref + 'mlp.fc2.bias', f'vision_layer_{i_v}_ffn_fc2.bias.weights')
-        ]:
-            if fname in state_dict:
-                save_tensor_with_header(state_dict[fname], output_dir / out, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
-
-        for fname, out in [
-            (vpref + 'self_attn.q_proj.weight', f'vision_layer_{i_v}_self_attn_q.weights'),
-            (vpref + 'self_attn.k_proj.weight', f'vision_layer_{i_v}_self_attn_k.weights'),
-            (vpref + 'self_attn.v_proj.weight', f'vision_layer_{i_v}_self_attn_v.weights'),
-            (vpref + 'self_attn.out_proj.weight', f'vision_layer_{i_v}_self_attn_out.weights'),
-            (vpref + 'self_attn.q_proj.bias', f'vision_layer_{i_v}_self_attn_q.bias.weights'),
-            (vpref + 'self_attn.k_proj.bias', f'vision_layer_{i_v}_self_attn_k.bias.weights'),
-            (vpref + 'self_attn.v_proj.bias', f'vision_layer_{i_v}_self_attn_v.bias.weights'),
-            (vpref + 'self_attn.out_proj.bias', f'vision_layer_{i_v}_self_attn_out.bias.weights')
-        ]:
-            if fname in state_dict:
-                save_tensor_with_header(state_dict[fname], output_dir / out, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
-
-    connector_keys = [
-        'model.connector.modality_projection.proj.weight',
-        'connector.modality_projection.proj.weight',
-        'model.connector.proj.weight',
-        'connector.proj.weight'
-    ]
-    for ck in connector_keys:
-        if ck in state_dict:
-            save_tensor_with_header(state_dict[ck], output_dir / 'connector_proj.weights', precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
-            break
+    # Extract vision-to-language projection weights using architecture-specific patterns
+    if get_projection_patterns:
+        projection_patterns = get_projection_patterns(detected_model_type)
+        for ck, outname in projection_patterns:
+            if ck in state_dict:
+                save_tensor_with_header(state_dict[ck], output_dir / outname, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                print(f"  Saved projection layer: {ck} -> {outname}")
+    else:
+        # Fallback to basic SmolVLM patterns
+        connector_keys = [
+            'model.connector.modality_projection.proj.weight',
+            'connector.modality_projection.proj.weight',
+            'model.connector.proj.weight',
+            'connector.proj.weight'
+        ]
+        for ck in connector_keys:
+            if ck in state_dict:
+                save_tensor_with_header(state_dict[ck], output_dir / 'connector_proj.weights', precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                break
 
     num_layers = int(model_config.get('num_layers', 0))
     for i in range(num_layers):
