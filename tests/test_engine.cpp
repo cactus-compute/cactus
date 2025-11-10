@@ -7,7 +7,7 @@
 #include <vector>
 #include <sstream>
 
-const char* g_model_path = "../../weights/lfm2-1.2b";
+const char* g_model_path = "../../weights/lfm2-1.2B";
 const char* g_options = R"({"max_tokens": 256, "stop_sequences": ["<|im_end|>", "<end_of_turn>"]})";
 
 struct Timer {
@@ -194,6 +194,7 @@ bool test_tool_call() {
     ])";
 
     const char* tools = R"([{
+        "type": "function",
         "function": {
             "name": "get_weather",
             "description": "Get weather for a location",
@@ -211,6 +212,55 @@ bool test_tool_call() {
         [](int result, const StreamingData& data, const std::string& response, const Metrics& m) {
             bool has_function = response.find("function_call") != std::string::npos;
             bool has_tool = response.find("get_weather") != std::string::npos;
+
+            std::cout << "├─ Function call: " << (has_function ? "YES ✓" : "NO ✗") << "\n"
+                      << "├─ Correct tool: " << (has_tool ? "YES ✓" : "NO ✗") << "\n"
+                      << "├─ Total tokens: " << data.token_count << std::endl;
+            m.print();
+
+            return result > 0 && has_function && has_tool;
+        }, tools);
+}
+
+bool test_tool_call_with_multiple_tools() {
+    const char* messages = R"([
+        {"role": "system", "content": "You are a helpful assistant that can use tools."},
+        {"role": "user", "content": "Set an alarm for 10:00 AM for me?"}
+    ])";
+
+    const char* tools = R"([{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather for a location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City, State, Country"}
+                },
+                "required": ["location"]
+            }
+        }
+    }, {
+        "type": "function",
+        "function": {
+            "name": "set_alarm",
+            "description": "Set an alarm for a given time",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hour": {"type": "integer", "description": "Hour to set the alarm for"},
+                    "minute": {"type": "integer", "description": "Minute to set the alarm for"}
+                },
+                "required": ["hour", "minute"]
+            }
+        }
+    }])";
+
+    return run_test("TOOL CALL WITH MULTIPLE TOOLS TEST", messages,
+        [](int result, const StreamingData& data, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("function_call") != std::string::npos;
+            bool has_tool = response.find("set_alarm") != std::string::npos;
 
             std::cout << "├─ Function call: " << (has_function ? "YES ✓" : "NO ✗") << "\n"
                       << "├─ Correct tool: " << (has_tool ? "YES ✓" : "NO ✗") << "\n"
@@ -284,6 +334,7 @@ int main() {
     TestUtils::TestRunner runner("Engine Tests");
     runner.run_test("streaming", test_streaming());
     runner.run_test("tool_calls", test_tool_call());
+    runner.run_test("tool_calls_with_multiple_tools", test_tool_call_with_multiple_tools());
     runner.run_test("embeddings", test_embeddings());
     runner.run_test("huge_context", test_huge_context());
     runner.print_summary();
