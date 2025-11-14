@@ -64,17 +64,19 @@ Example response from Gemma3-270m-INT8
 }
 ```
 
-## Real-World Performance (LFM-1.2B-INT8-CPU) (722mb Compressed)
+## Performance (LFM-1.2B-INT8-CPU) (722mb Compressed)
 
-| Device | Prefill-1k (toks/s) | Decode (toks/s) | Battery Drain (%/min) |
+| Device | Prefill (toks/s) | Decode (toks/s) | Battery Drain (%/min) |
 |:-------------------------------|:--------------------:|:----------------:|:---------------------:|
+| Macbook M4 Pro                 | 590                  | 96               | -                     |
 | iPhone 17 Pro                  | 420                  | 81               | 0.44                  |
 | Galaxy S25 Ultra               | 336                  | 64               | 0.45                  |
 | iPhone 16 Pro                  | 334                  | 64               | -                     |
-| Nothing 3                      | 296                  | 53               | 0.44                  |
+| Nothing 3                      | 296                  | 63               | 0.44                  |
 | iPhone 15 Pro                  | 274                  | 57               | -                     |
 | iPhone 14 Pro                  | 269                  | 51               | -                     |
 | OnePlus 13 5G                  | 268                  | 51               | 0.33                  |
+| Macbook M3                     | 260                  | 50               | -                     |
 | Galaxy S24 Ultra               | 240                  | 46               | 0.48                  |
 | iPhone 15                      | 241                  | 46               | -                     |
 | OnePlus Open                   | 235                  | 45               | -                     |
@@ -87,6 +89,7 @@ Example response from Gemma3-270m-INT8
 | OnePlus 11                     | 152                  | 30               | -                     |
 | Pixel 6a                       | 95                   | 17               | 0.48                  |
 | Nothing 3a                     | 93                   | 17               | 0.48                  |
+| Raspberry Pi 5                 | 60                   | 13               | -                      |
 
 ## Coming improvements:
 
@@ -96,7 +99,7 @@ Example response from Gemma3-270m-INT8
 
 ## Using this repo
 You can run these codes directly on M-series Macbooks since they are ARM-based.
-Vanilla M3 CPU-only can run Qwen3-600m-INT8 at 60+ toks/sec, just run the following: 
+Vanilla M3 CPU-only can run LFM2-1.2B-INT8 at 50+ toks/sec, just run the following: 
 
 ```bash
 tests/run.sh 
