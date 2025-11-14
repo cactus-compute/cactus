@@ -64,7 +64,7 @@ Example response from Gemma3-270m-INT8
 }
 ```
 
-## Performance (LFM-1.2B-INT8-CPU) (722mb Compressed)
+## CPU Performance (LFM2-1.2B-INT8) (722mb Compressed)
 
 | Device | Prefill (toks/s) | Decode (toks/s) | Battery Drain (%/min) |
 |:-------------------------------|:--------------------:|:----------------:|:---------------------:|
