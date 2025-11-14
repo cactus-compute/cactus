@@ -257,7 +257,7 @@ bool test_tool_call_with_multiple_tools() {
         }
     }])";
 
-    return run_test("TOOL CALL WITH MULTIPLE TOOLS TEST", messages,
+    return run_test("MULTIPLE TOOLS TEST", messages,
         [](int result, const StreamingData& data, const std::string& response, const Metrics& m) {
             bool has_function = response.find("function_call") != std::string::npos;
             bool has_tool = response.find("set_alarm") != std::string::npos;
@@ -331,6 +331,9 @@ bool test_huge_context() {
 }
 
 bool test_audio_processor() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║         Audio Processor Test             ║\n"
+              << "╚══════════════════════════════════════════╝\n";
     using namespace cactus::engine;
 
     const size_t n_fft = 400;

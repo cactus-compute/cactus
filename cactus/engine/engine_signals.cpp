@@ -226,7 +226,7 @@ static void compute_spectrogram_f32(
     float power,
     bool center,
     const char* pad_mode,
-    bool onesided,
+    bool onesided [[maybe_unused]],
     float dither,
     const float* preemphasis,
     const float* mel_filters,

@@ -640,7 +640,6 @@ void benchmark_spectrogram(TestUtils::TestRunner& runner, const BenchmarkConfig&
     const size_t num_frames = 1 + (padded_length - n_fft) / hop_length;
 
     double real_time_factor = (chunk_length * 1000.0) / time_ms;
-    double time_per_frame_us = (time_ms * 1000.0) / num_frames;
 
     size_t bytes_processed = (n_samples * sizeof(float)) + (feature_size * num_frames * sizeof(float));
     double gb_per_sec = bytes_processed / (time_ms * 1e6);
@@ -649,7 +648,7 @@ void benchmark_spectrogram(TestUtils::TestRunner& runner, const BenchmarkConfig&
         "Spectrogram " + std::to_string(chunk_length) + "s audio (" +
         std::to_string(num_frames) + " frames, " + std::to_string(feature_size) + " mel bins)",
         std::to_string(time_ms) + "ms, " + std::to_string(real_time_factor) + "x real-time, " +
-        std::to_string(time_per_frame_us) + " μs/frame, " + std::to_string(gb_per_sec) + " GB/s"
+        std::to_string(gb_per_sec) + " GB/s"
     );
 }
 
