@@ -225,7 +225,7 @@ bool test_tool_call() {
 bool test_tool_call_with_multiple_tools() {
     const char* messages = R"([
         {"role": "system", "content": "You are a helpful assistant that can use tools."},
-        {"role": "user", "content": "Set an alarm for 10:00 AM for me?"}
+        {"role": "user", "content": "Set an alarm for 10:00 AM."}
     ])";
 
     const char* tools = R"([{
