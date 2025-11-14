@@ -52,12 +52,17 @@ bool BPETokenizer::load_vocabulary_mmap(const std::string& vocab_file, const std
     std::string vocab_content(static_cast<char*>(vocab_mmap_ptr_), vocab_mmap_size_);
     std::istringstream vocab_stream(vocab_content);
 
+    auto rtrim_cr = [](std::string& s) {
+        if (!s.empty() && s.back() == '\r') s.pop_back();
+    };
+
     std::string line;
     uint32_t id = 0;
     token_to_id_.clear();
     id_to_token_.clear();
 
     while (std::getline(vocab_stream, line)) {
+        rtrim_cr(line);
         if (line.empty()) continue;
         token_to_id_[line] = id;
         id_to_token_.push_back(line);
@@ -87,11 +92,15 @@ bool BPETokenizer::load_vocabulary_mmap(const std::string& vocab_file, const std
     uint32_t priority = 0;
 
     while (std::getline(merges_stream, line)) {
+        rtrim_cr(line);
         if (line.empty() || line[0] == '#') continue;
 
         std::istringstream iss(line);
         std::string first, second;
         if (iss >> first >> second) {
+            rtrim_cr(first);
+            rtrim_cr(second);
+
             std::string merged = first + second;
             merge_rules_.emplace_back(first, second, merged, priority);
 

@@ -133,35 +133,44 @@ void cactus_scalar_op_int8(const int8_t* input, int8_t* output, size_t num_eleme
         case ScalarOpType::EXP: {
             CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
                 [&](size_t start_idx, size_t end_idx) {
-                    constexpr size_t SIMD_WIDTH = 4;
+                    constexpr size_t SIMD_WIDTH = 8;
                     const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
+
+                    const float32x4_t log2e = vdupq_n_f32(1.4426950408889634f);
+                    const float32x4_t c1 = vdupq_n_f32(0.6931471805599453f);
+                    const float32x4_t c2 = vdupq_n_f32(0.2402265069591007f);
+                    const float32x4_t c3 = vdupq_n_f32(0.05550410866482158f);
 
                     for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                         int16x8_t input_s16 = vmovl_s8(vld1_s8(&input[i]));
-                        float32x4_t input_low_f32 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(input_s16)));
-                        
-                        const float32x4_t log2e = vdupq_n_f32(1.4426950408889634f);
-                        const float32x4_t c1 = vdupq_n_f32(0.6931471805599453f);
-                        const float32x4_t c2 = vdupq_n_f32(0.2402265069591007f);
-                        const float32x4_t c3 = vdupq_n_f32(0.05550410866482158f);
+                        float32x4_t in_low = vcvtq_f32_s32(vmovl_s16(vget_low_s16(input_s16)));
+                        float32x4_t in_high = vcvtq_f32_s32(vmovl_s16(vget_high_s16(input_s16)));
 
-                        float32x4_t x = vmulq_f32(input_low_f32, log2e);
-                        int32x4_t xi = vcvtq_s32_f32(x);
-                        float32x4_t xf = vsubq_f32(x, vcvtq_f32_s32(xi));
-                        
-                        float32x4_t p = vmlaq_f32(c2, c3, xf);
-                        p = vmlaq_f32(c1, p, xf);
-                        p = vmlaq_f32(vdupq_n_f32(1.0f), p, xf);
+                        float32x4_t x_low = vmulq_f32(in_low, log2e);
+                        int32x4_t xi_low = vcvtq_s32_f32(x_low);
+                        float32x4_t xf_low = vsubq_f32(x_low, vcvtq_f32_s32(xi_low));
+                        float32x4_t p_low = vmlaq_f32(c2, c3, xf_low);
+                        p_low = vmlaq_f32(c1, p_low, xf_low);
+                        p_low = vmlaq_f32(vdupq_n_f32(1.0f), p_low, xf_low);
+                        int32x4_t exponent_low = vshlq_n_s32(vaddq_s32(xi_low, vdupq_n_s32(127)), 23);
+                        float32x4_t scale_low = vreinterpretq_f32_s32(exponent_low);
+                        float32x4_t result_low_f32 = vmulq_f32(p_low, scale_low);
 
-                        int32x4_t exponent = vaddq_s32(xi, vdupq_n_s32(127));
-                        exponent = vshlq_n_s32(exponent, 23);
-                        float32x4_t scale = vreinterpretq_f32_s32(exponent);
-                        
-                        float32x4_t result_f32 = vmulq_f32(p, scale);
-                        
-                        int32x4_t result_s32 = vcvtq_s32_f32(result_f32);
-                        int16x4_t result_s16 = vqmovn_s32(result_s32);
-                        vst1_s8(&output[i], vqmovn_s16(vcombine_s16(result_s16, result_s16)));
+                        float32x4_t x_high = vmulq_f32(in_high, log2e);
+                        int32x4_t xi_high = vcvtq_s32_f32(x_high);
+                        float32x4_t xf_high = vsubq_f32(x_high, vcvtq_f32_s32(xi_high));
+                        float32x4_t p_high = vmlaq_f32(c2, c3, xf_high);
+                        p_high = vmlaq_f32(c1, p_high, xf_high);
+                        p_high = vmlaq_f32(vdupq_n_f32(1.0f), p_high, xf_high);
+                        int32x4_t exponent_high = vshlq_n_s32(vaddq_s32(xi_high, vdupq_n_s32(127)), 23);
+                        float32x4_t scale_high = vreinterpretq_f32_s32(exponent_high);
+                        float32x4_t result_high_f32 = vmulq_f32(p_high, scale_high);
+
+                        int16x8_t result_s16 = vcombine_s16(
+                            vqmovn_s32(vcvtq_s32_f32(result_low_f32)),
+                            vqmovn_s32(vcvtq_s32_f32(result_high_f32))
+                        );
+                        vst1_s8(&output[i], vqmovn_s16(result_s16));
                     }
 
                     for (size_t i = vectorized_end; i < end_idx; ++i) {
@@ -214,30 +223,42 @@ void cactus_scalar_op_int8(const int8_t* input, int8_t* output, size_t num_eleme
         case ScalarOpType::COS: {
             CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
                 [&](size_t start_idx, size_t end_idx) {
-                    constexpr size_t SIMD_WIDTH = 4;
+                    constexpr size_t SIMD_WIDTH = 8;
                     const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
-
-                    const float32x4_t c1 = vdupq_n_f32(-0.5f);
-                    const float32x4_t c2 = vdupq_n_f32(0.04166666666f);
-                    const float32x4_t c3 = vdupq_n_f32(-0.00138888888f);
+                    const float32x4_t two_pi = vdupq_n_f32(2.0f * 3.14159265358979323846f);
+                    const float32x4_t inv_two_pi = vdupq_n_f32(1.0f / (2.0f * 3.14159265358979323846f));
+                    const float32x4_t c0 = vdupq_n_f32(1.0f);
+                    const float32x4_t c2 = vdupq_n_f32(-0.5f);
+                    const float32x4_t c4 = vdupq_n_f32(0.04166666666f);
+                    const float32x4_t c6 = vdupq_n_f32(-0.00138888888f);
 
                     for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                        int16x8_t input_s16 = vmovl_s8(vld1_s8(&input[i]));
-                        float32x4_t x = vcvtq_f32_s32(vmovl_s16(vget_low_s16(input_s16)));
+                        int16x8_t in_s16 = vmovl_s8(vld1_s8(&input[i]));
+                        float32x4_t x_low = vcvtq_f32_s32(vmovl_s16(vget_low_s16(in_s16)));
+                        float32x4_t x_high = vcvtq_f32_s32(vmovl_s16(vget_high_s16(in_s16)));
 
-                        x = vsubq_f32(x, vmulq_f32(vrndnq_f32(vmulq_f32(x, vdupq_n_f32(1.0f / (2.0f * 3.14159265358979323846f)))), vdupq_n_f32(2.0f * 3.14159265358979323846f)));
-                        
-                        float32x4_t x_abs = vabsq_f32(x);
-                        
-                        float32x4_t y = vdupq_n_f32(1.0f);
-                        float32x4_t x2 = vmulq_f32(x_abs, x_abs);
-                        y = vmlaq_f32(y, x2, c1);
-                        y = vmlaq_f32(y, vmulq_f32(x2, x2), c2);
-                        y = vmlaq_f32(y, vmulq_f32(vmulq_f32(x2, x2), x2), c3);
+                        x_low = vsubq_f32(x_low, vmulq_f32(vrndnq_f32(vmulq_f32(x_low, inv_two_pi)), two_pi));
+                        x_high = vsubq_f32(x_high, vmulq_f32(vrndnq_f32(vmulq_f32(x_high, inv_two_pi)), two_pi));
 
-                        int32x4_t result_s32 = vcvtq_s32_f32(vmulq_f32(y, vdupq_n_f32(127.0f)));
-                        int16x4_t result_s16 = vqmovn_s32(result_s32);
-                        vst1_s8(&output[i], vqmovn_s16(vcombine_s16(result_s16, result_s16)));
+                        auto poly = [&](float32x4_t x){
+                            float32x4_t x2 = vmulq_f32(x, x);
+                            float32x4_t x4 = vmulq_f32(x2, x2);
+                            float32x4_t x6 = vmulq_f32(x4, x2);
+                            float32x4_t res = c0;
+                            res = vmlaq_f32(res, x2, c2);
+                            res = vmlaq_f32(res, x4, c4);
+                            res = vmlaq_f32(res, x6, c6);
+                            return res;
+                        };
+
+                        float32x4_t y_low = poly(x_low);
+                        float32x4_t y_high = poly(x_high);
+
+                        int16x8_t result_s16 = vcombine_s16(
+                            vqmovn_s32(vcvtq_s32_f32(vmulq_f32(y_low, vdupq_n_f32(127.0f)))),
+                            vqmovn_s32(vcvtq_s32_f32(vmulq_f32(y_high, vdupq_n_f32(127.0f))))
+                        );
+                        vst1_s8(&output[i], vqmovn_s16(result_s16));
                     }
 
                     for (size_t i = vectorized_end; i < end_idx; ++i) {
@@ -252,33 +273,43 @@ void cactus_scalar_op_int8(const int8_t* input, int8_t* output, size_t num_eleme
         case ScalarOpType::SIN: {
             CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
                 [&](size_t start_idx, size_t end_idx) {
-                    constexpr size_t SIMD_WIDTH = 4;
+                    constexpr size_t SIMD_WIDTH = 8;
                     const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
-
+                    const float32x4_t two_pi = vdupq_n_f32(2.0f * 3.14159265358979323846f);
+                    const float32x4_t inv_two_pi = vdupq_n_f32(1.0f / (2.0f * 3.14159265358979323846f));
                     const float32x4_t c1 = vdupq_n_f32(1.0f);
                     const float32x4_t c3 = vdupq_n_f32(-0.16666666666f);
                     const float32x4_t c5 = vdupq_n_f32(0.00833333333f);
                     const float32x4_t c7 = vdupq_n_f32(-0.00019841269f);
 
                     for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                        int16x8_t input_s16 = vmovl_s8(vld1_s8(&input[i]));
-                        float32x4_t x = vcvtq_f32_s32(vmovl_s16(vget_low_s16(input_s16)));
+                        int16x8_t in_s16 = vmovl_s8(vld1_s8(&input[i]));
+                        float32x4_t x_low = vcvtq_f32_s32(vmovl_s16(vget_low_s16(in_s16)));
+                        float32x4_t x_high = vcvtq_f32_s32(vmovl_s16(vget_high_s16(in_s16)));
 
-                        x = vsubq_f32(x, vmulq_f32(vrndnq_f32(vmulq_f32(x, vdupq_n_f32(1.0f / (2.0f * 3.14159265358979323846f)))), vdupq_n_f32(2.0f * 3.14159265358979323846f)));
-                        
-                        float32x4_t x2 = vmulq_f32(x, x);
-                        float32x4_t x3 = vmulq_f32(x2, x);
-                        float32x4_t x5 = vmulq_f32(x3, x2);
-                        float32x4_t x7 = vmulq_f32(x5, x2);
-                        
-                        float32x4_t y = vmulq_f32(x, c1);
-                        y = vmlaq_f32(y, x3, c3);
-                        y = vmlaq_f32(y, x5, c5);
-                        y = vmlaq_f32(y, x7, c7);
+                        x_low = vsubq_f32(x_low, vmulq_f32(vrndnq_f32(vmulq_f32(x_low, inv_two_pi)), two_pi));
+                        x_high = vsubq_f32(x_high, vmulq_f32(vrndnq_f32(vmulq_f32(x_high, inv_two_pi)), two_pi));
 
-                        int32x4_t result_s32 = vcvtq_s32_f32(vmulq_f32(y, vdupq_n_f32(127.0f)));
-                        int16x4_t result_s16 = vqmovn_s32(result_s32);
-                        vst1_s8(&output[i], vqmovn_s16(vcombine_s16(result_s16, result_s16)));
+                        auto poly = [&](float32x4_t x){
+                            float32x4_t x2 = vmulq_f32(x, x);
+                            float32x4_t x3 = vmulq_f32(x2, x);
+                            float32x4_t x5 = vmulq_f32(x3, x2);
+                            float32x4_t x7 = vmulq_f32(x5, x2);
+                            float32x4_t y = vmulq_f32(x, c1);
+                            y = vmlaq_f32(y, x3, c3);
+                            y = vmlaq_f32(y, x5, c5);
+                            y = vmlaq_f32(y, x7, c7);
+                            return y;
+                        };
+
+                        float32x4_t y_low = poly(x_low);
+                        float32x4_t y_high = poly(x_high);
+
+                        int16x8_t result_s16 = vcombine_s16(
+                            vqmovn_s32(vcvtq_s32_f32(vmulq_f32(y_low, vdupq_n_f32(127.0f)))),
+                            vqmovn_s32(vcvtq_s32_f32(vmulq_f32(y_high, vdupq_n_f32(127.0f))))
+                        );
+                        vst1_s8(&output[i], vqmovn_s16(result_s16));
                     }
 
                     for (size_t i = vectorized_end; i < end_idx; ++i) {

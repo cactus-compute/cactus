@@ -19,6 +19,12 @@ find_library(CACTUS_LIB
     REQUIRED
 )
 
+set(MMAN_LIB "")
+if(NOT APPLE)
+    set(MMAN_LIB "mman")
+    message(STATUS "Non-Apple system detected: will attempt to link with -lmman for mmap/munmap support")
+endif()
+
 file(GLOB TEST_SOURCES "test_*.cpp")
 list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_utils.cpp")
 
@@ -27,6 +33,12 @@ foreach(TEST_FILE ${TEST_SOURCES})
     get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
     add_executable(${TEST_NAME} ${TEST_FILE} test_utils.cpp)
     target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_LIB})
+    
+    if(MMAN_LIB)
+        target_link_libraries(${TEST_NAME} PRIVATE ${MMAN_LIB})
+        message(STATUS "Test ${TEST_NAME} will link with -lmman")
+    endif()
+    
     target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_ROOT})
     
     message(STATUS "Added test: ${TEST_NAME}")
