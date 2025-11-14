@@ -330,12 +330,59 @@ bool test_huge_context() {
         }, nullptr, 100);
 }
 
+bool test_audio_processor() {
+    using namespace cactus::engine;
+
+    const size_t n_fft = 400;
+    const size_t hop_length = 160;
+    const size_t sampling_rate = 16000;
+    const size_t feature_size = 80;
+    const size_t num_frequency_bins = 1 + n_fft / 2;
+
+    AudioProcessor audio_proc;
+    audio_proc.init_mel_filters(num_frequency_bins, feature_size, 0.0f, 8000.0f, sampling_rate);
+
+    const size_t n_samples = sampling_rate;
+    std::vector<float> waveform(n_samples);
+    for (size_t i = 0; i < n_samples; i++) {
+        waveform[i] = std::sin(2.0f * M_PI * 440.0f * i / sampling_rate);
+    }
+
+    AudioProcessor::SpectrogramConfig config;
+    config.n_fft = n_fft;
+    config.hop_length = hop_length;
+    config.frame_length = n_fft;
+    config.power = 2.0f;
+    config.center = true;
+    config.log_mel = "log10";
+
+    auto log_mel_spec = audio_proc.compute_spectrogram(waveform, config);
+
+    const float expected[] = {0.535175f, 0.548542f, 0.590673f, 0.633320f, 0.711979f};
+    const float tolerance = 2e-6f;
+
+    const size_t pad_length = n_fft / 2;
+    const size_t padded_length = n_samples + 2 * pad_length;
+    const size_t num_frames = 1 + (padded_length - n_fft) / hop_length;
+
+    bool passed = true;
+    for (size_t i = 0; i < 5; i++) {
+        if (std::abs(log_mel_spec[i * num_frames] - expected[i]) > tolerance) {
+            passed = false;
+            break;
+        }
+    }
+
+    return passed;
+}
+
 int main() {
     TestUtils::TestRunner runner("Engine Tests");
     runner.run_test("streaming", test_streaming());
     runner.run_test("tool_calls", test_tool_call());
     runner.run_test("tool_calls_with_multiple_tools", test_tool_call_with_multiple_tools());
     runner.run_test("embeddings", test_embeddings());
+    runner.run_test("audio_processor", test_audio_processor());
     runner.run_test("huge_context", test_huge_context());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

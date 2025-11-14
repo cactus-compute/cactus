@@ -584,6 +584,75 @@ void benchmark_gather_ops(TestUtils::TestRunner& runner, BenchmarkConfig& config
     }
 }
 
+void benchmark_mel_filter_bank(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
+    using namespace cactus::engine;
+
+    const size_t sampling_rate = 16000;
+    const size_t feature_size = 80;
+    const size_t num_frequency_bins = 201;
+
+    AudioProcessor audio_proc;
+
+    double time_ms = time_operation<float>([&]() {
+        audio_proc.init_mel_filters(num_frequency_bins, feature_size, 0.0f, 8000.0f, sampling_rate);
+    }, config.iterations);
+
+    runner.log_performance(
+        "Mel Filter Bank " + std::to_string(feature_size) + " x " + std::to_string(num_frequency_bins),
+        std::to_string(time_ms) + "ms"
+    );
+}
+
+void benchmark_spectrogram(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
+    using namespace cactus::engine;
+
+    const size_t n_fft = 400;
+    const size_t hop_length = 160;
+    const size_t chunk_length = 30;
+    const size_t sampling_rate = 16000;
+    const size_t feature_size = 80;
+    const size_t num_frequency_bins = 1 + n_fft / 2;
+
+    const size_t n_samples = chunk_length * sampling_rate;
+
+    AudioProcessor audio_proc;
+    audio_proc.init_mel_filters(num_frequency_bins, feature_size, 0.0f, 8000.0f, sampling_rate);
+
+    std::vector<float> waveform(n_samples);
+    for (size_t i = 0; i < n_samples; i++) {
+        waveform[i] = std::sin(2.0f * M_PI * 440.0f * i / sampling_rate);
+    }
+
+    AudioProcessor::SpectrogramConfig spec_config;
+    spec_config.n_fft = n_fft;
+    spec_config.hop_length = hop_length;
+    spec_config.frame_length = n_fft;
+    spec_config.power = 2.0f;
+    spec_config.center = true;
+    spec_config.log_mel = "log10";
+
+    double time_ms = time_operation<float>([&]() {
+        audio_proc.compute_spectrogram(waveform, spec_config);
+    }, config.iterations);
+
+    const size_t pad_length = n_fft / 2;
+    const size_t padded_length = n_samples + 2 * pad_length;
+    const size_t num_frames = 1 + (padded_length - n_fft) / hop_length;
+
+    double real_time_factor = (chunk_length * 1000.0) / time_ms;
+    double time_per_frame_us = (time_ms * 1000.0) / num_frames;
+
+    size_t bytes_processed = (n_samples * sizeof(float)) + (feature_size * num_frames * sizeof(float));
+    double gb_per_sec = bytes_processed / (time_ms * 1e6);
+
+    runner.log_performance(
+        "Spectrogram " + std::to_string(chunk_length) + "s audio (" +
+        std::to_string(num_frames) + " frames, " + std::to_string(feature_size) + " mel bins)",
+        std::to_string(time_ms) + "ms, " + std::to_string(real_time_factor) + "x real-time, " +
+        std::to_string(time_per_frame_us) + " μs/frame, " + std::to_string(gb_per_sec) + " GB/s"
+    );
+}
+
 bool test_binary_elementwise_performance(TestUtils::TestRunner& runner) {
     BenchmarkConfig config;
     
@@ -663,18 +732,27 @@ bool test_gather_operations_performance(TestUtils::TestRunner& runner) {
 bool test_embedding_operations_performance(TestUtils::TestRunner& runner) {
     BenchmarkConfig config;
     config.iterations = 10;
-    
+
     benchmark_embedding_ops<int8_t>(runner, config);
     benchmark_embedding_ops<float>(runner, config);
     benchmark_mmap_embedding(runner, config);
-    
+
+    return true;
+}
+
+bool test_signals_performance(TestUtils::TestRunner& runner) {
+    BenchmarkConfig config;
+
+    benchmark_mel_filter_bank(runner, config);
+    benchmark_spectrogram(runner, config);
+
     return true;
 }
 
 
 int main() {
     TestUtils::TestRunner runner("Performance Benchmarks");
-    
+
     runner.run_test("Binary Element-wise Operations", test_binary_elementwise_performance(runner));
     runner.run_test("Scalar Operations", test_scalar_operations_performance(runner));
     runner.run_test("Matrix Multiplication", test_matrix_multiplication_performance(runner));
@@ -684,7 +762,8 @@ int main() {
     runner.run_test("Engine Operations", test_engine_operations_performance(runner));
     runner.run_test("Gather Operations", test_gather_operations_performance(runner));
     runner.run_test("Embedding Operations", test_embedding_operations_performance(runner));
-    
+    runner.run_test("Signals Operations", test_signals_performance(runner));
+
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
