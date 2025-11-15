@@ -64,11 +64,12 @@ Example response from Gemma3-270m-INT8
 }
 ```
 
-## CPU Performance (LFM2-1.2B-INT8) (722mb Compressed)
+## INT8 CPU Performance (LFM2-1.2B) (722mb Compressed)
 
 | Device | Prefill (toks/s) | Decode (toks/s) | Battery Drain (%/min) |
 |:-------------------------------|:--------------------:|:----------------:|:---------------------:|
-| Macbook M4 Pro                 | 590                  | 96               | -                     |
+| Macbook  M4 Pro                | 590                  | 96               | -                     |
+| Mac Mini M4 Pro                | 580                  | 93               | -                     |
 | iPhone 17 Pro                  | 420                  | 81               | 0.44                  |
 | Galaxy S25 Ultra               | 336                  | 64               | 0.45                  |
 | iPhone 16 Pro                  | 334                  | 64               | -                     |
@@ -76,7 +77,7 @@ Example response from Gemma3-270m-INT8
 | iPhone 15 Pro                  | 274                  | 57               | -                     |
 | iPhone 14 Pro                  | 269                  | 51               | -                     |
 | OnePlus 13 5G                  | 268                  | 51               | 0.33                  |
-| Macbook M3                     | 260                  | 50               | -                     |
+| Macbook Air M3                 | 260                  | 50               | -                     |
 | Galaxy S24 Ultra               | 240                  | 46               | 0.48                  |
 | iPhone 15                      | 241                  | 46               | -                     |
 | OnePlus Open                   | 235                  | 45               | -                     |
@@ -89,7 +90,7 @@ Example response from Gemma3-270m-INT8
 | OnePlus 11                     | 152                  | 30               | -                     |
 | Pixel 6a                       | 95                   | 17               | 0.48                  |
 | Nothing 3a                     | 93                   | 17               | 0.48                  |
-| Raspberry Pi 5                 | 60                   | 13               | -                      |
+| Raspberry Pi 5                 | 50                   | 8.5              | -                     |
 
 ## Coming improvements:
 
