@@ -117,8 +117,7 @@ pacman -S mingw-w64-clang-aarch64-cmake mingw-w64-clang-aarch64-toolchain mingw-
 pip3 install -r tools/requirements.txt
 ```
 
-1. Macbook: 
-2. Windows PC: 
+Then run the tests using
 
 ```bash
 tests/run.sh # tests/run.bat for Windows ARM
