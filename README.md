@@ -68,12 +68,13 @@ Example response from Gemma3-270m-INT8
 
 | Device | Prefill (toks/s) | Decode (toks/s) | Battery Drain (%/min) |
 |:-------------------------------|:--------------------:|:----------------:|:---------------------:|
-| Macbook  M4 Pro                | 590                  | 96               | -                     |
+| Macbook M4 Pro                 | 590                  | 96               | -                     |
 | Mac Mini M4 Pro                | 580                  | 93               | -                     |
 | iPhone 17 Pro                  | 420                  | 81               | 0.44                  |
 | Galaxy S25 Ultra               | 336                  | 64               | 0.45                  |
 | iPhone 16 Pro                  | 334                  | 64               | -                     |
 | Nothing 3a Pro                 | 296                  | 63               | 0.44                  |
+| Macbook Pro M3                  | 462                  | 62               | -                     |
 | iPhone 15 Pro                  | 274                  | 57               | -                     |
 | iPhone 14 Pro                  | 269                  | 51               | -                     |
 | OnePlus 13 5G                  | 268                  | 51               | 0.33                  |
