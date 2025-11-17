@@ -101,8 +101,27 @@ Example response from Gemma3-270m-INT8
 You can run these codes directly on M-series Macbooks since they are ARM-based.
 Vanilla M3 CPU-only can run LFM2-1.2B-INT8 at 50+ toks/sec, just run the following: 
 
+If developing on a Mac:
+
 ```bash
-tests/run.sh 
+# Needs C++ & Python, then Install CMake and Python dependencies weight convertion dependencies
+brew install cmake
+pip3 install -r tools/requirements.txt
+```
+
+If developing on Windows ARM PC: 
+
+```bash
+# Needs C++, Python and MySys with Pacman, then install CMake and Python dependencies weight convertion dependencies 
+pacman -S mingw-w64-clang-aarch64-cmake mingw-w64-clang-aarch64-toolchain mingw-w64-clang-aarch64-mman-win32
+pip3 install -r tools/requirements.txt
+```
+
+1. Macbook: 
+2. Windows PC: 
+
+```bash
+tests/run.sh # tests/run.bat for Windows ARM
 ```
 
 ## Generating weights from HuggingFace 
