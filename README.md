@@ -1,10 +1,10 @@
 <img src="assets/banner.jpg" alt="Logo" style="border-radius: 30px; width: 100%;">
 
-Fast, lightweight, cross-platform & energy-efficient AI inference framework for all phones, from old and budget to high-end. 
+Fast, lightweight, cross-platform & energy-efficient AI inference framework for all consumer devices. 
 
 ## Cactus Graph 
 Cactus Graph is a general numerical computing framework for implementing 
-any model, like PyTorch for phones.
+any model, like PyTorch for consumer devices.
 
 ```cpp
 #include cactus.h
