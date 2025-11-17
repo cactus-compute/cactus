@@ -1,0 +1,14 @@
+Document ID: CC-OPS-MINI-01
+Title: Cactus Candy — Ops & Quality Quick Notes
+Last-Updated: 2025-11-06
+Tags: cactus-candy, ops, qa, chocolate
+
+Overview: Produce consistent chocolate with minimal scrap and safe practices.
+Key Settings: Temper 45°C → 27°C → 31.5°C; tunnel 10–12°C; hold if index < 5.0.
+
+SOP (Spicy Bark, ultra-brief): 1) Sanitize. 2) Temper ≥ 5.0. 3) Deposit + 0.8% spice. 4) Cool ≤ 18°C. 5) Lot & sample.
+
+Incident Snippets — Justin L.:
+• Desk fan aimed at tunnel → chocolate confetti; 8 kg rework. Action: remove fan; post sign.
+• Slipped on cocoa nibs into empty tray (no injury). Action: hourly sweep checklist.
+• Logged “temper: medium spicy” instead of index. Action: retrain; add example log.

@@ -347,9 +347,9 @@ void benchmark_attention(TestUtils::TestRunner& runner, const BenchmarkConfig& c
     
     for (size_t dim : config.dimensions) {
         size_t batch_size = 1;
-        size_t seq_len = std::min(dim / 8, static_cast<size_t>(64)); 
-        size_t num_heads = 8;
-        size_t head_dim = dim / 8;
+        size_t seq_len = 1024; 
+        size_t num_heads = 16;
+        size_t head_dim = dim / 16;
         size_t total_elements = batch_size * seq_len * num_heads * head_dim;
         
         CactusGraph graph;
@@ -385,9 +385,9 @@ void benchmark_attention(TestUtils::TestRunner& runner, const BenchmarkConfig& c
 
 template<typename T>
 void benchmark_embedding_ops(TestUtils::TestRunner& runner, BenchmarkConfig& config) {
-    std::vector<size_t> vocab_sizes = {127};
-    std::vector<size_t> embedding_dims = {128};
-    std::vector<size_t> sequence_lengths = {64};
+    std::vector<size_t> vocab_sizes = {65000};
+    std::vector<size_t> embedding_dims = {1024};
+    std::vector<size_t> sequence_lengths = {1000};
     
     std::string precision_str = precision_to_string(std::is_same_v<T, int8_t> ? Precision::INT8 : Precision::FP32);
     

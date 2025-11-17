@@ -1090,6 +1090,15 @@ def convert_hf_to_cactus(model_name, output_dir, precision='INT8', cache_dir=Non
         sys.exit(1)
     
     config = convert_hf_model_weights(model, output_dir, precision, args)
+    model_name_l = str(model_name).lower()
+    if 'extract' in model_name_l:
+        config['model_variant'] = 'extract'
+    elif 'vlm' in model_name_l:
+        config['model_variant'] = 'vlm'
+    elif 'rag' in model_name_l:
+        config['model_variant'] = 'rag'
+    else:
+        config.setdefault('model_variant', 'default')
 
     if precision == 'INT8':
         config['precision'] = "FP16"

@@ -78,7 +78,7 @@ bool Model::init(const std::string& model_folder, size_t context_size, const std
     if (!tokenizer_->load_vocabulary_with_config(vocab_file, merges_file, tokenizer_config_file)) {
         return false;
     }
-    
+
     auto* gb = new CactusGraph();
     graph_handle_ = gb;
     
@@ -294,6 +294,14 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "smol" || value == "SMOL" || value == "Smol") model_type = ModelType::SMOL;
             else if (value == "bert" || value == "BERT") model_type = ModelType::NOMIC;
             else model_type = ModelType::QWEN;
+        }
+        else if (key == "model_variant") {
+            std::string v = value;
+            std::transform(v.begin(), v.end(), v.begin(), ::tolower);
+            if (v == "vlm") model_variant = ModelVariant::VLM;
+            else if (v == "extract") model_variant = ModelVariant::EXTRACT;
+            else if (v == "rag") model_variant = ModelVariant::RAG;
+            else model_variant = ModelVariant::DEFAULT;
         }
         else if (key == "conv_L_cache") conv_L_cache = static_cast<size_t>(std::stoul(value));
         else if (key == "layer_types") {

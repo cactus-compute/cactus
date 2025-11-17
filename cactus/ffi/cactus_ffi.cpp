@@ -43,7 +43,7 @@ const char* cactus_get_last_error() {
     return last_error_message.c_str();
 }
 
-cactus_model_t cactus_init(const char* model_path, size_t context_size) {
+cactus_model_t cactus_init(const char* model_path, size_t context_size, const char* corpus_dir) {
     try {
         auto* handle = new CactusModelHandle();
         handle->model = create_model(model_path);
@@ -59,7 +59,19 @@ cactus_model_t cactus_init(const char* model_path, size_t context_size) {
             delete handle;
             return nullptr;
         }
-        
+
+        if (corpus_dir != nullptr) {
+            Tokenizer* tok = handle->model->get_tokenizer();
+            if (tok) {
+                try {
+                    cactus::engine::Tokenizer* etok = static_cast<cactus::engine::Tokenizer*>(tok);
+                    etok->set_corpus_dir(std::string(corpus_dir));
+                } catch (...) {
+                    
+                }
+            }
+        }
+
         return handle;
     } catch (const std::exception& e) {
         last_error_message = std::string(e.what());
