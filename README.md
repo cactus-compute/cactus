@@ -98,8 +98,6 @@ Example response from Gemma3-270m-INT8
 - VLM and Audio models like LFM-VL, Whisper, KittenTTS, etc. 
 
 ## Using this repo
-You can run these codes directly on M-series Macbooks since they are ARM-based.
-Vanilla M3 CPU-only can run LFM2-1.2B-INT8 at 50+ toks/sec, just run the following: 
 
 If developing on a Mac:
 
