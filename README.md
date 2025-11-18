@@ -123,7 +123,7 @@ tests/run.sh # tests/run.bat for Windows ARM
 
 ## Generating weights from HuggingFace 
 
-Run one of the following 
+Run one of the following and replace the weight path in `tests/test_engine.cpp`.
 
 ```bash
 # Language models (INT8)
@@ -142,7 +142,11 @@ python3 tools/convert_hf.py Qwen/Qwen3-Embedding-0.6B weights/qwen3-embed-600m/
 python3 tools/convert_hf.py nomic-ai/nomic-embed-text-v2-moe weights/nomic/ 
 ```
 
-Then replace the model path in `tests/test_engine.cpp` with your choice.
+You can start an interactive session with a model by running:
+
+```bash
+/cli/build.sh 
+```
 
 ## Resources 
 

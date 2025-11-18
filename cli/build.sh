@@ -71,5 +71,9 @@ fi
 
 echo "Build complete: $BUILD_DIR/chat"
 echo ""
+
+clear 
 echo "Usage: $BUILD_DIR/chat <model_path>"
-echo "Example: $BUILD_DIR/chat weights/lfm2-1.2B"
+echo ""
+
+$BUILD_DIR/chat $PROJECT_ROOT/weights/lfm2-1.2B
