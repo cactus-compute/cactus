@@ -28,8 +28,9 @@ enum class OpType {
     INPUT, PRECISION_CAST,
     ADD, ADD_CLIPPED, SUBTRACT, MULTIPLY, DIVIDE,
     MATMUL, TRANSPOSE, RESHAPE, SLICE, GATHER, EMBEDDING,
+    BILINEAR_INTERPOLATION,
     SUM, MEAN, VARIANCE, MIN, MAX,
-    RMS_NORM, ROPE, SOFTMAX, ATTENTION, CONV1D_CAUSAL, CONV1D_K3, 
+    RMS_NORM, ROPE, SOFTMAX, ATTENTION, CONV1D_CAUSAL, CONV1D_K3,
     SCALAR_ADD, SCALAR_SUBTRACT, SCALAR_MULTIPLY, SCALAR_DIVIDE, SCALAR_EXP, SCALAR_SQRT, SCALAR_COS, SCALAR_SIN,
     SILU, GELU,
     SAMPLE, CONCAT,
@@ -147,6 +148,8 @@ struct OpParams {
     
     size_t index_value = 0;  // For INDEX operation
     size_t num_classes = 0;  // For scatter operations
+    size_t dst_height = 0;
+    size_t dst_width = 0;   
 };
 
 struct GraphNode {
@@ -188,6 +191,12 @@ namespace ValidationUtils {
 class CactusGraph {
 public:
     CactusGraph();
+
+    struct DebugNodeEntry {
+        uint32_t layer_idx;
+        std::string name;
+        size_t node_id;
+    };
     
     size_t input(const std::vector<size_t>& shape, Precision precision = Precision::INT8);
     size_t precision_cast(size_t input, Precision target_precision);
@@ -213,6 +222,7 @@ public:
     
     size_t matmul(size_t input1, size_t input2, bool pretransposed_rhs = false, ComputeBackend backend = ComputeBackend::CPU);
     size_t transpose(size_t input, ComputeBackend backend = ComputeBackend::CPU);
+    size_t transposeN(size_t input, const std::vector<size_t>& permutation, ComputeBackend backend = ComputeBackend::CPU);
     size_t reshape(size_t input, const std::vector<size_t>& new_shape);
     size_t slice(size_t input, int axis, size_t start, size_t length);
     size_t index(size_t input, size_t index_value, int dim);
@@ -229,6 +239,7 @@ public:
     void set_quantization_scale(size_t node_id, float scale);
     size_t embedding(const std::string& filename, size_t indices);
     size_t embedding(size_t embedding_tensor, size_t indices);
+    size_t bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width);
 
     size_t layernorm(size_t input, size_t weight, size_t bias, float epsilon = 1e-5f);
     size_t topk(size_t input, size_t k);
@@ -254,6 +265,11 @@ public:
     void execute(const std::string& profile_file = "");
     void hard_reset();
     void soft_reset();
+
+    void register_debug_node(uint32_t layer_idx, const std::string& name, size_t node_id);
+    void capture_debug_node(uint32_t layer_idx, const std::string& name, size_t node_id);
+    const std::vector<DebugNodeEntry>& get_debug_nodes() const;
+    void clear_debug_nodes();
     
     size_t add_node(OpType op_type, const std::vector<size_t>& inputs, const std::vector<size_t>& output_shape, const OpParams& params = {});
     const BufferDesc& get_output_buffer(size_t node_id) const;
@@ -267,6 +283,7 @@ private:
     size_t next_node_id_;
     std::vector<std::unique_ptr<GraphFile::MappedFile>> mapped_files_;
     std::unordered_map<std::string, size_t> weight_cache_;
+    std::vector<DebugNodeEntry> debug_nodes_;
 };
 
 

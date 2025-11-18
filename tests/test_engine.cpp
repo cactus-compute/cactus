@@ -1,4 +1,6 @@
 #include "test_utils.h"
+#include <fstream>
+#include <filesystem>
 #include <chrono>
 #include <cstring>
 #include <iostream>
@@ -9,8 +11,13 @@
 #include <vector>
 #include <sstream>
 
-const char* g_model_path = "../../weights/lfm2-1.2B";
-const char* g_options = R"({"max_tokens": 256, "stop_sequences": ["<|im_end|>", "<end_of_turn>"]})";
+
+const char* g_model_path = "../../weights/lfm2-vl-1.6b";
+
+const char* g_options = R"({
+        "max_tokens": 256,
+        "stop_sequences": ["<|im_end|>", "<end_of_turn>"]
+    })";
 
 struct Timer {
     std::chrono::high_resolution_clock::time_point start;
@@ -222,6 +229,66 @@ bool test_tool_call() {
 
             return result > 0 && has_function && has_tool;
         }, tools);
+}
+
+bool test_image_input() {
+    std::string model_path_str(g_model_path);
+    if (model_path_str.find("vl") == std::string::npos && model_path_str.find("vl") == std::string::npos) {
+        std::cout << "Skipping image input test: model is not a VLM." << std::endl;
+        return true;
+    }
+
+    std::string vision_file = model_path_str + std::string("/vision_patch_embedding.weights");
+    std::ifstream vf(vision_file);
+    if (!vf.good()) {
+        std::cout << "Skipping image input test: vision weights not found." << std::endl;
+        return true;
+    }
+    vf.close();
+
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║          IMAGE INPUT TEST                ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    cactus_model_t model = cactus_init(g_model_path, 2048, nullptr);
+    if (!model) {
+        std::cerr << "Failed to initialize model for image test" << std::endl;
+        return false;
+    }
+
+    std::filesystem::path rel_img_path = std::filesystem::path("../../tests/assets/test_monkey.png");
+    std::filesystem::path abs_img_path = std::filesystem::absolute(rel_img_path);
+    std::string img_path_str = abs_img_path.string();
+    std::string messages_json = "[";
+    messages_json += "{\"role\": \"user\", ";
+    messages_json += "\"content\": \"Describe what is happening in this image in two sentences.\", ";
+    messages_json += "\"images\": [\"" + img_path_str + "\"]}";
+    messages_json += "]";
+
+    const std::string& messages_ref = messages_json;
+    const char* messages = messages_ref.c_str();
+
+    StreamingData stream_data;
+    stream_data.model = model;
+
+    char response[4096];
+
+    std::cout << "Response: ";
+    int result = cactus_complete(model, messages, response, sizeof(response), g_options, nullptr,
+                                stream_callback, &stream_data);
+
+    std::cout << "\n\n[Results]\n";
+    Metrics metrics;
+    metrics.parse(response);
+    std::cout << "├─ Total tokens: " << stream_data.token_count << std::endl;
+    metrics.print();
+
+    bool success = result > 0 && stream_data.token_count > 0;
+    std::cout << "└─ Status: " << (success ? "PASSED ✓" : "FAILED ✗") << std::endl;
+
+    cactus_destroy(model);
+
+    return success;
 }
 
 bool test_tool_call_with_multiple_tools() {
@@ -462,6 +529,7 @@ int main() {
     runner.run_test("tool_calls", test_tool_call());
     runner.run_test("tool_calls_with_multiple_tools", test_tool_call_with_multiple_tools());
     runner.run_test("embeddings", test_embeddings());
+    runner.run_test("image_input", test_image_input());
     runner.run_test("audio_processor", test_audio_processor());
     runner.run_test("rag_preprocessing", test_rag());
     runner.run_test("huge_context", test_huge_context());

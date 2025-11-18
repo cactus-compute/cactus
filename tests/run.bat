@@ -7,7 +7,7 @@ echo ============================
 set "SCRIPT_DIR=%~dp0"
 set "PROJECT_ROOT=%SCRIPT_DIR%.."
 
-set "WEIGHTS_DIR=%PROJECT_ROOT%\weights\lfm2-1.2B"
+set "WEIGHTS_DIR=%PROJECT_ROOT%\weights\lfm2-vl-1.6b"
 if not exist "%WEIGHTS_DIR%\config.txt" (
     echo.
     echo Weights not found. Generating weights...
@@ -15,17 +15,17 @@ if not exist "%WEIGHTS_DIR%\config.txt" (
     cd /d "%PROJECT_ROOT%"
     where python3 >nul 2>&1
     if !errorlevel!==0 (
-        echo Running: python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ --precision INT8
-        python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ --precision INT8
+        echo Running: python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8
+        python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8
         if !errorlevel!==0 (
             echo Successfully generated Weights
         ) else (
             echo Warning: Failed to generate Weights. Tests may fail.
-            echo Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ --precision INT8
+            echo Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8
         )
     ) else (
         echo Warning: Python3 not found. Cannot generate weights automatically.
-        echo Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ --precision INT8
+        echo Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8
     )
 ) else (
     echo.

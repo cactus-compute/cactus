@@ -10,17 +10,19 @@
 #include <algorithm>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 
 namespace cactus {
 namespace engine {
 
 
 Model::Model()
-    : tokenizer_(nullptr),
-      graph_handle_(nullptr),
-      initialized_(false),
-      attention_scale_(0.0f),
-      output_weight_node_id_(0) {
+        : tokenizer_(nullptr),
+            graph_handle_(nullptr),
+            initialized_(false),
+            attention_scale_(0.0f),
+            output_weight_node_id_(0),
+            owns_graph_(false) {
 }
 
 Model::Model(const Config& config)
@@ -29,31 +31,56 @@ Model::Model(const Config& config)
       graph_handle_(nullptr),
       initialized_(false),
       attention_scale_(0.0f),
-      output_weight_node_id_(0) {
+      output_weight_node_id_(0),
+            owns_graph_(false) {
 }
 
 Model::~Model() {
-    if (graph_handle_) {
+    if (graph_handle_ && owns_graph_) {
         delete static_cast<CactusGraph*>(graph_handle_);
     }
 }
 
-bool Model::init(const std::string& model_folder, size_t context_size, const std::string& system_prompt) {
+bool Model::init(const std::string& model_folder, size_t context_size, const std::string& system_prompt, bool do_warmup) {
     if (initialized_) {
         return true;
+    }   
+    auto* gb = new CactusGraph();
+    graph_handle_ = gb;
+    owns_graph_ = true;
+    embedding_file_path_ = model_folder + "/token_embeddings.weights";
+    return init_internal(gb, model_folder, context_size, system_prompt, do_warmup);
+}
+
+bool Model::init(CactusGraph* external_graph, const std::string& model_folder, size_t context_size,
+                 const std::string& system_prompt, bool do_warmup) {
+    if (!external_graph) {
+        throw std::invalid_argument("External graph pointer must not be null");
     }
-    
+    if (initialized_) {
+        graph_handle_ = external_graph;
+        owns_graph_ = false;
+        return true;
+    }
+
+    owns_graph_ = false;
+    graph_handle_ = external_graph;
+    return init_internal(external_graph, model_folder, context_size, system_prompt, do_warmup);
+}
+
+bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size_t context_size,
+                          const std::string& system_prompt, bool do_warmup) {
     model_folder_path_ = model_folder;
     std::string config_path = model_folder + "/config.txt";
-    
+
     if (!config_.from_json(config_path)) {
         return false;
     }
-    
+
     std::string vocab_file = model_folder + "/vocab.txt";
     std::string merges_file = model_folder + "/merges.txt";
     std::string tokenizer_config_file = model_folder + "/tokenizer_config.txt";
-    
+
     std::ifstream merges_check(merges_file);
     bool has_merges = false;
     if (merges_check.is_open()) {
@@ -68,48 +95,41 @@ bool Model::init(const std::string& model_folder, size_t context_size, const std
         }
         merges_check.close();
     }
-    
+
     if (has_merges) {
         tokenizer_ = std::make_unique<BPETokenizer>();
     } else {
         tokenizer_ = std::make_unique<SPTokenizer>();
     }
-    
+
     if (!tokenizer_->load_vocabulary_with_config(vocab_file, merges_file, tokenizer_config_file)) {
         return false;
     }
 
-    auto* gb = new CactusGraph();
-    graph_handle_ = gb;
-    
     embedding_file_path_ = model_folder + "/token_embeddings.weights";
-
     load_weights_to_graph(gb);
     
+
     if (config_.model_type == Config::ModelType::GEMMA) {
-        attention_scale_ = 1.0f / std::sqrt(256.0f); 
+        attention_scale_ = 1.0f / std::sqrt(256.0f);
     } else {
         attention_scale_ = 1.0f / std::sqrt(static_cast<float>(config_.attention_head_dim));
     }
-    
+
     Precision cache_precision;
-    std::string precision_name;
     switch (config_.precision) {
         case Config::Precision::INT8:
             cache_precision = Precision::INT8;
-            precision_name = "INT8";
             break;
         case Config::Precision::FP16:
             cache_precision = Precision::FP16;
-            precision_name = "FP16";
             break;
         case Config::Precision::FP32:
             cache_precision = Precision::FP32;
-            precision_name = "FP32";
             break;
     }
     kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, config_.attention_head_dim, cache_precision);
-    
+
     size_t window_size = std::min(context_size, size_t(1024));
     size_t sink_size = 4;
     const char* env_window = std::getenv("CACTUS_KV_WINDOW_SIZE");
@@ -123,15 +143,17 @@ bool Model::init(const std::string& model_folder, size_t context_size, const std
     kv_cache_.set_window_size(window_size, sink_size);
     cache_k_output_nodes_.resize(config_.num_layers);
     cache_v_output_nodes_.resize(config_.num_layers);
-    
+
     post_init();
-    
+
     initialized_ = true;
-    
-    std::string warmup_text = system_prompt.empty() ? "Henry" : system_prompt;
-    auto warmup_tokens = tokenizer_->encode(warmup_text);
-    forward(warmup_tokens);
-    kv_cache_.reset();
+
+    if (do_warmup) {
+        std::string warmup_text = system_prompt.empty() ? "Henry" : system_prompt;
+        auto warmup_tokens = tokenizer_->encode(warmup_text);
+        forward(warmup_tokens);
+        kv_cache_.reset();
+    }
     return true;
 }
 
@@ -169,6 +191,12 @@ uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature,
     
     auto* output_ptr = gb->get_output(sampled_token_id);
     return *static_cast<uint32_t*>(output_ptr);
+}
+
+uint32_t Model::generate_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
+                                     float temperature, float top_p, size_t top_k, const std::string& profile_file) {
+    (void)image_paths;
+    return generate(tokens, temperature, top_p, top_k, profile_file);
 }
 
 void Model::update_kv_cache(CactusGraph* gb, size_t seq_len) {
@@ -283,6 +311,33 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "num_top_experts") num_top_experts = std::stoul(value);
         else if (key == "moe_every_n_layers") moe_every_n_layers = std::stoul(value);
         else if (key == "tie_word_embeddings") tie_word_embeddings = (value == "true" || value == "1");
+        else if (key == "vision_hidden_dim") vision_hidden_dim = std::stoul(value);
+        else if (key == "vision_num_layers") vision_num_layers = std::stoul(value);
+        else if (key == "vision_attention_heads") vision_attention_heads = std::stoul(value);
+        else if (key == "vision_image_size") vision_image_size = std::stoul(value);
+        else if (key == "vision_patch_size") vision_patch_size = std::stoul(value);
+        else if (key == "vision_num_channels") vision_num_channels = std::stoul(value);
+        else if (key == "vision_embed_dim") vision_embed_dim = std::stoul(value);
+        else if (key == "visual_tokens_per_img") visual_tokens_per_img = std::stoul(value);
+        else if (key == "use_pixel_shuffle") use_pixel_shuffle = (value == "true" || value == "1");
+        else if (key == "pixel_shuffle_factor") pixel_shuffle_factor = std::stoul(value);
+        else if (key == "use_image_tokens") use_image_tokens = (value == "true" || value == "1");
+        else if (key == "use_layout_tags") use_layout_tags = (value == "true" || value == "1");
+        else if (key == "image_seq_len") image_seq_len = std::stoul(value);
+        else if (key == "global_image_size") global_image_size = std::stoul(value);
+        else if (key == "max_tile_size") max_tile_size = std::stoul(value);
+        else if (key == "rescale_factor") rescale_factor = std::stof(value);
+        else if (key == "image_mean") image_mean = std::stof(value);
+        else if (key == "image_std") image_std = std::stof(value);
+        else if (key == "downsample_factor") downsample_factor = std::stoul(value);
+        else if (key == "min_tiles") min_tiles = std::stoul(value);
+        else if (key == "max_tiles") max_tiles = std::stoul(value);
+        else if (key == "use_thumbnail") use_thumbnail = (value == "true" || value == "1");
+        else if (key == "min_image_tokens") min_image_tokens = std::stoul(value);
+        else if (key == "max_image_tokens") max_image_tokens = std::stoul(value);
+        else if (key == "tile_size") tile_size = std::stoul(value);
+        else if (key == "max_pixels_tolerance") max_pixels_tolerance = std::stof(value);
+        else if (key == "do_image_splitting") do_image_splitting = (value == "true" || value == "1");
         else if (key == "precision") {
             if (value == "INT8") precision = Precision::INT8;
             else if (value == "FP16") precision = Precision::FP16;
@@ -306,7 +361,15 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "conv_L_cache") conv_L_cache = static_cast<size_t>(std::stoul(value));
         else if (key == "layer_types") {
             layer_types.clear();
-            std::stringstream ss(value);
+            std::string sanitized;
+            sanitized.reserve(value.size());
+            for (char c : value) {
+                if (c == '[' || c == ']' || c == '\'' || c == '"') {
+                    continue;
+                }
+                sanitized.push_back(c);
+            }
+            std::stringstream ss(sanitized);
             std::string item;
             while (std::getline(ss, item, ',')) {
                 if (!item.empty()) {
@@ -331,6 +394,10 @@ bool Config::from_json(const std::string& config_path) {
         default_top_p = 0.95f;
         default_top_k = 20;
     } else if (model_type == ModelType::QWEN) {
+        default_temperature = 0.6f;
+        default_top_p = 0.95f;
+        default_top_k = 20;
+    } else if (model_type == ModelType::QWEN) {
         default_temperature = 0.7f;
         default_top_p = 0.8f;
         default_top_k = 20;
@@ -351,6 +418,17 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
         return nullptr;
     }
 
+    const bool has_vision_support =
+    config.use_image_tokens ||
+    config.vision_num_layers > 0 ||
+    config.vision_embed_dim > 0 ||
+    config.vision_hidden_dim > 0 ||
+    config.visual_tokens_per_img > 0;
+
+    if (config.model_type == Config::ModelType::LFM2 && has_vision_support) {
+        return std::make_unique<Lfm2VlModel>(config);
+    }
+
     switch (config.model_type) {
         case Config::ModelType::QWEN:
             return std::make_unique<QwenModel>(config);
@@ -365,6 +443,37 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
         default:
             return std::make_unique<QwenModel>(config);
     }
+}
+
+void Model::capture_debug_node(uint32_t layer_idx, const std::string& name, size_t node_id) const {
+    auto* graph = static_cast<CactusGraph*>(graph_handle_);
+    if (!graph) {
+        return;
+    }
+    graph->capture_debug_node(layer_idx, name, node_id);
+}
+
+void Model::clear_debug_nodes() {
+    auto* graph = static_cast<CactusGraph*>(graph_handle_);
+    if (!graph) {
+        return;
+    }
+    graph->clear_debug_nodes();
+}
+
+const std::vector<Model::DebugNode>& Model::get_debug_nodes() const {
+    auto* graph = static_cast<CactusGraph*>(graph_handle_);
+    debug_nodes_.clear();
+    if (!graph) {
+        return debug_nodes_;
+    }
+
+    const auto& entries = graph->get_debug_nodes();
+    debug_nodes_.reserve(entries.size());
+    for (const auto& entry : entries) {
+        debug_nodes_.push_back({entry.layer_idx, entry.name, entry.node_id});
+    }
+    return debug_nodes_;
 }
 
 }

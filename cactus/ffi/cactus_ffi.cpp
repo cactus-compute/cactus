@@ -8,6 +8,8 @@
 #include <iostream>
 #include <atomic>
 #include <cstring>
+#include <filesystem>
+#include <cmath>
 #include <algorithm>
 
 using namespace cactus::engine;
@@ -108,10 +110,12 @@ int cactus_complete(
         auto start_time = std::chrono::high_resolution_clock::now();
         
         auto* handle = static_cast<CactusModelHandle*>(model);
-        auto* tokenizer = handle->model->get_tokenizer();
-        handle->should_stop = false;
+    auto* tokenizer = handle->model->get_tokenizer();
+    handle->should_stop = false;
         
-        auto messages = parse_messages_json(messages_json);
+        std::vector<std::string> image_paths;
+        auto messages = parse_messages_json(messages_json, image_paths);
+        
         if (messages.empty()) {
             handle_error_response("No messages provided", response_buffer, buffer_size);
             return -1;
@@ -136,6 +140,7 @@ int cactus_complete(
             return -1;
         }
 
+        // Use incremental processing approach from main
         std::vector<uint32_t> current_prompt_tokens = tokenizer->encode(full_prompt);
         
         std::vector<uint32_t> tokens_to_process;
@@ -159,7 +164,7 @@ int cactus_complete(
 
         std::vector<uint32_t> generated_tokens;
         double time_to_first_token = 0.0;
-        
+        // Generate first token - use image support from HEAD if images are present
         uint32_t next_token;
         if (tokens_to_process.empty()) {
             if (handle->processed_tokens.empty()) {
@@ -169,7 +174,11 @@ int cactus_complete(
             std::vector<uint32_t> last_token_vec = { handle->processed_tokens.back() };
             next_token = handle->model->generate(last_token_vec, temperature, top_p, top_k);
         } else {
-            next_token = handle->model->generate(tokens_to_process, temperature, top_p, top_k, "profile.txt");
+            if (!image_paths.empty()) {
+                next_token = handle->model->generate_with_images(tokens_to_process, image_paths, temperature, top_p, top_k, "profile.txt");
+            } else {
+                next_token = handle->model->generate(tokens_to_process, temperature, top_p, top_k, "profile.txt");
+            }
         }
         
         handle->processed_tokens = current_prompt_tokens;
@@ -177,7 +186,7 @@ int cactus_complete(
         auto token_end = std::chrono::high_resolution_clock::now();
         time_to_first_token = std::chrono::duration_cast<std::chrono::microseconds>(token_end - start_time).count() / 1000.0;
 
-        generated_tokens.push_back(next_token);
+    generated_tokens.push_back(next_token);
         handle->processed_tokens.push_back(next_token);
 
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {

@@ -413,6 +413,44 @@ void compute_fused_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
             }
             break;
         }
+        case OpType::BILINEAR_INTERPOLATION: {
+            const auto& pos_embeds_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+            
+            int total_pos_embeds = static_cast<int>(pos_embeds_buffer.shape[0]);
+            int embed_dim = static_cast<int>(pos_embeds_buffer.shape[1]);
+            
+            int src_height = static_cast<int>(std::sqrt(total_pos_embeds));
+            int src_width = src_height;
+            
+            int dst_height = static_cast<int>(node.params.dst_height);
+            int dst_width = static_cast<int>(node.params.dst_width);
+
+            std::vector<float> pos_embed_fp32(total_pos_embeds * embed_dim);
+            
+            if (pos_embeds_buffer.precision == Precision::INT8) {
+                const int8_t* pos_embeds_data = pos_embeds_buffer.data_as<int8_t>();
+                for (int i = 0; i < total_pos_embeds * embed_dim; ++i) {
+                    pos_embed_fp32[i] = static_cast<float>(pos_embeds_data[i]) * pos_embeds_buffer.quantization_scale;
+                }
+            }
+            else if (pos_embeds_buffer.precision == Precision::FP16) {
+                const __fp16* pos_embed_fp16 = pos_embeds_buffer.data_as<__fp16>();
+                for (int i = 0; i < total_pos_embeds * embed_dim; ++i) {
+                    pos_embed_fp32[i] = static_cast<float>(pos_embed_fp16[i]);
+                }
+            }
+            else {
+                const float* pos_embed_data = pos_embeds_buffer.data_as<float>();
+                std::memcpy(pos_embed_fp32.data(), pos_embed_data, total_pos_embeds * embed_dim * sizeof(float));
+            }
+            
+            
+            float* output = node.output_buffer.data_as<float>();
+            cactus_bilinear_interpolation_fp32(pos_embed_fp32.data(), output, 
+                                              src_height, src_width, embed_dim,
+                                              dst_height, dst_width);
+            break;
+        }
         case OpType::RMS_NORM: {
             const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
             const auto& weight_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;

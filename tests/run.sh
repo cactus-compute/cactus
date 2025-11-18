@@ -6,23 +6,23 @@ echo "============================"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-WEIGHTS_DIR="$PROJECT_ROOT/weights/lfm2-1.2B"
+WEIGHTS_DIR="$PROJECT_ROOT/weights/lfm2-vl-1.6b"
 if [ ! -d "$WEIGHTS_DIR" ] || [ ! -f "$WEIGHTS_DIR/config.txt" ]; then
     echo ""
     echo "Weights not found. Generating weights..."
     echo "============================================="
     cd "$PROJECT_ROOT"
     if command -v python3 &> /dev/null; then
-        echo "Running: python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ --precision INT8"
-        if python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ --precision INT8; then
+        echo "Running: python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8"
+        if python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8; then
             echo "Successfully generated Weights"
         else
             echo "Warning: Failed to generate Weights. Tests may fail."
-            echo "Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ --precision INT8"
+            echo "Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8"
         fi
     else
         echo "Warning: Python3 not found. Cannot generate weights automatically."
-        echo "Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ --precision INT8"
+        echo "Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8"
     fi
 else
     echo ""

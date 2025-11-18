@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <sstream>
 #include <iomanip>
+#include <filesystem>
 #include <cctype>
 
 namespace cactus {
@@ -31,8 +32,10 @@ inline void handle_error_response(const std::string& error_message, char* respon
     }
 }
 
-inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::string& json) {
+inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::string& json, 
+                                                                   std::vector<std::string>& out_image_paths) {
     std::vector<cactus::engine::ChatMessage> messages;
+    out_image_paths.clear();
     
     size_t pos = json.find('[');
     if (pos == std::string::npos) {
@@ -43,42 +46,79 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
     while (pos != std::string::npos) {
         cactus::engine::ChatMessage msg;
         
+        size_t obj_start = pos;
+        int brace_count = 1;
+        size_t obj_end = obj_start + 1;
+        while (obj_end < json.length() && brace_count > 0) {
+            if (json[obj_end] == '{') brace_count++;
+            else if (json[obj_end] == '}') brace_count--;
+            obj_end++;
+        }
+
         size_t role_pos = json.find("\"role\"", pos);
-        if (role_pos == std::string::npos) break;
+        if (role_pos == std::string::npos || role_pos >= obj_end) break;
         
         size_t role_start = json.find('"', role_pos + 6) + 1;
         size_t role_end = json.find('"', role_start);
         msg.role = json.substr(role_start, role_end - role_start);
         
         size_t content_pos = json.find("\"content\"", role_end);
-        if (content_pos == std::string::npos) break;
-        
-        size_t content_start = json.find('"', content_pos + 9) + 1;
-        size_t content_end = content_start;
-        
-        while (content_end < json.length()) {
-            content_end = json.find('"', content_end);
-            if (content_end == std::string::npos) break;
-            if (json[content_end - 1] != '\\') break;
-            content_end++;
+        if (content_pos != std::string::npos && content_pos < obj_end) {
+            size_t content_start = json.find('"', content_pos + 9) + 1;
+            size_t content_end = content_start;
+            
+            while (content_end < json.length()) {
+                content_end = json.find('"', content_end);
+                if (content_end == std::string::npos) break;
+                if (json[content_end - 1] != '\\') break;
+                content_end++;
+            }
+            
+            msg.content = json.substr(content_start, content_end - content_start);
+            
+            size_t escape_pos = 0;
+            while ((escape_pos = msg.content.find("\\n", escape_pos)) != std::string::npos) {
+                msg.content.replace(escape_pos, 2, "\n");
+                escape_pos += 1;
+            }
+            escape_pos = 0;
+            while ((escape_pos = msg.content.find("\\\"", escape_pos)) != std::string::npos) {
+                msg.content.replace(escape_pos, 2, "\"");
+                escape_pos += 1;
+            }
         }
         
-        msg.content = json.substr(content_start, content_end - content_start);
-        
-        size_t escape_pos = 0;
-        while ((escape_pos = msg.content.find("\\n", escape_pos)) != std::string::npos) {
-            msg.content.replace(escape_pos, 2, "\n");
-            escape_pos += 1;
-        }
-        escape_pos = 0;
-        while ((escape_pos = msg.content.find("\\\"", escape_pos)) != std::string::npos) {
-            msg.content.replace(escape_pos, 2, "\"");
-            escape_pos += 1;
+        size_t images_pos = json.find("\"images\"", pos);
+        if (images_pos != std::string::npos && images_pos < obj_end) {
+            size_t array_start = json.find('[', images_pos);
+            if (array_start != std::string::npos && array_start < obj_end) {
+                size_t array_end = json.find(']', array_start);
+                if (array_end != std::string::npos && array_end < obj_end) {
+                    size_t img_pos = array_start;
+                    while (true) {
+                        img_pos = json.find('"', img_pos + 1);
+                        if (img_pos == std::string::npos || img_pos >= array_end) break;
+                        
+                        size_t img_start = img_pos + 1;
+                        size_t img_end = json.find('"', img_start);
+                        if (img_end == std::string::npos || img_end > array_end) break;
+                        
+                        std::string img_path = json.substr(img_start, img_end - img_start);
+                        
+                        std::filesystem::path p(img_path);
+                        img_path = std::filesystem::absolute(p).string();
+                        
+                        msg.images.push_back(img_path);
+                        out_image_paths.push_back(img_path);
+                        img_pos = img_end;
+                    }
+                }
+            }
         }
         
         messages.push_back(msg);
         
-        pos = json.find('{', content_end);
+        pos = json.find('{', obj_end);
     }
     
     return messages;
@@ -137,10 +177,10 @@ inline void parse_options_json(const std::string& json,
                                float& temperature, float& top_p, 
                                size_t& top_k, size_t& max_tokens,
                                std::vector<std::string>& stop_sequences) {
-    temperature = -1.0f; // Use model default
-    top_p = -1.0f;       // Use model default
-    top_k = 0;           // Use model default
-    max_tokens = 100;    // FFI-level default
+    temperature = -1.0f; 
+    top_p = -1.0f;       
+    top_k = 0;           
+    max_tokens = 100;    
     stop_sequences.clear();
     
     if (json.empty()) return;

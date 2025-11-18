@@ -17,6 +17,8 @@ class CactusGraph;
 namespace cactus {
 namespace engine {
 
+class Siglip2Preprocessor;
+
 struct Config {
     uint32_t vocab_size = 151936;
     uint32_t bos_token_id = 151643;
@@ -35,7 +37,38 @@ struct Config {
     uint32_t moe_every_n_layers = 0;
     bool tie_word_embeddings = true;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, SMOL = 2, NOMIC = 3, LFM2 = 4};
+    uint32_t vision_hidden_dim = 0;
+    uint32_t vision_num_layers = 0;
+    uint32_t vision_attention_heads = 0;
+    uint32_t vision_image_size = 0;
+    uint32_t vision_patch_size = 0;
+    uint32_t vision_num_channels = 3;
+    uint32_t vision_embed_dim = 0;
+    uint32_t visual_tokens_per_img = 0;
+    bool use_pixel_shuffle = false;
+    uint32_t pixel_shuffle_factor = 1;
+    bool use_image_tokens = false;
+    bool use_layout_tags = false;
+    uint32_t image_seq_len = 64;
+
+    uint32_t global_image_size = 2048;
+    uint32_t max_tile_size = 512;
+    float rescale_factor = 0.00392156862745098f;
+    float image_mean = 0.5f;
+    float image_std = 0.5f;
+    
+    uint32_t downsample_factor = 2;
+    uint32_t min_tiles = 2;
+    uint32_t max_tiles = 10;
+    bool use_thumbnail = true;
+    uint32_t min_image_tokens = 64;
+    uint32_t max_image_tokens = 256;
+        uint32_t max_num_patches = 1024;
+    uint32_t tile_size = 512;
+    float max_pixels_tolerance = 2.0f;
+    bool do_image_splitting = true;
+
+    enum class ModelType {QWEN = 0, GEMMA = 1, SMOL = 2, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6};
     ModelType model_type = ModelType::QWEN;
 
     enum class ModelVariant {DEFAULT = 0, VLM = 1, EXTRACT = 2, RAG = 3};
@@ -77,6 +110,7 @@ struct MergeRule {
 struct ChatMessage {
     std::string role;
     std::string content;
+    std::vector<std::string> images;
 };
 
 class Tokenizer {
@@ -96,23 +130,32 @@ public:
     virtual bool has_chat_template() const { return has_chat_template_; }
 
     virtual bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) = 0;
+    
+    uint32_t get_image_token_id() const { return image_token_id_; }
+    uint32_t get_fake_token_id() const { return fake_token_id_; }
+    uint32_t get_global_img_token_id() const { return global_img_token_id_; }
+
 
     void set_corpus_dir(const std::string& dir) { corpus_dir_ = dir; }
 
 protected:
-
-    enum class ModelType { UNKNOWN, QWEN, GEMMA, LFM2 , SMOL, BERT };
+    enum class ModelType { UNKNOWN, QWEN, GEMMA, LFM2, SMOL, BERT };
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
     bool has_chat_template_ = false;
     std::string chat_template_;
+    
+    uint32_t image_token_id_ = 396;
+    uint32_t fake_token_id_ = 49189;
+    uint32_t global_img_token_id_ = 49152;
     std::string corpus_dir_;
 
     void detect_model_type(const std::string& config_path);
     std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_lfm2_vl_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_smol_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
 };
 
@@ -307,21 +350,36 @@ struct KVCache {
 
 class Model {
 public:
+    struct DebugNode {
+        uint32_t layer_idx;
+        std::string name;
+        size_t node_id;
+    };
+
     Model();
     explicit Model(const Config& config);
     virtual ~Model();
 
     const Config& get_config() const { return config_; }
     Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
+    const std::vector<DebugNode>& get_debug_nodes() const;
 
-    bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "");
-    uint32_t generate(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
+    virtual bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true);
+    virtual bool init(CactusGraph* external_graph, const std::string& model_folder, size_t context_size,
+              const std::string& system_prompt = "", bool do_warmup = true);
+    virtual uint32_t generate(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
                       size_t top_k = 0, const std::string& profile_file = "");
+
+    virtual uint32_t generate_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
+                                          float temperature = -1.0f, float top_p = -1.0f,
+                                          size_t top_k = 0, const std::string& profile_file = "");
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, const std::string& profile_file = "");
 
     virtual void reset_cache() { kv_cache_.reset(); }
     void set_cache_window(size_t window_size, size_t sink_size = 4) { kv_cache_.set_window_size(window_size, sink_size); }
+
+    void* graph_handle_;
 
 protected:
     virtual size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) = 0;
@@ -338,7 +396,6 @@ protected:
     Config config_;
     std::unique_ptr<Tokenizer> tokenizer_;
 
-    void* graph_handle_;
     bool initialized_;
     float attention_scale_;
 
@@ -351,9 +408,99 @@ protected:
     size_t embedding_node_id_;
     std::string model_folder_path_;
     size_t output_weight_node_id_;
+
+    mutable std::vector<DebugNode> debug_nodes_;
+
+    void capture_debug_node(uint32_t layer_idx, const std::string& name, size_t node_id) const;
+    void clear_debug_nodes();
+
+    bool init_internal(CactusGraph* gb, const std::string& model_folder, size_t context_size,
+                       const std::string& system_prompt, bool do_warmup);
+    bool owns_graph_;
 };
 
 std::unique_ptr<Model> create_model(const std::string& model_folder);
+
+class Siglip2Preprocessor {
+public:
+    struct Config {
+        int patch_size = 16;
+        int downsample_factor = 2;
+        int min_tiles = 2;
+        int max_tiles = 10;
+    bool use_thumbnail = true;
+        int min_image_tokens = 64;
+        int max_image_tokens = 256;
+        int max_num_patches = 1024;
+        int tile_size = 512;
+        float max_pixels_tolerance = 2.0f;
+        bool do_resize = true;
+        bool do_rescale = true;
+        bool do_normalize = true;
+        bool do_convert_rgb = true;
+        bool do_image_splitting = true;
+        float rescale_factor = 1.0f / 255.0f;
+        float image_mean[3] = {0.5f, 0.5f, 0.5f};
+        float image_std[3] = {0.5f, 0.5f, 0.5f};
+    };
+
+    struct PreprocessedImage {
+        std::vector<float> pixel_values;       
+        std::vector<int> pixel_attention_mask; 
+        std::vector<std::pair<int,int>> spatial_shapes;  
+        std::vector<size_t> pixel_values_shape;           
+        std::vector<size_t> pixel_attention_mask_shape;   
+        std::vector<size_t> spatial_shapes_shape;         
+        int num_patches_height;                 
+        int num_patches_width;                  
+        int actual_num_patches;                 
+        int num_tiles;                          
+        int patch_dim;                          
+        int max_patches_per_tile;               
+          
+        int image_rows;                         
+        int image_cols;                         
+        int image_height;                       
+        int image_width;                        
+        int tokens_per_tile;                    
+        int thumbnail_tokens;                   
+        
+        ~PreprocessedImage();
+    };
+
+    struct SpatialShapeResult {
+        std::vector<std::pair<int, int>> shapes;  
+        int grid_rows;                             
+        int grid_cols;                             
+    };
+
+    explicit Siglip2Preprocessor(const Config& config);
+    Siglip2Preprocessor();
+    ~Siglip2Preprocessor();
+
+    PreprocessedImage preprocess_from_file(const std::string& image_path);
+    PreprocessedImage preprocess_from_memory(const unsigned char* img_data, int width, int height, int channels);
+    SpatialShapeResult compute_spatial_shapes(int height, int width);
+
+private:
+    Config config_;
+
+    std::vector<unsigned char> convert_to_rgb(const unsigned char* img_data, int width, int height, int channels);
+    std::pair<int, int> smart_resize(int height, int width);
+    bool is_image_too_large(int height, int width);
+    std::pair<int, int> get_grid_layout(int height, int width);
+    std::pair<int, int> find_closest_aspect_ratio(float aspect_ratio, int width, int height);
+    std::vector<float> resize_image(const unsigned char* img_data, int src_width, int src_height,
+                                    int dst_width, int dst_height, int channels);
+    std::vector<float> normalize_image(const float* img_data, int width, int height, int channels);
+    std::vector<std::vector<float>> convert_image_to_patches(
+        const std::vector<float>& image, int width, int height, int channels, int patch_size);
+    PreprocessedImage pad_patches(const std::vector<std::vector<float>>& tile_patches,
+                                  const std::vector<std::pair<int,int>>& spatial_shapes,
+                                  int patch_dim,
+                                  int max_patches_per_tile);
+    int round_by_factor(int number, int factor);
+};
 
 class AudioProcessor {
 public:

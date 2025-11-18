@@ -366,6 +366,7 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
         case OpType::GATHER:
         case OpType::SLICE:
         case OpType::EMBEDDING:
+        case OpType::BILINEAR_INTERPOLATION:
             compute_fused_node(node, nodes, node_index_map);
             break;
         case OpType::SAMPLE:
@@ -519,6 +520,22 @@ CactusGraph::CactusGraph() : next_node_id_(0) {}
 
 size_t CactusGraph::get_node_count() const { 
     return nodes_.size(); 
+}
+
+void CactusGraph::register_debug_node(uint32_t layer_idx, const std::string& name, size_t node_id) {
+    debug_nodes_.push_back({layer_idx, name, node_id});
+}
+
+void CactusGraph::capture_debug_node(uint32_t layer_idx, const std::string& name, size_t node_id) {
+    register_debug_node(layer_idx, name, node_id);
+}
+
+const std::vector<CactusGraph::DebugNodeEntry>& CactusGraph::get_debug_nodes() const {
+    return debug_nodes_;
+}
+
+void CactusGraph::clear_debug_nodes() {
+    debug_nodes_.clear();
 }
 
  

@@ -18,11 +18,15 @@ find_library(CACTUS_LIB
     PATHS ${CACTUS_BUILD_DIR} ${CACTUS_BUILD_DIR}/lib
     REQUIRED
 )
-
+ 
 set(MMAN_LIB "")
 if(NOT APPLE)
-    set(MMAN_LIB "mman")
-    message(STATUS "Non-Apple system detected: will attempt to link with -lmman for mmap/munmap support")
+    find_library(MMAN_LIB mman)
+    if(MMAN_LIB)
+        message(STATUS "Found libmman: ${MMAN_LIB}")
+    else()
+        message(STATUS "libmman not found; assuming mmap symbols are provided by the C runtime")
+    endif()
 endif()
 
 file(GLOB TEST_SOURCES "test_*.cpp")

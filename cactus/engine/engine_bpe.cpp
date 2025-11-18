@@ -60,12 +60,17 @@ bool BPETokenizer::load_vocabulary_mmap(const std::string& vocab_file, const std
     uint32_t id = 0;
     token_to_id_.clear();
     id_to_token_.clear();
+    special_tokens_.clear();
 
     while (std::getline(vocab_stream, line)) {
         rtrim_cr(line);
         if (line.empty()) continue;
         token_to_id_[line] = id;
         id_to_token_.push_back(line);
+
+        if (!line.empty() && line.front() == '<' && line.back() == '>') {
+            special_tokens_[line] = id;
+        }
         id++;
     }
     vocab_size_ = id;

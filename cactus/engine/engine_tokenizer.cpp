@@ -28,7 +28,6 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
                 break;
             } else if(line.find("lfm2") != std::string::npos) {
                 model_type_ = ModelType::LFM2;
-                break;
             } else if (line.find("smol") != std::string::npos) {
                 model_type_ = ModelType::SMOL;
                 break;
@@ -71,6 +70,17 @@ std::vector<uint32_t> Tokenizer::apply_chat_template(const std::vector<ChatMessa
 }
 
 std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+    bool has_images = false;
+    for (const auto& msg : messages) {
+        if (!msg.images.empty()) {
+            has_images = true;
+            break;
+        }
+    }
+    if (model_type_ == ModelType::LFM2 && has_images) {
+        return format_lfm2_vl_style(messages, add_generation_prompt, tools_json);
+    }
+    
     switch (model_type_) {
         case ModelType::QWEN:
             return format_qwen_style(messages, add_generation_prompt, tools_json);
@@ -243,6 +253,84 @@ std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& message
     return result;
 }
 
+std::string Tokenizer::format_lfm2_vl_style(
+    const std::vector<ChatMessage>& messages,
+    bool add_generation_prompt,
+    const std::string& tools_json) const
+{
+    if (!tools_json.empty()) {
+        return "ERROR: Tool calls are not supported for LFM2-VL models";
+    }
+
+    std::string result = "<|startoftext|>";
+    
+    for (const auto& msg : messages) {
+        result += "<|im_start|>" + msg.role + "\n";
+        result += msg.content;
+        for (const auto& image_path : msg.images) {
+            int width = 0, height = 0, channels = 0;
+            unsigned char* img_data = stbi_load(image_path.c_str(), &width, &height, &channels, 0);
+            
+            if (img_data) {
+                Siglip2Preprocessor preprocessor;
+                auto shape_result = preprocessor.compute_spatial_shapes(height, width);
+                int downsample_factor = 2;
+                bool use_thumbnail = true;
+                int grid_rows = shape_result.grid_rows;
+                int grid_cols = shape_result.grid_cols;
+                int num_tiles = grid_rows * grid_cols;
+                result += "<|image_start|>";
+                
+                if (num_tiles > 1) {
+                    for (int tile_idx = 0; tile_idx < num_tiles; ++tile_idx) {
+                        int row = tile_idx / grid_cols;
+                        int col = tile_idx % grid_cols;
+                        
+                        result += "<|img_row_" + std::to_string(row + 1) + "_col_" + std::to_string(col + 1) + "|>";
+                        auto [tile_height, tile_width] = shape_result.shapes[tile_idx];
+                        int tile_tokens = (tile_height * tile_width) / (downsample_factor * downsample_factor);
+                        
+                        for (int t = 0; t < tile_tokens; ++t) {
+                            result += "<image>";
+                        }
+                    }
+                    if (use_thumbnail && static_cast<size_t>(num_tiles) < shape_result.shapes.size()) {
+                        result += "<|img_thumbnail|>";
+                        
+                        auto [thumb_height, thumb_width] = shape_result.shapes[num_tiles];
+                        int thumbnail_tokens = (thumb_height * thumb_width) / (downsample_factor * downsample_factor);
+                        
+                        for (int t = 0; t < thumbnail_tokens; ++t) {
+                            result += "<image>";
+                        }
+                    }
+                } else if (num_tiles == 1) {
+                    auto [thumb_height, thumb_width] = shape_result.shapes[0];
+                    int thumbnail_tokens = (thumb_height * thumb_width) / (downsample_factor * downsample_factor);
+                    
+                    for (int t = 0; t < thumbnail_tokens; ++t) {
+                        result += "<image>";
+                    }
+                }
+                
+                result += "<|image_end|>";
+                
+                stbi_image_free(img_data);
+            } else {
+                result += "<image>";
+            }
+        }
+        
+        result += "<|im_end|>\n";
+    }
+
+    if (add_generation_prompt) {
+        result += "<|im_start|>assistant\n";
+    }
+
+    return result;
+}
+
 
 std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
 
@@ -320,6 +408,7 @@ std::string Tokenizer::format_smol_style(const std::vector<ChatMessage>& message
 
     return result;
 }
+
 
 } // namespace engine
 } // namespace cactus
