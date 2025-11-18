@@ -142,7 +142,9 @@ python3 tools/convert_hf.py Qwen/Qwen3-Embedding-0.6B weights/qwen3-embed-600m/
 python3 tools/convert_hf.py nomic-ai/nomic-embed-text-v2-moe weights/nomic/ 
 ```
 
-You can start an interactive session with a model by running:
+## Playing with a model
+
+Just run 
 
 ```bash
 /cli/build.sh 
