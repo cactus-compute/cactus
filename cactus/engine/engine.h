@@ -7,10 +7,27 @@
 #include <cstdint>
 
 #include "../graph/graph.h"
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wc99-extensions"
+#pragma clang diagnostic ignored "-Wunused-parameter"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#endif
+
 extern "C" {
     #include "../../libs/stb/stb_image.h"
     #include "../../libs/stb/stb_image_resize2.h"
 }
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 class CactusGraph;
 

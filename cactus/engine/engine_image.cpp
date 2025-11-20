@@ -461,7 +461,7 @@ std::vector<float> Siglip2Preprocessor::normalize_image(
     size_t total_pixels = width * height * channels;
     std::vector<float> normalized(total_pixels);
 
-    for (size_t i = 0; i < width * height; ++i) {
+    for (size_t i = 0; i < static_cast<size_t>(width * height); ++i) {
         for (int c = 0; c < channels; ++c) {
             size_t idx = i * channels + c;
             float pixel = img_data[idx];

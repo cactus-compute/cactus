@@ -17,8 +17,9 @@ namespace engine {
 
 
 Model::Model()
-        : tokenizer_(nullptr),
-            graph_handle_(nullptr),
+        : graph_handle_(nullptr),
+            config_(),
+            tokenizer_(nullptr),
             initialized_(false),
             attention_scale_(0.0f),
             output_weight_node_id_(0),
@@ -26,13 +27,13 @@ Model::Model()
 }
 
 Model::Model(const Config& config)
-    : config_(config),
+    : graph_handle_(nullptr),
+      config_(config),
       tokenizer_(nullptr),
-      graph_handle_(nullptr),
       initialized_(false),
       attention_scale_(0.0f),
       output_weight_node_id_(0),
-            owns_graph_(false) {
+      owns_graph_(false) {
 }
 
 Model::~Model() {

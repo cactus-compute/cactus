@@ -227,9 +227,9 @@ public:
 
     bool is_cache_empty() const;
 
-    bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true);
+    bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true) override;
     bool init(CactusGraph* external_graph, const std::string& model_folder, size_t context_size,
-              const std::string& system_prompt = "", bool do_warmup = true);
+              const std::string& system_prompt = "", bool do_warmup = true) override;
 
 protected:
     size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,

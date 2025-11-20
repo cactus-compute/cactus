@@ -5,8 +5,11 @@
 #include <cmath>
 #include <vector>
 #include <stdexcept>
-#include <numbers>
 #include <limits>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 namespace cactus {
 namespace engine {
@@ -65,7 +68,7 @@ static void to_db(
 
 static void rfft_f32_1d(const float* input, float* output, const size_t n, const char* norm) {
     const size_t out_len = n / 2 + 1;
-    const float two_pi_over_n = 2.0f * std::numbers::pi / static_cast<float>(n);
+    const float two_pi_over_n = 2.0f * static_cast<float>(M_PI) / static_cast<float>(n);
 
     float norm_factor = 1.0f;
     if (norm) {
@@ -259,7 +262,7 @@ static void compute_spectrogram_f32(
         size_t length = frame_length + 1;
         hann_window.resize(frame_length);
         for (size_t i = 0; i < frame_length; i++) {
-            hann_window[i] = 0.5f * (1.0f - std::cos(2.0f * std::numbers::pi * i / (length - 1)));
+            hann_window[i] = 0.5f * (1.0f - std::cos(2.0f * static_cast<float>(M_PI) * i / (length - 1)));
         }
         actual_window = hann_window.data();
     } else if (window_length != frame_length) {
@@ -332,7 +335,7 @@ static void compute_spectrogram_f32(
                 for (size_t i = 0; i < frame_length; i++) {
                     float u1 = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
                     float u2 = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-                    float randn = std::sqrt(-2.0f * std::log(u1)) * std::cos(2.0f * std::numbers::pi * u2);
+                    float randn = std::sqrt(-2.0f * std::log(u1)) * std::cos(2.0f * static_cast<float>(M_PI) * u2);
                     local_buffer[i] += dither * randn;
                 }
             }

@@ -481,16 +481,16 @@ void cactus_bilinear_interpolation_fp32(const float* input, float* output, size_
                     ? static_cast<float>(src_width - 1) / static_cast<float>(dst_width - 1)
                             : 0.0f;
             
-    for (int dst_y = 0; dst_y < dst_height; ++dst_y) {
-        for (int dst_x = 0; dst_x < dst_width; ++dst_x) {
+    for (size_t dst_y = 0; dst_y < dst_height; ++dst_y) {
+        for (size_t dst_x = 0; dst_x < dst_width; ++dst_x) {
             float src_y_float = dst_y * scale_h;
             float src_x_float = dst_x * scale_w;
             
             int y0 = static_cast<int>(std::floor(src_y_float));
             int x0 = static_cast<int>(std::floor(src_x_float));
-            
-            int y1 = ((y0 + 1) < src_height) ? (y0 + 1) : (src_height - 1);
-            int x1 = ((x0 + 1) < src_width) ? (x0 + 1) : (src_width - 1);
+
+            int y1 = ((y0 + 1) < static_cast<int>(src_height)) ? (y0 + 1) : (static_cast<int>(src_height) - 1);
+            int x1 = ((x0 + 1) < static_cast<int>(src_width)) ? (x0 + 1) : (static_cast<int>(src_width) - 1);
 
             float dy = src_y_float - y0;
             float dx = src_x_float - x0;
@@ -500,14 +500,14 @@ void cactus_bilinear_interpolation_fp32(const float* input, float* output, size_
             float w10 = (1.0f - dx) * dy;
             float w11 = dx * dy;
             
-            int idx00 = (y0 * src_width + x0) * embed_dim;
-            int idx01 = (y0 * src_width + x1) * embed_dim;
-            int idx10 = (y1 * src_width + x0) * embed_dim;
-            int idx11 = (y1 * src_width + x1) * embed_dim;
+            size_t idx00 = (y0 * static_cast<int>(src_width) + x0) * static_cast<int>(embed_dim);
+            size_t idx01 = (y0 * static_cast<int>(src_width) + x1) * static_cast<int>(embed_dim);
+            size_t idx10 = (y1 * static_cast<int>(src_width) + x0) * static_cast<int>(embed_dim);
+            size_t idx11 = (y1 * static_cast<int>(src_width) + x1) * static_cast<int>(embed_dim);
+
+            size_t out_idx = (dst_y * dst_width + dst_x) * embed_dim;
             
-            int out_idx = (dst_y * dst_width + dst_x) * embed_dim;
-            
-            for (int d = 0; d < embed_dim; ++d) {
+            for (size_t d = 0; d < embed_dim; ++d) {
                 output[out_idx + d] = 
                     input[idx00 + d] * w00 +
                     input[idx01 + d] * w01 +

@@ -391,7 +391,7 @@ size_t LFM2Model::forward(const std::vector<uint32_t>& tokens, bool use_cache) {
         : ComputeBackend::NPU;
     return forward(gb, tokens, backend, use_cache);
 }
-void LFM2Model::post_execute_updates(CactusGraph* gb, size_t seq_len) {
+void LFM2Model::post_execute_updates(CactusGraph* gb, size_t /*seq_len*/) {
     if (conv_cache_bx_nodes_.empty()) {
         return;
     }

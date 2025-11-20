@@ -44,7 +44,7 @@ Lfm2VlModel::Lfm2VlModel(const Config& config)
     preprocessor_ = Siglip2Preprocessor(preprocessor_config);
 }
 
-bool Lfm2VlModel::init(const std::string& model_folder, size_t context_size, const std::string& system_prompt, bool do_warmup) {
+bool Lfm2VlModel::init(const std::string& model_folder, size_t context_size, const std::string& system_prompt, bool /*do_warmup*/) {
 
     if (!Model::init(model_folder, context_size, system_prompt, false)) {
         return false;
