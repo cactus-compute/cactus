@@ -1,6 +1,6 @@
 <img src="assets/banner.jpg" alt="Logo" style="border-radius: 30px; width: 100%;">
 
-Fast, lightweight, cross-platform & energy-efficient AI inference framework for all consumer devices. 
+Fast, lightweight, cross-platform & energy-efficient AI inference framework for small consumer devices. 
 
 ## Cactus Graph 
 Cactus Graph is a general numerical computing framework for implementing 
