@@ -6,23 +6,25 @@ echo "============================"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-WEIGHTS_DIR="$PROJECT_ROOT/weights/lfm2-vl-1.6b"
+MODEL_NAME="${1:-lfm2-vl-1.6b}"
+WEIGHTS_DIR="$PROJECT_ROOT/weights/$MODEL_NAME"
+echo "Using model: $MODEL_NAME"
 if [ ! -d "$WEIGHTS_DIR" ] || [ ! -f "$WEIGHTS_DIR/config.txt" ]; then
     echo ""
     echo "Weights not found. Generating weights..."
     echo "============================================="
     cd "$PROJECT_ROOT"
     if command -v python3 &> /dev/null; then
-        echo "Running: python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8"
-        if python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8; then
+        echo "Running: python3 tools/convert_hf.py LiquidAI/$MODEL_NAME weights/$MODEL_NAME/ --precision INT8"
+        if python3 tools/convert_hf.py LiquidAI/$MODEL_NAME weights/$MODEL_NAME/ --precision INT8; then
             echo "Successfully generated Weights"
         else
             echo "Warning: Failed to generate Weights. Tests may fail."
-            echo "Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8"
+            echo "Please run manually: python3 tools/convert_hf.py LiquidAI/$MODEL_NAME weights/$MODEL_NAME/ --precision INT8"
         fi
     else
         echo "Warning: Python3 not found. Cannot generate weights automatically."
-        echo "Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8"
+        echo "Please run manually: python3 tools/convert_hf.py LiquidAI/$MODEL_NAME weights/$MODEL_NAME/ --precision INT8"
     fi
 else
     echo ""
@@ -80,5 +82,5 @@ echo "Found ${#test_executables[@]} test executable(s)"
 
 for executable in "${test_executables[@]}"; do
     exec_name=$(basename "$executable")
-    ./"$exec_name"
+    MODEL_PATH="../../weights/$MODEL_NAME" ./"$exec_name"
 done

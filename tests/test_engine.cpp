@@ -10,9 +10,10 @@
 #include <cstdio>
 #include <vector>
 #include <sstream>
+#include <cstdlib>
 
 
-const char* g_model_path = "../../weights/lfm2-vl-1.6b";
+const char* g_model_path = nullptr;
 
 const char* g_options = R"({
         "max_tokens": 256,
@@ -239,6 +240,7 @@ bool test_image_input() {
     }
 
     std::string vision_file = model_path_str + std::string("/vision_patch_embedding.weights");
+    std::cout << "Checking for vision weights at: " << vision_file << std::endl;
     std::ifstream vf(vision_file);
     if (!vf.good()) {
         std::cout << "Skipping image input test: vision weights not found." << std::endl;
@@ -524,6 +526,16 @@ bool test_audio_processor() {
 }
 
 int main() {
+    // Read model path from environment variable, default to lfm2-vl-1.6b if not set
+    const char* env_model_path = std::getenv("MODEL_PATH");
+    if (env_model_path != nullptr) {
+        g_model_path = env_model_path;
+    } else {
+        g_model_path = "../../weights/lfm2-vl-1.6b";
+    }
+
+    std::cout << "Using model path: " << g_model_path << std::endl;
+
     TestUtils::TestRunner runner("Engine Tests");
     runner.run_test("streaming", test_streaming());
     runner.run_test("tool_calls", test_tool_call());

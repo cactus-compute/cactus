@@ -17,3 +17,4 @@ apple/*.xcframework
 apple/libcactus.a
 *.a
 venv
+tools/.venv
