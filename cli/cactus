@@ -1,0 +1,186 @@
+#!/bin/bash
+
+set -e
+
+# Default model configuration
+DEFAULT_MODEL_ID="LiquidAI/LFM2-1.2B"
+
+CLI_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(dirname "$CLI_DIR")"
+BUILD_DIR="$CLI_DIR/build"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+print_usage() {
+    echo "Usage: $0 <command> [model_id]"
+    echo ""
+    echo "Commands:"
+    echo "  build         - Build the chat application only"
+    echo "  download      - Download model weights only"
+    echo "  run           - Build, download (if needed), and run the chat app"
+    echo ""
+    echo "Arguments:"
+    echo "  model_id      - HuggingFace model ID (e.g., LiquidAI/LFM2-1.2B)"
+    echo ""
+    echo "Examples:"
+    echo "  $0 build"
+    echo "  $0 download LiquidAI/LFM2-1.2B"
+    echo "  $0 run"
+    echo "  $0 run Qwen/Qwen3-0.6B"
+    echo "  $0 run google/gemma-3-270m-it"
+    echo ""
+    echo "Common models:"
+    echo "  LiquidAI/LFM2-1.2B (default)"
+    echo "  Qwen/Qwen3-0.6B"
+    echo "  google/gemma-3-270m-it"
+    echo "  google/gemma-3-1b-it"
+}
+
+get_model_dir_name() {
+    # Convert model ID to directory name
+    # e.g., "LiquidAI/LFM2-1.2B" -> "lfm2-1.2B"
+    # e.g., "Qwen/Qwen3-0.6B" -> "qwen3-0.6B"
+    # e.g., "google/gemma-3-270m-it" -> "gemma3-270m"
+
+    local model_id="$1"
+    local model_name=$(echo "$model_id" | cut -d'/' -f2)
+
+    # Convert to lowercase and clean up
+    model_name=$(echo "$model_name" | tr '[:upper:]' '[:lower:]' | sed 's/-it$//')
+
+    echo "$model_name"
+}
+
+build_chat() {
+    echo -e "${BLUE}Building Cactus chat...${NC}"
+    echo "======================="
+
+    mkdir -p "$BUILD_DIR"
+
+    # Build Cactus library if needed
+    cd "$PROJECT_ROOT/cactus"
+    if [ ! -f "build/libcactus.a" ]; then
+        echo -e "${YELLOW}Cactus library not found. Building...${NC}"
+        ./build.sh
+    else
+        echo -e "${GREEN}Cactus library found.${NC}"
+    fi
+
+    cd "$BUILD_DIR"
+
+    echo "Compiling chat.cpp..."
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        clang++ -std=c++17 -O3 \
+            -I"$PROJECT_ROOT" \
+            "$CLI_DIR/chat.cpp" \
+            "$PROJECT_ROOT/cactus/build/libcactus.a" \
+            -o chat \
+            -framework Accelerate
+    else
+        g++ -std=c++17 -O3 \
+            -I"$PROJECT_ROOT" \
+            "$CLI_DIR/chat.cpp" \
+            "$PROJECT_ROOT/cactus/build/libcactus.a" \
+            -o chat \
+            -pthread
+    fi
+
+    echo -e "${GREEN}Build complete: $BUILD_DIR/chat${NC}"
+    echo ""
+}
+
+download_model() {
+    local model_id="$1"
+    local model_dir=$(get_model_dir_name "$model_id")
+    local weights_dir="$PROJECT_ROOT/weights/$model_dir"
+
+    if [ -d "$weights_dir" ] && [ -f "$weights_dir/config.txt" ]; then
+        echo -e "${GREEN}Model weights found at $weights_dir${NC}"
+        return 0
+    fi
+
+    echo ""
+    echo -e "${YELLOW}Model weights not found. Downloading $model_id...${NC}"
+    echo "============================================="
+
+    cd "$PROJECT_ROOT"
+
+    if ! command -v python3 &> /dev/null; then
+        echo -e "${RED}Error: Python3 not found. Cannot download weights automatically.${NC}"
+        echo "Please run manually: python3 tools/convert_hf.py $model_id weights/$model_dir/ --precision INT8"
+        return 1
+    fi
+
+    if ! python3 -c "import numpy, torch, transformers" 2>/dev/null; then
+        echo -e "${RED}Error: Required Python packages not found.${NC}"
+        echo "Please check the README for setup instructions."
+        return 1
+    fi
+
+    echo "Running: python3 tools/convert_hf.py $model_id weights/$model_dir/ --precision INT8"
+    if python3 tools/convert_hf.py "$model_id" "weights/$model_dir/" --precision INT8; then
+        echo -e "${GREEN}Successfully downloaded and converted weights${NC}"
+        return 0
+    else
+        echo -e "${RED}Error: Failed to download weights.${NC}"
+        echo "Please run manually: python3 tools/convert_hf.py $model_id weights/$model_dir/ --precision INT8"
+        return 1
+    fi
+}
+
+run_chat() {
+    local model_id="${1:-$DEFAULT_MODEL_ID}"
+    local model_dir=$(get_model_dir_name "$model_id")
+    local weights_dir="$PROJECT_ROOT/weights/$model_dir"
+
+    # Build the chat app
+    build_chat
+
+    # Download model if needed
+    if ! download_model "$model_id"; then
+        exit 1
+    fi
+
+    # Run the chat app
+    clear
+    echo -e "${GREEN}Starting Cactus Chat with model: $model_id${NC}"
+    echo ""
+
+    "$BUILD_DIR/chat" "$weights_dir"
+}
+
+# Main command handling
+if [ $# -eq 0 ]; then
+    print_usage
+    exit 1
+fi
+
+COMMAND="$1"
+MODEL_ID="${2:-$DEFAULT_MODEL_ID}"
+
+case "$COMMAND" in
+    build)
+        build_chat
+        ;;
+    download)
+        download_model "$MODEL_ID"
+        ;;
+    run)
+        run_chat "$MODEL_ID"
+        ;;
+    -h|--help|help)
+        print_usage
+        ;;
+    *)
+        echo -e "${RED}Error: Unknown command '$COMMAND'${NC}"
+        echo ""
+        print_usage
+        exit 1
+        ;;
+esac

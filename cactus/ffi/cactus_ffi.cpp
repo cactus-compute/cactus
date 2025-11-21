@@ -110,8 +110,8 @@ int cactus_complete(
         auto start_time = std::chrono::high_resolution_clock::now();
         
         auto* handle = static_cast<CactusModelHandle*>(model);
-    auto* tokenizer = handle->model->get_tokenizer();
-    handle->should_stop = false;
+        auto* tokenizer = handle->model->get_tokenizer();
+        handle->should_stop = false;
         
         std::vector<std::string> image_paths;
         auto messages = parse_messages_json(messages_json, image_paths);
@@ -186,7 +186,7 @@ int cactus_complete(
         auto token_end = std::chrono::high_resolution_clock::now();
         time_to_first_token = std::chrono::duration_cast<std::chrono::microseconds>(token_end - start_time).count() / 1000.0;
 
-    generated_tokens.push_back(next_token);
+        generated_tokens.push_back(next_token);
         handle->processed_tokens.push_back(next_token);
 
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {

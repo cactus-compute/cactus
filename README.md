@@ -97,7 +97,7 @@ Example response from Gemma3-270m-INT8
 - NPUs to improve energy-efficiency and prefill speed up to 11x
 - VLM and Audio models like LFM-VL, Whisper, KittenTTS, etc. 
 
-## Using this repo
+## Setting up this repo
 
 If developing on a Mac:
 
@@ -115,44 +115,46 @@ pacman -S mingw-w64-clang-aarch64-cmake mingw-w64-clang-aarch64-toolchain mingw-
 pip3 install -r tools/requirements.txt
 ```
 
-Then run the tests using
+## Running the codes 
+
+Then run full tests using default model:
 
 ```bash
 tests/run.sh # tests/run.bat for Windows ARM
 ```
 
-## Generating weights from HuggingFace 
-
-Run one of the following and replace the weight path in `tests/test_engine.cpp`.
+To generate weights from HuggingFace:
 
 ```bash
-# Language models (INT8)
-python3 tools/convert_hf.py google/gemma-3-270m-it weights/gemma3-270m/
-python3 tools/convert_hf.py LiquidAI/LFM2-350M weights/lfm2-350m/  # supports tool call
-python3 tools/convert_hf.py HuggingFaceTB/SmolLM2-360m-Instruct weights/smollm2-360m/ 
-python3 tools/convert_hf.py Qwen/Qwen3-0.6B weights/qwen3-600m/  # supports tool call
-python3 tools/convert_hf.py LiquidAI/LFM2-700M weights/lfm2-700m/ # supports tool call
-python3 tools/convert_hf.py google/gemma-3-1b-it weights/gemma3-1b/  
-python3 tools/convert_hf.py LiquidAI/LFM2-1.2B weights/lfm2-1.2B/ # supports tool call
-python3 tools/convert_hf.py Qwen/Qwen3-1.7B weights/qwen3-1.7B/ # supports tool call
-python3 tools/convert_hf.py HuggingFaceTB/SmolLM2-1.7B-Instruct weights/smollm2-1.7b/ 
-
-# Vision Language models (INT8)
-python3 tools/convert_hf.py LiquidAI/LFM2-VL-450M weights/lfm2-vl-450m/
-python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/
-
-# Embedding-only models 
-python3 tools/convert_hf.py Qwen/Qwen3-Embedding-0.6B weights/qwen3-embed-600m/ 
-python3 tools/convert_hf.py nomic-ai/nomic-embed-text-v2-moe weights/nomic/ 
+cli/cactus download Qwen/Qwen3-0.6B # HuggingFace path
+# stored as the weights/Qwen3-0.6B
+# replace with model path in tests/test_engine.cpp 
 ```
 
-## Playing with a model
-
-Just run 
+You can just interact with the model during dev using:
 
 ```bash
-/cli/build.sh 
+cli/cactus run LiquidAI/LFM2-VL-450M 
 ```
+
+## Supported models (INT8)
+
+| Model | Path | Tool Call Support | Vision Support | Type |
+|-------|------|-------------------|----------------|------|
+| google/gemma-3-270m-it | weights/gemma-3-270m-it/ | ❌ | ❌ | Text |
+| LiquidAI/LFM2-350M | weights/lfm2-350m/ | ✅ | ❌ | Text |
+| HuggingFaceTB/SmolLM2-360m-Instruct | weights/smollm2-360m-instruct/ | ❌ | ❌ | Text |
+| LiquidAI/LFM2-VL-450M | weights/lfm2-vl-450m/ | ❌ | ✅ | VLM |
+| Qwen/Qwen3-0.6B | weights/qwen3-0.6b/ | ✅ | ❌ | Text |
+| Qwen/Qwen3-Embedding-0.6B | weights/qwen3-embed-0.6b/ | ❌ | ❌ | Embedding |
+| LiquidAI/LFM2-700M | weights/lfm2-700m/ | ✅ | ❌ | Text |
+| nomic-ai/nomic-embed-text-v2-moe | weights/nomic/ | ❌ | ❌ | Embedding |
+| google/gemma-3-1b-it | weights/gemma-3-1b-it/ | ❌ | ❌ | Text |
+| LiquidAI/LFM2-1.2B | weights/lfm2-1.2B/ | ✅ | ❌ | Text |
+| LiquidAI/LFM2-VL-1.6B | weights/lfm2-vl-1.6b/ | ❌ | ✅ | VLM |
+| Qwen/Qwen3-1.7B | weights/qwen3-1.7B/ | ✅ | ❌ | Text |
+| HuggingFaceTB/SmolLM2-1.7B-Instruct | weights/smollm2-1.7b-instruct/ | ❌ | ❌ | Text |
+
 
 ## Resources 
 
