@@ -117,8 +117,6 @@ pip3 install -r tools/requirements.txt
 
 ## Running the codes 
 
-Then run full tests using default model:
-
 ```bash
 tests/run.sh # tests/run.bat for Windows ARM
 ```
