@@ -137,7 +137,7 @@ cli/cactus run LiquidAI/LFM2-VL-450M
 
 ## Supported models (INT8)
 
-| Model | Completion | Tool Call | Vision Support | Embed |
+| Model | Completion | Tool Call | Vision | Embed |
 |-------|--------------------|-------------------|----------------|------|
 | google/gemma-3-270m-it | ✅ | ❌ | ❌ | ❌ |
 | LiquidAI/LFM2-350M | ✅ | ✅ | ❌ | ✅ |
