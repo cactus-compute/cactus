@@ -74,7 +74,7 @@ Example response from Gemma3-270m-INT8
 | Galaxy S25 Ultra               | 336                  | 64               | 0.45                  |
 | iPhone 16 Pro                  | 334                  | 64               | -                     |
 | Nothing 3a Pro                 | 296                  | 63               | 0.44                  |
-| Macbook Pro M3                  | 462                  | 62               | -                     |
+| Macbook Pro M3                 | 462                  | 62               | -                     |
 | iPhone 15 Pro                  | 274                  | 57               | -                     |
 | iPhone 14 Pro                  | 269                  | 51               | -                     |
 | OnePlus 13 5G                  | 268                  | 51               | 0.33                  |
@@ -137,21 +137,21 @@ cli/cactus run LiquidAI/LFM2-VL-450M
 
 ## Supported models (INT8)
 
-| Model | Path | Tool Call Support | Vision Support | Type |
-|-------|------|-------------------|----------------|------|
-| google/gemma-3-270m-it | weights/gemma-3-270m-it/ | ❌ | ❌ | LLM |
-| LiquidAI/LFM2-350M | weights/lfm2-350m/ | ✅ | ❌ | LLM |
-| HuggingFaceTB/SmolLM2-360m-Instruct | weights/smollm2-360m-instruct/ | ❌ | ❌ | LLM |
-| LiquidAI/LFM2-VL-450M | weights/lfm2-vl-450m/ | ❌ | ✅ | VLM |
-| Qwen/Qwen3-0.6B | weights/qwen3-0.6b/ | ✅ | ❌ | LLM |
-| Qwen/Qwen3-Embedding-0.6B | weights/qwen3-embed-0.6b/ | ❌ | ❌ | Embed |
-| LiquidAI/LFM2-700M | weights/lfm2-700m/ | ✅ | ❌ | LLM |
-| nomic-ai/nomic-embed-text-v2-moe | weights/nomic/ | ❌ | ❌ | Embed |
-| google/gemma-3-1b-it | weights/gemma-3-1b-it/ | ❌ | ❌ | LLM |
-| LiquidAI/LFM2-1.2B | weights/lfm2-1.2B/ | ✅ | ❌ | LLM |
-| LiquidAI/LFM2-VL-1.6B | weights/lfm2-vl-1.6b/ | ❌ | ✅ | VLM |
-| Qwen/Qwen3-1.7B | weights/qwen3-1.7B/ | ✅ | ❌ | LLM |
-| HuggingFaceTB/SmolLM2-1.7B-Instruct | weights/smollm2-1.7b-instruct/ | ❌ | ❌ | LLM |
+| Model | Completion | Tool Call | Vision Support | Embed |
+|-------|--------------------|-------------------|----------------|------|
+| google/gemma-3-270m-it | ✅ | ❌ | ❌ | ❌ |
+| LiquidAI/LFM2-350M | ✅ | ✅ | ❌ | ✅ |
+| HuggingFaceTB/SmolLM2-360m-Instruct | ✅ | ❌ | ❌ | ❌ |
+| LiquidAI/LFM2-VL-450M | ✅ | ❌ | ✅ | ✅ |
+| Qwen/Qwen3-0.6B | ✅ | ✅ | ❌ | ✅ |
+| Qwen/Qwen3-Embedding-0.6B | ❌ | ❌ | ❌ | ✅ |
+| LiquidAI/LFM2-700M | ✅ | ✅ | ❌ | ✅ |
+| nomic-ai/nomic-embed-text-v2-moe | ❌ | ❌ | ❌ | ✅ |
+| google/gemma-3-1b-it | ✅ | ❌ | ❌ | ❌ |
+| LiquidAI/LFM2-1.2B | ✅ | ✅ | ❌ | ✅ |
+| LiquidAI/LFM2-VL-1.6B | ✅ | ❌ | ✅ | ✅ |
+| Qwen/Qwen3-1.7B | ✅ | ✅ | ❌ | ✅ |
+| HuggingFaceTB/SmolLM2-1.7B-Instruct | ✅ | ❌ | ❌ | ✅ |
 
 
 ## Resources 
