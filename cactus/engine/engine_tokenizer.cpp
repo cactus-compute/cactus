@@ -116,7 +116,8 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
         result += tools_json;
         result += "\n]\n\n";
         result += "When you need to call a tool, respond with a JSON object in this exact format:\n";
-        result += "{\"function_call\": {\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}}";
+        result += "{\"function_call\": {\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}}\n";
+        result += "You can call multiple tools by using multiple function_call JSON objects.";
         result += "<|im_end|>\n";
 
         for (const auto& msg : messages) {
@@ -142,7 +143,7 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
 
     if (add_generation_prompt) {
         if (!tools_json.empty()) {
-            result += "<|im_start|>assistant\n</think>\n\n";
+            result += "<|im_start|>assistant\n<think>\n</think>\n\n";
         } else {
             result += "<|im_start|>assistant\n";
         }
