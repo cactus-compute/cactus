@@ -236,6 +236,7 @@ public:
     size_t gather(size_t embeddings, size_t indices);
     size_t mmap_embeddings(const std::string& filename);
     size_t mmap_weights(const std::string& filename);
+    size_t load_weights(const std::string& filename); 
     void set_quantization_scale(size_t node_id, float scale);
     size_t embedding(const std::string& filename, size_t indices);
     size_t embedding(size_t embedding_tensor, size_t indices);

@@ -139,19 +139,19 @@ cli/cactus run LiquidAI/LFM2-VL-450M
 
 | Model | Completion | Tool Call | Vision | Embed |
 |-------|--------------------|-------------------|----------------|------|
-| google/gemma-3-270m-it | ✅ | ❌ | ❌ | ❌ |
-| LiquidAI/LFM2-350M | ✅ | ✅ | ❌ | ✅ |
-| HuggingFaceTB/SmolLM2-360m-Instruct | ✅ | ❌ | ❌ | ❌ |
-| LiquidAI/LFM2-VL-450M | ✅ | ❌ | ✅ | ✅ |
-| Qwen/Qwen3-0.6B | ✅ | ✅ | ❌ | ✅ |
-| Qwen/Qwen3-Embedding-0.6B | ❌ | ❌ | ❌ | ✅ |
-| LiquidAI/LFM2-700M | ✅ | ✅ | ❌ | ✅ |
-| nomic-ai/nomic-embed-text-v2-moe | ❌ | ❌ | ❌ | ✅ |
-| google/gemma-3-1b-it | ✅ | ❌ | ❌ | ❌ |
-| LiquidAI/LFM2-1.2B | ✅ | ✅ | ❌ | ✅ |
-| LiquidAI/LFM2-VL-1.6B | ✅ | ❌ | ✅ | ✅ |
-| Qwen/Qwen3-1.7B | ✅ | ✅ | ❌ | ✅ |
-| HuggingFaceTB/SmolLM2-1.7B-Instruct | ✅ | ❌ | ❌ | ✅ |
+| google/gemma-3-270m-it | ✓ | ✗ | ✗ | ✗ |
+| LiquidAI/LFM2-350M | ✓ | ✓ | ✗ | ✓ |
+| HuggingFaceTB/SmolLM2-360m-Instruct | ✓ | ✗ | ✗ | ✗ |
+| LiquidAI/LFM2-VL-450M | ✓ | ✗ | ✓ | ✓ |
+| Qwen/Qwen3-0.6B | ✓ | ✓ | ✗ | ✓ |
+| Qwen/Qwen3-Embedding-0.6B | ✗ | ✗ | ✗ | ✓ |
+| LiquidAI/LFM2-700M | ✓ | ✓ | ✗ | ✓ |
+| nomic-ai/nomic-embed-text-v2-moe | ✗ | ✗ | ✗ | ✓ |
+| google/gemma-3-1b-it | ✓ | ✗ | ✗ | ✗ |
+| LiquidAI/LFM2-1.2B | ✓ | ✓ | ✗ | ✓ |
+| LiquidAI/LFM2-VL-1.6B | ✓ | ✗ | ✓ | ✓ |
+| Qwen/Qwen3-1.7B | ✓ | ✓ | ✗ | ✓ |
+| HuggingFaceTB/SmolLM2-1.7B-Instruct | ✓ | ✗ | ✗ | ✓ |
 
 
 ## Resources 
