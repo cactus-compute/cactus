@@ -178,8 +178,9 @@ std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& message
             sys_content += "\n";
         }
         sys_content += "]<|tool_list_end|>";
-        sys_content += "\n\nWhen you need to call a tool, respond with a JSON object in this exact format:\n";
-        sys_content += "{\"function_call\": {\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}}";
+        sys_content += "\n\nWhen you need to call a tool, use this exact format:\n";
+        sys_content += "<|tool_call_start|>[function_name(arg1=\"value1\", arg2=\"value2\")]<|tool_call_end|>\n";
+        sys_content += "You can call multiple tools by using multiple tool call blocks.";
     }
 
     if (model_variant_ == ModelVariant::RAG) {
