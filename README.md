@@ -149,6 +149,7 @@ cli/cactus run LiquidAI/LFM2-VL-450M
 | nomic-ai/nomic-embed-text-v2-moe | ✗ | ✗ | ✗ | ✓ |
 | google/gemma-3-1b-it | ✓ | ✗ | ✗ | ✗ |
 | LiquidAI/LFM2-1.2B | ✓ | ✓ | ✗ | ✓ |
+| LiquidAI/LFM2-1.2B-RAG | ✓ | ✓ | ✗ | ✓ |
 | LiquidAI/LFM2-VL-1.6B | ✓ | ✗ | ✓ | ✓ |
 | Qwen/Qwen3-1.7B | ✓ | ✓ | ✗ | ✓ |
 | HuggingFaceTB/SmolLM2-1.7B-Instruct | ✓ | ✗ | ✗ | ✓ |
