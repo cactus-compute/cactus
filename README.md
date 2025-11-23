@@ -166,7 +166,7 @@ cli/cactus run LiquidAI/LFM2-VL-450M
 
 - [Kotlin Multiplatform SDK](https://github.com/cactus-compute/cactus-kotlin)
 - [Flutter SDK](https://github.com/cactus-compute/cactus-flutter)
-- [React Native SDK](https://github.com/cactus-compute/cactus-react)
+- [React Native SDK](https://github.com/cactus-compute/cactus-react-native)
 - [Swift SDK](https://github.com/mhayes853/swift-cactus)
 
 ## Try demo apps
