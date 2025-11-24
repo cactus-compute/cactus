@@ -16,6 +16,112 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Check for required dependencies
+check_dependencies() {
+    local missing_packages=()
+
+    # Check for CMake
+    if ! command -v cmake &> /dev/null; then
+        echo -e "${YELLOW}CMake is not installed${NC}"
+        missing_packages+=("cmake")
+    fi
+
+    # Check for Python3
+    if ! command -v python3 &> /dev/null; then
+        echo -e "${YELLOW}Python3 is not installed${NC}"
+        missing_packages+=("python3")
+    fi
+
+    # If packages are missing, handle installation
+    if [ ${#missing_packages[@]} -gt 0 ]; then
+        echo -e "\n${YELLOW}Missing packages: ${missing_packages[*]}${NC}"
+
+        # Check if brew is available
+        if command -v brew &> /dev/null; then
+            echo -e "\n${BLUE}Homebrew is available.${NC}"
+            echo -n "Would you like to install the missing packages with brew? [y/N]: "
+            read -r response
+
+            if [[ "$response" =~ ^[Yy]$ ]]; then
+                for package in "${missing_packages[@]}"; do
+                    echo -e "\n${BLUE}Installing $package...${NC}"
+                    brew install "$package"
+                done
+                echo -e "\n${GREEN}Installation complete!${NC}"
+            else
+                echo -e "\n${YELLOW}Please install the missing packages manually:${NC}"
+                for package in "${missing_packages[@]}"; do
+                    echo "  brew install $package"
+                done
+                exit 1
+            fi
+        else
+            echo -e "\n${YELLOW}Homebrew is not installed.${NC}"
+            echo "To install the missing packages, you can either:"
+            echo ""
+            echo "1. Install Homebrew first:"
+            echo '   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+            echo "   Then run: brew install ${missing_packages[*]}"
+            echo ""
+            echo "2. Or install the packages manually using your system's package manager"
+            exit 1
+        fi
+    else
+        # All packages exist, now check for Python venv
+        setup_python_venv
+    fi
+}
+
+# Setup Python virtual environment and install dependencies
+setup_python_venv() {
+    VENV_DIR="$PROJECT_ROOT/venv"
+    REQUIREMENTS_FILE="$PROJECT_ROOT/tools/requirements.txt"
+
+    # Check if venv exists
+    if [ ! -d "$VENV_DIR" ]; then
+        echo -e "${BLUE}Setting up Python virtual environment...${NC}"
+
+        # Create venv
+        if ! python3 -m venv "$VENV_DIR"; then
+            echo -e "${RED}Failed to create virtual environment${NC}"
+            echo "Please ensure python3-venv is installed:"
+            echo "  Ubuntu/Debian: sudo apt-get install python3-venv"
+            echo "  macOS: Should be included with Python3"
+            exit 1
+        fi
+
+        echo -e "${GREEN}Virtual environment created${NC}"
+    fi
+
+    # Activate venv
+    source "$VENV_DIR/bin/activate"
+
+    # Check if requirements file exists
+    if [ -f "$REQUIREMENTS_FILE" ]; then
+        # Check if dependencies are already installed
+        if ! python -c "import numpy, torch, transformers" 2>/dev/null; then
+            echo -e "${BLUE}Installing Python dependencies...${NC}"
+            echo "This may take a few minutes on first run."
+
+            # Upgrade pip first
+            pip install --upgrade pip >/dev/null 2>&1
+
+            # Install requirements
+            if pip install -r "$REQUIREMENTS_FILE"; then
+                echo -e "${GREEN}Python dependencies installed successfully${NC}"
+            else
+                echo -e "${RED}Failed to install Python dependencies${NC}"
+                exit 1
+            fi
+        else
+            echo -e "${GREEN}Python dependencies already installed${NC}"
+        fi
+    else
+        echo -e "${YELLOW}Warning: requirements.txt not found at $REQUIREMENTS_FILE${NC}"
+        echo "Python packages will need to be installed manually if needed"
+    fi
+}
+
 print_usage() {
     echo "Usage: $0 <command> [model_id]"
     echo ""
@@ -23,6 +129,7 @@ print_usage() {
     echo "  build         - Build the chat application only"
     echo "  download      - Download model weights only"
     echo "  run           - Build, download (if needed), and run the chat app"
+    echo "  test          - Run the test suite"
     echo ""
     echo "Arguments:"
     echo "  model_id      - HuggingFace model ID (e.g., LiquidAI/LFM2-1.2B)"
@@ -32,7 +139,7 @@ print_usage() {
     echo "  $0 download LiquidAI/LFM2-1.2B"
     echo "  $0 run"
     echo "  $0 run Qwen/Qwen3-0.6B"
-    echo "  $0 run google/gemma-3-270m-it"
+    echo "  $0 test"
     echo ""
     echo "Common models:"
     echo "  LiquidAI/LFM2-1.2B (default)"
@@ -65,8 +172,13 @@ build_chat() {
     # Build Cactus library if needed
     cd "$PROJECT_ROOT/cactus"
     if [ ! -f "build/libcactus.a" ]; then
-        echo -e "${YELLOW}Cactus library not found. Building...${NC}"
-        ./build.sh
+        echo -e "${YELLOW}Cactus library not found. Building it now...${NC}"
+        if [ -f "$PROJECT_ROOT/cactus/build.sh" ]; then
+            "$PROJECT_ROOT/cactus/build.sh"
+        else
+            echo -e "${RED}Error: build.sh not found at $PROJECT_ROOT/cactus/build.sh${NC}"
+            exit 1
+        fi
     else
         echo -e "${GREEN}Cactus library found.${NC}"
     fi
@@ -155,6 +267,21 @@ run_chat() {
     "$BUILD_DIR/chat" "$weights_dir"
 }
 
+run_tests() {
+    echo -e "${BLUE}Running test suite...${NC}"
+    echo "===================="
+
+    local test_script="$PROJECT_ROOT/tests/run.sh"
+
+    if [ -f "$test_script" ]; then
+        cd "$PROJECT_ROOT/tests"
+        ./run.sh
+    else
+        echo -e "${RED}Error: Test script not found at $test_script${NC}"
+        exit 1
+    fi
+}
+
 # Main command handling
 if [ $# -eq 0 ]; then
     print_usage
@@ -163,6 +290,13 @@ fi
 
 COMMAND="$1"
 MODEL_ID="${2:-$DEFAULT_MODEL_ID}"
+
+# Check dependencies for commands that need them
+case "$COMMAND" in
+    build|download|run)
+        check_dependencies
+        ;;
+esac
 
 case "$COMMAND" in
     build)
@@ -173,6 +307,9 @@ case "$COMMAND" in
         ;;
     run)
         run_chat "$MODEL_ID"
+        ;;
+    test)
+        run_tests
         ;;
     -h|--help|help)
         print_usage
