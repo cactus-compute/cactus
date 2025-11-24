@@ -97,42 +97,18 @@ Example response from Gemma3-270m-INT8
 - NPUs to improve energy-efficiency and prefill speed up to 11x
 - VLM and Audio models like LFM-VL, Whisper, KittenTTS, etc. 
 
-## Setting up this repo
+## Using up this repo (on Mac)
 
-If developing on a Mac:
-
-```bash
-# Needs C++ & Python, then Install CMake and Python dependencies weight convertion dependencies
-brew install cmake
-pip3 install -r tools/requirements.txt
-```
-
-If developing on Windows ARM PC: 
+Dependencies will be setup on first run automatically.
 
 ```bash
-# Needs C++, Python and MySys with Pacman, then install CMake and Python dependencies weight convertion dependencies 
-pacman -S mingw-w64-clang-aarch64-cmake mingw-w64-clang-aarch64-toolchain mingw-w64-clang-aarch64-mman-win32
-pip3 install -r tools/requirements.txt
-```
+cli/cactus --help # to see all commands
+cli/cactus run LiquidAI/LFM2-VL-450M # to interact with a model
+cli/cactus test # to run unit tests during dev
 
-## Running the codes 
-
-```bash
-tests/run.sh # tests/run.bat for Windows ARM
-```
-
-To generate weights from HuggingFace:
-
-```bash
 cli/cactus download Qwen/Qwen3-0.6B # HuggingFace path
 # stored as the weights/Qwen3-0.6B
 # replace with model path in tests/test_engine.cpp 
-```
-
-You can just interact with the model during dev using:
-
-```bash
-cli/cactus run LiquidAI/LFM2-VL-450M 
 ```
 
 ## Supported models (INT8)
@@ -162,7 +138,14 @@ cli/cactus run LiquidAI/LFM2-VL-450M
 - [Website](https://cactuscompute.com)
 - [Contribution Guidelines](CONTRIBUTING.md)
 
-## SDKs for app developers
+## Using in your apps
+
+```bash
+android/build.sh # generate the `libcactus.so` and `libcactus.a` for android
+apple/build.sh # generate the `.xcframeworks` for Apple
+```
+
+Or simply use the provided SDKs
 
 - [Kotlin Multiplatform SDK](https://github.com/cactus-compute/cactus-kotlin)
 - [Flutter SDK](https://github.com/cactus-compute/cactus-flutter)
@@ -173,3 +156,12 @@ cli/cactus run LiquidAI/LFM2-VL-450M
 
 - [iOS Demo](https://apps.apple.com/gb/app/cactus-chat/id6744444212)
 - [Android Demo](https://play.google.com/store/apps/details?id=com.rshemetsubuser.myapp)
+
+## Windows ARM PC setup
+
+```bash
+# Needs C++, Python and MySys with Pacman, then install CMake and Python dependencies weight convertion dependencies 
+pacman -S mingw-w64-clang-aarch64-cmake mingw-w64-clang-aarch64-toolchain mingw-w64-clang-aarch64-mman-win32
+pip3 install -r tools/requirements.txt
+tests/run.bat for Windows ARM
+```
