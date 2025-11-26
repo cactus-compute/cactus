@@ -85,7 +85,7 @@ struct Config {
     float max_pixels_tolerance = 2.0f;
     bool do_image_splitting = true;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, SMOL = 2, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6};
+    enum class ModelType {QWEN = 0, GEMMA = 1, SMOL = 2, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, PHI3 = 7};
     ModelType model_type = ModelType::QWEN;
 
     enum class ModelVariant {DEFAULT = 0, VLM = 1, EXTRACT = 2, RAG = 3};

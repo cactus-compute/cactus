@@ -348,6 +348,7 @@ bool Config::from_json(const std::string& config_path) {
             if (value == "gemma" || value == "GEMMA") model_type = ModelType::GEMMA;
             else if (value == "lfm2" || value == "LFM2") model_type = ModelType::LFM2;
             else if (value == "smol" || value == "SMOL" || value == "Smol") model_type = ModelType::SMOL;
+            else if (value == "phi3" || value == "PHI3" || value == "Phi3") model_type = ModelType::PHI3;
             else if (value == "bert" || value == "BERT") model_type = ModelType::NOMIC;
             else model_type = ModelType::QWEN;
         }
@@ -439,6 +440,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<LFM2Model>(config);
         case Config::ModelType::SMOL:
             return std::make_unique<SmolModel>(config);
+        case Config::ModelType::PHI3:
+            return std::make_unique<Phi3Model>(config);
         case Config::ModelType::NOMIC:
             return std::make_unique<NomicModel>(config);
         default:
