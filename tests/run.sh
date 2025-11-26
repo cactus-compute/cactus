@@ -12,16 +12,30 @@ if [ ! -d "$WEIGHTS_DIR" ] || [ ! -f "$WEIGHTS_DIR/config.txt" ]; then
     echo "Weights not found. Generating weights..."
     echo "============================================="
     cd "$PROJECT_ROOT"
-    if command -v python3 &> /dev/null; then
+
+    if ! command -v python3 &> /dev/null; then
+        echo "Error: python3 is not installed. Please install Python 3 and try again."
+        exit 1
+    fi
+
+    VENV_DIR="$PROJECT_ROOT/.venv"
+    if [ ! -d "$VENV_DIR" ]; then
+        echo "Creating Python virtual environment..."
+        python3 -m venv "$VENV_DIR"
+    fi
+
+    echo "Activating virtual environment and installing dependencies..."
+    # shellcheck source=/dev/null
+    source "$VENV_DIR/bin/activate"
+    if python3 -m pip install -r tools/requirements.txt; then
         echo "Running: python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8"
         if python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8; then
             echo "Successfully generated Weights"
         else
             echo "Warning: Failed to generate Weights. Tests may fail."
-            echo "Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8"
         fi
     else
-        echo "Warning: Python3 not found. Cannot generate weights automatically."
+        echo "Warning: Failed to install python dependencies. Tests may fail."
         echo "Please run manually: python3 tools/convert_hf.py LiquidAI/LFM2-VL-1.6B weights/lfm2-vl-1.6b/ --precision INT8"
     fi
 else
