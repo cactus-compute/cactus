@@ -626,6 +626,26 @@ size_t WhisperModel::forward(const std::vector<float>& mel_bins, const std::vect
     return run_decoder_step(tokens, use_cache, false);
 }
 
+std::vector<float> WhisperModel::get_audio_embeddings(const std::vector<float>& mel_bins) {
+    run_encoder(mel_bins);
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+
+    size_t pooled = gb->mean(weight_nodes_.encoder_output, 0);
+    gb->execute();
+
+    const auto& output_buf = gb->get_output_buffer(pooled);
+    size_t hidden_dim = output_buf.total_size;
+
+    std::vector<float> embedding(hidden_dim);
+    void* output_data = gb->get_output(pooled);
+    const float* output_ptr = static_cast<const float*>(output_data);
+    std::copy(output_ptr, output_ptr + hidden_dim, embedding.begin());
+
+    reset_cache();
+    return embedding;
+}
+
 uint32_t WhisperModel::generate_with_audio(
     const std::vector<uint32_t>& tokens,
     const std::vector<float>& mel_bins,

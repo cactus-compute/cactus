@@ -61,6 +61,14 @@ CACTUS_FFI_EXPORT int cactus_image_embed(
     size_t* embedding_dim
 );
 
+CACTUS_FFI_EXPORT int cactus_audio_embed(
+    cactus_model_t model,
+    const char* audio_path,
+    float* embeddings_buffer,
+    size_t buffer_size,
+    size_t* embedding_dim
+);
+
 CACTUS_FFI_EXPORT void cactus_reset(cactus_model_t model);
 
 CACTUS_FFI_EXPORT void cactus_stop(cactus_model_t model);

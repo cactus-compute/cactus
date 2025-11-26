@@ -382,8 +382,10 @@ public:
     const std::vector<DebugNode>& get_debug_nodes() const;
 
     virtual bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true);
+    
     virtual bool init(CactusGraph* external_graph, const std::string& model_folder, size_t context_size,
               const std::string& system_prompt = "", bool do_warmup = true);
+
     virtual uint32_t generate(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
                       size_t top_k = 0, const std::string& profile_file = "");
 
@@ -395,20 +397,28 @@ public:
                       size_t top_k = 0, const std::string& profile_file = "");
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, const std::string& profile_file = "");
+    
     virtual std::vector<float> get_image_embeddings(const std::string& image_path);
+    
+    virtual std::vector<float> get_audio_embeddings(const std::vector<float>& mel_bins);
 
     virtual void reset_cache() { kv_cache_.reset(); }
+    
     void set_cache_window(size_t window_size, size_t sink_size = 4) { kv_cache_.set_window_size(window_size, sink_size); }
 
     void* graph_handle_;
 
 protected:
     virtual size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) = 0;
+    
     virtual size_t forward(const std::vector<float>& mel_bins, const std::vector<uint32_t>& tokens, bool use_cache = false);
+    
     virtual void load_weights_to_graph(CactusGraph* gb) = 0;
+    
     virtual size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
                           ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) = 0;
-    virtual size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+    
+                          virtual size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
                     ComputeBackend backend) const = 0;
     virtual size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
                                   ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) = 0;

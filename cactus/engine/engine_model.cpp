@@ -221,6 +221,10 @@ std::vector<float> Model::get_image_embeddings(const std::string& /*image_path*/
     throw std::runtime_error("Image embeddings not supported for this model type");
 }
 
+std::vector<float> Model::get_audio_embeddings(const std::vector<float>& /*mel_bins*/) {
+    throw std::runtime_error("Audio embeddings not supported for this model type");
+}
+
 void Model::update_kv_cache(CactusGraph* gb, size_t seq_len) {
     kv_cache_.update_from_graph(gb, cache_k_output_nodes_, cache_v_output_nodes_, 
                                seq_len, config_.num_layers, config_.attention_kv_heads, 

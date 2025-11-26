@@ -625,7 +625,7 @@ static bool test_whisper_autoregressive() {
 
 static bool test_image_embeddings() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
-              << "║         Image Embeddings Test            ║\n"
+              << "║         IMAGE EMBEDDING TEST            ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
     if (!g_model_path) {
@@ -670,6 +670,52 @@ static bool test_image_embeddings() {
     return passed;
 }
 
+static bool test_audio_embeddings() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║         AUDIO EMBEDDING TEST            ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    if (!g_transcribe_model_path) {
+        std::cout << "⊘ SKIP │ CACTUS_TEST_TRANSCRIBE_MODEL not set\n";
+        return true;
+    }
+
+    const size_t buffer_size = 1024 * 1024; 
+    std::vector<float> embeddings(buffer_size / sizeof(float));
+    size_t embedding_dim = 0;
+
+    cactus_model_t model = cactus_init(g_transcribe_model_path, 2048, nullptr);
+    if (!model) {
+        std::cout << "⊘ SKIP │ Failed to init Whisper model\n";
+        return true;
+    }
+
+    Timer t;
+    int result = cactus_audio_embed(model, g_audio_file_path, embeddings.data(), buffer_size, &embedding_dim);
+    double elapsed = t.elapsed_ms();
+
+    cactus_destroy(model);
+
+    if (result == -1) {
+        std::cout << "⊘ SKIP │ Model doesn't support audio embeddings\n";
+        return true;
+    }
+
+    std::cout << "├─ Embedding dimension: " << embedding_dim << "\n";
+    std::cout << "├─ Time: " << std::fixed << std::setprecision(2) << elapsed << " ms\n";
+    std::cout << "├─ First 5 values: [";
+    for (size_t i = 0; i < std::min(embedding_dim, size_t(5)); i++) {
+        std::cout << std::fixed << std::setprecision(4) << embeddings[i];
+        if (i < std::min(embedding_dim, size_t(5)) - 1) std::cout << ", ";
+    }
+    std::cout << "]\n";
+
+    bool passed = result > 0 && embedding_dim > 0;
+
+    std::cout << "└─ Status: " << (passed ? "PASSED ✓" : "FAILED ✗") << "\n";
+    return passed;
+}
+
 int main() {
     TestUtils::TestRunner runner("Engine Tests");
     runner.run_test("streaming", test_streaming());
@@ -677,6 +723,7 @@ int main() {
     runner.run_test("tool_calls_with_multiple_tools", test_tool_call_with_multiple_tools());
     runner.run_test("embeddings", test_embeddings());
     runner.run_test("image_embeddings", test_image_embeddings());
+    runner.run_test("audio_embeddings", test_audio_embeddings());
     runner.run_test("image_input", test_image_input());
     runner.run_test("audio_processor", test_audio_processor());
     runner.run_test("whisper_prefill", test_whisper_prefill_only());

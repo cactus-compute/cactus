@@ -528,4 +528,43 @@ int cactus_image_embed(
     }
 }
 
+int cactus_audio_embed(
+    cactus_model_t model,
+    const char* audio_path,
+    float* embeddings_buffer,
+    size_t buffer_size,
+    size_t* embedding_dim
+) {
+    if (!model) return -1;
+    if (!audio_path || !embeddings_buffer || buffer_size == 0) return -1;
+
+    try {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+
+        auto mel_bins = compute_whisper_mel_from_wav(audio_path);
+        if (mel_bins.empty()) {
+            last_error_message = "Failed to compute mel spectrogram from audio file";
+            return -1;
+        }
+
+        std::vector<float> embeddings = handle->model->get_audio_embeddings(mel_bins);
+        if (embeddings.empty()) return -1;
+        if (embeddings.size() * sizeof(float) > buffer_size) return -2;
+
+        std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
+        if (embedding_dim) {
+            *embedding_dim = embeddings.size();
+        }
+
+        return static_cast<int>(embeddings.size());
+
+    } catch (const std::exception& e) {
+        last_error_message = std::string(e.what());
+        return -1;
+    } catch (...) {
+        last_error_message = "Unknown error during audio embedding generation";
+        return -1;
+    }
+}
+
 }
