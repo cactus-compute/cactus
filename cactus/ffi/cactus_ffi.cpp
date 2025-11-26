@@ -468,29 +468,62 @@ int cactus_embed(
 ) {
     if (!model) return -1;
     if (!text || !embeddings_buffer || buffer_size == 0) return -1;
-    
+
     try {
         auto* handle = static_cast<CactusModelHandle*>(model);
         auto* tokenizer = handle->model->get_tokenizer();
-        
+
         std::vector<uint32_t> tokens = tokenizer->encode(text);
         if (tokens.empty()) return -1;
-        
+
         std::vector<float> embeddings = handle->model->get_embeddings(tokens, true);
-        if (embeddings.size() * sizeof(float) > buffer_size) return -2; 
-        
+        if (embeddings.size() * sizeof(float) > buffer_size) return -2;
+
         std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
         if (embedding_dim) {
             *embedding_dim = embeddings.size();
         }
-        
+
         return static_cast<int>(embeddings.size());
-        
+
     } catch (const std::exception& e) {
         last_error_message = std::string(e.what());
         return -1;
     } catch (...) {
         last_error_message = "Unknown error during embedding generation";
+        return -1;
+    }
+}
+
+int cactus_image_embed(
+    cactus_model_t model,
+    const char* image_path,
+    float* embeddings_buffer,
+    size_t buffer_size,
+    size_t* embedding_dim
+) {
+    if (!model) return -1;
+    if (!image_path || !embeddings_buffer || buffer_size == 0) return -1;
+
+    try {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+
+        std::vector<float> embeddings = handle->model->get_image_embeddings(image_path);
+        if (embeddings.empty()) return -1;
+        if (embeddings.size() * sizeof(float) > buffer_size) return -2;
+
+        std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
+        if (embedding_dim) {
+            *embedding_dim = embeddings.size();
+        }
+
+        return static_cast<int>(embeddings.size());
+
+    } catch (const std::exception& e) {
+        last_error_message = std::string(e.what());
+        return -1;
+    } catch (...) {
+        last_error_message = "Unknown error during image embedding generation";
         return -1;
     }
 }

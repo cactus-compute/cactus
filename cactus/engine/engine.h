@@ -395,6 +395,7 @@ public:
                       size_t top_k = 0, const std::string& profile_file = "");
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, const std::string& profile_file = "");
+    virtual std::vector<float> get_image_embeddings(const std::string& image_path);
 
     virtual void reset_cache() { kv_cache_.reset(); }
     void set_cache_window(size_t window_size, size_t sink_size = 4) { kv_cache_.set_window_size(window_size, sink_size); }

@@ -149,6 +149,10 @@ size_t Lfm2VlModel::build_multimodal_projector(CactusGraph* gb, size_t image_fea
     return output;
 }
 
+std::vector<float> Lfm2VlModel::get_image_embeddings(const std::string& image_path) {
+    return vision_tower_.get_image_embedding(image_path);
+}
+
 std::vector<Lfm2VlModel::ProjectedTileFeature> Lfm2VlModel::get_image_features(
     CactusGraph* gb,
     const Siglip2Preprocessor::PreprocessedImage& preprocessed_image,

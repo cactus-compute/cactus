@@ -156,6 +156,7 @@ public:
                          ComputeBackend backend);
     std::vector<float> get_image_features(const std::string& image_path);
     std::vector<float> get_image_features(const Siglip2Preprocessor::PreprocessedImage& preprocessed_image);
+    std::vector<float> get_image_embedding(const std::string& image_path);
     size_t get_image_features_node(const Siglip2Preprocessor::PreprocessedImage& preprocessed_image);
     Siglip2Preprocessor& get_preprocessor() { return preprocessor_; }
     const Siglip2Preprocessor& get_preprocessor() const { return preprocessor_; }
@@ -643,6 +644,7 @@ public:
         const std::string& profile_file = "") override;
 
     void reset_cache() override;
+    std::vector<float> get_image_embeddings(const std::string& image_path) override;
 
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override;
