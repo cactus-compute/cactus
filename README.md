@@ -71,19 +71,19 @@ Example response from Gemma3-270m-INT8
 - [Peak RAM calculation logic](tests/test_utils.h#L160-L213) 
 - Covers the full range of consumer devices
 
-| Device | Short decode | 1k prefill/decode | 4k prefill/decode | 4k Peak RAM | 256x256 VLM TTFT | 256x256 VLM Decode | 256x256 VLM Peak RAM | 30s Transcribe TTFT | 30s Transcribe Decode | 30s Transcribe Peak RAM |
+| Device | Short Prompt Decode | 1k prefill/decode | 4k prefill/decode | 4k Peak RAM | 256x256 VLM TTFT | 256x256 VLM Decode | 256x256 VLM Peak RAM | 30s Transcribe TTFT | 30s Transcribe Decode | 30s Transcribe Peak RAM |
 |:------:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|
 | Mac M4 Pro | 173 tps | 1574/115 tps | 1089/100 tps | 122 MB | 0.38s | 168 tps | 112 MB | 1.7s | 83 tps | 142 MB |
 | Mac M3 Pro | - | - | - | - | - | - | - | - | - | - |
 | Mac M2 Pro | - | - | - | - | - | - | - | - | - | - |
-| Qualcomm PC X-Elite | - | - | - | - | - | - | - | - | - | - |
-| Qualcomm PC X-Plus | - | - | - | - | - | - | - | - | - | - |
+| Qualcomm PC X Elite | - | - | - | - | - | - | - | - | - | - |
+| Qualcomm PC X Plus | - | - | - | - | - | - | - | - | - | - |
 | iPad/Mac M5 | - | - | - | - | - | - | - | - | - | - |
 | iPad/Mac M4 | - | - | - | - | - | - | - | - | - | - |
-| iPad/Mac M3 | - | - | - | - | - | - | - | - | - | - |
+| iPad/Mac M3 | 112 tps | 786/78 tps | 446/60 tps | 98 MB | 0.58s | 111 tps | 54 MB | 4.24s | 58 tps | 42 MB |
 | iPhone 17 Pro | - | - | - | - | - | - | - | - | - | - |
 | iPhone 16 Pro | - | - | - | - | - | - | - | - | - | - |
-| iPhone 15 Pro | - | - | - | - | - | - | - | - | - | - |
+| iPhone 15 Pro | 99 tps | 549/74 tps | - | - | 0.84s | 93 tps | - | - | - | - |
 | Galaxy S25 Ultra | - | - | - | - | - | - | - | - | - | - |
 | Galaxy S24 Ultra | - | - | - | - | - | - | - | - | - | - |
 | Galaxy S23 Ultra | - | - | - | - | - | - | - | - | - | - |

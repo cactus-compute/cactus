@@ -1239,4 +1239,5 @@ void CactusGraph::soft_reset() {
     
     next_node_id_ = max_preserved_id + 1;
     debug_nodes_.clear();
+    shrink_thread_local_buffers();
 }

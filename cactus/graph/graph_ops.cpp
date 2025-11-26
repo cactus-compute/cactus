@@ -43,6 +43,13 @@ namespace {
     }
 }
 
+void shrink_thread_local_buffers() {
+    std::vector<int8_t>().swap(transpose_buffer_int8);
+    std::vector<__fp16>().swap(transpose_buffer_fp16);
+    std::vector<float>().swap(transpose_buffer_fp32);
+    std::vector<int8_t>().swap(quantization_buffer_int8);
+}
+
 void compute_reduce_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
     int axis = node.params.axis;

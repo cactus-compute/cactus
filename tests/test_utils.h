@@ -14,6 +14,12 @@
 
 #ifdef __APPLE__
 #include <mach/mach.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#include <psapi.h>
+#elif defined(__linux__) || defined(__ANDROID__)
+#include <fstream>
+#include <unistd.h>
 #endif
 
 namespace TestUtils {
@@ -163,6 +169,18 @@ inline size_t get_memory_footprint_bytes() {
     mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
     if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vm_info, &count) == KERN_SUCCESS) {
         return vm_info.phys_footprint;
+    }
+#elif defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS_EX pmc;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
+        return pmc.PrivateUsage;
+    }
+#elif defined(__linux__) || defined(__ANDROID__)
+    std::ifstream statm("/proc/self/statm");
+    if (statm.is_open()) {
+        size_t size, resident;
+        statm >> size >> resident;
+        return resident * sysconf(_SC_PAGESIZE);
     }
 #endif
     return 0;

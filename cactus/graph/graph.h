@@ -181,6 +181,8 @@ void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphN
 void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
+void shrink_thread_local_buffers();
+
 namespace ValidationUtils {
     void validate_tensor_dims(const std::vector<size_t>& shape, size_t required_dims, const std::string& op_name);
     void validate_precision(Precision actual, Precision required, const std::string& op_name);
