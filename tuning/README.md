@@ -12,7 +12,7 @@ Fine-tuning models for Cactus.
 
 ### Google Tunix (TPU)
 
-- `lora_gemma.ipynb` - LoRA fine-tuning
+- `qlora_gemma.ipynb` - (Q)LoRA fine-tuning
 - `grpo_gemma.ipynb` - GRPO (Group Relative Policy Optimization)
 - `dpo_gemma.ipynb` - DPO (Direct Preference Optimization)
 
