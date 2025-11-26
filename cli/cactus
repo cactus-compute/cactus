@@ -123,7 +123,7 @@ setup_python_venv() {
 }
 
 print_usage() {
-    echo "Usage: $0 <command> [model_id]"
+    echo "Usage: $0 <command> [options]"
     echo ""
     echo "Commands:"
     echo "  build         - Build the chat application only"
@@ -134,12 +134,19 @@ print_usage() {
     echo "Arguments:"
     echo "  model_id      - HuggingFace model ID (e.g., LiquidAI/LFM2-1.2B)"
     echo ""
+    echo "Test options:"
+    echo "  --model <name>            Model to use for tests (default: Qwen/Qwen3-0.6B)"
+    echo "  --transcribe_model <name> Transcribe model to use (default: openai/whisper-small)"
+    echo ""
     echo "Examples:"
     echo "  $0 build"
-    echo "  $0 download LiquidAI/LFM2-1.2B"
+    echo "  $0 download google/gemma-3-270m-it"
     echo "  $0 run"
     echo "  $0 run Qwen/Qwen3-0.6B"
     echo "  $0 test"
+    echo "  $0 test --model Qwen/Qwen3-0.6B"
+    echo "  $0 test --transcribe_model openai/whisper-large"
+    echo "  $0 test --model LiquidAI/LFM2-VL-450M --transcribe_model openai/whisper-large"
     echo ""
     echo "Common models:"
     echo "  LiquidAI/LFM2-1.2B (default)"
@@ -268,6 +275,28 @@ run_chat() {
 }
 
 run_tests() {
+    local model_arg=""
+    local transcribe_model_arg=""
+
+    # Parse test-specific arguments
+    shift  # Remove 'test' command
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --model)
+                model_arg="--model $2"
+                shift 2
+                ;;
+            --transcribe_model)
+                transcribe_model_arg="--transcribe_model $2"
+                shift 2
+                ;;
+            *)
+                echo -e "${RED}Unknown test option: $1${NC}"
+                exit 1
+                ;;
+        esac
+    done
+
     echo -e "${BLUE}Running test suite...${NC}"
     echo "===================="
 
@@ -275,7 +304,7 @@ run_tests() {
 
     if [ -f "$test_script" ]; then
         cd "$PROJECT_ROOT/tests"
-        ./run.sh
+        ./run.sh $model_arg $transcribe_model_arg
     else
         echo -e "${RED}Error: Test script not found at $test_script${NC}"
         exit 1
@@ -309,7 +338,7 @@ case "$COMMAND" in
         run_chat "$MODEL_ID"
         ;;
     test)
-        run_tests
+        run_tests "$@"
         ;;
     -h|--help|help)
         print_usage

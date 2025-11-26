@@ -34,6 +34,9 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
             } else if (line.find("bert") != std::string::npos) {
                 model_type_ = ModelType::BERT;
                 break;
+            } else if (line.find("whisper") != std::string::npos) {
+                model_type_ = ModelType::WHISPER;
+                break;
             } else {
                 model_type_ = ModelType::UNKNOWN;
             } 

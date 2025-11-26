@@ -139,7 +139,7 @@ size_t NomicModel::build_moe_mlp(CactusGraph* gb, size_t normalized_h, uint32_t 
     auto topk_w = gb->index(topk_indices_and_values, 1, 0);
     auto expert_token_weights_matrix = gb->scatter_topk(topk_idx, topk_w, num_experts); 
     
-    auto expert_outputs = 0; 
+    size_t expert_outputs = 0;
     for (size_t e = 0; e < num_experts; e++) {
         auto new_expert_output = gb->matmul(normalized_h, layer.mlp_experts_mlp1_weight[e], true, backend);  
         new_expert_output = gb->gelu(new_expert_output);

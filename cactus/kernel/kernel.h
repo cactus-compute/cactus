@@ -174,6 +174,15 @@ void cactus_gelu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 void cactus_gelu_int8(const int8_t* input, int8_t* output, size_t num_elements,
                       float input_scale, float output_scale);
 
+void cactus_gelu_f32_erf(const float* input, float* output, size_t num_elements);
+void cactus_gelu_f16_erf(const __fp16* input, __fp16* output, size_t num_elements);
+void cactus_gelu_int8_erf(
+    const int8_t* input,
+    int8_t* output,
+    size_t num_elements,
+    float scale_in,
+    float scale_out);
+
                       
 void cactus_attention_int8(const int8_t* queries, const int8_t* keys, const int8_t* values, int8_t* output,
                             size_t batch_size, size_t seq_len, size_t kv_seq_len, size_t num_q_heads, size_t num_kv_heads,
@@ -224,6 +233,28 @@ void cactus_conv1d_causal_depthwise_int8(
     float input_scale,
     float weight_scale,
     float output_scale);
+
+void cactus_conv1d_f32_k3(
+    const float* input,
+    const float* weight,
+    float* output,
+    size_t N,
+    size_t L,
+    size_t C_in,
+    size_t C_out,
+    size_t stride
+);
+
+void cactus_conv1d_f16_k3(
+    const __fp16* input,
+    const __fp16* weight,
+    __fp16* output,
+    size_t N,
+    size_t L,
+    size_t C_in,
+    size_t C_out,
+    size_t stride
+);
 
 void cactus_conv1d_f32_k3(
     const float* input,

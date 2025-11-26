@@ -105,30 +105,29 @@ Dependencies will be setup on first run automatically.
 cli/cactus --help # to see all commands
 cli/cactus run LiquidAI/LFM2-VL-450M # to interact with a model
 cli/cactus test # to run unit tests during dev
-
-cli/cactus download Qwen/Qwen3-0.6B # HuggingFace path
-# stored as the weights/Qwen3-0.6B
-# replace with model path in tests/test_engine.cpp 
+cli/cactus download Qwen/Qwen3-0.6B # HF name, stored to weights/Qwen3-0.6B
 ```
 
 ## Supported models (INT8)
 
-| Model | Completion | Tool Call | Vision | Embed |
-|-------|--------------------|-------------------|----------------|------|
-| google/gemma-3-270m-it | ✓ | ✗ | ✗ | ✗ |
-| LiquidAI/LFM2-350M | ✓ | ✓ | ✗ | ✓ |
-| HuggingFaceTB/SmolLM2-360m-Instruct | ✓ | ✗ | ✗ | ✗ |
-| LiquidAI/LFM2-VL-450M | ✓ | ✗ | ✓ | ✓ |
-| Qwen/Qwen3-0.6B | ✓ | ✓ | ✗ | ✓ |
-| Qwen/Qwen3-Embedding-0.6B | ✗ | ✗ | ✗ | ✓ |
-| LiquidAI/LFM2-700M | ✓ | ✓ | ✗ | ✓ |
-| nomic-ai/nomic-embed-text-v2-moe | ✗ | ✗ | ✗ | ✓ |
-| google/gemma-3-1b-it | ✓ | ✗ | ✗ | ✗ |
-| LiquidAI/LFM2-1.2B | ✓ | ✓ | ✗ | ✓ |
-| LiquidAI/LFM2-1.2B-RAG | ✓ | ✓ | ✗ | ✓ |
-| LiquidAI/LFM2-VL-1.6B | ✓ | ✗ | ✓ | ✓ |
-| Qwen/Qwen3-1.7B | ✓ | ✓ | ✗ | ✓ |
-| HuggingFaceTB/SmolLM2-1.7B-Instruct | ✓ | ✗ | ✗ | ✓ |
+| Model | Completion | Tool Call | Vision | Embed | Speech
+|-------|--------------------|-------------------|----------------|------|------|
+| google/gemma-3-270m-it | ✓ | ✗ | ✗ | ✗ | ✗ |
+| openai/whisper-small | ✗ | ✗ | ✗ | ✗ | ✓ |
+| LiquidAI/LFM2-350M | ✓ | ✓ | ✗ | ✓ | ✗ |
+| HuggingFaceTB/SmolLM2-360m-Instruct | ✓ | ✗ | ✗ | ✗ | ✗ |
+| LiquidAI/LFM2-VL-450M | ✓ | ✗ | ✓ | ✓ | ✗ |
+| Qwen/Qwen3-0.6B | ✓ | ✓ | ✗ | ✓ | ✗ |
+| Qwen/Qwen3-Embedding-0.6B | ✗ | ✗ | ✗ | ✓ | ✗ |
+| LiquidAI/LFM2-700M | ✓ | ✓ | ✗ | ✓ | ✗ |
+| nomic-ai/nomic-embed-text-v2-moe | ✗ | ✗ | ✗ | ✓ | ✗ |
+| openai/whisper-medium | ✗ | ✗ | ✗ | ✗ | ✓ |
+| google/gemma-3-1b-it | ✓ | ✗ | ✗ | ✗ | ✗ |
+| LiquidAI/LFM2-1.2B | ✓ | ✓ | ✗ | ✓ | ✗ |
+| LiquidAI/LFM2-1.2B-RAG | ✓ | ✓ | ✗ | ✓ | ✗ |
+| LiquidAI/LFM2-VL-1.6B | ✓ | ✗ | ✓ | ✓ | ✗ |
+| Qwen/Qwen3-1.7B | ✓ | ✓ | ✗ | ✓ | ✗ |
+| HuggingFaceTB/SmolLM2-1.7B-Instruct | ✓ | ✗ | ✗ | ✓ | ✗ |
 
 
 ## Resources 

@@ -284,21 +284,39 @@ size_t Siglip2VisionModel::get_image_features_node(const Siglip2Preprocessor::Pr
 
 std::vector<float> Siglip2VisionModel::get_image_features(const Siglip2Preprocessor::PreprocessedImage& preprocessed_image) {
     size_t last_hidden_state = forward_vision(preprocessed_image);
-    
+
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->execute();
-    
+
     const auto& output_buf = gb->get_output_buffer(last_hidden_state);
     size_t total_elements = 1;
     for (auto dim : output_buf.shape) {
         total_elements *= dim;
     }
-    
+
     std::vector<float> features(total_elements);
     void* output_data = gb->get_output(last_hidden_state);
     const float* output_ptr = static_cast<const float*>(output_data);
     std::copy(output_ptr, output_ptr + total_elements, features.begin());
     return features;
+}
+
+std::vector<float> Siglip2VisionModel::get_image_embedding(const std::string& image_path) {
+    auto preprocessed = preprocessor_.preprocess_from_file(image_path);
+    size_t last_hidden_state = forward_vision(preprocessed);
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    size_t pooled = gb->mean(last_hidden_state, 0);
+    gb->execute();
+
+    const auto& output_buf = gb->get_output_buffer(pooled);
+    size_t hidden_dim = output_buf.total_size;
+
+    std::vector<float> embedding(hidden_dim);
+    void* output_data = gb->get_output(pooled);
+    const float* output_ptr = static_cast<const float*>(output_data);
+    std::copy(output_ptr, output_ptr + hidden_dim, embedding.begin());
+    return embedding;
 }
 
 size_t Siglip2VisionModel::forward(const std::vector<uint32_t>&, bool) {return 0;}

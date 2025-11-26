@@ -679,53 +679,83 @@ void compute_fused_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
             }
             break;
         }
-        
+
         case OpType::CONV1D_K3: {
 
-            if (node.params.backend == ComputeBackend::NPU) {
-                throw std::runtime_error("NPU causal convolution operation not yet implemented");
-            }
+                if (node.params.backend == ComputeBackend::NPU) {
+                    throw std::runtime_error("NPU causal convolution operation not yet implemented");
+                }
 
-            const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer; 
-            const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer; 
-            auto& Y = node.output_buffer;
+                const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+                const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+                auto& Y = node.output_buffer;
 
-            if (X.shape.size() != 3) {
-                throw std::runtime_error("Conv requires 3D input [batch, seq_len, in_channels]");
-            }
-            if (W.shape.size() != 3) {
-                throw std::runtime_error("Weight must be 3D");
-            }
+                if (X.shape.size() != 3)
+                    throw std::runtime_error("Conv requires 3D input [N, C_in, L]!");
 
-            const size_t N     = X.shape[0];
-            const size_t L     = X.shape[1];
-            const size_t C_out    = W.shape[0];
-            const size_t C_in    = W.shape[1]; 
-            const size_t K     = W.shape[2];
-            const size_t stride = node.params.stride;
+                if (W.shape.size() != 3)
+                    throw std::runtime_error("Weight must be [C_out, C_in, 3]!");
 
-            Y.shape = { N, L, C_out };
-            Y.precision = X.precision;
+                const size_t N    = X.shape[0];
+                const size_t C_in = X.shape[1];
+                const size_t L    = X.shape[2];
 
-            if(K != 3){
-                throw std::runtime_error("Conv1d_k3 only supports kernel of size 3!");
-            }
+                const size_t C_out = W.shape[0];
+                const size_t K     = W.shape[2];
+                const size_t stride = node.params.stride;
 
-            if(X.precision == Precision::FP32){
-                cactus_conv1d_f32_k3(X.data_as<float>(), W.data_as<float>(), Y.data_as<float>(), N, L, C_in, C_out, stride);
-            }
+                if (K != 3)
+                    throw std::runtime_error("Conv1d_k3 only supports K=3!");
 
-            else if(X.precision == Precision::FP16){
-                cactus_conv1d_f16_k3(X.data_as<__fp16>(), W.data_as<__fp16>(), Y.data_as<__fp16>(), N, L, C_in, C_out, stride);
-            }
+                size_t L_out = ((L - 1) / stride) + 1;
+                Y.shape     = { N, C_out, L_out };
+                Y.precision = X.precision;
 
-            else{
-                throw std::runtime_error("Conv1d_k3 only supports FP32 and FP16");
-            }
+                if (W.precision == Precision::INT8) {
+                    if (X.precision != Precision::FP16) {
+                        throw std::runtime_error(
+                            "Conv1d_k3 with INT8 weights currently requires FP16 activations");
+                    }
 
-            break;
-            
+                    const float w_s = W.quantization_scale;
+                    const size_t W_size = C_out * C_in * K;
+                    const int8_t* W_int8 = W.data_as<int8_t>();
+
+                    std::vector<__fp16> W_fp16(W_size);
+                    for (size_t i = 0; i < W_size; ++i) {
+                        W_fp16[i] = static_cast<__fp16>(W_int8[i] * w_s);
+                    }
+
+                    cactus_conv1d_f16_k3(
+                        X.data_as<__fp16>(),
+                        W_fp16.data(),
+                        Y.data_as<__fp16>(),
+                        N, L, C_in, C_out, stride
+                    );
+                }
+                else if (X.precision == Precision::FP32) {
+                    cactus_conv1d_f32_k3(
+                        X.data_as<float>(),
+                        W.data_as<float>(),
+                        Y.data_as<float>(),
+                        N, L, C_in, C_out, stride
+                    );
+                }
+                else if (X.precision == Precision::FP16) {
+                    cactus_conv1d_f16_k3(
+                        X.data_as<__fp16>(),
+                        W.data_as<__fp16>(),
+                        Y.data_as<__fp16>(),
+                        N, L, C_in, C_out, stride
+                    );
+                }
+                else {
+                    throw std::runtime_error("Conv1d_k3 only supports FP32, FP16, and INT8 weights with FP16 activations!");
+                }
+
+                break;
         }
+
 
         case OpType::CONCAT: {
             const auto& input1_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;

@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <cmath>
+#include <iostream>
 
 namespace Quantization {
     void int8_to_fp32(const int8_t* src, float* dst, size_t count, float scale) {
@@ -342,6 +343,27 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
                                node.output_buffer.data_as<float>(),
                                node.output_buffer.total_size);
             }
+            break;
+        }
+        case OpType::GELU_ERF: {
+            const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+
+            if (input.precision == Precision::INT8) {
+                cactus_gelu_int8_erf(input.data_as<int8_t>(),
+                                    node.output_buffer.data_as<int8_t>(),
+                                    node.output_buffer.total_size,
+                                    input.quantization_scale,
+                                    node.output_buffer.quantization_scale);
+            } else if (input.precision == Precision::FP16) {
+                cactus_gelu_f16_erf(input.data_as<__fp16>(),
+                                    node.output_buffer.data_as<__fp16>(),
+                                    node.output_buffer.total_size);
+            } else {
+                cactus_gelu_f32_erf(input.data_as<float>(),
+                                    node.output_buffer.data_as<float>(),
+                                    node.output_buffer.total_size);
+            }
+
             break;
         }
         case OpType::MATMUL:
