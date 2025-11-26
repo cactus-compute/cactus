@@ -1,0 +1,252 @@
+name: Release Models to Supabase
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - '*'
+
+jobs:
+  convert-and-upload-models:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        model:
+          - 'google/gemma-3-270m-it'
+          - 'LiquidAI/LFM2-350M'
+          - 'HuggingFaceTB/SmolLM2-360m-Instruct'
+          - 'LiquidAI/LFM2-VL-450M'
+          - 'Qwen/Qwen3-0.6B'
+          - 'Qwen/Qwen3-Embedding-0.6B'
+          - 'LiquidAI/LFM2-700M'
+          - 'nomic-ai/nomic-embed-text-v2-moe'
+          - 'google/gemma-3-1b-it'
+          - 'LiquidAI/LFM2-1.2B'
+          - 'LiquidAI/LFM2-1.2B-RAG'
+          - 'LiquidAI/LFM2-VL-1.6B'
+          - 'Qwen/Qwen3-1.7B'
+          - 'HuggingFaceTB/SmolLM2-1.7B-Instruct'
+      fail-fast: false
+      max-parallel: 1  # Process one model at a time to avoid disk space issues
+
+    steps:
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+
+          # Remove unnecessary software to free up space
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tools/requirements.txt
+
+      - name: Download and convert model
+        run: |
+          echo "Disk space before download:"
+          df -h
+
+          echo "Downloading and converting ${{ matrix.model }}"
+          cli/cactus download "${{ matrix.model }}"
+
+          echo "Disk space after conversion:"
+          df -h
+
+          # Clean up HuggingFace cache to free space
+          echo "Cleaning HuggingFace cache..."
+          rm -rf ~/.cache/huggingface
+
+          echo "Disk space after cache cleanup:"
+          df -h
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+      - name: Get tag and model name
+        id: model-name
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          # Convert to folder name format (lowercase, no -it suffix)
+          MODEL_DIR=$(echo "${{ matrix.model }}" | cut -d'/' -f2 | tr '[:upper:]' '[:lower:]' | sed 's/-it$//')
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "dir=$MODEL_DIR" >> $GITHUB_OUTPUT
+          echo "full_name=${MODEL_DIR}-${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "Tag: $TAG_NAME"
+          echo "Model directory: $MODEL_DIR"
+          echo "Full name: ${MODEL_DIR}-${TAG_NAME}"
+
+      - name: Create zip archive
+        run: |
+          MODEL_DIR="${{ steps.model-name.outputs.dir }}"
+
+          echo "Looking for weights/$MODEL_DIR"
+          ls -la weights/
+
+          if [ -d "weights/$MODEL_DIR" ]; then
+            cd weights
+            zip -r "../${{ steps.model-name.outputs.full_name }}.zip" "$MODEL_DIR"
+            cd ..
+            echo "Created archive: ${{ steps.model-name.outputs.full_name }}.zip"
+            ls -lh "${{ steps.model-name.outputs.full_name }}.zip"
+          else
+            echo "Error: Model directory weights/$MODEL_DIR not found"
+            exit 1
+          fi
+
+      - name: Upload to Supabase Storage
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          # Upload to Supabase Storage
+          SUPABASE_BUCKET="cactus-models"
+          UPLOAD_PATH="${{ steps.model-name.outputs.tag }}/${{ steps.model-name.outputs.full_name }}.zip"
+
+          echo "Uploading to Supabase: $UPLOAD_PATH"
+
+          RESPONSE=$(curl -X POST \
+            "${SUPABASE_URL}/storage/v1/object/${SUPABASE_BUCKET}/${UPLOAD_PATH}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
+            -H "Content-Type: application/zip" \
+            --data-binary "@${{ steps.model-name.outputs.full_name }}.zip" \
+            -w "\n%{http_code}" \
+            -s)
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
+
+          echo "Response: $RESPONSE_BODY"
+          echo "HTTP Code: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "✓ Successfully uploaded ${{ steps.model-name.outputs.full_name }}.zip"
+
+            # Get public URL
+            PUBLIC_URL="${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${UPLOAD_PATH}"
+            echo "Public URL: $PUBLIC_URL"
+            echo "public_url=$PUBLIC_URL" >> $GITHUB_OUTPUT
+          else
+            echo "✗ Failed to upload ${{ steps.model-name.outputs.full_name }}.zip"
+            exit 1
+          fi
+        id: upload
+
+      - name: Insert model metadata into Supabase table
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          # Get file size in MB (rounded to nearest integer)
+          SIZE_BYTES=$(stat -f%z "${{ steps.model-name.outputs.full_name }}.zip" 2>/dev/null || stat -c%s "${{ steps.model-name.outputs.full_name }}.zip")
+          SIZE_MB=$(awk "BEGIN {printf \"%.0f\", $SIZE_BYTES / 1048576}")
+
+          # Create slug from model directory name
+          SLUG="${{ steps.model-name.outputs.dir }}"
+          TAG="${{ steps.model-name.outputs.tag }}"
+          DOWNLOAD_URL="${{ steps.upload.outputs.public_url }}"
+          SUPABASE_TABLE="models"
+
+          # Create JSON payload with only essential fields
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "slug": "$SLUG",
+            "download_url": "$DOWNLOAD_URL",
+            "size_mb": $SIZE_MB,
+            "quantization": 8,
+            "cactus_version": "$TAG"
+          }
+          EOF
+          )
+
+          echo "Inserting metadata into Supabase table..."
+          echo "$JSON_PAYLOAD" | jq . || echo "$JSON_PAYLOAD"
+
+          # Insert into Supabase table
+          RESPONSE=$(curl -X POST \
+            "${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
+            -H "apikey: ${SUPABASE_SERVICE_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Accept-Profile: cactus" \
+            -H "Content-Profile: cactus" \
+            -H "Prefer: return=representation" \
+            -d "$JSON_PAYLOAD" \
+            -w "\n%{http_code}" \
+            -s)
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
+
+          echo "Response: $RESPONSE_BODY"
+          echo "HTTP Code: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "✓ Successfully inserted metadata for $SLUG"
+          else
+            echo "✗ Failed to insert metadata for $SLUG"
+            exit 1
+          fi
+
+      - name: Clean up
+        if: always()
+        run: |
+          # Remove the zip file
+          rm -f "${{ steps.model-name.outputs.full_name }}.zip"
+
+          # Remove the weights directory to free up space
+          MODEL_DIR="${{ steps.model-name.outputs.dir }}"
+          if [ -d "weights/$MODEL_DIR" ]; then
+            echo "Removing weights/$MODEL_DIR to free up space"
+            rm -rf "weights/$MODEL_DIR"
+          fi
+
+          echo "Final disk space:"
+          df -h
+
+  create-release-summary:
+    needs: convert-and-upload-models
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Create release notes
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          echo "## Model Release $TAG_NAME" >> release-notes.md
+          echo "" >> release-notes.md
+          echo "All models have been converted and uploaded to Supabase Storage." >> release-notes.md
+          echo "" >> release-notes.md
+          echo "Models included:" >> release-notes.md
+          echo "- google/gemma-3-270m-it" >> release-notes.md
+          echo "- LiquidAI/LFM2-350M" >> release-notes.md
+          echo "- HuggingFaceTB/SmolLM2-360m-Instruct" >> release-notes.md
+          echo "- LiquidAI/LFM2-VL-450M" >> release-notes.md
+          echo "- Qwen/Qwen3-0.6B" >> release-notes.md
+          echo "- Qwen/Qwen3-Embedding-0.6B" >> release-notes.md
+          echo "- LiquidAI/LFM2-700M" >> release-notes.md
+          echo "- nomic-ai/nomic-embed-text-v2-moe" >> release-notes.md
+          echo "- google/gemma-3-1b-it" >> release-notes.md
+          echo "- LiquidAI/LFM2-1.2B" >> release-notes.md
+          echo "- LiquidAI/LFM2-1.2B-RAG" >> release-notes.md
+          echo "- LiquidAI/LFM2-VL-1.6B" >> release-notes.md
+          echo "- Qwen/Qwen3-1.7B" >> release-notes.md
+          echo "- HuggingFaceTB/SmolLM2-1.7B-Instruct" >> release-notes.md
+          cat release-notes.md
