@@ -218,8 +218,8 @@ protected:
 
 
 class LFM2Model : public Model {
-    friend class Lfm2VlModel;  
-    
+    friend class Lfm2VlModel;
+
 public:
     LFM2Model();
     explicit LFM2Model(const Config& config);
@@ -232,6 +232,7 @@ public:
               const std::string& system_prompt = "", bool do_warmup = true) override;
 
 protected:
+    using Model::forward;
     size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
                           ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
 
@@ -349,6 +350,273 @@ private:
 
         std::vector<LayerWeights> layers;
     } weight_nodes_;
+};
+
+class WhisperModel : public Model {
+public:
+    WhisperModel();
+    explicit WhisperModel(const Config& config);
+    ~WhisperModel() override = default;
+
+protected:
+    size_t build_attention(CactusGraph*, size_t, uint32_t,ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("Whisper: build_attention unused");
+    }
+
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("Whisper: build_mlp unused");
+    }
+
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("Whisper: build_transformer_block unused");
+    }
+
+    size_t forward(const std::vector<uint32_t>& /*tokens*/, bool /*use_cache*/ = false) override {
+        throw std::runtime_error("Whisper requires mel+token forward().");
+    }
+
+    size_t forward(const std::vector<float>& mel_bins, const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+
+    void run_encoder(const std::vector<float>& mel_bins);
+    void reset_graph_side_cache_nodes();
+
+    size_t run_decoder_step(const std::vector<uint32_t>& tokens, bool use_cache, bool last_token_only);
+
+    void load_weights_to_graph(CactusGraph* gb) override;
+
+    size_t build_encoder_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+    
+    size_t build_decoder_self_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+
+    size_t build_encoder_self_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+
+    size_t build_encoder_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                    ComputeBackend backend);
+    
+    size_t build_decoder_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                    ComputeBackend backend) const;
+    
+    size_t build_encoder_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+    
+    size_t build_decoder_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+    
+    size_t build_conv1d(CactusGraph* gb, size_t input);
+
+    uint32_t generate_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& mel_bins,
+                                    float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0, const std::string& profile_file = "") override;
+
+    void reset_cache() override;
+
+private:
+    struct WeightNodeIDs {
+        size_t output_weight;
+        size_t output_norm_weight;
+
+        size_t decoder_norm_weight;
+        size_t decoder_norm_bias;
+        size_t decoder_position_embeddings_weight;
+
+        size_t encoder_position_embeddings;
+        size_t encoder_conv1_weight;
+        size_t encoder_conv1_bias;
+        size_t encoder_conv2_weight;
+        size_t encoder_conv2_bias;
+        size_t encoder_norm_weight;
+        size_t encoder_norm_bias;
+
+        size_t encoder_output;
+
+        struct LayerWeights {
+            //Decoder layers
+            size_t decoder_output_norm_bias;
+            size_t decoder_output_norm_weight;
+            size_t decoder_position_embeddings_weight;
+            size_t decoder_token_embeddings_weight;
+
+            size_t decoder_encoder_attn_q_weight;
+            size_t decoder_encoder_attn_k_weight;
+            size_t decoder_encoder_attn_v_weight;
+            size_t decoder_encoder_attn_q_bias;
+            size_t decoder_encoder_attn_v_bias;
+            size_t decoder_encoder_attn_output_weight;
+            size_t decoder_encoder_attn_output_bias;
+
+            size_t decoder_post_encoder_layernorm_weight;
+            size_t decoder_post_encoder_layernorm_bias;
+
+            size_t decoder_ffn1_weight;
+            size_t decoder_ffn1_bias;
+            size_t decoder_ffn2_weight;
+            size_t decoder_ffn2_bias;
+
+            size_t decoder_post_ffn_layernorm_weight;
+            size_t decoder_post_ffn_layernorm_bias;
+            
+            size_t decoder_self_attn_q_weight;
+            size_t decoder_self_attn_k_weight;
+            size_t decoder_self_attn_v_weight;
+            size_t decoder_self_attn_q_bias;
+            size_t decoder_self_attn_v_bias;
+            size_t decoder_self_attn_output_weight;
+            size_t decoder_self_attn_output_bias;
+
+            size_t decoder_post_attn_layernorm_weight;
+            size_t decoder_post_attn_layernorm_bias;
+
+            //Encoder layers
+            size_t encoder_ffn1_weight;
+            size_t encoder_ffn1_bias;
+            size_t encoder_ffn2_weight;
+            size_t encoder_ffn2_bias;
+
+            size_t encoder_post_ffn_layernorm_weight;
+            size_t encoder_post_ffn_layernorm_bias;
+            
+            size_t encoder_self_attn_q_weight;
+            size_t encoder_self_attn_k_weight;
+            size_t encoder_self_attn_v_weight;
+            size_t encoder_self_attn_q_bias;
+            size_t encoder_self_attn_v_bias;
+            size_t encoder_self_attn_output_weight;
+            size_t encoder_self_attn_output_bias;
+
+            size_t encoder_post_attn_layernorm_weight;
+            size_t encoder_post_attn_layernorm_bias;
+        };
+
+        std::vector<LayerWeights> layers;
+    } weight_nodes_;
+
+    bool encoder_ready_ = false;
+    size_t last_new_tokens_;
+    std::vector<float> encoder_output_host_;
+    std::vector<size_t> encoder_output_shape_;
+    size_t last_conv1_node_ = 0;
+    size_t last_conv2_node_ = 0;
+    size_t last_encoder_post_norm_node_ = 0;
+    size_t last_enc_plus_pos_node_ = 0;
+    size_t encoder_transformer_block_0 = 0;
+    size_t encoder_pre_gelu = 0;
+    size_t encoder_post_gelu = 0;
+
+    std::vector<size_t> encoder_block_out_nodes_;
+    std::vector<uint8_t> encoder_output_bytes_;
+    Precision encoder_output_precision_ = Precision::FP32;
+
+    std::vector<size_t> suppress_tokens_ = {
+    1,
+    2,
+    7,
+    8,
+    9,
+    10,
+    14,
+    25,
+    26,
+    27,
+    28,
+    29,
+    31,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    90,
+    91,
+    92,
+    93,
+    359,
+    503,
+    522,
+    542,
+    873,
+    893,
+    902,
+    918,
+    922,
+    931,
+    1350,
+    1853,
+    1982,
+    2460,
+    2627,
+    3246,
+    3253,
+    3268,
+    3536,
+    3846,
+    3961,
+    4183,
+    4667,
+    6585,
+    6647,
+    7273,
+    9061,
+    9383,
+    10428,
+    10929,
+    11938,
+    12033,
+    12331,
+    12562,
+    13793,
+    14157,
+    14635,
+    15265,
+    15618,
+    16553,
+    16604,
+    18362,
+    18956,
+    20075,
+    21675,
+    22520,
+    26130,
+    26161,
+    26435,
+    28279,
+    29464,
+    31650,
+    32302,
+    32470,
+    36865,
+    42863,
+    47425,
+    49870,
+    50254,
+    50258,
+    50358,
+    50359,
+    50360,
+    50361,
+    50362
+    };
+
+    std::vector<size_t> begin_suppress_tokens_ = {
+    220,
+    50257
+    };
+
+    bool first_decode_step_ = true;
+
+    std::vector<size_t> encoder_k_nodes_;
+    std::vector<size_t> encoder_v_nodes_;
+
+    std::vector<std::vector<uint8_t>> encoder_k_host_;
+    std::vector<std::vector<uint8_t>> encoder_v_host_;
+    std::vector<std::vector<size_t>>  encoder_k_shape_;
+    std::vector<std::vector<size_t>>  encoder_v_shape_;
+    Precision encoder_kv_precision_ = Precision::FP32;
+    bool encoder_kv_ready_ = false;
+    
+
 };
 
 

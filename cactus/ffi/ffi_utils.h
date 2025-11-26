@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <sstream>
 #include <iomanip>
+#include <fstream>
+#include <iostream>
 #include <filesystem>
 #include <cctype>
 
@@ -177,8 +179,8 @@ inline void parse_options_json(const std::string& json,
                                float& temperature, float& top_p, 
                                size_t& top_k, size_t& max_tokens,
                                std::vector<std::string>& stop_sequences) {
-    temperature = -1.0f; 
-    top_p = -1.0f;       
+    temperature = 0.0f;
+    top_p = 0.0f;       
     top_k = 0;           
     max_tokens = 100;    
     stop_sequences.clear();

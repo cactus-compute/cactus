@@ -12,6 +12,7 @@
 #include <system_error>
 #include <limits>
 #include <set>
+#include <iostream>
 #include <sstream>
 
 static const char* op_type_names[] = {
@@ -124,6 +125,8 @@ size_t CactusGraph::matmul(size_t input1, size_t input2, bool pretransposed_rhs,
     if (K != rhs_K) {
         throw std::invalid_argument("Matrix dimensions incompatible for multiplication");
     }
+
+    
     
     std::vector<size_t> output_shape = {M, N};
     OpParams params{.pretransposed_rhs = pretransposed_rhs, .backend = backend};
@@ -355,8 +358,28 @@ size_t CactusGraph::conv1d_causal(size_t input, size_t weight, size_t, size_t di
 }
 
 size_t CactusGraph::conv1d_k3(size_t input, size_t weight, size_t stride){
-    OpParams params{.stride = stride};
-    return add_node(OpType::CONV1D_K3, {input, weight}, {}, params);
+    const auto& xin = get_output_buffer(input);   // [N, C_in, L]
+    const auto& w   = get_output_buffer(weight);  // [C_out, C_in, 3]
+
+    if (xin.shape.size() != 3) throw std::runtime_error("conv1d_k3 expects N,C,L");
+    if (w.shape.size()   != 3) throw std::runtime_error("weight must be [C_out,C_in,3]");
+    if (w.shape[1] != xin.shape[1]) throw std::runtime_error("C_in mismatch in conv1d_k3");
+    if (w.shape[2] != 3) throw std::runtime_error("K=3 expected in conv1d_k3");
+
+    const size_t N    = xin.shape[0];
+    const size_t L    = xin.shape[2];
+    const size_t C_out= w.shape[0];
+    const size_t K    = w.shape[2];
+
+    const size_t pad = 1;
+    const size_t L_out = (L + 2 * pad - K) / stride + 1;
+
+    OpParams params{};
+    params.stride = stride;
+    params.output_precision = xin.precision;
+
+    std::vector<size_t> out_shape{N, C_out, L_out};
+    return add_node(OpType::CONV1D_K3, {input, weight}, out_shape, params);
 }
 
 
@@ -478,6 +501,10 @@ size_t CactusGraph::silu(size_t input) {
 
 size_t CactusGraph::gelu(size_t input) {
     return add_node(OpType::GELU, {input}, {});
+}
+
+size_t CactusGraph::gelu_erf(size_t input){
+    return add_node(OpType::GELU_ERF, {input}, {});
 }
 
 size_t CactusGraph::gather(size_t tensor, size_t indices) {
@@ -822,7 +849,7 @@ void CactusGraph::execute(const std::string& profile_file) {
             out = &profile_out;
         }
     }
-    
+
     auto total_start = std::chrono::high_resolution_clock::now();
     
     if (enable_profiling) {
@@ -837,7 +864,7 @@ void CactusGraph::execute(const std::string& profile_file) {
     for (auto& node : nodes_) {
         if (enable_profiling && node->op_type != OpType::INPUT) {
             auto start = std::chrono::high_resolution_clock::now();
-            
+
             compute_node_optimized(*node, nodes_, node_index_map_);
             
             auto end = std::chrono::high_resolution_clock::now();
@@ -889,6 +916,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                 }
                 values_str += "]";
             }
+
             
             std::string weights_str = "";
             if ((node->op_type == OpType::RMS_NORM || node->op_type == OpType::MATMUL || 

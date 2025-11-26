@@ -85,7 +85,7 @@ struct Config {
     float max_pixels_tolerance = 2.0f;
     bool do_image_splitting = true;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, SMOL = 2, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6};
+    enum class ModelType {QWEN = 0, GEMMA = 1, SMOL = 2, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7};
     ModelType model_type = ModelType::QWEN;
 
     enum class ModelVariant {DEFAULT = 0, VLM = 1, EXTRACT = 2, RAG = 3};
@@ -156,7 +156,7 @@ public:
     void set_corpus_dir(const std::string& dir) { corpus_dir_ = dir; }
 
 protected:
-    enum class ModelType { UNKNOWN, QWEN, GEMMA, LFM2, SMOL, BERT };
+    enum class ModelType { UNKNOWN, QWEN, GEMMA, LFM2, SMOL, BERT, WHISPER};
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -390,6 +390,9 @@ public:
     virtual uint32_t generate_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                                           float temperature = -1.0f, float top_p = -1.0f,
                                           size_t top_k = 0, const std::string& profile_file = "");
+    
+    virtual uint32_t generate_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& mel_bins, float temperature = 0.0f, float top_p = 0.0f,
+                      size_t top_k = 0, const std::string& profile_file = "");
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, const std::string& profile_file = "");
 
@@ -400,6 +403,7 @@ public:
 
 protected:
     virtual size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) = 0;
+    virtual size_t forward(const std::vector<float>& mel_bins, const std::vector<uint32_t>& tokens, bool use_cache = false);
     virtual void load_weights_to_graph(CactusGraph* gb) = 0;
     virtual size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
                           ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) = 0;

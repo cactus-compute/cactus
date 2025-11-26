@@ -2,6 +2,7 @@
 #include <fstream>
 #include <filesystem>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <iomanip>
@@ -11,13 +12,40 @@
 #include <vector>
 #include <sstream>
 
-
-const char* g_model_path = "../../weights/lfm2-vl-1.6b";
+const char* g_model_path = std::getenv("CACTUS_TEST_MODEL");
+const char* g_transcribe_model_path = std::getenv("CACTUS_TEST_TRANSCRIBE_MODEL");
+const char* g_audio_file_path = "../assets/test.wav";
+const char* g_whisper_prompt = "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>";
 
 const char* g_options = R"({
         "max_tokens": 256,
         "stop_sequences": ["<|im_end|>", "<end_of_turn>"]
     })";
+
+
+double json_number(const std::string& json, const std::string& key, double def = 0.0) {
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return def;
+    size_t start = pos + pattern.size();
+    while (start < json.size() && (json[start] == ' ' || json[start] == '\t')) ++start;
+    size_t end = start;
+    while (end < json.size() && std::string(",}] \t\n\r").find(json[end]) == std::string::npos) ++end;
+    try { return std::stod(json.substr(start, end - start)); }
+    catch (...) { return def; }
+}
+
+std::string json_string(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return {};
+    size_t q1 = json.find('"', pos + pattern.size());
+    if (q1 == std::string::npos) return {};
+    size_t q2 = json.find('"', q1 + 1);
+    if (q2 == std::string::npos) return {};
+    return json.substr(q1 + 1, q2 - q1 - 1);
+}
+
 
 struct Timer {
     std::chrono::high_resolution_clock::time_point start;
@@ -38,13 +66,16 @@ struct StreamingData {
 
 void stream_callback(const char* token, uint32_t token_id, void* user_data) {
     auto* data = static_cast<StreamingData*>(user_data);
-    data->tokens.push_back(token);
+    data->tokens.push_back(token ? token : "");
     data->token_ids.push_back(token_id);
     data->token_count++;
-    std::cout << token << std::flush;
+
+    std::string out = token ? token : "";
+    for (char& c : out) if (c == '\n') c = ' ';
+    std::cout << out << std::flush;
 
     if (data->stop_at > 0 && data->token_count >= data->stop_at) {
-        std::cout << "\n\n[→ Stopping at token #" << data->stop_at << "]" << std::endl;
+        std::cout << " [→ stopped]" << std::flush;
         cactus_stop(data->model);
     }
 }
@@ -52,19 +83,30 @@ void stream_callback(const char* token, uint32_t token_id, void* user_data) {
 struct Metrics {
     double ttft = 0.0;
     double tps = 0.0;
+    double total_ms = 0.0;
+    double prompt_tokens = 0.0;
+    double completion_tokens = 0.0;
 
     void parse(const std::string& response) {
-        size_t pos = response.find("\"time_to_first_token_ms\":");
-        if (pos != std::string::npos) ttft = std::stod(response.substr(pos + 25));
-
-        pos = response.find("\"tokens_per_second\":");
-        if (pos != std::string::npos) tps = std::stod(response.substr(pos + 20));
+        ttft = json_number(response, "time_to_first_token_ms");
+        tps = json_number(response, "tokens_per_second");
+        total_ms = json_number(response, "total_time_ms");
+        prompt_tokens = json_number(response, "prompt_tokens", json_number(response, "prefill_tokens"));
+        completion_tokens = json_number(response, "completion_tokens", json_number(response, "decode_tokens"));
     }
 
     void print() const {
         std::cout << "├─ Time to first token: " << std::fixed << std::setprecision(2)
                   << ttft << " ms\n"
                   << "├─ Tokens per second: " << tps << std::endl;
+    }
+
+    void print_full() const {
+        std::cout << "├─ Time to first token: " << std::fixed << std::setprecision(2) << ttft << " ms\n"
+                  << "├─ Tokens per second:  " << tps << "\n"
+                  << "├─ Total time:         " << total_ms << " ms\n"
+                  << "├─ Prompt tokens:      " << prompt_tokens << "\n"
+                  << "├─ Completion tokens:  " << completion_tokens << std::endl;
     }
 };
 
@@ -476,7 +518,7 @@ bool test_rag() {
 
 bool test_audio_processor() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
-              << "║         Audio Processor Test             ║\n"
+              << "║         AUDIO PROCESSOR TEST             ║\n"
               << "╚══════════════════════════════════════════╝\n";
     using namespace cactus::engine;
 
@@ -523,6 +565,64 @@ bool test_audio_processor() {
     return passed;
 }
 
+template<typename Predicate>
+bool run_whisper_test(const char* title, const char* options_json, Predicate check) {
+    if (!g_transcribe_model_path) {
+        std::cout << "⊘ SKIP │ " << std::left << std::setw(25) << title
+                  << " │ CACTUS_TEST_TRANSCRIBE_MODEL not set\n";
+        return true;
+    }
+
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║" << std::setw(42) << std::left << std::string("          ") + title << "║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    cactus_model_t model = cactus_init(g_transcribe_model_path, 2048, nullptr);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize Whisper model\n";
+        return false;
+    }
+
+    char response[1 << 15] = {0};
+    StreamingData stream;
+    stream.model = model;
+
+    std::cout << "Transcript: ";
+    int rc = cactus_transcribe(model, g_audio_file_path, g_whisper_prompt,
+                               response, sizeof(response), options_json,
+                               stream_callback, &stream);
+
+    std::cout << "\n\n[Results]\n";
+    if (rc <= 0) {
+        std::cerr << "failed\n";
+        cactus_destroy(model);
+        return false;
+    }
+
+    Metrics m;
+    m.parse(response);
+    std::string text = json_string(response, "text");
+    if (text.empty()) text = json_string(response, "response");
+
+    m.print_full();
+
+    bool ok = check(rc, m);
+    std::cout << "└─ Status: " << (ok ? "PASSED ✓" : "FAILED ✗") << "\n";
+
+    cactus_destroy(model);
+    return ok;
+}
+
+static bool test_whisper_prefill_only() {
+    return run_whisper_test("SPEECH PREFILL", R"({"max_tokens": 1})",
+        [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 0; });
+}
+
+static bool test_whisper_autoregressive() {
+    return run_whisper_test("TRANSCRIPTION", R"({"max_tokens": 100})",
+        [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
+}
+
 int main() {
     TestUtils::TestRunner runner("Engine Tests");
     runner.run_test("streaming", test_streaming());
@@ -531,6 +631,8 @@ int main() {
     runner.run_test("embeddings", test_embeddings());
     runner.run_test("image_input", test_image_input());
     runner.run_test("audio_processor", test_audio_processor());
+    runner.run_test("whisper_prefill", test_whisper_prefill_only());
+    runner.run_test("whisper_autoregressive", test_whisper_autoregressive());
     runner.run_test("rag_preprocessing", test_rag());
     runner.run_test("huge_context", test_huge_context());
     runner.print_summary();

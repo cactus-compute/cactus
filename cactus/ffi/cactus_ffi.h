@@ -33,6 +33,17 @@ CACTUS_FFI_EXPORT int cactus_complete(
     void* user_data
 );
 
+CACTUS_FFI_EXPORT int cactus_transcribe(
+    cactus_model_t model,
+    const char* audio_file_path,
+    const char* prompt,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,
+    cactus_token_callback callback,
+    void* user_data
+);
+
 
 CACTUS_FFI_EXPORT int cactus_embed(
     cactus_model_t model,

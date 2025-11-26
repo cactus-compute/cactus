@@ -44,7 +44,7 @@ Lfm2VlModel::Lfm2VlModel(const Config& config)
     preprocessor_ = Siglip2Preprocessor(preprocessor_config);
 }
 
-bool Lfm2VlModel::init(const std::string& model_folder, size_t context_size, const std::string& system_prompt, bool /*do_warmup*/) {
+bool Lfm2VlModel::init(const std::string& model_folder, size_t context_size, const std::string& system_prompt, bool do_warmup) {
 
     if (!Model::init(model_folder, context_size, system_prompt, false)) {
         return false;
@@ -53,20 +53,27 @@ bool Lfm2VlModel::init(const std::string& model_folder, size_t context_size, con
     if (!shared_graph) {
         throw std::runtime_error("Shared graph was not initialized for Lfm2VlModel");
     }
-    std::string vision_folder = model_folder; 
+    std::string vision_folder = model_folder;
     if (!vision_tower_.init(shared_graph, vision_folder, context_size, "", false)) {
         throw std::runtime_error("Failed to initialize vision tower");
     }
-    
+
     vision_weights_loaded_ = true;
     if (!language_model_.init(shared_graph, model_folder, context_size, system_prompt, false)) {
         throw std::runtime_error("Failed to initialize language model");
     }
 
     language_model_.output_weight_node_id_ = output_weight_node_id_;
-    
+
     language_weights_loaded_ = true;
-    
+
+    if (do_warmup) {
+        std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
+        auto warmup_tokens = tokenizer_->encode(warmup_text);
+        language_model_.generate(warmup_tokens, config_.default_temperature, config_.default_top_p, config_.default_top_k, "");
+        language_model_.reset_cache();
+    }
+
     return true;
 }
 
