@@ -1,10 +1,18 @@
 # Tuning
 
-Fine-tuning Gemma models for Cactus using Google Tunix.
+Fine-tuning models for Cactus.
 
 ## Notebooks
 
-- `lora_gemma.ipynb` - LoRA fine-tuning
+### Recommended: Unsloth (GPU)
+
+- `unsloth_lora_qwen3.ipynb` - **Preferred** - LoRA fine-tuning with Unsloth
+  - Works on free Colab (T4 GPU, ~6GB VRAM)
+  - Highly optimized and tested library
+
+### Google Tunix (TPU)
+
+- `qlora_gemma.ipynb` - (Q)LoRA fine-tuning
 - `grpo_gemma.ipynb` - GRPO (Group Relative Policy Optimization)
 - `dpo_gemma.ipynb` - DPO (Direct Preference Optimization)
 
