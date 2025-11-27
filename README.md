@@ -82,7 +82,7 @@ Example response from Gemma3-270m-INT8
 | iPhone 15 Pro | 99 | 549/74 | - | - | 0.84s | 93 | - | - | - | - |
 | Qualcomm X Elite | - | - | - | - | - | - | - | - | - | - |
 | Qualcomm X Plus | - | - | - | - | - | - | - | - | - | - |
-| Galaxy S25 Ultra | 91 | 230/63 | 173/47 | 128MB | 1.4s | 58 | - | - | - | - |
+| Galaxy S25 Ultra | 91 | 230/63 | 173/57 | 128MB | 1.4s | 58 | - | - | - | - |
 | Galaxy S24 Ultra | - | - | - | - | - | - | - | - | - | - |
 | Pixel 10 Pro | - | - | - | - | - | - | - | - | - | - |
 | Pixel 9 Pro | - | - | - | - | - | - | - | - | - | - |
