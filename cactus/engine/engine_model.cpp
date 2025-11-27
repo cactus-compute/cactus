@@ -115,11 +115,11 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         embedding_file_path_ = model_folder+"/decoder_token_embeddings.weights";
     }
     else{
-        embedding_file_path_ = model_folder + "/token_embeddings.weights";
+    embedding_file_path_ = model_folder + "/token_embeddings.weights";
     }
 
     load_weights_to_graph(gb);
-
+    
     if (config_.model_type == Config::ModelType::GEMMA) {
         attention_scale_ = 1.0f / std::sqrt(256.0f);
     } else {
@@ -174,7 +174,7 @@ size_t Model::forward(const std::vector<float>& /*mel_bins*/, const std::vector<
 
 uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature, float top_p,
                         size_t top_k, const std::string& profile_file, bool prefill_only) {
-
+                            
     if (temperature < 0) {
         temperature = config_.default_temperature;
     }
@@ -191,14 +191,14 @@ uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature,
 
     size_t sampled_token_id = 0;
     if (!prefill_only) {
-        auto backend = config_.default_backend == Config::Backend::CPU
-            ? ComputeBackend::CPU
-            : ComputeBackend::NPU;
+    auto backend = config_.default_backend == Config::Backend::CPU
+        ? ComputeBackend::CPU
+        : ComputeBackend::NPU;
 
-        auto logits_node_id = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
+    auto logits_node_id = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
         sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k);
     }
-
+    
     if (!profile_file.empty()) {
         gb->execute(profile_file);
     } else {
@@ -210,7 +210,7 @@ uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature,
     if (prefill_only) {
         return sampled_token_id;
     }
-
+    
     auto* output_ptr = gb->get_output(sampled_token_id);
     return *static_cast<uint32_t*>(output_ptr);
 }
@@ -381,6 +381,7 @@ bool Config::from_json(const std::string& config_path) {
             if (value == "gemma" || value == "GEMMA") model_type = ModelType::GEMMA;
             else if (value == "lfm2" || value == "LFM2") model_type = ModelType::LFM2;
             else if (value == "smol" || value == "SMOL" || value == "Smol") model_type = ModelType::SMOL;
+            else if (value == "phi3" || value == "PHI3" || value == "Phi3") model_type = ModelType::PHI3;
             else if (value == "bert" || value == "BERT") model_type = ModelType::NOMIC;
             else if (value == "whisper" || value == "WHISPER") model_type = ModelType::WHISPER;
             else model_type = ModelType::QWEN;
@@ -477,6 +478,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<LFM2Model>(config);
         case Config::ModelType::SMOL:
             return std::make_unique<SmolModel>(config);
+        case Config::ModelType::PHI3:
+            return std::make_unique<Phi3Model>(config);
         case Config::ModelType::NOMIC:
             return std::make_unique<NomicModel>(config);
         case Config::ModelType::WHISPER:

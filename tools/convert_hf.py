@@ -249,6 +249,8 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         detected_model_type = 'lfm2'
     elif 'qwen' in model_type_str:
         detected_model_type = 'qwen'
+    elif 'phi3' in model_type_str or 'phi-3' in model_type_str:
+        detected_model_type = 'phi3'
     elif 'llama' in model_type_str:
         if('smol' in str(output_dir)):
             detected_model_type = 'smol'
@@ -971,6 +973,34 @@ def convert_hf_model_weights_vlm(model, output_dir, precision='INT8', args=None)
                     save_tensor_with_header(v_weight, output_dir / f'layer_{i}_attn_v.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                     saved_tensor_full_names.add(attn_name)
                     found = True
+        
+        # Fused QKV projection handling
+        qkv_name = layer_prefix + 'self_attn.qkv_proj.weight'
+        if qkv_name in state_dict:
+            qkv_weight = state_dict[qkv_name]
+            num_heads = model_config['attention_heads']
+            num_kv_heads = model_config['attention_kv_heads']
+            head_dim = model_config['attention_head_dim']
+            q_size = num_heads * head_dim
+            kv_size = num_kv_heads * head_dim
+            q_weight = qkv_weight[:q_size, :]
+            k_weight = qkv_weight[q_size:q_size + kv_size, :]
+            v_weight = qkv_weight[q_size + kv_size:, :]
+            save_tensor_with_header(q_weight, output_dir / f'layer_{i}_attn_q.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+            save_tensor_with_header(k_weight, output_dir / f'layer_{i}_attn_k.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+            save_tensor_with_header(v_weight, output_dir / f'layer_{i}_attn_v.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+            saved_tensor_full_names.add(qkv_name)
+        
+        # Fused gate_up projection handling
+        gate_up_name = layer_prefix + 'mlp.gate_up_proj.weight'
+        if gate_up_name in state_dict:
+            gate_up_weight = state_dict[gate_up_name]
+            intermediate_size = gate_up_weight.shape[0] // 2
+            gate_weight = gate_up_weight[:intermediate_size, :]
+            up_weight = gate_up_weight[intermediate_size:, :]
+            save_tensor_with_header(gate_weight, output_dir / f'layer_{i}_ffn_gate.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+            save_tensor_with_header(up_weight, output_dir / f'layer_{i}_ffn_up.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+            saved_tensor_full_names.add(gate_up_name)
     
     if saved_tensor_full_names != set(state_dict.keys()):
         print(f"Warning: Unsaved tensors: {set(state_dict.keys()) - saved_tensor_full_names}")
