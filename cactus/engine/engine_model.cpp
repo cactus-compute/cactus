@@ -173,8 +173,8 @@ size_t Model::forward(const std::vector<float>& /*mel_bins*/, const std::vector<
 }
 
 uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature, float top_p,
-                        size_t top_k, const std::string& profile_file) {
-                            
+                        size_t top_k, const std::string& profile_file, bool prefill_only) {
+
     if (temperature < 0) {
         temperature = config_.default_temperature;
     }
@@ -188,13 +188,17 @@ uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature,
     auto final_hidden = forward(tokens, true);
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    auto backend = config_.default_backend == Config::Backend::CPU
-        ? ComputeBackend::CPU
-        : ComputeBackend::NPU;
 
-    auto logits_node_id = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
-    auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k);
-    
+    size_t sampled_token_id = 0;
+    if (!prefill_only) {
+        auto backend = config_.default_backend == Config::Backend::CPU
+            ? ComputeBackend::CPU
+            : ComputeBackend::NPU;
+
+        auto logits_node_id = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
+        sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k);
+    }
+
     if (!profile_file.empty()) {
         gb->execute(profile_file);
     } else {
@@ -202,7 +206,11 @@ uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature,
     }
     post_execute_updates(gb, tokens.size());
     update_kv_cache(gb, tokens.size());
-    
+
+    if (prefill_only) {
+        return sampled_token_id;
+    }
+
     auto* output_ptr = gb->get_output(sampled_token_id);
     return *static_cast<uint32_t*>(output_ptr);
 }

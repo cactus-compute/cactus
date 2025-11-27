@@ -37,6 +37,60 @@ namespace Quantization {
     }
 }
 
+size_t BufferPool::round_up_size(size_t size) const {
+    constexpr size_t ALIGNMENT = 64;
+    constexpr size_t MIN_BUCKET = 1024;
+
+    if (size < MIN_BUCKET) return MIN_BUCKET;
+
+    size_t aligned = (size + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
+
+    size_t bucket = MIN_BUCKET;
+    while (bucket < aligned) {
+        bucket *= 2;
+    }
+    return bucket;
+}
+
+char* BufferPool::acquire(size_t byte_size) {
+    if (byte_size == 0) return nullptr;
+
+    size_t bucket_size = round_up_size(byte_size);
+
+    auto it = free_buffers_.find(bucket_size);
+    if (it != free_buffers_.end() && !it->second.empty()) {
+        auto buffer = std::move(it->second.back());
+        it->second.pop_back();
+        pool_bytes_ -= bucket_size;
+        active_bytes_ += bucket_size;
+        if (active_bytes_ > peak_bytes_) {
+            peak_bytes_ = active_bytes_;
+        }
+        return buffer.release();
+    }
+
+    active_bytes_ += bucket_size;
+    if (active_bytes_ > peak_bytes_) {
+        peak_bytes_ = active_bytes_;
+    }
+    return new char[bucket_size];
+}
+
+void BufferPool::release(char* ptr, size_t byte_size) {
+    if (!ptr || byte_size == 0) return;
+
+    size_t bucket_size = round_up_size(byte_size);
+    active_bytes_ -= bucket_size;
+    pool_bytes_ += bucket_size;
+
+    free_buffers_[bucket_size].push_back(std::unique_ptr<char[]>(ptr));
+}
+
+void BufferPool::clear() {
+    free_buffers_.clear();
+    pool_bytes_ = 0;
+}
+
 static std::vector<size_t> compute_strides(const std::vector<size_t>& shape, const std::vector<size_t>& target_shape) {
     std::vector<size_t> strides(target_shape.size());
     
@@ -505,35 +559,99 @@ TensorConfig& TensorConfig::global() {
     return instance;
 }
 
-BufferDesc::BufferDesc() 
-    : total_size(0), byte_size(0), external_data(nullptr), 
+BufferDesc::BufferDesc()
+    : total_size(0), byte_size(0), external_data(nullptr), pooled_data(nullptr),
       precision(Precision::INT8), quantization_scale(1.0f) {}
 
 BufferDesc::BufferDesc(const std::vector<size_t>& s, Precision prec, float scale)
-    : shape(s), external_data(nullptr), precision(prec), 
+    : shape(s), external_data(nullptr), pooled_data(nullptr), precision(prec),
       quantization_scale(scale) {
     total_size = 1;
     for (size_t dim : shape) total_size *= dim;
     byte_size = total_size * PrecisionTraits::size_of(prec);
 }
 
-void* BufferDesc::get_data() { 
-    return external_data ? external_data : data.get(); 
+BufferDesc::~BufferDesc() {
+    if (pooled_data) {
+        delete[] pooled_data;
+        pooled_data = nullptr;
+    }
 }
 
-const void* BufferDesc::get_data() const { 
-    return external_data ? external_data : data.get(); 
+BufferDesc::BufferDesc(BufferDesc&& other) noexcept
+    : shape(std::move(other.shape)),
+      total_size(other.total_size),
+      byte_size(other.byte_size),
+      data(std::move(other.data)),
+      external_data(other.external_data),
+      pooled_data(other.pooled_data),
+      precision(other.precision),
+      quantization_scale(other.quantization_scale) {
+    other.total_size = 0;
+    other.byte_size = 0;
+    other.external_data = nullptr;
+    other.pooled_data = nullptr;
+}
+
+BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
+    if (this != &other) {
+        // Free our current pooled_data
+        if (pooled_data) {
+            delete[] pooled_data;
+        }
+
+        shape = std::move(other.shape);
+        total_size = other.total_size;
+        byte_size = other.byte_size;
+        data = std::move(other.data);
+        external_data = other.external_data;
+        pooled_data = other.pooled_data;
+        precision = other.precision;
+        quantization_scale = other.quantization_scale;
+
+        other.total_size = 0;
+        other.byte_size = 0;
+        other.external_data = nullptr;
+        other.pooled_data = nullptr;
+    }
+    return *this;
+}
+
+void* BufferDesc::get_data() {
+    if (external_data) return external_data;
+    if (pooled_data) return pooled_data;
+    return data.get();
+}
+
+const void* BufferDesc::get_data() const {
+    if (external_data) return external_data;
+    if (pooled_data) return pooled_data;
+    return data.get();
 }
 
 void BufferDesc::allocate() {
-    if (!data && !external_data) {
+    if (!data && !external_data && !pooled_data) {
         data = std::make_unique<char[]>(byte_size);
+    }
+}
+
+void BufferDesc::allocate_from_pool(BufferPool& pool) {
+    if (!data && !external_data && !pooled_data && byte_size > 0) {
+        pooled_data = pool.acquire(byte_size);
+    }
+}
+
+void BufferDesc::release_to_pool(BufferPool& pool) {
+    if (pooled_data && byte_size > 0) {
+        pool.release(pooled_data, byte_size);
+        pooled_data = nullptr;
     }
 }
 
 void BufferDesc::set_external(void* ptr) {
     external_data = ptr;
     data.reset();
+    pooled_data = nullptr;
 }
 
 GraphNode::GraphNode(size_t node_id, OpType type) : id(node_id), op_type(type) {}

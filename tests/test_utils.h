@@ -135,7 +135,7 @@ bool TestUtils::TestFixture<T>::verify_output(size_t node_id, const std::vector<
     return compare_arrays(output, expected.data(), expected.size(), tolerance);
 }
 
-// Removed run_test method - tests handle their own runner calls
+
 
 template<typename T>
 bool TestUtils::compare_arrays(const T* actual, const T* expected, size_t count, float tolerance) {
