@@ -648,6 +648,7 @@ def convert_hf_model_weights_vlm(model, output_dir, precision='INT8', args=None)
 
     state_dict = model.state_dict()
     config = model.config
+    saved_tensor_full_names = set()
 
     tie_word_embeddings = getattr(config, 'tie_word_embeddings', False)
 
