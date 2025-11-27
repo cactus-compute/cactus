@@ -371,7 +371,7 @@ int cactus_complete(
             if (!image_paths.empty()) {
                 next_token = handle->model->generate_with_images(tokens_to_process, image_paths, temperature, top_p, top_k, "profile.txt");
             } else {
-                constexpr size_t PREFILL_CHUNK_SIZE = 1024;
+                constexpr size_t PREFILL_CHUNK_SIZE = 256;
 
                 if (tokens_to_process.size() > PREFILL_CHUNK_SIZE) {
                     size_t num_full_chunks = (tokens_to_process.size() - 1) / PREFILL_CHUNK_SIZE;
