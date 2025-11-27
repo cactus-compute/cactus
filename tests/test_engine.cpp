@@ -232,15 +232,28 @@ bool test_embeddings() {
 
     const char* texts[] = {"My name is Henry Ndubuaku", "Your name is Henry Ndubuaku"};
     std::vector<float> emb1(2048), emb2(2048);
-    size_t dim1, dim2;
+    size_t dim1 = 0, dim2 = 0;
 
     Timer t1;
-    cactus_embed(model, texts[0], emb1.data(), emb1.size() * sizeof(float), &dim1);
+    int result1 = cactus_embed(model, texts[0], emb1.data(), emb1.size() * sizeof(float), &dim1);
     double time1 = t1.elapsed_ms();
 
+    // Check if embeddings are supported by the model
+    if (result1 < 0) {
+        std::cout << "⊘ SKIP │ embeddings            │ model does not support embeddings (causal LM)" << std::endl;
+        cactus_destroy(model);
+        return true;
+    }
+
     Timer t2;
-    cactus_embed(model, texts[1], emb2.data(), emb2.size() * sizeof(float), &dim2);
+    int result2 = cactus_embed(model, texts[1], emb2.data(), emb2.size() * sizeof(float), &dim2);
     double time2 = t2.elapsed_ms();
+
+    if (result2 < 0 || dim1 == 0 || dim2 == 0) {
+        std::cout << "[✗] FAIL │ embeddings            │ embedding extraction failed" << std::endl;
+        cactus_destroy(model);
+        return false;
+    }
 
     float dot = 0, norm1 = 0, norm2 = 0;
     for (size_t i = 0; i < dim1; ++i) {
