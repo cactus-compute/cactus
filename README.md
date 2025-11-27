@@ -71,25 +71,25 @@ Example response from Gemma3-270m-INT8
 - <sub>**INT4 coming**: 2x speed, 2x smaller files</sub>
 - <sub>**NPU support coming**: 5-11x prefill speed, better energy efficiency</sub>
 
-| Device | Decode | 1k P/D | 4k P/D | 4k RAM | VLM TTFT | VLM Dec | VLM RAM | STT TTFT | STT Dec | STT RAM |
+| Device | Decode | 1k-P/D | 4k-P/D | 4k-RAM | VLM-TTFT | VLM-Dec | VLM-RAM | STT-TTFT | STT-Dec | STT-RAM |
 |--------|--------|--------|--------|--------|----------|---------|---------|----------|---------|---------|
-| Mac M4 Pro | 173 | 1574/115 | 1089/100 | 122 MB | 0.38s | 168 | 112 MB | 1.7s | 83 | 142 MB |
-| Mac M3 Pro | - | - | - | - | - | - | - | - | - | - |
-| iPad/Mac M4 | 129 | 793/82 | 507/64 | 80 MB | 0.46s | 113 | 45 MB | 2.4s | 60 | 31 MB |
-| iPad/Mac M3 | 112 | 786/78 | 446/60 | 80 MB | 0.58s | 111 | 54 MB | 4.2s | 58 | 42 MB |
-| iPhone 17 Pro | - | - | - | - | - | - | - | - | - | - |
-| iPhone 16 Pro | - | - | - | - | - | - | - | - | - | - |
-| iPhone 15 Pro | 99 | 549/74 | - | - | 0.84s | 93 | - | - | - | - |
-| Qualcomm X Elite | - | - | - | - | - | - | - | - | - | - |
-| Qualcomm X Plus | - | - | - | - | - | - | - | - | - | - |
-| Galaxy S25 Ultra | 91 | 230/63 | 173/47 | 128 MB | 1.4s | 58 | - | - | - | - |
-| Galaxy S24 Ultra | - | - | - | - | - | - | - | - | - | - |
-| Pixel 10 Pro | - | - | - | - | - | - | - | - | - | - |
-| Pixel 9 Pro | - | - | - | - | - | - | - | - | - | - |
-| Oppo Find X9 | - | - | - | - | - | - | - | - | - | - |
-| Xiaomi 15T Pro | - | - | - | - | - | - | - | - | - | - |
-| Nothing CMF 3 Pro | - | - | - | - | - | - | - | - | - | - |
-| Raspberry Pi 5 | 24 | 192/28 | - | - | 2.3s | 23 | - | 21s | 16 | - |
+| Mac-M4-Pro | 173 | 1574/115 | 1089/100 | 122MB | 0.38s | 168 | 112MB | 1.7s | 83 | 142MB |
+| Mac-M3-Pro | - | - | - | - | - | - | - | - | - | - |
+| iPad/Mac-M4 | 129 | 793/82 | 507/64 | 80MB | 0.46s | 113 | 45MB | 2.4s | 60 | 31MB |
+| iPad/Mac-M3 | 112 | 786/78 | 446/60 | 80MB | 0.58s | 111 | 54MB | 4.2s | 58 | 42MB |
+| iPhone-17-Pro | - | - | - | - | - | - | - | - | - | - |
+| iPhone-16-Pro | - | - | - | - | - | - | - | - | - | - |
+| iPhone-15-Pro | 99 | 549/74 | - | - | 0.84s | 93 | - | - | - | - |
+| Qualcomm-X-Elite | - | - | - | - | - | - | - | - | - | - |
+| Qualcomm-X-Plus | - | - | - | - | - | - | - | - | - | - |
+| Galaxy-S25-Ultra | 91 | 230/63 | 173/47 | 128MB | 1.4s | 58 | - | - | - | - |
+| Galaxy-S24-Ultra | - | - | - | - | - | - | - | - | - | - |
+| Pixel-10-Pro | - | - | - | - | - | - | - | - | - | - |
+| Pixel-9-Pro | - | - | - | - | - | - | - | - | - | - |
+| Oppo-Find-X9 | - | - | - | - | - | - | - | - | - | - |
+| Xiaomi-15T-Pro | - | - | - | - | - | - | - | - | - | - |
+| Nothing-CMF-3-Pro | - | - | - | - | - | - | - | - | - | - |
+| Raspberry-Pi-5 | 24 | 192/28 | - | - | 2.3s | 23 | - | 21s | 16 | - |
 
 
 ## Using up this repo on Mac
@@ -107,23 +107,23 @@ cli/cactus download Qwen/Qwen3-0.6B # HF name, stored to weights/Qwen3-0.6B
 
 | Model | Compressed Size | Completion | Tool Call | Vision | Embed | Speech
 |-------|--------------------|-------------------|----------------|------|------|------|
-| google/gemma-3-270m-it | 172 MB | ✓ | ✗ | ✗ | ✗ | ✗ |
-| openai/whisper-small | 210 MB | ✗ | ✗ | ✗ | ✓ | ✓ |
-| LiquidAI/LFM2-350M | 233 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
-| HuggingFaceTB/SmolLM2-360m-Instruct | 227 MB | ✓ | ✗ | ✗ | ✗ | ✗ |
-| LiquidAI/LFM2-VL-450M | 420 MB | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Qwen/Qwen3-0.6B | 394 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
-| Qwen/Qwen3-Embedding-0.6B | 394 MB | ✗ | ✗ | ✗ | ✓ | ✗ |
-| LiquidAI/LFM2-700M | 467 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
-| nomic-ai/nomic-embed-text-v2-moe | 533 MB | ✗ | ✗ | ✗ | ✓ | ✗ |
-| google/gemma-3-1b-it | 642 MB | ✓ | ✗ | ✗ | ✗ | ✗ |
-| openai/whisper-medium | 646 MB | ✗ | ✗ | ✗ | ✓ | ✓ |
-| LiquidAI/LFM2-1.2B | 722 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
-| LiquidAI/LFM2-1.2B-RAG | 722 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
-| LiquidAI/LFM2-1.2B-Tools | 722 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
-| LiquidAI/LFM2-VL-1.6B | 1440 MB | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Qwen/Qwen3-1.7B | 1161 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
-| HuggingFaceTB/SmolLM2-1.7B-Instruct | 1161 MB | ✓ | ✗ | ✗ | ✓ | ✗ |
+| google/gemma-3-270m-it | 172  | ✓ | ✗ | ✗ | ✗ | ✗ |
+| openai/whisper-small | 210  | ✗ | ✗ | ✗ | ✓ | ✓ |
+| LiquidAI/LFM2-350M | 233  | ✓ | ✓ | ✗ | ✓ | ✗ |
+| HuggingFaceTB/SmolLM2-360m-Instruct | 227  | ✓ | ✗ | ✗ | ✗ | ✗ |
+| LiquidAI/LFM2-VL-450M | 420  | ✓ | ✗ | ✓ | ✓ | ✗ |
+| Qwen/Qwen3-0.6B | 394  | ✓ | ✓ | ✗ | ✓ | ✗ |
+| Qwen/Qwen3-Embedding-0.6B | 394  | ✗ | ✗ | ✗ | ✓ | ✗ |
+| LiquidAI/LFM2-700M | 467  | ✓ | ✓ | ✗ | ✓ | ✗ |
+| nomic-ai/nomic-embed-text-v2-moe | 533  | ✗ | ✗ | ✗ | ✓ | ✗ |
+| google/gemma-3-1b-it | 642  | ✓ | ✗ | ✗ | ✗ | ✗ |
+| openai/whisper-medium | 646  | ✗ | ✗ | ✗ | ✓ | ✓ |
+| LiquidAI/LFM2-1.2B | 722  | ✓ | ✓ | ✗ | ✓ | ✗ |
+| LiquidAI/LFM2-1.2B-RAG | 722  | ✓ | ✓ | ✗ | ✓ | ✗ |
+| LiquidAI/LFM2-1.2B-Tools | 722  | ✓ | ✓ | ✗ | ✓ | ✗ |
+| LiquidAI/LFM2-VL-1.6B | 1440  | ✓ | ✗ | ✓ | ✓ | ✗ |
+| Qwen/Qwen3-1.7B | 1161  | ✓ | ✓ | ✗ | ✓ | ✗ |
+| HuggingFaceTB/SmolLM2-1.7B-Instruct | 1161  | ✓ | ✗ | ✗ | ✓ | ✗ |
 
 ## Resources 
 
