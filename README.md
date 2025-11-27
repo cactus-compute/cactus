@@ -64,31 +64,33 @@ Example response from Gemma3-270m-INT8
 }
 ```
 
-## INT8 CPU-ONLY Performance (LFM2-VL-450m & Whisper-Small)
+## INT8 CPU-ONLY Performance
 
-- INT4 to 2x speed and reduce file size 2x
-- NPUs to 5-11x prefill speed and improve energy-efficiency
-- Cactus is aggressively optimised for memory efficiency at the expense of everything else
+- <sub>**Models:** LFM2-VL-450m (text/vision) & Whisper-Small (speech)</sub>
+- <sub>**Decode** = tokens/sec, **P/D** = prefill/decode toks/sec, **VLM** = 256×256 image, **STT** = 30s audio transcription</sub>
+- <sub>**INT4 coming**: 2x speed, 2x smaller files</sub>
+- <sub>**NPU support coming**: 5-11x prefill speed, better energy efficiency</sub>
 
-| Device | Short Prompt Decode | 1k prefill/decode | 4k prefill/decode | 4k Peak RAM | 256x256 VLM TTFT | 256x256 VLM Decode | 256x256 VLM Peak RAM | 30s Transcribe TTFT | 30s Transcribe Decode | 30s Transcribe Peak RAM |
-|:------:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|
-| Mac M4 Pro | 173 tps | 1574/115 tps | 1089/100 tps | 122 MB | 0.38s | 168 tps | 112 MB | 1.7s | 83 tps | 142 MB |
+| Device | Decode | 1k P/D | 4k P/D | 4k RAM | VLM TTFT | VLM Dec | VLM RAM | STT TTFT | STT Dec | STT RAM |
+|--------|--------|--------|--------|--------|----------|---------|---------|----------|---------|---------|
+| Mac M4 Pro | 173 | 1574/115 | 1089/100 | 122 MB | 0.38s | 168 | 112 MB | 1.7s | 83 | 142 MB |
 | Mac M3 Pro | - | - | - | - | - | - | - | - | - | - |
-| iPad/Mac M4 | 129 tps | 793/82 tps | 507/64 tps | 80 MB | 0.46s | 113 tps | 45 MB | 2.4s | 60 tps | 31 MB |
-| iPad/Mac M3 | 112 tps | 786/78 tps | 446/60 tps | 80 MB | 0.58s | 111 tps | 54 MB | 4.2s | 58 tps | 42 MB |
+| iPad/Mac M4 | 129 | 793/82 | 507/64 | 80 MB | 0.46s | 113 | 45 MB | 2.4s | 60 | 31 MB |
+| iPad/Mac M3 | 112 | 786/78 | 446/60 | 80 MB | 0.58s | 111 | 54 MB | 4.2s | 58 | 42 MB |
 | iPhone 17 Pro | - | - | - | - | - | - | - | - | - | - |
 | iPhone 16 Pro | - | - | - | - | - | - | - | - | - | - |
-| iPhone 15 Pro | 99 tps | 549/74 tps | - | - | 0.84s | 93 tps | - | - | - | - |
-| Qualcomm PC X Elite | - | - | - | - | - | - | - | - | - | - |
-| Qualcomm PC X Plus | - | - | - | - | - | - | - | - | - | - |
-| Galaxy S25 Ultra | 91 tps | 230/63 tps | 173/47 tps | 128 MB | 1.4s | 58 tps | - | - | - | - |
+| iPhone 15 Pro | 99 | 549/74 | - | - | 0.84s | 93 | - | - | - | - |
+| Qualcomm X Elite | - | - | - | - | - | - | - | - | - | - |
+| Qualcomm X Plus | - | - | - | - | - | - | - | - | - | - |
+| Galaxy S25 Ultra | 91 | 230/63 | 173/47 | 128 MB | 1.4s | 58 | - | - | - | - |
 | Galaxy S24 Ultra | - | - | - | - | - | - | - | - | - | - |
 | Pixel 10 Pro | - | - | - | - | - | - | - | - | - | - |
-| Pixel 9 pro | - | - | - | - | - | - | - | - | - | - |
+| Pixel 9 Pro | - | - | - | - | - | - | - | - | - | - |
 | Oppo Find X9 | - | - | - | - | - | - | - | - | - | - |
 | Xiaomi 15T Pro | - | - | - | - | - | - | - | - | - | - |
 | Nothing CMF 3 Pro | - | - | - | - | - | - | - | - | - | - |
-| Raspberry Pi 5 | 24 tps | 192/28 tps | - | - | 2.3s | 23 tps | - | 21s | 16 tps | - |
+| Raspberry Pi 5 | 24 | 192/28 | - | - | 2.3s | 23 | - | 21s | 16 | - |
+
 
 ## Using up this repo on Mac
 
