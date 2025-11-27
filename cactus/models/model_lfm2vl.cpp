@@ -385,7 +385,8 @@ uint32_t Lfm2VlModel::generate(const std::vector<uint32_t>& tokens,
                                float temperature,
                                float top_p,
                                size_t top_k,
-                               const std::string& profile_file) {
+                               const std::string& profile_file,
+                               bool prefill_only) {
     if (!initialized_ || !graph_handle_) {
         throw std::runtime_error("Model not initialized - call init() first");
     }
@@ -403,7 +404,7 @@ uint32_t Lfm2VlModel::generate(const std::vector<uint32_t>& tokens,
     image_prefill_completed_ = false;
     last_token_count_ = tokens.size();
 
-    return language_model_.generate(tokens, temperature, top_p, top_k, profile_file);
+    return language_model_.generate(tokens, temperature, top_p, top_k, profile_file, prefill_only);
 }
 
 Lfm2VlModel::ForwardImageResult Lfm2VlModel::forward_images(

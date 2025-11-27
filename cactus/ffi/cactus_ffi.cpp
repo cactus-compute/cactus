@@ -336,7 +336,6 @@ int cactus_complete(
             return -1;
         }
 
-        // Use incremental processing approach from main
         std::vector<uint32_t> current_prompt_tokens = tokenizer->encode(full_prompt);
         
         std::vector<uint32_t> tokens_to_process;
@@ -360,7 +359,6 @@ int cactus_complete(
 
         std::vector<uint32_t> generated_tokens;
         double time_to_first_token = 0.0;
-        // Generate first token - use image support from HEAD if images are present
         uint32_t next_token;
         if (tokens_to_process.empty()) {
             if (handle->processed_tokens.empty()) {
@@ -373,7 +371,26 @@ int cactus_complete(
             if (!image_paths.empty()) {
                 next_token = handle->model->generate_with_images(tokens_to_process, image_paths, temperature, top_p, top_k, "profile.txt");
             } else {
-                next_token = handle->model->generate(tokens_to_process, temperature, top_p, top_k, "profile.txt");
+                constexpr size_t PREFILL_CHUNK_SIZE = 256;
+
+                if (tokens_to_process.size() > PREFILL_CHUNK_SIZE) {
+                    size_t num_full_chunks = (tokens_to_process.size() - 1) / PREFILL_CHUNK_SIZE;
+
+                    for (size_t chunk_idx = 0; chunk_idx < num_full_chunks; ++chunk_idx) {
+                        size_t start = chunk_idx * PREFILL_CHUNK_SIZE;
+                        size_t end = start + PREFILL_CHUNK_SIZE;
+                        std::vector<uint32_t> chunk(tokens_to_process.begin() + start,
+                                                    tokens_to_process.begin() + end);
+                        handle->model->generate(chunk, temperature, top_p, top_k, "", true);
+                    }
+
+                    size_t final_start = num_full_chunks * PREFILL_CHUNK_SIZE;
+                    std::vector<uint32_t> final_chunk(tokens_to_process.begin() + final_start,
+                                                      tokens_to_process.end());
+                    next_token = handle->model->generate(final_chunk, temperature, top_p, top_k);
+                } else {
+                    next_token = handle->model->generate(tokens_to_process, temperature, top_p, top_k);
+                }
             }
         }
         

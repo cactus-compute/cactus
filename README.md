@@ -1,10 +1,10 @@
 <img src="assets/banner.jpg" alt="Logo" style="border-radius: 30px; width: 100%;">
 
-Fast, lightweight, cross-platform & energy-efficient AI inference framework for small consumer devices. 
+Cross-platform & energy-efficient kernels, runtime and AI inference engine for mobile devices. 
 
 ## Cactus Graph 
 Cactus Graph is a general numerical computing framework for implementing 
-any model, like PyTorch for consumer devices.
+any model, like PyTorch for mobile devices.
 
 ```cpp
 #include cactus.h
@@ -64,71 +64,64 @@ Example response from Gemma3-270m-INT8
 }
 ```
 
-## INT8 CPU Performance (LFM2-1.2B) (722mb Compressed)
+## INT8 CPU-ONLY Performance (LFM2-VL-450m & Whisper-Small)
 
-| Device | Prefill (toks/s) | Decode (toks/s) | Battery Drain (%/min) |
-|:-------------------------------|:--------------------:|:----------------:|:---------------------:|
-| Macbook M4 Pro                 | 590                  | 96               | -                     |
-| Mac Mini M4 Pro                | 580                  | 93               | -                     |
-| iPhone 17 Pro                  | 420                  | 81               | 0.44                  |
-| Galaxy S25 Ultra               | 336                  | 64               | 0.45                  |
-| iPhone 16 Pro                  | 334                  | 64               | -                     |
-| Nothing 3a Pro                 | 296                  | 63               | 0.44                  |
-| Macbook Pro M3                 | 462                  | 62               | -                     |
-| iPhone 15 Pro                  | 274                  | 57               | -                     |
-| iPhone 14 Pro                  | 269                  | 51               | -                     |
-| OnePlus 13 5G                  | 268                  | 51               | 0.33                  |
-| Macbook Air M3                 | 260                  | 50               | -                     |
-| Galaxy S24 Ultra               | 240                  | 46               | 0.48                  |
-| iPhone 15                      | 241                  | 46               | -                     |
-| Galaxy S23                     | 233                  | 45               | -                     |
-| iPhone 13 Pro                  | 218                  | 42               | -                     |
-| OnePlus 12                     | 216                  | 42               | 0.42                  |
-| iPhone 13 mini                 | 156                  | 30               | -                     |
-| Redmi K70 Ultra                | 154                  | 30               | 0.41                  |
-| Xiaomi 13                      | 153                  | 30               | 0.50                  |
-| Pixel 6a                       | 85                   | 13               | 0.48                  |
-| Nothing 3a                     | 83                   | 13               | 0.48                  |
-| Raspberry Pi 5                 | 50                   | 8.5              | -                     |
+- INT4 to 2x speed and reduce file size 2x
+- NPUs to 5-11x prefill speed and improve energy-efficiency
+- Cactus is aggressively optimised for memory efficiency at the expense of everything else
 
-## Coming improvements:
+| Device | Short Prompt Decode | 1k prefill/decode | 4k prefill/decode | 4k Peak RAM | 256x256 VLM TTFT | 256x256 VLM Decode | 256x256 VLM Peak RAM | 30s Transcribe TTFT | 30s Transcribe Decode | 30s Transcribe Peak RAM |
+|:------:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|
+| Mac M4 Pro | 173 tps | 1574/115 tps | 1089/100 tps | 122 MB | 0.38s | 168 tps | 112 MB | 1.7s | 83 tps | 142 MB |
+| Mac M3 Pro | - | - | - | - | - | - | - | - | - | - |
+| iPad/Mac M4 | 129 tps | 793/82 tps | 507/64 tps | 80 MB | 0.46s | 113 tps | 45 MB | 2.4s | 60 tps | 31 MB |
+| iPad/Mac M3 | 112 tps | 786/78 tps | 446/60 tps | 80 MB | 0.58s | 111 tps | 54 MB | 4.2s | 58 tps | 42 MB |
+| iPhone 17 Pro | - | - | - | - | - | - | - | - | - | - |
+| iPhone 16 Pro | - | - | - | - | - | - | - | - | - | - |
+| iPhone 15 Pro | 99 tps | 549/74 tps | - | - | 0.84s | 93 tps | - | - | - | - |
+| Qualcomm PC X Elite | - | - | - | - | - | - | - | - | - | - |
+| Qualcomm PC X Plus | - | - | - | - | - | - | - | - | - | - |
+| Galaxy S25 Ultra | 91 tps | 230/63 tps | 173/47 tps | 128 MB | 1.4s | 58 tps | - | - | - | - |
+| Galaxy S24 Ultra | - | - | - | - | - | - | - | - | - | - |
+| Pixel 10 Pro | - | - | - | - | - | - | - | - | - | - |
+| Pixel 9 pro | - | - | - | - | - | - | - | - | - | - |
+| Oppo Find X9 | - | - | - | - | - | - | - | - | - | - |
+| Xiaomi 15T Pro | - | - | - | - | - | - | - | - | - | - |
+| Nothing CMF 3 Pro | - | - | - | - | - | - | - | - | - | - |
+| Raspberry Pi 5 | 24 tps | 192/28 tps | - | - | 2.3s | 23 tps | - | 21s | 16 tps | - |
 
-- INT4 to 2x speed, while reducing battery drain and file size 2x
-- NPUs to improve energy-efficiency and prefill speed up to 11x
-- VLM and Audio models like LFM-VL, Whisper, KittenTTS, etc. 
-
-## Using up this repo (on Mac)
+## Using up this repo on Mac
 
 Dependencies will be setup on first run automatically.
 
 ```bash
 cli/cactus --help # to see all commands
 cli/cactus run LiquidAI/LFM2-VL-450M # to interact with a model
-cli/cactus test # to run unit tests during dev
+cli/cactus test # to run unit tests during dev + reproduce benchmarks
 cli/cactus download Qwen/Qwen3-0.6B # HF name, stored to weights/Qwen3-0.6B
 ```
 
 ## Supported models (INT8)
 
-| Model | Completion | Tool Call | Vision | Embed | Speech
-|-------|--------------------|-------------------|----------------|------|------|
-| google/gemma-3-270m-it | ✓ | ✗ | ✗ | ✗ | ✗ |
-| openai/whisper-small | ✗ | ✗ | ✗ | ✗ | ✓ |
-| LiquidAI/LFM2-350M | ✓ | ✓ | ✗ | ✓ | ✗ |
-| HuggingFaceTB/SmolLM2-360m-Instruct | ✓ | ✗ | ✗ | ✗ | ✗ |
-| LiquidAI/LFM2-VL-450M | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Qwen/Qwen3-0.6B | ✓ | ✓ | ✗ | ✓ | ✗ |
-| Qwen/Qwen3-Embedding-0.6B | ✗ | ✗ | ✗ | ✓ | ✗ |
-| LiquidAI/LFM2-700M | ✓ | ✓ | ✗ | ✓ | ✗ |
-| nomic-ai/nomic-embed-text-v2-moe | ✗ | ✗ | ✗ | ✓ | ✗ |
-| openai/whisper-medium | ✗ | ✗ | ✗ | ✗ | ✓ |
-| google/gemma-3-1b-it | ✓ | ✗ | ✗ | ✗ | ✗ |
-| LiquidAI/LFM2-1.2B | ✓ | ✓ | ✗ | ✓ | ✗ |
-| LiquidAI/LFM2-1.2B-RAG | ✓ | ✓ | ✗ | ✓ | ✗ |
-| LiquidAI/LFM2-VL-1.6B | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Qwen/Qwen3-1.7B | ✓ | ✓ | ✗ | ✓ | ✗ |
-| HuggingFaceTB/SmolLM2-1.7B-Instruct | ✓ | ✗ | ✗ | ✓ | ✗ |
-
+| Model | Compressed Size | Completion | Tool Call | Vision | Embed | Speech
+|-------|--------------------|-------------------|----------------|------|------|------|
+| google/gemma-3-270m-it | 172 MB | ✓ | ✗ | ✗ | ✗ | ✗ |
+| openai/whisper-small | 210 MB | ✗ | ✗ | ✗ | ✓ | ✓ |
+| LiquidAI/LFM2-350M | 233 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
+| HuggingFaceTB/SmolLM2-360m-Instruct | 227 MB | ✓ | ✗ | ✗ | ✗ | ✗ |
+| LiquidAI/LFM2-VL-450M | 420 MB | ✓ | ✗ | ✓ | ✓ | ✗ |
+| Qwen/Qwen3-0.6B | 394 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
+| Qwen/Qwen3-Embedding-0.6B | 394 MB | ✗ | ✗ | ✗ | ✓ | ✗ |
+| LiquidAI/LFM2-700M | 467 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
+| nomic-ai/nomic-embed-text-v2-moe | 533 MB | ✗ | ✗ | ✗ | ✓ | ✗ |
+| google/gemma-3-1b-it | 642 MB | ✓ | ✗ | ✗ | ✗ | ✗ |
+| openai/whisper-medium | 646 MB | ✗ | ✗ | ✗ | ✓ | ✓ |
+| LiquidAI/LFM2-1.2B | 722 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
+| LiquidAI/LFM2-1.2B-RAG | 722 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
+| LiquidAI/LFM2-1.2B-Tools | 722 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
+| LiquidAI/LFM2-VL-1.6B | 1440 MB | ✓ | ✗ | ✓ | ✓ | ✗ |
+| Qwen/Qwen3-1.7B | 1161 MB | ✓ | ✓ | ✗ | ✓ | ✗ |
+| HuggingFaceTB/SmolLM2-1.7B-Instruct | 1161 MB | ✓ | ✗ | ✗ | ✓ | ✗ |
 
 ## Resources 
 

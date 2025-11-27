@@ -464,7 +464,6 @@ static void cactus_matmul_int8_to_int32_worker(const int8_t* a, const int8_t* b_
     constexpr int TILE_M = 4;
     constexpr int TILE_N = 4;
     constexpr int VECTOR_WIDTH = 16;
-    constexpr int DOT_GRANULARITY = 4;
     constexpr int VECTOR_UNROLL = 2;
     const size_t K_aligned = (K / (VECTOR_WIDTH * VECTOR_UNROLL)) * (VECTOR_WIDTH * VECTOR_UNROLL);
 
@@ -509,36 +508,20 @@ static void cactus_matmul_int8_to_int32_worker(const int8_t* a, const int8_t* b_
                 }
             }
 
-            for (size_t k_block = K_aligned; k_block < K; k_block += DOT_GRANULARITY) {
-                size_t remaining = std::min(static_cast<size_t>(DOT_GRANULARITY), K - k_block);
-                
-                for (int m = 0; m < TILE_M; ++m) {
-                    size_t row = row_block + m;
-                    if (row >= M) continue;
-                    
-                    for (int n = 0; n < TILE_N; ++n) {
-                        size_t col = col_block + n;
-                        if (col >= N) continue;
-                        
-                        int32_t dot_product = 0;
-                        for (size_t k = 0; k < remaining; ++k) {
-                            dot_product += static_cast<int32_t>(a[row * K + k_block + k]) * 
-                                          static_cast<int32_t>(b_transposed[col * K + k_block + k]);
-                        }
-                        
-                        int32x4_t dot_vec = vdupq_n_s32(dot_product);
-                        accumulators[m][n] = vaddq_s32(accumulators[m][n], dot_vec);
-                    }
-                }
-            }
-            
             for (int m = 0; m < TILE_M; ++m) {
                 size_t row = row_block + m;
                 if (row >= M) continue;
                 for (int n = 0; n < TILE_N; ++n) {
                     size_t col = col_block + n;
                     if (col >= N) continue;
+
                     int32_t sum = vaddvq_s32(accumulators[m][n]);
+
+                    for (size_t k = K_aligned; k < K; ++k) {
+                        sum += static_cast<int32_t>(a[row * K + k]) *
+                               static_cast<int32_t>(b_transposed[col * K + k]);
+                    }
+
                     c[row * N + col] = sum;
                 }
             }

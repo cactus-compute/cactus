@@ -92,9 +92,11 @@ struct TensorConfig {
 struct BroadcastInfo {
     std::vector<size_t> output_shape;
     bool needs_broadcasting;
-    
+
     static BroadcastInfo compute(const std::vector<size_t>& lhs, const std::vector<size_t>& rhs);
 };
+
+class BufferPool;
 
 struct BufferDesc {
     std::vector<size_t> shape;
@@ -102,22 +104,32 @@ struct BufferDesc {
     size_t byte_size;
     std::unique_ptr<char[]> data;
     void* external_data;
+    char* pooled_data;
     Precision precision;
     float quantization_scale;
-    
+
     BufferDesc();
     BufferDesc(const std::vector<size_t>& s, Precision prec = Precision::INT8, float scale = 1.0f);
-    
+    ~BufferDesc();
+
+    BufferDesc(BufferDesc&& other) noexcept;
+    BufferDesc& operator=(BufferDesc&& other) noexcept;
+
+    BufferDesc(const BufferDesc&) = delete;
+    BufferDesc& operator=(const BufferDesc&) = delete;
+
     void* get_data();
     const void* get_data() const;
-    
+
     template<typename T>
     T* data_as() { return static_cast<T*>(get_data()); }
-    
+
     template<typename T>
     const T* data_as() const { return static_cast<const T*>(get_data()); }
-    
+
     void allocate();
+    void allocate_from_pool(BufferPool& pool);
+    void release_to_pool(BufferPool& pool);
     void set_external(void* ptr);
 };
 
@@ -180,6 +192,33 @@ void compute_scatter_topk_node(GraphNode& node, const std::vector<std::unique_pt
 void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+
+void shrink_thread_local_buffers();
+
+class BufferPool {
+public:
+    BufferPool() = default;
+    ~BufferPool() = default;
+
+    BufferPool(const BufferPool&) = delete;
+    BufferPool& operator=(const BufferPool&) = delete;
+
+    char* acquire(size_t byte_size);
+    void release(char* ptr, size_t byte_size);
+    void clear();
+
+    size_t active_bytes() const { return active_bytes_; }
+    size_t pool_bytes() const { return pool_bytes_; }
+    size_t peak_bytes() const { return peak_bytes_; }
+
+private:
+    std::unordered_map<size_t, std::vector<std::unique_ptr<char[]>>> free_buffers_;
+    size_t active_bytes_ = 0;
+    size_t pool_bytes_ = 0;
+    size_t peak_bytes_ = 0;
+
+    size_t round_up_size(size_t size) const;
+};
 
 namespace ValidationUtils {
     void validate_tensor_dims(const std::vector<size_t>& shape, size_t required_dims, const std::string& op_name);
@@ -286,6 +325,7 @@ private:
     std::vector<std::unique_ptr<GraphFile::MappedFile>> mapped_files_;
     std::unordered_map<std::string, size_t> weight_cache_;
     std::vector<DebugNodeEntry> debug_nodes_;
+    BufferPool buffer_pool_;
 };
 
 

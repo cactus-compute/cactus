@@ -1,16 +1,9 @@
 #include "test_utils.h"
 #include <fstream>
-#include <filesystem>
-#include <chrono>
 #include <cstdlib>
-#include <cstring>
-#include <iostream>
-#include <iomanip>
-#include <cmath>
-#include <fstream>
 #include <cstdio>
-#include <vector>
-#include <sstream>
+
+using namespace EngineTestUtils;
 
 const char* g_model_path = std::getenv("CACTUS_TEST_MODEL");
 const char* g_transcribe_model_path = std::getenv("CACTUS_TEST_TRANSCRIBE_MODEL");
@@ -22,143 +15,10 @@ const char* g_options = R"({
         "stop_sequences": ["<|im_end|>", "<end_of_turn>"]
     })";
 
-
-double json_number(const std::string& json, const std::string& key, double def = 0.0) {
-    std::string pattern = "\"" + key + "\":";
-    size_t pos = json.find(pattern);
-    if (pos == std::string::npos) return def;
-    size_t start = pos + pattern.size();
-    while (start < json.size() && (json[start] == ' ' || json[start] == '\t')) ++start;
-    size_t end = start;
-    while (end < json.size() && std::string(",}] \t\n\r").find(json[end]) == std::string::npos) ++end;
-    try { return std::stod(json.substr(start, end - start)); }
-    catch (...) { return def; }
-}
-
-std::string json_string(const std::string& json, const std::string& key) {
-    std::string pattern = "\"" + key + "\":";
-    size_t pos = json.find(pattern);
-    if (pos == std::string::npos) return {};
-    size_t q1 = json.find('"', pos + pattern.size());
-    if (q1 == std::string::npos) return {};
-    size_t q2 = json.find('"', q1 + 1);
-    if (q2 == std::string::npos) return {};
-    return json.substr(q1 + 1, q2 - q1 - 1);
-}
-
-
-struct Timer {
-    std::chrono::high_resolution_clock::time_point start;
-    Timer() : start(std::chrono::high_resolution_clock::now()) {}
-    double elapsed_ms() const {
-        auto end = std::chrono::high_resolution_clock::now();
-        return std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
-    }
-};
-
-struct StreamingData {
-    std::vector<std::string> tokens;
-    std::vector<uint32_t> token_ids;
-    int token_count = 0;
-    cactus_model_t model = nullptr;
-    int stop_at = -1;
-};
-
-void stream_callback(const char* token, uint32_t token_id, void* user_data) {
-    auto* data = static_cast<StreamingData*>(user_data);
-    data->tokens.push_back(token ? token : "");
-    data->token_ids.push_back(token_id);
-    data->token_count++;
-
-    std::string out = token ? token : "";
-    for (char& c : out) if (c == '\n') c = ' ';
-    std::cout << out << std::flush;
-
-    if (data->stop_at > 0 && data->token_count >= data->stop_at) {
-        std::cout << " [→ stopped]" << std::flush;
-        cactus_stop(data->model);
-    }
-}
-
-struct Metrics {
-    double ttft = 0.0;
-    double tps = 0.0;
-    double total_ms = 0.0;
-    double prompt_tokens = 0.0;
-    double completion_tokens = 0.0;
-
-    void parse(const std::string& response) {
-        ttft = json_number(response, "time_to_first_token_ms");
-        tps = json_number(response, "tokens_per_second");
-        total_ms = json_number(response, "total_time_ms");
-        prompt_tokens = json_number(response, "prompt_tokens", json_number(response, "prefill_tokens"));
-        completion_tokens = json_number(response, "completion_tokens", json_number(response, "decode_tokens"));
-    }
-
-    void print() const {
-        std::cout << "├─ Time to first token: " << std::fixed << std::setprecision(2)
-                  << ttft << " ms\n"
-                  << "├─ Tokens per second: " << tps << std::endl;
-    }
-
-    void print_full() const {
-        std::cout << "├─ Time to first token: " << std::fixed << std::setprecision(2) << ttft << " ms\n"
-                  << "├─ Tokens per second:  " << tps << "\n"
-                  << "├─ Total time:         " << total_ms << " ms\n"
-                  << "├─ Prompt tokens:      " << prompt_tokens << "\n"
-                  << "├─ Completion tokens:  " << completion_tokens << std::endl;
-    }
-};
-
 template<typename TestFunc>
 bool run_test(const char* title, const char* messages, TestFunc test_logic,
               const char* tools = nullptr, int stop_at = -1) {
-
-    std::cout << "\n╔══════════════════════════════════════════╗\n"
-              << "║" << std::setw(42) << std::left << std::string("          ") + title << "║\n"
-              << "╚══════════════════════════════════════════╝\n";
-
-    cactus_model_t model = cactus_init(g_model_path, 2048, nullptr);
-    if (!model) {
-        std::cerr << "[✗] Failed to initialize model\n";
-        return false;
-    }
-
-    StreamingData data;
-    data.model = model;
-    data.stop_at = stop_at;
-
-    char response[4096];
-    std::cout << "Response: ";
-
-    int result = cactus_complete(model, messages, response, sizeof(response),
-                                 g_options, tools, stream_callback, &data);
-
-    std::cout << "\n\n[Results]\n";
-
-    Metrics metrics;
-    metrics.parse(response);
-
-    bool success = test_logic(result, data, response, metrics);
-
-    std::cout << "└─ Status: " << (success ? "PASSED ✓" : "FAILED ✗") << std::endl;
-
-    cactus_destroy(model);
-    return success;
-}
-
-std::string escape_json(const std::string& s) {
-    std::ostringstream o;
-    for (auto c : s) {
-        switch (c) {
-            case '"':  o << "\\\""; break;
-            case '\\': o << "\\\\"; break;
-            case '\n': o << "\\n";  break;
-            case '\r': o << "\\r";  break;
-            default:   o << c;      break;
-        }
-    }
-    return o.str();
+    return EngineTestUtils::run_test(title, g_model_path, messages, g_options, test_logic, tools, stop_at);
 }
 
 bool test_streaming() {
@@ -180,7 +40,7 @@ bool test_streaming() {
     StreamingData data1;
     data1.model = model;
     char response1[4096];
-    
+
     std::cout << "\n[Turn 1]\n";
     std::cout << "User: My name is Henry Ndubuaku, how are you?\n";
     std::cout << "Assistant: ";
@@ -191,13 +51,12 @@ bool test_streaming() {
     std::cout << "\n\n[Results - Turn 1]\n";
     Metrics metrics1;
     metrics1.parse(response1);
-    std::cout << "├─ Total tokens: " << data1.token_count << std::endl;
-    metrics1.print();
+    metrics1.print_perf(get_memory_usage_mb());
 
     bool success1 = result1 > 0 && data1.token_count > 0;
-    std::cout << "└─ Status: " << (success1 ? "PASSED ✓" : "FAILED ✗") << std::endl;
 
     if (!success1) {
+        std::cout << "└─ Status: FAILED ✗\n";
         cactus_destroy(model);
         return false;
     }
@@ -228,11 +87,9 @@ bool test_streaming() {
     std::cout << "\n\n[Results - Turn 2]\n";
     Metrics metrics2;
     metrics2.parse(response2);
-    std::cout << "├─ Total tokens: " << data2.token_count << std::endl;
-    metrics2.print();
+    metrics2.print_perf(get_memory_usage_mb());
 
     bool success2 = result2 > 0 && data2.token_count > 0;
-    std::cout << "└─ Status: " << (success2 ? "PASSED ✓" : "FAILED ✗") << std::endl;
 
     cactus_destroy(model);
     return success1 && success2;
@@ -260,27 +117,24 @@ bool test_tool_call() {
     }])";
 
     return run_test("TOOL CALL TEST", messages,
-        [](int result, const StreamingData& data, const std::string& response, const Metrics& m) {
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
             bool has_function = response.find("function_call") != std::string::npos;
             bool has_tool = response.find("get_weather") != std::string::npos;
-
-            std::cout << "├─ Function call: " << (has_function ? "YES ✓" : "NO ✗") << "\n"
-                      << "├─ Correct tool: " << (has_tool ? "YES ✓" : "NO ✗") << "\n"
-                      << "├─ Total tokens: " << data.token_count << std::endl;
-            m.print();
-
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n";
+            m.print_perf(get_memory_usage_mb());
             return result > 0 && has_function && has_tool;
         }, tools);
 }
 
 bool test_image_input() {
-    std::string model_path_str(g_model_path);
-    if (model_path_str.find("vl") == std::string::npos && model_path_str.find("vl") == std::string::npos) {
+    std::string model_path_str(g_model_path ? g_model_path : "");
+    if (model_path_str.find("vl") == std::string::npos) {
         std::cout << "Skipping image input test: model is not a VLM." << std::endl;
         return true;
     }
 
-    std::string vision_file = model_path_str + std::string("/vision_patch_embedding.weights");
+    std::string vision_file = model_path_str + "/vision_patch_embedding.weights";
     std::ifstream vf(vision_file);
     if (!vf.good()) {
         std::cout << "Skipping image input test: vision weights not found." << std::endl;
@@ -298,17 +152,10 @@ bool test_image_input() {
         return false;
     }
 
-    std::filesystem::path rel_img_path = std::filesystem::path("../../tests/assets/test_monkey.png");
-    std::filesystem::path abs_img_path = std::filesystem::absolute(rel_img_path);
-    std::string img_path_str = abs_img_path.string();
-    std::string messages_json = "[";
-    messages_json += "{\"role\": \"user\", ";
-    messages_json += "\"content\": \"Describe what is happening in this image in two sentences.\", ";
-    messages_json += "\"images\": [\"" + img_path_str + "\"]}";
-    messages_json += "]";
-
-    const std::string& messages_ref = messages_json;
-    const char* messages = messages_ref.c_str();
+    const char* img_path = "../../tests/assets/test_monkey.png";
+    std::string messages_json = "[{\"role\": \"user\", "
+        "\"content\": \"Describe what is happening in this image in two sentences.\", "
+        "\"images\": [\"" + std::string(img_path) + "\"]}]";
 
     StreamingData stream_data;
     stream_data.model = model;
@@ -316,20 +163,16 @@ bool test_image_input() {
     char response[4096];
 
     std::cout << "Response: ";
-    int result = cactus_complete(model, messages, response, sizeof(response), g_options, nullptr,
-                                stream_callback, &stream_data);
+    int result = cactus_complete(model, messages_json.c_str(), response, sizeof(response),
+                                 g_options, nullptr, stream_callback, &stream_data);
 
     std::cout << "\n\n[Results]\n";
     Metrics metrics;
     metrics.parse(response);
-    std::cout << "├─ Total tokens: " << stream_data.token_count << std::endl;
-    metrics.print();
+    metrics.print_perf(get_memory_usage_mb());
 
     bool success = result > 0 && stream_data.token_count > 0;
-    std::cout << "└─ Status: " << (success ? "PASSED ✓" : "FAILED ✗") << std::endl;
-
     cactus_destroy(model);
-
     return success;
 }
 
@@ -369,15 +212,12 @@ bool test_tool_call_with_multiple_tools() {
     }])";
 
     return run_test("MULTIPLE TOOLS TEST", messages,
-        [](int result, const StreamingData& data, const std::string& response, const Metrics& m) {
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
             bool has_function = response.find("function_call") != std::string::npos;
             bool has_tool = response.find("set_alarm") != std::string::npos;
-
-            std::cout << "├─ Function call: " << (has_function ? "YES ✓" : "NO ✗") << "\n"
-                      << "├─ Correct tool: " << (has_tool ? "YES ✓" : "NO ✗") << "\n"
-                      << "├─ Total tokens: " << data.token_count << std::endl;
-            m.print();
-
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n";
+            m.print_perf(get_memory_usage_mb());
             return result > 0 && has_function && has_tool;
         }, tools);
 }
@@ -412,16 +252,52 @@ bool test_embeddings() {
 
     std::cout << "\n[Results]\n"
               << "├─ Embedding dim: " << dim1 << "\n"
-              << "├─ Time (text1): " << std::fixed << std::setprecision(2) << time1 << " ms\n"
-              << "├─ Time (text2): " << time2 << " ms\n"
+              << "├─ Time (text1): " << std::fixed << std::setprecision(2) << time1 << "ms\n"
+              << "├─ Time (text2): " << time2 << "ms\n"
               << "├─ Similarity: " << std::setprecision(4) << similarity << "\n"
-              << "└─ Status: PASSED ✓" << std::endl;
+              << "└─ RAM: " << std::setprecision(1) << get_memory_usage_mb() << "MB" << std::endl;
 
     cactus_destroy(model);
     return true;
 }
 
-bool test_huge_context() {
+bool test_100_context() {
+    std::string msg = "[{\"role\": \"system\", \"content\": \"/no_think You are helpful. ";
+    for (int i = 0; i < 10; i++) {
+        msg += "Context " + std::to_string(i) + ": Background knowledge. ";
+    }
+    msg += "\"}, {\"role\": \"user\", \"content\": \"";
+    for (int i = 0; i < 10; i++) {
+        msg += "Data " + std::to_string(i) + " = " + std::to_string(i * 3.14159) + ". ";
+    }
+    msg += "Explain the data.\"}]";
+
+    return run_test("100 CONTEXT TEST", msg.c_str(),
+        [](int result, const StreamingData&, const std::string&, const Metrics& m) {
+            m.print_perf(get_memory_usage_mb());
+            return result > 0;
+        }, nullptr, 100);
+}
+
+bool test_1k_context() {
+    std::string msg = "[{\"role\": \"system\", \"content\": \"/no_think You are helpful. ";
+    for (int i = 0; i < 50; i++) {
+        msg += "Context " + std::to_string(i) + ": Background knowledge. ";
+    }
+    msg += "\"}, {\"role\": \"user\", \"content\": \"";
+    for (int i = 0; i < 50; i++) {
+        msg += "Data " + std::to_string(i) + " = " + std::to_string(i * 3.14159) + ". ";
+    }
+    msg += "Explain the data.\"}]";
+
+    return run_test("1K CONTEXT TEST", msg.c_str(),
+        [](int result, const StreamingData&, const std::string&, const Metrics& m) {
+            m.print_perf(get_memory_usage_mb());
+            return result > 0;
+        }, nullptr, 100);
+}
+
+bool test_4k_context() {
     std::string msg = "[{\"role\": \"system\", \"content\": \"/no_think You are helpful. ";
     for (int i = 0; i < 230; i++) {
         msg += "Context " + std::to_string(i) + ": Background knowledge. ";
@@ -433,10 +309,8 @@ bool test_huge_context() {
     msg += "Explain the data.\"}]";
 
     return run_test("4K CONTEXT TEST", msg.c_str(),
-        [](int result, const StreamingData& data, const std::string&, const Metrics& m) {
-            std::cout << "├─ Tokens generated: " << data.token_count << std::endl;
-            m.print();
-            std::cout << "├─ Early stop: " << (data.token_count == 100 ? "SUCCESS ✓" : "N/A") << std::endl;
+        [](int result, const StreamingData&, const std::string&, const Metrics& m) {
+            m.print_perf(get_memory_usage_mb());
             return result > 0;
         }, nullptr, 100);
 }
@@ -480,8 +354,7 @@ bool test_rag() {
               << "╚══════════════════════════════════════════╝\n";
 
     if (!is_rag) {
-        std::cout << "⊘ SKIP │ " << std::left << std::setw(25) << "rag_preprocessing"
-                  << " │ " << "model variant is not RAG (skipping)" << "\n";
+        std::cout << "⊘ SKIP │ model variant is not RAG\n";
         return true;
     }
 
@@ -503,15 +376,11 @@ bool test_rag() {
                                  g_options, nullptr, stream_callback, &data);
 
     std::cout << "\n\n[Results]\n";
-
     Metrics metrics;
     metrics.parse(response);
-
-    std::cout << "RAG PREPROCESSING: total tokens=" << data.token_count << " result=" << result << "\n";
-    metrics.print();
+    metrics.print_perf(get_memory_usage_mb());
 
     bool success = (result > 0) && (data.token_count > 0);
-
     cactus_destroy(model);
     return success;
 }
@@ -521,6 +390,8 @@ bool test_audio_processor() {
               << "║         AUDIO PROCESSOR TEST             ║\n"
               << "╚══════════════════════════════════════════╝\n";
     using namespace cactus::engine;
+
+    Timer t;
 
     const size_t n_fft = 400;
     const size_t hop_length = 160;
@@ -547,6 +418,8 @@ bool test_audio_processor() {
 
     auto log_mel_spec = audio_proc.compute_spectrogram(waveform, config);
 
+    double elapsed = t.elapsed_ms();
+
     const float expected[] = {0.535175f, 0.548542f, 0.590673f, 0.633320f, 0.711979f};
     const float tolerance = 2e-6f;
 
@@ -561,6 +434,9 @@ bool test_audio_processor() {
             break;
         }
     }
+
+    std::cout << "├─ Time: " << std::fixed << std::setprecision(2) << elapsed << "ms\n"
+              << "└─ RAM: " << std::setprecision(1) << get_memory_usage_mb() << "MB" << std::endl;
 
     return passed;
 }
@@ -601,24 +477,14 @@ bool run_whisper_test(const char* title, const char* options_json, Predicate che
 
     Metrics m;
     m.parse(response);
-    std::string text = json_string(response, "text");
-    if (text.empty()) text = json_string(response, "response");
-
-    m.print_full();
+    m.print_perf(get_memory_usage_mb());
 
     bool ok = check(rc, m);
-    std::cout << "└─ Status: " << (ok ? "PASSED ✓" : "FAILED ✗") << "\n";
-
     cactus_destroy(model);
     return ok;
 }
 
-static bool test_whisper_prefill_only() {
-    return run_whisper_test("SPEECH PREFILL", R"({"max_tokens": 1})",
-        [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 0; });
-}
-
-static bool test_whisper_autoregressive() {
+static bool test_transcription() {
     return run_whisper_test("TRANSCRIPTION", R"({"max_tokens": 100})",
         [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
 }
@@ -634,7 +500,7 @@ static bool test_image_embeddings() {
     }
 
     const char* image_path = "../assets/test_monkey.png";
-    const size_t buffer_size = 1024 * 1024 * 4; // 4MB buffer for embeddings
+    const size_t buffer_size = 1024 * 1024 * 4;
     std::vector<float> embeddings(buffer_size / sizeof(float));
     size_t embedding_dim = 0;
 
@@ -655,19 +521,11 @@ static bool test_image_embeddings() {
         return true;
     }
 
-    std::cout << "├─ Embedding dimension: " << embedding_dim << "\n";
-    std::cout << "├─ Time: " << std::fixed << std::setprecision(2) << elapsed << " ms\n";
-    std::cout << "├─ First 5 values: [";
-    for (size_t i = 0; i < std::min(embedding_dim, size_t(5)); i++) {
-        std::cout << std::fixed << std::setprecision(4) << embeddings[i];
-        if (i < std::min(embedding_dim, size_t(5)) - 1) std::cout << ", ";
-    }
-    std::cout << "]\n";
+    std::cout << "├─ Embedding dim: " << embedding_dim << "\n"
+              << "├─ Time: " << std::fixed << std::setprecision(2) << elapsed << "ms\n"
+              << "└─ RAM: " << std::setprecision(1) << get_memory_usage_mb() << "MB" << std::endl;
 
-    bool passed = result > 0 && embedding_dim > 0;
-
-    std::cout << "└─ Status: " << (passed ? "PASSED ✓" : "FAILED ✗") << "\n";
-    return passed;
+    return result > 0 && embedding_dim > 0;
 }
 
 static bool test_audio_embeddings() {
@@ -680,7 +538,7 @@ static bool test_audio_embeddings() {
         return true;
     }
 
-    const size_t buffer_size = 1024 * 1024; 
+    const size_t buffer_size = 1024 * 1024;
     std::vector<float> embeddings(buffer_size / sizeof(float));
     size_t embedding_dim = 0;
 
@@ -701,22 +559,15 @@ static bool test_audio_embeddings() {
         return true;
     }
 
-    std::cout << "├─ Embedding dimension: " << embedding_dim << "\n";
-    std::cout << "├─ Time: " << std::fixed << std::setprecision(2) << elapsed << " ms\n";
-    std::cout << "├─ First 5 values: [";
-    for (size_t i = 0; i < std::min(embedding_dim, size_t(5)); i++) {
-        std::cout << std::fixed << std::setprecision(4) << embeddings[i];
-        if (i < std::min(embedding_dim, size_t(5)) - 1) std::cout << ", ";
-    }
-    std::cout << "]\n";
+    std::cout << "├─ Embedding dim: " << embedding_dim << "\n"
+              << "├─ Time: " << std::fixed << std::setprecision(2) << elapsed << "ms\n"
+              << "└─ RAM: " << std::setprecision(1) << get_memory_usage_mb() << "MB" << std::endl;
 
-    bool passed = result > 0 && embedding_dim > 0;
-
-    std::cout << "└─ Status: " << (passed ? "PASSED ✓" : "FAILED ✗") << "\n";
-    return passed;
+    return result > 0 && embedding_dim > 0;
 }
 
 int main() {
+    capture_memory_baseline();
     TestUtils::TestRunner runner("Engine Tests");
     runner.run_test("streaming", test_streaming());
     runner.run_test("tool_calls", test_tool_call());
@@ -726,10 +577,11 @@ int main() {
     runner.run_test("audio_embeddings", test_audio_embeddings());
     runner.run_test("image_input", test_image_input());
     runner.run_test("audio_processor", test_audio_processor());
-    runner.run_test("whisper_prefill", test_whisper_prefill_only());
-    runner.run_test("whisper_autoregressive", test_whisper_autoregressive());
+    runner.run_test("transcription", test_transcription());
     runner.run_test("rag_preprocessing", test_rag());
-    runner.run_test("huge_context", test_huge_context());
+    runner.run_test("100_context", test_100_context());
+    runner.run_test("1k_context", test_1k_context());
+    runner.run_test("4k_context", test_4k_context());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

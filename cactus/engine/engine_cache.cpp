@@ -32,7 +32,9 @@ void KVCache::reset() {
 
     for (auto& cache : layer_caches) {
         cache.keys.clear();
+        cache.keys.shrink_to_fit();
         cache.values.clear();
+        cache.values.shrink_to_fit();
     }
 }
 
@@ -204,7 +206,7 @@ void ConvCache::init(size_t layers, size_t hidden_dim, size_t window_len, Precis
 
     layer_states.resize(num_layers);
     for (auto& state : layer_states) {
-        state.data.assign(window_size * hidden_size * element_size, 0);  
+        state.data.resize(window_size * hidden_size * element_size);
         state.head = 0;
         state.count = 0;
     }

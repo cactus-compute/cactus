@@ -132,6 +132,7 @@ GraphFile::MappedFile::MappedFile(const std::string& filename)
 
 GraphFile::MappedFile::~MappedFile() {
     if (mapped_data_ != nullptr && mapped_data_ != MAP_FAILED) {
+        madvise(mapped_data_, file_size_, MADV_DONTNEED);
         munmap(mapped_data_, file_size_);
         mapped_data_ = nullptr;
     }

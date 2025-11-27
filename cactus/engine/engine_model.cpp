@@ -140,7 +140,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     }
     kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, config_.attention_head_dim, cache_precision);
 
-    size_t window_size = std::min(context_size, size_t(1024));
+    size_t window_size = std::min(context_size, size_t(512));
     size_t sink_size = 4;
     const char* env_window = std::getenv("CACTUS_KV_WINDOW_SIZE");
     const char* env_sink = std::getenv("CACTUS_KV_SINK_SIZE");
@@ -173,8 +173,8 @@ size_t Model::forward(const std::vector<float>& /*mel_bins*/, const std::vector<
 }
 
 uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature, float top_p,
-                        size_t top_k, const std::string& profile_file) {
-                            
+                        size_t top_k, const std::string& profile_file, bool prefill_only) {
+
     if (temperature < 0) {
         temperature = config_.default_temperature;
     }
@@ -188,13 +188,17 @@ uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature,
     auto final_hidden = forward(tokens, true);
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    auto backend = config_.default_backend == Config::Backend::CPU
-        ? ComputeBackend::CPU
-        : ComputeBackend::NPU;
 
-    auto logits_node_id = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
-    auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k);
-    
+    size_t sampled_token_id = 0;
+    if (!prefill_only) {
+        auto backend = config_.default_backend == Config::Backend::CPU
+            ? ComputeBackend::CPU
+            : ComputeBackend::NPU;
+
+        auto logits_node_id = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
+        sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k);
+    }
+
     if (!profile_file.empty()) {
         gb->execute(profile_file);
     } else {
@@ -202,7 +206,11 @@ uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature,
     }
     post_execute_updates(gb, tokens.size());
     update_kv_cache(gb, tokens.size());
-    
+
+    if (prefill_only) {
+        return sampled_token_id;
+    }
+
     auto* output_ptr = gb->get_output(sampled_token_id);
     return *static_cast<uint32_t*>(output_ptr);
 }

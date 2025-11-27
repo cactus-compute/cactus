@@ -12,7 +12,6 @@
 #include <system_error>
 #include <limits>
 #include <set>
-#include <iostream>
 #include <sstream>
 
 static const char* op_type_names[] = {
@@ -814,7 +813,17 @@ const BufferDesc& CactusGraph::get_output_buffer(size_t node_id) const {
 }
 
 void CactusGraph::execute(const std::string& profile_file) {
-    allocate_buffers();
+    std::vector<size_t> last_use(nodes_.size(), 0);
+    for (size_t i = 0; i < nodes_.size(); ++i) {
+        for (size_t input_id : nodes_[i]->input_ids) {
+            auto it = node_index_map_.find(input_id);
+            if (it != node_index_map_.end()) {
+                last_use[it->second] = std::max(last_use[it->second], i);
+            }
+        }
+    }
+
+    BufferPool& pool = buffer_pool_;
 
     auto get_env_int = [](const char* name, int fallback) -> int {
         const char* val = std::getenv(name);
@@ -861,73 +870,79 @@ void CactusGraph::execute(const std::string& profile_file) {
         *out << std::string(60, '-') << std::endl;
     }
     
-    for (auto& node : nodes_) {
+    for (size_t node_idx = 0; node_idx < nodes_.size(); ++node_idx) {
+        auto& node = nodes_[node_idx];
+
+        if (node->op_type != OpType::INPUT) {
+            node->output_buffer.allocate_from_pool(pool);
+        }
+
         if (enable_profiling && node->op_type != OpType::INPUT) {
             auto start = std::chrono::high_resolution_clock::now();
 
             compute_node_optimized(*node, nodes_, node_index_map_);
-            
+
             auto end = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
             double ms = duration.count() / 1000.0;
-            
+
             std::string shape_str = "[";
             for (size_t i = 0; i < node->output_buffer.shape.size(); ++i) {
                 if (i > 0) shape_str += ",";
                 shape_str += std::to_string(node->output_buffer.shape[i]);
             }
             shape_str += "]";
-            
+
             std::string values_str = "";
-            if (node->output_buffer.data) {
+            if (node->output_buffer.get_data()) {
                 size_t num_values = std::min(size_t(5), node->output_buffer.total_size);
                 values_str = " values=[";
-                
+
                 if (node->output_buffer.precision == Precision::FP32) {
                     if (node->op_type == OpType::SAMPLE) {
-                        uint32_t* uint32_data = reinterpret_cast<uint32_t*>(node->output_buffer.data.get());
+                        uint32_t* uint32_data = reinterpret_cast<uint32_t*>(node->output_buffer.get_data());
                         for (size_t i = 0; i < num_values; ++i) {
                             if (i > 0) values_str += ",";
                             values_str += std::to_string(uint32_data[i]);
                         }
                     } else {
-                        float* float_data = reinterpret_cast<float*>(node->output_buffer.data.get());
+                        float* float_data = reinterpret_cast<float*>(node->output_buffer.get_data());
                         for (size_t i = 0; i < num_values; ++i) {
                             if (i > 0) values_str += ",";
                             values_str += std::to_string(float_data[i]).substr(0, 6);
                         }
                     }
                 } else if (node->output_buffer.precision == Precision::FP16) {
-                    __fp16* fp16_data = reinterpret_cast<__fp16*>(node->output_buffer.data.get());
+                    __fp16* fp16_data = reinterpret_cast<__fp16*>(node->output_buffer.get_data());
                     for (size_t i = 0; i < num_values; ++i) {
                         if (i > 0) values_str += ",";
                         values_str += std::to_string(static_cast<float>(fp16_data[i])).substr(0, 6);
                     }
                 } else if (node->output_buffer.precision == Precision::INT8) {
-                    int8_t* int8_data = reinterpret_cast<int8_t*>(node->output_buffer.data.get());
+                    int8_t* int8_data = reinterpret_cast<int8_t*>(node->output_buffer.get_data());
                     for (size_t i = 0; i < num_values; ++i) {
                         if (i > 0) values_str += ",";
                         values_str += std::to_string(static_cast<int>(int8_data[i]));
                     }
                 }
-                
+
                 if (node->output_buffer.total_size > 5) {
                     values_str += ",...";
                 }
                 values_str += "]";
             }
 
-            
+
             std::string weights_str = "";
-            if ((node->op_type == OpType::RMS_NORM || node->op_type == OpType::MATMUL || 
-                 node->op_type == OpType::GATHER || node->op_type == OpType::EMBEDDING || 
-                 node->op_type == OpType::ATTENTION || node->op_type == OpType::CONCAT) && 
+            if ((node->op_type == OpType::RMS_NORM || node->op_type == OpType::MATMUL ||
+                 node->op_type == OpType::GATHER || node->op_type == OpType::EMBEDDING ||
+                 node->op_type == OpType::ATTENTION || node->op_type == OpType::CONCAT) &&
                 node->input_ids.size() >= 2) {
                 const auto& weight_node = nodes_[node_index_map_.at(node->input_ids[1])];
                 if (weight_node->output_buffer.get_data()) {
                     size_t num_values = std::min(size_t(5), weight_node->output_buffer.total_size);
                     weights_str = " weights=[";
-                    
+
                     if (weight_node->output_buffer.precision == Precision::FP32) {
                         const float* float_data = weight_node->output_buffer.data_as<float>();
                         for (size_t i = 0; i < num_values; ++i) {
@@ -947,14 +962,14 @@ void CactusGraph::execute(const std::string& profile_file) {
                             weights_str += std::to_string(static_cast<int>(int8_data[i]));
                         }
                     }
-                    
+
                     if (weight_node->output_buffer.total_size > 5) {
                         weights_str += ",...";
                     }
                     weights_str += "]";
                 }
             }
-            
+
             *out << std::left << std::setw(15) << get_op_name(node->op_type)
                  << std::setw(12) << std::fixed << std::setprecision(3) << ms
                  << std::setw(20) << shape_str
@@ -1205,15 +1220,16 @@ void CactusGraph::hard_reset() {
     weight_cache_.clear();
     next_node_id_ = 0;
     debug_nodes_.clear();
+    buffer_pool_.clear();
 }
 
 void CactusGraph::soft_reset() {
-    
+
     std::set<size_t> cached_node_ids;
     for (const auto& cache_entry : weight_cache_) {
         cached_node_ids.insert(cache_entry.second);
     }
-    
+
     size_t max_preserved_id = 0;
     for (const auto& node : nodes_) {
         if ((node->op_type == OpType::INPUT && node->output_buffer.external_data) ||
@@ -1224,10 +1240,10 @@ void CactusGraph::soft_reset() {
 
     auto preserved_nodes = std::move(nodes_);
     auto preserved_index_map = std::move(node_index_map_);
-    
+
     nodes_.clear();
     node_index_map_.clear();
-    
+
     for (auto& node : preserved_nodes) {
         if ((node->op_type == OpType::INPUT && node->output_buffer.external_data) ||
             cached_node_ids.count(node->id)) {
@@ -1236,7 +1252,9 @@ void CactusGraph::soft_reset() {
             nodes_.push_back(std::move(node));
         }
     }
-    
+
     next_node_id_ = max_preserved_id + 1;
     debug_nodes_.clear();
+    buffer_pool_.clear();
+    shrink_thread_local_buffers();
 }
