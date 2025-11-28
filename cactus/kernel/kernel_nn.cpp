@@ -490,20 +490,12 @@ inline float32x4_t fast_exp_neon(float32x4_t x) {
     int32x4_t xi = vcvtq_s32_f32(x);
     float32x4_t xf = vsubq_f32(x, vcvtq_f32_s32(xi));
     
-    float32x4_t p = vdupq_n_f32(1.0f);
-    p = vfmaq_f32(p, c1, xf);
-    
-    float32x4_t xf2 = vmulq_f32(xf, xf);
-    p = vfmaq_f32(p, c2, xf2);
-    
-    float32x4_t xf3 = vmulq_f32(xf2, xf);
-    p = vfmaq_f32(p, c3, xf3);
-    
-    float32x4_t xf4 = vmulq_f32(xf3, xf);
-    p = vfmaq_f32(p, c4, xf4);
-    
-    float32x4_t xf5 = vmulq_f32(xf4, xf);
-    p = vfmaq_f32(p, c5, xf5);
+    float32x4_t p = c5;
+    p = vfmaq_f32(c4, p, xf);
+    p = vfmaq_f32(c3, p, xf);
+    p = vfmaq_f32(c2, p, xf);
+    p = vfmaq_f32(c1, p, xf);
+    p = vfmaq_f32(vdupq_n_f32(1.0f), p, xf); 
     
     int32x4_t exponent = vaddq_s32(xi, vdupq_n_s32(127));
     exponent = vshlq_n_s32(exponent, 23);
