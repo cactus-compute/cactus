@@ -810,7 +810,9 @@ void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<G
                                  0, input_buffer.total_size);
             break;
         case Precision::FP16: {
-            throw std::runtime_error("FP16 transpose not yet implemented");
+            const __fp16* input = input_buffer.data_as<__fp16>();
+            __fp16* output = node.output_buffer.data_as<__fp16>();
+            cactus_transpose_f16(input, output, input_buffer.shape.data(), permutation.data(), permutation.size(), 0, input_buffer.total_size);
             break;
         }
         case Precision::FP32: {
@@ -913,19 +915,18 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
                 const __fp16* lhs = lhs_buffer.data_as<__fp16>();
                 const __fp16* rhs = rhs_buffer.data_as<__fp16>();
                 __fp16* output = node.output_buffer.data_as<__fp16>();
-                
+
                 if (pretransposed_rhs) {
                     cactus_matmul_f16(lhs, rhs, output, M, K, N);
                 } else {
                     size_t transpose_size = rhs_shape[0] * rhs_shape[1];
                     ensure_transpose_buffer_fp16(transpose_size);
-                    
-                    cactus_transpose_2d_f32(reinterpret_cast<const float*>(rhs), 
-                                            reinterpret_cast<float*>(transpose_buffer_fp16.data()), 
+
+                    cactus_transpose_2d_f16(rhs, transpose_buffer_fp16.data(),
                                             rhs_shape[0], rhs_shape[1], 0, rhs_shape[0]);
                     cactus_matmul_f16(lhs, transpose_buffer_fp16.data(), output, M, K, N);
                 }
-                
+
                 break;
             }
             case Precision::FP32: {

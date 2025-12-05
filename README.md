@@ -73,13 +73,13 @@ Example response from Gemma3-270m-INT8
 
 | Device | Decode | 1k-P/D | 4k-P/D | 4k-RAM | VLM-TTFT | VLM-Dec | VLM-RAM | STT-TTFT | STT-Dec | STT-RAM |
 |--------|--------|--------|--------|--------|----------|---------|---------|----------|---------|---------|
-| Mac M4 Pro | 173 | 1574/115 | 1089/100 | 122MB | 0.38s | 168 | 112MB | 1.7s | 83 | 142MB |
-| Mac M3 Pro | 150 | 1540/109 | 890/93 | 121MB | 0.47s | 149 | 113MB | 2.9s | 78 | 140MB |
-| iPad/Mac M4 | 129 | 793/82 | 507/64 | 80MB | 0.46s | 113 | 145MB | 2.4s | 60 | 131MB |
-| iPad/Mac M3 | 112 | 786/78 | 446/60 | 81MB | 0.58s | 111 | 154MB | 4.2s | 58 | 142MB |
-| iPhone 17 Pro | 136 | 810/105 | 628/84 | - | 1.1s | 120 | - | - | - | - |
-| iPhone 16 Pro | 114 | 716/98 | 580/81 | - | 1.3s | 101 | - | 3.5s | 75 | - |
-| iPhone 15 Pro | 99 | 549/86 | 530/75 | - | 1.5s | 92 | - | 3.8s | 70 | - |
+| Mac M4 Pro | 173 | 1574/115 | 1089/100 | 122MB | 0.38s | 168 | 112MB | 0.3s | 83 | 142MB |
+| Mac M3 Pro | 150 | 1540/109 | 890/93 | 121MB | 0.47s | 149 | 113MB | 0.5s | 78 | 140MB |
+| iPad/Mac M4 | 129 | 793/82 | 507/64 | 80MB | 0.46s | 113 | 145MB | 0.4s | 60 | 131MB |
+| iPad/Mac M3 | 112 | 786/78 | 446/60 | 81MB | 0.58s | 111 | 154MB | 0.7s | 58 | 142MB |
+| iPhone 17 Pro | 136 | 810/105 | 628/84 | - | 1.1s | 120 | - | 0.5s | - | - |
+| iPhone 16 Pro | 114 | 716/98 | 580/81 | - | 1.3s | 101 | - | 0.6s | 75 | - |
+| iPhone 15 Pro | 99 | 549/86 | 530/75 | - | 1.5s | 92 | - | 0.7s | 70 | - |
 | Galaxy S25 Ultra | 91 | 230/63 | 173/57 | 128MB | 1.4s | 58 | - | - | - | - |
 | Nothing 3 | 56 | 167/49 | 160/46 | - | 1.7s | 54 | - | 8.5s | 55 | - |
 | Nothing 3a | 31 | 114/26 | 108/24 | - | 2.4s | 29 | - | - | - | - |
@@ -99,25 +99,25 @@ cli/cactus download Qwen/Qwen3-0.6B # HF name, stored to weights/Qwen3-0.6B
 
 ## Supported models (INT8)
 
-| Model | Compressed Size | Completion | Tool Call | Vision | Embed | Speech
-|-------|--------------------|-------------------|----------------|------|------|------|
-| google/gemma-3-270m-it | 172MB  | ✓ | ✗ | ✗ | ✗ | ✗ |
-| openai/whisper-small | 239MB  | ✗ | ✗ | ✗ | ✓ | ✓ |
-| LiquidAI/LFM2-350M | 233MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
-| HuggingFaceTB/SmolLM2-360m-Instruct | 227MB  | ✓ | ✗ | ✗ | ✗ | ✗ |
-| LiquidAI/LFM2-VL-450M | 420MB  | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Qwen/Qwen3-0.6B | 394MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
-| Qwen/Qwen3-Embedding-0.6B | 394MB  | ✗ | ✗ | ✗ | ✓ | ✗ |
-| LiquidAI/LFM2-700M | 467MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
-| nomic-ai/nomic-embed-text-v2-moe | 533MB  | ✗ | ✗ | ✗ | ✓ | ✗ |
-| google/gemma-3-1b-it | 642MB  | ✓ | ✗ | ✗ | ✗ | ✗ |
-| openai/whisper-medium | 646MB  | ✗ | ✗ | ✗ | ✓ | ✓ |
-| LiquidAI/LFM2-1.2B | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
-| LiquidAI/LFM2-1.2B-RAG | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
-| LiquidAI/LFM2-1.2B-Tools | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
-| LiquidAI/LFM2-VL-1.6B | 1440MB  | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Qwen/Qwen3-1.7B | 1161MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
-| HuggingFaceTB/SmolLM2-1.7B-Instruct | 1161MB  | ✓ | ✗ | ✗ | ✓ | ✗ |
+| Model | Compressed Size | Completion | Tool Call | Vision | Embed | Speech | NPU
+|-------|--------------------|-------------------|----------------|------|------|------|------|
+| google/gemma-3-270m-it | 172MB  | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| openai/whisper-small | 282MB  | ✗ | ✗ | ✗ | ✓ | ✓ | Apple |
+| LiquidAI/LFM2-350M | 233MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
+| HuggingFaceTB/SmolLM2-360m-Instruct | 227MB  | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| LiquidAI/LFM2-VL-450M | 420MB  | ✓ | ✗ | ✓ | ✓ | ✗ | ✗ |
+| Qwen/Qwen3-0.6B | 394MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
+| Qwen/Qwen3-Embedding-0.6B | 394MB  | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
+| LiquidAI/LFM2-700M | 467MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
+| nomic-ai/nomic-embed-text-v2-moe | 533MB  | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
+| google/gemma-3-1b-it | 642MB  | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| openai/whisper-medium | 646MB  | ✗ | ✗ | ✗ | ✓ | ✓ | Apple |
+| LiquidAI/LFM2-1.2B | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
+| LiquidAI/LFM2-1.2B-RAG | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
+| LiquidAI/LFM2-1.2B-Tools | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
+| LiquidAI/LFM2-VL-1.6B | 1440MB  | ✓ | ✗ | ✓ | ✓ | ✗ | ✗ |
+| Qwen/Qwen3-1.7B | 1161MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
+| HuggingFaceTB/SmolLM2-1.7B-Instruct | 1161MB  | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ |
 
 ## Resources 
 

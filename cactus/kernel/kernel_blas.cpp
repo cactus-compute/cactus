@@ -883,6 +883,137 @@ void cactus_transpose_2d_f32(const float* source, float* destination, size_t num
 }
 
 
+void cactus_transpose_2d_f16(const __fp16* source, __fp16* destination, size_t num_rows, size_t num_cols, size_t start_row, size_t end_row) {
+    constexpr size_t TILE_SIZE = 32;
+    constexpr size_t VECTOR_WIDTH = 8;
+
+    for (size_t row_tile_start = start_row; row_tile_start < end_row; row_tile_start += TILE_SIZE) {
+        const size_t row_tile_end = std::min(row_tile_start + TILE_SIZE, end_row);
+
+        for (size_t col_tile_start = 0; col_tile_start < num_cols; col_tile_start += TILE_SIZE) {
+            const size_t col_tile_end = std::min(col_tile_start + TILE_SIZE, num_cols);
+
+            for (size_t row_block = row_tile_start; row_block < row_tile_end; row_block += VECTOR_WIDTH) {
+                const size_t row_block_end = std::min(row_block + VECTOR_WIDTH, row_tile_end);
+
+                for (size_t col_block = col_tile_start; col_block < col_tile_end; col_block += VECTOR_WIDTH) {
+                    const size_t col_block_end = std::min(col_block + VECTOR_WIDTH, col_tile_end);
+
+                    if (row_block_end - row_block >= 8 && col_block_end - col_block >= 8) {
+                        float16x8_t rows[8];
+                        for (int i = 0; i < 8; i++) {
+                            if (row_block + i < row_block_end) {
+                                rows[i] = vld1q_f16(&source[(row_block + i) * num_cols + col_block]);
+                            } else {
+                                rows[i] = vdupq_n_f16(0.0f);
+                            }
+                        }
+
+                        float16x8x2_t r01 = vtrnq_f16(rows[0], rows[1]);
+                        float16x8x2_t r23 = vtrnq_f16(rows[2], rows[3]);
+                        float16x8x2_t r45 = vtrnq_f16(rows[4], rows[5]);
+                        float16x8x2_t r67 = vtrnq_f16(rows[6], rows[7]);
+
+                        float32x4x2_t r0123_lo = vtrnq_f32(
+                            vreinterpretq_f32_f16(r01.val[0]),
+                            vreinterpretq_f32_f16(r23.val[0]));
+                        float32x4x2_t r0123_hi = vtrnq_f32(
+                            vreinterpretq_f32_f16(r01.val[1]),
+                            vreinterpretq_f32_f16(r23.val[1]));
+                        float32x4x2_t r4567_lo = vtrnq_f32(
+                            vreinterpretq_f32_f16(r45.val[0]),
+                            vreinterpretq_f32_f16(r67.val[0]));
+                        float32x4x2_t r4567_hi = vtrnq_f32(
+                            vreinterpretq_f32_f16(r45.val[1]),
+                            vreinterpretq_f32_f16(r67.val[1]));
+
+                        float16x8_t col0 = vreinterpretq_f16_f32(vcombine_f32(
+                            vget_low_f32(r0123_lo.val[0]), vget_low_f32(r4567_lo.val[0])));
+                        float16x8_t col1 = vreinterpretq_f16_f32(vcombine_f32(
+                            vget_low_f32(r0123_hi.val[0]), vget_low_f32(r4567_hi.val[0])));
+                        float16x8_t col2 = vreinterpretq_f16_f32(vcombine_f32(
+                            vget_low_f32(r0123_lo.val[1]), vget_low_f32(r4567_lo.val[1])));
+                        float16x8_t col3 = vreinterpretq_f16_f32(vcombine_f32(
+                            vget_low_f32(r0123_hi.val[1]), vget_low_f32(r4567_hi.val[1])));
+                        float16x8_t col4 = vreinterpretq_f16_f32(vcombine_f32(
+                            vget_high_f32(r0123_lo.val[0]), vget_high_f32(r4567_lo.val[0])));
+                        float16x8_t col5 = vreinterpretq_f16_f32(vcombine_f32(
+                            vget_high_f32(r0123_hi.val[0]), vget_high_f32(r4567_hi.val[0])));
+                        float16x8_t col6 = vreinterpretq_f16_f32(vcombine_f32(
+                            vget_high_f32(r0123_lo.val[1]), vget_high_f32(r4567_lo.val[1])));
+                        float16x8_t col7 = vreinterpretq_f16_f32(vcombine_f32(
+                            vget_high_f32(r0123_hi.val[1]), vget_high_f32(r4567_hi.val[1])));
+
+                        float16x8_t cols[8] = {col0, col1, col2, col3, col4, col5, col6, col7};
+                        for (int c = 0; c < 8 && col_block + c < col_block_end; c++) {
+                            if (col_block + c < num_cols) {
+                                if (row_block_end - row_block >= 8) {
+                                    vst1q_f16(&destination[(col_block + c) * num_rows + row_block], cols[c]);
+                                } else {
+                                    __fp16 temp[8];
+                                    vst1q_f16(temp, cols[c]);
+                                    for (size_t i = 0; i < row_block_end - row_block; ++i) {
+                                        destination[(col_block + c) * num_rows + row_block + i] = temp[i];
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        for (size_t row = row_block; row < row_block_end; row++) {
+                            for (size_t col = col_block; col < col_block_end; col++) {
+                                destination[col * num_rows + row] = source[row * num_cols + col];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void cactus_transpose_f16(const __fp16* source, __fp16* destination, const size_t* shape, const size_t* permutation, size_t ndim, size_t start_idx, size_t end_idx) {
+    if (ndim == 2 && permutation[0] == 1 && permutation[1] == 0) {
+        size_t num_rows = shape[0];
+        size_t num_cols = shape[1];
+
+        constexpr size_t THRESHOLD = 8192;
+        constexpr size_t TILE_ROWS = 32;
+        if (num_rows * num_cols >= THRESHOLD) {
+            const size_t num_row_blocks = (num_rows + TILE_ROWS - 1) / TILE_ROWS;
+
+            CactusThreading::parallel_for(num_row_blocks, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+                [=](size_t start_block, size_t end_block) {
+                    for (size_t block_idx = start_block; block_idx < end_block; ++block_idx) {
+                        size_t start_row = block_idx * TILE_ROWS;
+                        size_t end_row = std::min(start_row + TILE_ROWS, num_rows);
+
+                        cactus_transpose_2d_f16(source, destination, num_rows, num_cols, start_row, end_row);
+                    }
+                });
+        } else {
+            cactus_transpose_2d_f16(source, destination, num_rows, num_cols, 0, num_rows);
+        }
+    } else {
+        for (size_t idx = start_idx; idx < end_idx; ++idx) {
+            size_t src_idx = 0;
+            size_t tmp_idx = idx;
+
+            for (size_t i = 0; i < ndim; ++i) {
+                size_t coord = tmp_idx % shape[permutation[ndim - 1 - i]];
+                tmp_idx /= shape[permutation[ndim - 1 - i]];
+
+                size_t stride = 1;
+                for (size_t j = permutation[ndim - 1 - i] + 1; j < ndim; ++j) {
+                    stride *= shape[j];
+                }
+                src_idx += coord * stride;
+            }
+
+            destination[idx] = source[src_idx];
+        }
+    }
+}
+
 void cactus_transpose_int8(const int8_t* source, int8_t* destination, const size_t* shape, const size_t* permutation, size_t ndim, size_t start_idx, size_t end_idx) {
     if (ndim == 2 && permutation[0] == 1 && permutation[1] == 0) {
         size_t num_rows = shape[0];
