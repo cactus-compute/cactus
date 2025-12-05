@@ -1,5 +1,7 @@
 #include "model.h"
 #include "../graph/graph.h"
+#include "../npu/npu.h"
+#include "../kernel/kernel.h"
 #include <cmath>
 #include <stdexcept>
 #include <set>
@@ -30,8 +32,6 @@ WhisperModel::WhisperModel(const Config& config) : Model(config) {
     attention_scale_ = 1.0f / std::sqrt(hd);
 
     encoder_block_out_nodes_.resize(config.num_layers, 0);
-
-    // Encoder cross-attention K/V cache
     encoder_k_nodes_.assign(config.num_layers, 0);
     encoder_v_nodes_.assign(config.num_layers, 0);
 
@@ -45,14 +45,6 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
     weight_nodes_.decoder_norm_bias = gb->mmap_weights(model_folder_path_ + "/decoder_norm.bias");
     weight_nodes_.decoder_position_embeddings_weight = gb->mmap_weights(model_folder_path_ + "/decoder_position_embeddings.weights");
 
-    weight_nodes_.encoder_position_embeddings = gb->mmap_weights(model_folder_path_ + "/encoder_position_embeddings.weights");
-    weight_nodes_.encoder_conv1_weight = gb->mmap_weights(model_folder_path_ + "/encoder_conv1_weight.weights");
-    weight_nodes_.encoder_conv1_bias = gb->mmap_weights(model_folder_path_ + "/encoder_conv1_bias.bias");
-    weight_nodes_.encoder_conv2_weight = gb->mmap_weights(model_folder_path_ + "/encoder_conv2_weight.weights");
-    weight_nodes_.encoder_conv2_bias = gb->mmap_weights(model_folder_path_ + "/encoder_conv2_bias.bias");
-    weight_nodes_.encoder_norm_weight = gb->mmap_weights(model_folder_path_ + "/encoder_norm_weight.weights");
-    weight_nodes_.encoder_norm_bias = gb->mmap_weights(model_folder_path_ + "/encoder_norm_bias.bias");
-
     if (config_.tie_word_embeddings) {
         weight_nodes_.output_weight = embedding_node_id_;
         output_weight_node_id_ = embedding_node_id_;
@@ -61,10 +53,34 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
         output_weight_node_id_ = weight_nodes_.output_weight;
     }
 
+    if (npu::is_npu_available()) {
+        std::string npu_encoder_path = model_folder_path_ + "/model.mlmodelc";
+        npu_encoder_ = npu::create_encoder();
+        if (npu_encoder_ && npu_encoder_->load(npu_encoder_path)) {
+            use_npu_encoder_ = true;
+
+            std::vector<int> typical_input_shape = {1, 80, 3000};
+            npu_encoder_->preallocate(typical_input_shape, "x", "");
+        } else {
+            use_npu_encoder_ = false;
+            npu_encoder_.reset();
+        }
+    }
+
+    if (!use_npu_encoder_) {
+        weight_nodes_.encoder_position_embeddings = gb->mmap_weights(model_folder_path_ + "/encoder_position_embeddings.weights");
+        weight_nodes_.encoder_conv1_weight = gb->mmap_weights(model_folder_path_ + "/encoder_conv1_weight.weights");
+        weight_nodes_.encoder_conv1_bias = gb->mmap_weights(model_folder_path_ + "/encoder_conv1_bias.bias");
+        weight_nodes_.encoder_conv2_weight = gb->mmap_weights(model_folder_path_ + "/encoder_conv2_weight.weights");
+        weight_nodes_.encoder_conv2_bias = gb->mmap_weights(model_folder_path_ + "/encoder_conv2_bias.bias");
+        weight_nodes_.encoder_norm_weight = gb->mmap_weights(model_folder_path_ + "/encoder_norm_weight.weights");
+        weight_nodes_.encoder_norm_bias = gb->mmap_weights(model_folder_path_ + "/encoder_norm_bias.bias");
+    }
+
     for (uint32_t i = 0; i < config_.num_layers; i++) {
         auto& layer = weight_nodes_.layers[i];
 
-        //Decoder Layers
+        // Decoder Layers (always needed)
         std::string layer_prefix = model_folder_path_ + "/decoder.layer_" + std::to_string(i) + "_";
 
         layer.decoder_encoder_attn_k_weight = gb->mmap_weights(layer_prefix + "encoder_attn_k.weights");
@@ -97,27 +113,28 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
         layer.decoder_post_attn_layernorm_weight = gb->mmap_weights(layer_prefix + "self_attn_norm.weights");
         layer.decoder_post_attn_layernorm_bias = gb->mmap_weights(layer_prefix + "self_attn_norm.bias");
 
-        //Encoder Layers
-        layer_prefix = model_folder_path_ + "/encoder.layer_" + std::to_string(i) + "_";
+        if (!use_npu_encoder_) {
+            layer_prefix = model_folder_path_ + "/encoder.layer_" + std::to_string(i) + "_";
 
-        layer.encoder_ffn1_weight = gb->mmap_weights(layer_prefix + "mlp_fc1.weights");
-        layer.encoder_ffn1_bias = gb->mmap_weights(layer_prefix + "mlp_fc1.bias");
-        layer.encoder_ffn2_weight = gb->mmap_weights(layer_prefix + "mlp_fc2.weights");
-        layer.encoder_ffn2_bias = gb->mmap_weights(layer_prefix + "mlp_fc2.bias");
+            layer.encoder_ffn1_weight = gb->mmap_weights(layer_prefix + "mlp_fc1.weights");
+            layer.encoder_ffn1_bias = gb->mmap_weights(layer_prefix + "mlp_fc1.bias");
+            layer.encoder_ffn2_weight = gb->mmap_weights(layer_prefix + "mlp_fc2.weights");
+            layer.encoder_ffn2_bias = gb->mmap_weights(layer_prefix + "mlp_fc2.bias");
 
-        layer.encoder_post_ffn_layernorm_weight = gb->mmap_weights(layer_prefix + "final_norm.weights");
-        layer.encoder_post_ffn_layernorm_bias = gb->mmap_weights(layer_prefix + "final_norm.bias");
+            layer.encoder_post_ffn_layernorm_weight = gb->mmap_weights(layer_prefix + "final_norm.weights");
+            layer.encoder_post_ffn_layernorm_bias = gb->mmap_weights(layer_prefix + "final_norm.bias");
 
-        layer.encoder_self_attn_k_weight = gb->mmap_weights(layer_prefix + "self_attn_k.weights");
-        layer.encoder_self_attn_q_weight = gb->mmap_weights(layer_prefix + "self_attn_q.weights");
-        layer.encoder_self_attn_v_weight = gb->mmap_weights(layer_prefix + "self_attn_v.weights");
-        layer.encoder_self_attn_output_weight = gb->mmap_weights(layer_prefix + "self_attn_output.weights");
-        layer.encoder_self_attn_q_bias = gb->mmap_weights(layer_prefix + "self_attn_q.bias");
-        layer.encoder_self_attn_v_bias = gb->mmap_weights(layer_prefix + "self_attn_v.bias");
-        layer.encoder_self_attn_output_bias = gb->mmap_weights(layer_prefix + "self_attn_output.bias");
+            layer.encoder_self_attn_k_weight = gb->mmap_weights(layer_prefix + "self_attn_k.weights");
+            layer.encoder_self_attn_q_weight = gb->mmap_weights(layer_prefix + "self_attn_q.weights");
+            layer.encoder_self_attn_v_weight = gb->mmap_weights(layer_prefix + "self_attn_v.weights");
+            layer.encoder_self_attn_output_weight = gb->mmap_weights(layer_prefix + "self_attn_output.weights");
+            layer.encoder_self_attn_q_bias = gb->mmap_weights(layer_prefix + "self_attn_q.bias");
+            layer.encoder_self_attn_v_bias = gb->mmap_weights(layer_prefix + "self_attn_v.bias");
+            layer.encoder_self_attn_output_bias = gb->mmap_weights(layer_prefix + "self_attn_output.bias");
 
-        layer.encoder_post_attn_layernorm_weight = gb->mmap_weights(layer_prefix + "self_attn_norm.weights");
-        layer.encoder_post_attn_layernorm_bias = gb->mmap_weights(layer_prefix + "self_attn_norm.bias");
+            layer.encoder_post_attn_layernorm_weight = gb->mmap_weights(layer_prefix + "self_attn_norm.weights");
+            layer.encoder_post_attn_layernorm_bias = gb->mmap_weights(layer_prefix + "self_attn_norm.bias");
+        }
     }
 }   
 
@@ -449,15 +466,51 @@ void WhisperModel::run_encoder(const std::vector<float>& mel_bins)
     if (T_mel == 0)
         throw std::runtime_error("Mel bins has zero frames.");
 
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    if (!gb)
+        throw std::runtime_error("Graph handle is null in run_encoder.");
+
+    if (use_npu_encoder_ && npu_encoder_ && npu_encoder_->is_available()) {
+        std::vector<int> out_shape = npu_encoder_->get_output_shape();
+        size_t T_enc, D_enc;
+        if (out_shape.size() == 3) {
+            T_enc = static_cast<size_t>(out_shape[1]);
+            D_enc = static_cast<size_t>(out_shape[2]);
+        } else if (out_shape.size() == 2) {
+            T_enc = static_cast<size_t>(out_shape[0]);
+            D_enc = static_cast<size_t>(out_shape[1]);
+        } else {
+            throw std::runtime_error("NPU encoder output has unexpected shape");
+        }
+
+        std::vector<__fp16> mel_bins_f16(mel_bins.size());
+        cactus_fp32_to_fp16(mel_bins.data(), mel_bins_f16.data(), mel_bins.size());
+
+        std::vector<__fp16> npu_output(T_enc * D_enc);
+        std::vector<int> input_shape = {1, 80, static_cast<int>(T_mel)};
+
+        size_t elements_written = npu_encoder_->encode(
+            mel_bins_f16.data(),
+            npu_output.data(),
+            input_shape,
+            "x",
+            ""
+        );
+
+        if (elements_written > 0) {
+            size_t enc_output_node = gb->input({T_enc, D_enc}, Precision::FP16);
+            gb->set_input(enc_output_node, npu_output.data(), Precision::FP16);
+
+            weight_nodes_.encoder_output = enc_output_node;
+            return;
+        }
+        std::cerr << "[WhisperEncoder] NPU encoding failed, falling back to CPU" << std::endl;
+    }
+
     auto backend =
         (config_.default_backend == Config::Backend::CPU)
         ? ComputeBackend::CPU
         : ComputeBackend::NPU;
-
-
-    auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    if (!gb)
-        throw std::runtime_error("Graph handle is null in run_encoder.");
 
     Precision act_precision;
     switch (config_.precision) {
@@ -471,9 +524,7 @@ void WhisperModel::run_encoder(const std::vector<float>& mel_bins)
 
     if (act_precision == Precision::FP16) {
         std::vector<__fp16> mel_bins_f16(mel_bins.size());
-        for (size_t i = 0; i < mel_bins.size(); ++i) {
-            mel_bins_f16[i] = (__fp16)mel_bins[i];
-        }
+        cactus_fp32_to_fp16(mel_bins.data(), mel_bins_f16.data(), mel_bins.size());
 
         mel_input = gb->input({1, 80, T_mel}, Precision::FP16);
         gb->set_input(mel_input, mel_bins_f16.data(), Precision::FP16);
@@ -488,7 +539,7 @@ void WhisperModel::run_encoder(const std::vector<float>& mel_bins)
         mel_input = gb->input({1, 80, T_mel}, Precision::INT8);
         gb->set_input(mel_input, mel_bins_i8.data(), Precision::INT8);
     }
-    
+
     else {
         mel_input = gb->input({1, 80, T_mel}, Precision::FP32);
         gb->set_input(mel_input, mel_bins.data(), Precision::FP32);
@@ -531,7 +582,7 @@ void WhisperModel::run_encoder(const std::vector<float>& mel_bins)
         weight_nodes_.encoder_norm_bias
     );
     last_encoder_post_norm_node_ = h_norm;
-    
+
 
     weight_nodes_.encoder_output = h_norm;
 }

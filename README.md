@@ -102,7 +102,7 @@ cli/cactus download Qwen/Qwen3-0.6B # HF name, stored to weights/Qwen3-0.6B
 | Model | Compressed Size | Completion | Tool Call | Vision | Embed | Speech
 |-------|--------------------|-------------------|----------------|------|------|------|
 | google/gemma-3-270m-it | 172MB  | ✓ | ✗ | ✗ | ✗ | ✗ |
-| openai/whisper-small | 210MB  | ✗ | ✗ | ✗ | ✓ | ✓ |
+| openai/whisper-small | 239MB  | ✗ | ✗ | ✗ | ✓ | ✓ |
 | LiquidAI/LFM2-350M | 233MB  | ✓ | ✓ | ✗ | ✓ | ✗ |
 | HuggingFaceTB/SmolLM2-360m-Instruct | 227MB  | ✓ | ✗ | ✗ | ✗ | ✗ |
 | LiquidAI/LFM2-VL-450M | 420MB  | ✓ | ✗ | ✓ | ✓ | ✗ |

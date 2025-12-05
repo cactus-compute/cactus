@@ -27,6 +27,9 @@ if(NOT APPLE)
     else()
         message(STATUS "libmman not found; assuming mmap symbols are provided by the C runtime")
     endif()
+else()
+    find_library(COREML_FRAMEWORK CoreML REQUIRED)
+    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 endif()
 
 file(GLOB TEST_SOURCES "test*.cpp")
@@ -37,12 +40,16 @@ foreach(TEST_FILE ${TEST_SOURCES})
     get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
     add_executable(${TEST_NAME} ${TEST_FILE} test_utils.cpp)
     target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_LIB})
-    
+
     if(MMAN_LIB)
         target_link_libraries(${TEST_NAME} PRIVATE ${MMAN_LIB})
         message(STATUS "Test ${TEST_NAME} will link with -lmman")
     endif()
-    
+
+    if(APPLE)
+        target_link_libraries(${TEST_NAME} PRIVATE ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+    endif()
+
     target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_ROOT})
     
     message(STATUS "Added test: ${TEST_NAME}")

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../engine/engine.h"
+#include "../npu/npu.h"
 
 namespace cactus {
 namespace engine {
@@ -618,7 +619,9 @@ private:
     std::vector<std::vector<size_t>>  encoder_v_shape_;
     Precision encoder_kv_precision_ = Precision::FP32;
     bool encoder_kv_ready_ = false;
-    
+
+    std::unique_ptr<npu::NPUEncoder> npu_encoder_;
+    bool use_npu_encoder_ = false;
 
 };
 

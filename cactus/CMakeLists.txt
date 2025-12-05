@@ -22,6 +22,13 @@ file(GLOB KERNEL_SOURCES "kernel/*.cpp")
 file(GLOB FFI_SOURCES "ffi/*.cpp")
 file(GLOB MODEL_SOURCES "models/*.cpp")
 
+if(APPLE)
+    enable_language(OBJCXX)
+    file(GLOB NPU_SOURCES "npu/*.mm")
+else()
+    set(NPU_SOURCES "")
+endif()
+
 set(HEADER_FILES
     cactus.h
     engine/engine.h
@@ -31,6 +38,8 @@ set(HEADER_FILES
     ffi/cactus_ffi.h
     ffi/ffi_utils.h
     models/model.h
+    npu/npu.h
+    npu/npu_ane.h
 )
 
 set(COMMON_SOURCES
@@ -39,6 +48,7 @@ set(COMMON_SOURCES
     ${ENGINE_SOURCES}
     ${FFI_SOURCES}
     ${MODEL_SOURCES}
+    ${NPU_SOURCES}
 )
 
 add_library(cactus STATIC ${COMMON_SOURCES})
@@ -51,7 +61,19 @@ target_include_directories(cactus PUBLIC
     kernel
     ffi
     models
+    npu
 )
+
+if(APPLE)
+    find_library(COREML_FRAMEWORK CoreML REQUIRED)
+    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    target_link_libraries(cactus PUBLIC ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+
+    # Set Objective-C++ flags for .mm files
+    set_source_files_properties(${NPU_SOURCES} PROPERTIES
+        COMPILE_FLAGS "-fobjc-arc"
+    )
+endif()
 
 # suppress warnings from stb_image
 target_include_directories(cactus SYSTEM PUBLIC

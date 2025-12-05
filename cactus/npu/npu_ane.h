@@ -1,0 +1,82 @@
+#ifndef CACTUS_NPU_ANE_H
+#define CACTUS_NPU_ANE_H
+
+#include "npu.h"
+
+#if defined(__APPLE__)
+#define CACTUS_HAS_ANE 1
+#else
+#define CACTUS_HAS_ANE 0
+#endif
+
+namespace cactus {
+namespace npu {
+
+#if CACTUS_HAS_ANE
+
+
+class ANEEncoder : public NPUEncoder {
+public:
+    ANEEncoder();
+    ~ANEEncoder() override;
+
+    ANEEncoder(const ANEEncoder&) = delete;
+    ANEEncoder& operator=(const ANEEncoder&) = delete;
+
+    ANEEncoder(ANEEncoder&& other) noexcept;
+    ANEEncoder& operator=(ANEEncoder&& other) noexcept;
+
+    bool load(const std::string& model_path) override;
+
+    bool preallocate(const std::vector<int>& input_shape,
+                     const std::string& input_name = "x",
+                     const std::string& output_name = "") override;
+
+    size_t encode(const __fp16* input,
+                  __fp16* output,
+                  const std::vector<int>& shape,
+                  const std::string& input_name = "x",
+                  const std::string& output_name = "") override;
+
+    bool is_available() const override;
+
+    std::vector<int> get_input_shape() const override;
+
+    std::vector<int> get_output_shape() const override;
+
+private:
+    void* impl_;  
+};
+
+#else
+
+class ANEEncoder : public NPUEncoder {
+public:
+    ANEEncoder() = default;
+    ~ANEEncoder() override = default;
+
+    bool load(const std::string&) override { return false; }
+
+    bool preallocate(const std::vector<int>&,
+                     const std::string& = "x",
+                     const std::string& = "") override { return false; }
+
+    size_t encode(const __fp16*,
+                  __fp16*,
+                  const std::vector<int>&,
+                  const std::string& = "x",
+                  const std::string& = "") override { return 0; }
+
+    bool is_available() const override { return false; }
+
+    std::vector<int> get_input_shape() const override { return {}; }
+
+    std::vector<int> get_output_shape() const override { return {}; }
+};
+
+#endif // CACTUS_HAS_ANE
+
+} // namespace npu
+} // namespace cactus
+
+#endif // CACTUS_NPU_ANE_H

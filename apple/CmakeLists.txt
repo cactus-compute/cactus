@@ -4,6 +4,10 @@ project(Cactus LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+# Minimum deployment targets for ANE/CoreML FP16 support
+set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version")
+set(CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.0" CACHE STRING "Minimum iOS version")
+
 set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../cactus)
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -17,6 +21,9 @@ file(GLOB KERNEL_SOURCES "${SOURCE_DIR}/kernel/*.cpp")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
 file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
 
+enable_language(OBJCXX)
+file(GLOB NPU_SOURCES "${SOURCE_DIR}/npu/*.mm")
+
 set(HEADER_FILES
     ${SOURCE_DIR}/cactus.h
     ${SOURCE_DIR}/engine/engine.h
@@ -26,6 +33,8 @@ set(HEADER_FILES
     ${SOURCE_DIR}/ffi/cactus_ffi.h
     ${SOURCE_DIR}/ffi/ffi_utils.h
     ${SOURCE_DIR}/models/model.h
+    ${SOURCE_DIR}/npu/npu.h
+    ${SOURCE_DIR}/npu/npu_ane.h
 )
 
 set(COMMON_SOURCES
@@ -34,6 +43,7 @@ set(COMMON_SOURCES
     ${ENGINE_SOURCES}
     ${FFI_SOURCES}
     ${MODEL_SOURCES}
+    ${NPU_SOURCES}
 )
 
 if(NOT COMMON_SOURCES)
@@ -58,15 +68,24 @@ else()
     add_library(cactus STATIC ${COMMON_SOURCES})
 endif()
 
-target_include_directories(cactus PUBLIC 
+target_include_directories(cactus PUBLIC
     ${SOURCE_DIR}
     ${SOURCE_DIR}/engine
     ${SOURCE_DIR}/graph
     ${SOURCE_DIR}/kernel
     ${SOURCE_DIR}/ffi
+    ${SOURCE_DIR}/npu
 )
 
-target_compile_definitions(cactus PRIVATE 
+find_library(COREML_FRAMEWORK CoreML REQUIRED)
+find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+target_link_libraries(cactus PUBLIC ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+
+set_source_files_properties(${NPU_SOURCES} PROPERTIES
+    COMPILE_FLAGS "-fobjc-arc"
+)
+
+target_compile_definitions(cactus PRIVATE
     PLATFORM_CPU_ONLY=1
 )
 
