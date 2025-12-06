@@ -76,6 +76,7 @@ check_dependencies() {
 setup_python_venv() {
     VENV_DIR="$PROJECT_ROOT/venv"
     REQUIREMENTS_FILE="$PROJECT_ROOT/tools/requirements.txt"
+    DEPS_INSTALLED_MARKER="$VENV_DIR/.deps_installed"
 
     # Check if venv exists
     if [ ! -d "$VENV_DIR" ]; then
@@ -96,29 +97,22 @@ setup_python_venv() {
     # Activate venv
     source "$VENV_DIR/bin/activate"
 
-    # Check if requirements file exists
-    if [ -f "$REQUIREMENTS_FILE" ]; then
-        # Check if dependencies are already installed
-        if ! python -c "import numpy, torch, transformers" 2>/dev/null; then
-            echo -e "${BLUE}Installing Python dependencies...${NC}"
-            echo "This may take a few minutes on first run."
+    # Check if requirements file exists and deps not already installed
+    if [ -f "$REQUIREMENTS_FILE" ] && [ ! -f "$DEPS_INSTALLED_MARKER" ]; then
+        echo -e "${BLUE}Installing Python dependencies...${NC}"
+        echo "This may take a few minutes on first run."
 
-            # Upgrade pip first
-            pip install --upgrade pip >/dev/null 2>&1
+        # Upgrade pip first
+        pip install --upgrade pip >/dev/null 2>&1
 
-            # Install requirements
-            if pip install -r "$REQUIREMENTS_FILE"; then
-                echo -e "${GREEN}Python dependencies installed successfully${NC}"
-            else
-                echo -e "${RED}Failed to install Python dependencies${NC}"
-                exit 1
-            fi
+        # Install requirements quietly
+        if pip install -q -r "$REQUIREMENTS_FILE"; then
+            touch "$DEPS_INSTALLED_MARKER"
+            echo -e "${GREEN}Python dependencies installed successfully${NC}"
         else
-            echo -e "${GREEN}Python dependencies already installed${NC}"
+            echo -e "${RED}Failed to install Python dependencies${NC}"
+            exit 1
         fi
-    else
-        echo -e "${YELLOW}Warning: requirements.txt not found at $REQUIREMENTS_FILE${NC}"
-        echo "Python packages will need to be installed manually if needed"
     fi
 }
 
