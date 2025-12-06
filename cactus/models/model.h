@@ -214,8 +214,11 @@ protected:
 
         std::vector<VisionLayerWeights> vision_layers;
     } vision_weight_nodes_;
-    
+
     Siglip2Preprocessor preprocessor_;
+
+    std::unique_ptr<npu::NPUEncoder> npu_encoder_;
+    bool use_npu_encoder_ = false;
 };
 
 

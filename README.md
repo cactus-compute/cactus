@@ -105,7 +105,7 @@ cli/cactus download Qwen/Qwen3-0.6B # HF name, stored to weights/Qwen3-0.6B
 | openai/whisper-small | 282MB  | ✗ | ✗ | ✗ | ✓ | ✓ | Apple |
 | LiquidAI/LFM2-350M | 233MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | HuggingFaceTB/SmolLM2-360m-Instruct | 227MB  | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| LiquidAI/LFM2-VL-450M | 420MB  | ✓ | ✗ | ✓ | ✓ | ✗ | ✗ |
+| LiquidAI/LFM2-VL-450M | 420MB  | ✓ | ✗ | ✓ | ✓ | ✗ | Apple |
 | Qwen/Qwen3-0.6B | 394MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | Qwen/Qwen3-Embedding-0.6B | 394MB  | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
 | LiquidAI/LFM2-700M | 467MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
@@ -115,7 +115,7 @@ cli/cactus download Qwen/Qwen3-0.6B # HF name, stored to weights/Qwen3-0.6B
 | LiquidAI/LFM2-1.2B | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | LiquidAI/LFM2-1.2B-RAG | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | LiquidAI/LFM2-1.2B-Tools | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
-| LiquidAI/LFM2-VL-1.6B | 1440MB  | ✓ | ✗ | ✓ | ✓ | ✗ | ✗ |
+| LiquidAI/LFM2-VL-1.6B | 1440MB  | ✓ | ✗ | ✓ | ✓ | ✗ | Apple |
 | Qwen/Qwen3-1.7B | 1161MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | HuggingFaceTB/SmolLM2-1.7B-Instruct | 1161MB  | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ |
 
