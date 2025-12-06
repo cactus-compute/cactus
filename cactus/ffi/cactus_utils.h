@@ -1,5 +1,5 @@
-#ifndef CACTUS_FFI_UTILS_H
-#define CACTUS_FFI_UTILS_H
+#ifndef CACTUS_UTILS_H
+#define CACTUS_UTILS_H
 
 #include "../engine/engine.h"
 #include <string>
@@ -12,6 +12,23 @@
 #include <iostream>
 #include <filesystem>
 #include <cctype>
+#include <memory>
+#include <atomic>
+#include <mutex>
+
+struct CactusModelHandle {
+    std::unique_ptr<cactus::engine::Model> model;
+    std::atomic<bool> should_stop;
+    std::vector<uint32_t> processed_tokens;
+    std::mutex model_mutex;
+
+    CactusModelHandle() : should_stop(false) {}
+};
+
+extern std::string last_error_message;
+
+bool matches_stop_sequence(const std::vector<uint32_t>& generated_tokens,
+                           const std::vector<std::vector<uint32_t>>& stop_sequences);
 
 namespace cactus {
 namespace ffi {
@@ -398,4 +415,4 @@ inline std::string construct_response_json(const std::string& regular_response,
 } // namespace ffi
 } // namespace cactus
 
-#endif // CACTUS_FFI_UTILS_H
+#endif // CACTUS_UTILS_H

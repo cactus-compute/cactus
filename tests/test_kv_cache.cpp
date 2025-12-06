@@ -218,6 +218,7 @@ bool test_large_window() {
 
     KVCache cache;
     cache.init(num_layers, 2048, num_kv_heads, head_dim, Precision::FP32);
+    cache.set_window_size(window_size, 4);
 
     CactusGraph graph;
 

@@ -2,6 +2,8 @@
 #include <fstream>
 #include <cstdlib>
 #include <cstdio>
+#include <thread>
+#include <chrono>
 
 using namespace EngineTestUtils;
 
@@ -466,7 +468,7 @@ bool run_whisper_test(const char* title, const char* options_json, Predicate che
     std::cout << "Transcript: ";
     int rc = cactus_transcribe(model, g_audio_file_path, g_whisper_prompt,
                                response, sizeof(response), options_json,
-                               stream_callback, &stream);
+                               stream_callback, &stream, nullptr, 0);
 
     std::cout << "\n\n[Results]\n";
     if (rc <= 0) {
@@ -566,6 +568,144 @@ static bool test_audio_embeddings() {
     return result > 0 && embedding_dim > 0;
 }
 
+static bool test_pcm_transcription() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║       PCM BUFFER TRANSCRIPTION          ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    if (!g_transcribe_model_path) {
+        std::cout << "⊘ SKIP │ CACTUS_TEST_TRANSCRIBE_MODEL not set\n";
+        return true;
+    }
+
+    cactus_model_t model = cactus_init(g_transcribe_model_path, 2048, nullptr);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize Whisper model\n";
+        return false;
+    }
+
+    const size_t sample_rate = 16000;
+    bool use_microphone = false;
+    bool test_passed = false;
+
+#ifdef HAVE_SDL2
+    {
+        std::cout << "Using microphone input (SDL2)...\n";
+
+        AudioCapture audio_capture(10000);
+        if (audio_capture.init(0, sample_rate)) {
+            std::cout << "\n🎤 Recording for 10 seconds... Speak now!\n\n";
+
+            audio_capture.resume();
+            use_microphone = true;
+
+            std::this_thread::sleep_for(std::chrono::seconds(10));
+
+            audio_capture.pause();
+
+            std::vector<float> audio_float;
+            size_t num_samples = audio_capture.get_all(audio_float);
+
+            if (num_samples == 0) {
+                std::cerr << "[!] No audio captured\n";
+                use_microphone = false;
+            } else {
+                std::cout << "Captured " << (num_samples / sample_rate)
+                          << " seconds of audio, transcribing...\n";
+
+                std::vector<int16_t> pcm_samples(num_samples);
+                for (size_t i = 0; i < num_samples; i++) {
+                    float clamped = std::max(-1.0f, std::min(1.0f, audio_float[i]));
+                    pcm_samples[i] = static_cast<int16_t>(clamped * 32767.0f);
+                }
+
+                // Transcribe
+                char response[1 << 15] = {0};
+                StreamingData stream;
+                stream.model = model;
+
+                std::cout << "Transcript: ";
+                int rc = cactus_transcribe(
+                    model,
+                    nullptr,
+                    g_whisper_prompt,
+                    response,
+                    sizeof(response),
+                    R"({"max_tokens": 100})",
+                    stream_callback,
+                    &stream,
+                    reinterpret_cast<const uint8_t*>(pcm_samples.data()),
+                    pcm_samples.size() * sizeof(int16_t)
+                );
+
+                std::cout << "\n\n[Results]\n";
+                if (rc > 0) {
+                    Metrics m;
+                    m.parse(response);
+                    m.print_perf(get_memory_usage_mb());
+                    test_passed = (rc > 0 && m.completion_tokens >= 1);
+                } else {
+                    std::cerr << "Transcription failed\n";
+                }
+            }
+        } else {
+            std::cerr << "[!] Failed to initialize audio capture, falling back to synthetic audio\n";
+        }
+    }
+#endif
+    if (!use_microphone) {
+        std::cout << "Using synthetic audio (440Hz sine wave)...\n";
+        const size_t duration_seconds = 3;
+        const size_t num_samples = sample_rate * duration_seconds;
+        std::vector<int16_t> pcm_samples(num_samples);
+
+        for (size_t i = 0; i < num_samples; i++) {
+            float t = static_cast<float>(i) / sample_rate;
+            float amplitude = 0.3f;
+            float value = amplitude * std::sin(2.0f * M_PI * 440.0f * t);
+            pcm_samples[i] = static_cast<int16_t>(value * 32767.0f);
+        }
+
+        char response[1 << 15] = {0};
+        StreamingData stream;
+        stream.model = model;
+
+        std::cout << "Transcript: ";
+        int rc = cactus_transcribe(
+            model,
+            nullptr,
+            g_whisper_prompt,
+            response,
+            sizeof(response),
+            R"({"max_tokens": 100})",
+            stream_callback,
+            &stream,
+            reinterpret_cast<const uint8_t*>(pcm_samples.data()),
+            pcm_samples.size() * sizeof(int16_t)
+        );
+
+        std::cout << "\n\n[Results]\n";
+        if (rc <= 0) {
+            std::cerr << "failed\n";
+            cactus_destroy(model);
+            return false;
+        }
+
+        Metrics m;
+        m.parse(response);
+        m.print_perf(get_memory_usage_mb());
+
+        std::cout << "├─ PCM samples: " << pcm_samples.size() << "\n"
+                  << "├─ Duration: " << duration_seconds << "s\n"
+                  << "└─ Sample rate: " << sample_rate << "Hz\n";
+
+        test_passed = (rc > 0 && m.completion_tokens >= 1);
+    }
+
+    cactus_destroy(model);
+    return test_passed;
+}
+
 int main() {
     capture_memory_baseline();
     TestUtils::TestRunner runner("Engine Tests");
@@ -578,6 +718,7 @@ int main() {
     runner.run_test("image_input", test_image_input());
     runner.run_test("audio_processor", test_audio_processor());
     runner.run_test("transcription", test_transcription());
+    runner.run_test("pcm_transcription", test_pcm_transcription());
     runner.run_test("rag_preprocessing", test_rag());
     runner.run_test("100_context", test_100_context());
     runner.run_test("1k_context", test_1k_context());

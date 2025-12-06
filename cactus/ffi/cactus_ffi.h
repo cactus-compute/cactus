@@ -41,7 +41,9 @@ CACTUS_FFI_EXPORT int cactus_transcribe(
     size_t buffer_size,
     const char* options_json,
     cactus_token_callback callback,
-    void* user_data
+    void* user_data,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
 );
 
 
