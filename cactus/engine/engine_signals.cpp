@@ -66,9 +66,59 @@ static void to_db(
     }
 }
 
+static size_t bit_reverse(size_t x, size_t log2n) {
+    size_t result = 0;
+    for (size_t i = 0; i < log2n; i++) {
+        result = (result << 1) | (x & 1);
+        x >>= 1;
+    }
+    return result;
+}
+
+static void fft_radix2(float* re, float* im, size_t n) {
+    if (n == 0 || (n & (n - 1)) != 0) return;
+
+    size_t log2n = 0;
+    for (size_t temp = n; temp > 1; temp >>= 1) log2n++;
+
+    for (size_t i = 0; i < n; i++) {
+        size_t j = bit_reverse(i, log2n);
+        if (i < j) {
+            std::swap(re[i], re[j]);
+            std::swap(im[i], im[j]);
+        }
+    }
+
+    for (size_t s = 1; s <= log2n; s++) {
+        size_t m = 1 << s;
+        size_t m2 = m >> 1;
+        float w_re = 1.0f;
+        float w_im = 0.0f;
+        float wm_re = std::cos(static_cast<float>(M_PI) / static_cast<float>(m2));
+        float wm_im = -std::sin(static_cast<float>(M_PI) / static_cast<float>(m2));
+
+        for (size_t j = 0; j < m2; j++) {
+            for (size_t k = j; k < n; k += m) {
+                size_t k_m2 = k + m2;
+                float t_re = w_re * re[k_m2] - w_im * im[k_m2];
+                float t_im = w_re * im[k_m2] + w_im * re[k_m2];
+                float u_re = re[k];
+                float u_im = im[k];
+                re[k] = u_re + t_re;
+                im[k] = u_im + t_im;
+                re[k_m2] = u_re - t_re;
+                im[k_m2] = u_im - t_im;
+            }
+            float new_w_re = w_re * wm_re - w_im * wm_im;
+            float new_w_im = w_re * wm_im + w_im * wm_re;
+            w_re = new_w_re;
+            w_im = new_w_im;
+        }
+    }
+}
+
 static void rfft_f32_1d(const float* input, float* output, const size_t n, const char* norm) {
     const size_t out_len = n / 2 + 1;
-    const float two_pi_over_n = 2.0f * static_cast<float>(M_PI) / static_cast<float>(n);
 
     float norm_factor = 1.0f;
     if (norm) {
@@ -83,19 +133,31 @@ static void rfft_f32_1d(const float* input, float* output, const size_t n, const
         }
     }
 
-    for (size_t i = 0; i < out_len; i++) {
-        float re = 0.0f;
-        float im = 0.0f;
-        const float base = -two_pi_over_n * static_cast<float>(i);
-        for (size_t j = 0; j < n; j++) {
-            const float angle = base * static_cast<float>(j);
-            const float input_val = input[j];
-            re += input_val * std::cos(angle);
-            im += input_val * std::sin(angle);
-        }
+    if ((n & (n - 1)) == 0 && n >= 4) {
+        std::vector<float> re(n), im(n, 0.0f);
+        std::copy(input, input + n, re.begin());
 
-        output[i * 2] = re * norm_factor;
-        output[i * 2 + 1] = im * norm_factor;
+        fft_radix2(re.data(), im.data(), n);
+
+        for (size_t i = 0; i < out_len; i++) {
+            output[i * 2] = re[i] * norm_factor;
+            output[i * 2 + 1] = im[i] * norm_factor;
+        }
+    } else {
+        const float two_pi_over_n = 2.0f * static_cast<float>(M_PI) / static_cast<float>(n);
+        for (size_t i = 0; i < out_len; i++) {
+            float re = 0.0f;
+            float im = 0.0f;
+            const float base = -two_pi_over_n * static_cast<float>(i);
+            for (size_t j = 0; j < n; j++) {
+                const float angle = base * static_cast<float>(j);
+                const float input_val = input[j];
+                re += input_val * std::cos(angle);
+                im += input_val * std::sin(angle);
+            }
+            output[i * 2] = re * norm_factor;
+            output[i * 2 + 1] = im * norm_factor;
+        }
     }
 }
 

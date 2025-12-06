@@ -347,7 +347,9 @@ size_t ANEEncoder::encode(const __fp16* input,
         if (mlOutput) {
             size_t count = mlOutput.count;
             __fp16* outputPtr = (__fp16*)mlOutput.dataPointer;
-            memcpy(output, outputPtr, count * sizeof(__fp16));
+            if (output != outputPtr) {
+                memcpy(output, outputPtr, count * sizeof(__fp16));
+            }
             return count;
         }
     }
@@ -383,6 +385,18 @@ std::vector<int> ANEEncoder::get_output_shape() const {
     return result;
 }
 
+__fp16* ANEEncoder::get_output_buffer() {
+    if (!impl_) return nullptr;
+    CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
+    if (!impl.cachedOutputArray) return nullptr;
+    return (__fp16*)impl.cachedOutputArray.dataPointer;
+}
+
+size_t ANEEncoder::get_output_buffer_size() const {
+    if (!impl_) return 0;
+    CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
+    return impl.cachedOutputSize;
+}
 
 std::unique_ptr<NPUEncoder> create_encoder() {
     return std::make_unique<ANEEncoder>();

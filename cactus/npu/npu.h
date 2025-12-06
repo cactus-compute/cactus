@@ -30,6 +30,10 @@ public:
     virtual std::vector<int> get_input_shape() const = 0;
 
     virtual std::vector<int> get_output_shape() const = 0;
+
+    virtual __fp16* get_output_buffer() = 0;
+
+    virtual size_t get_output_buffer_size() const = 0;
 };
 
 std::unique_ptr<NPUEncoder> create_encoder();

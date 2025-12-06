@@ -44,8 +44,12 @@ public:
 
     std::vector<int> get_output_shape() const override;
 
+    __fp16* get_output_buffer() override;
+
+    size_t get_output_buffer_size() const override;
+
 private:
-    void* impl_;  
+    void* impl_;
 };
 
 #else
@@ -72,6 +76,10 @@ public:
     std::vector<int> get_input_shape() const override { return {}; }
 
     std::vector<int> get_output_shape() const override { return {}; }
+
+    __fp16* get_output_buffer() override { return nullptr; }
+
+    size_t get_output_buffer_size() const override { return 0; }
 };
 
 #endif // CACTUS_HAS_ANE

@@ -486,25 +486,43 @@ void WhisperModel::run_encoder(const std::vector<float>& mel_bins)
         std::vector<__fp16> mel_bins_f16(mel_bins.size());
         cactus_fp32_to_fp16(mel_bins.data(), mel_bins_f16.data(), mel_bins.size());
 
-        std::vector<__fp16> npu_output(T_enc * D_enc);
         std::vector<int> input_shape = {1, 80, static_cast<int>(T_mel)};
 
-        size_t elements_written = npu_encoder_->encode(
-            mel_bins_f16.data(),
-            npu_output.data(),
-            input_shape,
-            "x",
-            ""
-        );
+        __fp16* output_buffer = npu_encoder_->get_output_buffer();
+        if (output_buffer) {
+            size_t elements_written = npu_encoder_->encode(
+                mel_bins_f16.data(),
+                output_buffer,  
+                input_shape,
+                "x",
+                ""
+            );
 
-        if (elements_written > 0) {
-            size_t enc_output_node = gb->input({T_enc, D_enc}, Precision::FP16);
-            gb->set_input(enc_output_node, npu_output.data(), Precision::FP16);
+            if (elements_written > 0) {
+                size_t enc_output_node = gb->input({T_enc, D_enc}, Precision::FP16);
+                gb->set_input(enc_output_node, output_buffer, Precision::FP16);
 
-            weight_nodes_.encoder_output = enc_output_node;
-            return;
+                weight_nodes_.encoder_output = enc_output_node;
+                return;
+            }
+        } else {
+            std::vector<__fp16> npu_output(T_enc * D_enc);
+            size_t elements_written = npu_encoder_->encode(
+                mel_bins_f16.data(),
+                npu_output.data(),
+                input_shape,
+                "x",
+                ""
+            );
+
+            if (elements_written > 0) {
+                size_t enc_output_node = gb->input({T_enc, D_enc}, Precision::FP16);
+                gb->set_input(enc_output_node, npu_output.data(), Precision::FP16);
+
+                weight_nodes_.encoder_output = enc_output_node;
+                return;
+            }
         }
-        std::cerr << "[WhisperEncoder] NPU encoding failed, falling back to CPU" << std::endl;
     }
 
     auto backend =
