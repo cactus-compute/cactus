@@ -170,9 +170,28 @@ size_t Model::forward(const std::vector<float>& /*mel_bins*/, const std::vector<
     return forward(tokens, use_cache);
 }
 
-void Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size) {
+void Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, const std::string& profile_file) {
+    if (tokens.empty()) {
+        return;
+    }
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+
+    auto process_chunk = [&](const std::vector<uint32_t>& chunk) {
+        forward(chunk, true);
+
+        if (!profile_file.empty()) {
+            gb->execute(profile_file);
+        } else {
+            gb->execute();
+        }
+
+        post_execute_updates(gb, chunk.size());
+        update_kv_cache(gb, chunk.size());
+    };
+
     if (tokens.size() <= chunk_size) {
-        decode(tokens, -1.0f, -1.0f, 0, "", true);
+        process_chunk(tokens);
         return;
     }
 
@@ -182,16 +201,16 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size) {
         size_t start = chunk_idx * chunk_size;
         size_t end = start + chunk_size;
         std::vector<uint32_t> chunk(tokens.begin() + start, tokens.begin() + end);
-        decode(chunk, -1.0f, -1.0f, 0, "", true);
+        process_chunk(chunk);
     }
 
     size_t final_start = num_full_chunks * chunk_size;
     std::vector<uint32_t> final_chunk(tokens.begin() + final_start, tokens.end());
-    decode(final_chunk, -1.0f, -1.0f, 0, "", true);
+    process_chunk(final_chunk);
 }
 
 uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, float top_p,
-                        size_t top_k, const std::string& profile_file, bool prefill_only) {
+                        size_t top_k, const std::string& profile_file) {
 
     if (temperature < 0) {
         temperature = config_.default_temperature;
@@ -206,33 +225,26 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     auto final_hidden = forward(tokens, true);
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    auto backend = config_.default_backend == Config::Backend::CPU
+        ? ComputeBackend::CPU
+        : ComputeBackend::NPU;
 
-    size_t sampled_token_id = 0;
-    if (!prefill_only) {
-        auto backend = config_.default_backend == Config::Backend::CPU
-            ? ComputeBackend::CPU
-            : ComputeBackend::NPU;
+    auto last_hidden = gb->index(final_hidden, tokens.size() - 1, 0);
+    const auto& last_hidden_buf = gb->get_output_buffer(last_hidden);
+    size_t hidden_dim = last_hidden_buf.shape[0];
+    last_hidden = gb->reshape(last_hidden, {1, hidden_dim});
 
-        auto last_hidden = gb->index(final_hidden, tokens.size() - 1, 0);
-        const auto& last_hidden_buf = gb->get_output_buffer(last_hidden);
-        size_t hidden_dim = last_hidden_buf.shape[0];
-        last_hidden = gb->reshape(last_hidden, {1, hidden_dim});
-
-        auto logits_node_id = gb->matmul(last_hidden, output_weight_node_id_, true, backend);
-        sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k);
-    }
+    auto logits_node_id = gb->matmul(last_hidden, output_weight_node_id_, true, backend);
+    auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k);
 
     if (!profile_file.empty()) {
         gb->execute(profile_file);
     } else {
         gb->execute();
     }
+
     post_execute_updates(gb, tokens.size());
     update_kv_cache(gb, tokens.size());
-
-    if (prefill_only) {
-        return sampled_token_id;
-    }
 
     auto* output_ptr = gb->get_output(sampled_token_id);
     return *static_cast<uint32_t*>(output_ptr);
