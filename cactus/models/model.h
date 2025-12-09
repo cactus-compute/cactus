@@ -412,7 +412,7 @@ protected:
     
     size_t build_conv1d(CactusGraph* gb, size_t input);
 
-    uint32_t generate_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& mel_bins,
+    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& mel_bins,
                                     float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0, const std::string& profile_file = "") override;
 
     std::vector<float> get_audio_embeddings(const std::vector<float>& mel_bins) override;
@@ -638,13 +638,14 @@ public:
     bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true) override;
     size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
 
-    uint32_t generate(const std::vector<uint32_t>& tokens,
+    uint32_t decode(const std::vector<uint32_t>& tokens,
                       float temperature = -1.0f,
                       float top_p = -1.0f,
                       size_t top_k = 0,
                       const std::string& profile_file = "",
                       bool prefill_only = false) override;
-    uint32_t generate_with_images(
+                      
+    uint32_t decode_with_images(
         const std::vector<uint32_t>& tokens,
         const std::vector<std::string>& image_paths,
         float temperature = -1.0f,

@@ -172,7 +172,7 @@ size_t Model::forward(const std::vector<float>& /*mel_bins*/, const std::vector<
 
 void Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size) {
     if (tokens.size() <= chunk_size) {
-        generate(tokens, -1.0f, -1.0f, 0, "", true);
+        decode(tokens, -1.0f, -1.0f, 0, "", true);
         return;
     }
 
@@ -182,15 +182,15 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size) {
         size_t start = chunk_idx * chunk_size;
         size_t end = start + chunk_size;
         std::vector<uint32_t> chunk(tokens.begin() + start, tokens.begin() + end);
-        generate(chunk, -1.0f, -1.0f, 0, "", true);
+        decode(chunk, -1.0f, -1.0f, 0, "", true);
     }
 
     size_t final_start = num_full_chunks * chunk_size;
     std::vector<uint32_t> final_chunk(tokens.begin() + final_start, tokens.end());
-    generate(final_chunk, -1.0f, -1.0f, 0, "", true);
+    decode(final_chunk, -1.0f, -1.0f, 0, "", true);
 }
 
-uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature, float top_p,
+uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, float top_p,
                         size_t top_k, const std::string& profile_file, bool prefill_only) {
 
     if (temperature < 0) {
@@ -238,14 +238,14 @@ uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature,
     return *static_cast<uint32_t*>(output_ptr);
 }
 
-uint32_t Model::generate_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& /*mel_bins*/, float temperature, float top_p, size_t top_k, const std::string& profile_file){
-    return generate(tokens, temperature, top_p, top_k, profile_file);
+uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& /*mel_bins*/, float temperature, float top_p, size_t top_k, const std::string& profile_file){
+    return decode(tokens, temperature, top_p, top_k, profile_file);
 }
 
-uint32_t Model::generate_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
+uint32_t Model::decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                                      float temperature, float top_p, size_t top_k, const std::string& profile_file) {
     (void)image_paths;
-    return generate(tokens, temperature, top_p, top_k, profile_file);
+    return decode(tokens, temperature, top_p, top_k, profile_file);
 }
 
 std::vector<float> Model::get_image_embeddings(const std::string& /*image_path*/) {

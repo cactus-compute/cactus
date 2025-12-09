@@ -715,7 +715,7 @@ std::vector<float> WhisperModel::get_audio_embeddings(const std::vector<float>& 
     return embedding;
 }
 
-uint32_t WhisperModel::generate_with_audio(
+uint32_t WhisperModel::decode_with_audio(
     const std::vector<uint32_t>& tokens,
     const std::vector<float>& mel_bins,
     float temperature,
@@ -728,7 +728,7 @@ uint32_t WhisperModel::generate_with_audio(
     if (tokens.empty())
         throw std::runtime_error("Token sequence cannot be empty");
     if (mel_bins.empty())
-        throw std::runtime_error("Mel bins cannot be empty in Whisper generate_with_audio");
+        throw std::runtime_error("Mel bins cannot be empty in Whisper decode_with_audio");
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
 

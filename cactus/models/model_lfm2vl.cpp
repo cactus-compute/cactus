@@ -70,7 +70,7 @@ bool Lfm2VlModel::init(const std::string& model_folder, size_t context_size, con
     if (do_warmup) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
-        language_model_.generate(warmup_tokens, config_.default_temperature, config_.default_top_p, config_.default_top_k, "");
+        language_model_.decode(warmup_tokens, config_.default_temperature, config_.default_top_p, config_.default_top_k, "");
         language_model_.reset_cache();
     }
 
@@ -381,7 +381,7 @@ size_t Lfm2VlModel::forward(const std::vector<uint32_t>& tokens, bool use_cache)
     return final_hidden;
 }
 
-uint32_t Lfm2VlModel::generate(const std::vector<uint32_t>& tokens,
+uint32_t Lfm2VlModel::decode(const std::vector<uint32_t>& tokens,
                                float temperature,
                                float top_p,
                                size_t top_k,
@@ -404,7 +404,7 @@ uint32_t Lfm2VlModel::generate(const std::vector<uint32_t>& tokens,
     image_prefill_completed_ = false;
     last_token_count_ = tokens.size();
 
-    return language_model_.generate(tokens, temperature, top_p, top_k, profile_file, prefill_only);
+    return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, prefill_only);
 }
 
 Lfm2VlModel::ForwardImageResult Lfm2VlModel::forward_images(
@@ -453,7 +453,7 @@ Lfm2VlModel::ForwardImageResult Lfm2VlModel::forward_images(
     return ForwardImageResult{final_hidden, merged_embeddings.seq_len};
 }
 
-uint32_t Lfm2VlModel::generate_with_images(
+uint32_t Lfm2VlModel::decode_with_images(
     const std::vector<uint32_t>& tokens,
     const std::vector<std::string>& image_paths,
     float temperature,
@@ -464,12 +464,12 @@ uint32_t Lfm2VlModel::generate_with_images(
     if (!initialized_ || !graph_handle_) {
         throw std::runtime_error("Model not initialized - call init() first");
     }
-    
+
     if (image_paths.empty()) {
-        
+
         image_prefill_completed_ = false;
         last_token_count_ = tokens.size();
-        return language_model_.generate(tokens, temperature, top_p, top_k, profile_file);
+        return language_model_.decode(tokens, temperature, top_p, top_k, profile_file);
     }
 
     if (temperature < 0) {
