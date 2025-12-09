@@ -101,18 +101,12 @@ int cactus_complete(
                 constexpr size_t PREFILL_CHUNK_SIZE = 256;
 
                 if (tokens_to_process.size() > PREFILL_CHUNK_SIZE) {
-                    size_t num_full_chunks = (tokens_to_process.size() - 1) / PREFILL_CHUNK_SIZE;
+                    size_t prefill_tokens = (tokens_to_process.size() - 1) / PREFILL_CHUNK_SIZE * PREFILL_CHUNK_SIZE;
+                    std::vector<uint32_t> prefill_chunk(tokens_to_process.begin(),
+                                                        tokens_to_process.begin() + prefill_tokens);
+                    handle->model->prefill(prefill_chunk, PREFILL_CHUNK_SIZE);
 
-                    for (size_t chunk_idx = 0; chunk_idx < num_full_chunks; ++chunk_idx) {
-                        size_t start = chunk_idx * PREFILL_CHUNK_SIZE;
-                        size_t end = start + PREFILL_CHUNK_SIZE;
-                        std::vector<uint32_t> chunk(tokens_to_process.begin() + start,
-                                                    tokens_to_process.begin() + end);
-                        handle->model->generate(chunk, temperature, top_p, top_k, "", true);
-                    }
-
-                    size_t final_start = num_full_chunks * PREFILL_CHUNK_SIZE;
-                    std::vector<uint32_t> final_chunk(tokens_to_process.begin() + final_start,
+                    std::vector<uint32_t> final_chunk(tokens_to_process.begin() + prefill_tokens,
                                                       tokens_to_process.end());
                     next_token = handle->model->generate(final_chunk, temperature, top_p, top_k);
                 } else {

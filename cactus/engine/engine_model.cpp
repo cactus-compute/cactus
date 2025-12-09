@@ -170,6 +170,26 @@ size_t Model::forward(const std::vector<float>& /*mel_bins*/, const std::vector<
     return forward(tokens, use_cache);
 }
 
+void Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size) {
+    if (tokens.size() <= chunk_size) {
+        generate(tokens, -1.0f, -1.0f, 0, "", true);
+        return;
+    }
+
+    size_t num_full_chunks = (tokens.size() - 1) / chunk_size;
+
+    for (size_t chunk_idx = 0; chunk_idx < num_full_chunks; ++chunk_idx) {
+        size_t start = chunk_idx * chunk_size;
+        size_t end = start + chunk_size;
+        std::vector<uint32_t> chunk(tokens.begin() + start, tokens.begin() + end);
+        generate(chunk, -1.0f, -1.0f, 0, "", true);
+    }
+
+    size_t final_start = num_full_chunks * chunk_size;
+    std::vector<uint32_t> final_chunk(tokens.begin() + final_start, tokens.end());
+    generate(final_chunk, -1.0f, -1.0f, 0, "", true);
+}
+
 uint32_t Model::generate(const std::vector<uint32_t>& tokens, float temperature, float top_p,
                         size_t top_k, const std::string& profile_file, bool prefill_only) {
 

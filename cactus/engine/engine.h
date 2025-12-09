@@ -389,6 +389,8 @@ public:
     virtual uint32_t generate(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
                       size_t top_k = 0, const std::string& profile_file = "", bool prefill_only = false);
 
+    virtual void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256);
+
     virtual uint32_t generate_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                                           float temperature = -1.0f, float top_p = -1.0f,
                                           size_t top_k = 0, const std::string& profile_file = "");
