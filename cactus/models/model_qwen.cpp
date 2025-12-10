@@ -1,5 +1,6 @@
 #include "model.h"
 #include "../graph/graph.h"
+#include "../npu/npu.h"
 #include <cmath>
 #include <stdexcept>
 #include <set>
@@ -39,6 +40,12 @@ void QwenModel::load_weights_to_graph(CactusGraph* gb) {
         layer.ffn_up_weight = gb->mmap_weights(layer_prefix + "ffn_up.weights");
         layer.ffn_down_weight = gb->mmap_weights(layer_prefix + "ffn_down.weights");
         layer.post_attention_layernorm_weight = gb->mmap_weights(layer_prefix + "post_attn_norm.weights");
+    }
+
+    // Load NPU prefill model if available
+    if (npu::is_npu_available()) {
+        std::string npu_prefill_path = model_folder_path_ + "/model.mlmodelc";
+        load_npu_prefill(npu_prefill_path);
     }
 }
 

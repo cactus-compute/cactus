@@ -197,6 +197,128 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
     current_seq_len = effective_seq_len;
 }
 
+void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp16* v_data,
+                               size_t num_tokens, size_t kv_heads, size_t dim) {
+    if (layer_idx >= num_layers || !k_data || !v_data || num_tokens == 0) {
+        return;
+    }
+
+    auto& cache = layer_caches[layer_idx];
+    size_t old_seq_len = current_seq_len;
+    size_t new_total_len = old_seq_len + num_tokens;
+    size_t elements_per_token = kv_heads * dim;
+    size_t bytes_per_token = elements_per_token * element_size;
+
+    // Only update total_seq_len once (when processing layer 0)
+    if (layer_idx == 0) {
+        total_seq_len += num_tokens;
+    }
+
+    bool use_sliding_window = (window_size > 0 && new_total_len > window_size);
+    size_t effective_seq_len = use_sliding_window ? window_size : new_total_len;
+
+    // NPU outputs are in shape [num_tokens, kv_heads, head_dim]
+    // We need to copy directly since cache uses same layout
+
+    if (!use_sliding_window) {
+        // Simple append - resize and copy
+        size_t total_bytes = new_total_len * bytes_per_token;
+        cache.keys.resize(total_bytes);
+        cache.values.resize(total_bytes);
+
+        // Convert fp16 to cache precision and copy
+        size_t offset = old_seq_len * bytes_per_token;
+        size_t new_bytes = num_tokens * bytes_per_token;
+
+        if (precision == Precision::FP16) {
+            // Direct copy for FP16
+            std::memcpy(cache.keys.data() + offset, k_data, new_bytes);
+            std::memcpy(cache.values.data() + offset, v_data, new_bytes);
+        } else if (precision == Precision::FP32) {
+            // Convert FP16 to FP32
+            float* k_dst = reinterpret_cast<float*>(cache.keys.data() + offset);
+            float* v_dst = reinterpret_cast<float*>(cache.values.data() + offset);
+            size_t count = num_tokens * elements_per_token;
+            for (size_t i = 0; i < count; ++i) {
+                k_dst[i] = static_cast<float>(k_data[i]);
+                v_dst[i] = static_cast<float>(v_data[i]);
+            }
+        }
+    } else {
+        // Sliding window - need to handle sink tokens and recent window
+        size_t cache_bytes = window_size * bytes_per_token;
+
+        if (cache.keys.size() != cache_bytes) {
+            cache.keys.resize(cache_bytes);
+            cache.values.resize(cache_bytes);
+        }
+
+        size_t sink_bytes = sink_size * bytes_per_token;
+        size_t remaining_window = window_size - sink_size;
+
+        if (num_tokens >= remaining_window) {
+            // New tokens fill the entire recent window
+            size_t skip_tokens = num_tokens - remaining_window;
+            size_t recent_bytes = remaining_window * bytes_per_token;
+
+            if (precision == Precision::FP16) {
+                std::memcpy(cache.keys.data() + sink_bytes,
+                           k_data + skip_tokens * elements_per_token,
+                           recent_bytes);
+                std::memcpy(cache.values.data() + sink_bytes,
+                           v_data + skip_tokens * elements_per_token,
+                           recent_bytes);
+            } else if (precision == Precision::FP32) {
+                float* k_dst = reinterpret_cast<float*>(cache.keys.data() + sink_bytes);
+                float* v_dst = reinterpret_cast<float*>(cache.values.data() + sink_bytes);
+                size_t count = remaining_window * elements_per_token;
+                const __fp16* k_src = k_data + skip_tokens * elements_per_token;
+                const __fp16* v_src = v_data + skip_tokens * elements_per_token;
+                for (size_t i = 0; i < count; ++i) {
+                    k_dst[i] = static_cast<float>(k_src[i]);
+                    v_dst[i] = static_cast<float>(v_src[i]);
+                }
+            }
+        } else {
+            // Shift existing data and append new tokens
+            size_t tokens_to_shift = remaining_window - num_tokens;
+
+            if (tokens_to_shift > 0 && old_seq_len > sink_size) {
+                size_t shift_src = old_seq_len - tokens_to_shift;
+                if (shift_src > sink_size) {
+                    std::memmove(cache.keys.data() + sink_bytes,
+                               cache.keys.data() + shift_src * bytes_per_token,
+                               tokens_to_shift * bytes_per_token);
+                    std::memmove(cache.values.data() + sink_bytes,
+                               cache.values.data() + shift_src * bytes_per_token,
+                               tokens_to_shift * bytes_per_token);
+                }
+            }
+
+            size_t append_offset = (window_size - num_tokens) * bytes_per_token;
+            size_t new_bytes = num_tokens * bytes_per_token;
+
+            if (precision == Precision::FP16) {
+                std::memcpy(cache.keys.data() + append_offset, k_data, new_bytes);
+                std::memcpy(cache.values.data() + append_offset, v_data, new_bytes);
+            } else if (precision == Precision::FP32) {
+                float* k_dst = reinterpret_cast<float*>(cache.keys.data() + append_offset);
+                float* v_dst = reinterpret_cast<float*>(cache.values.data() + append_offset);
+                size_t count = num_tokens * elements_per_token;
+                for (size_t i = 0; i < count; ++i) {
+                    k_dst[i] = static_cast<float>(k_data[i]);
+                    v_dst[i] = static_cast<float>(v_data[i]);
+                }
+            }
+        }
+    }
+
+    // Only update current_seq_len once (when processing last layer)
+    if (layer_idx == num_layers - 1) {
+        current_seq_len = effective_seq_len;
+    }
+}
+
 void ConvCache::init(size_t layers, size_t hidden_dim, size_t window_len, Precision model_precision) {
     num_layers = layers;
     hidden_size = hidden_dim;

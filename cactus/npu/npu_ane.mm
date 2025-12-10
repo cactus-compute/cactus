@@ -403,7 +403,288 @@ std::unique_ptr<NPUEncoder> create_encoder() {
 }
 
 bool is_npu_available() {
-    return true; 
+    return true;
+}
+
+} // namespace npu
+} // namespace cactus
+
+// ============================================================================
+// CactusANEPrefillImpl - Objective-C implementation for multi-output prefill
+// Must be at global scope, not inside C++ namespace
+// ============================================================================
+
+@interface CactusANEPrefillImpl : NSObject
+
+@property (nonatomic, strong) MLModel* model;
+@property (nonatomic, strong) MLModelDescription* modelDescription;
+@property (nonatomic, assign) int chunkSize;
+@property (nonatomic, assign) int hiddenDim;
+@property (nonatomic, assign) int numLayers;
+@property (nonatomic, assign) int numKvHeads;
+@property (nonatomic, assign) int headDim;
+
+- (instancetype)initWithModelPath:(NSString*)path;
+- (NSArray<NSDictionary*>*)predictWithInput:(NSString*)inputName
+                                       data:(const __fp16*)data
+                                      shape:(NSArray<NSNumber*>*)shape;
+
+@end
+
+@implementation CactusANEPrefillImpl
+
+- (instancetype)initWithModelPath:(NSString*)path {
+    self = [super init];
+    if (self) {
+        NSURL* modelURL = [NSURL fileURLWithPath:path];
+        NSError* error = nil;
+
+        MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
+        config.computeUnits = MLComputeUnitsCPUAndNeuralEngine;
+
+        _model = [MLModel modelWithContentsOfURL:modelURL configuration:config error:&error];
+        if (_model) {
+            _modelDescription = _model.modelDescription;
+            [self inferModelDimensions];
+        }
+        if (error) {
+            NSLog(@"[CactusANEPrefill] Error loading model: %@", error);
+        }
+    }
+    return self;
+}
+
+- (void)inferModelDimensions {
+    if (!_modelDescription) return;
+
+    // Get input shape to determine chunk_size and hidden_dim
+    // Expected input: [chunk_size, hidden_dim] e.g., [256, 1024]
+    NSString* inputName = _modelDescription.inputDescriptionsByName.allKeys.firstObject;
+    MLFeatureDescription* inputDesc = _modelDescription.inputDescriptionsByName[inputName];
+    if (inputDesc && inputDesc.type == MLFeatureTypeMultiArray) {
+        NSArray<NSNumber*>* shape = inputDesc.multiArrayConstraint.shape;
+        if (shape.count >= 2) {
+            _chunkSize = [shape[0] intValue];
+            _hiddenDim = [shape[1] intValue];
+        }
+    }
+
+    // Infer num_layers, num_kv_heads, head_dim from output names
+    // Outputs are: hidden, k_0, v_0, k_1, v_1, ..., k_N, v_N
+    // KV shape: [chunk_size, num_kv_heads, head_dim]
+    int maxLayerIdx = -1;
+    for (NSString* outputName in _modelDescription.outputDescriptionsByName.allKeys) {
+        if ([outputName hasPrefix:@"k_"]) {
+            int layerIdx = [[outputName substringFromIndex:2] intValue];
+            maxLayerIdx = MAX(maxLayerIdx, layerIdx);
+
+            // Get KV dimensions from this output
+            MLFeatureDescription* outputDesc = _modelDescription.outputDescriptionsByName[outputName];
+            if (outputDesc && outputDesc.type == MLFeatureTypeMultiArray) {
+                NSArray<NSNumber*>* shape = outputDesc.multiArrayConstraint.shape;
+                // Shape: [chunk_size, num_kv_heads, head_dim]
+                if (shape.count >= 3) {
+                    _numKvHeads = [shape[1] intValue];
+                    _headDim = [shape[2] intValue];
+                }
+            }
+        }
+    }
+    _numLayers = maxLayerIdx + 1;
+
+    NSLog(@"[CactusANEPrefill] Model dimensions: chunk_size=%d, hidden_dim=%d, layers=%d, kv_heads=%d, head_dim=%d",
+          _chunkSize, _hiddenDim, _numLayers, _numKvHeads, _headDim);
+}
+
+- (NSArray<NSDictionary*>*)predictWithInput:(NSString*)inputName
+                                       data:(const __fp16*)data
+                                      shape:(NSArray<NSNumber*>*)shape {
+    if (!_model) return @[];
+
+    NSError* error = nil;
+
+    // Create input array
+    MLMultiArray* inputArray = [[MLMultiArray alloc]
+        initWithShape:shape
+             dataType:MLMultiArrayDataTypeFloat16
+                error:&error];
+
+    if (error) {
+        NSLog(@"[CactusANEPrefill] Error creating input array: %@", error);
+        return @[];
+    }
+
+    // Copy input data
+    NSUInteger totalElements = 1;
+    for (NSNumber* dim in shape) {
+        totalElements *= [dim unsignedIntegerValue];
+    }
+    __fp16* inputPtr = (__fp16*)inputArray.dataPointer;
+    memcpy(inputPtr, data, totalElements * sizeof(__fp16));
+
+    // Create feature provider
+    MLFeatureValue* inputFeature = [MLFeatureValue featureValueWithMultiArray:inputArray];
+    NSDictionary* inputDict = @{inputName: inputFeature};
+    id<MLFeatureProvider> inputProvider = [[MLDictionaryFeatureProvider alloc]
+        initWithDictionary:inputDict
+                     error:&error];
+
+    if (error) {
+        NSLog(@"[CactusANEPrefill] Error creating feature provider: %@", error);
+        return @[];
+    }
+
+    // Run prediction
+    id<MLFeatureProvider> outputProvider = [_model predictionFromFeatures:inputProvider error:&error];
+
+    if (error) {
+        NSLog(@"[CactusANEPrefill] Error during prediction: %@", error);
+        return @[];
+    }
+
+    // Collect all outputs
+    NSMutableArray<NSDictionary*>* results = [NSMutableArray array];
+    for (NSString* outputName in _modelDescription.outputDescriptionsByName.allKeys) {
+        MLFeatureValue* outputFeature = [outputProvider featureValueForName:outputName];
+        if (outputFeature && outputFeature.multiArrayValue) {
+            MLMultiArray* outputArray = outputFeature.multiArrayValue;
+
+            // Get shape
+            NSMutableArray<NSNumber*>* outputShape = [NSMutableArray array];
+            for (NSNumber* dim in outputArray.shape) {
+                [outputShape addObject:dim];
+            }
+
+            // Copy data
+            size_t count = outputArray.count;
+            NSMutableData* outputData = [NSMutableData dataWithLength:count * sizeof(__fp16)];
+            __fp16* outputPtr = (__fp16*)outputArray.dataPointer;
+            memcpy(outputData.mutableBytes, outputPtr, count * sizeof(__fp16));
+
+            [results addObject:@{
+                @"name": outputName,
+                @"shape": outputShape,
+                @"data": outputData
+            }];
+        }
+    }
+
+    return results;
+}
+
+@end
+
+// C++ wrapper implementation for ANEPrefill
+namespace cactus {
+namespace npu {
+
+ANEPrefill::ANEPrefill() : impl_(nullptr) {}
+
+ANEPrefill::~ANEPrefill() {
+    if (impl_) {
+        (void)(__bridge_transfer CactusANEPrefillImpl*)impl_;
+        impl_ = nullptr;
+    }
+}
+
+ANEPrefill::ANEPrefill(ANEPrefill&& other) noexcept : impl_(other.impl_),
+    chunk_size_(other.chunk_size_), hidden_dim_(other.hidden_dim_),
+    num_layers_(other.num_layers_), num_kv_heads_(other.num_kv_heads_),
+    head_dim_(other.head_dim_) {
+    other.impl_ = nullptr;
+}
+
+ANEPrefill& ANEPrefill::operator=(ANEPrefill&& other) noexcept {
+    if (this != &other) {
+        if (impl_) {
+            (void)(__bridge_transfer CactusANEPrefillImpl*)impl_;
+        }
+        impl_ = other.impl_;
+        chunk_size_ = other.chunk_size_;
+        hidden_dim_ = other.hidden_dim_;
+        num_layers_ = other.num_layers_;
+        num_kv_heads_ = other.num_kv_heads_;
+        head_dim_ = other.head_dim_;
+        other.impl_ = nullptr;
+    }
+    return *this;
+}
+
+bool ANEPrefill::load(const std::string& model_path) {
+    @autoreleasepool {
+        NSString* path = [NSString stringWithUTF8String:model_path.c_str()];
+
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            return false;
+        }
+
+        CactusANEPrefillImpl* impl = [[CactusANEPrefillImpl alloc] initWithModelPath:path];
+
+        if (impl && impl.model) {
+            impl_ = (__bridge_retained void*)impl;
+            chunk_size_ = impl.chunkSize;
+            hidden_dim_ = impl.hiddenDim;
+            num_layers_ = impl.numLayers;
+            num_kv_heads_ = impl.numKvHeads;
+            head_dim_ = impl.headDim;
+            return true;
+        }
+        return false;
+    }
+}
+
+bool ANEPrefill::is_available() const {
+    if (!impl_) return false;
+    CactusANEPrefillImpl* impl = (__bridge CactusANEPrefillImpl*)impl_;
+    return impl.model != nil;
+}
+
+int ANEPrefill::get_chunk_size() const { return chunk_size_; }
+int ANEPrefill::get_hidden_dim() const { return hidden_dim_; }
+int ANEPrefill::get_num_layers() const { return num_layers_; }
+int ANEPrefill::get_num_kv_heads() const { return num_kv_heads_; }
+int ANEPrefill::get_head_dim() const { return head_dim_; }
+
+std::vector<NPUPrefillOutput> ANEPrefill::prefill_chunk(
+    const std::vector<__fp16>& embeddings,
+    const std::string& input_name) {
+
+    std::vector<NPUPrefillOutput> results;
+    if (!impl_) return results;
+
+    @autoreleasepool {
+        CactusANEPrefillImpl* impl = (__bridge CactusANEPrefillImpl*)impl_;
+
+        NSString* inName = [NSString stringWithUTF8String:input_name.c_str()];
+        NSArray<NSNumber*>* shape = @[@(chunk_size_), @(hidden_dim_)];
+
+        NSArray<NSDictionary*>* outputs = [impl predictWithInput:inName
+                                                            data:embeddings.data()
+                                                           shape:shape];
+
+        for (NSDictionary* output in outputs) {
+            NPUPrefillOutput result;
+            result.name = [output[@"name"] UTF8String];
+
+            NSArray<NSNumber*>* shapeArray = output[@"shape"];
+            for (NSNumber* dim in shapeArray) {
+                result.shape.push_back([dim intValue]);
+            }
+
+            NSData* data = output[@"data"];
+            size_t count = data.length / sizeof(__fp16);
+            result.data.resize(count);
+            memcpy(result.data.data(), data.bytes, data.length);
+
+            results.push_back(std::move(result));
+        }
+    }
+
+    return results;
+}
+
+std::unique_ptr<NPUPrefill> create_prefill() {
+    return std::make_unique<ANEPrefill>();
 }
 
 } // namespace npu
@@ -420,6 +701,10 @@ std::unique_ptr<NPUEncoder> create_encoder() {
 
 bool is_npu_available() {
     return false;
+}
+
+std::unique_ptr<NPUPrefill> create_prefill() {
+    return nullptr;
 }
 
 } // namespace npu
