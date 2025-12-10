@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-designated-field-initializers")
+    find_package(CURL REQUIRED)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+fp16+simd+dotprod -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-designated-field-initializers")
 endif()
@@ -30,6 +31,7 @@ set(HEADER_FILES
     kernel/kernel_utils.h
     ffi/cactus_ffi.h
     ffi/cactus_utils.h
+    ffi/cactus_telemetry.h
     models/model.h
 )
 
@@ -52,6 +54,11 @@ target_include_directories(cactus PUBLIC
     ffi
     models
 )
+
+if(APPLE AND CURL_FOUND)
+    target_link_libraries(cactus PUBLIC ${CURL_LIBRARIES})
+    target_include_directories(cactus PUBLIC ${CURL_INCLUDE_DIRS})
+endif()
 
 # suppress warnings from stb_image
 target_include_directories(cactus SYSTEM PUBLIC
