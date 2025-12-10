@@ -21,6 +21,7 @@ struct CactusModelHandle {
     std::atomic<bool> should_stop;
     std::vector<uint32_t> processed_tokens;
     std::mutex model_mutex;
+    std::string model_name;
 
     CactusModelHandle() : should_stop(false) {}
 };
@@ -414,5 +415,15 @@ inline std::string construct_response_json(const std::string& regular_response,
 
 } // namespace ffi
 } // namespace cactus
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+const char* cactus_get_last_error();
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // CACTUS_UTILS_H

@@ -30,8 +30,6 @@ struct TelemetryMetrics {
     bool success = false;
     std::string message;
 
-    int audio_duration_ms = 0;
-
     std::chrono::system_clock::time_point timestamp;
 };
 
@@ -142,16 +140,11 @@ std::string LogRecord::buildJson(
     json << "\"framework\":\"cpp\",";
     json << "\"framework_version\":\"1.0.0\"";
 
-    if (metrics.event_type == TelemetryEventType::Completion) {
+    if (metrics.event_type != TelemetryEventType::Embedding) {
         json << ",\"ttft\":" << metrics.ttft_ms;
         json << ",\"tps\":" << metrics.tps;
         json << ",\"response_time\":" << metrics.response_time_ms;
         json << ",\"tokens\":" << metrics.tokens;
-    }
-
-    if (metrics.event_type == TelemetryEventType::Transcription) {
-        json << ",\"response_time\":" << metrics.response_time_ms;
-        json << ",\"audio_duration\":" << metrics.audio_duration_ms;
     }
 
     if (!metrics.message.empty()) {
@@ -182,8 +175,8 @@ public:
                         const std::string& message = "");
 
     void recordTranscription(const std::string& model, bool success,
-                           double response_time_ms, int audio_duration_ms,
-                           const std::string& message = "");
+                           double ttft_ms, double tps, double response_time_ms,
+                           int tokens, const std::string& message = "");
 
     bool isEnabled() const;
 
@@ -264,10 +257,6 @@ void TelemetryCollector::sendToSupabase(const TelemetryMetrics& metrics) {
 
     std::string url = SUPABASE_URL + "/rest/v1/logs";
     auto response = HttpClient::postJson(url, headers, payload);
-
-    if (response.success) {
-        std::cerr << "[Telemetry] Log sent successfully" << std::endl;
-    }
 #endif
 }
 
@@ -323,14 +312,16 @@ void TelemetryCollector::recordEmbedding(const std::string& model, bool success,
 }
 
 void TelemetryCollector::recordTranscription(const std::string& model, bool success,
-                                            double response_time_ms, int audio_duration_ms,
-                                            const std::string& message) {
+                            double ttft_ms, double tps, double response_time_ms,
+                            int tokens, const std::string& message) {
     TelemetryMetrics metrics;
     metrics.event_type = TelemetryEventType::Transcription;
     metrics.model = model;
     metrics.success = success;
     metrics.response_time_ms = response_time_ms;
-    metrics.audio_duration_ms = audio_duration_ms;
+    metrics.ttft_ms = ttft_ms;
+    metrics.tps = tps;
+    metrics.tokens = tokens;
     metrics.message = message;
     metrics.timestamp = std::chrono::system_clock::now();
 
