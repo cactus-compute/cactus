@@ -20,8 +20,8 @@ public:
                         const std::string& message = "");
 
     void recordTranscription(const std::string& model, bool success,
-                           double response_time_ms, int audio_duration_ms,
-                           const std::string& message = "");
+                            double ttft_ms, double tps, double response_time_ms,
+                            int tokens, const std::string& message = "");
 };
 
 } // namespace ffi
