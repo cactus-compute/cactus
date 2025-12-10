@@ -93,7 +93,7 @@ int cactus_embed(
         std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
         if (embedding_dim) *embedding_dim = embeddings.size();
 
-        TelemetryCollector::getInstance().recordEmbedding(
+        CactusTelemetry::getInstance().recordEmbedding(
             handle->model_name,
             true,
             ""
@@ -105,7 +105,7 @@ int cactus_embed(
         last_error_message = e.what();
 
         auto* handle = static_cast<CactusModelHandle*>(model);
-        TelemetryCollector::getInstance().recordEmbedding(
+        CactusTelemetry::getInstance().recordEmbedding(
             handle->model_name,
             false,
             last_error_message
@@ -116,7 +116,7 @@ int cactus_embed(
         last_error_message = "Unknown error during embedding";
 
         auto* handle = static_cast<CactusModelHandle*>(model);
-        TelemetryCollector::getInstance().recordEmbedding(
+        CactusTelemetry::getInstance().recordEmbedding(
             handle->model_name,
             false,
             last_error_message
@@ -145,7 +145,7 @@ int cactus_image_embed(
         std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
         if (embedding_dim) *embedding_dim = embeddings.size();
 
-        TelemetryCollector::getInstance().recordEmbedding(
+        CactusTelemetry::getInstance().recordEmbedding(
             handle->model_name,
             true,
             ""
@@ -157,7 +157,7 @@ int cactus_image_embed(
         last_error_message = e.what();
 
         auto* handle = static_cast<CactusModelHandle*>(model);
-        TelemetryCollector::getInstance().recordEmbedding(
+        CactusTelemetry::getInstance().recordEmbedding(
             handle->model_name,
             false,
             last_error_message
@@ -168,7 +168,7 @@ int cactus_image_embed(
         last_error_message = "Unknown error during image embedding";
 
         auto* handle = static_cast<CactusModelHandle*>(model);
-        TelemetryCollector::getInstance().recordEmbedding(
+        CactusTelemetry::getInstance().recordEmbedding(
             handle->model_name,
             false,
             last_error_message
@@ -203,7 +203,7 @@ int cactus_audio_embed(
         std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
         if (embedding_dim) *embedding_dim = embeddings.size();
 
-        TelemetryCollector::getInstance().recordEmbedding(
+        CactusTelemetry::getInstance().recordEmbedding(
             handle->model_name,
             true,
             ""
@@ -215,7 +215,7 @@ int cactus_audio_embed(
         last_error_message = e.what();
 
         auto* handle = static_cast<CactusModelHandle*>(model);
-        TelemetryCollector::getInstance().recordEmbedding(
+        CactusTelemetry::getInstance().recordEmbedding(
             handle->model_name,
             false,
             last_error_message
@@ -226,7 +226,7 @@ int cactus_audio_embed(
         last_error_message = "Unknown error during audio embedding";
 
         auto* handle = static_cast<CactusModelHandle*>(model);
-        TelemetryCollector::getInstance().recordEmbedding(
+        CactusTelemetry::getInstance().recordEmbedding(
             handle->model_name,
             false,
             last_error_message

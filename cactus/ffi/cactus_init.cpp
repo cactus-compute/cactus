@@ -44,7 +44,7 @@ cactus_model_t cactus_init(const char* model_path, size_t context_size, const ch
         if (!handle->model) {
             last_error_message = "Failed to create model from: " + std::string(model_path);
 
-            TelemetryCollector::getInstance().recordInit(
+            CactusTelemetry::getInstance().recordInit(
                 model_name, false, last_error_message
             );
 
@@ -55,7 +55,7 @@ cactus_model_t cactus_init(const char* model_path, size_t context_size, const ch
         if (!handle->model->init(model_path, context_size)) {
             last_error_message = "Failed to initialize model from: " + std::string(model_path);
 
-            TelemetryCollector::getInstance().recordInit(
+            CactusTelemetry::getInstance().recordInit(
                 model_name, false, last_error_message
             );
 
@@ -72,7 +72,7 @@ cactus_model_t cactus_init(const char* model_path, size_t context_size, const ch
             }
         }
 
-        TelemetryCollector::getInstance().recordInit(
+        CactusTelemetry::getInstance().recordInit(
             model_name, true, "Model initialized successfully"
         );
 
@@ -80,7 +80,7 @@ cactus_model_t cactus_init(const char* model_path, size_t context_size, const ch
     } catch (const std::exception& e) {
         last_error_message = std::string(e.what());
 
-        TelemetryCollector::getInstance().recordInit(
+        CactusTelemetry::getInstance().recordInit(
             model_name, false, last_error_message
         );
 
@@ -88,7 +88,7 @@ cactus_model_t cactus_init(const char* model_path, size_t context_size, const ch
     } catch (...) {
         last_error_message = "Unknown error during model initialization";
 
-        TelemetryCollector::getInstance().recordInit(
+        CactusTelemetry::getInstance().recordInit(
             model_name, false, last_error_message
         );
 

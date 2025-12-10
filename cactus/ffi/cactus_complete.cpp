@@ -176,7 +176,7 @@ int cactus_complete(
 
         std::strcpy(response_buffer, result.c_str());
 
-        TelemetryCollector::getInstance().recordCompletion(
+        CactusTelemetry::getInstance().recordCompletion(
             handle->model_name,
             true,
             time_to_first_token,
@@ -190,7 +190,7 @@ int cactus_complete(
 
     } catch (const std::exception& e) {
         auto* handle = static_cast<CactusModelHandle*>(model);
-        TelemetryCollector::getInstance().recordCompletion(
+        CactusTelemetry::getInstance().recordCompletion(
             handle ? handle->model_name : "unknown",
             false,
             0.0, 0.0, 0.0, 0,

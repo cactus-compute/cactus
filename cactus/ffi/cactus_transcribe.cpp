@@ -230,7 +230,7 @@ int cactus_transcribe(
 
         std::strcpy(response_buffer, json.c_str());
 
-        TelemetryCollector::getInstance().recordTranscription(
+        CactusTelemetry::getInstance().recordTranscription(
             handle->model_name,
             true,
             time_to_first_token,
@@ -244,7 +244,7 @@ int cactus_transcribe(
     }
     catch (const std::exception& e) {
         auto* handle = static_cast<CactusModelHandle*>(model);
-        TelemetryCollector::getInstance().recordTranscription(
+        CactusTelemetry::getInstance().recordTranscription(
             handle->model_name,
             false,
             0.0,
@@ -259,7 +259,7 @@ int cactus_transcribe(
     }
     catch (...) {
         auto* handle = static_cast<CactusModelHandle*>(model);
-        TelemetryCollector::getInstance().recordTranscription(
+        CactusTelemetry::getInstance().recordTranscription(
             handle->model_name,
             false,
             0.0,
