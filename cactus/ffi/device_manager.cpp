@@ -1,7 +1,6 @@
+#include "cactus_utils.h"
 #include <fstream>
 #include <sstream>
-#include <random>
-#include <iomanip>
 #include <sys/stat.h>
 #include <iostream>
 #include <string>
@@ -36,7 +35,6 @@ public:
     static std::string getProjectId();
     static std::map<std::string, std::string> getDeviceMetadata();
     static std::string registerDevice();
-    static std::string generateUUID();
 
 private:
     static std::string getConfigPath();
@@ -69,18 +67,20 @@ std::map<std::string, std::string> DeviceManager::readConfig() {
 
         std::string content = buffer.str();
 
-        size_t device_pos = content.find("\"device_id\":\"");
+        const std::string device_id_key = "\"device_id\":\"";
+        size_t device_pos = content.find(device_id_key);
         if (device_pos != std::string::npos) {
-            size_t start = device_pos + 13;
+            size_t start = device_pos + device_id_key.length();
             size_t end = content.find("\"", start);
             if (end != std::string::npos) {
                 config["device_id"] = content.substr(start, end - start);
             }
         }
 
-        size_t project_pos = content.find("\"project_id\":\"");
+        const std::string project_id_key = "\"project_id\":\"";
+        size_t project_pos = content.find(project_id_key);
         if (project_pos != std::string::npos) {
-            size_t start = project_pos + 14;
+            size_t start = project_pos + project_id_key.length();
             size_t end = content.find("\"", start);
             if (end != std::string::npos) {
                 config["project_id"] = content.substr(start, end - start);
@@ -114,44 +114,6 @@ void DeviceManager::writeConfig(const std::map<std::string, std::string>& config
         file << "\n}\n";
         file.close();
     }
-}
-
-std::string DeviceManager::generateUUID() {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 15);
-    std::uniform_int_distribution<> dis2(8, 11);
-
-    std::stringstream ss;
-    ss << std::hex;
-
-    for (int i = 0; i < 8; i++) {
-        ss << dis(gen);
-    }
-    ss << "-";
-
-    for (int i = 0; i < 4; i++) {
-        ss << dis(gen);
-    }
-    ss << "-4";
-
-    for (int i = 0; i < 3; i++) {
-        ss << dis(gen);
-    }
-    ss << "-";
-
-    ss << dis2(gen);
-
-    for (int i = 0; i < 3; i++) {
-        ss << dis(gen);
-    }
-    ss << "-";
-
-    for (int i = 0; i < 12; i++) {
-        ss << dis(gen);
-    }
-
-    return ss.str();
 }
 
 std::string DeviceManager::getDeviceId() {
@@ -239,9 +201,10 @@ std::string DeviceManager::registerDevice() {
     if (response.success && !response.body.empty()) {
         std::string response_id;
 
-        size_t id_pos = response.body.find("\"id\":\"");
+        const std::string id_key = "\"id\":\"";
+        size_t id_pos = response.body.find(id_key);
         if (id_pos != std::string::npos) {
-            size_t start = id_pos + 6;
+            size_t start = id_pos + id_key.length();
             size_t end = response.body.find("\"", start);
             if (end != std::string::npos) {
                 response_id = response.body.substr(start, end - start);

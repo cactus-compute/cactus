@@ -138,14 +138,12 @@ std::string LogRecord::buildJson(
     json << "\"device_id\":\"" << device_id << "\",";
     json << "\"telemetry_token\":\"" << telemetry_token << "\",";
     json << "\"framework\":\"cpp\",";
-    json << "\"framework_version\":\"1.0.0\"";
+    json << "\"framework_version\":\"1.2.0\"";
 
-    if (metrics.event_type != TelemetryEventType::Embedding) {
-        json << ",\"ttft\":" << metrics.ttft_ms;
-        json << ",\"tps\":" << metrics.tps;
-        json << ",\"response_time\":" << metrics.response_time_ms;
-        json << ",\"tokens\":" << metrics.tokens;
-    }
+    json << ",\"ttft\":" << metrics.ttft_ms;
+    json << ",\"tps\":" << metrics.tps;
+    json << ",\"response_time\":" << metrics.response_time_ms;
+    json << ",\"tokens\":" << metrics.tokens;
 
     if (!metrics.message.empty()) {
         json << ",\"message\":\"" << escapeJson(metrics.message) << "\"";
@@ -256,7 +254,7 @@ void TelemetryCollector::sendToSupabase(const TelemetryMetrics& metrics) {
     headers["Content-Profile"] = "cactus";
 
     std::string url = SUPABASE_URL + "/rest/v1/logs";
-    auto response = HttpClient::postJson(url, headers, payload);
+    HttpClient::postJson(url, headers, payload);
 #endif
 }
 

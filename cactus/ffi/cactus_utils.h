@@ -15,6 +15,11 @@
 #include <memory>
 #include <atomic>
 #include <mutex>
+#include <random>
+
+#ifdef __APPLE__
+#include <uuid/uuid.h>
+#endif
 
 struct CactusModelHandle {
     std::unique_ptr<cactus::engine::Model> model;
@@ -33,6 +38,16 @@ bool matches_stop_sequence(const std::vector<uint32_t>& generated_tokens,
 
 namespace cactus {
 namespace ffi {
+
+inline std::string generateUUID() {
+#ifdef __APPLE__
+    uuid_t uuid;
+    uuid_generate_random(uuid);
+    char uuid_str[37];
+    uuid_unparse_lower(uuid, uuid_str);
+    return std::string(uuid_str);
+#endif
+}
 
 struct ToolFunction {
     std::string name;
