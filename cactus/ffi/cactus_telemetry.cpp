@@ -7,6 +7,7 @@
 #include <map>
 #include <iomanip>
 #include <ctime>
+#include "cactus_utils.h"
 
 namespace cactus {
 namespace ffi {
@@ -138,7 +139,7 @@ std::string LogRecord::buildJson(
     json << "\"device_id\":\"" << device_id << "\",";
     json << "\"telemetry_token\":\"" << telemetry_token << "\",";
     json << "\"framework\":\"cpp\",";
-    json << "\"framework_version\":\"1.2.0\"";
+    json << "\"framework_version\":\"" << getVersion() << "\"";
 
     json << ",\"ttft\":" << metrics.ttft_ms;
     json << ",\"tps\":" << metrics.tps;

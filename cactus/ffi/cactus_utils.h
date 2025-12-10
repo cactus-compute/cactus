@@ -39,6 +39,14 @@ bool matches_stop_sequence(const std::vector<uint32_t>& generated_tokens,
 namespace cactus {
 namespace ffi {
 
+#ifndef CACTUS_VERSION
+#define CACTUS_VERSION "unknown"
+#endif
+
+inline const char* getVersion() {
+    return CACTUS_VERSION;
+}
+
 inline std::string generateUUID() {
 #ifdef __APPLE__
     uuid_t uuid;

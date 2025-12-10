@@ -4,6 +4,9 @@ project(Cactus LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION" CACTUS_VERSION)
+string(STRIP "${CACTUS_VERSION}" CACTUS_VERSION)
+
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-designated-field-initializers")
@@ -44,7 +47,10 @@ set(COMMON_SOURCES
 )
 
 add_library(cactus STATIC ${COMMON_SOURCES})
-target_compile_definitions(cactus PUBLIC PLATFORM_CPU_ONLY=1)
+target_compile_definitions(cactus PUBLIC
+    PLATFORM_CPU_ONLY=1
+    CACTUS_VERSION="${CACTUS_VERSION}"
+)
 
 target_include_directories(cactus PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
