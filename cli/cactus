@@ -200,6 +200,7 @@ build_chat() {
             "$CLI_DIR/chat.cpp" \
             "$PROJECT_ROOT/cactus/build/libcactus.a" \
             -o chat \
+            -lcurl \
             -framework Accelerate
     else
         g++ -std=c++17 -O3 \
@@ -207,6 +208,7 @@ build_chat() {
             "$CLI_DIR/chat.cpp" \
             "$PROJECT_ROOT/cactus/build/libcactus.a" \
             -o chat \
+            -lcurl \
             -pthread
     fi
 
