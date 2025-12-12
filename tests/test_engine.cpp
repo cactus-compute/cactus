@@ -1,4 +1,5 @@
 #include "test_utils.h"
+#include "../cactus/ffi/cactus_telemetry.h"
 #include <fstream>
 #include <cstdlib>
 #include <cstdio>
@@ -707,6 +708,11 @@ static bool test_pcm_transcription() {
 }
 
 int main() {
+#ifdef __APPLE__
+    cactus_set_telemetry_enabled(1);
+    cactus_set_telemetry_token("973e4aaa-5ee4-4947-a128-757bb66be75b");
+#endif
+
     capture_memory_baseline();
     TestUtils::TestRunner runner("Engine Tests");
     runner.run_test("streaming", test_streaming());

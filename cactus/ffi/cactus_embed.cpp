@@ -1,11 +1,13 @@
 #include "cactus_ffi.h"
 #include "cactus_utils.h"
+#include "cactus_telemetry.h"
 #include "../../libs/audio/wav.h"
 #include <cstring>
 #include <cmath>
 #include <algorithm>
 
 using namespace cactus::engine;
+using namespace cactus::ffi;
 
 static constexpr size_t WHISPER_TARGET_FRAMES = 3000;
 static constexpr int WHISPER_SAMPLE_RATE = 16000;
@@ -91,13 +93,35 @@ int cactus_embed(
         std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
         if (embedding_dim) *embedding_dim = embeddings.size();
 
+        CactusTelemetry::getInstance().recordEmbedding(
+            handle->model_name,
+            true,
+            ""
+        );
+
         return static_cast<int>(embeddings.size());
 
     } catch (const std::exception& e) {
         last_error_message = e.what();
+
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        CactusTelemetry::getInstance().recordEmbedding(
+            handle->model_name,
+            false,
+            last_error_message
+        );
+
         return -1;
     } catch (...) {
         last_error_message = "Unknown error during embedding";
+
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        CactusTelemetry::getInstance().recordEmbedding(
+            handle->model_name,
+            false,
+            last_error_message
+        );
+
         return -1;
     }
 }
@@ -121,13 +145,35 @@ int cactus_image_embed(
         std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
         if (embedding_dim) *embedding_dim = embeddings.size();
 
+        CactusTelemetry::getInstance().recordEmbedding(
+            handle->model_name,
+            true,
+            ""
+        );
+
         return static_cast<int>(embeddings.size());
 
     } catch (const std::exception& e) {
         last_error_message = e.what();
+
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        CactusTelemetry::getInstance().recordEmbedding(
+            handle->model_name,
+            false,
+            last_error_message
+        );
+
         return -1;
     } catch (...) {
         last_error_message = "Unknown error during image embedding";
+
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        CactusTelemetry::getInstance().recordEmbedding(
+            handle->model_name,
+            false,
+            last_error_message
+        );
+
         return -1;
     }
 }
@@ -157,13 +203,35 @@ int cactus_audio_embed(
         std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
         if (embedding_dim) *embedding_dim = embeddings.size();
 
+        CactusTelemetry::getInstance().recordEmbedding(
+            handle->model_name,
+            true,
+            ""
+        );
+
         return static_cast<int>(embeddings.size());
 
     } catch (const std::exception& e) {
         last_error_message = e.what();
+
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        CactusTelemetry::getInstance().recordEmbedding(
+            handle->model_name,
+            false,
+            last_error_message
+        );
+
         return -1;
     } catch (...) {
         last_error_message = "Unknown error during audio embedding";
+
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        CactusTelemetry::getInstance().recordEmbedding(
+            handle->model_name,
+            false,
+            last_error_message
+        );
+
         return -1;
     }
 }

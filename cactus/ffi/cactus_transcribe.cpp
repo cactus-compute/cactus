@@ -1,5 +1,6 @@
 #include "cactus_ffi.h"
 #include "cactus_utils.h"
+#include "cactus_telemetry.h"
 #include "../../libs/audio/wav.h"
 #include <chrono>
 #include <cstring>
@@ -228,9 +229,46 @@ int cactus_transcribe(
         }
 
         std::strcpy(response_buffer, json.c_str());
+
+        CactusTelemetry::getInstance().recordTranscription(
+            handle->model_name,
+            true,
+            time_to_first_token,
+            tokens_per_second,
+            total_time_ms,
+            completion_tokens,
+            ""
+        );
+
         return static_cast<int>(json.size());
     }
+    catch (const std::exception& e) {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        CactusTelemetry::getInstance().recordTranscription(
+            handle->model_name,
+            false,
+            0.0,
+            0,
+            0.0,
+            0,
+            std::string(e.what())
+        );
+
+        handle_error_response(e.what(), response_buffer, buffer_size);
+        return -1;
+    }
     catch (...) {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        CactusTelemetry::getInstance().recordTranscription(
+            handle->model_name,
+            false,
+            0.0,
+            0,
+            0.0,
+            0,
+            "Unknown error in transcribe"
+        );
+
         handle_error_response("Unknown error in transcribe", response_buffer, buffer_size);
         return -1;
     }

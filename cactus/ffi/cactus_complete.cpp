@@ -1,5 +1,6 @@
 #include "cactus_ffi.h"
 #include "cactus_utils.h"
+#include "cactus_telemetry.h"
 #include <chrono>
 #include <cstring>
 
@@ -168,9 +169,28 @@ int cactus_complete(
         }
 
         std::strcpy(response_buffer, result.c_str());
+
+        CactusTelemetry::getInstance().recordCompletion(
+            handle->model_name,
+            true,
+            time_to_first_token,
+            tokens_per_second,
+            total_time_ms,
+            static_cast<int>(prompt_tokens + completion_tokens),
+            ""
+        );
+
         return static_cast<int>(result.length());
 
     } catch (const std::exception& e) {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        CactusTelemetry::getInstance().recordCompletion(
+            handle ? handle->model_name : "unknown",
+            false,
+            0.0, 0.0, 0.0, 0,
+            std::string(e.what())
+        );
+
         handle_error_response(e.what(), response_buffer, buffer_size);
         return -1;
     }
