@@ -427,7 +427,8 @@ bool is_npu_available() {
 - (instancetype)initWithModelPath:(NSString*)path;
 - (NSArray<NSDictionary*>*)predictWithInput:(NSString*)inputName
                                        data:(const __fp16*)data
-                                      shape:(NSArray<NSNumber*>*)shape;
+                                      shape:(NSArray<NSNumber*>*)shape
+                                     offset:(int)offset;
 
 @end
 
@@ -498,12 +499,13 @@ bool is_npu_available() {
 
 - (NSArray<NSDictionary*>*)predictWithInput:(NSString*)inputName
                                        data:(const __fp16*)data
-                                      shape:(NSArray<NSNumber*>*)shape {
+                                      shape:(NSArray<NSNumber*>*)shape
+                                     offset:(int)offset {
     if (!_model) return @[];
 
     NSError* error = nil;
 
-    // Create input array
+    // Create input array for embeddings
     MLMultiArray* inputArray = [[MLMultiArray alloc]
         initWithShape:shape
              dataType:MLMultiArrayDataTypeFloat16
@@ -522,9 +524,22 @@ bool is_npu_available() {
     __fp16* inputPtr = (__fp16*)inputArray.dataPointer;
     memcpy(inputPtr, data, totalElements * sizeof(__fp16));
 
-    // Create feature provider
+    // Create feature provider with embeddings
     MLFeatureValue* inputFeature = [MLFeatureValue featureValueWithMultiArray:inputArray];
-    NSDictionary* inputDict = @{inputName: inputFeature};
+    NSMutableDictionary* inputDict = [NSMutableDictionary dictionaryWithObject:inputFeature forKey:inputName];
+
+    // Add offset input if model supports it (for RoPE position encoding)
+    if (_modelDescription.inputDescriptionsByName[@"offset"] != nil) {
+        MLMultiArray* offsetArray = [[MLMultiArray alloc] initWithShape:@[@1]
+                                                               dataType:MLMultiArrayDataTypeInt32
+                                                                  error:&error];
+        if (!error) {
+            ((int32_t*)offsetArray.dataPointer)[0] = offset;
+            MLFeatureValue* offsetFeature = [MLFeatureValue featureValueWithMultiArray:offsetArray];
+            inputDict[@"offset"] = offsetFeature;
+        }
+    }
+
     id<MLFeatureProvider> inputProvider = [[MLDictionaryFeatureProvider alloc]
         initWithDictionary:inputDict
                      error:&error];
@@ -647,6 +662,7 @@ int ANEPrefill::get_head_dim() const { return head_dim_; }
 
 std::vector<NPUPrefillOutput> ANEPrefill::prefill_chunk(
     const std::vector<__fp16>& embeddings,
+    int position_offset,
     const std::string& input_name) {
 
     std::vector<NPUPrefillOutput> results;
@@ -660,7 +676,8 @@ std::vector<NPUPrefillOutput> ANEPrefill::prefill_chunk(
 
         NSArray<NSDictionary*>* outputs = [impl predictWithInput:inName
                                                             data:embeddings.data()
-                                                           shape:shape];
+                                                           shape:shape
+                                                          offset:position_offset];
 
         for (NSDictionary* output in outputs) {
             NPUPrefillOutput result;

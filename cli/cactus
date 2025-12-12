@@ -230,14 +230,19 @@ download_model() {
         return 1
     fi
 
-    if ! python3 -c "import numpy, torch, transformers" 2>/dev/null; then
+    local PYTHON_CMD="python3"
+    if [ -f "$PROJECT_ROOT/venv/bin/python3" ]; then
+        PYTHON_CMD="$PROJECT_ROOT/venv/bin/python3"
+    fi
+
+    if ! $PYTHON_CMD -c "import numpy, torch, transformers" 2>/dev/null; then
         echo -e "${RED}Error: Required Python packages not found.${NC}"
         echo "Please check the README for setup instructions."
         return 1
     fi
 
-    echo "Running: python3 tools/convert_hf.py $model_id weights/$model_dir/ --precision INT8"
-    if python3 tools/convert_hf.py "$model_id" "weights/$model_dir/" --precision INT8; then
+    echo "Running: $PYTHON_CMD tools/convert_hf.py $model_id weights/$model_dir/ --precision INT8"
+    if $PYTHON_CMD tools/convert_hf.py "$model_id" "weights/$model_dir/" --precision FP16; then
         echo -e "${GREEN}Successfully downloaded and converted weights${NC}"
         return 0
     else

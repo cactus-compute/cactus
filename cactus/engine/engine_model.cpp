@@ -653,8 +653,9 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
                   all_embeddings.begin() + (start + actual_tokens) * hidden_dim,
                   chunk_embeddings.begin());
 
-        // Run NPU prefill
-        std::vector<npu::NPUPrefillOutput> outputs = npu_prefill_->prefill_chunk(chunk_embeddings);
+        // Run NPU prefill with position offset for correct RoPE encoding
+        int position_offset = static_cast<int>(start);
+        std::vector<npu::NPUPrefillOutput> outputs = npu_prefill_->prefill_chunk(chunk_embeddings, position_offset);
 
         // Process outputs - update KV cache for each layer
         for (const auto& output : outputs) {

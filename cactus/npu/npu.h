@@ -74,9 +74,11 @@ public:
 
     // Run prefill on a chunk of embeddings
     // Input: embeddings [chunk_size, hidden_dim]
+    // Input: position_offset - starting position for RoPE (0 for first chunk, chunk_size for second, etc.)
     // Returns: vector of outputs (hidden, k_0, v_0, k_1, v_1, ...)
     virtual std::vector<NPUPrefillOutput> prefill_chunk(
         const std::vector<__fp16>& embeddings,
+        int position_offset = 0,
         const std::string& input_name = "x") = 0;
 };
 

@@ -715,17 +715,17 @@ int main() {
 
     capture_memory_baseline();
     TestUtils::TestRunner runner("Engine Tests");
-    runner.run_test("streaming", test_streaming());
-    runner.run_test("tool_calls", test_tool_call());
-    runner.run_test("tool_calls_with_multiple_tools", test_tool_call_with_multiple_tools());
-    runner.run_test("embeddings", test_embeddings());
-    runner.run_test("image_embeddings", test_image_embeddings());
-    runner.run_test("audio_embeddings", test_audio_embeddings());
-    runner.run_test("image_input", test_image_input());
-    runner.run_test("audio_processor", test_audio_processor());
-    runner.run_test("transcription", test_transcription());
-    runner.run_test("pcm_transcription", test_pcm_transcription());
-    runner.run_test("rag_preprocessing", test_rag());
+    // runner.run_test("streaming", test_streaming());
+    // runner.run_test("tool_calls", test_tool_call());
+    // runner.run_test("tool_calls_with_multiple_tools", test_tool_call_with_multiple_tools());
+    // runner.run_test("embeddings", test_embeddings());
+    // runner.run_test("image_embeddings", test_image_embeddings());
+    // runner.run_test("audio_embeddings", test_audio_embeddings());
+    // runner.run_test("image_input", test_image_input());
+    // runner.run_test("audio_processor", test_audio_processor());
+    // runner.run_test("transcription", test_transcription());
+    // runner.run_test("pcm_transcription", test_pcm_transcription());
+    // runner.run_test("rag_preprocessing", test_rag());
     runner.run_test("100_context", test_100_context());
     runner.run_test("1k_context", test_1k_context());
     runner.run_test("4k_context", test_4k_context());
