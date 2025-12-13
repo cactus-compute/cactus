@@ -73,10 +73,12 @@ bool Model::init(CactusGraph* external_graph, const std::string& model_folder, s
 bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size_t context_size,
                           const std::string& system_prompt, bool do_warmup) {
 
+    CACTUS_LOG_DEBUG("model", "Initializing model from: " << model_folder);
     model_folder_path_ = model_folder;
     std::string config_path = model_folder + "/config.txt";
 
     if (!config_.from_json(config_path)) {
+        CACTUS_LOG_ERROR("model", "Model initialization failed - config not loaded from: " << model_folder);
         return false;
     }
 
@@ -397,6 +399,7 @@ std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bo
 bool Config::from_json(const std::string& config_path) {
     std::ifstream file(config_path);
     if (!file) {
+        CACTUS_LOG_ERROR("config", "Failed to open config file: " << config_path);
         return false;
     }
     
@@ -536,10 +539,12 @@ std::string Config::to_json() const {
 }
 
 std::unique_ptr<Model> create_model(const std::string& model_folder) {
+    CACTUS_LOG_DEBUG("model", "Creating model from: " << model_folder);
     Config config;
     std::string config_path = model_folder + "/config.txt";
 
     if (!config.from_json(config_path)) {
+        CACTUS_LOG_ERROR("model", "Failed to create model - cannot load config from: " << model_folder);
         return nullptr;
     }
 
@@ -691,11 +696,9 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
 
         int position_offset = static_cast<int>(start);
 
-        // Use direct buffer access to avoid intermediate copies
         npu::NPUPrefillDirectResult direct_result = npu_prefill_->prefill_chunk_direct(chunk_embeddings, position_offset);
 
         if (direct_result.valid) {
-            // Update KV cache directly from NPU output buffers
             for (int layer_idx = 0; layer_idx < num_layers; layer_idx++) {
                 const auto& k_ref = direct_result.k_caches[layer_idx];
                 const auto& v_ref = direct_result.v_caches[layer_idx];

@@ -154,18 +154,8 @@ print_usage() {
 }
 
 get_model_dir_name() {
-    # Convert model ID to directory name
-    # e.g., "LiquidAI/LFM2-1.2B" -> "lfm2-1.2B"
-    # e.g., "Qwen/Qwen3-0.6B" -> "qwen3-0.6B"
-    # e.g., "google/gemma-3-270m-it" -> "gemma3-270m"
-
     local model_id="$1"
-    local model_name=$(echo "$model_id" | cut -d'/' -f2)
-
-    # Convert to lowercase and clean up
-    model_name=$(echo "$model_name" | tr '[:upper:]' '[:lower:]' | sed 's/-it$//')
-
-    echo "$model_name"
+    echo "$model_id" | cut -d'/' -f2
 }
 
 build_chat() {

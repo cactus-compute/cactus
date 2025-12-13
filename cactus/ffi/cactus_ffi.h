@@ -77,6 +77,14 @@ CACTUS_FFI_EXPORT void cactus_stop(cactus_model_t model);
 
 CACTUS_FFI_EXPORT void cactus_destroy(cactus_model_t model);
 
+CACTUS_FFI_EXPORT const char* cactus_get_last_error(void);
+
+// Log levels: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR, 4=NONE
+CACTUS_FFI_EXPORT void cactus_set_log_level(int level);
+
+typedef void (*cactus_log_callback)(int level, const char* component, const char* message, void* user_data);
+CACTUS_FFI_EXPORT void cactus_set_log_callback(cactus_log_callback callback, void* user_data);
+
 #ifdef __cplusplus
 }
 #endif

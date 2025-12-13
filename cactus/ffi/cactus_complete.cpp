@@ -22,11 +22,13 @@ int cactus_complete(
     if (!model) {
         std::string error_msg = last_error_message.empty() ?
             "Model not initialized. Check model path and files." : last_error_message;
+        CACTUS_LOG_ERROR("complete", error_msg);
         handle_error_response(error_msg, response_buffer, buffer_size);
         return -1;
     }
 
     if (!messages_json || !response_buffer || buffer_size == 0) {
+        CACTUS_LOG_ERROR("complete", "Invalid parameters: messages_json, response_buffer, or buffer_size");
         handle_error_response("Invalid parameters", response_buffer, buffer_size);
         return -1;
     }
@@ -42,6 +44,7 @@ int cactus_complete(
         auto messages = parse_messages_json(messages_json, image_paths);
 
         if (messages.empty()) {
+            CACTUS_LOG_ERROR("complete", "No messages provided in request");
             handle_error_response("No messages provided", response_buffer, buffer_size);
             return -1;
         }
@@ -60,11 +63,14 @@ int cactus_complete(
         std::string full_prompt = tokenizer->format_chat_prompt(messages, true, formatted_tools);
 
         if (full_prompt.find("ERROR:") == 0) {
+            CACTUS_LOG_ERROR("complete", "Prompt formatting failed: " << full_prompt.substr(6));
             handle_error_response(full_prompt.substr(6), response_buffer, buffer_size);
             return -1;
         }
 
         std::vector<uint32_t> current_prompt_tokens = tokenizer->encode(full_prompt);
+
+        CACTUS_LOG_DEBUG("complete", "Prompt tokens: " << current_prompt_tokens.size() << ", max_tokens: " << max_tokens);
 
         std::vector<uint32_t> tokens_to_process;
         bool is_prefix = (current_prompt_tokens.size() >= handle->processed_tokens.size()) &&
@@ -183,6 +189,8 @@ int cactus_complete(
         return static_cast<int>(result.length());
 
     } catch (const std::exception& e) {
+        CACTUS_LOG_ERROR("complete", "Exception: " << e.what());
+
         auto* handle = static_cast<CactusModelHandle*>(model);
         CactusTelemetry::getInstance().recordCompletion(
             handle ? handle->model_name : "unknown",
@@ -192,6 +200,19 @@ int cactus_complete(
         );
 
         handle_error_response(e.what(), response_buffer, buffer_size);
+        return -1;
+    } catch (...) {
+        CACTUS_LOG_ERROR("complete", "Unknown exception during completion");
+
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        CactusTelemetry::getInstance().recordCompletion(
+            handle ? handle->model_name : "unknown",
+            false,
+            0.0, 0.0, 0.0, 0,
+            "Unknown exception"
+        );
+
+        handle_error_response("Unknown error during completion", response_buffer, buffer_size);
         return -1;
     }
 }

@@ -105,9 +105,8 @@ echo ""
 echo "Step 4: Running tests..."
 echo "------------------------"
 
-# Set model path environment variables for tests
-MODEL_DIR=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
-TRANSCRIBE_MODEL_DIR=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+MODEL_DIR=$(echo "$MODEL_NAME" | sed 's|.*/||')
+TRANSCRIBE_MODEL_DIR=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||')
 export CACTUS_TEST_MODEL="$PROJECT_ROOT/weights/$MODEL_DIR"
 export CACTUS_TEST_TRANSCRIBE_MODEL="$PROJECT_ROOT/weights/$TRANSCRIBE_MODEL_DIR"
 export CACTUS_TEST_ASSETS="$PROJECT_ROOT/tests/assets"

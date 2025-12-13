@@ -78,17 +78,26 @@ int cactus_embed(
     size_t buffer_size,
     size_t* embedding_dim
 ) {
-    if (!model || !text || !embeddings_buffer || buffer_size == 0) return -1;
+    if (!model || !text || !embeddings_buffer || buffer_size == 0) {
+        CACTUS_LOG_ERROR("embed", "Invalid parameters for text embedding");
+        return -1;
+    }
 
     try {
         auto* handle = static_cast<CactusModelHandle*>(model);
         auto* tokenizer = handle->model->get_tokenizer();
 
         std::vector<uint32_t> tokens = tokenizer->encode(text);
-        if (tokens.empty()) return -1;
+        if (tokens.empty()) {
+            CACTUS_LOG_ERROR("embed", "Tokenization produced empty result");
+            return -1;
+        }
 
         std::vector<float> embeddings = handle->model->get_embeddings(tokens, true);
-        if (embeddings.size() * sizeof(float) > buffer_size) return -2;
+        if (embeddings.size() * sizeof(float) > buffer_size) {
+            CACTUS_LOG_ERROR("embed", "Buffer too small: need " << embeddings.size() * sizeof(float) << " bytes, got " << buffer_size);
+            return -2;
+        }
 
         std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
         if (embedding_dim) *embedding_dim = embeddings.size();
@@ -103,6 +112,7 @@ int cactus_embed(
 
     } catch (const std::exception& e) {
         last_error_message = e.what();
+        CACTUS_LOG_ERROR("embed", "Exception: " << e.what());
 
         auto* handle = static_cast<CactusModelHandle*>(model);
         CactusTelemetry::getInstance().recordEmbedding(
@@ -114,6 +124,7 @@ int cactus_embed(
         return -1;
     } catch (...) {
         last_error_message = "Unknown error during embedding";
+        CACTUS_LOG_ERROR("embed", last_error_message);
 
         auto* handle = static_cast<CactusModelHandle*>(model);
         CactusTelemetry::getInstance().recordEmbedding(
@@ -133,14 +144,24 @@ int cactus_image_embed(
     size_t buffer_size,
     size_t* embedding_dim
 ) {
-    if (!model || !image_path || !embeddings_buffer || buffer_size == 0) return -1;
+    if (!model || !image_path || !embeddings_buffer || buffer_size == 0) {
+        CACTUS_LOG_ERROR("image_embed", "Invalid parameters for image embedding");
+        return -1;
+    }
 
     try {
         auto* handle = static_cast<CactusModelHandle*>(model);
 
+        CACTUS_LOG_DEBUG("image_embed", "Processing image: " << image_path);
         std::vector<float> embeddings = handle->model->get_image_embeddings(image_path);
-        if (embeddings.empty()) return -1;
-        if (embeddings.size() * sizeof(float) > buffer_size) return -2;
+        if (embeddings.empty()) {
+            CACTUS_LOG_ERROR("image_embed", "Image embedding returned empty result");
+            return -1;
+        }
+        if (embeddings.size() * sizeof(float) > buffer_size) {
+            CACTUS_LOG_ERROR("image_embed", "Buffer too small: need " << embeddings.size() * sizeof(float) << " bytes");
+            return -2;
+        }
 
         std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
         if (embedding_dim) *embedding_dim = embeddings.size();
@@ -155,6 +176,7 @@ int cactus_image_embed(
 
     } catch (const std::exception& e) {
         last_error_message = e.what();
+        CACTUS_LOG_ERROR("image_embed", "Exception: " << e.what());
 
         auto* handle = static_cast<CactusModelHandle*>(model);
         CactusTelemetry::getInstance().recordEmbedding(
@@ -166,6 +188,7 @@ int cactus_image_embed(
         return -1;
     } catch (...) {
         last_error_message = "Unknown error during image embedding";
+        CACTUS_LOG_ERROR("image_embed", last_error_message);
 
         auto* handle = static_cast<CactusModelHandle*>(model);
         CactusTelemetry::getInstance().recordEmbedding(
@@ -185,20 +208,31 @@ int cactus_audio_embed(
     size_t buffer_size,
     size_t* embedding_dim
 ) {
-    if (!model || !audio_path || !embeddings_buffer || buffer_size == 0) return -1;
+    if (!model || !audio_path || !embeddings_buffer || buffer_size == 0) {
+        CACTUS_LOG_ERROR("audio_embed", "Invalid parameters for audio embedding");
+        return -1;
+    }
 
     try {
         auto* handle = static_cast<CactusModelHandle*>(model);
 
+        CACTUS_LOG_DEBUG("audio_embed", "Processing audio: " << audio_path);
         auto mel_bins = compute_mel_from_wav(audio_path);
         if (mel_bins.empty()) {
             last_error_message = "Failed to compute mel spectrogram";
+            CACTUS_LOG_ERROR("audio_embed", last_error_message << " for: " << audio_path);
             return -1;
         }
 
         std::vector<float> embeddings = handle->model->get_audio_embeddings(mel_bins);
-        if (embeddings.empty()) return -1;
-        if (embeddings.size() * sizeof(float) > buffer_size) return -2;
+        if (embeddings.empty()) {
+            CACTUS_LOG_ERROR("audio_embed", "Audio embedding returned empty result");
+            return -1;
+        }
+        if (embeddings.size() * sizeof(float) > buffer_size) {
+            CACTUS_LOG_ERROR("audio_embed", "Buffer too small: need " << embeddings.size() * sizeof(float) << " bytes");
+            return -2;
+        }
 
         std::memcpy(embeddings_buffer, embeddings.data(), embeddings.size() * sizeof(float));
         if (embedding_dim) *embedding_dim = embeddings.size();
@@ -213,6 +247,7 @@ int cactus_audio_embed(
 
     } catch (const std::exception& e) {
         last_error_message = e.what();
+        CACTUS_LOG_ERROR("audio_embed", "Exception: " << e.what());
 
         auto* handle = static_cast<CactusModelHandle*>(model);
         CactusTelemetry::getInstance().recordEmbedding(
@@ -224,6 +259,7 @@ int cactus_audio_embed(
         return -1;
     } catch (...) {
         last_error_message = "Unknown error during audio embedding";
+        CACTUS_LOG_ERROR("audio_embed", last_error_message);
 
         auto* handle = static_cast<CactusModelHandle*>(model);
         CactusTelemetry::getInstance().recordEmbedding(

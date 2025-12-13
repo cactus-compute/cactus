@@ -8,6 +8,88 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <mutex>
+#include <sstream>
+#include <iostream>
+
+namespace cactus {
+
+enum class LogLevel {
+    DEBUG = 0,
+    INFO = 1,
+    WARN = 2,
+    ERROR = 3,
+    NONE = 4
+};
+
+class Logger {
+public:
+    static Logger& instance() {
+        static Logger logger;
+        return logger;
+    }
+
+    void set_level(LogLevel level) { min_level_ = level; }
+    LogLevel get_level() const { return min_level_; }
+
+    void set_callback(std::function<void(LogLevel, const std::string&, const std::string&)> cb) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        callback_ = cb;
+    }
+
+    void log(LogLevel level, const std::string& component, const std::string& message) {
+        if (level < min_level_) return;
+
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        if (callback_) {
+            callback_(level, component, message);
+        } else {
+            std::cerr << "[" << level_string(level) << "] [" << component << "] " << message << std::endl;
+        }
+
+        if (level == LogLevel::ERROR) {
+            last_error_ = "[" + component + "] " + message;
+        }
+    }
+
+    const std::string& last_error() const { return last_error_; }
+    void clear_error() { last_error_.clear(); }
+
+private:
+    Logger() : min_level_(LogLevel::WARN) {}
+
+    static const char* level_string(LogLevel level) {
+        switch (level) {
+            case LogLevel::DEBUG: return "DEBUG";
+            case LogLevel::INFO:  return "INFO";
+            case LogLevel::WARN:  return "WARN";
+            case LogLevel::ERROR: return "ERROR";
+            default: return "?";
+        }
+    }
+
+    LogLevel min_level_;
+    std::mutex mutex_;
+    std::string last_error_;
+    std::function<void(LogLevel, const std::string&, const std::string&)> callback_;
+};
+
+} // namespace cactus
+
+#define CACTUS_LOG(level, component, msg) \
+    do { \
+        if (static_cast<int>(level) >= static_cast<int>(cactus::Logger::instance().get_level())) { \
+            std::ostringstream _cactus_log_ss; \
+            _cactus_log_ss << msg; \
+            cactus::Logger::instance().log(level, component, _cactus_log_ss.str()); \
+        } \
+    } while(0)
+
+#define CACTUS_LOG_DEBUG(component, msg) CACTUS_LOG(cactus::LogLevel::DEBUG, component, msg)
+#define CACTUS_LOG_INFO(component, msg)  CACTUS_LOG(cactus::LogLevel::INFO, component, msg)
+#define CACTUS_LOG_WARN(component, msg)  CACTUS_LOG(cactus::LogLevel::WARN, component, msg)
+#define CACTUS_LOG_ERROR(component, msg) CACTUS_LOG(cactus::LogLevel::ERROR, component, msg)
 
 namespace GraphFile {
     class MappedFile;
