@@ -11,6 +11,8 @@ DEFAULT_TRANSCRIBE_MODEL="openai/whisper-small"
 
 MODEL_NAME="$DEFAULT_MODEL"
 TRANSCRIBE_MODEL_NAME="$DEFAULT_TRANSCRIBE_MODEL"
+ANDROID_MODE=false
+IOS_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -22,12 +24,22 @@ while [[ $# -gt 0 ]]; do
             TRANSCRIBE_MODEL_NAME="$2"
             shift 2
             ;;
+        --android)
+            ANDROID_MODE=true
+            shift
+            ;;
+        --ios)
+            IOS_MODE=true
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --model <name>            Model to use for tests (default: $DEFAULT_MODEL)"
             echo "  --transcribe_model <name> Transcribe model to use (default: $DEFAULT_TRANSCRIBE_MODEL)"
+            echo "  --android                 Run tests on Android device or emulator"
+            echo "  --ios                     Run tests on iOS device or simulator"
             echo "  --help, -h                Show this help message"
             exit 0
             ;;
@@ -56,6 +68,14 @@ if ! "$PROJECT_ROOT/cli/cactus" download "$TRANSCRIBE_MODEL_NAME"; then
 fi
 
 echo ""
+if [ "$ANDROID_MODE" = true ]; then
+    exec "$SCRIPT_DIR/android/run.sh" "$MODEL_NAME" "$TRANSCRIBE_MODEL_NAME"
+fi
+
+if [ "$IOS_MODE" = true ]; then
+    exec "$SCRIPT_DIR/ios/run.sh" "$MODEL_NAME" "$TRANSCRIBE_MODEL_NAME"
+fi
+
 echo "Step 2: Building Cactus library..."
 cd "$PROJECT_ROOT"
 if ! cactus/build.sh; then
@@ -90,8 +110,10 @@ MODEL_DIR=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 TRANSCRIBE_MODEL_DIR=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 export CACTUS_TEST_MODEL="$PROJECT_ROOT/weights/$MODEL_DIR"
 export CACTUS_TEST_TRANSCRIBE_MODEL="$PROJECT_ROOT/weights/$TRANSCRIBE_MODEL_DIR"
+export CACTUS_TEST_ASSETS="$PROJECT_ROOT/tests/assets"
 echo "Using model path: $CACTUS_TEST_MODEL"
 echo "Using transcribe model path: $CACTUS_TEST_TRANSCRIBE_MODEL"
+echo "Using assets path: $CACTUS_TEST_ASSETS"
 
 echo "Discovering test executables..."
 test_executables=($(find . -maxdepth 1 -name "test_*" -type f | sort))

@@ -131,6 +131,8 @@ print_usage() {
     echo "Test options:"
     echo "  --model <name>            Model to use for tests (default: Qwen/Qwen3-0.6B)"
     echo "  --transcribe_model <name> Transcribe model to use (default: openai/whisper-small)"
+    echo "  --android                 Run tests on Android device or emulator"
+    echo "  --ios                     Run tests on iOS device or simulator"
     echo ""
     echo "Examples:"
     echo "  $0 build"
@@ -141,6 +143,8 @@ print_usage() {
     echo "  $0 test --model Qwen/Qwen3-0.6B"
     echo "  $0 test --transcribe_model openai/whisper-large"
     echo "  $0 test --model LiquidAI/LFM2-VL-450M --transcribe_model openai/whisper-large"
+    echo "  $0 test --android"
+    echo "  $0 test --ios"
     echo ""
     echo "Common models:"
     echo "  LiquidAI/LFM2-1.2B (default)"
@@ -189,18 +193,20 @@ build_chat() {
     echo "Compiling chat.cpp..."
 
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        clang++ -std=c++17 -O3 \
+        clang++ -std=c++20 -O3 \
             -I"$PROJECT_ROOT" \
             "$CLI_DIR/chat.cpp" \
             "$PROJECT_ROOT/cactus/build/libcactus.a" \
             -o chat \
+            -lcurl \
             -framework Accelerate
     else
-        g++ -std=c++17 -O3 \
+        g++ -std=c++20 -O3 \
             -I"$PROJECT_ROOT" \
             "$CLI_DIR/chat.cpp" \
             "$PROJECT_ROOT/cactus/build/libcactus.a" \
             -o chat \
+            -lcurl \
             -pthread
     fi
 
@@ -276,6 +282,8 @@ run_chat() {
 run_tests() {
     local model_arg=""
     local transcribe_model_arg=""
+    local android_arg=""
+    local ios_arg=""
 
     # Parse test-specific arguments
     shift  # Remove 'test' command
@@ -288,6 +296,14 @@ run_tests() {
             --transcribe_model)
                 transcribe_model_arg="--transcribe_model $2"
                 shift 2
+                ;;
+            --android|-android)
+                android_arg="--android"
+                shift
+                ;;
+            --ios|-ios)
+                ios_arg="--ios"
+                shift
                 ;;
             *)
                 echo -e "${RED}Unknown test option: $1${NC}"
@@ -303,7 +319,7 @@ run_tests() {
 
     if [ -f "$test_script" ]; then
         cd "$PROJECT_ROOT/tests"
-        ./run.sh $model_arg $transcribe_model_arg
+        ./run.sh $model_arg $transcribe_model_arg $android_arg $ios_arg
     else
         echo -e "${RED}Error: Test script not found at $test_script${NC}"
         exit 1

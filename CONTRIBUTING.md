@@ -71,7 +71,7 @@ git rebase HEAD~3 --signoff  # Sign-off last 3 commits
 
 ### Code Style
 
-- **C++ Standard**: Use C++17 features where appropriate
+- **C++ Standard**: Use C++20 features where appropriate
 - **Formatting**: Follow the existing code style in the project
 - **ARM NEON**: When writing SIMD code, ensure proper alignment and use appropriate intrinsics
 - **Comments**: Add comments for complex algorithms, especially in kernel implementations

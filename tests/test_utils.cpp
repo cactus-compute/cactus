@@ -88,7 +88,7 @@ void fill_random_float(std::vector<float>& data) {
 TestRunner::TestRunner(const std::string& suite_name)
     : suite_name_(suite_name), passed_count_(0), total_count_(0) {
     std::cout << "\n╔══════════════════════════════════════════════════════════════════════════════════════╗\n"
-              << "║ Running " << std::left << std::setw(73) << suite_name_ << " ║\n"
+              << "║ Running " << std::left << std::setw(76) << suite_name_ << " ║\n"
               << "╚══════════════════════════════════════════════════════════════════════════════════════╝\n";
 }
 

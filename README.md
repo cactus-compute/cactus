@@ -117,6 +117,8 @@ Dependencies will be setup on first run automatically.
 cli/cactus --help # to see all commands
 cli/cactus run LiquidAI/LFM2-VL-450M # to interact with a model
 cli/cactus test # to run unit tests during dev + reproduce benchmarks
+cli/cactus test --android # run tests on Android device or emulator
+cli/cactus test --ios # run tests on iOS device or simulator
 cli/cactus download Qwen/Qwen3-0.6B # HF name, stored to weights/Qwen3-0.6B
 ```
 
