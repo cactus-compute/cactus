@@ -44,7 +44,7 @@ void QwenModel::load_weights_to_graph(CactusGraph* gb) {
 
     // Load NPU prefill model if available
     if (npu::is_npu_available()) {
-        std::string npu_prefill_path = model_folder_path_ + "/model.mlmodelc";
+        std::string npu_prefill_path = model_folder_path_ + "/model.mlpackage";
         load_npu_prefill(npu_prefill_path);
     }
 }
@@ -167,6 +167,12 @@ size_t QwenModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) {
     auto input_node_id = gb->input({seq_len}, Precision::FP32);
     auto hidden = gb->embedding(embedding_node_id_, input_node_id);
 
+    std::vector<float> input_data(seq_len);
+    for (size_t i = 0; i < seq_len; i++) {
+        input_data[i] = static_cast<float>(tokens[i]);
+    }
+    gb->set_input(input_node_id, input_data.data(), Precision::FP32);
+
     static std::set<uint32_t> skip_layers = {};
     for (uint32_t layer_idx = 0; layer_idx < config_.num_layers; layer_idx++) {
         if (skip_layers.count(layer_idx)) {
@@ -176,12 +182,6 @@ size_t QwenModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) {
     }
 
     auto final_hidden = gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
-
-    std::vector<float> input_data(seq_len);
-    for (size_t i = 0; i < seq_len; i++) {
-        input_data[i] = static_cast<float>(tokens[i]);
-    }
-    gb->set_input(input_node_id, input_data.data(), Precision::FP32);
 
     return final_hidden;
 }

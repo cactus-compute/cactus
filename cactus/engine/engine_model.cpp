@@ -4,6 +4,7 @@
 #include "../npu/npu.h"
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <cmath>
 #include <cstdlib>
 #include <dirent.h>
@@ -175,15 +176,11 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, cons
     if (tokens.empty()) {
         return;
     }
-
-    // Use NPU prefill if available and context > 256 (NPU chunk size)
-    // For smaller contexts, CPU is more efficient
     if (has_npu_prefill() && tokens.size() > 256) {
         prefill_npu(tokens);
         return;
     }
 
-    // CPU path
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
 
     auto process_chunk = [&](const std::vector<uint32_t>& chunk) {
@@ -192,7 +189,7 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, cons
         if (!profile_file.empty()) {
             gb->execute(profile_file);
         } else {
-            gb->execute();
+            gb->execute("profile.txt");
         }
 
         post_execute_updates(gb, chunk.size());
@@ -285,13 +282,64 @@ void Model::update_kv_cache(CactusGraph* gb, size_t seq_len) {
 
 
 std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bool pooled, const std::string& profile_file) {
+    std::vector<float> embeddings;
+
+    if (has_npu_prefill() && tokens.size() <= static_cast<size_t>(npu_prefill_->get_chunk_size())) {
+        const int chunk_size = npu_prefill_->get_chunk_size();
+        const int hidden_dim = npu_prefill_->get_hidden_dim();
+
+        std::vector<__fp16> token_embeddings = get_token_embeddings(tokens);
+        if (token_embeddings.empty()) {
+            throw std::runtime_error("Failed to get token embeddings for NPU embeddings");
+        }
+
+        std::vector<__fp16> chunk_embeddings(chunk_size * hidden_dim, __fp16(0));
+        std::copy(token_embeddings.begin(), token_embeddings.end(), chunk_embeddings.begin());
+
+        std::vector<npu::NPUPrefillOutput> outputs = npu_prefill_->prefill_chunk(chunk_embeddings, 0);
+
+        const __fp16* hidden_data = nullptr;
+        for (const auto& output : outputs) {
+            if (output.name == "hidden") {
+                hidden_data = output.data.data();
+                break;
+            }
+        }
+
+        if (!hidden_data) {
+            throw std::runtime_error("NPU model did not return hidden output");
+        }
+
+        size_t num_tokens = tokens.size();
+
+        if (pooled) {
+            embeddings.resize(hidden_dim);
+            std::fill(embeddings.begin(), embeddings.end(), 0.0f);
+
+            for (size_t t = 0; t < num_tokens; t++) {
+                for (int d = 0; d < hidden_dim; d++) {
+                    embeddings[d] += static_cast<float>(hidden_data[t * hidden_dim + d]);
+                }
+            }
+            for (int d = 0; d < hidden_dim; d++) {
+                embeddings[d] /= static_cast<float>(num_tokens);
+            }
+        } else {
+            size_t total_size = num_tokens * hidden_dim;
+            embeddings.resize(total_size);
+            for (size_t i = 0; i < total_size; i++) {
+                embeddings[i] = static_cast<float>(hidden_data[i]);
+            }
+        }
+
+        return embeddings;
+    }
+
     auto final_hidden = forward(tokens);
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     auto* output_ptr = gb->get_output(final_hidden);
     const auto& output_buffer = gb->get_output_buffer(final_hidden);
-
-    std::vector<float> embeddings;
 
     if (pooled) {
         auto pooled_hidden = gb->mean(final_hidden, 0);
@@ -582,7 +630,6 @@ std::vector<__fp16> Model::get_token_embeddings(const std::vector<uint32_t>& tok
 
     gb->soft_reset();
 
-    // Create input node for token IDs (as floats, like Whisper does)
     size_t tok_input = gb->input({tokens.size()}, Precision::FP32);
     std::vector<float> tok_f(tokens.size());
     for (size_t i = 0; i < tokens.size(); i++) {
@@ -590,13 +637,10 @@ std::vector<__fp16> Model::get_token_embeddings(const std::vector<uint32_t>& tok
     }
     gb->set_input(tok_input, tok_f.data(), Precision::FP32);
 
-    // Use graph embedding op to lookup embeddings
     size_t embedding_node = gb->embedding(embedding_node_id_, tok_input);
 
-    // Execute to get the embeddings
     gb->execute();
 
-    // Get output and convert to fp16
     const auto& emb_buf = gb->get_output_buffer(embedding_node);
     void* emb_ptr = gb->get_output(embedding_node);
 
@@ -634,7 +678,6 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
     const int num_kv_heads = npu_prefill_->get_num_kv_heads();
     const int head_dim = npu_prefill_->get_head_dim();
 
-    // Get embeddings for all tokens
     std::vector<__fp16> all_embeddings = get_token_embeddings(tokens);
     if (all_embeddings.empty()) {
         throw std::runtime_error("Failed to get token embeddings for NPU prefill");
@@ -647,46 +690,36 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
         size_t start = c * chunk_size;
         size_t actual_tokens = std::min(static_cast<size_t>(chunk_size), num_tokens - start);
 
-        // Prepare chunk embeddings (pad to chunk_size if needed)
         std::vector<__fp16> chunk_embeddings(chunk_size * hidden_dim, __fp16(0));
         std::copy(all_embeddings.begin() + start * hidden_dim,
                   all_embeddings.begin() + (start + actual_tokens) * hidden_dim,
                   chunk_embeddings.begin());
 
-        // Run NPU prefill with position offset for correct RoPE encoding
         int position_offset = static_cast<int>(start);
         std::vector<npu::NPUPrefillOutput> outputs = npu_prefill_->prefill_chunk(chunk_embeddings, position_offset);
 
-        // Process outputs - update KV cache for each layer
+        std::vector<const __fp16*> k_outputs(num_layers, nullptr);
+        std::vector<const __fp16*> v_outputs(num_layers, nullptr);
+
         for (const auto& output : outputs) {
-            // Parse output name to determine if it's K or V and which layer
-            // Expected format: "k_0", "v_0", "k_1", "v_1", etc.
             if (output.name.length() >= 2 && output.name[1] == '_') {
                 char type = output.name[0];
                 int layer_idx = std::stoi(output.name.substr(2));
 
                 if (layer_idx >= 0 && layer_idx < num_layers) {
-                    // Find corresponding K/V pair
-                    const __fp16* k_data = nullptr;
-                    const __fp16* v_data = nullptr;
-
-                    for (const auto& other : outputs) {
-                        std::string k_name = "k_" + std::to_string(layer_idx);
-                        std::string v_name = "v_" + std::to_string(layer_idx);
-
-                        if (other.name == k_name) {
-                            k_data = other.data.data();
-                        } else if (other.name == v_name) {
-                            v_data = other.data.data();
-                        }
-                    }
-
-                    // Update KV cache (only once per layer - on 'k' output)
-                    if (type == 'k' && k_data && v_data) {
-                        kv_cache_.update_from_npu(layer_idx, k_data, v_data,
-                                                   actual_tokens, num_kv_heads, head_dim);
+                    if (type == 'k') {
+                        k_outputs[layer_idx] = output.data.data();
+                    } else if (type == 'v') {
+                        v_outputs[layer_idx] = output.data.data();
                     }
                 }
+            }
+        }
+
+        for (int layer_idx = 0; layer_idx < num_layers; layer_idx++) {
+            if (k_outputs[layer_idx] && v_outputs[layer_idx]) {
+                kv_cache_.update_from_npu(layer_idx, k_outputs[layer_idx], v_outputs[layer_idx],
+                                           actual_tokens, num_kv_heads, head_dim);
             }
         }
     }

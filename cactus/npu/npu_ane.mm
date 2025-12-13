@@ -409,11 +409,6 @@ bool is_npu_available() {
 } // namespace npu
 } // namespace cactus
 
-// ============================================================================
-// CactusANEPrefillImpl - Objective-C implementation for multi-output prefill
-// Must be at global scope, not inside C++ namespace
-// ============================================================================
-
 @interface CactusANEPrefillImpl : NSObject
 
 @property (nonatomic, strong) MLModel* model;
@@ -437,11 +432,34 @@ bool is_npu_available() {
 - (instancetype)initWithModelPath:(NSString*)path {
     self = [super init];
     if (self) {
-        NSURL* modelURL = [NSURL fileURLWithPath:path];
         NSError* error = nil;
+        NSURL* modelURL = [NSURL fileURLWithPath:path];
 
         MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
-        config.computeUnits = MLComputeUnitsCPUAndNeuralEngine;
+       config.computeUnits = MLComputeUnitsCPUAndGPU;
+
+        if ([path hasSuffix:@".mlpackage"]) {
+            NSString* cachedPath = [[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"mlmodelc"];
+            NSURL* cachedURL = [NSURL fileURLWithPath:cachedPath];
+
+            if ([[NSFileManager defaultManager] fileExistsAtPath:cachedPath]) {
+                modelURL = cachedURL;
+            } else {
+                NSURL* compiledURL = [MLModel compileModelAtURL:modelURL error:&error];
+                if (error) {
+                    NSLog(@"[CactusANEPrefill] Error compiling model: %@", error);
+                    return self;
+                }
+
+                NSError* moveError = nil;
+                [[NSFileManager defaultManager] moveItemAtURL:compiledURL toURL:cachedURL error:&moveError];
+                if (moveError) {
+                    modelURL = compiledURL;
+                } else {
+                    modelURL = cachedURL;
+                }
+            }
+        }
 
         _model = [MLModel modelWithContentsOfURL:modelURL configuration:config error:&error];
         if (_model) {
@@ -458,8 +476,6 @@ bool is_npu_available() {
 - (void)inferModelDimensions {
     if (!_modelDescription) return;
 
-    // Get input shape to determine chunk_size and hidden_dim
-    // Expected input: [chunk_size, hidden_dim] e.g., [256, 1024]
     NSString* inputName = _modelDescription.inputDescriptionsByName.allKeys.firstObject;
     MLFeatureDescription* inputDesc = _modelDescription.inputDescriptionsByName[inputName];
     if (inputDesc && inputDesc.type == MLFeatureTypeMultiArray) {
@@ -470,20 +486,15 @@ bool is_npu_available() {
         }
     }
 
-    // Infer num_layers, num_kv_heads, head_dim from output names
-    // Outputs are: hidden, k_0, v_0, k_1, v_1, ..., k_N, v_N
-    // KV shape: [chunk_size, num_kv_heads, head_dim]
     int maxLayerIdx = -1;
     for (NSString* outputName in _modelDescription.outputDescriptionsByName.allKeys) {
         if ([outputName hasPrefix:@"k_"]) {
             int layerIdx = [[outputName substringFromIndex:2] intValue];
             maxLayerIdx = MAX(maxLayerIdx, layerIdx);
 
-            // Get KV dimensions from this output
             MLFeatureDescription* outputDesc = _modelDescription.outputDescriptionsByName[outputName];
             if (outputDesc && outputDesc.type == MLFeatureTypeMultiArray) {
                 NSArray<NSNumber*>* shape = outputDesc.multiArrayConstraint.shape;
-                // Shape: [chunk_size, num_kv_heads, head_dim]
                 if (shape.count >= 3) {
                     _numKvHeads = [shape[1] intValue];
                     _headDim = [shape[2] intValue];
@@ -492,9 +503,6 @@ bool is_npu_available() {
         }
     }
     _numLayers = maxLayerIdx + 1;
-
-    NSLog(@"[CactusANEPrefill] Model dimensions: chunk_size=%d, hidden_dim=%d, layers=%d, kv_heads=%d, head_dim=%d",
-          _chunkSize, _hiddenDim, _numLayers, _numKvHeads, _headDim);
 }
 
 - (NSArray<NSDictionary*>*)predictWithInput:(NSString*)inputName
@@ -505,7 +513,6 @@ bool is_npu_available() {
 
     NSError* error = nil;
 
-    // Create input array for embeddings
     MLMultiArray* inputArray = [[MLMultiArray alloc]
         initWithShape:shape
              dataType:MLMultiArrayDataTypeFloat16
@@ -516,7 +523,6 @@ bool is_npu_available() {
         return @[];
     }
 
-    // Copy input data
     NSUInteger totalElements = 1;
     for (NSNumber* dim in shape) {
         totalElements *= [dim unsignedIntegerValue];
@@ -524,17 +530,15 @@ bool is_npu_available() {
     __fp16* inputPtr = (__fp16*)inputArray.dataPointer;
     memcpy(inputPtr, data, totalElements * sizeof(__fp16));
 
-    // Create feature provider with embeddings
     MLFeatureValue* inputFeature = [MLFeatureValue featureValueWithMultiArray:inputArray];
     NSMutableDictionary* inputDict = [NSMutableDictionary dictionaryWithObject:inputFeature forKey:inputName];
 
-    // Add offset input if model supports it (for RoPE position encoding)
     if (_modelDescription.inputDescriptionsByName[@"offset"] != nil) {
         MLMultiArray* offsetArray = [[MLMultiArray alloc] initWithShape:@[@1]
-                                                               dataType:MLMultiArrayDataTypeInt32
+                                                               dataType:MLMultiArrayDataTypeFloat16
                                                                   error:&error];
         if (!error) {
-            ((int32_t*)offsetArray.dataPointer)[0] = offset;
+            ((__fp16*)offsetArray.dataPointer)[0] = (__fp16)offset;
             MLFeatureValue* offsetFeature = [MLFeatureValue featureValueWithMultiArray:offsetArray];
             inputDict[@"offset"] = offsetFeature;
         }
@@ -549,7 +553,6 @@ bool is_npu_available() {
         return @[];
     }
 
-    // Run prediction
     id<MLFeatureProvider> outputProvider = [_model predictionFromFeatures:inputProvider error:&error];
 
     if (error) {
@@ -557,24 +560,33 @@ bool is_npu_available() {
         return @[];
     }
 
-    // Collect all outputs
     NSMutableArray<NSDictionary*>* results = [NSMutableArray array];
     for (NSString* outputName in _modelDescription.outputDescriptionsByName.allKeys) {
         MLFeatureValue* outputFeature = [outputProvider featureValueForName:outputName];
         if (outputFeature && outputFeature.multiArrayValue) {
             MLMultiArray* outputArray = outputFeature.multiArrayValue;
 
-            // Get shape
             NSMutableArray<NSNumber*>* outputShape = [NSMutableArray array];
             for (NSNumber* dim in outputArray.shape) {
                 [outputShape addObject:dim];
             }
 
-            // Copy data
             size_t count = outputArray.count;
             NSMutableData* outputData = [NSMutableData dataWithLength:count * sizeof(__fp16)];
-            __fp16* outputPtr = (__fp16*)outputArray.dataPointer;
-            memcpy(outputData.mutableBytes, outputPtr, count * sizeof(__fp16));
+
+            if (outputArray.dataType == MLMultiArrayDataTypeFloat16) {
+                __fp16* outputPtr = (__fp16*)outputArray.dataPointer;
+                memcpy(outputData.mutableBytes, outputPtr, count * sizeof(__fp16));
+            } else if (outputArray.dataType == MLMultiArrayDataTypeFloat32) {
+                float* outputPtr = (float*)outputArray.dataPointer;
+                __fp16* destPtr = (__fp16*)outputData.mutableBytes;
+                for (size_t i = 0; i < count; i++) {
+                    destPtr[i] = (__fp16)outputPtr[i];
+                }
+            } else {
+                __fp16* outputPtr = (__fp16*)outputArray.dataPointer;
+                memcpy(outputData.mutableBytes, outputPtr, count * sizeof(__fp16));
+            }
 
             [results addObject:@{
                 @"name": outputName,
@@ -589,7 +601,6 @@ bool is_npu_available() {
 
 @end
 
-// C++ wrapper implementation for ANEPrefill
 namespace cactus {
 namespace npu {
 

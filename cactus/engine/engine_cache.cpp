@@ -209,7 +209,6 @@ void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp
     size_t elements_per_token = kv_heads * dim;
     size_t bytes_per_token = elements_per_token * element_size;
 
-    // Only update total_seq_len once (when processing layer 0)
     if (layer_idx == 0) {
         total_seq_len += num_tokens;
     }
@@ -217,25 +216,19 @@ void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp
     bool use_sliding_window = (window_size > 0 && new_total_len > window_size);
     size_t effective_seq_len = use_sliding_window ? window_size : new_total_len;
 
-    // NPU outputs are in shape [num_tokens, kv_heads, head_dim]
-    // We need to copy directly since cache uses same layout
 
     if (!use_sliding_window) {
-        // Simple append - resize and copy
         size_t total_bytes = new_total_len * bytes_per_token;
         cache.keys.resize(total_bytes);
         cache.values.resize(total_bytes);
 
-        // Convert fp16 to cache precision and copy
         size_t offset = old_seq_len * bytes_per_token;
         size_t new_bytes = num_tokens * bytes_per_token;
 
         if (precision == Precision::FP16) {
-            // Direct copy for FP16
             std::memcpy(cache.keys.data() + offset, k_data, new_bytes);
             std::memcpy(cache.values.data() + offset, v_data, new_bytes);
         } else if (precision == Precision::FP32) {
-            // Convert FP16 to FP32
             float* k_dst = reinterpret_cast<float*>(cache.keys.data() + offset);
             float* v_dst = reinterpret_cast<float*>(cache.values.data() + offset);
             size_t count = num_tokens * elements_per_token;
@@ -245,7 +238,6 @@ void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp
             }
         }
     } else {
-        // Sliding window - need to handle sink tokens and recent window
         size_t cache_bytes = window_size * bytes_per_token;
 
         if (cache.keys.size() != cache_bytes) {
@@ -257,7 +249,6 @@ void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp
         size_t remaining_window = window_size - sink_size;
 
         if (num_tokens >= remaining_window) {
-            // New tokens fill the entire recent window
             size_t skip_tokens = num_tokens - remaining_window;
             size_t recent_bytes = remaining_window * bytes_per_token;
 
@@ -280,7 +271,6 @@ void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp
                 }
             }
         } else {
-            // Shift existing data and append new tokens
             size_t tokens_to_shift = remaining_window - num_tokens;
 
             if (tokens_to_shift > 0 && old_seq_len > sink_size) {
@@ -313,7 +303,6 @@ void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp
         }
     }
 
-    // Only update current_seq_len once (when processing last layer)
     if (layer_idx == num_layers - 1) {
         current_seq_len = effective_seq_len;
     }

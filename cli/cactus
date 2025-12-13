@@ -242,7 +242,7 @@ download_model() {
     fi
 
     echo "Running: $PYTHON_CMD tools/convert_hf.py $model_id weights/$model_dir/ --precision INT8"
-    if $PYTHON_CMD tools/convert_hf.py "$model_id" "weights/$model_dir/" --precision FP16; then
+    if $PYTHON_CMD tools/convert_hf.py "$model_id" "weights/$model_dir/" --precision INT8; then
         echo -e "${GREEN}Successfully downloaded and converted weights${NC}"
         return 0
     else
