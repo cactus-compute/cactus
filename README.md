@@ -91,16 +91,16 @@ Example response from Gemma3-270m-INT8
 
 | Model | Compressed Size | Completion | Tool Call | Vision | Embed | Speech | Pro
 |-------|--------------------|-------------------|----------------|------|------|------|------|
-| google/gemma-3-270m-it | 172MB  | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| google/gemma-3-270m-it | 172MB  | ✓ | ✗ | ✗ | ✗ | ✗ | Apple |
 | openai/whisper-small | 282MB  | ✗ | ✗ | ✗ | ✓ | ✓ | Apple |
 | LiquidAI/LFM2-350M | 233MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | HuggingFaceTB/SmolLM2-360m-Instruct | 227MB  | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | LiquidAI/LFM2-VL-450M | 420MB  | ✓ | ✗ | ✓ | ✓ | ✗ | Apple |
-| Qwen/Qwen3-0.6B | 394MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
+| Qwen/Qwen3-0.6B | 394MB  | ✓ | ✓ | ✗ | ✓ | ✗ | Apple |
 | Qwen/Qwen3-Embedding-0.6B | 394MB  | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
 | LiquidAI/LFM2-700M | 467MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | nomic-ai/nomic-embed-text-v2-moe | 533MB  | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
-| google/gemma-3-1b-it | 642MB  | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| google/gemma-3-1b-it | 642MB  | ✓ | ✗ | ✗ | ✗ | ✗ | Apple |
 | openai/whisper-medium | 646MB  | ✗ | ✗ | ✗ | ✓ | ✓ | Apple |
 | LiquidAI/LFM2-1.2B | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | LiquidAI/LFM2-1.2B-RAG | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |

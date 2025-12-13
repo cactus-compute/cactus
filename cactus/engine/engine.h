@@ -420,6 +420,7 @@ public:
 
     bool load_npu_prefill(const std::string& model_path);
     bool has_npu_prefill() const;
+    size_t get_prefill_chunk_size() const;
 
     void* graph_handle_;
 

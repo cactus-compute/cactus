@@ -105,17 +105,16 @@ int cactus_complete(
             if (!image_paths.empty()) {
                 next_token = handle->model->decode_with_images(tokens_to_process, image_paths, temperature, top_p, top_k, "profile.txt");
             } else {
-                constexpr size_t PREFILL_CHUNK_SIZE = 256;
+                size_t prefill_chunk_size = handle->model->get_prefill_chunk_size();
 
-                if (tokens_to_process.size() > PREFILL_CHUNK_SIZE) {
-                    size_t prefill_tokens = (tokens_to_process.size() - 1) / PREFILL_CHUNK_SIZE * PREFILL_CHUNK_SIZE;
-                    std::vector<uint32_t> prefill_chunk(tokens_to_process.begin(),
-                                                        tokens_to_process.begin() + prefill_tokens);
-                    handle->model->prefill(prefill_chunk, PREFILL_CHUNK_SIZE);
+                if (tokens_to_process.size() > 1) {
+                    // Prefill all but the last token, then decode the final token
+                    std::vector<uint32_t> prefill_tokens(tokens_to_process.begin(),
+                                                         tokens_to_process.end() - 1);
+                    handle->model->prefill(prefill_tokens, prefill_chunk_size);
 
-                    std::vector<uint32_t> final_chunk(tokens_to_process.begin() + prefill_tokens,
-                                                      tokens_to_process.end());
-                    next_token = handle->model->decode(final_chunk, temperature, top_p, top_k);
+                    std::vector<uint32_t> last_token = {tokens_to_process.back()};
+                    next_token = handle->model->decode(last_token, temperature, top_p, top_k);
                 } else {
                     next_token = handle->model->decode(tokens_to_process, temperature, top_p, top_k, "profile.txt");
                 }

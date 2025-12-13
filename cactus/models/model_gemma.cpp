@@ -1,5 +1,6 @@
 #include "model.h"
 #include "../graph/graph.h"
+#include "../npu/npu.h"
 #include <cmath>
 #include <stdexcept>
 #include <set>
@@ -45,6 +46,11 @@ void GemmaModel::load_weights_to_graph(CactusGraph* gb) {
         layer.post_attention_layernorm_weight = gb->mmap_weights(layer_prefix + "post_attn_norm.weights");
         layer.pre_feedforward_layernorm_weight = gb->mmap_weights(layer_prefix + "pre_ffn_norm.weights");
         layer.post_feedforward_layernorm_weight = gb->mmap_weights(layer_prefix + "post_ffn_norm.weights");
+    }
+
+    if (npu::is_npu_available()) {
+        std::string npu_prefill_path = model_folder_path_ + "/model.mlpackage";
+        load_npu_prefill(npu_prefill_path);
     }
 }
 

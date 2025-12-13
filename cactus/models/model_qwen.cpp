@@ -42,7 +42,6 @@ void QwenModel::load_weights_to_graph(CactusGraph* gb) {
         layer.post_attention_layernorm_weight = gb->mmap_weights(layer_prefix + "post_attn_norm.weights");
     }
 
-    // Load NPU prefill model if available
     if (npu::is_npu_available()) {
         std::string npu_prefill_path = model_folder_path_ + "/model.mlpackage";
         load_npu_prefill(npu_prefill_path);

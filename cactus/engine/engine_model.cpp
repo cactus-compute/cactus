@@ -178,9 +178,14 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, cons
     if (tokens.empty()) {
         return;
     }
-    if (has_npu_prefill() && tokens.size() > 256) {
-        prefill_npu(tokens);
-        return;
+
+    // Use NPU prefill if available and sequence is longer than chunk size
+    if (has_npu_prefill()) {
+        size_t npu_chunk_size = static_cast<size_t>(npu_prefill_->get_chunk_size());
+        if (tokens.size() > npu_chunk_size) {
+            prefill_npu(tokens);
+            return;
+        }
     }
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
@@ -608,17 +613,33 @@ const std::vector<Model::DebugNode>& Model::get_debug_nodes() const {
     return debug_nodes_;
 }
 
-// NPU prefill support
 bool Model::load_npu_prefill(const std::string& model_path) {
+    CACTUS_LOG_DEBUG("npu", "Attempting to load NPU prefill from: " << model_path);
+
     npu_prefill_ = npu::create_prefill();
     if (!npu_prefill_) {
+        CACTUS_LOG_DEBUG("npu", "NPU prefill creation failed (not supported on this device)");
         return false;
     }
-    return npu_prefill_->load(model_path);
+
+    bool loaded = npu_prefill_->load(model_path);
+    if (loaded) {
+        CACTUS_LOG_INFO("npu", "NPU prefill loaded successfully from: " << model_path);
+    } else {
+        CACTUS_LOG_DEBUG("npu", "NPU prefill model not found at: " << model_path);
+    }
+    return loaded;
 }
 
 bool Model::has_npu_prefill() const {
     return npu_prefill_ && npu_prefill_->is_available();
+}
+
+size_t Model::get_prefill_chunk_size() const {
+    if (has_npu_prefill()) {
+        return static_cast<size_t>(npu_prefill_->get_chunk_size());
+    }
+    return 256;  // default chunk size
 }
 
 std::vector<__fp16> Model::get_token_embeddings(const std::vector<uint32_t>& tokens) {
@@ -680,6 +701,13 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
     std::vector<__fp16> all_embeddings = get_token_embeddings(tokens);
     if (all_embeddings.empty()) {
         throw std::runtime_error("Failed to get token embeddings for NPU prefill");
+    }
+
+    if (config_.model_type == Config::ModelType::GEMMA) {
+        float scale = std::sqrt(static_cast<float>(hidden_dim));
+        for (size_t i = 0; i < all_embeddings.size(); i++) {
+            all_embeddings[i] = __fp16(static_cast<float>(all_embeddings[i]) * scale);
+        }
     }
 
     size_t num_tokens = tokens.size();
