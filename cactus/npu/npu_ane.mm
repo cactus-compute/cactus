@@ -40,11 +40,34 @@
 - (instancetype)initWithModelPath:(NSString*)path {
     self = [super init];
     if (self) {
-        NSURL* modelURL = [NSURL fileURLWithPath:path];
         NSError* error = nil;
+        NSURL* modelURL = [NSURL fileURLWithPath:path];
 
         MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
         config.computeUnits = MLComputeUnitsCPUAndNeuralEngine;
+
+        if ([path hasSuffix:@".mlpackage"]) {
+            NSString* cachedPath = [[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"mlmodelc"];
+            NSURL* cachedURL = [NSURL fileURLWithPath:cachedPath];
+
+            if ([[NSFileManager defaultManager] fileExistsAtPath:cachedPath]) {
+                modelURL = cachedURL;
+            } else {
+                NSURL* compiledURL = [MLModel compileModelAtURL:modelURL error:&error];
+                if (error) {
+                    NSLog(@"[CactusANE] Error compiling model: %@", error);
+                    return self;
+                }
+
+                NSError* moveError = nil;
+                [[NSFileManager defaultManager] moveItemAtURL:compiledURL toURL:cachedURL error:&moveError];
+                if (moveError) {
+                    modelURL = compiledURL;
+                } else {
+                    modelURL = cachedURL;
+                }
+            }
+        }
 
         _model = [MLModel modelWithContentsOfURL:modelURL configuration:config error:&error];
         if (_model) {
@@ -419,11 +442,21 @@ bool is_npu_available() {
 @property (nonatomic, assign) int numKvHeads;
 @property (nonatomic, assign) int headDim;
 
+@property (nonatomic, strong) MLMultiArray* cachedInputArray;
+@property (nonatomic, strong) MLMultiArray* cachedOffsetArray;
+@property (nonatomic, strong) NSMutableDictionary<NSString*, MLMultiArray*>* cachedOutputArrays;
+@property (nonatomic, strong) MLPredictionOptions* predictionOptions;
+
 - (instancetype)initWithModelPath:(NSString*)path;
+- (void)preallocateBuffers;
 - (NSArray<NSDictionary*>*)predictWithInput:(NSString*)inputName
                                        data:(const __fp16*)data
                                       shape:(NSArray<NSNumber*>*)shape
                                      offset:(int)offset;
+- (BOOL)predictDirectWithInput:(NSString*)inputName
+                          data:(const __fp16*)data
+                        offset:(int)offset;
+- (MLMultiArray*)getOutputArray:(NSString*)name;
 
 @end
 
@@ -465,6 +498,7 @@ bool is_npu_available() {
         if (_model) {
             _modelDescription = _model.modelDescription;
             [self inferModelDimensions];
+            [self preallocateBuffers];
         }
         if (error) {
             NSLog(@"[CactusANEPrefill] Error loading model: %@", error);
@@ -503,6 +537,88 @@ bool is_npu_available() {
         }
     }
     _numLayers = maxLayerIdx + 1;
+}
+
+- (void)preallocateBuffers {
+    if (!_model || !_modelDescription || _chunkSize == 0 || _hiddenDim == 0) return;
+
+    NSError* error = nil;
+
+    NSArray<NSNumber*>* inputShape = @[@(_chunkSize), @(_hiddenDim)];
+    _cachedInputArray = [[MLMultiArray alloc] initWithShape:inputShape
+                                                  dataType:MLMultiArrayDataTypeFloat16
+                                                     error:&error];
+    if (error) {
+        _cachedInputArray = nil;
+        return;
+    }
+
+    if (_modelDescription.inputDescriptionsByName[@"offset"] != nil) {
+        _cachedOffsetArray = [[MLMultiArray alloc] initWithShape:@[@1]
+                                                       dataType:MLMultiArrayDataTypeFloat16
+                                                           error:&error];
+        if (error) {
+            _cachedOffsetArray = nil;
+        }
+    }
+
+    _cachedOutputArrays = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString*, MLMultiArray*>* outputBackings = [NSMutableDictionary dictionary];
+
+    for (NSString* outputName in _modelDescription.outputDescriptionsByName.allKeys) {
+        MLFeatureDescription* outputDesc = _modelDescription.outputDescriptionsByName[outputName];
+        if (outputDesc && outputDesc.type == MLFeatureTypeMultiArray) {
+            NSArray<NSNumber*>* outputShape = outputDesc.multiArrayConstraint.shape;
+
+            MLMultiArray* outputArray = [[MLMultiArray alloc] initWithShape:outputShape
+                                                                  dataType:MLMultiArrayDataTypeFloat16
+                                                                     error:&error];
+            if (!error && outputArray) {
+                _cachedOutputArrays[outputName] = outputArray;
+                outputBackings[outputName] = outputArray;
+            }
+        }
+    }
+
+    _predictionOptions = [[MLPredictionOptions alloc] init];
+    if (@available(macOS 14.0, iOS 17.0, *)) {
+        _predictionOptions.outputBackings = outputBackings;
+    }
+}
+
+- (BOOL)predictDirectWithInput:(NSString*)inputName
+                          data:(const __fp16*)data
+                        offset:(int)offset {
+    if (!_model || !_cachedInputArray) return NO;
+
+    NSError* error = nil;
+
+    NSUInteger totalElements = (NSUInteger)(_chunkSize * _hiddenDim);
+    __fp16* inputPtr = (__fp16*)_cachedInputArray.dataPointer;
+    memcpy(inputPtr, data, totalElements * sizeof(__fp16));
+
+    MLFeatureValue* inputFeature = [MLFeatureValue featureValueWithMultiArray:_cachedInputArray];
+    NSMutableDictionary* inputDict = [NSMutableDictionary dictionaryWithObject:inputFeature forKey:inputName];
+
+    if (_cachedOffsetArray) {
+        ((__fp16*)_cachedOffsetArray.dataPointer)[0] = (__fp16)offset;
+        MLFeatureValue* offsetFeature = [MLFeatureValue featureValueWithMultiArray:_cachedOffsetArray];
+        inputDict[@"offset"] = offsetFeature;
+    }
+
+    id<MLFeatureProvider> inputProvider = [[MLDictionaryFeatureProvider alloc]
+        initWithDictionary:inputDict
+                     error:&error];
+    if (error) return NO;
+
+    id<MLFeatureProvider> outputProvider = [_model predictionFromFeatures:inputProvider
+                                                                  options:_predictionOptions
+                                                                    error:&error];
+    return (error == nil && outputProvider != nil);
+}
+
+- (MLMultiArray*)getOutputArray:(NSString*)name {
+    return _cachedOutputArrays[name];
 }
 
 - (NSArray<NSDictionary*>*)predictWithInput:(NSString*)inputName
@@ -709,6 +825,61 @@ std::vector<NPUPrefillOutput> ANEPrefill::prefill_chunk(
     }
 
     return results;
+}
+
+NPUPrefillDirectResult ANEPrefill::prefill_chunk_direct(
+    const std::vector<__fp16>& embeddings,
+    int position_offset,
+    const std::string& input_name) {
+
+    NPUPrefillDirectResult result;
+    result.valid = false;
+    result.hidden = {nullptr, 0};
+    result.k_caches.resize(num_layers_, {nullptr, 0});
+    result.v_caches.resize(num_layers_, {nullptr, 0});
+
+    if (!impl_) return result;
+
+    @autoreleasepool {
+        CactusANEPrefillImpl* impl = (__bridge CactusANEPrefillImpl*)impl_;
+
+        NSString* inName = [NSString stringWithUTF8String:input_name.c_str()];
+
+        BOOL success = [impl predictDirectWithInput:inName
+                                               data:embeddings.data()
+                                             offset:position_offset];
+
+        if (!success) return result;
+
+        // Get direct pointer to hidden output
+        MLMultiArray* hiddenArray = [impl getOutputArray:@"hidden"];
+        if (hiddenArray) {
+            result.hidden.data = (__fp16*)hiddenArray.dataPointer;
+            result.hidden.count = hiddenArray.count;
+        }
+
+        // Get direct pointers to KV cache outputs
+        for (int layer = 0; layer < num_layers_; layer++) {
+            NSString* kName = [NSString stringWithFormat:@"k_%d", layer];
+            NSString* vName = [NSString stringWithFormat:@"v_%d", layer];
+
+            MLMultiArray* kArray = [impl getOutputArray:kName];
+            MLMultiArray* vArray = [impl getOutputArray:vName];
+
+            if (kArray) {
+                result.k_caches[layer].data = (__fp16*)kArray.dataPointer;
+                result.k_caches[layer].count = kArray.count;
+            }
+            if (vArray) {
+                result.v_caches[layer].data = (__fp16*)vArray.dataPointer;
+                result.v_caches[layer].count = vArray.count;
+            }
+        }
+
+        result.valid = true;
+    }
+
+    return result;
 }
 
 std::unique_ptr<NPUPrefill> create_prefill() {

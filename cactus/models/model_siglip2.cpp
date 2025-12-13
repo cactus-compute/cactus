@@ -45,7 +45,7 @@ void Siglip2VisionModel::load_weights_to_graph(CactusGraph* gb) {
     std::string base = model_folder_path_ + "/";
 
     if (npu::is_npu_available()) {
-        std::string npu_encoder_path = model_folder_path_ + "/model.mlmodelc";
+        std::string npu_encoder_path = model_folder_path_ + "/model.mlpackage";
         npu_encoder_ = npu::create_encoder();
         if (npu_encoder_ && npu_encoder_->load(npu_encoder_path)) {
             use_npu_encoder_ = true;

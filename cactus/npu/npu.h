@@ -48,6 +48,20 @@ struct NPUPrefillOutput {
     std::vector<__fp16> data;
 };
 
+// Direct buffer reference for zero-copy access to NPU outputs
+struct NPUBufferRef {
+    const __fp16* data;
+    size_t count;  // number of elements
+};
+
+// Result from prefill_chunk_direct - provides direct pointers to internal buffers
+struct NPUPrefillDirectResult {
+    NPUBufferRef hidden;
+    std::vector<NPUBufferRef> k_caches;  // one per layer
+    std::vector<NPUBufferRef> v_caches;  // one per layer
+    bool valid;
+};
+
 // NPU Prefill class for LLM prefill acceleration
 // Unlike NPUEncoder which has single output, this handles multiple outputs:
 // - hidden: [chunk_size, hidden_dim] - final hidden states
@@ -77,6 +91,13 @@ public:
     // Input: position_offset - starting position for RoPE (0 for first chunk, chunk_size for second, etc.)
     // Returns: vector of outputs (hidden, k_0, v_0, k_1, v_1, ...)
     virtual std::vector<NPUPrefillOutput> prefill_chunk(
+        const std::vector<__fp16>& embeddings,
+        int position_offset = 0,
+        const std::string& input_name = "x") = 0;
+
+    // Zero-copy version: returns direct pointers to internal pre-allocated buffers
+    // IMPORTANT: The returned pointers are only valid until the next prefill call
+    virtual NPUPrefillDirectResult prefill_chunk_direct(
         const std::vector<__fp16>& embeddings,
         int position_offset = 0,
         const std::string& input_name = "x") = 0;

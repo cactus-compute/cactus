@@ -296,20 +296,14 @@ std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bo
         std::vector<__fp16> chunk_embeddings(chunk_size * hidden_dim, __fp16(0));
         std::copy(token_embeddings.begin(), token_embeddings.end(), chunk_embeddings.begin());
 
-        std::vector<npu::NPUPrefillOutput> outputs = npu_prefill_->prefill_chunk(chunk_embeddings, 0);
+        // Use direct buffer access to avoid intermediate copies
+        npu::NPUPrefillDirectResult direct_result = npu_prefill_->prefill_chunk_direct(chunk_embeddings, 0);
 
-        const __fp16* hidden_data = nullptr;
-        for (const auto& output : outputs) {
-            if (output.name == "hidden") {
-                hidden_data = output.data.data();
-                break;
-            }
-        }
-
-        if (!hidden_data) {
+        if (!direct_result.valid || !direct_result.hidden.data) {
             throw std::runtime_error("NPU model did not return hidden output");
         }
 
+        const __fp16* hidden_data = direct_result.hidden.data;
         size_t num_tokens = tokens.size();
 
         if (pooled) {
@@ -696,30 +690,20 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
                   chunk_embeddings.begin());
 
         int position_offset = static_cast<int>(start);
-        std::vector<npu::NPUPrefillOutput> outputs = npu_prefill_->prefill_chunk(chunk_embeddings, position_offset);
 
-        std::vector<const __fp16*> k_outputs(num_layers, nullptr);
-        std::vector<const __fp16*> v_outputs(num_layers, nullptr);
+        // Use direct buffer access to avoid intermediate copies
+        npu::NPUPrefillDirectResult direct_result = npu_prefill_->prefill_chunk_direct(chunk_embeddings, position_offset);
 
-        for (const auto& output : outputs) {
-            if (output.name.length() >= 2 && output.name[1] == '_') {
-                char type = output.name[0];
-                int layer_idx = std::stoi(output.name.substr(2));
+        if (direct_result.valid) {
+            // Update KV cache directly from NPU output buffers
+            for (int layer_idx = 0; layer_idx < num_layers; layer_idx++) {
+                const auto& k_ref = direct_result.k_caches[layer_idx];
+                const auto& v_ref = direct_result.v_caches[layer_idx];
 
-                if (layer_idx >= 0 && layer_idx < num_layers) {
-                    if (type == 'k') {
-                        k_outputs[layer_idx] = output.data.data();
-                    } else if (type == 'v') {
-                        v_outputs[layer_idx] = output.data.data();
-                    }
+                if (k_ref.data && v_ref.data) {
+                    kv_cache_.update_from_npu(layer_idx, k_ref.data, v_ref.data,
+                                               actual_tokens, num_kv_heads, head_dim);
                 }
-            }
-        }
-
-        for (int layer_idx = 0; layer_idx < num_layers; layer_idx++) {
-            if (k_outputs[layer_idx] && v_outputs[layer_idx]) {
-                kv_cache_.update_from_npu(layer_idx, k_outputs[layer_idx], v_outputs[layer_idx],
-                                           actual_tokens, num_kv_heads, head_dim);
             }
         }
     }
