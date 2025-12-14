@@ -14,7 +14,8 @@
 #include <sys/stat.h>
 #include "cactus_utils.h"
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(TARGET_OS_IPHONE) && !defined(__ANDROID__)
+#define CACTUS_TELEMETRY_ENABLED
 #include <curl/curl.h>
 #include <sys/utsname.h>
 #include <unistd.h>
@@ -79,7 +80,7 @@ inline HttpClient::Response HttpClient::postJson(
     const std::map<std::string, std::string>& headers,
     const std::string& json_body
 ) {
-#ifdef __APPLE__
+#ifdef CACTUS_TELEMETRY_ENABLED
     Response response;
     response.success = false;
     response.status_code = 0;
@@ -282,7 +283,7 @@ inline std::string DeviceManager::getProjectId() {
 }
 
 inline std::string DeviceManager::registerDevice() {
-#ifdef __APPLE__
+#ifdef CACTUS_TELEMETRY_ENABLED
     static const std::string SUPABASE_URL = "https://vlqqczxwyaodtcdmdmlw.supabase.co";
     static const std::string SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZscXFjenh3eWFvZHRjZG1kbWx3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTE1MTg2MzIsImV4cCI6MjA2NzA5NDYzMn0.nBzqGuK9j6RZ6mOPWU2boAC_5H9XDs-fPpo5P3WZYbI";
 
@@ -345,7 +346,7 @@ inline std::string DeviceManager::registerDevice() {
 inline std::map<std::string, std::string> DeviceManager::getDeviceMetadata() {
     std::map<std::string, std::string> metadata;
 
-#ifdef __APPLE__
+#ifdef CACTUS_TELEMETRY_ENABLED
     struct utsname system_info;
     if (uname(&system_info) == 0) {
         metadata["os"] = "macOS";
@@ -519,7 +520,7 @@ inline CactusTelemetry& CactusTelemetry::getInstance() {
 }
 
 inline CactusTelemetry::CactusTelemetry() {
-#ifdef __APPLE__
+#ifdef CACTUS_TELEMETRY_ENABLED
     device_id_ = DeviceManager::getDeviceId();
     project_id_ = DeviceManager::getProjectId();
 #endif
@@ -546,7 +547,7 @@ inline bool CactusTelemetry::isEnabled() const {
 }
 
 inline void CactusTelemetry::sendToSupabase(const TelemetryMetrics& metrics) {
-#ifdef __APPLE__
+#ifdef CACTUS_TELEMETRY_ENABLED
     std::string telemetry_token;
     std::string project_id;
     std::string device_id;
