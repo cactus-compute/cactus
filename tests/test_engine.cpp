@@ -132,9 +132,17 @@ bool test_tool_call() {
 
 bool test_image_input() {
     std::string model_path_str(g_model_path ? g_model_path : "");
-    if (model_path_str.find("vl") == std::string::npos) {
-        std::cout << "Skipping image input test: model is not a VLM." << std::endl;
-        return true;
+    std::string config_path = model_path_str + "/config.txt";
+    std::ifstream config_file(config_path);
+    if (config_file.good()) {
+        std::string line;
+        while (std::getline(config_file, line)) {
+            if (line.find("model_variant=vlm") != std::string::npos ||
+                line.find("model_variant=VLM") != std::string::npos) {
+                break;
+            }
+        }
+        config_file.close();
     }
 
     std::string vision_file = model_path_str + "/vision_patch_embedding.weights";

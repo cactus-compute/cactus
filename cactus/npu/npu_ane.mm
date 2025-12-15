@@ -449,15 +449,10 @@ bool is_npu_available() {
 
 - (instancetype)initWithModelPath:(NSString*)path;
 - (void)preallocateBuffers;
-- (NSArray<NSDictionary*>*)predictWithInput:(NSString*)inputName
-                                       data:(const __fp16*)data
-                                      shape:(NSArray<NSNumber*>*)shape
-                                     offset:(int)offset;
 - (BOOL)predictDirectWithInput:(NSString*)inputName
                           data:(const __fp16*)data
                         offset:(int)offset;
 - (MLMultiArray*)getOutputArray:(NSString*)name;
-
 @end
 
 @implementation CactusANEPrefillImpl
@@ -621,100 +616,6 @@ bool is_npu_available() {
     return _cachedOutputArrays[name];
 }
 
-- (NSArray<NSDictionary*>*)predictWithInput:(NSString*)inputName
-                                       data:(const __fp16*)data
-                                      shape:(NSArray<NSNumber*>*)shape
-                                     offset:(int)offset {
-    if (!_model) return @[];
-
-    NSError* error = nil;
-
-    MLMultiArray* inputArray = [[MLMultiArray alloc]
-        initWithShape:shape
-             dataType:MLMultiArrayDataTypeFloat16
-                error:&error];
-
-    if (error) {
-        NSLog(@"[CactusANEPrefill] Error creating input array: %@", error);
-        return @[];
-    }
-
-    NSUInteger totalElements = 1;
-    for (NSNumber* dim in shape) {
-        totalElements *= [dim unsignedIntegerValue];
-    }
-    __fp16* inputPtr = (__fp16*)inputArray.dataPointer;
-    memcpy(inputPtr, data, totalElements * sizeof(__fp16));
-
-    MLFeatureValue* inputFeature = [MLFeatureValue featureValueWithMultiArray:inputArray];
-    NSMutableDictionary* inputDict = [NSMutableDictionary dictionaryWithObject:inputFeature forKey:inputName];
-
-    if (_modelDescription.inputDescriptionsByName[@"offset"] != nil) {
-        MLMultiArray* offsetArray = [[MLMultiArray alloc] initWithShape:@[@1]
-                                                               dataType:MLMultiArrayDataTypeFloat16
-                                                                  error:&error];
-        if (!error) {
-            ((__fp16*)offsetArray.dataPointer)[0] = (__fp16)offset;
-            MLFeatureValue* offsetFeature = [MLFeatureValue featureValueWithMultiArray:offsetArray];
-            inputDict[@"offset"] = offsetFeature;
-        }
-    }
-
-    id<MLFeatureProvider> inputProvider = [[MLDictionaryFeatureProvider alloc]
-        initWithDictionary:inputDict
-                     error:&error];
-
-    if (error) {
-        NSLog(@"[CactusANEPrefill] Error creating feature provider: %@", error);
-        return @[];
-    }
-
-    id<MLFeatureProvider> outputProvider = [_model predictionFromFeatures:inputProvider error:&error];
-
-    if (error) {
-        NSLog(@"[CactusANEPrefill] Error during prediction: %@", error);
-        return @[];
-    }
-
-    NSMutableArray<NSDictionary*>* results = [NSMutableArray array];
-    for (NSString* outputName in _modelDescription.outputDescriptionsByName.allKeys) {
-        MLFeatureValue* outputFeature = [outputProvider featureValueForName:outputName];
-        if (outputFeature && outputFeature.multiArrayValue) {
-            MLMultiArray* outputArray = outputFeature.multiArrayValue;
-
-            NSMutableArray<NSNumber*>* outputShape = [NSMutableArray array];
-            for (NSNumber* dim in outputArray.shape) {
-                [outputShape addObject:dim];
-            }
-
-            size_t count = outputArray.count;
-            NSMutableData* outputData = [NSMutableData dataWithLength:count * sizeof(__fp16)];
-
-            if (outputArray.dataType == MLMultiArrayDataTypeFloat16) {
-                __fp16* outputPtr = (__fp16*)outputArray.dataPointer;
-                memcpy(outputData.mutableBytes, outputPtr, count * sizeof(__fp16));
-            } else if (outputArray.dataType == MLMultiArrayDataTypeFloat32) {
-                float* outputPtr = (float*)outputArray.dataPointer;
-                __fp16* destPtr = (__fp16*)outputData.mutableBytes;
-                for (size_t i = 0; i < count; i++) {
-                    destPtr[i] = (__fp16)outputPtr[i];
-                }
-            } else {
-                __fp16* outputPtr = (__fp16*)outputArray.dataPointer;
-                memcpy(outputData.mutableBytes, outputPtr, count * sizeof(__fp16));
-            }
-
-            [results addObject:@{
-                @"name": outputName,
-                @"shape": outputShape,
-                @"data": outputData
-            }];
-        }
-    }
-
-    return results;
-}
-
 @end
 
 namespace cactus {
@@ -787,46 +688,6 @@ int ANEPrefill::get_num_layers() const { return num_layers_; }
 int ANEPrefill::get_num_kv_heads() const { return num_kv_heads_; }
 int ANEPrefill::get_head_dim() const { return head_dim_; }
 
-std::vector<NPUPrefillOutput> ANEPrefill::prefill_chunk(
-    const std::vector<__fp16>& embeddings,
-    int position_offset,
-    const std::string& input_name) {
-
-    std::vector<NPUPrefillOutput> results;
-    if (!impl_) return results;
-
-    @autoreleasepool {
-        CactusANEPrefillImpl* impl = (__bridge CactusANEPrefillImpl*)impl_;
-
-        NSString* inName = [NSString stringWithUTF8String:input_name.c_str()];
-        NSArray<NSNumber*>* shape = @[@(chunk_size_), @(hidden_dim_)];
-
-        NSArray<NSDictionary*>* outputs = [impl predictWithInput:inName
-                                                            data:embeddings.data()
-                                                           shape:shape
-                                                          offset:position_offset];
-
-        for (NSDictionary* output in outputs) {
-            NPUPrefillOutput result;
-            result.name = [output[@"name"] UTF8String];
-
-            NSArray<NSNumber*>* shapeArray = output[@"shape"];
-            for (NSNumber* dim in shapeArray) {
-                result.shape.push_back([dim intValue]);
-            }
-
-            NSData* data = output[@"data"];
-            size_t count = data.length / sizeof(__fp16);
-            result.data.resize(count);
-            memcpy(result.data.data(), data.bytes, data.length);
-
-            results.push_back(std::move(result));
-        }
-    }
-
-    return results;
-}
-
 NPUPrefillDirectResult ANEPrefill::prefill_chunk_direct(
     const std::vector<__fp16>& embeddings,
     int position_offset,
@@ -851,14 +712,12 @@ NPUPrefillDirectResult ANEPrefill::prefill_chunk_direct(
 
         if (!success) return result;
 
-        // Get direct pointer to hidden output
         MLMultiArray* hiddenArray = [impl getOutputArray:@"hidden"];
         if (hiddenArray) {
             result.hidden.data = (__fp16*)hiddenArray.dataPointer;
             result.hidden.count = hiddenArray.count;
         }
 
-        // Get direct pointers to KV cache outputs
         for (int layer = 0; layer < num_layers_; layer++) {
             NSString* kName = [NSString stringWithFormat:@"k_%d", layer];
             NSString* vName = [NSString stringWithFormat:@"v_%d", layer];

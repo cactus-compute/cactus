@@ -72,11 +72,6 @@ public:
     int get_num_kv_heads() const override;
     int get_head_dim() const override;
 
-    std::vector<NPUPrefillOutput> prefill_chunk(
-        const std::vector<__fp16>& embeddings,
-        int position_offset = 0,
-        const std::string& input_name = "x") override;
-
     NPUPrefillDirectResult prefill_chunk_direct(
         const std::vector<__fp16>& embeddings,
         int position_offset = 0,
@@ -134,11 +129,6 @@ public:
     int get_num_layers() const override { return 0; }
     int get_num_kv_heads() const override { return 0; }
     int get_head_dim() const override { return 0; }
-
-    std::vector<NPUPrefillOutput> prefill_chunk(
-        const std::vector<__fp16>&,
-        int = 0,
-        const std::string& = "x") override { return {}; }
 
     NPUPrefillDirectResult prefill_chunk_direct(
         const std::vector<__fp16>&,
