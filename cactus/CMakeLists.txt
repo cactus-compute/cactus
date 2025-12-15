@@ -1,25 +1,45 @@
 cmake_minimum_required(VERSION 3.10)
 project(Cactus LANGUAGES CXX)
 
+# ------------------------------------------------------------------------------
+# Build settings
+# ------------------------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+    message(STATUS "CMAKE_BUILD_TYPE was not set, defaulting to Release.")
+endif()
+
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# ------------------------------------------------------------------------------
+# Version
+# ------------------------------------------------------------------------------
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../CACTUS_VERSION" CACTUS_VERSION)
 string(STRIP "${CACTUS_VERSION}" CACTUS_VERSION)
 
+# ------------------------------------------------------------------------------
+# Platform-specific settings
+# ------------------------------------------------------------------------------
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-designated-field-initializers")
+
+    enable_language(OBJCXX)
     find_package(CURL REQUIRED)
+    find_library(COREML_FRAMEWORK CoreML REQUIRED)
+    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+fp16+simd+dotprod -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-designated-field-initializers")
 endif()
 
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release)
-  message(STATUS "CMAKE_BUILD_TYPE was not set, defaulting to Release.")
-endif()
-
+# ------------------------------------------------------------------------------
+# Sources
+# ------------------------------------------------------------------------------
 file(GLOB ENGINE_SOURCES "engine/*.cpp")
 file(GLOB GRAPH_SOURCES "graph/*.cpp")
 file(GLOB KERNEL_SOURCES "kernel/*.cpp")
@@ -27,42 +47,21 @@ file(GLOB FFI_SOURCES "ffi/*.cpp")
 file(GLOB MODEL_SOURCES "models/*.cpp")
 
 if(APPLE)
-    enable_language(OBJCXX)
     file(GLOB NPU_SOURCES "npu/*.mm")
 else()
     set(NPU_SOURCES "")
 endif()
 
-set(HEADER_FILES
-    cactus.h
-    engine/engine.h
-    graph/graph.h
-    kernel/kernel.h
-    kernel/kernel_utils.h
-    ffi/cactus_ffi.h
-    ffi/cactus_utils.h
-    ffi/cactus_telemetry.h
-    models/model.h
-    npu/npu.h
-    npu/npu_ane.h
-)
-
 set(COMMON_SOURCES
-    ${KERNEL_SOURCES}
-    ${GRAPH_SOURCES}
     ${ENGINE_SOURCES}
+    ${GRAPH_SOURCES}
+    ${KERNEL_SOURCES}
     ${FFI_SOURCES}
     ${MODEL_SOURCES}
     ${NPU_SOURCES}
 )
 
-add_library(cactus STATIC ${COMMON_SOURCES})
-target_compile_definitions(cactus PUBLIC
-    PLATFORM_CPU_ONLY=1
-    CACTUS_VERSION="${CACTUS_VERSION}"
-)
-
-target_include_directories(cactus PUBLIC
+set(COMMON_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}
     engine
     graph
@@ -72,56 +71,57 @@ target_include_directories(cactus PUBLIC
     npu
 )
 
-if(APPLE)
-    find_library(COREML_FRAMEWORK CoreML REQUIRED)
-    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
-    target_link_libraries(cactus PUBLIC ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
-
-    set_source_files_properties(${NPU_SOURCES} PROPERTIES
-        COMPILE_FLAGS "-fobjc-arc"
-    )
-endif()
-
-if(APPLE AND CURL_FOUND)
-    target_link_libraries(cactus PUBLIC ${CURL_LIBRARIES})
-    target_include_directories(cactus PUBLIC ${CURL_INCLUDE_DIRS})
-endif()
-
-add_library(cactus_ffi SHARED ${COMMON_SOURCES})
-target_compile_definitions(cactus_ffi PUBLIC
+set(COMMON_DEFINITIONS
     PLATFORM_CPU_ONLY=1
     CACTUS_VERSION="${CACTUS_VERSION}"
 )
 
-target_include_directories(cactus_ffi PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    engine
-    graph
-    kernel
-    ffi
-    models
-)
+# ------------------------------------------------------------------------------
+# Helper function to configure targets
+# ------------------------------------------------------------------------------
+function(configure_cactus_target target_name)
+    target_compile_definitions(${target_name} PUBLIC ${COMMON_DEFINITIONS})
+    target_include_directories(${target_name} PUBLIC ${COMMON_INCLUDES})
 
-if(APPLE AND CURL_FOUND)
-    target_link_libraries(cactus_ffi PUBLIC ${CURL_LIBRARIES})
-    target_include_directories(cactus_ffi PUBLIC ${CURL_INCLUDE_DIRS})
-endif()
+    # Compiler-specific warnings
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(${target_name} PRIVATE -Wno-c99-extensions)
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(${target_name} PRIVATE -Wno-pedantic)
+    endif()
 
+    # Apple frameworks and libraries
+    if(APPLE)
+        target_link_libraries(${target_name} PUBLIC
+            ${COREML_FRAMEWORK}
+            ${FOUNDATION_FRAMEWORK}
+            ${CURL_LIBRARIES}
+        )
+        target_include_directories(${target_name} PUBLIC ${CURL_INCLUDE_DIRS})
+    endif()
+endfunction()
+
+# ------------------------------------------------------------------------------
+# Static library (for linking into executables)
+# ------------------------------------------------------------------------------
+add_library(cactus STATIC ${COMMON_SOURCES})
+configure_cactus_target(cactus)
+
+# ------------------------------------------------------------------------------
+# Shared library (for FFI/Python bindings)
+# ------------------------------------------------------------------------------
+add_library(cactus_ffi SHARED ${COMMON_SOURCES})
+configure_cactus_target(cactus_ffi)
 set_target_properties(cactus_ffi PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     OUTPUT_NAME "cactus"
 )
 
-target_include_directories(cactus SYSTEM PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/ffi
-)
-
-if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    target_compile_options(cactus PRIVATE -Wno-c99-extensions)
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    target_compile_options(cactus PRIVATE -Wno-pedantic)
+# ------------------------------------------------------------------------------
+# Objective-C++ ARC for NPU sources
+# ------------------------------------------------------------------------------
+if(APPLE AND NPU_SOURCES)
+    set_source_files_properties(${NPU_SOURCES} PROPERTIES
+        COMPILE_FLAGS "-fobjc-arc"
+    )
 endif()
-
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

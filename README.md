@@ -111,9 +111,10 @@ Example response from Gemma3-270m-INT8
 
 ## Using up this repo on Mac
 
-- Clone repo and simply run `source ./setup`.
+- Clone repo and run `source ./setup`.
 - Setup is automatic and usage instructions printed after.
 - Run `cactus --help` to see guides anytime.
+- Remember to run `source ./setup` in any new terminal.
 
 ## Using in your apps
 

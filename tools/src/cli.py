@@ -242,7 +242,9 @@ def cmd_build(args):
             str(lib_path),
             "-o", "chat",
             "-lcurl",
-            "-framework", "Accelerate"
+            "-framework", "Accelerate",
+            "-framework", "CoreML",
+            "-framework", "Foundation"
         ]
     else:
         compiler = "g++"
@@ -430,8 +432,19 @@ def cmd_clean(args):
     print_color(GREEN, "Clean complete!")
     print("All build artifacts have been removed.")
     print()
-    print_color(YELLOW, "To restore the development environment, run:")
-    print("  ./setup")
+
+    # Re-run setup automatically
+    print_color(BLUE, "Re-running setup...")
+    setup_script = PROJECT_ROOT / "setup"
+    result = subprocess.run(
+        ["bash", "-c", f"source {setup_script} && pip install -e {PROJECT_ROOT / 'tools'} --quiet"],
+        cwd=PROJECT_ROOT
+    )
+    if result.returncode == 0:
+        print_color(GREEN, "Setup complete!")
+    else:
+        print_color(YELLOW, "Setup had issues. Please run manually:")
+        print("  source ./setup")
     return 0
 
 
@@ -520,7 +533,6 @@ def create_parser():
   -----------------------------------------------------------------
 
   cactus clean                         removes all build artifacts
-                                       run ./setup again after
 
   -----------------------------------------------------------------
 
@@ -528,15 +540,14 @@ def create_parser():
 
   -----------------------------------------------------------------
 
-  Python scripting:
+  Python bindings:
 
   Cactus python package is auto installed for researchers and testing
-  Please see tools/examples.y and run the following instructions.
+  Please see tools/examples.py and run the following instructions.
 
   1. cactus build
   2. cactus download LiquidAI/LFM2-VL-450M
-  3. cd tools 
-  4. python example.py
+  3. python tools/example.py
 
   Note: Use any supported model
 
