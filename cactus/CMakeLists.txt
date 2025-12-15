@@ -87,7 +87,31 @@ if(APPLE AND CURL_FOUND)
     target_include_directories(cactus PUBLIC ${CURL_INCLUDE_DIRS})
 endif()
 
-# suppress warnings from stb_image
+add_library(cactus_ffi SHARED ${COMMON_SOURCES})
+target_compile_definitions(cactus_ffi PUBLIC
+    PLATFORM_CPU_ONLY=1
+    CACTUS_VERSION="${CACTUS_VERSION}"
+)
+
+target_include_directories(cactus_ffi PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    engine
+    graph
+    kernel
+    ffi
+    models
+)
+
+if(APPLE AND CURL_FOUND)
+    target_link_libraries(cactus_ffi PUBLIC ${CURL_LIBRARIES})
+    target_include_directories(cactus_ffi PUBLIC ${CURL_INCLUDE_DIRS})
+endif()
+
+set_target_properties(cactus_ffi PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    OUTPUT_NAME "cactus"
+)
+
 target_include_directories(cactus SYSTEM PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/ffi
 )

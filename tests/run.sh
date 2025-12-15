@@ -57,12 +57,12 @@ echo "Using transcribe model: $TRANSCRIBE_MODEL_NAME"
 
 echo ""
 echo "Step 1: Downloading model weights..."
-if ! "$PROJECT_ROOT/cli/cactus" download "$MODEL_NAME"; then
+if ! cactus download "$MODEL_NAME"; then
     echo "Failed to download model weights"
     exit 1
 fi
 
-if ! "$PROJECT_ROOT/cli/cactus" download "$TRANSCRIBE_MODEL_NAME"; then
+if ! cactus download "$TRANSCRIBE_MODEL_NAME"; then
     echo "Failed to download transcribe model weights"
     exit 1
 fi
@@ -77,8 +77,7 @@ if [ "$IOS_MODE" = true ]; then
 fi
 
 echo "Step 2: Building Cactus library..."
-cd "$PROJECT_ROOT"
-if ! cactus/build.sh; then
+if ! cactus build; then
     echo "Failed to build cactus library"
     exit 1
 fi
@@ -105,11 +104,14 @@ echo ""
 echo "Step 4: Running tests..."
 echo "------------------------"
 
-MODEL_DIR=$(echo "$MODEL_NAME" | sed 's|.*/||')
-TRANSCRIBE_MODEL_DIR=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||')
+# Set model path environment variables for tests
+MODEL_DIR=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+TRANSCRIBE_MODEL_DIR=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+
 export CACTUS_TEST_MODEL="$PROJECT_ROOT/weights/$MODEL_DIR"
 export CACTUS_TEST_TRANSCRIBE_MODEL="$PROJECT_ROOT/weights/$TRANSCRIBE_MODEL_DIR"
 export CACTUS_TEST_ASSETS="$PROJECT_ROOT/tests/assets"
+
 echo "Using model path: $CACTUS_TEST_MODEL"
 echo "Using transcribe model path: $CACTUS_TEST_TRANSCRIBE_MODEL"
 echo "Using assets path: $CACTUS_TEST_ASSETS"

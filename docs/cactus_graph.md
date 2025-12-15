@@ -3,12 +3,28 @@
 The Cactus Graph API provides a computational graph framework for building and executing tensor operations. It supports multiple precision types, broadcasting, and optimized execution for neural network inference.
 
 ## Table of Contents
+- [Setup](#setup)
 - [Core Concepts](#core-concepts)
 - [Getting Started](#getting-started)
 - [Tensor Operations](#tensor-operations)
 - [Advanced Features](#advanced-features)
 - [Complete Examples](#complete-examples)
 - [Best Practices](#best-practices)
+
+## Setup
+
+Before using the Cactus Graph API, set up your development environment:
+
+```bash
+# Setup the environment and install dependencies
+./setup
+
+# Build the Cactus library
+cactus build
+
+# Run tests to verify everything works
+cactus test
+```
 
 ## Core Concepts
 

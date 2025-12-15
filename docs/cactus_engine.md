@@ -2,6 +2,26 @@
 
 The Cactus Engine provides a clean C FFI (Foreign Function Interface) for integrating the LLM inference engine into various applications. This documentation covers all available functions, their parameters, and usage examples.
 
+## Getting Started
+
+Before using the Cactus Engine, you need to download model weights:
+
+```bash
+# Setup the environment
+./setup
+
+# Download model weights (converts HuggingFace models to Cactus format)
+cactus download LiquidAI/LFM2-1.2B
+
+# Or download a vision-language model
+cactus download LiquidAI/LFM2-VL-450M
+
+# Or download a whisper model for transcription
+cactus download openai/whisper-small
+```
+
+Weights are saved to the `weights/` directory and can be loaded using `cactus_init()`.
+
 ## Types
 
 ### `cactus_model_t`

@@ -17,3 +17,8 @@ apple/*.xcframework
 apple/libcactus.a
 *.a
 venv
+
+__pycache__
+*.egg-info
+profile.txt
+.dylib
