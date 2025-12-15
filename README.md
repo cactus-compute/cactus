@@ -77,10 +77,10 @@ Example response from Gemma3-270m-INT8
 | Mac M4 Pro | 173 | 1574/115 | 1089/100 | - | 122MB | 0.4s/0.1s* | 168 | 112MB | 1.7s/0.2s* | 83 | 142MB |
 | Mac M3 Pro | 150 | 1540/109 | 890/93 | - | 121MB | 0.5s/0.1s* | 149 | 113MB | 2.9s/0.4s* | 78 | 140MB |
 | iPad/Mac M4 | 129 | 793/82 | 507/64 | - | 80MB | 0.5s/0.1s* | 113 | 145MB | 2.4s0.3s* | 60 | 131MB |
-| iPad/Mac M3 | 112 | 786/78 | 446/60 | - | 81MB | 0.6s/0.1s* | 111 | 154MB | 4.2s/0.6s* | 58 | 142MB |
-| iPhone 17 Pro | 136 | 810/105 | 628/84 | - | - | 1.1s/0.3s* | 120 | - | 3.0s/0.4s* | - | - |
-| iPhone 16 Pro | 114 | 716/98 | 580/81 | - | - | 1.3s/0.3s* | 101 | - | 3.5s/0.5s* | 75 | - |
-| iPhone 15 Pro | 99 | 549/86 | 530/75 | - | - | 1.5s/0.4s* | 92 | - | 3.8s/0.6s* | 70 | - |
+| iPad/Mac M3 | 112 | 786/78 | 446/60 | - | 81MB | 0.6s/0.1s* | 111 | 154MB | 4.2s/0.7s* | 58 | 142MB |
+| iPhone 17 Pro | 136 | 810/105 | 628/84 | - | - | 1.1s/0.1s* | 120 | - | 3.0s/0.6s* | - | - |
+| iPhone 16 Pro | 114 | 716/98 | 580/81 | - | - | 1.3s/0.2s* | 101 | - | 3.5s/0.7s* | 75 | - |
+| iPhone 15 Pro | 99 | 549/86 | 530/75 | - | - | 1.5s/0.3s* | 92 | - | 3.8s/0.8s* | 70 | - |
 | Galaxy S25 Ultra | 91 | 230/63 | 173/57 | - | 128MB | 1.4s | 58 | - | - | - | - |
 | Nothing 3 | 56 | 167/49 | 160/46 | - | - | 1.7s | 54 | - | 8.5s | 55 | - |
 | Nothing 3a | 31 | 114/26 | 108/24 | - | - | 2.4s | 29 | - | - | - | - |
@@ -117,8 +117,8 @@ Dependencies will be setup on first run automatically.
 cli/cactus --help # to see all commands
 cli/cactus run LiquidAI/LFM2-VL-450M # to interact with a model
 cli/cactus test # to run unit tests during dev + reproduce benchmarks
-cli/cactus test --android # run tests on Android device or emulator
-cli/cactus test --ios # run tests on iOS device or simulator
+cli/cactus test --android # plug in phone or use simulator
+cli/cactus test --ios # plug in phone or use simulator
 cli/cactus download Qwen/Qwen3-0.6B # HF name, stored to weights/Qwen3-0.6B
 ```
 

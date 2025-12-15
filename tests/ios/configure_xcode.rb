@@ -171,6 +171,10 @@ target.build_configurations.each do |config|
   config.build_settings['OTHER_LDFLAGS'] ||= ['$(inherited)']
   config.build_settings['OTHER_LDFLAGS'].reject! { |flag| flag.to_s.include?('libcactus') }
   config.build_settings['OTHER_LDFLAGS'] << static_lib_path
+
+  ['-framework CoreML', '-framework Foundation'].each do |framework|
+    config.build_settings['OTHER_LDFLAGS'] << framework unless config.build_settings['OTHER_LDFLAGS'].include?(framework)
+  end
 end
 
 project.save rescue fail_with("Failed to save Xcode project")

@@ -4,7 +4,6 @@ project(Cactus LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-# Minimum deployment targets for ANE/CoreML FP16 support
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version")
 set(CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.0" CACHE STRING "Minimum iOS version")
 
@@ -88,6 +87,10 @@ set_source_files_properties(${NPU_SOURCES} PROPERTIES
 target_compile_definitions(cactus PRIVATE
     PLATFORM_CPU_ONLY=1
 )
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    target_compile_definitions(cactus PRIVATE TARGET_OS_IPHONE=1)
+endif()
 
 target_compile_options(cactus PRIVATE 
     -pthread
