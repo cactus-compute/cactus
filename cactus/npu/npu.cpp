@@ -27,12 +27,7 @@ static void try_load_cactus_util() {
         }
     }
 
-#if defined(__ANDROID__)
-    const char* lib_names[] = {
-        "libcactus_util.so",
-        "cactus_util"
-    };
-#elif defined(__APPLE__)
+#if defined(__APPLE__)
     const char* lib_names[] = {
         "@rpath/cactus_util.framework/cactus_util",
         "cactus_util",
