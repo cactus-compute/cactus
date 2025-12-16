@@ -21,7 +21,7 @@ file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
 file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
 
 enable_language(OBJCXX)
-file(GLOB NPU_SOURCES "${SOURCE_DIR}/npu/*.mm")
+file(GLOB NPU_SOURCES "${SOURCE_DIR}/npu/*.mm" "${SOURCE_DIR}/npu/*.cpp")
 
 set(HEADER_FILES
     ${SOURCE_DIR}/cactus.h
@@ -33,7 +33,6 @@ set(HEADER_FILES
     ${SOURCE_DIR}/ffi/cactus_utils.h
     ${SOURCE_DIR}/models/model.h
     ${SOURCE_DIR}/npu/npu.h
-    ${SOURCE_DIR}/npu/npu_ane.h
 )
 
 set(COMMON_SOURCES
@@ -109,7 +108,6 @@ if (${CMAKE_BUILD_TYPE} STREQUAL "Debug")
 endif ()
 
 target_compile_options(cactus PRIVATE -O3 -DNDEBUG)
-target_compile_options(cactus PRIVATE -fvisibility=hidden -fvisibility-inlines-hidden)
 target_compile_options(cactus PRIVATE -ffunction-sections -fdata-sections)
 
 target_compile_options(cactus PRIVATE 
@@ -123,7 +121,6 @@ target_compile_definitions(cactus PRIVATE
 )
 
 target_link_options(cactus PRIVATE -Wl,-dead_strip)
-target_link_options(cactus PRIVATE -flto)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
