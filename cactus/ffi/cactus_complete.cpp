@@ -52,12 +52,26 @@ int cactus_complete(
         float temperature, top_p;
         size_t top_k, max_tokens;
         std::vector<std::string> stop_sequences;
+        bool force_tools = false;
         parse_options_json(options_json ? options_json : "",
-                          temperature, top_p, top_k, max_tokens, stop_sequences);
+                          temperature, top_p, top_k, max_tokens, stop_sequences, force_tools);
 
         std::vector<ToolFunction> tools;
         if (tools_json && strlen(tools_json) > 0)
             tools = parse_tools_json(tools_json);
+
+        if (force_tools && !tools.empty()) {
+            std::vector<std::string> function_names;
+            function_names.reserve(tools.size());
+            for (const auto& tool : tools) {
+                function_names.push_back(tool.name);
+            }
+            handle->model->set_tool_constraints(function_names);
+
+            if (temperature == 0.0f) {
+                temperature = 0.01f;
+            }
+        }
 
         std::string formatted_tools = format_tools_for_prompt(tools);
         std::string full_prompt = tokenizer->format_chat_prompt(messages, true, formatted_tools);
@@ -103,12 +117,11 @@ int cactus_complete(
             next_token = handle->model->decode(last_token_vec, temperature, top_p, top_k);
         } else {
             if (!image_paths.empty()) {
-                next_token = handle->model->decode_with_images(tokens_to_process, image_paths, temperature, top_p, top_k, "profile.txt");
+                next_token = handle->model->decode_with_images(tokens_to_process, image_paths, temperature, top_p, top_k);
             } else {
                 size_t prefill_chunk_size = handle->model->get_prefill_chunk_size();
 
                 if (tokens_to_process.size() > 1) {
-                    // Prefill all but the last token, then decode the final token
                     std::vector<uint32_t> prefill_tokens(tokens_to_process.begin(),
                                                          tokens_to_process.end() - 1);
                     handle->model->prefill(prefill_tokens, prefill_chunk_size);
@@ -129,6 +142,10 @@ int cactus_complete(
         generated_tokens.push_back(next_token);
         handle->processed_tokens.push_back(next_token);
 
+        if (force_tools && !tools.empty()) {
+            handle->model->update_tool_constraints(next_token);
+        }
+
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
             if (callback) {
                 std::string new_text = tokenizer->decode({next_token});
@@ -142,6 +159,10 @@ int cactus_complete(
                 generated_tokens.push_back(next_token);
                 handle->processed_tokens.push_back(next_token);
 
+                if (force_tools && !tools.empty()) {
+                    handle->model->update_tool_constraints(next_token);
+                }
+
                 if (matches_stop_sequence(generated_tokens, stop_token_sequences)) break;
 
                 if (callback) {
@@ -149,6 +170,10 @@ int cactus_complete(
                     callback(new_text.c_str(), next_token, user_data);
                 }
             }
+        }
+
+        if (force_tools && !tools.empty()) {
+            handle->model->clear_tool_constraints();
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();

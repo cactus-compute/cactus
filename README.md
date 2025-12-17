@@ -104,7 +104,7 @@ Example response from Gemma3-270m-INT8
 | openai/whisper-medium | 646MB  | ✗ | ✗ | ✗ | ✓ | ✓ | Apple |
 | LiquidAI/LFM2-1.2B | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | LiquidAI/LFM2-1.2B-RAG | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
-| LiquidAI/LFM2-1.2B-Tools | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
+| LiquidAI/LFM2-1.2B-Tool | 722MB  | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | LiquidAI/LFM2-VL-1.6B | 1440MB  | ✓ | ✗ | ✓ | ✓ | ✗ | Apple |
 | Qwen/Qwen3-1.7B | 1161MB  | ✓ | ✓ | ✗ | ✓ | ✗ | Apple |
 | HuggingFaceTB/SmolLM2-1.7B-Instruct | 1161MB  | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ |

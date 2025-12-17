@@ -248,7 +248,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     last_hidden = gb->reshape(last_hidden, {1, hidden_dim});
 
     auto logits_node_id = gb->matmul(last_hidden, output_weight_node_id_, true, backend);
-    auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k);
+    auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k, tool_constrainer_.get_bias());
 
     if (!profile_file.empty()) {
         gb->execute(profile_file);

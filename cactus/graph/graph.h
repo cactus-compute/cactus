@@ -226,7 +226,7 @@ struct OpParams {
     size_t slice_start = 0;
     size_t slice_length = 0;
     size_t window_size = 0;
-    bool is_causal = true;  // Default to causal for backward compatibility
+    bool is_causal = true;  
     std::vector<size_t> new_shape;
     std::vector<size_t> permutation;
     Precision output_precision = Precision::INT8;
@@ -240,10 +240,13 @@ struct OpParams {
     size_t top_k = 0;
     size_t random_seed = 0;
     
-    size_t index_value = 0;  // For INDEX operation
-    size_t num_classes = 0;  // For scatter operations
+    size_t index_value = 0;  
+    size_t num_classes = 0; 
     size_t dst_height = 0;
-    size_t dst_width = 0;   
+    size_t dst_width = 0;
+
+    std::vector<float> bias_values;
+    std::vector<uint32_t> bias_indices;
 };
 
 struct GraphNode {
@@ -376,7 +379,8 @@ public:
     size_t conv1d_causal(size_t input, size_t weight, size_t kernel_size, size_t dilation = 1);
     size_t conv1d_k3(size_t input, size_t weight, size_t stride);
     
-    size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20);
+    size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20,
+                  const std::unordered_map<uint32_t, float>& logit_bias = {});
     
     size_t concat(size_t input1, size_t input2, int axis = 0);
     size_t scatter_topk(size_t indices, size_t values, size_t num_classes);

@@ -357,8 +357,8 @@ size_t CactusGraph::conv1d_causal(size_t input, size_t weight, size_t, size_t di
 }
 
 size_t CactusGraph::conv1d_k3(size_t input, size_t weight, size_t stride){
-    const auto& xin = get_output_buffer(input);   // [N, C_in, L]
-    const auto& w   = get_output_buffer(weight);  // [C_out, C_in, 3]
+    const auto& xin = get_output_buffer(input);  
+    const auto& w   = get_output_buffer(weight); 
 
     if (xin.shape.size() != 3) throw std::runtime_error("conv1d_k3 expects N,C,L");
     if (w.shape.size()   != 3) throw std::runtime_error("weight must be [C_out,C_in,3]");
@@ -430,19 +430,29 @@ size_t CactusGraph::scatter_topk(size_t indices, size_t values, size_t num_class
     return add_node(OpType::SCATTER_TOPK, {indices, values}, output_shape, params);
 }
 
-size_t CactusGraph::sample(size_t logits, float temperature, float top_p, size_t top_k) {
+size_t CactusGraph::sample(size_t logits, float temperature, float top_p, size_t top_k,
+                           const std::unordered_map<uint32_t, float>& logit_bias) {
     const auto& logits_buffer = get_output_buffer(logits);
-    
+
     if (logits_buffer.shape.empty()) {
         throw std::runtime_error("Sample requires non-empty logits tensor");
     }
-    
+
     OpParams params;
     params.temperature = temperature;
     params.top_p = top_p;
     params.top_k = top_k;
     params.random_seed = std::chrono::high_resolution_clock::now().time_since_epoch().count();
     params.output_precision = Precision::FP32;
+
+    if (!logit_bias.empty()) {
+        params.bias_indices.reserve(logit_bias.size());
+        params.bias_values.reserve(logit_bias.size());
+        for (const auto& [idx, val] : logit_bias) {
+            params.bias_indices.push_back(idx);
+            params.bias_values.push_back(val);
+        }
+    }
 
     std::vector<size_t> output_shape = {1};
     return add_node(OpType::SAMPLE, {logits}, output_shape, params);

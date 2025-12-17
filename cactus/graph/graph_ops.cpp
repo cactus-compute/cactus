@@ -952,39 +952,46 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 
 void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& logits_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    
+
     float temperature = node.params.temperature;
     float top_p = node.params.top_p;
     size_t top_k = node.params.top_k;
     size_t random_seed = node.params.random_seed;
-    
+
+    const float* bias_values = node.params.bias_values.empty() ? nullptr : node.params.bias_values.data();
+    const uint32_t* bias_indices = node.params.bias_indices.empty() ? nullptr : node.params.bias_indices.data();
+    size_t bias_count = node.params.bias_values.size();
+
     if (logits_buffer.shape.size() != 2) {
         throw std::runtime_error("Sample expects 2D logits tensor [seq_len, vocab_size]");
     }
-    
+
     size_t seq_len = logits_buffer.shape[0];
     size_t vocab_size = logits_buffer.shape[1];
     size_t last_token_offset = (seq_len - 1) * vocab_size;
-    
+
     if (logits_buffer.precision == Precision::INT8) {
         const int8_t* logits_int8 = logits_buffer.data_as<int8_t>();
         float scale = logits_buffer.quantization_scale;
-        
+
         std::vector<float> probs(vocab_size);
         for (size_t i = 0; i < vocab_size; ++i) {
             probs[i] = logits_int8[last_token_offset + i] * scale;
         }
-        
-        cactus_sample_f32(probs.data(), node.output_buffer.data_as<uint32_t>(), 
-                         vocab_size, temperature, top_p, top_k, random_seed);
+
+        cactus_sample_f32(probs.data(), node.output_buffer.data_as<uint32_t>(),
+                         vocab_size, temperature, top_p, top_k, random_seed,
+                         bias_values, bias_indices, bias_count);
     } else if (logits_buffer.precision == Precision::FP16) {
         const __fp16* logits_fp16 = logits_buffer.data_as<__fp16>();
-        cactus_sample_f16(logits_fp16 + last_token_offset, node.output_buffer.data_as<uint32_t>(), 
-                         vocab_size, temperature, top_p, top_k, random_seed);
+        cactus_sample_f16(logits_fp16 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
+                         vocab_size, temperature, top_p, top_k, random_seed,
+                         bias_values, bias_indices, bias_count);
     } else {
         const float* logits_fp32 = logits_buffer.data_as<float>();
-        cactus_sample_f32(logits_fp32 + last_token_offset, node.output_buffer.data_as<uint32_t>(), 
-                         vocab_size, temperature, top_p, top_k, random_seed);
+        cactus_sample_f32(logits_fp32 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
+                         vocab_size, temperature, top_p, top_k, random_seed,
+                         bias_values, bias_indices, bias_count);
     }
 }
 

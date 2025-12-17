@@ -158,10 +158,15 @@ struct Metrics {
 template<typename TestFunc>
 bool run_test(const char* title, const char* model_path, const char* messages,
               const char* options, TestFunc test_logic,
-              const char* tools = nullptr, int stop_at = -1) {
+              const char* tools = nullptr, int stop_at = -1,
+              const char* user_prompt = nullptr) {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║" << std::setw(42) << std::left << std::string("          ") + title << "║\n"
               << "╚══════════════════════════════════════════╝\n";
+
+    if (user_prompt) {
+        std::cout << "├─ User prompt: " << user_prompt << "\n";
+    }
 
     cactus_model_t model = cactus_init(model_path, 2048, nullptr);
     if (!model) {

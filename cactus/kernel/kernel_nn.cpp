@@ -725,7 +725,9 @@ void cactus_softmax_f16(
 }
 
 void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
-                       float temperature, float top_p, size_t top_k, size_t random_seed) {
+                       float temperature, float top_p, size_t top_k, size_t random_seed,
+                       const float* bias_values, const uint32_t* bias_indices,
+                       size_t bias_count) {
 
     if (temperature == 0.0f && top_p <= 0.0f && top_k == 0) {
         if (vocab_size == 0) {
@@ -746,12 +748,21 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
     }
 
     std::vector<float> filtered_logits(vocab_size);
-    
+
     for (size_t i = 0; i < vocab_size; ++i) {
         filtered_logits[i] = logits[i];
     }
-    
-    
+
+    // Apply logit bias before temperature scaling
+    if (bias_values && bias_indices && bias_count > 0) {
+        for (size_t i = 0; i < bias_count; ++i) {
+            uint32_t idx = bias_indices[i];
+            if (idx < vocab_size) {
+                filtered_logits[idx] += bias_values[i];
+            }
+        }
+    }
+
     if (temperature > 0) {
         for (size_t i = 0; i < vocab_size; ++i) {
             filtered_logits[i] /= temperature;
@@ -908,7 +919,9 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
 }
 
 void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size,
-                       float temperature, float top_p, size_t top_k, size_t random_seed) {
+                       float temperature, float top_p, size_t top_k, size_t random_seed,
+                       const float* bias_values, const uint32_t* bias_indices,
+                       size_t bias_count) {
 
     if (temperature == 0.0f && top_p <= 0.0f && top_k == 0) {
         if (vocab_size == 0) {
@@ -929,6 +942,17 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
     }
 
     std::vector<__fp16> filtered_logits(vocab_size);
+
+    std::memcpy(filtered_logits.data(), logits, vocab_size * sizeof(__fp16));
+
+    if (bias_values && bias_indices && bias_count > 0) {
+        for (size_t i = 0; i < bias_count; ++i) {
+            uint32_t idx = bias_indices[i];
+            if (idx < vocab_size) {
+                filtered_logits[idx] = static_cast<__fp16>(static_cast<float>(filtered_logits[idx]) + bias_values[i]);
+            }
+        }
+    }
 
     if (temperature > 0) {
         __fp16 inv_temp = static_cast<__fp16>(1.0f / temperature);
