@@ -29,10 +29,7 @@ if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-designated-field-initializers")
 
-    enable_language(OBJCXX)
     find_package(CURL REQUIRED)
-    find_library(COREML_FRAMEWORK CoreML REQUIRED)
-    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+fp16+simd+dotprod -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-designated-field-initializers")
 endif()
@@ -46,19 +43,13 @@ file(GLOB KERNEL_SOURCES "kernel/*.cpp")
 file(GLOB FFI_SOURCES "ffi/*.cpp")
 file(GLOB MODEL_SOURCES "models/*.cpp")
 
-if(APPLE)
-    file(GLOB NPU_SOURCES "npu/*.mm")
-else()
-    set(NPU_SOURCES "")
-endif()
-
 set(COMMON_SOURCES
     ${ENGINE_SOURCES}
     ${GRAPH_SOURCES}
     ${KERNEL_SOURCES}
     ${FFI_SOURCES}
     ${MODEL_SOURCES}
-    ${NPU_SOURCES}
+    npu/npu.cpp
 )
 
 set(COMMON_INCLUDES
@@ -90,13 +81,9 @@ function(configure_cactus_target target_name)
         target_compile_options(${target_name} PRIVATE -Wno-pedantic)
     endif()
 
-    # Apple frameworks and libraries
+    # Apple libraries
     if(APPLE)
-        target_link_libraries(${target_name} PUBLIC
-            ${COREML_FRAMEWORK}
-            ${FOUNDATION_FRAMEWORK}
-            ${CURL_LIBRARIES}
-        )
+        target_link_libraries(${target_name} PUBLIC ${CURL_LIBRARIES})
         target_include_directories(${target_name} PUBLIC ${CURL_INCLUDE_DIRS})
     endif()
 endfunction()
@@ -117,11 +104,3 @@ set_target_properties(cactus_ffi PROPERTIES
     OUTPUT_NAME "cactus"
 )
 
-# ------------------------------------------------------------------------------
-# Objective-C++ ARC for NPU sources
-# ------------------------------------------------------------------------------
-if(APPLE AND NPU_SOURCES)
-    set_source_files_properties(${NPU_SOURCES} PROPERTIES
-        COMPILE_FLAGS "-fobjc-arc"
-    )
-endif()
