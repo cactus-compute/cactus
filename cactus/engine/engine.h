@@ -488,7 +488,7 @@ public:
     virtual uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& mel_bins, float temperature = 0.0f, float top_p = 0.0f,
                       size_t top_k = 0, const std::string& profile_file = "");
 
-    std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, const std::string& profile_file = "");
+    std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, bool normalize = false, const std::string& profile_file = "");
     
     virtual std::vector<float> get_image_embeddings(const std::string& image_path);
     

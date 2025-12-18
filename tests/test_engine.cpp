@@ -326,20 +326,17 @@ bool test_embeddings() {
     size_t dim1, dim2;
 
     Timer t1;
-    cactus_embed(model, texts[0], emb1.data(), emb1.size() * sizeof(float), &dim1);
+    cactus_embed(model, texts[0], emb1.data(), emb1.size() * sizeof(float), &dim1, true);
     double time1 = t1.elapsed_ms();
 
     Timer t2;
-    cactus_embed(model, texts[1], emb2.data(), emb2.size() * sizeof(float), &dim2);
+    cactus_embed(model, texts[1], emb2.data(), emb2.size() * sizeof(float), &dim2, true);
     double time2 = t2.elapsed_ms();
 
-    float dot = 0, norm1 = 0, norm2 = 0;
+    float similarity = 0;
     for (size_t i = 0; i < dim1; ++i) {
-        dot += emb1[i] * emb2[i];
-        norm1 += emb1[i] * emb1[i];
-        norm2 += emb2[i] * emb2[i];
+        similarity += emb1[i] * emb2[i];
     }
-    float similarity = dot / (std::sqrt(norm1) * std::sqrt(norm2));
 
     std::cout << "\n[Results]\n"
               << "├─ Embedding dim: " << dim1 << "\n"

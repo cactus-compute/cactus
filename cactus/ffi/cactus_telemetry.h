@@ -131,6 +131,9 @@ inline HttpClient::Response HttpClient::postJson(
 
     return response;
 #else
+    (void)url;
+    (void)headers;
+    (void)json_body;
     Response response;
     response.success = false;
     response.status_code = 0;
@@ -564,6 +567,8 @@ inline void CactusTelemetry::sendToSupabase([[maybe_unused]] const TelemetryMetr
 
     std::string url = SUPABASE_URL + "/rest/v1/logs";
     HttpClient::postJson(url, headers, payload);
+#else
+    (void)metrics;
 #endif
 }
 

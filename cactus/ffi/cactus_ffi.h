@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #if __GNUC__ >= 4
   #define CACTUS_FFI_EXPORT __attribute__ ((visibility ("default")))
@@ -52,7 +53,8 @@ CACTUS_FFI_EXPORT int cactus_embed(
     const char* text,
     float* embeddings_buffer,
     size_t buffer_size,
-    size_t* embedding_dim
+    size_t* embedding_dim,
+    bool normalize
 );
 
 CACTUS_FFI_EXPORT int cactus_image_embed(

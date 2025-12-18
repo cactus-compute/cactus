@@ -288,54 +288,8 @@ void Model::update_kv_cache(CactusGraph* gb, size_t seq_len) {
 }
 
 
-std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bool pooled, const std::string& profile_file) {
+std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bool pooled, bool normalize, const std::string& profile_file) {
     std::vector<float> embeddings;
-
-    if (has_npu_prefill() && tokens.size() <= static_cast<size_t>(npu_prefill_->get_chunk_size())) {
-        const int chunk_size = npu_prefill_->get_chunk_size();
-        const int hidden_dim = npu_prefill_->get_hidden_dim();
-
-        std::vector<__fp16> token_embeddings = get_token_embeddings(tokens);
-        if (token_embeddings.empty()) {
-            throw std::runtime_error("Failed to get token embeddings for NPU embeddings");
-        }
-
-        std::vector<__fp16> chunk_embeddings(chunk_size * hidden_dim, __fp16(0));
-        std::copy(token_embeddings.begin(), token_embeddings.end(), chunk_embeddings.begin());
-
-        // Use direct buffer access to avoid intermediate copies
-        npu::NPUPrefillDirectResult direct_result = npu_prefill_->prefill_chunk_direct(chunk_embeddings, 0);
-
-        if (!direct_result.valid || !direct_result.hidden.data) {
-            throw std::runtime_error("NPU model did not return hidden output");
-        }
-
-        const __fp16* hidden_data = direct_result.hidden.data;
-        size_t num_tokens = tokens.size();
-
-        if (pooled) {
-            embeddings.resize(hidden_dim);
-            std::fill(embeddings.begin(), embeddings.end(), 0.0f);
-
-            for (size_t t = 0; t < num_tokens; t++) {
-                for (int d = 0; d < hidden_dim; d++) {
-                    embeddings[d] += static_cast<float>(hidden_data[t * hidden_dim + d]);
-                }
-            }
-            for (int d = 0; d < hidden_dim; d++) {
-                embeddings[d] /= static_cast<float>(num_tokens);
-            }
-        } else {
-            size_t total_size = num_tokens * hidden_dim;
-            embeddings.resize(total_size);
-            for (size_t i = 0; i < total_size; i++) {
-                embeddings[i] = static_cast<float>(hidden_data[i]);
-            }
-        }
-
-        return embeddings;
-    }
-
     auto final_hidden = forward(tokens);
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
@@ -392,6 +346,20 @@ std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bo
             float scale = output_buffer.quantization_scale;
             for (size_t i = 0; i < total_size; i++) {
                 embeddings[i] = hidden_states[i] * scale;
+            }
+        }
+    }
+
+    if (normalize && !embeddings.empty()) {
+        float norm_sq = 0.0f;
+        for (float v : embeddings) {
+            norm_sq += v * v;
+        }
+        float norm = std::sqrt(norm_sq);
+        if (norm > 1e-12f) {
+            float inv_norm = 1.0f / norm;
+            for (float& v : embeddings) {
+                v *= inv_norm;
             }
         }
     }

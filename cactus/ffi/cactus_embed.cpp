@@ -76,7 +76,8 @@ int cactus_embed(
     const char* text,
     float* embeddings_buffer,
     size_t buffer_size,
-    size_t* embedding_dim
+    size_t* embedding_dim,
+    bool normalize
 ) {
     if (!model || !text || !embeddings_buffer || buffer_size == 0) {
         CACTUS_LOG_ERROR("embed", "Invalid parameters for text embedding");
@@ -93,7 +94,7 @@ int cactus_embed(
             return -1;
         }
 
-        std::vector<float> embeddings = handle->model->get_embeddings(tokens, true);
+        std::vector<float> embeddings = handle->model->get_embeddings(tokens, true, normalize);
         if (embeddings.size() * sizeof(float) > buffer_size) {
             CACTUS_LOG_ERROR("embed", "Buffer too small: need " << embeddings.size() * sizeof(float) << " bytes, got " << buffer_size);
             return -2;
