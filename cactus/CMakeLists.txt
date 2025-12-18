@@ -33,6 +33,7 @@ file(GLOB GRAPH_SOURCES "graph/*.cpp")
 file(GLOB KERNEL_SOURCES "kernel/*.cpp")
 file(GLOB FFI_SOURCES "ffi/*.cpp")
 file(GLOB MODEL_SOURCES "models/*.cpp")
+
 file(GLOB NPU_SOURCES "npu/*.cpp")
 
 set(CACTUS_PRO_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../libs/libcactus_pro.a")
@@ -40,7 +41,7 @@ if(EXISTS ${CACTUS_PRO_LIB})
     message(STATUS "Found libcactus_pro.a - NPU acceleration enabled")
     set(CACTUS_HAS_PRO TRUE)
 else()
-    message(STATUS "libcactus_pro.a not found - NPU acceleration disabled")
+    message(STATUS "libcactus_pro.a not found - NPU acceleration disabled (using stubs)")
     set(CACTUS_HAS_PRO FALSE)
 endif()
 
