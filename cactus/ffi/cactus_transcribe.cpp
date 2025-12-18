@@ -149,7 +149,8 @@ int cactus_transcribe(
         float temperature, top_p;
         size_t top_k, max_tokens;
         std::vector<std::string> stop_sequences;
-        parse_options_json(options_json ? options_json : "", temperature, top_p, top_k, max_tokens, stop_sequences);
+        bool force_tools = false;  
+        parse_options_json(options_json ? options_json : "", temperature, top_p, top_k, max_tokens, stop_sequences, force_tools);
 
         std::vector<float> mel_bins;
         if (audio_file_path == nullptr) {

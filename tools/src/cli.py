@@ -207,18 +207,15 @@ def cmd_build(args):
     cactus_dir = PROJECT_ROOT / "cactus"
     lib_path = cactus_dir / "build" / "libcactus.a"
 
-    if not lib_path.exists():
-        print_color(YELLOW, "Cactus library not found. Building it now...")
-        build_script = cactus_dir / "build.sh"
-        if not build_script.exists():
-            print_color(RED, f"Error: build.sh not found at {build_script}")
-            return 1
-        result = run_command(str(build_script), cwd=cactus_dir, check=False)
-        if result.returncode != 0:
-            print_color(RED, "Failed to build cactus library")
-            return 1
-    else:
-        print_color(GREEN, "Cactus library found.")
+    print_color(YELLOW, "Building Cactus library...")
+    build_script = cactus_dir / "build.sh"
+    if not build_script.exists():
+        print_color(RED, f"Error: build.sh not found at {build_script}")
+        return 1
+    result = run_command(str(build_script), cwd=cactus_dir, check=False)
+    if result.returncode != 0:
+        print_color(RED, "Failed to build cactus library")
+        return 1
 
     tests_dir = PROJECT_ROOT / "tests"
     build_dir = tests_dir / "build"
