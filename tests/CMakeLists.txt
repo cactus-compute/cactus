@@ -14,19 +14,11 @@ endif()
 set(CACTUS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../cactus)
 set(CACTUS_BUILD_DIR ${CACTUS_ROOT}/build)
 
-find_library(CACTUS_LIB
+find_library(CACTUS_LIB 
     NAMES cactus
     PATHS ${CACTUS_BUILD_DIR} ${CACTUS_BUILD_DIR}/lib
     REQUIRED
 )
-
-set(CACTUS_UTIL_LIB "")
-if(DEFINED ENV{CACTUS_UTIL_PATH})
-    set(CACTUS_UTIL_LIB $ENV{CACTUS_UTIL_PATH})
-    message(STATUS "NPU support enabled: linking with cactus_util from ${CACTUS_UTIL_LIB}")
-else()
-    message(STATUS "Building without cactus_util - NPU will load dynamically at runtime if available")
-endif()
  
 set(MMAN_LIB "")
 if(NOT APPLE)
@@ -63,15 +55,6 @@ foreach(TEST_FILE ${TEST_SOURCES})
     get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
     add_executable(${TEST_NAME} ${TEST_FILE} test_utils.cpp)
     target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_LIB})
-
-    if(CACTUS_UTIL_LIB)
-        if(APPLE)
-            target_link_options(${TEST_NAME} PRIVATE -Wl,-force_load,${CACTUS_UTIL_LIB})
-            target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_UTIL_LIB})
-        elseif(ANDROID)
-            target_link_libraries(${TEST_NAME} PRIVATE -Wl,--whole-archive ${CACTUS_UTIL_LIB} -Wl,--no-whole-archive)
-        endif()
-    endif()
 
 
     if(MMAN_LIB)
