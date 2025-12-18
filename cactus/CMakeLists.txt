@@ -1,9 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 project(Cactus LANGUAGES CXX)
 
-# ------------------------------------------------------------------------------
-# Build settings
-# ------------------------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
@@ -16,15 +13,9 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-# ------------------------------------------------------------------------------
-# Version
-# ------------------------------------------------------------------------------
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../CACTUS_VERSION" CACTUS_VERSION)
 string(STRIP "${CACTUS_VERSION}" CACTUS_VERSION)
 
-# ------------------------------------------------------------------------------
-# Platform-specific settings
-# ------------------------------------------------------------------------------
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-designated-field-initializers")
@@ -37,19 +28,20 @@ else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+fp16+simd+dotprod -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-designated-field-initializers")
 endif()
 
-# ------------------------------------------------------------------------------
-# Sources
-# ------------------------------------------------------------------------------
 file(GLOB ENGINE_SOURCES "engine/*.cpp")
 file(GLOB GRAPH_SOURCES "graph/*.cpp")
 file(GLOB KERNEL_SOURCES "kernel/*.cpp")
 file(GLOB FFI_SOURCES "ffi/*.cpp")
 file(GLOB MODEL_SOURCES "models/*.cpp")
+file(GLOB NPU_SOURCES "npu/*.cpp")
 
-if(APPLE)
-    file(GLOB NPU_SOURCES "npu/*.mm")
+set(CACTUS_PRO_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../libs/libcactus_pro.a")
+if(EXISTS ${CACTUS_PRO_LIB})
+    message(STATUS "Found libcactus_pro.a - NPU acceleration enabled")
+    set(CACTUS_HAS_PRO TRUE)
 else()
-    set(NPU_SOURCES "")
+    message(STATUS "libcactus_pro.a not found - NPU acceleration disabled")
+    set(CACTUS_HAS_PRO FALSE)
 endif()
 
 set(COMMON_SOURCES
@@ -76,21 +68,25 @@ set(COMMON_DEFINITIONS
     CACTUS_VERSION="${CACTUS_VERSION}"
 )
 
-# ------------------------------------------------------------------------------
-# Helper function to configure targets
-# ------------------------------------------------------------------------------
 function(configure_cactus_target target_name)
     target_compile_definitions(${target_name} PUBLIC ${COMMON_DEFINITIONS})
     target_include_directories(${target_name} PUBLIC ${COMMON_INCLUDES})
 
-    # Compiler-specific warnings
     if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         target_compile_options(${target_name} PRIVATE -Wno-c99-extensions)
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         target_compile_options(${target_name} PRIVATE -Wno-pedantic)
     endif()
 
-    # Apple frameworks and libraries
+    if(CACTUS_HAS_PRO)
+        if(APPLE)
+            target_link_libraries(${target_name} PUBLIC "-force_load ${CACTUS_PRO_LIB}")
+        else()
+            target_link_libraries(${target_name} PUBLIC
+                "-Wl,--whole-archive" ${CACTUS_PRO_LIB} "-Wl,--no-whole-archive")
+        endif()
+    endif()
+
     if(APPLE)
         target_link_libraries(${target_name} PUBLIC
             ${COREML_FRAMEWORK}
@@ -101,15 +97,9 @@ function(configure_cactus_target target_name)
     endif()
 endfunction()
 
-# ------------------------------------------------------------------------------
-# Static library (for linking into executables)
-# ------------------------------------------------------------------------------
 add_library(cactus STATIC ${COMMON_SOURCES})
 configure_cactus_target(cactus)
 
-# ------------------------------------------------------------------------------
-# Shared library (for FFI/Python bindings)
-# ------------------------------------------------------------------------------
 add_library(cactus_ffi SHARED ${COMMON_SOURCES})
 configure_cactus_target(cactus_ffi)
 set_target_properties(cactus_ffi PROPERTIES
@@ -117,11 +107,3 @@ set_target_properties(cactus_ffi PROPERTIES
     OUTPUT_NAME "cactus"
 )
 
-# ------------------------------------------------------------------------------
-# Objective-C++ ARC for NPU sources
-# ------------------------------------------------------------------------------
-if(APPLE AND NPU_SOURCES)
-    set_source_files_properties(${NPU_SOURCES} PROPERTIES
-        COMPILE_FLAGS "-fobjc-arc"
-    )
-endif()

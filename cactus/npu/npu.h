@@ -9,7 +9,6 @@
 namespace cactus {
 namespace npu {
 
-
 class NPUEncoder {
 public:
     virtual ~NPUEncoder() = default;
@@ -37,19 +36,15 @@ public:
     virtual size_t get_output_buffer_size() const = 0;
 };
 
-std::unique_ptr<NPUEncoder> create_encoder();
-
-bool is_npu_available();
-
 struct NPUBufferRef {
     const __fp16* data;
-    size_t count;  
+    size_t count;
 };
 
 struct NPUPrefillDirectResult {
     NPUBufferRef hidden;
-    std::vector<NPUBufferRef> k_caches; 
-    std::vector<NPUBufferRef> v_caches; 
+    std::vector<NPUBufferRef> k_caches;
+    std::vector<NPUBufferRef> v_caches;
     bool valid;
 };
 
@@ -70,7 +65,10 @@ public:
         const std::string& input_name = "x") = 0;
 };
 
+
+std::unique_ptr<NPUEncoder> create_encoder();
 std::unique_ptr<NPUPrefill> create_prefill();
+bool is_npu_available();
 
 } // namespace npu
 } // namespace cactus
