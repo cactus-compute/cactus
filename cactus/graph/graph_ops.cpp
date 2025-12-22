@@ -61,7 +61,8 @@ void compute_reduce_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
                     int64_t result = cactus_sum_all_int8(input_buffer.data_as<int8_t>(), input_buffer.total_size);
                     node.output_buffer.data_as<int8_t>()[0] = static_cast<int8_t>(std::max(static_cast<int64_t>(-128), std::min(static_cast<int64_t>(127), result)));
                 } else if (input_buffer.precision == Precision::FP16) {
-                    throw std::runtime_error("FP16 sum not yet implemented");
+                    double result = cactus_sum_all_f16(input_buffer.data_as<__fp16>(), input_buffer.total_size);
+                    node.output_buffer.data_as<__fp16>()[0] = static_cast<__fp16>(result);
                 } else {
                     double result = cactus_sum_all_f32(input_buffer.data_as<float>(), input_buffer.total_size);
                     node.output_buffer.data_as<float>()[0] = static_cast<float>(result);

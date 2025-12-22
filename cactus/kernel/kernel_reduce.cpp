@@ -511,7 +511,7 @@ void cactus_sum_axis_f32(const float* input, float* output, size_t outer_size, s
         });
 }
 
-double cactus_mean_all_f16(const __fp16* data, size_t num_elements) {
+double cactus_sum_all_f16(const __fp16* data, size_t num_elements) {
     return CactusThreading::parallel_reduce(
         num_elements, CactusThreading::Thresholds::ALL_REDUCE,
         [&](size_t start_idx, size_t end_idx) -> double {
@@ -540,7 +540,12 @@ double cactus_mean_all_f16(const __fp16* data, size_t num_elements) {
         },
         0.0,
         [](double a, double b) { return a + b; }
-    ) / static_cast<double>(num_elements);
+    );
+}
+
+double cactus_mean_all_f16(const __fp16* data, size_t num_elements) {
+    double sum = cactus_sum_all_f16(data, num_elements);
+    return sum / static_cast<double>(num_elements);
 }
 
 void cactus_mean_axis_f16(const __fp16* input, __fp16* output, size_t outer_size, size_t axis_size, size_t inner_size) {

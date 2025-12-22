@@ -47,7 +47,7 @@ else()
     message(STATUS "SDL2 not found; microphone tests will be skipped")
 endif()
 
-file(GLOB TEST_SOURCES "test_en*.cpp")
+file(GLOB TEST_SOURCES "test_*.cpp")
 list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_utils.cpp")
 
 foreach(TEST_FILE ${TEST_SOURCES})

@@ -242,6 +242,26 @@ bool test_reduction_operations() {
            fixture.verify_output(sum_axis1, {6, 15});
 }
 
+bool test_fp16_reduction_operations() {
+    CactusGraph graph;
+    
+    size_t input_a = graph.input({2, 3}, Precision::FP16);
+    size_t sum_all = graph.sum(input_a, -1);
+    
+    std::vector<__fp16> input_data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+    graph.set_input(input_a, input_data.data(), Precision::FP16);
+    graph.execute();
+    
+    __fp16* output = static_cast<__fp16*>(graph.get_output(sum_all));
+    double result = static_cast<double>(output[0]);
+    double expected = 21.0;
+    
+    bool success = std::abs(result - expected) < 0.1f; // FP16 has lower precision
+    
+    graph.hard_reset();
+    return success;
+}
+
 bool test_mean_operations() {
     TestUtils::Int8TestFixture fixture("Mean Operations");
     
@@ -779,6 +799,7 @@ int main() {
     runner.run_test("Scalar Subtract/Divide", test_scalar_subtract_divide());
     runner.run_test("Scalar Math Functions", test_scalar_math_functions());
     runner.run_test("Reduction Operations", test_reduction_operations());
+    runner.run_test("FP16 Reduction Operations", test_fp16_reduction_operations());
     runner.run_test("Mean Operations", test_mean_operations());
     runner.run_test("Variance Operations", test_variance_operations());
     runner.run_test("Min/Max Operations", test_min_max_operations());

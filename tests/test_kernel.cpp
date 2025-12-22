@@ -97,6 +97,7 @@ bool test_neon_matrix_multiply_correctness() {
 }
 
 bool test_neon_reduction_correctness() {
+    // Test INT8 sum
     std::vector<int8_t> input = {1, 2, 3, 4, 5, 6, 7, 8};
     
     int64_t sum_result = cactus_sum_all_int8(input.data(), input.size());
@@ -110,6 +111,23 @@ bool test_neon_reduction_correctness() {
     double expected_mean = 4.5; 
     
     if (std::abs(mean_result - expected_mean) > 1e-6) {
+        return false;
+    }
+    
+    // Test FP16 sum
+    std::vector<__fp16> input_f16 = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
+    double sum_result_f16 = cactus_sum_all_f16(input_f16.data(), input_f16.size());
+    double expected_sum_f16 = 36.0;
+    
+    if (std::abs(sum_result_f16 - expected_sum_f16) > 1e-3) {
+        return false;
+    }
+    
+    // Test FP16 mean (which uses sum internally)
+    double mean_result_f16 = cactus_mean_all_f16(input_f16.data(), input_f16.size());
+    double expected_mean_f16 = 4.5;
+    
+    if (std::abs(mean_result_f16 - expected_mean_f16) > 1e-3) {
         return false;
     }
     

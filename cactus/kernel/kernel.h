@@ -118,6 +118,7 @@ void cactus_transpose_f32(const float* source, float* destination, const size_t*
 
 int64_t cactus_sum_all_int8(const int8_t* data, size_t num_elements);
 void cactus_sum_axis_int8(const int8_t* input, int8_t* output, size_t outer_size, size_t axis_size, size_t inner_size);
+double cactus_sum_all_f16(const __fp16* data, size_t num_elements);
 double cactus_sum_all_f32(const float* data, size_t num_elements);
 void cactus_sum_axis_f32(const float* input, float* output, size_t outer_size, size_t axis_size, size_t inner_size);
 
