@@ -124,6 +124,7 @@ Example response from Gemma3-270m-INT8
 - [Flutter SDK](https://github.com/cactus-compute/cactus-flutter)
 - [React Native SDK](https://github.com/cactus-compute/cactus-react-native)
 - [Swift SDK](https://github.com/mhayes853/swift-cactus)
+- [Rust SDK](https://github.com/mrsarac/cactus-rs)
 
 ## Try demo apps
 
