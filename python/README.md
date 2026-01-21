@@ -61,6 +61,7 @@ Run chat completion. Returns JSON string with response and metrics.
 | `top_k` | `int` | Top-k sampling |
 | `max_tokens` | `int` | Maximum tokens to generate |
 | `stop_sequences` | `list` | Stop sequences |
+| `include_stop_sequences` | `bool` | Include matched stop sequences in output (default: `False`) |
 | `force_tools` | `bool` | Constrain output to tool call format |
 | `tool_rag_top_k` | `int` | Select top-k relevant tools via Tool RAG (default: 2, 0 = use all tools) |
 | `confidence_threshold` | `float` | Minimum confidence for local generation (default: 0.7, triggers cloud_handoff when below) |

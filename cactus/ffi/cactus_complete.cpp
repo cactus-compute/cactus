@@ -78,9 +78,9 @@ int cactus_complete(
         float temperature, top_p, confidence_threshold;
         size_t top_k, max_tokens, tool_rag_top_k;
         std::vector<std::string> stop_sequences;
-        bool force_tools;
+        bool force_tools, include_stop_sequences;
         parse_options_json(options_json ? options_json : "",
-                          temperature, top_p, top_k, max_tokens, stop_sequences, force_tools, tool_rag_top_k, confidence_threshold);
+                          temperature, top_p, top_k, max_tokens, stop_sequences, force_tools, tool_rag_top_k, confidence_threshold, include_stop_sequences);
 
         std::vector<ToolFunction> tools;
         if (tools_json && strlen(tools_json) > 0)
@@ -151,6 +151,12 @@ int cactus_complete(
 
         std::vector<std::vector<uint32_t>> stop_token_sequences;
         stop_token_sequences.push_back({tokenizer->get_eos_token()});
+        if (stop_sequences.empty()) {
+            std::string default_stop = tokenizer->get_default_stop_sequence();
+            if (!default_stop.empty()) {
+                stop_sequences.push_back(default_stop);
+            }
+        }
         for (const auto& stop_seq : stop_sequences)
             stop_token_sequences.push_back(tokenizer->encode(stop_seq));
 
@@ -163,6 +169,18 @@ int cactus_complete(
         double time_to_first_token = 0.0;
         uint32_t next_token;
         float first_token_entropy = 0.0f;
+
+        auto trim_stop_suffix = [&]() {
+            if (include_stop_sequences) return;
+            for (const auto& stop_seq : stop_token_sequences) {
+                if (stop_seq.empty()) continue;
+                if (generated_tokens.size() >= stop_seq.size() &&
+                    std::equal(stop_seq.rbegin(), stop_seq.rend(), generated_tokens.rbegin())) {
+                    generated_tokens.resize(generated_tokens.size() - stop_seq.size());
+                    break;
+                }
+            }
+        };
 
         if (tokens_to_process.empty()) {
             if (handle->processed_tokens.empty()) {
@@ -268,13 +286,18 @@ int cactus_complete(
                     handle->model->update_tool_constraints(next_token);
                 }
 
-                if (matches_stop_sequence(generated_tokens, stop_token_sequences)) break;
+                if (matches_stop_sequence(generated_tokens, stop_token_sequences)) {
+                    trim_stop_suffix();
+                    break;
+                }
 
                 if (callback) {
                     std::string new_text = tokenizer->decode({next_token});
                     callback(new_text.c_str(), next_token, user_data);
                 }
             }
+        } else {
+            trim_stop_suffix();
         }
 
         float mean_entropy = total_entropy_sum / static_cast<float>(total_entropy_count);

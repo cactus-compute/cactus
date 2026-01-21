@@ -66,6 +66,19 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
     file.close();
 }
 
+std::string Tokenizer::get_default_stop_sequence() const {
+    switch (model_type_) {
+        case ModelType::GEMMA:
+            return "<end_of_turn>";
+        case ModelType::QWEN:
+        case ModelType::LFM2:
+        case ModelType::SMOL:
+            return "<|im_end|>";
+        default:
+            return "<|im_end|>";
+    }
+}
+
 std::vector<uint32_t> Tokenizer::apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt) const {
     std::string formatted_prompt = format_chat_prompt(messages, add_generation_prompt);
     return encode(formatted_prompt);

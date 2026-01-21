@@ -299,7 +299,8 @@ inline void parse_options_json(const std::string& json,
                                std::vector<std::string>& stop_sequences,
                                bool& force_tools,
                                size_t& tool_rag_top_k,
-                               float& confidence_threshold) {
+                               float& confidence_threshold,
+                               bool& include_stop_sequences) {
     temperature = 0.0f;
     top_p = 0.0f;
     top_k = 0;
@@ -307,6 +308,7 @@ inline void parse_options_json(const std::string& json,
     force_tools = false;
     tool_rag_top_k = 2;  // 0 = disabled, N = select top N relevant tools
     confidence_threshold = 0.7f;  // trigger cloud handoff when confidence < this value
+    include_stop_sequences = false;
     stop_sequences.clear();
 
     if (json.empty()) return;
@@ -352,6 +354,13 @@ inline void parse_options_json(const std::string& json,
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
         confidence_threshold = std::stof(json.substr(pos));
+    }
+
+    pos = json.find("\"include_stop_sequences\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(json[pos])) pos++;
+        include_stop_sequences = (json.substr(pos, 4) == "true");
     }
 
     pos = json.find("\"stop_sequences\"");

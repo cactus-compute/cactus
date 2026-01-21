@@ -218,6 +218,7 @@ def cactus_complete(
     top_k=None,
     max_tokens=None,
     stop_sequences=None,
+    include_stop_sequences=None,
     force_tools=False,
     tool_rag_top_k=None,
     confidence_threshold=None,
@@ -235,6 +236,7 @@ def cactus_complete(
         top_k: Top-k sampling
         max_tokens: Maximum tokens to generate
         stop_sequences: List of stop sequences
+        include_stop_sequences: Include matched stop sequences in output (default: False)
         force_tools: Constrain output to tool call format
         tool_rag_top_k: Select top-k relevant tools via Tool RAG (default: 2, 0 = disabled)
         confidence_threshold: Minimum confidence for local generation (default: 0.7, triggers cloud_handoff when below)
@@ -285,6 +287,8 @@ def cactus_complete(
         options["max_tokens"] = max_tokens
     if stop_sequences is not None:
         options["stop_sequences"] = stop_sequences
+    if include_stop_sequences is not None:
+        options["include_stop_sequences"] = include_stop_sequences
     if force_tools:
         options["force_tools"] = True
     if tool_rag_top_k is not None:

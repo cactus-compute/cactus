@@ -152,6 +152,7 @@ public:
     virtual uint32_t get_bos_token() const = 0;
     virtual uint32_t get_eos_token() const = 0;
     virtual bool has_chat_template() const { return has_chat_template_; }
+    std::string get_default_stop_sequence() const;
 
     virtual bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) = 0;
     
