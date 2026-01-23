@@ -463,6 +463,49 @@ Lfm2VlModel::ForwardImageResult Lfm2VlModel::forward_images(
         }
         gb->set_input(embedding_input.input_node, segment_data.data(), Precision::FP32);
     }
+    return language_model_.forward(gb, merged_embeddings.node_id, merged_embeddings.seq_len, backend, use_cache);
+    return ForwardImageResult{final_hidden, merged_embeddings.seq_len};
+}
+
+Lfm2VlModel::ForwardImageResult Lfm2VlModel::forward_media_inputs(
+    CactusGraph* gb,
+    const std::vector<uint32_t>& tokens,
+    const std::vector<const Siglip2Preprocessor::PreprocessedImage*>& images,
+    ComputeBackend backend,
+    bool use_cache) {
+    if (!gb) {
+        throw std::runtime_error("Graph must be initialized before forwarding");
+    }
+    if (tokens.empty()) {
+        throw std::runtime_error("Token sequence cannot be empty");
+    }
+
+    std::vector<std::vector<ProjectedTileFeature>> all_image_embeddings;
+    all_image_embeddings.reserve(images.size());
+    for (const auto* img : images) {
+        auto image_features = get_image_features(gb, *img, backend);
+        all_image_embeddings.push_back(std::move(image_features));
+    }
+
+    std::vector<TextEmbeddingInput> text_embedding_inputs;
+    text_embedding_inputs.reserve(tokens.size() / 4 + 1);
+    
+    auto merged_embeddings = merge_image_text_embeddings(gb, tokens, all_image_embeddings, text_embedding_inputs);
+    if (merged_embeddings.seq_len == 0) {
+        throw std::runtime_error("Merged embedding sequence length cannot be zero");
+    }
+
+    for (const auto& embedding_input : text_embedding_inputs) {
+        if (embedding_input.tokens.empty()) {
+            continue;
+        }
+
+        std::vector<float> segment_data(embedding_input.tokens.size());
+        for (size_t i = 0; i < embedding_input.tokens.size(); ++i) {
+            segment_data[i] = static_cast<float>(embedding_input.tokens[i]);
+        }
+        gb->set_input(embedding_input.input_node, segment_data.data(), Precision::FP32);
+    }
     size_t final_hidden = language_model_.forward(gb, merged_embeddings.node_id, merged_embeddings.seq_len, backend, use_cache);
     return ForwardImageResult{final_hidden, merged_embeddings.seq_len};
 }
@@ -476,12 +519,31 @@ uint32_t Lfm2VlModel::decode_with_images(
     const std::string& profile_file,
     float* out_entropy) {
 
+    std::vector<MediaInput> media;
+    media.reserve(image_paths.size());
+    for(const auto& path : image_paths) {
+        MediaInput m;
+        m.type = MediaInput::Type::PATH;
+        m.path = path;
+        media.push_back(m);
+    }
+    return decode_with_media(tokens, media, temperature, top_p, top_k, profile_file, out_entropy);
+}
+
+uint32_t Lfm2VlModel::decode_with_media(
+    const std::vector<uint32_t>& tokens,
+    const std::vector<MediaInput>& media,
+    float temperature,
+    float top_p,
+    size_t top_k,
+    const std::string& profile_file,
+    float* out_entropy) {
+
     if (!initialized_ || !graph_handle_) {
         throw std::runtime_error("Model not initialized - call init() first");
     }
 
-    if (image_paths.empty()) {
-
+    if (media.empty()) {
         image_prefill_completed_ = false;
         last_token_count_ = tokens.size();
         return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy);
@@ -506,7 +568,6 @@ uint32_t Lfm2VlModel::decode_with_images(
     bool need_prefill = cache_empty || !image_prefill_completed_;
 
     if (!need_prefill && tokens.size() <= last_token_count_) {
-        
         reset_cache();
         need_prefill = true;
     }
@@ -515,7 +576,29 @@ uint32_t Lfm2VlModel::decode_with_images(
     size_t final_hidden_node = 0;
 
     if (need_prefill) {
-        auto forward_result = forward_images(gb, tokens, image_paths, backend, true);
+        // Preprocess all images
+        std::vector<Siglip2Preprocessor::PreprocessedImage> preprocessed_images;
+        preprocessed_images.reserve(media.size());
+        std::vector<const Siglip2Preprocessor::PreprocessedImage*> preprocessed_ptrs;
+        preprocessed_ptrs.reserve(media.size());
+
+        for (const auto& item : media) {
+            if (item.type == MediaInput::Type::PATH) {
+                preprocessed_images.push_back(preprocessor_.preprocess_from_file(item.path));
+            } else {
+                preprocessed_images.push_back(preprocessor_.preprocess_from_memory(
+                    item.buffer, 
+                    static_cast<int>(item.width), 
+                    static_cast<int>(item.height), 
+                    static_cast<int>(item.channels)));
+            }
+        }
+
+        for(const auto& img : preprocessed_images) {
+            preprocessed_ptrs.push_back(&img);
+        }
+
+        auto forward_result = forward_media_inputs(gb, tokens, preprocessed_ptrs, backend, true);
         
         final_hidden_node = forward_result.final_hidden_node;
         seq_len_for_updates = forward_result.seq_len;
@@ -531,7 +614,6 @@ uint32_t Lfm2VlModel::decode_with_images(
                 throw std::runtime_error("Token sequence cannot be empty for cached decode step");
             }
             delta = 1;
-            
         }
         std::vector<uint32_t> incremental_tokens(tokens.end() - delta, tokens.end());
         
@@ -545,10 +627,8 @@ uint32_t Lfm2VlModel::decode_with_images(
     auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k);
     if (!profile_file.empty()) {
         gb->execute(profile_file);
-
     } else {
         gb->execute();
-
     }
 
     if (out_entropy) {

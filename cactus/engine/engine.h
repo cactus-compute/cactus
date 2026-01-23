@@ -502,6 +502,24 @@ public:
     virtual uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& mel_bins, float temperature = 0.0f, float top_p = 0.0f,
                       size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr);
 
+    struct MediaInput {
+        enum class Type { PATH, BUFFER };
+        Type type;
+        std::string path; 
+        const unsigned char* buffer = nullptr;
+        size_t width = 0;
+        size_t height = 0;
+        size_t channels = 0;
+        std::string id; 
+    };
+
+    virtual uint32_t decode_with_media(const std::vector<uint32_t>& tokens, const std::vector<MediaInput>& media,
+                                          float temperature = -1.0f, float top_p = -1.0f,
+                                          size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr) {
+        // Default implementation throws, similar to decode_with_images
+        throw std::runtime_error("decode_with_media not implemented for this model");
+    }
+
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, bool normalize = false, const std::string& profile_file = "");
     
     virtual std::vector<float> get_image_embeddings(const std::string& image_path);

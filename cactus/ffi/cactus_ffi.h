@@ -59,6 +59,27 @@ CACTUS_FFI_EXPORT int cactus_complete(
     void* user_data                         // optional
 );
 
+typedef struct {
+    const char* id;           // Identifier in messages_json (e.g. "buffer://img1")
+    const void* data;         // Raw pixel data
+    size_t width;
+    size_t height;
+    size_t channels;          // 3 for RGB, 4 for RGBA/BGRA
+} cactus_image_t;
+
+CACTUS_FFI_EXPORT int cactus_complete_with_images(
+    cactus_model_t model,
+    const char* messages_json,
+    const cactus_image_t* images,
+    size_t image_count,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,               // optional
+    const char* tools_json,                 // optional
+    cactus_token_callback callback,         // optional
+    void* user_data                         // optional
+);
+
 // ----------------------------------------------------------------------------
 // Tokenization
 // ----------------------------------------------------------------------------

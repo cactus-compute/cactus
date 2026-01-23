@@ -656,6 +656,15 @@ public:
         const std::string& profile_file = "",
         float* out_entropy = nullptr) override;
 
+    uint32_t decode_with_media(
+        const std::vector<uint32_t>& tokens,
+        const std::vector<MediaInput>& media,
+        float temperature = -1.0f,
+        float top_p = -1.0f,
+        size_t top_k = 0,
+        const std::string& profile_file = "",
+        float* out_entropy = nullptr) override;
+
     void reset_cache() override;
     std::vector<float> get_image_embeddings(const std::string& image_path) override;
 
@@ -695,6 +704,13 @@ private:
         CactusGraph* gb,
         const std::vector<uint32_t>& tokens,
         const std::vector<std::string>& image_paths,
+        ComputeBackend backend,
+        bool use_cache);
+
+    ForwardImageResult forward_media_inputs(
+        CactusGraph* gb,
+        const std::vector<uint32_t>& tokens,
+        const std::vector<const Siglip2Preprocessor::PreprocessedImage*>& images,
         ComputeBackend backend,
         bool use_cache);
     size_t build_multimodal_projector(
