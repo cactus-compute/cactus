@@ -516,6 +516,7 @@ public:
     virtual uint32_t decode_with_media(const std::vector<uint32_t>& tokens, const std::vector<MediaInput>& media,
                                           float temperature = -1.0f, float top_p = -1.0f,
                                           size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr) {
+        (void)tokens; (void)media; (void)temperature; (void)top_p; (void)top_k; (void)profile_file; (void)out_entropy;
         // Default implementation throws, similar to decode_with_images
         throw std::runtime_error("decode_with_media not implemented for this model");
     }

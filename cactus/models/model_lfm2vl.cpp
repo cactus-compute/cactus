@@ -463,7 +463,7 @@ Lfm2VlModel::ForwardImageResult Lfm2VlModel::forward_images(
         }
         gb->set_input(embedding_input.input_node, segment_data.data(), Precision::FP32);
     }
-    return language_model_.forward(gb, merged_embeddings.node_id, merged_embeddings.seq_len, backend, use_cache);
+    size_t final_hidden = language_model_.forward(gb, merged_embeddings.node_id, merged_embeddings.seq_len, backend, use_cache);
     return ForwardImageResult{final_hidden, merged_embeddings.seq_len};
 }
 
