@@ -176,35 +176,141 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
         }
 
         size_t role_pos = json.find("\"role\"", pos);
-        if (role_pos == std::string::npos || role_pos >= obj_end) break;
+        if (role_pos != std::string::npos && role_pos < obj_end) {
+            size_t role_start = json.find('"', role_pos + 6) + 1;
+            size_t role_end = json.find('"', role_start);
+            msg.role = json.substr(role_start, role_end - role_start);
+        }
         
-        size_t role_start = json.find('"', role_pos + 6) + 1;
-        size_t role_end = json.find('"', role_start);
-        msg.role = json.substr(role_start, role_end - role_start);
-        
-        size_t content_pos = json.find("\"content\"", role_end);
+        size_t content_pos = json.find("\"content\"", pos);
         if (content_pos != std::string::npos && content_pos < obj_end) {
-            size_t content_start = json.find('"', content_pos + 9) + 1;
-            size_t content_end = content_start;
-            
-            while (content_end < json.length()) {
-                content_end = json.find('"', content_end);
-                if (content_end == std::string::npos) break;
-                if (json[content_end - 1] != '\\') break;
-                content_end++;
-            }
-            
-            msg.content = json.substr(content_start, content_end - content_start);
-            
-            size_t escape_pos = 0;
-            while ((escape_pos = msg.content.find("\\n", escape_pos)) != std::string::npos) {
-                msg.content.replace(escape_pos, 2, "\n");
-                escape_pos += 1;
-            }
-            escape_pos = 0;
-            while ((escape_pos = msg.content.find("\\\"", escape_pos)) != std::string::npos) {
-                msg.content.replace(escape_pos, 2, "\"");
-                escape_pos += 1;
+            size_t colon_pos = json.find(':', content_pos + 9);
+            if (colon_pos != std::string::npos && colon_pos < obj_end) {
+                size_t val_start = colon_pos + 1;
+                while (val_start < obj_end && std::isspace(json[val_start])) val_start++;
+                
+                if (val_start < obj_end) {
+                    if (json[val_start] == '"') {
+                        // String content
+                        size_t str_start = val_start + 1;
+                        size_t str_end = str_start;
+                        while (str_end < json.length()) {
+                            str_end = json.find('"', str_end);
+                            if (str_end == std::string::npos || str_end >= obj_end) break;
+                            if (json[str_end - 1] != '\\') break;
+                            str_end++;
+                        }
+                        
+                        msg.content = json.substr(str_start, str_end - str_start);
+                        
+                        size_t escape_pos = 0;
+                        while ((escape_pos = msg.content.find("\\n", escape_pos)) != std::string::npos) {
+                            msg.content.replace(escape_pos, 2, "\n");
+                            escape_pos += 1;
+                        }
+                        escape_pos = 0;
+                        while ((escape_pos = msg.content.find("\\\"", escape_pos)) != std::string::npos) {
+                            msg.content.replace(escape_pos, 2, "\"");
+                            escape_pos += 1;
+                        }
+                    } else if (json[val_start] == '[') {
+                        // Array content (multi-modal)
+                        size_t arr_start = val_start;
+                        int arr_brace_count = 1;
+                        size_t arr_end = arr_start + 1;
+                        while (arr_end < obj_end && arr_brace_count > 0) {
+                            if (json[arr_end] == '[') arr_brace_count++;
+                            else if (json[arr_end] == ']') arr_brace_count--;
+                            arr_end++;
+                        }
+                        
+                        size_t part_pos = json.find('{', arr_start);
+                        while (part_pos != std::string::npos && part_pos < arr_end) {
+                            int part_brace_count = 1;
+                            size_t part_stop = part_pos + 1;
+                            while (part_stop < arr_end && part_brace_count > 0) {
+                                if (json[part_stop] == '{') part_brace_count++;
+                                else if (json[part_stop] == '}') part_brace_count--;
+                                part_stop++;
+                            }
+                            
+                            size_t type_pos = json.find("\"type\"", part_pos);
+                            if (type_pos != std::string::npos && type_pos < part_stop) {
+                                size_t type_start = json.find('"', type_pos + 6) + 1;
+                                size_t type_end = json.find('"', type_start);
+                                std::string type = json.substr(type_start, type_end - type_start);
+                                
+                                if (type == "text") {
+                                    size_t text_pos = json.find("\"text\"", part_pos);
+                                    // Ensure we find the key "text", not a value "text"
+                                    while (text_pos != std::string::npos && text_pos < part_stop) {
+                                        size_t colon = json.find(':', text_pos + 6);
+                                        if (colon != std::string::npos && colon < part_stop) {
+                                            bool all_space = true;
+                                            for (size_t k = text_pos + 6; k < colon; ++k) {
+                                                if (!std::isspace(json[k])) { all_space = false; break; }
+                                            }
+                                            if (all_space) break;
+                                        }
+                                        text_pos = json.find("\"text\"", text_pos + 1);
+                                    }
+
+                                    if (text_pos != std::string::npos && text_pos < part_stop) {
+                                        size_t text_start = json.find('"', text_pos + 6) + 1;
+                                        size_t text_end = text_start;
+                                        while (text_end < part_stop) {
+                                            text_end = json.find('"', text_end);
+                                            if (text_end == std::string::npos || text_end >= part_stop) break;
+                                            if (json[text_end - 1] != '\\') break;
+                                            text_end++;
+                                        }
+                                        msg.content += json.substr(text_start, text_end - text_start);
+                                    }
+                                } else if (type == "image_url") {
+                                    size_t url_pos = json.find("\"url\"", part_pos);
+                                    if (url_pos != std::string::npos && url_pos < part_stop) {
+                                        size_t url_start = json.find('"', url_pos + 5) + 1;
+                                        size_t url_end = json.find('"', url_start);
+                                        std::string img_path = json.substr(url_start, url_end - url_start);
+                                        if (img_path.find("file://") == 0) img_path = img_path.substr(7);
+                                        
+                                        std::filesystem::path p(img_path);
+                                        std::string absolute_path = std::filesystem::absolute(p).string();
+                                        msg.images.push_back(absolute_path);
+                                        out_image_paths.push_back(absolute_path);
+                                    }
+                                } else if (type == "image") {
+                                    size_t image_pos = json.find("\"image\"", part_pos);
+                                    // Ensure we find the key "image", not the value of type
+                                    while (image_pos != std::string::npos && image_pos < part_stop) {
+                                        size_t colon = json.find(':', image_pos + 7);
+                                        if (colon != std::string::npos && colon < part_stop) {
+                                            bool all_space = true;
+                                            for (size_t k = image_pos + 7; k < colon; ++k) {
+                                                if (!std::isspace(json[k])) { all_space = false; break; }
+                                            }
+                                            if (all_space) break;
+                                        }
+                                        image_pos = json.find("\"image\"", image_pos + 1);
+                                    }
+
+                                    if (image_pos != std::string::npos && image_pos < part_stop) {
+                                        size_t image_start = json.find('"', image_pos + 7) + 1;
+                                        size_t image_end = json.find('"', image_start);
+                                        std::string img_path = json.substr(image_start, image_end - image_start);
+                                        if (img_path.find("file://") == 0) img_path = img_path.substr(7);
+                                        
+                                        std::filesystem::path p(img_path);
+                                        std::string absolute_path = std::filesystem::absolute(p).string();
+                                        msg.images.push_back(absolute_path);
+                                        out_image_paths.push_back(absolute_path);
+                                    }
+                                }
+                            }
+                            part_pos = json.find('{', part_stop);
+                        }
+                    }
+                }
             }
         }
         
@@ -224,12 +330,13 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
                         if (img_end == std::string::npos || img_end > array_end) break;
                         
                         std::string img_path = json.substr(img_start, img_end - img_start);
+                        if (img_path.find("file://") == 0) img_path = img_path.substr(7);
                         
                         std::filesystem::path p(img_path);
-                        img_path = std::filesystem::absolute(p).string();
+                        std::string absolute_path = std::filesystem::absolute(p).string();
                         
-                        msg.images.push_back(img_path);
-                        out_image_paths.push_back(img_path);
+                        msg.images.push_back(absolute_path);
+                        out_image_paths.push_back(absolute_path);
                         img_pos = img_end;
                     }
                 }
@@ -237,7 +344,6 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
         }
         
         messages.push_back(msg);
-        
         pos = json.find('{', obj_end);
     }
     
@@ -299,8 +405,7 @@ inline void parse_options_json(const std::string& json,
                                std::vector<std::string>& stop_sequences,
                                bool& force_tools,
                                size_t& tool_rag_top_k,
-                               float& confidence_threshold,
-                               bool& include_stop_sequences) {
+                               float& confidence_threshold) {
     temperature = 0.0f;
     top_p = 0.0f;
     top_k = 0;
@@ -308,7 +413,6 @@ inline void parse_options_json(const std::string& json,
     force_tools = false;
     tool_rag_top_k = 2;  // 0 = disabled, N = select top N relevant tools
     confidence_threshold = 0.7f;  // trigger cloud handoff when confidence < this value
-    include_stop_sequences = false;
     stop_sequences.clear();
 
     if (json.empty()) return;
@@ -354,13 +458,6 @@ inline void parse_options_json(const std::string& json,
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
         confidence_threshold = std::stof(json.substr(pos));
-    }
-
-    pos = json.find("\"include_stop_sequences\"");
-    if (pos != std::string::npos) {
-        pos = json.find(':', pos) + 1;
-        while (pos < json.length() && std::isspace(json[pos])) pos++;
-        include_stop_sequences = (json.substr(pos, 4) == "true");
     }
 
     pos = json.find("\"stop_sequences\"");
