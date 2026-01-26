@@ -14,6 +14,43 @@ static constexpr size_t WHISPER_TARGET_FRAMES = 3000;
 static constexpr int WHISPER_SAMPLE_RATE = 16000;
 static constexpr size_t WHISPER_MAX_DECODER_POSITIONS = 448;
 
+// Check if a string ends with a complete UTF-8 sequence
+static bool is_complete_utf8(const std::string& str) {
+    if (str.empty()) return true;
+    
+    // Check the last few bytes for incomplete UTF-8 sequences
+    size_t len = str.length();
+    size_t i = len;
+    
+    // Find the start of the last UTF-8 character
+    while (i > 0 && i > len - 4) {
+        i--;
+        unsigned char c = static_cast<unsigned char>(str[i]);
+        
+        // If this is a single-byte character (0xxxxxxx), we're done
+        if ((c & 0x80) == 0) {
+            return true;
+        }
+        
+        // If this is the start of a multi-byte character (11xxxxxx)
+        if ((c & 0xC0) == 0xC0) {
+            // Calculate expected length
+            int expected_len;
+            if ((c & 0xE0) == 0xC0) expected_len = 2;      // 110xxxxx
+            else if ((c & 0xF0) == 0xE0) expected_len = 3; // 1110xxxx
+            else if ((c & 0xF8) == 0xF0) expected_len = 4; // 11110xxx
+            else return false; // Invalid UTF-8
+            
+            // Check if we have all the bytes
+            size_t actual_len = len - i;
+            return actual_len >= static_cast<size_t>(expected_len);
+        }
+    }
+    
+    // If we only found continuation bytes (10xxxxxx), incomplete
+    return false;
+}
+
 static AudioProcessor::SpectrogramConfig get_whisper_spectrogram_config() {
     AudioProcessor::SpectrogramConfig cfg{};
     cfg.n_fft        = 400;
@@ -207,10 +244,19 @@ int cactus_transcribe(
         generated_tokens.push_back(next_token);
         tokens.push_back(next_token);
         completion_tokens++;
+        
+        // UTF-8 buffer for handling multi-byte characters
+        std::string utf8_buffer;
 
         std::string piece = tokenizer->decode({ next_token });
         final_text += piece;
-        if (callback) callback(piece.c_str(), next_token, user_data);
+        if (callback) {
+            utf8_buffer += piece;
+            if (is_complete_utf8(utf8_buffer)) {
+                callback(utf8_buffer.c_str(), next_token, user_data);
+                utf8_buffer.clear();
+            }
+        }
 
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
             for (size_t i = 1; i < max_tokens; ++i) {
@@ -223,10 +269,21 @@ int cactus_transcribe(
 
                 piece = tokenizer->decode({ next_token });
                 final_text += piece;
-                if (callback) callback(piece.c_str(), next_token, user_data);
+                if (callback) {
+                    utf8_buffer += piece;
+                    if (is_complete_utf8(utf8_buffer)) {
+                        callback(utf8_buffer.c_str(), next_token, user_data);
+                        utf8_buffer.clear();
+                    }
+                }
 
                 if (matches_stop_sequence(generated_tokens, stop_token_sequences)) break;
             }
+        }
+        
+        // Send any remaining buffered text
+        if (callback && !utf8_buffer.empty()) {
+            callback(utf8_buffer.c_str(), next_token, user_data);
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();

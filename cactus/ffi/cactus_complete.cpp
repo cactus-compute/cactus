@@ -9,6 +9,43 @@ using namespace cactus::ffi;
 
 static constexpr size_t ROLLING_ENTROPY_WINDOW = 10;
 
+// Check if a string ends with a complete UTF-8 sequence
+static bool is_complete_utf8(const std::string& str) {
+    if (str.empty()) return true;
+    
+    // Check the last few bytes for incomplete UTF-8 sequences
+    size_t len = str.length();
+    size_t i = len;
+    
+    // Find the start of the last UTF-8 character
+    while (i > 0 && i > len - 4) {
+        i--;
+        unsigned char c = static_cast<unsigned char>(str[i]);
+        
+        // If this is a single-byte character (0xxxxxxx), we're done
+        if ((c & 0x80) == 0) {
+            return true;
+        }
+        
+        // If this is the start of a multi-byte character (11xxxxxx)
+        if ((c & 0xC0) == 0xC0) {
+            // Calculate expected length
+            int expected_len;
+            if ((c & 0xE0) == 0xC0) expected_len = 2;      // 110xxxxx
+            else if ((c & 0xF0) == 0xE0) expected_len = 3; // 1110xxxx
+            else if ((c & 0xF8) == 0xF0) expected_len = 4; // 11110xxx
+            else return false; // Invalid UTF-8
+            
+            // Check if we have all the bytes
+            size_t actual_len = len - i;
+            return actual_len >= static_cast<size_t>(expected_len);
+        }
+    }
+    
+    // If we only found continuation bytes (10xxxxxx), incomplete
+    return false;
+}
+
 extern "C" {
 
 int cactus_complete(
@@ -250,11 +287,20 @@ int cactus_complete(
         float total_entropy_sum = first_token_entropy;
         size_t total_entropy_count = 1;
         bool entropy_spike_handoff = false;
+        
+        // UTF-8 buffer for handling multi-byte characters
+        std::string utf8_buffer;
 
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
             if (callback) {
                 std::string new_text = tokenizer->decode({next_token});
-                callback(new_text.c_str(), next_token, user_data);
+                utf8_buffer += new_text;
+                
+                // Only send to callback if we have complete UTF-8
+                if (is_complete_utf8(utf8_buffer)) {
+                    callback(utf8_buffer.c_str(), next_token, user_data);
+                    utf8_buffer.clear();
+                }
             }
 
             for (size_t i = 1; i < max_tokens; i++) {
@@ -293,11 +339,22 @@ int cactus_complete(
 
                 if (callback) {
                     std::string new_text = tokenizer->decode({next_token});
-                    callback(new_text.c_str(), next_token, user_data);
+                    utf8_buffer += new_text;
+                    
+                    // Only send to callback if we have complete UTF-8
+                    if (is_complete_utf8(utf8_buffer)) {
+                        callback(utf8_buffer.c_str(), next_token, user_data);
+                        utf8_buffer.clear();
+                    }
                 }
             }
         } else {
             trim_stop_suffix();
+        }
+        
+        // Send any remaining buffered text
+        if (callback && !utf8_buffer.empty()) {
+            callback(utf8_buffer.c_str(), next_token, user_data);
         }
 
         float mean_entropy = total_entropy_sum / static_cast<float>(total_entropy_count);
