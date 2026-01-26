@@ -247,46 +247,13 @@ inline void unpack_int4_to_int8x32(uint8x16_t packed, int8x16_t& out_lo, int8x16
 }
 
 inline int32x4_t int4_dot_asm(int32x4_t acc, uint8x16_t packed, int8x16_t a_lo, int8x16_t a_hi) {
-#if defined(__aarch64__)
-    int8x16_t b_lo, b_hi;
-
-    __asm__ __volatile__ (
-        "movi   v16.16b, #0x0F          \n"  // low nibble mask
-        "movi   v17.16b, #7             \n"  // sign threshold
-        "movi   v18.16b, #16            \n"  // sign correction
-
-        "and    %[b_lo].16b, %[packed].16b, v16.16b  \n"
-
-        "ushr   %[b_hi].16b, %[packed].16b, #4      \n"
-
-        "cmgt   v19.16b, %[b_lo].16b, v17.16b       \n"
-        "and    v19.16b, v19.16b, v18.16b           \n"
-        "sub    %[b_lo].16b, %[b_lo].16b, v19.16b   \n"
-
-        "cmgt   v20.16b, %[b_hi].16b, v17.16b       \n"
-        "and    v20.16b, v20.16b, v18.16b           \n"
-        "sub    %[b_hi].16b, %[b_hi].16b, v20.16b   \n"
-
-        "zip1   v21.16b, %[b_lo].16b, %[b_hi].16b   \n"
-        "zip2   v22.16b, %[b_lo].16b, %[b_hi].16b   \n"
-
-        ".arch armv8.2-a+dotprod                    \n"
-        "sdot   %[acc].4s, %[a_lo].16b, v21.16b     \n"
-        "sdot   %[acc].4s, %[a_hi].16b, v22.16b     \n"
-
-        : [acc] "+w"(acc), [b_lo] "=w"(b_lo), [b_hi] "=w"(b_hi)
-        : [packed] "w"(packed), [a_lo] "w"(a_lo), [a_hi] "w"(a_hi)
-        : "v16", "v17", "v18", "v19", "v20", "v21", "v22"
-    );
-
-    return acc;
-#else
+    // Use portable fallback for ARMv8.0 compatibility
+    // The inline assembly version used .arch armv8.2-a+dotprod which crashes on ARMv8.0
     int8x16_t b_lo, b_hi;
     unpack_int4_to_int8x32(packed, b_lo, b_hi);
     acc = accum_dot(acc, a_lo, b_lo);
     acc = accum_dot(acc, a_hi, b_hi);
     return acc;
-#endif
 }
 
 inline int32_t int4_dot_m1_asm(const int8_t* a_ptr, const uint8_t* b_packed, size_t group_size) {
