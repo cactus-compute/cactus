@@ -101,8 +101,70 @@ inline bool cactus_has_i8mm() {
 
 inline float16x8_t accum_f16_dot(float16x8_t acc, float16x8_t a_low, float16x8_t a_high,
                                  float16x8_t b_low, float16x8_t b_high) {
-    acc = vfmaq_f16(acc, a_low, b_low);
-    return vfmaq_f16(acc, a_high, b_high);
+    // Convert to FP32, perform FMA, convert back to FP16 for ARMv8.0 compatibility
+    float32x4_t acc_lo = vcvt_f32_f16(vget_low_f16(acc));
+    float32x4_t acc_hi = vcvt_f32_f16(vget_high_f16(acc));
+    
+    float32x4_t a_low_lo = vcvt_f32_f16(vget_low_f16(a_low));
+    float32x4_t a_low_hi = vcvt_f32_f16(vget_high_f16(a_low));
+    float32x4_t b_low_lo = vcvt_f32_f16(vget_low_f16(b_low));
+    float32x4_t b_low_hi = vcvt_f32_f16(vget_high_f16(b_low));
+    
+    acc_lo = vfmaq_f32(acc_lo, a_low_lo, b_low_lo);
+    acc_hi = vfmaq_f32(acc_hi, a_low_hi, b_low_hi);
+    
+    float32x4_t a_high_lo = vcvt_f32_f16(vget_low_f16(a_high));
+    float32x4_t a_high_hi = vcvt_f32_f16(vget_high_f16(a_high));
+    float32x4_t b_high_lo = vcvt_f32_f16(vget_low_f16(b_high));
+    float32x4_t b_high_hi = vcvt_f32_f16(vget_high_f16(b_high));
+    
+    acc_lo = vfmaq_f32(acc_lo, a_high_lo, b_high_lo);
+    acc_hi = vfmaq_f32(acc_hi, a_high_hi, b_high_hi);
+    
+    return vcombine_f16(vcvt_f16_f32(acc_lo), vcvt_f16_f32(acc_hi));
+}
+
+// ARMv8.0-compatible FP16 vector operations using FP32 conversions
+inline float16x8_t vaddq_f16_compat(float16x8_t a, float16x8_t b) {
+    float32x4_t a_lo = vcvt_f32_f16(vget_low_f16(a));
+    float32x4_t a_hi = vcvt_f32_f16(vget_high_f16(a));
+    float32x4_t b_lo = vcvt_f32_f16(vget_low_f16(b));
+    float32x4_t b_hi = vcvt_f32_f16(vget_high_f16(b));
+    return vcombine_f16(vcvt_f16_f32(vaddq_f32(a_lo, b_lo)), vcvt_f16_f32(vaddq_f32(a_hi, b_hi)));
+}
+
+inline float16x8_t vsubq_f16_compat(float16x8_t a, float16x8_t b) {
+    float32x4_t a_lo = vcvt_f32_f16(vget_low_f16(a));
+    float32x4_t a_hi = vcvt_f32_f16(vget_high_f16(a));
+    float32x4_t b_lo = vcvt_f32_f16(vget_low_f16(b));
+    float32x4_t b_hi = vcvt_f32_f16(vget_high_f16(b));
+    return vcombine_f16(vcvt_f16_f32(vsubq_f32(a_lo, b_lo)), vcvt_f16_f32(vsubq_f32(a_hi, b_hi)));
+}
+
+inline float16x8_t vmulq_f16_compat(float16x8_t a, float16x8_t b) {
+    float32x4_t a_lo = vcvt_f32_f16(vget_low_f16(a));
+    float32x4_t a_hi = vcvt_f32_f16(vget_high_f16(a));
+    float32x4_t b_lo = vcvt_f32_f16(vget_low_f16(b));
+    float32x4_t b_hi = vcvt_f32_f16(vget_high_f16(b));
+    return vcombine_f16(vcvt_f16_f32(vmulq_f32(a_lo, b_lo)), vcvt_f16_f32(vmulq_f32(a_hi, b_hi)));
+}
+
+inline float16x8_t vdivq_f16_compat(float16x8_t a, float16x8_t b) {
+    float32x4_t a_lo = vcvt_f32_f16(vget_low_f16(a));
+    float32x4_t a_hi = vcvt_f32_f16(vget_high_f16(a));
+    float32x4_t b_lo = vcvt_f32_f16(vget_low_f16(b));
+    float32x4_t b_hi = vcvt_f32_f16(vget_high_f16(b));
+    return vcombine_f16(vcvt_f16_f32(vdivq_f32(a_lo, b_lo)), vcvt_f16_f32(vdivq_f32(a_hi, b_hi)));
+}
+
+inline float16x8_t vfmaq_f16_compat(float16x8_t acc, float16x8_t a, float16x8_t b) {
+    float32x4_t acc_lo = vcvt_f32_f16(vget_low_f16(acc));
+    float32x4_t acc_hi = vcvt_f32_f16(vget_high_f16(acc));
+    float32x4_t a_lo = vcvt_f32_f16(vget_low_f16(a));
+    float32x4_t a_hi = vcvt_f32_f16(vget_high_f16(a));
+    float32x4_t b_lo = vcvt_f32_f16(vget_low_f16(b));
+    float32x4_t b_hi = vcvt_f32_f16(vget_high_f16(b));
+    return vcombine_f16(vcvt_f16_f32(vfmaq_f32(acc_lo, a_lo, b_lo)), vcvt_f16_f32(vfmaq_f32(acc_hi, a_hi, b_hi)));
 }
 
 inline float32x4_t fast_exp_f32x4(float32x4_t x) {

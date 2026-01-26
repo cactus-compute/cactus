@@ -28,10 +28,10 @@ enum class BroadcastOp { ADD, SUB, MUL, DIV };
 
 template<BroadcastOp Op>
 static inline float16x8_t broadcast_op_vec(float16x8_t a, float16x8_t b) {
-    if constexpr (Op == BroadcastOp::ADD) return vaddq_f16(a, b);
-    else if constexpr (Op == BroadcastOp::SUB) return vsubq_f16(a, b);
-    else if constexpr (Op == BroadcastOp::MUL) return vmulq_f16(a, b);
-    else return vdivq_f16(a, b);
+    if constexpr (Op == BroadcastOp::ADD) return vaddq_f16_compat(a, b);
+    else if constexpr (Op == BroadcastOp::SUB) return vsubq_f16_compat(a, b);
+    else if constexpr (Op == BroadcastOp::MUL) return vmulq_f16_compat(a, b);
+    else return vdivq_f16_compat(a, b);
 }
 
 template<BroadcastOp Op>
@@ -197,21 +197,21 @@ void cactus_add_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num
                 for (size_t i = start_idx; i < unrolled_end; i += SIMD_WIDTH * UNROLL) {
                     __builtin_prefetch(&a[i + 256], 0, 0);
                     __builtin_prefetch(&b[i + 256], 0, 0);
-                    float16x8_t v0 = vaddq_f16(vld1q_f16(&a[i]), vld1q_f16(&b[i]));
-                    float16x8_t v1 = vaddq_f16(vld1q_f16(&a[i + 8]), vld1q_f16(&b[i + 8]));
-                    float16x8_t v2 = vaddq_f16(vld1q_f16(&a[i + 16]), vld1q_f16(&b[i + 16]));
-                    float16x8_t v3 = vaddq_f16(vld1q_f16(&a[i + 24]), vld1q_f16(&b[i + 24]));
+                    float16x8_t v0 = vaddq_f16_compat(vld1q_f16(&a[i]), vld1q_f16(&b[i]));
+                    float16x8_t v1 = vaddq_f16_compat(vld1q_f16(&a[i + 8]), vld1q_f16(&b[i + 8]));
+                    float16x8_t v2 = vaddq_f16_compat(vld1q_f16(&a[i + 16]), vld1q_f16(&b[i + 16]));
+                    float16x8_t v3 = vaddq_f16_compat(vld1q_f16(&a[i + 24]), vld1q_f16(&b[i + 24]));
                     stream_store_f16x8(&output[i], v0);
                     stream_store_f16x8(&output[i + 8], v1);
                     stream_store_f16x8(&output[i + 16], v2);
                     stream_store_f16x8(&output[i + 24], v3);
                 }
                 for (size_t i = unrolled_end; i < vectorized_end; i += SIMD_WIDTH) {
-                    stream_store_f16x8(&output[i], vaddq_f16(vld1q_f16(&a[i]), vld1q_f16(&b[i])));
+                    stream_store_f16x8(&output[i], vaddq_f16_compat(vld1q_f16(&a[i]), vld1q_f16(&b[i])));
                 }
             } else {
                 for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                    vst1q_f16(&output[i], vaddq_f16(vld1q_f16(&a[i]), vld1q_f16(&b[i])));
+                    vst1q_f16(&output[i], vaddq_f16_compat(vld1q_f16(&a[i]), vld1q_f16(&b[i])));
                 }
             }
 
@@ -272,13 +272,13 @@ void cactus_subtract_f16(const __fp16* a, const __fp16* b, __fp16* output, size_
                 for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                     float16x8_t a_vec = vld1q_f16(&a[i]);
                     float16x8_t b_vec = vld1q_f16(&b[i]);
-                    stream_store_f16x8(&output[i], vsubq_f16(a_vec, b_vec));
+                    stream_store_f16x8(&output[i], vsubq_f16_compat(a_vec, b_vec));
                 }
             } else {
                 for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                     float16x8_t a_vec = vld1q_f16(&a[i]);
                     float16x8_t b_vec = vld1q_f16(&b[i]);
-                    vst1q_f16(&output[i], vsubq_f16(a_vec, b_vec));
+                    vst1q_f16(&output[i], vsubq_f16_compat(a_vec, b_vec));
                 }
             }
 
@@ -299,13 +299,13 @@ void cactus_multiply_f16(const __fp16* a, const __fp16* b, __fp16* output, size_
                 for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                     float16x8_t a_vec = vld1q_f16(&a[i]);
                     float16x8_t b_vec = vld1q_f16(&b[i]);
-                    stream_store_f16x8(&output[i], vmulq_f16(a_vec, b_vec));
+                    stream_store_f16x8(&output[i], vmulq_f16_compat(a_vec, b_vec));
                 }
             } else {
                 for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                     float16x8_t a_vec = vld1q_f16(&a[i]);
                     float16x8_t b_vec = vld1q_f16(&b[i]);
-                    vst1q_f16(&output[i], vmulq_f16(a_vec, b_vec));
+                    vst1q_f16(&output[i], vmulq_f16_compat(a_vec, b_vec));
                 }
             }
 
@@ -326,13 +326,13 @@ void cactus_divide_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t 
                 for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                     float16x8_t a_vec = vld1q_f16(&a[i]);
                     float16x8_t b_vec = vld1q_f16(&b[i]);
-                    stream_store_f16x8(&output[i], vdivq_f16(a_vec, b_vec));
+                    stream_store_f16x8(&output[i], vdivq_f16_compat(a_vec, b_vec));
                 }
             } else {
                 for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                     float16x8_t a_vec = vld1q_f16(&a[i]);
                     float16x8_t b_vec = vld1q_f16(&b[i]);
-                    vst1q_f16(&output[i], vdivq_f16(a_vec, b_vec));
+                    vst1q_f16(&output[i], vdivq_f16_compat(a_vec, b_vec));
                 }
             }
 

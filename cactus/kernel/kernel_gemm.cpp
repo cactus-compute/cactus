@@ -54,14 +54,14 @@ static void cactus_matmul_f16_worker(
                     float16x8_t b_lo = vld1q_f16(b_transposed + (col_block + ni) * K + k);
                     float16x8_t b_hi = vld1q_f16(b_transposed + (col_block + ni) * K + k + 8);
 
-                    acc[0][ni] = vfmaq_f16(acc[0][ni], a0_lo, b_lo);
-                    acc[0][ni] = vfmaq_f16(acc[0][ni], a0_hi, b_hi);
-                    acc[1][ni] = vfmaq_f16(acc[1][ni], a1_lo, b_lo);
-                    acc[1][ni] = vfmaq_f16(acc[1][ni], a1_hi, b_hi);
-                    acc[2][ni] = vfmaq_f16(acc[2][ni], a2_lo, b_lo);
-                    acc[2][ni] = vfmaq_f16(acc[2][ni], a2_hi, b_hi);
-                    acc[3][ni] = vfmaq_f16(acc[3][ni], a3_lo, b_lo);
-                    acc[3][ni] = vfmaq_f16(acc[3][ni], a3_hi, b_hi);
+                    acc[0][ni] = vfmaq_f16_compat(acc[0][ni], a0_lo, b_lo);
+                    acc[0][ni] = vfmaq_f16_compat(acc[0][ni], a0_hi, b_hi);
+                    acc[1][ni] = vfmaq_f16_compat(acc[1][ni], a1_lo, b_lo);
+                    acc[1][ni] = vfmaq_f16_compat(acc[1][ni], a1_hi, b_hi);
+                    acc[2][ni] = vfmaq_f16_compat(acc[2][ni], a2_lo, b_lo);
+                    acc[2][ni] = vfmaq_f16_compat(acc[2][ni], a2_hi, b_hi);
+                    acc[3][ni] = vfmaq_f16_compat(acc[3][ni], a3_lo, b_lo);
+                    acc[3][ni] = vfmaq_f16_compat(acc[3][ni], a3_hi, b_hi);
                 }
             }
 
@@ -73,10 +73,10 @@ static void cactus_matmul_f16_worker(
 
                 for (size_t ni = 0; ni < TILE_N && col_block + ni < n_end; ++ni) {
                     float16x8_t b_v = vld1q_f16(b_transposed + (col_block + ni) * K + k);
-                    acc[0][ni] = vfmaq_f16(acc[0][ni], a0_v, b_v);
-                    acc[1][ni] = vfmaq_f16(acc[1][ni], a1_v, b_v);
-                    acc[2][ni] = vfmaq_f16(acc[2][ni], a2_v, b_v);
-                    acc[3][ni] = vfmaq_f16(acc[3][ni], a3_v, b_v);
+                    acc[0][ni] = vfmaq_f16_compat(acc[0][ni], a0_v, b_v);
+                    acc[1][ni] = vfmaq_f16_compat(acc[1][ni], a1_v, b_v);
+                    acc[2][ni] = vfmaq_f16_compat(acc[2][ni], a2_v, b_v);
+                    acc[3][ni] = vfmaq_f16_compat(acc[3][ni], a3_v, b_v);
                 }
             }
 

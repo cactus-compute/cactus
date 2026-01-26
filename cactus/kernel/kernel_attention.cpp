@@ -544,7 +544,7 @@ void cactus_rms_norm_f16(
             for (size_t u = 0; u < UNROLL_FACTOR; u++) {
                 float16x8_t input_vec = vld1q_f16(&input_row[i + u * SIMD_WIDTH]);
                 float16x8_t weight_vec = vld1q_f16(&weight[i + u * SIMD_WIDTH]);
-                float16x8_t norm_vec = vmulq_f16(vmulq_f16(input_vec, inv_rms_vec), weight_vec);
+                float16x8_t norm_vec = vmulq_f16_compat(vmulq_f16_compat(input_vec, inv_rms_vec), weight_vec);
                 vst1q_f16(&output_row[i + u * SIMD_WIDTH], norm_vec);
             }
         }
@@ -552,7 +552,7 @@ void cactus_rms_norm_f16(
         for (; i < simd_end; i += SIMD_WIDTH) {
             float16x8_t input_vec = vld1q_f16(&input_row[i]);
             float16x8_t weight_vec = vld1q_f16(&weight[i]);
-            float16x8_t norm_vec = vmulq_f16(vmulq_f16(input_vec, inv_rms_vec), weight_vec);
+            float16x8_t norm_vec = vmulq_f16_compat(vmulq_f16_compat(input_vec, inv_rms_vec), weight_vec);
             vst1q_f16(&output_row[i], norm_vec);
         }
         
@@ -652,8 +652,8 @@ void cactus_rope_f16(
                         float16x8_t x_first_half = vld1q_f16(&input_ptr[i]);
                         float16x8_t x_second_half = vld1q_f16(&input_ptr[i + half_dim]);
                         
-                        float16x8_t first_result = vfmsq_f16(vmulq_f16(x_first_half, cos_vec), x_second_half, sin_vec);
-                        float16x8_t second_result = vfmaq_f16(vmulq_f16(x_second_half, cos_vec), x_first_half, sin_vec);
+                        float16x8_t first_result = vfmsq_f16(vmulq_f16_compat(x_first_half, cos_vec), x_second_half, sin_vec);
+                        float16x8_t second_result = vfmaq_f16_compat(vmulq_f16_compat(x_second_half, cos_vec), x_first_half, sin_vec);
                         
                         vst1q_f16(&output_ptr[i], first_result);
                         vst1q_f16(&output_ptr[i + half_dim], second_result);

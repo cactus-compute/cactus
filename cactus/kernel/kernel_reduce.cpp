@@ -17,7 +17,7 @@ double cactus_sum_all_f16(const __fp16* data, size_t num_elements) {
 
             for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                 float16x8_t input_vec = vld1q_f16(&data[i]);
-                sum_vec = vaddq_f16(sum_vec, input_vec);
+                sum_vec = vaddq_f16_compat(sum_vec, input_vec);
             }
 
             double thread_sum = 0.0;
@@ -53,7 +53,7 @@ void cactus_sum_axis_f16(const __fp16* input, __fp16* output, size_t outer_size,
                     values[j] = input[idx];
                 }
                 float16x8_t input_vec = vld1q_f16(values);
-                sum_vec = vaddq_f16(sum_vec, input_vec);
+                sum_vec = vaddq_f16_compat(sum_vec, input_vec);
             }
 
             __fp16 total_sum = 0.0f;
@@ -93,7 +93,7 @@ void cactus_mean_axis_f16(const __fp16* input, __fp16* output, size_t outer_size
                     values[j] = input[idx];
                 }
                 float16x8_t input_vec = vld1q_f16(values);
-                sum_vec = vaddq_f16(sum_vec, input_vec);
+                sum_vec = vaddq_f16_compat(sum_vec, input_vec);
             }
 
             __fp16 total_sum = 0.0f;

@@ -21,21 +21,21 @@ void cactus_scalar_op_f16(const __fp16* input, __fp16* output, size_t num_elemen
                     if (use_streaming) {
                         for (size_t i = start_idx; i < unrolled_end; i += SIMD_WIDTH * UNROLL) {
                             __builtin_prefetch(&input[i + 256], 0, 0);
-                            float16x8_t v0 = vaddq_f16(vld1q_f16(&input[i]), scalar_vec);
-                            float16x8_t v1 = vaddq_f16(vld1q_f16(&input[i + 8]), scalar_vec);
-                            float16x8_t v2 = vaddq_f16(vld1q_f16(&input[i + 16]), scalar_vec);
-                            float16x8_t v3 = vaddq_f16(vld1q_f16(&input[i + 24]), scalar_vec);
+                            float16x8_t v0 = vaddq_f16_compat(vld1q_f16(&input[i]), scalar_vec);
+                            float16x8_t v1 = vaddq_f16_compat(vld1q_f16(&input[i + 8]), scalar_vec);
+                            float16x8_t v2 = vaddq_f16_compat(vld1q_f16(&input[i + 16]), scalar_vec);
+                            float16x8_t v3 = vaddq_f16_compat(vld1q_f16(&input[i + 24]), scalar_vec);
                             stream_store_f16x8(&output[i], v0);
                             stream_store_f16x8(&output[i + 8], v1);
                             stream_store_f16x8(&output[i + 16], v2);
                             stream_store_f16x8(&output[i + 24], v3);
                         }
                         for (size_t i = unrolled_end; i < vectorized_end; i += SIMD_WIDTH) {
-                            stream_store_f16x8(&output[i], vaddq_f16(vld1q_f16(&input[i]), scalar_vec));
+                            stream_store_f16x8(&output[i], vaddq_f16_compat(vld1q_f16(&input[i]), scalar_vec));
                         }
                     } else {
                         for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                            vst1q_f16(&output[i], vaddq_f16(vld1q_f16(&input[i]), scalar_vec));
+                            vst1q_f16(&output[i], vaddq_f16_compat(vld1q_f16(&input[i]), scalar_vec));
                         }
                     }
                     for (size_t i = vectorized_end; i < end_idx; ++i) {
@@ -57,21 +57,21 @@ void cactus_scalar_op_f16(const __fp16* input, __fp16* output, size_t num_elemen
                     if (use_streaming) {
                         for (size_t i = start_idx; i < unrolled_end; i += SIMD_WIDTH * UNROLL) {
                             __builtin_prefetch(&input[i + 256], 0, 0);
-                            float16x8_t v0 = vsubq_f16(vld1q_f16(&input[i]), scalar_vec);
-                            float16x8_t v1 = vsubq_f16(vld1q_f16(&input[i + 8]), scalar_vec);
-                            float16x8_t v2 = vsubq_f16(vld1q_f16(&input[i + 16]), scalar_vec);
-                            float16x8_t v3 = vsubq_f16(vld1q_f16(&input[i + 24]), scalar_vec);
+                            float16x8_t v0 = vsubq_f16_compat(vld1q_f16(&input[i]), scalar_vec);
+                            float16x8_t v1 = vsubq_f16_compat(vld1q_f16(&input[i + 8]), scalar_vec);
+                            float16x8_t v2 = vsubq_f16_compat(vld1q_f16(&input[i + 16]), scalar_vec);
+                            float16x8_t v3 = vsubq_f16_compat(vld1q_f16(&input[i + 24]), scalar_vec);
                             stream_store_f16x8(&output[i], v0);
                             stream_store_f16x8(&output[i + 8], v1);
                             stream_store_f16x8(&output[i + 16], v2);
                             stream_store_f16x8(&output[i + 24], v3);
                         }
                         for (size_t i = unrolled_end; i < vectorized_end; i += SIMD_WIDTH) {
-                            stream_store_f16x8(&output[i], vsubq_f16(vld1q_f16(&input[i]), scalar_vec));
+                            stream_store_f16x8(&output[i], vsubq_f16_compat(vld1q_f16(&input[i]), scalar_vec));
                         }
                     } else {
                         for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                            vst1q_f16(&output[i], vsubq_f16(vld1q_f16(&input[i]), scalar_vec));
+                            vst1q_f16(&output[i], vsubq_f16_compat(vld1q_f16(&input[i]), scalar_vec));
                         }
                     }
                     for (size_t i = vectorized_end; i < end_idx; ++i) {
@@ -93,21 +93,21 @@ void cactus_scalar_op_f16(const __fp16* input, __fp16* output, size_t num_elemen
                     if (use_streaming) {
                         for (size_t i = start_idx; i < unrolled_end; i += SIMD_WIDTH * UNROLL) {
                             __builtin_prefetch(&input[i + 256], 0, 0);
-                            float16x8_t v0 = vmulq_f16(vld1q_f16(&input[i]), scalar_vec);
-                            float16x8_t v1 = vmulq_f16(vld1q_f16(&input[i + 8]), scalar_vec);
-                            float16x8_t v2 = vmulq_f16(vld1q_f16(&input[i + 16]), scalar_vec);
-                            float16x8_t v3 = vmulq_f16(vld1q_f16(&input[i + 24]), scalar_vec);
+                            float16x8_t v0 = vmulq_f16_compat(vld1q_f16(&input[i]), scalar_vec);
+                            float16x8_t v1 = vmulq_f16_compat(vld1q_f16(&input[i + 8]), scalar_vec);
+                            float16x8_t v2 = vmulq_f16_compat(vld1q_f16(&input[i + 16]), scalar_vec);
+                            float16x8_t v3 = vmulq_f16_compat(vld1q_f16(&input[i + 24]), scalar_vec);
                             stream_store_f16x8(&output[i], v0);
                             stream_store_f16x8(&output[i + 8], v1);
                             stream_store_f16x8(&output[i + 16], v2);
                             stream_store_f16x8(&output[i + 24], v3);
                         }
                         for (size_t i = unrolled_end; i < vectorized_end; i += SIMD_WIDTH) {
-                            stream_store_f16x8(&output[i], vmulq_f16(vld1q_f16(&input[i]), scalar_vec));
+                            stream_store_f16x8(&output[i], vmulq_f16_compat(vld1q_f16(&input[i]), scalar_vec));
                         }
                     } else {
                         for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                            vst1q_f16(&output[i], vmulq_f16(vld1q_f16(&input[i]), scalar_vec));
+                            vst1q_f16(&output[i], vmulq_f16_compat(vld1q_f16(&input[i]), scalar_vec));
                         }
                     }
                     for (size_t i = vectorized_end; i < end_idx; ++i) {
@@ -129,21 +129,21 @@ void cactus_scalar_op_f16(const __fp16* input, __fp16* output, size_t num_elemen
                     if (use_streaming) {
                         for (size_t i = start_idx; i < unrolled_end; i += SIMD_WIDTH * UNROLL) {
                             __builtin_prefetch(&input[i + 256], 0, 0);
-                            float16x8_t v0 = vdivq_f16(vld1q_f16(&input[i]), scalar_vec);
-                            float16x8_t v1 = vdivq_f16(vld1q_f16(&input[i + 8]), scalar_vec);
-                            float16x8_t v2 = vdivq_f16(vld1q_f16(&input[i + 16]), scalar_vec);
-                            float16x8_t v3 = vdivq_f16(vld1q_f16(&input[i + 24]), scalar_vec);
+                            float16x8_t v0 = vdivq_f16_compat(vld1q_f16(&input[i]), scalar_vec);
+                            float16x8_t v1 = vdivq_f16_compat(vld1q_f16(&input[i + 8]), scalar_vec);
+                            float16x8_t v2 = vdivq_f16_compat(vld1q_f16(&input[i + 16]), scalar_vec);
+                            float16x8_t v3 = vdivq_f16_compat(vld1q_f16(&input[i + 24]), scalar_vec);
                             stream_store_f16x8(&output[i], v0);
                             stream_store_f16x8(&output[i + 8], v1);
                             stream_store_f16x8(&output[i + 16], v2);
                             stream_store_f16x8(&output[i + 24], v3);
                         }
                         for (size_t i = unrolled_end; i < vectorized_end; i += SIMD_WIDTH) {
-                            stream_store_f16x8(&output[i], vdivq_f16(vld1q_f16(&input[i]), scalar_vec));
+                            stream_store_f16x8(&output[i], vdivq_f16_compat(vld1q_f16(&input[i]), scalar_vec));
                         }
                     } else {
                         for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                            vst1q_f16(&output[i], vdivq_f16(vld1q_f16(&input[i]), scalar_vec));
+                            vst1q_f16(&output[i], vdivq_f16_compat(vld1q_f16(&input[i]), scalar_vec));
                         }
                     }
                     for (size_t i = vectorized_end; i < end_idx; ++i) {

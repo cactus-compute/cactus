@@ -224,7 +224,7 @@ void kernel_softmax_f16_single(const __fp16* input, __fp16* output, size_t vocab
     for (size_t i = 0; i < vocab_vectorized; i += VECTORIZED_WIDTH) {
         for (size_t u = 0; u < UNROLL_FACTOR; u++) {
             float16x8_t exp_vec = vld1q_f16(&output[i + u * SIMD_WIDTH]);
-            float16x8_t result = vmulq_f16(exp_vec, inv_sum_vec_f16);
+            float16x8_t result = vmulq_f16_compat(exp_vec, inv_sum_vec_f16);
             vst1q_f16(&output[i + u * SIMD_WIDTH], result);
         }
     }
@@ -485,7 +485,7 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
         size_t i = 0;
         for (; i + 8 <= vocab_size; i += 8) {
             float16x8_t logits_vec = vld1q_f16(&logits[i]);
-            float16x8_t scaled = vmulq_f16(logits_vec, inv_temp_vec);
+            float16x8_t scaled = vmulq_f16_compat(logits_vec, inv_temp_vec);
             vst1q_f16(&filtered_logits[i], scaled);
         }
         for (; i < vocab_size; ++i) {
