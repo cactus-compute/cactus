@@ -276,6 +276,48 @@ response = cactus_complete(vlm, messages)
 print(json.loads(response)["response"])
 ```
 
+### VLM with Tool Calling
+
+Get structured outputs from image analysis using tool calling:
+
+```python
+vlm = cactus_init("weights/lfm2-vl-450m")
+
+# Define tool for structured output
+tools = [{
+    "type": "function",
+    "function": {
+        "name": "analyze_image",
+        "description": "Analyze image content",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "desc": {"type": "string", "description": "Image description"},
+                "category": {"type": "string", "enum": ["animals", "nature", "objects"]}
+            },
+            "required": ["desc", "category"]
+        }
+    }
+}]
+
+messages = [{
+    "role": "user",
+    "content": "Analyze this image",
+    "images": ["path/to/image.png"]
+}]
+
+response = cactus_complete(vlm, messages, tools=json.dumps(tools))
+result = json.loads(response)
+
+# Structured output in function_calls
+for call in result["function_calls"]:
+    print(f"Description: {call['arguments']['desc']}")
+    print(f"Category: {call['arguments']['category']}")
+```
+
+See `python/example_vlm_tools.py` for a complete working example.
+
+
 ## Full Example
 
 See `python/example.py` for a complete example covering:

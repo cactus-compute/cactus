@@ -225,6 +225,105 @@ bool test_vlm_multiturn() {
     return success1 && success2;
 }
 
+bool test_vlm_tools() {
+    std::string model_path_str(g_model_path ? g_model_path : "");
+    
+    // Check if this is a VLM model
+    std::string vision_file = model_path_str + "/vision_patch_embedding.weights";
+    std::ifstream vf(vision_file);
+    if (!vf.good()) {
+        std::cout << "Skipping VLM tools test: vision weights not found." << std::endl;
+        return true;
+    }
+    vf.close();
+    
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║       VLM + TOOL CALLING TEST            ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+    
+    cactus_model_t model = cactus_init(g_model_path, nullptr);
+    if (!model) {
+        std::cerr << "Failed to initialize model for VLM tools test" << std::endl;
+        return false;
+    }
+    
+    std::string img_path = std::string(g_assets_path) + "/test_monkey.png";
+    
+    // Define tool for structured image analysis
+    const char* tools = R"([{
+        "type": "function",
+        "function": {
+            "name": "analyze_image_output",
+            "description": "Analyze image content and provide structured output",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "desc": {
+                        "type": "string",
+                        "description": "Detailed description of the image"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Image category",
+                        "enum": ["animals", "nature", "objects", "characters", "scenes"]
+                    }
+                },
+                "required": ["desc", "category"]
+            }
+        }
+    }])";
+    
+    std::string messages = "[{\"role\": \"user\", "
+        "\"content\": \"Please analyze this image and provide a detailed description.\", "
+        "\"images\": [\"" + img_path + "\"]}]";
+    
+    const char* options_with_force_tools = R"({
+        "max_tokens\": 256,
+        "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
+        "force_tools": true
+    })";
+    
+    StreamingData stream_data;
+    stream_data.model = model;
+    char response[4096];
+    
+    std::cout << "\n[Query]\n";
+    std::cout << "User: Please analyze this image and provide a detailed description.\n";
+    std::cout << "Assistant: ";
+    
+    int result = cactus_complete(model, messages.c_str(), response, sizeof(response),
+                                  options_with_force_tools, tools, stream_callback, &stream_data);
+    
+    std::cout << "\n\n[Results]\n";
+    Metrics metrics;
+    metrics.parse(response);
+    
+    // Check for function calls
+    std::string response_str(response);
+    bool has_function_calls = response_str.find("\"function_calls\":[") != std::string::npos;
+    bool has_analyze_function = has_function_calls && response_str.find("analyze_image_output") != std::string::npos;
+    bool has_desc = has_function_calls && response_str.find("\"desc\"") != std::string::npos;
+    bool has_category = has_function_calls && response_str.find("\"category\"") != std::string::npos;
+    
+    std::cout << "├─ Function calls: " << (has_function_calls ? "YES" : "NO") << "\n"
+              << "├─ Correct function: " << (has_analyze_function ? "YES" : "NO") << "\n"
+              << "├─ Has description: " << (has_desc ? "YES" : "NO") << "\n"
+              << "├─ Has category: " << (has_category ? "YES" : "NO") << "\n";
+    
+    metrics.print_json();
+    
+    bool success = result > 0 && has_function_calls && has_analyze_function && has_desc && has_category;
+    
+    if (!success) {
+        std::cout << "└─ Status: FAILED ✗\n";
+        std::cout << "   Response: " << response_str.substr(0, 500) << "...\n";
+    }
+    
+    cactus_destroy(model);
+    return success;
+}
+
+
 bool test_tool_call_with_two_tools() {
     const char* messages = R"([
         {"role": "system", "content": "You are a helpful assistant that can use tools."},
@@ -1030,6 +1129,7 @@ int main() {
     runner.run_test("image_embeddings", test_image_embeddings());
     runner.run_test("audio_embeddings", test_audio_embeddings());
     runner.run_test("vlm_multiturn", test_vlm_multiturn());
+    runner.run_test("vlm_tools", test_vlm_tools());
     runner.run_test("audio_processor", test_audio_processor());
     runner.run_test("transcription", test_transcription());
     runner.run_test("pcm_transcription", test_pcm_transcription());

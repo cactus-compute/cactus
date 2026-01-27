@@ -102,6 +102,40 @@ Example response from Gemma3-270m
 }
 ```
 
+## Vision + Tool Calling
+
+VLM models support tool calling for structured image analysis:
+
+```cpp
+const char* tools = R"([{
+    "type": "function",
+    "function": {
+        "name": "analyze_image",
+        "description": "Analyze image content",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "desc": {"type": "string"},
+                "category": {"type": "string", "enum": ["animals", "nature", "objects"]}
+            }
+        }
+    }
+}])";
+
+const char* messages = R"([{
+    "role": "user",
+    "content": "Analyze this image",
+    "images": ["path/to/image.png"]
+}])";
+
+cactus_complete(model, messages, response, sizeof(response), nullptr, tools, nullptr, nullptr);
+// response["function_calls"] contains structured output
+```
+
+See `python/example_vlm_tools.py` for a complete working example.
+
+
+
 # Performance
 
 - <sub>**Models:** LFM2-VL-450m & Whisper-Small</sub>
@@ -135,7 +169,7 @@ Example response from Gemma3-270m
 | google/functiongemma-270m-it | 252MB | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
 | openai/whisper-small | 283MB | ✗ | ✗ | ✗ | ✓ | ✓ | Apple |
 | LiquidAI/LFM2-350M | 244MB | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
-| LiquidAI/LFM2-VL-450M | 448MB | ✓ | ✗ | ✓ | ✓ | ✗ | Apple |
+| LiquidAI/LFM2-VL-450M | 448MB | ✓ | ✓ | ✓ | ✓ | ✗ | Apple |
 | nomic-ai/nomic-embed-text-v2-moe | 451MB | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
 | Qwen/Qwen3-0.6B | 514MB | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | Qwen/Qwen3-Embedding-0.6B | 514MB | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
@@ -145,7 +179,7 @@ Example response from Gemma3-270m
 | LiquidAI/LFM2-1.2B-RAG | 474MB | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | LiquidAI/LFM2-1.2B-Tool | 474MB | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | openai/whisper-medium | 658MB | ✗ | ✗ | ✗ | ✓ | ✓ | Apple |
-| LiquidAI/LFM2.5-VL-1.6B | 954MB | ✓ | ✗ | ✓ | ✓ | ✗ | Apple |
+| LiquidAI/LFM2.5-VL-1.6B | 954MB | ✓ | ✓ | ✓ | ✓ | ✗ | Apple |
 | Qwen/Qwen3-1.7B | 749MB | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 
 # Using this repo on a Mac
