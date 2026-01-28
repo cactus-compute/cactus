@@ -1,6 +1,10 @@
 #include "kernel.h"
 #include "kernel_utils.h"
 #include <arm_neon.h>
+#ifdef __hexagon__
+#include <hexagon_protos.h>
+#include <hexagon_types.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -10,6 +14,50 @@ double cactus_sum_all_f16(const __fp16* data, size_t num_elements) {
     return CactusThreading::parallel_reduce(
         num_elements, CactusThreading::Thresholds::ALL_REDUCE,
         [&](size_t start_idx, size_t end_idx) -> double {
+#ifdef __hexagon__
+            constexpr size_t HVX_WIDTH = 128 / sizeof(__fp16); // 64 elements
+            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / HVX_WIDTH) * HVX_WIDTH;
+
+            HVX_Vector sum_vec = Q6_V_vzero();
+
+            for (size_t i = start_idx; i < vectorized_end; i += HVX_WIDTH) {
+                HVX_Vector input_vec = Q6_V_vldu_A(&data[i]); // Unaligned load
+                sum_vec = Q6_Vhf_vadd_VhfVhf(sum_vec, input_vec);
+            }
+
+            // Horizontal reduction
+             // Rotate by 32 elements (64 bytes)
+             HVX_Vector rot = Q6_V_vror_Vr(sum_vec, 64);
+             sum_vec = Q6_Vhf_vadd_VhfVhf(sum_vec, rot);
+             // Rotate by 16 elements (32 bytes)
+             rot = Q6_V_vror_Vr(sum_vec, 32);
+             sum_vec = Q6_Vhf_vadd_VhfVhf(sum_vec, rot);
+             // Rotate by 8 elements (16 bytes)
+             rot = Q6_V_vror_Vr(sum_vec, 16);
+             sum_vec = Q6_Vhf_vadd_VhfVhf(sum_vec, rot);
+             // Rotate by 4 elements (8 bytes)
+             rot = Q6_V_vror_Vr(sum_vec, 8);
+             sum_vec = Q6_Vhf_vadd_VhfVhf(sum_vec, rot);
+             // Rotate by 2 elements (4 bytes)
+             rot = Q6_V_vror_Vr(sum_vec, 4);
+             sum_vec = Q6_Vhf_vadd_VhfVhf(sum_vec, rot);
+             // Rotate by 1 element (2 bytes)
+             rot = Q6_V_vror_Vr(sum_vec, 2);
+             sum_vec = Q6_Vhf_vadd_VhfVhf(sum_vec, rot);
+             
+             __fp16 result;
+             // Extract 0th element
+             // Q6_V_vstu_A is for vectors, need scalar extract. 
+             // Typically we can store to stack and read 0.
+             __fp16 temp_buf[64] __attribute__((aligned(128)));
+             Q6_V_vstu_A((HVX_Vector*)temp_buf, sum_vec);
+             double thread_sum = static_cast<double>(temp_buf[0]);
+
+             for (size_t i = vectorized_end; i < end_idx; ++i) {
+                 thread_sum += static_cast<double>(data[i]);
+             }
+             return thread_sum;
+#else
             constexpr size_t SIMD_WIDTH = 8;
             const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
 
@@ -32,6 +80,7 @@ double cactus_sum_all_f16(const __fp16* data, size_t num_elements) {
             }
 
             return thread_sum;
+#endif
         },
         0.0,
         [](double a, double b) { return a + b; }
