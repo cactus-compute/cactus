@@ -4,6 +4,9 @@
 #include <cstring>
 #include <algorithm>
 #include <cmath>
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+#endif
 
 static inline __fp16 hsum_f16x8(float16x8_t v) {
     float16x4_t lo = vget_low_f16(v);
@@ -107,6 +110,23 @@ void cactus_matmul_f16(
     size_t K,
     size_t N
 ) {
+#ifdef __APPLE__
+    // Apple AMX optimization via Accelerate
+    // A is MxK, B_Transposed is NxK. We want C = A * B_Transposed^T
+    cblas_hgemm(
+        CblasRowMajor,
+        CblasNoTrans,
+        CblasTrans,
+        (int)M,
+        (int)N,
+        (int)K,
+        1.0f,
+        a, (int)K,
+        b_transposed, (int)K,
+        0.0f,
+        c, (int)N
+    );
+#else
     constexpr size_t TILE_M = 4;
     const size_t num_row_blocks = (M + TILE_M - 1) / TILE_M;
 
@@ -123,6 +143,7 @@ void cactus_matmul_f16(
                 );
             }
         });
+#endif
 }
 
 void cactus_matmul_int8(

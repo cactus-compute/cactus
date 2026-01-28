@@ -30,6 +30,7 @@ if(APPLE)
     find_package(CURL REQUIRED)
     find_library(COREML_FRAMEWORK CoreML REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-field-initializers")
     add_compile_definitions(
@@ -107,6 +108,7 @@ function(configure_cactus_target target_name)
         target_link_libraries(${target_name} PUBLIC
             ${COREML_FRAMEWORK}
             ${FOUNDATION_FRAMEWORK}
+            ${ACCELERATE_FRAMEWORK}
             ${CURL_LIBRARIES}
         )
         target_include_directories(${target_name} PUBLIC ${CURL_INCLUDE_DIRS})
