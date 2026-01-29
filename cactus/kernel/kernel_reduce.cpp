@@ -6,6 +6,13 @@
 #include <limits>
 #include <vector>
 
+#ifdef __hexagon__
+#include <hexagon_protos.h>
+#include <hexagon_types.h>
+#endif
+
+
+
 double cactus_sum_all_f16(const __fp16* data, size_t num_elements) {
     return CactusThreading::parallel_reduce(
         num_elements, CactusThreading::Thresholds::ALL_REDUCE,
@@ -13,9 +20,41 @@ double cactus_sum_all_f16(const __fp16* data, size_t num_elements) {
             constexpr size_t SIMD_WIDTH = 8;
             const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
 
-            float16x8_t sum_vec = vdupq_n_f16(0.0f);
+            #ifdef __hexagon__
+            HVX_Vector sum_vec_hvx = Q6_V_vzero();
+            constexpr size_t HVX_WIDTH = 128 / sizeof(__fp16);
+            size_t hvx_end = start_idx + ((end_idx - start_idx) / HVX_WIDTH) * HVX_WIDTH;
+            size_t i = start_idx;
 
-            for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
+            for (; i < hvx_end; i += HVX_WIDTH) {
+                HVX_Vector input_vec = Q6_V_vldu_A((HVX_Vector*)&data[i]);
+                sum_vec_hvx = Q6_Vhf_vadd_VhfVhf(sum_vec_hvx, input_vec);
+            }
+
+            // HVX Butterfly Reduction (128B -> 2B)
+            sum_vec_hvx = Q6_Vhf_vadd_VhfVhf(sum_vec_hvx, Q6_V_vror_Vr(sum_vec_hvx, 64));
+            sum_vec_hvx = Q6_Vhf_vadd_VhfVhf(sum_vec_hvx, Q6_V_vror_Vr(sum_vec_hvx, 32));
+            sum_vec_hvx = Q6_Vhf_vadd_VhfVhf(sum_vec_hvx, Q6_V_vror_Vr(sum_vec_hvx, 16));
+            sum_vec_hvx = Q6_Vhf_vadd_VhfVhf(sum_vec_hvx, Q6_V_vror_Vr(sum_vec_hvx, 8));
+            sum_vec_hvx = Q6_Vhf_vadd_VhfVhf(sum_vec_hvx, Q6_V_vror_Vr(sum_vec_hvx, 4));
+            sum_vec_hvx = Q6_Vhf_vadd_VhfVhf(sum_vec_hvx, Q6_V_vror_Vr(sum_vec_hvx, 2));
+
+            // Extract scalar sum from lane 0
+            __attribute__((aligned(128))) unsigned char temp_buf[128];
+            Q6_V_vstu_A((HVX_Vector*)temp_buf, sum_vec_hvx);
+            double current_sum = (double)(*(__fp16*)temp_buf);
+
+            // Remainder
+            for (; i < end_idx; ++i) {
+                current_sum += (double)data[i];
+            }
+            return current_sum;
+
+            #else
+            float16x8_t sum_vec = vdupq_n_f16(0.0f);
+            
+            size_t i = start_idx;
+            for (; i < vectorized_end; i += SIMD_WIDTH) {
                 float16x8_t input_vec = vld1q_f16(&data[i]);
                 sum_vec = vaddq_f16(sum_vec, input_vec);
             }
@@ -32,6 +71,7 @@ double cactus_sum_all_f16(const __fp16* data, size_t num_elements) {
             }
 
             return thread_sum;
+            #endif
         },
         0.0,
         [](double a, double b) { return a + b; }
