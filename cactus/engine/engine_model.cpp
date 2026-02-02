@@ -113,7 +113,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
 
     graph_handle_ = gb;
 
-    if(config_.model_type == Config::ModelType::WHISPER){
+    if(config_.model_type == Config::ModelType::WHISPER || config_.model_type == Config::ModelType::TROCR){
         embedding_file_path_ = model_folder+"/decoder_token_embeddings.weights";
     }
     else{
@@ -128,7 +128,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         attention_scale_ = 1.0f / std::sqrt(static_cast<float>(config_.attention_head_dim));
     }
 
-    Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER || config_.model_type == Config::ModelType::MOONSHINE)
+    Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER || config_.model_type == Config::ModelType::TROCR)
                                ? Precision::FP16
                                : Precision::INT8;
     kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, config_.attention_head_dim, cache_precision);
@@ -151,7 +151,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
 
     initialized_ = true;
 
-    if (do_warmup && config_.model_type != Config::ModelType::WHISPER && config_.model_type != Config::ModelType::MOONSHINE) {
+    if (do_warmup && config_.model_type != Config::ModelType::WHISPER && config_.model_type != Config::ModelType::TROCR) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
         forward(warmup_tokens);
@@ -224,6 +224,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     if (top_k == 0) {
         top_k = config_.default_top_k;
     }
+
     auto final_hidden = forward(tokens, true);
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
@@ -245,21 +246,16 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
         const auto& logits_buf = gb->get_output_buffer(logits_node_id);
         void* logits_ptr = gb->get_output(logits_node_id);
         size_t vocab_size = logits_buf.shape.back();
-        size_t seq_len = 1;
-        if (logits_buf.shape.size() >= 2) {
-            seq_len = logits_buf.shape[logits_buf.shape.size() - 2];
-        }
-        size_t row_offset = (seq_len > 0 ? (seq_len - 1) * vocab_size : 0);
 
         std::vector<float> logits(vocab_size);
         if (logits_buf.precision == Precision::FP32) {
-            float* src = static_cast<float*>(logits_ptr) + row_offset;
+            float* src = static_cast<float*>(logits_ptr);
             std::copy(src, src + vocab_size, logits.begin());
         } else if (logits_buf.precision == Precision::FP16) {
-            __fp16* src = static_cast<__fp16*>(logits_ptr) + row_offset;
+            __fp16* src = static_cast<__fp16*>(logits_ptr);
             Quantization::fp16_to_fp32(src, logits.data(), vocab_size);
         } else {
-            int8_t* src = static_cast<int8_t*>(logits_ptr) + row_offset;
+            int8_t* src = static_cast<int8_t*>(logits_ptr);
             Quantization::int8_to_fp32(src, logits.data(), vocab_size, 1.0f);
         }
 
@@ -467,12 +463,25 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "model_type") {
             if (value == "gemma" || value == "GEMMA") model_type = ModelType::GEMMA;
             else if (value == "lfm2" || value == "LFM2") model_type = ModelType::LFM2;
+            else if (value == "smol" || value == "SMOL" || value == "Smol") model_type = ModelType::SMOL;
             else if (value == "bert" || value == "BERT") model_type = ModelType::NOMIC;
             else if (value == "whisper" || value == "WHISPER") model_type = ModelType::WHISPER;
             else if (value == "moonshine" || value == "MOONSHINE") model_type = ModelType::MOONSHINE;
             else if (value == "silero_vad" || value == "SILERO_VAD") model_type = ModelType::SILERO_VAD;
+            else if (value == "trocr" || value == "TROCR" || value == "TrOCR") model_type = ModelType::TROCR;
             else model_type = ModelType::QWEN;
         }
+        // TrOCR-specific config
+        else if (key == "encoder_num_layers") encoder_num_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "encoder_hidden_dim") encoder_hidden_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "encoder_attention_heads") encoder_attention_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "encoder_intermediate_dim") encoder_intermediate_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "decoder_num_layers") decoder_num_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "decoder_hidden_dim") decoder_hidden_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "decoder_attention_heads") decoder_attention_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "decoder_intermediate_dim") decoder_intermediate_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "trocr_image_size") trocr_image_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "trocr_patch_size") trocr_patch_size = static_cast<uint32_t>(std::stoul(value));
         else if (key == "model_variant") {
             std::string v = value;
             std::transform(v.begin(), v.end(), v.begin(), ::tolower);
@@ -502,17 +511,16 @@ bool Config::from_json(const std::string& config_path) {
                 }
             }
         }
-        else if (key == "enc_hidden_act") encoder_act_gelu = (value == "gelu");
-        else if (key == "dec_hidden_act") decoder_act_gelu = (value == "gelu");
-        else if (key == "num_encoder_layers") num_encoder_layers = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "num_decoder_layers") num_decoder_layers = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "partial_rotary_factor") partial_rotary_factor = std::stof(value);
     }
 
     if (model_type == ModelType::GEMMA) {
         default_temperature = 1.0f;
         default_top_p = 0.95f;
         default_top_k = 64;
+    } else if (model_type == ModelType::SMOL) {
+        default_temperature = 0.2f;
+        default_top_p = 0.95f;
+        default_top_k = 20;
     } else if (model_type == ModelType::LFM2) {
         default_temperature = 0.3f;
         default_top_p = 0.95f;
@@ -536,6 +544,10 @@ bool Config::from_json(const std::string& config_path) {
         default_top_k = 0;
         default_max_tps = 6.5f;
         default_cloud_handoff_threshold = 0.35f;
+    } else if (model_type == ModelType::TROCR) {
+        default_temperature = 0.0f;  // Greedy decoding for OCR
+        default_top_p = 0.0f;
+        default_top_k = 0;
     }
 
     return true;
@@ -573,6 +585,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<GemmaModel>(config);
         case Config::ModelType::LFM2:
             return std::make_unique<LFM2Model>(config);
+        case Config::ModelType::SMOL:
+            return std::make_unique<SmolModel>(config);
         case Config::ModelType::NOMIC:
             return std::make_unique<NomicModel>(config);
         case Config::ModelType::WHISPER:
@@ -581,6 +595,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<MoonshineModel>(config);
         case Config::ModelType::SILERO_VAD:
             return std::make_unique<SileroVADModel>(config);
+        case Config::ModelType::TROCR:
+            return std::make_unique<TrOCRModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }
