@@ -94,6 +94,7 @@ def cmd_download(args):
 
     is_vlm = 'vl' in model_id.lower() or 'vlm' in model_id.lower()
     is_whisper = 'whisper' in model_id.lower()
+    is_trocr = 'trocr' in model_id.lower()
 
     try:
         if is_vlm:
@@ -163,6 +164,13 @@ def cmd_download(args):
         elif is_whisper:
             tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
             model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+
+        elif is_trocr:
+            # TrOCR uses VisionEncoderDecoderModel
+            from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+            processor = TrOCRProcessor.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+            tokenizer = processor.tokenizer
+            model = VisionEncoderDecoderModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
 
         else:
             tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
