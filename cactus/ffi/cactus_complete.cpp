@@ -34,6 +34,154 @@ std::string construct_cloud_fallback_error_json(
 } // namespace ffi
 } // namespace cactus
 
+namespace {
+
+std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
+    for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+        if (it->role == "user") {
+            return it->content;
+        }
+    }
+    return {};
+}
+
+void inject_rag_context(CactusModelHandle* handle, std::vector<ChatMessage>& messages) {
+    if (!handle->corpus_index) return;
+
+    std::string query = extract_last_user_query(messages);
+    if (query.empty()) return;
+
+    std::string rag_context = retrieve_rag_context(handle, query);
+    if (rag_context.empty()) return;
+
+    if (!messages.empty() && messages[0].role == "system") {
+        messages[0].content = rag_context + messages[0].content;
+    } else {
+        ChatMessage system_msg;
+        system_msg.role = "system";
+        system_msg.content = rag_context + "Answer the user's question using ONLY the context above. Do not use any prior knowledge. If the answer cannot be found in the context, respond with \"I don't have enough information to answer that.\"";
+        messages.insert(messages.begin(), system_msg);
+    }
+}
+
+void setup_tool_constraints(CactusModelHandle* handle, const std::vector<ToolFunction>& tools,
+                           bool force_tools, float& temperature) {
+    if (!force_tools || tools.empty()) return;
+
+    std::vector<std::string> function_names;
+    function_names.reserve(tools.size());
+    for (const auto& tool : tools) {
+        function_names.push_back(tool.name);
+    }
+    handle->model->set_tool_constraints(function_names);
+
+    if (temperature == 0.0f) {
+        temperature = 0.01f;
+    }
+}
+
+std::vector<std::vector<uint32_t>> build_stop_sequences(
+    Tokenizer* tokenizer,
+    const std::vector<std::string>& stop_sequences,
+    Config::ModelType model_type,
+    bool has_tools
+) {
+    std::vector<std::vector<uint32_t>> stop_token_sequences;
+    stop_token_sequences.push_back({tokenizer->get_eos_token()});
+
+    std::vector<std::string> sequences = stop_sequences;
+    if (sequences.empty()) {
+        std::string default_stop = tokenizer->get_default_stop_sequence();
+        if (!default_stop.empty()) {
+            sequences.push_back(default_stop);
+        }
+    }
+    for (const auto& stop_seq : sequences) {
+        stop_token_sequences.push_back(tokenizer->encode(stop_seq));
+    }
+
+    if (model_type == Config::ModelType::GEMMA && has_tools) {
+        stop_token_sequences.push_back(tokenizer->encode("<end_function_call>"));
+        stop_token_sequences.push_back(tokenizer->encode("<start_function_response>"));
+    }
+
+    return stop_token_sequences;
+}
+
+void trim_stop_suffix(std::vector<uint32_t>& generated_tokens,
+                     const std::vector<std::vector<uint32_t>>& stop_token_sequences,
+                     bool include_stop_sequences) {
+    if (include_stop_sequences) return;
+    for (const auto& stop_seq : stop_token_sequences) {
+        if (stop_seq.empty()) continue;
+        if (generated_tokens.size() >= stop_seq.size() &&
+            std::equal(stop_seq.rbegin(), stop_seq.rend(), generated_tokens.rbegin())) {
+            generated_tokens.resize(generated_tokens.size() - stop_seq.size());
+            break;
+        }
+    }
+}
+
+struct EntropyState {
+    std::vector<float> window;
+    float window_sum = 0.0f;
+    float total_sum = 0.0f;
+    size_t total_count = 0;
+    bool spike_handoff = false;
+
+    void add(float entropy) {
+        window.push_back(entropy);
+        window_sum += entropy;
+        total_sum += entropy;
+        total_count++;
+
+        if (window.size() > ROLLING_ENTROPY_WINDOW) {
+            window_sum -= window.front();
+            window.erase(window.begin());
+        }
+    }
+
+    float rolling_confidence() const {
+        return 1.0f - (window_sum / window.size());
+    }
+
+    float mean_confidence() const {
+        return 1.0f - (total_sum / static_cast<float>(total_count));
+    }
+};
+
+uint32_t generate_first_token(
+    CactusModelHandle* handle,
+    const std::vector<uint32_t>& tokens_to_process,
+    const std::vector<std::string>& image_paths,
+    float temperature, float top_p, size_t top_k,
+    float* first_token_entropy
+) {
+    if (tokens_to_process.empty()) {
+        if (handle->processed_tokens.empty()) {
+            throw std::runtime_error("Cannot generate from empty prompt");
+        }
+        std::vector<uint32_t> last_token_vec = { handle->processed_tokens.back() };
+        return handle->model->decode(last_token_vec, temperature, top_p, top_k, "", first_token_entropy);
+    }
+
+    if (!image_paths.empty()) {
+        return handle->model->decode_with_images(tokens_to_process, image_paths, temperature, top_p, top_k, "", first_token_entropy);
+    }
+
+    size_t prefill_chunk_size = handle->model->get_prefill_chunk_size();
+    if (tokens_to_process.size() > 1) {
+        std::vector<uint32_t> prefill_tokens(tokens_to_process.begin(), tokens_to_process.end() - 1);
+        handle->model->prefill(prefill_tokens, prefill_chunk_size);
+
+        std::vector<uint32_t> last_token = {tokens_to_process.back()};
+        return handle->model->decode(last_token, temperature, top_p, top_k, "", first_token_entropy);
+    }
+    return handle->model->decode(tokens_to_process, temperature, top_p, top_k, "", first_token_entropy);
+}
+
+} // anonymous namespace
+
 extern "C" {
 
 int cactus_complete(
@@ -76,29 +224,7 @@ int cactus_complete(
             return -1;
         }
 
-        if (handle->corpus_index) {
-            std::string query;
-            for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
-                if (it->role == "user") {
-                    query = it->content;
-                    break;
-                }
-            }
-
-            if (!query.empty()) {
-                std::string rag_context = retrieve_rag_context(handle, query);
-                if (!rag_context.empty()) {
-                    if (!messages.empty() && messages[0].role == "system") {
-                        messages[0].content = rag_context + messages[0].content;
-                    } else {
-                        ChatMessage system_msg;
-                        system_msg.role = "system";
-                        system_msg.content = rag_context + "Answer the user's question using ONLY the context above. Do not use any prior knowledge. If the answer cannot be found in the context, respond with \"I don't have enough information to answer that.\"";
-                        messages.insert(messages.begin(), system_msg);
-                    }
-                }
-            }
-        }
+        inject_rag_context(handle, messages);
 
         float temperature, top_p, confidence_threshold;
         size_t top_k, max_tokens, tool_rag_top_k;
@@ -112,30 +238,13 @@ int cactus_complete(
             tools = parse_tools_json(tools_json);
 
         if (tool_rag_top_k > 0 && tools.size() > tool_rag_top_k) {
-            std::string query;
-            for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
-                if (it->role == "user") {
-                    query = it->content;
-                    break;
-                }
-            }
+            std::string query = extract_last_user_query(messages);
             if (!query.empty()) {
                 tools = select_relevant_tools(handle, query, tools, tool_rag_top_k);
             }
         }
 
-        if (force_tools && !tools.empty()) {
-            std::vector<std::string> function_names;
-            function_names.reserve(tools.size());
-            for (const auto& tool : tools) {
-                function_names.push_back(tool.name);
-            }
-            handle->model->set_tool_constraints(function_names);
-
-            if (temperature == 0.0f) {
-                temperature = 0.01f;
-            }
-        }
+        setup_tool_constraints(handle, tools, force_tools, temperature);
 
         Config::ModelType model_type = handle->model->get_config().model_type;
         std::string formatted_tools;
@@ -174,64 +283,14 @@ int cactus_complete(
 
         size_t prompt_tokens = tokens_to_process.size();
 
-        std::vector<std::vector<uint32_t>> stop_token_sequences;
-        stop_token_sequences.push_back({tokenizer->get_eos_token()});
-        if (stop_sequences.empty()) {
-            std::string default_stop = tokenizer->get_default_stop_sequence();
-            if (!default_stop.empty()) {
-                stop_sequences.push_back(default_stop);
-            }
-        }
-        for (const auto& stop_seq : stop_sequences)
-            stop_token_sequences.push_back(tokenizer->encode(stop_seq));
-
-        if (model_type == Config::ModelType::GEMMA && !tools.empty()) {
-            stop_token_sequences.push_back(tokenizer->encode("<end_function_call>"));
-            stop_token_sequences.push_back(tokenizer->encode("<start_function_response>"));
-        }
+        auto stop_token_sequences = build_stop_sequences(tokenizer, stop_sequences, model_type, !tools.empty());
 
         std::vector<uint32_t> generated_tokens;
         double time_to_first_token = 0.0;
-        uint32_t next_token;
         float first_token_entropy = 0.0f;
 
-        auto trim_stop_suffix = [&]() {
-            if (include_stop_sequences) return;
-            for (const auto& stop_seq : stop_token_sequences) {
-                if (stop_seq.empty()) continue;
-                if (generated_tokens.size() >= stop_seq.size() &&
-                    std::equal(stop_seq.rbegin(), stop_seq.rend(), generated_tokens.rbegin())) {
-                    generated_tokens.resize(generated_tokens.size() - stop_seq.size());
-                    break;
-                }
-            }
-        };
-
-        if (tokens_to_process.empty()) {
-            if (handle->processed_tokens.empty()) {
-                handle_error_response("Cannot generate from empty prompt", response_buffer, buffer_size);
-                return -1;
-            }
-            std::vector<uint32_t> last_token_vec = { handle->processed_tokens.back() };
-            next_token = handle->model->decode(last_token_vec, temperature, top_p, top_k, "", &first_token_entropy);
-        } else {
-            if (!image_paths.empty()) {
-                next_token = handle->model->decode_with_images(tokens_to_process, image_paths, temperature, top_p, top_k, "", &first_token_entropy);
-            } else {
-                size_t prefill_chunk_size = handle->model->get_prefill_chunk_size();
-
-                if (tokens_to_process.size() > 1) {
-                    std::vector<uint32_t> prefill_tokens(tokens_to_process.begin(),
-                                                         tokens_to_process.end() - 1);
-                    handle->model->prefill(prefill_tokens, prefill_chunk_size);
-
-                    std::vector<uint32_t> last_token = {tokens_to_process.back()};
-                    next_token = handle->model->decode(last_token, temperature, top_p, top_k, "", &first_token_entropy);
-                } else {
-                    next_token = handle->model->decode(tokens_to_process, temperature, top_p, top_k, "", &first_token_entropy);
-                }
-            }
-        }
+        uint32_t next_token = generate_first_token(handle, tokens_to_process, image_paths,
+                                                    temperature, top_p, top_k, &first_token_entropy);
 
         handle->processed_tokens = current_prompt_tokens;
 
@@ -298,12 +357,8 @@ int cactus_complete(
             handle->model->update_tool_constraints(next_token);
         }
 
-        std::vector<float> entropy_window;
-        entropy_window.push_back(first_token_entropy);
-        float entropy_sum = first_token_entropy;
-        float total_entropy_sum = first_token_entropy;
-        size_t total_entropy_count = 1;
-        bool entropy_spike_handoff = false;
+        EntropyState entropy;
+        entropy.add(first_token_entropy);
 
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
             if (callback) {
@@ -319,20 +374,10 @@ int cactus_complete(
                 generated_tokens.push_back(next_token);
                 handle->processed_tokens.push_back(next_token);
 
-                total_entropy_sum += token_entropy;
-                total_entropy_count++;
+                entropy.add(token_entropy);
 
-                entropy_window.push_back(token_entropy);
-                entropy_sum += token_entropy;
-                if (entropy_window.size() > ROLLING_ENTROPY_WINDOW) {
-                    entropy_sum -= entropy_window.front();
-                    entropy_window.erase(entropy_window.begin());
-                }
-
-                float rolling_mean_entropy = entropy_sum / entropy_window.size();
-                float rolling_confidence = 1.0f - rolling_mean_entropy;
-                if (rolling_confidence < confidence_threshold) {
-                    entropy_spike_handoff = true;
+                if (entropy.rolling_confidence() < confidence_threshold) {
+                    entropy.spike_handoff = true;
                     break;
                 }
 
@@ -341,7 +386,7 @@ int cactus_complete(
                 }
 
                 if (matches_stop_sequence(generated_tokens, stop_token_sequences)) {
-                    trim_stop_suffix();
+                    trim_stop_suffix(generated_tokens, stop_token_sequences, include_stop_sequences);
                     break;
                 }
 
@@ -351,11 +396,10 @@ int cactus_complete(
                 }
             }
         } else {
-            trim_stop_suffix();
+            trim_stop_suffix(generated_tokens, stop_token_sequences, include_stop_sequences);
         }
 
-        float mean_entropy = total_entropy_sum / static_cast<float>(total_entropy_count);
-        confidence = 1.0f - mean_entropy;
+        confidence = entropy.mean_confidence();
 
         if (force_tools && !tools.empty()) {
             handle->model->clear_tool_constraints();
@@ -377,7 +421,7 @@ int cactus_complete(
 
         std::string result = construct_response_json(regular_response, function_calls, time_to_first_token,
                                                      total_time_ms, prefill_tps, decode_tps, prompt_tokens,
-                                                     completion_tokens, confidence, entropy_spike_handoff);
+                                                     completion_tokens, confidence, entropy.spike_handoff);
 
         if (result.length() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);

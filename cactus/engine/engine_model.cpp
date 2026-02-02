@@ -467,7 +467,6 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "model_type") {
             if (value == "gemma" || value == "GEMMA") model_type = ModelType::GEMMA;
             else if (value == "lfm2" || value == "LFM2") model_type = ModelType::LFM2;
-            else if (value == "smol" || value == "SMOL" || value == "Smol") model_type = ModelType::SMOL;
             else if (value == "bert" || value == "BERT") model_type = ModelType::NOMIC;
             else if (value == "whisper" || value == "WHISPER") model_type = ModelType::WHISPER;
             else if (value == "moonshine" || value == "MOONSHINE") model_type = ModelType::MOONSHINE;
@@ -513,10 +512,6 @@ bool Config::from_json(const std::string& config_path) {
         default_temperature = 1.0f;
         default_top_p = 0.95f;
         default_top_k = 64;
-    } else if (model_type == ModelType::SMOL) {
-        default_temperature = 0.2f;
-        default_top_p = 0.95f;
-        default_top_k = 20;
     } else if (model_type == ModelType::LFM2) {
         default_temperature = 0.3f;
         default_top_p = 0.95f;
@@ -575,8 +570,6 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<GemmaModel>(config);
         case Config::ModelType::LFM2:
             return std::make_unique<LFM2Model>(config);
-        case Config::ModelType::SMOL:
-            return std::make_unique<SmolModel>(config);
         case Config::ModelType::NOMIC:
             return std::make_unique<NomicModel>(config);
         case Config::ModelType::WHISPER:

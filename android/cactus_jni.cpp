@@ -37,7 +37,7 @@ JNIEXPORT jlong JNICALL
 Java_com_cactus_Cactus_nativeInit(JNIEnv* env, jobject, jstring modelPath, jstring corpusDir) {
     const char* path = jstring_to_cstr(env, modelPath);
     const char* corpus = jstring_to_cstr(env, corpusDir);
-    jlong handle = reinterpret_cast<jlong>(cactus_init(path, corpus));
+    jlong handle = reinterpret_cast<jlong>(cactus_init(path, corpus, false));
     release_jstring(env, modelPath, path);
     release_jstring(env, corpusDir, corpus);
     return handle;

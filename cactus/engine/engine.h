@@ -94,7 +94,7 @@ struct Config {
     uint32_t num_decoder_layers = 0;
     float partial_rotary_factor = 0.0f;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, SMOL = 2, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8};
     ModelType model_type = ModelType::QWEN;
 
     enum class ModelVariant {DEFAULT = 0, VLM = 1, EXTRACT = 2, RAG = 3};
@@ -167,7 +167,7 @@ public:
     uint32_t get_global_img_token_id() const { return global_img_token_id_; }
 
 protected:
-    enum class ModelType { UNKNOWN, QWEN, GEMMA, LFM2, SMOL, BERT, WHISPER};
+    enum class ModelType { UNKNOWN, QWEN, GEMMA, LFM2, BERT, WHISPER};
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -183,7 +183,6 @@ protected:
     std::string format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_lfm2_vl_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
-    std::string format_smol_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
 };
 
 class BPETokenizer : public Tokenizer {
@@ -474,6 +473,8 @@ private:
     void compute_bias();
     void tokenize_grammar_elements();
     void add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set);
+    void tokenize_function_names(bool quote_names);
+    void init_common_tokens();
 };
 
 class Model {
@@ -648,6 +649,7 @@ public:
 private:
     Config config_;
 
+    std::pair<int64_t, int64_t> compute_pixel_limits() const;
     std::vector<unsigned char> convert_to_rgb(const unsigned char* img_data, int width, int height, int channels);
     std::pair<int, int> smart_resize(int height, int width);
     bool is_image_too_large(int height, int width);

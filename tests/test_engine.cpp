@@ -43,7 +43,7 @@ bool test_streaming() {
               << "║" << std::setw(42) << std::left << "      STREAMING & FOLLOW-UP TEST" << "║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    cactus_model_t model = cactus_init(g_model_path, nullptr);
+    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
     if (!model) {
         std::cerr << "[✗] Failed to initialize model\n";
         return false;
@@ -166,7 +166,7 @@ bool test_vlm_multiturn() {
               << "║       VLM MULTI-TURN TEST                ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    cactus_model_t model = cactus_init(g_model_path, nullptr);
+    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
     if (!model) {
         std::cerr << "Failed to initialize model for VLM multi-turn test" << std::endl;
         return false;
@@ -362,7 +362,7 @@ bool test_embeddings() {
               << "║          EMBEDDINGS TEST                 ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    cactus_model_t model = cactus_init(g_model_path, nullptr);
+    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
     if (!model) return false;
 
     const char* texts[] = {"My name is Henry Ndubuaku", "Your name is Henry Ndubuaku"};
@@ -479,7 +479,7 @@ bool test_rag() {
     std::cout << "├─ Initializing model with RAG...\n";
 
     Timer init_timer;
-    cactus_model_t model = cactus_init(g_model_path, corpus_dir.c_str());
+    cactus_model_t model = cactus_init(g_model_path, corpus_dir.c_str(), false);
     double init_time_ms = init_timer.elapsed_ms();
 
     if (!model) {
@@ -634,7 +634,7 @@ bool run_whisper_test(const char* title, const char* options_json, Predicate che
               << "║" << std::setw(42) << std::left << std::string("          ") + title << "║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr);
+    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
     if (!model) {
         std::cerr << "[✗] Failed to initialize Whisper model\n";
         return false;
@@ -681,7 +681,7 @@ static bool test_stream_transcription() {
         return true;
     }
 
-    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr);
+    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
     if (!model) {
         std::cerr << "[✗] Failed to initialize Whisper model\n";
         return false;
@@ -809,7 +809,7 @@ static bool test_image_embeddings() {
     std::vector<float> embeddings(buffer_size / sizeof(float));
     size_t embedding_dim = 0;
 
-    cactus_model_t model = cactus_init(g_model_path, nullptr);
+    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
     if (!model) {
         std::cout << "⊘ SKIP │ Model doesn't support image embeddings\n";
         return true;
@@ -846,7 +846,7 @@ static bool test_audio_embeddings() {
     std::vector<float> embeddings(buffer_size / sizeof(float));
     size_t embedding_dim = 0;
 
-    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr);
+    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
     if (!model) {
         std::cout << "⊘ SKIP │ Failed to init Whisper model\n";
         return true;
@@ -880,7 +880,7 @@ static bool test_pcm_transcription() {
         return true;
     }
 
-    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr);
+    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
     if (!model) {
         std::cerr << "[✗] Failed to initialize Whisper model\n";
         return false;

@@ -25,7 +25,8 @@ typedef void (*cactus_token_callback)(const char* token, uint32_t token_id, void
 
 CACTUS_FFI_EXPORT cactus_model_t cactus_init(
     const char* model_path,
-    const char* corpus_dir                  // optional: NULL if no RAG corpus
+    const char* corpus_dir,                 // optional: NULL if no RAG corpus
+    bool cache_index                        // false = always rebuild index, true = load cached if available
 );
 
 CACTUS_FFI_EXPORT void cactus_destroy(cactus_model_t model);

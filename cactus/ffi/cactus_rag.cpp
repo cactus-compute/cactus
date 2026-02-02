@@ -19,6 +19,41 @@ static constexpr float RRF_BM25_WEIGHT = 0.2f;
 static constexpr float BM25_K1 = 1.5f;
 static constexpr float BM25_B = 0.75f;
 
+static std::vector<std::pair<float, size_t>> compute_rrf_scores(
+    const std::vector<std::pair<float, size_t>>& emb_ranked,
+    const std::vector<std::pair<float, size_t>>& bm25_ranked,
+    size_t num_items
+) {
+    std::vector<std::pair<float, size_t>> emb_sorted = emb_ranked;
+    std::vector<std::pair<float, size_t>> bm25_sorted = bm25_ranked;
+
+    std::sort(emb_sorted.begin(), emb_sorted.end(),
+        [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::sort(bm25_sorted.begin(), bm25_sorted.end(),
+        [](const auto& a, const auto& b) { return a.first > b.first; });
+
+    std::unordered_map<size_t, size_t> emb_rank_map, bm25_rank_map;
+    for (size_t r = 0; r < emb_sorted.size(); ++r) {
+        emb_rank_map[emb_sorted[r].second] = r + 1;
+    }
+    for (size_t r = 0; r < bm25_sorted.size(); ++r) {
+        bm25_rank_map[bm25_sorted[r].second] = r + 1;
+    }
+
+    std::vector<std::pair<float, size_t>> rrf_scored;
+    rrf_scored.reserve(num_items);
+    for (size_t i = 0; i < num_items; ++i) {
+        float rrf = RRF_EMB_WEIGHT / (RRF_K + emb_rank_map[i]) +
+                    RRF_BM25_WEIGHT / (RRF_K + bm25_rank_map[i]);
+        rrf_scored.emplace_back(rrf, i);
+    }
+
+    std::sort(rrf_scored.begin(), rrf_scored.end(),
+        [](const auto& a, const auto& b) { return a.first > b.first; });
+
+    return rrf_scored;
+}
+
 static std::vector<std::string> tokenize_words(const std::string& text) {
     std::vector<std::string> words;
     std::string current;
@@ -143,28 +178,7 @@ std::string retrieve_rag_context(CactusModelHandle* handle, const std::string& q
             bm25_ranked.emplace_back(bm25, i);
         }
 
-        std::sort(emb_ranked.begin(), emb_ranked.end(),
-            [](const auto& a, const auto& b) { return a.first > b.first; });
-        std::sort(bm25_ranked.begin(), bm25_ranked.end(),
-            [](const auto& a, const auto& b) { return a.first > b.first; });
-
-        std::unordered_map<size_t, size_t> emb_rank_map, bm25_rank_map;
-        for (size_t r = 0; r < emb_ranked.size(); ++r) {
-            emb_rank_map[emb_ranked[r].second] = r + 1;
-        }
-        for (size_t r = 0; r < bm25_ranked.size(); ++r) {
-            bm25_rank_map[bm25_ranked[r].second] = r + 1;
-        }
-
-        std::vector<std::pair<float, size_t>> rrf_scored;
-        for (size_t i = 0; i < docs.size(); ++i) {
-            float rrf = RRF_EMB_WEIGHT / (RRF_K + emb_rank_map[i]) +
-                        RRF_BM25_WEIGHT / (RRF_K + bm25_rank_map[i]);
-            rrf_scored.emplace_back(rrf, i);
-        }
-
-        std::sort(rrf_scored.begin(), rrf_scored.end(),
-            [](const auto& a, const auto& b) { return a.first > b.first; });
+        auto rrf_scored = compute_rrf_scores(emb_ranked, bm25_ranked, docs.size());
 
         std::string context = "[Retrieved Context - Use ONLY this information to answer. If the answer is not in the context, say \"I don't have enough information to answer that.\"]\n";
         size_t count = std::min(RAG_TOP_K, rrf_scored.size());
@@ -271,7 +285,6 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
 
     auto query_words = tokenize_words(query);
 
-    // Compute BM25 stats
     float total_len = 0.0f;
     std::unordered_map<std::string, int> doc_freqs;
     for (const auto& text : handle->tool_texts) {
@@ -284,14 +297,12 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
     }
     float avg_doc_len = total_len / handle->tool_texts.size();
 
-    // Compute embedding similarity scores
     std::vector<std::pair<float, size_t>> emb_ranked;
     for (size_t i = 0; i < handle->tool_embeddings.size(); ++i) {
         float sim = cosine_similarity(query_embedding, handle->tool_embeddings[i]);
         emb_ranked.emplace_back(sim, i);
     }
 
-    // Compute BM25 scores
     std::vector<std::pair<float, size_t>> bm25_ranked;
     for (size_t i = 0; i < handle->tool_texts.size(); ++i) {
         float bm25 = compute_bm25_score(
@@ -300,32 +311,7 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
         bm25_ranked.emplace_back(bm25, i);
     }
 
-    // Sort by scores (descending)
-    std::sort(emb_ranked.begin(), emb_ranked.end(),
-        [](const auto& a, const auto& b) { return a.first > b.first; });
-    std::sort(bm25_ranked.begin(), bm25_ranked.end(),
-        [](const auto& a, const auto& b) { return a.first > b.first; });
-
-    // Build rank maps
-    std::unordered_map<size_t, size_t> emb_rank_map, bm25_rank_map;
-    for (size_t r = 0; r < emb_ranked.size(); ++r) {
-        emb_rank_map[emb_ranked[r].second] = r + 1;
-    }
-    for (size_t r = 0; r < bm25_ranked.size(); ++r) {
-        bm25_rank_map[bm25_ranked[r].second] = r + 1;
-    }
-
-    // Compute RRF scores
-    std::vector<std::pair<float, size_t>> rrf_scored;
-    for (size_t i = 0; i < all_tools.size(); ++i) {
-        float rrf = RRF_EMB_WEIGHT / (RRF_K + emb_rank_map[i]) +
-                    RRF_BM25_WEIGHT / (RRF_K + bm25_rank_map[i]);
-        rrf_scored.emplace_back(rrf, i);
-    }
-
-    // Sort by RRF score (descending)
-    std::sort(rrf_scored.begin(), rrf_scored.end(),
-        [](const auto& a, const auto& b) { return a.first > b.first; });
+    auto rrf_scored = compute_rrf_scores(emb_ranked, bm25_ranked, all_tools.size());
 
     // Select top-k tools
     std::vector<ToolFunction> selected;
@@ -424,28 +410,7 @@ int cactus_rag_query(
             bm25_ranked.emplace_back(bm25, i);
         }
 
-        std::sort(emb_ranked.begin(), emb_ranked.end(),
-            [](const auto& a, const auto& b) { return a.first > b.first; });
-        std::sort(bm25_ranked.begin(), bm25_ranked.end(),
-            [](const auto& a, const auto& b) { return a.first > b.first; });
-
-        std::unordered_map<size_t, size_t> emb_rank_map, bm25_rank_map;
-        for (size_t r = 0; r < emb_ranked.size(); ++r) {
-            emb_rank_map[emb_ranked[r].second] = r + 1;
-        }
-        for (size_t r = 0; r < bm25_ranked.size(); ++r) {
-            bm25_rank_map[bm25_ranked[r].second] = r + 1;
-        }
-
-        std::vector<std::pair<float, size_t>> rrf_scored;
-        for (size_t i = 0; i < docs.size(); ++i) {
-            float rrf = RRF_EMB_WEIGHT / (RRF_K + emb_rank_map[i]) +
-                        RRF_BM25_WEIGHT / (RRF_K + bm25_rank_map[i]);
-            rrf_scored.emplace_back(rrf, i);
-        }
-
-        std::sort(rrf_scored.begin(), rrf_scored.end(),
-            [](const auto& a, const auto& b) { return a.first > b.first; });
+        auto rrf_scored = compute_rrf_scores(emb_ranked, bm25_ranked, docs.size());
 
         size_t result_count = std::min(top_k > 0 ? top_k : RAG_TOP_K, rrf_scored.size());
 

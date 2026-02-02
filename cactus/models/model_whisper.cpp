@@ -11,15 +11,6 @@
 namespace cactus {
 namespace engine {
 
-
-struct ConvDebugNodes {
-    size_t conv1;
-    size_t conv2;
-    size_t conv2_transposed;
-    size_t output;
-};
-
-
 WhisperModel::WhisperModel() : Model() {}
 
 WhisperModel::WhisperModel(const Config& config) : Model(config) {

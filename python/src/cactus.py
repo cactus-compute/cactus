@@ -50,7 +50,7 @@ if not _LIB_PATH.exists():
 
 _lib = ctypes.CDLL(str(_LIB_PATH))
 
-_lib.cactus_init.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+_lib.cactus_init.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_bool]
 _lib.cactus_init.restype = ctypes.c_void_p
 
 _lib.cactus_complete.argtypes = [
@@ -185,13 +185,14 @@ _lib.cactus_index_destroy.argtypes = [ctypes.c_void_p]
 _lib.cactus_index_destroy.restype = None
 
 
-def cactus_init(model_path, corpus_dir=None):
+def cactus_init(model_path, corpus_dir=None, cache_index=False):
     """
     Initialize a model and return its handle.
 
     Args:
         model_path: Path to model weights directory
         corpus_dir: Optional path to RAG corpus directory for document Q&A
+        cache_index: If True, load cached index if available; if False, always rebuild
 
     Returns:
         Model handle (opaque pointer) or None if initialization failed.
@@ -199,7 +200,8 @@ def cactus_init(model_path, corpus_dir=None):
     """
     return _lib.cactus_init(
         model_path.encode() if isinstance(model_path, str) else model_path,
-        corpus_dir.encode() if corpus_dir else None
+        corpus_dir.encode() if corpus_dir else None,
+        cache_index
     )
 
 

@@ -159,8 +159,8 @@ public final class Cactus: @unchecked Sendable {
     private let handle: OpaquePointer
     private static let defaultBufferSize = 65536
 
-    public init(modelPath: String, corpusDir: String? = nil) throws {
-        guard let h = cactus_init(modelPath, corpusDir) else {
+    public init(modelPath: String, corpusDir: String? = nil, cacheIndex: Bool = false) throws {
+        guard let h = cactus_init(modelPath, corpusDir, cacheIndex) else {
             let error = String(cString: cactus_get_last_error())
             throw CactusError.initializationFailed(error.isEmpty ? "Unknown error" : error)
         }

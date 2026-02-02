@@ -396,7 +396,7 @@ int main(int argc, char* argv[]) {
     std::cout << "\n" << colored("Loading model from ", Color::YELLOW)
               << colored(model_path, Color::CYAN) << colored("...", Color::YELLOW) << "\n";
 
-    cactus_model_t model = cactus_init(model_path, nullptr);
+    cactus_model_t model = cactus_init(model_path, nullptr, false);
 
     if (!model) {
         std::cerr << colored("Failed to initialize model\n", Color::RED + Color::BOLD);

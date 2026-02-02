@@ -178,7 +178,7 @@ bool run_test(const char* title, const char* model_path, const char* messages,
         std::cout << "├─ User prompt: " << user_prompt << "\n";
     }
 
-    cactus_model_t model = cactus_init(model_path, nullptr);
+    cactus_model_t model = cactus_init(model_path, nullptr, false);
     if (!model) {
         std::cerr << "[✗] Failed to initialize model\n";
         return false;

@@ -31,18 +31,8 @@ std::string json_string(const std::string& json, const std::string& key) {
     return json.substr(q1 + 1, q2 - q1 - 1);
 }
 
-std::string escape_json(const std::string& s) {
-    std::ostringstream o;
-    for (auto c : s) {
-        switch (c) {
-            case '"':  o << "\\\""; break;
-            case '\\': o << "\\\\"; break;
-            case '\n': o << "\\n";  break;
-            case '\r': o << "\\r";  break;
-            default:   o << c;      break;
-        }
-    }
-    return o.str();
+inline std::string escape_json(const std::string& s) {
+    return escape_json_string(s);
 }
 
 bool json_bool(const std::string& json, const std::string& key) {

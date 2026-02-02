@@ -121,12 +121,16 @@ public class CactusHttp {
                 connection.setRequestProperty("X-Title", "Cactus");
 
                 if (authorization != null && !authorization.isEmpty()) {
+                    // Sanitize authorization header - strip newlines and whitespace
+                    // (common issue when users copy-paste API keys)
+                    String sanitizedAuth = authorization.trim().replaceAll("[\\r\\n]", "");
+
                     // Check if it's an Anthropic API key (doesn't start with "Bearer")
                     if (url.contains("anthropic.com")) {
-                        connection.setRequestProperty("x-api-key", authorization);
+                        connection.setRequestProperty("x-api-key", sanitizedAuth);
                         connection.setRequestProperty("anthropic-version", "2023-06-01");
                     } else {
-                        connection.setRequestProperty("Authorization", authorization);
+                        connection.setRequestProperty("Authorization", sanitizedAuth);
                     }
                 }
 

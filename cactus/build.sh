@@ -2,7 +2,6 @@
 
 set -e
 
-# Check for required build tools
 missing=()
 if ! command -v cmake &> /dev/null; then
     missing+=("cmake")
@@ -42,4 +41,4 @@ cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF > /dev/null 2>&1
 make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
 echo "Cactus library built successfully!"
-echo "Library location: $(pwd)/lib/libcactus.a"
+echo "Library location: $(pwd)/libcactus.a"

@@ -14,27 +14,28 @@ void ToolCallConstrainer::add_tokens_for_string(const std::string& str, std::uno
     }
 }
 
-void ToolCallConstrainer::tokenize_grammar_elements() {
-    if (!tokenizer_) return;
-
-    open_brace_tokens_.clear();
-    close_brace_tokens_.clear();
-    colon_tokens_.clear();
-    comma_tokens_.clear();
-    name_key_tokens_.clear();
-    args_key_tokens_.clear();
-    quote_tokens_.clear();
-    backtick_tokens_.clear();
-    all_func_name_tokens_.clear();
+void ToolCallConstrainer::tokenize_function_names(bool quote_names) {
     func_name_sequences_.clear();
-    tool_start_tokens_.clear();
-    tool_end_tokens_.clear();
-    bracket_open_tokens_.clear();
-    bracket_close_tokens_.clear();
-    paren_open_tokens_.clear();
-    paren_close_tokens_.clear();
-    equals_tokens_.clear();
+    all_func_name_tokens_.clear();
 
+    for (const auto& name : function_names_) {
+        std::string name_to_encode = quote_names ? ("\"" + name + "\"") : name;
+        auto tokens = tokenizer_->encode(name_to_encode);
+        func_name_sequences_[name] = tokens;
+        for (uint32_t t : tokens) {
+            all_func_name_tokens_.insert(t);
+        }
+        if (quote_names) {
+            auto unquoted_tokens = tokenizer_->encode(name);
+            for (uint32_t t : unquoted_tokens) {
+                all_func_name_tokens_.insert(t);
+            }
+        }
+    }
+}
+
+void ToolCallConstrainer::init_common_tokens() {
+    backtick_tokens_.clear();
     add_tokens_for_string("`", backtick_tokens_);
     add_tokens_for_string("``", backtick_tokens_);
     add_tokens_for_string("```", backtick_tokens_);
@@ -44,6 +45,28 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
     add_tokens_for_string("``` json", backtick_tokens_);
     add_tokens_for_string("```\n", backtick_tokens_);
     add_tokens_for_string("` ", backtick_tokens_);
+}
+
+void ToolCallConstrainer::tokenize_grammar_elements() {
+    if (!tokenizer_) return;
+
+    // Clear all token sets
+    open_brace_tokens_.clear();
+    close_brace_tokens_.clear();
+    colon_tokens_.clear();
+    comma_tokens_.clear();
+    name_key_tokens_.clear();
+    args_key_tokens_.clear();
+    quote_tokens_.clear();
+    tool_start_tokens_.clear();
+    tool_end_tokens_.clear();
+    bracket_open_tokens_.clear();
+    bracket_close_tokens_.clear();
+    paren_open_tokens_.clear();
+    paren_close_tokens_.clear();
+    equals_tokens_.clear();
+
+    init_common_tokens();
 
     if (model_type_ == Config::ModelType::LFM2) {
         add_tokens_for_string("<|tool_call_start|>", tool_start_tokens_);
@@ -56,13 +79,7 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
         add_tokens_for_string(",", comma_tokens_);
         add_tokens_for_string("\"", quote_tokens_);
 
-        for (const auto& name : function_names_) {
-            auto tokens = tokenizer_->encode(name);
-            func_name_sequences_[name] = tokens;
-            for (uint32_t t : tokens) {
-                all_func_name_tokens_.insert(t);
-            }
-        }
+        tokenize_function_names(false);  
     } else if (model_type_ == Config::ModelType::GEMMA) {
         gemma_call_start_tokens_.clear();
         gemma_call_end_tokens_.clear();
@@ -81,13 +98,7 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
         add_tokens_for_string(":", colon_tokens_);
         add_tokens_for_string(",", comma_tokens_);
 
-        for (const auto& name : function_names_) {
-            auto tokens = tokenizer_->encode(name);
-            func_name_sequences_[name] = tokens;
-            for (uint32_t t : tokens) {
-                all_func_name_tokens_.insert(t);
-            }
-        }
+        tokenize_function_names(false);  
     } else {
         qwen_tool_call_start_tokens_.clear();
         qwen_tool_call_end_tokens_.clear();
@@ -107,18 +118,7 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
         add_tokens_for_string("\"arguments\"", args_key_tokens_);
         add_tokens_for_string("arguments", args_key_tokens_);
 
-        for (const auto& name : function_names_) {
-            std::string quoted_name = "\"" + name + "\"";
-            auto tokens = tokenizer_->encode(quoted_name);
-            func_name_sequences_[name] = tokens;
-            for (uint32_t t : tokens) {
-                all_func_name_tokens_.insert(t);
-            }
-            auto unquoted_tokens = tokenizer_->encode(name);
-            for (uint32_t t : unquoted_tokens) {
-                all_func_name_tokens_.insert(t);
-            }
-        }
+        tokenize_function_names(true); 
     }
 }
 

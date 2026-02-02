@@ -7,27 +7,9 @@
 
 using namespace cactus::engine;
 using namespace cactus::ffi;
-
-static constexpr size_t WHISPER_TARGET_FRAMES = 3000;
-static constexpr int WHISPER_SAMPLE_RATE = 16000;
-
-static AudioProcessor::SpectrogramConfig get_whisper_spectrogram_config() {
-    AudioProcessor::SpectrogramConfig cfg{};
-    cfg.n_fft        = 400;
-    cfg.frame_length = 400;
-    cfg.hop_length   = 160;
-    cfg.power        = 2.0f;
-    cfg.center       = true;
-    cfg.pad_mode     = "reflect";
-    cfg.onesided     = true;
-    cfg.dither       = 0.0f;
-    cfg.mel_floor    = 1e-10f;
-    cfg.log_mel      = "log10";
-    cfg.reference    = 1.0f;
-    cfg.min_value    = 1e-10f;
-    cfg.remove_dc_offset = true;
-    return cfg;
-}
+using cactus::audio::WHISPER_TARGET_FRAMES;
+using cactus::audio::WHISPER_SAMPLE_RATE;
+using cactus::audio::get_whisper_spectrogram_config;
 
 static std::vector<float> compute_mel_from_wav(const std::string& wav_path) {
     AudioFP32 audio = load_wav(wav_path);

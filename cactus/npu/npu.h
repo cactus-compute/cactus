@@ -41,8 +41,6 @@ std::unique_ptr<NPUEncoder> create_encoder();
 
 bool is_npu_available();
 
-void set_npu_enabled(bool enabled);
-
 struct NPUBufferRef {
     const __fp16* data;
     size_t count;  

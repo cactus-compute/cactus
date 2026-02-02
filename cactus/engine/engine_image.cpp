@@ -32,6 +32,16 @@ Siglip2Preprocessor::Siglip2Preprocessor() : config_() {}
 
 Siglip2Preprocessor::~Siglip2Preprocessor() = default;
 
+std::pair<int64_t, int64_t> Siglip2Preprocessor::compute_pixel_limits() const {
+    int64_t min_pixels = static_cast<int64_t>(config_.min_image_tokens) *
+                         config_.patch_size * config_.patch_size *
+                         config_.downsample_factor * config_.downsample_factor;
+    int64_t max_pixels = static_cast<int64_t>(config_.max_image_tokens) *
+                         config_.patch_size * config_.patch_size *
+                         config_.downsample_factor * config_.downsample_factor;
+    return {min_pixels, max_pixels};
+}
+
 int Siglip2Preprocessor::round_by_factor(int number, int factor) {
     if (factor == 0) {
         return number;
@@ -44,12 +54,7 @@ int Siglip2Preprocessor::round_by_factor(int number, int factor) {
 
 std::pair<int,int> Siglip2Preprocessor::smart_resize(int height, int width) {
     const int total_factor = config_.patch_size * config_.downsample_factor;
-    const int64_t min_pixels = static_cast<int64_t>(config_.min_image_tokens) *
-                               config_.patch_size * config_.patch_size *
-                               config_.downsample_factor * config_.downsample_factor;
-    const int64_t max_pixels = static_cast<int64_t>(config_.max_image_tokens) *
-                               config_.patch_size * config_.patch_size *
-                               config_.downsample_factor * config_.downsample_factor;
+    auto [min_pixels, max_pixels] = compute_pixel_limits();
 
     int h_bar = std::max(total_factor, round_by_factor(height, total_factor));
     int w_bar = std::max(total_factor, round_by_factor(width, total_factor));
@@ -81,13 +86,11 @@ bool Siglip2Preprocessor::is_image_too_large(int height, int width) {
     const int w_bar = std::max(config_.patch_size, round_by_factor(width, total_factor));
 
     const int64_t pixels = static_cast<int64_t>(h_bar) * static_cast<int64_t>(w_bar);
-    const double max_pixels = static_cast<double>(config_.max_image_tokens) *
-                              config_.patch_size * config_.patch_size *
-                              config_.downsample_factor * config_.downsample_factor *
-                              config_.max_pixels_tolerance;
+    auto [min_pixels, max_pixels] = compute_pixel_limits();
+    const double max_pixels_with_tolerance = static_cast<double>(max_pixels) * config_.max_pixels_tolerance;
 
-    bool result = static_cast<double>(pixels) > max_pixels;
-    
+    bool result = static_cast<double>(pixels) > max_pixels_with_tolerance;
+
     return result;
 }
 

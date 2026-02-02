@@ -27,9 +27,6 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
                 break;
             } else if(line.find("lfm2") != std::string::npos) {
                 model_type_ = ModelType::LFM2;
-            } else if (line.find("smol") != std::string::npos) {
-                model_type_ = ModelType::SMOL;
-                break;
             } else if (line.find("bert") != std::string::npos) {
                 model_type_ = ModelType::BERT;
                 break;
@@ -72,7 +69,6 @@ std::string Tokenizer::get_default_stop_sequence() const {
             return "<end_of_turn>";
         case ModelType::QWEN:
         case ModelType::LFM2:
-        case ModelType::SMOL:
             return "<|im_end|>";
         default:
             return "<|im_end|>";
@@ -103,8 +99,6 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
             return format_gemma_style(messages, add_generation_prompt, tools_json);
         case ModelType::LFM2:
             return format_lfm2_style(messages, add_generation_prompt, tools_json);
-        case ModelType::SMOL:
-            return format_smol_style(messages, add_generation_prompt, tools_json);
         default:
             return format_qwen_style(messages, add_generation_prompt, tools_json);
     }
@@ -372,35 +366,6 @@ std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messag
 
     return result;
 }
-
-std::string Tokenizer::format_smol_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
-    if (!tools_json.empty()) {
-        return "ERROR: Tool calls are currently not supported for Smol models";
-    }
-
-    std::string result;
-
-    if (!messages.empty() && messages.front().role != "system") {
-        result += "<|im_start|>system\n";
-        result += "You are a helpful AI assistant named SmolLM, trained by Hugging Face";
-        result += "<|im_end|>\n";
-    }
-
-    for (const auto& msg : messages) {
-        result += "<|im_start|>";
-        result += msg.role;
-        result += "\n";
-        result += msg.content;
-        result += "<|im_end|>\n";
-    }
-
-    if (add_generation_prompt) {
-        result += "<|im_start|>assistant\n";
-    }
-
-    return result;
-}
-
 
 } // namespace engine
 } // namespace cactus

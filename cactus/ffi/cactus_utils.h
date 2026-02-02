@@ -33,10 +33,12 @@ inline size_t get_memory_footprint_bytes() {
     mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
     if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vm_info, &count) == KERN_SUCCESS)
         return vm_info.phys_footprint;
+
 #elif defined(_WIN32)
     PROCESS_MEMORY_COUNTERS_EX pmc;
     if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc)))
         return pmc.PrivateUsage;
+        
 #elif defined(__linux__) || defined(__ANDROID__)
     std::ifstream statm("/proc/self/statm");
     if (statm.is_open()) {
@@ -73,6 +75,33 @@ bool matches_stop_sequence(const std::vector<uint32_t>& generated_tokens,
                            const std::vector<std::vector<uint32_t>>& stop_sequences);
 
 std::string retrieve_rag_context(CactusModelHandle* handle, const std::string& query);
+
+namespace cactus {
+namespace audio {
+
+static constexpr size_t WHISPER_TARGET_FRAMES = 3000;
+static constexpr int WHISPER_SAMPLE_RATE = 16000;
+
+inline cactus::engine::AudioProcessor::SpectrogramConfig get_whisper_spectrogram_config() {
+    cactus::engine::AudioProcessor::SpectrogramConfig cfg{};
+    cfg.n_fft        = 400;
+    cfg.frame_length = 400;
+    cfg.hop_length   = 160;
+    cfg.power        = 2.0f;
+    cfg.center       = true;
+    cfg.pad_mode     = "reflect";
+    cfg.onesided     = true;
+    cfg.dither       = 0.0f;
+    cfg.mel_floor    = 1e-10f;
+    cfg.log_mel      = "log10";
+    cfg.reference    = 1.0f;
+    cfg.min_value    = 1e-10f;
+    cfg.remove_dc_offset = true;
+    return cfg;
+}
+
+} // namespace audio
+} // namespace cactus
 
 namespace cactus {
 namespace ffi {
@@ -306,8 +335,8 @@ inline void parse_options_json(const std::string& json,
     top_k = 0;
     max_tokens = 100;
     force_tools = false;
-    tool_rag_top_k = 2;  // 0 = disabled, N = select top N relevant tools
-    confidence_threshold = 0.7f;  // trigger cloud handoff when confidence < this value
+    tool_rag_top_k = 2;  
+    confidence_threshold = 0.7f;  
     include_stop_sequences = false;
     stop_sequences.clear();
 

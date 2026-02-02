@@ -431,10 +431,6 @@ bool is_npu_available() {
     return g_npu_enabled;
 }
 
-void set_npu_enabled(bool enabled) {
-    g_npu_enabled = enabled;
-}
-
 } // namespace npu
 } // namespace cactus
 

@@ -5,6 +5,28 @@
 
 using namespace cactus::net;
 
+// Forward declarations for functions defined later in this file
+namespace cactus {
+namespace ffi {
+bool perform_cloud_fallback(const std::string& messages_json,
+                            const std::string& options_json,
+                            std::string& cloud_response,
+                            std::string& error_message);
+std::string convert_cloud_response_to_cactus_format(
+    const std::string& cloud_response,
+    double local_time_to_first_token,
+    double local_prefill_tps,
+    size_t local_prompt_tokens,
+    float local_confidence);
+std::string construct_cloud_fallback_error_json(
+    const std::string& error_message,
+    float confidence,
+    double time_to_first_token,
+    double prefill_tps,
+    size_t prompt_tokens);
+} // namespace ffi
+} // namespace cactus
+
 extern "C" {
 
 void cactus_set_cloud_config(
@@ -117,39 +139,83 @@ std::string convert_cloud_response_to_cactus_format(
         response_text = "Cloud API returned non-JSON response (possibly an error page)";
     }
 
-    // Simple JSON parsing for choices[0].message.content
-    size_t content_pos = looks_like_json ? cloud_response.find("\"content\"") : std::string::npos;
-    if (content_pos != std::string::npos) {
-        size_t start = cloud_response.find("\"", content_pos + 10);
-        if (start != std::string::npos) {
-            start++;
-            size_t end = start;
-            while (end < cloud_response.size()) {
-                if (cloud_response[end] == '\\' && end + 1 < cloud_response.size()) {
-                    end += 2; // Skip escaped character
-                } else if (cloud_response[end] == '"') {
-                    break;
-                } else {
-                    end++;
-                }
+    // Helper lambda to extract string value starting at a position after opening quote
+    auto extract_json_string = [&cloud_response](size_t start) -> std::string {
+        std::string result;
+        size_t end = start;
+        while (end < cloud_response.size()) {
+            if (cloud_response[end] == '\\' && end + 1 < cloud_response.size()) {
+                end += 2; // Skip escaped character
+            } else if (cloud_response[end] == '"') {
+                break;
+            } else {
+                end++;
             }
-            response_text = cloud_response.substr(start, end - start);
+        }
+        result = cloud_response.substr(start, end - start);
 
-            // Unescape common sequences
-            std::string unescaped;
-            for (size_t i = 0; i < response_text.size(); i++) {
-                if (response_text[i] == '\\' && i + 1 < response_text.size()) {
-                    char next = response_text[i + 1];
-                    if (next == 'n') { unescaped += '\n'; i++; }
-                    else if (next == 't') { unescaped += '\t'; i++; }
-                    else if (next == '"') { unescaped += '"'; i++; }
-                    else if (next == '\\') { unescaped += '\\'; i++; }
-                    else { unescaped += response_text[i]; }
-                } else {
-                    unescaped += response_text[i];
+        // Unescape common sequences
+        std::string unescaped;
+        for (size_t i = 0; i < result.size(); i++) {
+            if (result[i] == '\\' && i + 1 < result.size()) {
+                char next = result[i + 1];
+                if (next == 'n') { unescaped += '\n'; i++; }
+                else if (next == 't') { unescaped += '\t'; i++; }
+                else if (next == '"') { unescaped += '"'; i++; }
+                else if (next == '\\') { unescaped += '\\'; i++; }
+                else { unescaped += result[i]; }
+            } else {
+                unescaped += result[i];
+            }
+        }
+        return unescaped;
+    };
+
+    if (looks_like_json) {
+        // Try OpenAI format first: {"choices":[{"message":{"content":"..."}}]}
+        size_t choices_pos = cloud_response.find("\"choices\"");
+        if (choices_pos != std::string::npos) {
+            size_t content_pos = cloud_response.find("\"content\"", choices_pos);
+            if (content_pos != std::string::npos) {
+                size_t start = cloud_response.find("\"", content_pos + 10);
+                if (start != std::string::npos) {
+                    response_text = extract_json_string(start + 1);
                 }
             }
-            response_text = unescaped;
+        }
+
+        // Try Anthropic format: {"content":[{"type":"text","text":"..."}]}
+        if (response_text.empty()) {
+            size_t content_pos = cloud_response.find("\"content\"");
+            if (content_pos != std::string::npos) {
+                // Look for "text" field within content array (Anthropic format)
+                size_t text_pos = cloud_response.find("\"text\"", content_pos);
+                if (text_pos != std::string::npos) {
+                    // Skip past "text": to find the value
+                    size_t colon_pos = cloud_response.find(":", text_pos + 6);
+                    if (colon_pos != std::string::npos) {
+                        size_t start = cloud_response.find("\"", colon_pos);
+                        if (start != std::string::npos) {
+                            response_text = extract_json_string(start + 1);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: look for any "content" with a direct string value
+        if (response_text.empty()) {
+            size_t content_pos = cloud_response.find("\"content\"");
+            if (content_pos != std::string::npos) {
+                size_t colon_pos = cloud_response.find(":", content_pos + 9);
+                if (colon_pos != std::string::npos) {
+                    // Skip whitespace after colon
+                    size_t val_start = cloud_response.find_first_not_of(" \t\n\r", colon_pos + 1);
+                    if (val_start != std::string::npos && cloud_response[val_start] == '"') {
+                        response_text = extract_json_string(val_start + 1);
+                    }
+                }
+            }
         }
     }
 

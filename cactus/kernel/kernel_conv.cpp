@@ -10,14 +10,76 @@
 #include <cstddef>
 #include <iostream>
 
-constexpr size_t T_TILE_F16 = 2;
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+#endif
 
-void cactus_conv1d_causal_depthwise_f16(
-    const __fp16* input, 
-    const __fp16* weight, 
-    __fp16* output,      
+constexpr size_t T_TILE_F16 = 2;
+constexpr size_t ACCELERATE_K_THRESHOLD = 32;
+constexpr size_t ACCELERATE_L_THRESHOLD = 128;
+
+#ifdef __APPLE__
+static void conv1d_causal_depthwise_f16_accelerate(
+    const __fp16* input,
+    const __fp16* weight,
+    __fp16* output,
     size_t N, size_t L, size_t C, size_t K, size_t dilation)
 {
+    const size_t in_bs  = L * C;
+    const size_t out_bs = L * C;
+    const size_t padded_len = L + (K - 1) * dilation;
+
+    CactusThreading::parallel_for_2d(N, C, CactusThreading::Thresholds::ATTENTION, [&](size_t n, size_t c) {
+        const __fp16* Xb = input  + n * in_bs;
+        __fp16*       Yb = output + n * out_bs;
+        const __fp16* Wc = weight + c * K;
+
+        std::vector<float> padded_input(padded_len, 0.0f);
+        std::vector<float> weight_f32(K);
+        std::vector<float> conv_out(L);
+
+        size_t pad = (K - 1) * dilation;
+        for (size_t t = 0; t < L; ++t) {
+            padded_input[pad + t] = (float)Xb[t * C + c];
+        }
+
+        for (size_t k = 0; k < K; ++k) {
+            weight_f32[k] = (float)Wc[k];
+        }
+
+        if (dilation == 1) {
+            vDSP_conv(padded_input.data(), 1, weight_f32.data(), 1,
+                      conv_out.data(), 1, L, K);
+        } else {
+            std::vector<float> dilated_weight(1 + (K - 1) * dilation, 0.0f);
+            for (size_t k = 0; k < K; ++k) {
+                dilated_weight[k * dilation] = weight_f32[k];
+            }
+            size_t dilated_K = dilated_weight.size();
+            vDSP_conv(padded_input.data(), 1, dilated_weight.data(), 1,
+                      conv_out.data(), 1, L, dilated_K);
+        }
+
+        for (size_t t = 0; t < L; ++t) {
+            Yb[t * C + c] = (__fp16)conv_out[t];
+        }
+    });
+}
+#endif
+
+void cactus_conv1d_causal_depthwise_f16(
+    const __fp16* input,
+    const __fp16* weight,
+    __fp16* output,
+    size_t N, size_t L, size_t C, size_t K, size_t dilation)
+{
+#ifdef __APPLE__
+    if (K >= ACCELERATE_K_THRESHOLD && L >= ACCELERATE_L_THRESHOLD) {
+        conv1d_causal_depthwise_f16_accelerate(input, weight, output, N, L, C, K, dilation);
+        return;
+    }
+#endif
+
     const size_t in_bs  = L * C;
     const size_t out_bs = L * C;
 
@@ -235,7 +297,65 @@ void cactus_conv1d_f16_k3(
     });
 }
 
-void cactus_conv1d_f16(
+#ifdef __APPLE__
+static void conv1d_f16_accelerate(
+    const __fp16* input,
+    const __fp16* weight,
+    const __fp16* bias,
+    __fp16* output,
+    size_t N, size_t L,
+    size_t C_in, size_t C_out,
+    size_t K,
+    size_t stride
+){
+    const size_t out_len = ((L - K) / stride) + 1;
+    const size_t in_bs   = C_in * L;
+    const size_t out_bs  = C_out * out_len;
+
+    CactusThreading::parallel_for_2d(
+        N, C_out, CactusThreading::Thresholds::ATTENTION,
+        [&](size_t n, size_t oc) {
+
+        const __fp16* Xb  = input  + n * in_bs;
+        __fp16*       Yoc = output + n * out_bs + oc * out_len;
+        const __fp16* Woc = weight + oc * (C_in * K);
+        const float   b   = bias ? (float)bias[oc] : 0.f;
+
+        std::vector<float> out_f32(out_len, b);
+        std::vector<float> input_f32(L);
+        std::vector<float> weight_f32(K);
+
+        for (size_t ic = 0; ic < C_in; ++ic) {
+            const __fp16* Xc = Xb + ic * L;
+            const __fp16* Wc = Woc + ic * K;
+
+            for (size_t i = 0; i < L; ++i) input_f32[i] = (float)Xc[i];
+            for (size_t k = 0; k < K; ++k) weight_f32[K - 1 - k] = (float)Wc[k];
+
+            if (stride == 1) {
+                std::vector<float> conv_out(out_len);
+                vDSP_conv(input_f32.data(), 1, weight_f32.data(), 1,
+                          conv_out.data(), 1, out_len, K);
+                vDSP_vadd(out_f32.data(), 1, conv_out.data(), 1,
+                          out_f32.data(), 1, out_len);
+            } else {
+                std::vector<float> full_conv(L - K + 1);
+                vDSP_conv(input_f32.data(), 1, weight_f32.data(), 1,
+                          full_conv.data(), 1, L - K + 1, K);
+                for (size_t out_t = 0; out_t < out_len; ++out_t) {
+                    out_f32[out_t] += full_conv[out_t * stride];
+                }
+            }
+        }
+
+        for (size_t out_t = 0; out_t < out_len; ++out_t) {
+            Yoc[out_t] = (__fp16)out_f32[out_t];
+        }
+    });
+}
+#endif
+
+static void conv1d_f16_neon(
     const __fp16* input,
     const __fp16* weight,
     const __fp16* bias,
@@ -297,6 +417,25 @@ void cactus_conv1d_f16(
             Yoc[out_t] = (__fp16)sum;
         }
     });
+}
+
+void cactus_conv1d_f16(
+    const __fp16* input,
+    const __fp16* weight,
+    const __fp16* bias,
+    __fp16* output,
+    size_t N, size_t L,
+    size_t C_in, size_t C_out,
+    size_t K,
+    size_t stride
+){
+#ifdef __APPLE__
+    if (K >= ACCELERATE_K_THRESHOLD && L >= ACCELERATE_L_THRESHOLD) {
+        conv1d_f16_accelerate(input, weight, bias, output, N, L, C_in, C_out, K, stride);
+        return;
+    }
+#endif
+    conv1d_f16_neon(input, weight, bias, output, N, L, C_in, C_out, K, stride);
 }
 
 inline void conv1d_k7s3_oc8_t4(

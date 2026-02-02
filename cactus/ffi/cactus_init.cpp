@@ -343,7 +343,7 @@ const char* cactus_get_last_error() {
     return last_error_message.c_str();
 }
 
-cactus_model_t cactus_init(const char* model_path, const char* corpus_dir) {
+cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool cache_index) {
     constexpr size_t DEFAULT_CONTEXT_SIZE = 512;  // matches default sliding window size
 
     std::string model_path_str = model_path ? std::string(model_path) : "unknown";
@@ -378,8 +378,13 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir) {
         if (corpus_dir != nullptr && strlen(corpus_dir) > 0) {
             handle->corpus_dir = std::string(corpus_dir);
 
-            if (!load_corpus_index(handle, handle->corpus_dir)) {
-                CACTUS_LOG_INFO("init", "No existing index found, building new corpus index");
+            bool loaded = false;
+            if (cache_index) {
+                loaded = load_corpus_index(handle, handle->corpus_dir);
+            }
+
+            if (!loaded) {
+                CACTUS_LOG_INFO("init", cache_index ? "No existing index found, building new corpus index" : "Building fresh corpus index (caching disabled)");
                 if (!build_corpus_index(handle, handle->corpus_dir)) {
                     CACTUS_LOG_WARN("init", "Failed to build corpus index - RAG disabled");
                 }
