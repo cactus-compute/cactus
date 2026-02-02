@@ -844,3 +844,6 @@ private:
 
 }
 }
+
+// Include TrOCR model definition
+#include "model_trocr.h"
