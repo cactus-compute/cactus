@@ -72,10 +72,51 @@ def detect_model_type(cfg, config, output_dir=None):
         return 'bert'
     elif 'whisper' in model_type_str:
         return 'whisper'
+    elif 'trocr' in model_type_str or 'vision-encoder-decoder' in model_type_str:
+        return 'trocr'
     else:
         if model_type_str:
             print(f"  Warning: Unknown model type '{model_type_str}', defaulting to 'qwen'")
         return 'qwen'
+
+
+def extract_trocr_config(config):
+    """Extract TrOCR-specific configuration parameters."""
+    encoder_cfg = cfg_get(config, 'encoder', None)
+    decoder_cfg = cfg_get(config, 'decoder', None)
+
+    # Encoder config (ViT/DeiT)
+    encoder_hidden = int(cfg_get(encoder_cfg, 'hidden_size', 768))
+    encoder_layers = int(cfg_get(encoder_cfg, 'num_hidden_layers', 12))
+    encoder_heads = int(cfg_get(encoder_cfg, 'num_attention_heads', 12))
+    encoder_intermediate = int(cfg_get(encoder_cfg, 'intermediate_size', 3072))
+    image_size = int(cfg_get(encoder_cfg, 'image_size', 384))
+    patch_size = int(cfg_get(encoder_cfg, 'patch_size', 16))
+    num_channels = int(cfg_get(encoder_cfg, 'num_channels', 3))
+
+    # Decoder config
+    decoder_hidden = int(cfg_get(decoder_cfg, 'hidden_size', cfg_get(decoder_cfg, 'd_model', 768)))
+    decoder_layers = int(cfg_get(decoder_cfg, 'num_hidden_layers', cfg_get(decoder_cfg, 'decoder_layers', 12)))
+    decoder_heads = int(cfg_get(decoder_cfg, 'num_attention_heads', cfg_get(decoder_cfg, 'decoder_attention_heads', 12)))
+    decoder_intermediate = int(cfg_get(decoder_cfg, 'intermediate_size', cfg_get(decoder_cfg, 'decoder_ffn_dim', 3072)))
+    vocab_size = int(cfg_get(decoder_cfg, 'vocab_size', 50265))
+    max_position_embeddings = int(cfg_get(decoder_cfg, 'max_position_embeddings', 512))
+
+    return {
+        'encoder_hidden_size': encoder_hidden,
+        'encoder_num_layers': encoder_layers,
+        'encoder_attention_heads': encoder_heads,
+        'encoder_intermediate_size': encoder_intermediate,
+        'image_size': image_size,
+        'patch_size': patch_size,
+        'num_channels': num_channels,
+        'decoder_hidden_size': decoder_hidden,
+        'decoder_num_layers': decoder_layers,
+        'decoder_attention_heads': decoder_heads,
+        'decoder_intermediate_size': decoder_intermediate,
+        'vocab_size': vocab_size,
+        'max_position_embeddings': max_position_embeddings,
+    }
 
 
 def extract_base_config(cfg, config):
