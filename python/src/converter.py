@@ -7,10 +7,21 @@ except ImportError:
     torch = None
 
 from .tensor_io import save_tensor_with_header, create_quantization_stats, print_quantization_summary
-from .config_utils import cfg_get, detect_model_type, extract_base_config, extract_vision_config, extract_lfm2_config, is_vlm_model, extract_moonshine_config
+from .config_utils import (
+    cfg_get,
+    detect_model_type,
+    extract_base_config,
+    extract_vision_config,
+    extract_lfm2_config,
+    extract_moonshine_config,
+    extract_trocr_config,
+    is_vlm_model,
+)
 from .weight_patterns import (
     EMBED_NAMES, OUTPUT_NAMES, OUTPUT_NORM_NAMES, LAYER_PREFIXES,
-    VISION_ITEMS, PROJECTOR_WEIGHTS, WHISPER_GLOBAL_WEIGHTS, MOONSHINE_GLOBAL_WEIGHTS,
+    VISION_ITEMS, PROJECTOR_WEIGHTS,
+    WHISPER_GLOBAL_WEIGHTS, MOONSHINE_GLOBAL_WEIGHTS,
+    TROCR_GLOBAL_WEIGHTS, get_trocr_encoder_layer_weights, get_trocr_decoder_layer_weights,
     get_layer_weight_patterns, get_vision_layer_weights
 )
 
@@ -73,7 +84,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 saved_tensor_full_names.add(name)
         embedding_found = True
 
-    elif model_type_str == 'moonshine':
+    elif detected_model_type == 'moonshine':
         for name, save_name in MOONSHINE_GLOBAL_WEIGHTS:
             if name in state_dict:
                 tensor = state_dict[name]
@@ -87,6 +98,82 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         model_config['enc_hidden_act'] = cfg.encoder_hidden_act
         model_config['num_encoder_layers'] = cfg.encoder_num_hidden_layers
         model_config['num_decoder_layers'] = cfg.decoder_num_hidden_layers
+
+    elif detected_model_type == 'trocr':
+        # TrOCR model conversion (Vision Encoder + Text Decoder)
+        print("  Converting TrOCR model...")
+
+        # Extract TrOCR-specific config
+        trocr_config = extract_trocr_config(config)
+        model_config.update(trocr_config)
+
+        # Save global weights (embeddings, layernorms, output projection)
+        for name, save_name in TROCR_GLOBAL_WEIGHTS:
+            if name in state_dict:
+                save_tensor_with_header(state_dict[name], output_dir / save_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                saved_tensor_full_names.add(name)
+
+        # Detect encoder layer prefix
+        encoder_prefix = None
+        max_enc_idx = -1
+        for k in state_dict.keys():
+            m = re.search(r'encoder\.encoder\.layer\.(\d+)\.', k)
+            if m:
+                encoder_prefix = 'encoder.encoder.layer.'
+                idx = int(m.group(1))
+                if idx > max_enc_idx:
+                    max_enc_idx = idx
+            if not encoder_prefix:
+                m = re.search(r'encoder\.layer\.(\d+)\.', k)
+                if m:
+                    encoder_prefix = 'encoder.layer.'
+                    idx = int(m.group(1))
+                    if idx > max_enc_idx:
+                        max_enc_idx = idx
+
+        encoder_layers = max_enc_idx + 1 if max_enc_idx >= 0 else trocr_config.get('encoder_num_layers', 12)
+
+        if encoder_prefix:
+            print(f"  Found {encoder_layers} encoder layers with prefix: {encoder_prefix}")
+            for i_enc in range(encoder_layers):
+                enc_weights = get_trocr_encoder_layer_weights(i_enc, encoder_prefix)
+                for fname, out in enc_weights:
+                    if fname in state_dict:
+                        save_tensor_with_header(state_dict[fname], output_dir / out, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                        saved_tensor_full_names.add(fname)
+
+        # Detect decoder layer prefix
+        decoder_prefix = None
+        max_dec_idx = -1
+        for k in state_dict.keys():
+            m = re.search(r'decoder\.model\.decoder\.layers\.(\d+)\.', k)
+            if m:
+                decoder_prefix = 'decoder.model.decoder.layers.'
+                idx = int(m.group(1))
+                if idx > max_dec_idx:
+                    max_dec_idx = idx
+            if not decoder_prefix:
+                m = re.search(r'decoder\.layers\.(\d+)\.', k)
+                if m:
+                    decoder_prefix = 'decoder.layers.'
+                    idx = int(m.group(1))
+                    if idx > max_dec_idx:
+                        max_dec_idx = idx
+
+        decoder_layers = max_dec_idx + 1 if max_dec_idx >= 0 else trocr_config.get('decoder_num_layers', 12)
+
+        if decoder_prefix:
+            print(f"  Found {decoder_layers} decoder layers with prefix: {decoder_prefix}")
+            for i_dec in range(decoder_layers):
+                dec_weights = get_trocr_decoder_layer_weights(i_dec, decoder_prefix)
+                for fname, out in dec_weights:
+                    if fname in state_dict:
+                        save_tensor_with_header(state_dict[fname], output_dir / out, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                        saved_tensor_full_names.add(fname)
+
+        model_config['encoder_num_layers'] = encoder_layers
+        model_config['decoder_num_layers'] = decoder_layers
+        embedding_found = True
 
     if embedding_found:
         embedding_norm_names = {'emb_ln.weight': 'embedding_layernorm.weight', 'emb_ln.bias': 'embedding_layernorm.bias'}
