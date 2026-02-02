@@ -103,6 +103,86 @@ WHISPER_GLOBAL_WEIGHTS = [
     ('encoder.layer_norm.weight', 'encoder_norm_weight.weights')
 ]
 
+# TrOCR global weights (Vision Encoder + Text Decoder)
+TROCR_GLOBAL_WEIGHTS = [
+    # Encoder (ViT) embeddings
+    ('encoder.embeddings.patch_embeddings.projection.weight', 'encoder_patch_embedding.weights'),
+    ('encoder.embeddings.patch_embeddings.projection.bias', 'encoder_patch_embedding.bias'),
+    ('encoder.embeddings.position_embeddings', 'encoder_position_embeddings.weights'),
+    ('encoder.embeddings.cls_token', 'encoder_cls_token.weights'),
+    ('encoder.layernorm.weight', 'encoder_layernorm.weights'),
+    ('encoder.layernorm.bias', 'encoder_layernorm.bias'),
+    # Decoder embeddings
+    ('decoder.model.decoder.embed_tokens.weight', 'decoder_token_embeddings.weights'),
+    ('decoder.model.decoder.embed_positions.weight', 'decoder_position_embeddings.weights'),
+    ('decoder.model.decoder.layernorm_embedding.weight', 'decoder_embed_layernorm.weights'),
+    ('decoder.model.decoder.layernorm_embedding.bias', 'decoder_embed_layernorm.bias'),
+    ('decoder.output_projection.weight', 'output_weight.weights'),
+    # Alternative paths for different TrOCR variants
+    ('decoder.embed_tokens.weight', 'decoder_token_embeddings.weights'),
+    ('decoder.embed_positions.weight', 'decoder_position_embeddings.weights'),
+    ('lm_head.weight', 'output_weight.weights'),
+]
+
+
+def get_trocr_encoder_layer_weights(layer_idx, prefix='encoder.encoder.layer.'):
+    """Get TrOCR ViT encoder layer weight patterns."""
+    lpref = f'{prefix}{layer_idx}.'
+    return [
+        (lpref + 'attention.attention.query.weight', f'encoder.layer_{layer_idx}_self_attn_q.weights'),
+        (lpref + 'attention.attention.query.bias', f'encoder.layer_{layer_idx}_self_attn_q.bias'),
+        (lpref + 'attention.attention.key.weight', f'encoder.layer_{layer_idx}_self_attn_k.weights'),
+        (lpref + 'attention.attention.key.bias', f'encoder.layer_{layer_idx}_self_attn_k.bias'),
+        (lpref + 'attention.attention.value.weight', f'encoder.layer_{layer_idx}_self_attn_v.weights'),
+        (lpref + 'attention.attention.value.bias', f'encoder.layer_{layer_idx}_self_attn_v.bias'),
+        (lpref + 'attention.output.dense.weight', f'encoder.layer_{layer_idx}_self_attn_output.weights'),
+        (lpref + 'attention.output.dense.bias', f'encoder.layer_{layer_idx}_self_attn_output.bias'),
+        (lpref + 'layernorm_before.weight', f'encoder.layer_{layer_idx}_layernorm1.weights'),
+        (lpref + 'layernorm_before.bias', f'encoder.layer_{layer_idx}_layernorm1.bias'),
+        (lpref + 'layernorm_after.weight', f'encoder.layer_{layer_idx}_layernorm2.weights'),
+        (lpref + 'layernorm_after.bias', f'encoder.layer_{layer_idx}_layernorm2.bias'),
+        (lpref + 'intermediate.dense.weight', f'encoder.layer_{layer_idx}_mlp_fc1.weights'),
+        (lpref + 'intermediate.dense.bias', f'encoder.layer_{layer_idx}_mlp_fc1.bias'),
+        (lpref + 'output.dense.weight', f'encoder.layer_{layer_idx}_mlp_fc2.weights'),
+        (lpref + 'output.dense.bias', f'encoder.layer_{layer_idx}_mlp_fc2.bias'),
+    ]
+
+
+def get_trocr_decoder_layer_weights(layer_idx, prefix='decoder.model.decoder.layers.'):
+    """Get TrOCR text decoder layer weight patterns."""
+    lpref = f'{prefix}{layer_idx}.'
+    return [
+        # Self-attention
+        (lpref + 'self_attn.q_proj.weight', f'decoder.layer_{layer_idx}_self_attn_q.weights'),
+        (lpref + 'self_attn.q_proj.bias', f'decoder.layer_{layer_idx}_self_attn_q.bias'),
+        (lpref + 'self_attn.k_proj.weight', f'decoder.layer_{layer_idx}_self_attn_k.weights'),
+        (lpref + 'self_attn.k_proj.bias', f'decoder.layer_{layer_idx}_self_attn_k.bias'),
+        (lpref + 'self_attn.v_proj.weight', f'decoder.layer_{layer_idx}_self_attn_v.weights'),
+        (lpref + 'self_attn.v_proj.bias', f'decoder.layer_{layer_idx}_self_attn_v.bias'),
+        (lpref + 'self_attn.out_proj.weight', f'decoder.layer_{layer_idx}_self_attn_output.weights'),
+        (lpref + 'self_attn.out_proj.bias', f'decoder.layer_{layer_idx}_self_attn_output.bias'),
+        (lpref + 'self_attn_layer_norm.weight', f'decoder.layer_{layer_idx}_self_attn_norm.weights'),
+        (lpref + 'self_attn_layer_norm.bias', f'decoder.layer_{layer_idx}_self_attn_norm.bias'),
+        # Cross-attention (encoder-decoder attention)
+        (lpref + 'encoder_attn.q_proj.weight', f'decoder.layer_{layer_idx}_cross_attn_q.weights'),
+        (lpref + 'encoder_attn.q_proj.bias', f'decoder.layer_{layer_idx}_cross_attn_q.bias'),
+        (lpref + 'encoder_attn.k_proj.weight', f'decoder.layer_{layer_idx}_cross_attn_k.weights'),
+        (lpref + 'encoder_attn.k_proj.bias', f'decoder.layer_{layer_idx}_cross_attn_k.bias'),
+        (lpref + 'encoder_attn.v_proj.weight', f'decoder.layer_{layer_idx}_cross_attn_v.weights'),
+        (lpref + 'encoder_attn.v_proj.bias', f'decoder.layer_{layer_idx}_cross_attn_v.bias'),
+        (lpref + 'encoder_attn.out_proj.weight', f'decoder.layer_{layer_idx}_cross_attn_output.weights'),
+        (lpref + 'encoder_attn.out_proj.bias', f'decoder.layer_{layer_idx}_cross_attn_output.bias'),
+        (lpref + 'encoder_attn_layer_norm.weight', f'decoder.layer_{layer_idx}_cross_attn_norm.weights'),
+        (lpref + 'encoder_attn_layer_norm.bias', f'decoder.layer_{layer_idx}_cross_attn_norm.bias'),
+        # MLP / FFN
+        (lpref + 'fc1.weight', f'decoder.layer_{layer_idx}_mlp_fc1.weights'),
+        (lpref + 'fc1.bias', f'decoder.layer_{layer_idx}_mlp_fc1.bias'),
+        (lpref + 'fc2.weight', f'decoder.layer_{layer_idx}_mlp_fc2.weights'),
+        (lpref + 'fc2.bias', f'decoder.layer_{layer_idx}_mlp_fc2.bias'),
+        (lpref + 'final_layer_norm.weight', f'decoder.layer_{layer_idx}_final_norm.weights'),
+        (lpref + 'final_layer_norm.bias', f'decoder.layer_{layer_idx}_final_norm.bias'),
+    ]
+
 
 def get_layer_weight_patterns(i, precision, model_type=None):
     is_whisper = model_type == 'whisper'
