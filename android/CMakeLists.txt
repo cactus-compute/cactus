@@ -17,6 +17,7 @@ file(GLOB KERNEL_SOURCES "${SOURCE_DIR}/kernel/*.cpp")
 file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
 set(NPU_SOURCES "${SOURCE_DIR}/npu/npu.cpp")
+set(NET_SOURCES "${SOURCE_DIR}/net/net_android.cpp")
 
 set(HEADER_FILES
     ${SOURCE_DIR}/cactus.h
@@ -28,6 +29,7 @@ set(HEADER_FILES
     ${SOURCE_DIR}/ffi/cactus_utils.h
     ${SOURCE_DIR}/models/model.h
     ${SOURCE_DIR}/npu/npu.h
+    ${SOURCE_DIR}/net/net.h
 )
 
 set(COMMON_SOURCES
@@ -37,6 +39,7 @@ set(COMMON_SOURCES
     ${FFI_SOURCES}
     ${MODEL_SOURCES}
     ${NPU_SOURCES}
+    ${NET_SOURCES}
 )
 
 if(NOT COMMON_SOURCES)
@@ -66,6 +69,7 @@ set(COMMON_INCLUDE_DIRS
     ${SOURCE_DIR}/ffi
     ${SOURCE_DIR}/models
     ${SOURCE_DIR}/npu
+    ${SOURCE_DIR}/net
 )
 
 target_include_directories(cactus PRIVATE ${COMMON_INCLUDE_DIRS})

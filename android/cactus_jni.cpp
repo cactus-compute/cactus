@@ -553,4 +553,46 @@ Java_com_cactus_CactusIndex_nativeIndexDestroy(JNIEnv*, jobject, jlong handle) {
     }
 }
 
+JNIEXPORT void JNICALL
+Java_com_cactus_Cactus_nativeSetCloudConfig(JNIEnv* env, jobject,
+                                             jstring provider, jstring apiKey,
+                                             jstring endpointUrl, jstring model) {
+    const char* providerStr = jstring_to_cstr(env, provider);
+    const char* apiKeyStr = jstring_to_cstr(env, apiKey);
+    const char* endpointUrlStr = jstring_to_cstr(env, endpointUrl);
+    const char* modelStr = jstring_to_cstr(env, model);
+
+    cactus_set_cloud_config(providerStr, apiKeyStr, endpointUrlStr, modelStr);
+
+    release_jstring(env, provider, providerStr);
+    release_jstring(env, apiKey, apiKeyStr);
+    release_jstring(env, endpointUrl, endpointUrlStr);
+    release_jstring(env, model, modelStr);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_cactus_Cactus_nativeIsCloudConfigured(JNIEnv*, jobject) {
+    return cactus_is_cloud_configured() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_cactus_Cactus_nativeIsNetworkAvailable(JNIEnv*, jobject) {
+    return cactus_is_network_available() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_cactus_Cactus_nativeTestHttp(JNIEnv* env, jobject, jstring url) {
+    const char* urlStr = jstring_to_cstr(env, url);
+    if (urlStr == nullptr) {
+        return env->NewStringUTF("{\"error\":\"URL is null\",\"status_code\":-1}");
+    }
+
+    std::vector<char> buffer(4096);
+    cactus_test_http(urlStr, buffer.data(), buffer.size());
+
+    release_jstring(env, url, urlStr);
+
+    return env->NewStringUTF(buffer.data());
+}
+
 }

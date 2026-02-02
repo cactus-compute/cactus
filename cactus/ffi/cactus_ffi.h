@@ -178,6 +178,35 @@ CACTUS_FFI_EXPORT void cactus_index_destroy(cactus_index_t index);
 
 CACTUS_FFI_EXPORT const char* cactus_get_last_error(void);
 
+// Cloud fallback configuration
+// Call this before cactus_complete() to enable automatic cloud fallback
+// provider: "openai", "anthropic", "gcp", or "custom"
+// api_key: API key for the provider
+// endpoint_url: optional, override default endpoint (required for "custom" and "gcp")
+// model: optional, cloud model to use (e.g., "gpt-4", "claude-3-opus-20240229")
+CACTUS_FFI_EXPORT void cactus_set_cloud_config(
+    const char* provider,
+    const char* api_key,
+    const char* endpoint_url,               // optional: NULL to use provider default
+    const char* model                       // optional: NULL to use provider default
+);
+
+// Check if cloud fallback is configured
+CACTUS_FFI_EXPORT bool cactus_is_cloud_configured(void);
+
+// Check if network/HTTP is available on this platform
+CACTUS_FFI_EXPORT bool cactus_is_network_available(void);
+
+// Test HTTP connectivity by making a simple request
+// Returns: HTTP status code (200 = success), or -1 on network error
+// response_buffer: receives JSON response or error message
+// This can be used to verify the JNI HTTP bridge works before using cloud fallback
+CACTUS_FFI_EXPORT int cactus_test_http(
+    const char* url,                        // URL to test (e.g., "https://httpbin.org/get")
+    char* response_buffer,
+    size_t buffer_size
+);
+
 #ifdef __cplusplus
 }
 #endif
