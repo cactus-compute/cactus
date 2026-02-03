@@ -110,7 +110,7 @@ graph.hard_reset();
 | Galaxy A56 | - | - | - |
 | Pixel 6a | 218/44 tps | 2.5s & 36 tps | 1.5s & 189 tps |
 | Nothing CMF | - | - | - |
-| Raspberry Pi 5 | - | - | - |
+| Raspberry Pi 5 | - | 17 tps | - |
 
  ## Supported Models                                                                                                                                                     
                                                                                                                                                                           
