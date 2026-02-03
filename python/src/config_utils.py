@@ -68,17 +68,17 @@ def extract_trocr_config(config):
     max_position_embeddings = int(cfg_get(decoder_cfg, 'max_position_embeddings', 512))
 
     return {
-        'encoder_hidden_size': encoder_hidden,
+        'encoder_hidden_dim': encoder_hidden,
         'encoder_num_layers': encoder_layers,
         'encoder_attention_heads': encoder_heads,
-        'encoder_intermediate_size': encoder_intermediate,
-        'image_size': image_size,
-        'patch_size': patch_size,
-        'num_channels': num_channels,
-        'decoder_hidden_size': decoder_hidden,
+        'encoder_intermediate_dim': encoder_intermediate,
+        'trocr_image_size': image_size,
+        'trocr_patch_size': patch_size,
+        'vision_num_channels': num_channels,
+        'decoder_hidden_dim': decoder_hidden,
         'decoder_num_layers': decoder_layers,
         'decoder_attention_heads': decoder_heads,
-        'decoder_intermediate_size': decoder_intermediate,
+        'decoder_intermediate_dim': decoder_intermediate,
         'vocab_size': vocab_size,
         'max_position_embeddings': max_position_embeddings,
     }
