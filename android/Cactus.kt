@@ -25,42 +25,12 @@ class Cactus private constructor(private var handle: Long) : Closeable {
         @JvmStatic
         private external fun nativeGetLastError(): String
 
-        /**
-         * Configure cloud fallback for when local model confidence is low.
-         * @param provider Cloud provider: "openai", "anthropic", "gcp", or "custom"
-         * @param apiKey API key for the cloud provider
-         * @param endpointUrl Optional custom endpoint URL (required for "custom" and "gcp")
-         * @param model Optional model name (e.g., "gpt-4", "claude-3-opus-20240229")
-         */
-        @JvmStatic
-        fun setCloudConfig(provider: String, apiKey: String, endpointUrl: String? = null, model: String? = null) {
-            nativeSetCloudConfig(provider, apiKey, endpointUrl, model)
-        }
-
-        /**
-         * Check if cloud fallback is configured.
-         */
-        @JvmStatic
-        fun isCloudConfigured(): Boolean = nativeIsCloudConfigured()
-
-        /**
-         * Check if network/HTTP is available on this platform.
-         */
         @JvmStatic
         fun isNetworkAvailable(): Boolean = nativeIsNetworkAvailable()
 
-        /**
-         * Test HTTP connectivity by making a request to the specified URL.
-         * @param url The URL to test (e.g., "https://httpbin.org/post")
-         * @return JSON string with status_code and either response body or error message
-         */
         @JvmStatic
         fun testHttp(url: String): String = nativeTestHttp(url)
 
-        @JvmStatic
-        private external fun nativeSetCloudConfig(provider: String, apiKey: String, endpointUrl: String?, model: String?)
-        @JvmStatic
-        private external fun nativeIsCloudConfigured(): Boolean
         @JvmStatic
         private external fun nativeIsNetworkAvailable(): Boolean
         @JvmStatic

@@ -18,7 +18,7 @@ see the main [README.md](../README.md) for how to use CLI & download weight
 
 1. Copy `libcactus.so` to `app/src/main/jniLibs/arm64-v8a/`
 2. Copy `Cactus.kt` to `app/src/main/java/com/cactus/`
-3. Copy `CactusHttp.java` to `app/src/main/java/com/cactus/` (required for cloud fallback)
+3. Copy `CactusHttp.java` to `app/src/main/java/com/cactus/` (required for HTTP support)
 4. Add `proguard-rules.pro` contents to your ProGuard config (if using minification)
 
 ### Kotlin Multiplatform
@@ -155,38 +155,14 @@ model.createStreamTranscriber().use { stream ->
 }
 ```
 
-### Cloud Fallback
+### HTTP Support
 
-When local model confidence is low, automatically route to cloud AI providers:
+Test network connectivity from native code:
 
 ```kotlin
-// Initialize HTTP (call once in Application.onCreate)
 CactusHttp.init(applicationContext)
 
-// Configure cloud provider
-Cactus.setCloudConfig(
-    provider = "openai",           // "openai", "anthropic", "openrouter", "gcp", or "custom"
-    apiKey = "sk-...",
-    endpointUrl = null,            // Optional: custom endpoint (required for "gcp" and "custom")
-    model = "gpt-4"                // Optional: specific model
-)
-
-// Use confidence threshold to trigger cloud fallback
-val options = CompletionOptions(
-    confidenceThreshold = 0.7f     // Fallback if confidence < 0.7
-)
-
-val result = model.complete("Complex question", options)
-// If local confidence was low, result came from cloud automatically
-```
-
-Check cloud status:
-
-```kotlin
-val isConfigured = Cactus.isCloudConfigured()
 val hasNetwork = Cactus.isNetworkAvailable()
-
-// Test connectivity
 val testResult = Cactus.testHttp("https://httpbin.org/post")
 ```
 
@@ -223,11 +199,8 @@ CactusIndex.create("/path/to/index", embeddingDim = 384).use { index ->
 object Cactus {
     fun create(modelPath: String, corpusDir: String? = null): Cactus
 
-    // Cloud fallback configuration
-    fun setCloudConfig(provider: String, apiKey: String, endpointUrl: String? = null, model: String? = null)
-    fun isCloudConfigured(): Boolean
     fun isNetworkAvailable(): Boolean
-    fun testHttp(url: String): String  // Returns JSON with status/error
+    fun testHttp(url: String): String
 }
 
 fun complete(prompt: String, options: CompletionOptions = CompletionOptions()): CompletionResult

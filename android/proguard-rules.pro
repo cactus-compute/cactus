@@ -18,9 +18,8 @@
 -keepclassmembers class com.cactus.Cactus {
     private static native long nativeInit(java.lang.String, java.lang.String);
     private static native java.lang.String nativeGetLastError();
-    private static native void nativeSetCloudConfig(java.lang.String, java.lang.String, java.lang.String, java.lang.String);
-    private static native boolean nativeIsCloudConfigured();
     private static native boolean nativeIsNetworkAvailable();
+    private static native java.lang.String nativeTestHttp(java.lang.String);
     private native void nativeDestroy(long);
     private native void nativeReset(long);
     private native void nativeStop(long);

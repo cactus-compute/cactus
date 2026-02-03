@@ -51,11 +51,11 @@ if(APPLE)
     set(NPU_SOURCES "npu/npu_ane.mm")
     set_source_files_properties(npu/npu_ane.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     message(STATUS "Apple platform detected - NPU/ANE acceleration enabled")
-    # Apple can use NSURLSession for HTTP (net_apple.mm) or stub for now
-    set(NET_SOURCES "net/net.cpp")
+    # Apple can use NSURLSession for HTTP or stub for now
+    set(NET_SOURCES "ffi/cactus_net.cpp")
 else()
     set(NPU_SOURCES "npu/npu.cpp")
-    set(NET_SOURCES "net/net.cpp")
+    set(NET_SOURCES "ffi/cactus_net.cpp")
 endif()
 
 set(COMMON_SOURCES
@@ -76,7 +76,6 @@ set(COMMON_INCLUDES
     ffi
     models
     npu
-    net
 )
 
 set(COMMON_DEFINITIONS

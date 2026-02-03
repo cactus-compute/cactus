@@ -1,38 +1,12 @@
 #include "cactus_ffi.h"
 #include "cactus_utils.h"
-#include "net.h"
 #include <chrono>
 #include <cstring>
 
 using namespace cactus::engine;
 using namespace cactus::ffi;
-using namespace cactus::net;
 
 static constexpr size_t ROLLING_ENTROPY_WINDOW = 10;
-
-// Forward declarations for cloud fallback (implemented in cactus_cloud.cpp)
-namespace cactus {
-namespace ffi {
-bool perform_cloud_fallback(const std::string& messages_json,
-                            const std::string& options_json,
-                            std::string& cloud_response,
-                            std::string& error_message);
-
-std::string convert_cloud_response_to_cactus_format(
-    const std::string& cloud_response,
-    double local_time_to_first_token,
-    double local_prefill_tps,
-    size_t local_prompt_tokens,
-    float local_confidence);
-
-std::string construct_cloud_fallback_error_json(
-    const std::string& error_message,
-    float confidence,
-    double time_to_first_token,
-    double prefill_tps,
-    size_t prompt_tokens);
-} // namespace ffi
-} // namespace cactus
 
 namespace {
 
@@ -301,46 +275,6 @@ int cactus_complete(
 
         if (confidence < confidence_threshold) {
             double prefill_tps = time_to_first_token > 0 ? (prompt_tokens * 1000.0) / time_to_first_token : 0.0;
-
-            // Attempt cloud fallback if configured
-            if (is_cloud_configured() && is_network_available()) {
-                std::string cloud_response;
-                std::string error_message;
-
-                if (perform_cloud_fallback(messages_json, options_json ? options_json : "", cloud_response, error_message)) {
-                    // Cloud succeeded - convert response to cactus format
-                    std::string result = convert_cloud_response_to_cactus_format(
-                        cloud_response,
-                        time_to_first_token,
-                        prefill_tps,
-                        prompt_tokens,
-                        confidence
-                    );
-                    if (result.length() >= buffer_size) {
-                        handle_error_response("Response buffer too small", response_buffer, buffer_size);
-                        return -1;
-                    }
-                    std::strcpy(response_buffer, result.c_str());
-                    return static_cast<int>(result.length());
-                } else {
-                    // Cloud failed - return error with cloud_handoff flag
-                    std::string result = construct_cloud_fallback_error_json(
-                        error_message,
-                        confidence,
-                        time_to_first_token,
-                        prefill_tps,
-                        prompt_tokens
-                    );
-                    if (result.length() >= buffer_size) {
-                        handle_error_response("Response buffer too small", response_buffer, buffer_size);
-                        return -1;
-                    }
-                    std::strcpy(response_buffer, result.c_str());
-                    return static_cast<int>(result.length());
-                }
-            }
-
-            // Cloud not configured - return original handoff JSON
             std::string result = construct_cloud_handoff_json(confidence, time_to_first_token, prefill_tps, prompt_tokens);
             if (result.length() >= buffer_size) {
                 handle_error_response("Response buffer too small", response_buffer, buffer_size);
