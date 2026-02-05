@@ -81,9 +81,12 @@ def detect_model_type(cfg, config, output_dir=None):
 
 
 def extract_trocr_config(config):
-    """Extract TrOCR-specific configuration parameters."""
+    """Extract TrOCR-specific configuration parameters with validation."""
     encoder_cfg = cfg_get(config, 'encoder', None)
     decoder_cfg = cfg_get(config, 'decoder', None)
+
+    if encoder_cfg is None and decoder_cfg is None:
+        print("Warning: No encoder/decoder config found, using TrOCR defaults")
 
     # Encoder config (ViT/DeiT)
     encoder_hidden = int(cfg_get(encoder_cfg, 'hidden_size', 768))
