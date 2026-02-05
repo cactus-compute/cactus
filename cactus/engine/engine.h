@@ -118,17 +118,17 @@ struct Config {
     std::vector<std::string> layer_types;
     size_t conv_L_cache = 0;
 
-    // TrOCR-specific configuration
-    uint32_t encoder_num_layers = 12;
-    uint32_t encoder_hidden_dim = 768;
-    uint32_t encoder_attention_heads = 12;
-    uint32_t encoder_intermediate_dim = 3072;
-    uint32_t decoder_num_layers = 12;
-    uint32_t decoder_hidden_dim = 768;
-    uint32_t decoder_attention_heads = 12;
-    uint32_t decoder_intermediate_dim = 3072;
-    uint32_t trocr_image_size = 384;
-    uint32_t trocr_patch_size = 16;
+    // TrOCR-specific configuration (Vision Transformer encoder + Text Decoder for OCR)
+    uint32_t encoder_num_layers = 12;        ///< Number of ViT encoder layers
+    uint32_t encoder_hidden_dim = 768;       ///< Hidden dimension of the encoder
+    uint32_t encoder_attention_heads = 12;   ///< Number of attention heads in encoder
+    uint32_t encoder_intermediate_dim = 3072; ///< Feed-forward intermediate dimension (encoder)
+    uint32_t decoder_num_layers = 12;        ///< Number of text decoder layers
+    uint32_t decoder_hidden_dim = 768;       ///< Hidden dimension of the decoder
+    uint32_t decoder_attention_heads = 12;   ///< Number of attention heads in decoder
+    uint32_t decoder_intermediate_dim = 3072; ///< Feed-forward intermediate dimension (decoder)
+    uint32_t trocr_image_size = 384;         ///< Input image size (e.g., 384x384 pixels)
+    uint32_t trocr_patch_size = 16;          ///< ViT patch size for image tokenization
 
     bool from_json(const std::string& json_path);
     std::string to_json() const;
