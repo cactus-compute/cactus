@@ -715,13 +715,18 @@ namespace index {
         std::vector<float> embedding;
         std::string content;
         std::string metadata;
-    };
 
+        Document() = default;
+        Document(int id, std::vector<float> embedding, std::string content, std::string metadata)
+            : id(id), embedding(std::move(embedding)), content(std::move(content)), metadata(std::move(metadata)) {}
+    };
     struct QueryResult {
         int doc_id;
         float score;
-    };
 
+        QueryResult() = default;
+        QueryResult(int doc_id, float score) : doc_id(doc_id), score(score) {}
+    };
     struct QueryOptions {
         size_t top_k = 10;
         float score_threshold = -1.0f;
