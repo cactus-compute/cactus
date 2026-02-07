@@ -5,6 +5,7 @@
 #import <CoreML/CoreML.h>
 #import <Foundation/Foundation.h>
 #include <iostream>
+#include "../graph/graph.h"
 
 @interface CactusANEImpl : NSObject
 
@@ -47,6 +48,11 @@
         config.computeUnits = MLComputeUnitsCPUAndNeuralEngine;
 
         if ([path hasSuffix:@".mlpackage"]) {
+            BOOL isDir = NO;
+            if (![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir] || !isDir) {
+                CACTUS_LOG_ERROR("npu", "ANE mlpackage path is not a valid directory: " << [path UTF8String]);
+                return self;
+            }
             NSString* cachedPath = [[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"mlmodelc"];
             NSURL* cachedURL = [NSURL fileURLWithPath:cachedPath];
 
@@ -55,7 +61,7 @@
             } else {
                 NSURL* compiledURL = [MLModel compileModelAtURL:modelURL error:&error];
                 if (error) {
-                    NSLog(@"[CactusANE] Error compiling model: %@", error);
+                    CACTUS_LOG_ERROR("npu", "ANE model compilation failed: " << [[error localizedDescription] UTF8String]);
                     return self;
                 }
 
@@ -74,7 +80,7 @@
             _modelDescription = _model.modelDescription;
                     }
         if (error) {
-            NSLog(@"[CactusANE] Error loading model: %@", error);
+            CACTUS_LOG_ERROR("npu", "ANE model load failed: " << [[error localizedDescription] UTF8String]);
         }
     }
     return self;
@@ -125,7 +131,7 @@
                 error:&error];
 
     if (error) {
-        NSLog(@"[CactusANE] Error preallocating input array: %@", error);
+        CACTUS_LOG_ERROR("npu", "ANE preallocate input array failed: " << [[error localizedDescription] UTF8String]);
         return NO;
     }
 
@@ -144,7 +150,7 @@
                     error:&error];
 
         if (error) {
-            NSLog(@"[CactusANE] Error preallocating output array: %@", error);
+            CACTUS_LOG_ERROR("npu", "ANE preallocate output array failed: " << [[error localizedDescription] UTF8String]);
             return NO;
         }
 
@@ -201,7 +207,7 @@
                     error:&error];
 
         if (error) {
-            NSLog(@"[CactusANE] Error creating input array: %@", error);
+            CACTUS_LOG_ERROR("npu", "ANE create input array failed: " << [[error localizedDescription] UTF8String]);
             return nil;
         }
     }
@@ -221,7 +227,7 @@
                      error:&error];
 
     if (error) {
-        NSLog(@"[CactusANE] Error creating feature provider: %@", error);
+        CACTUS_LOG_ERROR("npu", "ANE create feature provider failed: " << [[error localizedDescription] UTF8String]);
         return nil;
     }
 
@@ -236,7 +242,7 @@
     }
 
     if (error) {
-        NSLog(@"[CactusANE] Error during prediction: %@", error);
+        CACTUS_LOG_ERROR("npu", "ANE prediction failed: " << [[error localizedDescription] UTF8String]);
         return nil;
     }
 
@@ -287,9 +293,11 @@ ANEEncoder& ANEEncoder::operator=(ANEEncoder&& other) noexcept {
 
 bool ANEEncoder::load(const std::string& model_path) {
     @autoreleasepool {
+        CACTUS_LOG_INFO("npu", "ANEEncoder loading model: " << model_path);
         NSString* path = [NSString stringWithUTF8String:model_path.c_str()];
 
         if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            CACTUS_LOG_ERROR("npu", "ANEEncoder model file not found: " << model_path);
             return false;
         }
 
@@ -297,8 +305,10 @@ bool ANEEncoder::load(const std::string& model_path) {
 
         if (impl && impl.model) {
             impl_ = (__bridge_retained void*)impl;
-                        return true;
+            CACTUS_LOG_INFO("npu", "ANEEncoder model loaded successfully: " << model_path);
+            return true;
         }
+        CACTUS_LOG_ERROR("npu", "ANEEncoder model load failed: " << model_path);
         return false;
     }
 }
@@ -428,6 +438,7 @@ std::unique_ptr<NPUEncoder> create_encoder() {
 }
 
 bool is_npu_available() {
+    CACTUS_LOG_INFO("npu", "is_npu_available: " << (g_npu_enabled ? "true" : "false"));
     return g_npu_enabled;
 }
 
@@ -469,6 +480,11 @@ bool is_npu_available() {
         config.computeUnits = MLComputeUnitsCPUAndNeuralEngine;
 
         if ([path hasSuffix:@".mlpackage"]) {
+            BOOL isDir = NO;
+            if (![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir] || !isDir) {
+                CACTUS_LOG_ERROR("npu", "ANE prefill mlpackage path is not a valid directory: " << [path UTF8String]);
+                return self;
+            }
             NSString* cachedPath = [[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"mlmodelc"];
             NSURL* cachedURL = [NSURL fileURLWithPath:cachedPath];
 
@@ -477,7 +493,7 @@ bool is_npu_available() {
             } else {
                 NSURL* compiledURL = [MLModel compileModelAtURL:modelURL error:&error];
                 if (error) {
-                    NSLog(@"[CactusANEPrefill] Error compiling model: %@", error);
+                    CACTUS_LOG_ERROR("npu", "ANE prefill model compilation failed: " << [[error localizedDescription] UTF8String]);
                     return self;
                 }
 
@@ -498,7 +514,7 @@ bool is_npu_available() {
             [self preallocateBuffers];
                     }
         if (error) {
-            NSLog(@"[CactusANEPrefill] Error loading model: %@", error);
+            CACTUS_LOG_ERROR("npu", "ANE prefill model load failed: " << [[error localizedDescription] UTF8String]);
         }
     }
     return self;
@@ -657,9 +673,11 @@ ANEPrefill& ANEPrefill::operator=(ANEPrefill&& other) noexcept {
 
 bool ANEPrefill::load(const std::string& model_path) {
     @autoreleasepool {
+        CACTUS_LOG_INFO("npu", "ANEPrefill loading model: " << model_path);
         NSString* path = [NSString stringWithUTF8String:model_path.c_str()];
 
         if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            CACTUS_LOG_ERROR("npu", "ANEPrefill model file not found: " << model_path);
             return false;
         }
 
@@ -672,8 +690,10 @@ bool ANEPrefill::load(const std::string& model_path) {
             num_layers_ = impl.numLayers;
             num_kv_heads_ = impl.numKvHeads;
             head_dim_ = impl.headDim;
-                        return true;
+            CACTUS_LOG_INFO("npu", "ANEPrefill model loaded successfully: " << model_path);
+            return true;
         }
+        CACTUS_LOG_ERROR("npu", "ANEPrefill model load failed: " << model_path);
         return false;
     }
 }
