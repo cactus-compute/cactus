@@ -17,14 +17,14 @@ public final class Cactus: @unchecked Sendable {
         public let needsCloudHandoff: Bool
 
         init(json: [String: Any]) {
-            self.text = json["text"] as? String ?? ""
+            self.text = json["response"] as? String ?? json["text"] as? String ?? ""
             self.functionCalls = json["function_calls"] as? [[String: Any]]
-            self.promptTokens = json["prompt_tokens"] as? Int ?? 0
-            self.completionTokens = json["completion_tokens"] as? Int ?? 0
+            self.promptTokens = json["prefill_tokens"] as? Int ?? json["prompt_tokens"] as? Int ?? 0
+            self.completionTokens = json["decode_tokens"] as? Int ?? json["completion_tokens"] as? Int ?? 0
             self.timeToFirstToken = json["time_to_first_token_ms"] as? Double ?? 0
             self.totalTime = json["total_time_ms"] as? Double ?? 0
-            self.prefillTokensPerSecond = json["prefill_tokens_per_second"] as? Double ?? 0
-            self.decodeTokensPerSecond = json["decode_tokens_per_second"] as? Double ?? 0
+            self.prefillTokensPerSecond = json["prefill_tps"] as? Double ?? json["prefill_tokens_per_second"] as? Double ?? 0
+            self.decodeTokensPerSecond = json["decode_tps"] as? Double ?? json["decode_tokens_per_second"] as? Double ?? 0
             self.confidence = json["confidence"] as? Double ?? 1.0
             self.needsCloudHandoff = json["cloud_handoff"] as? Bool ?? false
         }
@@ -36,7 +36,7 @@ public final class Cactus: @unchecked Sendable {
         public let totalTime: Double
 
         init(json: [String: Any]) {
-            self.text = json["text"] as? String ?? ""
+            self.text = json["response"] as? String ?? json["text"] as? String ?? ""
             self.segments = json["segments"] as? [[String: Any]]
             self.totalTime = json["total_time_ms"] as? Double ?? 0
         }
@@ -156,7 +156,7 @@ public final class Cactus: @unchecked Sendable {
     }
 
 
-    private let handle: OpaquePointer
+    private let handle: cactus_model_t
     private static let defaultBufferSize = 65536
 
     public init(modelPath: String, corpusDir: String? = nil, cacheIndex: Bool = false) throws {
@@ -434,7 +434,7 @@ public final class Cactus: @unchecked Sendable {
     }
 
     public func createStreamTranscriber(options: TranscriptionOptions = .default) throws -> StreamTranscriber {
-        guard let streamHandle = cactus_stream_transcribe_start(handle, options.toJSON()) else {
+        guard let streamHandle: cactus_stream_transcribe_t = cactus_stream_transcribe_start(handle, options.toJSON()) else {
             let error = String(cString: cactus_get_last_error())
             throw CactusError.transcriptionFailed(error.isEmpty ? "Unknown error" : error)
         }
@@ -567,10 +567,10 @@ public extension Cactus {
 
 public final class StreamTranscriber: @unchecked Sendable {
 
-    private var handle: OpaquePointer?
+    private var handle: cactus_stream_transcribe_t?
     private static let defaultBufferSize = 65536
 
-    init(handle: OpaquePointer) {
+    init(handle: cactus_stream_transcribe_t) {
         self.handle = handle
     }
 
@@ -673,10 +673,10 @@ public final class CactusIndex: @unchecked Sendable {
         }
     }
 
-    private var handle: OpaquePointer?
+    private var handle: cactus_stream_transcribe_t?
 
     public init(indexDir: String, embeddingDim: Int) throws {
-        guard let h = cactus_index_init(indexDir, embeddingDim) else {
+        guard let h: cactus_index_t = cactus_index_init(indexDir, embeddingDim) else {
             throw IndexError.initializationFailed("Failed to initialize index")
         }
         self.handle = h
@@ -700,8 +700,8 @@ public final class CactusIndex: @unchecked Sendable {
         let embeddingDim = embeddings[0].count
 
         var idArray = ids.map { Int32($0) }
-        var docPtrs = documents.map { strdup($0) }
-        var metaPtrs: [UnsafeMutablePointer<CChar>?]? = metadatas?.map { strdup($0) }
+        var docPtrs: [UnsafePointer<CChar>?] = documents.map { UnsafePointer(strdup($0)) }
+        let metaPtrs: [UnsafePointer<CChar>?]? = metadatas?.map { UnsafePointer(strdup($0)) }
         var embPtrs = embeddings.map { emb -> UnsafePointer<Float>? in
             let ptr = UnsafeMutablePointer<Float>.allocate(capacity: emb.count)
             ptr.initialize(from: emb, count: emb.count)
@@ -739,8 +739,8 @@ public final class CactusIndex: @unchecked Sendable {
             }
         }
 
-        docPtrs.forEach { free($0) }
-        metaPtrs?.forEach { free($0) }
+        docPtrs.forEach { free(UnsafeMutablePointer(mutating: $0)) }
+        metaPtrs?.forEach { if let p = $0 { free(UnsafeMutablePointer(mutating: p)) } }
         embPtrs.forEach { ptr in
             if let ptr = ptr {
                 UnsafeMutablePointer(mutating: ptr).deallocate()
@@ -782,7 +782,7 @@ public final class CactusIndex: @unchecked Sendable {
         let result = embeddingCopy.withUnsafeMutableBufferPointer { embPtr in
             idBuffer.withUnsafeMutableBufferPointer { idPtr in
                 scoreBuffer.withUnsafeMutableBufferPointer { scorePtr in
-                    var embPtrPtr: UnsafePointer<Float>? = embPtr.baseAddress
+                    var embPtrPtr: UnsafePointer<Float>? = UnsafePointer(embPtr.baseAddress)
                     var idPtrPtr: UnsafeMutablePointer<Int32>? = idPtr.baseAddress
                     var scorePtrPtr: UnsafeMutablePointer<Float>? = scorePtr.baseAddress
 
