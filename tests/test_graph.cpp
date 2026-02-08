@@ -903,6 +903,189 @@ bool test_embedding_from_file() {
     return passed;
 }
 
+bool test_conv1d_int8_weights() {
+    // Test conv1d with ungrouped INT8 weights vs FP16 baseline
+    CactusGraph graph_fp16;
+    CactusGraph graph_int8;
+
+    const size_t N = 1, C_in = 2, L = 8, C_out = 2, K = 3, stride = 1;
+    // L_out = (8 - 3) / 1 + 1 = 6
+
+    // Weight values that fit in both int8 and fp16
+    std::vector<__fp16> W_fp16 = {
+        1, 2, 3,  -1, 0, 1,   // C_out=0: C_in=0 (3 vals), C_in=1 (3 vals)
+        0, 1, -1,  2, 1, 0    // C_out=1: C_in=0 (3 vals), C_in=1 (3 vals)
+    };
+    std::vector<int8_t> W_int8 = {
+        1, 2, 3,  -1, 0, 1,
+        0, 1, -1,  2, 1, 0
+    };
+
+    std::vector<__fp16> X_data = {
+        1, 2, 3, 4, 5, 6, 7, 8,   // C_in=0
+        2, 1, 0, 1, 2, 1, 0, 1    // C_in=1
+    };
+
+    // FP16 path
+    size_t x_fp16 = graph_fp16.input({N, C_in, L}, Precision::FP16);
+    size_t w_fp16 = graph_fp16.input({C_out, C_in, K}, Precision::FP16);
+    size_t y_fp16 = graph_fp16.conv1d(x_fp16, w_fp16, stride);
+    graph_fp16.set_input(x_fp16, X_data.data(), Precision::FP16);
+    graph_fp16.set_input(w_fp16, W_fp16.data(), Precision::FP16);
+    graph_fp16.execute();
+
+    // INT8 path
+    size_t x_int8 = graph_int8.input({N, C_in, L}, Precision::FP16);
+    size_t w_int8 = graph_int8.input({C_out, C_in, K}, Precision::INT8);
+    size_t y_int8 = graph_int8.conv1d(x_int8, w_int8, stride);
+    graph_int8.set_input(x_int8, X_data.data(), Precision::FP16);
+    graph_int8.set_input(w_int8, W_int8.data(), Precision::INT8);
+    graph_int8.execute();
+
+    __fp16* out_fp16 = static_cast<__fp16*>(graph_fp16.get_output(y_fp16));
+    __fp16* out_int8 = static_cast<__fp16*>(graph_int8.get_output(y_int8));
+
+    size_t L_out = (L - K) / stride + 1;
+    for (size_t i = 0; i < C_out * L_out; ++i) {
+        float diff = std::abs(static_cast<float>(out_fp16[i]) - static_cast<float>(out_int8[i]));
+        if (diff > 0.5f) {
+            std::cerr << "conv1d INT8 mismatch at " << i << ": fp16=" << static_cast<float>(out_fp16[i])
+                      << " int8=" << static_cast<float>(out_int8[i]) << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool test_conv1d_grouped_int8_weights() {
+    // Test conv1d with grouped INT8 weights and non-trivial scales
+    CactusGraph graph_fp16;
+    CactusGraph graph_int8;
+
+    const size_t N = 1, C_in = 2, L = 8, C_out = 2, K = 3, stride = 1;
+    const size_t K_total = C_in * K; // 6
+    const size_t group_size = 3;
+    const size_t num_groups = K_total / group_size; // 2
+
+    // INT8 weights
+    std::vector<int8_t> W_int8 = {
+        10, 20, 30,  -10, 0, 10,   // C_out=0
+        0, 10, -10,   20, 10, 0    // C_out=1
+    };
+    // Scales: 2 rows (C_out) x 2 groups = 4 scales
+    std::vector<__fp16> scales = {
+        static_cast<__fp16>(0.5f), static_cast<__fp16>(0.25f),  // C_out=0: group0=0.5, group1=0.25
+        static_cast<__fp16>(0.1f), static_cast<__fp16>(0.5f)    // C_out=1: group0=0.1, group1=0.5
+    };
+    // Dequantized = int8 * scale:
+    // C_out=0: 5, 10, 15, -2.5, 0, 2.5
+    // C_out=1: 0, 1, -1, 10, 5, 0
+    std::vector<__fp16> W_fp16 = {
+        static_cast<__fp16>(5.0f), static_cast<__fp16>(10.0f), static_cast<__fp16>(15.0f),
+        static_cast<__fp16>(-2.5f), static_cast<__fp16>(0.0f), static_cast<__fp16>(2.5f),
+        static_cast<__fp16>(0.0f), static_cast<__fp16>(1.0f), static_cast<__fp16>(-1.0f),
+        static_cast<__fp16>(10.0f), static_cast<__fp16>(5.0f), static_cast<__fp16>(0.0f)
+    };
+
+    std::vector<__fp16> X_data = {
+        1, 2, 3, 4, 5, 6, 7, 8,
+        2, 1, 0, 1, 2, 1, 0, 1
+    };
+
+    // FP16 baseline
+    size_t x_fp16 = graph_fp16.input({N, C_in, L}, Precision::FP16);
+    size_t w_fp16 = graph_fp16.input({C_out, C_in, K}, Precision::FP16);
+    size_t y_fp16 = graph_fp16.conv1d(x_fp16, w_fp16, stride);
+    graph_fp16.set_input(x_fp16, X_data.data(), Precision::FP16);
+    graph_fp16.set_input(w_fp16, W_fp16.data(), Precision::FP16);
+    graph_fp16.execute();
+
+    // Grouped INT8 path
+    size_t x_int8 = graph_int8.input({N, C_in, L}, Precision::FP16);
+    size_t w_int8 = graph_int8.input({C_out, C_in, K}, Precision::INT8);
+    size_t y_int8 = graph_int8.conv1d(x_int8, w_int8, stride);
+    graph_int8.set_input(x_int8, X_data.data(), Precision::FP16);
+    graph_int8.set_input(w_int8, W_int8.data(), Precision::INT8);
+    graph_int8.set_grouped_scales(w_int8, group_size, num_groups, scales.data());
+    graph_int8.execute();
+
+    __fp16* out_fp16 = static_cast<__fp16*>(graph_fp16.get_output(y_fp16));
+    __fp16* out_int8 = static_cast<__fp16*>(graph_int8.get_output(y_int8));
+
+    size_t L_out = (L - K) / stride + 1;
+    for (size_t i = 0; i < C_out * L_out; ++i) {
+        float diff = std::abs(static_cast<float>(out_fp16[i]) - static_cast<float>(out_int8[i]));
+        if (diff > 1.0f) {
+            std::cerr << "conv1d grouped INT8 mismatch at " << i << ": fp16=" << static_cast<float>(out_fp16[i])
+                      << " int8=" << static_cast<float>(out_int8[i]) << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool test_conv1d_k7s3_int8_weights() {
+    // Test conv1d_k7s3 with ungrouped INT8 weights vs FP16 baseline
+    CactusGraph graph_fp16;
+    CactusGraph graph_int8;
+
+    const size_t N = 1, C_in = 2, L = 16, C_out = 2;
+    // Weight shape for k7s3: [C_in=2, K=7, C_out=2]
+    // L_out = (16 - 7) / 3 + 1 = 4
+
+    // Small integer values that fit both types
+    std::vector<__fp16> W_fp16(C_in * 7 * C_out);
+    std::vector<int8_t> W_int8(C_in * 7 * C_out);
+    for (size_t i = 0; i < W_fp16.size(); ++i) {
+        int8_t val = static_cast<int8_t>((i % 5) - 2); // values in [-2, 2]
+        W_int8[i] = val;
+        W_fp16[i] = static_cast<__fp16>(static_cast<float>(val));
+    }
+
+    std::vector<__fp16> bias(C_out);
+    bias[0] = static_cast<__fp16>(0.5f);
+    bias[1] = static_cast<__fp16>(-0.5f);
+
+    std::vector<__fp16> X_data(N * C_in * L);
+    for (size_t i = 0; i < X_data.size(); ++i) {
+        X_data[i] = static_cast<__fp16>(static_cast<float>((i % 7) - 3));
+    }
+
+    // FP16 path
+    size_t x_fp16 = graph_fp16.input({N, C_in, L}, Precision::FP16);
+    size_t w_fp16 = graph_fp16.input({C_in, 7, C_out}, Precision::FP16);
+    size_t b_fp16 = graph_fp16.input({C_out}, Precision::FP16);
+    size_t y_fp16 = graph_fp16.conv1d_k7s3(x_fp16, w_fp16, b_fp16);
+    graph_fp16.set_input(x_fp16, X_data.data(), Precision::FP16);
+    graph_fp16.set_input(w_fp16, W_fp16.data(), Precision::FP16);
+    graph_fp16.set_input(b_fp16, bias.data(), Precision::FP16);
+    graph_fp16.execute();
+
+    // INT8 path
+    size_t x_int8 = graph_int8.input({N, C_in, L}, Precision::FP16);
+    size_t w_int8 = graph_int8.input({C_in, 7, C_out}, Precision::INT8);
+    size_t b_int8 = graph_int8.input({C_out}, Precision::FP16);
+    size_t y_int8 = graph_int8.conv1d_k7s3(x_int8, w_int8, b_int8);
+    graph_int8.set_input(x_int8, X_data.data(), Precision::FP16);
+    graph_int8.set_input(w_int8, W_int8.data(), Precision::INT8);
+    graph_int8.set_input(b_int8, bias.data(), Precision::FP16);
+    graph_int8.execute();
+
+    __fp16* out_fp16 = static_cast<__fp16*>(graph_fp16.get_output(y_fp16));
+    __fp16* out_int8 = static_cast<__fp16*>(graph_int8.get_output(y_int8));
+
+    size_t L_out = (L < 7) ? 0 : (L - 7) / 3 + 1;
+    for (size_t i = 0; i < C_out * L_out; ++i) {
+        float diff = std::abs(static_cast<float>(out_fp16[i]) - static_cast<float>(out_int8[i]));
+        if (diff > 0.5f) {
+            std::cerr << "conv1d_k7s3 INT8 mismatch at " << i << ": fp16=" << static_cast<float>(out_fp16[i])
+                      << " int8=" << static_cast<float>(out_int8[i]) << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("Graph Operations Tests");
 
@@ -944,6 +1127,9 @@ int main() {
     runner.run_test("Memory-Mapped Gather", test_mmap_gather());
     runner.run_test("Embedding Operation", test_embedding_operation());
     runner.run_test("Embedding from File", test_embedding_from_file());
+    runner.run_test("Conv1d INT8 Weights", test_conv1d_int8_weights());
+    runner.run_test("Conv1d Grouped INT8 Weights", test_conv1d_grouped_int8_weights());
+    runner.run_test("Conv1d K7S3 INT8 Weights", test_conv1d_k7s3_int8_weights());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
