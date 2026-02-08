@@ -602,12 +602,44 @@ void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     const size_t K = W.shape[2];
     const size_t stride = node.params.stride;
 
-    if (X.precision != Precision::FP16 || W.precision != Precision::FP16) {
-        throw std::runtime_error("Conv1d only supports FP16");
+    if (X.precision != Precision::FP16) {
+        throw std::runtime_error("Conv1d only supports FP16 activations");
     }
 
-    cactus_conv1d_f16(X.data_as<__fp16>(), W.data_as<__fp16>(), bias_ptr,
-                      Y.data_as<__fp16>(), N, L, C_in, C_out, K, stride);
+    if (W.precision == Precision::INT8) {
+        const size_t W_size = C_out * C_in * K;
+        const int8_t* W_int8 = W.data_as<int8_t>();
+
+        std::vector<__fp16> W_fp16(W_size);
+
+        if (W.is_grouped_int8()) {
+            const __fp16* scales = W.scales_as_fp16();
+            const size_t K_total = C_in * K;
+            const size_t group_size = W.group_size;
+            const size_t num_groups = K_total / group_size;
+
+            for (size_t row = 0; row < C_out; ++row) {
+                for (size_t col = 0; col < K_total; ++col) {
+                    size_t idx = row * K_total + col;
+                    size_t group_idx = col / group_size;
+                    float scale = static_cast<float>(scales[row * num_groups + group_idx]);
+                    W_fp16[idx] = static_cast<__fp16>(W_int8[idx] * scale);
+                }
+            }
+        } else {
+            for (size_t i = 0; i < W_size; ++i) {
+                W_fp16[i] = static_cast<__fp16>(W_int8[i]);
+            }
+        }
+
+        cactus_conv1d_f16(X.data_as<__fp16>(), W_fp16.data(), bias_ptr,
+                          Y.data_as<__fp16>(), N, L, C_in, C_out, K, stride);
+    } else if (W.precision == Precision::FP16) {
+        cactus_conv1d_f16(X.data_as<__fp16>(), W.data_as<__fp16>(), bias_ptr,
+                          Y.data_as<__fp16>(), N, L, C_in, C_out, K, stride);
+    } else {
+        throw std::runtime_error("Conv1d only supports FP16 and INT8 weights");
+    }
 }
 
 void compute_conv1d_k7s3_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
@@ -633,21 +665,58 @@ void compute_conv1d_k7s3_node(GraphNode& node, const std::vector<std::unique_ptr
     if (C_in != C_in_W) throw std::runtime_error("Channel mismatch in conv1d_k7s3");
     if (K != 7 || stride != 3) throw std::runtime_error("conv1d_k7s3 requires K=7, stride=3");
 
-    if (X.precision != Precision::FP16 || W.precision != Precision::FP16) {
-        throw std::runtime_error("Conv1d specialized only supports FP16");
+    if (X.precision != Precision::FP16) {
+        throw std::runtime_error("Conv1d_k7s3 only supports FP16 activations");
     }
-    
+
     size_t L_out = (L < 7) ? 0 : (L - 7) / 3 + 1;
     Y.shape = {N, C_out, L_out};
     Y.precision = Precision::FP16;
 
-    cactus_conv1d_f16_k7s3_oc8(
-        X.data_as<__fp16>(), 
-        W.data_as<__fp16>(), 
-        bias_ptr,
-        Y.data_as<__fp16>(), 
-        N, L, C_in, C_out
-    );
+    if (W.precision == Precision::INT8) {
+        const size_t W_size = C_in * K * C_out;
+        const int8_t* W_int8 = W.data_as<int8_t>();
+
+        std::vector<__fp16> W_fp16(W_size);
+
+        if (W.is_grouped_int8()) {
+            const __fp16* scales = W.scales_as_fp16();
+            const size_t K_total = K * C_out;
+            const size_t group_size = W.group_size;
+            const size_t num_groups = K_total / group_size;
+
+            for (size_t row = 0; row < C_in; ++row) {
+                for (size_t col = 0; col < K_total; ++col) {
+                    size_t idx = row * K_total + col;
+                    size_t group_idx = col / group_size;
+                    float scale = static_cast<float>(scales[row * num_groups + group_idx]);
+                    W_fp16[idx] = static_cast<__fp16>(W_int8[idx] * scale);
+                }
+            }
+        } else {
+            for (size_t i = 0; i < W_size; ++i) {
+                W_fp16[i] = static_cast<__fp16>(W_int8[i]);
+            }
+        }
+
+        cactus_conv1d_f16_k7s3_oc8(
+            X.data_as<__fp16>(),
+            W_fp16.data(),
+            bias_ptr,
+            Y.data_as<__fp16>(),
+            N, L, C_in, C_out
+        );
+    } else if (W.precision == Precision::FP16) {
+        cactus_conv1d_f16_k7s3_oc8(
+            X.data_as<__fp16>(),
+            W.data_as<__fp16>(),
+            bias_ptr,
+            Y.data_as<__fp16>(),
+            N, L, C_in, C_out
+        );
+    } else {
+        throw std::runtime_error("Conv1d_k7s3 only supports FP16 and INT8 weights");
+    }
 }
 
 void compute_rope_gptj_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
