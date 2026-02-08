@@ -105,7 +105,7 @@ graph.hard_reset();
 
 | Device | LFM2-350m<br>(1k-Prefill/100-Decode) | LFM2-VL-450m<br>(256px-Latency & Decode) | Moonshine-Base-67m<br>(30s-audio-Latency & Decode)
 |--------|--------|--------|----------|
-| iPad/Mac M1 | - | - | - |
+| Mac M1 Max (64GB) | 779tps/86tps (35MB RAM) | 0.5s/85tps (82MB RAM) | 0.6s/224tps (94MB RAM) |
 | iPhone 13 Mini | - | - | - |
 | Galaxy A56 | - | - | - |
 | Pixel 6a | 218tps/44tps (395MB RAM)| 2.5s/36tps (631MB RAM) | 1.5s/189tps (111MB RAM)|
