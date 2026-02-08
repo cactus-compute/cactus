@@ -22,6 +22,43 @@ namespace {
         }
     }
 
+    std::vector<__fp16> dequantize_int8_to_fp16(const BufferDesc& W, size_t num_rows, size_t K_total) {
+        const size_t W_size = num_rows * K_total;
+        const int8_t* W_int8 = W.data_as<int8_t>();
+        std::vector<__fp16> W_fp16(W_size);
+
+        if (W.is_grouped_int8()) {
+            if (!W.scales_data) {
+                throw std::runtime_error("Grouped INT8 weights are missing scales data");
+            }
+            const size_t group_size = W.group_size;
+            if (group_size == 0) {
+                throw std::runtime_error("Grouped INT8 weights have invalid group_size of 0");
+            }
+            const size_t expected_num_groups = (K_total + group_size - 1) / group_size;
+            const size_t num_groups = W.num_groups;
+            if (num_groups != expected_num_groups) {
+                throw std::runtime_error("Mismatch between grouped INT8 metadata and weight dimensions");
+            }
+            const __fp16* scales = W.scales_as_fp16();
+
+            for (size_t row = 0; row < num_rows; ++row) {
+                for (size_t col = 0; col < K_total; ++col) {
+                    size_t idx = row * K_total + col;
+                    size_t group_idx = col / group_size;
+                    float scale = static_cast<float>(scales[row * num_groups + group_idx]);
+                    W_fp16[idx] = static_cast<__fp16>(W_int8[idx] * scale);
+                }
+            }
+        } else {
+            for (size_t i = 0; i < W_size; ++i) {
+                W_fp16[i] = static_cast<__fp16>(W_int8[i]);
+            }
+        }
+
+        return W_fp16;
+    }
+
     void ensure_quant_buffers(size_t M, size_t K) {
         size_t required_data = M * K;
         if (quant_activation_buffer.size() < required_data) {
@@ -470,30 +507,7 @@ void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_p
     Y.precision = X.precision;
 
     if (W.precision == Precision::INT8) {
-        const size_t W_size = W0 * W1 * K;
-        const int8_t* W_int8 = W.data_as<int8_t>();
-
-        std::vector<__fp16> W_fp16(W_size);
-
-        if (W.is_grouped_int8()) {
-            const __fp16* scales = W.scales_as_fp16();
-            const size_t K_total = W1 * K;
-            const size_t group_size = W.group_size;
-            const size_t num_groups = K_total / group_size;
-
-            for (size_t row = 0; row < W0; ++row) {
-                for (size_t col = 0; col < K_total; ++col) {
-                    size_t idx = row * K_total + col;
-                    size_t group_idx = col / group_size;
-                    float scale = static_cast<float>(scales[row * num_groups + group_idx]);
-                    W_fp16[idx] = static_cast<__fp16>(W_int8[idx] * scale);
-                }
-            }
-        } else {
-            for (size_t i = 0; i < W_size; ++i) {
-                W_fp16[i] = static_cast<__fp16>(W_int8[i]);
-            }
-        }
+        auto W_fp16 = dequantize_int8_to_fp16(W, W0, W1 * K);
 
         cactus_conv1d_causal_depthwise_f16(
             X.data_as<__fp16>(), W_fp16.data(), Y.data_as<__fp16>(),
@@ -542,30 +556,7 @@ void compute_conv1d_k3_node(GraphNode& node, const std::vector<std::unique_ptr<G
     }
 
     if (W.precision == Precision::INT8) {
-        const size_t W_size = C_out * C_in * K;
-        const int8_t* W_int8 = W.data_as<int8_t>();
-
-        std::vector<__fp16> W_fp16(W_size);
-
-        if (W.is_grouped_int8()) {
-            const __fp16* scales = W.scales_as_fp16();
-            const size_t K_total = C_in * K;
-            const size_t group_size = W.group_size;
-            const size_t num_groups = K_total / group_size;
-
-            for (size_t row = 0; row < C_out; ++row) {
-                for (size_t col = 0; col < K_total; ++col) {
-                    size_t idx = row * K_total + col;
-                    size_t group_idx = col / group_size;
-                    float scale = static_cast<float>(scales[row * num_groups + group_idx]);
-                    W_fp16[idx] = static_cast<__fp16>(W_int8[idx] * scale);
-                }
-            }
-        } else {
-            for (size_t i = 0; i < W_size; ++i) {
-                W_fp16[i] = static_cast<__fp16>(W_int8[i]);
-            }
-        }
+        auto W_fp16 = dequantize_int8_to_fp16(W, C_out, C_in * K);
 
         cactus_conv1d_f16_k3(
             X.data_as<__fp16>(),
@@ -607,30 +598,7 @@ void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     }
 
     if (W.precision == Precision::INT8) {
-        const size_t W_size = C_out * C_in * K;
-        const int8_t* W_int8 = W.data_as<int8_t>();
-
-        std::vector<__fp16> W_fp16(W_size);
-
-        if (W.is_grouped_int8()) {
-            const __fp16* scales = W.scales_as_fp16();
-            const size_t K_total = C_in * K;
-            const size_t group_size = W.group_size;
-            const size_t num_groups = K_total / group_size;
-
-            for (size_t row = 0; row < C_out; ++row) {
-                for (size_t col = 0; col < K_total; ++col) {
-                    size_t idx = row * K_total + col;
-                    size_t group_idx = col / group_size;
-                    float scale = static_cast<float>(scales[row * num_groups + group_idx]);
-                    W_fp16[idx] = static_cast<__fp16>(W_int8[idx] * scale);
-                }
-            }
-        } else {
-            for (size_t i = 0; i < W_size; ++i) {
-                W_fp16[i] = static_cast<__fp16>(W_int8[i]);
-            }
-        }
+        auto W_fp16 = dequantize_int8_to_fp16(W, C_out, C_in * K);
 
         cactus_conv1d_f16(X.data_as<__fp16>(), W_fp16.data(), bias_ptr,
                           Y.data_as<__fp16>(), N, L, C_in, C_out, K, stride);
@@ -674,30 +642,7 @@ void compute_conv1d_k7s3_node(GraphNode& node, const std::vector<std::unique_ptr
     Y.precision = Precision::FP16;
 
     if (W.precision == Precision::INT8) {
-        const size_t W_size = C_in * K * C_out;
-        const int8_t* W_int8 = W.data_as<int8_t>();
-
-        std::vector<__fp16> W_fp16(W_size);
-
-        if (W.is_grouped_int8()) {
-            const __fp16* scales = W.scales_as_fp16();
-            const size_t K_total = K * C_out;
-            const size_t group_size = W.group_size;
-            const size_t num_groups = K_total / group_size;
-
-            for (size_t row = 0; row < C_in; ++row) {
-                for (size_t col = 0; col < K_total; ++col) {
-                    size_t idx = row * K_total + col;
-                    size_t group_idx = col / group_size;
-                    float scale = static_cast<float>(scales[row * num_groups + group_idx]);
-                    W_fp16[idx] = static_cast<__fp16>(W_int8[idx] * scale);
-                }
-            }
-        } else {
-            for (size_t i = 0; i < W_size; ++i) {
-                W_fp16[i] = static_cast<__fp16>(W_int8[i]);
-            }
-        }
+        auto W_fp16 = dequantize_int8_to_fp16(W, C_in, K * C_out);
 
         cactus_conv1d_f16_k7s3_oc8(
             X.data_as<__fp16>(),
