@@ -13,7 +13,10 @@ android/arm64-v8a/
 *.so
 
 apple/build/
+apple/build-ios/
+apple/build-macos/
 apple/build-static/
+apple/build-static-device/
 apple/*.xcframework
 apple/libcactus.a
 *.a
