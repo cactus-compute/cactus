@@ -1,0 +1,10 @@
+# Flutter-related
+**/Flutter/ephemeral/
+**/Pods/
+
+# Xcode-related
+**/dgph
+**/xcuserdata/
+
+# Pre-built frameworks (build locally via build script)
+Frameworks/
