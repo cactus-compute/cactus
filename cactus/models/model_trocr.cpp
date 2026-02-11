@@ -7,6 +7,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cstring>
+#include <fstream>
 
 namespace cactus {
 namespace engine {
@@ -144,11 +145,7 @@ size_t TrOCRModel::build_patch_embedding(CactusGraph* gb, size_t image_input, si
     size_t num_patches_w = width / patch_size;
     size_t num_patches = num_patches_h * num_patches_w;
 
-    // Apply patch embedding projection
-    // This is typically done via a Conv2D with kernel_size=patch_size, stride=patch_size
-    // For simplicity, we'll use matmul after reshaping
-
-    // Reshape image to patches: [num_patches, patch_size * patch_size * channels]
+    // Patch embedding: matmul after reshaping to [num_patches, patch_dim]
     size_t channels = config_.vision_num_channels > 0 ? config_.vision_num_channels : 3;
     size_t patch_dim = patch_size * patch_size * channels;
 
@@ -156,11 +153,8 @@ size_t TrOCRModel::build_patch_embedding(CactusGraph* gb, size_t image_input, si
     size_t patches = gb->matmul(image_input, weight_nodes_.encoder_patch_embedding_weight, true, ComputeBackend::CPU);
     patches = gb->add(patches, weight_nodes_.encoder_patch_embedding_bias);
 
-    // Add position embeddings
-    size_t pos_embed = gb->slice(weight_nodes_.encoder_position_embedding, 0, 0, num_patches + 1);  // +1 for CLS token
-
-    // Optionally prepend CLS token
-    // For TrOCR, we typically use the sequence without CLS for cross-attention
+    // Add position embeddings (+1 for CLS if used)
+    size_t pos_embed = gb->slice(weight_nodes_.encoder_position_embedding, 0, 0, num_patches + 1);
 
     const auto& patches_buf = gb->get_output_buffer(patches);
     const auto& pos_buf = gb->get_output_buffer(pos_embed);
@@ -252,6 +246,7 @@ size_t TrOCRModel::build_encoder_transformer_block(CactusGraph* gb, size_t hidde
     return output;
 }
 
+// image_pixels must be layout [num_patches, patch_dim] (row-major patches), not raw HWC.
 void TrOCRModel::run_encoder(const std::vector<float>& image_pixels, size_t height, size_t width) {
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     if (!gb) {
@@ -539,6 +534,129 @@ void TrOCRModel::reset_cache() {
     encoder_v_shape_.clear();
 }
 
+void TrOCRModel::load_and_preprocess_image(const std::string& image_path, std::vector<float>& out_pixels,
+                                           size_t& out_height, size_t& out_width) {
+    int width, height, channels;
+    unsigned char* img_data = stbi_load(image_path.c_str(), &width, &height, &channels, 3);
+    if (!img_data) {
+        throw std::runtime_error("Failed to load image: " + image_path);
+    }
+
+    size_t target_h = config_.trocr_image_size;
+    size_t target_w = config_.trocr_image_size;
+    size_t num_pixels = target_h * target_w * 3;
+    std::vector<unsigned char> resized_u8(num_pixels);
+
+    stbir_resize_uint8_linear(img_data, width, height, 0,
+                              resized_u8.data(),
+                              static_cast<int>(target_w), static_cast<int>(target_h), 0,
+                              STBIR_RGB);
+    stbi_image_free(img_data);
+
+    out_pixels.resize(num_pixels);
+    for (size_t i = 0; i < num_pixels; ++i) {
+        out_pixels[i] = (resized_u8[i] / 255.0f - 0.5f) / 0.5f;
+    }
+    out_height = target_h;
+    out_width = target_w;
+}
+
+uint32_t TrOCRModel::decode_with_images(const std::vector<uint32_t>& tokens,
+                                        const std::vector<std::string>& image_paths,
+                                        float temperature, float top_p, size_t top_k,
+                                        const std::string& profile_file, float* out_entropy) {
+    if (!initialized_ || !graph_handle_) {
+        throw std::runtime_error("Model not initialized - call init() first");
+    }
+
+    if (temperature < 0) temperature = config_.default_temperature;
+    if (top_p < 0) top_p = config_.default_top_p;
+    if (top_k == 0) top_k = config_.default_top_k;
+
+    if (image_paths.empty()) {
+        return decode(tokens, temperature, top_p, top_k, profile_file, out_entropy);
+    }
+
+    std::vector<float> image_pixels;
+    size_t img_h, img_w;
+    load_and_preprocess_image(image_paths[0], image_pixels, img_h, img_w);
+    return decode_with_image(tokens, image_pixels, img_h, img_w, temperature, top_p, top_k, profile_file, out_entropy);
+}
+
+uint32_t TrOCRModel::decode(const std::vector<uint32_t>& tokens, float temperature, float top_p,
+                            size_t top_k, const std::string& profile_file, float* out_entropy) {
+    if (!initialized_ || !graph_handle_) {
+        throw std::runtime_error("Model not initialized - call init() first");
+    }
+    if (tokens.empty()) {
+        throw std::runtime_error("Token sequence cannot be empty");
+    }
+    if (!encoder_ready_ || encoder_output_host_.empty()) {
+        throw std::runtime_error("TrOCR: call decode_with_images with an image first");
+    }
+
+    if (temperature < 0) temperature = config_.default_temperature;
+    if (top_p < 0) top_p = config_.default_top_p;
+    if (top_k == 0) top_k = config_.default_top_k;
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    gb->soft_reset();
+    reset_graph_side_cache_nodes();
+
+    size_t enc_node = gb->input(encoder_output_shape_, encoder_output_precision_);
+    gb->set_input(enc_node, encoder_output_host_.data(), encoder_output_precision_);
+    weight_nodes_.encoder_output = enc_node;
+
+    std::vector<uint32_t> last_token_vec = {tokens.back()};
+    size_t logits_node = run_decoder_step(last_token_vec, true, true);
+
+    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+    size_t sampled_token_id = gb->sample(logits_node, temperature, top_p, top_k, tool_constrainer_.get_bias());
+
+    if (!profile_file.empty()) {
+        gb->execute(profile_file);
+    } else {
+        gb->execute();
+    }
+
+    if (out_entropy) {
+        const auto& logits_buf = gb->get_output_buffer(logits_node);
+        void* logits_ptr = gb->get_output(logits_node);
+        size_t vocab_size = logits_buf.shape.back();
+        std::vector<float> logits(vocab_size);
+        if (logits_buf.precision == Precision::FP32) {
+            float* src = static_cast<float*>(logits_ptr);
+            std::copy(src, src + vocab_size, logits.begin());
+        } else if (logits_buf.precision == Precision::FP16) {
+            __fp16* src = static_cast<__fp16*>(logits_ptr);
+            Quantization::fp16_to_fp32(src, logits.data(), vocab_size);
+        } else {
+            int8_t* src = static_cast<int8_t*>(logits_ptr);
+            Quantization::int8_to_fp32(src, logits.data(), vocab_size, 1.0f);
+        }
+        float max_logit = *std::max_element(logits.begin(), logits.end());
+        double sum_exp = 0.0;
+        for (size_t i = 0; i < vocab_size; ++i) {
+            sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
+        }
+        double log_sum_exp = static_cast<double>(max_logit) + std::log(sum_exp);
+        double entropy = 0.0;
+        for (size_t i = 0; i < vocab_size; ++i) {
+            double log_prob = static_cast<double>(logits[i]) - log_sum_exp;
+            double prob = std::exp(log_prob);
+            if (prob > 1e-10) entropy -= prob * log_prob;
+        }
+        double max_entropy = std::log(static_cast<double>(vocab_size));
+        *out_entropy = static_cast<float>(entropy / max_entropy);
+    }
+
+    post_execute_updates(gb, 1);
+    update_kv_cache(gb, last_new_tokens_);
+
+    auto* out_ptr = gb->get_output(sampled_token_id);
+    return *reinterpret_cast<uint32_t*>(out_ptr);
+}
+
 uint32_t TrOCRModel::decode_with_image(
     const std::vector<uint32_t>& tokens,
     const std::vector<float>& image_pixels,
@@ -589,8 +707,33 @@ uint32_t TrOCRModel::decode_with_image(
 
         first_decode_step_ = true;
 
+        // Reshape raw image (HWC) to patch-major [num_patches, patch_dim] for run_encoder
+        size_t channels = config_.vision_num_channels > 0 ? config_.vision_num_channels : 3;
+        size_t patch_size = config_.trocr_patch_size;
+        size_t num_patches_h = image_height / patch_size;
+        size_t num_patches_w = image_width / patch_size;
+        size_t num_patches = num_patches_h * num_patches_w;
+        size_t patch_dim = patch_size * patch_size * channels;
+        std::vector<float> patches(num_patches * patch_dim);
+        for (size_t ph = 0; ph < num_patches_h; ++ph) {
+            for (size_t pw = 0; pw < num_patches_w; ++pw) {
+                size_t patch_idx = ph * num_patches_w + pw;
+                for (size_t py = 0; py < patch_size; ++py) {
+                    for (size_t px = 0; px < patch_size; ++px) {
+                        size_t img_y = ph * patch_size + py;
+                        size_t img_x = pw * patch_size + px;
+                        for (size_t c = 0; c < channels; ++c) {
+                            size_t patch_offset = patch_idx * patch_dim + (py * patch_size + px) * channels + c;
+                            size_t img_offset = (img_y * image_width + img_x) * channels + c;
+                            patches[patch_offset] = image_pixels[img_offset];
+                        }
+                    }
+                }
+            }
+        }
+
         // Run vision encoder
-        run_encoder(image_pixels, image_height, image_width);
+        run_encoder(patches, image_height, image_width);
 
         // Run decoder
         logits_node = run_decoder_step(full_tokens, false, false);
@@ -738,39 +881,18 @@ uint32_t TrOCRModel::decode_with_image(
 }
 
 std::vector<float> TrOCRModel::get_image_embeddings(const std::string& image_path) {
-    // Load and preprocess image
-    int width, height, channels;
-    unsigned char* img_data = stbi_load(image_path.c_str(), &width, &height, &channels, 3);
-    if (!img_data) {
-        throw std::runtime_error("Failed to load image: " + image_path);
-    }
+    std::vector<float> resized;
+    size_t target_h, target_w;
+    load_and_preprocess_image(image_path, resized, target_h, target_w);
 
-    // Preprocess image (resize, normalize)
-    size_t target_h = config_.trocr_image_size;
-    size_t target_w = config_.trocr_image_size;
     size_t patch_size = config_.trocr_patch_size;
+    size_t channels = config_.vision_num_channels > 0 ? config_.vision_num_channels : 3;
     size_t num_patches_h = target_h / patch_size;
     size_t num_patches_w = target_w / patch_size;
     size_t num_patches = num_patches_h * num_patches_w;
-    size_t patch_dim = patch_size * patch_size * 3;
+    size_t patch_dim = patch_size * patch_size * channels;
 
-    // Resize and normalize
-    std::vector<float> resized(target_h * target_w * 3);
-    stbir_resize_uint8_linear(img_data, width, height, 0,
-                              reinterpret_cast<unsigned char*>(resized.data()),
-                              static_cast<int>(target_w), static_cast<int>(target_h), 0,
-                              STBIR_RGB);
-
-    stbi_image_free(img_data);
-
-    // Normalize to [-1, 1]
-    for (auto& v : resized) {
-        v = (v / 255.0f - 0.5f) / 0.5f;
-    }
-
-    // Reshape to patches
     std::vector<float> patches(num_patches * patch_dim);
-    // Convert [H, W, C] to patches [num_patches, patch_dim]
     for (size_t ph = 0; ph < num_patches_h; ++ph) {
         for (size_t pw = 0; pw < num_patches_w; ++pw) {
             size_t patch_idx = ph * num_patches_w + pw;
@@ -778,9 +900,9 @@ std::vector<float> TrOCRModel::get_image_embeddings(const std::string& image_pat
                 for (size_t px = 0; px < patch_size; ++px) {
                     size_t img_y = ph * patch_size + py;
                     size_t img_x = pw * patch_size + px;
-                    for (size_t c = 0; c < 3; ++c) {
-                        size_t patch_offset = patch_idx * patch_dim + (py * patch_size + px) * 3 + c;
-                        size_t img_offset = (img_y * target_w + img_x) * 3 + c;
+                    for (size_t c = 0; c < channels; ++c) {
+                        size_t patch_offset = patch_idx * patch_dim + (py * patch_size + px) * channels + c;
+                        size_t img_offset = (img_y * target_w + img_x) * channels + c;
                         patches[patch_offset] = resized[img_offset];
                     }
                 }
@@ -788,7 +910,6 @@ std::vector<float> TrOCRModel::get_image_embeddings(const std::string& image_pat
         }
     }
 
-    // Run encoder
     run_encoder(patches, target_h, target_w);
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);

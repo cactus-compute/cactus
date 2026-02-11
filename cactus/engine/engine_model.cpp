@@ -527,10 +527,6 @@ bool Config::from_json(const std::string& config_path) {
         default_temperature = 0.6f;
         default_top_p = 0.95f;
         default_top_k = 20;
-    } else if (model_type == ModelType::QWEN) {
-        default_temperature = 0.7f;
-        default_top_p = 0.8f;
-        default_top_k = 20;
     } else if (model_type == ModelType::WHISPER) {
         default_temperature = 0.0f;
         default_top_p = 0.0f;

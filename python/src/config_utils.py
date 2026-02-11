@@ -46,7 +46,7 @@ def detect_model_type(cfg, config, output_dir=None):
 
 
 def extract_trocr_config(config):
-    """Extract TrOCR-specific configuration parameters with validation."""
+    """Extract TrOCR encoder/decoder config; warns if both encoder and decoder config missing."""
     encoder_cfg = cfg_get(config, 'encoder', None)
     decoder_cfg = cfg_get(config, 'decoder', None)
 

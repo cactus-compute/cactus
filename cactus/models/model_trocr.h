@@ -39,9 +39,13 @@ public:
         const std::string& profile_file = "",
         float* out_entropy = nullptr);
 
-    /**
-     * Get image embeddings from the vision encoder (for embedding extraction)
-     */
+    uint32_t decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
+                                float temperature = -1.0f, float top_p = -1.0f, size_t top_k = 0,
+                                const std::string& profile_file = "", float* out_entropy = nullptr) override;
+
+    uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
+                    size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr) override;
+
     std::vector<float> get_image_embeddings(const std::string& image_path) override;
 
     void reset_cache() override;
@@ -125,6 +129,10 @@ protected:
     size_t run_decoder_step(const std::vector<uint32_t>& tokens, bool use_cache, bool last_token_only);
 
     void reset_graph_side_cache_nodes();
+
+    /** Load image from path, resize to trocr_image_size, normalize to [-1,1]; output HWC float. */
+    void load_and_preprocess_image(const std::string& image_path, std::vector<float>& out_pixels,
+                                   size_t& out_height, size_t& out_width);
 
 private:
     struct WeightNodeIDs {
