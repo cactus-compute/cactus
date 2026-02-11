@@ -3,6 +3,13 @@
 #include <arm_neon.h>
 #include <cstring>
 #include <algorithm>
+#include <vector>
+
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+constexpr size_t ACCELERATE_M_THRESHOLD = 4;
+constexpr size_t ACCELERATE_K_THRESHOLD = 256;
+#endif
 
 // Do NOT Remove: Uncomment for testing on various paths
 // -----
@@ -157,6 +164,30 @@ void cactus_matmul_f16(
     size_t K,
     size_t N
 ) {
+#ifdef __APPLE__
+    if (K >= ACCELERATE_K_THRESHOLD && M >= ACCELERATE_M_THRESHOLD) {
+        const size_t a_len = M * K;
+        const size_t b_len = N * K;
+        const size_t c_len = M * N;
+
+        std::vector<float> A_f32(a_len);
+        std::vector<float> BT_f32(b_len);
+        std::vector<float> C_f32(c_len);
+
+        for (size_t i = 0; i < a_len; i++) A_f32[i] = (float)a[i];
+        for (size_t i = 0; i < b_len; i++) BT_f32[i] = (float)b_transposed[i];
+
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    (int)M, (int)N, (int)K,
+                    1.0f, A_f32.data(), (int)K,
+                    BT_f32.data(), (int)K,
+                    0.0f, C_f32.data(), (int)N);
+
+        for (size_t i = 0; i < c_len; i++) c[i] = (__fp16)C_f32[i];
+        return;
+    }
+#endif
+
     constexpr size_t TILE_M = 4;
     const size_t num_row_blocks = (M + TILE_M - 1) / TILE_M;
 
