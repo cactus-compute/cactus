@@ -329,6 +329,29 @@ bool test_matmul_int8_grouped_correctness() {
     return max_abs_error < 0.1f;
 }
 
+bool test_neon_reduction_fp16_accumulation_precision_loss() {
+    // Make the running sum large so small increments disappear in FP16.
+    // 4096 is exactly representable; above it, FP16 spacing grows.
+    const size_t N_big = 8192;   // sum of 1.0 to get accumulator "large"
+    const size_t N_small = 200000; // many small increments
+
+    std::vector<__fp16> input;
+    input.reserve(N_big + N_small);
+
+    for (size_t i = 0; i < N_big; ++i) input.push_back((__fp16)1.0f);
+    for (size_t i = 0; i < N_small; ++i) input.push_back((__fp16)0.001f);
+
+    double sum_result = cactus_sum_all_f16(input.data(), input.size());
+    double expected_sum = (double)N_big + (double)N_small * 0.001;
+
+    double abs_err = std::abs(sum_result - expected_sum);
+
+    // FP32 accumulation should be close (error maybe < 1.0 depending on ordering).
+    // FP16 lane accumulation will drop a LOT of the 0.001 contributions once sum is big.
+    return abs_err < 5.0;
+}
+
+
 int main() {
     TestUtils::TestRunner runner("Kernel Backend Tests");
 
@@ -342,6 +365,7 @@ int main() {
     runner.run_test("Kernel RoPE Correctness", test_neon_rope_correctness());
     runner.run_test("Kernel Attention FP16 Correctness", test_neon_attention_fp16_correctness());
     runner.run_test("Kernel Grouped INT8 MatMul Correctness", test_matmul_int8_grouped_correctness());
+    runner.run_test("Kernel Reduction FP16 Accumulation Precision Loss", test_neon_reduction_fp16_accumulation_precision_loss());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
