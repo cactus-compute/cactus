@@ -1,0 +1,118 @@
+name: Release & Update Homebrew
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Every Monday at 9am UTC
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g. v1.8). Leave empty to auto-increment."
+        required: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            # Get the latest vMAJOR.MINOR tag and increment the minor version
+            latest=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+$' | head -1)
+            if [ -z "$latest" ]; then
+              echo "tag=v1.7" >> $GITHUB_OUTPUT
+            else
+              major=${latest%%.*}
+              minor=${latest#*.}
+              next_minor=$((minor + 1))
+              echo "tag=${major}.${next_minor}" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Check if tag already exists
+        id: check
+        run: |
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for new commits since last tag
+        id: changes
+        run: |
+          latest_tag=$(git tag --sort=-v:refname | head -1)
+          if [ -z "$latest_tag" ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            count=$(git rev-list "${latest_tag}..HEAD" --count)
+            if [ "$count" -gt 0 ]; then
+              echo "has_changes=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_changes=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Skip if no changes (scheduled runs only)
+        if: github.event_name == 'schedule' && steps.changes.outputs.has_changes == 'false'
+        run: |
+          echo "No new commits since last tag. Skipping release."
+          exit 0
+
+      - name: Create tag
+        if: steps.check.outputs.exists == 'false' && (github.event_name != 'schedule' || steps.changes.outputs.has_changes == 'true')
+        run: |
+          git tag ${{ steps.version.outputs.tag }}
+          git push origin ${{ steps.version.outputs.tag }}
+
+      - name: Create GitHub release
+        if: github.event_name != 'schedule' || steps.changes.outputs.has_changes == 'true'
+        run: |
+          gh release create ${{ steps.version.outputs.tag }} \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes \
+            --prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get tarball SHA256
+        if: github.event_name != 'schedule' || steps.changes.outputs.has_changes == 'true'
+        id: sha
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
+          SHA=$(curl -sL "$URL" | shasum -a 256 | awk '{print $1}')
+          echo "sha256=${SHA}" >> $GITHUB_OUTPUT
+          echo "url=${URL}" >> $GITHUB_OUTPUT
+
+      - name: Update Homebrew formula
+        if: github.event_name != 'schedule' || steps.changes.outputs.has_changes == 'true'
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          SHA=${{ steps.sha.outputs.sha256 }}
+          URL=${{ steps.sha.outputs.url }}
+
+          # Clone the homebrew tap
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/cactus-compute/homebrew-cactus.git tap
+          cd tap
+
+          # Update the formula
+          sed -i "s|url \".*\"|url \"${URL}\"|" Formula/cactus.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/cactus.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/cactus.rb
+          git commit -m "Update cactus to ${TAG}"
+          git push origin main
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
