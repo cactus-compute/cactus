@@ -330,10 +330,8 @@ bool test_matmul_int8_grouped_correctness() {
 }
 
 bool test_neon_reduction_fp16_accumulation_precision_loss() {
-    // Make the running sum large so small increments disappear in FP16.
-    // 4096 is exactly representable; above it, FP16 spacing grows.
-    const size_t N_big = 8192;   // sum of 1.0 to get accumulator "large"
-    const size_t N_small = 200000; // many small increments
+    const size_t N_big = 8192;
+    const size_t N_small = 200000;
 
     std::vector<__fp16> input;
     input.reserve(N_big + N_small);
@@ -345,9 +343,6 @@ bool test_neon_reduction_fp16_accumulation_precision_loss() {
     double expected_sum = (double)N_big + (double)N_small * 0.001;
 
     double abs_err = std::abs(sum_result - expected_sum);
-
-    // FP32 accumulation should be close (error maybe < 1.0 depending on ordering).
-    // FP16 lane accumulation will drop a LOT of the 0.001 contributions once sum is big.
     return abs_err < 5.0;
 }
 
