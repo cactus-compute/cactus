@@ -196,5 +196,18 @@ git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setu
 - **Benchmark Your Changes**: Test performance impact, Cactus is performance-critical.
 - **Test everything**: A PR that fails to build is the biggest red flag, means it was not tested. 
 
+## Citation
+
+If you use Cactus in your research, please cite it as follows:
+
+```bibtex
+@software{cactus,
+  title        = {Cactus: AI Inference Engine for Phones & Wearables},
+  author       = {Ndubuaku, Henry and Cactus Team},
+  url          = {https://github.com/cactus-compute/cactus},
+  year         = {2025}
+}
+```
+
 ## Join The Community
 - [Reddit Channel](https://www.reddit.com/r/cactuscompute/)
