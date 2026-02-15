@@ -14,7 +14,7 @@ struct BenchmarkConfig {
     std::vector<size_t> dimensions = {1024};
     std::vector<Precision> precisions = {Precision::FP16};
     std::vector<ComputeBackend> backends = {ComputeBackend::CPU};
-    int iterations = 1;
+    int iterations = 10;
 
     BenchmarkConfig() {
     }
@@ -22,13 +22,18 @@ struct BenchmarkConfig {
 
 template<typename T>
 double time_operation(std::function<void()> operation, int iterations) {
+    // Warmup
+    for (int i = 0; i < 5; ++i) {
+        operation();
+    }
+
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < iterations; ++i) {
         operation();
     }
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    return duration.count() / 1000.0; 
+    return duration.count() / (1000.0 * iterations);
 }
 
 template<typename T>
