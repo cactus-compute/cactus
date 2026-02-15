@@ -970,7 +970,6 @@ bool test_engine_operations_performance(TestUtils::TestRunner& runner) {
 
 bool test_gather_operations_performance(TestUtils::TestRunner& runner) {
     BenchmarkConfig config;
-    config.iterations = 10;
     // INT8 for storage, FP16 for computation
     benchmark_gather_ops<int8_t>(runner, config);
     benchmark_gather_ops<__fp16>(runner, config);
