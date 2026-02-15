@@ -56,7 +56,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --android                 Run tests on Android device or emulator"
             echo "  --ios                     Run tests on iOS device or simulator"
             echo "  --no-rebuild              Skip building cactus library and tests"
-            echo "  --only <test_name>        Only run the specified test (engine, graph, index, kernel, kv_cache, performance)"
+            echo "  --only <test_name>        Only run the specified test (engine, graph, index, kernel, kv_cache, performance, etc)"
             echo "  --help, -h                Show this help message"
             exit 0
             ;;
@@ -165,7 +165,12 @@ test_executables=("${executable_tests[@]}")
 
 # If --only is set, execute only the named test
 if [ -n "$ONLY_EXEC" ]; then
-    allowed=("engine" "graph" "index" "kernel" "kv_cache" "performance")
+    allowed=()
+    for test_file in "${executable_tests[@]}"; do
+        test_name=$(basename "$test_file" | sed 's/^test_//')
+        allowed+=("$test_name")
+    done
+
     ok=false
     for a in "${allowed[@]}"; do
         if [ "$a" = "$ONLY_EXEC" ]; then
