@@ -1,5 +1,6 @@
 #include "cactus_ffi.h"
 #include "cactus_utils.h"
+#include "telemetry/telemetry.h"
 #include "../../libs/audio/wav.h"
 #include <chrono>
 #include <cstring>
@@ -58,30 +59,34 @@ int cactus_transcribe(
         std::string error_msg = last_error_message.empty() ? "Model not initialized." : last_error_message;
         CACTUS_LOG_ERROR("transcribe", error_msg);
         handle_error_response(error_msg, response_buffer, buffer_size);
+        cactus::telemetry::recordTranscription(nullptr, false, 0.0, 0.0, 0.0, 0, error_msg.c_str());
         return -1;
     }
-
     if (!prompt || !response_buffer || buffer_size == 0) {
         CACTUS_LOG_ERROR("transcribe", "Invalid parameters: prompt, response_buffer, or buffer_size");
         handle_error_response("Invalid parameters", response_buffer, buffer_size);
+        cactus::telemetry::recordTranscription(nullptr, false, 0.0, 0.0, 0.0, 0, "Invalid parameters");
         return -1;
     }
 
     if (!audio_file_path && (!pcm_buffer || pcm_buffer_size == 0)) {
         CACTUS_LOG_ERROR("transcribe", "No audio input provided");
         handle_error_response("Either audio_file_path or pcm_buffer must be provided", response_buffer, buffer_size);
+        cactus::telemetry::recordTranscription(model ? static_cast<CactusModelHandle*>(model)->model_name.c_str() : nullptr, false, 0.0, 0.0, 0.0, 0, "No audio input provided");
         return -1;
     }
 
     if (audio_file_path && pcm_buffer && pcm_buffer_size > 0) {
         CACTUS_LOG_ERROR("transcribe", "Both audio_file_path and pcm_buffer provided");
         handle_error_response("Cannot provide both audio_file_path and pcm_buffer", response_buffer, buffer_size);
+        cactus::telemetry::recordTranscription(nullptr, false, 0.0, 0.0, 0.0, 0, "Cannot provide both audio_file_path and pcm_buffer");
         return -1;
     }
 
     if (pcm_buffer && pcm_buffer_size > 0 && (pcm_buffer_size < 2 || pcm_buffer_size % 2 != 0)) {
         CACTUS_LOG_ERROR("transcribe", "Invalid pcm_buffer_size: " << pcm_buffer_size);
         handle_error_response("pcm_buffer_size must be even and at least 2 bytes", response_buffer, buffer_size);
+        cactus::telemetry::recordTranscription(nullptr, false, 0.0, 0.0, 0.0, 0, "pcm_buffer_size must be even and at least 2 bytes");
         return -1;
     }
 
@@ -94,8 +99,8 @@ int cactus_transcribe(
         float temperature, top_p, confidence_threshold;
         size_t top_k, max_tokens, tool_rag_top_k;
         std::vector<std::string> stop_sequences;
-        bool force_tools, include_stop_sequences;
-        parse_options_json(options_json ? options_json : "", temperature, top_p, top_k, max_tokens, stop_sequences, force_tools, tool_rag_top_k, confidence_threshold, include_stop_sequences);
+        bool force_tools, include_stop_sequences, telemetry_enabled;
+        parse_options_json(options_json ? options_json : "", temperature, top_p, top_k, max_tokens, stop_sequences, force_tools, tool_rag_top_k, confidence_threshold, include_stop_sequences, telemetry_enabled);
 
         std::vector<float> audio_features;
         
@@ -140,6 +145,7 @@ int cactus_transcribe(
         if (audio_features.empty()) {
             CACTUS_LOG_ERROR("transcribe", "Computed audio features are empty");
             handle_error_response("Computed audio features are empty", response_buffer, buffer_size);
+            cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, "Computed audio features are empty");
             return -1;
         }
 
@@ -149,6 +155,7 @@ int cactus_transcribe(
         if (!tokenizer) {
             CACTUS_LOG_ERROR("transcribe", "Tokenizer unavailable");
             handle_error_response("Tokenizer unavailable", response_buffer, buffer_size);
+            cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, "Tokenizer unavailable");
             return -1;
         }
 
@@ -156,6 +163,7 @@ int cactus_transcribe(
         if (tokens.empty() && !is_moonshine) {
             CACTUS_LOG_ERROR("transcribe", "Decoder input tokens empty after encoding prompt");
             handle_error_response("Decoder input tokens empty", response_buffer, buffer_size);
+            cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, "Decoder input tokens empty");
             return -1;
         }
 
@@ -261,8 +269,11 @@ int cactus_transcribe(
 
         if (json.size() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);
+            cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, "Response buffer too small");
             return -1;
         }
+
+        cactus::telemetry::recordTranscription(handle->model_name.c_str(), true, time_to_first_token, decode_tps, total_time_ms, static_cast<int>(completion_tokens), "");
 
         std::strcpy(response_buffer, json.c_str());
 
@@ -271,11 +282,13 @@ int cactus_transcribe(
     catch (const std::exception& e) {
         CACTUS_LOG_ERROR("transcribe", "Exception: " << e.what());
         handle_error_response(e.what(), response_buffer, buffer_size);
+        cactus::telemetry::recordTranscription(model ? static_cast<CactusModelHandle*>(model)->model_name.c_str() : nullptr, false, 0.0, 0.0, 0.0, 0, e.what());
         return -1;
     }
     catch (...) {
         CACTUS_LOG_ERROR("transcribe", "Unknown exception during transcription");
         handle_error_response("Unknown error in transcribe", response_buffer, buffer_size);
+        cactus::telemetry::recordTranscription(model ? static_cast<CactusModelHandle*>(model)->model_name.c_str() : nullptr, false, 0.0, 0.0, 0.0, 0, "Unknown error in transcribe");
         return -1;
     }
 }

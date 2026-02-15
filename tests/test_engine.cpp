@@ -30,7 +30,8 @@ const char* g_whisper_prompt = get_transcribe_prompt();
 
 const char* g_options = R"({
         "max_tokens": 256,
-        "stop_sequences": ["<|im_end|>", "<end_of_turn>"]
+    "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
+    "telemetry_enabled": false
     })";
 
 template<typename TestFunc>
@@ -725,7 +726,7 @@ bool run_whisper_test(const char* title, const char* options_json, Predicate che
 }
 
 static bool test_transcription() {
-    return run_whisper_test("TRANSCRIPTION", R"({"max_tokens": 100})",
+    return run_whisper_test("TRANSCRIPTION", R"({"max_tokens": 100, "telemetry_enabled": false})",
         [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
 }
 
@@ -746,7 +747,7 @@ static bool test_stream_transcription() {
     }
 
     cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(
-        model,  R"({"confirmation_threshold": 1.0, "min_chunk_size": 16000})"
+        model,  R"({"confirmation_threshold": 1.0, "min_chunk_size": 16000, "telemetry_enabled": false})"
     );
     if (!stream) {
         std::cerr << "[✗] Failed to initialize stream transcribe\n";
@@ -991,7 +992,7 @@ static bool test_pcm_transcription() {
                     g_whisper_prompt,
                     response,
                     sizeof(response),
-                    R"({"max_tokens": 100})",
+                    R"({"max_tokens": 100, "telemetry_enabled": false})",
                     stream_callback,
                     &stream,
                     reinterpret_cast<const uint8_t*>(pcm_samples.data()),
@@ -1037,7 +1038,7 @@ static bool test_pcm_transcription() {
             g_whisper_prompt,
             response,
             sizeof(response),
-            R"({"max_tokens": 100})",
+            R"({"max_tokens": 100, "telemetry_enabled": false})",
             stream_callback,
             &stream,
             reinterpret_cast<const uint8_t*>(pcm_samples.data()),

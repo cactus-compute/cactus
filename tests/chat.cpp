@@ -1,4 +1,5 @@
 #include "../cactus/ffi/cactus_ffi.h"
+#include "../cactus/telemetry/telemetry.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -236,15 +237,14 @@ int main(int argc, char* argv[]) {
         messages_json << "]";
 
         std::string options = "{\"temperature\":0.7,\"top_p\":0.95,\"top_k\":40,\"max_tokens\":"
-                            + std::to_string(MAX_TOKENS)
-                            + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
+                    + std::to_string(MAX_TOKENS)
+                    + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
 
         std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
 
         std::cout << colored("Assistant: ", Color::GREEN + Color::BOLD);
 
         printer.reset();
-
         int result = cactus_complete(
             model,
             messages_json.str().c_str(),

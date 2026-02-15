@@ -1,4 +1,5 @@
 #include "../cactus/ffi/cactus_ffi.h"
+#include "../cactus/telemetry/telemetry.h"
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -171,7 +172,7 @@ int transcribe_file(cactus_model_t model, const std::string& audio_path, const s
         prompt.c_str(),
         response_buffer.data(),
         response_buffer.size(),
-        R"({"max_tokens": 500})",
+        R"({"max_tokens": 500, "telemetry_enabled": true})",
         print_token,
         nullptr,
         nullptr,
@@ -314,7 +315,7 @@ int run_live_transcription(cactus_model_t model) {
     }
 
     cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(
-        model, R"({"confirmation_threshold": 0.99, "min_chunk_size": 16000})"
+        model, R"({"confirmation_threshold": 0.99, "min_chunk_size": 16000, "telemetry_enabled": true})"
     );
 
     if (!stream) {

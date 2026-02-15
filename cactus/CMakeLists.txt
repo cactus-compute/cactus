@@ -43,6 +43,7 @@ file(GLOB GRAPH_SOURCES "graph/*.cpp")
 file(GLOB KERNEL_SOURCES "kernel/*.cpp")
 file(GLOB FFI_SOURCES "ffi/*.cpp")
 file(GLOB MODEL_SOURCES "models/*.cpp")
+file(GLOB TELEMETRY_SOURCES "telemetry/*.cpp")
 
 if(APPLE)
     set(NPU_SOURCES "npu/npu_ane.mm")
@@ -59,6 +60,7 @@ set(COMMON_SOURCES
     ${FFI_SOURCES}
     ${MODEL_SOURCES}
     ${NPU_SOURCES}
+    ${TELEMETRY_SOURCES}
 )
 
 set(COMMON_INCLUDES
@@ -69,6 +71,7 @@ set(COMMON_INCLUDES
     ffi
     models
     npu
+    telemetry
 )
 
 function(configure_cactus_target target_name)

@@ -118,17 +118,6 @@ void CactusGraph::release_all_weight_pages() {
     }
 }
 
-size_t CactusGraph::load_weights(const std::string& filename) {
-    auto it = weight_cache_.find(filename);
-    if (it != weight_cache_.end()) {
-        return it->second;
-    }
-
-    auto loaded = GraphFile::load_into_graph(*this, filename);
-    weight_cache_[filename] = loaded.node_id;
-    return loaded.node_id;
-}
-
 void CactusGraph::set_grouped_scales(size_t node_id, size_t group_size, size_t num_groups, void* scales_ptr) {
     auto it = node_index_map_.find(node_id);
     if (it != node_index_map_.end()) {
@@ -266,132 +255,6 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
     }
 }
 
-LoadedNode load_into_graph(CactusGraph& graph, const std::string& filename) {
-    std::ifstream file(filename, std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Cannot open file for reading: " + filename);
-    }
-
-    char header[HEADER_SIZE];
-    file.read(header, HEADER_SIZE);
-    if (!file) {
-        throw std::runtime_error("Error reading file header: " + filename);
-    }
-
-    const char* ptr = header;
-    size_t offset = 0;
-
-    uint32_t magic = *reinterpret_cast<const uint32_t*>(ptr + offset);
-    offset += sizeof(uint32_t);
-    if (magic != CACTUS_MAGIC) {
-        throw std::runtime_error("Invalid tensor file: missing CACT magic number");
-    }
-
-    uint32_t flags = *reinterpret_cast<const uint32_t*>(ptr + offset);
-    offset += sizeof(uint32_t);
-    bool is_interleaved = (flags & FLAG_INTERLEAVED) != 0;
-
-    uint32_t alignment = *reinterpret_cast<const uint32_t*>(ptr + offset);
-    offset += sizeof(uint32_t);
-    if (alignment == 0) alignment = 1;
-
-    uint32_t ndim = *reinterpret_cast<const uint32_t*>(ptr + offset);
-    offset += sizeof(uint32_t);
-
-    std::vector<size_t> shape;
-    for (uint32_t i = 0; i < 4; i++) {
-        uint64_t dim_val = *reinterpret_cast<const uint64_t*>(ptr + offset);
-        offset += sizeof(uint64_t);
-        if (i < ndim && dim_val > 0) {
-            shape.push_back(static_cast<size_t>(dim_val));
-        }
-    }
-
-    uint32_t prec_val = *reinterpret_cast<const uint32_t*>(ptr + offset);
-    Precision precision = static_cast<Precision>(prec_val);
-    offset += sizeof(uint32_t);
-
-    size_t byte_size = *reinterpret_cast<const uint64_t*>(ptr + offset);
-    offset += sizeof(uint64_t);
-
-    size_t scales_bytes = *reinterpret_cast<const uint64_t*>(ptr + offset);
-    offset += sizeof(uint64_t);
-
-    size_t group_size = *reinterpret_cast<const uint32_t*>(ptr + offset);
-    offset += sizeof(uint32_t);
-
-    size_t num_groups = *reinterpret_cast<const uint32_t*>(ptr + offset);
-    offset += sizeof(uint32_t);
-
-    size_t original_N = *reinterpret_cast<const uint64_t*>(ptr + offset);
-    offset += sizeof(uint64_t);
-
-    size_t aligned_header = align_offset(HEADER_SIZE, alignment);
-    size_t padding = aligned_header - HEADER_SIZE;
-    if (padding > 0) {
-        file.seekg(static_cast<std::streamoff>(padding), std::ios::cur);
-    }
-
-    std::vector<char> scales_buffer;
-    if (scales_bytes > 0) {
-        scales_buffer.resize(scales_bytes);
-        file.read(scales_buffer.data(), static_cast<std::streamsize>(scales_bytes));
-
-        size_t scales_end = aligned_header + scales_bytes;
-        size_t data_start = align_offset(scales_end, alignment);
-        size_t scales_padding = data_start - scales_end;
-        if (scales_padding > 0) {
-            file.seekg(static_cast<std::streamoff>(scales_padding), std::ios::cur);
-        }
-    }
-
-    std::vector<char> buffer(byte_size);
-    file.read(buffer.data(), static_cast<std::streamsize>(byte_size));
-
-    if (!file || file.gcount() != static_cast<std::streamsize>(byte_size)) {
-        throw std::runtime_error("Error reading node data: " + filename);
-    }
-
-    // Handle INT4 unpacking
-    std::vector<int8_t> unpacked_buffer;
-    Precision effective_precision = precision;
-    size_t effective_byte_size = byte_size;
-    const void* data_ptr = buffer.data();
-
-    if (precision == Precision::INT4) {
-        size_t packed_size = byte_size;
-        size_t unpacked_size = packed_size * 2;
-        unpacked_buffer.resize(unpacked_size);
-
-        unpack_int4_to_int8(reinterpret_cast<const uint8_t*>(buffer.data()),
-                           unpacked_buffer.data(), packed_size);
-
-        effective_precision = Precision::INT8;
-        effective_byte_size = unpacked_size;
-        data_ptr = unpacked_buffer.data();
-    }
-
-    size_t node_id = graph.input(shape, effective_precision);
-    graph.set_input(node_id, data_ptr, effective_precision);
-
-    if (scales_bytes > 0 && group_size > 0 && num_groups > 0) {
-        auto& node_buffer = graph.nodes_[graph.node_index_map_.at(node_id)]->output_buffer;
-        node_buffer.owned_scales = std::make_unique<char[]>(scales_buffer.size());
-        std::memcpy(node_buffer.owned_scales.get(), scales_buffer.data(), scales_buffer.size());
-        node_buffer.set_grouped_scales(group_size, num_groups, node_buffer.owned_scales.get());
-
-        if (is_interleaved) {
-            node_buffer.set_interleaved(true, original_N);
-        }
-    }
-
-    return {node_id, shape, effective_precision, effective_byte_size};
-}
-
-MappedFile mmap_load(const std::string& filename) {
-    return MappedFile(filename);
-}
-
 // MappedFile implementation
 
 MappedFile::MappedFile(const std::string& filename)
@@ -517,23 +380,6 @@ const void* MappedFile::data() const {
 template<typename T>
 const T* MappedFile::typed_data() const {
     return static_cast<const T*>(data());
-}
-
-LoadedNode MappedFile::load_into_graph(CactusGraph& graph) const {
-    size_t node_id = graph.input(shape_, precision_);
-    graph.set_external_input(node_id, const_cast<void*>(data()), precision_);
-
-    if (precision_ == Precision::INT8 && group_size_ > 0) {
-        graph.set_grouped_scales(node_id, group_size_, num_groups_,
-                                 const_cast<void*>(scales_data()));
-
-        if (is_interleaved_) {
-            auto& buffer = graph.nodes_[graph.node_index_map_.at(node_id)]->output_buffer;
-            buffer.set_interleaved(true, original_N_);
-        }
-    }
-
-    return {node_id, shape_, precision_, byte_size_};
 }
 
 void MappedFile::parse_header() {
