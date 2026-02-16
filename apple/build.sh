@@ -134,16 +134,7 @@ function build_static_library() {
     cmake --build "$BUILD_DIR" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
 
     mkdir -p "$APPLE_DIR"
-
-    PRO_LIB="$ROOT_DIR/libs/libcactus_pro-ios.a"
-    if [ -f "$PRO_LIB" ]; then
-        echo "Merging libcactus_pro-ios.a into device static library..."
-        libtool -static -o "$APPLE_DIR/libcactus-device.a" "$BUILD_DIR/libcactus.a" "$PRO_LIB"
-    else
-        echo "Note: libcactus_pro-ios.a not found, building without NPU support"
-        cp "$BUILD_DIR/libcactus.a" "$APPLE_DIR/libcactus-device.a"
-    fi
-
+    cp "$BUILD_DIR/libcactus.a" "$APPLE_DIR/libcactus-device.a"
     echo "Device static library built: $APPLE_DIR/libcactus-device.a"
     
     echo "Building static library for iOS simulator..."
@@ -168,15 +159,7 @@ function build_static_library() {
 
     cmake --build "$BUILD_DIR_SIM" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
 
-    PRO_LIB_SIM="$ROOT_DIR/libs/libcactus_pro-ios-simulator.a"
-    if [ -f "$PRO_LIB_SIM" ]; then
-        echo "Merging libcactus_pro-ios-simulator.a into simulator static library..."
-        libtool -static -o "$APPLE_DIR/libcactus-simulator.a" "$BUILD_DIR_SIM/libcactus.a" "$PRO_LIB_SIM"
-    else
-        echo "Note: libcactus_pro-ios-simulator.a not found, building without NPU support"
-        cp "$BUILD_DIR_SIM/libcactus.a" "$APPLE_DIR/libcactus-simulator.a"
-    fi
-
+    cp "$BUILD_DIR_SIM/libcactus.a" "$APPLE_DIR/libcactus-simulator.a"
     echo "Simulator static library built: $APPLE_DIR/libcactus-simulator.a"
 }
 

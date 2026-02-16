@@ -12,20 +12,22 @@ STAGE_DIR = PROJECT_ROOT / "stage"
 MODELS = [
     "google/gemma-3-270m-it",
     "google/functiongemma-270m-it",
-    "openai/whisper-small",
     "LiquidAI/LFM2-350M",
-    "LiquidAI/LFM2-VL-450M",
-    "nomic-ai/nomic-embed-text-v2-moe",
     "Qwen/Qwen3-0.6B",
-    "Qwen/Qwen3-Embedding-0.6B",
     "LiquidAI/LFM2-700M",
     "google/gemma-3-1b-it",
+    "LiquidAI/LFM2.5-1.2B-Thinking",
     "LiquidAI/LFM2.5-1.2B-Instruct",
-    "LiquidAI/LFM2-1.2B-RAG",
-    "LiquidAI/LFM2-1.2B-Tool",
-    "openai/whisper-medium",
-    "LiquidAI/LFM2.5-VL-1.6B",
     "Qwen/Qwen3-1.7B",
+    "LiquidAI/LFM2-2.6B",
+    "LiquidAI/LFM2-VL-450M",
+    "LiquidAI/LFM2.5-VL-1.6B",
+    "UsefulSensors/moonshine-base",
+    "openai/whisper-small",
+    "openai/whisper-medium",
+    "snakers4/silero-vad",
+    "nomic-ai/nomic-embed-text-v2-moe",
+    "Qwen/Qwen3-Embedding-0.6B",
 ]
 
 PRO_MODELS = [
@@ -166,6 +168,25 @@ def changed(curr, prev):
     return curr.get("fingerprint") != prev.get("fingerprint")
 
 
+def update_org_readme(api, org):
+    readme = PROJECT_ROOT / "README.md"
+    if not readme.exists():
+        return
+
+    try:
+        api.create_repo(repo_id=f"{org}/README", repo_type="space", exist_ok=True)
+        api.upload_file(
+            path_or_fileobj=str(readme),
+            path_in_repo="README.md",
+            repo_id=f"{org}/README",
+            repo_type="space",
+            commit_message="Update organization README",
+        )
+        print("Updated organization README")
+    except Exception:
+        print("Failed to update organization README")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
@@ -227,6 +248,8 @@ def main():
             if stage_dir and stage_dir.exists():
                 shutil.rmtree(stage_dir)
                 print("Cleaned up stage directory")
+
+    update_org_readme(api, args.org)
 
 
 if __name__ == "__main__":

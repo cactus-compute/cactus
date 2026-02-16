@@ -40,13 +40,6 @@ else()
     message(STATUS "SDL2 not found; microphone tests will be skipped")
 endif()
 
-find_package(SDL2)
-if(SDL2_FOUND)
-    message(STATUS "Found SDL2: ${SDL2_LIBRARIES}")
-else()
-    message(STATUS "SDL2 not found; microphone tests will be skipped")
-endif()
-
 file(GLOB TEST_SOURCES "test_*.cpp")
 list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_utils.cpp")
 
@@ -103,6 +96,13 @@ foreach(APP_NAME chat asr)
 
         if(APPLE)
             target_link_libraries(${APP_NAME} PRIVATE ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+        endif()
+
+        if(SDL2_FOUND AND APP_NAME STREQUAL "asr")
+            target_link_libraries(${APP_NAME} PRIVATE ${SDL2_LIBRARIES})
+            target_include_directories(${APP_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
+            target_compile_definitions(${APP_NAME} PRIVATE HAVE_SDL2)
+            message(STATUS "asr will link with SDL2 for live transcription")
         endif()
 
         target_include_directories(${APP_NAME} PRIVATE ${CACTUS_ROOT})

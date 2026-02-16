@@ -1,5 +1,6 @@
 #include "cactus_ffi.h"
 #include "cactus_utils.h"
+#include "telemetry/telemetry.h"
 #include <chrono>
 #include <cstring>
 
@@ -203,9 +204,13 @@ int cactus_complete(
         float temperature, top_p, confidence_threshold;
         size_t top_k, max_tokens, tool_rag_top_k;
         std::vector<std::string> stop_sequences;
-        bool force_tools, include_stop_sequences;
-        parse_options_json(options_json ? options_json : "",
-                          temperature, top_p, top_k, max_tokens, stop_sequences, force_tools, tool_rag_top_k, confidence_threshold, include_stop_sequences);
+        bool force_tools, include_stop_sequences, use_vad, telemetry_enabled;
+        parse_options_json(
+            options_json ? options_json : "", temperature,
+            top_p, top_k, max_tokens, stop_sequences,
+            force_tools, tool_rag_top_k, confidence_threshold,
+            include_stop_sequences, use_vad, telemetry_enabled
+        );
 
         std::vector<ToolFunction> tools;
         if (tools_json && strlen(tools_json) > 0)
@@ -281,6 +286,22 @@ int cactus_complete(
                 return -1;
             }
             std::strcpy(response_buffer, result.c_str());
+
+            cactus::telemetry::CompletionMetrics metrics{};
+            metrics.success = false;
+            metrics.cloud_handoff = true;
+            metrics.ttft_ms = time_to_first_token;
+            metrics.prefill_tps = prefill_tps;
+            metrics.decode_tps = 0.0;
+            metrics.response_time_ms = time_to_first_token;
+            metrics.confidence = confidence;
+            metrics.ram_usage_mb = get_ram_usage_mb();
+            metrics.prefill_tokens = prompt_tokens;
+            metrics.decode_tokens = 0;
+            metrics.error_message = nullptr;
+            metrics.function_calls_json = "[]";
+            cactus::telemetry::recordCompletion(handle->model_name.c_str(), metrics);
+
             return static_cast<int>(result.length());
         }
 
@@ -364,15 +385,65 @@ int cactus_complete(
 
         std::strcpy(response_buffer, result.c_str());
 
+        std::string function_calls_json = serialize_function_calls(function_calls);
+        cactus::telemetry::CompletionMetrics metrics{};
+        metrics.success = !entropy.spike_handoff;
+        metrics.cloud_handoff = entropy.spike_handoff;
+        metrics.ttft_ms = time_to_first_token;
+        metrics.prefill_tps = prefill_tps;
+        metrics.decode_tps = decode_tps;
+        metrics.response_time_ms = total_time_ms;
+        metrics.confidence = confidence;
+        metrics.ram_usage_mb = get_ram_usage_mb();
+        metrics.prefill_tokens = prompt_tokens;
+        metrics.decode_tokens = completion_tokens;
+        metrics.error_message = nullptr;
+        metrics.function_calls_json = function_calls_json.c_str();
+        cactus::telemetry::recordCompletion(handle->model_name.c_str(), metrics);
+
         return static_cast<int>(result.length());
 
     } catch (const std::exception& e) {
         CACTUS_LOG_ERROR("complete", "Exception: " << e.what());
         handle_error_response(e.what(), response_buffer, buffer_size);
+
+        cactus::telemetry::CompletionMetrics metrics{};
+        metrics.success = false;
+        metrics.cloud_handoff = false;
+        metrics.ttft_ms = 0.0;
+        metrics.prefill_tps = 0.0;
+        metrics.decode_tps = 0.0;
+        metrics.response_time_ms = 0.0;
+        metrics.confidence = 0.0;
+        metrics.ram_usage_mb = get_ram_usage_mb();
+        metrics.prefill_tokens = 0;
+        metrics.decode_tokens = 0;
+        metrics.error_message = e.what();
+        metrics.function_calls_json = "[]";
+        auto* h = static_cast<CactusModelHandle*>(model);
+        cactus::telemetry::recordCompletion(h ? h->model_name.c_str() : "unknown", metrics);
+
         return -1;
     } catch (...) {
         CACTUS_LOG_ERROR("complete", "Unknown exception during completion");
         handle_error_response("Unknown error during completion", response_buffer, buffer_size);
+
+        cactus::telemetry::CompletionMetrics metrics{};
+        metrics.success = false;
+        metrics.cloud_handoff = false;
+        metrics.ttft_ms = 0.0;
+        metrics.prefill_tps = 0.0;
+        metrics.decode_tps = 0.0;
+        metrics.response_time_ms = 0.0;
+        metrics.confidence = 0.0;
+        metrics.ram_usage_mb = get_ram_usage_mb();
+        metrics.prefill_tokens = 0;
+        metrics.decode_tokens = 0;
+        metrics.error_message = "Unknown error during completion";
+        metrics.function_calls_json = "[]";
+        auto* h = static_cast<CactusModelHandle*>(model);
+        cactus::telemetry::recordCompletion(h ? h->model_name.c_str() : "unknown", metrics);
+
         return -1;
     }
 }

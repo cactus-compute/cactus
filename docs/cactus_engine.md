@@ -456,6 +456,49 @@ if (result > 0) {
 cactus_stream_transcribe_stop(stream, NULL, 0);
 ```
 
+### `cactus_vad`
+Detects speech segments in audio using Voice Activity Detection. Supports both file-based and buffer-based audio input.
+
+```c
+int cactus_vad(
+    cactus_model_t model,           // Model handle (must be VAD model)
+    const char* audio_file_path,    // Path to audio file - can be NULL if using pcm_buffer
+    char* response_buffer,          // Buffer for response JSON
+    size_t buffer_size,             // Size of response buffer
+    const char* options_json,       // Optional VAD options (can be NULL)
+    const uint8_t* pcm_buffer,      // Optional raw PCM audio buffer (can be NULL if using file)
+    size_t pcm_buffer_size          // Size of PCM buffer in bytes
+);
+```
+
+**Returns:** Number of bytes written to response_buffer on success, negative value on error
+
+**Response Format:**
+```json
+{
+  "success": true,
+  "error": null,
+  "segments": [
+    {"start": 0, "end": 16000},
+    {"start": 32000, "end": 48000}
+  ],
+  "total_time_ms": 12.34,
+  "ram_usage_mb": 45.67
+}
+```
+
+**Example:**
+```c
+cactus_model_t vad = cactus_init("../../weights/silero-vad", NULL);
+
+char response[4096];
+int result = cactus_vad(vad, "audio.wav", response, sizeof(response), NULL, NULL, 0);
+
+if (result > 0) {
+    printf("Response: %s\n", response);
+}
+```
+
 ### `cactus_embed`
 Generates text embeddings for semantic search, similarity, and RAG applications.
 

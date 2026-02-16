@@ -139,6 +139,32 @@ actual class Cactus private constructor(private var handle: Long) : AutoCloseabl
             ?: throw CactusException(nativeGetLastError().ifEmpty { "Failed to generate audio embedding" })
     }
 
+    actual fun vad(audioPath: String, options: VADOptions): VADResult {
+        checkHandle()
+        val optionsJson = options.toJson()
+        val responseJson = nativeVad(handle, audioPath, optionsJson, null)
+        val json = JSONObject(responseJson)
+
+        if (json.has("error") && !json.isNull("error")) {
+            throw CactusException(json.getString("error"))
+        }
+
+        return json.toVADResult()
+    }
+
+    actual fun vad(pcmData: ByteArray, options: VADOptions): VADResult {
+        checkHandle()
+        val optionsJson = options.toJson()
+        val responseJson = nativeVad(handle, null, optionsJson, pcmData)
+        val json = JSONObject(responseJson)
+
+        if (json.has("error") && !json.isNull("error")) {
+            throw CactusException(json.getString("error"))
+        }
+
+        return json.toVADResult()
+    }
+
     actual fun createStreamTranscriber(): StreamTranscriber {
         checkHandle()
         val streamHandle = nativeStreamTranscribeInit(handle)
@@ -182,6 +208,7 @@ actual class Cactus private constructor(private var handle: Long) : AutoCloseabl
     private external fun nativeScoreWindow(handle: Long, tokens: IntArray, start: Int, end: Int, context: Int): String
     private external fun nativeImageEmbed(handle: Long, imagePath: String): FloatArray?
     private external fun nativeAudioEmbed(handle: Long, audioPath: String): FloatArray?
+    private external fun nativeVad(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
     private external fun nativeStreamTranscribeInit(handle: Long): Long
 }
 
@@ -352,6 +379,36 @@ private fun JSONObject.toTranscriptionResult(): TranscriptionResult {
         text = optString("text", ""),
         segments = segments,
         totalTime = optDouble("total_time_ms", 0.0)
+    )
+}
+
+private fun VADOptions.toJson(): String? {
+    val options = JSONObject()
+    threshold?.let { options.put("threshold", it) }
+    negThreshold?.let { options.put("neg_threshold", it) }
+    minSpeechDurationMs?.let { options.put("min_speech_duration_ms", it) }
+    maxSpeechDurationS?.let { options.put("max_speech_duration_s", it) }
+    minSilenceDurationMs?.let { options.put("min_silence_duration_ms", it) }
+    speechPadMs?.let { options.put("speech_pad_ms", it) }
+    windowSizeSamples?.let { options.put("window_size_samples", it) }
+    samplingRate?.let { options.put("sampling_rate", it) }
+    return if (options.length() > 0) options.toString() else null
+}
+
+private fun JSONObject.toVADResult(): VADResult {
+    val segments = getJSONArray("segments").let { arr ->
+        (0 until arr.length()).map { i ->
+            val obj = arr.getJSONObject(i)
+            VADSegment(
+                start = obj.getInt("start"),
+                end = obj.getInt("end")
+            )
+        }
+    }
+    return VADResult(
+        segments = segments,
+        totalTime = optDouble("total_time_ms", 0.0),
+        ramUsage = optDouble("ram_usage_mb", 0.0)
     )
 }
 

@@ -5,6 +5,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 MODEL_NAME="$1"
 TRANSCRIBE_MODEL_NAME="$2"
+VAD_MODEL_NAME="$3"
 
 echo "Running Cactus tests on Android..."
 echo "============================"
@@ -244,8 +245,10 @@ echo "Step 4: Deploying to device..."
 
 model_dir=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 transcribe_model_dir=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+vad_model_dir=$(echo "$VAD_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 model_src="$PROJECT_ROOT/weights/$model_dir"
 transcribe_model_src="$PROJECT_ROOT/weights/$transcribe_model_dir"
+vad_model_src="$PROJECT_ROOT/weights/$vad_model_dir"
 assets_src="$PROJECT_ROOT/tests/assets"
 
 device_test_dir="/data/local/tmp/cactus_tests"
@@ -257,6 +260,7 @@ adb -s "$DEVICE_ID" shell "mkdir -p $device_test_dir $device_model_dir $device_a
 echo "Pushing model weights..."
 adb -s "$DEVICE_ID" push "$model_src" "$device_model_dir/"
 adb -s "$DEVICE_ID" push "$transcribe_model_src" "$device_model_dir/"
+adb -s "$DEVICE_ID" push "$vad_model_src" "$device_model_dir/"
 
 echo "Pushing test assets..."
 adb -s "$DEVICE_ID" push "$assets_src" "$device_assets_dir/"
@@ -273,6 +277,7 @@ echo "Step 5: Running tests..."
 echo "------------------------"
 echo "Using model path: $device_model_dir/$model_dir"
 echo "Using transcribe model path: $device_model_dir/$transcribe_model_dir"
+echo "Using VAD model path: $device_model_dir/$vad_model_dir"
 echo "Using assets path: $device_assets_dir/assets"
 echo "Using index path: $device_assets_dir/assets"
 
@@ -282,6 +287,7 @@ for test_exe in "${test_executables[@]}"; do
     adb -s "$DEVICE_ID" shell "cd $device_test_dir && \
         export CACTUS_TEST_MODEL=$device_model_dir/$model_dir && \
         export CACTUS_TEST_TRANSCRIBE_MODEL=$device_model_dir/$transcribe_model_dir && \
+        export CACTUS_TEST_VAD_MODEL=$device_model_dir/$vad_model_dir && \
         export CACTUS_TEST_ASSETS=$device_assets_dir/assets && \
         export CACTUS_INDEX_PATH=$device_assets_dir/assets && \
         ./$test_name"

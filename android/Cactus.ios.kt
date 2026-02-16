@@ -274,6 +274,57 @@ actual class Cactus private constructor(private var handle: COpaquePointer?) : A
         }
     }
 
+    actual fun vad(audioPath: String, options: VADOptions): VADResult {
+        checkHandle()
+        memScoped {
+            val buffer = allocArray<ByteVar>(65536)
+            val optionsJson = serializeVADOptions(options)
+
+            val result = cactus_vad(
+                handle,
+                audioPath,
+                buffer,
+                65536u,
+                optionsJson,
+                null,
+                0u
+            )
+
+            if (result < 0) {
+                val error = cactus_get_last_error()?.toKString() ?: "Unknown error"
+                throw CactusException(error)
+            }
+
+            return parseVADResult(buffer.toKString())
+        }
+    }
+
+    actual fun vad(pcmData: ByteArray, options: VADOptions): VADResult {
+        checkHandle()
+        memScoped {
+            val buffer = allocArray<ByteVar>(65536)
+            val optionsJson = serializeVADOptions(options)
+            val pcmPtr = pcmData.refTo(0).getPointer(this)
+
+            val result = cactus_vad(
+                handle,
+                null,
+                buffer,
+                65536u,
+                optionsJson,
+                pcmPtr.reinterpret(),
+                pcmData.size.toULong()
+            )
+
+            if (result < 0) {
+                val error = cactus_get_last_error()?.toKString() ?: "Unknown error"
+                throw CactusException(error)
+            }
+
+            return parseVADResult(buffer.toKString())
+        }
+    }
+
     actual fun createStreamTranscriber(): StreamTranscriber {
         checkHandle()
         val streamHandle = cactus_stream_transcribe_init(handle)
@@ -351,6 +402,36 @@ actual class Cactus private constructor(private var handle: COpaquePointer?) : A
             text = obj["text"]?.jsonPrimitive?.contentOrNull ?: "",
             segments = obj["segments"]?.jsonArray?.map { it.jsonObject.toMap() },
             totalTime = obj["total_time_ms"]?.jsonPrimitive?.doubleOrNull ?: 0.0
+        )
+    }
+
+    private fun serializeVADOptions(options: VADOptions): String? {
+        val obj = buildJsonObject {
+            options.threshold?.let { put("threshold", it) }
+            options.negThreshold?.let { put("neg_threshold", it) }
+            options.minSpeechDurationMs?.let { put("min_speech_duration_ms", it) }
+            options.maxSpeechDurationS?.let { put("max_speech_duration_s", it) }
+            options.minSilenceDurationMs?.let { put("min_silence_duration_ms", it) }
+            options.speechPadMs?.let { put("speech_pad_ms", it) }
+            options.windowSizeSamples?.let { put("window_size_samples", it) }
+            options.samplingRate?.let { put("sampling_rate", it) }
+        }
+        return if (obj.isEmpty()) null else obj.toString()
+    }
+
+    private fun parseVADResult(json: String): VADResult {
+        val obj = Json.parseToJsonElement(json).jsonObject
+        val segments = obj["segments"]?.jsonArray?.map { segObj ->
+            val seg = segObj.jsonObject
+            VADSegment(
+                start = seg["start"]?.jsonPrimitive?.intOrNull ?: 0,
+                end = seg["end"]?.jsonPrimitive?.intOrNull ?: 0
+            )
+        } ?: emptyList()
+        return VADResult(
+            segments = segments,
+            totalTime = obj["total_time_ms"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+            ramUsage = obj["ram_usage_mb"]?.jsonPrimitive?.doubleOrNull ?: 0.0
         )
     }
 

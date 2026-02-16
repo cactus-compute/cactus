@@ -22,28 +22,17 @@ file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
 
 enable_language(OBJCXX)
 
+set(NPU_SOURCES "${SOURCE_DIR}/npu/npu_ane.mm")
+
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     string(TOLOWER "${CMAKE_OSX_SYSROOT}" SYSROOT_LOWER)
     if(SYSROOT_LOWER MATCHES "simulator")
-        set(CACTUS_PRO_LIB "${SOURCE_DIR}/../libs/libcactus_pro-ios-simulator.a")
-        message(STATUS "Building for iOS Simulator - using libcactus_pro-ios-simulator.a")
+        message(STATUS "Building for iOS Simulator with ANE support")
     else()
-        set(CACTUS_PRO_LIB "${SOURCE_DIR}/../libs/libcactus_pro-ios.a")
-        message(STATUS "Building for iOS Device - using libcactus_pro-ios.a")
+        message(STATUS "Building for iOS Device with ANE support")
     endif()
 else()
-    set(CACTUS_PRO_LIB "${SOURCE_DIR}/../libs/libcactus_pro.a")
-    message(STATUS "Building for macOS - using libcactus_pro.a")
-endif()
-
-if(EXISTS ${CACTUS_PRO_LIB})
-    message(STATUS "Found ${CACTUS_PRO_LIB} - NPU acceleration enabled")
-    set(CACTUS_HAS_PRO TRUE)
-    set(NPU_SOURCES "")
-else()
-    message(STATUS "${CACTUS_PRO_LIB} not found - NPU acceleration disabled (using stubs)")
-    set(CACTUS_HAS_PRO FALSE)
-    file(GLOB NPU_SOURCES "${SOURCE_DIR}/npu/*.cpp")
+    message(STATUS "Building for macOS with ANE support")
 endif()
 
 set(HEADER_FILES
@@ -101,10 +90,6 @@ target_include_directories(cactus PUBLIC
 find_library(COREML_FRAMEWORK CoreML REQUIRED)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
-
-if(CACTUS_HAS_PRO)
-    target_link_libraries(cactus PUBLIC "-force_load ${CACTUS_PRO_LIB}")
-endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     find_package(CURL REQUIRED)

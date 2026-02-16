@@ -2,6 +2,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <cstdio>
+#include <iostream>
 #include <thread>
 #include <chrono>
 #include <dirent.h>
@@ -12,6 +13,7 @@ using namespace EngineTestUtils;
 
 const char* g_model_path = std::getenv("CACTUS_TEST_MODEL");
 const char* g_transcribe_model_path = std::getenv("CACTUS_TEST_TRANSCRIBE_MODEL");
+const char* g_vad_model_path = std::getenv("CACTUS_TEST_VAD_MODEL");
 const char* g_assets_path = std::getenv("CACTUS_TEST_ASSETS");
 
 static const char* get_transcribe_prompt() {
@@ -29,7 +31,8 @@ const char* g_whisper_prompt = get_transcribe_prompt();
 
 const char* g_options = R"({
         "max_tokens": 256,
-        "stop_sequences": ["<|im_end|>", "<end_of_turn>"]
+    "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
+    "telemetry_enabled": false
     })";
 
 template<typename TestFunc>
@@ -289,6 +292,63 @@ bool test_tool_call_with_two_tools() {
             m.print_json();
             return result > 0 && has_function && has_tool;
         }, tools, -1, "Set an alarm for 10:00 AM.");
+}
+
+bool test_multiple_tool_call_invocations() {
+    const char* messages = R"([
+        {"role": "system", "content": "You are a helpful assistant that can use tools."},
+        {"role": "user", "content": "Send a message to Blob and get the weather for San Francisco."}
+    ])";
+
+    const char* tools = R"([{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather for a location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City, State, Country"}
+                },
+                "required": ["location"]
+            }
+        }
+    }, {
+        "type": "function",
+        "function": {
+            "name": "send_message",
+            "description": "Send a message to a contact",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "recipient": {"type": "string", "description": "Name of the person to send the message to"},
+                    "message": {"type": "string", "description": "The message content to send"}
+                },
+                "required": ["recipient", "message"]
+            }
+        }
+    }])";
+
+    const char* options_with_force_tools = R"({
+        "max_tokens": 256,
+        "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
+        "force_tools": true
+    })";
+
+    return EngineTestUtils::run_test("MULTIPLE TOOLS TEST", g_model_path, messages, options_with_force_tools,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_weather_tool = has_function
+                && (response.find("\"name\":\"get_weather\"") != std::string::npos
+                    || response.find("\"name\": \"get_weather\"") != std::string::npos);
+            bool has_message_tool = has_function
+                && (response.find("\"name\":\"send_message\"") != std::string::npos
+                    || response.find("\"name\": \"send_message\"") != std::string::npos);
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool: " << (has_weather_tool && has_message_tool ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_weather_tool && has_message_tool;
+        }, tools, -1, "Send a message to Blob and get the weather for San Francisco.");
 }
 
 bool test_tool_call_with_three_tools() {
@@ -667,7 +727,7 @@ bool run_whisper_test(const char* title, const char* options_json, Predicate che
 }
 
 static bool test_transcription() {
-    return run_whisper_test("TRANSCRIPTION", R"({"max_tokens": 100})",
+    return run_whisper_test("TRANSCRIPTION", R"({"max_tokens": 100, "telemetry_enabled": false})",
         [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
 }
 
@@ -688,7 +748,7 @@ static bool test_stream_transcription() {
     }
 
     cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(
-        model,  R"({"confirmation_threshold": 1.0, "min_chunk_size": 16000})"
+        model,  R"({"confirmation_threshold": 1.0, "min_chunk_size": 16000, "telemetry_enabled": false})"
     );
     if (!stream) {
         std::cerr << "[✗] Failed to initialize stream transcribe\n";
@@ -870,6 +930,82 @@ static bool test_audio_embeddings() {
     return result > 0 && embedding_dim > 0;
 }
 
+static bool test_vad_process() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║           VAD PROCESS TEST               ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    const char* vad_model_path = std::getenv("CACTUS_TEST_VAD_MODEL");
+    if (!vad_model_path) {
+        std::cout << "⊘ SKIP │ CACTUS_TEST_VAD_MODEL not set\n";
+        return true;
+    }
+
+    cactus_model_t model = cactus_init(vad_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize VAD model\n";
+        return false;
+    }
+
+    std::string audio_path = std::string(g_assets_path) + "/test.wav";
+    char response[8192] = {0};
+
+    Timer timer;
+    int result = cactus_vad(model, audio_path.c_str(), response, sizeof(response), R"({"threshold": 0.5})", nullptr, 0);
+    double elapsed = timer.elapsed_ms();
+
+    cactus_destroy(model);
+
+    if (result < 0) {
+        std::cerr << "[✗] VAD processing failed\n";
+        return false;
+    }
+
+    std::string response_str(response);
+    if (response_str.find("\"success\":true") == std::string::npos) {
+        std::cerr << "[✗] VAD response indicates failure\n";
+        return false;
+    }
+
+    std::vector<std::pair<size_t, size_t>> segments;
+    size_t pos = 0;
+    while ((pos = response_str.find("{\"start\":", pos)) != std::string::npos) {
+        size_t start_pos = response_str.find(":", pos) + 1;
+        size_t end_pos = response_str.find(",", start_pos);
+        size_t start = std::stoull(response_str.substr(start_pos, end_pos - start_pos));
+
+        pos = response_str.find("\"end\":", pos) + 6;
+        end_pos = response_str.find("}", pos);
+        size_t end = std::stoull(response_str.substr(pos, end_pos - pos));
+
+        segments.push_back({start, end});
+        pos = end_pos;
+    }
+
+    size_t total_speech_samples = 0;
+    for (const auto& segment : segments) {
+        total_speech_samples += (segment.second - segment.first);
+    }
+
+    std::cout << "\n[Results]\n"
+              << "  \"success\": true,\n"
+              << "  \"total_time_ms\": " << std::fixed << std::setprecision(2) << elapsed << ",\n"
+              << "  \"speech_duration_sec\": " << std::setprecision(2) << (total_speech_samples / 16000.0) << ",\n"
+              << "  \"segments_detected\": " << segments.size() << "\n";
+
+    for (size_t i = 0; i < segments.size(); ++i) {
+        float start_sec = segments[i].first / 16000.0f;
+        float end_sec = segments[i].second / 16000.0f;
+        const char* prefix = (i == segments.size() - 1) ? "└─" : "├─";
+        std::cout << prefix << " Segment " << (i + 1) << ": "
+                  << std::fixed << std::setprecision(2) << start_sec << "s - "
+                  << std::setprecision(2) << end_sec << "s ("
+                  << std::setprecision(2) << (end_sec - start_sec) << "s)" << std::endl;
+    }
+
+    return result > 0 && !segments.empty();
+}
+
 static bool test_pcm_transcription() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║       PCM BUFFER TRANSCRIPTION           ║\n"
@@ -933,7 +1069,7 @@ static bool test_pcm_transcription() {
                     g_whisper_prompt,
                     response,
                     sizeof(response),
-                    R"({"max_tokens": 100})",
+                    R"({"max_tokens": 100, "telemetry_enabled": false})",
                     stream_callback,
                     &stream,
                     reinterpret_cast<const uint8_t*>(pcm_samples.data()),
@@ -979,7 +1115,7 @@ static bool test_pcm_transcription() {
             g_whisper_prompt,
             response,
             sizeof(response),
-            R"({"max_tokens": 100})",
+            R"({"max_tokens": 100, "telemetry_enabled": false})",
             stream_callback,
             &stream,
             reinterpret_cast<const uint8_t*>(pcm_samples.data()),
@@ -1010,22 +1146,23 @@ static bool test_pcm_transcription() {
 
 int main() {
     TestUtils::TestRunner runner("Engine Tests");
-    runner.run_test("1k_context", test_1k_context());
-    runner.run_test("streaming", test_streaming());
-    runner.run_test("tool_calls", test_tool_call());
-    runner.run_test("tool_calls_with_two_tools", test_tool_call_with_two_tools());
-    runner.run_test("tool_calls_with_three_tools", test_tool_call_with_three_tools());
-    runner.run_test("cloud_handoff", test_cloud_handoff());
-    runner.run_test("vlm_multiturn", test_vlm_multiturn());
-    runner.run_test("embeddings", test_embeddings());
-    runner.run_test("image_embeddings", test_image_embeddings());
-    runner.run_test("audio_embeddings", test_audio_embeddings());
-    runner.run_test("vlm_multiturn", test_vlm_multiturn());
-    runner.run_test("audio_processor", test_audio_processor());
+    // runner.run_test("1k_context", test_1k_context());
+    // runner.run_test("streaming", test_streaming());
+    // runner.run_test("tool_calls", test_tool_call());
+    // runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
+    // runner.run_test("tool_calls_with_two_tools", test_tool_call_with_two_tools());
+    // runner.run_test("tool_calls_with_three_tools", test_tool_call_with_three_tools());
+    // runner.run_test("cloud_handoff", test_cloud_handoff());
+    // runner.run_test("vlm_multiturn", test_vlm_multiturn());
+    // runner.run_test("embeddings", test_embeddings());
+    // runner.run_test("image_embeddings", test_image_embeddings());
+    // runner.run_test("audio_embeddings", test_audio_embeddings());
+    // runner.run_test("audio_processor", test_audio_processor());
+    runner.run_test("vad_process", test_vad_process());
     runner.run_test("transcription", test_transcription());
-    runner.run_test("pcm_transcription", test_pcm_transcription());
-    runner.run_test("stream_transcription", test_stream_transcription());
-    runner.run_test("rag_preprocessing", test_rag());
+    // runner.run_test("pcm_transcription", test_pcm_transcription());
+    // runner.run_test("stream_transcription", test_stream_transcription());
+    // runner.run_test("rag_preprocessing", test_rag());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

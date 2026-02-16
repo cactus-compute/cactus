@@ -1,4 +1,5 @@
 #include "../cactus/ffi/cactus_ffi.h"
+#include "../cactus/telemetry/telemetry.h"
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -12,6 +13,8 @@
 #include <mutex>
 #include <vector>
 #include <algorithm>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #ifdef HAVE_SDL2
 #include <SDL2/SDL.h>
@@ -30,9 +33,6 @@ namespace Color {
     const std::string MAGENTA = "\033[35m";
     const std::string RED     = "\033[31m";
     const std::string GRAY    = "\033[90m";
-#ifdef HAVE_SDL2
-    const std::string CLEAR_LINE = "\033[2K\r";
-#endif
 }
 
 bool supports_color() {
@@ -83,6 +83,62 @@ std::string extract_json_value(const std::string& json, const std::string& key) 
     return json.substr(start, end - start);
 }
 
+std::string extract_json_number(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\":";
+    size_t start = json.find(pattern);
+    if (start == std::string::npos) return "";
+    start += pattern.length();
+    while (start < json.length() && std::isspace(json[start])) start++;
+    size_t end = start;
+    while (end < json.length() && (isdigit(json[end]) || json[end] == '.' || json[end] == '-')) {
+        end++;
+    }
+    return json.substr(start, end - start);
+}
+
+size_t visible_length(const std::string& s) {
+    size_t len = 0;
+    bool in_esc = false;
+    for (char c : s) {
+        if (c == '\033') { in_esc = true; continue; }
+        if (in_esc) { if (c == 'm') in_esc = false; continue; }
+        if ((c & 0xC0) != 0x80) len++;
+    }
+    return len;
+}
+
+int get_terminal_width() {
+    struct winsize w;
+    return (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1) ? 80 : w.ws_col;
+}
+
+std::string truncate_visible(const std::string& s, size_t limit) {
+    std::string out;
+    size_t len = 0;
+    bool in_esc = false;
+    for (char c : s) {
+        if (c == '\033') { in_esc = true; out += c; continue; }
+        if (in_esc) { out += c; if (c == 'm') in_esc = false; continue; }
+        if (len >= limit && (c & 0xC0) != 0x80) break;
+        out += c;
+        if ((c & 0xC0) != 0x80) len++;
+    }
+    return out + "\033[0m";
+}
+
+size_t find_safe_split_index(const std::string& s, size_t limit) {
+    size_t len = 0;
+    bool in_esc = false;
+    for (size_t i = 0; i < s.length(); ++i) {
+        char c = s[i];
+        if (c == '\033') { in_esc = true; continue; }
+        if (in_esc) { if (c == 'm') in_esc = false; continue; }
+        if ((c & 0xC0) != 0x80) len++;
+        if (len >= limit && c == ' ' && !in_esc) return i;
+    }
+    return std::string::npos;
+}
+
 void print_token(const char* token, uint32_t /*token_id*/, void* /*user_data*/) {
     std::cout << token << std::flush;
 }
@@ -116,7 +172,7 @@ int transcribe_file(cactus_model_t model, const std::string& audio_path, const s
         prompt.c_str(),
         response_buffer.data(),
         response_buffer.size(),
-        R"({"max_tokens": 500})",
+        R"({"max_tokens": 500, "telemetry_enabled": true})",
         print_token,
         nullptr,
         nullptr,
@@ -259,7 +315,7 @@ int run_live_transcription(cactus_model_t model) {
     }
 
     cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(
-        model, R"({"confirmation_threshold": 1.0, "min_chunk_size": 16000})"
+        model, R"({"confirmation_threshold": 0.99, "min_chunk_size": 16000, "telemetry_enabled": true})"
     );
 
     if (!stream) {
@@ -284,6 +340,9 @@ int run_live_transcription(cactus_model_t model) {
     });
 
     std::string confirmed_text;
+    std::string last_stats;
+    std::string current_line_confirmed;
+    bool status_line_visible = false;
     std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
 
     auto last_process_time = std::chrono::steady_clock::now();
@@ -309,6 +368,7 @@ int run_live_transcription(cactus_model_t model) {
                     audio_chunk, g_audio_state.actual_sample_rate, TARGET_SAMPLE_RATE
                 );
 
+                auto t_start = std::chrono::high_resolution_clock::now();
                 int process_result = cactus_stream_transcribe_process(
                     stream,
                     resampled.data(),
@@ -316,23 +376,58 @@ int run_live_transcription(cactus_model_t model) {
                     response_buffer.data(),
                     response_buffer.size()
                 );
+                auto t_end = std::chrono::high_resolution_clock::now();
+                double latency_ms = std::chrono::duration_cast<std::chrono::microseconds>(t_end - t_start).count() / 1000.0;
 
                 if (process_result >= 0) {
                     std::string json_str(response_buffer.data());
                     std::string confirmed = extract_json_value(json_str, "confirmed");
                     std::string pending = extract_json_value(json_str, "pending");
+                    std::string ttft = extract_json_number(json_str, "time_to_first_token_ms");
 
-                    std::cout << Color::CLEAR_LINE;
-                    if (!confirmed_text.empty()) {
-                        std::cout << colored(confirmed_text, Color::GREEN);
+                    if (!confirmed.empty() || !pending.empty()) {
+                        int val = ttft.empty() ? 0 : std::stoi(ttft);
+                        last_stats = colored("[Lat:" + std::to_string(int(latency_ms)) + "ms TTFT:" + std::to_string(val) + "ms] ", Color::GRAY);
                     }
-                    if (!pending.empty()) {
-                        std::cout << colored(pending, Color::YELLOW);
+
+                    int width = get_terminal_width();
+                    int limit = (width < 20 ? 80 : width) * 0.7;
+
+                    if (status_line_visible) {
+                        std::cout << "\r\033[2K\033[1A";
+                        status_line_visible = false;
                     }
-                    std::cout << std::flush;
 
                     if (!confirmed.empty()) {
+                        current_line_confirmed += colored(confirmed, Color::GREEN) + " ";
                         confirmed_text += confirmed + " ";
+                    }
+
+                    while (true) {
+                        size_t idx = find_safe_split_index(current_line_confirmed, limit);
+                        if (idx == std::string::npos) break;
+                        
+                        std::string part = current_line_confirmed.substr(0, idx);
+                        std::string rem = current_line_confirmed.substr(idx + 1);
+                        
+                        std::cout << "\r\033[K" << part + Color::RESET << "\n";
+                        current_line_confirmed = Color::GREEN + rem;
+                    }
+
+                    std::cout << "\r\033[K" << current_line_confirmed;
+
+                    std::stringstream ss;
+                    if (!last_stats.empty()) ss << last_stats;
+                    if (!pending.empty()) ss << colored(pending, Color::YELLOW);
+                    
+                    std::string ghost = ss.str();
+                    if (visible_length(ghost) >= static_cast<size_t>(width)) ghost = truncate_visible(ghost, width - 1);
+
+                    if (!ghost.empty()) {
+                        std::cout << "\n" << ghost << std::flush;
+                        status_line_visible = true;
+                    } else {
+                        std::cout << std::flush;
                     }
                 }
             }

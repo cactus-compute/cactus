@@ -33,6 +33,8 @@ def get_model_dir_name(model_id):
 
 def get_weights_dir(model_id):
     """Get the weights directory path for a model."""
+    if 'silero-vad' in model_id.lower():
+        return PROJECT_ROOT / "weights" / "silero-vad"
     model_dir = get_model_dir_name(model_id)
     return PROJECT_ROOT / "weights" / model_dir
 
@@ -94,6 +96,7 @@ def cmd_download(args):
 
     is_vlm = 'vl' in model_id.lower() or 'vlm' in model_id.lower()
     is_whisper = 'whisper' in model_id.lower()
+    is_vad = 'silero-vad' in model_id.lower()
 
     try:
         if is_vlm:
@@ -163,6 +166,27 @@ def cmd_download(args):
         elif is_whisper:
             tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
             model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+
+        elif is_vad:
+            try:
+                import torchaudio
+            except ImportError:
+                print_color(RED, "Error: torchaudio is required for Silero-VAD")
+                print("Install with: pip install torchaudio")
+                return 1
+
+            from .converter_silero_vad import convert_silero_vad_weights
+
+            model, _ = torch.hub.load("snakers4/silero-vad", "silero_vad", force_reload=False)
+            convert_silero_vad_weights(model, weights_dir, precision, args)
+
+            del model
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            print_color(GREEN, f"Successfully downloaded and converted weights to {weights_dir}")
+            return 0
 
         else:
             tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
@@ -509,6 +533,9 @@ def cmd_run(args):
     """Download model if needed and start interactive chat."""
     model_id = args.model_id
 
+    if getattr(args, 'no_cloud_tele', False):
+        os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
+
     lib_path = PROJECT_ROOT / "cactus" / "build" / "libcactus.a"
     if not lib_path.exists():
         print_color(RED, "Error: Cactus library not built. Run 'cactus build' first.")
@@ -537,13 +564,16 @@ def cmd_run(args):
     os.execv(str(chat_binary), [str(chat_binary), str(weights_dir)])
 
 
-DEFAULT_ASR_MODEL_ID = "openai/whisper-small"
+DEFAULT_ASR_MODEL_ID = "UsefulSensors/moonshine-base"
 
 
 def cmd_transcribe(args):
     """Download ASR model if needed and start transcription."""
     model_id = getattr(args, 'model_id', DEFAULT_ASR_MODEL_ID)
     audio_file = getattr(args, 'audio_file', None)
+
+    if getattr(args, 'no_cloud_tele', False):
+        os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
 
     audio_extensions = ('.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac')
     if model_id and model_id.lower().endswith(audio_extensions):
@@ -682,6 +712,8 @@ def cmd_eval(args):
     print(" ".join(cmd))
 
     env = os.environ.copy()
+    if getattr(args, 'no_cloud_tele', False):
+        env["CACTUS_NO_CLOUD_TELE"] = "1"
     if mode == "vlm":
         ffi_dir = str(repo_root / "cactus" / "tools" / "src")
         existing = env.get("PYTHONPATH", "")
@@ -700,7 +732,7 @@ def cmd_test(args):
     if getattr(args, 'large', False):
         args.model = 'LiquidAI/LFM2.5-VL-1.6B'
         args.transcribe_model = 'openai/whisper-small'
-        print_color(BLUE, f"Using large models: {args.model}, {args.transcribe_model}")
+        print_color(BLUE, f"Using large models: {args.model}, {args.transcribe_model}, {args.vad_model}")
 
     precision = getattr(args, 'precision', None)
     if precision:
@@ -724,7 +756,7 @@ def cmd_test(args):
         if download_result != 0:
             return download_result
 
-        transcribe_model_id = getattr(args, 'transcribe_model', 'openai/whisper-small')
+        transcribe_model_id = getattr(args, 'transcribe_model', 'UsefulSensors/moonshine-base')
         transcribe_weights_dir = get_weights_dir(transcribe_model_id)
 
         if transcribe_weights_dir.exists():
@@ -741,6 +773,23 @@ def cmd_test(args):
         if download_result != 0:
             return download_result
 
+        vad_model_id = getattr(args, 'vad_model', 'silero-vad')
+        vad_weights_dir = get_weights_dir(vad_model_id)
+
+        if vad_weights_dir.exists():
+            print_color(YELLOW, f"Removing existing weights at {vad_weights_dir} to regenerate with {precision}...")
+            shutil.rmtree(vad_weights_dir)
+
+        dl_args_vad = DownloadArgs()
+        dl_args_vad.model_id = vad_model_id
+        dl_args_vad.precision = precision
+        dl_args_vad.cache_dir = None
+        dl_args_vad.token = getattr(args, 'token', None)
+
+        download_result = cmd_download(dl_args_vad)
+        if download_result != 0:
+            return download_result
+
     test_script = PROJECT_ROOT / "tests" / "run.sh"
 
     if not test_script.exists():
@@ -753,6 +802,8 @@ def cmd_test(args):
         cmd.extend(["--model", args.model])
     if args.transcribe_model:
         cmd.extend(["--transcribe_model", args.transcribe_model])
+    if args.vad_model:
+        cmd.extend(["--vad_model", args.vad_model])
     if precision:
         cmd.extend(["--precision", precision])
     if getattr(args, 'no_rebuild', False):
@@ -761,8 +812,14 @@ def cmd_test(args):
         cmd.append("--android")
     if args.ios:
         cmd.append("--ios")
+    if args.only:
+        cmd.extend(["--only", args.only])
 
-    result = subprocess.run(cmd, cwd=PROJECT_ROOT / "tests")
+    env = os.environ.copy()
+    if getattr(args, 'no_cloud_tele', False):
+        env["CACTUS_NO_CLOUD_TELE"] = "1"
+
+    result = subprocess.run(cmd, cwd=PROJECT_ROOT / "tests", env=env)
     return result.returncode
 
 
@@ -1029,6 +1086,7 @@ def create_parser():
     --large                            use larger models (LFM2.5-VL-1.6B + whisper-small)
     --precision INT4|INT8|FP16         regenerates weights with precision
     --no-rebuild                       skip building library and tests
+    --only <test_name>                 run specific test (engine, graph, index, kernel, kv_cache, performance, etc)
     --ios                              run on connected iPhone
     --android                          run on connected Android
 
@@ -1091,6 +1149,8 @@ def create_parser():
                             help='Quantization precision (default: INT8)')
     run_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     run_parser.add_argument('--token', help='HuggingFace API token')
+    run_parser.add_argument('--no-cloud-tele', action='store_true',
+                            help='Disable cloud telemetry (write to cache only)')
 
     transcribe_parser = subparsers.add_parser('transcribe', help='Download ASR model and run transcription')
     transcribe_parser.add_argument('model_id', nargs='?', default=DEFAULT_ASR_MODEL_ID,
@@ -1101,6 +1161,8 @@ def create_parser():
                                    help='Quantization precision (default: INT8)')
     transcribe_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     transcribe_parser.add_argument('--token', help='HuggingFace API token')
+    transcribe_parser.add_argument('--no-cloud-tele', action='store_true',
+                                   help='Disable cloud telemetry (write to cache only)')
 
     eval_parser = subparsers.add_parser('eval', help='Run evaluation scripts outside the cactus submodule')
     eval_parser.add_argument('model_id', nargs='?', default=DEFAULT_MODEL_ID,
@@ -1114,12 +1176,16 @@ def create_parser():
     eval_parser.add_argument('--stt', action='store_true', help='Run speech-to-text evals')
     eval_parser.add_argument('--llm', action='store_true', help='Run LLM evals')
     eval_parser.add_argument('--embed', action='store_true', help='Run embedding evals')
+    eval_parser.add_argument('--no-cloud-tele', action='store_true',
+                             help='Disable cloud telemetry (write to cache only)')
 
     test_parser = subparsers.add_parser('test', help='Run the test suite')
     test_parser.add_argument('--model', default='LiquidAI/LFM2-VL-450M',
                              help='Model to use for tests')
-    test_parser.add_argument('--transcribe_model', default='openai/whisper-small',
+    test_parser.add_argument('--transcribe_model', default='UsefulSensors/moonshine-base',
                              help='Transcribe model to use')
+    test_parser.add_argument('--vad_model', default='silero-vad',
+                             help='VAD model to use')
     test_parser.add_argument('--large', action='store_true',
                              help='Use larger models (LFM2.5-VL-1.6B + whisper-small)')
     test_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'],
@@ -1131,6 +1197,9 @@ def create_parser():
                              help='Run tests on Android')
     test_parser.add_argument('--ios', action='store_true',
                              help='Run tests on iOS')
+    test_parser.add_argument('--only', help='Only run the specified test (engine, graph, index, kernel, kv_cache, performance, etc)')
+    test_parser.add_argument('--no-cloud-tele', action='store_true',
+                             help='Disable cloud telemetry (write to cache only)')
 
     clean_parser = subparsers.add_parser('clean', help='Remove all build artifacts')
 

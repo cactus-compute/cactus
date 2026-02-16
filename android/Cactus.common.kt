@@ -33,6 +33,8 @@ expect class Cactus : AutoCloseable {
     fun ragQuery(query: String, topK: Int = 5): String
     fun tokenize(text: String): IntArray
     fun scoreWindow(tokens: IntArray, start: Int, end: Int, context: Int): String
+    fun vad(audioPath: String, options: VADOptions = VADOptions()): VADResult
+    fun vad(pcmData: ByteArray, options: VADOptions = VADOptions()): VADResult
     fun createStreamTranscriber(): StreamTranscriber
     fun reset()
     fun stop()
@@ -92,6 +94,28 @@ data class TranscriptionResult(
     val text: String,
     val segments: List<Map<String, Any>>?,
     val totalTime: Double
+)
+
+data class VADSegment(
+    val start: Int,
+    val end: Int
+)
+
+data class VADResult(
+    val segments: List<VADSegment>,
+    val totalTime: Double,
+    val ramUsage: Double
+)
+
+data class VADOptions(
+    val threshold: Float? = null,
+    val negThreshold: Float? = null,
+    val minSpeechDurationMs: Int? = null,
+    val maxSpeechDurationS: Float? = null,
+    val minSilenceDurationMs: Int? = null,
+    val speechPadMs: Int? = null,
+    val windowSizeSamples: Int? = null,
+    val samplingRate: Int? = null
 )
 
 fun interface TokenCallback {

@@ -94,22 +94,24 @@ graph.hard_reset();
 
 ## Benchmark (INT8)
 
-| Device | LFM2.5-1.2B<br>(1k-Prefill/100-Decode) | LFM2.5-VL-1.6B<br>(256px-Latency & Decode) | Whisper-Small<br>(30s-audio-Latency & Decode)
+| Device | LFM2.5-1.2B<br>(1k-Prefill/100-Decode) | LFM2.5-VL-1.6B<br>(256px-Latency & Decode) | Whisper-Small-244m<br>(30s-audio-Latency & Decode)
 |--------|--------|--------|----------|
-| Mac M4 Pro | 582/77 tps| 0.2s & 76tps | 0.1s & 111tps |
-| iPad/Mac M4 | - | - | - |
-| iPhone 17 Pro | 300/33 tps | 0.3s & 33tps | 0.3s & 114tps |
-| Galaxy S25 Ultra | 226/36 tps | 2.6s & 33tps | 2.3s & 90tps |
+| Mac M4 Pro | 582tps/77tps (76MB RAM) | 0.2s/76tps (87MB RAM) | 0.1s/119tps (73MB RAM) |
+| iPad/Mac M4 | 379tps/46tps (30MB RAM) | 0.2s/46tps (53MB RAM) | 0.2s/100tp (122MB RAM) |
+| iPad/Mac M2 | 315tps/42tps (181MB RAM) | 0.3s/42tps (426MB RAM) | 0.3s/86tps (160MB RAM) |
+| iPhone 17 Pro | 300tps/33tps (108MB RAM)| 0.3s/33tps (156MB RAM) | 0.3s/114tps (177MB RAM)|
+| Galaxy S25 Ultra | 226tps/36tps (1.2GB RAM) | 2.6s/33tps (2GB RAM) | 2.3s/90tps (363MB RAM) |
 | Pixel 10 Pro | - | - | - |
 | Vivo X200 Pro | - | - | - |
 
-| Device | LFM2-350m<br>(1k-Prefill/100-Decode) | LFM2-VL-450m<br>(256px-Latency & Decode) | Moonshine-Base<br>(30s-audio-Latency & Decode)
+| Device | LFM2-350m<br>(1k-Prefill/100-Decode) | LFM2-VL-450m<br>(256px-Latency & Decode) | Moonshine-Base-67m<br>(30s-audio-Latency & Decode)
 |--------|--------|--------|----------|
+| iPad/Mac M2 | 998tps/101tps (334MB RAM) | 0.2s/109tps (146MB RAM) | 0.3s/395tps (201MB RAM) |
 | iPad/Mac M1 | - | - | - |
 | iPhone 13 Mini | - | - | - |
 | Galaxy A56 | - | - | - |
-| Pixel 6a | 218/44 tps | 2.5s & 36 tps | 1.5s & 189 tps |
-| Nothing CMF | - | - | - |
+| Pixel 6a | 218tps/44tps (395MB RAM)| 2.5s/36tps (631MB RAM) | 1.5s/189tps (111MB RAM)|
+| CMF Phone 2 Pro | 146tps/21tps (394MB RAM) | 2.4s/22tps (632MB RAM) | 1.9s/119tps (112MB RAM) |
 | Raspberry Pi 5 | - | - | - |
 
  ## Supported Models                                                                                                                                                     
@@ -130,7 +132,8 @@ graph.hard_reset();
 | LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |                                                                                                               
 | UsefulSensors/moonshine-base | transcription, speech embed |                                                                                                         
 | openai/whisper-small | transcription, speech embed, Apple NPU |                                                                                                                 
-| openai/whisper-medium | transcribe, speech embed, Apple NPU |                                                                             
+| openai/whisper-medium | transcribe, speech embed, Apple NPU |
+| snakers4/silero-vad | vad |
 | nomic-ai/nomic-embed-text-v2-moe | embed |                                                                                                                    
 | Qwen/Qwen3-Embedding-0.6B | embed | 
 
@@ -153,7 +156,7 @@ git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setu
 | `cactus download [model]` | Downloads model to `./weights` |
 | `cactus convert [model] [dir]` | Converts model, supports LoRA merging (`--lora <path>`) |
 | `cactus build` | Builds for ARM (`--apple` or `--android`) |
-| `cactus test` | Runs tests (`--ios` / `--android`, `--model [name/path]`), `--precision` |
+| `cactus test` | Runs tests (`--ios` / `--android`, `--model [name/path]`, `--transcribe_model [name/path]`, `--only [test_name]`, `--precision`) |
 | `cactus transcribe [model]` | Transcribe audio file (`--file`) or live microphone |
 | `cactus clean` | Removes build artifacts |
 | `cactus --help` | Shows all commands and flags (always run this) |
@@ -182,6 +185,30 @@ git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setu
 7. [University of Pennsylvania's AI@Penn](https://ai-at-penn-main-105.vercel.app/)
 8. [University of Michigan Ann-Arbor MSAIL](https://msail.github.io/)
 9. [University of Colorado Boulder's AI Club](https://www.cuaiclub.org/)
+
+## Contributing to Cactus
+
+- **C++ Standard**: Use C++20 features where appropriate.
+- **Formatting**: Follow the existing code style in the project, one header per folder.
+- **Comments**: Avoid comments, make your code read like plain english.
+- **AI-Generated Code**: Do not bindly PR AI slop, this codebase is very complex, they miss details.
+- **Update docs**: Please update docs when necessary, be intuitive and straightforward. 
+- **Keep It Simple**: Do not go beyond the scope of the GH issue, avoid bloated PRs, keep codes lean.
+- **Benchmark Your Changes**: Test performance impact, Cactus is performance-critical.
+- **Test everything**: A PR that fails to build is the biggest red flag, means it was not tested. 
+
+## Citation
+
+If you use Cactus in your research, please cite it as follows:
+
+```bibtex
+@software{cactus,
+  title        = {Cactus: AI Inference Engine for Phones & Wearables},
+  author       = {Ndubuaku, Henry and Cactus Team},
+  url          = {https://github.com/cactus-compute/cactus},
+  year         = {2025}
+}
+```
 
 ## Join The Community
 - [Reddit Channel](https://www.reddit.com/r/cactuscompute/)

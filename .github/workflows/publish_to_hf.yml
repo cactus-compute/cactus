@@ -1,0 +1,49 @@
+name: Publish to Hugging Face
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: macos-latest
+    steps:
+      - name: Get release version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: cactus-compute/cactus-pro
+          token: ${{ secrets.CACTUS_PRO_TOKEN }}
+          path: cactus-pro
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r python/requirements.txt
+
+      - name: Publish models
+        run: |
+          cd python
+          python -m src.publish_to_hf \
+            --version ${{ steps.version.outputs.tag }} \
+            --org Cactus-Compute \
+            --precision INT8 \
+            --bits 8
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}

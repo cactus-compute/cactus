@@ -326,4 +326,22 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
 
     print_quantization_summary(quantization_stats, args)
 
+    if detected_model_type in ['whisper', 'moonshine']:
+        if torch is None:
+            print("Warning: torch not available, skipping VAD bundling")
+        else:
+            from .converter_silero_vad import convert_silero_vad_weights
+
+            print(f"Bundling Silero VAD weights for {detected_model_type} model...")
+            try:
+                vad_model, _ = torch.hub.load("snakers4/silero-vad", "silero_vad", force_reload=False)
+                vad_output_dir = str(Path(output_dir) / "vad")
+                convert_silero_vad_weights(vad_model, vad_output_dir, precision, args)
+                del vad_model
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("VAD weights bundled successfully")
+            except Exception as e:
+                print(f"Warning: Failed to bundle VAD weights: {e}")
+
     return model_config

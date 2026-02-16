@@ -842,5 +842,104 @@ private:
     size_t last_token_count_ = 0;
 };
 
+class SileroVADModel : public Model {
+public:
+    static constexpr size_t CONTEXT_SIZE = 64;
+    static constexpr size_t CHUNK_SIZE = 512;
+    static constexpr size_t REFLECT_PAD_SIZE = 64;
+    static constexpr size_t HIDDEN_SIZE = 128;
+    static constexpr size_t GATE_SIZE = 512;
+
+    SileroVADModel();
+    explicit SileroVADModel(const Config& config);
+    ~SileroVADModel() override;
+
+    bool init(const std::string& model_folder, size_t context_size = 0,
+              const std::string& system_prompt = "", bool do_warmup = false) override;
+
+    struct SpeechTimestamp {
+        size_t start;
+        size_t end;
+    };
+
+    struct SpeechTimestampsOptions {
+        float threshold = 0.5f;
+        float neg_threshold = 0.0f;
+        int min_speech_duration_ms = 250;
+        float max_speech_duration_s = std::numeric_limits<float>::infinity();
+        int min_silence_duration_ms = 100;
+        int speech_pad_ms = 30;
+        int window_size_samples = 512;
+        int min_silence_at_max_speech = 98;
+        bool use_max_poss_sil_at_max_speech = true;
+        int sampling_rate = 16000;
+    };
+
+    float process_chunk(const std::vector<float>& audio_chunk);
+    void reset_states();
+    std::vector<SpeechTimestamp> get_speech_timestamps(const std::vector<float>& audio, const SpeechTimestampsOptions& options);
+
+protected:
+    size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("SileroVAD: build_attention unused");
+    }
+
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("SileroVAD: build_mlp unused");
+    }
+
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("SileroVAD: build_transformer_block unused");
+    }
+
+    size_t forward(const std::vector<uint32_t>&, bool = false) override {
+        throw std::runtime_error("SileroVAD: use process_chunk() instead");
+    }
+
+    size_t forward(const std::vector<float>& audio_features, const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+
+    void load_weights_to_graph(CactusGraph* gb) override;
+
+private:
+    void build_graph();
+
+    struct VADGraphNodes {
+        size_t input;
+        size_t h_prev;
+        size_t c_prev;
+        size_t h_new;
+        size_t c_new;
+        size_t output;
+        size_t lstm_output;
+        size_t encoder_output;
+    } graph_nodes_;
+
+    struct VADWeightNodes {
+        size_t stft_basis;
+        struct EncoderBlock {
+            size_t conv_weight;
+            size_t conv_bias;
+        };
+        std::vector<EncoderBlock> encoder_blocks;
+        size_t lstm_weight_ih;
+        size_t lstm_weight_hh;
+        size_t lstm_bias_ih;
+        size_t lstm_bias_hh;
+        size_t output_conv_weight;
+        size_t output_conv_bias;
+    } weight_nodes_;
+
+    struct VADState {
+        std::vector<__fp16> h;
+        std::vector<__fp16> c;
+        std::vector<float> context;
+        std::vector<float> input_buf;
+        std::vector<__fp16> input_fp16;
+    } state_;
+
+    CactusGraph graph_;
+    std::string weights_path_;
+};
+
 }
 }

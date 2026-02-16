@@ -120,6 +120,16 @@ CACTUS_FFI_EXPORT int cactus_audio_embed(
     size_t* embedding_dim
 );
 
+CACTUS_FFI_EXPORT int cactus_vad(
+    cactus_model_t model,
+    const char* audio_file_path,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+);
+
 CACTUS_FFI_EXPORT int cactus_rag_query(
     cactus_model_t model,
     const char* query,

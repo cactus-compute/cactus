@@ -494,11 +494,11 @@ bool test_graph_save_load() {
         GraphFile::save_node(graph, result_id, filename);
 
         CactusGraph new_graph;
-        auto loaded = GraphFile::load_into_graph(new_graph, filename);
+        size_t loaded_id = new_graph.mmap_weights(filename);
         new_graph.execute();
 
         __fp16* original_data = static_cast<__fp16*>(graph.get_output(result_id));
-        __fp16* loaded_data = static_cast<__fp16*>(new_graph.get_output(loaded.node_id));
+        __fp16* loaded_data = static_cast<__fp16*>(new_graph.get_output(loaded_id));
 
         for (size_t i = 0; i < 6; ++i) {
             if (std::abs(static_cast<float>(original_data[i]) - static_cast<float>(loaded_data[i])) > 1e-3f) {
@@ -509,9 +509,10 @@ bool test_graph_save_load() {
             }
         }
 
-        bool result = (loaded.shape == std::vector<size_t>{2, 3}) &&
-                     (loaded.precision == Precision::FP16) &&
-                     (loaded.byte_size == 12);
+        const auto& buf = new_graph.get_output_buffer(loaded_id);
+        bool result = (buf.shape == std::vector<size_t>{2, 3}) &&
+                     (buf.precision == Precision::FP16) &&
+                     (buf.byte_size == 12);
 
         graph.hard_reset();
         new_graph.hard_reset();

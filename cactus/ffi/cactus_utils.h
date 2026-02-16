@@ -56,6 +56,7 @@ inline double get_ram_usage_mb() {
 
 struct CactusModelHandle {
     std::unique_ptr<cactus::engine::Model> model;
+    std::unique_ptr<cactus::engine::Model> vad_model;
     std::atomic<bool> should_stop;
     std::vector<uint32_t> processed_tokens;
     std::mutex model_mutex;
@@ -64,7 +65,7 @@ struct CactusModelHandle {
     std::string corpus_dir;
     size_t corpus_embedding_dim = 0;
     std::vector<std::vector<float>> tool_embeddings;
-    std::vector<std::string> tool_texts;  
+    std::vector<std::string> tool_texts;
 
     CactusModelHandle() : should_stop(false) {}
 };
@@ -105,14 +106,6 @@ inline cactus::engine::AudioProcessor::SpectrogramConfig get_whisper_spectrogram
 
 namespace cactus {
 namespace ffi {
-
-#ifndef CACTUS_VERSION
-#define CACTUS_VERSION "unknown"
-#endif
-
-inline const char* getVersion() {
-    return CACTUS_VERSION;
-}
 
 inline std::string generateUUID() {
 #ifdef __APPLE__
@@ -329,15 +322,19 @@ inline void parse_options_json(const std::string& json,
                                bool& force_tools,
                                size_t& tool_rag_top_k,
                                float& confidence_threshold,
-                               bool& include_stop_sequences) {
+                               bool& include_stop_sequences,
+                               bool& use_vad,
+                               bool& telemetry_enabled) {
     temperature = 0.0f;
     top_p = 0.0f;
     top_k = 0;
     max_tokens = 100;
     force_tools = false;
-    tool_rag_top_k = 2;  
-    confidence_threshold = 0.7f;  
+    tool_rag_top_k = 2;
+    confidence_threshold = 0.7f;
     include_stop_sequences = false;
+    use_vad = true;
+    telemetry_enabled = true;
     stop_sequences.clear();
 
     if (json.empty()) return;
@@ -392,6 +389,20 @@ inline void parse_options_json(const std::string& json,
         include_stop_sequences = (json.substr(pos, 4) == "true");
     }
 
+    pos = json.find("\"use_vad\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(json[pos])) pos++;
+        use_vad = (json.substr(pos, 4) == "true");
+    }
+
+    pos = json.find("\"telemetry_enabled\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(json[pos])) pos++;
+        telemetry_enabled = (json.substr(pos, 4) == "true");
+    }
+
     pos = json.find("\"stop_sequences\"");
     if (pos != std::string::npos) {
         pos = json.find('[', pos);
@@ -426,6 +437,78 @@ inline std::string format_tools_for_prompt(const std::vector<ToolFunction>& tool
         formatted_tools_json += "}}";
     }
     return formatted_tools_json;
+}
+
+static inline std::string trim_lfm2_slice(const std::string& value, size_t begin, size_t end) {
+    while (begin < end && std::isspace(static_cast<unsigned char>(value[begin]))) {
+        begin++;
+    }
+    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+        end--;
+    }
+    return value.substr(begin, end - begin);
+}
+
+static inline void append_lfm2_call(const std::string& entry,
+                                   std::vector<std::string>& function_calls) {
+    if (entry.empty()) return;
+
+    std::string trimmed_entry = trim_lfm2_slice(entry, 0, entry.size());
+    if (trimmed_entry.empty()) return;
+
+    size_t paren_pos = trimmed_entry.find('(');
+    if (paren_pos == std::string::npos) return;
+
+    std::string func_name = trim_lfm2_slice(trimmed_entry, 0, paren_pos);
+    std::string args_str = trim_lfm2_slice(trimmed_entry, paren_pos + 1, trimmed_entry.size());
+
+    if (!args_str.empty() && args_str.back() == ')') {
+        args_str.pop_back();
+        args_str = trim_lfm2_slice(args_str, 0, args_str.size());
+    }
+
+    std::string json_call = "{\"name\":\"" + func_name + "\",\"arguments\":{";
+
+    size_t arg_pos = 0;
+    bool first_arg = true;
+    while (arg_pos < args_str.length()) {
+        while (arg_pos < args_str.length() && std::isspace(static_cast<unsigned char>(args_str[arg_pos]))) {
+            arg_pos++;
+        }
+
+        size_t eq_pos = args_str.find('=', arg_pos);
+        if (eq_pos == std::string::npos) break;
+
+        std::string arg_name = args_str.substr(arg_pos, eq_pos - arg_pos);
+
+        size_t val_start = eq_pos + 1;
+        size_t val_end = val_start;
+
+        if (val_start < args_str.length() && args_str[val_start] == '"') {
+            val_start++;
+            val_end = args_str.find('"', val_start);
+            if (val_end == std::string::npos) break;
+        } else {
+            val_end = args_str.find(',', val_start);
+            if (val_end == std::string::npos) val_end = args_str.length();
+        }
+
+        std::string arg_value = args_str.substr(val_start, val_end - val_start);
+
+        if (!first_arg) json_call += ",";
+        json_call += "\"" + arg_name + "\":\"" + arg_value + "\"";
+        first_arg = false;
+
+        arg_pos = args_str.find(',', val_end);
+        if (arg_pos != std::string::npos) {
+            arg_pos++;
+        } else {
+            break;
+        }
+    }
+
+    json_call += "}}";
+    function_calls.push_back(json_call);
 }
 
 inline void parse_function_calls_from_response(const std::string& response_text,
@@ -464,7 +547,7 @@ inline void parse_function_calls_from_response(const std::string& response_text,
             break;
         }
     }
-
+    
     // Parse LFM2-style function calls: <|tool_call_start|>[name(args)]<|tool_call_end|>
     const std::string TOOL_CALL_START = "<|tool_call_start|>";
     const std::string TOOL_CALL_END = "<|tool_call_end|>";
@@ -472,68 +555,51 @@ inline void parse_function_calls_from_response(const std::string& response_text,
 
     while ((tool_start_pos = regular_response.find(TOOL_CALL_START, tool_start_pos)) != std::string::npos) {
         size_t content_start = tool_start_pos + TOOL_CALL_START.length();
-        size_t tool_end_pos = response_text.find(TOOL_CALL_END, content_start);
+        size_t tool_end_pos = regular_response.find(TOOL_CALL_END, content_start);
 
         if (tool_end_pos != std::string::npos) {
-            std::string tool_content = response_text.substr(content_start, tool_end_pos - content_start);
+            std::string tool_content = regular_response.substr(content_start, tool_end_pos - content_start);
+            std::string content = tool_content;
+            size_t trim_start = 0;
+            while (trim_start < content.size() && std::isspace(static_cast<unsigned char>(content[trim_start]))) {
+                trim_start++;
+            }
 
-            if (tool_content.size() > 2 && tool_content[0] == '[' && tool_content[tool_content.size()-1] == ']') {
-                tool_content = tool_content.substr(1, tool_content.size() - 2); 
-
-                size_t paren_pos = tool_content.find('(');
-                if (paren_pos != std::string::npos) {
-                    std::string func_name = tool_content.substr(0, paren_pos);
-                    std::string args_str = tool_content.substr(paren_pos + 1);
-
-                    if (!args_str.empty() && args_str.back() == ')') {
-                        args_str.pop_back();
-                    }
-
-                    std::string json_call = "{\"name\":\"" + func_name + "\",\"arguments\":{";
-
-                    size_t arg_pos = 0;
-                    bool first_arg = true;
-                    while (arg_pos < args_str.length()) {
-                        while (arg_pos < args_str.length() && std::isspace(args_str[arg_pos])) arg_pos++;
-
-                        size_t eq_pos = args_str.find('=', arg_pos);
-                        if (eq_pos == std::string::npos) break;
-
-                        std::string arg_name = args_str.substr(arg_pos, eq_pos - arg_pos);
-
-                        size_t val_start = eq_pos + 1;
-                        size_t val_end = val_start;
-
-                        if (val_start < args_str.length() && args_str[val_start] == '"') {
-                            val_start++;
-                            val_end = args_str.find('"', val_start);
-                            if (val_end == std::string::npos) break;
-                        } else {
-                            val_end = args_str.find(',', val_start);
-                            if (val_end == std::string::npos) val_end = args_str.length();
-                        }
-
-                        std::string arg_value = args_str.substr(val_start, val_end - val_start);
-
-                        if (!first_arg) json_call += ",";
-                        json_call += "\"" + arg_name + "\":\"" + arg_value + "\"";
-                        first_arg = false;
-
-                        arg_pos = args_str.find(',', val_end);
-                        if (arg_pos != std::string::npos) {
-                            arg_pos++;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    json_call += "}}";
-                    function_calls.push_back(json_call);
+            if (trim_start < content.size()) {
+                size_t trim_end = content.size() - 1;
+                while (trim_end > trim_start && std::isspace(static_cast<unsigned char>(content[trim_end]))) {
+                    trim_end--;
                 }
+                content = content.substr(trim_start, trim_end - trim_start + 1);
+            } else {
+                content.clear();
+            }
+
+            if (!content.empty() && content.front() == '[' && content.back() == ']') {
+                std::string inner = content.substr(1, content.size() - 2);
+                size_t start = 0;
+                int paren_depth = 0;
+
+                for (size_t i = 0; i < inner.size(); ++i) {
+                    char c = inner[i];
+                    if (c == '(') {
+                        paren_depth++;
+                    } else if (c == ')' && paren_depth > 0) {
+                        paren_depth--;
+                    } else if (c == ',' && paren_depth == 0) {
+                        append_lfm2_call(inner.substr(start, i - start), function_calls);
+                        start = i + 1;
+                    }
+                }
+
+                if (start < inner.size()) {
+                    append_lfm2_call(inner.substr(start), function_calls);
+                }
+            } else if (!content.empty()) {
+                append_lfm2_call(content, function_calls);
             }
 
             regular_response.erase(tool_start_pos, tool_end_pos + TOOL_CALL_END.length() - tool_start_pos);
-            tool_start_pos = tool_end_pos + TOOL_CALL_END.length();
         } else {
             break;
         }
@@ -627,6 +693,18 @@ inline std::string construct_cloud_handoff_json(float confidence,
     json << "\"total_tokens\":" << prompt_tokens;
     json << "}";
     return json.str();
+}
+
+inline std::string serialize_function_calls(const std::vector<std::string>& calls) {
+    if (calls.empty()) return "[]";
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < calls.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << calls[i];
+    }
+    oss << "]";
+    return oss.str();
 }
 
 } // namespace ffi

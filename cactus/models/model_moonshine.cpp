@@ -199,12 +199,18 @@ void MoonshineModel::reset_cache() {
     encoder_output_host_.clear();
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     if (gb) {
+        if (last_encoder_post_norm_node_ != 0) {
+            gb->invalidate_persistent(last_encoder_post_norm_node_);
+            last_encoder_post_norm_node_ = 0;
+        }
         for (size_t i = 0; i < encoder_k_persistent_.size(); ++i) {
             if (encoder_k_persistent_[i] != 0) {
                 gb->invalidate_persistent(encoder_k_persistent_[i]);
+                encoder_k_persistent_[i] = 0;
             }
             if (encoder_v_persistent_[i] != 0) {
                 gb->invalidate_persistent(encoder_v_persistent_[i]);
+                encoder_v_persistent_[i] = 0;
             }
         }
     }

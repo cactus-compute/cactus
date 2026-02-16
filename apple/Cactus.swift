@@ -42,6 +42,29 @@ public final class Cactus: @unchecked Sendable {
         }
     }
 
+    public struct VADSegment {
+        public let start: Int
+        public let end: Int
+
+        init(dict: [String: Any]) {
+            self.start = dict["start"] as? Int ?? 0
+            self.end = dict["end"] as? Int ?? 0
+        }
+    }
+
+    public struct VADResult {
+        public let segments: [VADSegment]
+        public let totalTime: Double
+        public let ramUsage: Double
+
+        init(json: [String: Any]) {
+            let segmentsArray = json["segments"] as? [[String: Any]] ?? []
+            self.segments = segmentsArray.map { VADSegment(dict: $0) }
+            self.totalTime = json["total_time_ms"] as? Double ?? 0
+            self.ramUsage = json["ram_usage_mb"] as? Double ?? 0
+        }
+    }
+
     public struct Message {
         public let role: String
         public let content: String
@@ -137,10 +160,63 @@ public final class Cactus: @unchecked Sendable {
         }
     }
 
+    public struct VADOptions {
+        public var threshold: Float?
+        public var negThreshold: Float?
+        public var minSpeechDurationMs: Int?
+        public var maxSpeechDurationS: Float?
+        public var minSilenceDurationMs: Int?
+        public var speechPadMs: Int?
+        public var windowSizeSamples: Int?
+        public var samplingRate: Int?
+
+        public init(
+            threshold: Float? = nil,
+            negThreshold: Float? = nil,
+            minSpeechDurationMs: Int? = nil,
+            maxSpeechDurationS: Float? = nil,
+            minSilenceDurationMs: Int? = nil,
+            speechPadMs: Int? = nil,
+            windowSizeSamples: Int? = nil,
+            samplingRate: Int? = nil
+        ) {
+            self.threshold = threshold
+            self.negThreshold = negThreshold
+            self.minSpeechDurationMs = minSpeechDurationMs
+            self.maxSpeechDurationS = maxSpeechDurationS
+            self.minSilenceDurationMs = minSilenceDurationMs
+            self.speechPadMs = speechPadMs
+            self.windowSizeSamples = windowSizeSamples
+            self.samplingRate = samplingRate
+        }
+
+        public static let `default` = VADOptions()
+
+        func toJSON() -> String? {
+            var dict: [String: Any] = [:]
+            if let threshold = threshold { dict["threshold"] = threshold }
+            if let negThreshold = negThreshold { dict["neg_threshold"] = negThreshold }
+            if let minSpeechDurationMs = minSpeechDurationMs { dict["min_speech_duration_ms"] = minSpeechDurationMs }
+            if let maxSpeechDurationS = maxSpeechDurationS { dict["max_speech_duration_s"] = maxSpeechDurationS }
+            if let minSilenceDurationMs = minSilenceDurationMs { dict["min_silence_duration_ms"] = minSilenceDurationMs }
+            if let speechPadMs = speechPadMs { dict["speech_pad_ms"] = speechPadMs }
+            if let windowSizeSamples = windowSizeSamples { dict["window_size_samples"] = windowSizeSamples }
+            if let samplingRate = samplingRate { dict["sampling_rate"] = samplingRate }
+
+            guard !dict.isEmpty else { return nil }
+            guard let data = try? JSONSerialization.data(withJSONObject: dict),
+                  let json = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return json
+        }
+    }
+
     public enum CactusError: Error, LocalizedError {
         case initializationFailed(String)
         case completionFailed(String)
         case transcriptionFailed(String)
+        case vadFailed(String)
         case embeddingFailed(String)
         case invalidResponse
 
@@ -149,6 +225,7 @@ public final class Cactus: @unchecked Sendable {
             case .initializationFailed(let msg): return "Initialization failed: \(msg)"
             case .completionFailed(let msg): return "Completion failed: \(msg)"
             case .transcriptionFailed(let msg): return "Transcription failed: \(msg)"
+            case .vadFailed(let msg): return "VAD failed: \(msg)"
             case .embeddingFailed(let msg): return "Embedding failed: \(msg)"
             case .invalidResponse: return "Invalid response from model"
             }
@@ -433,6 +510,80 @@ public final class Cactus: @unchecked Sendable {
         return Array(embeddingBuffer.prefix(embeddingDim))
     }
 
+    public func vad(
+        audioPath: String,
+        options: VADOptions = .default
+    ) throws -> VADResult {
+        var buffer = [CChar](repeating: 0, count: Self.defaultBufferSize)
+        let optionsJSON = options.toJSON()
+
+        let result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
+            cactus_vad(
+                handle,
+                audioPath,
+                bufferPtr.baseAddress,
+                bufferPtr.count,
+                optionsJSON,
+                nil,
+                0
+            )
+        }
+
+        if result < 0 {
+            let error = String(cString: cactus_get_last_error())
+            throw CactusError.vadFailed(error.isEmpty ? "Unknown error" : error)
+        }
+
+        let responseString = String(cString: buffer)
+        guard let json = parseJSON(responseString) else {
+            throw CactusError.invalidResponse
+        }
+
+        if let errorMsg = json["error"] as? String {
+            throw CactusError.vadFailed(errorMsg)
+        }
+
+        return VADResult(json: json)
+    }
+
+    public func vad(
+        pcmData: Data,
+        options: VADOptions = .default
+    ) throws -> VADResult {
+        var buffer = [CChar](repeating: 0, count: Self.defaultBufferSize)
+        let optionsJSON = options.toJSON()
+
+        let result = pcmData.withUnsafeBytes { pcmPtr in
+            buffer.withUnsafeMutableBufferPointer { bufferPtr in
+                cactus_vad(
+                    handle,
+                    nil,
+                    bufferPtr.baseAddress,
+                    bufferPtr.count,
+                    optionsJSON,
+                    pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                    pcmData.count
+                )
+            }
+        }
+
+        if result < 0 {
+            let error = String(cString: cactus_get_last_error())
+            throw CactusError.vadFailed(error.isEmpty ? "Unknown error" : error)
+        }
+
+        let responseString = String(cString: buffer)
+        guard let json = parseJSON(responseString) else {
+            throw CactusError.invalidResponse
+        }
+
+        if let errorMsg = json["error"] as? String {
+            throw CactusError.vadFailed(errorMsg)
+        }
+
+        return VADResult(json: json)
+    }
+
     public func createStreamTranscriber(options: TranscriptionOptions = .default) throws -> StreamTranscriber {
         guard let streamHandle = cactus_stream_transcribe_start(handle, options.toJSON()) else {
             let error = String(cString: cactus_get_last_error())
@@ -555,6 +706,38 @@ public extension Cactus {
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let result = try self.embed(text: text, normalize: normalize)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func vad(
+        audioPath: String,
+        options: VADOptions = .default
+    ) async throws -> VADResult {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.vad(audioPath: audioPath, options: options)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func vad(
+        pcmData: Data,
+        options: VADOptions = .default
+    ) async throws -> VADResult {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.vad(pcmData: pcmData, options: options)
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)

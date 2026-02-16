@@ -4,6 +4,7 @@ Cactus FFI Python Bindings
 Python bindings for Cactus Engine via FFI. Provides access to:
 - Text completion with LLMs (including cloud handoff detection)
 - Audio transcription with Whisper models
+- Voice Activity Detection (VAD) for speech segment detection
 - Text, image, and audio embeddings
 - RAG (Retrieval-Augmented Generation) queries
 - Tool RAG (automatic tool selection based on query relevance)
@@ -84,6 +85,12 @@ _lib.cactus_audio_embed.argtypes = [
 ]
 _lib.cactus_audio_embed.restype = ctypes.c_int
 
+_lib.cactus_vad.argtypes = [
+    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
+    ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
+]
+_lib.cactus_vad.restype = ctypes.c_int
+
 _lib.cactus_reset.argtypes = [ctypes.c_void_p]
 _lib.cactus_reset.restype = None
 
@@ -123,26 +130,19 @@ _lib.cactus_rag_query.argtypes = [
 ]
 _lib.cactus_rag_query.restype = ctypes.c_int
 
-_lib.cactus_stream_transcribe_init.argtypes = [ctypes.c_void_p]
-_lib.cactus_stream_transcribe_init.restype = ctypes.c_void_p
-
-_lib.cactus_stream_transcribe_insert.argtypes = [
-    ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
-]
-_lib.cactus_stream_transcribe_insert.restype = ctypes.c_int
+_lib.cactus_stream_transcribe_start.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+_lib.cactus_stream_transcribe_start.restype = ctypes.c_void_p
 
 _lib.cactus_stream_transcribe_process.argtypes = [
-    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p
+    ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
+    ctypes.c_char_p, ctypes.c_size_t
 ]
 _lib.cactus_stream_transcribe_process.restype = ctypes.c_int
 
-_lib.cactus_stream_transcribe_finalize.argtypes = [
+_lib.cactus_stream_transcribe_stop.argtypes = [
     ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t
 ]
-_lib.cactus_stream_transcribe_finalize.restype = ctypes.c_int
-
-_lib.cactus_stream_transcribe_destroy.argtypes = [ctypes.c_void_p]
-_lib.cactus_stream_transcribe_destroy.restype = None
+_lib.cactus_stream_transcribe_stop.restype = ctypes.c_int
 
 _lib.cactus_index_init.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
 _lib.cactus_index_init.restype = ctypes.c_void_p
@@ -396,6 +396,68 @@ def cactus_audio_embed(model, audio_path):
     return list(buf[:dim.value])
 
 
+def cactus_vad(model, audio_path=None, pcm_data=None, options=None):
+    """
+    Voice Activity Detection - detect speech segments in audio.
+
+    Args:
+        model: VAD model handle from cactus_init
+        audio_path: Path to audio file (WAV format), or None if using pcm_data
+        pcm_data: PCM audio data as bytes (int16, 16kHz), or None if using audio_path
+        options: Optional dict with VAD parameters:
+            - threshold: Speech threshold (default: 0.5)
+            - neg_threshold: Silence threshold (default: 0.35)
+            - min_speech_duration_ms: Minimum speech segment duration (default: 250)
+            - max_speech_duration_s: Maximum speech segment duration (default: inf)
+            - min_silence_duration_ms: Minimum silence between segments (default: 100)
+            - speech_pad_ms: Padding around speech segments (default: 30)
+            - window_size_samples: Analysis window size (default: 512)
+            - sampling_rate: Audio sample rate (default: 16000)
+
+    Returns:
+        JSON string with response format:
+        {
+            "success": bool,
+            "error": str|null,
+            "segments": [{"start": int, "end": int}, ...],  # Sample indices
+            "total_time_ms": float,
+            "ram_usage_mb": float
+        }
+
+    Raises:
+        ValueError: If both or neither audio_path and pcm_data are provided
+    """
+    if (audio_path is None) == (pcm_data is None):
+        raise ValueError("Must provide either audio_path or pcm_data (not both)")
+
+    options_json = None
+    if options:
+        options_json = json.dumps(options) if isinstance(options, dict) else options
+
+    buf = ctypes.create_string_buffer(65536)
+
+    if pcm_data is not None:
+        if isinstance(pcm_data, bytes):
+            arr = (ctypes.c_uint8 * len(pcm_data)).from_buffer_copy(pcm_data)
+        else:
+            arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        _lib.cactus_vad(
+            model, None, buf, len(buf),
+            options_json.encode() if options_json else None,
+            arr, len(arr)
+        )
+    else:
+        _lib.cactus_vad(
+            model,
+            audio_path.encode() if isinstance(audio_path, str) else audio_path,
+            buf, len(buf),
+            options_json.encode() if options_json else None,
+            None, 0
+        )
+
+    return buf.value.decode("utf-8", errors="ignore")
+
+
 def cactus_reset(model):
     """Reset model state (clear KV cache). Call between unrelated conversations."""
     _lib.cactus_reset(model)
@@ -509,74 +571,57 @@ def cactus_rag_query(model, query, top_k=5):
     return json.loads(buf.value.decode("utf-8", errors="ignore"))
 
 
-def cactus_stream_transcribe_init(model):
+def cactus_stream_transcribe_start(model, options=None):
     """
     Initialize streaming transcription session.
 
     Args:
         model: Whisper model handle from cactus_init
+        options: Optional JSON string with options
 
     Returns:
         Stream handle for use with other stream_transcribe functions.
     """
-    return _lib.cactus_stream_transcribe_init(model)
+    return _lib.cactus_stream_transcribe_start(
+        model,
+        options.encode() if options else None
+    )
 
 
-def cactus_stream_transcribe_insert(stream, pcm_data):
+def cactus_stream_transcribe_process(stream, pcm_data):
     """
-    Insert audio data into streaming transcription buffer.
+    Process audio data and return transcription.
 
     Args:
-        stream: Stream handle from cactus_stream_transcribe_init
+        stream: Stream handle from cactus_stream_transcribe_start
         pcm_data: PCM audio data as bytes or list of uint8
 
     Returns:
-        0 on success, -1 on error.
+        JSON string with transcription result.
     """
     if isinstance(pcm_data, bytes):
         arr = (ctypes.c_uint8 * len(pcm_data)).from_buffer_copy(pcm_data)
     else:
         arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
-    return _lib.cactus_stream_transcribe_insert(stream, arr, len(arr))
 
-
-def cactus_stream_transcribe_process(stream, options=None):
-    """
-    Process buffered audio and return transcription.
-
-    Args:
-        stream: Stream handle from cactus_stream_transcribe_init
-        options: Optional JSON string with options (e.g., {"confirmation_threshold": 0.95})
-
-    Returns:
-        JSON string with "success", "confirmed", and "pending" keys.
-    """
     buf = ctypes.create_string_buffer(65536)
-    _lib.cactus_stream_transcribe_process(
-        stream, buf, len(buf),
-        options.encode() if options else None
-    )
+    _lib.cactus_stream_transcribe_process(stream, arr, len(arr), buf, len(buf))
     return buf.value.decode("utf-8", errors="ignore")
 
 
-def cactus_stream_transcribe_finalize(stream):
+def cactus_stream_transcribe_stop(stream):
     """
     Finalize streaming transcription and get final result.
 
     Args:
-        stream: Stream handle from cactus_stream_transcribe_init
+        stream: Stream handle from cactus_stream_transcribe_start
 
     Returns:
-        JSON string with "success" and "confirmed" keys.
+        JSON string with final transcription result.
     """
     buf = ctypes.create_string_buffer(65536)
-    _lib.cactus_stream_transcribe_finalize(stream, buf, len(buf))
+    _lib.cactus_stream_transcribe_stop(stream, buf, len(buf))
     return buf.value.decode("utf-8", errors="ignore")
-
-
-def cactus_stream_transcribe_destroy(stream):
-    """Free streaming transcription resources."""
-    _lib.cactus_stream_transcribe_destroy(stream)
 
 
 def cactus_index_init(index_dir, embedding_dim):

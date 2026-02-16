@@ -13,9 +13,6 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../CACTUS_VERSION" CACTUS_VERSION)
-string(STRIP "${CACTUS_VERSION}" CACTUS_VERSION)
-
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-field-initializers")
@@ -24,6 +21,7 @@ if(APPLE)
         __ARM_FEATURE_FP16_VECTOR_ARITHMETIC=1
         __ARM_FEATURE_DOTPROD=1
         __ARM_FEATURE_MATMUL_INT8=1
+        ACCELERATE_NEW_LAPACK=1
     )
 
     enable_language(OBJCXX)
@@ -46,6 +44,7 @@ file(GLOB GRAPH_SOURCES "graph/*.cpp")
 file(GLOB KERNEL_SOURCES "kernel/*.cpp")
 file(GLOB FFI_SOURCES "ffi/*.cpp")
 file(GLOB MODEL_SOURCES "models/*.cpp")
+file(GLOB TELEMETRY_SOURCES "telemetry/*.cpp")
 
 if(APPLE)
     set(NPU_SOURCES "npu/npu_ane.mm")
@@ -66,6 +65,7 @@ set(COMMON_SOURCES
     ${MODEL_SOURCES}
     ${NPU_SOURCES}
     ${NET_SOURCES}
+    ${TELEMETRY_SOURCES}
 )
 
 set(COMMON_INCLUDES
@@ -76,14 +76,10 @@ set(COMMON_INCLUDES
     ffi
     models
     npu
-)
-
-set(COMMON_DEFINITIONS
-    CACTUS_VERSION="${CACTUS_VERSION}"
+    telemetry
 )
 
 function(configure_cactus_target target_name)
-    target_compile_definitions(${target_name} PUBLIC ${COMMON_DEFINITIONS})
     target_include_directories(${target_name} PUBLIC ${COMMON_INCLUDES})
 
     if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

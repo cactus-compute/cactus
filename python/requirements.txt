@@ -1,5 +1,6 @@
 torch>=2.8.0
 torchvision>=0.23.0
+torchaudio==2.8.0
 transformers>=4.57.0
 pillow>=11.3.0
 num2words>=0.5.12
