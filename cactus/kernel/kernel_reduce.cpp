@@ -13,7 +13,6 @@ double cactus_sum_all_f16(const __fp16* data, size_t num_elements) {
             constexpr size_t SIMD_WIDTH = 8;
             const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
 
-            // Accumulate in f32 to avoid f16 overflow and precision loss
             float32x4_t sum_lo = vdupq_n_f32(0.0f);
             float32x4_t sum_hi = vdupq_n_f32(0.0f);
 
@@ -23,10 +22,8 @@ double cactus_sum_all_f16(const __fp16* data, size_t num_elements) {
                 sum_hi = vaddq_f32(sum_hi, vcvt_f32_f16(vget_high_f16(input_vec)));
             }
 
-            // Horizontal reduce f32 -> double for the thread result
             double thread_sum = static_cast<double>(vaddvq_f32(vaddq_f32(sum_lo, sum_hi)));
 
-            // Scalar tail
             for (size_t i = vectorized_end; i < end_idx; ++i) {
                 thread_sum += static_cast<double>(data[i]);
             }
@@ -46,7 +43,6 @@ void cactus_sum_axis_f16(const __fp16* input, __fp16* output, size_t outer_size,
             constexpr size_t SIMD_WIDTH = 8;
             const size_t vectorized_axis = (axis_size / SIMD_WIDTH) * SIMD_WIDTH;
 
-            // Accumulate in f32 (per-output element) to avoid f16 precision loss.
             float32x4_t sum_lo = vdupq_n_f32(0.0f);
             float32x4_t sum_hi = vdupq_n_f32(0.0f);
 
@@ -145,7 +141,6 @@ double cactus_variance_all_f16(const __fp16* data, size_t num_elements) {
                 sum_sq_vec_hi = vfmaq_f32(sum_sq_vec_hi, x_hi, x_hi);
             }
 
-            // Reduce vectors to scalars
             double sum = static_cast<double>(vaddvq_f32(vaddq_f32(sum_vec_lo, sum_vec_hi)));
             double sum_sq = static_cast<double>(vaddvq_f32(vaddq_f32(sum_sq_vec_lo, sum_sq_vec_hi)));
 

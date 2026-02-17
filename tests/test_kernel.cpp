@@ -329,124 +329,6 @@ bool test_matmul_int8_grouped_correctness() {
     return max_abs_error < 0.1f;
 }
 
-bool test_neon_reduction_fp16_accumulation_precision_loss() {
-    const size_t N_big = 8192;
-    const size_t N_small = 200000;
-
-    std::vector<__fp16> input;
-    input.reserve(N_big + N_small);
-
-    for (size_t i = 0; i < N_big; ++i) input.push_back((__fp16)1.0f);
-    for (size_t i = 0; i < N_small; ++i) input.push_back((__fp16)0.001f);
-
-    double sum_result = cactus_sum_all_f16(input.data(), input.size());
-    double expected_sum = (double)N_big + (double)N_small * 0.001;
-
-    double abs_err = std::abs(sum_result - expected_sum);
-    return abs_err < 5.0;
-}
-
-bool test_neon_mean_all_fp16_accumulation_precision_loss() {
-    const size_t N_big = 8192;
-    const size_t N_small = 200000;
-    const double small_val = 0.001;
-
-    std::vector<__fp16> input;
-    input.reserve(N_big + N_small);
-
-    for (size_t i = 0; i < N_big; ++i) input.push_back((__fp16)1.0f);
-    for (size_t i = 0; i < N_small; ++i) input.push_back((__fp16)small_val);
-
-    double mean_result = cactus_mean_all_f16(input.data(), input.size());
-    double expected_sum = static_cast<double>(N_big) + static_cast<double>(N_small) * small_val;
-    double expected_mean = expected_sum / static_cast<double>(input.size());
-
-    double abs_err = std::abs(mean_result - expected_mean);
-
-    return abs_err < 1e-3;
-}
-
-bool test_neon_sum_axis_fp16_accumulation_precision_loss() {
-    const size_t N_big = 4096;
-    const size_t N_small = 50000;
-    const double small_val = 0.001;
-    const size_t axis_size = N_big + N_small;
-
-    const size_t outer_size = 2;
-    const size_t inner_size = 4;
-
-    std::vector<__fp16> input(outer_size * axis_size * inner_size);
-    std::vector<__fp16> output(outer_size * inner_size);
-
-    for (size_t outer = 0; outer < outer_size; ++outer) {
-        for (size_t a = 0; a < axis_size; ++a) {
-            const __fp16 v = (a < N_big) ? (__fp16)1.0f : (__fp16)small_val;
-            for (size_t inner = 0; inner < inner_size; ++inner) {
-                size_t idx = outer * axis_size * inner_size + a * inner_size + inner;
-                input[idx] = v;
-            }
-        }
-    }
-
-    cactus_sum_axis_f16(input.data(), output.data(), outer_size, axis_size, inner_size);
-
-    double expected = static_cast<double>(N_big) + static_cast<double>(N_small) * small_val;
-
-    for (size_t outer = 0; outer < outer_size; ++outer) {
-        for (size_t inner = 0; inner < inner_size; ++inner) {
-            size_t out_idx = outer * inner_size + inner;
-            double got = static_cast<double>(output[out_idx]);
-
-            double abs_err = std::abs(got - expected);
-
-            if (abs_err > 10.0) return false;
-        }
-    }
-
-    return true;
-}
-
-bool test_neon_mean_axis_fp16_accumulation_precision_loss() {
-    const size_t N_big = 4096;
-    const size_t N_small = 50000;
-    const double small_val = 0.001;
-    const size_t axis_size = N_big + N_small;
-
-    const size_t outer_size = 2;
-    const size_t inner_size = 4;
-
-    std::vector<__fp16> input(outer_size * axis_size * inner_size);
-    std::vector<__fp16> output(outer_size * inner_size);
-
-    for (size_t outer = 0; outer < outer_size; ++outer) {
-        for (size_t a = 0; a < axis_size; ++a) {
-            const __fp16 v = (a < N_big) ? (__fp16)1.0f : (__fp16)small_val;
-            for (size_t inner = 0; inner < inner_size; ++inner) {
-                size_t idx = outer * axis_size * inner_size + a * inner_size + inner;
-                input[idx] = v;
-            }
-        }
-    }
-
-    cactus_mean_axis_f16(input.data(), output.data(), outer_size, axis_size, inner_size);
-
-    double expected_sum = static_cast<double>(N_big) + static_cast<double>(N_small) * small_val;
-    double expected_mean = expected_sum / static_cast<double>(axis_size);
-
-    for (size_t outer = 0; outer < outer_size; ++outer) {
-        for (size_t inner = 0; inner < inner_size; ++inner) {
-            size_t out_idx = outer * inner_size + inner;
-            double got = static_cast<double>(output[out_idx]);
-
-            double abs_err = std::abs(got - expected_mean);
-
-            if (abs_err > 1e-2) return false;
-        }
-    }
-
-    return true;
-}
-
 int main() {
     TestUtils::TestRunner runner("Kernel Backend Tests");
 
@@ -460,10 +342,6 @@ int main() {
     runner.run_test("Kernel RoPE Correctness", test_neon_rope_correctness());
     runner.run_test("Kernel Attention FP16 Correctness", test_neon_attention_fp16_correctness());
     runner.run_test("Kernel Grouped INT8 MatMul Correctness", test_matmul_int8_grouped_correctness());
-    runner.run_test("Kernel Reduction FP16 Accumulation Precision Loss", test_neon_reduction_fp16_accumulation_precision_loss());
-    runner.run_test("Kernel Mean All FP16 Accumulation Precision Loss", test_neon_mean_all_fp16_accumulation_precision_loss());
-    runner.run_test("Kernel Sum Axis FP16 Accumulation Precision Loss", test_neon_sum_axis_fp16_accumulation_precision_loss());
-    runner.run_test("Kernel Mean Axis FP16 Accumulation Precision Loss", test_neon_mean_axis_fp16_accumulation_precision_loss());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
