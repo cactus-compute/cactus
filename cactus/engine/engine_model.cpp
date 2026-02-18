@@ -509,6 +509,18 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "partial_rotary_factor") partial_rotary_factor = std::stof(value);
     }
 
+    const bool has_vision_support =
+        use_image_tokens ||
+        vision_num_layers > 0 ||
+        vision_embed_dim > 0 ||
+        vision_hidden_dim > 0 ||
+        visual_tokens_per_img > 0;
+
+    // Backward compatibility: some legacy VLM configs still ship with model_variant=default.
+    if (model_type == ModelType::LFM2 && model_variant == ModelVariant::DEFAULT && has_vision_support) {
+        model_variant = ModelVariant::VLM;
+    }
+
     if (model_type == ModelType::GEMMA) {
         default_temperature = 1.0f;
         default_top_p = 0.95f;

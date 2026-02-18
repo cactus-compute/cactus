@@ -9,6 +9,10 @@
 #include <iomanip>
 #include <chrono>
 #include <thread>
+#include <filesystem>
+#include <fstream>
+#include <algorithm>
+#include <cctype>
 
 constexpr int MAX_TOKENS = 512;
 constexpr size_t MAX_BYTES_PER_TOKEN = 64;
@@ -171,15 +175,71 @@ std::string unescape_json(const std::string& s) {
     return result;
 }
 
+bool model_supports_images(const std::string& model_path) {
+    std::filesystem::path config_path = std::filesystem::path(model_path) / "config.txt";
+    std::ifstream config_file(config_path);
+    if (!config_file.is_open()) {
+        return false;
+    }
+
+    std::string line;
+    while (std::getline(config_file, line)) {
+        auto eq_pos = line.find('=');
+        if (eq_pos == std::string::npos) {
+            continue;
+        }
+
+        std::string key = line.substr(0, eq_pos);
+        std::string value = line.substr(eq_pos + 1);
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+
+        if (key == "model_variant" && value == "vlm") {
+            return true;
+        }
+
+        if (key == "vision_num_layers" || key == "vision_embed_dim" ||
+            key == "vision_hidden_dim" || key == "vision_image_size") {
+            try {
+                if (std::stof(value) > 0.0f) {
+                    return true;
+                }
+            } catch (...) {
+                continue;
+            }
+        }
+    }
+
+    return false;
+}
+
 int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
-        std::cerr << "Usage: " << argv[0] << " <model_path>\n";
-        std::cerr << "Example: " << argv[0] << " weights/lfm2-1.2B\n";
+    if (argc < 2 || argc > 3) {
+        std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Invalid arguments\n";
+        std::cerr << "Usage: " << argv[0] << " <model_path> [image_path]\n";
+        std::cerr << "Example: " << argv[0] << " weights/lfm2-vl-450m ./image.jpg\n";
         return 1;
     }
 
     const char* model_path = argv[1];
+    std::string image_path;
+    if (argc == 3) {
+        image_path = std::filesystem::absolute(argv[2]).string();
+        if (!std::filesystem::exists(image_path)) {
+            std::cerr << colored("Error: ", Color::RED + Color::BOLD)
+                      << "Image file not found: " << image_path << "\n";
+            return 1;
+        }
+        if (!model_supports_images(model_path)) {
+            std::cout << colored("Warning: ", Color::YELLOW + Color::BOLD)
+                      << "Model does not support image inputs; ignoring image.\n";
+            image_path.clear();
+        }
+    }
 
     std::cout << "\n" << colored("Loading model from ", Color::YELLOW)
               << colored(model_path, Color::CYAN) << colored("...", Color::YELLOW) << "\n";
@@ -192,6 +252,10 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << colored("Model loaded successfully!\n", Color::GREEN + Color::BOLD);
+    if (!image_path.empty()) {
+        std::cout << colored("Using image: ", Color::YELLOW)
+                  << colored(image_path, Color::CYAN) << "\n";
+    }
 
     print_header();
 
@@ -228,7 +292,11 @@ int main(int argc, char* argv[]) {
             if (i > 0) messages_json << ",";
             if (i % 2 == 0) {
                 messages_json << "{\"role\":\"user\",\"content\":\""
-                             << escape_json(history[i]) << "\"}";
+                             << escape_json(history[i]) << "\"";
+                if (!image_path.empty() && i == 0) {
+                    messages_json << ",\"images\":[\"" << escape_json(image_path) << "\"]";
+                }
+                messages_json << "}";
             } else {
                 messages_json << "{\"role\":\"assistant\",\"content\":\""
                              << escape_json(history[i]) << "\"}";

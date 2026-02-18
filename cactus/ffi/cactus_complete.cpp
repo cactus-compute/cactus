@@ -246,7 +246,22 @@ int cactus_complete(
 
         std::vector<uint32_t> tokens_to_process;
 
-        bool has_images = !image_paths.empty();
+        const auto& model_config = handle->model->get_config();
+        const bool model_supports_images =
+            model_config.model_variant == Config::ModelVariant::VLM ||
+            model_config.use_image_tokens ||
+            model_config.vision_num_layers > 0 ||
+            model_config.vision_embed_dim > 0 ||
+            model_config.vision_hidden_dim > 0 ||
+            model_config.visual_tokens_per_img > 0;
+        if (!image_paths.empty() && !model_supports_images) {
+            CACTUS_LOG_WARN("complete", "Ignoring image inputs for non-VLM model");
+        }
+        const std::vector<std::string> no_images;
+        const std::vector<std::string>& active_image_paths =
+            model_supports_images ? image_paths : no_images;
+
+        bool has_images = !active_image_paths.empty();
         bool is_prefix = !has_images &&
                          (current_prompt_tokens.size() >= handle->processed_tokens.size()) &&
                          std::equal(handle->processed_tokens.begin(), handle->processed_tokens.end(), current_prompt_tokens.begin());
@@ -268,7 +283,7 @@ int cactus_complete(
         double time_to_first_token = 0.0;
         float first_token_entropy = 0.0f;
 
-        uint32_t next_token = generate_first_token(handle, tokens_to_process, image_paths,
+        uint32_t next_token = generate_first_token(handle, tokens_to_process, active_image_paths,
                                                     temperature, top_p, top_k, &first_token_entropy);
 
         handle->processed_tokens = current_prompt_tokens;

@@ -153,7 +153,7 @@ git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setu
 | Command | Description |
 |---------|-------------|
 | `cactus auth` | Setup Cactus cloud fallback (optional) (`--status`, `--clear`) |
-| `cactus run [model]` | Opens playground (auto downloads model) |
+| `cactus run [model]` | Opens playground (auto downloads model), optional `--image <path>` for VLM chat |
 | `cactus download [model]` | Downloads model to `./weights` |
 | `cactus convert [model] [dir]` | Converts model, supports LoRA merging (`--lora <path>`) |
 | `cactus build` | Builds for ARM (`--apple` or `--android`) |
@@ -161,6 +161,19 @@ git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setu
 | `cactus transcribe [model]` | Transcribe audio file (`--file`) or live microphone |
 | `cactus clean` | Removes build artifacts |
 | `cactus --help` | Shows all commands and flags (always run this) |
+
+### Optional image input for `cactus run`
+
+Use `--image` to attach a local image to chat when running a vision model.
+
+```bash
+cactus run LiquidAI/LFM2-VL-450M --image /absolute/path/to/image.png
+```
+
+- The image is attached to the first user message in the chat session.
+- Supported vision models include `LiquidAI/LFM2-VL-450M` and `LiquidAI/LFM2.5-VL-1.6B`.
+- If the selected model does not support vision, Cactus prints a warning and continues in text-only mode.
+- If the image path does not exist, `cactus run` exits with an error.
 
 ## Using in your apps 
 

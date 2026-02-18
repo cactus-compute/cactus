@@ -41,25 +41,55 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
     file.clear();
     file.seekg(0);
 
-    while (std::getline(file, line)) {
-        size_t pos2 = line.find("model_variant");
-        if (pos2 != std::string::npos) {
-            std::transform(line.begin(), line.end(), line.begin(), ::tolower);
+    bool has_vision_support = false;
 
-            if (line.find("vlm") != std::string::npos) {
+    while (std::getline(file, line)) {
+        std::string lower = line;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+        size_t eq_pos = lower.find('=');
+        if (eq_pos == std::string::npos) continue;
+
+        std::string key = lower.substr(0, eq_pos);
+        std::string value = lower.substr(eq_pos + 1);
+
+        key.erase(0, key.find_first_not_of(" \t"));
+        key.erase(key.find_last_not_of(" \t") + 1);
+        value.erase(0, value.find_first_not_of(" \t"));
+        value.erase(value.find_last_not_of(" \t") + 1);
+
+        if (key == "model_variant") {
+            if (value == "vlm") {
                 model_variant_ = ModelVariant::VLM;
-                break;
-            } else if (line.find("extract") != std::string::npos) {
+            } else if (value == "extract") {
                 model_variant_ = ModelVariant::EXTRACT;
-                break;
-            } else if (line.find("rag") != std::string::npos) {
+            } else if (value == "rag") {
                 model_variant_ = ModelVariant::RAG;
-                break;
             } else {
                 model_variant_ = ModelVariant::DEFAULT;
             }
+            continue;
+        }
+
+        if (key == "use_image_tokens") {
+            has_vision_support = (value == "true" || value == "1");
+            continue;
+        }
+
+        if (key == "vision_num_layers" || key == "vision_embed_dim" ||
+            key == "vision_hidden_dim" || key == "visual_tokens_per_img") {
+            try {
+                has_vision_support = has_vision_support || (std::stoul(value) > 0);
+            } catch (...) {
+            }
         }
     }
+
+    // Backward compatibility: infer VL model type from vision fields when model_variant is not set.
+    if (model_type_ == ModelType::LFM2 && model_variant_ == ModelVariant::DEFAULT && has_vision_support) {
+        model_variant_ = ModelVariant::VLM;
+    }
+
     file.close();
 }
 
@@ -88,7 +118,7 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
             break;
         }
     }
-    if (model_type_ == ModelType::LFM2 && has_images) {
+    if (model_type_ == ModelType::LFM2 && has_images && model_variant_ == ModelVariant::VLM) {
         return format_lfm2_vl_style(messages, add_generation_prompt, tools_json);
     }
     

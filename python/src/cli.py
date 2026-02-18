@@ -52,6 +52,40 @@ def run_command(cmd, cwd=None, check=True):
     return result
 
 
+def model_supports_images(weights_dir):
+    """Return True if local model config indicates image/VLM support."""
+    config_path = Path(weights_dir) / "config.txt"
+    if not config_path.exists():
+        return False
+
+    config = {}
+    try:
+        with open(config_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or '=' not in line:
+                    continue
+                key, value = line.split('=', 1)
+                config[key.strip().lower()] = value.strip().lower()
+    except Exception:
+        return False
+
+    if config.get('model_variant') == 'vlm':
+        return True
+
+    for key in ('vision_num_layers', 'vision_embed_dim', 'vision_hidden_dim', 'vision_image_size'):
+        value = config.get(key)
+        if not value:
+            continue
+        try:
+            if int(float(value)) > 0:
+                return True
+        except ValueError:
+            continue
+
+    return False
+
+
 def ensure_vad_weights(model_id, weights_dir, precision='INT8'):
     """Bundle Silero VAD weights into <weights_dir>/vad/ for whisper/moonshine models."""
     is_asr = 'whisper' in model_id.lower() or 'moonshine' in model_id.lower()
@@ -672,6 +706,14 @@ def cmd_run(args):
         os.environ["CACTUS_CLOUD_API_KEY"] = api_key
 
     model_id = args.model_id
+    image_path = getattr(args, 'image', None)
+
+    resolved_image = None
+    if image_path:
+        resolved_image = Path(image_path).expanduser().resolve()
+        if not resolved_image.exists():
+            print_color(RED, f"Error: image file not found: {resolved_image}")
+            return 1
 
     if getattr(args, 'no_cloud_tele', False):
         os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
@@ -691,6 +733,10 @@ def cmd_run(args):
             return download_result
         weights_dir = get_weights_dir(model_id)
 
+    if resolved_image and not model_supports_images(weights_dir):
+        print_color(YELLOW, f"Warning: model at {weights_dir} does not support images; ignoring --image")
+        resolved_image = None
+
     chat_binary = PROJECT_ROOT / "tests" / "build" / "chat"
 
     if not chat_binary.exists():
@@ -699,9 +745,15 @@ def cmd_run(args):
 
     os.system('clear' if platform.system() != 'Windows' else 'cls')
     print_color(GREEN, f"Starting Cactus Chat with model: {model_id}")
+    if resolved_image:
+        print_color(GREEN, f"Using image: {resolved_image}")
     print()
 
-    os.execv(str(chat_binary), [str(chat_binary), str(weights_dir)])
+    exec_args = [str(chat_binary), str(weights_dir)]
+    if resolved_image:
+        exec_args.append(str(resolved_image))
+
+    os.execv(str(chat_binary), exec_args)
 
 
 DEFAULT_ASR_MODEL_ID = "openai/whisper-small"
@@ -1401,6 +1453,7 @@ def create_parser():
                                        auto downloads and spins up
 
     Optional flags:
+    --image <path>                     optional image for VLM chat (first user turn)
     --precision INT4|INT8|FP16         default: INT8
     --token <token>                    HF token (for gated models)
     --reconvert                        force model weights reconversion from source
@@ -1532,6 +1585,8 @@ def create_parser():
     run_parser.add_argument('--token', help='HuggingFace API token')
     run_parser.add_argument('--no-cloud-tele', action='store_true',
                             help='Disable cloud telemetry (write to cache only)')
+    run_parser.add_argument('--image',
+                            help='Optional image path for VLM chat (attached to first user message)')
     run_parser.add_argument('--reconvert', action='store_true',
                             help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
 
