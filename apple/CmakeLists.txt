@@ -136,6 +136,7 @@ target_compile_definitions(cactus PRIVATE
     __ARM_FEATURE_FP16_VECTOR_ARITHMETIC=1
     __ARM_FEATURE_DOTPROD=1
     __ARM_FEATURE_MATMUL_INT8=1
+    ACCELERATE_NEW_LAPACK
 )
 
 target_link_options(cactus PRIVATE -Wl,-dead_strip)

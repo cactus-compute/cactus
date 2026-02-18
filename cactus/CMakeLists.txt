@@ -21,6 +21,7 @@ if(APPLE)
         __ARM_FEATURE_FP16_VECTOR_ARITHMETIC=1
         __ARM_FEATURE_DOTPROD=1
         __ARM_FEATURE_MATMUL_INT8=1
+        ACCELERATE_NEW_LAPACK
     )
 
     enable_language(OBJCXX)
