@@ -23,15 +23,13 @@ TrOCRModel::TrOCRModel(const Config& config) : Model(config) {
     }
     attention_scale_ = 1.0f / std::sqrt(hd);
 
-    encoder_k_nodes_.assign(config.decoder_num_layers, 0);
-    encoder_v_nodes_.assign(config.decoder_num_layers, 0);
+    encoder_k_persistent_.assign(config.decoder_num_layers, 0);
+    encoder_v_persistent_.assign(config.decoder_num_layers, 0);
 }
 
 void TrOCRModel::load_weights_to_graph(CactusGraph* gb) {
-    // Load decoder token embeddings
     embedding_node_id_ = gb->mmap_embeddings(embedding_file_path_);
 
-    // Encoder global weights
     weight_nodes_.encoder_patch_embedding_weight = gb->mmap_weights(model_folder_path_ + "/encoder_patch_embedding.weights");
     weight_nodes_.encoder_patch_embedding_bias = gb->mmap_weights(model_folder_path_ + "/encoder_patch_embedding.bias");
     weight_nodes_.encoder_position_embedding = gb->mmap_weights(model_folder_path_ + "/encoder_position_embeddings.weights");
@@ -44,7 +42,6 @@ void TrOCRModel::load_weights_to_graph(CactusGraph* gb) {
     weight_nodes_.encoder_layernorm_weight = gb->mmap_weights(model_folder_path_ + "/encoder_layernorm.weights");
     weight_nodes_.encoder_layernorm_bias = gb->mmap_weights(model_folder_path_ + "/encoder_layernorm.bias");
 
-    // Decoder global weights
     weight_nodes_.decoder_embed_tokens = gb->mmap_weights(model_folder_path_ + "/decoder_token_embeddings.weights");
     weight_nodes_.decoder_position_embedding = gb->mmap_weights(model_folder_path_ + "/decoder_position_embeddings.weights");
 
@@ -54,7 +51,6 @@ void TrOCRModel::load_weights_to_graph(CactusGraph* gb) {
         weight_nodes_.decoder_embed_layernorm_bias = gb->mmap_weights(model_folder_path_ + "/decoder_embed_layernorm.bias");
     }
 
-    // Output projection
     if (config_.tie_word_embeddings) {
         weight_nodes_.output_weight = weight_nodes_.decoder_embed_tokens;
         output_weight_node_id_ = weight_nodes_.decoder_embed_tokens;
@@ -63,7 +59,6 @@ void TrOCRModel::load_weights_to_graph(CactusGraph* gb) {
         output_weight_node_id_ = weight_nodes_.output_weight;
     }
 
-    // Load encoder layer weights
     for (uint32_t i = 0; i < config_.encoder_num_layers; i++) {
         auto& layer = weight_nodes_.encoder_layers[i];
         std::string prefix = model_folder_path_ + "/encoder.layer_" + std::to_string(i) + "_";
@@ -89,12 +84,10 @@ void TrOCRModel::load_weights_to_graph(CactusGraph* gb) {
         layer.encoder_mlp_fc2_bias = gb->mmap_weights(prefix + "mlp_fc2.bias");
     }
 
-    // Load decoder layer weights
     for (uint32_t i = 0; i < config_.decoder_num_layers; i++) {
         auto& layer = weight_nodes_.decoder_layers[i];
         std::string prefix = model_folder_path_ + "/decoder.layer_" + std::to_string(i) + "_";
 
-        // Self-attention
         layer.decoder_self_attn_q_weight = gb->mmap_weights(prefix + "self_attn_q.weights");
         layer.decoder_self_attn_k_weight = gb->mmap_weights(prefix + "self_attn_k.weights");
         layer.decoder_self_attn_v_weight = gb->mmap_weights(prefix + "self_attn_v.weights");
@@ -108,7 +101,6 @@ void TrOCRModel::load_weights_to_graph(CactusGraph* gb) {
         layer.decoder_self_attn_layernorm_weight = gb->mmap_weights(prefix + "self_attn_norm.weights");
         layer.decoder_self_attn_layernorm_bias = gb->mmap_weights(prefix + "self_attn_norm.bias");
 
-        // Cross-attention
         layer.decoder_cross_attn_q_weight = gb->mmap_weights(prefix + "cross_attn_q.weights");
         layer.decoder_cross_attn_k_weight = gb->mmap_weights(prefix + "cross_attn_k.weights");
         layer.decoder_cross_attn_v_weight = gb->mmap_weights(prefix + "cross_attn_v.weights");
@@ -122,7 +114,6 @@ void TrOCRModel::load_weights_to_graph(CactusGraph* gb) {
         layer.decoder_cross_attn_layernorm_weight = gb->mmap_weights(prefix + "cross_attn_norm.weights");
         layer.decoder_cross_attn_layernorm_bias = gb->mmap_weights(prefix + "cross_attn_norm.bias");
 
-        // MLP
         layer.decoder_mlp_fc1_weight = gb->mmap_weights(prefix + "mlp_fc1.weights");
         layer.decoder_mlp_fc1_bias = gb->mmap_weights(prefix + "mlp_fc1.bias");
         layer.decoder_mlp_fc2_weight = gb->mmap_weights(prefix + "mlp_fc2.weights");
@@ -133,34 +124,19 @@ void TrOCRModel::load_weights_to_graph(CactusGraph* gb) {
     }
 }
 
-// ============ Vision Encoder Methods ============
 
 size_t TrOCRModel::build_patch_embedding(CactusGraph* gb, size_t image_input, size_t height, size_t width) {
-    // Image input shape: [batch, channels, height, width] or [channels, height, width]
-    // Patch embedding via convolution-like projection
-
     size_t patch_size = config_.trocr_patch_size;
     size_t num_patches_h = height / patch_size;
     size_t num_patches_w = width / patch_size;
     size_t num_patches = num_patches_h * num_patches_w;
-
-    // Apply patch embedding projection
-    // This is typically done via a Conv2D with kernel_size=patch_size, stride=patch_size
-    // For simplicity, we'll use matmul after reshaping
-
-    // Reshape image to patches: [num_patches, patch_size * patch_size * channels]
     size_t channels = config_.vision_num_channels > 0 ? config_.vision_num_channels : 3;
     size_t patch_dim = patch_size * patch_size * channels;
 
-    // Project patches to hidden dimension
     size_t patches = gb->matmul(image_input, weight_nodes_.encoder_patch_embedding_weight, true, ComputeBackend::CPU);
     patches = gb->add(patches, weight_nodes_.encoder_patch_embedding_bias);
 
-    // Add position embeddings
     size_t pos_embed = gb->slice(weight_nodes_.encoder_position_embedding, 0, 0, num_patches + 1);  // +1 for CLS token
-
-    // Optionally prepend CLS token
-    // For TrOCR, we typically use the sequence without CLS for cross-attention
 
     const auto& patches_buf = gb->get_output_buffer(patches);
     const auto& pos_buf = gb->get_output_buffer(pos_embed);
@@ -176,8 +152,6 @@ size_t TrOCRModel::build_patch_embedding(CactusGraph* gb, size_t image_input, si
 
 size_t TrOCRModel::build_encoder_self_attention(CactusGraph* gb, size_t input, uint32_t layer_idx, ComputeBackend backend) {
     const auto& layer = weight_nodes_.encoder_layers[layer_idx];
-
-    // Q, K, V projections
     size_t q = gb->matmul(input, layer.encoder_self_attn_q_weight, true, backend);
     q = gb->add(q, layer.encoder_self_attn_q_bias);
 
@@ -187,24 +161,15 @@ size_t TrOCRModel::build_encoder_self_attention(CactusGraph* gb, size_t input, u
     size_t v = gb->matmul(input, layer.encoder_self_attn_v_weight, true, backend);
     v = gb->add(v, layer.encoder_self_attn_v_bias);
 
-    // Get dimensions
     const auto& q_buf = gb->get_output_buffer(q);
     size_t seq_len = q_buf.shape[0];
     size_t num_heads = config_.encoder_attention_heads;
     size_t head_dim = config_.encoder_hidden_dim / num_heads;
-
-    // Reshape for multi-head attention: [seq, hidden] -> [1, seq, heads, head_dim]
     q = gb->reshape(q, {1, seq_len, num_heads, head_dim});
     k = gb->reshape(k, {1, seq_len, num_heads, head_dim});
     v = gb->reshape(v, {1, seq_len, num_heads, head_dim});
-
-    // Compute attention (no causal mask for encoder)
     size_t attn = gb->attention(q, k, v, attention_scale_, false);
-
-    // Reshape back: [1, seq, heads, head_dim] -> [seq, hidden]
     attn = gb->reshape(attn, {seq_len, num_heads * head_dim});
-
-    // Output projection
     size_t output = gb->matmul(attn, layer.encoder_self_attn_output_weight, true, backend);
     output = gb->add(output, layer.encoder_self_attn_output_bias);
 
@@ -213,15 +178,9 @@ size_t TrOCRModel::build_encoder_self_attention(CactusGraph* gb, size_t input, u
 
 size_t TrOCRModel::build_encoder_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx, ComputeBackend backend) {
     const auto& layer = weight_nodes_.encoder_layers[layer_idx];
-
-    // FC1
     size_t fc1 = gb->matmul(input, layer.encoder_mlp_fc1_weight, true, backend);
     fc1 = gb->add(fc1, layer.encoder_mlp_fc1_bias);
-
-    // GELU activation (ViT uses GELU)
     size_t act = gb->gelu_erf(fc1);
-
-    // FC2
     size_t fc2 = gb->matmul(act, layer.encoder_mlp_fc2_weight, true, backend);
     fc2 = gb->add(fc2, layer.encoder_mlp_fc2_bias);
 
@@ -230,23 +189,11 @@ size_t TrOCRModel::build_encoder_mlp(CactusGraph* gb, size_t input, uint32_t lay
 
 size_t TrOCRModel::build_encoder_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx, ComputeBackend backend) {
     const auto& layer = weight_nodes_.encoder_layers[layer_idx];
-
-    // Pre-LayerNorm (ViT uses pre-norm)
     size_t ln1 = gb->layernorm(hidden, layer.encoder_layernorm1_weight, layer.encoder_layernorm1_bias);
-
-    // Self-attention
     size_t attn = build_encoder_self_attention(gb, ln1, layer_idx, backend);
-
-    // Residual connection
     size_t x = gb->add(hidden, attn);
-
-    // Pre-LayerNorm for MLP
     size_t ln2 = gb->layernorm(x, layer.encoder_layernorm2_weight, layer.encoder_layernorm2_bias);
-
-    // MLP
     size_t mlp = build_encoder_mlp(gb, ln2, layer_idx, backend);
-
-    // Residual connection
     size_t output = gb->add(x, mlp);
 
     return output;
@@ -260,7 +207,6 @@ void TrOCRModel::run_encoder(const std::vector<float>& image_pixels, size_t heig
 
     auto backend = (config_.default_backend == Config::Backend::CPU) ? ComputeBackend::CPU : ComputeBackend::NPU;
 
-    // Create image input node
     size_t channels = config_.vision_num_channels > 0 ? config_.vision_num_channels : 3;
     size_t patch_size = config_.trocr_patch_size;
     size_t num_patches_h = height / patch_size;
@@ -268,25 +214,22 @@ void TrOCRModel::run_encoder(const std::vector<float>& image_pixels, size_t heig
     size_t num_patches = num_patches_h * num_patches_w;
     size_t patch_dim = patch_size * patch_size * channels;
 
-    // Input: flattened patches [num_patches, patch_dim]
     std::vector<__fp16> image_f16(image_pixels.size());
     cactus_fp32_to_fp16(image_pixels.data(), image_f16.data(), image_pixels.size());
 
     size_t image_input = gb->input({num_patches, patch_dim}, Precision::FP16);
     gb->set_input(image_input, image_f16.data(), Precision::FP16);
 
-    // Patch embedding
     size_t hidden = build_patch_embedding(gb, image_input, height, width);
 
-    // Encoder transformer layers
     for (uint32_t i = 0; i < config_.encoder_num_layers; ++i) {
         hidden = build_encoder_transformer_block(gb, hidden, i, backend);
     }
 
-    // Final layer norm
     size_t encoder_output = gb->layernorm(hidden, weight_nodes_.encoder_layernorm_weight, weight_nodes_.encoder_layernorm_bias);
 
     weight_nodes_.encoder_output = encoder_output;
+    last_encoder_post_norm_node_ = encoder_output;
 }
 
 // ============ Text Decoder Methods ============
@@ -295,7 +238,6 @@ size_t TrOCRModel::build_decoder_self_attention(CactusGraph* gb, size_t input, u
                                                  ComputeBackend backend, bool use_cache, size_t position_offset) {
     const auto& layer = weight_nodes_.decoder_layers[layer_idx];
 
-    // Q, K, V projections
     size_t q = gb->matmul(input, layer.decoder_self_attn_q_weight, true, backend);
     q = gb->add(q, layer.decoder_self_attn_q_bias);
 
@@ -305,13 +247,11 @@ size_t TrOCRModel::build_decoder_self_attention(CactusGraph* gb, size_t input, u
     size_t v = gb->matmul(input, layer.decoder_self_attn_v_weight, true, backend);
     v = gb->add(v, layer.decoder_self_attn_v_bias);
 
-    // Get dimensions
     const auto& q_buf = gb->get_output_buffer(q);
     size_t seq_new = q_buf.shape[0];
     size_t num_heads = config_.decoder_attention_heads;
     size_t head_dim = config_.decoder_hidden_dim / num_heads;
 
-    // Reshape for multi-head attention
     size_t q_4d = gb->reshape(q, {1, seq_new, num_heads, head_dim});
     size_t k_4d = gb->reshape(k, {1, seq_new, num_heads, head_dim});
     size_t v_4d = gb->reshape(v, {1, seq_new, num_heads, head_dim});
@@ -319,26 +259,30 @@ size_t TrOCRModel::build_decoder_self_attention(CactusGraph* gb, size_t input, u
     size_t final_k = k_4d;
     size_t final_v = v_4d;
 
-    // Handle KV cache for incremental decoding
     if (use_cache && !kv_cache_.is_empty()) {
         auto k_view = kv_cache_.get_key_view(layer_idx);
         auto v_view = kv_cache_.get_value_view(layer_idx);
 
-        if (k_view.ptr1 && v_view.ptr1) {
-            size_t cache_len = kv_cache_.current_seq_len;
-
-            size_t cache_k_node = gb->input({1, cache_len, num_heads, head_dim}, kv_cache_.precision);
-            size_t cache_v_node = gb->input({1, cache_len, num_heads, head_dim}, kv_cache_.precision);
-
-            gb->set_input(cache_k_node, k_view.ptr1, kv_cache_.precision);
-            gb->set_input(cache_v_node, v_view.ptr1, kv_cache_.precision);
-
-            final_k = gb->concat(cache_k_node, k_4d, 1);
-            final_v = gb->concat(cache_v_node, v_4d, 1);
+        if (!k_view.ptr1 || !v_view.ptr1) {
+            throw std::runtime_error("KV cache view is empty but kv_cache_.is_empty()==false");
         }
+
+        size_t cache_len = kv_cache_.current_seq_len;
+        size_t cache_k_node = gb->input({1, cache_len, num_heads, head_dim}, kv_cache_.precision);
+        size_t cache_v_node = gb->input({1, cache_len, num_heads, head_dim}, kv_cache_.precision);
+
+        if (k_view.ptr2 == nullptr && v_view.ptr2 == nullptr) {
+            gb->set_external_input(cache_k_node, const_cast<void*>(k_view.ptr1), kv_cache_.precision);
+            gb->set_external_input(cache_v_node, const_cast<void*>(v_view.ptr1), kv_cache_.precision);
+        } else {
+            gb->set_external_input(cache_k_node, kv_cache_.get_key_ptr(layer_idx), kv_cache_.precision);
+            gb->set_external_input(cache_v_node, kv_cache_.get_value_ptr(layer_idx), kv_cache_.precision);
+        }
+
+        final_k = gb->concat(cache_k_node, k_4d, 1);
+        final_v = gb->concat(cache_v_node, v_4d, 1);
     }
 
-    // Store for cache update
     if (use_cache) {
         cache_k_output_nodes_[layer_idx] = final_k;
         cache_v_output_nodes_[layer_idx] = final_v;
@@ -347,13 +291,9 @@ size_t TrOCRModel::build_decoder_self_attention(CactusGraph* gb, size_t input, u
         cache_v_output_nodes_[layer_idx] = v_4d;
     }
 
-    // Causal attention for decoder
     size_t attn = gb->attention(q_4d, final_k, final_v, attention_scale_, position_offset);
-
-    // Reshape back
     attn = gb->reshape(attn, {seq_new, num_heads * head_dim});
 
-    // Output projection
     size_t output = gb->matmul(attn, layer.decoder_self_attn_output_weight, true, backend);
     output = gb->add(output, layer.decoder_self_attn_output_bias);
 
@@ -361,65 +301,59 @@ size_t TrOCRModel::build_decoder_self_attention(CactusGraph* gb, size_t input, u
 }
 
 size_t TrOCRModel::build_decoder_cross_attention(CactusGraph* gb, size_t input, uint32_t layer_idx,
-                                                  ComputeBackend backend, bool use_cache) {
+                                                 ComputeBackend backend, bool /*use_cache*/) {
     const auto& layer = weight_nodes_.decoder_layers[layer_idx];
 
-    // Query from decoder
     size_t q = gb->matmul(input, layer.decoder_cross_attn_q_weight, true, backend);
     q = gb->add(q, layer.decoder_cross_attn_q_bias);
 
     const auto& q_buf = gb->get_output_buffer(q);
+    if (q_buf.shape.size() != 2) {
+        throw std::runtime_error("encoder cross-attn: q must be [T_dec, D]");
+    }
+
     size_t seq_dec = q_buf.shape[0];
     size_t num_heads = config_.decoder_attention_heads;
     size_t head_dim = config_.decoder_hidden_dim / num_heads;
 
     q = gb->reshape(q, {1, seq_dec, num_heads, head_dim});
 
-    size_t k_4d, v_4d;
+    size_t k_4d = 0;
+    size_t v_4d = 0;
 
-    // Use cached encoder K/V if available
-    if (use_cache && encoder_kv_ready_) {
-        const auto& k_shape = encoder_k_shape_[layer_idx];
-        const auto& v_shape = encoder_v_shape_[layer_idx];
-
-        size_t cache_k_node = gb->input(k_shape, encoder_kv_precision_);
-        size_t cache_v_node = gb->input(v_shape, encoder_kv_precision_);
-
-        gb->set_input(cache_k_node, encoder_k_host_[layer_idx].data(), encoder_kv_precision_);
-        gb->set_input(cache_v_node, encoder_v_host_[layer_idx].data(), encoder_kv_precision_);
-
-        k_4d = cache_k_node;
-        v_4d = cache_v_node;
+    bool is_populated = (encoder_k_persistent_[layer_idx] != 0 && gb->is_populated(encoder_k_persistent_[layer_idx]));
+    if (is_populated) {
+        k_4d = encoder_k_persistent_[layer_idx];
+        v_4d = encoder_v_persistent_[layer_idx];
     } else {
-        // Compute K, V from encoder output
-        size_t enc_output = weight_nodes_.encoder_output;
+        size_t enc_norm = last_encoder_post_norm_node_;
 
-        size_t k = gb->matmul(enc_output, layer.decoder_cross_attn_k_weight, true, backend);
+        size_t k = gb->matmul(enc_norm, layer.decoder_cross_attn_k_weight, true, backend);
         k = gb->add(k, layer.decoder_cross_attn_k_bias);
 
-        size_t v = gb->matmul(enc_output, layer.decoder_cross_attn_v_weight, true, backend);
+        size_t v = gb->matmul(enc_norm, layer.decoder_cross_attn_v_weight, true, backend);
         v = gb->add(v, layer.decoder_cross_attn_v_bias);
 
         const auto& k_buf = gb->get_output_buffer(k);
+        if (k_buf.shape.size() != 2) {
+            throw std::runtime_error("encoder cross-attn: k must be [T_enc, D]");
+        }
         size_t seq_enc = k_buf.shape[0];
 
         k_4d = gb->reshape(k, {1, seq_enc, num_heads, head_dim});
         v_4d = gb->reshape(v, {1, seq_enc, num_heads, head_dim});
 
-        // Store for caching
-        if (!encoder_kv_ready_) {
-            encoder_k_nodes_[layer_idx] = k_4d;
-            encoder_v_nodes_[layer_idx] = v_4d;
+        if (encoder_k_persistent_[layer_idx] == 0) {
+            encoder_k_persistent_[layer_idx] = gb->persistent(k_4d);
+            encoder_v_persistent_[layer_idx] = gb->persistent(v_4d);
         }
+        k_4d = encoder_k_persistent_[layer_idx];
+        v_4d = encoder_v_persistent_[layer_idx];
     }
 
-    // Cross-attention (no causal mask)
     size_t attn = gb->attention(q, k_4d, v_4d, attention_scale_, false);
-
-    // Reshape back
     attn = gb->reshape(attn, {seq_dec, num_heads * head_dim});
 
-    // Output projection
     size_t output = gb->matmul(attn, layer.decoder_cross_attn_output_weight, true, backend);
     output = gb->add(output, layer.decoder_cross_attn_output_bias);
 
@@ -530,13 +464,25 @@ void TrOCRModel::reset_graph_side_cache_nodes() {
 void TrOCRModel::reset_cache() {
     Model::reset_cache();
     encoder_ready_ = false;
-    encoder_kv_ready_ = false;
     first_decode_step_ = true;
-    encoder_output_host_.clear();
-    encoder_k_host_.clear();
-    encoder_v_host_.clear();
-    encoder_k_shape_.clear();
-    encoder_v_shape_.clear();
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    if (gb) {
+        if (encoder_output_persistent_ != 0) {
+            gb->invalidate_persistent(encoder_output_persistent_);
+            encoder_output_persistent_ = 0;
+        }
+        for (size_t i = 0; i < encoder_k_persistent_.size(); ++i) {
+            if (encoder_k_persistent_[i] != 0) {
+                gb->invalidate_persistent(encoder_k_persistent_[i]);
+                encoder_k_persistent_[i] = 0;
+            }
+            if (encoder_v_persistent_[i] != 0) {
+                gb->invalidate_persistent(encoder_v_persistent_[i]);
+                encoder_v_persistent_[i] = 0;
+            }
+        }
+    }
 }
 
 uint32_t TrOCRModel::decode_with_image(
@@ -573,42 +519,20 @@ uint32_t TrOCRModel::decode_with_image(
     full_tokens.insert(full_tokens.end(), tokens.begin(), tokens.end());
 
     if (cold_start) {
-        // First call - run encoder and full decoder
         gb->soft_reset();
         kv_cache_.reset();
         kv_cache_.current_seq_len = 0;
         reset_graph_side_cache_nodes();
 
-        encoder_kv_ready_ = false;
-        encoder_k_nodes_.assign(config_.decoder_num_layers, 0);
-        encoder_v_nodes_.assign(config_.decoder_num_layers, 0);
-        encoder_k_host_.clear();
-        encoder_v_host_.clear();
-        encoder_k_shape_.clear();
-        encoder_v_shape_.clear();
-
         first_decode_step_ = true;
 
-        // Run vision encoder
         run_encoder(image_pixels, image_height, image_width);
 
-        // Run decoder
         logits_node = run_decoder_step(full_tokens, false, false);
     } else {
-        // Incremental decoding - use cached encoder output
         gb->soft_reset();
         reset_graph_side_cache_nodes();
 
-        if (encoder_output_host_.empty()) {
-            throw std::runtime_error("Missing encoder_output_host_ in warm step");
-        }
-
-        // Restore encoder output
-        size_t enc_node = gb->input(encoder_output_shape_, encoder_output_precision_);
-        gb->set_input(enc_node, encoder_output_host_.data(), encoder_output_precision_);
-        weight_nodes_.encoder_output = enc_node;
-
-        // Run decoder with just the last token
         std::vector<uint32_t> last_token_vec = {tokens.back()};
         logits_node = run_decoder_step(last_token_vec, true, true);
     }
@@ -622,69 +546,11 @@ uint32_t TrOCRModel::decode_with_image(
         gb->execute();
     }
 
-    // Cache encoder output on first run
     if (cold_start) {
-        auto& out_buf = gb->get_output_buffer(weight_nodes_.encoder_output);
-
-        encoder_output_shape_ = out_buf.shape;
-        encoder_output_precision_ = out_buf.precision;
-
-        size_t total_elems = 1;
-        for (auto s : out_buf.shape) total_elems *= s;
-
-        size_t elem_size = 0;
-        switch (out_buf.precision) {
-            case Precision::FP32: elem_size = sizeof(float); break;
-            case Precision::FP16: elem_size = sizeof(uint16_t); break;
-            case Precision::INT8: elem_size = sizeof(int8_t); break;
-            default:
-                throw std::runtime_error("Unsupported encoder_output precision");
+        if (encoder_output_persistent_ == 0) {
+            encoder_output_persistent_ = gb->persistent(last_encoder_post_norm_node_);
         }
-
-        encoder_output_host_.resize(total_elems * elem_size);
-        std::memcpy(encoder_output_host_.data(), gb->get_output(weight_nodes_.encoder_output), total_elems * elem_size);
-
-        // Cache cross-attention K/V
-        auto& k0_buf = gb->get_output_buffer(encoder_k_nodes_[0]);
-        encoder_kv_precision_ = k0_buf.precision;
-
-        encoder_k_host_.resize(config_.decoder_num_layers);
-        encoder_v_host_.resize(config_.decoder_num_layers);
-        encoder_k_shape_.resize(config_.decoder_num_layers);
-        encoder_v_shape_.resize(config_.decoder_num_layers);
-
-        size_t kv_elem_size = 0;
-        switch (encoder_kv_precision_) {
-            case Precision::FP32: kv_elem_size = sizeof(float); break;
-            case Precision::FP16: kv_elem_size = sizeof(uint16_t); break;
-            case Precision::INT8: kv_elem_size = sizeof(int8_t); break;
-            default:
-                throw std::runtime_error("Unsupported encoder K/V precision");
-        }
-
-        for (uint32_t i = 0; i < config_.decoder_num_layers; ++i) {
-            size_t k_node = encoder_k_nodes_[i];
-            size_t v_node = encoder_v_nodes_[i];
-
-            auto& k_buf = gb->get_output_buffer(k_node);
-            auto& v_buf = gb->get_output_buffer(v_node);
-
-            encoder_k_shape_[i] = k_buf.shape;
-            encoder_v_shape_[i] = v_buf.shape;
-
-            size_t k_elems = 1;
-            for (auto s : k_buf.shape) k_elems *= s;
-            size_t v_elems = 1;
-            for (auto s : v_buf.shape) v_elems *= s;
-
-            encoder_k_host_[i].resize(k_elems * kv_elem_size);
-            encoder_v_host_[i].resize(v_elems * kv_elem_size);
-
-            std::memcpy(encoder_k_host_[i].data(), gb->get_output(k_node), k_elems * kv_elem_size);
-            std::memcpy(encoder_v_host_[i].data(), gb->get_output(v_node), v_elems * kv_elem_size);
-        }
-
-        encoder_kv_ready_ = true;
+        last_encoder_post_norm_node_ = encoder_output_persistent_;
         encoder_ready_ = true;
     }
 
@@ -738,14 +604,11 @@ uint32_t TrOCRModel::decode_with_image(
 }
 
 std::vector<float> TrOCRModel::get_image_embeddings(const std::string& image_path) {
-    // Load and preprocess image
     int width, height, channels;
     unsigned char* img_data = stbi_load(image_path.c_str(), &width, &height, &channels, 3);
     if (!img_data) {
         throw std::runtime_error("Failed to load image: " + image_path);
     }
-
-    // Preprocess image (resize, normalize)
     size_t target_h = config_.trocr_image_size;
     size_t target_w = config_.trocr_image_size;
     size_t patch_size = config_.trocr_patch_size;
@@ -753,8 +616,6 @@ std::vector<float> TrOCRModel::get_image_embeddings(const std::string& image_pat
     size_t num_patches_w = target_w / patch_size;
     size_t num_patches = num_patches_h * num_patches_w;
     size_t patch_dim = patch_size * patch_size * 3;
-
-    // Resize and normalize
     std::vector<float> resized(target_h * target_w * 3);
     stbir_resize_uint8_linear(img_data, width, height, 0,
                               reinterpret_cast<unsigned char*>(resized.data()),
@@ -762,15 +623,10 @@ std::vector<float> TrOCRModel::get_image_embeddings(const std::string& image_pat
                               STBIR_RGB);
 
     stbi_image_free(img_data);
-
-    // Normalize to [-1, 1]
     for (auto& v : resized) {
         v = (v / 255.0f - 0.5f) / 0.5f;
     }
-
-    // Reshape to patches
     std::vector<float> patches(num_patches * patch_dim);
-    // Convert [H, W, C] to patches [num_patches, patch_dim]
     for (size_t ph = 0; ph < num_patches_h; ++ph) {
         for (size_t pw = 0; pw < num_patches_w; ++pw) {
             size_t patch_idx = ph * num_patches_w + pw;
@@ -787,13 +643,9 @@ std::vector<float> TrOCRModel::get_image_embeddings(const std::string& image_pat
             }
         }
     }
-
-    // Run encoder
     run_encoder(patches, target_h, target_w);
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
-
-    // Pool encoder output
     size_t pooled = gb->mean(weight_nodes_.encoder_output, 0);
     gb->execute();
 
