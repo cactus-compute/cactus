@@ -12,6 +12,18 @@ Build output: `android/build/lib/libcactus.so`
 
 see the main [README.md](../README.md) for how to use CLI & download weight
 
+### Vendored libcurl (device builds)
+
+To bundle libcurl locally for Android device testing, place artifacts using:
+
+`libs/curl/android/arm64-v8a/libcurl.a` and `libs/curl/include/curl/*.h`
+
+The build auto-detects `libs/curl`. You can override with:
+
+```bash
+CACTUS_CURL_ROOT=/absolute/path/to/curl cactus build --android
+```
+
 ## Integration
 
 ### Android-only

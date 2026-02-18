@@ -3,6 +3,4 @@ torchvision>=0.23.0
 transformers>=4.57.0
 pillow>=11.3.0
 num2words>=0.5.12
-peft>=0.15.0
-einops>=0.8.1
-huggingface-hub==0.36.0
+huggingface-hub>=0.36.0

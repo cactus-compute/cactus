@@ -21,6 +21,21 @@ see the main [README.md](../README.md) for how to use CLI & download weight
 
 For Android, build `libcactus.so` from the `android/` directory.
 
+### Vendored libcurl (iOS + macOS)
+
+To bundle libcurl from this repo instead of relying on system curl, place artifacts under:
+
+- `libs/curl/include/curl/*.h`
+- `libs/curl/ios/device/libcurl.a`
+- `libs/curl/ios/simulator/libcurl.a`
+- `libs/curl/macos/libcurl.a`
+
+Build scripts auto-detect `libs/curl`. Override with:
+
+```bash
+CACTUS_CURL_ROOT=/absolute/path/to/curl cactus build --apple
+```
+
 ## Integration
 
 ### iOS/macOS: XCFramework (Recommended)

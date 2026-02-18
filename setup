@@ -2,10 +2,8 @@
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     echo "Please run: source ./setup"
-    exit 1
+    return 1 2>/dev/null || exit 1
 fi
-
-set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$PROJECT_ROOT/venv"
@@ -44,22 +42,22 @@ fi
 echo ""
 echo -e "${BLUE}Step 2: Setting up Python virtual environment...${NC}"
 
-if ! command -v python3 &> /dev/null; then
-    echo -e "${RED}Error: python3 is not installed${NC}"
+if ! command -v python3.12 &> /dev/null; then
+    echo -e "${RED}Error: python3.12 is not installed${NC}"
     echo ""
-    echo "Please install python3:"
-    echo "  macOS:        brew install python3"
-    echo "  Ubuntu/Debian: sudo apt-get install python3 python3-venv python3-pip"
-    exit 1
+    echo "Please install python3.12:"
+    echo "  macOS:         brew install python@3.12"
+    echo "  Ubuntu/Debian: sudo apt-get install python3.12 python3.12-venv"
+    return 1
 fi
 
 if [ ! -d "$VENV_DIR" ]; then
-    if ! python3 -m venv "$VENV_DIR"; then
+    if ! python3.12 -m venv "$VENV_DIR"; then
         echo -e "${RED}Failed to create virtual environment${NC}"
-        echo "Please ensure python3-venv is installed:"
-        echo "  Ubuntu/Debian: sudo apt-get install python3-venv"
-        echo "  macOS: Should be included with Python3"
-        exit 1
+        echo "Please ensure python3.12-venv is installed:"
+        echo "  Ubuntu/Debian: sudo apt-get install python3.12-venv"
+        echo "  macOS: Should be included with Python3.12"
+        return 1
     fi
     echo -e "${GREEN}✓ Virtual environment created${NC}"
 else
@@ -78,7 +76,7 @@ if [ -f "$REQUIREMENTS_FILE" ]; then
         echo -e "${GREEN}✓ Dependencies installed${NC}"
     else
         echo -e "${RED}Failed to install dependencies${NC}"
-        exit 1
+        return 1
     fi
 else
     echo -e "${YELLOW}Warning: requirements.txt not found${NC}"
@@ -102,7 +100,7 @@ if python3 -m pip install -e "$PROJECT_ROOT/python" --quiet; then
     echo -e "${GREEN}✓ Cactus CLI installed${NC}"
 else
     echo -e "${RED}Failed to install cactus CLI${NC}"
-    exit 1
+    return 1
 fi
 
 echo ""
@@ -111,5 +109,3 @@ echo -e "${GREEN}Setup complete!${NC}"
 echo -e "${GREEN}=============================================${NC}"
 echo ""
 cactus --help
-
-set +e

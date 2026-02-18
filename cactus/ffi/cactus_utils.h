@@ -56,6 +56,7 @@ inline double get_ram_usage_mb() {
 
 struct CactusModelHandle {
     std::unique_ptr<cactus::engine::Model> model;
+    std::unique_ptr<cactus::engine::Model> vad_model;
     std::atomic<bool> should_stop;
     std::vector<uint32_t> processed_tokens;
     std::mutex model_mutex;
@@ -64,7 +65,7 @@ struct CactusModelHandle {
     std::string corpus_dir;
     size_t corpus_embedding_dim = 0;
     std::vector<std::vector<float>> tool_embeddings;
-    std::vector<std::string> tool_texts;  
+    std::vector<std::string> tool_texts;
 
     CactusModelHandle() : should_stop(false) {}
 };
@@ -321,15 +322,19 @@ inline void parse_options_json(const std::string& json,
                                bool& force_tools,
                                size_t& tool_rag_top_k,
                                float& confidence_threshold,
-                               bool& include_stop_sequences) {
+                               bool& include_stop_sequences,
+                               bool& use_vad,
+                               bool& telemetry_enabled) {
     temperature = 0.0f;
     top_p = 0.0f;
     top_k = 0;
     max_tokens = 100;
     force_tools = false;
-    tool_rag_top_k = 2;  
-    confidence_threshold = 0.7f;  
+    tool_rag_top_k = 2;
+    confidence_threshold = 0.7f;
     include_stop_sequences = false;
+    use_vad = true;
+    telemetry_enabled = true;
     stop_sequences.clear();
 
     if (json.empty()) return;
@@ -382,6 +387,20 @@ inline void parse_options_json(const std::string& json,
         pos = json.find(':', pos) + 1;
         while (pos < json.length() && std::isspace(json[pos])) pos++;
         include_stop_sequences = (json.substr(pos, 4) == "true");
+    }
+
+    pos = json.find("\"use_vad\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(json[pos])) pos++;
+        use_vad = (json.substr(pos, 4) == "true");
+    }
+
+    pos = json.find("\"telemetry_enabled\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(json[pos])) pos++;
+        telemetry_enabled = (json.substr(pos, 4) == "true");
     }
 
     pos = json.find("\"stop_sequences\"");
@@ -674,6 +693,18 @@ inline std::string construct_cloud_handoff_json(float confidence,
     json << "\"total_tokens\":" << prompt_tokens;
     json << "}";
     return json.str();
+}
+
+inline std::string serialize_function_calls(const std::vector<std::string>& calls) {
+    if (calls.empty()) return "[]";
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < calls.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << calls[i];
+    }
+    oss << "]";
+    return oss.str();
 }
 
 } // namespace ffi

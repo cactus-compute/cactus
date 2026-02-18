@@ -125,7 +125,10 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         model_type: Model type string (e.g., 'gemma', 'llama')
     """
     if torch is not None and isinstance(tensor, torch.Tensor):
-        data = tensor.detach().cpu().numpy()
+        t = tensor.detach().cpu()
+        if t.dtype == torch.bfloat16:
+            t = t.float()
+        data = t.numpy()
     else:
         data = np.array(tensor)
 

@@ -14,6 +14,9 @@ cactus build --python
 # Download models
 cactus download LiquidAI/LFM2-VL-450M
 cactus download openai/whisper-small
+
+# Optional: set your Cactus Cloud API key for automatic cloud fallback
+cactus auth
 ```
 
 ## Quick Example

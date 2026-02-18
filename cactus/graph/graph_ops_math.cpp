@@ -163,6 +163,11 @@ void compute_activation_node(GraphNode& node, const std::vector<std::unique_ptr<
     }
 
     switch (node.op_type) {
+        case OpType::RELU:
+            cactus_relu_f16(input.data_as<__fp16>(),
+                            node.output_buffer.data_as<__fp16>(),
+                            node.output_buffer.total_size);
+            break;
         case OpType::SILU:
             cactus_silu_f16(input.data_as<__fp16>(),
                            node.output_buffer.data_as<__fp16>(),
@@ -177,6 +182,11 @@ void compute_activation_node(GraphNode& node, const std::vector<std::unique_ptr<
             cactus_gelu_f16_erf(input.data_as<__fp16>(),
                                 node.output_buffer.data_as<__fp16>(),
                                 node.output_buffer.total_size);
+            break;
+        case OpType::SIGMOID:
+            cactus_sigmoid_f16(input.data_as<__fp16>(),
+                            node.output_buffer.data_as<__fp16>(),
+                            node.output_buffer.total_size);
             break;
         case OpType::TANH:
             cactus_tanh_f16(input.data_as<__fp16>(),

@@ -33,6 +33,8 @@ extern void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_p
 extern void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_rope_gptj_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void shrink_thread_local_buffers();
+extern void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_stft_magnitude_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 extern void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
@@ -57,13 +59,15 @@ static const char* op_type_names[] = {
     "RMS_NORM", "ROPE", "ROPE_GPTJ", "SOFTMAX", "ATTENTION", "ATTENTION_INT8_HYBRID", "CONV1D_CAUSAL", "CONV1D_K3", "CONV1D_K7S3", "CONV1D",
     "SCALAR_ADD", "SCALAR_SUBTRACT", "SCALAR_MULTIPLY", "SCALAR_DIVIDE",
     "SCALAR_EXP", "SCALAR_SQRT", "SCALAR_COS", "SCALAR_SIN",
-    "SILU", "GELU", "GELU_ERF", "TANH",
+    "RELU", "SILU", "GELU", "GELU_ERF", "SIGMOID", "TANH",
     "SAMPLE", "CONCAT",
     "SCATTER_TOPK",
     "TOPK", "LAYERNORM", "GROUPNORM",
     "INDEX",
     "PERSISTENT",
-    "QUANTIZE_ACTIVATIONS"
+    "QUANTIZE_ACTIVATIONS",
+    "LSTM_CELL",
+    "STFT_MAGNITUDE"
 };
 
 static const char* get_op_name(OpType op) {
@@ -94,9 +98,11 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
             compute_unary_op_node(node, nodes, node_index_map);
             break;
 
+        case OpType::RELU:
         case OpType::SILU:
         case OpType::GELU:
         case OpType::GELU_ERF:
+        case OpType::SIGMOID:
         case OpType::TANH:
             compute_activation_node(node, nodes, node_index_map);
             break;
@@ -215,6 +221,14 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
 
         case OpType::QUANTIZE_ACTIVATIONS:
             compute_quantize_activations_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::LSTM_CELL:
+            compute_lstm_cell_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::STFT_MAGNITUDE:
+            compute_stft_magnitude_node(node, nodes, node_index_map);
             break;
 
         default:

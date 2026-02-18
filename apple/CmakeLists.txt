@@ -8,6 +8,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version")
 set(CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.0" CACHE STRING "Minimum iOS version")
 
 set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../cactus)
+set(CACTUS_CURL_ROOT "${CMAKE_SOURCE_DIR}/../libs/curl" CACHE PATH "Path to vendored libcurl artifacts")
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
@@ -19,6 +20,7 @@ file(GLOB GRAPH_SOURCES "${SOURCE_DIR}/graph/*.cpp")
 file(GLOB KERNEL_SOURCES "${SOURCE_DIR}/kernel/*.cpp")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
 file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
+file(GLOB TELEMETRY_SOURCES "${SOURCE_DIR}/telemetry/*.cpp")
 
 enable_language(OBJCXX)
 
@@ -53,6 +55,7 @@ set(COMMON_SOURCES
     ${ENGINE_SOURCES}
     ${FFI_SOURCES}
     ${MODEL_SOURCES}
+    ${TELEMETRY_SOURCES}
     ${NPU_SOURCES}
 )
 
@@ -84,17 +87,58 @@ target_include_directories(cactus PUBLIC
     ${SOURCE_DIR}/graph
     ${SOURCE_DIR}/kernel
     ${SOURCE_DIR}/ffi
+    ${SOURCE_DIR}/telemetry
     ${SOURCE_DIR}/npu
 )
 
 find_library(COREML_FRAMEWORK CoreML REQUIRED)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+find_library(SECURITY_FRAMEWORK Security REQUIRED)
+find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
+find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    find_package(CURL REQUIRED)
-    target_link_libraries(cactus PUBLIC ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK} ${ACCELERATE_FRAMEWORK} ${CURL_LIBRARIES})
-    target_include_directories(cactus PUBLIC ${CURL_INCLUDE_DIRS})
+    set(CACTUS_CURL_INCLUDE_DIR "${CACTUS_CURL_ROOT}/include")
+    set(CACTUS_CURL_LIBRARY_MACOS "${CACTUS_CURL_ROOT}/macos/libcurl.a")
+    if(NOT EXISTS "${CACTUS_CURL_INCLUDE_DIR}/curl/curl.h" OR NOT EXISTS "${CACTUS_CURL_LIBRARY_MACOS}")
+        message(FATAL_ERROR "Vendored macOS libcurl not found. Expected: ${CACTUS_CURL_INCLUDE_DIR}/curl/curl.h and ${CACTUS_CURL_LIBRARY_MACOS}")
+    endif()
+    message(STATUS "Using vendored libcurl for macOS: ${CACTUS_CURL_LIBRARY_MACOS}")
+    target_link_libraries(cactus PUBLIC
+        ${COREML_FRAMEWORK}
+        ${FOUNDATION_FRAMEWORK}
+        ${ACCELERATE_FRAMEWORK}
+        ${SECURITY_FRAMEWORK}
+        ${SYSTEMCONFIGURATION_FRAMEWORK}
+        ${CFNETWORK_FRAMEWORK}
+        "${CACTUS_CURL_LIBRARY_MACOS}"
+    )
+    target_include_directories(cactus PUBLIC "${CACTUS_CURL_INCLUDE_DIR}")
+    target_compile_definitions(cactus PRIVATE CACTUS_USE_CURL=1)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    target_link_libraries(cactus PUBLIC
+        ${COREML_FRAMEWORK}
+        ${FOUNDATION_FRAMEWORK}
+        ${ACCELERATE_FRAMEWORK}
+        ${SECURITY_FRAMEWORK}
+        ${SYSTEMCONFIGURATION_FRAMEWORK}
+        ${CFNETWORK_FRAMEWORK}
+    )
+    set(CACTUS_CURL_INCLUDE_DIR "${CACTUS_CURL_ROOT}/include")
+    string(TOLOWER "${CMAKE_OSX_SYSROOT}" CACTUS_SYSROOT_LOWER)
+    if(CACTUS_SYSROOT_LOWER MATCHES "simulator")
+        set(CACTUS_CURL_LIBRARY_IOS "${CACTUS_CURL_ROOT}/ios/simulator/libcurl.a")
+    else()
+        set(CACTUS_CURL_LIBRARY_IOS "${CACTUS_CURL_ROOT}/ios/device/libcurl.a")
+    endif()
+    if(NOT EXISTS "${CACTUS_CURL_INCLUDE_DIR}/curl/curl.h" OR NOT EXISTS "${CACTUS_CURL_LIBRARY_IOS}")
+        message(FATAL_ERROR "Vendored iOS libcurl not found for sysroot ${CMAKE_OSX_SYSROOT}. Expected: ${CACTUS_CURL_INCLUDE_DIR}/curl/curl.h and ${CACTUS_CURL_LIBRARY_IOS}")
+    endif()
+    message(STATUS "Using vendored libcurl for iOS: ${CACTUS_CURL_LIBRARY_IOS}")
+    target_link_libraries(cactus PUBLIC "${CACTUS_CURL_LIBRARY_IOS}")
+    target_include_directories(cactus PUBLIC "${CACTUS_CURL_INCLUDE_DIR}")
+    target_compile_definitions(cactus PRIVATE CACTUS_USE_CURL=1)
 else()
     target_link_libraries(cactus PUBLIC ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK} ${ACCELERATE_FRAMEWORK})
 endif()

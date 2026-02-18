@@ -7,6 +7,7 @@ APPLE_DIR="$ROOT_DIR/apple"
 CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:-Release}
 BUILD_STATIC=${BUILD_STATIC:-true}
 BUILD_XCFRAMEWORK=${BUILD_XCFRAMEWORK:-true}
+CACTUS_CURL_ROOT=${CACTUS_CURL_ROOT:-"$ROOT_DIR/libs/curl"}
 
 if ! command -v cmake &> /dev/null; then
     echo "Error: cmake not found, please install it"
@@ -26,6 +27,7 @@ echo "Build type: $CMAKE_BUILD_TYPE"
 echo "Using $n_cpu CPU cores"
 echo "Static library: $BUILD_STATIC"
 echo "XCFramework: $BUILD_XCFRAMEWORK"
+echo "Vendored libcurl root: $CACTUS_CURL_ROOT"
 
 function cp_headers() {
     mkdir -p "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers"
@@ -128,6 +130,7 @@ function build_static_library() {
           -DCMAKE_OSX_SYSROOT="$IOS_SDK_PATH" \
           -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
           -DBUILD_SHARED_LIBS=OFF \
+          -DCACTUS_CURL_ROOT="$CACTUS_CURL_ROOT" \
           -S "$APPLE_DIR" \
           -B "$BUILD_DIR" >/dev/null
 
@@ -154,6 +157,7 @@ function build_static_library() {
           -DCMAKE_OSX_SYSROOT="$IOS_SIM_SDK_PATH" \
           -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
           -DBUILD_SHARED_LIBS=OFF \
+          -DCACTUS_CURL_ROOT="$CACTUS_CURL_ROOT" \
           -S "$APPLE_DIR" \
           -B "$BUILD_DIR_SIM" >/dev/null
 
@@ -176,6 +180,7 @@ function build_framework() {
         -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
         -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
         -DBUILD_SHARED_LIBS=ON \
+        -DCACTUS_CURL_ROOT="$CACTUS_CURL_ROOT" \
         -DCMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH=NO \
         -DCMAKE_IOS_INSTALL_COMBINED=YES >/dev/null
 

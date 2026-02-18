@@ -9,6 +9,13 @@
 #include <random>
 #include <iostream>
 
+void cactus_relu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
+    for (size_t i = 0; i < num_elements; ++i) {
+        __fp16 x = input[i];
+        output[i] = x > static_cast<__fp16>(0) ? x : static_cast<__fp16>(0);
+    }
+}
+
 void cactus_silu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
     CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
         [&](size_t start_idx, size_t end_idx) {
@@ -147,6 +154,37 @@ void cactus_gelu_f16_erf(const __fp16* input, __fp16* output, size_t num_element
             }
         }
     );
+}
+
+void cactus_sigmoid_f16(const __fp16* input, __fp16* output, size_t num_elements) {
+    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+        [&](size_t start_idx, size_t end_idx) {
+            constexpr size_t SIMD_WIDTH = 8;
+            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
+            const float32x4_t one_f32 = vdupq_n_f32(1.0f);
+
+            for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
+                float16x8_t x = vld1q_f16(&input[i]);
+
+                float32x4_t x_low = vcvt_f32_f16(vget_low_f16(x));
+                float32x4_t x_high = vcvt_f32_f16(vget_high_f16(x));
+
+                float32x4_t exp_low = fast_exp_f32x4(vnegq_f32(x_low));
+                float32x4_t exp_high = fast_exp_f32x4(vnegq_f32(x_high));
+
+                float32x4_t sigmoid_low = vdivq_f32(one_f32, vaddq_f32(one_f32, exp_low));
+                float32x4_t sigmoid_high = vdivq_f32(one_f32, vaddq_f32(one_f32, exp_high));
+
+                float16x8_t sigmoid = vcombine_f16(vcvt_f16_f32(sigmoid_low), vcvt_f16_f32(sigmoid_high));
+                vst1q_f16(&output[i], sigmoid);
+            }
+
+            for (size_t i = vectorized_end; i < end_idx; ++i) {
+                float x_f32 = static_cast<float>(input[i]);
+                float sigmoid = 1.0f / (1.0f + expf(-x_f32));
+                output[i] = static_cast<__fp16>(sigmoid);
+            }
+        });
 }
 
 void cactus_tanh_f16(const __fp16* input, __fp16* output, size_t num_elements) {

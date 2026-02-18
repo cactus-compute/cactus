@@ -7,6 +7,14 @@ def fail_with(message)
 end
 
 def generate_app_delegate(output_path, test_files)
+  raw_level = ENV.fetch('CACTUS_TEST_LOG_LEVEL', 'WARN').to_s.upcase
+  level = case raw_level
+          when 'DEBUG', 'INFO', 'WARN', 'ERROR', 'NONE'
+            raw_level
+          else
+            'WARN'
+          end
+
   test_names = test_files.map { |f| File.basename(f, '.cpp') }
   extern_declarations = test_names.map { |name| "extern int #{name}_main();" }.join("\n")
   test_calls = test_names.map { |name| "        #{name}_main();" }.join("\n")
@@ -18,8 +26,20 @@ def generate_app_delegate(output_path, test_files)
     #import "AppDelegate.h"
     #import <unistd.h>
     #include "graph/graph.h"
+    #include "ffi/cactus_ffi.h"
+    #include <algorithm>
+    #include <chrono>
+    #include <cctype>
+    #include <string>
+    #include <vector>
 
     #{extern_declarations}
+
+    static void asr_token_callback(const char* token, uint32_t, void*) {
+        if (!token) return;
+        fputs(token, stdout);
+        fflush(stdout);
+    }
 
     @implementation AppDelegate
 
@@ -63,12 +83,92 @@ def generate_app_delegate(output_path, test_files)
         setbuf(stderr, NULL);
     #endif
 
-        cactus::Logger::instance().set_level(cactus::LogLevel::DEBUG);
+        cactus::Logger::instance().set_level(cactus::LogLevel::#{level});
 
         NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
         [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_MODEL")];
         [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_TRANSCRIBE_MODEL")];
+        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_VAD_MODEL")];
         [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_ASSETS")];
+        [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_ASR_AUDIO_FILE")];
+
+        const char* run_asr = getenv("CACTUS_RUN_ASR");
+        if (run_asr && run_asr[0] == '1') {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                const char* model_path = getenv("CACTUS_TEST_TRANSCRIBE_MODEL");
+                const char* audio_file = getenv("CACTUS_ASR_AUDIO_FILE");
+                if (!model_path || !model_path[0] || !audio_file || !audio_file[0]) {
+                    fprintf(stderr, "[ASR] Missing CACTUS_TEST_TRANSCRIBE_MODEL or CACTUS_ASR_AUDIO_FILE\\n");
+                    exit(1);
+                }
+
+                cactus_model_t model = cactus_init(model_path, nullptr, false);
+                if (!model) {
+                    const char* err = cactus_get_last_error();
+                    fprintf(stderr, "[ASR] Failed to initialize model: %s\\n", err ? err : "unknown");
+                    exit(1);
+                }
+
+                std::string model_l = model_path;
+                std::transform(model_l.begin(), model_l.end(), model_l.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                const char* prompt = (model_l.find("whisper") != std::string::npos)
+                    ? "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>"
+                    : "";
+
+                std::string options = "{\\\"max_tokens\\\":500,\\\"telemetry_enabled\\\":true";
+                const char* threshold = getenv("CACTUS_CLOUD_HANDOFF_THRESHOLD");
+                if (threshold && threshold[0]) {
+                    options += ",\\\"cloud_handoff_threshold\\\":";
+                    options += threshold;
+                }
+                options += "}";
+
+                std::vector<char> response(65536, 0);
+                auto t0 = std::chrono::high_resolution_clock::now();
+                int rc = cactus_transcribe(
+                    model,
+                    audio_file,
+                    prompt,
+                    response.data(),
+                    response.size(),
+                    options.c_str(),
+                    asr_token_callback,
+                    nullptr,
+                    nullptr,
+                    0
+                );
+                auto t1 = std::chrono::high_resolution_clock::now();
+                double wall_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
+
+                if (rc < 0) {
+                    const char* err = cactus_get_last_error();
+                    fprintf(stderr, "\\n[ASR] Transcription failed: %s\\n", err ? err : "unknown");
+                    cactus_destroy(model);
+                    exit(1);
+                }
+
+                std::string json(response.data());
+                bool cloud_handoff = json.find("\\\"cloud_handoff\\\":true") != std::string::npos;
+                double model_ms = 0.0;
+                size_t p = json.find("\\\"total_time_ms\\\":");
+                if (p != std::string::npos) {
+                    p += 16;
+                    size_t e = json.find_first_of(",}", p);
+                    try { model_ms = std::stod(json.substr(p, e - p)); } catch (...) {}
+                }
+
+                printf("\\n\\n[processed in: %.2fs | model time: %.2fs]\\n",
+                       wall_ms / 1000.0, model_ms / 1000.0);
+                printf("[cloud_handoff: %s]\\n", cloud_handoff ? "true" : "false");
+                printf("\\n👋 Goodbye!\\n");
+                fflush(stdout);
+
+                cactus_destroy(model);
+                exit(0);
+            });
+            return YES;
+        }
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     #{test_calls}
@@ -158,6 +258,20 @@ static_lib_path = device_type == 'simulator' ?
 fail_with("Static library not found at: #{static_lib_path}") unless File.exist?(static_lib_path)
 puts "Using static library: #{static_lib_path}"
 
+curl_root = ENV['CACTUS_CURL_ROOT']
+vendored_curl_lib = nil
+if curl_root && !curl_root.empty?
+  vendored_curl_lib = device_type == 'simulator' ?
+    File.join(curl_root, 'ios', 'simulator', 'libcurl.a') :
+    File.join(curl_root, 'ios', 'device', 'libcurl.a')
+  if File.exist?(vendored_curl_lib)
+    puts "Using vendored iOS libcurl: #{vendored_curl_lib}"
+  else
+    vendored_curl_lib = nil
+    puts "Vendored iOS libcurl not found under CACTUS_CURL_ROOT=#{curl_root}; continuing without explicit curl link"
+  end
+end
+
 target.frameworks_build_phase.files.to_a.each do |build_file|
   if build_file.file_ref&.path&.to_s&.include?('libcactus')
     target.frameworks_build_phase.files.delete(build_file)
@@ -176,6 +290,12 @@ target.build_configurations.each do |config|
   [tests_root, cactus_root].each do |path|
     config.build_settings['HEADER_SEARCH_PATHS'] << path unless config.build_settings['HEADER_SEARCH_PATHS'].include?(path)
   end
+  if curl_root && !curl_root.empty?
+    curl_include = File.join(curl_root, 'include')
+    if File.exist?(File.join(curl_include, 'curl', 'curl.h'))
+      config.build_settings['HEADER_SEARCH_PATHS'] << curl_include unless config.build_settings['HEADER_SEARCH_PATHS'].include?(curl_include)
+    end
+  end
 
   config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++20'
   config.build_settings['CLANG_CXX_LIBRARY'] = 'libc++'
@@ -192,8 +312,11 @@ target.build_configurations.each do |config|
   config.build_settings['OTHER_LDFLAGS'].reject! { |flag| flag.to_s.include?('libcactus') }
   config.build_settings['OTHER_LDFLAGS'] << static_lib_path
 
-  ['-framework CoreML', '-framework Foundation', '-framework Accelerate'].each do |framework|
+  ['-framework CoreML', '-framework Foundation', '-framework Accelerate', '-framework Security', '-framework SystemConfiguration', '-framework CFNetwork'].each do |framework|
     config.build_settings['OTHER_LDFLAGS'] << framework unless config.build_settings['OTHER_LDFLAGS'].include?(framework)
+  end
+  if vendored_curl_lib
+    config.build_settings['OTHER_LDFLAGS'] << vendored_curl_lib unless config.build_settings['OTHER_LDFLAGS'].include?(vendored_curl_lib)
   end
 end
 

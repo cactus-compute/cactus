@@ -183,7 +183,12 @@ void cactus_conv1d_f16_k3(
     const size_t in_bs  = C_in * L;
     const size_t out_bs = C_out * out_len;
 
-    CactusThreading::parallel_for_2d(N, C_out, CactusThreading::Thresholds::ATTENTION, [&](size_t n, size_t oc) {
+    const size_t total_compute = N * C_out * out_len * C_in * 3;
+    CactusThreading::ParallelConfig config = (total_compute < 100000)
+        ? CactusThreading::ParallelConfig{SIZE_MAX, SIZE_MAX}
+        : CactusThreading::Thresholds::ATTENTION;
+
+    CactusThreading::parallel_for_2d(N, C_out, config, [&](size_t n, size_t oc) {
         const __fp16* Xb = input + n * in_bs;
         __fp16* Yoc = output + n * out_bs + oc * out_len;
         const __fp16* Woc = weight + oc * (C_in * 3);
@@ -312,8 +317,13 @@ static void conv1d_f16_accelerate(
     const size_t in_bs   = C_in * L;
     const size_t out_bs  = C_out * out_len;
 
+    const size_t total_compute = N * C_out * out_len * C_in * K;
+    CactusThreading::ParallelConfig config = (total_compute < 100000)
+        ? CactusThreading::ParallelConfig{SIZE_MAX, SIZE_MAX}
+        : CactusThreading::Thresholds::ATTENTION;
+
     CactusThreading::parallel_for_2d(
-        N, C_out, CactusThreading::Thresholds::ATTENTION,
+        N, C_out, config,
         [&](size_t n, size_t oc) {
 
         const __fp16* Xb  = input  + n * in_bs;
@@ -369,8 +379,13 @@ static void conv1d_f16_neon(
     const size_t in_bs   = C_in  * L;
     const size_t out_bs  = C_out * out_len;
 
+    const size_t total_compute = N * C_out * out_len * C_in * K;
+    CactusThreading::ParallelConfig config = (total_compute < 100000)
+        ? CactusThreading::ParallelConfig{SIZE_MAX, SIZE_MAX}
+        : CactusThreading::Thresholds::ATTENTION;
+
     CactusThreading::parallel_for_2d(
-        N, C_out, CactusThreading::Thresholds::ATTENTION,
+        N, C_out, config,
         [&](size_t n, size_t oc) {
 
         const __fp16* Xb  = input  + n * in_bs;
@@ -620,6 +635,72 @@ void cactus_bilinear_interpolation_f16(const __fp16* input, __fp16* output, size
                     static_cast<float>(input[idx10 + d]) * w10 +
                     static_cast<float>(input[idx11 + d]) * w11;
                 output[out_idx + d] = static_cast<__fp16>(result);
+            }
+        }
+    }
+}
+
+void cactus_stft_magnitude_f16(
+    const __fp16* input,
+    const __fp16* weight,
+    __fp16* output,
+    size_t N, size_t L,
+    size_t C_in, size_t /*C_out*/,
+    size_t K, size_t stride,
+    size_t num_fft_bins
+){
+    const size_t out_len = ((L - K) / stride) + 1;
+    const size_t in_bs = C_in * L;
+    const size_t out_bs = num_fft_bins * out_len;
+
+    for (size_t n = 0; n < N; ++n) {
+        const __fp16* Xb = input + n * in_bs;
+
+        for (size_t bin = 0; bin < num_fft_bins; ++bin) {
+            const size_t real_oc = bin;
+            const size_t imag_oc = bin + num_fft_bins;
+            const __fp16* Wr = weight + real_oc * (C_in * K);
+            const __fp16* Wi = weight + imag_oc * (C_in * K);
+
+            for (size_t out_t = 0; out_t < out_len; ++out_t) {
+                const size_t t = out_t * stride;
+                float sum_real = 0.0f;
+                float sum_imag = 0.0f;
+
+                for (size_t ic = 0; ic < C_in; ++ic) {
+                    const __fp16* Xc = Xb + ic * L + t;
+                    const __fp16* Wrc = Wr + ic * K;
+                    const __fp16* Wic = Wi + ic * K;
+
+                    float32x4_t acc_r0 = vdupq_n_f32(0.f);
+                    float32x4_t acc_r1 = vdupq_n_f32(0.f);
+                    float32x4_t acc_i0 = vdupq_n_f32(0.f);
+                    float32x4_t acc_i1 = vdupq_n_f32(0.f);
+
+                    size_t k = 0;
+                    for (; k + 8 <= K; k += 8) {
+                        const float16x8_t xv = vld1q_f16(Xc + k);
+                        const float16x8_t wr = vld1q_f16(Wrc + k);
+                        const float16x8_t wi = vld1q_f16(Wic + k);
+
+                        acc_r0 = vfmaq_f32(acc_r0, vcvt_f32_f16(vget_low_f16(xv)), vcvt_f32_f16(vget_low_f16(wr)));
+                        acc_r1 = vfmaq_f32(acc_r1, vcvt_f32_f16(vget_high_f16(xv)), vcvt_f32_f16(vget_high_f16(wr)));
+                        acc_i0 = vfmaq_f32(acc_i0, vcvt_f32_f16(vget_low_f16(xv)), vcvt_f32_f16(vget_low_f16(wi)));
+                        acc_i1 = vfmaq_f32(acc_i1, vcvt_f32_f16(vget_high_f16(xv)), vcvt_f32_f16(vget_high_f16(wi)));
+                    }
+
+                    sum_real += vaddvq_f32(acc_r0) + vaddvq_f32(acc_r1);
+                    sum_imag += vaddvq_f32(acc_i0) + vaddvq_f32(acc_i1);
+
+                    for (; k < K; ++k) {
+                        float x = (float)Xc[k];
+                        sum_real += x * (float)Wrc[k];
+                        sum_imag += x * (float)Wic[k];
+                    }
+                }
+
+                float magnitude = sqrtf(sum_real * sum_real + sum_imag * sum_imag);
+                output[n * out_bs + bin * out_len + out_t] = (__fp16)magnitude;
             }
         }
     }

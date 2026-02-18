@@ -656,7 +656,7 @@ std::vector<float> WhisperModel::get_audio_embeddings(const std::vector<float>& 
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
 
-    size_t pooled = gb->mean(weight_nodes_.encoder_output, 0);
+    size_t pooled = gb->mean(encoder_output_persistent_, 0);
     gb->execute();
 
     const auto& output_buf = gb->get_output_buffer(pooled);

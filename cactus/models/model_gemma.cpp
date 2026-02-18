@@ -106,7 +106,7 @@ size_t GemmaModel::build_attention(CactusGraph* gb, size_t normalized_input, uin
             kv_cache_.get_values_int8(layer_idx),
             kv_cache_.get_key_scales(layer_idx),
             kv_cache_.get_value_scales(layer_idx),
-            kv_cache_.current_seq_len, num_kv_heads, head_dim
+            kv_cache_.current_seq_len, num_kv_heads, head_dim, window_size
         );
     } else {
         attn_output_4d = gb->attention(q_proj_4d, k_proj_4d, v_proj_4d, attention_scale_, position_offset, window_size);

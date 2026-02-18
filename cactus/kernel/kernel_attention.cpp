@@ -657,6 +657,7 @@ void cactus_attention_hybrid_int8_fp16(
     float scale,
     size_t position_offset,
     bool is_causal,
+    size_t window_size,
     size_t quant_group_size
 ) {
     if (scale == 0.0f) {
@@ -715,7 +716,14 @@ void cactus_attention_hybrid_int8_fp16(
                 const size_t absolute_q_pos = position_offset + q_pos;
                 size_t kv_end = is_causal ? std::min(kv_seq_len, absolute_q_pos + 1) : kv_seq_len;
 
-                for (size_t kv_block_start = 0; kv_block_start < kv_end; kv_block_start += BLOCK_SIZE) {
+                size_t kv_start = 0;
+                if (window_size > 0 && absolute_q_pos > window_size) {
+                    kv_start = absolute_q_pos - window_size;
+                }
+
+                size_t kv_block_start0 = (kv_start / BLOCK_SIZE) * BLOCK_SIZE;
+
+                for (size_t kv_block_start = kv_block_start0; kv_block_start < kv_end; kv_block_start += BLOCK_SIZE) {
                     const size_t kv_block_end = std::min(kv_block_start + BLOCK_SIZE, kv_end);
                     const size_t block_size = kv_block_end - kv_block_start;
 
@@ -724,7 +732,7 @@ void cactus_attention_hybrid_int8_fp16(
                     for (size_t kv_idx = 0; kv_idx < block_size; ++kv_idx) {
                         const size_t kv_pos = kv_block_start + kv_idx;
 
-                        if (is_causal && kv_pos > absolute_q_pos) {
+                        if ((is_causal && kv_pos > absolute_q_pos) || (window_size > 0 && kv_pos < kv_start)) {
                             block_scores[kv_idx] = -std::numeric_limits<float>::infinity();
                             continue;
                         }

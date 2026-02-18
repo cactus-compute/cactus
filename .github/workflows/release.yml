@@ -1,0 +1,108 @@
+name: Release & Update Homebrew
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Every Monday at 9am UTC
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g. v1.8). Leave empty to use CACTUS_VERSION."
+        required: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            TAG=$(cat CACTUS_VERSION | tr -d '[:space:]')
+            echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if tag already exists
+        id: check
+        run: |
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Skip if tag already exists (scheduled runs only)
+        if: github.event_name == 'schedule' && steps.check.outputs.exists == 'true'
+        run: |
+          echo "Tag ${{ steps.version.outputs.tag }} already exists. Skipping release."
+          exit 0
+
+      - name: Create tag
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git tag ${{ steps.version.outputs.tag }}
+          git push origin ${{ steps.version.outputs.tag }}
+
+      - name: Create GitHub release
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          gh release create ${{ steps.version.outputs.tag }} \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get tarball SHA256
+        if: steps.check.outputs.exists == 'false'
+        id: sha
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
+          SHA=$(curl -sL "$URL" | shasum -a 256 | awk '{print $1}')
+          echo "sha256=${SHA}" >> $GITHUB_OUTPUT
+          echo "url=${URL}" >> $GITHUB_OUTPUT
+
+      - name: Update Homebrew formula
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          SHA=${{ steps.sha.outputs.sha256 }}
+          URL=${{ steps.sha.outputs.url }}
+
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/cactus-compute/homebrew-cactus.git tap
+          cd tap
+
+          sed -i "s|url \".*\"|url \"${URL}\"|" Formula/cactus.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/cactus.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/cactus.rb
+          git commit -m "Update cactus to ${TAG}"
+          git push origin main
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Bump CACTUS_VERSION for next release
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          # Increment minor version: v1.7 -> v1.8
+          major=${TAG%%.*}
+          minor=${TAG#*.}
+          next_minor=$((minor + 1))
+          echo "${major}.${next_minor}" > CACTUS_VERSION
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CACTUS_VERSION
+          git commit -m "Bump version to ${major}.${next_minor}"
+          git push origin main

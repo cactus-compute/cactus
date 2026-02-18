@@ -9,10 +9,18 @@
 #include <algorithm>
 #include <cctype>
 
+#if __has_include(<curl/curl.h>)
+#include <curl/curl.h>
+#define CACTUS_ENGINE_TEST_HAS_CURL 1
+#else
+#define CACTUS_ENGINE_TEST_HAS_CURL 0
+#endif
+
 using namespace EngineTestUtils;
 
 const char* g_model_path = std::getenv("CACTUS_TEST_MODEL");
 const char* g_transcribe_model_path = std::getenv("CACTUS_TEST_TRANSCRIBE_MODEL");
+const char* g_vad_model_path = std::getenv("CACTUS_TEST_VAD_MODEL");
 const char* g_assets_path = std::getenv("CACTUS_TEST_ASSETS");
 
 static const char* get_transcribe_prompt() {
@@ -30,8 +38,36 @@ const char* g_whisper_prompt = get_transcribe_prompt();
 
 const char* g_options = R"({
         "max_tokens": 256,
-        "stop_sequences": ["<|im_end|>", "<end_of_turn>"]
+    "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
+    "telemetry_enabled": false
     })";
+
+static bool test_curl_runtime() {
+#if !CACTUS_ENGINE_TEST_HAS_CURL
+    std::cout << "⊘ SKIP │ curl/curl.h not available\n";
+    return true;
+#else
+    if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
+        return false;
+    }
+
+    bool ok = true;
+    curl_version_info_data* info = curl_version_info(CURLVERSION_NOW);
+    ok = ok && info && info->version && info->host;
+
+    CURL* handle = curl_easy_init();
+    ok = ok && (handle != nullptr);
+    if (handle) {
+        ok = ok && (curl_easy_setopt(handle, CURLOPT_URL, "https://example.com/") == CURLE_OK);
+        ok = ok && (curl_easy_setopt(handle, CURLOPT_NOBODY, 1L) == CURLE_OK);
+        ok = ok && (curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, 200L) == CURLE_OK);
+        curl_easy_cleanup(handle);
+    }
+
+    curl_global_cleanup();
+    return ok;
+#endif
+}
 
 template<typename TestFunc>
 bool run_test(const char* title, const char* messages, TestFunc test_logic,
@@ -725,7 +761,7 @@ bool run_whisper_test(const char* title, const char* options_json, Predicate che
 }
 
 static bool test_transcription() {
-    return run_whisper_test("TRANSCRIPTION", R"({"max_tokens": 100})",
+    return run_whisper_test("TRANSCRIPTION", R"({"max_tokens": 100, "telemetry_enabled": false})",
         [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
 }
 
@@ -746,7 +782,7 @@ static bool test_stream_transcription() {
     }
 
     cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(
-        model,  R"({"confirmation_threshold": 1.0, "min_chunk_size": 16000})"
+        model,  R"({"confirmation_threshold": 1.0, "min_chunk_size": 16000, "telemetry_enabled": false})"
     );
     if (!stream) {
         std::cerr << "[✗] Failed to initialize stream transcribe\n";
@@ -928,6 +964,82 @@ static bool test_audio_embeddings() {
     return result > 0 && embedding_dim > 0;
 }
 
+static bool test_vad_process() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║           VAD PROCESS TEST               ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    const char* vad_model_path = std::getenv("CACTUS_TEST_VAD_MODEL");
+    if (!vad_model_path) {
+        std::cout << "⊘ SKIP │ CACTUS_TEST_VAD_MODEL not set\n";
+        return true;
+    }
+
+    cactus_model_t model = cactus_init(vad_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize VAD model\n";
+        return false;
+    }
+
+    std::string audio_path = std::string(g_assets_path) + "/test.wav";
+    char response[8192] = {0};
+
+    Timer timer;
+    int result = cactus_vad(model, audio_path.c_str(), response, sizeof(response), R"({"threshold": 0.5})", nullptr, 0);
+    double elapsed = timer.elapsed_ms();
+
+    cactus_destroy(model);
+
+    if (result < 0) {
+        std::cerr << "[✗] VAD processing failed\n";
+        return false;
+    }
+
+    std::string response_str(response);
+    if (response_str.find("\"success\":true") == std::string::npos) {
+        std::cerr << "[✗] VAD response indicates failure\n";
+        return false;
+    }
+
+    std::vector<std::pair<size_t, size_t>> segments;
+    size_t pos = 0;
+    while ((pos = response_str.find("{\"start\":", pos)) != std::string::npos) {
+        size_t start_pos = response_str.find(":", pos) + 1;
+        size_t end_pos = response_str.find(",", start_pos);
+        size_t start = std::stoull(response_str.substr(start_pos, end_pos - start_pos));
+
+        pos = response_str.find("\"end\":", pos) + 6;
+        end_pos = response_str.find("}", pos);
+        size_t end = std::stoull(response_str.substr(pos, end_pos - pos));
+
+        segments.push_back({start, end});
+        pos = end_pos;
+    }
+
+    size_t total_speech_samples = 0;
+    for (const auto& segment : segments) {
+        total_speech_samples += (segment.second - segment.first);
+    }
+
+    std::cout << "\n[Results]\n"
+              << "  \"success\": true,\n"
+              << "  \"total_time_ms\": " << std::fixed << std::setprecision(2) << elapsed << ",\n"
+              << "  \"speech_duration_sec\": " << std::setprecision(2) << (total_speech_samples / 16000.0) << ",\n"
+              << "  \"segments_detected\": " << segments.size() << "\n";
+
+    for (size_t i = 0; i < segments.size(); ++i) {
+        float start_sec = segments[i].first / 16000.0f;
+        float end_sec = segments[i].second / 16000.0f;
+        const char* prefix = (i == segments.size() - 1) ? "└─" : "├─";
+        std::cout << prefix << " Segment " << (i + 1) << ": "
+                  << std::fixed << std::setprecision(2) << start_sec << "s - "
+                  << std::setprecision(2) << end_sec << "s ("
+                  << std::setprecision(2) << (end_sec - start_sec) << "s)" << std::endl;
+    }
+
+    return result > 0 && !segments.empty();
+}
+
 static bool test_pcm_transcription() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║       PCM BUFFER TRANSCRIPTION           ║\n"
@@ -991,7 +1103,7 @@ static bool test_pcm_transcription() {
                     g_whisper_prompt,
                     response,
                     sizeof(response),
-                    R"({"max_tokens": 100})",
+                    R"({"max_tokens": 100, "telemetry_enabled": false})",
                     stream_callback,
                     &stream,
                     reinterpret_cast<const uint8_t*>(pcm_samples.data()),
@@ -1037,7 +1149,7 @@ static bool test_pcm_transcription() {
             g_whisper_prompt,
             response,
             sizeof(response),
-            R"({"max_tokens": 100})",
+            R"({"max_tokens": 100, "telemetry_enabled": false})",
             stream_callback,
             &stream,
             reinterpret_cast<const uint8_t*>(pcm_samples.data()),
@@ -1068,6 +1180,7 @@ static bool test_pcm_transcription() {
 
 int main() {
     TestUtils::TestRunner runner("Engine Tests");
+    runner.run_test("curl_runtime", test_curl_runtime());
     runner.run_test("1k_context", test_1k_context());
     runner.run_test("streaming", test_streaming());
     runner.run_test("tool_calls", test_tool_call());
@@ -1080,6 +1193,7 @@ int main() {
     runner.run_test("image_embeddings", test_image_embeddings());
     runner.run_test("audio_embeddings", test_audio_embeddings());
     runner.run_test("audio_processor", test_audio_processor());
+    runner.run_test("vad_process", test_vad_process());
     runner.run_test("transcription", test_transcription());
     runner.run_test("pcm_transcription", test_pcm_transcription());
     runner.run_test("stream_transcription", test_stream_transcription());

@@ -93,6 +93,15 @@ typedef CactusAudioEmbedNative = Int32 Function(
     IntPtr bufferSize,
     Pointer<IntPtr> embeddingDim);
 
+typedef CactusVadNative = Int32 Function(
+    CactusModelT model,
+    Pointer<Utf8> audioFilePath,
+    Pointer<Utf8> responseBuffer,
+    IntPtr bufferSize,
+    Pointer<Utf8> optionsJson,
+    Pointer<Uint8> pcmBuffer,
+    IntPtr pcmBufferSize);
+
 typedef CactusRagQueryNative = Int32 Function(
     CactusModelT model,
     Pointer<Utf8> query,
@@ -127,6 +136,8 @@ typedef CactusIndexDestroyNative = Void Function(CactusIndexT index);
 
 typedef CactusGetLastErrorNative = Pointer<Utf8> Function();
 
+typedef CactusSetTelemetryEnvironmentNative = Void Function(
+    Pointer<Utf8> framework, Pointer<Utf8> cacheLocation);
 
 typedef CactusInitDart = CactusModelT Function(
     Pointer<Utf8> modelPath, Pointer<Utf8> corpusDir);
@@ -209,6 +220,15 @@ typedef CactusAudioEmbedDart = int Function(
     int bufferSize,
     Pointer<IntPtr> embeddingDim);
 
+typedef CactusVadDart = int Function(
+    CactusModelT model,
+    Pointer<Utf8> audioFilePath,
+    Pointer<Utf8> responseBuffer,
+    int bufferSize,
+    Pointer<Utf8> optionsJson,
+    Pointer<Uint8> pcmBuffer,
+    int pcmBufferSize);
+
 typedef CactusRagQueryDart = int Function(
     CactusModelT model,
     Pointer<Utf8> query,
@@ -242,6 +262,9 @@ typedef CactusIndexCompactDart = int Function(CactusIndexT index);
 typedef CactusIndexDestroyDart = void Function(CactusIndexT index);
 
 typedef CactusGetLastErrorDart = Pointer<Utf8> Function();
+
+typedef CactusSetTelemetryEnvironmentDart = void Function(
+    Pointer<Utf8> framework, Pointer<Utf8> cacheLocation);
 
 
 DynamicLibrary _loadLibrary() {
@@ -296,6 +319,8 @@ final _cactusImageEmbed =
     _lib.lookupFunction<CactusImageEmbedNative, CactusImageEmbedDart>('cactus_image_embed');
 final _cactusAudioEmbed =
     _lib.lookupFunction<CactusAudioEmbedNative, CactusAudioEmbedDart>('cactus_audio_embed');
+final _cactusVad =
+    _lib.lookupFunction<CactusVadNative, CactusVadDart>('cactus_vad');
 final _cactusRagQuery =
     _lib.lookupFunction<CactusRagQueryNative, CactusRagQueryDart>('cactus_rag_query');
 final _cactusIndexInit =
@@ -312,6 +337,9 @@ final _cactusIndexDestroy =
     _lib.lookupFunction<CactusIndexDestroyNative, CactusIndexDestroyDart>('cactus_index_destroy');
 final _cactusGetLastError = _lib
     .lookupFunction<CactusGetLastErrorNative, CactusGetLastErrorDart>('cactus_get_last_error');
+final _cactusSetTelemetryEnvironment = _lib.lookupFunction<
+    CactusSetTelemetryEnvironmentNative,
+    CactusSetTelemetryEnvironmentDart>('cactus_set_telemetry_environment');
 
 // ----------------------------------------------------------------------------
 // Helper Extensions
@@ -500,6 +528,80 @@ class TranscriptionResult {
   }
 }
 
+class VADSegment {
+  final int start;
+  final int end;
+
+  VADSegment({required this.start, required this.end});
+
+  factory VADSegment.fromJson(Map<String, dynamic> json) {
+    return VADSegment(
+      start: json['start'] ?? 0,
+      end: json['end'] ?? 0,
+    );
+  }
+}
+
+class VADResult {
+  final List<VADSegment> segments;
+  final double totalTime;
+  final double ramUsage;
+
+  VADResult({
+    required this.segments,
+    this.totalTime = 0.0,
+    this.ramUsage = 0.0,
+  });
+
+  factory VADResult.fromJson(Map<String, dynamic> json) {
+    final segmentsList = json['segments'] as List<dynamic>? ?? [];
+    return VADResult(
+      segments: segmentsList
+          .map((s) => VADSegment.fromJson(s as Map<String, dynamic>))
+          .toList(),
+      totalTime: (json['total_time_ms'] ?? 0.0).toDouble(),
+      ramUsage: (json['ram_usage_mb'] ?? 0.0).toDouble(),
+    );
+  }
+}
+
+class VADOptions {
+  final double? threshold;
+  final double? negThreshold;
+  final int? minSpeechDurationMs;
+  final double? maxSpeechDurationS;
+  final int? minSilenceDurationMs;
+  final int? speechPadMs;
+  final int? windowSizeSamples;
+  final int? samplingRate;
+
+  const VADOptions({
+    this.threshold,
+    this.negThreshold,
+    this.minSpeechDurationMs,
+    this.maxSpeechDurationS,
+    this.minSilenceDurationMs,
+    this.speechPadMs,
+    this.windowSizeSamples,
+    this.samplingRate,
+  });
+
+  static const defaultOptions = VADOptions();
+
+  Map<String, dynamic> toJson() {
+    final map = <String, dynamic>{};
+    if (threshold != null) map['threshold'] = threshold;
+    if (negThreshold != null) map['neg_threshold'] = negThreshold;
+    if (minSpeechDurationMs != null) map['min_speech_duration_ms'] = minSpeechDurationMs;
+    if (maxSpeechDurationS != null) map['max_speech_duration_s'] = maxSpeechDurationS;
+    if (minSilenceDurationMs != null) map['min_silence_duration_ms'] = minSilenceDurationMs;
+    if (speechPadMs != null) map['speech_pad_ms'] = speechPadMs;
+    if (windowSizeSamples != null) map['window_size_samples'] = windowSizeSamples;
+    if (samplingRate != null) map['sampling_rate'] = samplingRate;
+    return map;
+  }
+}
+
 class IndexResult {
   final int id;
   final double score;
@@ -510,10 +612,17 @@ class IndexResult {
 class Cactus {
   final CactusModelT _handle;
   bool _disposed = false;
+  static bool _frameworkSet = false;
 
   Cactus._(this._handle);
 
   static Cactus create(String modelPath, {String? corpusDir}) {
+    if (!_frameworkSet) {
+      final frameworkPtr = 'flutter'.toNativeUtf8();
+      _cactusSetTelemetryEnvironment(frameworkPtr, nullptr);
+      calloc.free(frameworkPtr);
+      _frameworkSet = true;
+    }
     final modelPathPtr = modelPath.toNativeUtf8();
     final corpusDirPtr = corpusDir?.toNativeUtf8() ?? nullptr;
 
@@ -527,6 +636,12 @@ class Cactus {
       calloc.free(modelPathPtr);
       if (corpusDirPtr != nullptr) calloc.free(corpusDirPtr);
     }
+  }
+
+  static void setTelemetryEnvironment(String path) {
+    final pathPtr = path.toNativeUtf8();
+    _cactusSetTelemetryEnvironment(nullptr, pathPtr);
+    calloc.free(pathPtr);
   }
 
   void _checkNotDisposed() {
@@ -844,6 +959,93 @@ class Cactus {
       calloc.free(embeddingsBuffer);
       calloc.free(embeddingDim);
       calloc.free(audioPathPtr);
+    }
+  }
+
+  VADResult vad(
+    String audioPath, {
+    VADOptions options = VADOptions.defaultOptions,
+  }) {
+    _checkNotDisposed();
+
+    const bufferSize = 1024 * 1024;
+    final responseBuffer = calloc<Uint8>(bufferSize);
+    final audioPathPtr = audioPath.toNativeUtf8();
+    final optionsMap = options.toJson();
+    final optionsJson = optionsMap.isNotEmpty ? jsonEncode(optionsMap) : null;
+    final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
+
+    try {
+      final result = _cactusVad(
+        _handle,
+        audioPathPtr,
+        responseBuffer.cast(),
+        bufferSize,
+        optionsPtr,
+        nullptr,
+        0,
+      );
+
+      if (result < 0) {
+        throw CactusException('VAD failed: ${getLastError()}');
+      }
+
+      final responseStr = responseBuffer.cast<Utf8>().toDartString();
+      final responseJson = jsonDecode(responseStr) as Map<String, dynamic>;
+
+      if (responseJson['error'] != null) {
+        throw CactusException('VAD error: ${responseJson['error']}');
+      }
+
+      return VADResult.fromJson(responseJson);
+    } finally {
+      calloc.free(responseBuffer);
+      calloc.free(audioPathPtr);
+      if (optionsPtr != nullptr) calloc.free(optionsPtr);
+    }
+  }
+
+  VADResult vadPcm(
+    Uint8List pcmData, {
+    VADOptions options = VADOptions.defaultOptions,
+  }) {
+    _checkNotDisposed();
+
+    const bufferSize = 1024 * 1024;
+    final responseBuffer = calloc<Uint8>(bufferSize);
+    final optionsMap = options.toJson();
+    final optionsJson = optionsMap.isNotEmpty ? jsonEncode(optionsMap) : null;
+    final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
+    final pcmBuffer = calloc<Uint8>(pcmData.length);
+    pcmBuffer.asTypedList(pcmData.length).setAll(0, pcmData);
+
+    try {
+      final result = _cactusVad(
+        _handle,
+        nullptr,
+        responseBuffer.cast(),
+        bufferSize,
+        optionsPtr,
+        pcmBuffer,
+        pcmData.length,
+      );
+
+      if (result < 0) {
+        throw CactusException('VAD failed: ${getLastError()}');
+      }
+
+      final responseStr = responseBuffer.cast<Utf8>().toDartString();
+      final responseJson = jsonDecode(responseStr) as Map<String, dynamic>;
+
+      if (responseJson['error'] != null) {
+        throw CactusException('VAD error: ${responseJson['error']}');
+      }
+
+      return VADResult.fromJson(responseJson);
+    } finally {
+      calloc.free(responseBuffer);
+      if (optionsPtr != nullptr) calloc.free(optionsPtr);
+      calloc.free(pcmBuffer);
     }
   }
 

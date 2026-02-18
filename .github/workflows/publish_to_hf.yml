@@ -4,21 +4,76 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      model:
+        description: Model to publish (leave empty to publish all)
+        required: false
+        type: string
+      version:
+        description: Version tag
+        required: true
+        type: string
+      org:
+        description: Organization
+        required: false
+        default: Cactus-Compute
+        type: string
+      int4:
+        description: Export INT4
+        required: false
+        type: boolean
+        default: false
+      int8:
+        description: Export INT8
+        required: false
+        type: boolean
+        default: false
+      fp16:
+        description: Export FP16
+        required: false
+        type: boolean
+        default: false
+      apple:
+        description: Export Apple weights
+        required: false
+        type: boolean
+        default: false
+
+env:
+  MODELS_CONFIG: |
+    [
+      {"model": "google/gemma-3-270m-it",           "int4": true,  "int8": true,  "fp16": false, "apple": false},
+      {"model": "google/functiongemma-270m-it",     "int4": true,  "int8": true,  "fp16": false, "apple": false},
+      {"model": "LiquidAI/LFM2-350M",               "int4": true,  "int8": true,  "fp16": false, "apple": false},
+      {"model": "Qwen/Qwen3-0.6B",                  "int4": true,  "int8": true,  "fp16": false, "apple": false},
+      {"model": "LiquidAI/LFM2-700M",               "int4": true,  "int8": true,  "fp16": false, "apple": false},
+      {"model": "google/gemma-3-1b-it",             "int4": true,  "int8": true,  "fp16": false, "apple": false},
+      {"model": "LiquidAI/LFM2.5-1.2B-Thinking",    "int4": true,  "int8": true,  "fp16": false, "apple": false},
+      {"model": "LiquidAI/LFM2.5-1.2B-Instruct",    "int4": true,  "int8": true,  "fp16": false, "apple": false},
+      {"model": "Qwen/Qwen3-1.7B",                  "int4": true,  "int8": true,  "fp16": false, "apple": false},
+      {"model": "LiquidAI/LFM2-2.6B",               "int4": true,  "int8": true,  "fp16": false, "apple": false},
+      {"model": "LiquidAI/LFM2-VL-450M",            "int4": true,  "int8": true,  "fp16": false, "apple": true},
+      {"model": "LiquidAI/LFM2.5-VL-1.6B",          "int4": true,  "int8": true,  "fp16": false, "apple": true},
+      {"model": "UsefulSensors/moonshine-base",     "int4": true,  "int8": true,  "fp16": false, "apple": true},
+      {"model": "openai/whisper-small",             "int4": true,  "int8": true,  "fp16": false, "apple": true},
+      {"model": "openai/whisper-medium",            "int4": true,  "int8": true,  "fp16": false, "apple": true},
+      {"model": "snakers4/silero-vad",              "int4": true,  "int8": true,  "fp16": false, "apple": false},
+      {"model": "nomic-ai/nomic-embed-text-v2-moe", "int4": true,  "int8": true,  "fp16": false, "apple": false},
+      {"model": "Qwen/Qwen3-Embedding-0.6B",        "int4": true,  "int8": true,  "fp16": false, "apple": false}
+    ]
 
 jobs:
   publish:
     runs-on: macos-latest
     steps:
-      - name: Get release version
+      - name: Get version
         id: version
         run: |
           if [ "${{ github.event_name }}" == "release" ]; then
             echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName)" >> $GITHUB_OUTPUT
+            echo "tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - uses: actions/checkout@v4
         with:
@@ -40,10 +95,44 @@ jobs:
       - name: Publish models
         run: |
           cd python
-          python -m src.publish_to_hf \
-            --version ${{ steps.version.outputs.tag }} \
-            --org Cactus-Compute \
-            --precision INT8 \
-            --bits 8
+          ORG="${{ github.event.inputs.org || 'Cactus-Compute' }}"
+          VERSION="${{ steps.version.outputs.tag }}"
+
+          publish_model() {
+            local model=$1 int4=$2 int8=$3 fp16=$4 apple=$5
+            FLAGS="--version $VERSION --org $ORG --model $model"
+            [ "$int4" == "true" ] && FLAGS="$FLAGS --int4"
+            [ "$int8" == "true" ] && FLAGS="$FLAGS --int8"
+            [ "$fp16" == "true" ] && FLAGS="$FLAGS --fp16"
+            [ "$apple" == "true" ] && FLAGS="$FLAGS --apple"
+            python -m src.publish_to_hf --task export_model $FLAGS
+          }
+
+          if [ -n "${{ github.event.inputs.model }}" ]; then
+            publish_model \
+              "${{ github.event.inputs.model }}" \
+              "${{ github.event.inputs.int4 }}" \
+              "${{ github.event.inputs.int8 }}" \
+              "${{ github.event.inputs.fp16 }}" \
+              "${{ github.event.inputs.apple }}"
+          else
+            echo "$MODELS_CONFIG" | jq -c '.[]' | while read -r config; do
+              model=$(echo "$config" | jq -r '.model')
+              int4=$(echo "$config" | jq -r '.int4')
+              int8=$(echo "$config" | jq -r '.int8')
+              fp16=$(echo "$config" | jq -r '.fp16')
+              apple=$(echo "$config" | jq -r '.apple')
+              publish_model "$model" "$int4" "$int8" "$fp16" "$apple"
+            done
+          fi
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+      - name: Update organization README
+        if: "!github.event.inputs.model"
+        run: |
+          cd python
+          ORG="${{ github.event.inputs.org || 'Cactus-Compute' }}"
+          python -m src.publish_to_hf --task update_org_readme --org "$ORG"
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}

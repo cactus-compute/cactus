@@ -13,19 +13,16 @@ double cactus_sum_all_f16(const __fp16* data, size_t num_elements) {
             constexpr size_t SIMD_WIDTH = 8;
             const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
 
-            float16x8_t sum_vec = vdupq_n_f16(0.0f);
+            float32x4_t sum_lo = vdupq_n_f32(0.0f);
+            float32x4_t sum_hi = vdupq_n_f32(0.0f);
 
             for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                 float16x8_t input_vec = vld1q_f16(&data[i]);
-                sum_vec = vaddq_f16(sum_vec, input_vec);
+                sum_lo = vaddq_f32(sum_lo, vcvt_f32_f16(vget_low_f16(input_vec)));
+                sum_hi = vaddq_f32(sum_hi, vcvt_f32_f16(vget_high_f16(input_vec)));
             }
 
-            double thread_sum = 0.0;
-            __fp16 sum_array[8];
-            vst1q_f16(sum_array, sum_vec);
-            for (int j = 0; j < 8; j++) {
-                thread_sum += static_cast<double>(sum_array[j]);
-            }
+            double thread_sum = static_cast<double>(vaddvq_f32(vaddq_f32(sum_lo, sum_hi)));
 
             for (size_t i = vectorized_end; i < end_idx; ++i) {
                 thread_sum += static_cast<double>(data[i]);
@@ -41,10 +38,11 @@ double cactus_sum_all_f16(const __fp16* data, size_t num_elements) {
 void cactus_sum_axis_f16(const __fp16* input, __fp16* output, size_t outer_size, size_t axis_size, size_t inner_size) {
     CactusThreading::parallel_for_2d(outer_size, inner_size, CactusThreading::Thresholds::AXIS_REDUCE,
         [&](size_t outer, size_t inner) {
-            float16x8_t sum_vec = vdupq_n_f16(0.0f);
-
             constexpr size_t SIMD_WIDTH = 8;
             const size_t vectorized_axis = (axis_size / SIMD_WIDTH) * SIMD_WIDTH;
+
+            float32x4_t sum_lo = vdupq_n_f32(0.0f);
+            float32x4_t sum_hi = vdupq_n_f32(0.0f);
 
             for (size_t a = 0; a < vectorized_axis; a += SIMD_WIDTH) {
                 __fp16 values[SIMD_WIDTH];
@@ -53,23 +51,19 @@ void cactus_sum_axis_f16(const __fp16* input, __fp16* output, size_t outer_size,
                     values[j] = input[idx];
                 }
                 float16x8_t input_vec = vld1q_f16(values);
-                sum_vec = vaddq_f16(sum_vec, input_vec);
+                sum_lo = vaddq_f32(sum_lo, vcvt_f32_f16(vget_low_f16(input_vec)));
+                sum_hi = vaddq_f32(sum_hi, vcvt_f32_f16(vget_high_f16(input_vec)));
             }
 
-            __fp16 total_sum = 0.0f;
-            __fp16 sum_array[8];
-            vst1q_f16(sum_array, sum_vec);
-            for (int j = 0; j < 8; j++) {
-                total_sum += sum_array[j];
-            }
+            float total_sum_f32 = vaddvq_f32(vaddq_f32(sum_lo, sum_hi));
 
             for (size_t a = vectorized_axis; a < axis_size; a++) {
                 size_t idx = outer * axis_size * inner_size + a * inner_size + inner;
-                total_sum += input[idx];
+                total_sum_f32 += static_cast<float>(input[idx]);
             }
 
             size_t output_idx = outer * inner_size + inner;
-            output[output_idx] = total_sum;
+            output[output_idx] = static_cast<__fp16>(total_sum_f32);
         });
 }
 
@@ -81,10 +75,11 @@ double cactus_mean_all_f16(const __fp16* data, size_t num_elements) {
 void cactus_mean_axis_f16(const __fp16* input, __fp16* output, size_t outer_size, size_t axis_size, size_t inner_size) {
     CactusThreading::parallel_for_2d(outer_size, inner_size, CactusThreading::Thresholds::AXIS_REDUCE,
         [&](size_t outer, size_t inner) {
-            float16x8_t sum_vec = vdupq_n_f16(0.0f);
-
             constexpr size_t SIMD_WIDTH = 8;
             const size_t vectorized_axis = (axis_size / SIMD_WIDTH) * SIMD_WIDTH;
+
+            float32x4_t sum_lo = vdupq_n_f32(0.0f);
+            float32x4_t sum_hi = vdupq_n_f32(0.0f);
 
             for (size_t a = 0; a < vectorized_axis; a += SIMD_WIDTH) {
                 __fp16 values[SIMD_WIDTH];
@@ -93,23 +88,21 @@ void cactus_mean_axis_f16(const __fp16* input, __fp16* output, size_t outer_size
                     values[j] = input[idx];
                 }
                 float16x8_t input_vec = vld1q_f16(values);
-                sum_vec = vaddq_f16(sum_vec, input_vec);
+                sum_lo = vaddq_f32(sum_lo, vcvt_f32_f16(vget_low_f16(input_vec)));
+                sum_hi = vaddq_f32(sum_hi, vcvt_f32_f16(vget_high_f16(input_vec)));
             }
 
-            __fp16 total_sum = 0.0f;
-            __fp16 sum_array[8];
-            vst1q_f16(sum_array, sum_vec);
-            for (int j = 0; j < 8; j++) {
-                total_sum += sum_array[j];
-            }
+            float total_sum_f32 = vaddvq_f32(vaddq_f32(sum_lo, sum_hi));
 
             for (size_t a = vectorized_axis; a < axis_size; a++) {
                 size_t idx = outer * axis_size * inner_size + a * inner_size + inner;
-                total_sum += input[idx];
+                total_sum_f32 += static_cast<float>(input[idx]);
             }
 
+            const float mean_f32 = total_sum_f32 / static_cast<float>(axis_size);
+
             size_t output_idx = outer * inner_size + inner;
-            output[output_idx] = total_sum / static_cast<__fp16>(axis_size);
+            output[output_idx] = static_cast<__fp16>(mean_f32);
         });
 }
 
@@ -144,7 +137,6 @@ double cactus_variance_all_f16(const __fp16* data, size_t num_elements) {
                 sum_sq_vec_hi = vfmaq_f32(sum_sq_vec_hi, x_hi, x_hi);
             }
 
-            // Reduce vectors to scalars
             double sum = static_cast<double>(vaddvq_f32(vaddq_f32(sum_vec_lo, sum_vec_hi)));
             double sum_sq = static_cast<double>(vaddvq_f32(vaddq_f32(sum_sq_vec_lo, sum_sq_vec_hi)));
 

@@ -94,7 +94,7 @@ struct Config {
     uint32_t num_decoder_layers = 0;
     float partial_rotary_factor = 0.0f;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9};
     ModelType model_type = ModelType::QWEN;
 
     enum class ModelVariant {DEFAULT = 0, VLM = 1, EXTRACT = 2, RAG = 3};
@@ -113,6 +113,7 @@ struct Config {
     float default_top_p = 0.95f;
     size_t default_top_k = 20;
     float default_max_tps = -1.0f;
+    float default_cloud_handoff_threshold = 0.0f;
 
     std::vector<std::string> layer_types;
     size_t conv_L_cache = 0;

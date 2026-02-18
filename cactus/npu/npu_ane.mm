@@ -297,7 +297,7 @@ bool ANEEncoder::load(const std::string& model_path) {
         NSString* path = [NSString stringWithUTF8String:model_path.c_str()];
 
         if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
-            CACTUS_LOG_ERROR("npu", "ANEEncoder model file not found: " << model_path);
+            CACTUS_LOG_WARN("npu", "ANEEncoder model file not found: " << model_path);
             return false;
         }
 
