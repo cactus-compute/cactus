@@ -179,16 +179,6 @@ void cactus_matmul_f16(
     size_t N
 ) {
 
-#if defined(CACTUS_COMPILE_SME2)
-	if (cpu_has_sme2() && M >= SME2_M_THRESHOLD) {
-		cactus_matmul_f16_sme2_caller(
-			a, b_transposed, c,
-			M, K, N
-		);
-		return;
-	}
-#endif
-
 #ifdef __APPLE__
     if (K >= ACCELERATE_K_THRESHOLD && M >= ACCELERATE_M_THRESHOLD) {
         const size_t a_len = M * K;
@@ -211,6 +201,16 @@ void cactus_matmul_f16(
         for (size_t i = 0; i < c_len; i++) c[i] = (__fp16)C_f32[i];
         return;
     }
+#endif
+
+#if defined(CACTUS_COMPILE_SME2)
+	if (cpu_has_sme2() && M >= SME2_M_THRESHOLD) {
+		cactus_matmul_f16_sme2_caller(
+			a, b_transposed, c,
+			M, K, N
+		);
+		return;
+	}
 #endif
 
     constexpr size_t TILE_M = 4;

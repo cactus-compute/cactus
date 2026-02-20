@@ -9,150 +9,78 @@
 #include <arm_sme.h>
 
 static void cactus_matmul_f16_sme2_worker(
-    const __fp16* a_transposed, const __fp16* b, __fp16* c,
-    size_t M, size_t K, size_t N,
-    size_t start_row, size_t end_row,
-    size_t TILE_M, size_t TILE_N,
-    float* tmp
+	const __fp16* a_transposed, const __fp16* b, __fp16* c,
+	size_t M, size_t K, size_t N,
+	size_t start_row, size_t end_row,
+	size_t TILE_M, size_t TILE_N,
+	float* tmp
 ) __arm_streaming __arm_inout("za") {
-    (void)M;
-    if (start_row >= end_row) return;
+	(void) M;
+	if (start_row >= end_row) return;
 
-    const size_t VLh = svcnth();
-    const svcount_t pC16 = svptrue_c16();
+	for (size_t row = start_row; row < end_row; row += TILE_M) {
+		const size_t active_r = std::min(TILE_M, end_row - row);
+		const svbool_t pMh = svwhilelt_b16(0, active_r * 2);
+		const svbool_t pM16 = svwhilelt_b16(0, active_r);
+		const svbool_t pMDim = svwhilelt_b32((uint64_t) row, (uint64_t) end_row);
 
-    for (size_t row = start_row; row < end_row; row += TILE_M) {
-        const size_t active_r = std::min(TILE_M, end_row - row);
-        const svbool_t pMh   = svwhilelt_b16(0, active_r * 2);
-        const svbool_t pM16  = svwhilelt_b16(0, active_r);
-        const svbool_t pMDim = svwhilelt_b32((uint64_t)row, (uint64_t)end_row);
+		for (size_t col0 = 0; col0 < N; col0 += 2 * TILE_N) {
+			const size_t col1 = col0 + TILE_N;	
 
-        size_t col = 0;
-        for (; col + 2 * VLh <= N; col += 2 * VLh) {
-            const size_t col0 = col;
-            const size_t col1 = col + VLh;
+			const size_t active_c0 = std::min(TILE_N, N - col0);
+			const svbool_t pNh0 = svwhilelt_b16(0, active_c0 * 2);
+			const svbool_t pN16_0 = svwhilelt_b16(0, active_c0);
+			const svbool_t pN32_0 = svwhilelt_b32((uint64_t) 0, (uint64_t) active_c0);
+			const svbool_t pNDim0 = svwhilelt_b32((uint64_t) col0, (uint64_t) N);
 
-            const svbool_t pN16_full = svptrue_b16();
-            const svbool_t pNh_full  = svptrue_b16();   // zipped width == full when using full vectors
-            const svbool_t pN32_full = svptrue_b32();
-            const svbool_t pNDim0    = svwhilelt_b32((uint64_t)col0, (uint64_t)N);
-            const svbool_t pNDim1    = svwhilelt_b32((uint64_t)col1, (uint64_t)N);
+			const size_t active_c1 = (col1 < N) ? std::min(TILE_N, N - col1) : 0;
+			const svbool_t pNh1 = svwhilelt_b16(0, active_c1 * 2);
+			const svbool_t pN16_1 = svwhilelt_b16(0, active_c1);
+			const svbool_t pN32_1 = svwhilelt_b32((uint64_t) 0, (uint64_t) active_c1);
+			const svbool_t pNDim1 = svwhilelt_b32((uint64_t) col1, (uint64_t) N);
 
-            svzero_za();
+			svzero_za();
+			for (size_t k = 0; k < K; k += 2) {
+				svfloat16_t a0 = svld1(pM16, &a_transposed[(k + 0) * M + row]);
+				svfloat16_t a1 = (k + 1 < K) ? svld1(pM16, &a_transposed[(k + 1) * M + row]) : svdup_n_f16(0);
+				svfloat16_t zA = svzip1_f16(a0, a1);
 
-            for (size_t k = 0; k < K; k += 2) {
-                svfloat16_t a0 = svld1(pM16, &a_transposed[(k + 0) * M + row]);
-                svfloat16_t a1 = (k + 1 < K)
-                    ? svld1(pM16, &a_transposed[(k + 1) * M + row])
-                    : svdup_n_f16(0);
-                svfloat16_t zA = svzip1_f16(a0, a1);
+				svfloat16_t b0_0 = svld1(pN16_0, &b[(k + 0) * N + col0]);
+				svfloat16_t b1_0 = (k + 1 < K) ? svld1(pN16_0, &b[(k + 1) * N + col0]) : svdup_n_f16(0);
+				svfloat16_t zB0 = svzip1_f16(b0_0, b1_0);
 
-                svfloat16x2_t b0_2 = svld1_x2(pC16, &b[(k + 0) * N + col0]);
-                svfloat16_t b0_0 = svget2(b0_2, 0);
-                svfloat16_t b0_1 = svget2(b0_2, 1);
+				svmopa_za32_f16_m(0, pMh, pNh0, zA, zB0);
 
-                svfloat16_t b1_0, b1_1;
-                if (k + 1 < K) {
-                    svfloat16x2_t b1_2 = svld1_x2(pC16, &b[(k + 1) * N + col0]);
-                    b1_0 = svget2(b1_2, 0);
-                    b1_1 = svget2(b1_2, 1);
-                } else {
-                    b1_0 = svdup_n_f16(0);
-                    b1_1 = svdup_n_f16(0);
-                }
+				if (active_c1) {
+					svfloat16_t b0_1 = svld1(pN16_1, &b[(k + 0) * N + col1]);
+					svfloat16_t b1_1 = (k + 1 < K) ? svld1(pN16_1, &b[(k + 1) * N + col1]) : svdup_n_f16(0);
+					svfloat16_t zB1 = svzip1_f16(b0_1, b1_1);
 
-                svfloat16_t zB0 = svzip1_f16(b0_0, b1_0);
-                svfloat16_t zB1 = svzip1_f16(b0_1, b1_1);
+					svmopa_za32_f16_m(1, pMh, pNh1, zA, zB1);
+				}
+			}
 
-                svmopa_za32_f16_m(0, pMh, pNh_full, zA, zB0);
-                svmopa_za32_f16_m(1, pMh, pNh_full, zA, zB1);
-            }
+			for (size_t m = 0; m < active_r; ++m) {
+				svbool_t p_lane0 = svpsel_lane_b32(pNDim0, pMDim, row + m);
+				svst1_hor_za32(0, m, p_lane0, tmp);
+				
+				svfloat32_t out32 = svld1(pN32_0, tmp);
+				svfloat16_t out16 = svcvt_f16_f32_z(pN32_0, out32);
+				out16 = svuzp1_f16(out16, out16);
+				svst1(pN16_0, &c[(row + m) * N + col0], out16);
 
-            for (size_t m = 0; m < active_r; ++m) {
-                {
-                    svbool_t p_lane0 = svpsel_lane_b32(pNDim0, pMDim, row + m);
-                    svst1_hor_za32(0, m, p_lane0, tmp);
-
-                    svfloat32_t out32 = svld1(pN32_full, tmp);
-                    svfloat16_t out16 = svcvt_f16_f32_z(pN32_full, out32);
-                    out16 = svuzp1_f16(out16, out16);
-                    svst1(pN16_full, &c[(row + m) * N + col0], out16);
-                }
-                {
-                    svbool_t p_lane1 = svpsel_lane_b32(pNDim1, pMDim, row + m);
-                    svst1_hor_za32(1, m, p_lane1, tmp);
-
-                    svfloat32_t out32 = svld1(pN32_full, tmp);
-                    svfloat16_t out16 = svcvt_f16_f32_z(pN32_full, out32);
-                    out16 = svuzp1_f16(out16, out16);
-                    svst1(pN16_full, &c[(row + m) * N + col1], out16);
-                }
-            }
-        }
-
-        for (; col < N; col += 2 * TILE_N) {
-            const size_t col0 = col;
-            const size_t col1 = col0 + TILE_N;
-
-            const size_t active_c0 = std::min(TILE_N, N - col0);
-            const svbool_t pNh0    = svwhilelt_b16(0, active_c0 * 2);
-            const svbool_t pN16_0  = svwhilelt_b16(0, active_c0);
-            const svbool_t pN32_0  = svwhilelt_b32((uint64_t)0, (uint64_t)active_c0);
-            const svbool_t pNDim0  = svwhilelt_b32((uint64_t)col0, (uint64_t)N);
-
-            const size_t active_c1 = (col1 < N) ? std::min(TILE_N, N - col1) : 0;
-            const svbool_t pNh1    = svwhilelt_b16(0, active_c1 * 2);
-            const svbool_t pN16_1  = svwhilelt_b16(0, active_c1);
-            const svbool_t pN32_1  = svwhilelt_b32((uint64_t)0, (uint64_t)active_c1);
-            const svbool_t pNDim1  = svwhilelt_b32((uint64_t)col1, (uint64_t)N);
-
-            svzero_za();
-
-            for (size_t k = 0; k < K; k += 2) {
-                svfloat16_t a0 = svld1(pM16, &a_transposed[(k + 0) * M + row]);
-                svfloat16_t a1 = (k + 1 < K)
-                    ? svld1(pM16, &a_transposed[(k + 1) * M + row])
-                    : svdup_n_f16(0);
-                svfloat16_t zA = svzip1_f16(a0, a1);
-
-                svfloat16_t b0_0 = svld1(pN16_0, &b[(k + 0) * N + col0]);
-                svfloat16_t b1_0 = (k + 1 < K)
-                    ? svld1(pN16_0, &b[(k + 1) * N + col0])
-                    : svdup_n_f16(0);
-                svfloat16_t zB0 = svzip1_f16(b0_0, b1_0);
-                svmopa_za32_f16_m(0, pMh, pNh0, zA, zB0);
-
-                if (active_c1) {
-                    svfloat16_t b0_1 = svld1(pN16_1, &b[(k + 0) * N + col1]);
-                    svfloat16_t b1_1 = (k + 1 < K)
-                        ? svld1(pN16_1, &b[(k + 1) * N + col1])
-                        : svdup_n_f16(0);
-                    svfloat16_t zB1 = svzip1_f16(b0_1, b1_1);
-                    svmopa_za32_f16_m(1, pMh, pNh1, zA, zB1);
-                }
-            }
-
-            for (size_t m = 0; m < active_r; ++m) {
-                svbool_t p_lane0 = svpsel_lane_b32(pNDim0, pMDim, row + m);
-                svst1_hor_za32(0, m, p_lane0, tmp);
-
-                svfloat32_t out32 = svld1(pN32_0, tmp);
-                svfloat16_t out16 = svcvt_f16_f32_z(pN32_0, out32);
-                out16 = svuzp1_f16(out16, out16);
-                svst1(pN16_0, &c[(row + m) * N + col0], out16);
-
-                if (active_c1) {
-                    svbool_t p_lane1 = svpsel_lane_b32(pNDim1, pMDim, row + m);
-                    svst1_hor_za32(1, m, p_lane1, tmp);
-
-                    svfloat32_t out32b = svld1(pN32_1, tmp);
-                    svfloat16_t out16b = svcvt_f16_f32_z(pN32_1, out32b);
-                    out16b = svuzp1_f16(out16b, out16b);
-                    svst1(pN16_1, &c[(row + m) * N + col1], out16b);
-                }
-            }
-        }
-    }
+				if (active_c1) {
+					svbool_t p_lane1 = svpsel_lane_b32(pNDim1, pMDim, row + m);
+					svst1_hor_za32(1, m, p_lane1, tmp);
+					
+					svfloat32_t out32 = svld1(pN32_1, tmp);
+					svfloat16_t out16 = svcvt_f16_f32_z(pN32_1, out32);
+					out16 = svuzp1_f16(out16, out16);
+					svst1(pN16_1, &c[(row + m) * N + col1], out16);
+				}
+			}
+		}
+	}
 }
 
 __arm_new("za") __arm_locally_streaming
