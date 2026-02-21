@@ -5,7 +5,6 @@ import argparse
 import re
 import subprocess
 import shutil
-import shlex
 import platform
 from pathlib import Path
 
@@ -46,11 +45,18 @@ def check_command(cmd):
 
 
 def run_command(cmd, cwd=None, check=True):
-    """Run a shell command and optionally exit on failure."""
-    # If cmd is a string (single command/script path), quote it to handle spaces
+    """Run a script or command and optionally exit on failure.
+
+    Args:
+        cmd: Script path (str) or command list. String paths are executed
+             directly without shell interpretation to handle spaces safely.
+        cwd: Working directory for the command.
+        check: If True, exit on non-zero return code.
+    """
+    # Convert string paths to list to avoid shell=True and handle spaces safely
     if isinstance(cmd, str):
-        cmd = shlex.quote(cmd)
-    result = subprocess.run(cmd, cwd=cwd, shell=isinstance(cmd, str))
+        cmd = [cmd]
+    result = subprocess.run(cmd, cwd=cwd)
     if check and result.returncode != 0:
         sys.exit(result.returncode)
     return result
