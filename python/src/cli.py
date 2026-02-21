@@ -5,6 +5,7 @@ import argparse
 import re
 import subprocess
 import shutil
+import shlex
 import platform
 from pathlib import Path
 
@@ -46,6 +47,9 @@ def check_command(cmd):
 
 def run_command(cmd, cwd=None, check=True):
     """Run a shell command and optionally exit on failure."""
+    # If cmd is a string (single command/script path), quote it to handle spaces
+    if isinstance(cmd, str):
+        cmd = shlex.quote(cmd)
     result = subprocess.run(cmd, cwd=cwd, shell=isinstance(cmd, str))
     if check and result.returncode != 0:
         sys.exit(result.returncode)
