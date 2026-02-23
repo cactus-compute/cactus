@@ -223,6 +223,7 @@ Lfm2VlModel::MergedEmbeddingResult Lfm2VlModel::merge_image_text_embeddings(
 
     const uint32_t image_start_id = get_token_id("<|image_start|>");
     const uint32_t image_end_id = get_token_id("<|image_end|>");
+    const bool relax_image_placeholder_matching = vision_tower_.use_npu_encoder_;
 
     std::vector<size_t> sequence_nodes;
     sequence_nodes.reserve(tokens.size() + image_embedding_nodes.size());
@@ -283,11 +284,19 @@ Lfm2VlModel::MergedEmbeddingResult Lfm2VlModel::merge_image_text_embeddings(
                 if (inner_token == image_token_id) {
                     flush_segment();
 
-                    if (tile_index < tiles.size()) {
-                        const auto& tile = tiles[tile_index++];
-                        sequence_nodes.push_back(tile.node_id);
-                        total_seq_len += tile.token_count;
+                    if (tile_index >= tiles.size()) {
+                        if (relax_image_placeholder_matching) {
+                            ++token_index;
+                            continue;
+                        }
+                        throw std::runtime_error("More <image> placeholders than projected tile features");
+                    }
 
+                    const auto& tile = tiles[tile_index++];
+                    sequence_nodes.push_back(tile.node_id);
+                    total_seq_len += tile.token_count;
+
+                    if (relax_image_placeholder_matching) {
                         size_t consumed_placeholders = 0;
                         while (consumed_placeholders < tile.token_count &&
                                token_index < tokens.size() &&
@@ -297,7 +306,16 @@ Lfm2VlModel::MergedEmbeddingResult Lfm2VlModel::merge_image_text_embeddings(
                         }
                         continue;
                     }
-                    ++token_index;
+
+                    for (size_t count = 0; count < tile.token_count; ++count) {
+                        if (token_index >= tokens.size()) {
+                            throw std::runtime_error("Insufficient <image> tokens for projected features");
+                        }
+                        if (tokens[token_index] != image_token_id) {
+                            throw std::runtime_error("Unexpected token encountered within image feature span");
+                        }
+                        ++token_index;
+                    }
                     continue;
                 }
                 current_segment.push_back(inner_token);
@@ -310,10 +328,19 @@ Lfm2VlModel::MergedEmbeddingResult Lfm2VlModel::merge_image_text_embeddings(
                 }
             }
 
-            while (tile_index < tiles.size()) {
-                const auto& tile = tiles[tile_index++];
-                sequence_nodes.push_back(tile.node_id);
-                total_seq_len += tile.token_count;
+            if (relax_image_placeholder_matching) {
+                while (tile_index < tiles.size()) {
+                    const auto& tile = tiles[tile_index++];
+                    sequence_nodes.push_back(tile.node_id);
+                    total_seq_len += tile.token_count;
+                }
+            } else if (tile_index != tiles.size()) {
+                if (tile_index < tiles.size()) {
+                    for (size_t remaining = tile_index; remaining < tiles.size(); ++remaining) {
+                        (void)tiles[remaining];
+                    }
+                }
+                throw std::runtime_error("Unused projected tile features remain after processing image block");
             }
 
             ++image_index;
