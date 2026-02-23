@@ -9,37 +9,37 @@ except ImportError:
     scan_cache_dir = None
 
 
-def _find_sp_model(repo_id, token=None):
+def _find_sentencepiece_model(repo_id, token=None):
     local_path = Path(repo_id)
     if local_path.is_dir():
         if sp := next((f for f in local_path.iterdir() if f.suffix == '.model' and f.is_file()), None):
             return str(sp)
         return None
 
-    sp_file = None
+    sentencepiece_file = None
     if scan_cache_dir:
         try:
             if repo := next((r for r in scan_cache_dir().repos if r.repo_id == repo_id), None):
                 latest = max(repo.revisions, key=lambda r: r.last_modified)
-                sp_file = next((f.file_name for f in latest.files if f.file_name.endswith('.model') and '/' not in f.file_name), None)
+                sentencepiece_file = next((f.file_name for f in latest.files if f.file_name.endswith('.model') and '/' not in f.file_name), None)
         except Exception:
             pass
-    if not sp_file and list_repo_files:
+    if not sentencepiece_file and list_repo_files:
         try:
             repo_files = list_repo_files(repo_id, token=token)
-            sp_file = next((f for f in repo_files if f.endswith('.model') and '/' not in f), None)
+            sentencepiece_file = next((f for f in repo_files if f.endswith('.model') and '/' not in f), None)
         except Exception:
             pass
 
-    if sp_file and hf_hub_download:
-        return hf_hub_download(repo_id=repo_id, filename=sp_file, token=token)
+    if sentencepiece_file and hf_hub_download:
+        return hf_hub_download(repo_id=repo_id, filename=sentencepiece_file, token=token)
 
     return None
 
 
 def convert_hf_tokenizer(tokenizer, output_dir, token=None):
     """Convert a HuggingFace tokenizer to Cactus format."""
-    sp_tokenizer_model_path = _find_sp_model(tokenizer.name_or_path, token=token)
+    sentencepiece_tokenizer_model_path = _find_sentencepiece_model(tokenizer.name_or_path, token=token)
 
     tokenizer_json_data = {}
     tokenizer_json_path = output_dir / "tokenizer.json"
@@ -71,7 +71,7 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None):
 
     vocab_output = output_dir / "vocab.txt"
 
-    if sp_tokenizer_model_path:
+    if sentencepiece_tokenizer_model_path:
         with open(vocab_output, 'w', encoding='utf-8') as f:
             for token_id, token_str in enumerate(id_to_token):
                 if token_str:
@@ -94,7 +94,7 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None):
 
     merges_written = False
 
-    if not sp_tokenizer_model_path and tokenizer_json_data:
+    if not sentencepiece_tokenizer_model_path and tokenizer_json_data:
         merges_from_json = tokenizer_json_data.get("model", {}).get("merges", []) or []
         write_merges_file(merges_from_json)
         merges_written = True
@@ -177,10 +177,10 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None):
                 print(f"    Found Gemma special token: {token_str} (ID: {token_id})")
 
         missing_tokens = [k for k, v in gemma_special_tokens.items() if v is None]
-        if missing_tokens and sp_tokenizer_model_path:
+        if missing_tokens and sentencepiece_tokenizer_model_path:
             try:
                 import sentencepiece as spm
-                sp = spm.SentencePieceProcessor(model_file=sp_tokenizer_model_path)
+                sp = spm.SentencePieceProcessor(model_file=sentencepiece_tokenizer_model_path)
                 for token_str in missing_tokens:
                     token_id = sp.piece_to_id(token_str)
                     if token_id != sp.unk_id():
@@ -276,7 +276,7 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None):
             f.write(f"{key}={value}\n")
         f.write(f"model_max_length={getattr(tokenizer, 'model_max_length', 131072)}\n")
 
-        if sp_tokenizer_model_path:
+        if sentencepiece_tokenizer_model_path:
             f.write("tokenizer_type=sentencepiece\n")
         else:
             f.write("tokenizer_type=bpe\n")
