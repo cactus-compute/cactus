@@ -2,6 +2,7 @@
 #include "kernel_utils.h"
 #include <arm_neon.h>
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 
 void cactus_int8_to_fp32(const int8_t* src, float* dst, size_t count, float scale) {
@@ -293,59 +294,19 @@ void cactus_quantize_kv_fp16_to_int8(
 }
 
 void cactus_unpack_int4_to_int8(const uint8_t* packed, int8_t* unpacked, size_t unpacked_count) {
-    const size_t packed_count = (unpacked_count + 1) / 2;
+    assert (unpacked_count % 32 == 0 && "Unpacked count must be a multiple of 32 for int4 unpacking");
+    const size_t num_groups = unpacked_count / 32;
 
-    CactusThreading::parallel_for(packed_count, CactusThreading::Thresholds::ELEMENT_WISE,
-        [packed, unpacked, unpacked_count](size_t start, size_t end) {
-            const size_t simd_end = start + ((end - start) / 16) * 16;
+    CactusThreading::parallel_for(num_groups, CactusThreading::Thresholds::ELEMENT_WISE,
+        [packed, unpacked](size_t start, size_t end) {
+            for (size_t group = start; group < end; ++group) {
+                const uint8_t* src = &packed[group * 16];
+                int8_t* dst = &unpacked[group * 32];
 
-            for (size_t i = start; i < simd_end; i += 16) {
-
-                uint8x16_t input = vld1q_u8(&packed[i]);
-                uint8x16_t low_mask = vdupq_n_u8(0x0F);
-                uint8x16_t low_nibbles = vandq_u8(input, low_mask);
-
-                uint8x16_t high_nibbles = vshrq_n_u8(input, 4);
-                uint8x16_t sign_bit = vdupq_n_u8(0x08);
-                uint8x16_t sign_extend = vdupq_n_u8(0x10);
-
-                uint8x16_t low_sign = vandq_u8(low_nibbles, sign_bit);
-                uint8x16_t low_has_sign = vcgtq_u8(low_sign, vdupq_n_u8(0));
-                uint8x16_t low_correction = vandq_u8(low_has_sign, sign_extend);
-                int8x16_t low_signed = vreinterpretq_s8_u8(vsubq_u8(low_nibbles, low_correction));
-
-                uint8x16_t high_sign = vandq_u8(high_nibbles, sign_bit);
-                uint8x16_t high_has_sign = vcgtq_u8(high_sign, vdupq_n_u8(0));
-                uint8x16_t high_correction = vandq_u8(high_has_sign, sign_extend);
-                int8x16_t high_signed = vreinterpretq_s8_u8(vsubq_u8(high_nibbles, high_correction));
-
-                int8x16x2_t interleaved = vzipq_s8(low_signed, high_signed);
-
-                size_t out_idx = i * 2;
-                if (out_idx + 16 <= unpacked_count) {
-                    vst1q_s8(&unpacked[out_idx], interleaved.val[0]);
-                }
-                if (out_idx + 32 <= unpacked_count) {
-                    vst1q_s8(&unpacked[out_idx + 16], interleaved.val[1]);
-                }
-            }
-
-            for (size_t i = simd_end; i < end; ++i) {
-                uint8_t byte = packed[i];
-
-                int8_t low = byte & 0x0F;
-                if (low & 0x08) low |= 0xF0;  
-
-                int8_t high = (byte >> 4) & 0x0F;
-                if (high & 0x08) high |= 0xF0; 
-
-                size_t out_idx = i * 2;
-                if (out_idx < unpacked_count) {
-                    unpacked[out_idx] = low;
-                }
-                if (out_idx + 1 < unpacked_count) {
-                    unpacked[out_idx + 1] = high;
-                }
+                int8x16_t high_signed, low_signed;
+                unpack_int4_as_int8x16x2(src, high_signed, low_signed);
+                vst1q_s8(dst, low_signed);
+                vst1q_s8(dst + 16, high_signed);
             }
         });
 }

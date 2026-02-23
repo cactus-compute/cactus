@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
+#include <cassert>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -151,8 +152,17 @@ struct PrecisionTraits {
 
     static constexpr size_t packed_size_of(Precision prec, size_t count) {
         switch (prec) {
-            case Precision::INT4: return (count + 1) / 2;  
+            case Precision::INT4: return (count + 1) / 2;
             default: return count * size_of(prec);
+        }
+    }
+
+    static size_t byte_offset_of(Precision prec, size_t element_offset) {
+        switch (prec) {
+            case Precision::INT4:
+                assert(element_offset % 32 == 0 && "INT4 byte offset must be group-aligned (multiple of 32)");
+                return element_offset / 2;
+            default: return element_offset * size_of(prec);
         }
     }
 
@@ -191,7 +201,6 @@ struct TensorConfig {
     Precision compute_precision = Precision::INT8;
     Precision output_precision = Precision::INT8;
     bool auto_mixed_precision = false;
-    bool enable_int4_packing = true;
     
     static TensorConfig& global();
 };
@@ -251,6 +260,10 @@ struct BufferDesc {
 
     bool is_grouped_int8() const {
         return precision == Precision::INT8 && group_size > 0;
+    }
+
+    bool is_grouped_int4() const {
+        return precision == Precision::INT4 && group_size > 0;
     }
 
     void set_grouped_scales(size_t gs, size_t ng, void* scales_ptr) {
@@ -617,11 +630,8 @@ namespace GraphFile {
         bool is_interleaved_ = false;
         size_t original_N_ = 0;
 
-        std::unique_ptr<int8_t[]> unpacked_data_;  
-
         void parse_header();
         void apply_madvise_hints();
-        void unpack_int4_data();
     };
 }
 

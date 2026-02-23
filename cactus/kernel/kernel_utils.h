@@ -102,6 +102,12 @@ inline float32x4_t fast_tanh_f32x4(float32x4_t x) {
     return result;
 }
 
+inline void unpack_int4_as_int8x16x2(const uint8_t* ptr, int8x16_t& high_decoded, int8x16_t& low_decoded) {
+    int8x16_t packed = vreinterpretq_s8_u8(vld1q_u8(ptr));
+    high_decoded = vshrq_n_s8(packed, 4);
+    low_decoded = vshrq_n_s8(vshlq_n_s8(packed, 4), 4);
+}
+
 namespace CactusThreading {
 
     class ThreadPool {

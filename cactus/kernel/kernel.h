@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <arm_neon.h>
 
+enum class Precision;
+
 enum class ScalarOpType {
     ADD,
     SUBTRACT,
@@ -50,6 +52,23 @@ void cactus_gemm_int8(const int8_t* A, const float* A_scales,
 void cactus_matmul_int8(const int8_t* A, const float* A_scales,
                         const int8_t* B, const __fp16* B_scales,
                         __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
+
+void cactus_gemv_int4(const int8_t* A, float A_scale,
+                      const int8_t* B_packed, const __fp16* B_scales,
+                      __fp16* C, size_t K, size_t N, size_t group_size);
+
+void cactus_gemm_int4(const int8_t* A, const float* A_scales,
+                      const int8_t* B_packed, const __fp16* B_scales,
+                      __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
+
+void cactus_matmul_int4(const int8_t* A, const float* A_scales,
+                        const int8_t* B_packed, const __fp16* B_scales,
+                        __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
+
+void cactus_matmul_integer(Precision precision,
+                            const int8_t* A, const float* A_scales,
+                            const int8_t* B, const __fp16* B_scales,
+                            __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
 
 void cactus_matmul_f16(const __fp16* a, const __fp16* b_transposed, __fp16* c,
                        size_t M, size_t K, size_t N);

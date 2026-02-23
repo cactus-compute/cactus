@@ -1,5 +1,7 @@
 #include "graph.h"
+#include "../kernel/kernel_utils.h"
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -435,6 +437,19 @@ void CactusGraph::execute(const std::string& profile_file) {
                             if (i > 0) weights_str += ",";
                             weights_str += std::to_string(static_cast<int>(int8_data[i]));
                         }
+                    } else if (weight_node->output_buffer.precision == Precision::INT4) {
+                        const uint8_t* packed = weight_node->output_buffer.data_as<uint8_t>();
+                        int8x16_t high, low;
+                        unpack_int4_as_int8x16x2(packed, high, low);
+                        int8_t low_lanes[16], high_lanes[16];
+                        vst1q_s8(low_lanes, low);
+                        vst1q_s8(high_lanes, high);
+
+                        for (size_t i = 0; i < num_values; ++i) {
+                            if (i > 0) weights_str += ",";
+                            int8_t val = (i < 16) ? low_lanes[i] : high_lanes[i - 16];
+                            weights_str += std::to_string(static_cast<int>(val));
+                        }
                     }
 
                     if (weight_node->output_buffer.total_size > 5) {
@@ -617,6 +632,23 @@ void CactusGraph::execute(const std::string& profile_file) {
                         for (size_t i = 0; i < elements_to_process; ++i) {
                             accumulate(static_cast<float>(typed[i]), i);
                         }
+                    } else if (buffer.precision == Precision::INT4) {
+                        assert(elements_to_process % 32 == 0 && "INT4 precision capture requires element count to be multiple of 32");
+                        const uint8_t* packed_ptr = reinterpret_cast<const uint8_t*>(data_ptr);
+                        for (size_t i = 0; i < elements_to_process; i+=32) {
+                            int8x16_t high, low;
+                            unpack_int4_as_int8x16x2(packed_ptr + i / 2, high, low);
+                            int8_t high_lanes[16], low_lanes[16];
+                            vst1q_s8(high_lanes, high);
+                            vst1q_s8(low_lanes, low);
+
+                            for (size_t j = 0; j < 16; ++j) {
+                                accumulate(static_cast<float>(low_lanes[j]), i + j);
+                            }
+                            for (size_t j = 0; j < 16; ++j) {
+                                accumulate(static_cast<float>(high_lanes[j]), i + 16 + j);
+                            }
+                        }
                     } else {
                         has_data = false;
                     }
@@ -631,7 +663,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                     if (bin_file.is_open()) {
                         size_t bytes_to_write = buffer.byte_size;
                         if (truncated) {
-                             bytes_to_write = buffer.total_size * PrecisionTraits::size_of(buffer.precision);
+                             bytes_to_write = PrecisionTraits::packed_size_of(buffer.precision, elements_to_process);
                         }
                         bin_file.write(reinterpret_cast<const char*>(data_ptr), bytes_to_write);
                     }
