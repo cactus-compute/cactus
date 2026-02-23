@@ -667,6 +667,10 @@ size_t CactusGraph::scalar_sin(size_t input) {
     return add_node(OpType::SCALAR_SIN, {input}, {});
 }
 
+size_t CactusGraph::scalar_log(size_t input) {
+    return add_node(OpType::SCALAR_LOG, {input}, {});
+}
+
 size_t CactusGraph::relu(size_t input) {
     return add_node(OpType::RELU, {input}, {});
 }

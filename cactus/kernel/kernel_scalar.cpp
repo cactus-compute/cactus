@@ -260,5 +260,16 @@ void cactus_scalar_op_f16(const __fp16* input, __fp16* output, size_t num_elemen
                 });
             break;
         }
+
+        case ScalarOpType::LOG: {
+            CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+                [&](size_t start_idx, size_t end_idx) {
+                    for (size_t i = start_idx; i < end_idx; ++i) {
+                        float val = static_cast<float>(input[i]);
+                        output[i] = static_cast<__fp16>(std::log(val));
+                    }
+                });
+            break;
+        }
     }
 }
