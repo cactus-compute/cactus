@@ -354,12 +354,14 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(
 ```json
 {
     "confirmation_threshold": 0.99,
-    "min_chunk_size": 32000
+    "min_chunk_size": 32000,
+    "language": "en"
 }
 ```
 
 - `confirmation_threshold`: Threshold (0.0-1.0) for confirming transcription segments. Higher values require more stability. Default: 0.99
 - `min_chunk_size`: Minimum audio samples to perform transcription processing step. Default: 32000
+- `language`: ISO 639-1 language code (e.g., "en", "es", "fr", "de"). Default: "en". Ignored for non-Whisper models.
 
 **Example:**
 ```c
