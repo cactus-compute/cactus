@@ -172,14 +172,16 @@ std::string unescape_json(const std::string& s) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc != 2) {
+    if (argc < 2 || argc > 3) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
-        std::cerr << "Usage: " << argv[0] << " <model_path>\n";
+        std::cerr << "Usage: " << argv[0] << " <model_path> [image_path]\n";
         std::cerr << "Example: " << argv[0] << " weights/lfm2-1.2B\n";
+        std::cerr << "Example: " << argv[0] << " weights/LFM2-VL-450M photo.png\n";
         return 1;
     }
 
     const char* model_path = argv[1];
+    const char* image_path = (argc == 3) ? argv[2] : nullptr;
 
     std::cout << "\n" << colored("Loading model from ", Color::YELLOW)
               << colored(model_path, Color::CYAN) << colored("...", Color::YELLOW) << "\n";
@@ -192,6 +194,10 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << colored("Model loaded successfully!\n", Color::GREEN + Color::BOLD);
+
+    if (image_path) {
+        std::cout << colored("Image: ", Color::YELLOW) << colored(image_path, Color::CYAN) << "\n";
+    }
 
     print_header();
 
@@ -228,7 +234,11 @@ int main(int argc, char* argv[]) {
             if (i > 0) messages_json << ",";
             if (i % 2 == 0) {
                 messages_json << "{\"role\":\"user\",\"content\":\""
-                             << escape_json(history[i]) << "\"}";
+                             << escape_json(history[i]) << "\"";
+                if (image_path && i == 0) {
+                    messages_json << ",\"images\":[\"" << escape_json(image_path) << "\"]";
+                }
+                messages_json << "}";
             } else {
                 messages_json << "{\"role\":\"assistant\",\"content\":\""
                              << escape_json(history[i]) << "\"}";

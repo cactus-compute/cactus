@@ -787,11 +787,21 @@ def cmd_run(args):
         print_color(RED, f"Error: Chat binary not found at {chat_binary}")
         return 1
 
+    image_path = getattr(args, 'image', None)
+    if image_path:
+        image_path = str(Path(image_path).resolve())
+        if not Path(image_path).exists():
+            print_color(RED, f"Error: Image not found at {image_path}")
+            return 1
+
     os.system('clear' if platform.system() != 'Windows' else 'cls')
     print_color(GREEN, f"Starting Cactus Chat with model: {model_id}")
     print()
 
-    os.execv(str(chat_binary), [str(chat_binary), str(weights_dir)])
+    exec_args = [str(chat_binary), str(weights_dir)]
+    if image_path:
+        exec_args.append(image_path)
+    os.execv(str(chat_binary), exec_args)
 
 
 DEFAULT_ASR_MODEL_ID = "openai/whisper-small"
@@ -1494,6 +1504,7 @@ def create_parser():
     Optional flags:
     --precision INT4|INT8|FP16         default: INT8
     --token <token>                    HF token (for gated models)
+    --image <path>                     image for vision models (VLM)
     --reconvert                        force model weights reconversion from source
 
   -----------------------------------------------------------------
@@ -1623,6 +1634,7 @@ def create_parser():
     run_parser.add_argument('--token', help='HuggingFace API token')
     run_parser.add_argument('--no-cloud-tele', action='store_true',
                             help='Disable cloud telemetry (write to cache only)')
+    run_parser.add_argument('--image', help='Path to image for vision models')
     run_parser.add_argument('--reconvert', action='store_true',
                             help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
 
