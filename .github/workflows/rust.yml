@@ -28,9 +28,11 @@ jobs:
           key: cactus-models-${{ matrix.os }}-v2
       - run: cactus download google/gemma-3-270m-it
       - run: cactus download openai/whisper-small
+      - run: curl -fL -o "${{ runner.temp }}/jfk.wav" https://github.com/ggml-org/whisper.cpp/raw/refs/tags/v1.8.3/samples/jfk.wav
       - run: cargo test --manifest-path rust/Cargo.toml --test llm -- --nocapture
         env:
           CACTUS_MODEL_PATH: ${{ github.workspace }}/weights/gemma-3-270m-it
       - run: cargo test --manifest-path rust/Cargo.toml --test stt -- --nocapture
         env:
           CACTUS_STT_MODEL_PATH: ${{ github.workspace }}/weights/whisper-small
+          CACTUS_STT_AUDIO_PATH: ${{ runner.temp }}/jfk.wav
