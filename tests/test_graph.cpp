@@ -157,20 +157,23 @@ bool test_scalar_math_functions() {
     size_t sqrt_result = fixture.graph().scalar_sqrt(input_a);
     size_t cos_result = fixture.graph().scalar_cos(input_a);
     size_t sin_result = fixture.graph().scalar_sin(input_a);
+    size_t log_result = fixture.graph().scalar_log(input_a);
 
-    std::vector<__fp16> input_data = {0.0f, 1.0f, 4.0f};
+    std::vector<__fp16> input_data = {0.5f, 1.0f, 4.0f};
     fixture.set_input_data(input_a, input_data);
     fixture.execute();
 
-    std::vector<__fp16> exp_expected = {1.0f, 2.71828f, 54.5982f};
-    std::vector<__fp16> sqrt_expected = {0.0f, 1.0f, 2.0f};
-    std::vector<__fp16> cos_expected = {1.0f, 0.54030f, -0.65364f};
-    std::vector<__fp16> sin_expected = {0.0f, 0.84147f, -0.75680f};
+    std::vector<__fp16> exp_expected = {1.64872f, 2.71828f, 54.5982f};
+    std::vector<__fp16> sqrt_expected = {0.70711f, 1.0f, 2.0f};
+    std::vector<__fp16> cos_expected = {0.87758f, 0.54030f, -0.65364f};
+    std::vector<__fp16> sin_expected = {0.47943f, 0.84147f, -0.75680f};
+    std::vector<__fp16> log_expected = {-0.69315f, 0.0f, 1.38629f};
 
     return fixture.verify_output(exp_result, exp_expected, 0.01f) &&
            fixture.verify_output(sqrt_result, sqrt_expected, 0.01f) &&
            fixture.verify_output(cos_result, cos_expected, 0.01f) &&
-           fixture.verify_output(sin_result, sin_expected, 0.01f);
+           fixture.verify_output(sin_result, sin_expected, 0.01f) &&
+           fixture.verify_output(log_result, log_expected, 0.01f);
 }
 
 bool test_rms_norm() {

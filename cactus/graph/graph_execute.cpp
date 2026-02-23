@@ -61,7 +61,7 @@ static const char* op_type_names[] = {
     "SUM", "MEAN", "VARIANCE", "MIN", "MAX",
     "RMS_NORM", "ROPE", "ROPE_GPTJ", "SOFTMAX", "ATTENTION", "ATTENTION_INT8_HYBRID", "CONV1D_CAUSAL", "CONV1D_K3", "CONV1D_K7S3", "CONV1D",
     "SCALAR_ADD", "SCALAR_SUBTRACT", "SCALAR_MULTIPLY", "SCALAR_DIVIDE",
-    "SCALAR_EXP", "SCALAR_SQRT", "SCALAR_COS", "SCALAR_SIN",
+    "SCALAR_EXP", "SCALAR_SQRT", "SCALAR_COS", "SCALAR_SIN", "SCALAR_LOG",
     "RELU", "SILU", "GELU", "GELU_ERF", "SIGMOID", "TANH",
     "SAMPLE", "CONCAT",
     "SCATTER_TOPK",
@@ -99,6 +99,7 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
         case OpType::SCALAR_SQRT:
         case OpType::SCALAR_COS:
         case OpType::SCALAR_SIN:
+        case OpType::SCALAR_LOG:
             compute_unary_op_node(node, nodes, node_index_map);
             break;
 

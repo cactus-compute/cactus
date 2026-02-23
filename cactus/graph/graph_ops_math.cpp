@@ -86,6 +86,7 @@ void dispatch_unary_op_f16(OpType op, const __fp16* input, __fp16* output, size_
         case OpType::SCALAR_SQRT: scalar_op = ScalarOpType::SQRT; break;
         case OpType::SCALAR_COS: scalar_op = ScalarOpType::COS; break;
         case OpType::SCALAR_SIN: scalar_op = ScalarOpType::SIN; break;
+        case OpType::SCALAR_LOG: scalar_op = ScalarOpType::LOG; break;
         default: return;
     }
 

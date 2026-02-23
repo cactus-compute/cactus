@@ -223,7 +223,8 @@ void benchmark_scalar_ops(TestUtils::TestRunner& runner, const BenchmarkConfig& 
         {"Scalar Exp", [](CactusGraph& b, size_t a) { return b.scalar_exp(a); }},
         {"Scalar Sqrt", [](CactusGraph& b, size_t a) { return b.scalar_sqrt(a); }},
         {"Scalar Cos", [](CactusGraph& b, size_t a) { return b.scalar_cos(a); }},
-        {"Scalar Sin", [](CactusGraph& b, size_t a) { return b.scalar_sin(a); }}
+        {"Scalar Sin", [](CactusGraph& b, size_t a) { return b.scalar_sin(a); }},
+        {"Scalar Log", [](CactusGraph& b, size_t a) { return b.scalar_log(a); }}
     };
 
     Precision precision = TestUtils::default_precision<T>();

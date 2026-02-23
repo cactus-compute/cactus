@@ -14,7 +14,8 @@ enum class ScalarOpType {
     EXP,
     SQRT,
     COS,
-    SIN
+    SIN,
+    LOG
 };
 
 constexpr size_t KV_QUANT_GROUP_SIZE = 32;

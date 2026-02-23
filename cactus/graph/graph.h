@@ -126,7 +126,7 @@ enum class OpType {
     BILINEAR_INTERPOLATION,
     SUM, MEAN, VARIANCE, MIN, MAX,
     RMS_NORM, ROPE, ROPE_GPTJ, SOFTMAX, ATTENTION, ATTENTION_INT8_HYBRID, CONV1D_CAUSAL, CONV1D_K3, CONV1D_K7S3, CONV1D,
-    SCALAR_ADD, SCALAR_SUBTRACT, SCALAR_MULTIPLY, SCALAR_DIVIDE, SCALAR_EXP, SCALAR_SQRT, SCALAR_COS, SCALAR_SIN,
+    SCALAR_ADD, SCALAR_SUBTRACT, SCALAR_MULTIPLY, SCALAR_DIVIDE, SCALAR_EXP, SCALAR_SQRT, SCALAR_COS, SCALAR_SIN, SCALAR_LOG,
     RELU, SILU, GELU, GELU_ERF, SIGMOID, TANH,
     SAMPLE, CONCAT,
     SCATTER_TOPK,
@@ -445,6 +445,7 @@ public:
     size_t scalar_sqrt(size_t input);
     size_t scalar_cos(size_t input);
     size_t scalar_sin(size_t input);
+    size_t scalar_log(size_t input);
     
     size_t relu(size_t input);
     size_t silu(size_t input);
@@ -635,4 +636,4 @@ namespace GraphFile {
     };
 }
 
-#endif 
+#endif

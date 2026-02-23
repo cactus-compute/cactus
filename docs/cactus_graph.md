@@ -106,6 +106,7 @@ size_t exp_result = graph.scalar_exp(input);    // e^input
 size_t sqrt_result = graph.scalar_sqrt(input);  // √input
 size_t cos_result = graph.scalar_cos(input);    // cos(input)
 size_t sin_result = graph.scalar_sin(input);    // sin(input)
+size_t log_result = graph.scalar_log(input);    // ln(input)
 ```
 
 ### Matrix Operations
