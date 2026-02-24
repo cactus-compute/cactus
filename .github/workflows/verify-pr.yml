@@ -97,17 +97,16 @@ jobs:
   unit-tests:
     needs: build
     runs-on: [self-hosted, linux, arm64]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
       - name: Run unit tests
         run: |
-          chmod +x tests/build/test_*
           FAILED=0
           for test in test_graph test_kernel test_kv_cache test_index; do
             echo "=== Running $test ==="
-            if ! ./tests/build/$test; then
+            if ! bash tests/build/$test; then
               FAILED=$((FAILED + 1))
             fi
           done
@@ -116,20 +115,16 @@ jobs:
   loading-tests:
     needs: build
     runs-on: [self-hosted, linux, arm64]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
       - name: Run model loading failure tests
-        run: |
-          ./tests/build/test_model_loading
+        run: bash tests/build/test_model_loading
 
   model-tests:
     needs: build
     runs-on: [self-hosted, linux, arm64]
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
     strategy:
       fail-fast: false
       matrix:
@@ -181,9 +176,11 @@ jobs:
           #   model_dir: lfm2-vl-450m-int4
           #   env_var: CACTUS_TEST_MODEL
     steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
       - name: Run ground truth test
         run: |
-          chmod +x tests/build/test_groundtruth
           export ${{ matrix.env_var }}="${{ github.workspace }}/weights/${{ matrix.model_dir }}"
           export CACTUS_TEST_ASSETS="${{ github.workspace }}/tests/assets"
           export CACTUS_TEST_GOLDEN_DIR="${{ github.workspace }}/tests/golden"
@@ -192,4 +189,4 @@ jobs:
           if [ "${{ matrix.family }}" = "whisper" ] || [ "${{ matrix.family }}" = "moonshine" ]; then
             export CACTUS_TEST_VAD_MODEL="${{ github.workspace }}/weights/silero-vad"
           fi
-          ./tests/build/test_groundtruth
+          bash tests/build/test_groundtruth
