@@ -102,7 +102,6 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 saved_tensor_full_names.add(name)
 
     if tie_word_embeddings:
-        import os
         src = output_dir / "token_embeddings.weights"
         dst = output_dir / "output_weight.weights"
         if src.exists():
