@@ -70,8 +70,8 @@ void benchmark_streaming_stores(TestUtils::TestRunner& runner, const BenchmarkCo
     for (size_t num_elements : sizes) {
         std::vector<__fp16> A(num_elements), B(num_elements), C(num_elements);
         for (size_t i = 0; i < num_elements; ++i) {
-            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
-            B[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
+            B[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
         }
 
         double time_ms = time_operation<__fp16>([&]() {
@@ -144,12 +144,12 @@ void benchmark_conv1d_ops(TestUtils::TestRunner& runner, const BenchmarkConfig& 
 
         std::vector<__fp16> input(N * C_in * L);
         for (size_t i = 0; i < input.size(); ++i) {
-            input[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
+            input[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
         }
 
         std::vector<__fp16> weight(C_out * C_in * 3);
         for (size_t i = 0; i < weight.size(); ++i) {
-            weight[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f);
+            weight[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 0.1f);
         }
 
         std::vector<__fp16> output(N * C_out * out_len);
@@ -179,12 +179,12 @@ void benchmark_broadcast_ops(TestUtils::TestRunner& runner, const BenchmarkConfi
 
         std::vector<__fp16> A(total_elements);
         for (size_t i = 0; i < total_elements; ++i) {
-            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
         }
 
         std::vector<__fp16> B_vec(cols);
         for (size_t i = 0; i < cols; ++i) {
-            B_vec[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f);
+            B_vec[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 0.1f);
         }
 
         std::vector<__fp16> C(total_elements);
@@ -312,7 +312,7 @@ void benchmark_matmul_int8_grouped(TestUtils::TestRunner& runner, const Benchmar
 
         std::vector<__fp16> A(M * K_aligned);
         for (size_t i = 0; i < M * K_aligned; ++i) {
-            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
         }
 
         std::vector<int8_t> B(N * K_aligned);
@@ -322,7 +322,7 @@ void benchmark_matmul_int8_grouped(TestUtils::TestRunner& runner, const Benchmar
 
         std::vector<__fp16> B_scales(N * num_groups);
         for (size_t i = 0; i < N * num_groups; ++i) {
-            B_scales[i] = static_cast<__fp16>(0.01f + (static_cast<float>(rand()) / RAND_MAX) * 0.05f);
+            B_scales[i] = static_cast<__fp16>(0.01f + (static_cast<float>(rand()) / static_cast<float>(RAND_MAX)) * 0.05f);
         }
 
         std::vector<int8_t> A_quant(M * K_aligned);
@@ -473,7 +473,7 @@ void benchmark_rms_norm(TestUtils::TestRunner& runner, const BenchmarkConfig& co
         std::vector<__fp16> data_a(total_elements);
         std::vector<__fp16> weight_data(dim, static_cast<__fp16>(1.0f));
         for (size_t i = 0; i < total_elements; ++i) {
-            data_a[i] = static_cast<__fp16>(static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f);
+            data_a[i] = static_cast<__fp16>(static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 2.0f - 1.0f);
         }
 
         graph.set_input(input_a, const_cast<void*>(static_cast<const void*>(data_a.data())), precision);
@@ -513,7 +513,7 @@ void benchmark_rope(TestUtils::TestRunner& runner, const BenchmarkConfig& config
 
         std::vector<__fp16> data_a(total_elements);
         for (size_t i = 0; i < total_elements; ++i) {
-            data_a[i] = static_cast<__fp16>(static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f);
+            data_a[i] = static_cast<__fp16>(static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 2.0f - 1.0f);
         }
         fixture.set_input_data(input_a, data_a, precision);
 
@@ -643,7 +643,7 @@ void benchmark_mmap_embedding(TestUtils::TestRunner& runner, BenchmarkConfig& co
 
                 std::vector<__fp16> embeddings_data(vocab_size * embedding_dim);
                 for (size_t i = 0; i < embeddings_data.size(); ++i) {
-                    embeddings_data[i] = static_cast<__fp16>(static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f);
+                    embeddings_data[i] = static_cast<__fp16>(static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 2.0f - 1.0f);
                 }
 
                 size_t temp_embeddings = graph.input({vocab_size, embedding_dim}, Precision::FP16);
@@ -876,10 +876,10 @@ void benchmark_gemm_f16_direct(TestUtils::TestRunner& runner, const BenchmarkCon
     for (const auto& [M, K, N] : shapes) {
         std::vector<__fp16> A(M * K), B_T(N * K), C(M * N);
         for (size_t i = 0; i < M * K; ++i) {
-            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
         }
         for (size_t i = 0; i < N * K; ++i) {
-            B_T[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
+            B_T[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
         }
 
         double time_ms = time_operation<__fp16>([&]() {

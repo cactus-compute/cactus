@@ -11,7 +11,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <uuid/uuid.h>
+#include <random>
 
 std::string make_temp_dir(const char* prefix) {
     char pattern[256] = {0};
@@ -31,11 +31,20 @@ int count_events(const std::string& file_path) {
 }
 
 std::string random_project_id() {
-    uuid_t uuid;
-    uuid_generate_random(uuid);
-    char uuid_str[37];
-    uuid_unparse_lower(uuid, uuid_str);
-    return std::string(uuid_str);
+    static thread_local std::mt19937_64 rng(std::random_device{}());
+    uint64_t a = rng();
+    uint64_t b = rng();
+    a = (a & 0xffffffffffff0fffULL) | 0x0000000000004000ULL;
+    b = (b & 0x3fffffffffffffffULL) | 0x8000000000000000ULL;
+    char buf[37];
+    std::snprintf(buf, sizeof(buf),
+        "%08llx-%04llx-%04llx-%04llx-%012llx",
+        (unsigned long long)((a >> 32) & 0xffffffffULL),
+        (unsigned long long)((a >> 16) & 0xffffULL),
+        (unsigned long long)(a & 0xffffULL),
+        (unsigned long long)((b >> 48) & 0xffffULL),
+        (unsigned long long)(b & 0xffffffffffffULL));
+    return std::string(buf);
 }
 
 enum class CloudTelemetryTestResult {

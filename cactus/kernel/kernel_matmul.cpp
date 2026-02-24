@@ -377,14 +377,13 @@ void cactus_gemm_int8(
 ) {
     if (M == 0 || K == 0 || N == 0) return;
 
-    constexpr size_t TILE_M = 4;
+    constexpr size_t TILE_M = 8;
     constexpr size_t TILE_N = 4;
 
     const size_t num_groups = K / group_size;
     const size_t N_blocks = (N + TILE_N - 1) / TILE_N;
     const size_t num_row_tiles = (M + TILE_M - 1) / TILE_M;
     const size_t total_tiles = num_row_tiles * N_blocks;
-
 
     CactusThreading::parallel_gemm_tiles(M, total_tiles,
         [=](size_t tile_start, size_t tile_end) {
@@ -398,10 +397,16 @@ void cactus_gemm_int8(
                 const size_t actual_m = m_end - m_start;
                 const size_t actual_n = n_end - n_start;
 
-                float32x4_t running_sum[TILE_M] = {
-                    vdupq_n_f32(0.0f), vdupq_n_f32(0.0f),
-                    vdupq_n_f32(0.0f), vdupq_n_f32(0.0f)
-                };
+                const int8_t* a_rows[TILE_M];
+                for (size_t mi = 0; mi < TILE_M; mi++) {
+                    size_t row = m_start + (mi < actual_m ? mi : actual_m - 1);
+                    a_rows[mi] = A + row * K;
+                }
+
+                float32x4_t running_sum[TILE_M];
+                for (size_t mi = 0; mi < TILE_M; mi++) {
+                    running_sum[mi] = vdupq_n_f32(0.0f);
+                }
 
                 for (size_t g = 0; g < num_groups; g++) {
                     const size_t k_base = g * group_size;
@@ -413,7 +418,7 @@ void cactus_gemm_int8(
                     int8x16_t b01 = vld1q_s8(b_base + 16);
                     int8x16_t b02 = vld1q_s8(b_base + 32);
                     int8x16_t b03 = vld1q_s8(b_base + 48);
-                    
+
                     int8x16_t b10 = vld1q_s8(b_base + 64);
                     int8x16_t b11 = vld1q_s8(b_base + 80);
                     int8x16_t b12 = vld1q_s8(b_base + 96);
@@ -423,25 +428,31 @@ void cactus_gemm_int8(
                     float16x4_t scales_f16 = vld1_f16(scale_ptr);
                     float32x4_t scales = vcvt_f32_f16(scales_f16);
 
-                    for (size_t mi = 0; mi < actual_m; mi++) {
-                        const int8_t* a_ptr = A + (m_start + mi) * K + k_base;
+                    #define CACTUS_GEMM_ROW(ROW) do { \
+                        const int8_t* a_ptr_##ROW = a_rows[ROW] + k_base; \
+                        int32x4_t acc_##ROW = vdupq_n_s32(0); \
+                        int8x16_t a_lo_##ROW = vld1q_s8(a_ptr_##ROW); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b00, a_lo_##ROW, 0); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b01, a_lo_##ROW, 1); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b02, a_lo_##ROW, 2); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b03, a_lo_##ROW, 3); \
+                        int8x16_t a_hi_##ROW = vld1q_s8(a_ptr_##ROW + 16); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b10, a_hi_##ROW, 0); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b11, a_hi_##ROW, 1); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b12, a_hi_##ROW, 2); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b13, a_hi_##ROW, 3); \
+                        running_sum[ROW] = vmlaq_f32(running_sum[ROW], vcvtq_f32_s32(acc_##ROW), scales); \
+                    } while(0)
 
-                        int32x4_t acc = vdupq_n_s32(0);
-
-                        int8x16_t a_vec = vld1q_s8(a_ptr);
-                        acc = CACTUS_DOTQ_LANE(acc, b00, a_vec, 0);
-                        acc = CACTUS_DOTQ_LANE(acc, b01, a_vec, 1);
-                        acc = CACTUS_DOTQ_LANE(acc, b02, a_vec, 2);
-                        acc = CACTUS_DOTQ_LANE(acc, b03, a_vec, 3);
-
-                        a_vec = vld1q_s8(a_ptr + 16);
-                        acc = CACTUS_DOTQ_LANE(acc, b10, a_vec, 0);
-                        acc = CACTUS_DOTQ_LANE(acc, b11, a_vec, 1);
-                        acc = CACTUS_DOTQ_LANE(acc, b12, a_vec, 2);
-                        acc = CACTUS_DOTQ_LANE(acc, b13, a_vec, 3);
-
-                        running_sum[mi] = vmlaq_f32(running_sum[mi], vcvtq_f32_s32(acc), scales);
-                    }
+                    CACTUS_GEMM_ROW(0);
+                    CACTUS_GEMM_ROW(1);
+                    CACTUS_GEMM_ROW(2);
+                    CACTUS_GEMM_ROW(3);
+                    CACTUS_GEMM_ROW(4);
+                    CACTUS_GEMM_ROW(5);
+                    CACTUS_GEMM_ROW(6);
+                    CACTUS_GEMM_ROW(7);
+                    #undef CACTUS_GEMM_ROW
                 }
 
                 for (size_t mi = 0; mi < actual_m; mi++) {

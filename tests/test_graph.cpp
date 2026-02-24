@@ -469,7 +469,7 @@ bool test_precision_conversion() {
     size_t fp32_converted_id = fixture.graph().precision_cast(fp16_id, Precision::FP32);
     fixture.execute();
 
-    float* fp32_data = static_cast<float*>(fixture.graph().get_output(fp32_converted_id));
+    auto* fp32_data = static_cast<float*>(fixture.graph().get_output(fp32_converted_id));
 
     for (size_t i = 0; i < 4; ++i) {
         assert(std::abs(fp32_data[i] - static_cast<float>(data[i])) < 1e-3f);

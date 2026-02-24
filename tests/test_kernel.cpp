@@ -220,7 +220,7 @@ bool test_matmul_int8_grouped_correctness() {
 
     std::vector<__fp16> A(M * K);
     for (size_t i = 0; i < M * K; ++i) {
-        A[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.5f);
+        A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 0.5f);
     }
 
     std::vector<int8_t> B_rowmajor(N * K);
