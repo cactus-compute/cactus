@@ -1,4 +1,5 @@
 name: PR Verification
+# no-op: verify approval trigger
 
 on:
   pull_request_review:
