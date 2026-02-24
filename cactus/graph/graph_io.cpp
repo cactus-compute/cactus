@@ -129,7 +129,7 @@ size_t CactusGraph::embedding(const std::string& filename, size_t indices) {
     size_t embeddings_node = input(shape, precision);
     set_external_input(embeddings_node, const_cast<void*>(mapped_file->data()), precision);
 
-    if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
+    if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
         set_grouped_scales(embeddings_node, mapped_file->group_size(), mapped_file->num_groups(),
                           const_cast<void*>(mapped_file->scales_data()));
 
@@ -146,7 +146,7 @@ size_t CactusGraph::embedding(const std::string& filename, size_t indices) {
     output_shape.push_back(shape[1]);
 
     OpParams params;
-    params.output_precision = (precision == Precision::INT8) ? Precision::FP16 : precision;
+    params.output_precision = Precision::FP16;
 
     return add_node(OpType::EMBEDDING, {embeddings_node, indices}, output_shape, params);
 }

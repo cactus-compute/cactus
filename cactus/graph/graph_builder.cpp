@@ -764,8 +764,7 @@ size_t CactusGraph::embedding(size_t embedding_tensor, size_t indices) {
     output_shape.push_back(emb_buffer.shape[1]);
 
     OpParams params;
-    params.output_precision = (emb_buffer.precision == Precision::INT8) ? Precision::FP16 : emb_buffer.precision;
-
+    params.output_precision = Precision::FP16;
     return add_node(OpType::EMBEDDING, {embedding_tensor, indices}, output_shape, params);
 }
 
