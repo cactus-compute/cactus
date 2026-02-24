@@ -1,0 +1,144 @@
+name: PR Verification
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      approved: ${{ steps.check.outputs.approved }}
+    steps:
+      - id: check
+        run: |
+          if [ "${{ github.event.review.state }}" = "approved" ]; then
+            echo "approved=true" >> $GITHUB_OUTPUT
+          else
+            echo "approved=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.approved == 'true'
+    runs-on: [self-hosted, linux, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for Python changes
+        id: check_python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CHANGED=$(gh pr diff ${{ github.event.pull_request.number }} --name-only | grep -cE '^python/(src/|requirements\.txt)' || true)
+          echo "python_changed=$([[ $CHANGED -gt 0 ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+      - name: Rebuild venv if Python sources changed
+        if: steps.check_python.outputs.python_changed == 'true'
+        run: |
+          deactivate || true
+          rm -rf venv
+          source ./setup
+
+      - name: Purge cached weights if converters changed
+        if: steps.check_python.outputs.python_changed == 'true'
+        run: rm -rf weights/
+
+      - name: Build library
+        run: bash cactus/build.sh
+
+      - name: Build tests
+        run: |
+          cd tests
+          rm -rf build && mkdir -p build && cd build
+          cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF
+          make -j$(nproc)
+
+  unit-tests:
+    needs: build
+    runs-on: [self-hosted, linux, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run unit tests
+        run: |
+          chmod +x tests/build/test_*
+          FAILED=0
+          for test in test_graph test_kernel test_kv_cache test_index; do
+            echo "=== Running $test ==="
+            if ! ./tests/build/$test; then
+              FAILED=$((FAILED + 1))
+            fi
+          done
+          exit $FAILED
+
+  loading-tests:
+    needs: build
+    runs-on: [self-hosted, linux, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run model loading failure tests
+        run: |
+          ./tests/build/test_model_loading
+
+  model-tests:
+    needs: build
+    runs-on: [self-hosted, linux, arm64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - family: qwen
+            model: "Qwen/Qwen3-0.6B"
+            precision: INT8
+            env_var: CACTUS_TEST_MODEL
+          - family: nomic
+            model: "nomic-ai/nomic-embed-text-v2-moe"
+            precision: INT8
+            env_var: CACTUS_TEST_MODEL
+          - family: lfm2
+            model: "LiquidAI/LFM2-350M"
+            precision: INT8
+            env_var: CACTUS_TEST_MODEL
+          - family: lfm2moe
+            model: "LiquidAI/LFM2-MoE-8B-A1B"
+            precision: INT8
+            env_var: CACTUS_TEST_MODEL
+          - family: gemma
+            model: "google/gemma-3-270m-it"
+            precision: INT8
+            env_var: CACTUS_TEST_MODEL
+          - family: whisper
+            model: "openai/whisper-small"
+            precision: INT8
+            env_var: CACTUS_TEST_TRANSCRIBE_MODEL
+          - family: moonshine
+            model: "UsefulSensors/moonshine-base"
+            precision: INT8
+            env_var: CACTUS_TEST_TRANSCRIBE_MODEL
+          - family: lfm2vl
+            model: "LiquidAI/LFM2-VL-450M"
+            precision: INT8
+            env_var: CACTUS_TEST_MODEL
+          - family: lfm2vl
+            model: "LiquidAI/LFM2-VL-450M"
+            precision: INT4
+            env_var: CACTUS_TEST_MODEL
+          - family: lfm2vl
+            model: "LiquidAI/LFM2-VL-450M"
+            precision: FP16
+            env_var: CACTUS_TEST_MODEL
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ground truth test
+        run: |
+          chmod +x tests/build/test_groundtruth
+          MODEL_DIR=$(echo "${{ matrix.model }}" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+          export ${{ matrix.env_var }}="${{ github.workspace }}/weights/${MODEL_DIR}"
+          export CACTUS_TEST_ASSETS="${{ github.workspace }}/tests/assets"
+          export CACTUS_TEST_GOLDEN_DIR="${{ github.workspace }}/tests/golden"
+          export CACTUS_TEST_GOLDEN_FAMILY="${{ matrix.family }}"
+          export CACTUS_TEST_GOLDEN_PRECISION="${{ matrix.precision }}"
+          if [ "${{ matrix.family }}" = "whisper" ] || [ "${{ matrix.family }}" = "moonshine" ]; then
+            export CACTUS_TEST_VAD_MODEL="${{ github.workspace }}/weights/silero-vad"
+          fi
+          ./tests/build/test_groundtruth

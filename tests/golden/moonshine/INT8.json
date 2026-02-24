@@ -1,0 +1,8 @@
+{
+    "model_family": "moonshine",
+    "precision": "INT8",
+    "test_type": "stt",
+    "audio_file": "test.wav",
+    "reference_transcript": "",
+    "wer_threshold": 0.15
+}

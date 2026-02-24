@@ -1,0 +1,9 @@
+{
+    "model_family": "nomic",
+    "precision": "INT8",
+    "test_type": "embedding",
+    "input_text": "The quick brown fox jumps over the lazy dog",
+    "expected_embedding_dim": 768,
+    "reference_embedding": [],
+    "cosine_similarity_threshold": 0.99
+}

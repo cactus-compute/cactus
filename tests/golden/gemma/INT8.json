@@ -1,0 +1,10 @@
+{
+    "model_family": "gemma",
+    "precision": "INT8",
+    "test_type": "llm",
+    "input_messages": "[{\"role\":\"user\",\"content\":\"What is 2+2? Answer with just the number.\"}]",
+    "options": "{\"max_tokens\":32,\"temperature\":0,\"top_k\":1,\"stop_sequences\":[\"<end_of_turn>\"],\"telemetry_enabled\":false}",
+    "expected_output": "4",
+    "token_count_min": 1,
+    "token_count_max": 10
+}
