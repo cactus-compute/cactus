@@ -79,11 +79,22 @@ static size_t bit_reverse(size_t x, size_t log2n) {
     return result;
 }
 
-static void fft_radix2(float* re, float* im, size_t n) {
-    if (n == 0 || (n & (n - 1)) != 0) return;
+static bool is_power_of_two(size_t n) {
+    return n != 0 && (n & (n - 1)) == 0;
+}
 
+static size_t log2_power_of_two(size_t n) {
     size_t log2n = 0;
-    for (size_t temp = n; temp > 1; temp >>= 1) log2n++;
+    for (size_t temp = n; temp > 1; temp >>= 1) {
+        log2n++;
+    }
+    return log2n;
+}
+
+static void fft_radix2(float* re, float* im, size_t n, bool inverse) {
+    if (!is_power_of_two(n)) return;
+
+    const size_t log2n = log2_power_of_two(n);
 
     for (size_t i = 0; i < n; i++) {
         size_t j = bit_reverse(i, log2n);
@@ -94,12 +105,13 @@ static void fft_radix2(float* re, float* im, size_t n) {
     }
 
     for (size_t s = 1; s <= log2n; s++) {
-        size_t m = 1 << s;
+        size_t m = size_t{1} << s;
         size_t m2 = m >> 1;
         float w_re = 1.0f;
         float w_im = 0.0f;
-        float wm_re = std::cos(static_cast<float>(M_PI) / static_cast<float>(m2));
-        float wm_im = -std::sin(static_cast<float>(M_PI) / static_cast<float>(m2));
+        const float angle = static_cast<float>(M_PI) / static_cast<float>(m2);
+        const float wm_re = std::cos(angle);
+        const float wm_im = inverse ? std::sin(angle) : -std::sin(angle);
 
         for (size_t j = 0; j < m2; j++) {
             for (size_t k = j; k < n; k += m) {
@@ -121,20 +133,87 @@ static void fft_radix2(float* re, float* im, size_t n) {
     }
 }
 
+enum class FFTNorm {
+    BACKWARD,
+    FORWARD,
+    ORTHO
+};
+
+static FFTNorm parse_fft_norm(const char* norm) {
+    if (!norm || std::strcmp(norm, "backward") == 0) {
+        return FFTNorm::BACKWARD;
+    }
+    if (std::strcmp(norm, "forward") == 0) {
+        return FFTNorm::FORWARD;
+    }
+    if (std::strcmp(norm, "ortho") == 0) {
+        return FFTNorm::ORTHO;
+    }
+    throw std::invalid_argument("norm must be one of {\"backward\",\"forward\",\"ortho\"}");
+}
+
+static size_t next_power_of_two(size_t n) {
+    size_t padded_n = 1;
+    while (padded_n < n) {
+        padded_n <<= 1;
+    }
+    return padded_n;
+}
+
+static float fft_norm_factor(size_t n, FFTNorm norm_mode, bool inverse) {
+    if (norm_mode == FFTNorm::ORTHO) {
+        return 1.0f / std::sqrt(static_cast<float>(n));
+    }
+    if (norm_mode == FFTNorm::FORWARD) {
+        return inverse ? 1.0f : (1.0f / static_cast<float>(n));
+    }
+    return inverse ? (1.0f / static_cast<float>(n)) : 1.0f;
+}
+
+static void ensure_irfft_scratch(std::vector<float>& re, std::vector<float>& im, size_t n) {
+    if (re.size() < n) {
+        re.resize(n);
+    }
+    if (im.size() < n) {
+        im.resize(n);
+    }
+}
+
+static void idft_r_f32_1d_dft(
+    const float* input,
+    float* output,
+    const size_t n,
+    const float norm_factor) {
+    const size_t in_len = n / 2 + 1;
+    const float two_pi_over_n = (2.0f * static_cast<float>(M_PI)) / static_cast<float>(n);
+    for (size_t t = 0; t < n; ++t) {
+        float sum = input[0];
+        for (size_t k = 1; k < in_len; ++k) {
+            const float re = input[k * 2];
+            const float im = input[k * 2 + 1];
+            const float angle = two_pi_over_n * static_cast<float>(k * t);
+            const float c = std::cos(angle);
+            const float s = std::sin(angle);
+            const bool self_conjugate = (k * 2 == n);
+            if (self_conjugate) {
+                sum += re * c;
+            } else {
+                sum += 2.0f * (re * c - im * s);
+            }
+        }
+        output[t] = sum * norm_factor;
+    }
+}
+
 static void rfft_f32_1d(const float* input, float* output, const size_t n, const char* norm) {
     const size_t out_len = n / 2 + 1;
+    const FFTNorm norm_mode = parse_fft_norm(norm);
+    const float norm_factor = fft_norm_factor(n, norm_mode, false);
 
-    float norm_factor = 1.0f;
-    if (norm) {
-        if (std::strcmp(norm, "backward") == 0) {
-            norm_factor = 1.0f;
-        } else if (std::strcmp(norm, "forward") == 0) {
-            norm_factor = 1.0f / static_cast<float>(n);
-        } else if (std::strcmp(norm, "ortho") == 0) {
-            norm_factor = 1.0f / std::sqrt(static_cast<float>(n));
-        } else {
-            throw std::invalid_argument("norm must be one of {\"backward\",\"forward\",\"ortho\"}");
-        }
+    if (n == 1) {
+        output[0] = input[0] * norm_factor;
+        output[1] = 0.0f;
+        return;
     }
 
 #ifdef __APPLE__
@@ -185,19 +264,65 @@ static void rfft_f32_1d(const float* input, float* output, const size_t n, const
     }
 #endif
 
-    size_t padded_n = 1;
-    while (padded_n < n) {
-        padded_n <<= 1;
-    }
+    const size_t padded_n = next_power_of_two(n);
 
     std::vector<float> re(padded_n, 0.0f), im(padded_n, 0.0f);
     std::copy(input, input + n, re.begin());
 
-    fft_radix2(re.data(), im.data(), padded_n);
+    fft_radix2(re.data(), im.data(), padded_n, false);
 
     for (size_t i = 0; i < out_len; i++) {
         output[i * 2] = re[i] * norm_factor;
         output[i * 2 + 1] = im[i] * norm_factor;
+    }
+}
+
+static void idft_r_f32_1d(const float* input, float* output, const size_t n, const char* norm) {
+    const size_t in_len = n / 2 + 1;
+    const FFTNorm norm_mode = parse_fft_norm(norm);
+    const float norm_factor = fft_norm_factor(n, norm_mode, true);
+
+    if (n == 1) {
+        output[0] = input[0] * norm_factor;
+        return;
+    }
+
+    if (!is_power_of_two(n)) {
+        idft_r_f32_1d_dft(input, output, n, norm_factor);
+        return;
+    }
+
+    const size_t padded_n = next_power_of_two(n);
+    const size_t padded_half_plus_one = padded_n / 2 + 1;
+    thread_local std::vector<float> re_scratch;
+    thread_local std::vector<float> im_scratch;
+    ensure_irfft_scratch(re_scratch, im_scratch, padded_n);
+    std::fill(re_scratch.begin(), re_scratch.begin() + padded_n, 0.0f);
+    std::fill(im_scratch.begin(), im_scratch.begin() + padded_n, 0.0f);
+    float* re = re_scratch.data();
+    float* im = im_scratch.data();
+    for (size_t i = 0; i < in_len; ++i) {
+        re[i] = input[i * 2];
+        im[i] = input[i * 2 + 1];
+    }
+
+    im[0] = 0.0f;
+    const bool has_padded_nyquist_bin = in_len == padded_half_plus_one;
+    if (has_padded_nyquist_bin) {
+        im[padded_n / 2] = 0.0f;
+    }
+
+    const size_t mirror_limit = has_padded_nyquist_bin ? (in_len - 1) : in_len;
+    for (size_t i = 1; i < mirror_limit; ++i) {
+        const size_t mirrored = padded_n - i;
+        re[mirrored] = re[i];
+        im[mirrored] = -im[i];
+    }
+
+    fft_radix2(re, im, padded_n, true);
+
+    for (size_t i = 0; i < n; ++i) {
+        output[i] = re[i] * norm_factor;
     }
 }
 
@@ -588,6 +713,22 @@ std::vector<float> AudioProcessor::compute_spectrogram(
         config.remove_dc_offset
     );
 
+    return output;
+}
+
+std::vector<float> AudioProcessor::compute_irfft(
+    const std::vector<float>& complex_input,
+    size_t n,
+    const char* norm) {
+    if (n == 0) {
+        throw std::invalid_argument("compute_irfft: n must be greater than 0");
+    }
+    const size_t expected_in_len = (n / 2 + 1) * 2;
+    if (complex_input.size() != expected_in_len) {
+        throw std::invalid_argument("compute_irfft: complex_input must contain exactly (n/2+1)*2 values");
+    }
+    std::vector<float> output(n);
+    idft_r_f32_1d(complex_input.data(), output.data(), n, norm);
     return output;
 }
 

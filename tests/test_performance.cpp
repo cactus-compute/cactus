@@ -977,11 +977,40 @@ bool test_gather_operations_performance(TestUtils::TestRunner& runner) {
     return true;
 }
 
+void benchmark_irfft(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
+    using namespace cactus::engine;
+
+    auto run_for_size = [&](size_t n) {
+        const size_t n_bins = n / 2 + 1;
+        const bool is_pow2 = n != 0 && ((n & (n - 1)) == 0);
+        std::vector<float> complex_input(n_bins * 2);
+        for (size_t i = 0; i < complex_input.size(); ++i)
+            complex_input[i] = static_cast<float>(i % 7) * 0.1f;
+
+        double ms = time_operation<float>([&]() {
+            AudioProcessor::compute_irfft(complex_input, n);
+        }, config.iterations);
+
+        std::ostringstream s;
+        s << std::fixed << std::setprecision(3) << ms << "ms";
+        runner.log_performance(
+            "IRFFT " + std::string(is_pow2 ? "pow2 " : "nonpow2 ") + "n=" + std::to_string(n),
+            s.str()
+        );
+    };
+
+    run_for_size(500);
+    run_for_size(512);
+    run_for_size(1000);
+    run_for_size(1024);
+}
+
 bool test_signals_performance(TestUtils::TestRunner& runner) {
     BenchmarkConfig config;
 
     benchmark_mel_filter_bank(runner, config);
     benchmark_spectrogram(runner, config);
+    benchmark_irfft(runner, config);
 
     return true;
 }
