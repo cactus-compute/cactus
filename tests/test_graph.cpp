@@ -952,6 +952,91 @@ bool test_stft() {
     return true;
 }
 
+template<typename T>
+static bool run_layernorm_case(
+    size_t batch, size_t feat, bool with_bias, float epsilon,
+    float weight_scale, float bias_val)
+{
+    const size_t total = batch * feat;
+
+    std::vector<float> input_f(total), weight_f(feat), bias_f(feat);
+    for (size_t b = 0; b < batch; ++b)
+        for (size_t j = 0; j < feat; ++j)
+            input_f[b * feat + j] = static_cast<float>(j + 1);
+    for (size_t j = 0; j < feat; ++j) {
+        weight_f[j] = weight_scale;
+        bias_f[j]   = bias_val;
+    }
+
+    std::vector<T> inp_data(total), w_data(feat), b_data(feat);
+    for (size_t i = 0; i < total; ++i) inp_data[i] = static_cast<T>(input_f[i]);
+    for (size_t j = 0; j < feat;  ++j) {
+        w_data[j] = static_cast<T>(weight_f[j]);
+        b_data[j] = static_cast<T>(bias_f[j]);
+    }
+
+    TestUtils::TestFixture<T> fx;
+    size_t inp_id = fx.create_input({batch, feat});
+    size_t w_id   = fx.create_input({feat});
+    fx.set_input_data(inp_id, inp_data);
+    fx.set_input_data(w_id,   w_data);
+
+    size_t out_id;
+    if (with_bias) {
+        size_t b_id = fx.create_input({feat});
+        fx.set_input_data(b_id, b_data);
+        out_id = fx.graph().layernorm(inp_id, w_id, b_id, epsilon);
+    } else {
+        out_id = fx.graph().layernorm(inp_id, w_id, epsilon);
+    }
+
+    fx.execute();
+
+    std::vector<T> expected(total);
+    for (size_t b = 0; b < batch; ++b) {
+        float mean = 0.0f;
+        for (size_t j = 0; j < feat; ++j) mean += input_f[b * feat + j];
+        mean /= static_cast<float>(feat);
+        float var = 0.0f;
+        for (size_t j = 0; j < feat; ++j) {
+            float d = input_f[b * feat + j] - mean;
+            var += d * d;
+        }
+        var /= static_cast<float>(feat);
+        float inv_std = 1.0f / std::sqrt(var + epsilon);
+        for (size_t j = 0; j < feat; ++j) {
+            float val = (input_f[b * feat + j] - mean) * inv_std * weight_f[j];
+            if (with_bias) val += bias_f[j];
+            expected[b * feat + j] = static_cast<T>(val);
+        }
+    }
+
+    return fx.verify_output(out_id, expected, TestUtils::default_tolerance<T>());
+}
+
+bool test_layernorm() {
+    struct Case { size_t batch, feat; bool fp32, with_bias; float epsilon, weight_scale, bias_val; };
+    const std::vector<Case> cases = {
+        {1,  1,  false, false, 1e-5f, 1.0f, 0.0f},
+        {1,  7,  false, false, 1e-5f, 1.0f, 0.0f},
+        {1,  8,  false, false, 1e-5f, 1.0f, 0.0f},
+        {4,  8,  false, false, 1e-5f, 1.0f, 0.0f},
+        {4,  8,  false, true,  1e-5f, 1.0f, 0.0f},
+        {4,  8,  true,  false, 1e-5f, 1.0f, 0.0f},
+        {4,  8,  true,  true,  1e-5f, 1.0f, 0.0f},
+        {1,  8,  false, false, 1.0f,  1.0f, 0.0f},
+        {2, 16,  false, true,  1e-5f, 0.5f, 0.3f},
+    };
+
+    for (const auto& c : cases) {
+        bool ok = c.fp32
+            ? run_layernorm_case<float>(c.batch, c.feat, c.with_bias, c.epsilon, c.weight_scale, c.bias_val)
+            : run_layernorm_case<__fp16>(c.batch, c.feat, c.with_bias, c.epsilon, c.weight_scale, c.bias_val);
+        if (!ok) return false;
+    }
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("Graph Operations Tests");
 
@@ -994,6 +1079,7 @@ int main() {
     runner.run_test("Embedding Operation", test_embedding_operation());
     runner.run_test("Embedding from File", test_embedding_from_file());
     runner.run_test("STFT Complex", test_stft());
+    runner.run_test("LayerNorm", test_layernorm());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
