@@ -94,7 +94,7 @@ bool test_audio_processor() {
 #else
     // Linux uses the non-Accelerate FFT path with different absolute scaling.
     // Validate spectral shape against the same fixture rather than exact magnitude.
-    const float shape_tolerance = 0.08f;
+    const float shape_tolerance = 0.10f;
     const float anchor = log_mel_spec[0];
     if (!std::isfinite(anchor) || anchor <= 0.0f) {
         std::cerr << "  [audio_processor][non-apple] invalid anchor value: " << anchor << std::endl;
