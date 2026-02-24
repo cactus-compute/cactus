@@ -90,50 +90,56 @@ jobs:
           - family: qwen
             model: "Qwen/Qwen3-0.6B"
             precision: INT8
+            model_dir: qwen3-0.6b
             env_var: CACTUS_TEST_MODEL
           - family: nomic
             model: "nomic-ai/nomic-embed-text-v2-moe"
             precision: INT8
+            model_dir: nomic-embed-text-v2-moe
             env_var: CACTUS_TEST_MODEL
           - family: lfm2
             model: "LiquidAI/LFM2-350M"
             precision: INT8
+            model_dir: lfm2-350m
             env_var: CACTUS_TEST_MODEL
           - family: lfm2moe
-            model: "LiquidAI/LFM2-MoE-8B-A1B"
+            model: "LiquidAI/LFM2-8B-A1B"
             precision: INT8
+            model_dir: lfm2-8b-a1b
             env_var: CACTUS_TEST_MODEL
           - family: gemma
             model: "google/gemma-3-270m-it"
             precision: INT8
+            model_dir: gemma-3-270m-it
             env_var: CACTUS_TEST_MODEL
           - family: whisper
             model: "openai/whisper-small"
             precision: INT8
+            model_dir: whisper-small
             env_var: CACTUS_TEST_TRANSCRIBE_MODEL
           - family: moonshine
             model: "UsefulSensors/moonshine-base"
             precision: INT8
+            model_dir: moonshine-base
             env_var: CACTUS_TEST_TRANSCRIBE_MODEL
           - family: lfm2vl
             model: "LiquidAI/LFM2-VL-450M"
             precision: INT8
+            model_dir: lfm2-vl-450m-int8
             env_var: CACTUS_TEST_MODEL
-          - family: lfm2vl
-            model: "LiquidAI/LFM2-VL-450M"
-            precision: INT4
-            env_var: CACTUS_TEST_MODEL
-          - family: lfm2vl
-            model: "LiquidAI/LFM2-VL-450M"
-            precision: FP16
-            env_var: CACTUS_TEST_MODEL
+          # INT4 and FP16 VLM disabled — INT4 non-Apple variant produces 0 tokens,
+          # FP16 non-Apple variant not available on Cactus-Compute.
+          # - family: lfm2vl
+          #   model: "LiquidAI/LFM2-VL-450M"
+          #   precision: INT4
+          #   model_dir: lfm2-vl-450m-int4
+          #   env_var: CACTUS_TEST_MODEL
     steps:
       - uses: actions/checkout@v4
       - name: Run ground truth test
         run: |
           chmod +x tests/build/test_groundtruth
-          MODEL_DIR=$(echo "${{ matrix.model }}" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
-          export ${{ matrix.env_var }}="${{ github.workspace }}/weights/${MODEL_DIR}"
+          export ${{ matrix.env_var }}="${{ github.workspace }}/weights/${{ matrix.model_dir }}"
           export CACTUS_TEST_ASSETS="${{ github.workspace }}/tests/assets"
           export CACTUS_TEST_GOLDEN_DIR="${{ github.workspace }}/tests/golden"
           export CACTUS_TEST_GOLDEN_FAMILY="${{ matrix.family }}"
