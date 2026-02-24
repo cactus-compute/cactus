@@ -98,7 +98,6 @@ jobs:
     needs: build
     runs-on: [self-hosted, linux, arm64]
     steps:
-      - uses: actions/checkout@v4
       - name: Run unit tests
         run: |
           chmod +x tests/build/test_*
@@ -115,7 +114,6 @@ jobs:
     needs: build
     runs-on: [self-hosted, linux, arm64]
     steps:
-      - uses: actions/checkout@v4
       - name: Run model loading failure tests
         run: |
           ./tests/build/test_model_loading
@@ -174,7 +172,6 @@ jobs:
           #   model_dir: lfm2-vl-450m-int4
           #   env_var: CACTUS_TEST_MODEL
     steps:
-      - uses: actions/checkout@v4
       - name: Run ground truth test
         run: |
           chmod +x tests/build/test_groundtruth
