@@ -27,6 +27,8 @@ jobs:
     runs-on: [self-hosted, linux, arm64]
     steps:
       - uses: actions/checkout@v4
+        with:
+          clean: false
 
       - name: Check for Python changes
         id: check_python
