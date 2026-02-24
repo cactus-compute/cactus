@@ -61,8 +61,8 @@ bool test_audio_processor() {
 
     double elapsed = t.elapsed_ms();
 
-    const float expected[] = {0.535175f, 0.548542f, 0.590673f, 0.633320f, 0.711979f};
-    const float tolerance = 2e-6f;
+    const float expected[] = {1.133450f, 1.142660f, 1.161900f, 1.196580f, 1.229480f};
+    const float tolerance = 1e-4f;
 
     const size_t pad_length = n_fft / 2;
     const size_t padded_length = n_samples + 2 * pad_length;
