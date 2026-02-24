@@ -97,6 +97,9 @@ jobs:
   unit-tests:
     needs: build
     runs-on: [self-hosted, linux, arm64]
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
     steps:
       - name: Run unit tests
         run: |
@@ -113,6 +116,9 @@ jobs:
   loading-tests:
     needs: build
     runs-on: [self-hosted, linux, arm64]
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
     steps:
       - name: Run model loading failure tests
         run: |
@@ -121,6 +127,9 @@ jobs:
   model-tests:
     needs: build
     runs-on: [self-hosted, linux, arm64]
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
     strategy:
       fail-fast: false
       matrix:
