@@ -85,7 +85,6 @@ static std::string resolve_asset_paths(const std::string& messages) {
     if (!g_assets_path) return messages;
     std::string prefix = std::string(g_assets_path) + "/";
     std::string result = messages;
-    // Replace bare filenames in "images":["filename.png"] with absolute paths
     for (const char* ext : {".png", ".jpg", ".jpeg", ".wav", ".mp3"}) {
         size_t pos = 0;
         while ((pos = result.find(ext, pos)) != std::string::npos) {
@@ -103,7 +102,6 @@ static std::string resolve_asset_paths(const std::string& messages) {
     return result;
 }
 
-// LLM and VLM use the same cactus_complete path
 static bool test_completion_golden(const std::string& golden) {
     std::string messages = resolve_asset_paths(json_string(golden, "input_messages"));
     std::string options  = json_string(golden, "options");
