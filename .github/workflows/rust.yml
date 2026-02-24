@@ -2,12 +2,16 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: [rust/**, cactus/**]
+    paths: [rust/**, cactus/**, .github/workflows/rust.yml]
   pull_request:
-    paths: [rust/**, cactus/**]
+    paths: [rust/**, cactus/**, .github/workflows/rust.yml]
+
+permissions:
+  contents: read
 
 jobs:
   test:
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -21,6 +25,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: ${{ matrix.deps }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - run: pip3 install --break-system-packages huggingface-hub && pip3 install --break-system-packages -e python/ --no-deps
       - uses: actions/cache@v4
         with:

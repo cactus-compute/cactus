@@ -1,0 +1,46 @@
+on:
+  pull_request:
+    paths:
+      - cactus/**
+      - tests/**
+      - .github/workflows/cpp.yml
+  push:
+    branches: [main]
+    paths:
+      - cactus/**
+      - tests/**
+      - .github/workflows/cpp.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            deps: brew install ccache ninja
+          - os: ubuntu-24.04-arm
+            deps: sudo apt-get update && sudo apt-get install -y cmake build-essential libcurl4-openssl-dev ccache ninja-build
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: ${{ matrix.deps }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ matrix.os }}-${{ github.ref_name }}-${{ hashFiles('cactus/CMakeLists.txt', 'tests/CMakeLists.txt', '.github/workflows/cpp.yml') }}
+          restore-keys: |
+            ccache-${{ matrix.os }}-${{ github.ref_name }}-
+            ccache-${{ matrix.os }}-
+      - run: ccache --zero-stats || true
+      - run: cmake -G Ninja -S cactus -B cactus/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - run: cmake --build cactus/build --target cactus_ffi --parallel 4
+      - run: cmake -G Ninja -S tests -B tests/build-ci -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - run: cmake --build tests/build-ci --target test_stt --parallel 4
+      - run: ./tests/build-ci/test_stt
+      - run: ccache --show-stats || true
