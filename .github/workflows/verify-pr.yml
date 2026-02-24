@@ -84,6 +84,8 @@ jobs:
           convert_if_missing "openai/whisper-small" "whisper-small" "INT8"
           convert_if_missing "UsefulSensors/moonshine-base" "moonshine-base" "INT8"
           convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-int8" "INT8"
+          convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-int4" "INT4"
+          convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-fp16" "FP16"
 
       - name: Build library
         run: bash cactus/build.sh
@@ -165,6 +167,14 @@ jobs:
             model_dir: lfm2-vl-450m-int8
             env_var: CACTUS_TEST_MODEL
             precision: INT8
+          - family: lfm2vl
+            model_dir: lfm2-vl-450m-int4
+            env_var: CACTUS_TEST_MODEL
+            precision: INT4
+          - family: lfm2vl
+            model_dir: lfm2-vl-450m-fp16
+            env_var: CACTUS_TEST_MODEL
+            precision: FP16
     steps:
       - uses: actions/checkout@v4
         with:

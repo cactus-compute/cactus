@@ -4,7 +4,7 @@
     "test_type": "vlm",
     "input_messages": "[{\"role\":\"user\",\"content\":\"What animal is in this image? One word.\",\"images\":[\"test_monkey.png\"]}]",
     "options": "{\"max_tokens\":16,\"temperature\":0,\"top_k\":1,\"stop_sequences\":[\"<|im_end|>\"],\"telemetry_enabled\":false}",
-    "expected_output": "monkey",
+    "expected_output": "Monkey",
     "token_count_min": 1,
     "token_count_max": 16
 }
