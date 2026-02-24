@@ -21,7 +21,7 @@ jobs:
             echo "approved=false" >> $GITHUB_OUTPUT
           fi
 
-  build:
+  verify:
     needs: gate
     if: needs.gate.outputs.approved == 'true'
     runs-on: [self-hosted, linux, arm64]
@@ -68,7 +68,6 @@ jobs:
             if [ ! -f "weights/$output_dir/config.txt" ]; then
               echo "Converting $model_id -> weights/$output_dir"
               python3 -m src.cli convert "$model_id" "weights/$output_dir" --precision "$precision" ${HF_TOKEN:+--token "$HF_TOKEN"} || true
-              # Handle converter outputting to default dir
               local default_dir="weights/$(echo "$model_id" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')"
               if [ ! -f "weights/$output_dir/config.txt" ] && [ -f "$default_dir/config.txt" ]; then
                 mv "$default_dir" "weights/$output_dir"
@@ -94,99 +93,49 @@ jobs:
           cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF
           make -j$(nproc)
 
-  unit-tests:
-    needs: build
-    runs-on: [self-hosted, linux, arm64]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          clean: false
       - name: Run unit tests
         run: |
           FAILED=0
           for test in test_graph test_kernel test_kv_cache test_index; do
             echo "=== Running $test ==="
-            if ! bash tests/build/$test; then
+            if ! ./tests/build/$test; then
               FAILED=$((FAILED + 1))
             fi
           done
-          exit $FAILED
+          if [ $FAILED -gt 0 ]; then exit 1; fi
 
-  loading-tests:
-    needs: build
-    runs-on: [self-hosted, linux, arm64]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          clean: false
-      - name: Run model loading failure tests
-        run: bash tests/build/test_model_loading
+      - name: Run model loading tests
+        run: ./tests/build/test_model_loading
 
-  model-tests:
-    needs: build
-    runs-on: [self-hosted, linux, arm64]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - family: qwen
-            model: "Qwen/Qwen3-0.6B"
-            precision: INT8
-            model_dir: qwen3-0.6b
-            env_var: CACTUS_TEST_MODEL
-          - family: nomic
-            model: "nomic-ai/nomic-embed-text-v2-moe"
-            precision: INT8
-            model_dir: nomic-embed-text-v2-moe
-            env_var: CACTUS_TEST_MODEL
-          - family: lfm2
-            model: "LiquidAI/LFM2-350M"
-            precision: INT8
-            model_dir: lfm2-350m
-            env_var: CACTUS_TEST_MODEL
-          - family: lfm2moe
-            model: "LiquidAI/LFM2-8B-A1B"
-            precision: INT8
-            model_dir: lfm2-8b-a1b
-            env_var: CACTUS_TEST_MODEL
-          - family: gemma
-            model: "google/gemma-3-270m-it"
-            precision: INT8
-            model_dir: gemma-3-270m-it
-            env_var: CACTUS_TEST_MODEL
-          - family: whisper
-            model: "openai/whisper-small"
-            precision: INT8
-            model_dir: whisper-small
-            env_var: CACTUS_TEST_TRANSCRIBE_MODEL
-          - family: moonshine
-            model: "UsefulSensors/moonshine-base"
-            precision: INT8
-            model_dir: moonshine-base
-            env_var: CACTUS_TEST_TRANSCRIBE_MODEL
-          - family: lfm2vl
-            model: "LiquidAI/LFM2-VL-450M"
-            precision: INT8
-            model_dir: lfm2-vl-450m-int8
-            env_var: CACTUS_TEST_MODEL
-          # INT4 VLM disabled — non-Apple variant produces 0 tokens
-          # - family: lfm2vl
-          #   model: "LiquidAI/LFM2-VL-450M"
-          #   precision: INT4
-          #   model_dir: lfm2-vl-450m-int4
-          #   env_var: CACTUS_TEST_MODEL
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          clean: false
-      - name: Run ground truth test
+      - name: Run ground truth tests
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          export ${{ matrix.env_var }}="${{ github.workspace }}/weights/${{ matrix.model_dir }}"
-          export CACTUS_TEST_ASSETS="${{ github.workspace }}/tests/assets"
-          export CACTUS_TEST_GOLDEN_DIR="${{ github.workspace }}/tests/golden"
-          export CACTUS_TEST_GOLDEN_FAMILY="${{ matrix.family }}"
-          export CACTUS_TEST_GOLDEN_PRECISION="${{ matrix.precision }}"
-          if [ "${{ matrix.family }}" = "whisper" ] || [ "${{ matrix.family }}" = "moonshine" ]; then
-            export CACTUS_TEST_VAD_MODEL="${{ github.workspace }}/weights/silero-vad"
+          FAILED=0
+          run_model_test() {
+            local family=$1 model_dir=$2 env_var=$3 precision=$4
+            echo "=== Testing $family ($precision) ==="
+            export ${env_var}="${{ github.workspace }}/weights/$model_dir"
+            export CACTUS_TEST_ASSETS="${{ github.workspace }}/tests/assets"
+            export CACTUS_TEST_GOLDEN_DIR="${{ github.workspace }}/tests/golden"
+            export CACTUS_TEST_GOLDEN_FAMILY="$family"
+            export CACTUS_TEST_GOLDEN_PRECISION="$precision"
+            if [ "$family" = "whisper" ] || [ "$family" = "moonshine" ]; then
+              export CACTUS_TEST_VAD_MODEL="${{ github.workspace }}/weights/silero-vad"
+            fi
+            if ! ./tests/build/test_groundtruth; then
+              FAILED=$((FAILED + 1))
+            fi
+          }
+          run_model_test qwen qwen3-0.6b CACTUS_TEST_MODEL INT8
+          run_model_test nomic nomic-embed-text-v2-moe CACTUS_TEST_MODEL INT8
+          run_model_test lfm2 lfm2-350m CACTUS_TEST_MODEL INT8
+          run_model_test lfm2moe lfm2-8b-a1b CACTUS_TEST_MODEL INT8
+          run_model_test gemma gemma-3-270m-it CACTUS_TEST_MODEL INT8
+          run_model_test whisper whisper-small CACTUS_TEST_TRANSCRIBE_MODEL INT8
+          run_model_test moonshine moonshine-base CACTUS_TEST_TRANSCRIBE_MODEL INT8
+          run_model_test lfm2vl lfm2-vl-450m-int8 CACTUS_TEST_MODEL INT8
+          if [ $FAILED -gt 0 ]; then
+            echo "$FAILED model test(s) failed"
+            exit 1
           fi
-          bash tests/build/test_groundtruth
