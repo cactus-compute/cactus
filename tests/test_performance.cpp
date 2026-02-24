@@ -999,18 +999,8 @@ void benchmark_stft(TestUtils::TestRunner& runner, const BenchmarkConfig& config
 
     std::vector<__fp16> cplx_out(N * 2 * num_fft_bins * out_len);
     double cplx_ms = time_operation<__fp16>([&]() {
-        cactus_stft_complex_f16(input_data.data(), weight_data.data(), cplx_out.data(),
+        cactus_stft_f16(input_data.data(), weight_data.data(), cplx_out.data(),
                                 N, L, C_in, C_out, K, stride, num_fft_bins);
-    }, config.iterations);
-
-    TestUtils::FP16TestFixture fx;
-    size_t inp = fx.create_input({N, C_in, L});
-    size_t wt  = fx.create_input({C_out, C_in, K});
-    fx.graph().stft_magnitude(inp, wt, stride, num_fft_bins);
-    fx.set_input_data(inp, input_data);
-    fx.set_input_data(wt, weight_data);
-    double mag_ms = time_operation<__fp16>([&]() {
-        fx.execute();
     }, config.iterations);
 
     auto fmt = [&](double ms) {
@@ -1019,7 +1009,6 @@ void benchmark_stft(TestUtils::TestRunner& runner, const BenchmarkConfig& config
         return s.str();
     };
     runner.log_performance("STFT Complex (kernel)    " + label, fmt(cplx_ms));
-    runner.log_performance("STFT Magnitude (graph)   " + label, fmt(mag_ms));
 }
 
 bool test_stft_performance(TestUtils::TestRunner& runner) {

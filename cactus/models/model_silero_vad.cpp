@@ -41,10 +41,15 @@ void SileroVADModel::build_graph() {
     graph_nodes_.h_prev = graph_.input({1, HIDDEN_SIZE}, Precision::FP16);
     graph_nodes_.c_prev = graph_.input({1, HIDDEN_SIZE}, Precision::FP16);
 
-    auto stft = graph_.stft_magnitude(graph_nodes_.input, weight_nodes_.stft_basis, 128, 129);
+    auto cplx  = graph_.stft(graph_nodes_.input, weight_nodes_.stft_basis, 128, 129);
+    auto re    = graph_.slice(cplx, 1, 0, 129);
+    auto im    = graph_.slice(cplx, 1, 129, 129);
+    auto re_sq = graph_.multiply(re, re);
+    auto im_sq = graph_.multiply(im, im);
+    auto mag   = graph_.scalar_sqrt(graph_.add(re_sq, im_sq));
 
     const size_t strides[4] = {1, 2, 2, 1};
-    auto x = stft;
+    auto x = mag;
     for (uint32_t i = 0; i < 4; i++) {
         auto conv = graph_.conv1d_k3(x, weight_nodes_.encoder_blocks[i].conv_weight, strides[i]);
         auto bias_reshaped = graph_.reshape(weight_nodes_.encoder_blocks[i].conv_bias,

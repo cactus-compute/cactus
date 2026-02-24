@@ -640,7 +640,7 @@ void cactus_bilinear_interpolation_f16(const __fp16* input, __fp16* output, size
     }
 }
 
-void cactus_stft_complex_f16(
+void cactus_stft_f16(
     const __fp16* input,
     const __fp16* weight,
     __fp16* output,

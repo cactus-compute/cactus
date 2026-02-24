@@ -429,7 +429,7 @@ bool test_int4_matmul_correctness() {
     return true;
 }
 
-bool test_stft_complex_kernel_correctness() {
+bool test_stft_kernel_correctness() {
     const size_t N = 2, C_in = 1, L = 8, K = 4, stride = 2, num_fft_bins = 2;
     const size_t C_out = 2 * num_fft_bins;
     const size_t out_len = (L - K) / stride + 1;
@@ -457,7 +457,7 @@ bool test_stft_complex_kernel_correctness() {
     };
 
     std::vector<__fp16> cplx(N * C_out * out_len, (__fp16)0);
-    cactus_stft_complex_f16(input.data(), weight.data(), cplx.data(),
+    cactus_stft_f16(input.data(), weight.data(), cplx.data(),
                             N, L, C_in, C_out, K, stride, num_fft_bins);
 
     const size_t out_bs = C_out * out_len;
@@ -490,7 +490,7 @@ int main() {
     runner.run_test("Kernel Attention FP16 Correctness", test_neon_attention_fp16_correctness());
     runner.run_test("Kernel Grouped INT8 MatMul Correctness", test_matmul_int8_grouped_correctness());
     runner.run_test("Kernel INT4 MatMul Correctness", test_int4_matmul_correctness());
-    runner.run_test("Kernel STFT Complex Correctness", test_stft_complex_kernel_correctness());
+    runner.run_test("Kernel STFT Complex Correctness", test_stft_kernel_correctness());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
