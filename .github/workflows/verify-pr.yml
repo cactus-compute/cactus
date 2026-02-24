@@ -96,7 +96,10 @@ jobs:
           make -j$(nproc)
 
       - name: Run unit tests
+        env:
+          CACTUS_INDEX_PATH: ${{ runner.temp }}/cactus_index
         run: |
+          mkdir -p "$CACTUS_INDEX_PATH"
           FAILED=0
           for test in test_graph test_kernel test_kv_cache test_index; do
             echo "=== Running $test ==="
