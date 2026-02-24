@@ -986,6 +986,43 @@ bool test_signals_performance(TestUtils::TestRunner& runner) {
     return true;
 }
 
+void benchmark_stft(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
+    const size_t N = 1, C_in = 1, L = 20480, K = 400, stride = 160, num_fft_bins = 128;
+    const size_t C_out = 2 * num_fft_bins;
+    const size_t out_len = (L - K) / stride + 1;
+
+    std::vector<__fp16> input(N * C_in * L);
+    std::vector<__fp16> weight(C_out * C_in * K);
+    setup_random_data<__fp16>(input);
+    setup_random_data<__fp16>(weight);
+
+    std::vector<__fp16> mag_out(N * num_fft_bins * out_len);
+    double mag_ms = time_operation<__fp16>([&]() {
+        cactus_stft_magnitude_f16(input.data(), weight.data(), mag_out.data(),
+                                  N, L, C_in, C_out, K, stride, num_fft_bins);
+    }, config.iterations);
+
+    std::vector<__fp16> cplx_out(N * 2 * num_fft_bins * out_len);
+    double cplx_ms = time_operation<__fp16>([&]() {
+        cactus_stft_complex_f16(input.data(), weight.data(), cplx_out.data(),
+                                N, L, C_in, C_out, K, stride, num_fft_bins);
+    }, config.iterations);
+
+    auto fmt = [&](double ms) {
+        std::ostringstream s;
+        s << std::fixed << std::setprecision(3) << ms << "ms";
+        return s.str();
+    };
+    runner.log_performance("STFT Magnitude (" + std::to_string(num_fft_bins) + " bins, " + std::to_string(out_len) + " frames)", fmt(mag_ms));
+    runner.log_performance("STFT Complex   (" + std::to_string(num_fft_bins) + " bins, " + std::to_string(out_len) + " frames)", fmt(cplx_ms));
+}
+
+bool test_stft_performance(TestUtils::TestRunner& runner) {
+    BenchmarkConfig config;
+    benchmark_stft(runner, config);
+    return true;
+}
+
 
 int main() {
     TestUtils::TestRunner runner("Performance Benchmarks");
@@ -1004,6 +1041,7 @@ int main() {
     runner.run_test("Engine Operations", test_engine_operations_performance(runner));
     runner.run_test("Gather Operations", test_gather_operations_performance(runner));
     runner.run_test("Signals Operations", test_signals_performance(runner));
+    runner.run_test("STFT Operations", test_stft_performance(runner));
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

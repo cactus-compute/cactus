@@ -181,6 +181,16 @@ void cactus_stft_magnitude_f16(
     size_t num_fft_bins
 );
 
+void cactus_stft_complex_f16(
+    const __fp16* input,
+    const __fp16* weight,
+    __fp16* output,
+    size_t N, size_t L,
+    size_t C_in, size_t C_out,
+    size_t K, size_t stride,
+    size_t num_fft_bins
+);
+
 void cactus_conv1d_f16_k7s3_oc8(
     const __fp16* input,
     const __fp16* Wpack,

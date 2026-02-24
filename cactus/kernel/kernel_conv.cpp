@@ -640,27 +640,28 @@ void cactus_bilinear_interpolation_f16(const __fp16* input, __fp16* output, size
     }
 }
 
-void cactus_stft_magnitude_f16(
+enum class StftOutputMode { Magnitude, Complex };
+
+template <StftOutputMode Mode>
+static void stft_f16_impl(
     const __fp16* input,
     const __fp16* weight,
     __fp16* output,
     size_t N, size_t L,
-    size_t C_in, size_t /*C_out*/,
+    size_t C_in,
     size_t K, size_t stride,
     size_t num_fft_bins
-){
+) {
     const size_t out_len = ((L - K) / stride) + 1;
     const size_t in_bs = C_in * L;
-    const size_t out_bs = num_fft_bins * out_len;
+    const size_t out_bs = (Mode == StftOutputMode::Complex ? 2 : 1) * num_fft_bins * out_len;
 
     for (size_t n = 0; n < N; ++n) {
         const __fp16* Xb = input + n * in_bs;
 
         for (size_t bin = 0; bin < num_fft_bins; ++bin) {
-            const size_t real_oc = bin;
-            const size_t imag_oc = bin + num_fft_bins;
-            const __fp16* Wr = weight + real_oc * (C_in * K);
-            const __fp16* Wi = weight + imag_oc * (C_in * K);
+            const __fp16* Wr = weight + bin * (C_in * K);
+            const __fp16* Wi = weight + (bin + num_fft_bins) * (C_in * K);
 
             for (size_t out_t = 0; out_t < out_len; ++out_t) {
                 const size_t t = out_t * stride;
@@ -699,9 +700,37 @@ void cactus_stft_magnitude_f16(
                     }
                 }
 
-                float magnitude = sqrtf(sum_real * sum_real + sum_imag * sum_imag);
-                output[n * out_bs + bin * out_len + out_t] = (__fp16)magnitude;
+                if constexpr (Mode == StftOutputMode::Magnitude) {
+                    output[n * out_bs + bin * out_len + out_t] = (__fp16)sqrtf(sum_real * sum_real + sum_imag * sum_imag);
+                } else {
+                    output[n * out_bs + bin * out_len + out_t] = (__fp16)sum_real;
+                    output[n * out_bs + (bin + num_fft_bins) * out_len + out_t] = (__fp16)sum_imag;
+                }
             }
         }
     }
+}
+
+void cactus_stft_magnitude_f16(
+    const __fp16* input,
+    const __fp16* weight,
+    __fp16* output,
+    size_t N, size_t L,
+    size_t C_in, size_t /*C_out*/,
+    size_t K, size_t stride,
+    size_t num_fft_bins
+) {
+    stft_f16_impl<StftOutputMode::Magnitude>(input, weight, output, N, L, C_in, K, stride, num_fft_bins);
+}
+
+void cactus_stft_complex_f16(
+    const __fp16* input,
+    const __fp16* weight,
+    __fp16* output,
+    size_t N, size_t L,
+    size_t C_in, size_t /*C_out*/,
+    size_t K, size_t stride,
+    size_t num_fft_bins
+) {
+    stft_f16_impl<StftOutputMode::Complex>(input, weight, output, N, L, C_in, K, stride, num_fft_bins);
 }
