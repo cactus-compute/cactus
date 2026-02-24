@@ -43,7 +43,7 @@ class Cactus private constructor(private var handle: Long) : Closeable {
         val responseJson = nativeComplete(handle, messagesJson, options.toJson(), toolsJson, callback)
         val json = JSONObject(responseJson)
 
-        if (json.has("error")) {
+        if (json.has("error") && !json.isNull("error")) {
             throw CactusException(json.getString("error"))
         }
 
@@ -65,7 +65,7 @@ class Cactus private constructor(private var handle: Long) : Closeable {
         val responseJson = nativeTranscribe(handle, audioPath, prompt, optionsJson, null)
         val json = JSONObject(responseJson)
 
-        if (json.has("error")) {
+        if (json.has("error") && !json.isNull("error")) {
             throw CactusException(json.getString("error"))
         }
 
@@ -87,7 +87,7 @@ class Cactus private constructor(private var handle: Long) : Closeable {
         val responseJson = nativeTranscribe(handle, null, prompt, optionsJson, pcmData)
         val json = JSONObject(responseJson)
 
-        if (json.has("error")) {
+        if (json.has("error") && !json.isNull("error")) {
             throw CactusException(json.getString("error"))
         }
 
@@ -449,14 +449,14 @@ private fun JSONObject.toCompletionResult(): CompletionResult {
         (0 until arr.length()).map { arr.getJSONObject(it).toMap() }
     }
     return CompletionResult(
-        text = optString("text", ""),
+        text = optString("response", ""),
         functionCalls = functionCalls,
-        promptTokens = optInt("prompt_tokens", 0),
-        completionTokens = optInt("completion_tokens", 0),
+        promptTokens = optInt("prefill_tokens", 0),
+        completionTokens = optInt("decode_tokens", 0),
         timeToFirstToken = optDouble("time_to_first_token_ms", 0.0),
         totalTime = optDouble("total_time_ms", 0.0),
-        prefillTokensPerSecond = optDouble("prefill_tokens_per_second", 0.0),
-        decodeTokensPerSecond = optDouble("decode_tokens_per_second", 0.0),
+        prefillTokensPerSecond = optDouble("prefill_tps", 0.0),
+        decodeTokensPerSecond = optDouble("decode_tps", 0.0),
         confidence = optDouble("confidence", 1.0),
         needsCloudHandoff = optBoolean("cloud_handoff", false)
     )
@@ -467,7 +467,7 @@ private fun JSONObject.toTranscriptionResult(): TranscriptionResult {
         (0 until arr.length()).map { arr.getJSONObject(it).toMap() }
     }
     return TranscriptionResult(
-        text = optString("text", ""),
+        text = optString("response", ""),
         segments = segments,
         totalTime = optDouble("total_time_ms", 0.0)
     )

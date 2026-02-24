@@ -17,14 +17,14 @@ public final class Cactus: @unchecked Sendable {
         public let needsCloudHandoff: Bool
 
         init(json: [String: Any]) {
-            self.text = json["text"] as? String ?? ""
+            self.text = json["response"] as? String ?? ""
             self.functionCalls = json["function_calls"] as? [[String: Any]]
-            self.promptTokens = json["prompt_tokens"] as? Int ?? 0
-            self.completionTokens = json["completion_tokens"] as? Int ?? 0
+            self.promptTokens = json["prefill_tokens"] as? Int ?? 0
+            self.completionTokens = json["decode_tokens"] as? Int ?? 0
             self.timeToFirstToken = json["time_to_first_token_ms"] as? Double ?? 0
             self.totalTime = json["total_time_ms"] as? Double ?? 0
-            self.prefillTokensPerSecond = json["prefill_tokens_per_second"] as? Double ?? 0
-            self.decodeTokensPerSecond = json["decode_tokens_per_second"] as? Double ?? 0
+            self.prefillTokensPerSecond = json["prefill_tps"] as? Double ?? 0
+            self.decodeTokensPerSecond = json["decode_tps"] as? Double ?? 0
             self.confidence = json["confidence"] as? Double ?? 1.0
             self.needsCloudHandoff = json["cloud_handoff"] as? Bool ?? false
         }
@@ -36,7 +36,7 @@ public final class Cactus: @unchecked Sendable {
         public let totalTime: Double
 
         init(json: [String: Any]) {
-            self.text = json["text"] as? String ?? ""
+            self.text = json["response"] as? String ?? ""
             self.segments = json["segments"] as? [[String: Any]]
             self.totalTime = json["total_time_ms"] as? Double ?? 0
         }
@@ -233,7 +233,7 @@ public final class Cactus: @unchecked Sendable {
     }
 
 
-    private let handle: OpaquePointer
+    private let handle: UnsafeMutableRawPointer
     private static let defaultBufferSize = 65536
     private static let _frameworkInitialized: Void = {
         cactus_set_telemetry_environment("swift", nil)
@@ -758,10 +758,10 @@ public extension Cactus {
 
 public final class StreamTranscriber: @unchecked Sendable {
 
-    private var handle: OpaquePointer?
+    private var handle: UnsafeMutableRawPointer?
     private static let defaultBufferSize = 65536
 
-    init(handle: OpaquePointer) {
+    init(handle: UnsafeMutableRawPointer) {
         self.handle = handle
     }
 
@@ -864,7 +864,7 @@ public final class CactusIndex: @unchecked Sendable {
         }
     }
 
-    private var handle: OpaquePointer?
+    private var handle: UnsafeMutableRawPointer?
 
     public init(indexDir: String, embeddingDim: Int) throws {
         guard let h = cactus_index_init(indexDir, embeddingDim) else {
@@ -908,8 +908,8 @@ public final class CactusIndex: @unchecked Sendable {
                             cactus_index_add(
                                 handle,
                                 idPtr.baseAddress,
-                                docPtr.baseAddress,
-                                metaPtr.baseAddress,
+                                unsafeBitCast(docPtr.baseAddress, to: UnsafeMutablePointer<UnsafePointer<CChar>?>?.self),
+                                unsafeBitCast(metaPtr.baseAddress, to: UnsafeMutablePointer<UnsafePointer<CChar>?>?.self),
                                 embPtr.baseAddress,
                                 count,
                                 embeddingDim
@@ -919,7 +919,7 @@ public final class CactusIndex: @unchecked Sendable {
                         return cactus_index_add(
                             handle,
                             idPtr.baseAddress,
-                            docPtr.baseAddress,
+                            unsafeBitCast(docPtr.baseAddress, to: UnsafeMutablePointer<UnsafePointer<CChar>?>?.self),
                             nil,
                             embPtr.baseAddress,
                             count,
@@ -973,7 +973,7 @@ public final class CactusIndex: @unchecked Sendable {
         let result = embeddingCopy.withUnsafeMutableBufferPointer { embPtr in
             idBuffer.withUnsafeMutableBufferPointer { idPtr in
                 scoreBuffer.withUnsafeMutableBufferPointer { scorePtr in
-                    var embPtrPtr: UnsafePointer<Float>? = embPtr.baseAddress
+                    var embPtrPtr: UnsafePointer<Float>? = embPtr.baseAddress.map { UnsafePointer($0) }
                     var idPtrPtr: UnsafeMutablePointer<Int32>? = idPtr.baseAddress
                     var scorePtrPtr: UnsafeMutablePointer<Float>? = scorePtr.baseAddress
 
