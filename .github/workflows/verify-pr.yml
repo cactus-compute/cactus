@@ -1,5 +1,44 @@
 name: PR Verification
-# no-op: verify approval trigger
+#   SETUP
+#   1. System packages:                                                                                                                                                                      
+#   sudo apt-get install -y build-essential libcurl4-openssl-dev cmake libicu-dev                                                                                                            
+#   2. Python 3.12 via Homebrew (deadsnakes PPA doesn't support Ubuntu 25.10):
+#   # Install Homebrew                                                                                                                                                                       
+#   NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"                                                                         
+                                                                                                                                                                                           
+#   # Install Python 3.12                                                                                                                                                                    
+#   eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+#   brew install python@3.12
+
+#   # Make it available system-wide
+#   sudo ln -sf /home/linuxbrew/.linuxbrew/bin/python3.12 /usr/local/bin/python3.12
+
+#   GitHub Actions Runner Installation (already done)
+
+#   mkdir -p ~/actions-runner && cd ~/actions-runner
+#   curl -sO -L https://github.com/actions/runner/releases/download/v2.331.0/actions-runner-linux-arm64-2.331.0.tar.gz
+#   tar xzf actions-runner-linux-arm64-2.331.0.tar.gz
+#   sudo ./bin/installdependencies.sh
+
+#   Configure Runner for a Repo (repeat this for each repo)
+
+#   1. Remove old runner config (if switching repos):
+#   cd ~/actions-runner
+#   sudo ./svc.sh stop
+#   sudo ./svc.sh uninstall
+#   ./config.sh remove --token <OLD_REMOVE_TOKEN>
+#   1. Get the remove token from the old repo: Settings → Actions → Runners → click runner → Remove.
+#   2. Get new token: Go to the target repo (e.g. cactus-compute/cactus) → Settings → Actions → Runners → New self-hosted runner → Linux / ARM64. Copy the token from the ./config.sh command
+#    shown.
+#   3. Configure:
+#   cd ~/actions-runner
+#   ./config.sh --url https://github.com/cactus-compute/cactus --token <TOKEN_FROM_STEP_2>
+#   3. Accept defaults for runner group, name, and labels (it auto-detects self-hosted, linux, ARM64).
+#   4. Start as service:
+#   sudo ./svc.sh install
+#   sudo ./svc.sh start
+#   5. Add repo secret: Go to the target repo → Settings → Secrets and variables → Actions → New repository secret → Name: HF_TOKEN, Value: <your token>
+#   6. Verify: The runner should appear as "Online" in the repo's Settings → Actions → Runners. Trigger the workflow from Actions → PR Verification → Run workflow.
 
 on:
   pull_request_review:
