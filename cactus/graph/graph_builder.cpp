@@ -529,22 +529,13 @@ size_t CactusGraph::lstm_cell(size_t input, size_t h_prev, size_t c_prev, size_t
 }
 
 size_t CactusGraph::stft_magnitude(size_t input, size_t weight, size_t stride, size_t num_fft_bins) {
-    const auto& xin = get_output_buffer(input);
-    const auto& w = get_output_buffer(weight);
-
-    if (xin.shape.size() != 3) throw std::runtime_error("stft_magnitude expects N,C,L input");
-    if (w.shape.size() != 3) throw std::runtime_error("stft_magnitude weight expects [C_out, C_in, K]");
-
-    size_t N = xin.shape[0];
-    size_t L = xin.shape[2];
-    size_t K = w.shape[2];
-    size_t L_out = (L - K) / stride + 1;
-
-    OpParams params{};
-    params.stride = stride;
-    params.num_fft_bins = num_fft_bins;
-
-    return add_node(OpType::STFT_MAGNITUDE, {input, weight}, {N, num_fft_bins, L_out}, params);
+    size_t cplx  = stft_complex(input, weight, stride, num_fft_bins);
+    size_t re    = slice(cplx, 1, 0, num_fft_bins);
+    size_t im    = slice(cplx, 1, num_fft_bins, num_fft_bins);
+    size_t re_sq = multiply(re, re);
+    size_t im_sq = multiply(im, im);
+    size_t sum   = add(re_sq, im_sq);
+    return scalar_sqrt(sum);
 }
 
 size_t CactusGraph::stft_complex(size_t input, size_t weight, size_t stride, size_t num_fft_bins) {

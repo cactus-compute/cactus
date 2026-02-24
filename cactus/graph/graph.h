@@ -136,7 +136,6 @@ enum class OpType {
     PERSISTENT,
     QUANTIZE_ACTIVATIONS,
     LSTM_CELL,
-    STFT_MAGNITUDE,
     STFT_COMPLEX
 };
 

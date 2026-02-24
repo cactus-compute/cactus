@@ -473,22 +473,6 @@ bool test_stft_complex_kernel_correctness() {
         }
     }
 
-    std::vector<__fp16> mag(N * num_fft_bins * out_len, (__fp16)0);
-    cactus_stft_magnitude_f16(input.data(), weight.data(), mag.data(),
-                              N, L, C_in, C_out, K, stride, num_fft_bins);
-
-    const size_t mag_bs = num_fft_bins * out_len;
-    for (size_t n = 0; n < N; ++n) {
-        for (size_t b = 0; b < num_fft_bins; ++b) {
-            for (size_t t = 0; t < out_len; ++t) {
-                float r  = (float)cplx[n * out_bs + b * out_len + t];
-                float im = (float)cplx[n * out_bs + (b + num_fft_bins) * out_len + t];
-                float m  = (float)mag[n * mag_bs + b * out_len + t];
-                if (std::abs(std::sqrt(r * r + im * im) - m) > tol) return false;
-            }
-        }
-    }
-
     return true;
 }
 

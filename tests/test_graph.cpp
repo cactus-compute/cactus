@@ -952,6 +952,61 @@ bool test_stft_complex() {
     return true;
 }
 
+bool test_stft_magnitude_via_complex() {
+    const size_t N = 2, C_in = 1, L = 8, K = 4, stride = 2, num_fft_bins = 2;
+    const size_t C_out = 2 * num_fft_bins;
+    const size_t out_len = (L - K) / stride + 1;
+
+    std::vector<__fp16> weight_data = {
+        (__fp16) 1, (__fp16) 1, (__fp16) 1, (__fp16) 1,
+        (__fp16) 1, (__fp16) 0, (__fp16)-1, (__fp16) 0,
+        (__fp16) 0, (__fp16) 0, (__fp16) 0, (__fp16) 0,
+        (__fp16) 0, (__fp16)-1, (__fp16) 0, (__fp16) 1,
+    };
+    std::vector<__fp16> input_data = {
+        (__fp16)1, (__fp16)2, (__fp16)3, (__fp16)4, (__fp16)5, (__fp16)6, (__fp16)7, (__fp16)8,
+        (__fp16)0, (__fp16)1, (__fp16)0, (__fp16)-1, (__fp16)0, (__fp16)1, (__fp16)0, (__fp16)-1,
+    };
+
+    TestUtils::FP16TestFixture fx_cplx;
+    size_t inp_c = fx_cplx.create_input({N, C_in, L});
+    size_t wt_c  = fx_cplx.create_input({C_out, C_in, K});
+    size_t cplx_out = fx_cplx.graph().stft_complex(inp_c, wt_c, stride, num_fft_bins);
+    fx_cplx.set_input_data(inp_c, input_data);
+    fx_cplx.set_input_data(wt_c, weight_data);
+    fx_cplx.execute();
+    const __fp16* cplx = fx_cplx.get_output(cplx_out);
+    const size_t cplx_bs = C_out * out_len;
+
+    TestUtils::FP16TestFixture fx_mag;
+    size_t inp_m = fx_mag.create_input({N, C_in, L});
+    size_t wt_m  = fx_mag.create_input({C_out, C_in, K});
+    size_t mag_out = fx_mag.graph().stft_magnitude(inp_m, wt_m, stride, num_fft_bins);
+
+    if (fx_mag.graph().get_output_buffer(mag_out).shape != std::vector<size_t>{N, num_fft_bins, out_len}) return false;
+
+    fx_mag.set_input_data(inp_m, input_data);
+    fx_mag.set_input_data(wt_m, weight_data);
+    fx_mag.execute();
+    const __fp16* mag = fx_mag.get_output(mag_out);
+    const size_t mag_bs = num_fft_bins * out_len;
+
+    const float tol = 0.15f;
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t b = 0; b < num_fft_bins; ++b) {
+            for (size_t t = 0; t < out_len; ++t) {
+                float re = (float)cplx[n * cplx_bs + b * out_len + t];
+                float im = (float)cplx[n * cplx_bs + (b + num_fft_bins) * out_len + t];
+                float expected_mag = std::sqrt(re * re + im * im);
+                float got_mag = (float)mag[n * mag_bs + b * out_len + t];
+                if (std::abs(got_mag - expected_mag) > tol) return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("Graph Operations Tests");
 
@@ -994,6 +1049,7 @@ int main() {
     runner.run_test("Embedding Operation", test_embedding_operation());
     runner.run_test("Embedding from File", test_embedding_from_file());
     runner.run_test("STFT Complex", test_stft_complex());
+    runner.run_test("STFT Magnitude via Complex", test_stft_magnitude_via_complex());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

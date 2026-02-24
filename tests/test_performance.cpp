@@ -990,22 +990,27 @@ void benchmark_stft(TestUtils::TestRunner& runner, const BenchmarkConfig& config
     const size_t N = 1, C_in = 1, L = 20480, K = 400, stride = 160, num_fft_bins = 128;
     const size_t C_out = 2 * num_fft_bins;
     const size_t out_len = (L - K) / stride + 1;
+    const std::string label = "(" + std::to_string(num_fft_bins) + " bins, " + std::to_string(out_len) + " frames)";
 
-    std::vector<__fp16> input(N * C_in * L);
-    std::vector<__fp16> weight(C_out * C_in * K);
-    setup_random_data<__fp16>(input);
-    setup_random_data<__fp16>(weight);
-
-    std::vector<__fp16> mag_out(N * num_fft_bins * out_len);
-    double mag_ms = time_operation<__fp16>([&]() {
-        cactus_stft_magnitude_f16(input.data(), weight.data(), mag_out.data(),
-                                  N, L, C_in, C_out, K, stride, num_fft_bins);
-    }, config.iterations);
+    std::vector<__fp16> input_data(N * C_in * L);
+    std::vector<__fp16> weight_data(C_out * C_in * K);
+    setup_random_data<__fp16>(input_data);
+    setup_random_data<__fp16>(weight_data);
 
     std::vector<__fp16> cplx_out(N * 2 * num_fft_bins * out_len);
     double cplx_ms = time_operation<__fp16>([&]() {
-        cactus_stft_complex_f16(input.data(), weight.data(), cplx_out.data(),
+        cactus_stft_complex_f16(input_data.data(), weight_data.data(), cplx_out.data(),
                                 N, L, C_in, C_out, K, stride, num_fft_bins);
+    }, config.iterations);
+
+    TestUtils::FP16TestFixture fx;
+    size_t inp = fx.create_input({N, C_in, L});
+    size_t wt  = fx.create_input({C_out, C_in, K});
+    fx.graph().stft_magnitude(inp, wt, stride, num_fft_bins);
+    fx.set_input_data(inp, input_data);
+    fx.set_input_data(wt, weight_data);
+    double mag_ms = time_operation<__fp16>([&]() {
+        fx.execute();
     }, config.iterations);
 
     auto fmt = [&](double ms) {
@@ -1013,8 +1018,8 @@ void benchmark_stft(TestUtils::TestRunner& runner, const BenchmarkConfig& config
         s << std::fixed << std::setprecision(3) << ms << "ms";
         return s.str();
     };
-    runner.log_performance("STFT Magnitude (" + std::to_string(num_fft_bins) + " bins, " + std::to_string(out_len) + " frames)", fmt(mag_ms));
-    runner.log_performance("STFT Complex   (" + std::to_string(num_fft_bins) + " bins, " + std::to_string(out_len) + " frames)", fmt(cplx_ms));
+    runner.log_performance("STFT Complex (kernel)    " + label, fmt(cplx_ms));
+    runner.log_performance("STFT Magnitude (graph)   " + label, fmt(mag_ms));
 }
 
 bool test_stft_performance(TestUtils::TestRunner& runner) {
