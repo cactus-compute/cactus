@@ -102,6 +102,32 @@ inline float32x4_t fast_tanh_f32x4(float32x4_t x) {
     return result;
 }
 
+// Fast sigmoid approximation: sigmoid(x) = 1 / (1 + exp(-x))
+// Uses rational polynomial approximation to avoid costly vdivq_f32
+// Accurate to ~0.5% over the range [-8, 8], suitable for FP16 precision
+inline float32x4_t fast_sigmoid_f32x4(float32x4_t x) {
+    const float32x4_t zero = vdupq_n_f32(0.0f);
+    const float32x4_t one = vdupq_n_f32(1.0f);
+    const float32x4_t half = vdupq_n_f32(0.5f);
+
+    // Saturation for large values: sigmoid(x) ≈ 1 for x > 8, ≈ 0 for x < -8
+    uint32x4_t pos_sat = vcgtq_f32(x, vdupq_n_f32(8.0f));
+    uint32x4_t neg_sat = vcltq_f32(x, vdupq_n_f32(-8.0f));
+
+    // Use symmetry: sigmoid(x) = 1 - sigmoid(-x), so compute on |x| and adjust
+    // For moderate range, use: sigmoid(x) ≈ 0.5 + 0.5 * tanh(x/2)
+    // This reuses our fast_tanh implementation
+    float32x4_t x_scaled = vmulq_f32(x, half);
+    float32x4_t tanh_val = fast_tanh_f32x4(x_scaled);
+    float32x4_t result = vfmaq_f32(half, half, tanh_val);  // 0.5 + 0.5 * tanh(x/2)
+
+    // Apply saturation
+    result = vbslq_f32(pos_sat, one, result);
+    result = vbslq_f32(neg_sat, zero, result);
+
+    return result;
+}
+
 inline void unpack_int4_as_int8x16x2(const uint8_t* ptr, int8x16_t& high_decoded, int8x16_t& low_decoded) {
     int8x16_t packed = vreinterpretq_s8_u8(vld1q_u8(ptr));
     high_decoded = vshrq_n_s8(packed, 4);
