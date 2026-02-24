@@ -10,10 +10,44 @@
 #include <iostream>
 
 void cactus_relu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
-    for (size_t i = 0; i < num_elements; ++i) {
-        __fp16 x = input[i];
-        output[i] = x > static_cast<__fp16>(0) ? x : static_cast<__fp16>(0);
-    }
+    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_BASIC,
+        [&](size_t start_idx, size_t end_idx) {
+            constexpr size_t SIMD_WIDTH = 8;
+            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
+            const float16x8_t zero = vdupq_n_f16(0.0f);
+
+            // Vectorized loop with 4x unrolling
+            size_t i = start_idx;
+            for (; i + 4 * SIMD_WIDTH <= vectorized_end; i += 4 * SIMD_WIDTH) {
+                float16x8_t x0 = vld1q_f16(&input[i]);
+                float16x8_t x1 = vld1q_f16(&input[i + SIMD_WIDTH]);
+                float16x8_t x2 = vld1q_f16(&input[i + 2 * SIMD_WIDTH]);
+                float16x8_t x3 = vld1q_f16(&input[i + 3 * SIMD_WIDTH]);
+
+                float16x8_t relu0 = vmaxq_f16(x0, zero);
+                float16x8_t relu1 = vmaxq_f16(x1, zero);
+                float16x8_t relu2 = vmaxq_f16(x2, zero);
+                float16x8_t relu3 = vmaxq_f16(x3, zero);
+
+                vst1q_f16(&output[i], relu0);
+                vst1q_f16(&output[i + SIMD_WIDTH], relu1);
+                vst1q_f16(&output[i + 2 * SIMD_WIDTH], relu2);
+                vst1q_f16(&output[i + 3 * SIMD_WIDTH], relu3);
+            }
+
+            // Handle remaining vectors
+            for (; i < vectorized_end; i += SIMD_WIDTH) {
+                float16x8_t x = vld1q_f16(&input[i]);
+                float16x8_t relu = vmaxq_f16(x, zero);
+                vst1q_f16(&output[i], relu);
+            }
+
+            // Scalar cleanup for remaining elements
+            for (; i < end_idx; ++i) {
+                __fp16 x = input[i];
+                output[i] = x > static_cast<__fp16>(0) ? x : static_cast<__fp16>(0);
+            }
+        });
 }
 
 void cactus_silu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
@@ -106,8 +140,12 @@ void cactus_gelu_f16_erf(const __fp16* input, __fp16* output, size_t num_element
         CactusThreading::Thresholds::SCALAR_EXPENSIVE,
         [&](size_t start_idx, size_t end_idx) {
 
-            constexpr size_t SIMD = 8; 
+            constexpr size_t SIMD = 8;
             size_t vec_end = start_idx + ((end_idx - start_idx) / SIMD) * SIMD;
+
+            const float32x4_t half = vdupq_n_f32(0.5f);
+            const float32x4_t one = vdupq_n_f32(1.0f);
+            const float32x4_t inv_sqrt2_vec = vdupq_n_f32(inv_sqrt2);
 
             for (size_t i = start_idx; i < vec_end; i += SIMD) {
 
@@ -116,27 +154,18 @@ void cactus_gelu_f16_erf(const __fp16* input, __fp16* output, size_t num_element
                 float32x4_t x0 = vcvt_f32_f16(vget_low_f16(xh));
                 float32x4_t x1 = vcvt_f32_f16(vget_high_f16(xh));
 
-                float32x4_t arg0 = vmulq_n_f32(x0, inv_sqrt2);
-                float32x4_t arg1 = vmulq_n_f32(x1, inv_sqrt2);
+                float32x4_t arg0 = vmulq_f32(x0, inv_sqrt2_vec);
+                float32x4_t arg1 = vmulq_f32(x1, inv_sqrt2_vec);
 
-                float arg0_s[4], arg1_s[4];
-                float erf0_s[4], erf1_s[4];
-                vst1q_f32(arg0_s, arg0);
-                vst1q_f32(arg1_s, arg1);
+                // Use fast NEON erf approximation instead of scalar erff()
+                float32x4_t erf0 = fast_erf_f32x4(arg0);
+                float32x4_t erf1 = fast_erf_f32x4(arg1);
 
-                for (int j = 0; j < 4; j++) {
-                    erf0_s[j] = erff(arg0_s[j]);
-                    erf1_s[j] = erff(arg1_s[j]);
-                }
+                float32x4_t t0 = vaddq_f32(one, erf0);
+                float32x4_t t1 = vaddq_f32(one, erf1);
 
-                float32x4_t erf0 = vld1q_f32(erf0_s);
-                float32x4_t erf1 = vld1q_f32(erf1_s);
-
-                float32x4_t t0 = vaddq_f32(vdupq_n_f32(1.0f), erf0);
-                float32x4_t t1 = vaddq_f32(vdupq_n_f32(1.0f), erf1);
-
-                float32x4_t gelu0 = vmulq_f32(vmulq_n_f32(x0, 0.5f), t0);
-                float32x4_t gelu1 = vmulq_f32(vmulq_n_f32(x1, 0.5f), t1);
+                float32x4_t gelu0 = vmulq_f32(vmulq_f32(half, x0), t0);
+                float32x4_t gelu1 = vmulq_f32(vmulq_f32(half, x1), t1);
 
                 float16x8_t gelu_h = vcombine_f16(
                     vcvt_f16_f32(gelu0),

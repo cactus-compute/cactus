@@ -108,6 +108,55 @@ inline void unpack_int4_as_int8x16x2(const uint8_t* ptr, int8x16_t& high_decoded
     low_decoded = vshrq_n_s8(vshlq_n_s8(packed, 4), 4);
 }
 
+// 5th-order polynomial approximation for erf(x) using Abramowitz and Stegun method
+// Accurate to ~2e-5 over the range [-4, 4], suitable for FP16 precision
+inline float32x4_t fast_erf_f32x4(float32x4_t x) {
+    const float32x4_t zero = vdupq_n_f32(0.0f);
+    const float32x4_t one = vdupq_n_f32(1.0f);
+
+    // Save sign and work with absolute value
+    uint32x4_t sign_mask = vcltq_f32(x, zero);
+    float32x4_t abs_x = vabsq_f32(x);
+
+    // Abramowitz & Stegun coefficients
+    const float32x4_t p = vdupq_n_f32(0.3275911f);
+    const float32x4_t a1 = vdupq_n_f32(0.254829592f);
+    const float32x4_t a2 = vdupq_n_f32(-0.284496736f);
+    const float32x4_t a3 = vdupq_n_f32(1.421413741f);
+    const float32x4_t a4 = vdupq_n_f32(-1.453152027f);
+    const float32x4_t a5 = vdupq_n_f32(1.061405429f);
+
+    // t = 1 / (1 + p*|x|)
+    float32x4_t t = vdivq_f32(one, vfmaq_f32(one, p, abs_x));
+
+    // Polynomial evaluation: a5*t^5 + a4*t^4 + a3*t^3 + a2*t^2 + a1*t
+    float32x4_t t2 = vmulq_f32(t, t);
+    float32x4_t t3 = vmulq_f32(t2, t);
+    float32x4_t t4 = vmulq_f32(t3, t);
+    float32x4_t t5 = vmulq_f32(t4, t);
+
+    float32x4_t poly = vfmaq_f32(
+        vfmaq_f32(
+            vfmaq_f32(
+                vfmaq_f32(vmulq_f32(a5, t5), a4, t4),
+                a3, t3
+            ),
+            a2, t2
+        ),
+        a1, t
+    );
+
+    // erf(x) ≈ 1 - poly * exp(-x^2)
+    float32x4_t x_squared = vmulq_f32(abs_x, abs_x);
+    float32x4_t exp_neg_x2 = fast_exp_f32x4(vnegq_f32(x_squared));
+    float32x4_t result = vsubq_f32(one, vmulq_f32(poly, exp_neg_x2));
+
+    // Restore sign: erf(-x) = -erf(x)
+    result = vbslq_f32(sign_mask, vnegq_f32(result), result);
+
+    return result;
+}
+
 namespace CactusThreading {
 
     class ThreadPool {
