@@ -3,6 +3,7 @@ name: PR Verification
 on:
   pull_request_review:
     types: [submitted]
+  workflow_dispatch:
 
 jobs:
   gate:
@@ -12,7 +13,9 @@ jobs:
     steps:
       - id: check
         run: |
-          if [ "${{ github.event.review.state }}" = "approved" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "approved=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.review.state }}" = "approved" ]; then
             echo "approved=true" >> $GITHUB_OUTPUT
           else
             echo "approved=false" >> $GITHUB_OUTPUT
@@ -30,8 +33,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          CHANGED=$(gh pr diff ${{ github.event.pull_request.number }} --name-only | grep -cE '^python/(src/|requirements\.txt)' || true)
-          echo "python_changed=$([[ $CHANGED -gt 0 ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "python_changed=false" >> $GITHUB_OUTPUT
+          else
+            CHANGED=$(gh pr diff ${{ github.event.pull_request.number }} --name-only | grep -cE '^python/(src/|requirements\.txt)' || true)
+            echo "python_changed=$([[ $CHANGED -gt 0 ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Ensure venv exists
+        run: |
+          if [ ! -f venv/bin/activate ]; then
+            echo "No venv found, running setup..."
+            source ./setup
+          fi
 
       - name: Rebuild venv if Python sources changed
         if: steps.check_python.outputs.python_changed == 'true'
@@ -43,6 +57,32 @@ jobs:
       - name: Purge cached weights if converters changed
         if: steps.check_python.outputs.python_changed == 'true'
         run: rm -rf weights/
+
+      - name: Convert models if weights missing
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          source venv/bin/activate
+          convert_if_missing() {
+            local model_id=$1 output_dir=$2 precision=$3
+            if [ ! -f "weights/$output_dir/config.txt" ]; then
+              echo "Converting $model_id -> weights/$output_dir"
+              python3 -m src.cli convert "$model_id" "weights/$output_dir" --precision "$precision" ${HF_TOKEN:+--token "$HF_TOKEN"} || true
+              # Handle converter outputting to default dir
+              local default_dir="weights/$(echo "$model_id" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')"
+              if [ ! -f "weights/$output_dir/config.txt" ] && [ -f "$default_dir/config.txt" ]; then
+                mv "$default_dir" "weights/$output_dir"
+              fi
+            fi
+          }
+          convert_if_missing "Qwen/Qwen3-0.6B" "qwen3-0.6b" "INT8"
+          convert_if_missing "nomic-ai/nomic-embed-text-v2-moe" "nomic-embed-text-v2-moe" "INT8"
+          convert_if_missing "LiquidAI/LFM2-350M" "lfm2-350m" "INT8"
+          convert_if_missing "LiquidAI/LFM2-8B-A1B" "lfm2-8b-a1b" "INT8"
+          convert_if_missing "google/gemma-3-270m-it" "gemma-3-270m-it" "INT8"
+          convert_if_missing "openai/whisper-small" "whisper-small" "INT8"
+          convert_if_missing "UsefulSensors/moonshine-base" "moonshine-base" "INT8"
+          convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-int8" "INT8"
 
       - name: Build library
         run: bash cactus/build.sh
@@ -127,8 +167,7 @@ jobs:
             precision: INT8
             model_dir: lfm2-vl-450m-int8
             env_var: CACTUS_TEST_MODEL
-          # INT4 and FP16 VLM disabled — INT4 non-Apple variant produces 0 tokens,
-          # FP16 non-Apple variant not available on Cactus-Compute.
+          # INT4 VLM disabled — non-Apple variant produces 0 tokens
           # - family: lfm2vl
           #   model: "LiquidAI/LFM2-VL-450M"
           #   precision: INT4
