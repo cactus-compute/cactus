@@ -1,6 +1,7 @@
 #include "model.h"
 #include "../graph/graph.h"
 #include "../kernel/kernel.h"
+#include <algorithm>
 #include <stdexcept>
 
 namespace cactus {

@@ -212,9 +212,29 @@ std::string json_string(const std::string& json, const std::string& key) {
     while (start < json.size() && (json[start] == ' ' || json[start] == '\t')) ++start;
     if (start >= json.size() || json[start] != '"') return {};
     size_t q1 = start;
-    size_t q2 = json.find('"', q1 + 1);
-    if (q2 == std::string::npos) return {};
-    return json.substr(q1 + 1, q2 - q1 - 1);
+    size_t q2 = q1 + 1;
+    while (q2 < json.size()) {
+        if (json[q2] == '\\') { q2 += 2; continue; }
+        if (json[q2] == '"') break;
+        q2++;
+    }
+    if (q2 >= json.size()) return {};
+    std::string raw = json.substr(q1 + 1, q2 - q1 - 1);
+    std::string result;
+    for (size_t i = 0; i < raw.size(); i++) {
+        if (raw[i] == '\\' && i + 1 < raw.size()) {
+            char next = raw[i + 1];
+            if (next == '"') { result += '"'; i++; }
+            else if (next == '\\') { result += '\\'; i++; }
+            else if (next == 'n') { result += '\n'; i++; }
+            else if (next == 'r') { result += '\r'; i++; }
+            else if (next == 't') { result += '\t'; i++; }
+            else result += raw[i];
+        } else {
+            result += raw[i];
+        }
+    }
+    return result;
 }
 
 std::string escape_json(const std::string& s) {
