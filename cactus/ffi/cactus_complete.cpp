@@ -299,7 +299,7 @@ int cactus_complete(
             metrics.prefill_tokens = prompt_tokens;
             metrics.decode_tokens = 0;
             metrics.error_message = nullptr;
-            metrics.function_calls_json = "[]";
+            metrics.function_calls_json = nullptr;
             cactus::telemetry::recordCompletion(handle->model_name.c_str(), metrics);
 
             return static_cast<int>(result.length());
@@ -398,7 +398,7 @@ int cactus_complete(
         metrics.prefill_tokens = prompt_tokens;
         metrics.decode_tokens = completion_tokens;
         metrics.error_message = nullptr;
-        metrics.function_calls_json = function_calls_json.c_str();
+        metrics.function_calls_json = nullptr;
         cactus::telemetry::recordCompletion(handle->model_name.c_str(), metrics);
 
         return static_cast<int>(result.length());
@@ -419,7 +419,7 @@ int cactus_complete(
         metrics.prefill_tokens = 0;
         metrics.decode_tokens = 0;
         metrics.error_message = e.what();
-        metrics.function_calls_json = "[]";
+        metrics.function_calls_json = nullptr;
         auto* h = static_cast<CactusModelHandle*>(model);
         cactus::telemetry::recordCompletion(h ? h->model_name.c_str() : "unknown", metrics);
 
@@ -440,7 +440,7 @@ int cactus_complete(
         metrics.prefill_tokens = 0;
         metrics.decode_tokens = 0;
         metrics.error_message = "Unknown error during completion";
-        metrics.function_calls_json = "[]";
+        metrics.function_calls_json = nullptr;
         auto* h = static_cast<CactusModelHandle*>(model);
         cactus::telemetry::recordCompletion(h ? h->model_name.c_str() : "unknown", metrics);
 

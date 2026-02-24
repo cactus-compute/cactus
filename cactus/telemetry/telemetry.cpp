@@ -961,11 +961,7 @@ static CloudSendResult send_batch_to_cloud(const std::vector<Event>& local, cons
         } else {
             payload << ",\"error\":null";
         }
-        if (e.function_calls[0] != '\0') {
-            payload << ",\"function_calls\":" << e.function_calls;
-        } else {
-            payload << ",\"function_calls\":[]";
-        }
+        payload << ",\"function_calls\":null";
         payload << "}";
         if (i + 1 < local.size()) payload << ",";
     }
@@ -1030,11 +1026,7 @@ static void write_events_to_cache_in_dir(const std::vector<Event>& local, const 
         } else {
             oss << ",\"error\":null";
         }
-        if (e.function_calls[0] != '\0') {
-            oss << ",\"function_calls\":" << e.function_calls;
-        } else {
-            oss << ",\"function_calls\":[]";
-        }
+        oss << ",\"function_calls\":null";
         oss << "}";
         std::string file = dir + "/" + event_type_to_string(e.type) + ".log";
         std::ofstream out(file, std::ios::app);
