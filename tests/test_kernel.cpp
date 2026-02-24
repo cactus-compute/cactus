@@ -429,6 +429,52 @@ bool test_int4_matmul_correctness() {
     return true;
 }
 
+bool test_stft_kernel_correctness() {
+    const size_t N = 2, C_in = 1, L = 8, K = 4, stride = 2, num_fft_bins = 2;
+    const size_t C_out = 2 * num_fft_bins;
+    const size_t out_len = (L - K) / stride + 1;
+
+    const __fp16 bin0_re[] = {(__fp16) 1, (__fp16) 1, (__fp16) 1, (__fp16) 1};
+    const __fp16 bin1_re[] = {(__fp16) 1, (__fp16) 0, (__fp16)-1, (__fp16) 0};
+    const __fp16 bin0_im[] = {(__fp16) 0, (__fp16) 0, (__fp16) 0, (__fp16) 0};
+    const __fp16 bin1_im[] = {(__fp16) 0, (__fp16)-1, (__fp16) 0, (__fp16) 1};
+    std::vector<__fp16> weight;
+    for (const __fp16* row : {bin0_re, bin1_re, bin0_im, bin1_im})
+        weight.insert(weight.end(), row, row + K);
+
+    const __fp16 ramp[]   = {(__fp16)1, (__fp16)2, (__fp16)3, (__fp16)4,
+                              (__fp16)5, (__fp16)6, (__fp16)7, (__fp16)8};
+    const __fp16 cosine[] = {(__fp16)0, (__fp16)1, (__fp16) 0, (__fp16)-1,
+                              (__fp16)0, (__fp16)1, (__fp16) 0, (__fp16)-1};
+    std::vector<__fp16> input;
+    input.insert(input.end(), ramp,   ramp   + L);
+    input.insert(input.end(), cosine, cosine + L);
+
+    struct Cplx { float r, i; };
+    const Cplx expected[2][2][3] = {
+        { { {10,0},{18,0},{26,0} }, { {-2,2},{-2,2},{-2,2} } },
+        { { { 0,0},{ 0,0},{ 0,0} }, { { 0,-2},{ 0,2},{ 0,-2} } },
+    };
+
+    std::vector<__fp16> cplx(N * C_out * out_len, (__fp16)0);
+    cactus_stft_f16(input.data(), weight.data(), cplx.data(),
+                            N, L, C_in, C_out, K, stride, num_fft_bins);
+
+    const size_t out_bs = C_out * out_len;
+    const float tol = 0.1f;
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t b = 0; b < num_fft_bins; ++b) {
+            for (size_t t = 0; t < out_len; ++t) {
+                float r  = (float)cplx[n * out_bs + b * out_len + t];
+                float im = (float)cplx[n * out_bs + (b + num_fft_bins) * out_len + t];
+                if (std::abs(r  - expected[n][b][t].r) > tol) return false;
+                if (std::abs(im - expected[n][b][t].i) > tol) return false;
+            }
+        }
+    }
+
+    return true;
+}
 
 int main() {
     TestUtils::TestRunner runner("Kernel Backend Tests");
@@ -444,6 +490,7 @@ int main() {
     runner.run_test("Kernel Attention FP16 Correctness", test_neon_attention_fp16_correctness());
     runner.run_test("Kernel Grouped INT8 MatMul Correctness", test_matmul_int8_grouped_correctness());
     runner.run_test("Kernel INT4 MatMul Correctness", test_int4_matmul_correctness());
+    runner.run_test("Kernel STFT Complex Correctness", test_stft_kernel_correctness());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

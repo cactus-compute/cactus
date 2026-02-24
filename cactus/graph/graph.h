@@ -136,7 +136,7 @@ enum class OpType {
     PERSISTENT,
     QUANTIZE_ACTIVATIONS,
     LSTM_CELL,
-    STFT_MAGNITUDE
+    STFT
 };
 
 struct PrecisionTraits {
@@ -526,7 +526,7 @@ public:
     size_t conv1d(size_t input, size_t weight, size_t bias, size_t stride);
 
     size_t lstm_cell(size_t input, size_t h_prev, size_t c_prev, size_t weight_ih, size_t weight_hh, size_t bias_ih, size_t bias_hh);
-    size_t stft_magnitude(size_t input, size_t weight, size_t stride, size_t num_fft_bins);
+    size_t stft(size_t input, size_t weight, size_t stride, size_t num_fft_bins);
 
     size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20,
                   const std::unordered_map<uint32_t, float>& logit_bias = {});

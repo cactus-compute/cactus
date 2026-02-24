@@ -640,7 +640,7 @@ void cactus_bilinear_interpolation_f16(const __fp16* input, __fp16* output, size
     }
 }
 
-void cactus_stft_magnitude_f16(
+void cactus_stft_f16(
     const __fp16* input,
     const __fp16* weight,
     __fp16* output,
@@ -648,19 +648,17 @@ void cactus_stft_magnitude_f16(
     size_t C_in, size_t /*C_out*/,
     size_t K, size_t stride,
     size_t num_fft_bins
-){
+) {
     const size_t out_len = ((L - K) / stride) + 1;
-    const size_t in_bs = C_in * L;
-    const size_t out_bs = num_fft_bins * out_len;
+    const size_t in_bs  = C_in * L;
+    const size_t out_bs = 2 * num_fft_bins * out_len;
 
     for (size_t n = 0; n < N; ++n) {
         const __fp16* Xb = input + n * in_bs;
 
         for (size_t bin = 0; bin < num_fft_bins; ++bin) {
-            const size_t real_oc = bin;
-            const size_t imag_oc = bin + num_fft_bins;
-            const __fp16* Wr = weight + real_oc * (C_in * K);
-            const __fp16* Wi = weight + imag_oc * (C_in * K);
+            const __fp16* Wr = weight + bin * (C_in * K);
+            const __fp16* Wi = weight + (bin + num_fft_bins) * (C_in * K);
 
             for (size_t out_t = 0; out_t < out_len; ++out_t) {
                 const size_t t = out_t * stride;
@@ -668,9 +666,9 @@ void cactus_stft_magnitude_f16(
                 float sum_imag = 0.0f;
 
                 for (size_t ic = 0; ic < C_in; ++ic) {
-                    const __fp16* Xc = Xb + ic * L + t;
-                    const __fp16* Wrc = Wr + ic * K;
-                    const __fp16* Wic = Wi + ic * K;
+                    const __fp16* Xc  = Xb  + ic * L + t;
+                    const __fp16* Wrc = Wr  + ic * K;
+                    const __fp16* Wic = Wi  + ic * K;
 
                     float32x4_t acc_r0 = vdupq_n_f32(0.f);
                     float32x4_t acc_r1 = vdupq_n_f32(0.f);
@@ -683,9 +681,9 @@ void cactus_stft_magnitude_f16(
                         const float16x8_t wr = vld1q_f16(Wrc + k);
                         const float16x8_t wi = vld1q_f16(Wic + k);
 
-                        acc_r0 = vfmaq_f32(acc_r0, vcvt_f32_f16(vget_low_f16(xv)), vcvt_f32_f16(vget_low_f16(wr)));
+                        acc_r0 = vfmaq_f32(acc_r0, vcvt_f32_f16(vget_low_f16(xv)),  vcvt_f32_f16(vget_low_f16(wr)));
                         acc_r1 = vfmaq_f32(acc_r1, vcvt_f32_f16(vget_high_f16(xv)), vcvt_f32_f16(vget_high_f16(wr)));
-                        acc_i0 = vfmaq_f32(acc_i0, vcvt_f32_f16(vget_low_f16(xv)), vcvt_f32_f16(vget_low_f16(wi)));
+                        acc_i0 = vfmaq_f32(acc_i0, vcvt_f32_f16(vget_low_f16(xv)),  vcvt_f32_f16(vget_low_f16(wi)));
                         acc_i1 = vfmaq_f32(acc_i1, vcvt_f32_f16(vget_high_f16(xv)), vcvt_f32_f16(vget_high_f16(wi)));
                     }
 
@@ -699,8 +697,8 @@ void cactus_stft_magnitude_f16(
                     }
                 }
 
-                float magnitude = sqrtf(sum_real * sum_real + sum_imag * sum_imag);
-                output[n * out_bs + bin * out_len + out_t] = (__fp16)magnitude;
+                output[n * out_bs + bin * out_len + out_t]                    = (__fp16)sum_real;
+                output[n * out_bs + (bin + num_fft_bins) * out_len + out_t]  = (__fp16)sum_imag;
             }
         }
     }

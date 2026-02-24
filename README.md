@@ -176,8 +176,10 @@ git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setu
 - [Android Demo](https://play.google.com/store/apps/details?id=com.rshemetsubuser.myapp)
 
 ## Maintaining Organisations
-1. [Cactus Compute, Inc. (YC S25)](https://cactuscompute.com/) 
-2. [UCLA's BruinAI](https://bruinai.org/) 
+Developed by [Cactus Compute, Inc. (YC S25)](https://cactuscompute.com/), with maintenance from:
+
+1. [UCLA's BruinAI](https://bruinai.org/) 
+2. [Char (YC S25)](https://char.com/)
 3. [Yale's AI Society](https://www.yale-ai.org/team)
 4. [National Unoversity of Singapore's AI Society](https://www.nusaisociety.org/)
 5. [UC Irvine's AI@UCI](https://aiclub.ics.uci.edu/)

@@ -171,7 +171,7 @@ void cactus_conv1d_f16(
     size_t stride
 );
 
-void cactus_stft_magnitude_f16(
+void cactus_stft_f16(
     const __fp16* input,
     const __fp16* weight,
     __fp16* output,
