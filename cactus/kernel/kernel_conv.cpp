@@ -628,13 +628,37 @@ void cactus_bilinear_interpolation_f16(const __fp16* input, __fp16* output, size
 
             size_t out_idx = (dst_y * dst_width + dst_x) * embed_dim;
 
+            // for (size_t d = 0; d < embed_dim; ++d) {
+            //     float result =
+            //         static_cast<float>(input[idx00 + d]) * w00 +
+            //         static_cast<float>(input[idx01 + d]) * w01 +
+            //         static_cast<float>(input[idx10 + d]) * w10 +
+            //         static_cast<float>(input[idx11 + d]) * w11;
+            //     output[out_idx + d] = static_cast<__fp16>(result);
+            // }
+
+            for(size_t d = 0; d + 8 <= embeded_dim; d += 8){
+                float16x8_t v00 = vld1q_f16(input + idx00 + d);
+                float16x8_t v01 = vld1q_f16(input + idx01 + d);
+                float16x8_t v10 = vld1q_f16(input + idx10 + d);
+                float16x8_t v11 = vld1q_f16(input + idx11 + d);
+
+                float16x8_t result = vfmaq_f16(
+                    vfmaq_f16(
+                        vfmaq_f16(vdupq_n_f16(0.0f), v00, vdupq_n_f16(w00)),
+                        v01, vdupq_n_f16(w01)),
+                    v10, vdupq_n_f16(w10));
+                result = vfmaq_f16(result, v11, vdupq_n_f16(w11));
+
+                vst1q_f16(output + out_idx + d, result);
+            }
+
             for (size_t d = 0; d < embed_dim; ++d) {
-                float result =
-                    static_cast<float>(input[idx00 + d]) * w00 +
-                    static_cast<float>(input[idx01 + d]) * w01 +
-                    static_cast<float>(input[idx10 + d]) * w10 +
-                    static_cast<float>(input[idx11 + d]) * w11;
-                output[out_idx + d] = static_cast<__fp16>(result);
+                output[out_idx + d] =
+                    input[idx00 + d] * w00 +
+                    input[idx01 + d] * w01 +
+                    input[idx10 + d] * w10 +
+                    input[idx11 + d] * w11;
             }
         }
     }
