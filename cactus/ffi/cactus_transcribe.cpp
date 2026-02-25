@@ -130,6 +130,53 @@ int cactus_transcribe(
             cloud_handoff_threshold = 0.0001f;
         }
 
+        {
+            const std::string opts = options_json ? options_json : "";
+            std::vector<std::string> custom_vocabulary;
+            float vocabulary_boost = 5.0f;
+
+            size_t pos = opts.find("\"vocabulary_boost\"");
+            if (pos != std::string::npos) {
+                pos = opts.find(':', pos);
+                if (pos != std::string::npos) {
+                    ++pos;
+                    while (pos < opts.size() && std::isspace(static_cast<unsigned char>(opts[pos]))) ++pos;
+                    try { vocabulary_boost = std::stof(opts.substr(pos)); } catch (...) {}
+                }
+            }
+
+            pos = opts.find("\"custom_vocabulary\"");
+            if (pos != std::string::npos) {
+                pos = opts.find('[', pos);
+                size_t end = opts.find(']', pos);
+                if (pos != std::string::npos && end != std::string::npos) {
+                    std::string arr = opts.substr(pos + 1, end - pos - 1);
+                    size_t i = 0;
+                    while (i < arr.size()) {
+                        size_t q1 = arr.find('"', i);
+                        if (q1 == std::string::npos) break;
+                        size_t q2 = arr.find('"', q1 + 1);
+                        if (q2 == std::string::npos) break;
+                        custom_vocabulary.push_back(arr.substr(q1 + 1, q2 - q1 - 1));
+                        i = q2 + 1;
+                    }
+                }
+            }
+
+            if (!custom_vocabulary.empty()) {
+                std::unordered_map<uint32_t, float> vocab_bias;
+                float clamped_boost = std::min(std::max(vocabulary_boost, 0.0f), 20.0f);
+                auto* tokenizer = handle->model->get_tokenizer();
+                for (const auto& word : custom_vocabulary) {
+                    auto token_ids = tokenizer->encode(word);
+                    for (uint32_t token_id : token_ids) {
+                        vocab_bias[token_id] += clamped_boost;
+                    }
+                }
+                handle->model->set_vocab_bias(vocab_bias);
+            }
+        }
+
         (void)telemetry_enabled;
 
         bool is_moonshine = handle->model->get_config().model_type == cactus::engine::Config::ModelType::MOONSHINE;

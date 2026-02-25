@@ -237,7 +237,11 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     last_hidden = gb->reshape(last_hidden, {1, hidden_dim});
 
     auto logits_node_id = gb->matmul(last_hidden, output_weight_node_id_, true, backend);
-    auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k, tool_constrainer_.get_bias());
+    auto combined_bias = tool_constrainer_.get_bias();
+    for (const auto& [token_id, boost] : vocab_bias_) {
+        combined_bias[token_id] += boost;
+    }
+    auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k, combined_bias);
 
     gb->execute(profile_file);
 

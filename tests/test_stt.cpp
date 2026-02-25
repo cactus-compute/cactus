@@ -754,7 +754,59 @@ static bool test_vad_process() {
 
     return result > 0 && !segments.empty();
 }
+static bool test_vocab_bias_base_class() {
+    if (!g_transcribe_model_path) {
+        std::cout << "⊘ SKIP │ VOCAB BIAS BASE CLASS │ CACTUS_TEST_TRANSCRIBE_MODEL not set\n";
+        return true;
+    }
 
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║       VOCAB BIAS BASE CLASS TEST         ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    char response_no_bias[1 << 15] = {0};
+    char response_with_bias[1 << 15] = {0};
+
+    {
+        cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
+        if (!model) return false;
+        StreamingData stream; stream.model = model;
+        std::string audio_path = std::string(g_assets_path) + "/test.wav";
+        cactus_transcribe(model, audio_path.c_str(), g_whisper_prompt,
+                          response_no_bias, sizeof(response_no_bias),
+                          R"({"max_tokens": 100, "telemetry_enabled": false})",
+                          stream_callback, &stream, nullptr, 0);
+        cactus_destroy(model);
+    }
+
+    {
+        cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
+        if (!model) return false;
+        StreamingData stream; stream.model = model;
+        std::string audio_path = std::string(g_assets_path) + "/test.wav";
+        cactus_transcribe(model, audio_path.c_str(), g_whisper_prompt,
+                          response_with_bias, sizeof(response_with_bias),
+                          R"({
+                              "max_tokens": 100,
+                              "telemetry_enabled": false,
+                              "custom_vocabulary": ["Omeprazole", "HIPAA", "Cactus"],
+                              "vocabulary_boost": 15.0
+                          })",
+                          stream_callback, &stream, nullptr, 0);
+        cactus_destroy(model);
+    }
+
+    std::string no_bias_text = json_string(std::string(response_no_bias), "response");
+    std::string with_bias_text = json_string(std::string(response_with_bias), "response");
+
+    std::cout << "├─ Without bias: \"" << no_bias_text << "\"\n";
+    std::cout << "└─ With bias:    \"" << with_bias_text << "\"\n";
+
+    bool outputs_differ = (no_bias_text != with_bias_text);
+    std::cout << (outputs_differ ? "✓ Bias affected output\n" : "⚠ Bias had no effect on output\n");
+
+    return !with_bias_text.empty();
+}
 static bool test_pcm_transcription() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║       PCM BUFFER TRANSCRIPTION           ║\n"
@@ -899,6 +951,7 @@ int main() {
     runner.run_test("irfft_correctness", test_irfft_correctness());
     runner.run_test("vad_process", test_vad_process());
     runner.run_test("transcription", test_transcription());
+    runner.run_test("vocab_bias_base_class", test_vocab_bias_base_class());
     runner.run_test("pcm_transcription", test_pcm_transcription());
     runner.run_test("stream_transcription", test_stream_transcription());
     runner.print_summary();

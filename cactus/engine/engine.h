@@ -540,6 +540,10 @@ public:
 
     void* graph_handle_;
 
+    void set_vocab_bias(const std::unordered_map<uint32_t, float>& bias) {
+        vocab_bias_ = bias;
+    }
+
 protected:
     virtual size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) = 0;
     
@@ -587,6 +591,9 @@ protected:
     virtual std::vector<__fp16> get_token_embeddings(const std::vector<uint32_t>& tokens);
 
     ToolCallConstrainer tool_constrainer_;
+
+private:
+    std::unordered_map<uint32_t, float> vocab_bias_;
 };
 
 std::unique_ptr<Model> create_model(const std::string& model_folder);
