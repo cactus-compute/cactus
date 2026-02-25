@@ -162,8 +162,8 @@ static void broadcast_op_optimized(const __fp16* a, const __fp16* b, __fp16* out
                 }
             });
     } else if (inner_size > 0 && (a_inner_broadcast || b_inner_broadcast)) {
-        // Intermediate path: stride-0 on inner dim but inner_size < 8.
-        // Walk outer coords directly, avoid compute_linear_index per element.
+        // stride-0 on inner dim but inner_size < 8
+        // walk outer coords directly, avoid compute_linear_index per element
         CactusThreading::parallel_for(outer_size, CactusThreading::Thresholds::ELEMENT_WISE,
             [&](size_t start_outer, size_t end_outer) {
                 std::vector<size_t> coords(ndim, 0);
@@ -184,21 +184,53 @@ static void broadcast_op_optimized(const __fp16* a, const __fp16* b, __fp16* out
                     __fp16* out_ptr = output + outer_idx * inner_size;
 
                     if (a_inner_broadcast && b_inner_broadcast) {
+                        // both broadcast: compute once, splat result
                         __fp16 result = broadcast_op_scalar<Op>(a[a_base], b[b_base]);
-                        for (size_t i = 0; i < inner_size; ++i) {
+                        float16x8_t result_vec = vdupq_n_f16(result);
+                        const size_t vec_end = (inner_size / 8) * 8;
+                        for (size_t i = 0; i < vec_end; i += 8) {
+                            vst1q_f16(out_ptr + i, result_vec);
+                        }
+                        for (size_t i = vec_end; i < inner_size; ++i) {
                             out_ptr[i] = result;
                         }
                     } else if (a_inner_broadcast) {
-                        __fp16 a_val = a[a_base];
+                        float16x8_t a_vec = vdupq_n_f16(a[a_base]);
                         const __fp16* b_ptr = b + b_base;
-                        for (size_t i = 0; i < inner_size; ++i) {
-                            out_ptr[i] = broadcast_op_scalar<Op>(a_val, b_ptr[i * b_strides[ndim - 1]]);
+                        if (b_strides[ndim - 1] == 1) {
+                            // B is contiguous — vectorize with vld1q
+                            const size_t vec_end = (inner_size / 8) * 8;
+                            for (size_t i = 0; i < vec_end; i += 8) {
+                                float16x8_t b_vec = vld1q_f16(b_ptr + i);
+                                vst1q_f16(out_ptr + i, broadcast_op_vec<Op>(a_vec, b_vec));
+                            }
+                            for (size_t i = vec_end; i < inner_size; ++i) {
+                                out_ptr[i] = broadcast_op_scalar<Op>(a[a_base], b_ptr[i]);
+                            }
+                        } else {
+                            // B is strided — scalar fallback
+                            for (size_t i = 0; i < inner_size; ++i) {
+                                out_ptr[i] = broadcast_op_scalar<Op>(a[a_base], b_ptr[i * b_strides[ndim - 1]]);
+                            }
                         }
                     } else {
                         const __fp16* a_ptr = a + a_base;
-                        __fp16 b_val = b[b_base];
-                        for (size_t i = 0; i < inner_size; ++i) {
-                            out_ptr[i] = broadcast_op_scalar<Op>(a_ptr[i * a_strides[ndim - 1]], b_val);
+                        float16x8_t b_vec = vdupq_n_f16(b[b_base]);
+                        if (a_strides[ndim - 1] == 1) {
+                            // A is contiguous — vectorize with vld1q
+                            const size_t vec_end = (inner_size / 8) * 8;
+                            for (size_t i = 0; i < vec_end; i += 8) {
+                                float16x8_t a_vec = vld1q_f16(a_ptr + i);
+                                vst1q_f16(out_ptr + i, broadcast_op_vec<Op>(a_vec, b_vec));
+                            }
+                            for (size_t i = vec_end; i < inner_size; ++i) {
+                                out_ptr[i] = broadcast_op_scalar<Op>(a_ptr[i], b[b_base]);
+                            }
+                        } else {
+                            // A is strided — scalar fallback
+                            for (size_t i = 0; i < inner_size; ++i) {
+                                out_ptr[i] = broadcast_op_scalar<Op>(a_ptr[i * a_strides[ndim - 1]], b[b_base]);
+                            }
                         }
                     }
 
