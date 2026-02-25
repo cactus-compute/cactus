@@ -10,44 +10,88 @@
 #include <iostream>
 
 void cactus_relu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
-    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_BASIC,
-        [&](size_t start_idx, size_t end_idx) {
-            constexpr size_t SIMD_WIDTH = 8;
-            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
-            const float16x8_t zero = vdupq_n_f16(0.0f);
+    // ReLU is trivial (just vmaxq_f16) - don't use threading unless very large
+    // Use 10x higher threshold than SCALAR_BASIC to avoid overhead
+    constexpr size_t RELU_THRESHOLD = 50000;
 
-            // Vectorized loop with 4x unrolling
-            size_t i = start_idx;
-            for (; i + 4 * SIMD_WIDTH <= vectorized_end; i += 4 * SIMD_WIDTH) {
-                float16x8_t x0 = vld1q_f16(&input[i]);
-                float16x8_t x1 = vld1q_f16(&input[i + SIMD_WIDTH]);
-                float16x8_t x2 = vld1q_f16(&input[i + 2 * SIMD_WIDTH]);
-                float16x8_t x3 = vld1q_f16(&input[i + 3 * SIMD_WIDTH]);
+    if (num_elements < RELU_THRESHOLD) {
+        // Single-threaded path for smaller tensors
+        constexpr size_t SIMD_WIDTH = 8;
+        const size_t vectorized_end = (num_elements / SIMD_WIDTH) * SIMD_WIDTH;
+        const float16x8_t zero = vdupq_n_f16(0.0f);
 
-                float16x8_t relu0 = vmaxq_f16(x0, zero);
-                float16x8_t relu1 = vmaxq_f16(x1, zero);
-                float16x8_t relu2 = vmaxq_f16(x2, zero);
-                float16x8_t relu3 = vmaxq_f16(x3, zero);
+        // Vectorized loop with 4x unrolling
+        size_t i = 0;
+        for (; i + 4 * SIMD_WIDTH <= vectorized_end; i += 4 * SIMD_WIDTH) {
+            float16x8_t x0 = vld1q_f16(&input[i]);
+            float16x8_t x1 = vld1q_f16(&input[i + SIMD_WIDTH]);
+            float16x8_t x2 = vld1q_f16(&input[i + 2 * SIMD_WIDTH]);
+            float16x8_t x3 = vld1q_f16(&input[i + 3 * SIMD_WIDTH]);
 
-                vst1q_f16(&output[i], relu0);
-                vst1q_f16(&output[i + SIMD_WIDTH], relu1);
-                vst1q_f16(&output[i + 2 * SIMD_WIDTH], relu2);
-                vst1q_f16(&output[i + 3 * SIMD_WIDTH], relu3);
-            }
+            float16x8_t relu0 = vmaxq_f16(x0, zero);
+            float16x8_t relu1 = vmaxq_f16(x1, zero);
+            float16x8_t relu2 = vmaxq_f16(x2, zero);
+            float16x8_t relu3 = vmaxq_f16(x3, zero);
 
-            // Handle remaining vectors
-            for (; i < vectorized_end; i += SIMD_WIDTH) {
-                float16x8_t x = vld1q_f16(&input[i]);
-                float16x8_t relu = vmaxq_f16(x, zero);
-                vst1q_f16(&output[i], relu);
-            }
+            vst1q_f16(&output[i], relu0);
+            vst1q_f16(&output[i + SIMD_WIDTH], relu1);
+            vst1q_f16(&output[i + 2 * SIMD_WIDTH], relu2);
+            vst1q_f16(&output[i + 3 * SIMD_WIDTH], relu3);
+        }
 
-            // Scalar cleanup for remaining elements
-            for (; i < end_idx; ++i) {
-                __fp16 x = input[i];
-                output[i] = x > static_cast<__fp16>(0) ? x : static_cast<__fp16>(0);
-            }
-        });
+        // Handle remaining vectors
+        for (; i < vectorized_end; i += SIMD_WIDTH) {
+            float16x8_t x = vld1q_f16(&input[i]);
+            float16x8_t relu = vmaxq_f16(x, zero);
+            vst1q_f16(&output[i], relu);
+        }
+
+        // Scalar cleanup for remaining elements
+        for (; i < num_elements; ++i) {
+            __fp16 x = input[i];
+            output[i] = x > static_cast<__fp16>(0) ? x : static_cast<__fp16>(0);
+        }
+    } else {
+        // Multi-threaded path for very large tensors
+        CactusThreading::parallel_for(num_elements, {RELU_THRESHOLD, RELU_THRESHOLD / 2},
+            [&](size_t start_idx, size_t end_idx) {
+                constexpr size_t SIMD_WIDTH = 8;
+                const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
+                const float16x8_t zero = vdupq_n_f16(0.0f);
+
+                // Vectorized loop with 4x unrolling
+                size_t i = start_idx;
+                for (; i + 4 * SIMD_WIDTH <= vectorized_end; i += 4 * SIMD_WIDTH) {
+                    float16x8_t x0 = vld1q_f16(&input[i]);
+                    float16x8_t x1 = vld1q_f16(&input[i + SIMD_WIDTH]);
+                    float16x8_t x2 = vld1q_f16(&input[i + 2 * SIMD_WIDTH]);
+                    float16x8_t x3 = vld1q_f16(&input[i + 3 * SIMD_WIDTH]);
+
+                    float16x8_t relu0 = vmaxq_f16(x0, zero);
+                    float16x8_t relu1 = vmaxq_f16(x1, zero);
+                    float16x8_t relu2 = vmaxq_f16(x2, zero);
+                    float16x8_t relu3 = vmaxq_f16(x3, zero);
+
+                    vst1q_f16(&output[i], relu0);
+                    vst1q_f16(&output[i + SIMD_WIDTH], relu1);
+                    vst1q_f16(&output[i + 2 * SIMD_WIDTH], relu2);
+                    vst1q_f16(&output[i + 3 * SIMD_WIDTH], relu3);
+                }
+
+                // Handle remaining vectors
+                for (; i < vectorized_end; i += SIMD_WIDTH) {
+                    float16x8_t x = vld1q_f16(&input[i]);
+                    float16x8_t relu = vmaxq_f16(x, zero);
+                    vst1q_f16(&output[i], relu);
+                }
+
+                // Scalar cleanup for remaining elements
+                for (; i < end_idx; ++i) {
+                    __fp16 x = input[i];
+                    output[i] = x > static_cast<__fp16>(0) ? x : static_cast<__fp16>(0);
+                }
+            });
+    }
 }
 
 void cactus_silu_f16(const __fp16* input, __fp16* output, size_t num_elements) {

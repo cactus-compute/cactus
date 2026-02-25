@@ -108,8 +108,9 @@ inline void unpack_int4_as_int8x16x2(const uint8_t* ptr, int8x16_t& high_decoded
     low_decoded = vshrq_n_s8(vshlq_n_s8(packed, 4), 4);
 }
 
-// 5th-order polynomial approximation for erf(x) using Abramowitz and Stegun method
+// Optimized erf(x) approximation using Abramowitz and Stegun method
 // Accurate to ~2e-5 over the range [-4, 4], suitable for FP16 precision
+// Uses reciprocal estimation instead of division and Horner's method for efficiency
 inline float32x4_t fast_erf_f32x4(float32x4_t x) {
     const float32x4_t zero = vdupq_n_f32(0.0f);
     const float32x4_t one = vdupq_n_f32(1.0f);
@@ -126,25 +127,19 @@ inline float32x4_t fast_erf_f32x4(float32x4_t x) {
     const float32x4_t a4 = vdupq_n_f32(-1.453152027f);
     const float32x4_t a5 = vdupq_n_f32(1.061405429f);
 
-    // t = 1 / (1 + p*|x|)
-    float32x4_t t = vdivq_f32(one, vfmaq_f32(one, p, abs_x));
+    // t = 1 / (1 + p*|x|) using reciprocal estimation (faster than vdivq_f32)
+    float32x4_t denom = vfmaq_f32(one, p, abs_x);
+    float32x4_t recip = vrecpeq_f32(denom);
+    recip = vmulq_f32(vrecpsq_f32(denom, recip), recip); // Newton-Raphson refinement
+    float32x4_t t = recip;
 
-    // Polynomial evaluation: a5*t^5 + a4*t^4 + a3*t^3 + a2*t^2 + a1*t
-    float32x4_t t2 = vmulq_f32(t, t);
-    float32x4_t t3 = vmulq_f32(t2, t);
-    float32x4_t t4 = vmulq_f32(t3, t);
-    float32x4_t t5 = vmulq_f32(t4, t);
-
-    float32x4_t poly = vfmaq_f32(
-        vfmaq_f32(
-            vfmaq_f32(
-                vfmaq_f32(vmulq_f32(a5, t5), a4, t4),
-                a3, t3
-            ),
-            a2, t2
-        ),
-        a1, t
-    );
+    // Horner's method for polynomial: ((((a5*t + a4)*t + a3)*t + a2)*t + a1)*t
+    float32x4_t poly = a5;
+    poly = vfmaq_f32(a4, poly, t);
+    poly = vfmaq_f32(a3, poly, t);
+    poly = vfmaq_f32(a2, poly, t);
+    poly = vfmaq_f32(a1, poly, t);
+    poly = vmulq_f32(poly, t);
 
     // erf(x) ≈ 1 - poly * exp(-x^2)
     float32x4_t x_squared = vmulq_f32(abs_x, abs_x);
