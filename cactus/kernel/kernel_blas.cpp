@@ -161,6 +161,54 @@ static void broadcast_op_optimized(const __fp16* a, const __fp16* b, __fp16* out
                     }
                 }
             });
+    } else if (inner_size > 0 && (a_inner_broadcast || b_inner_broadcast)) {
+        // Intermediate path: stride-0 on inner dim but inner_size < 8.
+        // Walk outer coords directly, avoid compute_linear_index per element.
+        CactusThreading::parallel_for(outer_size, CactusThreading::Thresholds::ELEMENT_WISE,
+            [&](size_t start_outer, size_t end_outer) {
+                std::vector<size_t> coords(ndim, 0);
+
+                size_t tmp = start_outer;
+                for (int i = ndim - 2; i >= 0; --i) {
+                    coords[i] = tmp % output_shape[i];
+                    tmp /= output_shape[i];
+                }
+
+                for (size_t outer_idx = start_outer; outer_idx < end_outer; ++outer_idx) {
+                    size_t a_base = 0, b_base = 0;
+                    for (size_t i = 0; i < ndim - 1; ++i) {
+                        a_base += coords[i] * a_strides[i];
+                        b_base += coords[i] * b_strides[i];
+                    }
+
+                    __fp16* out_ptr = output + outer_idx * inner_size;
+
+                    if (a_inner_broadcast && b_inner_broadcast) {
+                        __fp16 result = broadcast_op_scalar<Op>(a[a_base], b[b_base]);
+                        for (size_t i = 0; i < inner_size; ++i) {
+                            out_ptr[i] = result;
+                        }
+                    } else if (a_inner_broadcast) {
+                        __fp16 a_val = a[a_base];
+                        const __fp16* b_ptr = b + b_base;
+                        for (size_t i = 0; i < inner_size; ++i) {
+                            out_ptr[i] = broadcast_op_scalar<Op>(a_val, b_ptr[i * b_strides[ndim - 1]]);
+                        }
+                    } else {
+                        const __fp16* a_ptr = a + a_base;
+                        __fp16 b_val = b[b_base];
+                        for (size_t i = 0; i < inner_size; ++i) {
+                            out_ptr[i] = broadcast_op_scalar<Op>(a_ptr[i * a_strides[ndim - 1]], b_val);
+                        }
+                    }
+
+                    for (int i = ndim - 2; i >= 0; --i) {
+                        coords[i]++;
+                        if (coords[i] < output_shape[i]) break;
+                        coords[i] = 0;
+                    }
+                }
+            });
     } else {
         CactusThreading::parallel_for(total_elements, CactusThreading::Thresholds::ELEMENT_WISE,
             [&](size_t start_idx, size_t end_idx) {
@@ -316,28 +364,31 @@ void cactus_multiply_f16(const __fp16* a, const __fp16* b, __fp16* output, size_
 }
 
 void cactus_add_scaled_f16(const __fp16* base, const __fp16* src, __fp16* output, size_t num_elements, float scale) {
-    constexpr size_t SIMD_WIDTH = 8;
-    const float32x4_t vscale = vdupq_n_f32(scale);
-    const size_t vec_end = (num_elements / SIMD_WIDTH) * SIMD_WIDTH;
+    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::ELEMENT_WISE,
+        [&](size_t start_idx, size_t end_idx) {
+            constexpr size_t SIMD_WIDTH = 8;
+            const float32x4_t vscale = vdupq_n_f32(scale);
+            const size_t vec_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
 
-    for (size_t i = 0; i < vec_end; i += SIMD_WIDTH) {
-        float16x8_t base_vec = vld1q_f16(base + i);
-        float16x8_t src_vec = vld1q_f16(src + i);
+            for (size_t i = start_idx; i < vec_end; i += SIMD_WIDTH) {
+                float16x8_t base_vec = vld1q_f16(base + i);
+                float16x8_t src_vec = vld1q_f16(src + i);
 
-        float32x4_t base_lo = vcvt_f32_f16(vget_low_f16(base_vec));
-        float32x4_t base_hi = vcvt_f32_f16(vget_high_f16(base_vec));
-        float32x4_t src_lo = vcvt_f32_f16(vget_low_f16(src_vec));
-        float32x4_t src_hi = vcvt_f32_f16(vget_high_f16(src_vec));
+                float32x4_t base_lo = vcvt_f32_f16(vget_low_f16(base_vec));
+                float32x4_t base_hi = vcvt_f32_f16(vget_high_f16(base_vec));
+                float32x4_t src_lo = vcvt_f32_f16(vget_low_f16(src_vec));
+                float32x4_t src_hi = vcvt_f32_f16(vget_high_f16(src_vec));
 
-        float32x4_t result_lo = vfmaq_f32(base_lo, src_lo, vscale);
-        float32x4_t result_hi = vfmaq_f32(base_hi, src_hi, vscale);
+                float32x4_t result_lo = vfmaq_f32(base_lo, src_lo, vscale);
+                float32x4_t result_hi = vfmaq_f32(base_hi, src_hi, vscale);
 
-        vst1q_f16(output + i, vcombine_f16(vcvt_f16_f32(result_lo), vcvt_f16_f32(result_hi)));
-    }
-    for (size_t i = vec_end; i < num_elements; ++i) {
-        output[i] = static_cast<__fp16>(static_cast<float>(base[i])
-                                        + static_cast<float>(src[i]) * scale);
-    }
+                vst1q_f16(output + i, vcombine_f16(vcvt_f16_f32(result_lo), vcvt_f16_f32(result_hi)));
+            }
+            for (size_t i = vec_end; i < end_idx; ++i) {
+                output[i] = static_cast<__fp16>(static_cast<float>(base[i])
+                                                + static_cast<float>(src[i]) * scale);
+            }
+        });
 }
 
 void cactus_divide_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements) {
@@ -539,23 +590,105 @@ void cactus_transpose_f16(const __fp16* source, __fp16* destination, const size_
         } else {
             cactus_transpose_2d_f16(source, destination, num_rows, num_cols, 0, num_rows);
         }
-    } else {
-        for (size_t idx = start_idx; idx < end_idx; ++idx) {
-            size_t src_idx = 0;
-            size_t tmp_idx = idx;
+        return;
+    }
 
-            for (size_t i = 0; i < ndim; ++i) {
-                size_t coord = tmp_idx % shape[permutation[ndim - 1 - i]];
-                tmp_idx /= shape[permutation[ndim - 1 - i]];
-
-                size_t stride = 1;
-                for (size_t j = permutation[ndim - 1 - i] + 1; j < ndim; ++j) {
-                    stride *= shape[j];
-                }
-                src_idx += coord * stride;
+    // Detect adjacent-swap permutation: exactly two adjacent dims swapped, rest identity.
+    // Covers [0,2,1,3] (GQA KV-reshape), [0,2,1], [1,0,2], etc.
+    int swap_pos = -1;
+    bool is_batched_2d = (ndim >= 3);
+    for (size_t i = 0; i < ndim && is_batched_2d; ++i) {
+        if (permutation[i] != i) {
+            if (swap_pos == -1 && i + 1 < ndim &&
+                permutation[i] == i + 1 && permutation[i + 1] == i) {
+                swap_pos = static_cast<int>(i);
+                ++i; // skip partner
+            } else {
+                is_batched_2d = false;
             }
-
-            destination[idx] = source[src_idx];
         }
+    }
+
+    if (is_batched_2d && swap_pos >= 0) {
+        // Decompose into batched 2D transposes.
+        size_t batch_size = 1;
+        for (int i = 0; i < swap_pos; ++i) {
+            batch_size *= shape[i];
+        }
+        size_t M = shape[swap_pos];
+        size_t N = shape[swap_pos + 1];
+        size_t inner_size = 1;
+        for (size_t i = swap_pos + 2; i < ndim; ++i) {
+            inner_size *= shape[i];
+        }
+
+        size_t matrix_elements = M * N * inner_size;
+
+        if (inner_size == 1) {
+            // Pure element transpose — reuse the NEON 8×8 tiled kernel.
+            constexpr size_t THRESHOLD = 8192;
+            constexpr size_t TILE_ROWS = 32;
+
+            CactusThreading::parallel_for(batch_size, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+                [=](size_t start_batch, size_t end_batch) {
+                    for (size_t b = start_batch; b < end_batch; ++b) {
+                        const __fp16* src = source + b * matrix_elements;
+                        __fp16* dst = destination + b * matrix_elements;
+
+                        if (M * N >= THRESHOLD) {
+                            const size_t num_row_blocks = (M + TILE_ROWS - 1) / TILE_ROWS;
+                            for (size_t block_idx = 0; block_idx < num_row_blocks; ++block_idx) {
+                                size_t start_row = block_idx * TILE_ROWS;
+                                size_t end_row = std::min(start_row + TILE_ROWS, M);
+                                cactus_transpose_2d_f16(src, dst, M, N, start_row, end_row);
+                            }
+                        } else {
+                            cactus_transpose_2d_f16(src, dst, M, N, 0, M);
+                        }
+                    }
+                });
+        } else {
+            // Block transpose: each (i,j) element is a contiguous block of inner_size values.
+            // src[i][j] → dst[j][i], where each "element" is inner_size contiguous __fp16s.
+            size_t block_bytes = inner_size * sizeof(__fp16);
+
+            CactusThreading::parallel_for(batch_size, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+                [=](size_t start_batch, size_t end_batch) {
+                    for (size_t b = start_batch; b < end_batch; ++b) {
+                        const __fp16* src = source + b * matrix_elements;
+                        __fp16* dst = destination + b * matrix_elements;
+
+                        for (size_t i = 0; i < M; ++i) {
+                            for (size_t j = 0; j < N; ++j) {
+                                // src layout: [i * N * inner + j * inner]
+                                // dst layout: [j * M * inner + i * inner]
+                                std::memcpy(dst + (j * M + i) * inner_size,
+                                            src + (i * N + j) * inner_size,
+                                            block_bytes);
+                            }
+                        }
+                    }
+                });
+        }
+        return;
+    }
+
+    // Generic scalar fallback for non-adjacent swaps.
+    for (size_t idx = start_idx; idx < end_idx; ++idx) {
+        size_t src_idx = 0;
+        size_t tmp_idx = idx;
+
+        for (size_t i = 0; i < ndim; ++i) {
+            size_t coord = tmp_idx % shape[permutation[ndim - 1 - i]];
+            tmp_idx /= shape[permutation[ndim - 1 - i]];
+
+            size_t stride = 1;
+            for (size_t j = permutation[ndim - 1 - i] + 1; j < ndim; ++j) {
+                stride *= shape[j];
+            }
+            src_idx += coord * stride;
+        }
+
+        destination[idx] = source[src_idx];
     }
 }
