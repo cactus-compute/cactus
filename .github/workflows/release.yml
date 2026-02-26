@@ -1,0 +1,72 @@
+name: Release & Update Homebrew
+
+on:
+  schedule:
+    - cron: "0 21 * * 1" # Every Monday at 9pm UTC
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine version
+        id: version
+        run: |
+          TAG=$(cat CACTUS_VERSION | tr -d '[:space:]')
+          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists. Skipping."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${TAG}" >> $GITHUB_OUTPUT
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create tag and release
+        if: steps.version.outputs.skip == 'false'
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          git tag ${TAG}
+          git push origin ${TAG}
+          gh release create ${TAG} \
+            --title "${TAG}" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get tarball SHA256
+        if: steps.version.outputs.skip == 'false'
+        id: sha
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
+          SHA=$(curl -sL "$URL" | shasum -a 256 | awk '{print $1}')
+          echo "sha256=${SHA}" >> $GITHUB_OUTPUT
+          echo "url=${URL}" >> $GITHUB_OUTPUT
+
+      - name: Update Homebrew formula
+        if: steps.version.outputs.skip == 'false'
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          SHA=${{ steps.sha.outputs.sha256 }}
+          URL=${{ steps.sha.outputs.url }}
+
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/cactus-compute/homebrew-cactus.git tap
+          cd tap
+
+          sed -i "s|url \".*\"|url \"${URL}\"|" Formula/cactus.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/cactus.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/cactus.rb
+          git commit -m "Update cactus to ${TAG}"
+          git push origin main
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

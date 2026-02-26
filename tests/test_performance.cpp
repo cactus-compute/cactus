@@ -14,7 +14,7 @@ struct BenchmarkConfig {
     std::vector<size_t> dimensions = {1024};
     std::vector<Precision> precisions = {Precision::FP16};
     std::vector<ComputeBackend> backends = {ComputeBackend::CPU};
-    int iterations = 1;
+    int iterations = 10;
 
     BenchmarkConfig() {
     }
@@ -22,13 +22,18 @@ struct BenchmarkConfig {
 
 template<typename T>
 double time_operation(std::function<void()> operation, int iterations) {
+    // Warmup
+    for (int i = 0; i < 5; ++i) {
+        operation();
+    }
+
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < iterations; ++i) {
         operation();
     }
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    return duration.count() / 1000.0; 
+    return duration.count() / (1000.0 * iterations);
 }
 
 template<typename T>
@@ -65,8 +70,8 @@ void benchmark_streaming_stores(TestUtils::TestRunner& runner, const BenchmarkCo
     for (size_t num_elements : sizes) {
         std::vector<__fp16> A(num_elements), B(num_elements), C(num_elements);
         for (size_t i = 0; i < num_elements; ++i) {
-            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
-            B[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
+            B[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
         }
 
         double time_ms = time_operation<__fp16>([&]() {
@@ -139,12 +144,12 @@ void benchmark_conv1d_ops(TestUtils::TestRunner& runner, const BenchmarkConfig& 
 
         std::vector<__fp16> input(N * C_in * L);
         for (size_t i = 0; i < input.size(); ++i) {
-            input[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
+            input[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
         }
 
         std::vector<__fp16> weight(C_out * C_in * 3);
         for (size_t i = 0; i < weight.size(); ++i) {
-            weight[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f);
+            weight[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 0.1f);
         }
 
         std::vector<__fp16> output(N * C_out * out_len);
@@ -174,12 +179,12 @@ void benchmark_broadcast_ops(TestUtils::TestRunner& runner, const BenchmarkConfi
 
         std::vector<__fp16> A(total_elements);
         for (size_t i = 0; i < total_elements; ++i) {
-            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
         }
 
         std::vector<__fp16> B_vec(cols);
         for (size_t i = 0; i < cols; ++i) {
-            B_vec[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f);
+            B_vec[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 0.1f);
         }
 
         std::vector<__fp16> C(total_elements);
@@ -218,7 +223,8 @@ void benchmark_scalar_ops(TestUtils::TestRunner& runner, const BenchmarkConfig& 
         {"Scalar Exp", [](CactusGraph& b, size_t a) { return b.scalar_exp(a); }},
         {"Scalar Sqrt", [](CactusGraph& b, size_t a) { return b.scalar_sqrt(a); }},
         {"Scalar Cos", [](CactusGraph& b, size_t a) { return b.scalar_cos(a); }},
-        {"Scalar Sin", [](CactusGraph& b, size_t a) { return b.scalar_sin(a); }}
+        {"Scalar Sin", [](CactusGraph& b, size_t a) { return b.scalar_sin(a); }},
+        {"Scalar Log", [](CactusGraph& b, size_t a) { return b.scalar_log(a); }}
     };
 
     Precision precision = TestUtils::default_precision<T>();
@@ -306,7 +312,7 @@ void benchmark_matmul_int8_grouped(TestUtils::TestRunner& runner, const Benchmar
 
         std::vector<__fp16> A(M * K_aligned);
         for (size_t i = 0; i < M * K_aligned; ++i) {
-            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
         }
 
         std::vector<int8_t> B(N * K_aligned);
@@ -316,7 +322,7 @@ void benchmark_matmul_int8_grouped(TestUtils::TestRunner& runner, const Benchmar
 
         std::vector<__fp16> B_scales(N * num_groups);
         for (size_t i = 0; i < N * num_groups; ++i) {
-            B_scales[i] = static_cast<__fp16>(0.01f + (static_cast<float>(rand()) / RAND_MAX) * 0.05f);
+            B_scales[i] = static_cast<__fp16>(0.01f + (static_cast<float>(rand()) / static_cast<float>(RAND_MAX)) * 0.05f);
         }
 
         std::vector<int8_t> A_quant(M * K_aligned);
@@ -534,7 +540,7 @@ void benchmark_rms_norm(TestUtils::TestRunner& runner, const BenchmarkConfig& co
         std::vector<__fp16> data_a(total_elements);
         std::vector<__fp16> weight_data(dim, static_cast<__fp16>(1.0f));
         for (size_t i = 0; i < total_elements; ++i) {
-            data_a[i] = static_cast<__fp16>(static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f);
+            data_a[i] = static_cast<__fp16>(static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 2.0f - 1.0f);
         }
 
         graph.set_input(input_a, const_cast<void*>(static_cast<const void*>(data_a.data())), precision);
@@ -574,7 +580,7 @@ void benchmark_rope(TestUtils::TestRunner& runner, const BenchmarkConfig& config
 
         std::vector<__fp16> data_a(total_elements);
         for (size_t i = 0; i < total_elements; ++i) {
-            data_a[i] = static_cast<__fp16>(static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f);
+            data_a[i] = static_cast<__fp16>(static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 2.0f - 1.0f);
         }
         fixture.set_input_data(input_a, data_a, precision);
 
@@ -704,7 +710,7 @@ void benchmark_mmap_embedding(TestUtils::TestRunner& runner, BenchmarkConfig& co
 
                 std::vector<__fp16> embeddings_data(vocab_size * embedding_dim);
                 for (size_t i = 0; i < embeddings_data.size(); ++i) {
-                    embeddings_data[i] = static_cast<__fp16>(static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f);
+                    embeddings_data[i] = static_cast<__fp16>(static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 2.0f - 1.0f);
                 }
 
                 size_t temp_embeddings = graph.input({vocab_size, embedding_dim}, Precision::FP16);
@@ -937,10 +943,10 @@ void benchmark_gemm_f16_direct(TestUtils::TestRunner& runner, const BenchmarkCon
     for (const auto& [M, K, N] : shapes) {
         std::vector<__fp16> A(M * K), B_T(N * K), C(M * N);
         for (size_t i = 0; i < M * K; ++i) {
-            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
         }
         for (size_t i = 0; i < N * K; ++i) {
-            B_T[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 2.0f);
+            B_T[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
         }
 
         double time_ms = time_operation<__fp16>([&]() {
@@ -1038,11 +1044,38 @@ bool test_engine_operations_performance(TestUtils::TestRunner& runner) {
 
 bool test_gather_operations_performance(TestUtils::TestRunner& runner) {
     BenchmarkConfig config;
-    config.iterations = 10;
     // INT8 for storage, FP16 for computation
     benchmark_gather_ops<int8_t>(runner, config);
     benchmark_gather_ops<__fp16>(runner, config);
     return true;
+}
+
+void benchmark_irfft(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
+    using namespace cactus::engine;
+
+    auto run_for_size = [&](size_t n) {
+        const size_t n_bins = n / 2 + 1;
+        const bool is_pow2 = n != 0 && ((n & (n - 1)) == 0);
+        std::vector<float> complex_input(n_bins * 2);
+        for (size_t i = 0; i < complex_input.size(); ++i)
+            complex_input[i] = static_cast<float>(i % 7) * 0.1f;
+
+        double ms = time_operation<float>([&]() {
+            AudioProcessor::compute_irfft(complex_input, n);
+        }, config.iterations);
+
+        std::ostringstream s;
+        s << std::fixed << std::setprecision(3) << ms << "ms";
+        runner.log_performance(
+            "IRFFT " + std::string(is_pow2 ? "pow2 " : "nonpow2 ") + "n=" + std::to_string(n),
+            s.str()
+        );
+    };
+
+    run_for_size(500);
+    run_for_size(512);
+    run_for_size(1000);
+    run_for_size(1024);
 }
 
 bool test_signals_performance(TestUtils::TestRunner& runner) {
@@ -1050,7 +1083,39 @@ bool test_signals_performance(TestUtils::TestRunner& runner) {
 
     benchmark_mel_filter_bank(runner, config);
     benchmark_spectrogram(runner, config);
+    benchmark_irfft(runner, config);
 
+    return true;
+}
+
+void benchmark_stft(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
+    const size_t N = 1, C_in = 1, L = 20480, K = 400, stride = 160, num_fft_bins = 128;
+    const size_t C_out = 2 * num_fft_bins;
+    const size_t out_len = (L - K) / stride + 1;
+    const std::string label = "(" + std::to_string(num_fft_bins) + " bins, " + std::to_string(out_len) + " frames)";
+
+    std::vector<__fp16> input_data(N * C_in * L);
+    std::vector<__fp16> weight_data(C_out * C_in * K);
+    setup_random_data<__fp16>(input_data);
+    setup_random_data<__fp16>(weight_data);
+
+    std::vector<__fp16> cplx_out(N * 2 * num_fft_bins * out_len);
+    double cplx_ms = time_operation<__fp16>([&]() {
+        cactus_stft_f16(input_data.data(), weight_data.data(), cplx_out.data(),
+                                N, L, C_in, C_out, K, stride, num_fft_bins);
+    }, config.iterations);
+
+    auto fmt = [&](double ms) {
+        std::ostringstream s;
+        s << std::fixed << std::setprecision(3) << ms << "ms";
+        return s.str();
+    };
+    runner.log_performance("STFT Complex (kernel)    " + label, fmt(cplx_ms));
+}
+
+bool test_stft_performance(TestUtils::TestRunner& runner) {
+    BenchmarkConfig config;
+    benchmark_stft(runner, config);
     return true;
 }
 
@@ -1073,6 +1138,7 @@ int main() {
     runner.run_test("Engine Operations", test_engine_operations_performance(runner));
     runner.run_test("Gather Operations", test_gather_operations_performance(runner));
     runner.run_test("Signals Operations", test_signals_performance(runner));
+    runner.run_test("STFT Operations", test_stft_performance(runner));
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

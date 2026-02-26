@@ -56,6 +56,12 @@ struct Config {
     uint32_t num_shared_experts = 0;
     uint32_t num_top_experts = 0;
     uint32_t moe_every_n_layers = 0;
+    uint32_t moe_intermediate_dim = 0;
+    uint32_t num_dense_layers = 0;
+    uint32_t num_experts_per_tok = 0;
+    bool norm_topk_prob = false;
+    bool use_expert_bias = false;
+    float routed_scaling_factor = 1.0f;
     bool tie_word_embeddings = true;
 
     uint32_t vision_hidden_dim = 0;
@@ -93,8 +99,16 @@ struct Config {
     uint32_t num_encoder_layers = 0;
     uint32_t num_decoder_layers = 0;
     float partial_rotary_factor = 0.0f;
+    uint32_t pad_token_id = 0;
+    uint32_t conv_kernel_size = 0;
+    uint32_t subsampling_conv_kernel_size = 0;
+    uint32_t subsampling_conv_stride = 0;
+    uint32_t subsampling_conv_channels = 0;
+    uint32_t subsampling_factor = 0;
+    uint32_t num_mel_bins = 80;
+    std::string encoder_hidden_act = "silu";
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10};
     ModelType model_type = ModelType::QWEN;
 
     enum class ModelVariant {DEFAULT = 0, VLM = 1, EXTRACT = 2, RAG = 3};
@@ -113,6 +127,7 @@ struct Config {
     float default_top_p = 0.95f;
     size_t default_top_k = 20;
     float default_max_tps = -1.0f;
+    float default_cloud_handoff_threshold = 0.0f;
 
     std::vector<std::string> layer_types;
     size_t conv_L_cache = 0;
@@ -167,7 +182,7 @@ public:
     uint32_t get_global_img_token_id() const { return global_img_token_id_; }
 
 protected:
-    enum class ModelType { UNKNOWN, QWEN, GEMMA, LFM2, BERT, WHISPER};
+    enum class ModelType { UNKNOWN, QWEN, GEMMA, LFM2, BERT, WHISPER, PARAKEET};
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -365,7 +380,6 @@ struct KVCache {
                          size_t num_tokens, size_t kv_heads, size_t head_dim);
 
     bool is_empty() const { return current_seq_len == 0; }
-    bool is_int8() const { return precision == Precision::INT8; }
     void* get_key_ptr(size_t layer);
     void* get_value_ptr(size_t layer);
 
@@ -683,6 +697,8 @@ public:
         float reference = 1.0f;
         float min_value = 1e-10f;
         bool remove_dc_offset = false;
+        float preemphasis = 0.0f;
+        bool hann_periodic = true;
     };
 
     AudioProcessor();
@@ -694,6 +710,11 @@ public:
     std::vector<float> compute_spectrogram(
         const std::vector<float>& waveform,
         const SpectrogramConfig& config);
+
+    static std::vector<float> compute_irfft(
+        const std::vector<float>& complex_input,
+        size_t n,
+        const char* norm = "backward");
 
     const std::vector<float>& get_mel_filters() const { return mel_filters_; }
 
@@ -720,6 +741,8 @@ namespace index {
     struct QueryResult {
         int doc_id;
         float score;
+
+        QueryResult(int doc_id, float score) : doc_id(doc_id), score(score) {}
     };
 
     struct QueryOptions {

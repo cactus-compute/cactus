@@ -1,5 +1,6 @@
 #include "cactus_ffi.h"
 #include "cactus_utils.h"
+#include "telemetry/telemetry.h"
 #include <string>
 #include <cstring>
 #include <algorithm>
@@ -7,6 +8,8 @@
 #include <sstream>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <chrono>
+#include <filesystem>
 
 using namespace cactus::engine;
 using namespace cactus::ffi;
@@ -14,6 +17,12 @@ using namespace cactus::ffi;
 static constexpr size_t RAG_MAX_CHUNK_TOKENS = 128;
 static constexpr size_t RAG_MIN_CHUNK_TOKENS = 24;
 static constexpr size_t RAG_CHUNK_OVERLAP = 32;
+
+static void apply_no_cloud_telemetry_env() {
+    if (cactus::ffi::env_flag_enabled("CACTUS_NO_CLOUD_TELE")) {
+        cactus::telemetry::setCloudDisabled(true);
+    }
+}
 
 static time_t get_file_mtime(const std::string& path) {
     struct stat st;
@@ -356,6 +365,11 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
 
     CACTUS_LOG_INFO("init", "Loading model: " << model_name << " from " << model_path_str);
 
+    apply_no_cloud_telemetry_env();
+    cactus::telemetry::init(nullptr, model_path_str.c_str(), nullptr);
+
+    auto __cactus_init_start = std::chrono::steady_clock::now();
+
     try {
         auto* handle = new CactusModelHandle();
         handle->model = create_model(model_path);
@@ -364,6 +378,10 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
         if (!handle->model) {
             last_error_message = "Failed to create model - check config.txt exists at: " + model_path_str;
             CACTUS_LOG_ERROR("init", last_error_message);
+            {
+                auto __cactus_init_err_dur = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - __cactus_init_start).count();
+                cactus::telemetry::recordInit(model_name.c_str(), false, static_cast<double>(__cactus_init_err_dur), last_error_message.c_str());
+            }
             delete handle;
             return nullptr;
         }
@@ -371,8 +389,31 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
         if (!handle->model->init(model_path, DEFAULT_CONTEXT_SIZE)) {
             last_error_message = "Failed to initialize model - check weight files at: " + model_path_str;
             CACTUS_LOG_ERROR("init", last_error_message);
+            {
+                auto __cactus_init_err_dur = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - __cactus_init_start).count();
+                cactus::telemetry::recordInit(model_name.c_str(), false, static_cast<double>(__cactus_init_err_dur), last_error_message.c_str());
+            }
             delete handle;
             return nullptr;
+        }
+
+        auto model_type = handle->model->get_config().model_type;
+        if (model_type == Config::ModelType::WHISPER || model_type == Config::ModelType::MOONSHINE || model_type == Config::ModelType::PARAKEET) {
+            std::string vad_path = model_path_str + "/vad";
+            handle->vad_model = create_model(vad_path);
+            if (!handle->vad_model) {
+                last_error_message = "Failed to create VAD model - check VAD weights at: " + vad_path;
+                CACTUS_LOG_ERROR("init", last_error_message);
+                delete handle;
+                return nullptr;
+            }
+            if (!handle->vad_model->init(vad_path, 0, "", false)) {
+                last_error_message = "Failed to initialize VAD model - check VAD weight files at: " + vad_path;
+                CACTUS_LOG_ERROR("init", last_error_message);
+                delete handle;
+                return nullptr;
+            }
+
         }
 
         if (corpus_dir != nullptr && strlen(corpus_dir) > 0) {
@@ -392,15 +433,27 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
         }
 
         CACTUS_LOG_INFO("init", "Model loaded successfully: " << model_name);
+        {
+            auto __cactus_init_ok_dur = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - __cactus_init_start).count();
+            cactus::telemetry::recordInit(model_name.c_str(), true, static_cast<double>(__cactus_init_ok_dur), "");
+        }
 
         return handle;
     } catch (const std::exception& e) {
         last_error_message = "Exception during init: " + std::string(e.what());
         CACTUS_LOG_ERROR("init", last_error_message);
+        {
+            auto __cactus_init_err_dur = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - __cactus_init_start).count();
+            cactus::telemetry::recordInit(model_name.c_str(), false, static_cast<double>(__cactus_init_err_dur), last_error_message.c_str());
+        }
         return nullptr;
     } catch (...) {
         last_error_message = "Unknown exception during model initialization";
         CACTUS_LOG_ERROR("init", last_error_message);
+        {
+            auto __cactus_init_err_dur = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - __cactus_init_start).count();
+            cactus::telemetry::recordInit(model_name.c_str(), false, static_cast<double>(__cactus_init_err_dur), last_error_message.c_str());
+        }
         return nullptr;
     }
 }

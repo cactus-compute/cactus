@@ -1,0 +1,45 @@
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [rust/**, cactus/**, .github/workflows/rust.yml]
+  pull_request:
+    paths: [rust/**, cactus/**, .github/workflows/rust.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            deps: brew install llvm
+          - os: ubuntu-24.04-arm
+            deps: sudo apt-get update && sudo apt-get install -y cmake build-essential libcurl4-openssl-dev libclang-dev
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: ${{ matrix.deps }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: pip3 install --break-system-packages huggingface-hub && pip3 install --break-system-packages -e python/ --no-deps
+      - uses: actions/cache@v4
+        with:
+          path: weights/
+          key: cactus-models-${{ matrix.os }}-v2
+      - run: cactus download google/gemma-3-270m-it
+      - run: cactus download openai/whisper-small
+      - run: curl -fL -o "${{ runner.temp }}/jfk.wav" https://github.com/ggml-org/whisper.cpp/raw/refs/tags/v1.8.3/samples/jfk.wav
+      - run: cargo test --manifest-path rust/Cargo.toml --test llm -- --nocapture
+        env:
+          CACTUS_MODEL_PATH: ${{ github.workspace }}/weights/gemma-3-270m-it
+      - run: cargo test --manifest-path rust/Cargo.toml --test stt -- --nocapture
+        env:
+          CACTUS_STT_MODEL_PATH: ${{ github.workspace }}/weights/whisper-small
+          CACTUS_STT_AUDIO_PATH: ${{ runner.temp }}/jfk.wav

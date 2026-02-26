@@ -1,3 +1,9 @@
+---
+title: "Cactus Android & Kotlin Multiplatform SDK"
+description: "Kotlin API for running AI models on-device on Android and iOS via Kotlin Multiplatform. Supports completion, transcription, embeddings, RAG, and tool calling."
+keywords: ["Android SDK", "Kotlin Multiplatform", "on-device AI", "mobile inference", "JNI", "KMP"]
+---
+
 # Cactus for Android & Kotlin Multiplatform
 
 Run AI models on-device with a simple Kotlin API.
@@ -11,6 +17,18 @@ cactus build --android
 Build output: `android/build/lib/libcactus.so`
 
 see the main [README.md](../README.md) for how to use CLI & download weight
+
+### Vendored libcurl (device builds)
+
+To bundle libcurl locally for Android device testing, place artifacts using:
+
+`libs/curl/android/arm64-v8a/libcurl.a` and `libs/curl/include/curl/*.h`
+
+The build auto-detects `libs/curl`. You can override with:
+
+```bash
+CACTUS_CURL_ROOT=/absolute/path/to/curl cactus build --android
+```
 
 ## Integration
 
@@ -296,3 +314,11 @@ data class IndexResult(val id: Int, val score: Float)
 
 - Android API 24+ / arm64-v8a
 - iOS 14+ / arm64 (KMP only)
+
+## See Also
+
+- [Cactus Engine API](/docs/cactus_engine.md) — Full C API reference underlying the Kotlin bindings
+- [Cactus Index API](/docs/cactus_index.md) — Vector database API for RAG applications
+- [Fine-tuning Guide](/docs/finetuning.md) — Deploy custom fine-tunes to Android
+- [Swift SDK](/apple/) — Swift alternative for Apple platforms
+- [Flutter SDK](/flutter/) — Cross-platform alternative using Dart

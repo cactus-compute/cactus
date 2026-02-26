@@ -1,7 +1,10 @@
 #include "cactus_ffi.h"
+#include "cactus_cloud.h"
 #include "cactus_utils.h"
+#include "telemetry/telemetry.h"
 #include <chrono>
 #include <cstring>
+#include <future>
 
 using namespace cactus::engine;
 using namespace cactus::ffi;
@@ -202,10 +205,18 @@ int cactus_complete(
 
         float temperature, top_p, confidence_threshold;
         size_t top_k, max_tokens, tool_rag_top_k;
+        size_t cloud_timeout_ms = 15000;
         std::vector<std::string> stop_sequences;
-        bool force_tools, include_stop_sequences;
-        parse_options_json(options_json ? options_json : "",
-                          temperature, top_p, top_k, max_tokens, stop_sequences, force_tools, tool_rag_top_k, confidence_threshold, include_stop_sequences);
+        bool force_tools, include_stop_sequences, use_vad, telemetry_enabled;
+        bool auto_handoff = true;
+        bool handoff_with_images = true;
+        parse_options_json(
+            options_json ? options_json : "", temperature,
+            top_p, top_k, max_tokens, stop_sequences,
+            force_tools, tool_rag_top_k, confidence_threshold,
+            include_stop_sequences, use_vad, telemetry_enabled,
+            &auto_handoff, &cloud_timeout_ms, &handoff_with_images
+        );
 
         std::vector<ToolFunction> tools;
         if (tools_json && strlen(tools_json) > 0)
@@ -225,7 +236,7 @@ int cactus_complete(
         if (model_type == Config::ModelType::GEMMA) {
             formatted_tools = gemma::format_tools(tools);
         } else {
-            formatted_tools = format_tools_for_prompt(tools);
+            formatted_tools = serialize_tools_json(tools);
         }
         std::string full_prompt = tokenizer->format_chat_prompt(messages, true, formatted_tools);
 
@@ -272,16 +283,33 @@ int cactus_complete(
         time_to_first_token = std::chrono::duration_cast<std::chrono::microseconds>(token_end - start_time).count() / 1000.0;
 
         float confidence = 1.0f - first_token_entropy;
+        bool cloud_used = false;
+        std::string cloud_error;
+        std::future<CloudCompletionResult> cloud_future;
+        bool cloud_future_started = false;
+        const bool cloud_eligible = auto_handoff && (!has_images || handoff_with_images);
+
+        auto maybe_start_cloud_handoff = [&](const std::string& local_output_hint,
+                                             const std::vector<std::string>& local_calls_hint) {
+            if (!cloud_eligible || cloud_future_started) {
+                return;
+            }
+            CloudCompletionRequest request;
+            request.messages = messages;
+            request.tools = tools;
+            request.local_output = local_output_hint;
+            request.local_function_calls = local_calls_hint;
+            request.has_images = has_images;
+            request.cloud_key = resolve_cloud_api_key(nullptr);
+
+            cloud_future_started = true;
+            cloud_future = std::async(std::launch::async, [request, cloud_timeout_ms]() {
+                return cloud_complete_request(request, static_cast<long>(cloud_timeout_ms));
+            });
+        };
 
         if (confidence < confidence_threshold) {
-            double prefill_tps = time_to_first_token > 0 ? (prompt_tokens * 1000.0) / time_to_first_token : 0.0;
-            std::string result = construct_cloud_handoff_json(confidence, time_to_first_token, prefill_tps, prompt_tokens);
-            if (result.length() >= buffer_size) {
-                handle_error_response("Response buffer too small", response_buffer, buffer_size);
-                return -1;
-            }
-            std::strcpy(response_buffer, result.c_str());
-            return static_cast<int>(result.length());
+            maybe_start_cloud_handoff("", {});
         }
 
         generated_tokens.push_back(next_token);
@@ -312,7 +340,7 @@ int cactus_complete(
 
                 if (entropy.rolling_confidence() < confidence_threshold) {
                     entropy.spike_handoff = true;
-                    break;
+                    maybe_start_cloud_handoff("", {});
                 }
 
                 if (force_tools && !tools.empty()) {
@@ -353,9 +381,43 @@ int cactus_complete(
         std::vector<std::string> function_calls;
         parse_function_calls_from_response(response_text, regular_response, function_calls);
 
-        std::string result = construct_response_json(regular_response, function_calls, time_to_first_token,
+        if (confidence < confidence_threshold) {
+            maybe_start_cloud_handoff(regular_response, function_calls);
+        }
+
+        std::string local_completion = regular_response;
+        if (local_completion.empty() && function_calls.empty()) {
+            local_completion = response_text;
+        }
+        std::string primary_response = local_completion;
+        std::vector<std::string> primary_function_calls = function_calls;
+
+        if (cloud_future_started) {
+            auto status = cloud_future.wait_for(std::chrono::milliseconds(cloud_timeout_ms));
+            if (status == std::future_status::ready) {
+                CloudCompletionResult cloud_result = cloud_future.get();
+                if (cloud_result.ok && (!cloud_result.response.empty() || !cloud_result.function_calls.empty())) {
+                    cloud_used = true;
+                    if (!cloud_result.response.empty()) {
+                        primary_response = cloud_result.response;
+                    }
+                    if (!cloud_result.function_calls.empty()) {
+                        primary_function_calls = cloud_result.function_calls;
+                    }
+                } else {
+                    cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
+                    CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed, falling back to local output: " << cloud_error);
+                }
+            } else {
+                cloud_error = "timeout";
+                CACTUS_LOG_WARN("cloud_handoff", "Cloud completion timed out, falling back to local output: " << cloud_error);
+            }
+        }
+
+        const bool handoff_succeeded = cloud_used;
+        std::string result = construct_response_json(primary_response, primary_function_calls, time_to_first_token,
                                                      total_time_ms, prefill_tps, decode_tps, prompt_tokens,
-                                                     completion_tokens, confidence, entropy.spike_handoff);
+                                                     completion_tokens, confidence, handoff_succeeded);
 
         if (result.length() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);
@@ -364,15 +426,65 @@ int cactus_complete(
 
         std::strcpy(response_buffer, result.c_str());
 
+        std::string function_calls_json = serialize_function_calls(primary_function_calls);
+        cactus::telemetry::CompletionMetrics metrics{};
+        metrics.success = true;
+        metrics.cloud_handoff = handoff_succeeded;
+        metrics.ttft_ms = time_to_first_token;
+        metrics.prefill_tps = prefill_tps;
+        metrics.decode_tps = decode_tps;
+        metrics.response_time_ms = total_time_ms;
+        metrics.confidence = confidence;
+        metrics.ram_usage_mb = get_ram_usage_mb();
+        metrics.prefill_tokens = prompt_tokens;
+        metrics.decode_tokens = completion_tokens;
+        metrics.error_message = nullptr;
+        metrics.function_calls_json = nullptr;
+        cactus::telemetry::recordCompletion(handle->model_name.c_str(), metrics);
+
         return static_cast<int>(result.length());
 
     } catch (const std::exception& e) {
         CACTUS_LOG_ERROR("complete", "Exception: " << e.what());
         handle_error_response(e.what(), response_buffer, buffer_size);
+
+        cactus::telemetry::CompletionMetrics metrics{};
+        metrics.success = false;
+        metrics.cloud_handoff = false;
+        metrics.ttft_ms = 0.0;
+        metrics.prefill_tps = 0.0;
+        metrics.decode_tps = 0.0;
+        metrics.response_time_ms = 0.0;
+        metrics.confidence = 0.0;
+        metrics.ram_usage_mb = get_ram_usage_mb();
+        metrics.prefill_tokens = 0;
+        metrics.decode_tokens = 0;
+        metrics.error_message = e.what();
+        metrics.function_calls_json = nullptr;
+        auto* h = static_cast<CactusModelHandle*>(model);
+        cactus::telemetry::recordCompletion(h ? h->model_name.c_str() : "unknown", metrics);
+
         return -1;
     } catch (...) {
         CACTUS_LOG_ERROR("complete", "Unknown exception during completion");
         handle_error_response("Unknown error during completion", response_buffer, buffer_size);
+
+        cactus::telemetry::CompletionMetrics metrics{};
+        metrics.success = false;
+        metrics.cloud_handoff = false;
+        metrics.ttft_ms = 0.0;
+        metrics.prefill_tps = 0.0;
+        metrics.decode_tps = 0.0;
+        metrics.response_time_ms = 0.0;
+        metrics.confidence = 0.0;
+        metrics.ram_usage_mb = get_ram_usage_mb();
+        metrics.prefill_tokens = 0;
+        metrics.decode_tokens = 0;
+        metrics.error_message = "Unknown error during completion";
+        metrics.function_calls_json = nullptr;
+        auto* h = static_cast<CactusModelHandle*>(model);
+        cactus::telemetry::recordCompletion(h ? h->model_name.c_str() : "unknown", metrics);
+
         return -1;
     }
 }

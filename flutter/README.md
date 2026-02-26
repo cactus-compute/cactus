@@ -1,3 +1,9 @@
+---
+title: "Cactus Flutter SDK"
+description: "Flutter bindings for Cactus on-device AI inference. Run LLMs, vision models, and speech models on iOS, macOS, and Android with dart:ffi."
+keywords: ["Flutter SDK", "dart FFI", "on-device AI", "mobile inference", "iOS", "Android", "macOS"]
+---
+
 # Cactus for Flutter
 
 Run AI models on-device with dart:ffi direct bindings for iOS, macOS, and Android.
@@ -310,3 +316,11 @@ final path = '${Directory.current.path}/model.gguf';
 - Dart 2.17+
 - iOS 14.0+ / macOS 13.0+
 - Android API 24+ / arm64-v8a
+
+## See Also
+
+- [Cactus Engine API](/docs/cactus_engine.md) — Full C API reference underlying the Flutter bindings
+- [Cactus Index API](/docs/cactus_index.md) — Vector database API for RAG applications
+- [Fine-tuning Guide](/docs/finetuning.md) — Deploy custom fine-tunes to mobile
+- [Swift SDK](/apple/) — Native Swift alternative for Apple platforms
+- [Kotlin/Android SDK](/android/) — Native Kotlin alternative for Android

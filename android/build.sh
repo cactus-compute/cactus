@@ -7,6 +7,7 @@ ANDROID_DIR="$PROJECT_ROOT/android"
 ANDROID_PLATFORM=${ANDROID_PLATFORM:-android-21}
 CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:-Release}
 BUILD_DIR="$ANDROID_DIR/build"
+CACTUS_CURL_ROOT=${CACTUS_CURL_ROOT:-"$PROJECT_ROOT/libs/curl"}
 
 if [ -z "$ANDROID_NDK_HOME" ]; then
     if [ -n "$ANDROID_HOME" ]; then
@@ -38,11 +39,13 @@ echo "Building Cactus for Android ($ABI)..."
 echo "Build type: $CMAKE_BUILD_TYPE"
 echo "Using $n_cpu CPU cores"
 echo "Android CMakeLists.txt: $ANDROID_DIR/CMakeLists.txt"
+echo "Vendored libcurl root: $CACTUS_CURL_ROOT"
 
 cmake -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
       -DANDROID_ABI="$ABI" \
       -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
       -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
+      -DCACTUS_CURL_ROOT="$CACTUS_CURL_ROOT" \
       -S "$ANDROID_DIR" \
       -B "$BUILD_DIR" >/dev/null
 

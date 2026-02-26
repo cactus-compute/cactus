@@ -1,0 +1,46 @@
+# Cactus
+
+> Energy-efficient AI inference engine for running LLMs, vision models, and speech models on phones, wearables, Macs, and ARM devices like Raspberry Pi. Built by Cactus Compute, Inc. (YC S25).
+
+Cactus has three layers: Cactus Kernels (ARM SIMD kernels for Apple, Snapdragon, Google Tensor, Exynos, MediaTek, Raspberry Pi), Cactus Graph (zero-copy computation graph, like PyTorch for mobile), and Cactus Engine (high-level inference API with OpenAI-compatible chat completion, tool calling, auto-RAG, vision, transcription, embeddings, and cloud handoff).
+
+Supported models include Gemma 3, Qwen 3, LiquidAI LFM2/LFM2.5, Whisper, Moonshine, Parakeet, Nomic Embed, and Silero VAD. Models run at INT4/INT8 precision with Apple NPU acceleration on supported hardware.
+
+## Docs
+
+- [Engine API](docs/cactus_engine.md): C FFI for LLM inference, chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, and voice activity detection
+- [Graph API](docs/cactus_graph.md): Computational graph framework for tensor operations, matrix multiplication, attention, normalization, and activation functions
+- [Vector Index](docs/cactus_index.md): On-device vector database with cosine similarity search for RAG applications
+- [Fine-tuning Guide](docs/finetuning.md): Deploying Unsloth LoRA fine-tunes to mobile devices via Cactus
+- [Compatibility](docs/compatibility.md): Runtime and weight versioning across releases
+
+## SDKs
+
+- [Python](python/README.md): Python bindings via FFI with context manager support
+- [Swift](apple/README.md): Swift API for iOS, macOS, tvOS, watchOS with async/await and XCFramework
+- [Kotlin/Android](android/README.md): Kotlin API for Android and Kotlin Multiplatform (iOS + Android)
+- [Flutter](flutter/README.md): Dart FFI bindings for iOS, macOS, and Android
+- [Rust](rust/README.md): Raw FFI bindings auto-generated via bindgen
+- [React Native](https://github.com/cactus-compute/cactus-react-native): React Native SDK (external repo)
+
+## Blog
+
+- [Hybrid Transcription](blog/hybrid_transcription.md): Sub-150ms transcription with cloud-level accuracy using on-device/cloud hybrid inference
+- [LFM2 24B Review](blog/lfm2_24b_a2b.md): Running LFM2-24B MoE (A2B) locally on Mac for coding use cases
+
+## Key Concepts
+
+- **Cloud Handoff**: When the on-device model's confidence drops below a threshold, Cactus signals `cloud_handoff: true` so the app can route to a cloud API
+- **Auto-RAG**: Pass a corpus directory at init and Cactus automatically retrieves relevant context for each query
+- **Tool Calling**: Define tools as JSON and Cactus returns structured `function_calls` in the response
+- **Tool RAG**: When many tools are defined, Cactus selects the top-k most relevant tools per query
+- **Streaming**: All completion and transcription APIs support token-level streaming callbacks
+- **INT4 Quantization**: Lossless weight quantization for ~50% memory reduction with minimal quality loss
+- **NPU Acceleration**: Apple Neural Engine support for vision and transcription models
+
+## Links
+
+- GitHub: https://github.com/cactus-compute/cactus
+- Website: https://cactuscompute.com/
+- HuggingFace Weights: https://huggingface.co/Cactus-Compute
+- Reddit: https://www.reddit.com/r/cactuscompute/

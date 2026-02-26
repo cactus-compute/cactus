@@ -3,13 +3,19 @@
 
 #import "AppDelegate.h"
 #import <unistd.h>
+#include "graph/graph.h"
+#include "ffi/cactus_ffi.h"
+#include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <string>
+#include <vector>
 
-extern int test_engine_main();
-extern int test_graph_main();
-extern int test_index_main();
-extern int test_kernel_main();
-extern int test_kv_cache_main();
-extern int test_performance_main();
+static void asr_token_callback(const char* token, uint32_t, void*) {
+    if (!token) return;
+    fputs(token, stdout);
+    fflush(stdout);
+}
 
 @implementation AppDelegate
 
@@ -18,10 +24,27 @@ extern int test_performance_main();
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSString *itemName = [NSString stringWithUTF8String:name];
     NSString *sourceItemPath = [NSString stringWithFormat:@"%@/%@", bundlePath, itemName];
-    if ([fileManager fileExistsAtPath:itemName]) {
-        [fileManager removeItemAtPath:itemName error:nil];
+    if (![fileManager fileExistsAtPath:sourceItemPath]) {
+        fprintf(stderr, "[CactusTest] copyFromBundle: source not found: %s\n", [sourceItemPath UTF8String]);
+        return;
     }
-    [fileManager copyItemAtPath:sourceItemPath toPath:itemName error:nil];
+    if ([fileManager fileExistsAtPath:itemName]) {
+        NSError *removeError = nil;
+        [fileManager removeItemAtPath:itemName error:&removeError];
+        if (removeError) {
+            fprintf(stderr, "[CactusTest] copyFromBundle: failed to remove existing %s: %s\n",
+                [itemName UTF8String], [[removeError localizedDescription] UTF8String]);
+        }
+    }
+    NSError *copyError = nil;
+    [fileManager copyItemAtPath:sourceItemPath toPath:itemName error:&copyError];
+    if (copyError) {
+        fprintf(stderr, "[CactusTest] copyFromBundle: failed to copy %s -> %s: %s\n",
+            [sourceItemPath UTF8String], [itemName UTF8String], [[copyError localizedDescription] UTF8String]);
+    } else {
+        fprintf(stderr, "[CactusTest] copyFromBundle: copied %s -> %s\n",
+            [sourceItemPath UTF8String], [itemName UTF8String]);
+    }
 }
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
@@ -36,18 +59,108 @@ extern int test_performance_main();
     setbuf(stderr, NULL);
 #endif
 
+    cactus::Logger::instance().set_level(cactus::LogLevel::WARN);
+
     NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
     [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_MODEL")];
     [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_TRANSCRIBE_MODEL")];
+    [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_VAD_MODEL")];
     [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_ASSETS")];
+    [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_ASR_AUDIO_FILE")];
+
+    const char* run_asr = getenv("CACTUS_RUN_ASR");
+    if (run_asr && run_asr[0] == '1') {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            const char* model_path = getenv("CACTUS_TEST_TRANSCRIBE_MODEL");
+            const char* audio_file = getenv("CACTUS_ASR_AUDIO_FILE");
+            if (!model_path || !model_path[0] || !audio_file || !audio_file[0]) {
+                fprintf(stderr, "[ASR] Missing CACTUS_TEST_TRANSCRIBE_MODEL or CACTUS_ASR_AUDIO_FILE\n");
+                exit(1);
+            }
+
+            cactus_model_t model = cactus_init(model_path, nullptr, false);
+            if (!model) {
+                const char* err = cactus_get_last_error();
+                fprintf(stderr, "[ASR] Failed to initialize model: %s\n", err ? err : "unknown");
+                exit(1);
+            }
+
+            std::string model_l = model_path;
+            std::transform(model_l.begin(), model_l.end(), model_l.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            const char* prompt = (model_l.find("whisper") != std::string::npos)
+                ? "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>"
+                : "";
+
+            std::string options = "{\"max_tokens\":500,\"telemetry_enabled\":true";
+            const char* threshold = getenv("CACTUS_CLOUD_HANDOFF_THRESHOLD");
+            if (threshold && threshold[0]) {
+                options += ",\"cloud_handoff_threshold\":";
+                options += threshold;
+            }
+            options += "}";
+
+            std::vector<char> response(65536, 0);
+            auto t0 = std::chrono::high_resolution_clock::now();
+            int rc = cactus_transcribe(
+                model,
+                audio_file,
+                prompt,
+                response.data(),
+                response.size(),
+                options.c_str(),
+                asr_token_callback,
+                nullptr,
+                nullptr,
+                0
+            );
+            auto t1 = std::chrono::high_resolution_clock::now();
+            double wall_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
+
+            if (rc < 0) {
+                const char* err = cactus_get_last_error();
+                fprintf(stderr, "\n[ASR] Transcription failed: %s\n", err ? err : "unknown");
+                cactus_destroy(model);
+                exit(1);
+            }
+
+            std::string json(response.data());
+            bool cloud_handoff = json.find("\"cloud_handoff\":true") != std::string::npos;
+            double model_ms = 0.0;
+            size_t p = json.find("\"total_time_ms\":");
+            if (p != std::string::npos) {
+                p += 16;
+                size_t e = json.find_first_of(",}", p);
+                try { model_ms = std::stod(json.substr(p, e - p)); } catch (...) {}
+            }
+
+            printf("\n\n[processed in: %.2fs | model time: %.2fs]\n",
+                   wall_ms / 1000.0, model_ms / 1000.0);
+            printf("[cloud_handoff: %s]\n", cloud_handoff ? "true" : "false");
+            printf("\n👋 Goodbye!\n");
+            fflush(stdout);
+
+            cactus_destroy(model);
+            exit(0);
+        });
+        return YES;
+    }
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        test_engine_main();
+        test_curl_main();
+        test_embed_main();
+        test_exhaustive_main();
         test_graph_main();
         test_index_main();
         test_kernel_main();
         test_kv_cache_main();
+        test_llm_main();
+        test_model_loading_main();
         test_performance_main();
+        test_rag_main();
+        test_stt_main();
+        test_telemetry_main();
+        test_vlm_main();
         exit(0);
     });
 

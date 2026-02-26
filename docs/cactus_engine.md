@@ -1,3 +1,9 @@
+---
+title: "Cactus Engine FFI API Reference"
+description: "C API documentation for Cactus on-device AI inference engine. Supports text completion, vision, transcription, embeddings, RAG, tool calling, and cloud handoff."
+keywords: ["on-device AI", "mobile inference", "LLM API", "C FFI", "edge AI", "transcription", "embeddings", "RAG", "tool calling"]
+---
+
 # Cactus Engine FFI Documentation
 
 The Cactus Engine provides a clean C FFI (Foreign Function Interface) for integrating the LLM inference engine into various applications. This documentation covers all available functions, their parameters, and usage examples.
@@ -12,6 +18,9 @@ cactus download LiquidAI/LFM2-1.2B
 cactus download LiquidAI/LFM2-VL-450M
 cactus download openai/whisper-small
 cactus download UsefulSensors/moonshine-base --precision FP16
+
+# Optional: set your Cactus Cloud API key for automatic cloud fallback
+cactus auth
 ```
 
 Weights are saved to the `weights/` directory and can be loaded using `cactus_init()`.
@@ -351,12 +360,14 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(
 ```json
 {
     "confirmation_threshold": 0.99,
-    "min_chunk_size": 32000
+    "min_chunk_size": 32000,
+    "language": "en"
 }
 ```
 
 - `confirmation_threshold`: Threshold (0.0-1.0) for confirming transcription segments. Higher values require more stability. Default: 0.99
 - `min_chunk_size`: Minimum audio samples to perform transcription processing step. Default: 32000
+- `language`: ISO 639-1 language code (e.g., "en", "es", "fr", "de"). Default: "en". Ignored for non-Whisper models.
 
 **Example:**
 ```c
@@ -454,6 +465,49 @@ if (result > 0) {
 
 // Or simply cleanup resources without response
 cactus_stream_transcribe_stop(stream, NULL, 0);
+```
+
+### `cactus_vad`
+Detects speech segments in audio using Voice Activity Detection. Supports both file-based and buffer-based audio input.
+
+```c
+int cactus_vad(
+    cactus_model_t model,           // Model handle (must be VAD model)
+    const char* audio_file_path,    // Path to audio file - can be NULL if using pcm_buffer
+    char* response_buffer,          // Buffer for response JSON
+    size_t buffer_size,             // Size of response buffer
+    const char* options_json,       // Optional VAD options (can be NULL)
+    const uint8_t* pcm_buffer,      // Optional raw PCM audio buffer (can be NULL if using file)
+    size_t pcm_buffer_size          // Size of PCM buffer in bytes
+);
+```
+
+**Returns:** Number of bytes written to response_buffer on success, negative value on error
+
+**Response Format:**
+```json
+{
+  "success": true,
+  "error": null,
+  "segments": [
+    {"start": 0, "end": 16000},
+    {"start": 32000, "end": 48000}
+  ],
+  "total_time_ms": 12.34,
+  "ram_usage_mb": 45.67
+}
+```
+
+**Example:**
+```c
+cactus_model_t vad = cactus_init("../../weights/silero-vad", NULL);
+
+char response[4096];
+int result = cactus_vad(vad, "audio.wav", response, sizeof(response), NULL, NULL, 0);
+
+if (result > 0) {
+    printf("Response: %s\n", response);
+}
 ```
 
 ### `cactus_embed`
@@ -1073,3 +1127,15 @@ Common error scenarios:
 3. **Early Stopping**: Use `cactus_stop()` to avoid unnecessary generation
 4. **Batch Embeddings**: When possible, process multiple texts in sequence without resetting
 5. **KV Cache Tuning**: Adjust `CACTUS_KV_WINDOW_SIZE` based on your context needs
+
+## See Also
+
+- [Cactus Graph API](/docs/cactus_graph.md) — Low-level computational graph for custom tensor operations
+- [Cactus Index API](/docs/cactus_index.md) — On-device vector database for RAG applications
+- [Fine-tuning Guide](/docs/finetuning.md) — Deploy Unsloth LoRA fine-tunes to mobile
+- [Runtime Compatibility](/docs/compatibility.md) — Weight versioning across releases
+- [Python SDK](/python/) — Python bindings for the Engine API
+- [Swift SDK](/apple/) — Swift bindings with async/await support
+- [Kotlin/Android SDK](/android/) — Kotlin Multiplatform bindings
+- [Flutter SDK](/flutter/) — Dart FFI bindings for mobile apps
+- [Rust SDK](/rust/) — Rust FFI bindings via bindgen

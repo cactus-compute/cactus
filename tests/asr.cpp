@@ -1,4 +1,6 @@
 #include "../cactus/ffi/cactus_ffi.h"
+#include "../cactus/ffi/cactus_cloud.h"
+#include "../cactus/telemetry/telemetry.h"
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -7,10 +9,10 @@
 #include <iomanip>
 #include <chrono>
 #include <fstream>
-#include <atomic>
 #include <thread>
-#include <mutex>
 #include <vector>
+#include <deque>
+#include <cctype>
 #include <algorithm>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -18,6 +20,21 @@
 #ifdef HAVE_SDL2
 #include <SDL2/SDL.h>
 #endif
+
+static std::string get_cloud_api_key() {
+    return cactus::ffi::resolve_cloud_api_key(nullptr);
+}
+
+static std::string get_transcribe_options_json() {
+    const char* threshold = std::getenv("CACTUS_CLOUD_HANDOFF_THRESHOLD");
+    std::ostringstream oss;
+    oss << "{\"max_tokens\":500,\"telemetry_enabled\":true";
+    if (threshold && threshold[0] != '\0') {
+        oss << ",\"cloud_handoff_threshold\":" << threshold;
+    }
+    oss << "}";
+    return oss.str();
+}
 
 constexpr size_t RESPONSE_BUFFER_SIZE = 65536;
 
@@ -69,6 +86,25 @@ bool file_exists(const std::string& path) {
     return f.good();
 }
 
+bool read_file_bytes(const std::string& path, std::vector<uint8_t>& out) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) return false;
+    in.seekg(0, std::ios::end);
+    std::streamsize size = in.tellg();
+    if (size <= 0) return false;
+    in.seekg(0, std::ios::beg);
+    out.resize(static_cast<size_t>(size));
+    return static_cast<bool>(in.read(reinterpret_cast<char*>(out.data()), size));
+}
+
+bool ends_with_wav(const std::string& path) {
+    std::string lower = path;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return lower.size() >= 4 && lower.substr(lower.size() - 4) == ".wav";
+}
+
 std::string extract_json_value(const std::string& json, const std::string& key) {
     std::string pattern = "\"" + key + "\":\"";
     size_t start = json.find(pattern);
@@ -88,11 +124,11 @@ std::string extract_json_number(const std::string& json, const std::string& key)
     if (start == std::string::npos) return "";
     start += pattern.length();
     while (start < json.length() && std::isspace(json[start])) start++;
-    size_t end = start;
-    while (end < json.length() && (isdigit(json[end]) || json[end] == '.' || json[end] == '-')) {
-        end++;
-    }
-    return json.substr(start, end - start);
+    const char* begin = json.c_str() + start;
+    char* end_ptr = nullptr;
+    std::strtod(begin, &end_ptr);
+    if (end_ptr == begin) return "";
+    return std::string(begin, static_cast<size_t>(end_ptr - begin));
 }
 
 size_t visible_length(const std::string& s) {
@@ -142,28 +178,30 @@ void print_token(const char* token, uint32_t /*token_id*/, void* /*user_data*/) 
     std::cout << token << std::flush;
 }
 
-std::string get_transcribe_prompt(const std::string& model_path) {
+std::string get_transcribe_prompt(const std::string& model_path, const std::string& language = "en") {
     std::string path_lower = model_path;
     std::transform(path_lower.begin(), path_lower.end(), path_lower.begin(),
                    [](unsigned char c) { return std::tolower(c); });
 
     if (path_lower.find("whisper") != std::string::npos) {
-        return "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>";
+        return "<|startoftranscript|><|" + language + "|><|transcribe|><|notimestamps|>";
     }
-    return "";  // Moonshine uses empty prompt
+    return "";
 }
 
-int transcribe_file(cactus_model_t model, const std::string& audio_path, const std::string& model_path) {
+int transcribe_file(cactus_model_t model, const std::string& audio_path, const std::string& model_path, const std::string& language = "en") {
     if (!file_exists(audio_path)) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD)
                   << "File not found: " << audio_path << "\n";
         return -1;
     }
 
-    std::string prompt = get_transcribe_prompt(model_path);
+    std::string prompt = get_transcribe_prompt(model_path, language);
     std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
 
     auto start_time = std::chrono::steady_clock::now();
+
+    const std::string options_json = get_transcribe_options_json();
 
     int result = cactus_transcribe(
         model,
@@ -171,7 +209,7 @@ int transcribe_file(cactus_model_t model, const std::string& audio_path, const s
         prompt.c_str(),
         response_buffer.data(),
         response_buffer.size(),
-        R"({"max_tokens": 500})",
+        options_json.c_str(),
         print_token,
         nullptr,
         nullptr,
@@ -193,6 +231,42 @@ int transcribe_file(cactus_model_t model, const std::string& audio_path, const s
     }
 
     std::string json_str(response_buffer.data());
+    std::string local_response = extract_json_value(json_str, "response");
+    bool cloud_handoff = json_str.find("\"cloud_handoff\":true") != std::string::npos;
+    bool cloud_key_detected = !get_cloud_api_key().empty();
+
+    bool cloud_result_used_cloud = false;
+    bool cloud_result_attempted = false;
+    std::string cloud_result_error;
+    std::string cloud_result_text;
+    bool cloud_transcript_changed = false;
+
+    if (cloud_handoff) {
+        cloud_result_attempted = true;
+        if (!ends_with_wav(audio_path)) {
+            cloud_result_error = "cloud_file_mode_requires_wav";
+            cloud_result_text = local_response;
+        } else {
+            std::vector<uint8_t> audio_bytes;
+            if (!read_file_bytes(audio_path, audio_bytes)) {
+                cloud_result_error = "audio_read_failed";
+                cloud_result_text = local_response;
+            } else {
+                std::string audio_b64 = cactus::ffi::cloud_base64_encode(audio_bytes.data(), audio_bytes.size());
+                cactus::ffi::CloudResponse cloud_result =
+                    cactus::ffi::cloud_transcribe_request(audio_b64, local_response, 15L, nullptr);
+                cloud_result_used_cloud = cloud_result.used_cloud;
+                cloud_result_error = cloud_result.error;
+                cloud_result_text = cloud_result.transcript;
+                if (!cloud_result.api_key_hash.empty()) {
+                    cactus::telemetry::setCloudKey(cloud_result.api_key_hash.c_str());
+                }
+                cloud_transcript_changed = cloud_result_used_cloud &&
+                                           !cloud_result_text.empty() &&
+                                           cloud_result_text != local_response;
+            }
+        }
+    }
 
     std::string time_str;
     size_t time_pos = json_str.find("\"total_time_ms\":");
@@ -211,8 +285,28 @@ int transcribe_file(cactus_model_t model, const std::string& audio_path, const s
         stats << colored(" | model time: ", Color::GRAY) << model_time << "s";
     }
     stats << colored("]", Color::GRAY);
+    stats << "\n" << colored("[cloud_handoff: ", Color::GRAY)
+          << (cloud_handoff ? colored("true", Color::YELLOW) : colored("false", Color::GREEN))
+          << colored("]", Color::GRAY);
+    stats << "\n" << colored("[cloud_key_detected: ", Color::GRAY)
+          << (cloud_key_detected ? colored("true", Color::CYAN) : colored("false", Color::RED))
+          << colored("]", Color::GRAY);
+    if (cloud_result_attempted) {
+        stats << "\n" << colored("[cloud_result_used_cloud: ", Color::GRAY)
+              << (cloud_result_used_cloud ? colored("true", Color::CYAN) : colored("false", Color::YELLOW))
+              << colored("]", Color::GRAY);
+        if (!cloud_result_error.empty()) {
+            stats << "\n" << colored("[cloud_result_error: ", Color::GRAY)
+                  << colored(cloud_result_error, Color::YELLOW)
+                  << colored("]", Color::GRAY);
+        }
+    }
 
     std::cout << stats.str() << "\n";
+    if (cloud_result_attempted && cloud_transcript_changed) {
+        std::cout << "\n" << colored("Cloud corrected transcript:", Color::GREEN + Color::BOLD) << "\n";
+        std::cout << cloud_result_text << "\n";
+    }
 
     return 0;
 }
@@ -260,6 +354,13 @@ std::vector<uint8_t> resample_audio(const std::vector<uint8_t>& input, int sourc
     return result;
 }
 
+struct Segment {
+    std::string text;
+    bool pending_cloud = false;
+    std::chrono::steady_clock::time_point cloud_start_time;
+    int64_t cloud_job_id = -1;
+};
+
 AudioState g_audio_state;
 
 void audio_callback(void* /*userdata*/, Uint8* stream, int len) {
@@ -269,7 +370,7 @@ void audio_callback(void* /*userdata*/, Uint8* stream, int len) {
     g_audio_state.buffer.insert(g_audio_state.buffer.end(), stream, stream + len);
 }
 
-int run_live_transcription(cactus_model_t model) {
+int run_live_transcription(cactus_model_t model, const std::string& language = "en") {
     if (SDL_Init(SDL_INIT_AUDIO) < 0) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD)
                   << "Failed to initialize SDL: " << SDL_GetError() << "\n";
@@ -313,9 +414,8 @@ int run_live_transcription(cactus_model_t model) {
                   << "Hz, will resample to " << TARGET_SAMPLE_RATE << "Hz\n";
     }
 
-    cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(
-        model, R"({"confirmation_threshold": 0.99, "min_chunk_size": 16000})"
-    );
+    std::string options = R"({"confirmation_threshold": 0.99, "min_chunk_size": 16000, "telemetry_enabled": true, "language": ")" + language + R"("})";
+    cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(model, options.c_str());
 
     if (!stream) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD)
@@ -323,6 +423,14 @@ int run_live_transcription(cactus_model_t model) {
         SDL_CloseAudioDevice(device);
         SDL_Quit();
         return 1;
+    }
+
+    std::string api_key = get_cloud_api_key();
+    if (api_key.empty()) {
+        std::cout << colored("Warning: ", Color::YELLOW + Color::BOLD)
+                  << "CACTUS_CLOUD_KEY environment variable not set.\n";
+        std::cout << colored("         Cloud handoff will be disabled (fallback to local transcription).\n", Color::YELLOW);
+        std::cout << "\n";
     }
 
     print_header_live_mode();
@@ -338,14 +446,17 @@ int run_live_transcription(cactus_model_t model) {
         should_stop = true;
     });
 
+    std::deque<Segment> segments;
     std::string confirmed_text;
-    std::string last_stats;
     std::string current_line_confirmed;
-    bool status_line_visible = false;
+    
+    int last_pending_line_count = 0;
+    std::string last_stats;
+
     std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
 
     auto last_process_time = std::chrono::steady_clock::now();
-    const auto process_interval = std::chrono::milliseconds(500);
+    const auto process_interval = std::chrono::milliseconds(1000);
 
     while (!should_stop) {
         auto now = std::chrono::steady_clock::now();
@@ -382,52 +493,124 @@ int run_live_transcription(cactus_model_t model) {
                     std::string json_str(response_buffer.data());
                     std::string confirmed = extract_json_value(json_str, "confirmed");
                     std::string pending = extract_json_value(json_str, "pending");
+                    std::string cloud_result = extract_json_value(json_str, "cloud_result");
+                    std::string cloud_job_id = extract_json_number(json_str, "cloud_job_id");
+                    std::string cloud_result_job_id = extract_json_number(json_str, "cloud_result_job_id");
                     std::string ttft = extract_json_number(json_str, "time_to_first_token_ms");
+                    std::string decode_tps = extract_json_number(json_str, "decode_tps");
+
+                    bool matched_cloud_result_segment = false;
+                    if (!cloud_result.empty()) {
+                        int64_t result_job_id = cloud_result_job_id.empty() ? 0 : std::stoll(cloud_result_job_id);
+                        if (result_job_id > 0) {
+                            for (auto& seg : segments) {
+                                if (seg.pending_cloud && seg.cloud_job_id == result_job_id) {
+                                    seg.text = cloud_result;
+                                    seg.pending_cloud = false;
+                                    matched_cloud_result_segment = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    bool should_enqueue_confirmed = !confirmed.empty();
+                    if (should_enqueue_confirmed &&
+                        matched_cloud_result_segment &&
+                        !cloud_result.empty() &&
+                        confirmed == cloud_result) {
+                        should_enqueue_confirmed = false;
+                    }
+
+                    if (should_enqueue_confirmed) {
+                        Segment seg;
+                        seg.text = confirmed;
+
+                        bool is_cloud = json_str.find("\"cloud_handoff\":true") != std::string::npos;
+                        int64_t parsed_cloud_job_id = cloud_job_id.empty() ? 0 : std::stoll(cloud_job_id);
+                        if (is_cloud && parsed_cloud_job_id > 0) {
+                            seg.pending_cloud = true;
+                            seg.cloud_start_time = std::chrono::steady_clock::now();
+                            seg.cloud_job_id = parsed_cloud_job_id;
+                        }
+                        segments.push_back(seg);
+                    }
+
+                    for (auto& seg : segments) {
+                        if (seg.pending_cloud &&
+                            std::chrono::steady_clock::now() - seg.cloud_start_time > std::chrono::seconds(10)) {
+                            seg.pending_cloud = false;
+                        }
+                    }
 
                     if (!confirmed.empty() || !pending.empty()) {
-                        int val = ttft.empty() ? 0 : std::stoi(ttft);
-                        last_stats = colored("[Lat:" + std::to_string(int(latency_ms)) + "ms TTFT:" + std::to_string(val) + "ms] ", Color::GRAY);
+                        last_stats = colored("[Latency:" + std::to_string(int(latency_ms)) + "ms Decode speed:" + decode_tps + " tokens/sec] ", Color::GRAY);
                     }
 
                     int width = get_terminal_width();
                     int limit = (width < 20 ? 80 : width) * 0.7;
 
-                    if (status_line_visible) {
-                        std::cout << "\r\033[2K\033[1A";
-                        status_line_visible = false;
+                    if (last_pending_line_count > 0) {
+                        std::cout << "\r\033[2K";
+                        for (int i = 0; i < last_pending_line_count; ++i)
+                            std::cout << "\033[1A\033[2K";
+                    } else {
+                        std::cout << "\r";
                     }
 
-                    if (!confirmed.empty()) {
-                        current_line_confirmed += colored(confirmed, Color::GREEN) + " ";
-                        confirmed_text += confirmed + " ";
+                    while (!segments.empty() && !segments.front().pending_cloud) {
+                        current_line_confirmed += colored(segments.front().text, Color::GREEN) + " ";
+                        confirmed_text += segments.front().text + " ";
+                        segments.pop_front();
                     }
 
                     while (true) {
                         size_t idx = find_safe_split_index(current_line_confirmed, limit);
                         if (idx == std::string::npos) break;
-                        
                         std::string part = current_line_confirmed.substr(0, idx);
                         std::string rem = current_line_confirmed.substr(idx + 1);
-                        
                         std::cout << "\r\033[K" << part + Color::RESET << "\n";
                         current_line_confirmed = Color::GREEN + rem;
                     }
 
                     std::cout << "\r\033[K" << current_line_confirmed;
 
-                    std::stringstream ss;
-                    if (!last_stats.empty()) ss << last_stats;
-                    if (!pending.empty()) ss << colored(pending, Color::YELLOW);
-                    
-                    std::string ghost = ss.str();
-                    if (visible_length(ghost) >= static_cast<size_t>(width)) ghost = truncate_visible(ghost, width - 1);
-
-                    if (!ghost.empty()) {
-                        std::cout << "\n" << ghost << std::flush;
-                        status_line_visible = true;
-                    } else {
-                        std::cout << std::flush;
+                    std::string ghost = last_stats;
+                    if (!segments.empty()) {
+                        if (!ghost.empty()) ghost += "\n";
+                        ghost += colored("[Awaiting Cloud] ", Color::RED);
+                        for (const auto& seg : segments)
+                            ghost += colored(seg.text, seg.pending_cloud ? Color::RED : Color::GREEN) + " ";
                     }
+                    if (!pending.empty()) {
+                        if (!ghost.empty()) ghost += "\n";
+                        ghost += colored("[Uncommitted] ", Color::YELLOW) + colored(pending, Color::YELLOW);
+                    }
+
+                    last_pending_line_count = 0;
+                    if (!ghost.empty()) {
+                        std::cout << "\n";
+                        std::stringstream ss(ghost);
+                        std::string line;
+                        bool first = true;
+                        while (std::getline(ss, line)) {
+                            while (true) {
+                                size_t idx = find_safe_split_index(line, limit);
+                                if (idx == std::string::npos) break;
+                                if (!first) std::cout << "\n";
+                                std::cout << line.substr(0, idx);
+                                line = line.substr(idx + 1);
+                                last_pending_line_count++;
+                                first = false;
+                            }
+                            if (!first) std::cout << "\n";
+                            std::cout << line;
+                            last_pending_line_count++;
+                            first = false;
+                        }
+                    }
+
+                    std::cout << std::flush;
                 }
             }
         }
@@ -448,6 +631,10 @@ int run_live_transcription(cactus_model_t model) {
     print_separator();
 
     if (stopping_result >= 0) {
+        for (const auto& seg : segments) {
+            confirmed_text += seg.text + " ";
+        }
+    
         std::string json_str(response_buffer.data());
         std::string final_text = extract_json_value(json_str, "confirmed");
         std::string full_transcript = confirmed_text + final_text;
@@ -477,15 +664,21 @@ int run_live_transcription(cactus_model_t model) {
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
-        std::cerr << "Usage: " << argv[0] << " <model_path> [audio_file]\n";
-        std::cerr << "\nModes:\n";
-        std::cerr << "  " << argv[0] << " weights/whisper-small              # Live microphone transcription\n";
-        std::cerr << "  " << argv[0] << " weights/whisper-small audio.wav    # Transcribe single file\n";
+        std::cerr << "Usage: " << argv[0] << " <model_path> [audio_file] [--language <code>]\n";
         return 1;
     }
 
     const char* model_path = argv[1];
-    const char* audio_file = argc > 2 ? argv[2] : nullptr;
+    const char* audio_file = nullptr;
+    std::string language = "en";
+
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--language" && i + 1 < argc) {
+            language = argv[++i];
+        } else if (argv[i][0] != '-') {
+            audio_file = argv[i];
+        }
+    }
 
     std::cout << "\n" << colored("Loading model from ", Color::YELLOW)
               << colored(model_path, Color::CYAN) << colored("...", Color::YELLOW) << "\n";
@@ -508,10 +701,10 @@ int main(int argc, char* argv[]) {
     if (audio_file) {
         std::cout << "\n" << colored("Transcribing: ", Color::BLUE + Color::BOLD)
                   << audio_file << "\n\n";
-        result = transcribe_file(model, audio_file, model_path);
+        result = transcribe_file(model, audio_file, model_path, language);
     } else {
 #ifdef HAVE_SDL2
-        result = run_live_transcription(model);
+        result = run_live_transcription(model, language);
 #else
         std::cerr << colored("Error: ", Color::RED + Color::BOLD)
                   << "Live transcription requires SDL2.\n";

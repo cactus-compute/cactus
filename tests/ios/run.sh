@@ -2,9 +2,15 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CACTUS_CURL_ROOT="${CACTUS_CURL_ROOT:-$PROJECT_ROOT/libs/curl}"
+export CACTUS_CURL_ROOT
 
 MODEL_NAME="$1"
 TRANSCRIBE_MODEL_NAME="$2"
+VAD_MODEL_NAME="$3"
+RUN_ASR="${CACTUS_RUN_ASR:-0}"
+ASR_AUDIO_SOURCE="${CACTUS_ASR_AUDIO_SOURCE:-}"
+ASR_AUDIO_FILE="${CACTUS_ASR_AUDIO_FILE:-}"
 
 echo "Running Cactus tests on iOS..."
 echo "============================"
@@ -203,7 +209,7 @@ if ! gem list xcodeproj -i; then
     fi
 fi
 
-export PROJECT_ROOT TESTS_ROOT="$tests_root" CACTUS_ROOT="$cactus_root" XCODEPROJ_PATH="$xcodeproj_path" BUNDLE_ID="$bundle_id" DEVELOPMENT_TEAM="$development_team" DEVICE_TYPE="$device_type"
+export PROJECT_ROOT TESTS_ROOT="$tests_root" CACTUS_ROOT="$cactus_root" XCODEPROJ_PATH="$xcodeproj_path" BUNDLE_ID="$bundle_id" DEVELOPMENT_TEAM="$development_team" DEVICE_TYPE="$device_type" CACTUS_CURL_ROOT="$CACTUS_CURL_ROOT"
 if ! ruby "$SCRIPT_DIR/configure_xcode.rb"; then
     echo "Failed to configure Xcode project"
     exit 1
@@ -264,21 +270,76 @@ fi
 
 model_dir=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 transcribe_model_dir=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+vad_model_dir=$(echo "$VAD_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 model_src="$PROJECT_ROOT/weights/$model_dir"
 transcribe_model_src="$PROJECT_ROOT/weights/$transcribe_model_dir"
+vad_model_src="$PROJECT_ROOT/weights/$vad_model_dir"
 assets_src="$PROJECT_ROOT/tests/assets"
 
+if [ ! -d "$model_src" ] || [ ! -f "$model_src/config.txt" ]; then
+    echo "Error: model weights missing or invalid at $model_src"
+    exit 1
+fi
+if [ ! -d "$transcribe_model_src" ] || [ ! -f "$transcribe_model_src/config.txt" ]; then
+    echo "Error: transcribe model weights missing or invalid at $transcribe_model_src"
+    exit 1
+fi
+if [ ! -d "$vad_model_src" ] || [ ! -f "$vad_model_src/config.txt" ]; then
+    echo "Error: VAD model weights missing or invalid at $vad_model_src"
+    exit 1
+fi
+
 echo "Copying model weights to app bundle..."
+rm -rf "$app_path/$model_dir" "$app_path/$transcribe_model_dir" "$app_path/$vad_model_dir"
 if ! cp -R "$model_src" "$app_path/"; then
-    echo "Warning: Could not copy model weights"
+    echo "Error: Could not copy model weights from $model_src"
+    exit 1
 fi
 if ! cp -R "$transcribe_model_src" "$app_path/"; then
-    echo "Warning: Could not copy transcribe model weights"
+    echo "Error: Could not copy transcribe model weights from $transcribe_model_src"
+    exit 1
+fi
+if ! cp -R "$vad_model_src" "$app_path/"; then
+    echo "Error: Could not copy VAD model weights from $vad_model_src"
+    exit 1
+fi
+
+# Whisper/Moonshine init expects a bundled "<transcribe_model>/vad" directory.
+transcribe_lower=$(echo "$transcribe_model_dir" | tr '[:upper:]' '[:lower:]')
+if [[ "$transcribe_lower" == *"whisper"* || "$transcribe_lower" == *"moonshine"* || "$transcribe_lower" == *"parakeet"* ]]; then
+    if [ ! -f "$app_path/$transcribe_model_dir/vad/config.txt" ]; then
+        echo "Transcribe model missing bundled VAD; injecting from $vad_model_src"
+        mkdir -p "$app_path/$transcribe_model_dir/vad"
+        if ! rsync -a "$vad_model_src/" "$app_path/$transcribe_model_dir/vad/"; then
+            echo "Error: Failed to inject VAD into transcribe model bundle"
+            exit 1
+        fi
+    fi
+    if [ ! -f "$app_path/$transcribe_model_dir/vad/config.txt" ]; then
+        echo "Error: bundled transcribe VAD is missing config.txt after packaging"
+        exit 1
+    fi
 fi
 
 echo "Copying test assets to app bundle..."
 if ! cp -R "$assets_src" "$app_path/"; then
-    echo "Warning: Could not copy test assets"
+    echo "Error: Could not copy test assets from $assets_src"
+    exit 1
+fi
+
+if [ "$RUN_ASR" = "1" ]; then
+    if [ -z "$ASR_AUDIO_SOURCE" ] || [ ! -f "$ASR_AUDIO_SOURCE" ]; then
+        echo "Error: CACTUS_ASR_AUDIO_SOURCE must point to an existing audio file when CACTUS_RUN_ASR=1"
+        exit 1
+    fi
+    if [ -z "$ASR_AUDIO_FILE" ]; then
+        ASR_AUDIO_FILE=$(basename "$ASR_AUDIO_SOURCE")
+    fi
+    echo "Copying ASR audio file to app bundle..."
+    if ! cp "$ASR_AUDIO_SOURCE" "$app_path/$ASR_AUDIO_FILE"; then
+        echo "Error: Could not copy ASR audio file into app bundle"
+        exit 1
+    fi
 fi
 
 echo ""
@@ -295,17 +356,39 @@ if [ "$device_type" = "simulator" ]; then
         exit 1
     fi
 
-    echo "Launching tests..."
+    if [ "$RUN_ASR" = "1" ]; then
+        echo "Launching ASR transcription..."
+    else
+        echo "Launching tests..."
+    fi
     echo "Using model path: $model_dir"
     echo "Using transcribe model path: $transcribe_model_dir"
     echo "Using assets path: assets"
     echo "Using index path: assets"
 
-    SIMCTL_CHILD_CACTUS_TEST_MODEL="$model_dir" \
-    SIMCTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL="$transcribe_model_dir" \
-    SIMCTL_CHILD_CACTUS_TEST_ASSETS="assets" \
-    SIMCTL_CHILD_CACTUS_INDEX_PATH="assets" \
-    xcrun simctl launch --console-pty "$device_uuid" "$bundle_id"
+    sim_env=(
+        "SIMCTL_CHILD_CACTUS_TEST_MODEL=$model_dir"
+        "SIMCTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL=$transcribe_model_dir"
+        "SIMCTL_CHILD_CACTUS_TEST_VAD_MODEL=$vad_model_dir"
+        "SIMCTL_CHILD_CACTUS_TEST_ASSETS=assets"
+        "SIMCTL_CHILD_CACTUS_INDEX_PATH=assets"
+        "SIMCTL_CHILD_CACTUS_NO_CLOUD_TELE=$CACTUS_NO_CLOUD_TELE"
+    )
+    if [ "$RUN_ASR" = "1" ]; then
+        sim_env+=("SIMCTL_CHILD_CACTUS_RUN_ASR=1")
+        sim_env+=("SIMCTL_CHILD_CACTUS_ASR_AUDIO_FILE=$ASR_AUDIO_FILE")
+    fi
+    if [ -n "$CACTUS_CLOUD_KEY" ]; then
+        sim_env+=("SIMCTL_CHILD_CACTUS_CLOUD_KEY=$CACTUS_CLOUD_KEY")
+    fi
+    if [ -n "$CACTUS_CLOUD_STRICT_SSL" ]; then
+        sim_env+=("SIMCTL_CHILD_CACTUS_CLOUD_STRICT_SSL=$CACTUS_CLOUD_STRICT_SSL")
+    fi
+    if [ -n "$CACTUS_CLOUD_HANDOFF_THRESHOLD" ]; then
+        sim_env+=("SIMCTL_CHILD_CACTUS_CLOUD_HANDOFF_THRESHOLD=$CACTUS_CLOUD_HANDOFF_THRESHOLD")
+    fi
+
+    env "${sim_env[@]}" xcrun simctl launch --console-pty "$device_uuid" "$bundle_id"
 else
     echo "Installing on: $device_name"
 
@@ -318,17 +401,40 @@ else
         exit 1
     fi
 
-    echo "Launching tests..."
+    if [ "$RUN_ASR" = "1" ]; then
+        echo "Launching ASR transcription..."
+    else
+        echo "Launching tests..."
+    fi
     echo "(Logs will be fetched from device after completion)"
     echo "Using model path: $model_dir"
     echo "Using transcribe model path: $transcribe_model_dir"
     echo "Using assets path: assets"
     echo "Using index path: assets"
 
-    launch_output=$(DEVICECTL_CHILD_CACTUS_TEST_MODEL="$model_dir" \
-    DEVICECTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL="$transcribe_model_dir" \
-    DEVICECTL_CHILD_CACTUS_TEST_ASSETS="assets" \
-    DEVICECTL_CHILD_CACTUS_INDEX_PATH="assets" \
+    device_env=(
+        "DEVICECTL_CHILD_CACTUS_TEST_MODEL=$model_dir"
+        "DEVICECTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL=$transcribe_model_dir"
+        "DEVICECTL_CHILD_CACTUS_TEST_VAD_MODEL=$vad_model_dir"
+        "DEVICECTL_CHILD_CACTUS_TEST_ASSETS=assets"
+        "DEVICECTL_CHILD_CACTUS_INDEX_PATH=assets"
+        "DEVICECTL_CHILD_CACTUS_NO_CLOUD_TELE=$CACTUS_NO_CLOUD_TELE"
+    )
+    if [ "$RUN_ASR" = "1" ]; then
+        device_env+=("DEVICECTL_CHILD_CACTUS_RUN_ASR=1")
+        device_env+=("DEVICECTL_CHILD_CACTUS_ASR_AUDIO_FILE=$ASR_AUDIO_FILE")
+    fi
+    if [ -n "$CACTUS_CLOUD_KEY" ]; then
+        device_env+=("DEVICECTL_CHILD_CACTUS_CLOUD_KEY=$CACTUS_CLOUD_KEY")
+    fi
+    if [ -n "$CACTUS_CLOUD_STRICT_SSL" ]; then
+        device_env+=("DEVICECTL_CHILD_CACTUS_CLOUD_STRICT_SSL=$CACTUS_CLOUD_STRICT_SSL")
+    fi
+    if [ -n "$CACTUS_CLOUD_HANDOFF_THRESHOLD" ]; then
+        device_env+=("DEVICECTL_CHILD_CACTUS_CLOUD_HANDOFF_THRESHOLD=$CACTUS_CLOUD_HANDOFF_THRESHOLD")
+    fi
+
+    launch_output=$(env "${device_env[@]}" \
     xcrun devicectl device process launch --device "$device_uuid" "$bundle_id" 2>&1) || true
 
     echo "$launch_output"

@@ -315,6 +315,31 @@ void cactus_multiply_f16(const __fp16* a, const __fp16* b, __fp16* output, size_
         });
 }
 
+void cactus_add_scaled_f16(const __fp16* base, const __fp16* src, __fp16* output, size_t num_elements, float scale) {
+    constexpr size_t SIMD_WIDTH = 8;
+    const float32x4_t vscale = vdupq_n_f32(scale);
+    const size_t vec_end = (num_elements / SIMD_WIDTH) * SIMD_WIDTH;
+
+    for (size_t i = 0; i < vec_end; i += SIMD_WIDTH) {
+        float16x8_t base_vec = vld1q_f16(base + i);
+        float16x8_t src_vec = vld1q_f16(src + i);
+
+        float32x4_t base_lo = vcvt_f32_f16(vget_low_f16(base_vec));
+        float32x4_t base_hi = vcvt_f32_f16(vget_high_f16(base_vec));
+        float32x4_t src_lo = vcvt_f32_f16(vget_low_f16(src_vec));
+        float32x4_t src_hi = vcvt_f32_f16(vget_high_f16(src_vec));
+
+        float32x4_t result_lo = vfmaq_f32(base_lo, src_lo, vscale);
+        float32x4_t result_hi = vfmaq_f32(base_hi, src_hi, vscale);
+
+        vst1q_f16(output + i, vcombine_f16(vcvt_f16_f32(result_lo), vcvt_f16_f32(result_hi)));
+    }
+    for (size_t i = vec_end; i < num_elements; ++i) {
+        output[i] = static_cast<__fp16>(static_cast<float>(base[i])
+                                        + static_cast<float>(src[i]) * scale);
+    }
+}
+
 void cactus_divide_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements) {
     const bool use_streaming = num_elements >= STREAMING_STORE_THRESHOLD;
     CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::ELEMENT_WISE,

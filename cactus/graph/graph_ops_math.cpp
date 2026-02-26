@@ -86,6 +86,7 @@ void dispatch_unary_op_f16(OpType op, const __fp16* input, __fp16* output, size_
         case OpType::SCALAR_SQRT: scalar_op = ScalarOpType::SQRT; break;
         case OpType::SCALAR_COS: scalar_op = ScalarOpType::COS; break;
         case OpType::SCALAR_SIN: scalar_op = ScalarOpType::SIN; break;
+        case OpType::SCALAR_LOG: scalar_op = ScalarOpType::LOG; break;
         default: return;
     }
 
@@ -163,6 +164,11 @@ void compute_activation_node(GraphNode& node, const std::vector<std::unique_ptr<
     }
 
     switch (node.op_type) {
+        case OpType::RELU:
+            cactus_relu_f16(input.data_as<__fp16>(),
+                            node.output_buffer.data_as<__fp16>(),
+                            node.output_buffer.total_size);
+            break;
         case OpType::SILU:
             cactus_silu_f16(input.data_as<__fp16>(),
                            node.output_buffer.data_as<__fp16>(),
@@ -177,6 +183,11 @@ void compute_activation_node(GraphNode& node, const std::vector<std::unique_ptr<
             cactus_gelu_f16_erf(input.data_as<__fp16>(),
                                 node.output_buffer.data_as<__fp16>(),
                                 node.output_buffer.total_size);
+            break;
+        case OpType::SIGMOID:
+            cactus_sigmoid_f16(input.data_as<__fp16>(),
+                            node.output_buffer.data_as<__fp16>(),
+                            node.output_buffer.total_size);
             break;
         case OpType::TANH:
             cactus_tanh_f16(input.data_as<__fp16>(),

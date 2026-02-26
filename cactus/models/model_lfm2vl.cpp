@@ -102,15 +102,19 @@ void Lfm2VlModel::load_weights_to_graph(CactusGraph* gb) {
         return primary_path.string();
     };
 
-    projector_weights_.layer_norm_weight = gb->mmap_weights(resolve_weight("projector_layer_norm.weights"));
-    
-    projector_weights_.layer_norm_bias = gb->mmap_weights(resolve_weight("projector_layer_norm.bias.weights"));
+    try { 
+        projector_weights_.layer_norm_weight = gb->mmap_weights(resolve_weight("projector_layer_norm.weights"));
+        projector_weights_.layer_norm_bias = gb->mmap_weights(resolve_weight("projector_layer_norm.bias.weights"));
+    } catch (const std::exception&) {
+        projector_weights_.layer_norm_weight = 0;
+        projector_weights_.layer_norm_bias = 0;
+    }
     
     projector_weights_.linear_1_weight = gb->mmap_weights(resolve_weight("projector_linear_1.weights", "projector_linear1.weights"));
     projector_weights_.linear_1_bias = gb->mmap_weights(resolve_weight("projector_linear_1.bias.weights", "projector_linear1.bias.weights"));
     projector_weights_.linear_2_weight = gb->mmap_weights(resolve_weight("projector_linear_2.weights", "projector_linear2.weights"));
     projector_weights_.linear_2_bias = gb->mmap_weights(resolve_weight("projector_linear_2.bias.weights", "projector_linear2.bias.weights"));
-    output_weight_node_id_ = gb->mmap_weights(resolve_weight("output_weight.weights"));
+    output_weight_node_id_ = gb->mmap_weights(resolve_weight("token_embeddings.weights"));
 }
 
 size_t Lfm2VlModel::pixel_unshuffle(CactusGraph* gb, size_t hidden_states, 
@@ -142,8 +146,11 @@ size_t Lfm2VlModel::build_multimodal_projector(CactusGraph* gb, size_t image_fea
     const size_t in_channels = vision_hidden * factor * factor;
     const size_t seq_len = new_h * new_w;
     size_t flattened = gb->reshape(unshuffled, {seq_len, in_channels});
-    size_t normalized = gb->layernorm(flattened, projector_weights_.layer_norm_weight,
-                                      projector_weights_.layer_norm_bias, config_.layer_norm_eps);
+    size_t normalized = flattened;
+    if (projector_weights_.layer_norm_weight != 0 && projector_weights_.layer_norm_bias != 0) {
+        normalized = gb->layernorm(flattened, projector_weights_.layer_norm_weight,
+                                   projector_weights_.layer_norm_bias, config_.layer_norm_eps);
+    }
     size_t hidden = gb->matmul(normalized, projector_weights_.linear_1_weight, true, backend);
     hidden = gb->add(hidden, projector_weights_.linear_1_bias);
     hidden = gb->gelu(hidden);

@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../cactus)
+set(CACTUS_CURL_ROOT "${CMAKE_SOURCE_DIR}/../libs/curl" CACHE PATH "Path to vendored libcurl artifacts")
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
@@ -16,6 +17,7 @@ file(GLOB GRAPH_SOURCES "${SOURCE_DIR}/graph/*.cpp")
 file(GLOB KERNEL_SOURCES "${SOURCE_DIR}/kernel/*.cpp")
 file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
+file(GLOB TELEMETRY_SOURCES "${SOURCE_DIR}/telemetry/*.cpp")
 set(NPU_SOURCES "${SOURCE_DIR}/npu/npu.cpp")
 
 set(HEADER_FILES
@@ -36,6 +38,7 @@ set(COMMON_SOURCES
     ${ENGINE_SOURCES}
     ${FFI_SOURCES}
     ${MODEL_SOURCES}
+    ${TELEMETRY_SOURCES}
     ${NPU_SOURCES}
 )
 
@@ -66,12 +69,45 @@ set(COMMON_INCLUDE_DIRS
     ${SOURCE_DIR}/ffi
     ${SOURCE_DIR}/models
     ${SOURCE_DIR}/npu
+    ${SOURCE_DIR}/telemetry
 )
 
 target_include_directories(cactus PRIVATE ${COMMON_INCLUDE_DIRS})
 target_include_directories(cactus_static PRIVATE ${COMMON_INCLUDE_DIRS})
 
 target_link_libraries(cactus ${LOG_LIB} android)
+
+set(CACTUS_CURL_INCLUDE_DIR "${CACTUS_CURL_ROOT}/include")
+set(CACTUS_CURL_LIBRARY_ANDROID "${CACTUS_CURL_ROOT}/android/${ANDROID_ABI}/libcurl.a")
+set(CACTUS_MBEDTLS_ROOT "${CMAKE_SOURCE_DIR}/mbedtls/${ANDROID_ABI}")
+if(NOT EXISTS "${CACTUS_MBEDTLS_ROOT}")
+    set(CACTUS_MBEDTLS_ROOT "${CMAKE_SOURCE_DIR}/../libs/mbedtls/android/${ANDROID_ABI}")
+endif()
+set(CACTUS_MBEDTLS_INCLUDE_DIR "${CACTUS_MBEDTLS_ROOT}/include")
+set(CACTUS_MBEDTLS_LIBRARY "${CACTUS_MBEDTLS_ROOT}/lib/libmbedtls.a")
+set(CACTUS_MBEDX509_LIBRARY "${CACTUS_MBEDTLS_ROOT}/lib/libmbedx509.a")
+set(CACTUS_MBEDCRYPTO_LIBRARY "${CACTUS_MBEDTLS_ROOT}/lib/libmbedcrypto.a")
+if(EXISTS "${CACTUS_CURL_INCLUDE_DIR}/curl/curl.h" AND EXISTS "${CACTUS_CURL_LIBRARY_ANDROID}")
+    message(STATUS "Using vendored libcurl for Android: ${CACTUS_CURL_LIBRARY_ANDROID}")
+
+    if(NOT (EXISTS "${CACTUS_MBEDTLS_LIBRARY}" AND EXISTS "${CACTUS_MBEDX509_LIBRARY}" AND EXISTS "${CACTUS_MBEDCRYPTO_LIBRARY}"))
+        message(FATAL_ERROR "Vendored mbedTLS libraries not found. Expected: ${CACTUS_MBEDTLS_LIBRARY}, ${CACTUS_MBEDX509_LIBRARY}, ${CACTUS_MBEDCRYPTO_LIBRARY}")
+    endif()
+
+    target_include_directories(cactus PRIVATE "${CACTUS_CURL_INCLUDE_DIR}")
+    target_include_directories(cactus_static PRIVATE "${CACTUS_CURL_INCLUDE_DIR}")
+    target_include_directories(cactus PRIVATE "${CACTUS_MBEDTLS_INCLUDE_DIR}")
+    target_include_directories(cactus_static PRIVATE "${CACTUS_MBEDTLS_INCLUDE_DIR}")
+    target_compile_definitions(cactus PRIVATE CACTUS_USE_CURL=1)
+    target_compile_definitions(cactus_static PRIVATE CACTUS_USE_CURL=1)
+
+    target_link_libraries(cactus "${CACTUS_CURL_LIBRARY_ANDROID}")
+    target_link_libraries(cactus_static "${CACTUS_CURL_LIBRARY_ANDROID}")
+    target_link_libraries(cactus "${CACTUS_MBEDTLS_LIBRARY}" "${CACTUS_MBEDX509_LIBRARY}" "${CACTUS_MBEDCRYPTO_LIBRARY}")
+    target_link_libraries(cactus_static "${CACTUS_MBEDTLS_LIBRARY}" "${CACTUS_MBEDX509_LIBRARY}" "${CACTUS_MBEDCRYPTO_LIBRARY}")
+else()
+    message(FATAL_ERROR "Vendored Android libcurl not found. Expected: ${CACTUS_CURL_INCLUDE_DIR}/curl/curl.h and ${CACTUS_CURL_LIBRARY_ANDROID}")
+endif()
 
 set(COMMON_COMPILE_DEFINITIONS
     PLATFORM_CPU_ONLY=1

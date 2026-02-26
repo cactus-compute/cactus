@@ -4,11 +4,27 @@ project(CactusTests LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+function(cactus_require_vendored_curl include_dir library_path platform_label)
+    if(NOT EXISTS "${include_dir}/curl/curl.h" OR NOT EXISTS "${library_path}")
+        message(WARNING "==============================================================================")
+        message(WARNING " Vendored libcurl is required for ${platform_label} tests but is missing.")
+        message(WARNING " Expected header: ${include_dir}/curl/curl.h")
+        message(WARNING " Expected library: ${library_path}")
+        message(WARNING " Populate libs/curl from your local curl build before running cactus test.")
+        message(WARNING "==============================================================================")
+        message(FATAL_ERROR "Missing vendored libcurl artifacts for ${platform_label} tests")
+    endif()
+endfunction()
+
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -pthread -Wall -Wextra -pedantic -O3")
-    find_package(CURL REQUIRED)
+    set(CACTUS_CURL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../libs/curl" CACHE PATH "Path to vendored libcurl artifacts")
+    set(CACTUS_CURL_INCLUDE_DIR "${CACTUS_CURL_ROOT}/include")
+    set(CACTUS_CURL_LIBRARY_MACOS "${CACTUS_CURL_ROOT}/macos/libcurl.a")
+    cactus_require_vendored_curl("${CACTUS_CURL_INCLUDE_DIR}" "${CACTUS_CURL_LIBRARY_MACOS}" "macOS")
 else()
+    find_package(CURL)
 endif()
 
 set(CACTUS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../cactus)
@@ -31,6 +47,10 @@ if(NOT APPLE)
 else()
     find_library(COREML_FRAMEWORK CoreML REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+    find_library(SECURITY_FRAMEWORK Security REQUIRED)
+    find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
+    find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
 endif()
 
 find_package(SDL2)
@@ -62,15 +82,24 @@ foreach(TEST_FILE ${TEST_SOURCES})
         message(STATUS "Test ${TEST_NAME} will link with SDL2")
     endif()
 
-    if(APPLE AND CURL_FOUND)
+    if(APPLE)
+        target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})
+        target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_CURL_INCLUDE_DIR})
+        message(STATUS "Test ${TEST_NAME} will link with libcurl")
+    elseif(CURL_FOUND)
         target_link_libraries(${TEST_NAME} PRIVATE ${CURL_LIBRARIES})
         target_include_directories(${TEST_NAME} PRIVATE ${CURL_INCLUDE_DIRS})
-        message(STATUS "Test ${TEST_NAME} will link with libcurl")
+        message(STATUS "Test ${TEST_NAME} will link with system libcurl")
     endif()
-
-
     if(APPLE)
-        target_link_libraries(${TEST_NAME} PRIVATE ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+        target_link_libraries(${TEST_NAME} PRIVATE
+            ${ACCELERATE_FRAMEWORK}
+            ${COREML_FRAMEWORK}
+            ${FOUNDATION_FRAMEWORK}
+            ${SECURITY_FRAMEWORK}
+            ${SYSTEMCONFIGURATION_FRAMEWORK}
+            ${CFNETWORK_FRAMEWORK}
+        )
     endif()
 
     target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_ROOT})
@@ -89,13 +118,22 @@ foreach(APP_NAME chat asr)
             target_link_libraries(${APP_NAME} PRIVATE ${MMAN_LIB})
         endif()
 
-        if(APPLE AND CURL_FOUND)
+        if(APPLE)
+            target_link_libraries(${APP_NAME} PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})
+            target_include_directories(${APP_NAME} PRIVATE ${CACTUS_CURL_INCLUDE_DIR})
+        elseif(CURL_FOUND)
             target_link_libraries(${APP_NAME} PRIVATE ${CURL_LIBRARIES})
             target_include_directories(${APP_NAME} PRIVATE ${CURL_INCLUDE_DIRS})
         endif()
-
         if(APPLE)
-            target_link_libraries(${APP_NAME} PRIVATE ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+            target_link_libraries(${APP_NAME} PRIVATE
+                ${ACCELERATE_FRAMEWORK}
+                ${COREML_FRAMEWORK}
+                ${FOUNDATION_FRAMEWORK}
+                ${SECURITY_FRAMEWORK}
+                ${SYSTEMCONFIGURATION_FRAMEWORK}
+                ${CFNETWORK_FRAMEWORK}
+            )
         endif()
 
         if(SDL2_FOUND AND APP_NAME STREQUAL "asr")

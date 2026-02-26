@@ -1,3 +1,9 @@
+---
+title: "Deploying Unsloth Fine-Tunes to Cactus for Phones"
+description: "Step-by-step guide to training LoRA fine-tunes with Unsloth and deploying them to iOS and Android devices using Cactus inference engine."
+keywords: ["fine-tuning", "LoRA", "Unsloth", "mobile deployment", "on-device AI", "iOS", "Android", "Qwen", "Gemma"]
+---
+
 # Deploying Unsloth Fine-Tunes to Cactus for Phones
 
 - Cactus is an inference engine for mobile devices, macs and ARM chips like Raspberry Pi.
@@ -172,3 +178,11 @@ this way you can test before fully building out your apps.
 - Supported Base Models: `Qwen3, Gemma3, LFM2, SmolLM2` 
 - Full API reference: [Cactus Engine](https://github.com/cactus-compute/cactus/blob/main/docs/cactus_engine.md)
 - Learn more and report bugs: [Cactus](https://github.com/cactus-compute/cactus/tree/main)
+
+## See Also
+
+- [Cactus Engine API](/docs/cactus_engine.md) — Full C API reference for inference, streaming, and tool calling
+- [Runtime Compatibility](/docs/compatibility.md) — Ensure your weights match your Cactus runtime version
+- [Python SDK](/python/) — Use fine-tuned models from Python
+- [Swift SDK](/apple/) — Deploy fine-tuned models in iOS/macOS apps
+- [Kotlin/Android SDK](/android/) — Deploy fine-tuned models in Android apps

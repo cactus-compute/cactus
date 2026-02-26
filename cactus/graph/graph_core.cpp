@@ -65,7 +65,7 @@ BufferDesc::BufferDesc(const std::vector<size_t>& s, Precision prec)
     : shape(s), external_data(nullptr), pooled_data(nullptr), precision(prec) {
     total_size = 1;
     for (size_t dim : shape) total_size *= dim;
-    byte_size = total_size * PrecisionTraits::size_of(prec);
+    byte_size = PrecisionTraits::packed_size_of(prec, total_size);
 }
 
 BufferDesc::~BufferDesc() {

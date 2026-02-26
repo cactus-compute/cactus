@@ -1,0 +1,126 @@
+name: Deploy Docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - run: pip install "mkdocs<2" mkdocs-material
+
+      - name: Assemble docs directory
+        run: |
+          mkdir -p site_docs/docs site_docs/python site_docs/apple site_docs/android site_docs/flutter site_docs/rust site_docs/blog site_docs/assets
+
+          # Copy assets
+          cp -r assets/* site_docs/assets/
+
+          # Copy supporting files
+          cp CONTRIBUTING.md site_docs/CONTRIBUTING.md
+
+          # Copy docs
+          cp docs/*.md site_docs/docs/
+
+          # Copy SDK READMEs
+          cp python/README.md site_docs/python/README.md
+          cp apple/README.md site_docs/apple/README.md
+          cp android/README.md site_docs/android/README.md
+          cp flutter/README.md site_docs/flutter/README.md
+          cp rust/README.md site_docs/rust/README.md
+
+          # Copy blog
+          cp blog/*.md site_docs/blog/
+
+          # Use README.md as index (single source of truth)
+          {
+            echo '---'
+            echo 'title: "Cactus"'
+            echo 'description: "Energy-efficient AI inference engine for phones, wearables, Macs, and ARM devices."'
+            echo '---'
+            echo ''
+            cat README.md
+          } > site_docs/index.md
+
+          # Remove the H1 title from index (banner replaces it)
+          sed -i '/^# Cactus$/d' site_docs/index.md
+
+          # --- Fix links in index.md (README links → site_docs structure) ---
+          sed -i 's|(cactus_engine\.md)|(docs/cactus_engine.md)|g' site_docs/index.md
+          sed -i 's|(cactus_graph\.md)|(docs/cactus_graph.md)|g' site_docs/index.md
+          sed -i 's|(cactus_index\.md)|(docs/cactus_index.md)|g' site_docs/index.md
+          sed -i 's|(finetuning\.md)|(docs/finetuning.md)|g' site_docs/index.md
+          sed -i 's|(compatibility\.md)|(docs/compatibility.md)|g' site_docs/index.md
+          sed -i 's|(/CONTRIBUTING\.md)|(CONTRIBUTING.md)|g' site_docs/index.md
+          sed -i 's|(/python/)|(python/README.md)|g' site_docs/index.md
+          sed -i 's|(/apple/)|(apple/README.md)|g' site_docs/index.md
+          sed -i 's|(/android/)|(android/README.md)|g' site_docs/index.md
+          sed -i 's|(/flutter/)|(flutter/README.md)|g' site_docs/index.md
+          sed -i 's|(/rust/)|(rust/README.md)|g' site_docs/index.md
+          sed -i 's|(/blog/hybrid_transcription\.md)|(blog/hybrid_transcription.md)|g' site_docs/index.md
+          sed -i 's|(/blog/lfm2_24b_a2b\.md)|(blog/lfm2_24b_a2b.md)|g' site_docs/index.md
+
+          # --- Fix links in docs/ files (absolute /docs/ → relative same dir, absolute /sdk/ → ../sdk/) ---
+          for f in site_docs/docs/*.md; do
+            sed -i 's|(/docs/cactus_engine\.md)|(cactus_engine.md)|g' "$f"
+            sed -i 's|(/docs/cactus_graph\.md)|(cactus_graph.md)|g' "$f"
+            sed -i 's|(/docs/cactus_index\.md)|(cactus_index.md)|g' "$f"
+            sed -i 's|(/docs/finetuning\.md)|(finetuning.md)|g' "$f"
+            sed -i 's|(/docs/compatibility\.md)|(compatibility.md)|g' "$f"
+            sed -i 's|(/docs/index\.md)|(../index.md)|g' "$f"
+            sed -i 's|(/CONTRIBUTING\.md)|(../CONTRIBUTING.md)|g' "$f"
+            sed -i 's|(/python/)|(../python/README.md)|g' "$f"
+            sed -i 's|(/apple/)|(../apple/README.md)|g' "$f"
+            sed -i 's|(/android/)|(../android/README.md)|g' "$f"
+            sed -i 's|(/flutter/)|(../flutter/README.md)|g' "$f"
+            sed -i 's|(/rust/)|(../rust/README.md)|g' "$f"
+          done
+
+          # --- Fix links in SDK READMEs (one level deep → ../docs/, ../sdk/) ---
+          for f in site_docs/python/README.md site_docs/apple/README.md site_docs/android/README.md site_docs/flutter/README.md site_docs/rust/README.md; do
+            sed -i 's|(/docs/cactus_engine\.md)|(../docs/cactus_engine.md)|g' "$f"
+            sed -i 's|(/docs/cactus_graph\.md)|(../docs/cactus_graph.md)|g' "$f"
+            sed -i 's|(/docs/cactus_index\.md)|(../docs/cactus_index.md)|g' "$f"
+            sed -i 's|(/docs/finetuning\.md)|(../docs/finetuning.md)|g' "$f"
+            sed -i 's|(/docs/compatibility\.md)|(../docs/compatibility.md)|g' "$f"
+            sed -i 's|(/python/)|(../python/README.md)|g' "$f"
+            sed -i 's|(/apple/)|(../apple/README.md)|g' "$f"
+            sed -i 's|(/android/)|(../android/README.md)|g' "$f"
+            sed -i 's|(/flutter/)|(../flutter/README.md)|g' "$f"
+            sed -i 's|(/rust/)|(../rust/README.md)|g' "$f"
+            sed -i 's|(\.\.\/README\.md)|(../index.md)|g' "$f"
+          done
+
+          # --- Fix links in blog posts (one level deep) ---
+          for f in site_docs/blog/*.md; do
+            sed -i 's|(/docs/cactus_engine\.md)|(../docs/cactus_engine.md)|g' "$f"
+            sed -i 's|(/docs/cactus_graph\.md)|(../docs/cactus_graph.md)|g' "$f"
+            sed -i 's|(/docs/cactus_index\.md)|(../docs/cactus_index.md)|g' "$f"
+            sed -i 's|(/docs/finetuning\.md)|(../docs/finetuning.md)|g' "$f"
+            sed -i 's|(/docs/compatibility\.md)|(../docs/compatibility.md)|g' "$f"
+            sed -i 's|(/python/)|(../python/README.md)|g' "$f"
+            sed -i 's|(/apple/)|(../apple/README.md)|g' "$f"
+            sed -i 's|(/android/)|(../android/README.md)|g' "$f"
+            sed -i 's|(/flutter/)|(../flutter/README.md)|g' "$f"
+            sed -i 's|(/blog/hybrid_transcription\.md)|(hybrid_transcription.md)|g' "$f"
+            sed -i 's|(/blog/lfm2_24b_a2b\.md)|(lfm2_24b_a2b.md)|g' "$f"
+          done
+
+          # --- Fix links in CONTRIBUTING.md (root level) ---
+          sed -i 's|(/docs/cactus_engine\.md)|(docs/cactus_engine.md)|g' site_docs/CONTRIBUTING.md
+          sed -i 's|(/docs/cactus_graph\.md)|(docs/cactus_graph.md)|g' site_docs/CONTRIBUTING.md
+          sed -i 's|(/docs/cactus_index\.md)|(docs/cactus_index.md)|g' site_docs/CONTRIBUTING.md
+          sed -i 's|(/docs/index\.md)|(index.md)|g' site_docs/CONTRIBUTING.md
+
+      - run: mkdocs gh-deploy --force

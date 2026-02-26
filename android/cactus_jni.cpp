@@ -33,6 +33,18 @@ static void token_callback_bridge(const char* token, uint32_t token_id, void* us
 
 extern "C" {
 
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*, void*) {
+    cactus_set_telemetry_environment("kotlin", nullptr);
+    return JNI_VERSION_1_6;
+}
+
+JNIEXPORT void JNICALL
+Java_com_cactus_Cactus_nativeSetCacheDir(JNIEnv* env, jobject, jstring cacheDir) {
+    const char* dir = jstring_to_cstr(env, cacheDir);
+    cactus_set_telemetry_environment(nullptr, dir);
+    release_jstring(env, cacheDir, dir);
+}
+
 JNIEXPORT jlong JNICALL
 Java_com_cactus_Cactus_nativeInit(JNIEnv* env, jobject, jstring modelPath, jstring corpusDir) {
     const char* path = jstring_to_cstr(env, modelPath);
@@ -410,6 +422,54 @@ Java_com_cactus_Cactus_nativeAudioEmbed(JNIEnv* env, jobject, jlong handle, jstr
     jfloatArray jarray = env->NewFloatArray(static_cast<jsize>(embeddingDim));
     env->SetFloatArrayRegion(jarray, 0, static_cast<jsize>(embeddingDim), buffer.data());
     return jarray;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_cactus_Cactus_nativeVad(JNIEnv* env, jobject, jlong handle,
+                                  jstring audioPath, jstring optionsJson, jbyteArray pcmData) {
+    if (handle == 0) {
+        return env->NewStringUTF("{\"error\":\"Model not initialized\"}");
+    }
+
+    const char* path = jstring_to_cstr(env, audioPath);
+    const char* options = jstring_to_cstr(env, optionsJson);
+
+    std::vector<char> buffer(DEFAULT_BUFFER_SIZE);
+
+    const uint8_t* pcmBuffer = nullptr;
+    size_t pcmSize = 0;
+    jbyte* pcmBytes = nullptr;
+
+    if (pcmData != nullptr) {
+        pcmSize = env->GetArrayLength(pcmData);
+        pcmBytes = env->GetByteArrayElements(pcmData, nullptr);
+        pcmBuffer = reinterpret_cast<const uint8_t*>(pcmBytes);
+    }
+
+    int result = cactus_vad(
+        reinterpret_cast<cactus_model_t>(handle),
+        path,
+        buffer.data(),
+        buffer.size(),
+        options,
+        pcmBuffer,
+        pcmSize
+    );
+
+    if (pcmBytes != nullptr) {
+        env->ReleaseByteArrayElements(pcmData, pcmBytes, JNI_ABORT);
+    }
+
+    release_jstring(env, audioPath, path);
+    release_jstring(env, optionsJson, options);
+
+    if (result < 0) {
+        const char* error = cactus_get_last_error();
+        std::string errorJson = "{\"error\":\"" + std::string(error ? error : "Unknown error") + "\"}";
+        return env->NewStringUTF(errorJson.c_str());
+    }
+
+    return env->NewStringUTF(buffer.data());
 }
 
 JNIEXPORT jlong JNICALL

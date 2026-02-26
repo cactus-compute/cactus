@@ -1,0 +1,105 @@
+[
+    {
+        "model_family": "gemma",
+        "precision": "INT8",
+        "test_type": "llm",
+        "input_messages": "[{\"role\":\"user\",\"content\":\"What is 2+2? Answer with just the number.\"}]",
+        "options": "{\"max_tokens\":32,\"temperature\":0,\"top_k\":1,\"stop_sequences\":[\"<end_of_turn>\"],\"telemetry_enabled\":false}",
+        "expected_output": "2",
+        "token_count_min": 1,
+        "token_count_max": 10
+    },
+    {
+        "model_family": "lfm2",
+        "precision": "INT8",
+        "test_type": "llm",
+        "input_messages": "[{\"role\":\"user\",\"content\":\"What is 2+2? Answer with just the number.\"}]",
+        "options": "{\"max_tokens\":32,\"temperature\":0,\"top_k\":1,\"stop_sequences\":[\"<|im_end|>\"],\"telemetry_enabled\":false}",
+        "expected_output": "2",
+        "token_count_min": 1,
+        "token_count_max": 10
+    },
+    {
+        "model_family": "lfm2moe",
+        "precision": "INT8",
+        "test_type": "llm",
+        "input_messages": "[{\"role\":\"user\",\"content\":\"What is 2+2? Answer with just the number.\"}]",
+        "options": "{\"max_tokens\":32,\"temperature\":0,\"top_k\":1,\"stop_sequences\":[\"<|im_end|>\"],\"telemetry_enabled\":false}",
+        "expected_output": "4",
+        "token_count_min": 1,
+        "token_count_max": 10
+    },
+    {
+        "model_family": "lfm2vl",
+        "precision": "FP16",
+        "test_type": "vlm",
+        "input_messages": "[{\"role\":\"user\",\"content\":\"What animal is in this image? One word.\",\"images\":[\"test_monkey.png\"]}]",
+        "options": "{\"max_tokens\":16,\"temperature\":0,\"top_k\":1,\"stop_sequences\":[\"<|im_end|>\"],\"telemetry_enabled\":false}",
+        "expected_output": "The animal in this image is a monkey.",
+        "token_count_min": 1,
+        "token_count_max": 16
+    },
+    {
+        "model_family": "lfm2vl",
+        "precision": "INT4",
+        "test_type": "vlm",
+        "input_messages": "[{\"role\":\"user\",\"content\":\"What animal is in this image? One word.\",\"images\":[\"test_monkey.png\"]}]",
+        "options": "{\"max_tokens\":16,\"temperature\":0,\"top_k\":1,\"stop_sequences\":[\"<|im_end|>\"],\"telemetry_enabled\":false}",
+        "expected_output": "Monkey",
+        "token_count_min": 1,
+        "token_count_max": 16
+    },
+    {
+        "model_family": "lfm2vl",
+        "precision": "INT8",
+        "test_type": "vlm",
+        "input_messages": "[{\"role\":\"user\",\"content\":\"What animal is in this image? One word.\",\"images\":[\"test_monkey.png\"]}]",
+        "options": "{\"max_tokens\":16,\"temperature\":0,\"top_k\":1,\"stop_sequences\":[\"<|im_end|>\"],\"telemetry_enabled\":false}",
+        "expected_output": "monkey",
+        "token_count_min": 1,
+        "token_count_max": 16
+    },
+    {
+        "model_family": "moonshine",
+        "precision": "INT8",
+        "test_type": "stt",
+        "audio_file": "test.wav",
+        "reference_transcript": "Hello hello hello um quickly testing out creating a way of file through voice memos um the goal is to use this way file to test out whisper hopefully this will transcribe properly that's all i can hope for all right here we go",
+        "wer_threshold": 0.15
+    },
+    {
+        "model_family": "parakeet",
+        "precision": "INT8",
+        "test_type": "stt",
+        "audio_file": "test.wav",
+        "reference_transcript": "hello hello hello quickly testing out creating a way file through voice memos the goal is to use this wh file to test out whisper hopefully this will transcribe properly that's all i can hope for all right here we go",
+        "wer_threshold": 0.15
+    },
+    {
+        "model_family": "nomic",
+        "precision": "INT8",
+        "test_type": "embedding",
+        "input_text": "The quick brown fox jumps over the lazy dog",
+        "expected_embedding_dim": 768,
+        "reference_embedding": [],
+        "cosine_similarity_threshold": 0.99
+    },
+    {
+        "model_family": "qwen",
+        "precision": "INT8",
+        "test_type": "llm",
+        "input_messages": "[{\"role\":\"user\",\"content\":\"What is 2+2? Answer with just the number.\"}]",
+        "options": "{\"max_tokens\":32,\"temperature\":0,\"top_k\":1,\"stop_sequences\":[\"<|im_end|>\"],\"telemetry_enabled\":false}",
+        "expected_output": "2+2",
+        "token_count_min": 1,
+        "token_count_max": 64
+    },
+    {
+        "model_family": "whisper",
+        "precision": "INT8",
+        "test_type": "stt",
+        "audio_file": "test.wav",
+        "reference_transcript": "Hello hello hello, just quickly testing out creating a WAV file through voice memos. The goal is to use this WAV file to test out Whisper. Hopefully this will transcribe properly. That's all I can hope for. Alright, here we go.",
+        "wer_threshold": 0.15
+    }
+]

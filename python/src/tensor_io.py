@@ -2,6 +2,7 @@ import numpy as np
 import struct
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+from .weight_patterns import EMBED_NAMES
 
 try:
     import torch
@@ -91,20 +92,23 @@ def interleave_scales(scales: np.ndarray, block_size: int = INTERLEAVE_BLOCK) ->
 
 
 def pack_int4_pairs(data: np.ndarray) -> np.ndarray:
-    """Pack pairs of INT4 values (stored as int8) into single bytes.
+    """Pack INT4 values (stored as int8) into bytes using planar layout.
 
-    Input: array of int8 values in range [-8, 7]
-    Output: array of uint8 with half the length, each byte containing two packed int4 values
+    Input: array of int8 values in range [-8, 7], length must be a multiple of 32
+    Output: array of uint8 with half the length
 
-    Packing format: low nibble = first value, high nibble = second value
+    Packing format (planar, groups of 32):
+      For each group of 32 values, the first 16 are stored in the low nibbles
+      and the next 16 in the high nibbles of 16 consecutive bytes.
+      Nibbles are stored in two's complement form (value & 0x0F).
     """
-    assert len(data) % 2 == 0, "Data length must be even for INT4 packing"
+    assert len(data) % 32 == 0, "Data length must be a multiple of 32 for INT4 planar packing"
 
-    pairs = data.reshape(-1, 2)
-    low = pairs[:, 0].astype(np.uint8) & 0x0F
-    high = (pairs[:, 1].astype(np.uint8) & 0x0F) << 4
+    groups = data.reshape(-1, 32)
+    low = (groups[:, :16].astype(np.int8).view(np.uint8) & 0x0F).astype(np.uint8)
+    high = ((groups[:, 16:].astype(np.int8).view(np.uint8) & 0x0F).astype(np.uint8)) << 4
 
-    return (low | high).astype(np.uint8)
+    return (low | high).astype(np.uint8).reshape(-1)
 
 
 def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=False, stats_tracker=None, args=None, model_type=None):
@@ -125,7 +129,10 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         model_type: Model type string (e.g., 'gemma', 'llama')
     """
     if torch is not None and isinstance(tensor, torch.Tensor):
-        data = tensor.detach().cpu().numpy()
+        t = tensor.detach().cpu()
+        if t.dtype == torch.bfloat16:
+            t = t.float()
+        data = t.numpy()
     else:
         data = np.array(tensor)
 
@@ -139,6 +146,8 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         filename = output_path.name
         if any(x in filename for x in ['norm', 'bias', 'vision', 'position_embeddings', 'embed_positions']):
             precision = 'FP16'
+        elif precision == 'INT4' and any(x in filename for x in EMBED_NAMES):
+            precision = 'INT8'
 
     shape = list(data.shape)
     if transpose and len(shape) == 2:

@@ -258,6 +258,92 @@ private:
 };
 
 
+class LFM2MoEModel : public Model {
+public:
+    LFM2MoEModel();
+    explicit LFM2MoEModel(const Config& config);
+    ~LFM2MoEModel() override = default;
+
+    bool is_cache_empty() const;
+
+    bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true) override;
+    bool init(CactusGraph* external_graph, const std::string& model_folder, size_t context_size,
+              const std::string& system_prompt = "", bool do_warmup = true) override;
+
+protected:
+    using Model::forward;
+    size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t build_conv1d(CactusGraph* gb, size_t input, uint32_t layer_idx,
+                        ComputeBackend backend, bool use_cache);
+
+    size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                    ComputeBackend backend) const override;
+
+    size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    size_t forward(CactusGraph* gb, const std::vector<uint32_t>& tokens, ComputeBackend backend, bool use_cache = false);
+    size_t forward(CactusGraph* gb, size_t input_embeddings, size_t seq_len, ComputeBackend backend, bool use_cache = false);
+    void post_init() override;
+    void post_execute_updates(CactusGraph* gb, size_t seq_len) override;
+    void reset_cache() override;
+    void load_weights_to_graph(CactusGraph* gb) override;
+
+private:
+    bool is_dense_layer(uint32_t layer_idx) const;
+
+    struct WeightNodeIDs {
+        size_t output_weight;
+        size_t output_norm_weight;
+
+        struct ExpertWeights {
+            size_t w1_weight = 0;
+            size_t w3_weight = 0;
+            size_t w2_weight = 0;
+        };
+
+        struct LayerWeights {
+            size_t attn_q_weight = 0;
+            size_t attn_k_weight = 0;
+            size_t attn_v_weight = 0;
+            size_t attn_output_weight = 0;
+            size_t attn_q_norm_weight = 0;
+            size_t attn_k_norm_weight = 0;
+
+            size_t conv_depthwise_weight = 0;
+            size_t conv_in_proj_weight = 0;
+            size_t conv_out_proj_weight = 0;
+
+            size_t input_layernorm_weight = 0;
+            size_t post_attention_layernorm_weight = 0;
+            size_t ffn_gate_weight = 0;
+            size_t ffn_up_weight = 0;
+            size_t ffn_down_weight = 0;
+
+            size_t moe_router_weight = 0;
+            size_t moe_expert_bias = 0;
+            std::vector<ExpertWeights> moe_experts;
+        };
+
+        enum class LayerType : uint8_t { ATTENTION, CONV };
+
+        struct LayerEntry {
+            LayerType type;
+            LayerWeights weights;
+        };
+
+        std::vector<LayerEntry> layers;
+    } weight_nodes_;
+
+    ConvCache conv_cache_;
+    std::vector<size_t> conv_cache_bx_nodes_;
+    bool last_forward_used_cache_ = false;
+};
+
+
 class NomicModel : public Model {
 public:
     NomicModel();
@@ -742,6 +828,123 @@ private:
 
 };
 
+class ParakeetModel : public Model {
+public:
+    ParakeetModel();
+    explicit ParakeetModel(const Config& config);
+    ~ParakeetModel() override = default;
+
+protected:
+    size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("Parakeet: build_attention unused");
+    }
+
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("Parakeet: build_mlp unused");
+    }
+
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("Parakeet: build_transformer_block unused");
+    }
+
+    size_t forward(const std::vector<uint32_t>& /*tokens*/, bool /*use_cache*/ = false) override {
+        throw std::runtime_error("Parakeet requires audio feature forward().");
+    }
+
+    size_t forward(const std::vector<float>& audio_features, const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    void load_weights_to_graph(CactusGraph* gb) override;
+    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+                               float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0,
+                               const std::string& profile_file = "", float* out_entropy = nullptr) override;
+    std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
+    void reset_cache() override;
+
+private:
+    size_t build_encoder(CactusGraph* gb, const std::vector<float>& audio_features);
+    size_t build_ctc_logits(CactusGraph* gb, size_t hidden_states);
+    size_t build_subsampling(CactusGraph* gb, const std::vector<float>& audio_features);
+    size_t build_relative_position_embeddings(CactusGraph* gb, size_t seq_len);
+    size_t build_self_attention(CactusGraph* gb, size_t hidden, size_t position_embeddings, uint32_t layer_idx, ComputeBackend backend);
+    size_t build_feed_forward(CactusGraph* gb, size_t hidden, uint32_t layer_idx, bool second_ff, ComputeBackend backend);
+    size_t build_convolution_module(CactusGraph* gb, size_t hidden, uint32_t layer_idx, ComputeBackend backend);
+    size_t build_encoder_block(CactusGraph* gb, size_t hidden, size_t position_embeddings, uint32_t layer_idx, ComputeBackend backend);
+    std::vector<uint32_t> greedy_decode_tokens(CactusGraph* gb, size_t logits_node) const;
+
+    struct WeightNodeIDs {
+        size_t ctc_head_weight = 0;
+        size_t ctc_head_bias = 0;
+
+        size_t subsampling_conv0_weight = 0;
+        size_t subsampling_conv0_bias = 0;
+        size_t subsampling_depthwise1_weight = 0;
+        size_t subsampling_depthwise1_bias = 0;
+        size_t subsampling_pointwise1_weight = 0;
+        size_t subsampling_pointwise1_bias = 0;
+        size_t subsampling_depthwise2_weight = 0;
+        size_t subsampling_depthwise2_bias = 0;
+        size_t subsampling_pointwise2_weight = 0;
+        size_t subsampling_pointwise2_bias = 0;
+        size_t subsampling_linear_weight = 0;
+        size_t subsampling_linear_bias = 0;
+
+        struct LayerWeights {
+            size_t ff1_linear1_weight = 0;
+            size_t ff1_linear1_bias = 0;
+            size_t ff1_linear2_weight = 0;
+            size_t ff1_linear2_bias = 0;
+
+            size_t ff2_linear1_weight = 0;
+            size_t ff2_linear1_bias = 0;
+            size_t ff2_linear2_weight = 0;
+            size_t ff2_linear2_bias = 0;
+
+            size_t self_attn_q_weight = 0;
+            size_t self_attn_q_bias = 0;
+            size_t self_attn_k_weight = 0;
+            size_t self_attn_k_bias = 0;
+            size_t self_attn_v_weight = 0;
+            size_t self_attn_v_bias = 0;
+            size_t self_attn_output_weight = 0;
+            size_t self_attn_output_bias = 0;
+            size_t self_attn_relative_k_weight = 0;
+            size_t self_attn_bias_u = 0;
+            size_t self_attn_bias_v = 0;
+
+            size_t norm_ff1_weight = 0;
+            size_t norm_ff1_bias = 0;
+            size_t norm_self_attn_weight = 0;
+            size_t norm_self_attn_bias = 0;
+            size_t norm_conv_weight = 0;
+            size_t norm_conv_bias = 0;
+            size_t norm_ff2_weight = 0;
+            size_t norm_ff2_bias = 0;
+            size_t norm_out_weight = 0;
+            size_t norm_out_bias = 0;
+
+            size_t conv_pointwise1_weight = 0;
+            size_t conv_pointwise1_bias = 0;
+            size_t conv_depthwise_weight = 0;
+            size_t conv_depthwise_bias = 0;
+            size_t conv_pointwise2_weight = 0;
+            size_t conv_pointwise2_bias = 0;
+            size_t conv_batchnorm_weight = 0;
+            size_t conv_batchnorm_bias = 0;
+            size_t conv_batchnorm_running_mean = 0;
+            size_t conv_batchnorm_running_var = 0;
+        };
+
+        std::vector<LayerWeights> layers;
+    } weight_nodes_;
+
+    bool ctc_tokens_ready_ = false;
+    size_t ctc_emit_index_ = 0;
+    std::vector<uint32_t> ctc_tokens_;
+    size_t last_input_token_count_ = 0;
+
+    std::unique_ptr<npu::NPUEncoder> npu_encoder_;
+    bool use_npu_encoder_ = false;
+};
+
 
 class Lfm2VlModel : public Model {
 public:
@@ -840,6 +1043,105 @@ private:
 
     bool image_prefill_completed_ = false;
     size_t last_token_count_ = 0;
+};
+
+class SileroVADModel : public Model {
+public:
+    static constexpr size_t CONTEXT_SIZE = 64;
+    static constexpr size_t CHUNK_SIZE = 512;
+    static constexpr size_t REFLECT_PAD_SIZE = 64;
+    static constexpr size_t HIDDEN_SIZE = 128;
+    static constexpr size_t GATE_SIZE = 512;
+
+    SileroVADModel();
+    explicit SileroVADModel(const Config& config);
+    ~SileroVADModel() override;
+
+    bool init(const std::string& model_folder, size_t context_size = 0,
+              const std::string& system_prompt = "", bool do_warmup = false) override;
+
+    struct SpeechTimestamp {
+        size_t start;
+        size_t end;
+    };
+
+    struct SpeechTimestampsOptions {
+        float threshold = 0.5f;
+        float neg_threshold = 0.0f;
+        int min_speech_duration_ms = 250;
+        float max_speech_duration_s = std::numeric_limits<float>::infinity();
+        int min_silence_duration_ms = 100;
+        int speech_pad_ms = 30;
+        int window_size_samples = 512;
+        int min_silence_at_max_speech = 98;
+        bool use_max_poss_sil_at_max_speech = true;
+        int sampling_rate = 16000;
+    };
+
+    float process_chunk(const std::vector<float>& audio_chunk);
+    void reset_states();
+    std::vector<SpeechTimestamp> get_speech_timestamps(const std::vector<float>& audio, const SpeechTimestampsOptions& options);
+
+protected:
+    size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("SileroVAD: build_attention unused");
+    }
+
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("SileroVAD: build_mlp unused");
+    }
+
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("SileroVAD: build_transformer_block unused");
+    }
+
+    size_t forward(const std::vector<uint32_t>&, bool = false) override {
+        throw std::runtime_error("SileroVAD: use process_chunk() instead");
+    }
+
+    size_t forward(const std::vector<float>& audio_features, const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+
+    void load_weights_to_graph(CactusGraph* gb) override;
+
+private:
+    void build_graph();
+
+    struct VADGraphNodes {
+        size_t input;
+        size_t h_prev;
+        size_t c_prev;
+        size_t h_new;
+        size_t c_new;
+        size_t output;
+        size_t lstm_output;
+        size_t encoder_output;
+    } graph_nodes_;
+
+    struct VADWeightNodes {
+        size_t stft_basis;
+        struct EncoderBlock {
+            size_t conv_weight;
+            size_t conv_bias;
+        };
+        std::vector<EncoderBlock> encoder_blocks;
+        size_t lstm_weight_ih;
+        size_t lstm_weight_hh;
+        size_t lstm_bias_ih;
+        size_t lstm_bias_hh;
+        size_t output_conv_weight;
+        size_t output_conv_bias;
+    } weight_nodes_;
+
+    struct VADState {
+        std::vector<__fp16> h;
+        std::vector<__fp16> c;
+        std::vector<float> context;
+        std::vector<float> input_buf;
+        std::vector<__fp16> input_fp16;
+    } state_;
+
+    CactusGraph graph_;
+    std::string weights_path_;
 };
 
 }

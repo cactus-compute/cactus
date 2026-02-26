@@ -3,6 +3,7 @@
 #include <cmath>
 #include <iostream>
 #include <random>
+#include <algorithm>
 
 bool test_neon_add_fp16_correctness() {
     const size_t size = 16;
@@ -329,7 +330,7 @@ bool test_matmul_int8_grouped_correctness() {
 
     std::vector<__fp16> A(M * K);
     for (size_t i = 0; i < M * K; ++i) {
-        A[i] = static_cast<__fp16>((static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.5f);
+        A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 0.5f);
     }
 
     std::vector<int8_t> B_rowmajor(N * K);
@@ -439,6 +440,152 @@ bool test_matmul_int8_grouped_correctness() {
     return max_abs_error < 0.1f;
 }
 
+bool test_int4_matmul_correctness() {
+    const size_t K = 128, N = 8, group_size = 32;
+    const size_t num_groups = K / group_size;
+    const size_t BS = 4;
+
+    std::mt19937 gen(42);
+    std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
+
+    std::vector<float> B_fp32(N * K);
+    for (size_t i = 0; i < N * K; ++i) B_fp32[i] = dis(gen);
+
+    std::vector<int8_t> B_raw(N * K);
+    std::vector<float> B_scales(N * num_groups);
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t g = 0; g < num_groups; ++g) {
+            float max_abs = 0.0f;
+            for (size_t k = 0; k < group_size; ++k) {
+                float val = std::abs(B_fp32[n * K + g * group_size + k]);
+                if (val > max_abs) max_abs = val;
+            }
+            float scale = std::max(max_abs / 7.0f, 1e-10f);
+            B_scales[n * num_groups + g] = scale;
+            for (size_t k = 0; k < group_size; ++k) {
+                int32_t q = static_cast<int32_t>(std::round(B_fp32[n * K + g * group_size + k] / scale));
+                B_raw[n * K + g * group_size + k] = static_cast<int8_t>(std::clamp(q, -8, 7));
+            }
+        }
+    }
+
+    std::vector<int8_t> B_interleaved(N * K);
+    for (size_t n_blk = 0; n_blk < N / BS; ++n_blk)
+        for (size_t k_blk = 0; k_blk < K / BS; ++k_blk)
+            for (size_t ni = 0; ni < BS; ++ni)
+                for (size_t ki = 0; ki < BS; ++ki)
+                    B_interleaved[(n_blk * (K / BS) + k_blk) * BS * BS + ni * BS + ki] =
+                        B_raw[(n_blk * BS + ni) * K + k_blk * BS + ki];
+
+    std::vector<uint8_t> B_packed(N * K / 2);
+    for (size_t i = 0; i < N * K; i += 32) {
+        for (size_t j = 0; j < 16; ++j) {
+            uint8_t lo = static_cast<uint8_t>(B_interleaved[i + j] & 0x0F);
+            uint8_t hi = static_cast<uint8_t>((B_interleaved[i + 16 + j] & 0x0F) << 4);
+            B_packed[i / 2 + j] = lo | hi;
+        }
+    }
+
+    std::vector<__fp16> B_scales_interleaved(N * num_groups);
+    for (size_t n_blk = 0; n_blk < N / BS; ++n_blk)
+        for (size_t g = 0; g < num_groups; ++g)
+            for (size_t ni = 0; ni < BS; ++ni)
+                B_scales_interleaved[(n_blk * num_groups + g) * BS + ni] =
+                    static_cast<__fp16>(B_scales[(n_blk * BS + ni) * num_groups + g]);
+
+    for (size_t M : {1, 5}) {
+        std::vector<__fp16> A_fp16(M * K);
+        for (size_t i = 0; i < M * K; ++i) A_fp16[i] = static_cast<__fp16>(dis(gen));
+
+        std::vector<int8_t> A_quant(M * K);
+        std::vector<float> A_scales(M);
+        for (size_t m = 0; m < M; ++m) {
+            A_scales[m] = std::max(cactus_fp16_max_abs(A_fp16.data() + m * K, K) / 127.0f, 1e-10f);
+            cactus_fp16_to_int8(A_fp16.data() + m * K, A_quant.data() + m * K, K, A_scales[m]);
+        }
+
+        std::vector<__fp16> C(M * N);
+        cactus_matmul_int4(A_quant.data(), A_scales.data(),
+                           reinterpret_cast<const int8_t*>(B_packed.data()),
+                           B_scales_interleaved.data(), C.data(), M, K, N, group_size);
+
+        std::vector<float> C_ref(M * N, 0.0f);
+        for (size_t m = 0; m < M; ++m) {
+            for (size_t n = 0; n < N; ++n) {
+                float acc = 0.0f;
+                for (size_t g = 0; g < num_groups; ++g) {
+                    int32_t group_sum = 0;
+                    for (size_t k = 0; k < group_size; ++k) {
+                        size_t k_idx = g * group_size + k;
+                        group_sum += static_cast<int32_t>(A_quant[m * K + k_idx]) *
+                                     static_cast<int32_t>(B_raw[n * K + k_idx]);
+                    }
+                    acc += static_cast<float>(group_sum) * A_scales[m] * B_scales[n * num_groups + g];
+                }
+                C_ref[m * N + n] = acc;
+            }
+        }
+
+        float max_err = 0.0f;
+        for (size_t i = 0; i < M * N; ++i) {
+            float err = std::abs(static_cast<float>(C[i]) - C_ref[i]);
+            if (err > max_err) max_err = err;
+        }
+
+        std::cout << "  INT4 " << (M == 1 ? "GEMV" : "GEMM") << " max abs error: " << max_err << std::endl;
+        if (max_err >= 0.1f) return false;
+    }
+
+    return true;
+}
+
+bool test_stft_kernel_correctness() {
+    const size_t N = 2, C_in = 1, L = 8, K = 4, stride = 2, num_fft_bins = 2;
+    const size_t C_out = 2 * num_fft_bins;
+    const size_t out_len = (L - K) / stride + 1;
+
+    const __fp16 bin0_re[] = {(__fp16) 1, (__fp16) 1, (__fp16) 1, (__fp16) 1};
+    const __fp16 bin1_re[] = {(__fp16) 1, (__fp16) 0, (__fp16)-1, (__fp16) 0};
+    const __fp16 bin0_im[] = {(__fp16) 0, (__fp16) 0, (__fp16) 0, (__fp16) 0};
+    const __fp16 bin1_im[] = {(__fp16) 0, (__fp16)-1, (__fp16) 0, (__fp16) 1};
+    std::vector<__fp16> weight;
+    for (const __fp16* row : {bin0_re, bin1_re, bin0_im, bin1_im})
+        weight.insert(weight.end(), row, row + K);
+
+    const __fp16 ramp[]   = {(__fp16)1, (__fp16)2, (__fp16)3, (__fp16)4,
+                              (__fp16)5, (__fp16)6, (__fp16)7, (__fp16)8};
+    const __fp16 cosine[] = {(__fp16)0, (__fp16)1, (__fp16) 0, (__fp16)-1,
+                              (__fp16)0, (__fp16)1, (__fp16) 0, (__fp16)-1};
+    std::vector<__fp16> input;
+    input.insert(input.end(), ramp,   ramp   + L);
+    input.insert(input.end(), cosine, cosine + L);
+
+    struct Cplx { float r, i; };
+    const Cplx expected[2][2][3] = {
+        { { {10,0},{18,0},{26,0} }, { {-2,2},{-2,2},{-2,2} } },
+        { { { 0,0},{ 0,0},{ 0,0} }, { { 0,-2},{ 0,2},{ 0,-2} } },
+    };
+
+    std::vector<__fp16> cplx(N * C_out * out_len, (__fp16)0);
+    cactus_stft_f16(input.data(), weight.data(), cplx.data(),
+                            N, L, C_in, C_out, K, stride, num_fft_bins);
+
+    const size_t out_bs = C_out * out_len;
+    const float tol = 0.1f;
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t b = 0; b < num_fft_bins; ++b) {
+            for (size_t t = 0; t < out_len; ++t) {
+                float r  = (float)cplx[n * out_bs + b * out_len + t];
+                float im = (float)cplx[n * out_bs + (b + num_fft_bins) * out_len + t];
+                if (std::abs(r  - expected[n][b][t].r) > tol) return false;
+                if (std::abs(im - expected[n][b][t].i) > tol) return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("Kernel Backend Tests");
 
@@ -458,6 +605,8 @@ int main() {
     runner.run_test("Kernel RoPE Correctness", test_neon_rope_correctness());
     runner.run_test("Kernel Attention FP16 Correctness", test_neon_attention_fp16_correctness());
     runner.run_test("Kernel Grouped INT8 MatMul Correctness", test_matmul_int8_grouped_correctness());
+    runner.run_test("Kernel INT4 MatMul Correctness", test_int4_matmul_correctness());
+    runner.run_test("Kernel STFT Complex Correctness", test_stft_kernel_correctness());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

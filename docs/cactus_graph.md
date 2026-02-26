@@ -1,3 +1,9 @@
+---
+title: "Cactus Graph API Documentation"
+description: "Computational graph framework for building and executing tensor operations on mobile devices. Supports matrix multiplication, attention, normalization, and INT4/INT8/FP16 precision."
+keywords: ["computation graph", "tensor operations", "mobile AI", "matrix multiplication", "attention mechanism", "INT4", "FP16"]
+---
+
 # Cactus Graph API Documentation
 
 The Cactus Graph API provides a computational graph framework for building and executing tensor operations. It supports multiple precision types, broadcasting, and optimized execution for neural network inference.
@@ -106,6 +112,7 @@ size_t exp_result = graph.scalar_exp(input);    // e^input
 size_t sqrt_result = graph.scalar_sqrt(input);  // √input
 size_t cos_result = graph.scalar_cos(input);    // cos(input)
 size_t sin_result = graph.scalar_sin(input);    // sin(input)
+size_t log_result = graph.scalar_log(input);    // ln(input)
 ```
 
 ### Matrix Operations
@@ -433,3 +440,9 @@ path1 = graph.silu(path1);
 size_t path2 = graph.matmul(input, weight2);
 size_t output = graph.multiply(path1, path2);
 ```
+
+## See Also
+
+- [Cactus Engine API](/docs/cactus_engine.md) — High-level inference API built on top of Cactus Graph
+- [Cactus Index API](/docs/cactus_index.md) — On-device vector database for embedding storage and search
+- [Runtime Compatibility](/docs/compatibility.md) — Weight versioning across releases

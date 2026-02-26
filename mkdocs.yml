@@ -1,0 +1,84 @@
+site_name: Cactus Docs
+site_url: https://cactus-compute.github.io/cactus/
+site_description: "Low-latency energy-efficient AI engine for mobile devices and wearables"
+site_author: Cactus Compute
+repo_url: https://github.com/cactus-compute/cactus
+repo_name: cactus-compute/cactus
+
+docs_dir: site_docs
+
+theme:
+  name: material
+  favicon: assets/logo.png
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  palette:
+    - scheme: slate
+      primary: black
+      accent: white
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: black
+      accent: black
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - tables
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+
+plugins:
+  - search
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/cactus-compute/cactus
+    - icon: fontawesome/brands/reddit
+      link: https://www.reddit.com/r/cactuscompute/
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Runtime Compatibility: docs/compatibility.md
+    - Contributing: CONTRIBUTING.md
+  - Core APIs:
+    - Engine API: docs/cactus_engine.md
+    - Graph API: docs/cactus_graph.md
+    - Index API: docs/cactus_index.md
+  - Guides:
+    - Fine-tuning & Deployment: docs/finetuning.md
+  - SDKs:
+    - Python: python/README.md
+    - Swift: apple/README.md
+    - Kotlin / Android: android/README.md
+    - Flutter: flutter/README.md
+    - Rust: rust/README.md
+  - Blog:
+    - All Posts: blog/README.md
+    - Hybrid Transcription: blog/hybrid_transcription.md
+    - "LFM2-24B on Mac": blog/lfm2_24b_a2b.md

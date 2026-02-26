@@ -33,13 +33,14 @@ void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     }
 
     size_t num_indices = indices_buffer.total_size;
-    size_t bytes_per_element = element_size * PrecisionTraits::size_of(tensor_buffer.precision);
+    size_t bytes_per_element = PrecisionTraits::packed_size_of(tensor_buffer.precision, element_size);
 
-    if (tensor_buffer.precision == Precision::INT8) {
-        const int8_t* tensor_data = tensor_buffer.data_as<int8_t>();
-        int8_t* output = node.output_buffer.data_as<int8_t>();
+    if (PrecisionTraits::is_integer(tensor_buffer.precision)) {
+        const char* tensor_data = static_cast<const char*>(tensor_buffer.get_data());
+        char* output = static_cast<char*>(node.output_buffer.get_data());
+        Precision prec = tensor_buffer.precision;
 
-        const bool is_grouped = tensor_buffer.is_grouped_int8();
+        const bool is_grouped = tensor_buffer.group_size > 0;
         __fp16* gathered_scales = nullptr;
         const __fp16* src_scales = nullptr;
         size_t num_groups = 0;
@@ -52,32 +53,18 @@ void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             gathered_scales = reinterpret_cast<__fp16*>(node.output_buffer.owned_scales.get());
         }
 
-        if (indices_buffer.precision == Precision::INT8) {
-            const int8_t* indices = indices_buffer.data_as<int8_t>();
-            for (size_t i = 0; i < num_indices; i++) {
-                size_t idx = static_cast<size_t>(indices[i]);
-                if (idx >= first_dim) {
-                    throw std::runtime_error("Gather index " + std::to_string(idx) + " out of bounds for dimension " + std::to_string(first_dim));
-                }
-                std::memcpy(output + i * element_size, tensor_data + idx * element_size, bytes_per_element);
-                if (is_grouped) {
-                    for (size_t g = 0; g < num_groups; g++) {
-                        gathered_scales[i * num_groups + g] = src_scales[idx * num_groups + g];
-                    }
-                }
+        const int8_t* indices = indices_buffer.data_as<int8_t>();
+        for (size_t i = 0; i < num_indices; i++) {
+            size_t idx = static_cast<size_t>(indices[i]);
+            if (idx >= first_dim) {
+                throw std::runtime_error("Gather index " + std::to_string(idx) + " out of bounds for dimension " + std::to_string(first_dim));
             }
-        } else {
-            const float* indices = indices_buffer.data_as<float>();
-            for (size_t i = 0; i < num_indices; i++) {
-                size_t idx = static_cast<size_t>(indices[i]);
-                if (idx >= first_dim) {
-                    throw std::runtime_error("Gather index " + std::to_string(idx) + " out of bounds for dimension " + std::to_string(first_dim));
-                }
-                std::memcpy(output + i * element_size, tensor_data + idx * element_size, bytes_per_element);
-                if (is_grouped) {
-                    for (size_t g = 0; g < num_groups; g++) {
-                        gathered_scales[i * num_groups + g] = src_scales[idx * num_groups + g];
-                    }
+            std::memcpy(output + PrecisionTraits::byte_offset_of(prec, i * element_size),
+                        tensor_data + PrecisionTraits::byte_offset_of(prec, idx * element_size),
+                        bytes_per_element);
+            if (is_grouped) {
+                for (size_t g = 0; g < num_groups; g++) {
+                    gathered_scales[i * num_groups + g] = src_scales[idx * num_groups + g];
                 }
             }
         }
@@ -150,8 +137,6 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
         slice_length = axis_size - slice_start;
     }
 
-    const size_t element_size = PrecisionTraits::size_of(input_buffer.precision);
-
     if (axis_index == 0) {
         size_t inner_elements = 1;
         for (size_t i = 1; i < input_buffer.shape.size(); ++i) {
@@ -163,7 +148,7 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
             throw std::runtime_error("Slice input buffer is not available");
         }
 
-        const size_t byte_offset = slice_start * inner_elements * element_size;
+        const size_t byte_offset = PrecisionTraits::byte_offset_of(input_buffer.precision, slice_start * inner_elements);
 
         node.output_buffer.set_external(base_ptr + byte_offset);
         node.output_buffer.precision = input_buffer.precision;
@@ -203,11 +188,6 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
         outer_elements *= input_buffer.shape[i];
     }
 
-    const size_t copy_block_elements = slice_length * inner_elements;
-    const size_t axis_stride_elements = axis_size * inner_elements;
-    const size_t copy_block_bytes = copy_block_elements * element_size;
-    const size_t axis_stride_bytes = axis_stride_elements * element_size;
-
     node.output_buffer.external_data = nullptr;
     node.output_buffer.allocate();
     node.output_buffer.precision = input_buffer.precision;
@@ -217,8 +197,13 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
         throw std::runtime_error("Slice output buffer could not be allocated");
     }
 
+    const size_t copy_block_elements = slice_length * inner_elements;
+    const size_t axis_stride_elements = axis_size * inner_elements;
+    const size_t copy_block_bytes = PrecisionTraits::byte_offset_of(input_buffer.precision, copy_block_elements);
+    const size_t axis_stride_bytes = PrecisionTraits::byte_offset_of(input_buffer.precision, axis_stride_elements);
+
     for (size_t outer = 0; outer < outer_elements; ++outer) {
-        const char* src = input_ptr + outer * axis_stride_bytes + slice_start * inner_elements * element_size;
+        const char* src = input_ptr + outer * axis_stride_bytes + PrecisionTraits::byte_offset_of(input_buffer.precision, slice_start * inner_elements);
         char* dst = output_ptr + outer * copy_block_bytes;
         std::memcpy(dst, src, copy_block_bytes);
     }
@@ -348,13 +333,12 @@ void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
     int dim = node.params.axis;
     size_t index_value = node.params.index_value;
 
-    size_t element_size = PrecisionTraits::size_of(input_buffer.precision);
     const char* input_data = static_cast<const char*>(input_buffer.get_data());
     char* output_data = static_cast<char*>(node.output_buffer.get_data());
 
     if (dim == 0) {
         size_t slice_size = input_buffer.total_size / input_shape[0];
-        size_t offset_bytes = index_value * slice_size * element_size;
+        size_t offset_bytes = PrecisionTraits::byte_offset_of(input_buffer.precision, index_value * slice_size);
         node.output_buffer.set_external(const_cast<char*>(input_data) + offset_bytes);
         return;
     }
@@ -374,9 +358,10 @@ void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
     for (size_t outer_idx = 0; outer_idx < outer_size; ++outer_idx) {
         size_t input_base = outer_idx * block_size + index_value * dim_stride;
 
-        std::memcpy(output_data + output_idx * element_size,
-                    input_data + input_base * element_size,
-                    slice_size * element_size);
+        char* output_offset_bytes = output_data + PrecisionTraits::byte_offset_of(input_buffer.precision, output_idx);
+        const char* input_offset_bytes = input_data + PrecisionTraits::byte_offset_of(input_buffer.precision, input_base);
+        size_t length = PrecisionTraits::byte_offset_of(input_buffer.precision, slice_size);
+        std::memcpy(output_offset_bytes, input_offset_bytes, length);
 
         output_idx += slice_size;
     }

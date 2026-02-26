@@ -123,44 +123,32 @@ size_t NomicModel::build_standard_mlp(CactusGraph* gb, size_t normalized_h, uint
 size_t NomicModel::build_moe_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
                                 ComputeBackend backend) const {
     const auto& layer = weight_nodes_.layers[layer_idx];
-    const auto& router_shape = gb->get_output_buffer(layer.mlp_router_layer_weight).shape;
-    if (router_shape.size() != 2) {
-        throw std::runtime_error("MoE router weight must be 2D");
-    }
-
-    const size_t num_experts = config_.num_experts != 0 ? config_.num_experts : router_shape[0];
-    const size_t seq_len = gb->get_output_buffer(normalized_h).shape[0];
+    const size_t num_experts = config_.num_experts != 0
+        ? config_.num_experts
+        : gb->get_output_buffer(layer.mlp_router_layer_weight).shape[0];
 
     auto gate_weights = gb->matmul(normalized_h, layer.mlp_router_layer_weight, true, backend);
     auto gate_probs = gb->softmax(gate_weights);
-    
-    auto topk_indices_and_values = gb->topk(gate_probs, config_.num_top_experts);
-    auto topk_idx = gb->index(topk_indices_and_values, 0, 0);
-    auto topk_w = gb->index(topk_indices_and_values, 1, 0);
-    auto expert_token_weights_matrix = gb->scatter_topk(topk_idx, topk_w, num_experts); 
-    
-    size_t expert_outputs = 0;
-    for (size_t e = 0; e < num_experts; e++) {
-        auto new_expert_output = gb->matmul(normalized_h, layer.mlp_experts_mlp1_weight[e], true, backend);  
-        new_expert_output = gb->gelu(new_expert_output);
-        new_expert_output = gb->matmul(new_expert_output, layer.mlp_experts_mlp2_weight[e], true, backend); 
+    auto topk_result = gb->topk(gate_probs, config_.num_top_experts);
+    auto topk_idx = gb->index(topk_result, 0, 0);
 
-        auto expert_token_weights = gb->index(expert_token_weights_matrix, e, 0); 
-        const auto& expert_weights_prec = gb->get_output_buffer(new_expert_output).precision;
-        if (gb->get_output_buffer(expert_token_weights).precision != expert_weights_prec) {
-            expert_token_weights = gb->precision_cast(expert_token_weights, expert_weights_prec);
-        }
-        expert_token_weights = gb->reshape(expert_token_weights, {seq_len, 1});
-        
-        new_expert_output = gb->multiply(new_expert_output, expert_token_weights); 
-        if (e == 0) {
-            expert_outputs = new_expert_output;
-        } else {
-            expert_outputs = gb->add(expert_outputs, new_expert_output);
-        }
+    std::vector<size_t> w1_weights, w2_weights;
+    for (size_t e = 0; e < num_experts; ++e) {
+        w1_weights.push_back(layer.mlp_experts_mlp1_weight[e]);
+        w2_weights.push_back(layer.mlp_experts_mlp2_weight[e]);
     }
 
-    return gb->add(expert_outputs, layer.mlp_experts_bias);
+    auto moe_out = gb->moe_layer(
+        normalized_h, gate_probs, topk_idx,
+        w1_weights, w2_weights,
+        num_experts, config_.num_top_experts,
+        false,  
+        1e-6f, 
+        1.0f,
+        Activation::GELU   
+    );
+
+    return gb->add(moe_out, layer.mlp_experts_bias);
 }
 
 size_t NomicModel::build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,

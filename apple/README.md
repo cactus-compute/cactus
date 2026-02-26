@@ -1,3 +1,9 @@
+---
+title: "Cactus Swift Multiplatform SDK"
+description: "Swift API for running AI models on-device on iOS, macOS, tvOS, watchOS, and Android. Supports async/await, streaming, transcription, embeddings, RAG, and tool calling."
+keywords: ["Swift SDK", "iOS", "macOS", "XCFramework", "on-device AI", "Apple Silicon", "NPU"]
+---
+
 # Cactus for Swift Multiplatform
 
 Run AI models on-device with a simple Swift API on iOS, macOS, and Android.
@@ -20,6 +26,21 @@ see the main [README.md](../README.md) for how to use CLI & download weight
 | `libcactus-simulator.a` | Static library for iOS simulator |
 
 For Android, build `libcactus.so` from the `android/` directory.
+
+### Vendored libcurl (iOS + macOS)
+
+To bundle libcurl from this repo instead of relying on system curl, place artifacts under:
+
+- `libs/curl/include/curl/*.h`
+- `libs/curl/ios/device/libcurl.a`
+- `libs/curl/ios/simulator/libcurl.a`
+- `libs/curl/macos/libcurl.a`
+
+Build scripts auto-detect `libs/curl`. Override with:
+
+```bash
+CACTUS_CURL_ROOT=/absolute/path/to/curl cactus build --apple
+```
 
 ## Integration
 
@@ -287,3 +308,11 @@ struct IndexResult {
 - Swift 6.0+ with [Swift SDK for Android](https://www.swift.org/documentation/articles/swift-sdk-for-android-getting-started.html)
 - Android NDK 27d+
 - Android API 28+ / arm64-v8a
+
+## See Also
+
+- [Cactus Engine API](/docs/cactus_engine.md) — Full C API reference underlying the Swift bindings
+- [Cactus Index API](/docs/cactus_index.md) — Vector database API for RAG applications
+- [Fine-tuning Guide](/docs/finetuning.md) — Deploy custom fine-tunes to iOS/macOS
+- [Kotlin/Android SDK](/android/) — Kotlin alternative for Android
+- [Flutter SDK](/flutter/) — Cross-platform alternative using Dart

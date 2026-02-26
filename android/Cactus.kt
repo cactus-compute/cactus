@@ -43,7 +43,7 @@ class Cactus private constructor(private var handle: Long) : Closeable {
         val responseJson = nativeComplete(handle, messagesJson, options.toJson(), toolsJson, callback)
         val json = JSONObject(responseJson)
 
-        if (json.has("error")) {
+        if (json.has("error") && !json.isNull("error")) {
             throw CactusException(json.getString("error"))
         }
 
@@ -65,7 +65,7 @@ class Cactus private constructor(private var handle: Long) : Closeable {
         val responseJson = nativeTranscribe(handle, audioPath, prompt, optionsJson, null)
         val json = JSONObject(responseJson)
 
-        if (json.has("error")) {
+        if (json.has("error") && !json.isNull("error")) {
             throw CactusException(json.getString("error"))
         }
 
@@ -87,7 +87,7 @@ class Cactus private constructor(private var handle: Long) : Closeable {
         val responseJson = nativeTranscribe(handle, null, prompt, optionsJson, pcmData)
         val json = JSONObject(responseJson)
 
-        if (json.has("error")) {
+        if (json.has("error") && !json.isNull("error")) {
             throw CactusException(json.getString("error"))
         }
 
@@ -150,6 +150,32 @@ class Cactus private constructor(private var handle: Long) : Closeable {
             ?: throw CactusException(nativeGetLastError().ifEmpty { "Failed to generate audio embedding" })
     }
 
+    fun vad(audioPath: String, options: VADOptions = VADOptions()): VADResult {
+        checkHandle()
+        val optionsJson = options.toJson()
+        val responseJson = nativeVad(handle, audioPath, optionsJson, null)
+        val json = JSONObject(responseJson)
+
+        if (json.has("error") && !json.isNull("error")) {
+            throw CactusException(json.getString("error"))
+        }
+
+        return json.toVADResult()
+    }
+
+    fun vad(pcmData: ByteArray, options: VADOptions = VADOptions()): VADResult {
+        checkHandle()
+        val optionsJson = options.toJson()
+        val responseJson = nativeVad(handle, null, optionsJson, pcmData)
+        val json = JSONObject(responseJson)
+
+        if (json.has("error") && !json.isNull("error")) {
+            throw CactusException(json.getString("error"))
+        }
+
+        return json.toVADResult()
+    }
+
     fun createStreamTranscriber(): StreamTranscriber {
         checkHandle()
         val streamHandle = nativeStreamTranscribeInit(handle)
@@ -183,6 +209,7 @@ class Cactus private constructor(private var handle: Long) : Closeable {
     private external fun nativeScoreWindow(handle: Long, tokens: IntArray, start: Int, end: Int, context: Int): String
     private external fun nativeImageEmbed(handle: Long, imagePath: String): FloatArray?
     private external fun nativeAudioEmbed(handle: Long, audioPath: String): FloatArray?
+    private external fun nativeVad(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
     private external fun nativeStreamTranscribeInit(handle: Long): Long
 }
 
@@ -376,6 +403,41 @@ data class TranscriptionResult(
     val totalTime: Double
 )
 
+data class VADSegment(
+    val start: Int,
+    val end: Int
+)
+
+data class VADResult(
+    val segments: List<VADSegment>,
+    val totalTime: Double,
+    val ramUsage: Double
+)
+
+data class VADOptions(
+    val threshold: Float? = null,
+    val negThreshold: Float? = null,
+    val minSpeechDurationMs: Int? = null,
+    val maxSpeechDurationS: Float? = null,
+    val minSilenceDurationMs: Int? = null,
+    val speechPadMs: Int? = null,
+    val windowSizeSamples: Int? = null,
+    val samplingRate: Int? = null
+) {
+    fun toJson(): String? {
+        val options = JSONObject()
+        threshold?.let { options.put("threshold", it) }
+        negThreshold?.let { options.put("neg_threshold", it) }
+        minSpeechDurationMs?.let { options.put("min_speech_duration_ms", it) }
+        maxSpeechDurationS?.let { options.put("max_speech_duration_s", it) }
+        minSilenceDurationMs?.let { options.put("min_silence_duration_ms", it) }
+        speechPadMs?.let { options.put("speech_pad_ms", it) }
+        windowSizeSamples?.let { options.put("window_size_samples", it) }
+        samplingRate?.let { options.put("sampling_rate", it) }
+        return if (options.length() > 0) options.toString() else null
+    }
+}
+
 fun interface TokenCallback {
     fun onToken(token: String, tokenId: Int)
 }
@@ -387,14 +449,14 @@ private fun JSONObject.toCompletionResult(): CompletionResult {
         (0 until arr.length()).map { arr.getJSONObject(it).toMap() }
     }
     return CompletionResult(
-        text = optString("text", ""),
+        text = optString("response", ""),
         functionCalls = functionCalls,
-        promptTokens = optInt("prompt_tokens", 0),
-        completionTokens = optInt("completion_tokens", 0),
+        promptTokens = optInt("prefill_tokens", 0),
+        completionTokens = optInt("decode_tokens", 0),
         timeToFirstToken = optDouble("time_to_first_token_ms", 0.0),
         totalTime = optDouble("total_time_ms", 0.0),
-        prefillTokensPerSecond = optDouble("prefill_tokens_per_second", 0.0),
-        decodeTokensPerSecond = optDouble("decode_tokens_per_second", 0.0),
+        prefillTokensPerSecond = optDouble("prefill_tps", 0.0),
+        decodeTokensPerSecond = optDouble("decode_tps", 0.0),
         confidence = optDouble("confidence", 1.0),
         needsCloudHandoff = optBoolean("cloud_handoff", false)
     )
@@ -405,9 +467,26 @@ private fun JSONObject.toTranscriptionResult(): TranscriptionResult {
         (0 until arr.length()).map { arr.getJSONObject(it).toMap() }
     }
     return TranscriptionResult(
-        text = optString("text", ""),
+        text = optString("response", ""),
         segments = segments,
         totalTime = optDouble("total_time_ms", 0.0)
+    )
+}
+
+private fun JSONObject.toVADResult(): VADResult {
+    val segments = getJSONArray("segments").let { arr ->
+        (0 until arr.length()).map { i ->
+            val obj = arr.getJSONObject(i)
+            VADSegment(
+                start = obj.getInt("start"),
+                end = obj.getInt("end")
+            )
+        }
+    }
+    return VADResult(
+        segments = segments,
+        totalTime = optDouble("total_time_ms", 0.0),
+        ramUsage = optDouble("ram_usage_mb", 0.0)
     )
 }
 

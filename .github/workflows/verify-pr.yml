@@ -1,0 +1,225 @@
+name: PR Verification
+#   SETUP
+#   1. System packages:                                                                                                                                                                      
+#   sudo apt-get install -y build-essential libcurl4-openssl-dev cmake libicu-dev                                                                                                            
+#   2. Python 3.12 via Homebrew (deadsnakes PPA doesn't support Ubuntu 25.10):
+#   # Install Homebrew                                                                                                                                                                       
+#   NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"                                                                         
+                                                                                                                                                                                           
+#   # Install Python 3.12                                                                                                                                                                    
+#   eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+#   brew install python@3.12
+
+#   # Make it available system-wide
+#   sudo ln -sf /home/linuxbrew/.linuxbrew/bin/python3.12 /usr/local/bin/python3.12
+
+#   GitHub Actions Runner Installation (already done)
+
+#   mkdir -p ~/actions-runner && cd ~/actions-runner
+#   curl -sO -L https://github.com/actions/runner/releases/download/v2.331.0/actions-runner-linux-arm64-2.331.0.tar.gz
+#   tar xzf actions-runner-linux-arm64-2.331.0.tar.gz
+#   sudo ./bin/installdependencies.sh
+
+#   Configure Runner for a Repo (repeat this for each repo)
+
+#   1. Remove old runner config (if switching repos):
+#   cd ~/actions-runner
+#   sudo ./svc.sh stop
+#   sudo ./svc.sh uninstall
+#   ./config.sh remove --token <OLD_REMOVE_TOKEN>
+#   1. Get the remove token from the old repo: Settings → Actions → Runners → click runner → Remove.
+#   2. Get new token: Go to the target repo (e.g. cactus-compute/cactus) → Settings → Actions → Runners → New self-hosted runner → Linux / ARM64. Copy the token from the ./config.sh command
+#    shown.
+#   3. Configure:
+#   cd ~/actions-runner
+#   ./config.sh --url https://github.com/cactus-compute/cactus --token <TOKEN_FROM_STEP_2>
+#   3. Accept defaults for runner group, name, and labels (it auto-detects self-hosted, linux, ARM64).
+#   4. Start as service:
+#   sudo ./svc.sh install
+#   sudo ./svc.sh start
+#   5. Add repo secret: Go to the target repo → Settings → Secrets and variables → Actions → New repository secret → Name: HF_TOKEN, Value: <your token>
+#   6. Verify: The runner should appear as "Online" in the repo's Settings → Actions → Runners. Trigger the workflow from Actions → PR Verification → Run workflow.
+
+on:
+  pull_request_review:
+    types: [submitted]
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      approved: ${{ steps.check.outputs.approved }}
+    steps:
+      - id: check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "approved=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.review.state }}" = "approved" ]; then
+            echo "approved=true" >> $GITHUB_OUTPUT
+          else
+            echo "approved=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.approved == 'true'
+    runs-on: [self-hosted, linux, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Check for Python changes
+        id: check_python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "python_changed=false" >> $GITHUB_OUTPUT
+          else
+            CHANGED=$(gh pr diff ${{ github.event.pull_request.number }} --name-only | grep -cE '^python/(src/|requirements\.txt)' || true)
+            echo "python_changed=$([[ $CHANGED -gt 0 ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Ensure venv exists
+        run: |
+          if [ ! -f venv/bin/activate ]; then
+            echo "No venv found, running setup..."
+            source ./setup
+          fi
+
+      - name: Rebuild venv if Python sources changed
+        if: steps.check_python.outputs.python_changed == 'true'
+        run: |
+          deactivate || true
+          rm -rf venv
+          source ./setup
+
+      - name: Purge cached weights if converters changed
+        if: steps.check_python.outputs.python_changed == 'true'
+        run: rm -rf weights/
+
+      - name: Convert models if weights missing
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          source venv/bin/activate
+          convert_if_missing() {
+            local model_id=$1 output_dir=$2 precision=$3
+            if [ ! -f "weights/$output_dir/config.txt" ]; then
+              echo "Converting $model_id -> weights/$output_dir"
+              python3 -m src.cli convert "$model_id" "weights/$output_dir" --precision "$precision" ${HF_TOKEN:+--token "$HF_TOKEN"} || echo "WARNING: conversion of $model_id failed (exit $?), checking fallback directory"
+              local default_dir="weights/$(echo "$model_id" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')"
+              if [ ! -f "weights/$output_dir/config.txt" ] && [ -f "$default_dir/config.txt" ]; then
+                mv "$default_dir" "weights/$output_dir"
+              fi
+            fi
+          }
+          convert_if_missing "Qwen/Qwen3-0.6B" "qwen3-0.6b" "INT8"
+          convert_if_missing "nomic-ai/nomic-embed-text-v2-moe" "nomic-embed-text-v2-moe" "INT8"
+          convert_if_missing "LiquidAI/LFM2-350M" "lfm2-350m" "INT8"
+          convert_if_missing "LiquidAI/LFM2-8B-A1B" "lfm2-8b-a1b" "INT8"
+          convert_if_missing "google/gemma-3-270m-it" "gemma-3-270m-it" "INT8"
+          convert_if_missing "openai/whisper-small" "whisper-small" "INT8"
+          convert_if_missing "UsefulSensors/moonshine-base" "moonshine-base" "INT8"
+          convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-int8" "INT8"
+          convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-int4" "INT4"
+          convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-fp16" "FP16"
+
+      - name: Build library
+        run: bash cactus/build.sh
+
+      - name: Build tests
+        run: |
+          cd tests
+          rm -rf build && mkdir -p build && cd build
+          cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF
+          make -j$(nproc)
+
+  unit-tests:
+    needs: build
+    runs-on: [self-hosted, linux, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: Run unit tests
+        env:
+          CACTUS_INDEX_PATH: ${{ runner.temp }}/cactus_index
+          CACTUS_NO_CLOUD_TELE: "1"
+        run: |
+          mkdir -p "$CACTUS_INDEX_PATH"
+          FAILED=0
+          for test in test_graph test_kernel test_kv_cache test_index test_model_loading; do
+            echo "=== Running $test ==="
+            if ! ./tests/build/$test; then
+              FAILED=$((FAILED + 1))
+            fi
+          done
+          if [ $FAILED -gt 0 ]; then exit 1; fi
+
+  exhaustive-tests:
+    needs: build
+    runs-on: [self-hosted, linux, arm64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - family: qwen
+            model_dir: qwen3-0.6b
+            env_var: CACTUS_TEST_MODEL
+            precision: INT8
+          - family: nomic
+            model_dir: nomic-embed-text-v2-moe
+            env_var: CACTUS_TEST_MODEL
+            precision: INT8
+          - family: lfm2
+            model_dir: lfm2-350m
+            env_var: CACTUS_TEST_MODEL
+            precision: INT8
+          - family: lfm2moe
+            model_dir: lfm2-8b-a1b
+            env_var: CACTUS_TEST_MODEL
+            precision: INT8
+          - family: gemma
+            model_dir: gemma-3-270m-it
+            env_var: CACTUS_TEST_MODEL
+            precision: INT8
+          - family: whisper
+            model_dir: whisper-small
+            env_var: CACTUS_TEST_TRANSCRIBE_MODEL
+            precision: INT8
+          - family: moonshine
+            model_dir: moonshine-base
+            env_var: CACTUS_TEST_TRANSCRIBE_MODEL
+            precision: INT8
+          - family: lfm2vl
+            model_dir: lfm2-vl-450m-int8
+            env_var: CACTUS_TEST_MODEL
+            precision: INT8
+          - family: lfm2vl
+            model_dir: lfm2-vl-450m-int4
+            env_var: CACTUS_TEST_MODEL
+            precision: INT4
+          - family: lfm2vl
+            model_dir: lfm2-vl-450m-fp16
+            env_var: CACTUS_TEST_MODEL
+            precision: FP16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: Run exhaustive test
+        env:
+          CACTUS_NO_CLOUD_TELE: "1"
+        run: |
+          export ${{ matrix.env_var }}="${{ github.workspace }}/weights/${{ matrix.model_dir }}"
+          export CACTUS_TEST_ASSETS="${{ github.workspace }}/tests/assets"
+          export CACTUS_TEST_GOLDEN_FILE="${{ github.workspace }}/tests/golden/golden.json"
+          export CACTUS_TEST_GOLDEN_FAMILY="${{ matrix.family }}"
+          export CACTUS_TEST_GOLDEN_PRECISION="${{ matrix.precision }}"
+          if [ "${{ matrix.family }}" = "whisper" ] || [ "${{ matrix.family }}" = "moonshine" ]; then
+            export CACTUS_TEST_VAD_MODEL="${{ github.workspace }}/weights/silero-vad"
+          fi
+          ./tests/build/test_exhaustive

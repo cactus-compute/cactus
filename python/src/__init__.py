@@ -17,4 +17,10 @@ def __getattr__(name):
     if name == "convert_hf_tokenizer":
         from .tokenizer import convert_hf_tokenizer
         return convert_hf_tokenizer
+    if name == "CactusModel":
+        from .cactus import CactusModel
+        return CactusModel
+    if name == "CactusIndex":
+        from .cactus import CactusIndex
+        return CactusIndex
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

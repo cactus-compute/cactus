@@ -17,10 +17,18 @@ apple/build-static/
 apple/*.xcframework
 apple/libcactus.a
 *.a
+!libs/curl/**/*.a
 venv
 
 __pycache__
 *.egg-info
 profile.txt
+*_profile.txt
 *.dylib
 *.bin
+tmp
+
+ruy
+notes.txt
+site/
+site_docs/
