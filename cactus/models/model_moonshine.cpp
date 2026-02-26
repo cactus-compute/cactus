@@ -531,8 +531,18 @@ std::vector<float> MoonshineModel::get_audio_embeddings(const std::vector<float>
     size_t hidden_dim = output_buf.total_size;
     std::vector<float> embedding(hidden_dim);
     void* output_data = gb->get_output(pooled);
-    const float* output_ptr = static_cast<const float*>(output_data);
-    std::copy(output_ptr, output_ptr + hidden_dim, embedding.begin());
+    if (output_buf.precision == Precision::FP32) {
+        const float* output_ptr = static_cast<const float*>(output_data);
+        std::copy(output_ptr, output_ptr + hidden_dim, embedding.begin());
+    } else if (output_buf.precision == Precision::FP16) {
+        const __fp16* output_ptr = static_cast<const __fp16*>(output_data);
+        Quantization::fp16_to_fp32(output_ptr, embedding.data(), hidden_dim);
+    } else if (output_buf.precision == Precision::INT8) {
+        const int8_t* output_ptr = static_cast<const int8_t*>(output_data);
+        Quantization::int8_to_fp32(output_ptr, embedding.data(), hidden_dim, 1.0f);
+    } else {
+        throw std::runtime_error("Unsupported encoder embedding precision");
+    }
     reset_cache();
     return embedding;
 }

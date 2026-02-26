@@ -664,10 +664,20 @@ std::vector<float> WhisperModel::get_audio_embeddings(const std::vector<float>& 
 
     std::vector<float> embedding(hidden_dim);
     void* output_data = gb->get_output(pooled);
-    const float* output_ptr = static_cast<const float*>(output_data);
-    std::copy(output_ptr, output_ptr + hidden_dim, embedding.begin());
+    if (output_buf.precision == Precision::FP32) {
+        const float* output_ptr = static_cast<const float*>(output_data);
+        std::copy(output_ptr, output_ptr + hidden_dim, embedding.begin());
+    } else if (output_buf.precision == Precision::FP16) {
+        const __fp16* output_ptr = static_cast<const __fp16*>(output_data);
+        Quantization::fp16_to_fp32(output_ptr, embedding.data(), hidden_dim);
+    } else if (output_buf.precision == Precision::INT8) {
+        const int8_t* output_ptr = static_cast<const int8_t*>(output_data);
+        Quantization::int8_to_fp32(output_ptr, embedding.data(), hidden_dim, 1.0f);
+    } else {
+        throw std::runtime_error("Unsupported encoder embedding precision");
+    }
 
-    reset_cache();
+    encoder_ready_ = true;
     return embedding;
 }
 
@@ -687,7 +697,8 @@ uint32_t WhisperModel::decode_with_audio(
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
 
-    bool cold_start = !encoder_ready_;
+    bool need_encoder = !encoder_ready_;
+    bool cold_start = (kv_cache_.current_seq_len == 0) || need_encoder;
     size_t logits_node = 0;
 
     uint32_t bos = static_cast<uint32_t>(get_tokenizer()->get_bos_token());
@@ -705,7 +716,9 @@ uint32_t WhisperModel::decode_with_audio(
         reset_graph_side_cache_nodes();
 
         first_decode_step_ = true;
-        run_encoder(audio_features);
+        if (need_encoder) {
+            run_encoder(audio_features);
+        }
         logits_node = run_decoder_step(full_tokens, false, false);
         encoder_ready_ = true;
     }

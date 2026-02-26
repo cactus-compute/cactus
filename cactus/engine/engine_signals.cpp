@@ -18,6 +18,30 @@
 namespace cactus {
 namespace engine {
 
+static constexpr float SIGNALS_EPS = 1e-8f;
+
+static void compute_mean_std(const float* values, size_t size, float& mean, float& stddev) {
+    if (size == 0 || values == nullptr) {
+        mean = 0.0f;
+        stddev = 0.0f;
+        return;
+    }
+
+    const float n = static_cast<float>(size);
+    float sum = 0.0f;
+    for (size_t i = 0; i < size; i++) {
+        sum += values[i];
+    }
+    mean = sum / n;
+
+    float var_sum = 0.0f;
+    for (size_t i = 0; i < size; i++) {
+        const float d = values[i] - mean;
+        var_sum += d * d;
+    }
+    stddev = std::sqrt(std::max(0.0f, var_sum / n));
+}
+
 static void to_db(
     float* spectrogram,
     size_t size,
@@ -714,6 +738,637 @@ std::vector<float> AudioProcessor::compute_spectrogram(
     );
 
     return output;
+}
+
+void AudioProcessor::compute_stft_power(
+    const std::vector<float>& waveform,
+    size_t sampling_rate,
+    const SpectrogramConfig& config,
+    std::vector<float>& stft_power,
+    std::vector<float>& freqs_hz,
+    size_t& num_frames) const {
+
+    stft_power.clear();
+    freqs_hz.clear();
+    num_frames = 0;
+
+    if (waveform.empty()) {
+        return;
+    }
+    if (config.hop_length == 0 || config.frame_length == 0 || config.n_fft == 0) {
+        throw std::invalid_argument("Invalid STFT config: n_fft, frame_length, and hop_length must be > 0");
+    }
+
+    const size_t n_samples = waveform.size();
+    const size_t pad_length = config.center ? config.frame_length / 2 : 0;
+    const size_t padded_length = n_samples + 2 * pad_length;
+    if (padded_length < config.frame_length) {
+        return;
+    }
+
+    num_frames = 1 + (padded_length - config.frame_length) / config.hop_length;
+    const size_t num_frequency_bins = config.n_fft / 2 + 1;
+    if (num_frames == 0 || num_frequency_bins == 0) {
+        return;
+    }
+
+    stft_power.resize(num_frequency_bins * num_frames, 0.0f);
+    compute_spectrogram_f32(
+        waveform.data(),
+        waveform.size(),
+        nullptr,
+        0,
+        config.frame_length,
+        config.hop_length,
+        &config.n_fft,
+        stft_power.data(),
+        config.power,
+        config.center,
+        config.pad_mode,
+        config.onesided,
+        config.dither,
+        nullptr,
+        nullptr,
+        0,
+        config.mel_floor,
+        nullptr,
+        config.reference,
+        config.min_value,
+        nullptr,
+        config.remove_dc_offset
+    );
+
+    freqs_hz.resize(num_frequency_bins, 0.0f);
+    const float fft_hz = static_cast<float>(sampling_rate) / static_cast<float>(config.n_fft);
+    for (size_t i = 0; i < num_frequency_bins; i++) {
+        freqs_hz[i] = static_cast<float>(i) * fft_hz;
+    }
+}
+
+static void high_freq_energy_ratio_sequence(
+    const std::vector<float>& stft_power,
+    const std::vector<float>& freqs_hz,
+    size_t num_frames,
+    float cutoff_hz,
+    float* out_ratio) {
+
+    if (num_frames == 0) {
+        return;
+    }
+    if (freqs_hz.empty()) {
+        throw std::invalid_argument("freqs_hz must not be empty");
+    }
+    if (out_ratio == nullptr) {
+        throw std::invalid_argument("out_ratio must not be null");
+    }
+    if (stft_power.size() != freqs_hz.size() * num_frames) {
+        throw std::invalid_argument(
+            "stft_power size must equal freqs_hz.size() * num_frames");
+    }
+
+    const size_t num_freq_bins = freqs_hz.size();
+    std::vector<uint8_t> mask(num_freq_bins, 0);
+    for (size_t f = 0; f < num_freq_bins; f++) {
+        mask[f] = (freqs_hz[f] >= cutoff_hz) ? 1 : 0;
+    }
+
+    CactusThreading::parallel_for(
+        num_frames,
+        CactusThreading::Thresholds::ALL_REDUCE,
+        [&](size_t start, size_t end) {
+            for (size_t t = start; t < end; t++) {
+                float num = 0.0f;
+                float den = 0.0f;
+                for (size_t f = 0; f < num_freq_bins; f++) {
+                    const float p = stft_power[f * num_frames + t];
+                    den += p;
+                    if (mask[f]) {
+                        num += p;
+                    }
+                }
+                out_ratio[t] = num / (den + SIGNALS_EPS);
+            }
+        });
+}
+
+float AudioProcessor::high_freq_energy_ratio_mean(
+    const std::vector<float>& stft_power,
+    const std::vector<float>& freqs_hz,
+    size_t num_frames,
+    float cutoff_hz) const {
+    if (num_frames == 0) {
+        return 0.0f;
+    }
+    std::vector<float> ratio(num_frames, 0.0f);
+    high_freq_energy_ratio_sequence(stft_power, freqs_hz, num_frames, cutoff_hz, ratio.data());
+    float mean = 0.0f;
+    float stddev = 0.0f;
+    compute_mean_std(ratio.data(), ratio.size(), mean, stddev);
+    return mean;
+}
+
+static void spectral_entropy_sequence(
+    const std::vector<float>& stft_power,
+    size_t num_frames,
+    float* out_entropy) {
+
+    if (num_frames == 0) {
+        return;
+    }
+    if (stft_power.empty()) {
+        throw std::invalid_argument("stft_power must not be empty");
+    }
+    if (out_entropy == nullptr) {
+        throw std::invalid_argument("out_entropy must not be null");
+    }
+    if (stft_power.size() % num_frames != 0) {
+        throw std::invalid_argument(
+            "stft_power size must be divisible by num_frames");
+    }
+
+    const size_t num_freq_bins = stft_power.size() / num_frames;
+    if (num_freq_bins == 0) {
+        return;
+    }
+    const float log_bins = (num_freq_bins > 1)
+        ? std::log(static_cast<float>(num_freq_bins))
+        : 1.0f;
+
+    CactusThreading::parallel_for(
+        num_frames,
+        CactusThreading::Thresholds::ALL_REDUCE,
+        [&](size_t start, size_t end) {
+            for (size_t t = start; t < end; t++) {
+                float den = 0.0f;
+                for (size_t f = 0; f < num_freq_bins; f++) {
+                    den += stft_power[f * num_frames + t] + SIGNALS_EPS;
+                }
+
+                float h = 0.0f;
+                for (size_t f = 0; f < num_freq_bins; f++) {
+                    const float p = (stft_power[f * num_frames + t] + SIGNALS_EPS) / den;
+                    h -= p * std::log(p);
+                }
+                out_entropy[t] = h / log_bins;
+            }
+        });
+}
+
+float AudioProcessor::spectral_entropy_std(
+    const std::vector<float>& stft_power,
+    size_t num_frames) const {
+    if (num_frames == 0) {
+        return 0.0f;
+    }
+    std::vector<float> entropy(num_frames, 0.0f);
+    spectral_entropy_sequence(stft_power, num_frames, entropy.data());
+    float mean = 0.0f;
+    float stddev = 0.0f;
+    compute_mean_std(entropy.data(), entropy.size(), mean, stddev);
+    return stddev;
+}
+
+static float percentile_linear(std::vector<float> values, float q) {
+    if (values.empty()) {
+        return 0.0f;
+    }
+    if (q <= 0.0f) {
+        return *std::min_element(values.begin(), values.end());
+    }
+    if (q >= 1.0f) {
+        return *std::max_element(values.begin(), values.end());
+    }
+
+    std::sort(values.begin(), values.end());
+    const float pos = q * static_cast<float>(values.size() - 1);
+    const size_t lo = static_cast<size_t>(std::floor(pos));
+    const size_t hi = static_cast<size_t>(std::ceil(pos));
+    const float alpha = pos - static_cast<float>(lo);
+    return values[lo] * (1.0f - alpha) + values[hi] * alpha;
+}
+
+static float median_copy(std::vector<float> values) {
+    return percentile_linear(std::move(values), 0.5f);
+}
+
+static std::vector<float> hann_window_frame(size_t frame_length) {
+    std::vector<float> win(frame_length, 1.0f);
+    if (frame_length <= 1) {
+        return win;
+    }
+    for (size_t i = 0; i < frame_length; i++) {
+        win[i] = 0.5f - 0.5f * std::cos(
+            (2.0f * static_cast<float>(M_PI) * static_cast<float>(i)) /
+            static_cast<float>(frame_length - 1));
+    }
+    return win;
+}
+
+static void frame_signal_sequence(
+    const std::vector<float>& waveform,
+    size_t frame_length,
+    size_t hop_length,
+    std::vector<float>& frames,
+    size_t& num_frames) {
+
+    num_frames = 0;
+    frames.clear();
+
+    if (frame_length == 0 || hop_length == 0 || waveform.size() < frame_length) {
+        return;
+    }
+
+    num_frames = 1 + (waveform.size() - frame_length) / hop_length;
+    frames.resize(num_frames * frame_length, 0.0f);
+
+    for (size_t t = 0; t < num_frames; t++) {
+        const size_t offset = t * hop_length;
+        std::copy(
+            waveform.begin() + static_cast<std::ptrdiff_t>(offset),
+            waveform.begin() + static_cast<std::ptrdiff_t>(offset + frame_length),
+            frames.begin() + static_cast<std::ptrdiff_t>(t * frame_length));
+    }
+}
+
+static void extract_voiced_frames(
+    const std::vector<float>& waveform,
+    size_t frame_length,
+    size_t hop_length,
+    float energy_gate,
+    std::vector<float>& voiced_frames,
+    size_t& num_voiced_frames) {
+
+    voiced_frames.clear();
+    num_voiced_frames = 0;
+
+    std::vector<float> frames;
+    size_t num_frames = 0;
+    frame_signal_sequence(waveform, frame_length, hop_length, frames, num_frames);
+    if (num_frames == 0) {
+        return;
+    }
+
+    std::vector<float> energies(num_frames, 0.0f);
+    for (size_t t = 0; t < num_frames; t++) {
+        const float* frame = frames.data() + t * frame_length;
+        float sum = 0.0f;
+        for (size_t i = 0; i < frame_length; i++) {
+            sum += frame[i] * frame[i];
+        }
+        energies[t] = std::sqrt(sum / static_cast<float>(frame_length) + SIGNALS_EPS);
+    }
+
+    const float med = median_copy(energies);
+    const float threshold = energy_gate * (med + SIGNALS_EPS);
+
+    num_voiced_frames = 0;
+    for (size_t t = 0; t < num_frames; t++) {
+        if (energies[t] >= threshold) {
+            num_voiced_frames++;
+        }
+    }
+    if (num_voiced_frames == 0) {
+        return;
+    }
+
+    voiced_frames.resize(num_voiced_frames * frame_length, 0.0f);
+    size_t out_t = 0;
+    for (size_t t = 0; t < num_frames; t++) {
+        if (energies[t] < threshold) {
+            continue;
+        }
+        std::copy(
+            frames.begin() + static_cast<std::ptrdiff_t>(t * frame_length),
+            frames.begin() + static_cast<std::ptrdiff_t>((t + 1) * frame_length),
+            voiced_frames.begin() + static_cast<std::ptrdiff_t>(out_t * frame_length));
+        out_t++;
+    }
+}
+
+static void pitch_lag_sequence(
+    const std::vector<float>& frames,
+    size_t num_frames,
+    size_t frame_length,
+    size_t sample_rate,
+    float fmin,
+    float fmax,
+    float* out_lags) {
+
+    if (num_frames == 0) {
+        return;
+    }
+    if (out_lags == nullptr) {
+        throw std::invalid_argument("out_lags must not be null");
+    }
+    if (frames.size() != num_frames * frame_length) {
+        throw std::invalid_argument("frames size must equal num_frames * frame_length");
+    }
+
+    const int lag_min_i = std::max(1, static_cast<int>(sample_rate / fmax));
+    const int lag_max_i = std::min(
+        static_cast<int>(frame_length) - 1,
+        static_cast<int>(sample_rate / fmin));
+    if (lag_min_i > lag_max_i) {
+        for (size_t t = 0; t < num_frames; t++) {
+            out_lags[t] = 0.0f;
+        }
+        return;
+    }
+
+    for (size_t t = 0; t < num_frames; t++) {
+        const float* frame = frames.data() + t * frame_length;
+        float mean = 0.0f;
+        for (size_t i = 0; i < frame_length; i++) {
+            mean += frame[i];
+        }
+        mean /= static_cast<float>(frame_length);
+
+        std::vector<float> x(frame_length, 0.0f);
+        float r0 = 0.0f;
+        for (size_t i = 0; i < frame_length; i++) {
+            x[i] = frame[i] - mean;
+            r0 += x[i] * x[i];
+        }
+        r0 += SIGNALS_EPS;
+
+        float best_r = -std::numeric_limits<float>::infinity();
+        int best_lag = lag_min_i;
+        for (int lag = lag_min_i; lag <= lag_max_i; lag++) {
+            float r = 0.0f;
+            for (size_t i = 0; i + static_cast<size_t>(lag) < frame_length; i++) {
+                r += x[i] * x[i + static_cast<size_t>(lag)];
+            }
+            r /= r0;
+            if (r > best_r) {
+                best_r = r;
+                best_lag = lag;
+            }
+        }
+        out_lags[t] = static_cast<float>(best_lag);
+    }
+}
+
+static void yin_confidence_sequence(
+    const std::vector<float>& frames,
+    size_t num_frames,
+    size_t frame_length,
+    size_t sample_rate,
+    float fmin,
+    float fmax,
+    float* out_conf) {
+
+    if (num_frames == 0) {
+        return;
+    }
+    if (out_conf == nullptr) {
+        throw std::invalid_argument("out_conf must not be null");
+    }
+    if (frames.size() != num_frames * frame_length) {
+        throw std::invalid_argument("frames size must equal num_frames * frame_length");
+    }
+
+    const int lag_min_i = std::max(1, static_cast<int>(sample_rate / fmax));
+    const int lag_max_i = std::min(
+        static_cast<int>(frame_length) - 1,
+        static_cast<int>(sample_rate / fmin));
+    if (lag_min_i > lag_max_i) {
+        for (size_t t = 0; t < num_frames; t++) {
+            out_conf[t] = 0.0f;
+        }
+        return;
+    }
+
+    for (size_t t = 0; t < num_frames; t++) {
+        const float* frame = frames.data() + t * frame_length;
+
+        float mean = 0.0f;
+        for (size_t i = 0; i < frame_length; i++) {
+            mean += frame[i];
+        }
+        mean /= static_cast<float>(frame_length);
+
+        std::vector<float> x(frame_length, 0.0f);
+        for (size_t i = 0; i < frame_length; i++) {
+            x[i] = frame[i] - mean;
+        }
+
+        std::vector<float> d(static_cast<size_t>(lag_max_i), 0.0f);
+        for (int tau = 1; tau <= lag_max_i; tau++) {
+            float acc = 0.0f;
+            for (size_t i = 0; i + static_cast<size_t>(tau) < frame_length; i++) {
+                const float diff = x[i] - x[i + static_cast<size_t>(tau)];
+                acc += diff * diff;
+            }
+            d[static_cast<size_t>(tau - 1)] = acc;
+        }
+
+        float cumsum = 0.0f;
+        float min_cmnd = std::numeric_limits<float>::infinity();
+        for (int tau = 1; tau <= lag_max_i; tau++) {
+            cumsum += d[static_cast<size_t>(tau - 1)];
+            const float cmnd = d[static_cast<size_t>(tau - 1)] *
+                static_cast<float>(tau) / (cumsum + SIGNALS_EPS);
+            if (tau >= lag_min_i) {
+                min_cmnd = std::min(min_cmnd, cmnd);
+            }
+        }
+
+        float conf = 1.0f - min_cmnd;
+        conf = std::max(0.0f, std::min(1.0f, conf));
+        out_conf[t] = conf;
+    }
+}
+
+static void spectral_peak_spacing_cv_sequence(
+    const std::vector<float>& frames,
+    size_t num_frames,
+    size_t frame_length,
+    size_t n_fft,
+    float peak_prominence,
+    float* out_spacing_cv) {
+
+    if (num_frames == 0) {
+        return;
+    }
+    if (n_fft < frame_length) {
+        throw std::invalid_argument("n_fft must be >= frame_length");
+    }
+    if (out_spacing_cv == nullptr) {
+        throw std::invalid_argument("out_spacing_cv must not be null");
+    }
+    if (frames.size() != num_frames * frame_length) {
+        throw std::invalid_argument("frames size must equal num_frames * frame_length");
+    }
+
+    const size_t num_bins = n_fft / 2 + 1;
+    const std::vector<float> win = hann_window_frame(frame_length);
+
+    std::vector<float> frame_work(frame_length, 0.0f);
+    std::vector<float> fft_complex(num_bins * 2, 0.0f);
+    std::vector<float> logmag(num_bins, 0.0f);
+
+    for (size_t t = 0; t < num_frames; t++) {
+        const float* frame = frames.data() + t * frame_length;
+
+        float mean = 0.0f;
+        for (size_t i = 0; i < frame_length; i++) {
+            mean += frame[i];
+        }
+        mean /= static_cast<float>(frame_length);
+
+        for (size_t i = 0; i < frame_length; i++) {
+            frame_work[i] = (frame[i] - mean) * win[i];
+        }
+
+        rfft_f32_1d(frame_work.data(), fft_complex.data(), n_fft, "backward");
+
+        for (size_t b = 0; b < num_bins; b++) {
+            const float re = fft_complex[b * 2];
+            const float im = fft_complex[b * 2 + 1];
+            const float mag = std::hypot(re, im) + SIGNALS_EPS;
+            logmag[b] = 20.0f * std::log10(mag);
+        }
+
+        const float med = median_copy(logmag);
+        const float thr = med + peak_prominence;
+        std::vector<size_t> peaks;
+        for (size_t b = 1; b + 1 < num_bins; b++) {
+            if (logmag[b] > logmag[b - 1] &&
+                logmag[b] > logmag[b + 1] &&
+                logmag[b] > thr) {
+                peaks.push_back(b);
+            }
+        }
+
+        if (peaks.size() < 2) {
+            out_spacing_cv[t] = 0.0f;
+            continue;
+        }
+
+        std::vector<float> spacings;
+        spacings.reserve(peaks.size() - 1);
+        for (size_t i = 1; i < peaks.size(); i++) {
+            spacings.push_back(static_cast<float>(peaks[i] - peaks[i - 1]));
+        }
+
+        float spacing_mean = 0.0f;
+        float spacing_std = 0.0f;
+        compute_mean_std(spacings.data(), spacings.size(), spacing_mean, spacing_std);
+        out_spacing_cv[t] = spacing_std / (spacing_mean + SIGNALS_EPS);
+    }
+}
+
+float AudioProcessor::overlap_pitch_lag_cv(
+    const std::vector<float>& waveform,
+    size_t sample_rate,
+    size_t frame_length,
+    size_t hop_length,
+    float fmin,
+    float fmax,
+    float energy_gate) const {
+
+    std::vector<float> voiced_frames;
+    size_t num_voiced_frames = 0;
+    extract_voiced_frames(
+        waveform,
+        frame_length,
+        hop_length,
+        energy_gate,
+        voiced_frames,
+        num_voiced_frames);
+    if (num_voiced_frames == 0) {
+        return 0.0f;
+    }
+
+    std::vector<float> lags(num_voiced_frames, 0.0f);
+    pitch_lag_sequence(
+        voiced_frames,
+        num_voiced_frames,
+        frame_length,
+        sample_rate,
+        fmin,
+        fmax,
+        lags.data());
+
+    float lag_mean = 0.0f;
+    float lag_std = 0.0f;
+    compute_mean_std(lags.data(), lags.size(), lag_mean, lag_std);
+    if (lag_mean <= 0.0f) {
+        return 0.0f;
+    }
+    return lag_std / (lag_mean + SIGNALS_EPS);
+}
+
+float AudioProcessor::overlap_spectral_peak_spacing_cv_mean(
+    const std::vector<float>& waveform,
+    size_t sample_rate [[maybe_unused]],
+    size_t frame_length,
+    size_t hop_length,
+    size_t n_fft,
+    float peak_prominence,
+    float energy_gate) const {
+
+    std::vector<float> voiced_frames;
+    size_t num_voiced_frames = 0;
+    extract_voiced_frames(
+        waveform,
+        frame_length,
+        hop_length,
+        energy_gate,
+        voiced_frames,
+        num_voiced_frames);
+    if (num_voiced_frames == 0) {
+        return 0.0f;
+    }
+
+    std::vector<float> spacing_cv(num_voiced_frames, 0.0f);
+    spectral_peak_spacing_cv_sequence(
+        voiced_frames,
+        num_voiced_frames,
+        frame_length,
+        n_fft,
+        peak_prominence,
+        spacing_cv.data());
+
+    float mean = 0.0f;
+    float stddev = 0.0f;
+    compute_mean_std(spacing_cv.data(), spacing_cv.size(), mean, stddev);
+    return mean;
+}
+
+float AudioProcessor::overlap_yin_conf_p95(
+    const std::vector<float>& waveform,
+    size_t sample_rate,
+    size_t frame_length,
+    size_t hop_length,
+    float fmin,
+    float fmax,
+    float energy_gate) const {
+
+    std::vector<float> voiced_frames;
+    size_t num_voiced_frames = 0;
+    extract_voiced_frames(
+        waveform,
+        frame_length,
+        hop_length,
+        energy_gate,
+        voiced_frames,
+        num_voiced_frames);
+    if (num_voiced_frames == 0) {
+        return 0.0f;
+    }
+
+    std::vector<float> conf(num_voiced_frames, 0.0f);
+    yin_confidence_sequence(
+        voiced_frames,
+        num_voiced_frames,
+        frame_length,
+        sample_rate,
+        fmin,
+        fmax,
+        conf.data());
+
+    return percentile_linear(std::move(conf), 0.95f);
 }
 
 std::vector<float> AudioProcessor::compute_irfft(

@@ -477,6 +477,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "whisper" || value == "WHISPER") model_type = ModelType::WHISPER;
             else if (value == "moonshine" || value == "MOONSHINE") model_type = ModelType::MOONSHINE;
             else if (value == "silero_vad" || value == "SILERO_VAD") model_type = ModelType::SILERO_VAD;
+            else if (value == "cloud_handoff" || value == "CLOUD_HANDOFF") model_type = ModelType::CLOUD_HANDOFF;
             else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {
@@ -590,6 +591,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<MoonshineModel>(config);
         case Config::ModelType::SILERO_VAD:
             return std::make_unique<SileroVADModel>(config);
+        case Config::ModelType::CLOUD_HANDOFF:
+            return std::make_unique<WhisperCloudHandoffModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }

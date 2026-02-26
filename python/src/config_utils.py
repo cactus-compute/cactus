@@ -1,7 +1,6 @@
 import json
 import os
 from pathlib import Path
-from typing import Optional, Any, Dict
 
 
 class CactusConfig:
@@ -78,6 +77,7 @@ def cfg_get(c, key, default=None):
 def detect_model_type(cfg, config, output_dir=None):
     """Detect the model architecture type from config."""
     model_type_str = cfg_get(cfg, 'model_type', cfg_get(config, 'model_type', '')).lower()
+    normalized_model_type = model_type_str.replace('-', '_')
 
     if 'gemma' in model_type_str:
         return 'gemma'
@@ -98,6 +98,8 @@ def detect_model_type(cfg, config, output_dir=None):
         return 'whisper'
     elif 'parakeet' in model_type_str:
         return 'parakeet'
+    elif normalized_model_type == 'cloud_handoff':
+        return 'cloud_handoff'
     else:
         if model_type_str:
             print(f"  Warning: Unknown model type '{model_type_str}', defaulting to 'qwen'")

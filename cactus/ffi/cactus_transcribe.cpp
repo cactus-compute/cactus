@@ -107,10 +107,11 @@ int cactus_transcribe(
         size_t top_k, max_tokens, tool_rag_top_k;
         std::vector<std::string> stop_sequences;
         bool force_tools, include_stop_sequences, use_vad, telemetry_enabled;
+        bool use_cloud_handoff_classifier = true;
         float cloud_handoff_threshold = handle->model->get_config().default_cloud_handoff_threshold;
         const std::string opts = options_json ? options_json : "";
         parse_options_json(
-            options_json ? options_json : "", temperature,
+            opts, temperature,
             top_p, top_k, max_tokens, stop_sequences,
             force_tools, tool_rag_top_k, confidence_threshold,
             include_stop_sequences, use_vad, telemetry_enabled
@@ -125,6 +126,16 @@ int cactus_transcribe(
                     try {
                         cloud_handoff_threshold = std::stof(opts.substr(pos));
                     } catch (...) {}
+                }
+            }
+
+            pos = opts.find("\"use_cloud_handoff_classifier\"");
+            if (pos != std::string::npos) {
+                pos = opts.find(':', pos);
+                if (pos != std::string::npos) {
+                    ++pos;
+                    while (pos < opts.size() && std::isspace(static_cast<unsigned char>(opts[pos]))) ++pos;
+                    use_cloud_handoff_classifier = (opts.substr(pos, 4) == "true");
                 }
             }
         }
@@ -189,6 +200,8 @@ int cactus_transcribe(
         }
         const float audio_length_sec = static_cast<float>(audio_buffer.size()) / static_cast<float>(WHISPER_SAMPLE_RATE);
 
+        std::vector<float> waveform_features = audio_buffer;
+
         if (!is_moonshine) {
             AudioProcessor ap;
             if (is_parakeet) {
@@ -218,6 +231,33 @@ int cactus_transcribe(
         }
 
         CACTUS_LOG_DEBUG("transcribe", "Audio features prepared, size: " << audio_buffer.size());
+
+        float cloud_handoff_classifier_prob = 0.0f;
+        bool cloud_handoff_classifier_fire = false;
+
+        if (use_cloud_handoff_classifier && handle->cloud_handoff_model) {
+            auto* cloud_handoff_model = static_cast<WhisperCloudHandoffModel*>(handle->cloud_handoff_model.get());
+            try {
+                std::vector<float> encoder_mean_features = handle->model->get_audio_embeddings(audio_buffer);
+                std::string cloud_handoff_error;
+                if (!cloud_handoff_model->predict_handoff_from_audio(
+                        waveform_features,
+                        encoder_mean_features,
+                        &cloud_handoff_classifier_fire,
+                        &cloud_handoff_classifier_prob,
+                        &cloud_handoff_error)) {
+                    CACTUS_LOG_WARN("cloud_handoff", "Failed to run cloud_handoff classifier: " << cloud_handoff_error);
+                } else {
+                    CACTUS_LOG_DEBUG(
+                        "cloud_handoff",
+                        "classifier_prob=" << cloud_handoff_classifier_prob
+                            << ", threshold=" << cloud_handoff_model->threshold()
+                            << ", fire=" << (cloud_handoff_classifier_fire ? "true" : "false"));
+                }
+            } catch (const std::exception& e) {
+                CACTUS_LOG_WARN("cloud_handoff", "Failed to run cloud_handoff classifier: " << e.what());
+            }
+        }
 
         auto* tokenizer = handle->model->get_tokenizer();
         if (!tokenizer) {
@@ -341,7 +381,7 @@ int cactus_transcribe(
             cleaned_text.erase(0, 1);
         }
 
-        bool entropy_handoff = false;
+        bool entropy_handoff = cloud_handoff_classifier_fire;
         if (!cleaned_text.empty() && cleaned_text.length() > 5) {
              if (cloud_handoff_threshold > 0.0f && max_token_entropy_norm > cloud_handoff_threshold) {
                  entropy_handoff = true;
@@ -349,7 +389,18 @@ int cactus_transcribe(
         }
         const bool cloud_handoff = entropy_handoff;
 
-        std::string json = construct_response_json(cleaned_text, {}, time_to_first_token, total_time_ms, prefill_tps, decode_tps, prompt_tokens, completion_tokens, confidence, cloud_handoff);
+        std::string json = construct_response_json(
+            cleaned_text,
+            {},
+            time_to_first_token,
+            total_time_ms,
+            prefill_tps,
+            decode_tps,
+            prompt_tokens,
+            completion_tokens,
+            confidence,
+            cloud_handoff,
+            cloud_handoff_classifier_prob);
 
         if (json.size() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);

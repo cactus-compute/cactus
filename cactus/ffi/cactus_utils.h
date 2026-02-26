@@ -61,6 +61,7 @@ inline double get_ram_usage_mb() {
 struct CactusModelHandle {
     std::unique_ptr<cactus::engine::Model> model;
     std::unique_ptr<cactus::engine::Model> vad_model;
+    std::unique_ptr<cactus::engine::Model> cloud_handoff_model;
     std::atomic<bool> should_stop;
     std::vector<uint32_t> processed_tokens;
     std::mutex model_mutex;
@@ -881,7 +882,8 @@ inline std::string construct_response_json(const std::string& regular_response,
                                            size_t prompt_tokens,
                                            size_t completion_tokens,
                                            float confidence = 0.0f,
-                                           bool cloud_handoff = false) {
+                                           bool cloud_handoff = false,
+                                           float cloud_handoff_classifier_prob = 0.0f) {
     std::ostringstream json;
     json << "{";
     json << "\"success\":true,";
@@ -895,6 +897,7 @@ inline std::string construct_response_json(const std::string& regular_response,
     }
     json << "],";
     json << "\"confidence\":" << std::fixed << std::setprecision(4) << confidence << ",";
+    json << "\"cloud_handoff_classifier_prob\":" << std::fixed << std::setprecision(4) << cloud_handoff_classifier_prob << ",";
     json << "\"time_to_first_token_ms\":" << std::fixed << std::setprecision(2) << time_to_first_token << ",";
     json << "\"total_time_ms\":" << std::fixed << std::setprecision(2) << total_time_ms << ",";
     json << "\"prefill_tps\":" << std::fixed << std::setprecision(2) << prefill_tps << ",";

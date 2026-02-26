@@ -414,6 +414,23 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
                 return nullptr;
             }
 
+            if (model_type == Config::ModelType::WHISPER) {
+                std::string cloud_handoff_path = model_path_str + "/cloud-handoff";
+                handle->cloud_handoff_model = create_model(cloud_handoff_path);
+                if (!handle->cloud_handoff_model) {
+                    last_error_message = "Failed to create cloud-handoff model - check cloud-handoff weights at: " + cloud_handoff_path;
+                    CACTUS_LOG_ERROR("init", last_error_message);
+                    delete handle;
+                    return nullptr;
+                }
+                if (!handle->cloud_handoff_model->init(cloud_handoff_path, 0, "", false)) {
+                    last_error_message = "Failed to initialize cloud-handoff model - check cloud-handoff weight files at: " + cloud_handoff_path;
+                    CACTUS_LOG_ERROR("init", last_error_message);
+                    delete handle;
+                    return nullptr;
+                }
+                CACTUS_LOG_INFO("init", "Loaded cloud-handoff sidecar model from: " << cloud_handoff_path);
+            }
         }
 
         if (corpus_dir != nullptr && strlen(corpus_dir) > 0) {

@@ -2,7 +2,6 @@
 import sys
 import os
 import argparse
-import re
 import json
 import subprocess
 import shutil
@@ -100,6 +99,24 @@ def ensure_vad_weights(model_id, weights_dir, precision='INT8'):
         print("Transcription may fail without VAD. Try: cactus download snakers4/silero-vad")
 
 
+def ensure_cloud_handoff_weights(model_id, weights_dir, precision='FP16', args=None):
+    """Bundle cloud-handoff classifier weights into <weights_dir>/cloud-handoff/ for whisper models."""
+    if 'whisper' not in model_id.lower():
+        return
+    cloud_handoff_dir = weights_dir / "cloud-handoff"
+    if (cloud_handoff_dir / "config.txt").exists():
+        return
+    try:
+        from .converter import bundle_whisper_cloud_handoff_weights
+
+        print_color(YELLOW, "Bundling cloud-handoff weights for speech model...")
+        bundle_whisper_cloud_handoff_weights(weights_dir, precision, args)
+        print_color(GREEN, "Cloud-handoff weights bundled successfully")
+    except Exception as e:
+        print_color(RED, f"Warning: Failed to bundle cloud-handoff weights: {e}")
+        print("Transcription will run without cloud-handoff.")
+
+
 def download_from_hf(model_id, weights_dir, precision):
     """Download pre-converted model from Cactus-Compute HuggingFace."""
     try:
@@ -163,6 +180,16 @@ def download_from_hf(model_id, weights_dir, precision):
 def cmd_download(args):
     """Download model weights. By default downloads pre-converted weights from Cactus-Compute."""
     model_id = args.model_id
+
+    normalized_model_id = model_id.lower().replace("-", "_")
+    if "cloud_handoff" in normalized_model_id:
+        print_color(
+            RED,
+            "Cloud Handoff repos are sidecar classifiers. Convert a Whisper model; "
+            "cloud_handoff is bundled automatically.",
+        )
+        return 1
+
     weights_dir = get_weights_dir(model_id)
     reconvert = getattr(args, 'reconvert', False)
     precision = getattr(args, 'precision', 'INT4')
@@ -173,6 +200,7 @@ def cmd_download(args):
 
     if weights_dir.exists() and (weights_dir / "config.txt").exists():
         ensure_vad_weights(model_id, weights_dir, precision)
+        ensure_cloud_handoff_weights(model_id, weights_dir, precision, args)
         print_color(GREEN, f"Model weights found at {weights_dir}")
         return 0
 
@@ -183,6 +211,7 @@ def cmd_download(args):
     if not reconvert:
         if download_from_hf(model_id, weights_dir, precision):
             ensure_vad_weights(model_id, weights_dir, precision)
+            ensure_cloud_handoff_weights(model_id, weights_dir, precision, args)
             return 0
 
     try:

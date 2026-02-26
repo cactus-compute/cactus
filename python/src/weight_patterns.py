@@ -103,6 +103,18 @@ WHISPER_GLOBAL_WEIGHTS = [
     ('encoder.layer_norm.weight', 'encoder_norm_weight.weights')
 ]
 
+CLOUD_HANDOFF_GLOBAL_WEIGHTS = [
+    ('classifier.fc1.weight', 'cloud_handoff_fc1.weights'),
+    ('classifier.fc1.bias', 'cloud_handoff_fc1.bias'),
+    ('classifier.fc2.weight', 'cloud_handoff_fc2.weights'),
+    ('classifier.fc2.bias', 'cloud_handoff_fc2.bias'),
+]
+
+CLOUD_HANDOFF_STATS_WEIGHTS = [
+    ('feature_mean', 'cloud_handoff_feature_mean.weights'),
+    ('feature_std', 'cloud_handoff_feature_std.weights'),
+]
+
 
 def get_layer_weight_patterns(i, precision, model_type=None):
     is_whisper = model_type == 'whisper'
