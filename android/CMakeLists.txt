@@ -7,6 +7,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../cactus)
 set(CACTUS_CURL_ROOT "${CMAKE_SOURCE_DIR}/../libs/curl" CACHE PATH "Path to vendored libcurl artifacts")
 
+set(_CACTUS_VERSION_FILE "${CMAKE_SOURCE_DIR}/../CACTUS_VERSION")
+if(EXISTS "${_CACTUS_VERSION_FILE}")
+    file(READ "${_CACTUS_VERSION_FILE}" _CACTUS_VERSION_CONTENT)
+    string(STRIP "${_CACTUS_VERSION_CONTENT}" CACTUS_VERSION_STR)
+    message(STATUS "Cactus version: ${CACTUS_VERSION_STR}")
+else()
+    set(CACTUS_VERSION_STR "")
+endif()
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
     message(STATUS "CMAKE_BUILD_TYPE was not set, defaulting to Release.")
@@ -112,6 +121,9 @@ endif()
 set(COMMON_COMPILE_DEFINITIONS
     PLATFORM_CPU_ONLY=1
 )
+if(NOT "${CACTUS_VERSION_STR}" STREQUAL "")
+    list(APPEND COMMON_COMPILE_DEFINITIONS "CACTUS_COMPILE_TIME_VERSION=\"${CACTUS_VERSION_STR}\"")
+endif()
 
 target_compile_definitions(cactus PRIVATE ${COMMON_COMPILE_DEFINITIONS})
 target_compile_definitions(cactus_static PRIVATE ${COMMON_COMPILE_DEFINITIONS})

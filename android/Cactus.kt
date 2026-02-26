@@ -9,6 +9,7 @@ class Cactus private constructor(private var handle: Long) : Closeable {
     companion object {
         init {
             System.loadLibrary("cactus")
+            nativeSetFramework()
         }
 
         @JvmStatic
@@ -20,6 +21,8 @@ class Cactus private constructor(private var handle: Long) : Closeable {
             return Cactus(handle)
         }
 
+        @JvmStatic
+        private external fun nativeSetFramework()
         @JvmStatic
         private external fun nativeInit(modelPath: String, corpusDir: String?): Long
         @JvmStatic

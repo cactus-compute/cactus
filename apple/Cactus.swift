@@ -236,7 +236,10 @@ public final class Cactus: @unchecked Sendable {
     private let handle: UnsafeMutableRawPointer
     private static let defaultBufferSize = 65536
     private static let _frameworkInitialized: Void = {
-        cactus_set_telemetry_environment("swift", nil)
+        cactus_set_telemetry_environment("swift", nil, nil)
+        if let bundleId = Bundle.main.bundleIdentifier {
+            bundleId.withCString { cactus_set_app_id($0) }
+        }
     }()
 
     public init(modelPath: String, corpusDir: String? = nil, cacheIndex: Bool = false) throws {
@@ -253,7 +256,7 @@ public final class Cactus: @unchecked Sendable {
     }
 
     public static func setTelemetryEnvironment(_ path: String) {
-        cactus_set_telemetry_environment(nil, path)
+        cactus_set_telemetry_environment(nil, path, nil)
     }
 
     public func complete(

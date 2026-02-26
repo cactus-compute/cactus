@@ -137,7 +137,7 @@ typedef CactusIndexDestroyNative = Void Function(CactusIndexT index);
 typedef CactusGetLastErrorNative = Pointer<Utf8> Function();
 
 typedef CactusSetTelemetryEnvironmentNative = Void Function(
-    Pointer<Utf8> framework, Pointer<Utf8> cacheLocation);
+    Pointer<Utf8> framework, Pointer<Utf8> cacheLocation, Pointer<Utf8> version);
 
 typedef CactusInitDart = CactusModelT Function(
     Pointer<Utf8> modelPath, Pointer<Utf8> corpusDir);
@@ -264,7 +264,10 @@ typedef CactusIndexDestroyDart = void Function(CactusIndexT index);
 typedef CactusGetLastErrorDart = Pointer<Utf8> Function();
 
 typedef CactusSetTelemetryEnvironmentDart = void Function(
-    Pointer<Utf8> framework, Pointer<Utf8> cacheLocation);
+    Pointer<Utf8> framework, Pointer<Utf8> cacheLocation, Pointer<Utf8> version);
+
+typedef CactusTelemetryFlushNative = Void Function();
+typedef CactusTelemetryFlushDart = void Function();
 
 
 DynamicLibrary _loadLibrary() {
@@ -340,6 +343,9 @@ final _cactusGetLastError = _lib
 final _cactusSetTelemetryEnvironment = _lib.lookupFunction<
     CactusSetTelemetryEnvironmentNative,
     CactusSetTelemetryEnvironmentDart>('cactus_set_telemetry_environment');
+final _cactusTelemetryFlush = _lib.lookupFunction<
+    CactusTelemetryFlushNative,
+    CactusTelemetryFlushDart>('cactus_telemetry_flush');
 
 // ----------------------------------------------------------------------------
 // Helper Extensions
@@ -619,7 +625,7 @@ class Cactus {
   static Cactus create(String modelPath, {String? corpusDir}) {
     if (!_frameworkSet) {
       final frameworkPtr = 'flutter'.toNativeUtf8();
-      _cactusSetTelemetryEnvironment(frameworkPtr, nullptr);
+      _cactusSetTelemetryEnvironment(frameworkPtr, nullptr, nullptr);
       calloc.free(frameworkPtr);
       _frameworkSet = true;
     }
@@ -640,7 +646,7 @@ class Cactus {
 
   static void setTelemetryEnvironment(String path) {
     final pathPtr = path.toNativeUtf8();
-    _cactusSetTelemetryEnvironment(nullptr, pathPtr);
+    _cactusSetTelemetryEnvironment(nullptr, pathPtr, nullptr);
     calloc.free(pathPtr);
   }
 
@@ -1097,6 +1103,7 @@ class Cactus {
   void dispose() {
     if (!_disposed) {
       _cactusDestroy(_handle);
+      _cactusTelemetryFlush();
       _disposed = true;
     }
   }
@@ -1191,6 +1198,7 @@ class StreamTranscriber {
   void dispose() {
     if (!_disposed) {
       _cactusStreamTranscribeDestroy(_handle);
+      _cactusTelemetryFlush();
       _disposed = true;
     }
   }
@@ -1379,6 +1387,7 @@ class CactusIndex {
   void dispose() {
     if (!_disposed) {
       _cactusIndexDestroy(_handle);
+      _cactusTelemetryFlush();
       _disposed = true;
     }
   }
