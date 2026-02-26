@@ -5,10 +5,15 @@ import os
 import shutil
 import subprocess
 import sys
+import yaml
 from huggingface_hub import HfApi, hf_hub_download
 from .cli import cmd_convert, get_weights_dir, PROJECT_ROOT
 
 STAGE_DIR = PROJECT_ROOT / "stage"
+
+FALLBACK_LICENSES = {
+    "snakers4/silero-vad": "mit",
+}
 
 
 def sha256(file):
@@ -100,9 +105,11 @@ def update_org_readme(api, org):
         return 1
 
     try:
-        api.create_repo(repo_id=f"{org}/README", repo_type="space", exist_ok=True)
+        api.create_repo(repo_id=f"{org}/README", repo_type="space", space_sdk="static", exist_ok=True)
+        frontmatter = f"---\ntitle: {org}\nsdk: static\npinned: true\n---\n\n"
+        content = (frontmatter + readme.read_text()).encode()
         api.upload_file(
-            path_or_fileobj=str(readme),
+            path_or_fileobj=content,
             path_in_repo="README.md",
             repo_id=f"{org}/README",
             repo_type="space",
@@ -171,6 +178,33 @@ def export_and_publish_model(args, api):
 
         api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
 
+        try:
+            info = api.model_info(args.model)
+            source_license = (info.card_data and info.card_data.license) or FALLBACK_LICENSES.get(args.model)
+        except Exception:
+            source_license = FALLBACK_LICENSES.get(args.model)
+
+        meta = {"base_model": args.model}
+        if args.pipeline_tag:
+            meta["pipeline_tag"] = args.pipeline_tag
+        if args.tags:
+            meta["tags"] = [tag.strip() for tag in args.tags.split(",") if tag.strip()]
+        if source_license:
+            meta["license"] = source_license
+        if args.description:
+            meta["description"] = args.description
+        readme = f"---\n{yaml.dump(meta, default_flow_style=False, allow_unicode=True).strip()}\n---\n"
+        try:
+            api.upload_file(
+                path_or_fileobj=readme.encode("utf-8"),
+                path_in_repo="README.md",
+                repo_id=repo_id,
+                repo_type="model",
+                commit_message="Update model card",
+            )
+        except Exception:
+            print("Model card update failed")
+
         if changed(config, get_prev_config(api, repo_id, args.version)):
             api.upload_folder(
                 folder_path=str(stage),
@@ -210,6 +244,9 @@ def main():
     parser.add_argument("--int8", action="store_true")
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--apple", action="store_true")
+    parser.add_argument("--pipeline-tag", dest="pipeline_tag")
+    parser.add_argument("--tags", help="Comma-separated list of HuggingFace tags")
+    parser.add_argument("--description")
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN")
