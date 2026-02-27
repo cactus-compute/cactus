@@ -1119,6 +1119,74 @@ bool test_stft_performance(TestUtils::TestRunner& runner) {
     return true;
 }
 
+template<typename T>
+void run_layernorm_case(TestUtils::TestRunner& runner,
+    size_t batch, size_t feat, const char* tag, bool with_bias, int iterations)
+{
+    const size_t total = batch * feat;
+    const Precision prec = TestUtils::default_precision<T>();
+
+    CactusGraph graph;
+    size_t inp = graph.input({batch, feat}, prec);
+    size_t w   = graph.input({feat},        prec);
+
+    std::vector<T> inp_data(total), w_data(feat), b_data(feat);
+    setup_random_data(inp_data);
+    for (size_t i = 0; i < feat; ++i) {
+        w_data[i] = static_cast<T>(1.0f);
+        b_data[i] = static_cast<T>(0.0f);
+    }
+    graph.set_input(inp, inp_data.data(), prec);
+    graph.set_input(w,   w_data.data(),   prec);
+
+    if (with_bias) {
+        size_t bias_id = graph.input({feat}, prec);
+        graph.set_input(bias_id, b_data.data(), prec);
+        graph.layernorm(inp, w, bias_id, 1e-5f);
+    } else {
+        graph.layernorm(inp, w, 1e-5f);
+    }
+
+    double ms = time_operation<T>([&]() { graph.execute(); }, iterations);
+    double gb = (total * sizeof(T) * 2) / (ms * 1e6);
+
+    std::ostringstream det;
+    det << std::fixed << std::setprecision(3) << ms << "ms, "
+        << std::setprecision(2) << gb << " GB/s";
+
+    std::string label = std::string("LayerNorm ") + precision_to_string(prec)
+        + (with_bias ? " +bias " : " no-bias") + " " + tag;
+    runner.log_performance(label, det.str());
+    graph.hard_reset();
+}
+
+void benchmark_layernorm(TestUtils::TestRunner& runner, const BenchmarkConfig&) {
+    struct ShapeCase { size_t batch; size_t feat; const char* tag; };
+    const std::vector<ShapeCase> shapes = {
+        {1,      1,  "edge:single    "},
+        {1,      7,  "edge:unaligned "},
+        {1,    512,  "prod:whisper-1 "},
+        {128,  512,  "prod:whisper-128"},
+        {1500, 512,  "prod:whisper-full"},
+        {1,   1024,  "prod:bert-1    "},
+        {128, 1024,  "prod:bert-128  "},
+    };
+    const int iterations = 100;
+
+    for (const auto& [batch, feat, tag] : shapes) {
+        for (bool with_bias : {false, true}) {
+            run_layernorm_case<__fp16>(runner, batch, feat, tag, with_bias, iterations);
+            run_layernorm_case<float> (runner, batch, feat, tag, with_bias, iterations);
+        }
+    }
+}
+
+bool test_layernorm_performance(TestUtils::TestRunner& runner) {
+    BenchmarkConfig config;
+    benchmark_layernorm(runner, config);
+    return true;
+}
+
 
 int main() {
     TestUtils::TestRunner runner("Performance Benchmarks");
@@ -1139,6 +1207,7 @@ int main() {
     runner.run_test("Gather Operations", test_gather_operations_performance(runner));
     runner.run_test("Signals Operations", test_signals_performance(runner));
     runner.run_test("STFT Operations", test_stft_performance(runner));
+    runner.run_test("LayerNorm Operations", test_layernorm_performance(runner));
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
