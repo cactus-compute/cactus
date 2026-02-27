@@ -204,8 +204,8 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                         idx = int(m.group(1))
                         if idx > max_v_idx:
                             max_v_idx = idx
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
         if not vision_prefix:
             vision_prefix = 'model.vision_model.encoder.layers.'
@@ -330,25 +330,27 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                     found = False
                     for pattern in name_patterns:
                         if model_type_str == 'lfm2_moe' and pattern.startswith('feed_forward.experts.{channel}.'):
-                            num_channels = int(model_config.get('num_experts', 0))
-                            if num_channels <= 0:
+                            num_experts = int(model_config.get('num_experts', 0))
+                            if num_experts <= 0:
                                 continue
 
                             matched_any_channel = False
-                            for channel_idx in range(num_channels):
-                                full_name = layer_prefix + pattern.replace('{channel}', str(channel_idx))
+                            for expert_idx in range(num_experts):
+                                full_name = layer_prefix + pattern.replace('{channel}', str(expert_idx))
                                 if full_name not in state_dict:
                                     continue
 
-                                channel_output_name = output_name.replace('{channel}', str(channel_idx))
+                                expert_output_name = output_name.replace('{channel}', str(expert_idx))
                                 tensor = state_dict[full_name]
-                                save_tensor_with_header(tensor, output_dir / channel_output_name, tensor_precision, transpose=should_transpose, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                                save_tensor_with_header(tensor, output_dir / expert_output_name, tensor_precision, transpose=should_transpose, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                                 saved_tensor_full_names.add(full_name)
                                 matched_any_channel = True
 
                             if matched_any_channel:
                                 found = True
-                                break
+                                # After MOE expert pattern handling, skip regular pattern matching 
+                                # to ensure efficiency and consistency.
+                                continue
 
                         full_name = layer_prefix + pattern
                         if full_name in state_dict:
@@ -563,41 +565,5 @@ def convert_silero_vad_weights(model, output_dir, precision="FP16", args=None):
 
     for i in range(config["num_encoder_blocks"]):
         save_tensor_with_header(
-            state_dict[f"_model.encoder.{i}.reparam_conv.weight"],
-            output_dir / f"encoder_block_{i}_conv_weight.weights",
-            precision=precision,
+            state_dict[f"_model.encoder.{i}.reparam_conv.weight"], output_dir / f"encoder_{i}_weight.weights", precision=precision
         )
-        save_tensor_with_header(
-            state_dict[f"_model.encoder.{i}.reparam_conv.bias"],
-            output_dir / f"encoder_block_{i}_conv_bias.weights",
-            precision=precision,
-        )
-
-    lstm_weights = [
-        ("_model.decoder.rnn.weight_ih", "lstm_weight_ih.weights"),
-        ("_model.decoder.rnn.weight_hh", "lstm_weight_hh.weights"),
-        ("_model.decoder.rnn.bias_ih", "lstm_bias_ih.weights"),
-        ("_model.decoder.rnn.bias_hh", "lstm_bias_hh.weights"),
-    ]
-    for key, filename in lstm_weights:
-        save_tensor_with_header(
-            state_dict[key], output_dir / filename, precision="FP16"
-        )
-
-    save_tensor_with_header(
-        state_dict["_model.decoder.decoder.2.weight"],
-        output_dir / "output_conv_weight.weights",
-        precision=precision,
-    )
-    save_tensor_with_header(
-        state_dict["_model.decoder.decoder.2.bias"],
-        output_dir / "output_conv_bias.weights",
-        precision=precision,
-    )
-
-    config_path = output_dir / "config.txt"
-    with open(config_path, "w") as f:
-        for key, value in config.items():
-            f.write(f"{key}={value}\n")
-
-    return config
