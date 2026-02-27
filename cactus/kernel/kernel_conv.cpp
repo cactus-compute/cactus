@@ -34,34 +34,39 @@ static void conv1d_causal_depthwise_f16_accelerate(
         __fp16*       Yb = output + n * out_bs;
         const __fp16* Wc = weight + c * K;
 
-        std::vector<float> padded_input(padded_len, 0.0f);
-        std::vector<float> weight_f32(K);
-        std::vector<float> conv_out(L);
-
-        size_t pad = (K - 1) * dilation;
-        for (size_t t = 0; t < L; ++t) {
-            padded_input[pad + t] = (float)Xb[t * C + c];
-        }
-
-        for (size_t k = 0; k < K; ++k) {
-            weight_f32[k] = (float)Wc[k];
-        }
-
         if (dilation == 1) {
-            vDSP_conv(padded_input.data(), 1, weight_f32.data(), 1,
-                      conv_out.data(), 1, L, K);
-        } else {
-            std::vector<float> dilated_weight(1 + (K - 1) * dilation, 0.0f);
-            for (size_t k = 0; k < K; ++k) {
-                dilated_weight[k * dilation] = weight_f32[k];
-            }
-            size_t dilated_K = dilated_weight.size();
-            vDSP_conv(padded_input.data(), 1, dilated_weight.data(), 1,
-                      conv_out.data(), 1, L, dilated_K);
-        }
 
-        for (size_t t = 0; t < L; ++t) {
-            Yb[t * C + c] = (__fp16)conv_out[t];
+            size_t i = 0;
+            for(; i + 7 < L; i += 8){
+                float16x8_t acc = vdupq_n_f16(0.0f);
+
+                for (size_t k = 0; k < K; ++k) {
+                    float16x8_t input_vec = vld1q_f16(&Xb[(i + k) * C + c]);
+                    float16x8_t weight_vec = vdupq_n_f16(Wc[k]);
+                    acc = vfmaq_f16(acc, input_vec, weight_vec);
+                }
+                vst1q_f16(&Yb[i * C + c], acc);
+            }
+
+            for (; i < L; ++i) {
+                float acc = 0.0f;
+                for (size_t k = 0; k < K; ++k) {
+                    acc += float(Xb[(i + k) * C + c]) * float(Wc[k]);
+                }
+                Yb[i * C + c] = (__fp16)acc;
+            }
+        } else {
+
+            for (size_t i = 0; i < L; ++i) {
+                float acc = 0.0f;
+
+                for (size_t k = 0; k < K; ++k) {
+                    size_t idx = i + k * dilation;
+                    acc += float(Xb[idx * C + c]) * float(Wc[k]);
+                }
+
+                Yb[i * C + c] = (__fp16)acc;
+            }
         }
     });
 }
@@ -628,13 +633,29 @@ void cactus_bilinear_interpolation_f16(const __fp16* input, __fp16* output, size
 
             size_t out_idx = (dst_y * dst_width + dst_x) * embed_dim;
 
-            for (size_t d = 0; d < embed_dim; ++d) {
-                float result =
-                    static_cast<float>(input[idx00 + d]) * w00 +
-                    static_cast<float>(input[idx01 + d]) * w01 +
-                    static_cast<float>(input[idx10 + d]) * w10 +
-                    static_cast<float>(input[idx11 + d]) * w11;
-                output[out_idx + d] = static_cast<__fp16>(result);
+            size_t d = 0;
+            for(; d + 8 <= embed_dim; d += 8){
+                float16x8_t v00 = vld1q_f16(input + idx00 + d);
+                float16x8_t v01 = vld1q_f16(input + idx01 + d);
+                float16x8_t v10 = vld1q_f16(input + idx10 + d);
+                float16x8_t v11 = vld1q_f16(input + idx11 + d);
+
+                float16x8_t result = vfmaq_f16(
+                    vfmaq_f16(
+                        vfmaq_f16(vdupq_n_f16(0.0f), v00, vdupq_n_f16(w00)),
+                        v01, vdupq_n_f16(w01)),
+                    v10, vdupq_n_f16(w10));
+                result = vfmaq_f16(result, v11, vdupq_n_f16(w11));
+
+                vst1q_f16(output + out_idx + d, result);
+            }
+
+            for (; d < embed_dim; ++d) {
+                output[out_idx + d] =
+                    input[idx00 + d] * w00 +
+                    input[idx01 + d] * w01 +
+                    input[idx10 + d] * w10 +
+                    input[idx11 + d] * w11;
             }
         }
     }
