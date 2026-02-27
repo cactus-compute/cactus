@@ -329,6 +329,27 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 for name_patterns, tensor_precision, output_name, should_transpose in weight_patterns:
                     found = False
                     for pattern in name_patterns:
+                        if model_type_str == 'lfm2_moe' and pattern.startswith('feed_forward.experts.{channel}.'):
+                            num_channels = int(model_config.get('num_experts', 0))
+                            if num_channels <= 0:
+                                continue
+
+                            matched_any_channel = False
+                            for channel_idx in range(num_channels):
+                                full_name = layer_prefix + pattern.replace('{channel}', str(channel_idx))
+                                if full_name not in state_dict:
+                                    continue
+
+                                channel_output_name = output_name.replace('{channel}', str(channel_idx))
+                                tensor = state_dict[full_name]
+                                save_tensor_with_header(tensor, output_dir / channel_output_name, tensor_precision, transpose=should_transpose, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                                saved_tensor_full_names.add(full_name)
+                                matched_any_channel = True
+
+                            if matched_any_channel:
+                                found = True
+                                break
+
                         full_name = layer_prefix + pattern
                         if full_name in state_dict:
                             tensor = state_dict[full_name]
