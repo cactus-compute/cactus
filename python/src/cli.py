@@ -185,6 +185,8 @@ def cmd_download(args):
             ensure_vad_weights(model_id, weights_dir, precision)
             return 0
 
+    tokenizer_labels = None
+
     try:
         import torch
         from transformers import AutoTokenizer
@@ -380,8 +382,12 @@ def cmd_download(args):
                     )
                 else:
                     raise
-
+                #Hopefully ts works
             config_obj = _download_config_json(model_id, revision=revision)
+            if 'parakeet-tdt' in model_id.lower():
+                cfg_labels = config_obj.get('labels', [])
+                if isinstance(cfg_labels, list) and cfg_labels:
+                    tokenizer_labels = cfg_labels
 
             state_dict = None
             try:
@@ -501,7 +507,13 @@ def cmd_download(args):
             for key, value in config.items():
                 f.write(f"{key}={format_config_value(value)}\n")
 
-        convert_hf_tokenizer(tokenizer, weights_dir, token=token)
+        convert_hf_tokenizer(
+            tokenizer,
+            weights_dir,
+            token=token,
+            model_id=model_id,
+            labels=tokenizer_labels,
+        )
 
         del model
         del tokenizer
