@@ -362,7 +362,9 @@ int cactus_stream_transcribe_process(
 
         const auto model_type = handle->model_handle->model->get_config().model_type;
         bool is_moonshine = model_type == cactus::engine::Config::ModelType::MOONSHINE;
-        bool is_parakeet = model_type == cactus::engine::Config::ModelType::PARAKEET;
+        bool is_parakeet =
+            model_type == cactus::engine::Config::ModelType::PARAKEET ||
+            model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
 
         std::string prompt = is_moonshine ? "" :
             "<|startoftranscript|><|" + handle->options.language + "|><|transcribe|><|notimestamps|>";

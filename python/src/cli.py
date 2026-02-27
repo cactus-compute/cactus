@@ -12,7 +12,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 DEFAULT_MODEL_ID = "LiquidAI/LFM2.5-1.2B-Instruct"
-DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "UsefulSensors/moonshine-base"
+DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
@@ -213,11 +213,25 @@ def cmd_download(args):
     import transformers
     transformers.logging.set_verbosity_error()
 
-    def _download_config_json(repo_id):
+    def _download_config_json(repo_id, revision=None):
         from huggingface_hub import hf_hub_download
-        config_path = hf_hub_download(repo_id=repo_id, filename="config.json", cache_dir=cache_dir, token=token)
+        config_path = hf_hub_download(
+            repo_id=repo_id,
+            filename="config.json",
+            cache_dir=cache_dir,
+            token=token,
+            revision=revision,
+        )
         with open(config_path, 'r', encoding='utf-8') as fh:
             return json.load(fh)
+
+    def _resolve_hf_revision(repo_id):
+        env_revision = os.getenv("CACTUS_HF_REVISION", "").strip()
+        if env_revision:
+            return env_revision
+        if repo_id.lower() == "nvidia/parakeet-tdt-0.6b-v3":
+            return "refs/pr/7"
+        return None
 
     def _load_raw_hf_state_dict(repo_id):
         from huggingface_hub import snapshot_download
@@ -342,12 +356,32 @@ def cmd_download(args):
             model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
 
         elif is_parakeet:
-            from transformers import AutoConfig
             from huggingface_hub import hf_hub_download, snapshot_download
             from safetensors.torch import load_file as load_safetensors
 
-            tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
-            config_obj = AutoConfig.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+            revision = _resolve_hf_revision(model_id)
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    model_id,
+                    cache_dir=cache_dir,
+                    trust_remote_code=True,
+                    token=token,
+                    revision=revision,
+                )
+            except Exception as tok_err:
+                if "TokenizersBackend" in str(tok_err) or "does not exist or is not currently imported" in str(tok_err):
+                    from transformers import PreTrainedTokenizerFast
+                    print("  Note: Using PreTrainedTokenizerFast fallback for Parakeet tokenizer...")
+                    tokenizer = PreTrainedTokenizerFast.from_pretrained(
+                        model_id,
+                        cache_dir=cache_dir,
+                        token=token,
+                        revision=revision,
+                    )
+                else:
+                    raise
+
+            config_obj = _download_config_json(model_id, revision=revision)
 
             state_dict = None
             try:
@@ -355,11 +389,17 @@ def cmd_download(args):
                     repo_id=model_id,
                     filename="model.safetensors",
                     cache_dir=cache_dir,
-                    token=token
+                    token=token,
+                    revision=revision,
                 )
                 state_dict = load_safetensors(weights_path, device="cpu")
             except Exception:
-                snapshot_path = snapshot_download(repo_id=model_id, cache_dir=cache_dir, token=token)
+                snapshot_path = snapshot_download(
+                    repo_id=model_id,
+                    cache_dir=cache_dir,
+                    token=token,
+                    revision=revision,
+                )
                 index_path = Path(snapshot_path) / "model.safetensors.index.json"
                 if not index_path.exists():
                     raise
@@ -1621,7 +1661,7 @@ def create_parser():
 
     Optional flags:
     --model <model>                    default: LFM2-VL-450M
-    --transcribe_model <model>         default: UsefulSensors/moonshine-base
+    --transcribe_model <model>         default: nvidia/parakeet-tdt-0.6b-v3
     --benchmark                        use larger models (LFM2.5-VL-1.6B + nvidia/parakeet-ctc-1.1b)
     --precision INT4|INT8|FP16         regenerates weights with precision
     --reconvert                        force model weights reconversion from source

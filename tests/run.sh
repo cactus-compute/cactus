@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 DEFAULT_MODEL="LiquidAI/LFM2-VL-450M"
-DEFAULT_TRANSCRIBE_MODEL="UsefulSensors/moonshine-base"
+DEFAULT_TRANSCRIBE_MODEL="nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_VAD_MODEL="snakers4/silero-vad"
 
 MODEL_NAME="$DEFAULT_MODEL"

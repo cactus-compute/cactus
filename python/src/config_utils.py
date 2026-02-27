@@ -78,6 +78,14 @@ def cfg_get(c, key, default=None):
 def detect_model_type(cfg, config, output_dir=None):
     """Detect the model architecture type from config."""
     model_type_str = cfg_get(cfg, 'model_type', cfg_get(config, 'model_type', '')).lower()
+    decoding_cfg = cfg_get(cfg, 'decoding', cfg_get(config, 'decoding', None))
+    decoding_model_type = str(cfg_get(decoding_cfg, 'model_type', '')).lower()
+    loss_cfg = cfg_get(cfg, 'loss', cfg_get(config, 'loss', None))
+    loss_name = str(cfg_get(loss_cfg, 'loss_name', '')).lower()
+
+    # NeMo Parakeet-TDT configs often do not expose HF-style model_type names.
+    if decoding_model_type == 'tdt' or loss_name == 'tdt':
+        return 'parakeet_tdt'
 
     if 'gemma' in model_type_str:
         return 'gemma'

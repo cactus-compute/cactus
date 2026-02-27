@@ -128,7 +128,10 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         attention_scale_ = 1.0f / std::sqrt(static_cast<float>(config_.attention_head_dim));
     }
 
-    Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER || config_.model_type == Config::ModelType::MOONSHINE || config_.model_type == Config::ModelType::PARAKEET)
+    Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER ||
+                                 config_.model_type == Config::ModelType::MOONSHINE ||
+                                 config_.model_type == Config::ModelType::PARAKEET ||
+                                 config_.model_type == Config::ModelType::PARAKEET_TDT)
                                ? Precision::FP16
                                : Precision::INT8;
     kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, config_.attention_head_dim, cache_precision);
@@ -151,7 +154,11 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
 
     initialized_ = true;
 
-    if (do_warmup && config_.model_type != Config::ModelType::WHISPER && config_.model_type != Config::ModelType::MOONSHINE && config_.model_type != Config::ModelType::PARAKEET) {
+    if (do_warmup &&
+        config_.model_type != Config::ModelType::WHISPER &&
+        config_.model_type != Config::ModelType::MOONSHINE &&
+        config_.model_type != Config::ModelType::PARAKEET &&
+        config_.model_type != Config::ModelType::PARAKEET_TDT) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
         forward(warmup_tokens);
@@ -478,6 +485,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "moonshine" || value == "MOONSHINE") model_type = ModelType::MOONSHINE;
             else if (value == "silero_vad" || value == "SILERO_VAD") model_type = ModelType::SILERO_VAD;
             else if (value == "parakeet" || value == "PARAKEET") model_type = ModelType::PARAKEET;
+            else if (value == "parakeet_tdt" || value == "PARAKEET_TDT") model_type = ModelType::PARAKEET_TDT;
             else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {
@@ -522,6 +530,23 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "subsampling_factor") subsampling_factor = static_cast<uint32_t>(std::stoul(value));
         else if (key == "num_mel_bins") num_mel_bins = static_cast<uint32_t>(std::stoul(value));
         else if (key == "encoder_hidden_act") encoder_hidden_act = value;
+        else if (key == "predictor_hidden_dim") predictor_hidden_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "predictor_num_layers") predictor_num_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "tdt_joint_dim") tdt_joint_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "tdt_num_durations") tdt_num_durations = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "tdt_blank_id") tdt_blank_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "tdt_durations") {
+            tdt_durations.clear();
+            std::stringstream ss(value);
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                size_t first = item.find_first_not_of(" \t");
+                if (first == std::string::npos) continue;
+                size_t last = item.find_last_not_of(" \t");
+                item = item.substr(first, last - first + 1);
+                tdt_durations.push_back(static_cast<uint32_t>(std::stoul(item)));
+            }
+        }
     }
 
     if (model_type == ModelType::GEMMA) {
@@ -552,6 +577,12 @@ bool Config::from_json(const std::string& config_path) {
         default_max_tps = 6.5f;
         default_cloud_handoff_threshold = 0.35f;
     } else if (model_type == ModelType::PARAKEET) {
+        default_temperature = 0.0f;
+        default_top_p = 0.0f;
+        default_top_k = 0;
+        default_max_tps = 8.0f;
+        default_cloud_handoff_threshold = 0.35f;
+    } else if (model_type == ModelType::PARAKEET_TDT) {
         default_temperature = 0.0f;
         default_top_p = 0.0f;
         default_top_k = 0;
@@ -607,6 +638,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<SileroVADModel>(config);
         case Config::ModelType::PARAKEET:
             return std::make_unique<ParakeetModel>(config);
+        case Config::ModelType::PARAKEET_TDT:
+            return std::make_unique<ParakeetTDTModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }

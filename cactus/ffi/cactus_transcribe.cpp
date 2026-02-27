@@ -137,7 +137,9 @@ int cactus_transcribe(
         (void)telemetry_enabled;
 
         bool is_moonshine = handle->model->get_config().model_type == cactus::engine::Config::ModelType::MOONSHINE;
-        bool is_parakeet = handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET;
+        bool is_parakeet =
+            handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET ||
+            handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
 
         std::vector<float> audio_buffer;
         if (audio_file_path == nullptr) {

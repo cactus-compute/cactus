@@ -28,6 +28,15 @@ static const char* get_transcribe_prompt() {
 
 static const char* g_whisper_prompt = get_transcribe_prompt();
 
+static bool is_parakeet_tdt_model() {
+    if (!g_transcribe_model_path) {
+        return false;
+    }
+    std::string path = g_transcribe_model_path;
+    std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c){ return std::tolower(c); });
+    return path.find("parakeet-tdt") != std::string::npos;
+}
+
 bool test_audio_processor() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║         AUDIO PROCESSOR TEST             ║\n"
@@ -556,6 +565,24 @@ static bool test_transcription() {
         [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
 }
 
+static bool test_parakeet_tdt_transcription() {
+    if (!g_transcribe_model_path) {
+        std::cout << "⊘ SKIP │ " << std::left << std::setw(25) << "parakeet_tdt_transcription"
+                  << " │ CACTUS_TEST_TRANSCRIBE_MODEL not set\n";
+        return true;
+    }
+    if (!is_parakeet_tdt_model()) {
+        std::cout << "⊘ SKIP │ " << std::left << std::setw(25) << "parakeet_tdt_transcription"
+                  << " │ active model is not Parakeet-TDT\n";
+        return true;
+    }
+
+    return run_whisper_test("PARAKEET TDT TRANSCRIPTION", R"({"max_tokens": 100, "telemetry_enabled": false})",
+        [](int rc, const Metrics& m) {
+            return rc > 0 && m.completion_tokens >= 8 && !m.response.empty();
+        });
+}
+
 static bool test_vad_process() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║           VAD PROCESS TEST               ║\n"
@@ -638,6 +665,7 @@ int main() {
     runner.run_test("irfft_correctness", test_irfft_correctness());
     runner.run_test("vad_process", test_vad_process());
     runner.run_test("transcription", test_transcription());
+    runner.run_test("parakeet_tdt_transcription", test_parakeet_tdt_transcription());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
