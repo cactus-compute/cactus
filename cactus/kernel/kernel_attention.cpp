@@ -6,6 +6,31 @@
 #include <limits>
 #include <cstring>
 #include <vector>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+
+static std::atomic<int> g_decode_attention_variant{0};
+static std::atomic<uint64_t> g_attn_total_ns{0};
+static std::atomic<uint64_t> g_attn_call_count{0};
+
+void cactus_set_decode_attention_variant(int v) {
+    g_decode_attention_variant.store(v, std::memory_order_relaxed);
+}
+
+int cactus_get_decode_attention_variant() {
+    return g_decode_attention_variant.load(std::memory_order_relaxed);
+}
+
+void cactus_reset_attn_counters() {
+    g_attn_total_ns.store(0, std::memory_order_relaxed);
+    g_attn_call_count.store(0, std::memory_order_relaxed);
+}
+
+void cactus_get_attn_counters(uint64_t* total_ns, uint64_t* call_count) {
+    *total_ns = g_attn_total_ns.load(std::memory_order_relaxed);
+    *call_count = g_attn_call_count.load(std::memory_order_relaxed);
+}
 
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -928,6 +953,34 @@ void cactus_attention_hybrid_int8_fp16(
     size_t window_size,
     size_t quant_group_size
 ) {
+    if (seq_len == 1) {
+        int variant = g_decode_attention_variant.load(std::memory_order_relaxed);
+        if (variant == 1 || variant == 2) {
+            auto t0 = std::chrono::high_resolution_clock::now();
+            if (variant == 1) {
+                cactus_attention_hybrid_int8_fp16_interleaved(
+                    queries, keys_cached, values_cached, k_scales, v_scales,
+                    keys_new, values_new, output,
+                    batch_size, seq_len, cache_len, new_len,
+                    num_q_heads, num_kv_heads, head_dim,
+                    scale, position_offset, is_causal, window_size, quant_group_size);
+            } else {
+                cactus_attention_hybrid_int8_fp16_deferscale(
+                    queries, keys_cached, values_cached, k_scales, v_scales,
+                    keys_new, values_new, output,
+                    batch_size, seq_len, cache_len, new_len,
+                    num_q_heads, num_kv_heads, head_dim,
+                    scale, position_offset, is_causal, window_size, quant_group_size);
+            }
+            auto t1 = std::chrono::high_resolution_clock::now();
+            g_attn_total_ns.fetch_add(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count(),
+                std::memory_order_relaxed);
+            g_attn_call_count.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }

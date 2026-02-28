@@ -420,4 +420,9 @@ void cactus_lstm_cell_f16(
     size_t hidden_size
 );
 
+void cactus_set_decode_attention_variant(int variant);
+int cactus_get_decode_attention_variant();
+void cactus_reset_attn_counters();
+void cactus_get_attn_counters(uint64_t* total_ns, uint64_t* call_count);
+
 #endif
