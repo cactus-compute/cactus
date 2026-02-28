@@ -11,6 +11,21 @@
 #include <string>
 #include <vector>
 
+extern int test_curl_main();
+extern int test_embed_main();
+extern int test_exhaustive_main();
+extern int test_graph_main();
+extern int test_index_main();
+extern int test_kernel_main();
+extern int test_kv_cache_main();
+extern int test_llm_main();
+extern int test_model_loading_main();
+extern int test_performance_main();
+extern int test_rag_main();
+extern int test_stt_main();
+extern int test_telemetry_main();
+extern int test_vlm_main();
+
 static void asr_token_callback(const char* token, uint32_t, void*) {
     if (!token) return;
     fputs(token, stdout);

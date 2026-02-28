@@ -36,6 +36,7 @@ file(GLOB TELEMETRY_SOURCES "${SOURCE_DIR}/telemetry/*.cpp")
 enable_language(OBJCXX)
 
 set(NPU_SOURCES "${SOURCE_DIR}/npu/npu_ane.mm")
+set_source_files_properties(${NPU_SOURCES} PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     string(TOLOWER "${CMAKE_OSX_SYSROOT}" SYSROOT_LOWER)
