@@ -698,6 +698,84 @@ void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
     size_t feature_size = input_buffer.shape.back();
     size_t batch_size = input_buffer.total_size / feature_size;
 
+    if (weight_buffer.total_size != feature_size) {
+        throw std::runtime_error("LayerNorm weight size mismatch with input feature dimension");
+    }
+
+    using BufferDesc = std::remove_reference_t<decltype(weight_buffer)>;
+    const BufferDesc* bias_buffer_ptr = nullptr;
+    if (has_bias) {
+        const auto& bias_buffer = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+        if (bias_buffer.total_size != feature_size) {
+            throw std::runtime_error("LayerNorm bias size mismatch with input feature dimension");
+        }
+        bias_buffer_ptr = &bias_buffer;
+    }
+
+    if (input_buffer.precision == Precision::FP16 &&
+        weight_buffer.precision == Precision::FP16 &&
+        node.output_buffer.precision == Precision::FP16 &&
+        (!has_bias || bias_buffer_ptr->precision == Precision::FP16)) {
+        const __fp16* input_fp16 = input_buffer.data_as<__fp16>();
+        const __fp16* weight_fp16 = weight_buffer.data_as<__fp16>();
+        const __fp16* bias_fp16 = has_bias ? bias_buffer_ptr->data_as<__fp16>() : nullptr;
+        __fp16* output_fp16 = node.output_buffer.data_as<__fp16>();
+
+        const auto compute_row_stats = [&](const __fp16* input_row, float& mean, float& inv_std) {
+            float mean_sq = 0.0f;
+            mean = 0.0f;
+            for (size_t i = 0; i < feature_size; ++i) {
+                const float value = static_cast<float>(input_row[i]);
+                mean += value;
+                mean_sq += value * value;
+            }
+
+            mean /= static_cast<float>(feature_size);
+            mean_sq /= static_cast<float>(feature_size);
+            float variance = mean_sq - (mean * mean);
+            if (variance < 0.0f) {
+                variance = 0.0f;
+            }
+            inv_std = 1.0f / std::sqrt(variance + epsilon);
+        };
+
+        if (has_bias) {
+            for (size_t b = 0; b < batch_size; ++b) {
+                const size_t row_offset = b * feature_size;
+                const __fp16* input_row = input_fp16 + row_offset;
+                __fp16* output_row = output_fp16 + row_offset;
+
+                float mean = 0.0f;
+                float inv_std = 0.0f;
+                compute_row_stats(input_row, mean, inv_std);
+
+                for (size_t i = 0; i < feature_size; ++i) {
+                    const float value = static_cast<float>(input_row[i]);
+                    const float weight = static_cast<float>(weight_fp16[i]);
+                    const float bias = static_cast<float>(bias_fp16[i]);
+                    output_row[i] = static_cast<__fp16>((value - mean) * inv_std * weight + bias);
+                }
+            }
+        } else {
+            for (size_t b = 0; b < batch_size; ++b) {
+                const size_t row_offset = b * feature_size;
+                const __fp16* input_row = input_fp16 + row_offset;
+                __fp16* output_row = output_fp16 + row_offset;
+
+                float mean = 0.0f;
+                float inv_std = 0.0f;
+                compute_row_stats(input_row, mean, inv_std);
+
+                for (size_t i = 0; i < feature_size; ++i) {
+                    const float value = static_cast<float>(input_row[i]);
+                    const float weight = static_cast<float>(weight_fp16[i]);
+                    output_row[i] = static_cast<__fp16>((value - mean) * inv_std * weight);
+                }
+            }
+        }
+        return;
+    }
+
     std::vector<float> input_float(input_buffer.total_size);
     std::vector<float> weight_float(feature_size);
     std::vector<float> bias_float(feature_size, 0.0f);
@@ -725,7 +803,7 @@ void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
     }
 
     if (has_bias) {
-        const auto& bias_buffer = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+        const auto& bias_buffer = *bias_buffer_ptr;
         if (bias_buffer.precision == Precision::INT8) {
             throw std::runtime_error("LayerNorm currently does not support INT8 bias");
         } else if (bias_buffer.precision == Precision::FP16) {

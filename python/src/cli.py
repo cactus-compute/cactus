@@ -1294,8 +1294,13 @@ def cmd_test(args):
         cmd.append("--ios")
     if getattr(args, 'exhaustive', False):
         cmd.append("--exhaustive")
-    if args.only:
-        cmd.extend(["--only", args.only])
+    test_filter = args.only
+    for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance']:
+        if getattr(args, _test_name, False):
+            test_filter = _test_name
+            break
+    if test_filter:
+        cmd.extend(["--only", test_filter])
     env = os.environ.copy()
     if getattr(args, 'enable_telemetry', False):
         env.pop("CACTUS_NO_CLOUD_TELE", None)
@@ -1626,7 +1631,16 @@ def create_parser():
     --precision INT4|INT8|FP16         regenerates weights with precision
     --reconvert                        force model weights reconversion from source
     --no-rebuild                       skip building library and tests
-    --only <test_name>                 run specific test (llm, vlm, stt, embed, rag, graph, index, kernel, kv_cache, performance, etc)
+    --llm                              run only LLM tests
+    --vlm                              run only VLM tests
+    --stt                              run only speech-to-text tests
+    --embed                            run only embedding tests
+    --rag                              run only RAG tests
+    --graph                            run only graph tests
+    --index                            run only index tests
+    --kernel                           run only kernel tests
+    --kv_cache                         run only KV cache tests
+    --performance                      run only performance benchmarks
     --ios                              run on connected iPhone
     --android                          run on connected Android
 
@@ -1757,7 +1771,10 @@ def create_parser():
                              help='Run tests on iOS')
     test_parser.add_argument('--exhaustive', action='store_true',
                              help='Run exhaustive golden tests for all model families and precisions')
-    test_parser.add_argument('--only', help='Only run the specified test (llm, vlm, stt, embed, rag, graph, index, kernel, kv_cache, performance, etc)')
+    test_parser.add_argument('--only', help='(deprecated, use --<test_name> instead) Only run the specified test')
+    for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance']:
+        test_parser.add_argument(f'--{_test_name}', action='store_true',
+                                 help=f'Only run the {_test_name} tests')
     test_parser.add_argument('--enable-telemetry', action='store_true',
                              help='Enable cloud telemetry (disabled by default in tests)')
     test_parser.add_argument('--reconvert', action='store_true',
