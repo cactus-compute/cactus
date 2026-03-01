@@ -38,6 +38,18 @@ on:
         required: false
         type: boolean
         default: false
+      pipeline_tag:
+        description: Pipeline tag (e.g. text-generation)
+        required: false
+        type: string
+      tags:
+        description: Comma-separated tags (e.g. completion,tools)
+        required: false
+        type: string
+      description:
+        description: Model description
+        required: false
+        type: string
 
 env:
   MODELS_CONFIG: |
@@ -103,14 +115,14 @@ jobs:
 
           publish_model() {
             local model=$1 int4=$2 int8=$3 fp16=$4 apple=$5 pipeline_tag=$6 tags=$7 description="${8:-}"
-            FLAGS="--version $VERSION --org $ORG --model $model"
-            [ "$int4" == "true" ] && FLAGS="$FLAGS --int4"
-            [ "$int8" == "true" ] && FLAGS="$FLAGS --int8"
-            [ "$fp16" == "true" ] && FLAGS="$FLAGS --fp16"
-            [ "$apple" == "true" ] && FLAGS="$FLAGS --apple"
-            [ -n "$pipeline_tag" ] && FLAGS="$FLAGS --pipeline-tag $pipeline_tag"
-            [ -n "$tags" ] && FLAGS="$FLAGS --tags $tags"
-            python -m src.publish_to_hf --task export_model $FLAGS --description "$description"
+            FLAGS=(--version "$VERSION" --org "$ORG" --model "$model")
+            [ "$int4" == "true" ] && FLAGS+=(--int4)
+            [ "$int8" == "true" ] && FLAGS+=(--int8)
+            [ "$fp16" == "true" ] && FLAGS+=(--fp16)
+            [ "$apple" == "true" ] && FLAGS+=(--apple)
+            [ -n "$pipeline_tag" ] && FLAGS+=(--pipeline-tag "$pipeline_tag")
+            [ -n "$tags" ] && FLAGS+=(--tags "$tags")
+            python -m src.publish_to_hf --task export_model "${FLAGS[@]}" --description "$description"
           }
 
           if [ -n "${{ github.event.inputs.model }}" ]; then
@@ -119,7 +131,10 @@ jobs:
               "${{ github.event.inputs.int4 }}" \
               "${{ github.event.inputs.int8 }}" \
               "${{ github.event.inputs.fp16 }}" \
-              "${{ github.event.inputs.apple }}"
+              "${{ github.event.inputs.apple }}" \
+              "${{ github.event.inputs.pipeline_tag }}" \
+              "${{ github.event.inputs.tags }}" \
+              "${{ github.event.inputs.description }}"
           else
             echo "$MODELS_CONFIG" | jq -c '.[]' | while read -r config; do
               model=$(echo "$config" | jq -r '.model')

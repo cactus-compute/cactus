@@ -212,7 +212,7 @@ graph.hard_reset();
 │    --precision INT4|INT8|FP16        regenerate weights with precision       │
 │    --reconvert                       force reconversion from source          │
 │    --no-rebuild                      skip building library                   │
-│    --only <test>                     specific test (llm, vlm, stt, etc)      │
+│    --llm / --stt / --performance     run specific test suite                 │
 │    --ios                             run on connected iPhone                 │
 │    --android                         run on connected Android                │
 │                                                                              │

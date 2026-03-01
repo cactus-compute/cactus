@@ -106,7 +106,8 @@ def update_org_readme(api, org):
 
     try:
         api.create_repo(repo_id=f"{org}/README", repo_type="space", space_sdk="static", exist_ok=True)
-        frontmatter = f"---\ntitle: {org}\nsdk: static\npinned: true\n---\n\n"
+        frontmatter_data = {"title": org, "sdk": "static", "pinned": True}
+        frontmatter = "---\n" + yaml.safe_dump(frontmatter_data, sort_keys=False) + "---\n\n"
         content = (frontmatter + readme.read_text()).encode()
         api.upload_file(
             path_or_fileobj=content,
@@ -180,7 +181,7 @@ def export_and_publish_model(args, api):
 
         try:
             info = api.model_info(args.model)
-            source_license = (info.card_data and info.card_data.license) or FALLBACK_LICENSES.get(args.model)
+            source_license = (getattr(info.card_data, "license", None) if info.card_data is not None else None) or FALLBACK_LICENSES.get(args.model)
         except Exception:
             source_license = FALLBACK_LICENSES.get(args.model)
 
@@ -193,7 +194,7 @@ def export_and_publish_model(args, api):
             meta["license"] = source_license
         if args.description:
             meta["description"] = args.description
-        readme = f"---\n{yaml.dump(meta, default_flow_style=False, allow_unicode=True).strip()}\n---\n"
+        readme = f"---\n{yaml.safe_dump(meta, default_flow_style=False, allow_unicode=True).strip()}\n---\n"
         try:
             api.upload_file(
                 path_or_fileobj=readme.encode("utf-8"),
