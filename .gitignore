@@ -33,3 +33,12 @@ ruy
 notes.txt
 site/
 site_docs/
+
+# benchmark artifacts
+*.csv
+*.png
+*.log
+corpus/
+kv_profile_results/
+tests/results/
+tests/analysis/
