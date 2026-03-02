@@ -223,7 +223,6 @@ static inline void cactus_attention_f16_fast(
     bool is_causal
 ) {
     constexpr size_t BLOCK_SIZE = 32;
-    constexpr size_t MAX_ACCUM_SLOTS = 256 / 8;
     const size_t nblocks = head_dim / 8;
 
 #ifdef __APPLE__
@@ -250,7 +249,7 @@ static inline void cactus_attention_f16_fast(
         [&](size_t start, size_t end) {
 
         float block_scores[BLOCK_SIZE];
-        float16x8_t vacc[MAX_ACCUM_SLOTS];
+        std::vector<float16x8_t> vacc(nblocks);
 
         for (size_t work = start; work < end; ++work) {
             const size_t batch = work / (num_q_heads * seq_len);
@@ -636,302 +635,6 @@ void cactus_attention_f16(
         });
 }
 
-static void cactus_attention_hybrid_int8_fp16_decode(
-    const __fp16* queries,
-    const int8_t* keys_cached,
-    const int8_t* values_cached,
-    const float* k_scales,
-    const float* v_scales,
-    const __fp16* keys_new,
-    const __fp16* values_new,
-    __fp16* output,
-    size_t batch_size,
-    size_t cache_len,
-    size_t new_len,
-    size_t num_q_heads,
-    size_t num_kv_heads,
-    size_t head_dim,
-    float scale,
-    size_t position_offset,
-    bool is_causal,
-    size_t window_size,
-    size_t quant_group_size
-) {
-    const size_t kv_seq_len = cache_len + new_len;
-
-    constexpr size_t VECTOR_WIDTH = 8;
-    constexpr size_t BLOCK_SIZE = 32;
-    constexpr size_t MAX_HEAD_DIM = 256;
-    constexpr size_t MAX_ACCUM_SLOTS = MAX_HEAD_DIM / VECTOR_WIDTH;
-    const size_t head_dim_aligned = (head_dim / VECTOR_WIDTH) * VECTOR_WIDTH;
-    const size_t num_accum_slots = head_dim_aligned / VECTOR_WIDTH;
-
-    const size_t gqa_group_size = num_q_heads / num_kv_heads;
-    const size_t num_quant_groups = (head_dim + quant_group_size - 1) / quant_group_size;
-
-    const size_t q_stride = num_q_heads * head_dim;
-    const size_t kv_seq_stride = num_kv_heads * head_dim;
-    const size_t o_stride = num_q_heads * head_dim;
-
-    CactusThreading::parallel_for(batch_size * num_q_heads, CactusThreading::Thresholds::ATTENTION,
-        [=](size_t start_idx, size_t end_idx) {
-            float block_scores[BLOCK_SIZE];
-            float32x4_t output_accum_low[MAX_ACCUM_SLOTS];
-            float32x4_t output_accum_high[MAX_ACCUM_SLOTS];
-            float16x8_t block_accum[MAX_ACCUM_SLOTS];
-
-            for (size_t work_idx = start_idx; work_idx < end_idx; ++work_idx) {
-                const size_t batch_idx = work_idx / num_q_heads;
-                const size_t q_head_idx = work_idx % num_q_heads;
-                const size_t kv_head_idx = q_head_idx / gqa_group_size;
-
-                const __fp16* q_vec = queries + batch_idx * q_stride + q_head_idx * head_dim;
-                const int8_t* K_cached_base = keys_cached + batch_idx * cache_len * kv_seq_stride;
-                const int8_t* V_cached_base = values_cached + batch_idx * cache_len * kv_seq_stride;
-                const __fp16* K_new_base = keys_new + batch_idx * new_len * kv_seq_stride;
-                const __fp16* V_new_base = values_new + batch_idx * new_len * kv_seq_stride;
-                __fp16* o_vec = output + batch_idx * o_stride + q_head_idx * head_dim;
-
-                float running_max = -std::numeric_limits<float>::infinity();
-                float running_sum = 0.0f;
-
-                for (size_t i = 0; i < num_accum_slots; ++i) {
-                    output_accum_low[i] = vdupq_n_f32(0.0f);
-                    output_accum_high[i] = vdupq_n_f32(0.0f);
-                }
-
-                const size_t absolute_q_pos = position_offset;
-                size_t kv_end = is_causal ? std::min(kv_seq_len, absolute_q_pos + 1) : kv_seq_len;
-
-                size_t kv_start = 0;
-                if (window_size > 0 && absolute_q_pos > window_size) {
-                    kv_start = absolute_q_pos - window_size;
-                }
-
-                size_t kv_block_start0 = (kv_start / BLOCK_SIZE) * BLOCK_SIZE;
-
-                for (size_t kv_block_start = kv_block_start0; kv_block_start < kv_end; kv_block_start += BLOCK_SIZE) {
-                    const size_t kv_block_end = std::min(kv_block_start + BLOCK_SIZE, kv_end);
-                    const size_t block_size = kv_block_end - kv_block_start;
-
-                    float block_max = -std::numeric_limits<float>::infinity();
-
-                    // K scoring: interleaved 2-position + deferred scale
-
-                    size_t kv_idx = 0;
-                    for (; kv_idx + 1 < block_size; kv_idx += 2) {
-                        const size_t kv_pos_a = kv_block_start + kv_idx;
-                        const size_t kv_pos_b = kv_pos_a + 1;
-
-                        bool skip_a = (is_causal && kv_pos_a > absolute_q_pos) || (window_size > 0 && kv_pos_a < kv_start);
-                        bool skip_b = (is_causal && kv_pos_b > absolute_q_pos) || (window_size > 0 && kv_pos_b < kv_start);
-
-                        if (skip_a && skip_b) {
-                            block_scores[kv_idx] = -std::numeric_limits<float>::infinity();
-                            block_scores[kv_idx + 1] = -std::numeric_limits<float>::infinity();
-                            continue;
-                        }
-
-                        float score_a = 0.0f, score_b = 0.0f;
-
-                        if (kv_pos_a < cache_len && kv_pos_b < cache_len && !skip_a && !skip_b) {
-                            const int8_t* k_a = K_cached_base + kv_pos_a * kv_seq_stride + kv_head_idx * head_dim;
-                            const int8_t* k_b = K_cached_base + kv_pos_b * kv_seq_stride + kv_head_idx * head_dim;
-                            const float* ks_a = k_scales + (kv_pos_a * num_kv_heads + kv_head_idx) * num_quant_groups;
-                            const float* ks_b = k_scales + (kv_pos_b * num_kv_heads + kv_head_idx) * num_quant_groups;
-
-                            for (size_t qg = 0; qg < num_quant_groups; qg++) {
-                                const size_t dim_base = qg * quant_group_size;
-
-                                float32x4_t raw_lo_a = vdupq_n_f32(0.0f), raw_hi_a = vdupq_n_f32(0.0f);
-                                float32x4_t raw_lo_b = vdupq_n_f32(0.0f), raw_hi_b = vdupq_n_f32(0.0f);
-
-                                #pragma unroll
-                                for (size_t i = 0; i < 4; i++) {
-                                    const size_t d = dim_base + i * VECTOR_WIDTH;
-                                    if (d >= head_dim_aligned) break;
-
-                                    float16x8_t qf = vld1q_f16(&q_vec[d]);
-                                    float32x4_t q_lo = vcvt_f32_f16(vget_low_f16(qf));
-                                    float32x4_t q_hi = vcvt_f32_f16(vget_high_f16(qf));
-
-                                    int16x8_t ka_i16 = vmovl_s8(vld1_s8(&k_a[d]));
-                                    int16x8_t kb_i16 = vmovl_s8(vld1_s8(&k_b[d]));
-
-                                    raw_lo_a = vfmaq_f32(raw_lo_a, q_lo, vcvtq_f32_s32(vmovl_s16(vget_low_s16(ka_i16))));
-                                    raw_hi_a = vfmaq_f32(raw_hi_a, q_hi, vcvtq_f32_s32(vmovl_s16(vget_high_s16(ka_i16))));
-                                    raw_lo_b = vfmaq_f32(raw_lo_b, q_lo, vcvtq_f32_s32(vmovl_s16(vget_low_s16(kb_i16))));
-                                    raw_hi_b = vfmaq_f32(raw_hi_b, q_hi, vcvtq_f32_s32(vmovl_s16(vget_high_s16(kb_i16))));
-                                }
-
-                                score_a += ks_a[qg] * vaddvq_f32(vaddq_f32(raw_lo_a, raw_hi_a));
-                                score_b += ks_b[qg] * vaddvq_f32(vaddq_f32(raw_lo_b, raw_hi_b));
-                            }
-                            score_a *= scale; score_b *= scale;
-                        } else {
-                            auto score_one = [&](size_t kv_pos) -> float {
-                                float s = 0.0f;
-                                if (kv_pos < cache_len) {
-                                    const int8_t* kv = K_cached_base + kv_pos * kv_seq_stride + kv_head_idx * head_dim;
-                                    const float* ks = k_scales + (kv_pos * num_kv_heads + kv_head_idx) * num_quant_groups;
-                                    for (size_t qg = 0; qg < num_quant_groups; qg++) {
-                                        float32x4_t rlo = vdupq_n_f32(0.0f), rhi = vdupq_n_f32(0.0f);
-                                        const size_t db = qg * quant_group_size;
-                                        for (size_t ii = 0; ii < 4; ii++) {
-                                            const size_t d = db + ii * VECTOR_WIDTH;
-                                            if (d >= head_dim_aligned) break;
-                                            float16x8_t qf = vld1q_f16(&q_vec[d]);
-                                            int16x8_t ki16 = vmovl_s8(vld1_s8(&kv[d]));
-                                            rlo = vfmaq_f32(rlo, vcvt_f32_f16(vget_low_f16(qf)), vcvtq_f32_s32(vmovl_s16(vget_low_s16(ki16))));
-                                            rhi = vfmaq_f32(rhi, vcvt_f32_f16(vget_high_f16(qf)), vcvtq_f32_s32(vmovl_s16(vget_high_s16(ki16))));
-                                        }
-                                        s += ks[qg] * vaddvq_f32(vaddq_f32(rlo, rhi));
-                                    }
-                                } else {
-                                    const __fp16* kfp = K_new_base + (kv_pos - cache_len) * kv_seq_stride + kv_head_idx * head_dim;
-                                    float32x4_t slo = vdupq_n_f32(0.0f), shi = vdupq_n_f32(0.0f);
-                                    for (size_t d = 0; d < head_dim_aligned; d += VECTOR_WIDTH) {
-                                        float16x8_t qf = vld1q_f16(&q_vec[d]);
-                                        float16x8_t kf = vld1q_f16(&kfp[d]);
-                                        slo = vfmaq_f32(slo, vcvt_f32_f16(vget_low_f16(qf)), vcvt_f32_f16(vget_low_f16(kf)));
-                                        shi = vfmaq_f32(shi, vcvt_f32_f16(vget_high_f16(qf)), vcvt_f32_f16(vget_high_f16(kf)));
-                                    }
-                                    s = vaddvq_f32(vaddq_f32(slo, shi));
-                                }
-                                return s * scale;
-                            };
-                            if (!skip_a) score_a = score_one(kv_pos_a);
-                            if (!skip_b) score_b = score_one(kv_pos_b);
-                        }
-
-                        block_scores[kv_idx] = skip_a ? -std::numeric_limits<float>::infinity() : score_a;
-                        block_scores[kv_idx + 1] = skip_b ? -std::numeric_limits<float>::infinity() : score_b;
-                        if (!skip_a) block_max = std::max(block_max, score_a);
-                        if (!skip_b) block_max = std::max(block_max, score_b);
-                    }
-
-                    for (; kv_idx < block_size; ++kv_idx) {
-                        const size_t kv_pos = kv_block_start + kv_idx;
-                        if ((is_causal && kv_pos > absolute_q_pos) || (window_size > 0 && kv_pos < kv_start)) {
-                            block_scores[kv_idx] = -std::numeric_limits<float>::infinity();
-                            continue;
-                        }
-                        float score = 0.0f;
-                        if (kv_pos < cache_len) {
-                            const int8_t* kv = K_cached_base + kv_pos * kv_seq_stride + kv_head_idx * head_dim;
-                            const float* ks = k_scales + (kv_pos * num_kv_heads + kv_head_idx) * num_quant_groups;
-                            for (size_t qg = 0; qg < num_quant_groups; qg++) {
-                                float32x4_t rlo = vdupq_n_f32(0.0f), rhi = vdupq_n_f32(0.0f);
-                                const size_t db = qg * quant_group_size;
-                                for (size_t ii = 0; ii < 4; ii++) {
-                                    const size_t d = db + ii * VECTOR_WIDTH;
-                                    if (d >= head_dim_aligned) break;
-                                    float16x8_t qf = vld1q_f16(&q_vec[d]);
-                                    int16x8_t ki16 = vmovl_s8(vld1_s8(&kv[d]));
-                                    rlo = vfmaq_f32(rlo, vcvt_f32_f16(vget_low_f16(qf)), vcvtq_f32_s32(vmovl_s16(vget_low_s16(ki16))));
-                                    rhi = vfmaq_f32(rhi, vcvt_f32_f16(vget_high_f16(qf)), vcvtq_f32_s32(vmovl_s16(vget_high_s16(ki16))));
-                                }
-                                score += ks[qg] * vaddvq_f32(vaddq_f32(rlo, rhi));
-                            }
-                        } else {
-                            const __fp16* kfp = K_new_base + (kv_pos - cache_len) * kv_seq_stride + kv_head_idx * head_dim;
-                            float32x4_t slo = vdupq_n_f32(0.0f), shi = vdupq_n_f32(0.0f);
-                            for (size_t d = 0; d < head_dim_aligned; d += VECTOR_WIDTH) {
-                                float16x8_t qf = vld1q_f16(&q_vec[d]);
-                                float16x8_t kf = vld1q_f16(&kfp[d]);
-                                slo = vfmaq_f32(slo, vcvt_f32_f16(vget_low_f16(qf)), vcvt_f32_f16(vget_low_f16(kf)));
-                                shi = vfmaq_f32(shi, vcvt_f32_f16(vget_high_f16(qf)), vcvt_f32_f16(vget_high_f16(kf)));
-                            }
-                            score = vaddvq_f32(vaddq_f32(slo, shi));
-                        }
-                        score *= scale;
-                        block_scores[kv_idx] = score;
-                        block_max = std::max(block_max, score);
-                    }
-
-                    if (block_max > -std::numeric_limits<float>::infinity()) {
-                        float scale_correction = expf(running_max - block_max);
-                        running_sum *= scale_correction;
-                        for (size_t i = 0; i < num_accum_slots; ++i) {
-                            output_accum_low[i] = vmulq_n_f32(output_accum_low[i], scale_correction);
-                            output_accum_high[i] = vmulq_n_f32(output_accum_high[i], scale_correction);
-                        }
-                        running_max = block_max;
-                    }
-
-                    float block_sum = 0.0f;
-                    for (size_t j = 0; j < block_size; ++j) {
-                        if (block_scores[j] != -std::numeric_limits<float>::infinity()) {
-                            block_scores[j] = expf(block_scores[j] - block_max);
-                            block_sum += block_scores[j];
-                        } else {
-                            block_scores[j] = 0.0f;
-                        }
-                    }
-
-                    // V accumulation: FP16 block accumulators, widened to FP32 at block end
-
-                    for (size_t i = 0; i < num_accum_slots; ++i)
-                        block_accum[i] = vdupq_n_f16((__fp16)0.0f);
-
-                    for (size_t j = 0; j < block_size; ++j) {
-                        const float w = block_scores[j];
-                        if (w == 0.0f) continue;
-
-                        const size_t kv_pos = kv_block_start + j;
-
-                        if (kv_pos < cache_len) {
-                            const int8_t* v_ptr = V_cached_base + kv_pos * kv_seq_stride + kv_head_idx * head_dim;
-                            const float* vs = v_scales + (kv_pos * num_kv_heads + kv_head_idx) * num_quant_groups;
-
-                            for (size_t qg = 0; qg < num_quant_groups; qg++) {
-                                const size_t dim_base = qg * quant_group_size;
-                                const float16x8_t ws_vec = vdupq_n_f16(static_cast<__fp16>(w * vs[qg]));
-
-                                #pragma unroll
-                                for (size_t i = 0; i < 4; i++) {
-                                    const size_t d = dim_base + i * VECTOR_WIDTH;
-                                    if (d >= head_dim_aligned) break;
-
-                                    float16x8_t v_f16 = vcvtq_f16_s16(vmovl_s8(vld1_s8(&v_ptr[d])));
-                                    block_accum[d / VECTOR_WIDTH] = vfmaq_f16(block_accum[d / VECTOR_WIDTH], v_f16, ws_vec);
-                                }
-                            }
-                        } else {
-                            const __fp16* v_ptr = V_new_base + (kv_pos - cache_len) * kv_seq_stride + kv_head_idx * head_dim;
-                            const float16x8_t w_vec = vdupq_n_f16(static_cast<__fp16>(w));
-
-                            for (size_t d = 0; d < head_dim_aligned; d += VECTOR_WIDTH) {
-                                block_accum[d / VECTOR_WIDTH] = vfmaq_f16(block_accum[d / VECTOR_WIDTH], vld1q_f16(&v_ptr[d]), w_vec);
-                            }
-                        }
-                    }
-
-                    for (size_t i = 0; i < num_accum_slots; ++i) {
-                        output_accum_low[i] = vaddq_f32(output_accum_low[i], vcvt_f32_f16(vget_low_f16(block_accum[i])));
-                        output_accum_high[i] = vaddq_f32(output_accum_high[i], vcvt_f32_f16(vget_high_f16(block_accum[i])));
-                    }
-
-                    running_sum += block_sum;
-                }
-
-                if (running_sum > 0.0f) {
-                    const float inv_sum = 1.0f / running_sum;
-                    const float32x4_t inv_sum_vec = vdupq_n_f32(inv_sum);
-
-                    for (size_t d = 0; d < head_dim_aligned; d += VECTOR_WIDTH) {
-                        size_t idx = d / VECTOR_WIDTH;
-                        vst1q_f16(&o_vec[d], vcombine_f16(
-                            vcvt_f16_f32(vmulq_f32(output_accum_low[idx], inv_sum_vec)),
-                            vcvt_f16_f32(vmulq_f32(output_accum_high[idx], inv_sum_vec))));
-                    }
-                } else {
-                    memset(o_vec, 0, head_dim * sizeof(__fp16));
-                }
-            }
-        });
-}
-
 void cactus_attention_hybrid_int8_fp16(
     const __fp16* queries,
     const int8_t* keys_cached,
@@ -958,21 +661,12 @@ void cactus_attention_hybrid_int8_fp16(
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }
 
-    if (seq_len == 1 && head_dim % 8 == 0) {
-        cactus_attention_hybrid_int8_fp16_decode(
-            queries, keys_cached, values_cached, k_scales, v_scales,
-            keys_new, values_new, output,
-            batch_size, cache_len, new_len,
-            num_q_heads, num_kv_heads, head_dim,
-            scale, position_offset, is_causal, window_size, quant_group_size);
-        return;
-    }
-
     const size_t kv_seq_len = cache_len + new_len;
 
     constexpr size_t VECTOR_WIDTH = 8;
     constexpr size_t BLOCK_SIZE = 32;
     const size_t head_dim_aligned = (head_dim / VECTOR_WIDTH) * VECTOR_WIDTH;
+    const size_t num_accum_slots = head_dim_aligned / VECTOR_WIDTH;
 
     const size_t gqa_group_size = num_q_heads / num_kv_heads;
     const size_t num_quant_groups = (head_dim + quant_group_size - 1) / quant_group_size;
@@ -987,9 +681,10 @@ void cactus_attention_hybrid_int8_fp16(
 
     CactusThreading::parallel_for(batch_size * num_q_heads * seq_len, CactusThreading::Thresholds::ATTENTION,
         [=](size_t start_idx, size_t end_idx) {
-            std::vector<float> block_scores(BLOCK_SIZE);
-            std::vector<float32x4_t> output_accum_low(head_dim_aligned / VECTOR_WIDTH * 2);
-            std::vector<float32x4_t> output_accum_high(head_dim_aligned / VECTOR_WIDTH * 2);
+            float block_scores[BLOCK_SIZE];
+            std::vector<float32x4_t> output_accum_low(num_accum_slots);
+            std::vector<float32x4_t> output_accum_high(num_accum_slots);
+            std::vector<float16x8_t> block_accum(num_accum_slots);
 
             for (size_t work_idx = start_idx; work_idx < end_idx; ++work_idx) {
                 const size_t batch_idx = work_idx / (num_q_heads * seq_len);
@@ -1012,7 +707,7 @@ void cactus_attention_hybrid_int8_fp16(
                 float running_max = -std::numeric_limits<float>::infinity();
                 float running_sum = 0.0f;
 
-                for (size_t i = 0; i < output_accum_low.size(); ++i) {
+                for (size_t i = 0; i < num_accum_slots; ++i) {
                     output_accum_low[i] = vdupq_n_f32(0.0f);
                     output_accum_high[i] = vdupq_n_f32(0.0f);
                 }
@@ -1041,8 +736,7 @@ void cactus_attention_hybrid_int8_fp16(
                             continue;
                         }
 
-                        float32x4_t score_accum_low = vdupq_n_f32(0.0f);
-                        float32x4_t score_accum_high = vdupq_n_f32(0.0f);
+                        float score = 0.0f;
 
                         if (kv_pos < cache_len) {
                             const int8_t* k_vec = K_cached_base + kv_pos * kv_seq_stride + kv_head_idx * head_dim;
@@ -1050,8 +744,9 @@ void cactus_attention_hybrid_int8_fp16(
 
                             for (size_t quant_group = 0; quant_group < num_quant_groups; quant_group++) {
                                 const size_t dim_base = quant_group * quant_group_size;
-                                const float k_scale = k_scale_base[quant_group];
-                                const float32x4_t k_scale_vec = vdupq_n_f32(k_scale);
+
+                                float32x4_t raw_lo = vdupq_n_f32(0.0f);
+                                float32x4_t raw_hi = vdupq_n_f32(0.0f);
 
                                 #pragma unroll
                                 for (size_t i = 0; i < 4; i++) {
@@ -1062,34 +757,33 @@ void cactus_attention_hybrid_int8_fp16(
                                     float32x4_t q_low = vcvt_f32_f16(vget_low_f16(q_vec_f16));
                                     float32x4_t q_high = vcvt_f32_f16(vget_high_f16(q_vec_f16));
 
-                                    int8x8_t k_vec_i8 = vld1_s8(&k_vec[dim_block]);
-                                    int16x8_t k_vec_i16 = vmovl_s8(k_vec_i8);
-                                    float32x4_t k_low = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(k_vec_i16))), k_scale_vec);
-                                    float32x4_t k_high = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(k_vec_i16))), k_scale_vec);
+                                    int16x8_t k_vec_i16 = vmovl_s8(vld1_s8(&k_vec[dim_block]));
 
-                                    score_accum_low = vfmaq_f32(score_accum_low, q_low, k_low);
-                                    score_accum_high = vfmaq_f32(score_accum_high, q_high, k_high);
+                                    raw_lo = vfmaq_f32(raw_lo, q_low, vcvtq_f32_s32(vmovl_s16(vget_low_s16(k_vec_i16))));
+                                    raw_hi = vfmaq_f32(raw_hi, q_high, vcvtq_f32_s32(vmovl_s16(vget_high_s16(k_vec_i16))));
                                 }
+
+                                score += k_scale_base[quant_group] * vaddvq_f32(vaddq_f32(raw_lo, raw_hi));
                             }
                         } else {
                             const size_t new_pos = kv_pos - cache_len;
                             const __fp16* k_vec = K_new_base + new_pos * kv_seq_stride + kv_head_idx * head_dim;
 
+                            float32x4_t score_lo = vdupq_n_f32(0.0f);
+                            float32x4_t score_hi = vdupq_n_f32(0.0f);
+
                             for (size_t dim_block = 0; dim_block < head_dim_aligned; dim_block += VECTOR_WIDTH) {
                                 float16x8_t q_vec_f16 = vld1q_f16(&q_vec[dim_block]);
                                 float16x8_t k_vec_f16 = vld1q_f16(&k_vec[dim_block]);
 
-                                float32x4_t q_low = vcvt_f32_f16(vget_low_f16(q_vec_f16));
-                                float32x4_t q_high = vcvt_f32_f16(vget_high_f16(q_vec_f16));
-                                float32x4_t k_low = vcvt_f32_f16(vget_low_f16(k_vec_f16));
-                                float32x4_t k_high = vcvt_f32_f16(vget_high_f16(k_vec_f16));
-
-                                score_accum_low = vfmaq_f32(score_accum_low, q_low, k_low);
-                                score_accum_high = vfmaq_f32(score_accum_high, q_high, k_high);
+                                score_lo = vfmaq_f32(score_lo, vcvt_f32_f16(vget_low_f16(q_vec_f16)), vcvt_f32_f16(vget_low_f16(k_vec_f16)));
+                                score_hi = vfmaq_f32(score_hi, vcvt_f32_f16(vget_high_f16(q_vec_f16)), vcvt_f32_f16(vget_high_f16(k_vec_f16)));
                             }
+
+                            score = vaddvq_f32(vaddq_f32(score_lo, score_hi));
                         }
 
-                        float score = vaddvq_f32(vaddq_f32(score_accum_low, score_accum_high)) * scale;
+                        score *= scale;
                         block_scores[kv_idx] = score;
                         block_max = std::max(block_max, score);
                     }
@@ -1098,7 +792,7 @@ void cactus_attention_hybrid_int8_fp16(
                         float scale_correction = expf(running_max - block_max);
                         running_sum *= scale_correction;
 
-                        for (size_t i = 0; i < output_accum_low.size() / 2; ++i) {
+                        for (size_t i = 0; i < num_accum_slots; ++i) {
                             output_accum_low[i] = vmulq_n_f32(output_accum_low[i], scale_correction);
                             output_accum_high[i] = vmulq_n_f32(output_accum_high[i], scale_correction);
                         }
@@ -1115,12 +809,14 @@ void cactus_attention_hybrid_int8_fp16(
                         }
                     }
 
+                    for (size_t i = 0; i < num_accum_slots; ++i)
+                        block_accum[i] = vdupq_n_f16((__fp16)0.0f);
+
                     for (size_t kv_idx = 0; kv_idx < block_size; ++kv_idx) {
                         const float attn_weight = block_scores[kv_idx];
                         if (attn_weight == 0.0f) continue;
 
                         const size_t kv_pos = kv_block_start + kv_idx;
-                        const float32x4_t weight_vec = vdupq_n_f32(attn_weight);
 
                         if (kv_pos < cache_len) {
                             const int8_t* v_vec = V_cached_base + kv_pos * kv_seq_stride + kv_head_idx * head_dim;
@@ -1128,38 +824,31 @@ void cactus_attention_hybrid_int8_fp16(
 
                             for (size_t quant_group = 0; quant_group < num_quant_groups; quant_group++) {
                                 const size_t dim_base = quant_group * quant_group_size;
-                                const float v_scale = v_scale_base[quant_group];
-                                const float32x4_t v_scale_vec = vdupq_n_f32(v_scale);
+                                const float16x8_t ws_vec = vdupq_n_f16(static_cast<__fp16>(attn_weight * v_scale_base[quant_group]));
 
                                 #pragma unroll
                                 for (size_t i = 0; i < 4; i++) {
                                     const size_t dim_block = dim_base + i * VECTOR_WIDTH;
                                     if (dim_block >= head_dim_aligned) break;
 
-                                    int8x8_t v_vec_i8 = vld1_s8(&v_vec[dim_block]);
-                                    int16x8_t v_vec_i16 = vmovl_s8(v_vec_i8);
-                                    float32x4_t v_low = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(v_vec_i16))), v_scale_vec);
-                                    float32x4_t v_high = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(v_vec_i16))), v_scale_vec);
-
-                                    size_t idx = dim_block / VECTOR_WIDTH;
-                                    output_accum_low[idx] = vfmaq_f32(output_accum_low[idx], v_low, weight_vec);
-                                    output_accum_high[idx] = vfmaq_f32(output_accum_high[idx], v_high, weight_vec);
+                                    float16x8_t v_f16 = vcvtq_f16_s16(vmovl_s8(vld1_s8(&v_vec[dim_block])));
+                                    block_accum[dim_block / VECTOR_WIDTH] = vfmaq_f16(block_accum[dim_block / VECTOR_WIDTH], v_f16, ws_vec);
                                 }
                             }
                         } else {
                             const size_t new_pos = kv_pos - cache_len;
                             const __fp16* v_vec = V_new_base + new_pos * kv_seq_stride + kv_head_idx * head_dim;
+                            const float16x8_t w_vec = vdupq_n_f16(static_cast<__fp16>(attn_weight));
 
                             for (size_t dim_block = 0; dim_block < head_dim_aligned; dim_block += VECTOR_WIDTH) {
-                                float16x8_t v_vec_f16 = vld1q_f16(&v_vec[dim_block]);
-                                float32x4_t v_low = vcvt_f32_f16(vget_low_f16(v_vec_f16));
-                                float32x4_t v_high = vcvt_f32_f16(vget_high_f16(v_vec_f16));
-
-                                size_t idx = dim_block / VECTOR_WIDTH;
-                                output_accum_low[idx] = vfmaq_f32(output_accum_low[idx], v_low, weight_vec);
-                                output_accum_high[idx] = vfmaq_f32(output_accum_high[idx], v_high, weight_vec);
+                                block_accum[dim_block / VECTOR_WIDTH] = vfmaq_f16(block_accum[dim_block / VECTOR_WIDTH], vld1q_f16(&v_vec[dim_block]), w_vec);
                             }
                         }
+                    }
+
+                    for (size_t i = 0; i < num_accum_slots; ++i) {
+                        output_accum_low[i] = vaddq_f32(output_accum_low[i], vcvt_f32_f16(vget_low_f16(block_accum[i])));
+                        output_accum_high[i] = vaddq_f32(output_accum_high[i], vcvt_f32_f16(vget_high_f16(block_accum[i])));
                     }
 
                     running_sum += block_sum;
@@ -1171,19 +860,12 @@ void cactus_attention_hybrid_int8_fp16(
 
                     for (size_t dim_block = 0; dim_block < head_dim_aligned; dim_block += VECTOR_WIDTH) {
                         size_t idx = dim_block / VECTOR_WIDTH;
-                        float32x4_t final_low = vmulq_f32(output_accum_low[idx], inv_sum_vec);
-                        float32x4_t final_high = vmulq_f32(output_accum_high[idx], inv_sum_vec);
-
-                        float16x4_t low_f16 = vcvt_f16_f32(final_low);
-                        float16x4_t high_f16 = vcvt_f16_f32(final_high);
-                        float16x8_t combined = vcombine_f16(low_f16, high_f16);
-
-                        vst1q_f16(&o_vec[dim_block], combined);
+                        vst1q_f16(&o_vec[dim_block], vcombine_f16(
+                            vcvt_f16_f32(vmulq_f32(output_accum_low[idx], inv_sum_vec)),
+                            vcvt_f16_f32(vmulq_f32(output_accum_high[idx], inv_sum_vec))));
                     }
                 } else {
-                    for (size_t dim = 0; dim < head_dim; ++dim) {
-                        o_vec[dim] = static_cast<__fp16>(0.0f);
-                    }
+                    memset(o_vec, 0, head_dim * sizeof(__fp16));
                 }
             }
         });
