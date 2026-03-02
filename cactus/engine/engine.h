@@ -107,6 +107,13 @@ struct Config {
     uint32_t subsampling_factor = 0;
     uint32_t num_mel_bins = 80;
     std::string encoder_hidden_act = "silu";
+    uint32_t linear_num_key_heads = 0;
+    uint32_t linear_key_head_dim = 0;
+    uint32_t linear_num_value_heads = 0;
+    uint32_t linear_value_head_dim = 0;
+    uint32_t linear_q_proj_dim = 0;
+    uint32_t linear_k_proj_dim = 0;
+    uint32_t linear_v_proj_dim = 0;
 
     enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10};
     ModelType model_type = ModelType::QWEN;

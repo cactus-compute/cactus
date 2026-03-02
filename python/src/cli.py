@@ -419,8 +419,11 @@ def cmd_download(args):
                 else:
                     raise
 
-            if model_type == 'lfm2_moe':
-                print("  Note: Loading raw checkpoint tensors for lfm2_moe conversion...")
+            if model_type == 'lfm2_moe' or model_type.startswith('qwen3_5'):
+                if model_type == 'lfm2_moe':
+                    print("  Note: Loading raw checkpoint tensors for lfm2_moe conversion...")
+                else:
+                    print(f"  Note: Loading raw checkpoint tensors for {model_type} conversion...")
                 raw_state_dict = _load_raw_hf_state_dict(model_id)
 
                 class _RawModelWrapper:

@@ -525,19 +525,15 @@ std::string BPETokenizer::decode(const std::vector<uint32_t>& tokens) const {
     for (uint32_t token_id : tokens) {
         if (token_id >= id_to_token_.size()) continue;
         const std::string& tok = id_to_token_[token_id];
+        unicode_result += tok;
+    }
 
-        size_t pos = 0;
-        while (pos < tok.size()) {
-            if (pos + 3 <= tok.size() &&
-                (unsigned char)tok[pos]   == 0xE2 &&
-                (unsigned char)tok[pos+1] == 0x96 &&
-                (unsigned char)tok[pos+2] == 0x81) {
-                unicode_result.push_back(' ');
-                pos += 3;
-            } else {
-                unicode_result.push_back(tok[pos++]);
-            }
-        }
+    // SentencePiece-style "▁" may appear in shared vocabularies and should decode to ASCII spaces.
+    static const std::string kSpSpace = "\xE2\x96\x81";
+    size_t pos = 0;
+    while ((pos = unicode_result.find(kSpSpace, pos)) != std::string::npos) {
+        unicode_result.replace(pos, kSpSpace.size(), " ");
+        pos += 1;
     }
 
     return unicode_to_bytes(unicode_result);

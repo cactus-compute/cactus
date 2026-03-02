@@ -956,6 +956,130 @@ size_t CactusGraph::lstm_cell(size_t input, size_t h_prev, size_t c_prev, size_t
     return add_node(OpType::LSTM_CELL, {input, h_prev, c_prev, weight_ih, weight_hh, bias_ih, bias_hh}, output_shape, {});
 }
 
+size_t CactusGraph::gated_deltanet_decode(size_t query, size_t key, size_t value, size_t gate_log, size_t beta,
+                                          size_t initial_state, float scale) {
+    const auto& q = get_output_buffer(query);
+    const auto& k = get_output_buffer(key);
+    const auto& v = get_output_buffer(value);
+    const auto& g = get_output_buffer(gate_log);
+    const auto& b = get_output_buffer(beta);
+    const auto& s = get_output_buffer(initial_state);
+
+    if (q.shape.size() != 4 || k.shape.size() != 4 || v.shape.size() != 4) {
+        throw std::runtime_error("gated_deltanet_decode expects query/key/value rank 4 [B, T, H, D]");
+    }
+    if (g.shape.size() != 3 || b.shape.size() != 3) {
+        throw std::runtime_error("gated_deltanet_decode expects gate_log/beta rank 3 [B, T, H]");
+    }
+    if (s.shape.size() != 4) {
+        throw std::runtime_error("gated_deltanet_decode expects initial_state rank 4 [B, H, K, V]");
+    }
+
+    const size_t B = q.shape[0];
+    const size_t T = q.shape[1];
+    const size_t H = q.shape[2];
+    const size_t K = q.shape[3];
+
+    if (T != 1) {
+        throw std::runtime_error("gated_deltanet_decode expects T=1 (single-step decode)");
+    }
+    if (k.shape[0] != B || k.shape[1] != T || k.shape[2] != H || k.shape[3] != K) {
+        throw std::runtime_error("gated_deltanet_decode query/key shape mismatch");
+    }
+    if (v.shape[0] != B || v.shape[1] != T || v.shape[2] != H) {
+        throw std::runtime_error("gated_deltanet_decode value shape mismatch");
+    }
+    if (g.shape[0] != B || g.shape[1] != T || g.shape[2] != H ||
+        b.shape[0] != B || b.shape[1] != T || b.shape[2] != H) {
+        throw std::runtime_error("gated_deltanet_decode gate_log/beta shape mismatch");
+    }
+    const size_t V = v.shape[3];
+    if (s.shape[0] != B || s.shape[1] != H || s.shape[2] != K || s.shape[3] != V) {
+        throw std::runtime_error("gated_deltanet_decode initial_state shape mismatch");
+    }
+
+    if (q.precision != Precision::FP16 || k.precision != Precision::FP16 || v.precision != Precision::FP16 ||
+        g.precision != Precision::FP16 || b.precision != Precision::FP16 || s.precision != Precision::FP16) {
+        throw std::runtime_error("gated_deltanet_decode currently requires FP16 inputs");
+    }
+
+    float op_scale = scale;
+    if (op_scale == 0.0f) {
+        op_scale = 1.0f / std::sqrt(static_cast<float>(K));
+    }
+
+    OpParams params;
+    params.scale = op_scale;
+    params.output_precision = Precision::FP16;
+    return add_node(OpType::GATED_DELTANET_DECODE,
+                    {query, key, value, gate_log, beta, initial_state},
+                    {B, static_cast<size_t>(1 + K), H, V},
+                    params);
+}
+
+size_t CactusGraph::gated_deltanet_prefill(size_t query, size_t key, size_t value, size_t gate_log, size_t beta,
+                                           size_t initial_state, size_t chunk_size, float scale) {
+    const auto& q = get_output_buffer(query);
+    const auto& k = get_output_buffer(key);
+    const auto& v = get_output_buffer(value);
+    const auto& g = get_output_buffer(gate_log);
+    const auto& b = get_output_buffer(beta);
+    const auto& s = get_output_buffer(initial_state);
+
+    if (q.shape.size() != 4 || k.shape.size() != 4 || v.shape.size() != 4) {
+        throw std::runtime_error("gated_deltanet_prefill expects query/key/value rank 4 [B, T, H, D]");
+    }
+    if (g.shape.size() != 3 || b.shape.size() != 3) {
+        throw std::runtime_error("gated_deltanet_prefill expects gate_log/beta rank 3 [B, T, H]");
+    }
+    if (s.shape.size() != 4) {
+        throw std::runtime_error("gated_deltanet_prefill expects initial_state rank 4 [B, H, K, V]");
+    }
+
+    const size_t B = q.shape[0];
+    const size_t T = q.shape[1];
+    const size_t H = q.shape[2];
+    const size_t K = q.shape[3];
+
+    if (k.shape[0] != B || k.shape[1] != T || k.shape[2] != H || k.shape[3] != K) {
+        throw std::runtime_error("gated_deltanet_prefill query/key shape mismatch");
+    }
+    if (v.shape[0] != B || v.shape[1] != T || v.shape[2] != H) {
+        throw std::runtime_error("gated_deltanet_prefill value shape mismatch");
+    }
+    if (g.shape[0] != B || g.shape[1] != T || g.shape[2] != H ||
+        b.shape[0] != B || b.shape[1] != T || b.shape[2] != H) {
+        throw std::runtime_error("gated_deltanet_prefill gate_log/beta shape mismatch");
+    }
+    const size_t V = v.shape[3];
+    if (s.shape[0] != B || s.shape[1] != H || s.shape[2] != K || s.shape[3] != V) {
+        throw std::runtime_error("gated_deltanet_prefill initial_state shape mismatch");
+    }
+
+    if (q.precision != Precision::FP16 || k.precision != Precision::FP16 || v.precision != Precision::FP16 ||
+        g.precision != Precision::FP16 || b.precision != Precision::FP16 || s.precision != Precision::FP16) {
+        throw std::runtime_error("gated_deltanet_prefill currently requires FP16 inputs");
+    }
+
+    if (chunk_size == 0) {
+        chunk_size = 64;
+    }
+
+    float op_scale = scale;
+    if (op_scale == 0.0f) {
+        op_scale = 1.0f / std::sqrt(static_cast<float>(K));
+    }
+
+    OpParams params;
+    params.scale = op_scale;
+    params.chunk_size = chunk_size;
+    params.output_precision = Precision::FP16;
+    return add_node(OpType::GATED_DELTANET_PREFILL,
+                    {query, key, value, gate_log, beta, initial_state},
+                    {B, T + K, H, V},
+                    params);
+}
+
 size_t CactusGraph::stft(size_t input, size_t weight, size_t stride, size_t num_fft_bins) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);

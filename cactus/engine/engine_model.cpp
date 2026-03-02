@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <dirent.h>
 #include <algorithm>
+#include <filesystem>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -522,6 +523,13 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "subsampling_factor") subsampling_factor = static_cast<uint32_t>(std::stoul(value));
         else if (key == "num_mel_bins") num_mel_bins = static_cast<uint32_t>(std::stoul(value));
         else if (key == "encoder_hidden_act") encoder_hidden_act = value;
+        else if (key == "linear_num_key_heads") linear_num_key_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_key_head_dim") linear_key_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_num_value_heads") linear_num_value_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_value_head_dim") linear_value_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_q_proj_dim") linear_q_proj_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_k_proj_dim") linear_k_proj_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_v_proj_dim") linear_v_proj_dim = static_cast<uint32_t>(std::stoul(value));
     }
 
     if (model_type == ModelType::GEMMA) {
@@ -587,8 +595,28 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
         return std::make_unique<Lfm2VlModel>(config);
     }
 
+    auto has_deltanet_layers = [&config]() -> bool {
+        for (const auto& lt : config.layer_types) {
+            std::string lt_norm = lt;
+            std::transform(lt_norm.begin(), lt_norm.end(), lt_norm.begin(), ::tolower);
+            if (lt_norm.find("deltanet") != std::string::npos ||
+                lt_norm.find("linear_attention") != std::string::npos ||
+                lt_norm.find("linear_attn") != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    const bool has_qwen3p5_linear_files =
+        std::filesystem::exists(model_folder + "/layer_0_linear_attn_q.weights") ||
+        std::filesystem::exists(model_folder + "/layer_0_linear_attn_qkv.weights");
+
     switch (config.model_type) {
         case Config::ModelType::QWEN:
+            if (has_deltanet_layers() || has_qwen3p5_linear_files) {
+                return std::make_unique<Qwen3p5Model>(config);
+            }
             return std::make_unique<QwenModel>(config);
         case Config::ModelType::GEMMA:
             return std::make_unique<GemmaModel>(config);
@@ -608,6 +636,9 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
         case Config::ModelType::PARAKEET:
             return std::make_unique<ParakeetModel>(config);
         default:
+            if (has_deltanet_layers() || has_qwen3p5_linear_files) {
+                return std::make_unique<Qwen3p5Model>(config);
+            }
             return std::make_unique<QwenModel>(config);
     }
 }

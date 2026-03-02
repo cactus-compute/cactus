@@ -7,6 +7,7 @@
 #include <cmath>
 #include <assert.h>
 #include <algorithm>
+#include <limits>
 
 namespace {
     thread_local std::vector<__fp16> transpose_buffer_fp16;
@@ -64,6 +65,135 @@ namespace {
         cached_quant_src = src;
         cached_quant_M = M;
         cached_quant_K = K;
+    }
+
+    inline float safe_exp_gate(float gate_log) {
+        const float clamped = std::max(-20.0f, std::min(6.0f, gate_log));
+        return std::exp(clamped);
+    }
+
+    inline void fold_state_scale(std::vector<float>& state, float factor) {
+        for (float& v : state) {
+            v *= factor;
+        }
+    }
+
+    void gated_deltanet_step(
+        const __fp16* q_ptr,
+        const __fp16* k_ptr,
+        const __fp16* v_ptr,
+        float gate_log,
+        float beta,
+        float scale,
+        size_t k_dim,
+        size_t v_dim,
+        std::vector<float>& state,
+        float& state_scale,
+        std::vector<float>& proj,
+        std::vector<float>& delta,
+        __fp16* out_ptr) {
+        const float gate_log_safe = std::isfinite(gate_log) ? gate_log : -20.0f;
+        const float beta_safe = std::isfinite(beta) ? std::min(1.0f, std::max(0.0f, beta)) : 0.0f;
+
+        if (proj.size() != v_dim) {
+            proj.assign(v_dim, 0.0f);
+        }
+        if (delta.size() != v_dim) {
+            delta.assign(v_dim, 0.0f);
+        }
+
+        const float prev_scale = state_scale;
+        std::fill(proj.begin(), proj.end(), 0.0f);
+
+        for (size_t kd = 0; kd < k_dim; ++kd) {
+            const float k_val = static_cast<float>(k_ptr[kd]);
+            const float* state_row = state.data() + kd * v_dim;
+            for (size_t vd = 0; vd < v_dim; ++vd) {
+                proj[vd] += state_row[vd] * k_val;
+            }
+        }
+        for (size_t vd = 0; vd < v_dim; ++vd) {
+            proj[vd] *= prev_scale;
+        }
+
+        for (size_t vd = 0; vd < v_dim; ++vd) {
+            const float v_val = static_cast<float>(v_ptr[vd]);
+            delta[vd] = (v_val - proj[vd]) * beta_safe;
+        }
+
+        state_scale = prev_scale * safe_exp_gate(gate_log_safe);
+        if (!std::isfinite(state_scale) ||
+            std::fabs(state_scale) < 1e-8f ||
+            std::fabs(state_scale) > 1e8f) {
+            fold_state_scale(state, state_scale);
+            state_scale = 1.0f;
+        }
+        const float inv_scale = 1.0f / state_scale;
+
+        for (size_t kd = 0; kd < k_dim; ++kd) {
+            const float k_scaled = static_cast<float>(k_ptr[kd]) * inv_scale;
+            float* state_row = state.data() + kd * v_dim;
+            for (size_t vd = 0; vd < v_dim; ++vd) {
+                state_row[vd] += k_scaled * delta[vd];
+                if (!std::isfinite(state_row[vd])) {
+                    state_row[vd] = 0.0f;
+                }
+            }
+        }
+
+        for (size_t vd = 0; vd < v_dim; ++vd) {
+            float acc = 0.0f;
+            for (size_t kd = 0; kd < k_dim; ++kd) {
+                acc += state[kd * v_dim + vd] * static_cast<float>(q_ptr[kd]);
+            }
+            if (!std::isfinite(acc)) {
+                acc = 0.0f;
+            }
+            out_ptr[vd] = static_cast<__fp16>(acc * state_scale * scale);
+        }
+    }
+
+    void validate_gated_deltanet_inputs(
+        const BufferDesc& q,
+        const BufferDesc& k,
+        const BufferDesc& v,
+        const BufferDesc& g,
+        const BufferDesc& b,
+        const BufferDesc& s) {
+        if (q.precision != Precision::FP16 || k.precision != Precision::FP16 || v.precision != Precision::FP16 ||
+            g.precision != Precision::FP16 || b.precision != Precision::FP16 || s.precision != Precision::FP16) {
+            throw std::runtime_error("GATED_DELTANET requires FP16 inputs");
+        }
+
+        if (q.shape.size() != 4 || k.shape.size() != 4 || v.shape.size() != 4) {
+            throw std::runtime_error("GATED_DELTANET expects query/key/value rank 4 [B, T, H, D]");
+        }
+        if (g.shape.size() != 3 || b.shape.size() != 3) {
+            throw std::runtime_error("GATED_DELTANET expects gate_log/beta rank 3 [B, T, H]");
+        }
+        if (s.shape.size() != 4) {
+            throw std::runtime_error("GATED_DELTANET expects state rank 4 [B, H, K, V]");
+        }
+
+        const size_t B = q.shape[0];
+        const size_t T = q.shape[1];
+        const size_t H = q.shape[2];
+        const size_t K = q.shape[3];
+
+        if (k.shape[0] != B || k.shape[1] != T || k.shape[2] != H || k.shape[3] != K) {
+            throw std::runtime_error("GATED_DELTANET query/key shape mismatch");
+        }
+        if (v.shape[0] != B || v.shape[1] != T || v.shape[2] != H) {
+            throw std::runtime_error("GATED_DELTANET value shape mismatch");
+        }
+        if (g.shape[0] != B || g.shape[1] != T || g.shape[2] != H ||
+            b.shape[0] != B || b.shape[1] != T || b.shape[2] != H) {
+            throw std::runtime_error("GATED_DELTANET gate_log/beta shape mismatch");
+        }
+        const size_t V = v.shape[3];
+        if (s.shape[0] != B || s.shape[1] != H || s.shape[2] != K || s.shape[3] != V) {
+            throw std::runtime_error("GATED_DELTANET state shape mismatch");
+        }
     }
 
 }
@@ -1916,6 +2046,162 @@ void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
                     size_t idx = n * channels * spatial_size + ch * spatial_size + s;
                     float val = static_cast<float>(src[idx]);
                     dst[idx] = static_cast<__fp16>((val - mean) * inv_std * wt + bi);
+                }
+            }
+        }
+    }
+}
+
+void compute_gated_deltanet_decode_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                        const std::unordered_map<size_t, size_t>& node_index_map) {
+    if (node.input_ids.size() != 6) {
+        throw std::runtime_error("GATED_DELTANET_DECODE expects 6 inputs");
+    }
+
+    const auto& q = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& k = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& v = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    const auto& g = nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
+    const auto& b = nodes[node_index_map.at(node.input_ids[4])]->output_buffer;
+    const auto& s = nodes[node_index_map.at(node.input_ids[5])]->output_buffer;
+
+    validate_gated_deltanet_inputs(q, k, v, g, b, s);
+    if (q.shape[1] != 1) {
+        throw std::runtime_error("GATED_DELTANET_DECODE expects T=1");
+    }
+
+    const size_t B = q.shape[0];
+    const size_t H = q.shape[2];
+    const size_t K = q.shape[3];
+    const size_t V = v.shape[3];
+    const size_t out_seq = 1 + K;
+    const float scale = node.params.scale;
+
+    const __fp16* q_data = q.data_as<__fp16>();
+    const __fp16* k_data = k.data_as<__fp16>();
+    const __fp16* v_data = v.data_as<__fp16>();
+    const __fp16* g_data = g.data_as<__fp16>();
+    const __fp16* b_data = b.data_as<__fp16>();
+    const __fp16* s_data = s.data_as<__fp16>();
+    __fp16* out = node.output_buffer.data_as<__fp16>();
+
+    std::vector<float> state(K * V);
+    std::vector<float> proj(V);
+    std::vector<float> delta(V);
+
+    for (size_t batch = 0; batch < B; ++batch) {
+        for (size_t head = 0; head < H; ++head) {
+            for (size_t kd = 0; kd < K; ++kd) {
+                for (size_t vd = 0; vd < V; ++vd) {
+                    const size_t s_idx = (((batch * H + head) * K + kd) * V + vd);
+                    state[kd * V + vd] = static_cast<float>(s_data[s_idx]);
+                }
+            }
+
+            float state_scale = 1.0f;
+            const size_t q_base = ((batch * H + head) * K);
+            const size_t v_base = ((batch * H + head) * V);
+            const float gate_log = static_cast<float>(g_data[batch * H + head]);
+            const float beta = static_cast<float>(b_data[batch * H + head]);
+
+            gated_deltanet_step(
+                q_data + q_base,
+                k_data + q_base,
+                v_data + v_base,
+                gate_log,
+                beta,
+                scale,
+                K,
+                V,
+                state,
+                state_scale,
+                proj,
+                delta,
+                out + (((batch * out_seq) * H + head) * V));
+
+            fold_state_scale(state, state_scale);
+            for (size_t kd = 0; kd < K; ++kd) {
+                for (size_t vd = 0; vd < V; ++vd) {
+                    const size_t out_idx = (((batch * out_seq + (1 + kd)) * H + head) * V + vd);
+                    out[out_idx] = static_cast<__fp16>(state[kd * V + vd]);
+                }
+            }
+        }
+    }
+}
+
+void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                         const std::unordered_map<size_t, size_t>& node_index_map) {
+    if (node.input_ids.size() != 6) {
+        throw std::runtime_error("GATED_DELTANET_PREFILL expects 6 inputs");
+    }
+
+    const auto& q = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& k = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& v = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    const auto& g = nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
+    const auto& b = nodes[node_index_map.at(node.input_ids[4])]->output_buffer;
+    const auto& s = nodes[node_index_map.at(node.input_ids[5])]->output_buffer;
+
+    validate_gated_deltanet_inputs(q, k, v, g, b, s);
+
+    const size_t B = q.shape[0];
+    const size_t T = q.shape[1];
+    const size_t H = q.shape[2];
+    const size_t K = q.shape[3];
+    const size_t V = v.shape[3];
+    const size_t out_seq = T + K;
+    const float scale = node.params.scale;
+
+    const __fp16* q_data = q.data_as<__fp16>();
+    const __fp16* k_data = k.data_as<__fp16>();
+    const __fp16* v_data = v.data_as<__fp16>();
+    const __fp16* g_data = g.data_as<__fp16>();
+    const __fp16* b_data = b.data_as<__fp16>();
+    const __fp16* s_data = s.data_as<__fp16>();
+    __fp16* out = node.output_buffer.data_as<__fp16>();
+
+    std::vector<float> state(K * V);
+    std::vector<float> proj(V);
+    std::vector<float> delta(V);
+
+    for (size_t batch = 0; batch < B; ++batch) {
+        for (size_t head = 0; head < H; ++head) {
+            for (size_t kd = 0; kd < K; ++kd) {
+                for (size_t vd = 0; vd < V; ++vd) {
+                    const size_t s_idx = (((batch * H + head) * K + kd) * V + vd);
+                    state[kd * V + vd] = static_cast<float>(s_data[s_idx]);
+                }
+            }
+
+            float state_scale = 1.0f;
+
+            for (size_t t = 0; t < T; ++t) {
+                const size_t qkv_k_base = (((batch * T + t) * H + head) * K);
+                const size_t qkv_v_base = (((batch * T + t) * H + head) * V);
+                const size_t gb_idx = ((batch * T + t) * H + head);
+
+                gated_deltanet_step(
+                    q_data + qkv_k_base,
+                    k_data + qkv_k_base,
+                    v_data + qkv_v_base,
+                    static_cast<float>(g_data[gb_idx]),
+                    static_cast<float>(b_data[gb_idx]),
+                    scale,
+                    K,
+                    V,
+                    state,
+                    state_scale,
+                    proj,
+                    delta,
+                    out + (((batch * out_seq + t) * H + head) * V));
+            }
+
+            fold_state_scale(state, state_scale);
+            for (size_t kd = 0; kd < K; ++kd) {
+                for (size_t vd = 0; vd < V; ++vd) {
+                    const size_t out_idx = (((batch * out_seq + (T + kd)) * H + head) * V + vd);
+                    out[out_idx] = static_cast<__fp16>(state[kd * V + vd]);
                 }
             }
         }

@@ -108,14 +108,17 @@ def extract_base_config(cfg, config):
     """Extract base model configuration parameters."""
     rope_parameters = cfg_get(cfg, 'rope_parameters', {})
     rope_theta = cfg_get(cfg, 'rope_theta', None)
+    partial_rotary_factor = cfg_get(cfg, 'partial_rotary_factor', None)
     if rope_theta is None and isinstance(rope_parameters, dict):
         rope_theta = rope_parameters.get('rope_theta', None)
+    if partial_rotary_factor is None and isinstance(rope_parameters, dict):
+        partial_rotary_factor = rope_parameters.get('partial_rotary_factor', None)
     if rope_theta is None:
         rope_theta = cfg_get(config, 'rope_theta', 10000.0)
 
     num_experts_per_tok = cfg_get(cfg, 'num_experts_per_tok', cfg_get(cfg, 'moe_top_k', cfg_get(cfg, 'num_top_experts', 0)))
 
-    return {
+    base = {
         'vocab_size': cfg_get(cfg, 'vocab_size', cfg_get(config, 'vocab_size', 0)),
         'hidden_dim': cfg_get(cfg, 'hidden_size', cfg_get(cfg, 'hidden_dim', 0)),
         'num_layers': int(cfg_get(cfg, 'num_hidden_layers', cfg_get(cfg, 'num_layers', 0) or 0)),
@@ -132,6 +135,38 @@ def extract_base_config(cfg, config):
         'num_experts_per_tok': num_experts_per_tok,
         'moe_every_n_layers': cfg_get(cfg, 'moe_every_n_layers', 0),
     }
+    if partial_rotary_factor is not None:
+        base['partial_rotary_factor'] = float(partial_rotary_factor)
+
+    # Preserve heterogeneous layer topology (e.g., Qwen3.5 deltanet layers) if available.
+    layer_types = cfg_get(cfg, 'layer_types', None)
+    if isinstance(layer_types, (list, tuple)) and layer_types:
+        base['layer_types'] = list(layer_types)
+
+    conv_l_cache = cfg_get(cfg, 'conv_L_cache', None)
+    if conv_l_cache is not None:
+        base['conv_L_cache'] = int(conv_l_cache)
+
+    # Qwen3.5 linear-attention projection dimensions.
+    linear_num_key_heads = cfg_get(cfg, 'linear_num_key_heads', None)
+    linear_key_head_dim = cfg_get(cfg, 'linear_key_head_dim', None)
+    linear_num_value_heads = cfg_get(cfg, 'linear_num_value_heads', None)
+    linear_value_head_dim = cfg_get(cfg, 'linear_value_head_dim', None)
+    if linear_num_key_heads is not None:
+        base['linear_num_key_heads'] = int(linear_num_key_heads)
+    if linear_key_head_dim is not None:
+        base['linear_key_head_dim'] = int(linear_key_head_dim)
+    if linear_num_value_heads is not None:
+        base['linear_num_value_heads'] = int(linear_num_value_heads)
+    if linear_value_head_dim is not None:
+        base['linear_value_head_dim'] = int(linear_value_head_dim)
+    if linear_num_key_heads is not None and linear_key_head_dim is not None:
+        base['linear_q_proj_dim'] = int(linear_num_key_heads) * int(linear_key_head_dim)
+        base['linear_k_proj_dim'] = int(linear_num_key_heads) * int(linear_key_head_dim)
+    if linear_num_value_heads is not None and linear_value_head_dim is not None:
+        base['linear_v_proj_dim'] = int(linear_num_value_heads) * int(linear_value_head_dim)
+
+    return base
 
 
 def extract_vision_config(config, vision_cfg):

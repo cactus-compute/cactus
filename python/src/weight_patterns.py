@@ -106,12 +106,41 @@ WHISPER_GLOBAL_WEIGHTS = [
 
 def get_layer_weight_patterns(i, precision, model_type=None):
     is_whisper = model_type == 'whisper'
+    is_qwen_family = isinstance(model_type, str) and ('qwen' in model_type)
 
     patterns = [
         (['self_attn.q_proj.weight', 'attn.q_proj.weight', 'attn.c_attn.weight'], precision, f'layer_{i}_attn_q.weights', False) if not is_whisper else None,
         (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False) if not is_whisper else None,
         (['self_attn.v_proj.weight', 'attn.v_proj.weight'], precision, f'layer_{i}_attn_v.weights', False) if not is_whisper else None,
         (['self_attn.o_proj.weight', 'attn.o_proj.weight', 'attn.c_proj.weight', 'self_attn.out_proj.weight'], precision, f'layer_{i}_attn_output.weights', False) if not is_whisper else None,
+        # Qwen3.5 linear-attention path
+        (['linear_attn.in_proj_qkv.weight'], precision, f'layer_{i}_linear_attn_qkv.weights', False) if is_qwen_family else None,
+        (['linear_attn.in_proj_a.weight'], precision, f'layer_{i}_linear_attn_a.weights', False) if is_qwen_family else None,
+        (['linear_attn.in_proj_b.weight'], precision, f'layer_{i}_linear_attn_b.weights', False) if is_qwen_family else None,
+        (['linear_attn.in_proj_z.weight'], precision, f'layer_{i}_linear_attn_z.weights', False) if is_qwen_family else None,
+        (['linear_attn.out_proj.weight'], precision, f'layer_{i}_linear_attn_output.weights', False) if is_qwen_family else None,
+        (['linear_attn.norm.weight'], precision, f'layer_{i}_linear_attn_norm.weights', False) if is_qwen_family else None,
+        (['linear_attn.conv1d.weight'], precision, f'layer_{i}_linear_attn_conv1d.weights', False) if is_qwen_family else None,
+        (['linear_attn.A_log'], precision, f'layer_{i}_linear_attn_A_log.weights', False) if is_qwen_family else None,
+        (['linear_attn.dt_bias'], precision, f'layer_{i}_linear_attn_dt_bias.weights', False) if is_qwen_family else None,
+        ([
+            'self_attn.deltanet_gate_proj.weight',
+            'self_attn.gated_deltanet_gate_proj.weight',
+            'self_attn.attn_gate_proj.weight',
+            'self_attn.f_gate_proj.weight',
+            'self_attn.attn_f_gate_proj.weight',
+            'self_attn.attn_gate.weight',
+            'self_attn.attn_f_gate.weight',
+        ], precision, f'layer_{i}_deltanet_gate.weights', False) if is_qwen_family else None,
+        ([
+            'self_attn.deltanet_beta_proj.weight',
+            'self_attn.gated_deltanet_beta_proj.weight',
+            'self_attn.attn_beta_proj.weight',
+            'self_attn.f_beta_proj.weight',
+            'self_attn.attn_f_beta_proj.weight',
+            'self_attn.attn_beta.weight',
+            'self_attn.attn_f_beta.weight',
+        ], precision, f'layer_{i}_deltanet_beta.weights', False) if is_qwen_family else None,
         (['input_layernorm.weight', 'ln_1.weight', 'operator_norm.weight'], precision, f'layer_{i}_input_norm.weights', False),
         (['self_attn.q_norm.weight', 'self_attn.q_layernorm.weight'], precision, f'layer_{i}_attn_q_norm.weights', False),
         (['self_attn.k_norm.weight', 'self_attn.k_layernorm.weight'], precision, f'layer_{i}_attn_k_norm.weights', False),

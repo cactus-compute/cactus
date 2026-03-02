@@ -952,6 +952,159 @@ bool test_stft() {
     return true;
 }
 
+bool test_gated_deltanet_decode_prefill_equivalence() {
+    constexpr size_t B = 1;
+    constexpr size_t T = 6;
+    constexpr size_t H = 2;
+    constexpr size_t K = 4;
+    constexpr size_t V = 3;
+
+    CactusGraph graph;
+
+    size_t q = graph.input({B, T, H, K}, Precision::FP16);
+    size_t k = graph.input({B, T, H, K}, Precision::FP16);
+    size_t v = graph.input({B, T, H, V}, Precision::FP16);
+    size_t g = graph.input({B, T, H}, Precision::FP16);
+    size_t beta = graph.input({B, T, H}, Precision::FP16);
+    size_t s0 = graph.input({B, H, K, V}, Precision::FP16);
+
+    size_t prefill = graph.gated_deltanet_prefill(q, k, v, g, beta, s0, 3);
+    size_t prefill_y = graph.slice(prefill, 1, 0, T);
+    size_t prefill_state_tail = graph.slice(prefill, 1, T, K);
+    size_t prefill_state = graph.transposeN(prefill_state_tail, {0, 2, 1, 3});
+
+    size_t decode_state = s0;
+    size_t decode_y = 0;
+    for (size_t t = 0; t < T; ++t) {
+        size_t q_t = graph.slice(q, 1, t, 1);
+        size_t k_t = graph.slice(k, 1, t, 1);
+        size_t v_t = graph.slice(v, 1, t, 1);
+        size_t g_t = graph.slice(g, 1, t, 1);
+        size_t beta_t = graph.slice(beta, 1, t, 1);
+
+        size_t decode_out = graph.gated_deltanet_decode(q_t, k_t, v_t, g_t, beta_t, decode_state);
+        size_t y_t = graph.slice(decode_out, 1, 0, 1);
+        size_t state_tail_t = graph.slice(decode_out, 1, 1, K);
+        decode_state = graph.transposeN(state_tail_t, {0, 2, 1, 3});
+
+        if (t == 0) {
+            decode_y = y_t;
+        } else {
+            decode_y = graph.concat(decode_y, y_t, 1);
+        }
+    }
+
+    std::vector<__fp16> q_data(B * T * H * K);
+    std::vector<__fp16> k_data(B * T * H * K);
+    std::vector<__fp16> v_data(B * T * H * V);
+    std::vector<__fp16> g_data(B * T * H);
+    std::vector<__fp16> beta_data(B * T * H);
+    std::vector<__fp16> s0_data(B * H * K * V, static_cast<__fp16>(0.0f));
+
+    for (size_t t = 0; t < T; ++t) {
+        for (size_t h = 0; h < H; ++h) {
+            const size_t gb_idx = (t * H + h);
+            g_data[gb_idx] = static_cast<__fp16>(-0.35f - 0.07f * static_cast<float>(t + h));
+            beta_data[gb_idx] = static_cast<__fp16>(0.55f + 0.03f * static_cast<float>((t + h) % 2));
+
+            for (size_t kd = 0; kd < K; ++kd) {
+                const size_t qk_idx = ((t * H + h) * K + kd);
+                q_data[qk_idx] = static_cast<__fp16>(0.05f * static_cast<float>(1 + kd + h));
+                k_data[qk_idx] = static_cast<__fp16>(0.04f * static_cast<float>(1 + ((t + kd + h) % 5)));
+            }
+            for (size_t vd = 0; vd < V; ++vd) {
+                const size_t v_idx = ((t * H + h) * V + vd);
+                v_data[v_idx] = static_cast<__fp16>(0.1f * static_cast<float>(1 + ((t + vd + h) % 4)));
+            }
+        }
+    }
+
+    graph.set_input(q, q_data.data(), Precision::FP16);
+    graph.set_input(k, k_data.data(), Precision::FP16);
+    graph.set_input(v, v_data.data(), Precision::FP16);
+    graph.set_input(g, g_data.data(), Precision::FP16);
+    graph.set_input(beta, beta_data.data(), Precision::FP16);
+    graph.set_input(s0, s0_data.data(), Precision::FP16);
+    graph.execute();
+
+    const __fp16* y_prefill = static_cast<const __fp16*>(graph.get_output(prefill_y));
+    const __fp16* y_decode = static_cast<const __fp16*>(graph.get_output(decode_y));
+    const __fp16* state_prefill = static_cast<const __fp16*>(graph.get_output(prefill_state));
+    const __fp16* state_decode = static_cast<const __fp16*>(graph.get_output(decode_state));
+
+    const size_t y_count = B * T * H * V;
+    const size_t s_count = B * H * K * V;
+    for (size_t i = 0; i < y_count; ++i) {
+        if (std::abs(static_cast<float>(y_prefill[i]) - static_cast<float>(y_decode[i])) > 0.08f) {
+            graph.hard_reset();
+            return false;
+        }
+    }
+    for (size_t i = 0; i < s_count; ++i) {
+        if (std::abs(static_cast<float>(state_prefill[i]) - static_cast<float>(state_decode[i])) > 0.08f) {
+            graph.hard_reset();
+            return false;
+        }
+    }
+
+    graph.hard_reset();
+    return true;
+}
+
+bool test_gated_deltanet_prefill_chunk_invariance() {
+    constexpr size_t B = 1;
+    constexpr size_t T = 7;
+    constexpr size_t H = 2;
+    constexpr size_t K = 3;
+    constexpr size_t V = 3;
+
+    CactusGraph graph;
+    size_t q = graph.input({B, T, H, K}, Precision::FP16);
+    size_t k = graph.input({B, T, H, K}, Precision::FP16);
+    size_t v = graph.input({B, T, H, V}, Precision::FP16);
+    size_t g = graph.input({B, T, H}, Precision::FP16);
+    size_t beta = graph.input({B, T, H}, Precision::FP16);
+    size_t s0 = graph.input({B, H, K, V}, Precision::FP16);
+
+    size_t out_chunk2 = graph.gated_deltanet_prefill(q, k, v, g, beta, s0, 2);
+    size_t out_chunk4 = graph.gated_deltanet_prefill(q, k, v, g, beta, s0, 4);
+
+    std::vector<__fp16> q_data(B * T * H * K);
+    std::vector<__fp16> k_data(B * T * H * K);
+    std::vector<__fp16> v_data(B * T * H * V);
+    std::vector<__fp16> g_data(B * T * H);
+    std::vector<__fp16> beta_data(B * T * H);
+    std::vector<__fp16> s0_data(B * H * K * V);
+
+    for (size_t i = 0; i < q_data.size(); ++i) q_data[i] = static_cast<__fp16>(0.03f * static_cast<float>(1 + (i % 11)));
+    for (size_t i = 0; i < k_data.size(); ++i) k_data[i] = static_cast<__fp16>(0.02f * static_cast<float>(1 + (i % 7)));
+    for (size_t i = 0; i < v_data.size(); ++i) v_data[i] = static_cast<__fp16>(0.05f * static_cast<float>(1 + (i % 5)));
+    for (size_t i = 0; i < g_data.size(); ++i) g_data[i] = static_cast<__fp16>(-0.4f - 0.03f * static_cast<float>(i % 3));
+    for (size_t i = 0; i < beta_data.size(); ++i) beta_data[i] = static_cast<__fp16>(0.45f + 0.02f * static_cast<float>(i % 4));
+    for (size_t i = 0; i < s0_data.size(); ++i) s0_data[i] = static_cast<__fp16>(0.01f * static_cast<float>(i % 3));
+
+    graph.set_input(q, q_data.data(), Precision::FP16);
+    graph.set_input(k, k_data.data(), Precision::FP16);
+    graph.set_input(v, v_data.data(), Precision::FP16);
+    graph.set_input(g, g_data.data(), Precision::FP16);
+    graph.set_input(beta, beta_data.data(), Precision::FP16);
+    graph.set_input(s0, s0_data.data(), Precision::FP16);
+    graph.execute();
+
+    const __fp16* out2 = static_cast<const __fp16*>(graph.get_output(out_chunk2));
+    const __fp16* out4 = static_cast<const __fp16*>(graph.get_output(out_chunk4));
+    const size_t count = B * (T + K) * H * V;
+    for (size_t i = 0; i < count; ++i) {
+        if (std::abs(static_cast<float>(out2[i]) - static_cast<float>(out4[i])) > 0.08f) {
+            graph.hard_reset();
+            return false;
+        }
+    }
+
+    graph.hard_reset();
+    return true;
+}
+
 template<typename T>
 static bool run_layernorm_case(
     size_t batch, size_t feat, bool with_bias, float epsilon,
@@ -1079,6 +1232,8 @@ int main() {
     runner.run_test("Embedding Operation", test_embedding_operation());
     runner.run_test("Embedding from File", test_embedding_from_file());
     runner.run_test("STFT Complex", test_stft());
+    runner.run_test("Gated DeltaNet Decode/Prefill Equivalence", test_gated_deltanet_decode_prefill_equivalence());
+    runner.run_test("Gated DeltaNet Prefill Chunk Invariance", test_gated_deltanet_prefill_chunk_invariance());
     runner.run_test("LayerNorm", test_layernorm());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
