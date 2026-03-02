@@ -92,6 +92,7 @@ private:
             size_t input_layernorm_weight = 0;
             size_t attn_q_norm_weight = 0;
             size_t attn_k_norm_weight = 0;
+            size_t deltanet_qkv_weight = 0;
             size_t deltanet_gate_weight = 0;
             size_t deltanet_beta_weight = 0;
             size_t deltanet_gate_bias = 0;

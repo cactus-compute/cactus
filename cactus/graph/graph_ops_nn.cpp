@@ -5,6 +5,7 @@
 #include <vector>
 #include <stdexcept>
 #include <cmath>
+#include <cstdlib>
 #include <assert.h>
 #include <algorithm>
 #include <limits>
@@ -67,89 +68,231 @@ namespace {
         cached_quant_K = K;
     }
 
-    inline float safe_exp_gate(float gate_log) {
-        const float clamped = std::max(-20.0f, std::min(6.0f, gate_log));
-        return std::exp(clamped);
+    inline __fp16 safe_exp_gate(__fp16 gate_log) {
+        const float gate = static_cast<float>(gate_log);
+        const float clamped = std::max(-20.0f, std::min(6.0f, gate));
+        return static_cast<__fp16>(std::exp(clamped));
     }
 
-    inline void fold_state_scale(std::vector<float>& state, float factor) {
-        for (float& v : state) {
-            v *= factor;
+    inline void fold_state_scale(std::vector<__fp16>& state, __fp16 factor) {
+        for (__fp16& v : state) {
+            v = static_cast<__fp16>(v * factor);
         }
+    }
+
+    const __fp16* as_fp16_ptr(const BufferDesc& buffer, std::vector<__fp16>& scratch) {
+        if (buffer.precision == Precision::FP16) {
+            return buffer.data_as<__fp16>();
+        }
+        if (buffer.precision == Precision::FP32) {
+            scratch.resize(buffer.total_size);
+            cactus_fp32_to_fp16(buffer.data_as<float>(), scratch.data(), buffer.total_size);
+            return scratch.data();
+        }
+        throw std::runtime_error("GATED_DELTANET unsupported precision (expected FP16/FP32)");
+    }
+
+    struct GatedDeltaChunkScratch {
+        std::vector<__fp16> state;
+        std::vector<__fp16> m_chunk;
+        std::vector<__fp16> q_chunk;
+        std::vector<__fp16> k_chunk;
+        std::vector<__fp16> v_chunk;
+        std::vector<__fp16> g_chunk;
+        std::vector<__fp16> beta_chunk;
+        std::vector<__fp16> n0_proj;
+        std::vector<__fp16> delta_chunk;
+        std::vector<__fp16> gram;
+        std::vector<__fp16> p_prev;
+        std::vector<__fp16> p_curr;
+        std::vector<__fp16> inv_p_curr;
+        std::vector<__fp16> coeff;
+        std::vector<__fp16> out_acc;
+
+        void ensure(size_t K, size_t V, size_t Cmax) {
+            const size_t kv = K * V;
+            if (state.size() < kv) state.resize(kv);
+            if (m_chunk.size() < kv) m_chunk.resize(kv);
+            if (q_chunk.size() < Cmax * K) q_chunk.resize(Cmax * K);
+            if (k_chunk.size() < Cmax * K) k_chunk.resize(Cmax * K);
+            if (v_chunk.size() < Cmax * V) v_chunk.resize(Cmax * V);
+            if (g_chunk.size() < Cmax) g_chunk.resize(Cmax);
+            if (beta_chunk.size() < Cmax) beta_chunk.resize(Cmax);
+            if (n0_proj.size() < Cmax * V) n0_proj.resize(Cmax * V);
+            if (delta_chunk.size() < Cmax * V) delta_chunk.resize(Cmax * V);
+            if (gram.size() < Cmax * Cmax) gram.resize(Cmax * Cmax);
+            if (p_prev.size() < Cmax) p_prev.resize(Cmax);
+            if (p_curr.size() < Cmax) p_curr.resize(Cmax);
+            if (inv_p_curr.size() < Cmax) inv_p_curr.resize(Cmax);
+            if (coeff.size() < Cmax * Cmax) coeff.resize(Cmax * Cmax);
+            if (out_acc.size() < V) out_acc.resize(V);
+        }
+    };
+
+    thread_local GatedDeltaChunkScratch g_gated_deltanet_chunk_scratch;
+
+    inline size_t tuned_gated_deltanet_chunk_size(size_t requested_chunk, size_t K, size_t V) {
+        size_t chunk = requested_chunk == 0 ? 64 : requested_chunk;
+
+        const char* env_chunk = std::getenv("CACTUS_GATED_DELTANET_CHUNK_SIZE");
+        if (env_chunk != nullptr) {
+            long parsed = std::strtol(env_chunk, nullptr, 10);
+            if (parsed > 1) {
+                chunk = static_cast<size_t>(parsed);
+            }
+        } else {
+            (void)K;
+            (void)V;
+            chunk = std::min<size_t>(chunk, 16);
+        }
+
+        return std::max<size_t>(2, chunk);
     }
 
     void gated_deltanet_step(
         const __fp16* q_ptr,
         const __fp16* k_ptr,
         const __fp16* v_ptr,
-        float gate_log,
-        float beta,
-        float scale,
+        __fp16 gate_log,
+        __fp16 beta,
+        __fp16 scale,
         size_t k_dim,
         size_t v_dim,
-        std::vector<float>& state,
-        float& state_scale,
-        std::vector<float>& proj,
-        std::vector<float>& delta,
+        std::vector<__fp16>& state,
+        __fp16& state_scale,
+        std::vector<__fp16>& proj,
+        std::vector<__fp16>& delta,
         __fp16* out_ptr) {
-        const float gate_log_safe = std::isfinite(gate_log) ? gate_log : -20.0f;
-        const float beta_safe = std::isfinite(beta) ? std::min(1.0f, std::max(0.0f, beta)) : 0.0f;
+        const __fp16 gate_log_safe = (gate_log == gate_log)
+            ? gate_log : static_cast<__fp16>(-20.0f);
+        __fp16 beta_safe = beta;
+        if (!(beta_safe == beta_safe)) {
+            beta_safe = static_cast<__fp16>(0.0f);
+        } else if (beta_safe < static_cast<__fp16>(0.0f)) {
+            beta_safe = static_cast<__fp16>(0.0f);
+        } else if (beta_safe > static_cast<__fp16>(1.0f)) {
+            beta_safe = static_cast<__fp16>(1.0f);
+        }
 
         if (proj.size() != v_dim) {
-            proj.assign(v_dim, 0.0f);
+            proj.assign(v_dim, static_cast<__fp16>(0.0f));
         }
         if (delta.size() != v_dim) {
-            delta.assign(v_dim, 0.0f);
+            delta.assign(v_dim, static_cast<__fp16>(0.0f));
         }
 
-        const float prev_scale = state_scale;
-        std::fill(proj.begin(), proj.end(), 0.0f);
+        const __fp16 prev_scale = state_scale;
+        std::fill(proj.begin(), proj.end(), static_cast<__fp16>(0.0f));
 
         for (size_t kd = 0; kd < k_dim; ++kd) {
-            const float k_val = static_cast<float>(k_ptr[kd]);
-            const float* state_row = state.data() + kd * v_dim;
+            const __fp16 k_val = k_ptr[kd];
+            const __fp16* state_row = state.data() + kd * v_dim;
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+            size_t vd = 0;
+            const float16x8_t k8 = vdupq_n_f16(k_val);
+            for (; vd + 8 <= v_dim; vd += 8) {
+                float16x8_t p = vld1q_f16(proj.data() + vd);
+                const float16x8_t s = vld1q_f16(state_row + vd);
+                p = vfmaq_f16(p, s, k8);
+                vst1q_f16(proj.data() + vd, p);
+            }
+            for (; vd < v_dim; ++vd) {
+                proj[vd] = static_cast<__fp16>(proj[vd] + state_row[vd] * k_val);
+            }
+#else
             for (size_t vd = 0; vd < v_dim; ++vd) {
-                proj[vd] += state_row[vd] * k_val;
+                proj[vd] = static_cast<__fp16>(proj[vd] + state_row[vd] * k_val);
+            }
+#endif
+        }
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+        {
+            size_t vd = 0;
+            const float16x8_t scale8 = vdupq_n_f16(prev_scale);
+            for (; vd + 8 <= v_dim; vd += 8) {
+                float16x8_t p = vld1q_f16(proj.data() + vd);
+                p = vmulq_f16(p, scale8);
+                vst1q_f16(proj.data() + vd, p);
+            }
+            for (; vd < v_dim; ++vd) {
+                proj[vd] = static_cast<__fp16>(proj[vd] * prev_scale);
             }
         }
+#else
         for (size_t vd = 0; vd < v_dim; ++vd) {
-            proj[vd] *= prev_scale;
+            proj[vd] = static_cast<__fp16>(proj[vd] * prev_scale);
         }
+#endif
 
         for (size_t vd = 0; vd < v_dim; ++vd) {
-            const float v_val = static_cast<float>(v_ptr[vd]);
-            delta[vd] = (v_val - proj[vd]) * beta_safe;
+            delta[vd] = static_cast<__fp16>((v_ptr[vd] - proj[vd]) * beta_safe);
         }
 
         state_scale = prev_scale * safe_exp_gate(gate_log_safe);
-        if (!std::isfinite(state_scale) ||
-            std::fabs(state_scale) < 1e-8f ||
-            std::fabs(state_scale) > 1e8f) {
+        if (!(state_scale == state_scale) ||
+            state_scale == static_cast<__fp16>(0.0f)) {
             fold_state_scale(state, state_scale);
-            state_scale = 1.0f;
+            state_scale = static_cast<__fp16>(1.0f);
         }
-        const float inv_scale = 1.0f / state_scale;
+        const __fp16 inv_scale = static_cast<__fp16>(static_cast<__fp16>(1.0f) / state_scale);
 
         for (size_t kd = 0; kd < k_dim; ++kd) {
-            const float k_scaled = static_cast<float>(k_ptr[kd]) * inv_scale;
-            float* state_row = state.data() + kd * v_dim;
+            const __fp16 k_scaled = static_cast<__fp16>(k_ptr[kd] * inv_scale);
+            __fp16* state_row = state.data() + kd * v_dim;
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+            size_t vd = 0;
+            const float16x8_t k8 = vdupq_n_f16(k_scaled);
+            for (; vd + 8 <= v_dim; vd += 8) {
+                float16x8_t s = vld1q_f16(state_row + vd);
+                const float16x8_t d = vld1q_f16(delta.data() + vd);
+                s = vfmaq_f16(s, d, k8);
+                vst1q_f16(state_row + vd, s);
+            }
+            for (; vd < v_dim; ++vd) {
+                state_row[vd] = static_cast<__fp16>(state_row[vd] + k_scaled * delta[vd]);
+            }
+#else
             for (size_t vd = 0; vd < v_dim; ++vd) {
-                state_row[vd] += k_scaled * delta[vd];
-                if (!std::isfinite(state_row[vd])) {
-                    state_row[vd] = 0.0f;
+                state_row[vd] = static_cast<__fp16>(state_row[vd] + k_scaled * delta[vd]);
+            }
+#endif
+            for (size_t vd = 0; vd < v_dim; ++vd) {
+                if (!std::isfinite(static_cast<float>(state_row[vd]))) {
+                    state_row[vd] = static_cast<__fp16>(0.0f);
                 }
             }
         }
 
+        std::fill(proj.begin(), proj.end(), static_cast<__fp16>(0.0f));
+        for (size_t kd = 0; kd < k_dim; ++kd) {
+            const __fp16 q_val = q_ptr[kd];
+            const __fp16* state_row = state.data() + kd * v_dim;
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+            size_t vd = 0;
+            const float16x8_t q8 = vdupq_n_f16(q_val);
+            for (; vd + 8 <= v_dim; vd += 8) {
+                float16x8_t o = vld1q_f16(proj.data() + vd);
+                const float16x8_t s = vld1q_f16(state_row + vd);
+                o = vfmaq_f16(o, s, q8);
+                vst1q_f16(proj.data() + vd, o);
+            }
+            for (; vd < v_dim; ++vd) {
+                proj[vd] = static_cast<__fp16>(proj[vd] + state_row[vd] * q_val);
+            }
+#else
+            for (size_t vd = 0; vd < v_dim; ++vd) {
+                proj[vd] = static_cast<__fp16>(proj[vd] + state_row[vd] * q_val);
+            }
+#endif
+        }
+
+        const __fp16 out_scale = static_cast<__fp16>(state_scale * scale);
         for (size_t vd = 0; vd < v_dim; ++vd) {
-            float acc = 0.0f;
-            for (size_t kd = 0; kd < k_dim; ++kd) {
-                acc += state[kd * v_dim + vd] * static_cast<float>(q_ptr[kd]);
+            __fp16 acc = proj[vd];
+            if (!std::isfinite(static_cast<float>(acc))) {
+                acc = static_cast<__fp16>(0.0f);
             }
-            if (!std::isfinite(acc)) {
-                acc = 0.0f;
-            }
-            out_ptr[vd] = static_cast<__fp16>(acc * state_scale * scale);
+            out_ptr[vd] = static_cast<__fp16>(acc * out_scale);
         }
     }
 
@@ -160,9 +303,13 @@ namespace {
         const BufferDesc& g,
         const BufferDesc& b,
         const BufferDesc& s) {
-        if (q.precision != Precision::FP16 || k.precision != Precision::FP16 || v.precision != Precision::FP16 ||
-            g.precision != Precision::FP16 || b.precision != Precision::FP16 || s.precision != Precision::FP16) {
-            throw std::runtime_error("GATED_DELTANET requires FP16 inputs");
+        auto is_supported_precision = [](Precision p) {
+            return p == Precision::FP16 || p == Precision::FP32;
+        };
+        if (!is_supported_precision(q.precision) || !is_supported_precision(k.precision) ||
+            !is_supported_precision(v.precision) || !is_supported_precision(g.precision) ||
+            !is_supported_precision(b.precision) || !is_supported_precision(s.precision)) {
+            throw std::runtime_error("GATED_DELTANET requires FP16/FP32 inputs");
         }
 
         if (q.shape.size() != 4 || k.shape.size() != 4 || v.shape.size() != 4) {
@@ -172,26 +319,30 @@ namespace {
             throw std::runtime_error("GATED_DELTANET expects gate_log/beta rank 3 [B, T, H]");
         }
         if (s.shape.size() != 4) {
-            throw std::runtime_error("GATED_DELTANET expects state rank 4 [B, H, K, V]");
+            throw std::runtime_error("GATED_DELTANET expects state rank 4 [B, K, H, V]");
         }
 
         const size_t B = q.shape[0];
         const size_t T = q.shape[1];
-        const size_t H = q.shape[2];
+        const size_t Hq = q.shape[2];
         const size_t K = q.shape[3];
 
-        if (k.shape[0] != B || k.shape[1] != T || k.shape[2] != H || k.shape[3] != K) {
+        if (k.shape[0] != B || k.shape[1] != T || k.shape[2] != Hq || k.shape[3] != K) {
             throw std::runtime_error("GATED_DELTANET query/key shape mismatch");
         }
-        if (v.shape[0] != B || v.shape[1] != T || v.shape[2] != H) {
+        if (v.shape[0] != B || v.shape[1] != T) {
             throw std::runtime_error("GATED_DELTANET value shape mismatch");
         }
-        if (g.shape[0] != B || g.shape[1] != T || g.shape[2] != H ||
-            b.shape[0] != B || b.shape[1] != T || b.shape[2] != H) {
+        const size_t Hv = v.shape[2];
+        if (g.shape[0] != B || g.shape[1] != T || g.shape[2] != Hv ||
+            b.shape[0] != B || b.shape[1] != T || b.shape[2] != Hv) {
             throw std::runtime_error("GATED_DELTANET gate_log/beta shape mismatch");
         }
+        if (Hq == 0 || Hv == 0 || (Hv % Hq) != 0) {
+            throw std::runtime_error("GATED_DELTANET expects value heads divisible by q/k heads");
+        }
         const size_t V = v.shape[3];
-        if (s.shape[0] != B || s.shape[1] != H || s.shape[2] != K || s.shape[3] != V) {
+        if (s.shape[0] != B || s.shape[1] != K || s.shape[2] != Hv || s.shape[3] != V) {
             throw std::runtime_error("GATED_DELTANET state shape mismatch");
         }
     }
@@ -672,7 +823,7 @@ void compute_rel_pos_bias_node(GraphNode& node, const std::vector<std::unique_pt
     const __fp16* r = r_buffer.data_as<__fp16>();
     __fp16* y = y_buffer.data_as<__fp16>();
 
-    const float scale = node.params.scale;
+    const __fp16 scale = static_cast<__fp16>(node.params.scale);
 
     const size_t q_batch_stride = T * H * D;
     const size_t r_batch_stride = R * H * D;
@@ -1920,7 +2071,7 @@ void compute_stft_node(GraphNode& node, const std::vector<std::unique_ptr<GraphN
 void compute_conv1d_k7s3_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                          const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer; // Expected packed [C_in, K, C_out]
+    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
     const BufferDesc* B = nullptr;
     if (node.input_ids.size() >= 3) {
         B = &nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
@@ -2071,67 +2222,84 @@ void compute_gated_deltanet_decode_node(GraphNode& node, const std::vector<std::
     }
 
     const size_t B = q.shape[0];
-    const size_t H = q.shape[2];
+    const size_t Hq = q.shape[2];
     const size_t K = q.shape[3];
+    const size_t Hv = v.shape[2];
     const size_t V = v.shape[3];
     const size_t out_seq = 1 + K;
-    const float scale = node.params.scale;
+    const __fp16 scale = static_cast<__fp16>(node.params.scale);
+    const size_t qk_repeat = Hv / Hq;
+    const size_t qk_heads_from_params = node.params.num_kv_heads;
+    if (qk_heads_from_params != 0 && qk_heads_from_params != Hq) {
+        throw std::runtime_error("GATED_DELTANET_DECODE num_qk_heads param mismatch");
+    }
 
-    const __fp16* q_data = q.data_as<__fp16>();
-    const __fp16* k_data = k.data_as<__fp16>();
-    const __fp16* v_data = v.data_as<__fp16>();
-    const __fp16* g_data = g.data_as<__fp16>();
-    const __fp16* b_data = b.data_as<__fp16>();
-    const __fp16* s_data = s.data_as<__fp16>();
+    std::vector<__fp16> q_cast;
+    std::vector<__fp16> k_cast;
+    std::vector<__fp16> v_cast;
+    std::vector<__fp16> g_cast;
+    std::vector<__fp16> b_cast;
+    std::vector<__fp16> s_cast;
+    const __fp16* q_data = as_fp16_ptr(q, q_cast);
+    const __fp16* k_data = as_fp16_ptr(k, k_cast);
+    const __fp16* v_data = as_fp16_ptr(v, v_cast);
+    const __fp16* g_data = as_fp16_ptr(g, g_cast);
+    const __fp16* b_data = as_fp16_ptr(b, b_cast);
+    const __fp16* s_data = as_fp16_ptr(s, s_cast);
     __fp16* out = node.output_buffer.data_as<__fp16>();
 
-    std::vector<float> state(K * V);
-    std::vector<float> proj(V);
-    std::vector<float> delta(V);
+    CactusThreading::parallel_for(B * Hv, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+        [&](size_t bh_start, size_t bh_end) {
+            std::vector<__fp16> state(K * V);
+            std::vector<__fp16> proj(V);
+            std::vector<__fp16> delta(V);
 
-    for (size_t batch = 0; batch < B; ++batch) {
-        for (size_t head = 0; head < H; ++head) {
-            for (size_t kd = 0; kd < K; ++kd) {
-                for (size_t vd = 0; vd < V; ++vd) {
-                    const size_t s_idx = (((batch * H + head) * K + kd) * V + vd);
-                    state[kd * V + vd] = static_cast<float>(s_data[s_idx]);
+            for (size_t bh = bh_start; bh < bh_end; ++bh) {
+                const size_t batch = bh / Hv;
+                const size_t v_head = bh % Hv;
+                const size_t qk_head = v_head / qk_repeat;
+
+                for (size_t kd = 0; kd < K; ++kd) {
+                    for (size_t vd = 0; vd < V; ++vd) {
+                        const size_t s_idx = (((batch * K + kd) * Hv + v_head) * V + vd);
+                        state[kd * V + vd] = s_data[s_idx];
+                    }
+                }
+
+                __fp16 state_scale = static_cast<__fp16>(1.0f);
+                const size_t qk_base = ((batch * Hq + qk_head) * K);
+                const size_t v_base = ((batch * Hv + v_head) * V);
+                const __fp16 gate_log = g_data[batch * Hv + v_head];
+                const __fp16 beta = b_data[batch * Hv + v_head];
+
+                gated_deltanet_step(
+                    q_data + qk_base,
+                    k_data + qk_base,
+                    v_data + v_base,
+                    gate_log,
+                    beta,
+                    scale,
+                    K,
+                    V,
+                    state,
+                    state_scale,
+                    proj,
+                    delta,
+                    out + (((batch * out_seq) * Hv + v_head) * V));
+
+                fold_state_scale(state, state_scale);
+                for (size_t kd = 0; kd < K; ++kd) {
+                    for (size_t vd = 0; vd < V; ++vd) {
+                        const size_t out_idx = (((batch * out_seq + (1 + kd)) * Hv + v_head) * V + vd);
+                        out[out_idx] = state[kd * V + vd];
+                    }
                 }
             }
-
-            float state_scale = 1.0f;
-            const size_t q_base = ((batch * H + head) * K);
-            const size_t v_base = ((batch * H + head) * V);
-            const float gate_log = static_cast<float>(g_data[batch * H + head]);
-            const float beta = static_cast<float>(b_data[batch * H + head]);
-
-            gated_deltanet_step(
-                q_data + q_base,
-                k_data + q_base,
-                v_data + v_base,
-                gate_log,
-                beta,
-                scale,
-                K,
-                V,
-                state,
-                state_scale,
-                proj,
-                delta,
-                out + (((batch * out_seq) * H + head) * V));
-
-            fold_state_scale(state, state_scale);
-            for (size_t kd = 0; kd < K; ++kd) {
-                for (size_t vd = 0; vd < V; ++vd) {
-                    const size_t out_idx = (((batch * out_seq + (1 + kd)) * H + head) * V + vd);
-                    out[out_idx] = static_cast<__fp16>(state[kd * V + vd]);
-                }
-            }
-        }
-    }
+        });
 }
 
-void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
-                                         const std::unordered_map<size_t, size_t>& node_index_map) {
+static void compute_gated_deltanet_prefill_node_chunked(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                                        const std::unordered_map<size_t, size_t>& node_index_map) {
     if (node.input_ids.size() != 6) {
         throw std::runtime_error("GATED_DELTANET_PREFILL expects 6 inputs");
     }
@@ -2147,65 +2315,437 @@ void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vector<std:
 
     const size_t B = q.shape[0];
     const size_t T = q.shape[1];
-    const size_t H = q.shape[2];
+    const size_t Hq = q.shape[2];
     const size_t K = q.shape[3];
+    const size_t Hv = v.shape[2];
     const size_t V = v.shape[3];
     const size_t out_seq = T + K;
-    const float scale = node.params.scale;
+    const __fp16 scale = static_cast<__fp16>(node.params.scale);
+    const size_t qk_repeat = Hv / Hq;
+    const size_t qk_heads_from_params = node.params.num_kv_heads;
+    if (qk_heads_from_params != 0 && qk_heads_from_params != Hq) {
+        throw std::runtime_error("GATED_DELTANET_PREFILL num_qk_heads param mismatch");
+    }
 
-    const __fp16* q_data = q.data_as<__fp16>();
-    const __fp16* k_data = k.data_as<__fp16>();
-    const __fp16* v_data = v.data_as<__fp16>();
-    const __fp16* g_data = g.data_as<__fp16>();
-    const __fp16* b_data = b.data_as<__fp16>();
-    const __fp16* s_data = s.data_as<__fp16>();
+    std::vector<__fp16> q_cast;
+    std::vector<__fp16> k_cast;
+    std::vector<__fp16> v_cast;
+    std::vector<__fp16> g_cast;
+    std::vector<__fp16> b_cast;
+    std::vector<__fp16> s_cast;
+    const __fp16* q_data = as_fp16_ptr(q, q_cast);
+    const __fp16* k_data = as_fp16_ptr(k, k_cast);
+    const __fp16* v_data = as_fp16_ptr(v, v_cast);
+    const __fp16* g_data = as_fp16_ptr(g, g_cast);
+    const __fp16* b_data = as_fp16_ptr(b, b_cast);
+    const __fp16* s_data = as_fp16_ptr(s, s_cast);
     __fp16* out = node.output_buffer.data_as<__fp16>();
 
-    std::vector<float> state(K * V);
-    std::vector<float> proj(V);
-    std::vector<float> delta(V);
+    const size_t chunk_size = tuned_gated_deltanet_chunk_size(
+        std::max<size_t>(2, node.params.chunk_size), K, V);
+    const __fp16 kMinAbs = static_cast<__fp16>(1e-3f);
 
-    for (size_t batch = 0; batch < B; ++batch) {
-        for (size_t head = 0; head < H; ++head) {
-            for (size_t kd = 0; kd < K; ++kd) {
-                for (size_t vd = 0; vd < V; ++vd) {
-                    const size_t s_idx = (((batch * H + head) * K + kd) * V + vd);
-                    state[kd * V + vd] = static_cast<float>(s_data[s_idx]);
+    CactusThreading::parallel_for(B * Hv, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+        [&](size_t bh_start, size_t bh_end) {
+            auto& ws = g_gated_deltanet_chunk_scratch;
+            ws.ensure(K, V, chunk_size);
+
+            __fp16* state = ws.state.data();
+            __fp16* m_chunk = ws.m_chunk.data();
+            __fp16* q_chunk = ws.q_chunk.data();
+            __fp16* k_chunk = ws.k_chunk.data();
+            __fp16* v_chunk = ws.v_chunk.data();
+            __fp16* g_chunk = ws.g_chunk.data();
+            __fp16* beta_chunk = ws.beta_chunk.data();
+            __fp16* n0_proj = ws.n0_proj.data();
+            __fp16* delta_chunk = ws.delta_chunk.data();
+            __fp16* gram = ws.gram.data();
+            __fp16* p_prev = ws.p_prev.data();
+            __fp16* p_curr = ws.p_curr.data();
+            __fp16* inv_p_curr = ws.inv_p_curr.data();
+            __fp16* coeff = ws.coeff.data();
+            __fp16* out_acc = ws.out_acc.data();
+
+            for (size_t bh = bh_start; bh < bh_end; ++bh) {
+                const size_t batch = bh / Hv;
+                const size_t v_head = bh % Hv;
+                const size_t qk_head = v_head / qk_repeat;
+
+                for (size_t kd = 0; kd < K; ++kd) {
+                    const size_t s_idx = (((batch * K + kd) * Hv + v_head) * V);
+                    std::memcpy(state + kd * V, s_data + s_idx, V * sizeof(__fp16));
+                }
+
+                for (size_t t0 = 0; t0 < T; t0 += chunk_size) {
+                    const size_t C = std::min(chunk_size, T - t0);
+                    const size_t CV = C * V;
+                    const size_t CC = C * C;
+
+                    std::fill(n0_proj, n0_proj + CV, static_cast<__fp16>(0.0f));
+                    std::fill(delta_chunk, delta_chunk + CV, static_cast<__fp16>(0.0f));
+                    std::fill(gram, gram + CC, static_cast<__fp16>(0.0f));
+                    std::fill(coeff, coeff + CC, static_cast<__fp16>(0.0f));
+                    std::fill(m_chunk, m_chunk + (K * V), static_cast<__fp16>(0.0f));
+
+                    for (size_t ct = 0; ct < C; ++ct) {
+                        const size_t t = t0 + ct;
+                        const size_t qkv_k_base = (((batch * T + t) * Hq + qk_head) * K);
+                        const size_t qkv_v_base = (((batch * T + t) * Hv + v_head) * V);
+                        const size_t gb_idx = ((batch * T + t) * Hv + v_head);
+
+                        std::memcpy(q_chunk + ct * K, q_data + qkv_k_base, K * sizeof(__fp16));
+                        std::memcpy(k_chunk + ct * K, k_data + qkv_k_base, K * sizeof(__fp16));
+                        std::memcpy(v_chunk + ct * V, v_data + qkv_v_base, V * sizeof(__fp16));
+
+                        const __fp16 gate_log = (g_data[gb_idx] == g_data[gb_idx])
+                            ? g_data[gb_idx] : static_cast<__fp16>(-20.0f);
+                        __fp16 beta = b_data[gb_idx];
+                        if (!(beta == beta)) beta = static_cast<__fp16>(0.0f);
+                        if (beta < static_cast<__fp16>(0.0f)) beta = static_cast<__fp16>(0.0f);
+                        if (beta > static_cast<__fp16>(1.0f)) beta = static_cast<__fp16>(1.0f);
+                        g_chunk[ct] = safe_exp_gate(gate_log);
+                        beta_chunk[ct] = beta;
+                    }
+
+                    for (size_t ct = 0; ct < C; ++ct) {
+                        const __fp16* k_row = k_chunk + ct * K;
+                        __fp16* p_row = n0_proj + ct * V;
+                        for (size_t kd = 0; kd < K; ++kd) {
+                            const __fp16 kval = k_row[kd];
+                            const __fp16* s_row = state + kd * V;
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+                            size_t vd = 0;
+                            const float16x8_t kv8 = vdupq_n_f16(kval);
+                            for (; vd + 8 <= V; vd += 8) {
+                                float16x8_t p8 = vld1q_f16(p_row + vd);
+                                const float16x8_t s8 = vld1q_f16(s_row + vd);
+                                p8 = vfmaq_f16(p8, s8, kv8);
+                                vst1q_f16(p_row + vd, p8);
+                            }
+                            for (; vd < V; ++vd) {
+                                p_row[vd] = static_cast<__fp16>(p_row[vd] + kval * s_row[vd]);
+                            }
+#else
+                            for (size_t vd = 0; vd < V; ++vd) {
+                                p_row[vd] = static_cast<__fp16>(p_row[vd] + kval * s_row[vd]);
+                            }
+#endif
+                        }
+                    }
+
+                    for (size_t t = 0; t < C; ++t) {
+                        const __fp16* kt = k_chunk + t * K;
+                        for (size_t j = 0; j < t; ++j) {
+                            const __fp16* kj = k_chunk + j * K;
+                            __fp16 dot = static_cast<__fp16>(0.0f);
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+                            size_t kd = 0;
+                            float16x8_t acc8 = vdupq_n_f16(static_cast<__fp16>(0.0f));
+                            for (; kd + 8 <= K; kd += 8) {
+                                const float16x8_t a8 = vld1q_f16(kt + kd);
+                                const float16x8_t b8 = vld1q_f16(kj + kd);
+                                acc8 = vfmaq_f16(acc8, a8, b8);
+                            }
+                            alignas(16) __fp16 lanes[8];
+                            vst1q_f16(lanes, acc8);
+                            for (size_t i = 0; i < 8; ++i) {
+                                dot = static_cast<__fp16>(dot + lanes[i]);
+                            }
+                            for (; kd < K; ++kd) {
+                                dot = static_cast<__fp16>(dot + kt[kd] * kj[kd]);
+                            }
+#else
+                            for (size_t kd = 0; kd < K; ++kd) {
+                                dot = static_cast<__fp16>(dot + kt[kd] * kj[kd]);
+                            }
+#endif
+                            gram[t * C + j] = dot;
+                        }
+                    }
+
+                    __fp16 running_p = static_cast<__fp16>(1.0f);
+                    for (size_t t = 0; t < C; ++t) {
+                        p_prev[t] = running_p;
+                        running_p = static_cast<__fp16>(running_p * g_chunk[t]);
+                        p_curr[t] = running_p;
+                        const __fp16 abs_running = (running_p < static_cast<__fp16>(0.0f))
+                            ? static_cast<__fp16>(-running_p) : running_p;
+                        inv_p_curr[t] = (abs_running > kMinAbs)
+                            ? static_cast<__fp16>(static_cast<__fp16>(1.0f) / running_p)
+                            : static_cast<__fp16>(0.0f);
+                    }
+
+                    for (size_t t = 0; t < C; ++t) {
+                        const __fp16 pp = p_prev[t];
+                        __fp16* coeff_row = coeff + t * C;
+                        for (size_t j = 0; j < t; ++j) {
+                            const __fp16 inv_pc = inv_p_curr[j];
+                            coeff_row[j] = inv_pc == static_cast<__fp16>(0.0f)
+                                ? static_cast<__fp16>(0.0f)
+                                : static_cast<__fp16>(pp * inv_pc * gram[t * C + j]);
+                        }
+                    }
+
+                    for (size_t t = 0; t < C; ++t) {
+                        const __fp16 pp = p_prev[t];
+                        const __fp16 bt = beta_chunk[t];
+                        const __fp16* n0_row = n0_proj + t * V;
+                        const __fp16* v_row = v_chunk + t * V;
+                        __fp16* d_row = delta_chunk + t * V;
+
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+                        size_t vd = 0;
+                        const float16x8_t pp8 = vdupq_n_f16(pp);
+                        const float16x8_t bt8 = vdupq_n_f16(bt);
+                        for (; vd + 8 <= V; vd += 8) {
+                            float16x8_t acc8 = vmulq_f16(vld1q_f16(n0_row + vd), pp8);
+                            for (size_t j = 0; j < t; ++j) {
+                                const __fp16 c = coeff[t * C + j];
+                                if (c == static_cast<__fp16>(0.0f)) continue;
+                                const float16x8_t dj8 = vld1q_f16(delta_chunk + j * V + vd);
+                                acc8 = vfmaq_f16(acc8, dj8, vdupq_n_f16(c));
+                            }
+                            const float16x8_t v8 = vld1q_f16(v_row + vd);
+                            const float16x8_t d8 = vmulq_f16(vsubq_f16(v8, acc8), bt8);
+                            vst1q_f16(d_row + vd, d8);
+                        }
+                        for (; vd < V; ++vd) {
+                            __fp16 acc = static_cast<__fp16>(pp * n0_row[vd]);
+                            for (size_t j = 0; j < t; ++j) {
+                                acc = static_cast<__fp16>(acc + coeff[t * C + j] * delta_chunk[j * V + vd]);
+                            }
+                            d_row[vd] = static_cast<__fp16>(bt * (v_row[vd] - acc));
+                        }
+#else
+                        for (size_t vd = 0; vd < V; ++vd) {
+                            __fp16 acc = static_cast<__fp16>(pp * n0_row[vd]);
+                            for (size_t j = 0; j < t; ++j) {
+                                acc = static_cast<__fp16>(acc + coeff[t * C + j] * delta_chunk[j * V + vd]);
+                            }
+                            d_row[vd] = static_cast<__fp16>(bt * (v_row[vd] - acc));
+                        }
+#endif
+                    }
+
+                    running_p = static_cast<__fp16>(1.0f);
+                    for (size_t t = 0; t < C; ++t) {
+                        const __fp16 gt = g_chunk[t];
+                        const __fp16* k_row = k_chunk + t * K;
+                        const __fp16* q_row = q_chunk + t * K;
+                        const __fp16* d_row = delta_chunk + t * V;
+
+                        running_p = static_cast<__fp16>(running_p * gt);
+                        const __fp16 p_run = running_p;
+
+                        for (size_t kd = 0; kd < K; ++kd) {
+                            const __fp16 kval = k_row[kd];
+                            __fp16* m_row = m_chunk + kd * V;
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+                            size_t vd = 0;
+                            const float16x8_t gt8 = vdupq_n_f16(gt);
+                            const float16x8_t kv8 = vdupq_n_f16(kval);
+                            for (; vd + 8 <= V; vd += 8) {
+                                float16x8_t m8 = vld1q_f16(m_row + vd);
+                                const float16x8_t d8 = vld1q_f16(d_row + vd);
+                                m8 = vmulq_f16(m8, gt8);
+                                m8 = vfmaq_f16(m8, d8, kv8);
+                                vst1q_f16(m_row + vd, m8);
+                            }
+                            for (; vd < V; ++vd) {
+                                m_row[vd] = static_cast<__fp16>(gt * m_row[vd] + kval * d_row[vd]);
+                            }
+#else
+                            for (size_t vd = 0; vd < V; ++vd) {
+                                m_row[vd] = static_cast<__fp16>(gt * m_row[vd] + kval * d_row[vd]);
+                            }
+#endif
+                        }
+
+                        const size_t out_base = (((batch * out_seq + (t0 + t)) * Hv + v_head) * V);
+                        std::fill(out_acc, out_acc + V, static_cast<__fp16>(0.0f));
+                        for (size_t kd = 0; kd < K; ++kd) {
+                            const __fp16 qval = q_row[kd];
+                            const __fp16* s_row = state + kd * V;
+                            const __fp16* m_row = m_chunk + kd * V;
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+                            size_t vd = 0;
+                            const float16x8_t q8 = vdupq_n_f16(qval);
+                            const float16x8_t p8 = vdupq_n_f16(p_run);
+                            for (; vd + 8 <= V; vd += 8) {
+                                float16x8_t acc8 = vld1q_f16(out_acc + vd);
+                                const float16x8_t s8 = vld1q_f16(s_row + vd);
+                                const float16x8_t m8 = vld1q_f16(m_row + vd);
+                                const float16x8_t n8 = vfmaq_f16(m8, s8, p8);
+                                acc8 = vfmaq_f16(acc8, n8, q8);
+                                vst1q_f16(out_acc + vd, acc8);
+                            }
+                            for (; vd < V; ++vd) {
+                                out_acc[vd] = static_cast<__fp16>(
+                                    out_acc[vd] + qval * (static_cast<__fp16>(p_run * s_row[vd]) + m_row[vd]));
+                            }
+#else
+                            for (size_t vd = 0; vd < V; ++vd) {
+                                out_acc[vd] = static_cast<__fp16>(
+                                    out_acc[vd] + qval * (static_cast<__fp16>(p_run * s_row[vd]) + m_row[vd]));
+                            }
+#endif
+                        }
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+                        size_t vd = 0;
+                        const float16x8_t scale8 = vdupq_n_f16(scale);
+                        for (; vd + 8 <= V; vd += 8) {
+                            float16x8_t y8 = vld1q_f16(out_acc + vd);
+                            y8 = vmulq_f16(y8, scale8);
+                            vst1q_f16(out + out_base + vd, y8);
+                        }
+                        for (; vd < V; ++vd) {
+                            out[out_base + vd] = static_cast<__fp16>(out_acc[vd] * scale);
+                        }
+#else
+                        for (size_t vd = 0; vd < V; ++vd) {
+                            out[out_base + vd] = static_cast<__fp16>(out_acc[vd] * scale);
+                        }
+#endif
+                    }
+
+                    const __fp16 p_end = running_p;
+                    for (size_t kd = 0; kd < K; ++kd) {
+                        __fp16* s_row = state + kd * V;
+                        const __fp16* m_row = m_chunk + kd * V;
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+                        size_t vd = 0;
+                        const float16x8_t p8 = vdupq_n_f16(p_end);
+                        for (; vd + 8 <= V; vd += 8) {
+                            float16x8_t s8 = vld1q_f16(s_row + vd);
+                            const float16x8_t m8 = vld1q_f16(m_row + vd);
+                            s8 = vfmaq_f16(m8, s8, p8);
+                            vst1q_f16(s_row + vd, s8);
+                        }
+                        for (; vd < V; ++vd) {
+                            s_row[vd] = static_cast<__fp16>(p_end * s_row[vd] + m_row[vd]);
+                        }
+#else
+                        for (size_t vd = 0; vd < V; ++vd) {
+                            s_row[vd] = static_cast<__fp16>(p_end * s_row[vd] + m_row[vd]);
+                        }
+#endif
+                    }
+                }
+
+                for (size_t kd = 0; kd < K; ++kd) {
+                    const size_t out_idx = (((batch * out_seq + (T + kd)) * Hv + v_head) * V);
+                    std::memcpy(out + out_idx, state + kd * V, V * sizeof(__fp16));
                 }
             }
+        });
+}
 
-            float state_scale = 1.0f;
-
-            for (size_t t = 0; t < T; ++t) {
-                const size_t qkv_k_base = (((batch * T + t) * H + head) * K);
-                const size_t qkv_v_base = (((batch * T + t) * H + head) * V);
-                const size_t gb_idx = ((batch * T + t) * H + head);
-
-                gated_deltanet_step(
-                    q_data + qkv_k_base,
-                    k_data + qkv_k_base,
-                    v_data + qkv_v_base,
-                    static_cast<float>(g_data[gb_idx]),
-                    static_cast<float>(b_data[gb_idx]),
-                    scale,
-                    K,
-                    V,
-                    state,
-                    state_scale,
-                    proj,
-                    delta,
-                    out + (((batch * out_seq + t) * H + head) * V));
-            }
-
-            fold_state_scale(state, state_scale);
-            for (size_t kd = 0; kd < K; ++kd) {
-                for (size_t vd = 0; vd < V; ++vd) {
-                    const size_t out_idx = (((batch * out_seq + (T + kd)) * H + head) * V + vd);
-                    out[out_idx] = static_cast<__fp16>(state[kd * V + vd]);
-                }
-            }
-        }
+static void compute_gated_deltanet_prefill_node_old(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                                    const std::unordered_map<size_t, size_t>& node_index_map) {
+    if (node.input_ids.size() != 6) {
+        throw std::runtime_error("GATED_DELTANET_PREFILL expects 6 inputs");
     }
+
+    const auto& q = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& k = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& v = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    const auto& g = nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
+    const auto& b = nodes[node_index_map.at(node.input_ids[4])]->output_buffer;
+    const auto& s = nodes[node_index_map.at(node.input_ids[5])]->output_buffer;
+
+    validate_gated_deltanet_inputs(q, k, v, g, b, s);
+
+    const size_t B = q.shape[0];
+    const size_t T = q.shape[1];
+    const size_t Hq = q.shape[2];
+    const size_t K = q.shape[3];
+    const size_t Hv = v.shape[2];
+    const size_t V = v.shape[3];
+    const size_t out_seq = T + K;
+    const __fp16 scale = static_cast<__fp16>(node.params.scale);
+    const size_t qk_repeat = Hv / Hq;
+    const size_t qk_heads_from_params = node.params.num_kv_heads;
+    if (qk_heads_from_params != 0 && qk_heads_from_params != Hq) {
+        throw std::runtime_error("GATED_DELTANET_PREFILL num_qk_heads param mismatch");
+    }
+
+    std::vector<__fp16> q_cast;
+    std::vector<__fp16> k_cast;
+    std::vector<__fp16> v_cast;
+    std::vector<__fp16> g_cast;
+    std::vector<__fp16> b_cast;
+    std::vector<__fp16> s_cast;
+    const __fp16* q_data = as_fp16_ptr(q, q_cast);
+    const __fp16* k_data = as_fp16_ptr(k, k_cast);
+    const __fp16* v_data = as_fp16_ptr(v, v_cast);
+    const __fp16* g_data = as_fp16_ptr(g, g_cast);
+    const __fp16* b_data = as_fp16_ptr(b, b_cast);
+    const __fp16* s_data = as_fp16_ptr(s, s_cast);
+    __fp16* out = node.output_buffer.data_as<__fp16>();
+
+    CactusThreading::parallel_for(B * Hv, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+        [&](size_t bh_start, size_t bh_end) {
+            std::vector<__fp16> state(K * V);
+            std::vector<__fp16> proj(V);
+            std::vector<__fp16> delta(V);
+
+            for (size_t bh = bh_start; bh < bh_end; ++bh) {
+                const size_t batch = bh / Hv;
+                const size_t v_head = bh % Hv;
+                const size_t qk_head = v_head / qk_repeat;
+
+                for (size_t kd = 0; kd < K; ++kd) {
+                    for (size_t vd = 0; vd < V; ++vd) {
+                        const size_t s_idx = (((batch * K + kd) * Hv + v_head) * V + vd);
+                        state[kd * V + vd] = s_data[s_idx];
+                    }
+                }
+
+                __fp16 state_scale = static_cast<__fp16>(1.0f);
+                for (size_t t = 0; t < T; ++t) {
+                    const size_t qkv_k_base = (((batch * T + t) * Hq + qk_head) * K);
+                    const size_t qkv_v_base = (((batch * T + t) * Hv + v_head) * V);
+                    const size_t gb_idx = ((batch * T + t) * Hv + v_head);
+
+                    gated_deltanet_step(
+                        q_data + qkv_k_base,
+                        k_data + qkv_k_base,
+                        v_data + qkv_v_base,
+                        g_data[gb_idx],
+                        b_data[gb_idx],
+                        scale,
+                        K,
+                        V,
+                        state,
+                        state_scale,
+                        proj,
+                        delta,
+                        out + (((batch * out_seq + t) * Hv + v_head) * V));
+                }
+
+                fold_state_scale(state, state_scale);
+                for (size_t kd = 0; kd < K; ++kd) {
+                    for (size_t vd = 0; vd < V; ++vd) {
+                        const size_t out_idx = (((batch * out_seq + (T + kd)) * Hv + v_head) * V + vd);
+                        out[out_idx] = state[kd * V + vd];
+                    }
+                }
+            }
+        });
+}
+
+void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                         const std::unordered_map<size_t, size_t>& node_index_map) {
+    const char* force_old = std::getenv("CACTUS_GATED_DELTANET_PREFILL_OLD");
+    if (force_old != nullptr && std::atoi(force_old) != 0) {
+        compute_gated_deltanet_prefill_node_old(node, nodes, node_index_map);
+        return;
+    }
+    if (node.params.chunk_size <= 1) {
+        compute_gated_deltanet_prefill_node_old(node, nodes, node_index_map);
+        return;
+    }
+    compute_gated_deltanet_prefill_node_chunked(node, nodes, node_index_map);
 }
 
 void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {

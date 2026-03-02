@@ -2,6 +2,7 @@
 #include "../graph/graph.h"
 #include "../npu/npu.h"
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <filesystem>
 #include <set>
@@ -71,7 +72,6 @@ void Qwen3p5Model::post_init() {
         deltanet_key_dim_ = key_head_dim;
         deltanet_value_dim_ = value_head_dim;
     } else if (has_deltanet_layer) {
-        // Fallback for older converted configs that only store linear_*_proj_dim values.
         auto* gb = static_cast<CactusGraph*>(graph_handle_);
         if (!gb) {
             throw std::runtime_error("Qwen3p5Model cannot infer linear-attention dims: graph unavailable");
@@ -266,6 +266,11 @@ void Qwen3p5Model::load_weights_to_graph(CactusGraph* gb) {
             "layer_" + std::to_string(i) + "_attn_k_norm/linear_attn_norm");
 
         if (is_deltanet) {
+            const std::string qkv_path = choose_existing_weight({
+                layer_prefix + "linear_attn_qkv.weights"
+            });
+            layer.deltanet_qkv_weight = qkv_path.empty() ? 0 : gb->mmap_weights(qkv_path);
+
             const std::string gate_path = choose_existing_weight({
                 layer_prefix + "deltanet_gate.weights",
                 layer_prefix + "attn_gate.weights",
@@ -329,18 +334,47 @@ size_t Qwen3p5Model::build_gated_deltanet(CactusGraph* gb, size_t normalized_inp
     const auto& layer_entry = weight_nodes_.layers[layer_idx];
     const auto& layer = layer_entry.weights;
 
-    size_t q_proj = gb->matmul(normalized_input, layer.attn_q_weight, true, backend);
-    size_t k_proj = gb->matmul(normalized_input, layer.attn_k_weight, true, backend);
-    size_t v_proj = gb->matmul(normalized_input, layer.attn_v_weight, true, backend);
+    const auto& in_shape = gb->get_output_buffer(normalized_input).shape;
+    if (in_shape.size() < 2) {
+        throw std::runtime_error("Qwen3p5Model linear-attention expects rank-2 normalized input");
+    }
+    const size_t seq_len = in_shape[0];
+
+    size_t q_proj = 0;
+    size_t k_proj = 0;
+    size_t v_proj = 0;
+    size_t mixed_qkv = 0;
     size_t z_proj = layer.deltanet_z_weight ? gb->matmul(normalized_input, layer.deltanet_z_weight, true, backend) : 0;
 
-    const auto& q_shape = gb->get_output_buffer(q_proj).shape;
-    const size_t seq_len = q_shape[0];
     const size_t num_heads = deltanet_heads_;
     const size_t key_dim = deltanet_key_dim_;
     const size_t value_dim = deltanet_value_dim_;
     const size_t v_proj_dim = num_heads * value_dim;
-    const size_t qk_proj_dim = gb->get_output_buffer(q_proj).shape[1];
+    size_t qk_proj_dim = 0;
+
+    if (layer.deltanet_qkv_weight != 0) {
+        mixed_qkv = gb->matmul(normalized_input, layer.deltanet_qkv_weight, true, backend);
+        const auto& mixed_shape = gb->get_output_buffer(mixed_qkv).shape;
+        if (mixed_shape.size() < 2 || mixed_shape[0] != seq_len) {
+            throw std::runtime_error("Qwen3p5Model invalid linear-attention joint qkv projection shape");
+        }
+        if (mixed_shape[1] <= v_proj_dim || ((mixed_shape[1] - v_proj_dim) % 2) != 0) {
+            throw std::runtime_error("Qwen3p5Model invalid linear-attention joint qkv projection width");
+        }
+        qk_proj_dim = (mixed_shape[1] - v_proj_dim) / 2;
+    } else {
+        q_proj = gb->matmul(normalized_input, layer.attn_q_weight, true, backend);
+        k_proj = gb->matmul(normalized_input, layer.attn_k_weight, true, backend);
+        v_proj = gb->matmul(normalized_input, layer.attn_v_weight, true, backend);
+        const auto& q_shape = gb->get_output_buffer(q_proj).shape;
+        if (q_shape.size() < 2 || q_shape[0] != seq_len) {
+            throw std::runtime_error("Qwen3p5Model invalid linear-attention q projection shape");
+        }
+        qk_proj_dim = q_shape[1];
+        size_t mixed_qk = gb->concat(q_proj, k_proj, 1);
+        mixed_qkv = gb->concat(mixed_qk, v_proj, 1);
+    }
+
     if (qk_proj_dim == 0 || qk_proj_dim % key_dim != 0 || v_proj_dim == 0) {
         throw std::runtime_error("Qwen3p5Model invalid linear-attention projection dimensions");
     }
@@ -348,45 +382,63 @@ size_t Qwen3p5Model::build_gated_deltanet(CactusGraph* gb, size_t normalized_inp
     if (num_heads % num_k_heads != 0) {
         throw std::runtime_error("Qwen3p5Model requires num_v_heads divisible by num_k_heads");
     }
-    const size_t qk_repeat = num_heads / num_k_heads;
 
-    // Qwen3.5 linear-attn applies depthwise causal conv over concatenated [q,k,v].
     const size_t mixed_proj_dim = qk_proj_dim + qk_proj_dim + v_proj_dim;
     if (deltanet_mixed_dim_ != 0 && mixed_proj_dim != deltanet_mixed_dim_) {
         throw std::runtime_error("Qwen3p5Model linear-attention mixed projection dim mismatch");
     }
-
-    size_t mixed_qk = gb->concat(q_proj, k_proj, 1);
-    size_t mixed_qkv = gb->concat(mixed_qk, v_proj, 1);
     const size_t state_flat_dim = deltanet_state_flat_dim_;
     size_t prev_state_flat = 0;
     size_t prev_conv_flat = 0;
     if (use_cache && conv_cache_.window_size > 0) {
         const auto view = conv_cache_.get_window(layer_idx);
-        std::vector<size_t> segments;
-
-        if (view.len2 > 0) {
-            size_t left_node = gb->input({view.len2, deltanet_cache_row_dim_}, conv_cache_.precision);
-            gb->set_external_input(left_node, const_cast<void*>(view.ptr2), conv_cache_.precision);
-            segments.push_back(left_node);
-        }
-        if (view.len1 > 0) {
-            size_t right_node = gb->input({view.len1, deltanet_cache_row_dim_}, conv_cache_.precision);
-            gb->set_external_input(right_node, const_cast<void*>(view.ptr1), conv_cache_.precision);
-            segments.push_back(right_node);
-        }
-
-        if (!segments.empty()) {
-            size_t stacked = segments[0];
-            for (size_t i = 1; i < segments.size(); ++i) {
-                stacked = gb->concat(stacked, segments[i], 0);
+        if (conv_cache_.window_size == 1 && view.total_len == 1) {
+            const uint8_t* cache_row = nullptr;
+            if (view.len2 == 1 && view.ptr2 != nullptr) {
+                cache_row = static_cast<const uint8_t*>(view.ptr2);
+            } else if (view.len1 == 1 && view.ptr1 != nullptr) {
+                cache_row = static_cast<const uint8_t*>(view.ptr1);
             }
-            if (view.total_len > 1) {
-                stacked = gb->slice(stacked, 0, view.total_len - 1, 1);
+            if (cache_row != nullptr) {
+                prev_state_flat = gb->input({1, state_flat_dim}, conv_cache_.precision);
+                gb->set_external_input(prev_state_flat, const_cast<void*>(static_cast<const void*>(cache_row)),
+                                       conv_cache_.precision);
+                if (deltanet_conv_flat_dim_ > 0) {
+                    const size_t state_bytes = state_flat_dim * conv_cache_.element_size;
+                    prev_conv_flat = gb->input({1, deltanet_conv_flat_dim_}, conv_cache_.precision);
+                    gb->set_external_input(
+                        prev_conv_flat,
+                        const_cast<void*>(static_cast<const void*>(cache_row + state_bytes)),
+                        conv_cache_.precision);
+                }
             }
-            prev_state_flat = gb->slice(stacked, 1, 0, state_flat_dim);
-            if (deltanet_conv_flat_dim_ > 0) {
-                prev_conv_flat = gb->slice(stacked, 1, state_flat_dim, deltanet_conv_flat_dim_);
+        }
+
+        if (prev_state_flat == 0) {
+            std::vector<size_t> segments;
+            if (view.len2 > 0) {
+                size_t left_node = gb->input({view.len2, deltanet_cache_row_dim_}, conv_cache_.precision);
+                gb->set_external_input(left_node, const_cast<void*>(view.ptr2), conv_cache_.precision);
+                segments.push_back(left_node);
+            }
+            if (view.len1 > 0) {
+                size_t right_node = gb->input({view.len1, deltanet_cache_row_dim_}, conv_cache_.precision);
+                gb->set_external_input(right_node, const_cast<void*>(view.ptr1), conv_cache_.precision);
+                segments.push_back(right_node);
+            }
+
+            if (!segments.empty()) {
+                size_t stacked = segments[0];
+                for (size_t i = 1; i < segments.size(); ++i) {
+                    stacked = gb->concat(stacked, segments[i], 0);
+                }
+                if (view.total_len > 1) {
+                    stacked = gb->slice(stacked, 0, view.total_len - 1, 1);
+                }
+                prev_state_flat = gb->slice(stacked, 1, 0, state_flat_dim);
+                if (deltanet_conv_flat_dim_ > 0) {
+                    prev_conv_flat = gb->slice(stacked, 1, state_flat_dim, deltanet_conv_flat_dim_);
+                }
             }
         }
     }
@@ -423,31 +475,14 @@ size_t Qwen3p5Model::build_gated_deltanet(CactusGraph* gb, size_t normalized_inp
     size_t k_4d = gb->reshape(k_proj, {1, seq_len, num_k_heads, key_dim});
     size_t v_4d = gb->reshape(v_proj, {1, seq_len, num_heads, value_dim});
 
-    auto repeat_kv_heads = [&](size_t x_4d) -> size_t {
-        if (qk_repeat == 1) return x_4d;
-        std::vector<size_t> pieces;
-        pieces.reserve(num_heads);
-        for (size_t h = 0; h < num_k_heads; ++h) {
-            size_t h_slice = gb->slice(x_4d, 2, h, 1);
-            for (size_t r = 0; r < qk_repeat; ++r) pieces.push_back(h_slice);
-        }
-        size_t out = pieces[0];
-        for (size_t i = 1; i < pieces.size(); ++i) out = gb->concat(out, pieces[i], 2);
-        return out;
-    };
-
-    q_4d = repeat_kv_heads(q_4d);
-    k_4d = repeat_kv_heads(k_4d);
-
-    // Match HF linear-attn kernel behavior: L2-normalize q/k on the head_dim axis.
     size_t q_norm = gb->sum(gb->multiply(q_4d, q_4d), 3);
     q_norm = gb->scalar_sqrt(gb->scalar_add(q_norm, 1e-6f));
-    q_norm = gb->reshape(q_norm, {1, seq_len, num_heads, 1});
+    q_norm = gb->reshape(q_norm, {1, seq_len, num_k_heads, 1});
     q_4d = gb->divide(q_4d, q_norm);
 
     size_t k_norm = gb->sum(gb->multiply(k_4d, k_4d), 3);
     k_norm = gb->scalar_sqrt(gb->scalar_add(k_norm, 1e-6f));
-    k_norm = gb->reshape(k_norm, {1, seq_len, num_heads, 1});
+    k_norm = gb->reshape(k_norm, {1, seq_len, num_k_heads, 1});
     k_4d = gb->divide(k_4d, k_norm);
 
     size_t a_logits = gb->matmul(normalized_input, layer.deltanet_gate_weight, true, backend);
@@ -482,41 +517,33 @@ size_t Qwen3p5Model::build_gated_deltanet(CactusGraph* gb, size_t normalized_inp
     }
     size_t beta = gb->sigmoid(b_logits);
 
-    // Kernel currently supports FP16 only.
-    q_4d = gb->precision_cast(q_4d, Precision::FP16);
-    k_4d = gb->precision_cast(k_4d, Precision::FP16);
-    v_4d = gb->precision_cast(v_4d, Precision::FP16);
-    gate_log = gb->precision_cast(gate_log, Precision::FP16);
-    beta = gb->precision_cast(beta, Precision::FP16);
-
     size_t gate_3d = gb->reshape(gate_log, {1, seq_len, num_heads});
     size_t beta_3d = gb->reshape(beta, {1, seq_len, num_heads});
 
     size_t initial_state;
 
     if (prev_state_flat != 0) {
-        initial_state = gb->reshape(prev_state_flat, {1, num_heads, key_dim, value_dim});
+        initial_state = gb->reshape(prev_state_flat, {1, key_dim, num_heads, value_dim});
     } else {
-        initial_state = gb->input({1, num_heads, key_dim, value_dim}, Precision::FP16);
+        initial_state = gb->input({1, key_dim, num_heads, value_dim}, Precision::FP16);
         std::vector<__fp16> zeros(state_flat_dim, static_cast<__fp16>(0.0f));
         gb->set_input(initial_state, zeros.data(), Precision::FP16);
     }
 
     size_t deltanet_out;
     if (use_cache && seq_len == 1) {
-        deltanet_out = gb->gated_deltanet_decode(q_4d, k_4d, v_4d, gate_3d, beta_3d, initial_state, 0.0f);
+        deltanet_out = gb->gated_deltanet_decode(q_4d, k_4d, v_4d, gate_3d, beta_3d, initial_state, 0.0f, num_k_heads);
     } else {
         const size_t chunk_for_op = std::min<size_t>(64, std::max<size_t>(1, seq_len));
         deltanet_out = gb->gated_deltanet_prefill(
-            q_4d, k_4d, v_4d, gate_3d, beta_3d, initial_state, chunk_for_op, 0.0f);
+            q_4d, k_4d, v_4d, gate_3d, beta_3d, initial_state, chunk_for_op, 0.0f, num_k_heads);
     }
 
     size_t y_4d = gb->slice(deltanet_out, 1, 0, seq_len);
     size_t state_tail = gb->slice(deltanet_out, 1, seq_len, key_dim);
-    size_t state_hkdv = gb->transposeN(state_tail, {0, 2, 1, 3});
 
     if (use_cache) {
-        size_t packed_cache = gb->reshape(state_hkdv, {1, state_flat_dim});
+        size_t packed_cache = gb->reshape(state_tail, {1, state_flat_dim});
         if (deltanet_conv_flat_dim_ > 0) {
             size_t history_2d = 0;
             if (layer.deltanet_conv_weight) {
@@ -581,8 +608,6 @@ size_t Qwen3p5Model::build_attention(CactusGraph* gb, size_t normalized_input, u
     size_t q_gate = 0;
     const size_t q_proj_dim = q_shape.size() > 1 ? q_shape[1] : 0;
     if (q_proj_dim == 2 * q_target_dim) {
-        // Qwen3.5 packs query/gate per head: [B,T,H,2*D] flattened as [B,T,H*2*D].
-        // Split on the per-head 2*D axis to recover [query, gate] consistently with HF.
         size_t q_packed = gb->reshape(q_proj, {batch_seq, num_heads, 2 * head_dim});
         q_gate = gb->slice(q_packed, 2, head_dim, head_dim);
         q_proj = gb->slice(q_packed, 2, 0, head_dim);
@@ -610,7 +635,6 @@ size_t Qwen3p5Model::build_attention(CactusGraph* gb, size_t normalized_input, u
     if (config_.rope_theta > 0) {
         float rotary_factor = config_.partial_rotary_factor;
         if (rotary_factor <= 0.0f) {
-            // Qwen3.5 text defaults to partial_rotary_factor=0.25.
             rotary_factor = 0.25f;
         }
         size_t rot_dim = static_cast<size_t>(static_cast<float>(head_dim) * rotary_factor);
