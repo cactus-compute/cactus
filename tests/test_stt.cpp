@@ -556,7 +556,6 @@ static bool test_transcription() {
         [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
 }
 
-<<<<<<< HEAD
 static bool test_language_detection() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║         LANGUAGE DETECTION               ║\n"
@@ -617,8 +616,6 @@ static bool test_language_detection() {
     return success && language == "en" && confidence >= 0.0 && confidence <= 1.0;
 }
 
-=======
->>>>>>> origin/main
 static bool test_vad_process() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║           VAD PROCESS TEST               ║\n"
@@ -701,12 +698,7 @@ int main() {
     runner.run_test("irfft_correctness", test_irfft_correctness());
     runner.run_test("vad_process", test_vad_process());
     runner.run_test("transcription", test_transcription());
-<<<<<<< HEAD
     runner.run_test("language_detection", test_language_detection());
-    runner.run_test("pcm_transcription", test_pcm_transcription());
-    runner.run_test("stream_transcription", test_stream_transcription());
-=======
->>>>>>> origin/main
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
