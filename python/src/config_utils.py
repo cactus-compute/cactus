@@ -138,7 +138,6 @@ def extract_base_config(cfg, config):
     if partial_rotary_factor is not None:
         base['partial_rotary_factor'] = float(partial_rotary_factor)
 
-    # Preserve heterogeneous layer topology (e.g., Qwen3.5 deltanet layers) if available.
     layer_types = cfg_get(cfg, 'layer_types', None)
     if isinstance(layer_types, (list, tuple)) and layer_types:
         base['layer_types'] = list(layer_types)
@@ -147,7 +146,6 @@ def extract_base_config(cfg, config):
     if conv_l_cache is not None:
         base['conv_L_cache'] = int(conv_l_cache)
 
-    # Qwen3.5 linear-attention projection dimensions.
     linear_num_key_heads = cfg_get(cfg, 'linear_num_key_heads', None)
     linear_key_head_dim = cfg_get(cfg, 'linear_key_head_dim', None)
     linear_num_value_heads = cfg_get(cfg, 'linear_num_value_heads', None)

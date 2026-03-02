@@ -173,7 +173,6 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             saved_tensor_full_names.add(name)
             break
 
-    # Optional Qwen3.5 MTP head weights (not required for base next-token decode).
     mtp_global_mappings = [
         ('mtp.norm.weight', 'mtp_norm.weights'),
         ('mtp.fc.weight', 'mtp_fc.weights'),
@@ -425,7 +424,6 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                                     break
 
                             if model_type_str.startswith('qwen3_5') and pattern == 'linear_attn.in_proj_qkv.weight':
-                                # Export combined QKV and split projections for linear-attention layers.
                                 if tensor.ndim != 2:
                                     raise ValueError(f"Invalid qwen3_5 linear_attn.in_proj_qkv shape: {tensor.shape}")
 
