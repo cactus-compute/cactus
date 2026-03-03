@@ -50,6 +50,34 @@ static std::vector<float> normalize_mel(std::vector<float>& mel, size_t n_mels) 
     return std::move(mel);
 }
 
+static std::string extract_whisper_language_code(std::string token_text) {
+    const size_t open = token_text.find("<|");
+    if (open == std::string::npos) return "";
+
+    const size_t close = token_text.find("|>", open + 2);
+    if (close == std::string::npos || close <= open + 2) return "";
+
+    std::string inner = token_text.substr(open + 2, close - (open + 2));
+    std::transform(inner.begin(), inner.end(), inner.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    static const std::vector<std::string> non_language_tokens = {
+        "startoftranscript", "transcribe", "translate", "notimestamps",
+        "endoftext", "nospeech", "nocaptions", "sot", "sot_prev", "sot_lm"
+    };
+    for (const auto& reserved : non_language_tokens) {
+        if (inner == reserved) return "";
+    }
+
+    if (inner.size() < 2 || inner.size() > 8) return "";
+    for (char c : inner) {
+        const bool ok = (c >= 'a' && c <= 'z') || c == '-';
+        if (!ok) return "";
+    }
+    return inner;
+}
+
 extern "C" {
 
 int cactus_transcribe(
@@ -385,4 +413,203 @@ int cactus_transcribe(
     }
 }
 
+<<<<<<< HEAD
+=======
+int cactus_detect_language(
+    cactus_model_t model,
+    const char* audio_file_path,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+) {
+    if (!model) {
+        std::string error_msg = last_error_message.empty() ? "Model not initialized." : last_error_message;
+        CACTUS_LOG_ERROR("detect_language", error_msg);
+        handle_error_response(error_msg, response_buffer, buffer_size);
+        return -1;
+    }
+    if (!response_buffer || buffer_size == 0) {
+        CACTUS_LOG_ERROR("detect_language", "Invalid parameters: response_buffer or buffer_size");
+        handle_error_response("Invalid parameters", response_buffer, buffer_size);
+        return -1;
+    }
+    if (!audio_file_path && (!pcm_buffer || pcm_buffer_size == 0)) {
+        CACTUS_LOG_ERROR("detect_language", "No audio input provided");
+        handle_error_response("Either audio_file_path or pcm_buffer must be provided", response_buffer, buffer_size);
+        return -1;
+    }
+    if (audio_file_path && pcm_buffer && pcm_buffer_size > 0) {
+        CACTUS_LOG_ERROR("detect_language", "Both audio_file_path and pcm_buffer provided");
+        handle_error_response("Cannot provide both audio_file_path and pcm_buffer", response_buffer, buffer_size);
+        return -1;
+    }
+    if (pcm_buffer && pcm_buffer_size > 0 && (pcm_buffer_size < 2 || pcm_buffer_size % 2 != 0)) {
+        CACTUS_LOG_ERROR("detect_language", "Invalid pcm_buffer_size: " << pcm_buffer_size);
+        handle_error_response("pcm_buffer_size must be even and at least 2 bytes", response_buffer, buffer_size);
+        return -1;
+    }
+
+    try {
+        auto start_time = std::chrono::high_resolution_clock::now();
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        std::lock_guard<std::mutex> lock(handle->model_mutex);
+        handle->should_stop = false;
+
+        if (handle->model->get_config().model_type != cactus::engine::Config::ModelType::WHISPER) {
+            handle_error_response("Language detection currently requires a Whisper model", response_buffer, buffer_size);
+            return -1;
+        }
+
+        float temperature, top_p, confidence_threshold;
+        size_t top_k, max_tokens, tool_rag_top_k;
+        std::vector<std::string> stop_sequences;
+        bool force_tools, include_stop_sequences, use_vad, telemetry_enabled;
+        parse_options_json(
+            options_json ? options_json : "", temperature,
+            top_p, top_k, max_tokens, stop_sequences,
+            force_tools, tool_rag_top_k, confidence_threshold,
+            include_stop_sequences, use_vad, telemetry_enabled
+        );
+        (void)temperature;
+        (void)top_p;
+        (void)top_k;
+        (void)max_tokens;
+        (void)tool_rag_top_k;
+        (void)force_tools;
+        (void)include_stop_sequences;
+        (void)telemetry_enabled;
+
+        std::vector<float> audio_buffer;
+        if (audio_file_path == nullptr) {
+            const int16_t* pcm_samples = reinterpret_cast<const int16_t*>(pcm_buffer);
+            size_t num_samples = pcm_buffer_size / 2;
+
+            std::vector<float> waveform_fp32(num_samples);
+            for (size_t i = 0; i < num_samples; i++) {
+                waveform_fp32[i] = static_cast<float>(pcm_samples[i]) / 32768.0f;
+            }
+            audio_buffer = resample_to_16k_fp32(waveform_fp32, WHISPER_SAMPLE_RATE);
+        } else {
+            AudioFP32 audio = load_wav(audio_file_path);
+            audio_buffer = resample_to_16k_fp32(audio.samples, audio.sample_rate);
+        }
+
+        if (use_vad && handle->vad_model) {
+            auto* vad = static_cast<SileroVADModel*>(handle->vad_model.get());
+            auto segments = vad->get_speech_timestamps(audio_buffer, {});
+
+            std::vector<float> speech_audio;
+            for (const auto& segment : segments) {
+                speech_audio.insert(
+                    speech_audio.end(),
+                    audio_buffer.begin() + segment.start,
+                    audio_buffer.begin() + std::min(segment.end, audio_buffer.size())
+                );
+            }
+            audio_buffer = std::move(speech_audio);
+        }
+
+        if (audio_buffer.empty()) {
+            handle_error_response("No speech detected in audio input", response_buffer, buffer_size);
+            return -1;
+        }
+
+        AudioProcessor ap;
+        auto cfg = get_whisper_spectrogram_config();
+        ap.init_mel_filters(cfg.n_fft / 2 + 1, 80, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
+        std::vector<float> mel = ap.compute_spectrogram(audio_buffer, cfg);
+        std::vector<float> features = normalize_mel(mel, 80);
+        if (features.empty()) {
+            handle_error_response("Computed audio features are empty", response_buffer, buffer_size);
+            return -1;
+        }
+
+        auto* tokenizer = handle->model->get_tokenizer();
+        if (!tokenizer) {
+            handle_error_response("Tokenizer unavailable", response_buffer, buffer_size);
+            return -1;
+        }
+
+        std::vector<uint32_t> decode_tokens = tokenizer->encode("<|startoftranscript|>");
+        if (decode_tokens.empty()) {
+            handle_error_response("Failed to encode Whisper start token", response_buffer, buffer_size);
+            return -1;
+        }
+
+        handle->model->reset_cache();
+        float entropy = 1.0f;
+        uint32_t token_id = 0;
+        std::string token_text;
+        std::string language;
+
+        // Whisper may emit one or more control tokens before the language token.
+        // Decode a few initial tokens and select the first valid language token.
+        constexpr size_t kMaxLanguageProbeSteps = 4;
+        for (size_t step = 0; step < kMaxLanguageProbeSteps; ++step) {
+            float step_entropy = 1.0f;
+            const uint32_t step_token_id = handle->model->decode_with_audio(
+                decode_tokens, features, 0.0f, 0.0f, 0, "", &step_entropy
+            );
+            const std::string step_token_text = tokenizer->decode({step_token_id});
+            const std::string step_language = extract_whisper_language_code(step_token_text);
+
+            token_id = step_token_id;
+            token_text = step_token_text;
+            entropy = step_entropy;
+
+            if (!step_language.empty()) {
+                language = step_language;
+                break;
+            }
+
+            decode_tokens.push_back(step_token_id);
+        }
+        handle->model->reset_cache();
+
+        if (language.empty()) {
+            language = "unknown";
+        }
+
+        float confidence = 1.0f - entropy;
+        if (confidence < 0.0f) confidence = 0.0f;
+        if (confidence > 1.0f) confidence = 1.0f;
+
+        auto end_time = std::chrono::high_resolution_clock::now();
+        double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"success\":true,";
+        json << "\"error\":null,";
+        json << "\"language\":\"" << escape_json_string(language) << "\",";
+        json << "\"language_token\":\"" << escape_json_string(token_text) << "\",";
+        json << "\"token_id\":" << token_id << ",";
+        json << "\"confidence\":" << std::fixed << std::setprecision(4) << confidence << ",";
+        json << "\"entropy\":" << std::fixed << std::setprecision(4) << entropy << ",";
+        json << "\"total_time_ms\":" << std::fixed << std::setprecision(2) << total_time_ms << ",";
+        json << "\"ram_usage_mb\":" << std::fixed << std::setprecision(2) << get_ram_usage_mb();
+        json << "}";
+
+        std::string response = json.str();
+        if (response.size() >= buffer_size) {
+            handle_error_response("Response buffer too small", response_buffer, buffer_size);
+            return -1;
+        }
+
+        std::strcpy(response_buffer, response.c_str());
+        return static_cast<int>(response.size());
+    } catch (const std::exception& e) {
+        CACTUS_LOG_ERROR("detect_language", "Exception: " << e.what());
+        handle_error_response(e.what(), response_buffer, buffer_size);
+        return -1;
+    } catch (...) {
+        CACTUS_LOG_ERROR("detect_language", "Unknown exception during language detection");
+        handle_error_response("Unknown error in detect_language", response_buffer, buffer_size);
+        return -1;
+    }
+}
+
+>>>>>>> origin/main
 }

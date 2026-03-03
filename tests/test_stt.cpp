@@ -12,6 +12,7 @@
 using namespace EngineTestUtils;
 
 static const char* g_transcribe_model_path = std::getenv("CACTUS_TEST_TRANSCRIBE_MODEL");
+static const char* g_whisper_model_path = std::getenv("CACTUS_TEST_WHISPER_MODEL");
 static const char* g_vad_model_path = std::getenv("CACTUS_TEST_VAD_MODEL");
 static const char* g_assets_path = std::getenv("CACTUS_TEST_ASSETS");
 
@@ -561,6 +562,73 @@ static bool test_transcription_long() {
         [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
 }
 
+static bool test_language_detection() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║         LANGUAGE DETECTION               ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    if (!g_assets_path) {
+        std::cout << "⊘ SKIP │ CACTUS_TEST_ASSETS not set\n";
+        return true;
+    }
+
+    const char* whisper_model_path = g_whisper_model_path;
+    if (!whisper_model_path || std::string(whisper_model_path).empty()) {
+        if (g_transcribe_model_path) {
+            std::string transcribe_path = g_transcribe_model_path;
+            std::transform(transcribe_path.begin(), transcribe_path.end(), transcribe_path.begin(),
+                           [](unsigned char c){ return std::tolower(c); });
+            if (transcribe_path.find("whisper") != std::string::npos) {
+                whisper_model_path = g_transcribe_model_path;
+            }
+        }
+    }
+    if (!whisper_model_path || std::string(whisper_model_path).empty()) {
+        std::cerr << "[✗] CACTUS_TEST_WHISPER_MODEL not set (required for language detection)\n";
+        return false;
+    }
+
+    cactus_model_t model = cactus_init(whisper_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize Whisper model for language detection\n";
+        return false;
+    }
+
+    std::string audio_path = std::string(g_assets_path) + "/test.wav";
+    char response[1 << 14] = {0};
+
+    int rc = cactus_detect_language(
+        model,
+        audio_path.c_str(),
+        response,
+        sizeof(response),
+        R"({"telemetry_enabled": false})",
+        nullptr,
+        0
+    );
+
+    std::string response_str(response);
+    if (rc <= 0) {
+        std::cerr << "[✗] Language detection failed: " << response_str << "\n";
+        cactus_destroy(model);
+        return false;
+    }
+
+    const bool success = response_str.find("\"success\":true") != std::string::npos;
+    const std::string language = json_string(response_str, "language");
+    const std::string language_token = json_string(response_str, "language_token");
+    const double confidence = json_number(response_str, "confidence", -1.0);
+
+    std::cout << "\n[Results]\n"
+              << "  \"success\": " << (success ? "true" : "false") << ",\n"
+              << "  \"language\": \"" << language << "\",\n"
+              << "  \"language_token\": \"" << language_token << "\",\n"
+              << "  \"confidence\": " << std::fixed << std::setprecision(4) << confidence << "\n";
+
+    cactus_destroy(model);
+    return success && language == "en" && confidence >= 0.0 && confidence <= 1.0;
+}
+
 static bool test_vad_process() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║           VAD PROCESS TEST               ║\n"
@@ -644,6 +712,7 @@ int main() {
     runner.run_test("vad_process", test_vad_process());
     runner.run_test("transcription", test_transcription());
     runner.run_test("transcription_long", test_transcription_long());
+    runner.run_test("language_detection", test_language_detection());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

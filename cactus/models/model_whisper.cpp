@@ -690,12 +690,12 @@ uint32_t WhisperModel::decode_with_audio(
     bool cold_start = !encoder_ready_;
     size_t logits_node = 0;
 
-    uint32_t bos = static_cast<uint32_t>(get_tokenizer()->get_bos_token());
-
     std::vector<uint32_t> full_tokens;
-    full_tokens.reserve(tokens.size() + 1);
-    full_tokens.push_back(bos);
-    full_tokens.insert(full_tokens.end(), tokens.begin(), tokens.end());
+    if (tokens.empty()) {
+        full_tokens.push_back(static_cast<uint32_t>(get_tokenizer()->get_bos_token()));
+    } else {
+        full_tokens = tokens;
+    }
 
     if (cold_start)
     {
