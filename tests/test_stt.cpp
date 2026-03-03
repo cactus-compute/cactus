@@ -547,6 +547,23 @@ bool run_transcription_test(const char* title, const char* audio_file, const cha
     m.parse(response);
     m.print_json();
 
+    const bool streamed_eot = std::any_of(
+        stream.tokens.begin(),
+        stream.tokens.end(),
+        [](const std::string& tok) { return tok.find("<|endoftext|>") != std::string::npos; }
+    );
+    if (streamed_eot) {
+        std::cerr << "stream callback emitted <|endoftext|>\n";
+        cactus_destroy(model);
+        return false;
+    }
+
+    if (m.response.find("<|endoftext|>") != std::string::npos) {
+        std::cerr << "final transcript contains <|endoftext|>\n";
+        cactus_destroy(model);
+        return false;
+    }
+
     bool ok = check(rc, m);
     cactus_destroy(model);
     return ok;

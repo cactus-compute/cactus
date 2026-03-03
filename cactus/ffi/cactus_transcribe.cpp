@@ -348,14 +348,15 @@ int cactus_transcribe(
                 if (token_entropy > max_token_entropy_norm) max_token_entropy_norm = token_entropy;
 
                 generated_tokens.emplace_back(next_token);
+                if (matches_stop_sequence(generated_tokens, stop_token_sequences)) {
+                    break;
+                }
+
                 tokens.emplace_back(next_token);
                 completion_tokens++;
-
                 std::string piece = tokenizer->decode({ next_token });
                 final_text += piece;
                 if (callback) callback(piece.c_str(), next_token, user_data);
-
-                if (matches_stop_sequence(generated_tokens, stop_token_sequences)) break;
             }
 
             cactus_reset(model);
@@ -372,7 +373,7 @@ int cactus_transcribe(
         double decode_tps = (completion_tokens > 1 && decode_time_ms > 0.0) ? ((completion_tokens - 1) * 1000.0) / decode_time_ms : 0.0;
 
         const std::vector<std::string> tokens_to_remove = {
-            "<|startoftranscript|>", "</s>", "<pad>"
+            "<|startoftranscript|>", "</s>", "<pad>", "<|endoftext|>", "<|endoftranscript|>"
         };
         for (const auto& token : tokens_to_remove) {
             size_t pos = 0;
@@ -413,8 +414,6 @@ int cactus_transcribe(
     }
 }
 
-<<<<<<< HEAD
-=======
 int cactus_detect_language(
     cactus_model_t model,
     const char* audio_file_path,
@@ -611,5 +610,4 @@ int cactus_detect_language(
     }
 }
 
->>>>>>> origin/main
 }
