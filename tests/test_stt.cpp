@@ -28,15 +28,6 @@ static const char* get_transcribe_prompt() {
 
 static const char* g_whisper_prompt = get_transcribe_prompt();
 
-static bool is_parakeet_tdt_model() {
-    if (!g_transcribe_model_path) {
-        return false;
-    }
-    std::string path = g_transcribe_model_path;
-    std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c){ return std::tolower(c); });
-    return path.find("parakeet-tdt") != std::string::npos;
-}
-
 bool test_audio_processor() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║         AUDIO PROCESSOR TEST             ║\n"
@@ -530,7 +521,7 @@ bool run_transcription_test(const char* title, const char* audio_file, const cha
 
     cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
     if (!model) {
-        std::cerr << "[✗] Failed to initialize Whisper model\n";
+        std::cerr << "[✗] Failed to initialize transcription model\n";
         return false;
     }
 
@@ -568,24 +559,6 @@ static bool test_transcription() {
 static bool test_transcription_long() {
     return run_transcription_test("TRANSCRIPTION LONG", "test_long.wav", R"({"max_tokens": 1000, "telemetry_enabled": false})",
         [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
-}
-
-static bool test_parakeet_tdt_transcription() {
-    if (!g_transcribe_model_path) {
-        std::cout << "⊘ SKIP │ " << std::left << std::setw(25) << "parakeet_tdt_transcription"
-                  << " │ CACTUS_TEST_TRANSCRIBE_MODEL not set\n";
-        return true;
-    }
-    if (!is_parakeet_tdt_model()) {
-        std::cout << "⊘ SKIP │ " << std::left << std::setw(25) << "parakeet_tdt_transcription"
-                  << " │ active model is not Parakeet-TDT\n";
-        return true;
-    }
-
-    return run_whisper_test("PARAKEET TDT TRANSCRIPTION", R"({"max_tokens": 100, "telemetry_enabled": false})",
-        [](int rc, const Metrics& m) {
-            return rc > 0 && m.completion_tokens >= 8 && !m.response.empty();
-        });
 }
 
 static bool test_vad_process() {
