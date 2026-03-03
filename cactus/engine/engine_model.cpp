@@ -471,6 +471,8 @@ bool Config::from_json(const std::string& config_path) {
             else precision = Precision::FP32;
         }
         else if (key == "model_type") {
+            std::string model_type_value = value;
+            std::transform(model_type_value.begin(), model_type_value.end(), model_type_value.begin(), ::tolower);
             if (value == "gemma" || value == "GEMMA") model_type = ModelType::GEMMA;
             else if (value == "lfm2" || value == "LFM2" || value == "lfm2_moe" || value == "LFM2_MOE") model_type = ModelType::LFM2;
             else if (value == "bert" || value == "BERT") model_type = ModelType::NOMIC;
@@ -478,9 +480,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "moonshine" || value == "MOONSHINE") model_type = ModelType::MOONSHINE;
             else if (value == "silero_vad" || value == "SILERO_VAD") model_type = ModelType::SILERO_VAD;
             else if (value == "parakeet" || value == "PARAKEET") model_type = ModelType::PARAKEET;
-            else if (value == "qwen3.5" || value == "QWEN3.5" ||
-                     value == "qwen3_5" || value == "QWEN3_5" ||
-                     value == "qwen3p5" || value == "QWEN3P5") model_type = ModelType::QWEN3P5;
+            else if (model_type_value.rfind("qwen3_5", 0) == 0) model_type = ModelType::QWEN3P5;
             else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {

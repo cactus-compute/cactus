@@ -19,9 +19,7 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
         if (pos != std::string::npos) {
             std::transform(line.begin(), line.end(), line.begin(), ::tolower);
 
-            if (line.find("qwen3.5") != std::string::npos ||
-                line.find("qwen3_5") != std::string::npos ||
-                line.find("qwen3p5") != std::string::npos) {
+            if (line.find("qwen3_5") != std::string::npos) {
                 model_type_ = ModelType::QWEN3P5;
                 break;
             } else if (line.find("qwen") != std::string::npos) {

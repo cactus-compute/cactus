@@ -77,12 +77,17 @@ def cfg_get(c, key, default=None):
 
 def detect_model_type(cfg, config, output_dir=None):
     """Detect the model architecture type from config."""
-    model_type_str = cfg_get(cfg, 'model_type', cfg_get(config, 'model_type', '')).lower()
+    model_type_str = str(cfg_get(cfg, 'model_type', cfg_get(config, 'model_type', ''))).lower().strip()
+
+    if model_type_str:
+        print(f"  Source model_type: {model_type_str}")
 
     if 'gemma' in model_type_str:
         return 'gemma'
     elif 'lfm2' in model_type_str:
         return 'lfm2'
+    elif model_type_str.startswith('qwen3_5'):
+        return 'qwen3_5'
     elif 'qwen' in model_type_str:
         return 'qwen'
     elif 'moonshine' in model_type_str:
