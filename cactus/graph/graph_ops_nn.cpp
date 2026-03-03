@@ -2129,11 +2129,11 @@ void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<G
     );
 
     __fp16* output = node.output_buffer.data_as<__fp16>();
-    for (size_t b_idx = 0; b_idx < batch_size; ++b_idx) {
+    for (size_t b = 0; b < batch_size; ++b) {
         for (size_t i = 0; i < hidden_size; ++i) {
-            const size_t idx = b_idx * hidden_size + i;
-            output[b_idx * hidden_size * 2 + i * 2] = h_new_temp[idx];
-            output[b_idx * hidden_size * 2 + i * 2 + 1] = c_new_temp[idx];
+            const size_t idx = b * hidden_size + i;
+            output[b * hidden_size * 2 + i * 2] = h_new_temp[idx];
+            output[b * hidden_size * 2 + i * 2 + 1] = c_new_temp[idx];
         }
     }
 }
