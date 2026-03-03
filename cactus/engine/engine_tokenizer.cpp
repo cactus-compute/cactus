@@ -228,11 +228,7 @@ std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& message
     }
 
     if (add_generation_prompt) {
-        if (!tools_json.empty()) {
-            result += "<|im_start|>assistant\n<think>\n</think>\n\n";
-        } else {
-            result += "<|im_start|>assistant\n";
-        }
+        result += "<|im_start|>assistant\n";
     }
 
     return result;
