@@ -78,6 +78,13 @@ static std::string extract_whisper_language_code(std::string token_text) {
     return inner;
 }
 
+static bool is_terminal_transcription_piece(const std::string& piece) {
+    return piece == "<|endoftext|>" ||
+           piece == "<|endoftranscript|>" ||
+           piece == "</s>" ||
+           piece == "<pad>";
+}
+
 extern "C" {
 
 int cactus_transcribe(
@@ -263,7 +270,17 @@ int cactus_transcribe(
         float max_tps = handle->model->get_config().default_max_tps;
         if (max_tps < 0) max_tps = 100;
 
-        const std::vector<std::vector<uint32_t>> stop_token_sequences = {{ tokenizer->get_eos_token() }};
+        std::vector<std::vector<uint32_t>> stop_token_sequences = {{ tokenizer->get_eos_token() }};
+        auto append_exact_stop_sequence = [&](const char* stop_text) {
+            std::vector<uint32_t> seq = tokenizer->encode(stop_text);
+            if (!seq.empty() && tokenizer->decode(seq) == stop_text) {
+                stop_token_sequences.push_back(std::move(seq));
+            }
+        };
+        append_exact_stop_sequence("<|endoftext|>");
+        append_exact_stop_sequence("<|endoftranscript|>");
+        append_exact_stop_sequence("</s>");
+        append_exact_stop_sequence("<pad>");
 
         double time_to_first_token = 0.0;
         size_t completion_tokens = 0;
@@ -352,9 +369,13 @@ int cactus_transcribe(
                     break;
                 }
 
+                std::string piece = tokenizer->decode({ next_token });
+                if (is_terminal_transcription_piece(piece)) {
+                    break;
+                }
+
                 tokens.emplace_back(next_token);
                 completion_tokens++;
-                std::string piece = tokenizer->decode({ next_token });
                 final_text += piece;
                 if (callback) callback(piece.c_str(), next_token, user_data);
             }
