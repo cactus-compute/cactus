@@ -2003,64 +2003,6 @@ void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vector<std:
         B, T, Hq, Hv, K, V, node.params.chunk_size, node.params.scale);
 }
 
-void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& h_prev_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
-    const auto& c_prev_buffer = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
-    const auto& weight_ih_buffer = nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
-    const auto& weight_hh_buffer = nodes[node_index_map.at(node.input_ids[4])]->output_buffer;
-    const auto& bias_ih_buffer = nodes[node_index_map.at(node.input_ids[5])]->output_buffer;
-    const auto& bias_hh_buffer = nodes[node_index_map.at(node.input_ids[6])]->output_buffer;
-
-    if (input_buffer.precision != Precision::FP16 || h_prev_buffer.precision != Precision::FP16 ||
-        c_prev_buffer.precision != Precision::FP16 || weight_ih_buffer.precision != Precision::FP16 ||
-        weight_hh_buffer.precision != Precision::FP16 || bias_ih_buffer.precision != Precision::FP16 ||
-        bias_hh_buffer.precision != Precision::FP16) {
-        throw std::runtime_error("LSTM cell requires all inputs to be FP16");
-    }
-
-    if (input_buffer.shape.size() != 2 || h_prev_buffer.shape.size() != 2 || c_prev_buffer.shape.size() != 2) {
-        throw std::runtime_error("LSTM cell input/state shapes must be 2D [batch, features]");
-    }
-
-    const size_t batch_size = input_buffer.shape[0];
-    const size_t input_size = input_buffer.shape[1];
-    const size_t hidden_size = h_prev_buffer.shape[1];
-
-    const __fp16* x_input = input_buffer.data_as<__fp16>();
-    const __fp16* h_prev = h_prev_buffer.data_as<__fp16>();
-    const __fp16* c_prev = c_prev_buffer.data_as<__fp16>();
-    const __fp16* weight_ih = weight_ih_buffer.data_as<__fp16>();
-    const __fp16* weight_hh = weight_hh_buffer.data_as<__fp16>();
-    const __fp16* bias_ih = bias_ih_buffer.data_as<__fp16>();
-    const __fp16* bias_hh = bias_hh_buffer.data_as<__fp16>();
-
-    node.output_buffer.shape = {batch_size, hidden_size, 2};
-    node.output_buffer.total_size = batch_size * hidden_size * 2;
-    node.output_buffer.precision = Precision::FP16;
-    node.output_buffer.allocate();
-
-    std::vector<__fp16> h_new_temp(batch_size * hidden_size);
-    std::vector<__fp16> c_new_temp(batch_size * hidden_size);
-
-    cactus_lstm_cell_f16(
-        x_input, h_prev, c_prev,
-        weight_ih, weight_hh,
-        bias_ih, bias_hh,
-        h_new_temp.data(), c_new_temp.data(),
-        batch_size, input_size, hidden_size
-    );
-
-    __fp16* output = node.output_buffer.data_as<__fp16>();
-    for (size_t b_idx = 0; b_idx < batch_size; ++b_idx) {
-        for (size_t i = 0; i < hidden_size; ++i) {
-            const size_t idx = b_idx * hidden_size + i;
-            output[b_idx * hidden_size * 2 + i * 2] = h_new_temp[idx];
-            output[b_idx * hidden_size * 2 + i * 2 + 1] = c_new_temp[idx];
-        }
-    }
-}
-
 void compute_rope_gptj_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                             const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
@@ -2136,4 +2078,63 @@ void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
             }
         }
     }
+
+
+void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& h_prev_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& c_prev_buffer = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    const auto& weight_ih_buffer = nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
+    const auto& weight_hh_buffer = nodes[node_index_map.at(node.input_ids[4])]->output_buffer;
+    const auto& bias_ih_buffer = nodes[node_index_map.at(node.input_ids[5])]->output_buffer;
+    const auto& bias_hh_buffer = nodes[node_index_map.at(node.input_ids[6])]->output_buffer;
+
+    if (input_buffer.precision != Precision::FP16 || h_prev_buffer.precision != Precision::FP16 ||
+        c_prev_buffer.precision != Precision::FP16 || weight_ih_buffer.precision != Precision::FP16 ||
+        weight_hh_buffer.precision != Precision::FP16 || bias_ih_buffer.precision != Precision::FP16 ||
+        bias_hh_buffer.precision != Precision::FP16) {
+        throw std::runtime_error("LSTM cell requires all inputs to be FP16");
+    }
+
+    if (input_buffer.shape.size() != 2 || h_prev_buffer.shape.size() != 2 || c_prev_buffer.shape.size() != 2) {
+        throw std::runtime_error("LSTM cell input/state shapes must be 2D [batch, features]");
+    }
+
+    const size_t batch_size = input_buffer.shape[0];
+    const size_t input_size = input_buffer.shape[1];
+    const size_t hidden_size = h_prev_buffer.shape[1];
+
+    const __fp16* x_input = input_buffer.data_as<__fp16>();
+    const __fp16* h_prev = h_prev_buffer.data_as<__fp16>();
+    const __fp16* c_prev = c_prev_buffer.data_as<__fp16>();
+    const __fp16* weight_ih = weight_ih_buffer.data_as<__fp16>();
+    const __fp16* weight_hh = weight_hh_buffer.data_as<__fp16>();
+    const __fp16* bias_ih = bias_ih_buffer.data_as<__fp16>();
+    const __fp16* bias_hh = bias_hh_buffer.data_as<__fp16>();
+
+    node.output_buffer.shape = {batch_size, hidden_size, 2};
+    node.output_buffer.total_size = batch_size * hidden_size * 2;
+    node.output_buffer.precision = Precision::FP16;
+    node.output_buffer.allocate();
+
+    std::vector<__fp16> h_new_temp(batch_size * hidden_size);
+    std::vector<__fp16> c_new_temp(batch_size * hidden_size);
+
+    cactus_lstm_cell_f16(
+        x_input, h_prev, c_prev,
+        weight_ih, weight_hh,
+        bias_ih, bias_hh,
+        h_new_temp.data(), c_new_temp.data(),
+        batch_size, input_size, hidden_size
+    );
+
+    __fp16* output = node.output_buffer.data_as<__fp16>();
+    for (size_t b_idx = 0; b_idx < batch_size; ++b_idx) {
+        for (size_t i = 0; i < hidden_size; ++i) {
+            const size_t idx = b_idx * hidden_size + i;
+            output[b_idx * hidden_size * 2 + i * 2] = h_new_temp[idx];
+            output[b_idx * hidden_size * 2 + i * 2 + 1] = c_new_temp[idx];
+        }
+    }
+}
 }

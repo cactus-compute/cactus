@@ -980,30 +980,7 @@ size_t CactusGraph::gated_deltanet_decode(size_t query, size_t key, size_t value
     const size_t Hq = q.shape[2];
     const size_t K = q.shape[3];
     const size_t Hv = v.shape[2];
-
-    if (T != 1) {
-        throw std::runtime_error("gated_deltanet_decode expects T=1 (single-step decode)");
-    }
-    if (k.shape[0] != B || k.shape[1] != T || k.shape[2] != Hq || k.shape[3] != K) {
-        throw std::runtime_error("gated_deltanet_decode query/key shape mismatch");
-    }
-    if (v.shape[0] != B || v.shape[1] != T) {
-        throw std::runtime_error("gated_deltanet_decode value shape mismatch");
-    }
-    if (g.shape[0] != B || g.shape[1] != T || g.shape[2] != Hv ||
-        b.shape[0] != B || b.shape[1] != T || b.shape[2] != Hv) {
-        throw std::runtime_error("gated_deltanet_decode gate_log/beta shape mismatch");
-    }
-    if (Hq == 0 || Hv == 0 || (Hv % Hq) != 0) {
-        throw std::runtime_error("gated_deltanet_decode expects value heads divisible by q/k heads");
-    }
-    if (num_qk_heads != 0 && num_qk_heads != Hq) {
-        throw std::runtime_error("gated_deltanet_decode num_qk_heads does not match query/key shape");
-    }
     const size_t V = v.shape[3];
-    if (s.shape[0] != B || s.shape[1] != K || s.shape[2] != Hv || s.shape[3] != V) {
-        throw std::runtime_error("gated_deltanet_decode initial_state shape mismatch");
-    }
 
     auto is_supported_precision = [](Precision p) {
         return p == Precision::FP16 || p == Precision::FP32;
@@ -1054,27 +1031,7 @@ size_t CactusGraph::gated_deltanet_prefill(size_t query, size_t key, size_t valu
     const size_t Hq = q.shape[2];
     const size_t K = q.shape[3];
     const size_t Hv = v.shape[2];
-
-    if (k.shape[0] != B || k.shape[1] != T || k.shape[2] != Hq || k.shape[3] != K) {
-        throw std::runtime_error("gated_deltanet_prefill query/key shape mismatch");
-    }
-    if (v.shape[0] != B || v.shape[1] != T) {
-        throw std::runtime_error("gated_deltanet_prefill value shape mismatch");
-    }
-    if (g.shape[0] != B || g.shape[1] != T || g.shape[2] != Hv ||
-        b.shape[0] != B || b.shape[1] != T || b.shape[2] != Hv) {
-        throw std::runtime_error("gated_deltanet_prefill gate_log/beta shape mismatch");
-    }
-    if (Hq == 0 || Hv == 0 || (Hv % Hq) != 0) {
-        throw std::runtime_error("gated_deltanet_prefill expects value heads divisible by q/k heads");
-    }
-    if (num_qk_heads != 0 && num_qk_heads != Hq) {
-        throw std::runtime_error("gated_deltanet_prefill num_qk_heads does not match query/key shape");
-    }
     const size_t V = v.shape[3];
-    if (s.shape[0] != B || s.shape[1] != K || s.shape[2] != Hv || s.shape[3] != V) {
-        throw std::runtime_error("gated_deltanet_prefill initial_state shape mismatch");
-    }
 
     auto is_supported_precision = [](Precision p) {
         return p == Precision::FP16 || p == Precision::FP32;
