@@ -508,7 +508,7 @@ bool test_irfft_correctness() {
 }
 
 template<typename Predicate>
-bool run_whisper_test(const char* title, const char* options_json, Predicate check) {
+bool run_transcription_test(const char* title, const char* audio_file, const char* options_json, Predicate check) {
     if (!g_transcribe_model_path) {
         std::cout << "⊘ SKIP │ " << std::left << std::setw(25) << title
                   << " │ CACTUS_TEST_TRANSCRIBE_MODEL not set\n";
@@ -529,7 +529,7 @@ bool run_whisper_test(const char* title, const char* options_json, Predicate che
     StreamingData stream;
     stream.model = model;
 
-    std::string audio_path = std::string(g_assets_path) + "/test.wav";
+    std::string audio_path = std::string(g_assets_path) + "/" + audio_file;
     std::cout << "Transcript: ";
     int rc = cactus_transcribe(model, audio_path.c_str(), g_whisper_prompt,
                                response, sizeof(response), options_json,
@@ -552,7 +552,12 @@ bool run_whisper_test(const char* title, const char* options_json, Predicate che
 }
 
 static bool test_transcription() {
-    return run_whisper_test("TRANSCRIPTION", R"({"max_tokens": 100, "telemetry_enabled": false})",
+    return run_transcription_test("TRANSCRIPTION", "test.wav", R"({"max_tokens": 100, "telemetry_enabled": false})",
+        [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
+}
+
+static bool test_transcription_long() {
+    return run_transcription_test("TRANSCRIPTION LONG", "test_long.wav", R"({"max_tokens": 1000, "telemetry_enabled": false})",
         [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
 }
 
@@ -638,6 +643,7 @@ int main() {
     runner.run_test("irfft_correctness", test_irfft_correctness());
     runner.run_test("vad_process", test_vad_process());
     runner.run_test("transcription", test_transcription());
+    runner.run_test("transcription_long", test_transcription_long());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
