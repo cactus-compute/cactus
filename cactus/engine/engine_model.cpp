@@ -9,7 +9,6 @@
 #include <cstdlib>
 #include <dirent.h>
 #include <algorithm>
-#include <filesystem>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -479,6 +478,9 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "moonshine" || value == "MOONSHINE") model_type = ModelType::MOONSHINE;
             else if (value == "silero_vad" || value == "SILERO_VAD") model_type = ModelType::SILERO_VAD;
             else if (value == "parakeet" || value == "PARAKEET") model_type = ModelType::PARAKEET;
+            else if (value == "qwen3.5" || value == "QWEN3.5" ||
+                     value == "qwen3_5" || value == "QWEN3_5" ||
+                     value == "qwen3p5" || value == "QWEN3P5") model_type = ModelType::QWEN3P5;
             else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {
@@ -544,7 +546,7 @@ bool Config::from_json(const std::string& config_path) {
         default_temperature = 0.6f;
         default_top_p = 0.95f;
         default_top_k = 20;
-    } else if (model_type == ModelType::QWEN) {
+    } else if (model_type == ModelType::QWEN3P5) {
         default_temperature = 0.7f;
         default_top_p = 0.8f;
         default_top_k = 20;
@@ -595,29 +597,11 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
         return std::make_unique<Lfm2VlModel>(config);
     }
 
-    auto has_deltanet_layers = [&config]() -> bool {
-        for (const auto& lt : config.layer_types) {
-            std::string lt_norm = lt;
-            std::transform(lt_norm.begin(), lt_norm.end(), lt_norm.begin(), ::tolower);
-            if (lt_norm.find("deltanet") != std::string::npos ||
-                lt_norm.find("linear_attention") != std::string::npos ||
-                lt_norm.find("linear_attn") != std::string::npos) {
-                return true;
-            }
-        }
-        return false;
-    };
-
-    const bool has_qwen3p5_linear_files =
-        std::filesystem::exists(model_folder + "/layer_0_linear_attn_q.weights") ||
-        std::filesystem::exists(model_folder + "/layer_0_linear_attn_qkv.weights");
-
     switch (config.model_type) {
         case Config::ModelType::QWEN:
-            if (has_deltanet_layers() || has_qwen3p5_linear_files) {
-                return std::make_unique<Qwen3p5Model>(config);
-            }
             return std::make_unique<QwenModel>(config);
+        case Config::ModelType::QWEN3P5:
+            return std::make_unique<Qwen3p5Model>(config);
         case Config::ModelType::GEMMA:
             return std::make_unique<GemmaModel>(config);
         case Config::ModelType::LFM2:
@@ -636,9 +620,6 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
         case Config::ModelType::PARAKEET:
             return std::make_unique<ParakeetModel>(config);
         default:
-            if (has_deltanet_layers() || has_qwen3p5_linear_files) {
-                return std::make_unique<Qwen3p5Model>(config);
-            }
             return std::make_unique<QwenModel>(config);
     }
 }
