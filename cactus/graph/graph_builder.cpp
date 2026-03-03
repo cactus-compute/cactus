@@ -957,7 +957,7 @@ size_t CactusGraph::lstm_cell(size_t input, size_t h_prev, size_t c_prev, size_t
 }
 
 size_t CactusGraph::gated_deltanet_decode(size_t query, size_t key, size_t value, size_t gate_log, size_t beta,
-                                          size_t initial_state, float scale, size_t num_qk_heads) {
+                                          size_t initial_state, float scale) {
     const auto& q = get_output_buffer(query);
     const auto& k = get_output_buffer(key);
     const auto& v = get_output_buffer(value);
@@ -981,7 +981,9 @@ size_t CactusGraph::gated_deltanet_decode(size_t query, size_t key, size_t value
     const size_t K = q.shape[3];
     const size_t Hv = v.shape[2];
     const size_t V = v.shape[3];
-
+    if (T != 1) {
+        throw std::runtime_error("gated_deltanet_decode expects sequence length T=1");
+    }
     auto is_supported_precision = [](Precision p) {
         return p == Precision::FP16 || p == Precision::FP32;
     };
@@ -1007,8 +1009,7 @@ size_t CactusGraph::gated_deltanet_decode(size_t query, size_t key, size_t value
 }
 
 size_t CactusGraph::gated_deltanet_prefill(size_t query, size_t key, size_t value, size_t gate_log, size_t beta,
-                                           size_t initial_state, size_t chunk_size, float scale,
-                                           size_t num_qk_heads) {
+                                           size_t initial_state, size_t chunk_size, float scale) {
     const auto& q = get_output_buffer(query);
     const auto& k = get_output_buffer(key);
     const auto& v = get_output_buffer(value);
@@ -1032,7 +1033,6 @@ size_t CactusGraph::gated_deltanet_prefill(size_t query, size_t key, size_t valu
     const size_t K = q.shape[3];
     const size_t Hv = v.shape[2];
     const size_t V = v.shape[3];
-
     auto is_supported_precision = [](Precision p) {
         return p == Precision::FP16 || p == Precision::FP32;
     };

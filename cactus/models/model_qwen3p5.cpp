@@ -160,7 +160,7 @@ void Qwen3p5Model::post_init() {
         throw std::runtime_error("Qwen3p5Model computed zero cache row dim");
     }
 
-    conv_cache_.init(config_.num_layers, deltanet_cache_row_dim_, 1, Precision::FP16);
+    conv_cache_.init(config_.num_layers, deltanet_cache_row_dim_, 1, Precision::FP32);
     last_forward_used_cache_ = false;
     deltanet_total_seq_len_ = 0;
 }
@@ -451,6 +451,7 @@ size_t Qwen3p5Model::build_gated_deltanet(CactusGraph* gb, size_t normalized_inp
             size_t history_2d = 0;
             if (prev_conv_flat != 0) {
                 history_2d = gb->reshape(prev_conv_flat, {deltanet_conv_history_len_, mixed_proj_dim});
+                history_2d = gb->precision_cast(history_2d, Precision::FP16);
             } else {
                 history_2d = gb->input({deltanet_conv_history_len_, mixed_proj_dim}, Precision::FP16);
                 std::vector<__fp16> zeros(deltanet_conv_flat_dim_, static_cast<__fp16>(0.0f));
@@ -532,11 +533,11 @@ size_t Qwen3p5Model::build_gated_deltanet(CactusGraph* gb, size_t normalized_inp
 
     size_t deltanet_out;
     if (use_cache && seq_len == 1) {
-        deltanet_out = gb->gated_deltanet_decode(q_4d, k_4d, v_4d, gate_3d, beta_3d, initial_state, 0.0f, num_k_heads);
+        deltanet_out = gb->gated_deltanet_decode(q_4d, k_4d, v_4d, gate_3d, beta_3d, initial_state, 0.0f);
     } else {
         const size_t chunk_for_op = std::min<size_t>(64, std::max<size_t>(1, seq_len));
         deltanet_out = gb->gated_deltanet_prefill(
-            q_4d, k_4d, v_4d, gate_3d, beta_3d, initial_state, chunk_for_op, 0.0f, num_k_heads);
+            q_4d, k_4d, v_4d, gate_3d, beta_3d, initial_state, chunk_for_op, 0.0f);
     }
 
     size_t y_4d = gb->slice(deltanet_out, 1, 0, seq_len);
@@ -560,6 +561,7 @@ size_t Qwen3p5Model::build_gated_deltanet(CactusGraph* gb, size_t normalized_inp
                 }
             } else if (prev_conv_flat != 0) {
                 history_2d = gb->reshape(prev_conv_flat, {deltanet_conv_history_len_, mixed_proj_dim});
+                history_2d = gb->precision_cast(history_2d, Precision::FP16);
             } else {
                 history_2d = gb->input({deltanet_conv_history_len_, mixed_proj_dim}, Precision::FP16);
                 std::vector<__fp16> zeros(deltanet_conv_flat_dim_, static_cast<__fp16>(0.0f));
@@ -569,6 +571,7 @@ size_t Qwen3p5Model::build_gated_deltanet(CactusGraph* gb, size_t normalized_inp
             size_t history_flat = gb->reshape(history_2d, {1, deltanet_conv_flat_dim_});
             packed_cache = gb->concat(packed_cache, history_flat, 1);
         }
+        packed_cache = gb->precision_cast(packed_cache, conv_cache_.precision);
         conv_cache_state_nodes_[layer_idx] = packed_cache;
         cache_k_output_nodes_[layer_idx] = 0;
         cache_v_output_nodes_[layer_idx] = 0;

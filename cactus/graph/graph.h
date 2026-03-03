@@ -549,10 +549,9 @@ public:
 
     size_t lstm_cell(size_t input, size_t h_prev, size_t c_prev, size_t weight_ih, size_t weight_hh, size_t bias_ih, size_t bias_hh);
     size_t gated_deltanet_decode(size_t query, size_t key, size_t value, size_t gate_log, size_t beta,
-                                 size_t initial_state, float scale = 0.0f, size_t num_qk_heads = 0);
+                                 size_t initial_state, float scale = 0.0f);
     size_t gated_deltanet_prefill(size_t query, size_t key, size_t value, size_t gate_log, size_t beta,
-                                  size_t initial_state, size_t chunk_size = 64, float scale = 0.0f,
-                                  size_t num_qk_heads = 0);
+                                  size_t initial_state, size_t chunk_size = 64, float scale = 0.0f);
     size_t stft(size_t input, size_t weight, size_t stride, size_t num_fft_bins);
 
     size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20,

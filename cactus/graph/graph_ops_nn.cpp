@@ -2078,7 +2078,7 @@ void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
             }
         }
     }
-
+}
 
 void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
@@ -2136,5 +2136,4 @@ void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<G
             output[b * hidden_size * 2 + i * 2 + 1] = c_new_temp[idx];
         }
     }
-}
 }
