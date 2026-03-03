@@ -12,6 +12,7 @@
 using namespace EngineTestUtils;
 
 static const char* g_transcribe_model_path = std::getenv("CACTUS_TEST_TRANSCRIBE_MODEL");
+static const char* g_whisper_model_path = std::getenv("CACTUS_TEST_WHISPER_MODEL");
 static const char* g_vad_model_path = std::getenv("CACTUS_TEST_VAD_MODEL");
 static const char* g_assets_path = std::getenv("CACTUS_TEST_ASSETS");
 
@@ -566,18 +567,30 @@ static bool test_language_detection() {
               << "║         LANGUAGE DETECTION               ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    if (!g_transcribe_model_path) {
-        std::cout << "⊘ SKIP │ CACTUS_TEST_TRANSCRIBE_MODEL not set\n";
-        return true;
-    }
     if (!g_assets_path) {
         std::cout << "⊘ SKIP │ CACTUS_TEST_ASSETS not set\n";
         return true;
     }
 
-    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
+    const char* whisper_model_path = g_whisper_model_path;
+    if (!whisper_model_path || std::string(whisper_model_path).empty()) {
+        if (g_transcribe_model_path) {
+            std::string transcribe_path = g_transcribe_model_path;
+            std::transform(transcribe_path.begin(), transcribe_path.end(), transcribe_path.begin(),
+                           [](unsigned char c){ return std::tolower(c); });
+            if (transcribe_path.find("whisper") != std::string::npos) {
+                whisper_model_path = g_transcribe_model_path;
+            }
+        }
+    }
+    if (!whisper_model_path || std::string(whisper_model_path).empty()) {
+        std::cerr << "[✗] CACTUS_TEST_WHISPER_MODEL not set (required for language detection)\n";
+        return false;
+    }
+
+    cactus_model_t model = cactus_init(whisper_model_path, nullptr, false);
     if (!model) {
-        std::cerr << "[✗] Failed to initialize transcribe model\n";
+        std::cerr << "[✗] Failed to initialize Whisper model for language detection\n";
         return false;
     }
 
@@ -596,11 +609,6 @@ static bool test_language_detection() {
 
     std::string response_str(response);
     if (rc <= 0) {
-        if (response_str.find("requires a Whisper model") != std::string::npos) {
-            std::cout << "⊘ SKIP │ Language detection is currently Whisper-only\n";
-            cactus_destroy(model);
-            return true;
-        }
         std::cerr << "[✗] Language detection failed: " << response_str << "\n";
         cactus_destroy(model);
         return false;
@@ -704,6 +712,7 @@ int main() {
     runner.run_test("vad_process", test_vad_process());
     runner.run_test("transcription", test_transcription());
     runner.run_test("transcription_long", test_transcription_long());
+    runner.run_test("language_detection", test_language_detection());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

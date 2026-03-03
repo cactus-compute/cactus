@@ -13,6 +13,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 DEFAULT_MODEL_ID = "LiquidAI/LFM2.5-1.2B-Instruct"
 DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "UsefulSensors/moonshine-base"
+DEFAULT_TEST_WHISPER_MODEL_ID = "openai/whisper-small"
 
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
@@ -1252,6 +1253,7 @@ def cmd_test(args):
         for model_id in [
             getattr(args, 'model', 'LiquidAI/LFM2-VL-450M'),
             getattr(args, 'transcribe_model', DEFAULT_TEST_TRANSCRIBE_MODEL_ID),
+            getattr(args, 'whisper_model', DEFAULT_TEST_WHISPER_MODEL_ID),
             getattr(args, 'vad_model', 'snakers4/silero-vad')
         ]:
             class DownloadArgs:
@@ -1282,6 +1284,8 @@ def cmd_test(args):
         cmd.extend(["--model", args.model])
     if args.transcribe_model:
         cmd.extend(["--transcribe_model", args.transcribe_model])
+    if getattr(args, 'whisper_model', None):
+        cmd.extend(["--whisper_model", args.whisper_model])
     if args.vad_model:
         cmd.extend(["--vad_model", args.vad_model])
     if args.precision:
@@ -1627,6 +1631,7 @@ def create_parser():
     Optional flags:
     --model <model>                    default: LFM2-VL-450M
     --transcribe_model <model>         default: UsefulSensors/moonshine-base
+    --whisper_model <model>            default: openai/whisper-small (language detection)
     --benchmark                        use larger models (LFM2.5-VL-1.6B + nvidia/parakeet-ctc-1.1b)
     --precision INT4|INT8|FP16         regenerates weights with precision
     --reconvert                        force model weights reconversion from source
@@ -1756,6 +1761,8 @@ def create_parser():
                              help='Model to use for tests')
     test_parser.add_argument('--transcribe_model', default=DEFAULT_TEST_TRANSCRIBE_MODEL_ID,
                              help='Transcribe model to use')
+    test_parser.add_argument('--whisper_model', default=DEFAULT_TEST_WHISPER_MODEL_ID,
+                             help='Whisper model to use for language detection tests')
     test_parser.add_argument('--vad_model', default='snakers4/silero-vad',
                              help='VAD model to use')
     test_parser.add_argument('--benchmark', action='store_true',

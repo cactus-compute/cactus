@@ -183,13 +183,9 @@ int cactus_transcribe(
             audio_samples = resample_to_16k_fp32(audio.samples, audio.sample_rate);
         }
 
-<<<<<<< HEAD
-        if (use_vad && handle->vad_model) {
-=======
         std::vector<std::vector<float>> chunks;
 
         if (use_vad) {
->>>>>>> origin/main
             auto* vad = static_cast<SileroVADModel*>(handle->vad_model.get());
             auto vad_segments = vad->get_speech_timestamps(audio_samples, {});
             chunks.reserve(vad_segments.size());
