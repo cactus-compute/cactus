@@ -302,13 +302,19 @@ static inline void cactus_attention_f16_h64(
                     block_max = std::max(block_max, score);
                 }
 
-                float scale_corr = expf(running_max - block_max);
-                running_sum *= scale_corr;
+                float current_block_scale = 1.0f;
+                if (block_max > running_max) {
+                    float scale_correction = expf(running_max - block_max);
+                    running_sum *= scale_correction;
 
-                #pragma unroll
-                for (int d = 0; d < 8; d++) {
-                    acc_lo[d] = vmulq_n_f32(acc_lo[d], scale_corr);
-                    acc_hi[d] = vmulq_n_f32(acc_hi[d], scale_corr);
+                    #pragma unroll
+                    for (int d = 0; d < 8; d++) {
+                        acc_lo[d] = vmulq_n_f32(acc_lo[d], scale_correction);
+                        acc_hi[d] = vmulq_n_f32(acc_hi[d], scale_correction);
+                    }
+                    running_max = block_max;
+                } else {
+                    current_block_scale = expf(block_max - running_max);
                 }
 
                 float block_sum = 0.f;
@@ -318,11 +324,11 @@ static inline void cactus_attention_f16_h64(
                 }
 
                 for (size_t i = 0; i < kv1 - kv0; i++) {
-                    float w = block_scores[i];
-                    if (w == 0.f) continue;
+                    const float attn_weight = block_scores[i] * current_block_scale;
+                    if (attn_weight == 0.f) continue;
 
                     const __fp16* v = values + batch*kv_batch_stride + (kv0+i)*kv_seq_stride + kv_head*HEAD_DIM;
-                    float32x4_t wv = vdupq_n_f32(w);
+                    float32x4_t wv = vdupq_n_f32(attn_weight);
 
                     #pragma unroll
                     for (int d = 0; d < 8; d++) {
@@ -332,8 +338,7 @@ static inline void cactus_attention_f16_h64(
                     }
                 }
 
-                running_sum += block_sum;
-                running_max = block_max;
+                running_sum += block_sum * current_block_scale;
             }
 
             if (running_sum == 0.f) {
