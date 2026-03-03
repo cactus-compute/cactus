@@ -357,6 +357,7 @@ private fun CompletionOptions.toJson(): String = JSONObject().apply {
     put("max_tokens", maxTokens)
     put("stop", JSONArray(stopSequences))
     put("confidence_threshold", confidenceThreshold)
+    put("force_tools", forceTools)
 }.toString()
 
 private fun JSONObject.toCompletionResult(): CompletionResult {

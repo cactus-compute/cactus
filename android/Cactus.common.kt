@@ -75,7 +75,8 @@ data class CompletionOptions(
     val topK: Int = 40,
     val maxTokens: Int = 512,
     val stopSequences: List<String> = emptyList(),
-    val confidenceThreshold: Float = 0f
+    val confidenceThreshold: Float = 0f,
+    val forceTools: Boolean = false
 )
 
 data class CompletionResult(
