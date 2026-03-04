@@ -181,10 +181,14 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             throw std::runtime_error("Quantized matmul requires INT8 (pre-quantized) or FP16 activations");
         }
 
-        cactus_matmul_integer(rhs_buffer.precision,
-                        lhs_int8, lhs_scales,
-                        rhs, rhs_scales, output,
-                        M, K, N, rhs_buffer.group_size);
+        if (node.params.sparse_activations && M == 1 && rhs_buffer.precision == Precision::INT8) {
+            cactus_gemv_sparse_int8(lhs_int8, lhs_scales[0], rhs, rhs_scales, output, K, N, rhs_buffer.group_size);
+        } else {
+            cactus_matmul_integer(rhs_buffer.precision,
+                            lhs_int8, lhs_scales,
+                            rhs, rhs_scales, output,
+                            M, K, N, rhs_buffer.group_size);
+        }
     } else {
         if (lhs_buffer.precision != Precision::FP16) {
             throw std::runtime_error("FP16 matmul requires FP16 activations");

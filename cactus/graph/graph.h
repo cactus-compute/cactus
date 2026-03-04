@@ -350,6 +350,7 @@ struct OpParams {
     size_t num_kv_heads = 0;
     size_t head_dim = 0;
     size_t num_fft_bins = 0;
+    bool sparse_activations = false;
 };
 
 struct GraphNode {
@@ -457,6 +458,7 @@ public:
     size_t glu(size_t input, int axis = -1);
     
     size_t matmul(size_t input1, size_t input2, bool pretransposed_rhs = false, ComputeBackend backend = ComputeBackend::CPU);
+    size_t matmul_sparse(size_t input1, size_t input2, bool pretransposed_rhs = false, ComputeBackend backend = ComputeBackend::CPU);
     size_t transpose(size_t input, ComputeBackend backend = ComputeBackend::CPU);
     size_t transposeN(size_t input, const std::vector<size_t>& permutation, ComputeBackend backend = ComputeBackend::CPU);
     size_t reshape(size_t input, const std::vector<size_t>& new_shape);
