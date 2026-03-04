@@ -114,7 +114,7 @@ struct Config {
     uint32_t tdt_blank_id = 0;
     std::vector<uint32_t> tdt_durations;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, PARAKEET_TDT = 11};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, PARAKEET_TDT = 11, GEMMA3N = 12};
     ModelType model_type = ModelType::QWEN;
 
     enum class ModelVariant {DEFAULT = 0, VLM = 1, EXTRACT = 2, RAG = 3};
@@ -137,6 +137,13 @@ struct Config {
 
     std::vector<std::string> layer_types;
     size_t conv_L_cache = 0;
+
+    uint32_t altup_num_inputs = 4;
+    uint32_t laurel_rank = 64;
+    uint32_t hidden_size_per_layer_input = 256;
+    float rope_local_base_freq = 10000.0f;
+    float final_logit_softcapping = 0.0f;
+    std::vector<float> activation_sparsity_ppf;
 
     bool from_json(const std::string& json_path);
     std::string to_json() const;

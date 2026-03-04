@@ -98,6 +98,87 @@ private:
         std::vector<LayerWeights> layers;
     } weight_nodes_;
 };
+
+class GemmaModel3n : public Model {
+public:
+    GemmaModel3n();
+    explicit GemmaModel3n(const Config& config);
+    ~GemmaModel3n() override = default;
+
+protected:
+    size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                    ComputeBackend backend) const override;
+
+    size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    void load_weights_to_graph(CactusGraph* gb) override;
+    void post_init() override;
+
+private:
+    size_t build_laurel(CactusGraph* gb, size_t normed_input, uint32_t layer_idx, ComputeBackend backend) const;
+    size_t build_gaussian_topk(CactusGraph* gb, size_t input, float ppf) const;
+    size_t build_rms_norm_no_weight(CactusGraph* gb, size_t input, size_t num_rows, size_t row_dim) const;
+    size_t build_magnitude_normalize(CactusGraph* gb, size_t reference, size_t target) const;
+
+    size_t build_altup_router_modalities(CactusGraph* gb, size_t stream0, uint32_t layer_idx, ComputeBackend backend) const;
+    void build_altup_predict(CactusGraph* gb, size_t modalities, uint32_t layer_idx,
+                             const size_t* streams, size_t* predictions) const;
+    void build_altup_correct(CactusGraph* gb, size_t activated, size_t modalities, uint32_t layer_idx,
+                             ComputeBackend backend, const size_t* predictions, size_t* corrected) const;
+    void build_per_layer_input(CactusGraph* gb, size_t pli_combined, uint32_t layer_idx,
+                               ComputeBackend backend, size_t* streams) const;
+
+    struct WeightNodeIDs {
+        size_t output_weight;
+        size_t output_norm_weight;
+
+        size_t altup_proj_weights[3];
+        size_t altup_unembed_proj_weights[3];
+        size_t embed_tokens_per_layer;
+        size_t per_layer_model_proj;
+        size_t per_layer_proj_norm;
+
+        struct LayerWeights {
+            size_t attn_q_weight;
+            size_t attn_k_weight;
+            size_t attn_v_weight;
+            size_t attn_output_weight;
+            size_t input_layernorm_weight;
+            size_t attn_q_norm_weight;
+            size_t attn_k_norm_weight;
+            size_t pre_feedforward_layernorm_weight;
+            size_t post_feedforward_layernorm_weight;
+            size_t ffn_gate_weight;
+            size_t ffn_up_weight;
+            size_t ffn_down_weight;
+            size_t post_attention_layernorm_weight;
+
+            size_t altup_router_norm;
+            size_t altup_prediction_coefs;
+            size_t altup_correction_coefs;
+            size_t altup_correct_output_scale;
+            size_t altup_modality_router;
+            size_t laurel_left;
+            size_t laurel_right;
+            size_t laurel_norm;
+            size_t per_layer_gate;
+            size_t per_layer_proj;
+            size_t post_per_layer_norm;
+        };
+
+        std::vector<LayerWeights> layers;
+    } weight_nodes_;
+
+    std::vector<int> kv_share_map_;
+    std::vector<size_t> shared_k_nodes_;
+    std::vector<size_t> shared_v_nodes_;
+};
+
 class Siglip2VisionModel : public Model {
     friend class Lfm2VlModel;  
     

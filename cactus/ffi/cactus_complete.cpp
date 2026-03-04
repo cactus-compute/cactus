@@ -77,7 +77,7 @@ std::vector<std::vector<uint32_t>> build_stop_sequences(
         stop_token_sequences.push_back(tokenizer->encode(stop_seq));
     }
 
-    if (model_type == Config::ModelType::GEMMA && has_tools) {
+    if ((model_type == Config::ModelType::GEMMA || model_type == Config::ModelType::GEMMA3N) && has_tools) {
         stop_token_sequences.push_back(tokenizer->encode("<end_function_call>"));
         stop_token_sequences.push_back(tokenizer->encode("<start_function_response>"));
     }
@@ -233,7 +233,7 @@ int cactus_complete(
 
         Config::ModelType model_type = handle->model->get_config().model_type;
         std::string formatted_tools;
-        if (model_type == Config::ModelType::GEMMA) {
+        if (model_type == Config::ModelType::GEMMA || model_type == Config::ModelType::GEMMA3N) {
             formatted_tools = gemma::format_tools(tools);
         } else {
             formatted_tools = serialize_tools_json(tools);

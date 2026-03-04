@@ -80,7 +80,7 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
         add_tokens_for_string("\"", quote_tokens_);
 
         tokenize_function_names(false);  
-    } else if (model_type_ == Config::ModelType::GEMMA) {
+    } else if (model_type_ == Config::ModelType::GEMMA || model_type_ == Config::ModelType::GEMMA3N) {
         gemma_call_start_tokens_.clear();
         gemma_call_end_tokens_.clear();
         gemma_call_prefix_tokens_.clear();
@@ -134,7 +134,7 @@ void ToolCallConstrainer::init(Config::ModelType model_type,
 
     if (model_type_ == Config::ModelType::LFM2) {
         state_ = State::LFM_START;
-    } else if (model_type_ == Config::ModelType::GEMMA) {
+    } else if (model_type_ == Config::ModelType::GEMMA || model_type_ == Config::ModelType::GEMMA3N) {
         state_ = State::GEMMA_START;
     } else {
         state_ = State::QWEN_START;
@@ -209,7 +209,7 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
             default:
                 break;
         }
-    } else if (model_type_ == Config::ModelType::GEMMA) {
+    } else if (model_type_ == Config::ModelType::GEMMA || model_type_ == Config::ModelType::GEMMA3N) {
         switch (state_) {
             case State::GEMMA_START:
                 if (generated_text_.find("<start_function_call>") != std::string::npos) {
@@ -478,7 +478,7 @@ void ToolCallConstrainer::compute_bias() {
             default:
                 break;
         }
-    } else if (model_type_ == Config::ModelType::GEMMA) {
+    } else if (model_type_ == Config::ModelType::GEMMA || model_type_ == Config::ModelType::GEMMA3N) {
         for (uint32_t t : gemma_response_start_tokens_) {
             current_bias_[t] = BLOCK_BIAS;
         }
@@ -694,7 +694,7 @@ void ToolCallConstrainer::reset() {
 
     if (model_type_ == Config::ModelType::LFM2) {
         state_ = State::LFM_START;
-    } else if (model_type_ == Config::ModelType::GEMMA) {
+    } else if (model_type_ == Config::ModelType::GEMMA || model_type_ == Config::ModelType::GEMMA3N) {
         state_ = State::GEMMA_START;
     } else {
         state_ = State::QWEN_START;
