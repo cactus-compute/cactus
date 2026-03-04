@@ -246,7 +246,7 @@ def extract_gemma3n_config(cfg, root_config):
                 layer_types.append('sliding')
 
     final_logit_softcapping = float(cfg_get(cfg, 'final_logit_softcapping',
-        cfg_get(root_config, 'final_logit_softcapping', 0.0)))
+        cfg_get(root_config, 'final_logit_softcapping', 30.0)))
 
     activation_sparsity = cfg_get(cfg, 'activation_sparsity_pattern',
         cfg_get(root_config, 'activation_sparsity_pattern', None))

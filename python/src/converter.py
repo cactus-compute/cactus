@@ -308,6 +308,14 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                     saved_tensor_full_names.add(fname)
 
     if detected_model_type == 'gemma3n':
+        pli_key = 'model.language_model.embed_tokens_per_layer.weight'
+        if pli_key in state_dict:
+            pli_tensor = state_dict[pli_key]
+            main_vocab = int(model_config.get('vocab_size', pli_tensor.shape[0]))
+            if pli_tensor.shape[0] < main_vocab:
+                pad_rows = main_vocab - pli_tensor.shape[0]
+                state_dict[pli_key] = torch.cat([pli_tensor, pli_tensor[0:1].expand(pad_rows, -1)], dim=0)
+
         for name, save_name in GEMMA3N_GLOBAL_WEIGHTS:
             if name in state_dict:
                 save_tensor_with_header(state_dict[name], output_dir / save_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
@@ -699,7 +707,9 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 missing_tensors.append((i, "<no-layer-prefix>", ["<no-matching-prefix>"]))
                 continue
 
-            weight_patterns = get_layer_weight_patterns(i, precision, model_type_str)
+            num_kv_shared = int(model_config.get('num_kv_shared_layers', 0))
+            first_shared = num_layers - num_kv_shared if num_layers > num_kv_shared else num_layers
+            weight_patterns = get_layer_weight_patterns(i, precision, model_type_str, skip_kv=(i >= first_shared))
 
             for layer_prefix in existing_prefixes:
                 for name_patterns, tensor_precision, output_name, should_transpose in weight_patterns:

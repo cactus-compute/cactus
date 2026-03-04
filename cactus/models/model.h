@@ -116,10 +116,21 @@ protected:
                                   ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
 
     size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "") override;
     void load_weights_to_graph(CactusGraph* gb) override;
     void post_init() override;
 
 private:
+    size_t forward_split(const std::vector<uint32_t>& tokens, bool use_cache);
+
+    size_t build_preamble(CactusGraph* gb, size_t seq_len, ComputeBackend backend,
+                          size_t& token_input, size_t& pli_input, size_t* streams);
+    void build_layer(CactusGraph* gb, uint32_t layer_idx, ComputeBackend backend,
+                     bool use_cache, size_t pos_offset, size_t pli, size_t* streams);
+    size_t build_output_head(CactusGraph* gb, size_t* streams, ComputeBackend backend);
+    void set_token_inputs(CactusGraph* gb, size_t token_input, size_t pli_input,
+                          const std::vector<uint32_t>& tokens);
+
     size_t build_laurel(CactusGraph* gb, size_t normed_input, uint32_t layer_idx, ComputeBackend backend) const;
     size_t build_gaussian_topk(CactusGraph* gb, size_t input, float ppf) const;
     size_t build_rms_norm_no_weight(CactusGraph* gb, size_t input, size_t num_rows, size_t row_dim) const;

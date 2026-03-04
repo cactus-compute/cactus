@@ -122,6 +122,9 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
     bool any_layer_updated = false;
 
     for (size_t layer_idx = 0; layer_idx < layers; layer_idx++) {
+        if (k_nodes[layer_idx] == 0 || v_nodes[layer_idx] == 0)
+            continue;
+
         auto& cache = layer_caches[layer_idx];
 
         void* k_output = gb->get_output(k_nodes[layer_idx]);

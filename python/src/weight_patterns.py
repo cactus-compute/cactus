@@ -127,17 +127,17 @@ WHISPER_GLOBAL_WEIGHTS = [
 ]
 
 
-def get_layer_weight_patterns(i, precision, model_type=None):
+def get_layer_weight_patterns(i, precision, model_type=None, skip_kv=False):
     is_whisper = model_type == 'whisper'
 
     patterns = [
         (['self_attn.q_proj.weight', 'attn.q_proj.weight', 'attn.c_attn.weight'], precision, f'layer_{i}_attn_q.weights', False) if not is_whisper else None,
-        (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False) if not is_whisper else None,
-        (['self_attn.v_proj.weight', 'attn.v_proj.weight'], precision, f'layer_{i}_attn_v.weights', False) if not is_whisper else None,
+        (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False) if not is_whisper and not skip_kv else None,
+        (['self_attn.v_proj.weight', 'attn.v_proj.weight'], precision, f'layer_{i}_attn_v.weights', False) if not is_whisper and not skip_kv else None,
         (['self_attn.o_proj.weight', 'attn.o_proj.weight', 'attn.c_proj.weight', 'self_attn.out_proj.weight'], precision, f'layer_{i}_attn_output.weights', False) if not is_whisper else None,
         (['input_layernorm.weight', 'ln_1.weight', 'operator_norm.weight'], precision, f'layer_{i}_input_norm.weights', False),
         (['self_attn.q_norm.weight', 'self_attn.q_layernorm.weight'], precision, f'layer_{i}_attn_q_norm.weights', False),
-        (['self_attn.k_norm.weight', 'self_attn.k_layernorm.weight'], precision, f'layer_{i}_attn_k_norm.weights', False),
+        (['self_attn.k_norm.weight', 'self_attn.k_layernorm.weight'], precision, f'layer_{i}_attn_k_norm.weights', False) if not skip_kv else None,
         (['mlp.gate_proj.weight', 'mlp.c_fc.weight', 'feed_forward.w1.weight', 'ff.ff_proj.weight'], precision, f'layer_{i}_ffn_gate.weights', False),
         (['mlp.up_proj.weight', 'feed_forward.w3.weight', 'ff.ff_noact.weight'], precision, f'layer_{i}_ffn_up.weights', False),
         (['mlp.down_proj.weight', 'mlp.c_proj.weight', 'feed_forward.w2.weight', 'ff.ff_out.weight'], precision, f'layer_{i}_ffn_down.weights', False),

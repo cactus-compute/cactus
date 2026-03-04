@@ -2,6 +2,7 @@
 #include "../graph/graph.h"
 #include <cmath>
 #include <cassert>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace cactus {
@@ -62,17 +63,21 @@ void GemmaModel3n::load_weights_to_graph(CactusGraph* gb) {
     weight_nodes_.per_layer_model_proj = gb->mmap_weights(model_folder_path_ + "/per_layer_model_proj.weights");
     weight_nodes_.per_layer_proj_norm = gb->mmap_weights(model_folder_path_ + "/per_layer_proj_norm.weights");
 
+    uint32_t num_shared = config_.num_kv_shared_layers;
+    uint32_t first_shared = (config_.num_layers > num_shared) ? config_.num_layers - num_shared : config_.num_layers;
+
     for (uint32_t i = 0; i < config_.num_layers; i++) {
         auto& layer = weight_nodes_.layers[i];
         std::string prefix = model_folder_path_ + "/layer_" + std::to_string(i) + "_";
+        bool is_shared = (i >= first_shared);
 
-        layer.attn_q_weight       = gb->mmap_weights(prefix + "attn_q.weights");
-        layer.attn_k_weight       = gb->mmap_weights(prefix + "attn_k.weights");
-        layer.attn_v_weight       = gb->mmap_weights(prefix + "attn_v.weights");
-        layer.attn_output_weight  = gb->mmap_weights(prefix + "attn_output.weights");
+        layer.attn_q_weight                    = gb->mmap_weights(prefix + "attn_q.weights");
+        layer.attn_k_weight                    = is_shared ? 0 : gb->mmap_weights(prefix + "attn_k.weights");
+        layer.attn_v_weight                    = is_shared ? 0 : gb->mmap_weights(prefix + "attn_v.weights");
+        layer.attn_output_weight               = gb->mmap_weights(prefix + "attn_output.weights");
         layer.input_layernorm_weight           = gb->mmap_weights(prefix + "input_norm.weights");
         layer.attn_q_norm_weight               = gb->mmap_weights(prefix + "attn_q_norm.weights");
-        layer.attn_k_norm_weight               = gb->mmap_weights(prefix + "attn_k_norm.weights");
+        layer.attn_k_norm_weight               = is_shared ? 0 : gb->mmap_weights(prefix + "attn_k_norm.weights");
         layer.ffn_gate_weight                  = gb->mmap_weights(prefix + "ffn_gate.weights");
         layer.ffn_up_weight                    = gb->mmap_weights(prefix + "ffn_up.weights");
         layer.ffn_down_weight                  = gb->mmap_weights(prefix + "ffn_down.weights");
@@ -221,17 +226,18 @@ size_t GemmaModel3n::build_attention(CactusGraph* gb, size_t input, uint32_t lay
         shared_v_nodes_[layer_idx] = v4;
     }
 
-    if (use_cache) {
+    if (use_cache && share_src < 0) {
         cache_k_output_nodes_[layer_idx] = k4;
         cache_v_output_nodes_[layer_idx] = v4;
     }
 
+    size_t cache_src = (share_src >= 0) ? static_cast<size_t>(share_src) : layer_idx;
     size_t attn;
     if (use_cache && !kv_cache_.is_empty()) {
         attn = gb->attention_int8_hybrid(
             q4, k4, v4, attention_scale_, position_offset,
-            kv_cache_.get_keys_int8(layer_idx), kv_cache_.get_values_int8(layer_idx),
-            kv_cache_.get_key_scales(layer_idx), kv_cache_.get_value_scales(layer_idx),
+            kv_cache_.get_keys_int8(cache_src), kv_cache_.get_values_int8(cache_src),
+            kv_cache_.get_key_scales(cache_src), kv_cache_.get_value_scales(cache_src),
             kv_cache_.current_seq_len, kv_heads, head_dim, window);
     } else {
         attn = gb->attention(q4, k4, v4, attention_scale_, position_offset, window);
@@ -275,27 +281,17 @@ size_t GemmaModel3n::build_transformer_block(CactusGraph* gb, size_t hidden, uin
 }
 
 
-size_t GemmaModel3n::forward(const std::vector<uint32_t>& tokens, bool use_cache) {
-    if (!initialized_ || !graph_handle_)
-        throw std::runtime_error("Model not initialized - call init() first");
-    if (tokens.empty())
-        throw std::runtime_error("Token sequence cannot be empty");
-
-    auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    gb->soft_reset();
-
-    size_t seq_len      = tokens.size();
-    size_t pos_offset   = use_cache ? kv_cache_.get_total_seq_len() : 0;
-    auto backend        = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+size_t GemmaModel3n::build_preamble(CactusGraph* gb, size_t seq_len, ComputeBackend backend,
+                                     size_t& token_input, size_t& pli_input, size_t* streams) {
     uint32_t num_layers = config_.num_layers;
     uint32_t pli_dim    = config_.hidden_size_per_layer_input;
     uint32_t num_altup  = config_.altup_num_inputs;
 
-    auto token_input = gb->input({seq_len}, Precision::FP32);
+    token_input = gb->input({seq_len}, Precision::FP32);
     auto x = gb->scalar_multiply(gb->embedding(embedding_node_id_, token_input),
                                  std::sqrt(static_cast<float>(config_.hidden_dim)));
 
-    auto pli_input = gb->input({seq_len}, Precision::FP32);
+    pli_input = gb->input({seq_len}, Precision::FP32);
     auto pli_embed = gb->scalar_multiply(gb->embedding(weight_nodes_.embed_tokens_per_layer, pli_input),
                                          std::sqrt(static_cast<float>(pli_dim)));
     auto pli_proj = gb->scalar_multiply(gb->matmul(x, weight_nodes_.per_layer_model_proj, true, backend),
@@ -305,25 +301,31 @@ size_t GemmaModel3n::forward(const std::vector<uint32_t>& tokens, bool use_cache
     pli_proj = gb->reshape(pli_proj, {seq_len, num_layers * pli_dim});
     auto pli_combined = gb->scalar_multiply(gb->add(pli_proj, pli_embed), RSQRT2);
 
-    size_t streams[4];
     streams[0] = x;
     for (uint32_t i = 1; i < num_altup; i++)
         streams[i] = build_magnitude_normalize(gb, x, gb->matmul(x, weight_nodes_.altup_proj_weights[i - 1], true, backend));
 
-    for (uint32_t layer_idx = 0; layer_idx < num_layers; layer_idx++) {
-        auto modalities = build_altup_router_modalities(gb, streams[0], layer_idx, backend);
+    return pli_combined;
+}
 
-        size_t predictions[4];
-        build_altup_predict(gb, modalities, layer_idx, streams, predictions);
+void GemmaModel3n::build_layer(CactusGraph* gb, uint32_t layer_idx, ComputeBackend backend,
+                                      bool use_cache, size_t pos_offset, size_t pli, size_t* streams) {
+    auto modalities = build_altup_router_modalities(gb, streams[0], layer_idx, backend);
 
-        auto activated = build_transformer_block(gb, predictions[0], layer_idx, backend, use_cache, pos_offset);
+    size_t predictions[4];
+    build_altup_predict(gb, modalities, layer_idx, streams, predictions);
 
-        build_altup_correct(gb, activated, build_altup_router_modalities(gb, activated, layer_idx, backend),
-                            layer_idx, backend, predictions, streams);
+    auto activated = build_transformer_block(gb, predictions[0], layer_idx, backend, use_cache, pos_offset);
 
-        if (pli_dim > 0)
-            build_per_layer_input(gb, pli_combined, layer_idx, backend, streams);
-    }
+    build_altup_correct(gb, activated, build_altup_router_modalities(gb, activated, layer_idx, backend),
+                        layer_idx, backend, predictions, streams);
+
+    if (config_.hidden_size_per_layer_input > 0)
+        build_per_layer_input(gb, pli, layer_idx, backend, streams);
+}
+
+size_t GemmaModel3n::build_output_head(CactusGraph* gb, size_t* streams, ComputeBackend backend) {
+    uint32_t num_altup = config_.altup_num_inputs;
 
     for (uint32_t i = 1; i < num_altup; i++) {
         streams[i] = gb->matmul(streams[i], weight_nodes_.altup_unembed_proj_weights[i - 1], true, backend);
@@ -335,18 +337,115 @@ size_t GemmaModel3n::forward(const std::vector<uint32_t>& tokens, bool use_cache
         hidden = gb->add(hidden, streams[i]);
     hidden = gb->scalar_multiply(hidden, 1.0f / static_cast<float>(num_altup));
 
-    std::vector<float> input_data(seq_len);
-    for (size_t i = 0; i < seq_len; i++)
+    return gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
+}
+
+void GemmaModel3n::set_token_inputs(CactusGraph* gb, size_t token_input, size_t pli_input,
+                                     const std::vector<uint32_t>& tokens) {
+    std::vector<float> input_data(tokens.size());
+    for (size_t i = 0; i < tokens.size(); i++)
         input_data[i] = static_cast<float>(tokens[i]);
     gb->set_input(token_input, input_data.data(), Precision::FP32);
     gb->set_input(pli_input, input_data.data(), Precision::FP32);
+}
 
-    auto output = gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
-    if (config_.final_logit_softcapping > 0.0f) {
-        float cap = config_.final_logit_softcapping;
-        output = gb->scalar_multiply(gb->tanh(gb->scalar_multiply(output, 1.0f / cap)), cap);
+
+size_t GemmaModel3n::forward(const std::vector<uint32_t>& tokens, bool use_cache) {
+    if (!initialized_ || !graph_handle_)
+        throw std::runtime_error("Model not initialized - call init() first");
+    if (tokens.empty())
+        throw std::runtime_error("Token sequence cannot be empty");
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    gb->soft_reset();
+
+    size_t pos_offset = use_cache ? kv_cache_.get_total_seq_len() : 0;
+    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+
+    size_t token_input, pli_input, streams[4];
+    auto pli = build_preamble(gb, tokens.size(), backend, token_input, pli_input, streams);
+
+    for (uint32_t i = 0; i < config_.num_layers; i++)
+        build_layer(gb, i, backend, use_cache, pos_offset, pli, streams);
+
+    set_token_inputs(gb, token_input, pli_input, tokens);
+    return build_output_head(gb, streams, backend);
+}
+
+
+size_t GemmaModel3n::forward_split(const std::vector<uint32_t>& tokens, bool use_cache) {
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    gb->soft_reset();
+
+    size_t seq_len = tokens.size();
+    size_t pos_offset = use_cache ? kv_cache_.get_total_seq_len() : 0;
+    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+    uint32_t num_layers = config_.num_layers;
+    uint32_t first_shared = num_layers - config_.num_kv_shared_layers;
+
+    size_t token_input, pli_input, streams[4];
+    auto pli = build_preamble(gb, seq_len, backend, token_input, pli_input, streams);
+
+    for (uint32_t i = 0; i < first_shared; i++)
+        build_layer(gb, i, backend, use_cache, pos_offset, pli, streams);
+
+    size_t hidden_dim = config_.hidden_dim;
+    for (uint32_t i = 0; i < config_.altup_num_inputs; i++) {
+        streams[i] = gb->index(streams[i], seq_len - 1, 0);
+        streams[i] = gb->reshape(streams[i], {1, hidden_dim});
     }
-    return output;
+
+    auto pli_last = gb->index(pli, seq_len - 1, 0);
+    pli_last = gb->reshape(pli_last, {1, num_layers * config_.hidden_size_per_layer_input});
+
+    for (uint32_t i = first_shared; i < num_layers; i++)
+        build_layer(gb, i, backend, use_cache, pos_offset, pli_last, streams);
+
+    set_token_inputs(gb, token_input, pli_input, tokens);
+    return build_output_head(gb, streams, backend);
+}
+
+
+void GemmaModel3n::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, const std::string& profile_file) {
+    if (tokens.empty())
+        return;
+
+    static constexpr size_t SPLIT_PREFILL_MIN_TOKENS = 32;
+    bool use_split = config_.num_kv_shared_layers > 0
+                  && tokens.size() >= SPLIT_PREFILL_MIN_TOKENS
+                  && !std::getenv("CACTUS_DISABLE_SPLIT_PREFILL");
+
+    if (!use_split) {
+        Model::prefill(tokens, chunk_size, profile_file);
+        return;
+    }
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+
+    auto process_chunk = [&](const std::vector<uint32_t>& chunk) {
+        forward_split(chunk, true);
+        gb->execute(profile_file);
+        update_kv_cache(gb, chunk.size());
+    };
+
+    if (tokens.size() <= chunk_size) {
+        process_chunk(tokens);
+        return;
+    }
+
+    size_t num_full_chunks = (tokens.size() - 1) / chunk_size;
+    for (size_t i = 0; i < num_full_chunks; ++i) {
+        size_t start = i * chunk_size;
+        std::vector<uint32_t> chunk(tokens.begin() + start, tokens.begin() + start + chunk_size);
+        if (i == 1)
+            gb->set_prefill_mode(true);
+        process_chunk(chunk);
+    }
+
+    gb->set_prefill_mode(false);
+    size_t final_start = num_full_chunks * chunk_size;
+    std::vector<uint32_t> final_chunk(tokens.begin() + final_start, tokens.end());
+    process_chunk(final_chunk);
 }
 
 }
