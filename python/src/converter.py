@@ -12,6 +12,7 @@ from .config_utils import cfg_get, detect_model_type, extract_base_config, extra
 from .weight_patterns import (
     EMBED_NAMES, OUTPUT_NAMES, OUTPUT_NORM_NAMES, LAYER_PREFIXES,
     VISION_ITEMS, PROJECTOR_WEIGHTS, WHISPER_GLOBAL_WEIGHTS, MOONSHINE_GLOBAL_WEIGHTS,
+    GEMMA3N_GLOBAL_WEIGHTS, GEMMA3N_VISION_TOWER_PREFIX, GEMMA3N_AUDIO_TOWER_PREFIX,
     get_layer_weight_patterns, get_vision_layer_weights
 )
 
@@ -21,6 +22,20 @@ def _find_first_key(state_dict, candidates):
         if key in state_dict:
             return key
     return None
+
+
+def _gemma3n_tower_output_name(hf_key, strip_prefix, add_prefix):
+    name = hf_key[len(strip_prefix):]
+    if name.endswith('.weight'):
+        name = name[:-len('.weight')]
+        ext = '.weights'
+    elif name.endswith('.bias'):
+        name = name[:-len('.bias')]
+        ext = '.bias'
+    else:
+        ext = '.weights'
+    name = name.replace('.', '_')
+    return add_prefix + name + ext
 
 
 def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
@@ -289,6 +304,25 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 if fname in state_dict:
                     save_tensor_with_header(state_dict[fname], output_dir / out, precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                     saved_tensor_full_names.add(fname)
+
+    if detected_model_type == 'gemma3n':
+        for name, save_name in GEMMA3N_GLOBAL_WEIGHTS:
+            if name in state_dict:
+                save_tensor_with_header(state_dict[name], output_dir / save_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                saved_tensor_full_names.add(name)
+
+        for hf_key in sorted(state_dict.keys()):
+            if hf_key.startswith(GEMMA3N_VISION_TOWER_PREFIX) and hf_key not in saved_tensor_full_names:
+                out_name = _gemma3n_tower_output_name(hf_key, GEMMA3N_VISION_TOWER_PREFIX, 'vision_')
+                save_tensor_with_header(state_dict[hf_key], output_dir / out_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                saved_tensor_full_names.add(hf_key)
+
+        for hf_key in sorted(state_dict.keys()):
+            if hf_key.startswith(GEMMA3N_AUDIO_TOWER_PREFIX) and hf_key not in saved_tensor_full_names:
+                out_name = _gemma3n_tower_output_name(hf_key, GEMMA3N_AUDIO_TOWER_PREFIX, 'audio_')
+                save_tensor_with_header(state_dict[hf_key], output_dir / out_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                saved_tensor_full_names.add(hf_key)
+
     missing_tensors = []
     if detected_model_type == 'parakeet':
         global_mappings = [

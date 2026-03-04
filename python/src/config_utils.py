@@ -87,7 +87,9 @@ def detect_model_type(cfg, config, output_dir=None):
     if decoding_model_type == 'tdt' or loss_name == 'tdt':
         return 'parakeet_tdt'
 
-    if 'gemma' in model_type_str:
+    if 'gemma3n' in model_type_str:
+        return 'gemma3n'
+    elif 'gemma' in model_type_str:
         return 'gemma'
     elif 'lfm2' in model_type_str:
         return 'lfm2'

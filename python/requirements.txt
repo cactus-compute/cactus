@@ -5,3 +5,5 @@ pillow==11.3.0
 num2words==0.5.12
 huggingface_hub==1.4.1
 einops==0.8.2
+timm==1.0.25
+sentencepiece==0.2.1
