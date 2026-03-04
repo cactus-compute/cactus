@@ -246,15 +246,11 @@ size_t GemmaModel3n::build_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx
     auto gate = gb->matmul(input, layer.ffn_gate_weight, true, backend);
     auto up   = gb->matmul(input, layer.ffn_up_weight, true, backend);
 
-    bool is_sparse = layer_idx < config_.activation_sparsity_ppf.size() &&
-                     config_.activation_sparsity_ppf[layer_idx] > 0.0f;
-
-    if (is_sparse)
+    if (layer_idx < config_.activation_sparsity_ppf.size() && config_.activation_sparsity_ppf[layer_idx] > 0.0f)
         gate = build_gaussian_topk(gb, gate, config_.activation_sparsity_ppf[layer_idx]);
 
-    auto gated = gb->multiply(gb->gelu(gate), up);
-    return is_sparse ? gb->matmul_sparse(gated, layer.ffn_down_weight, true, backend)
-                     : gb->matmul(gated, layer.ffn_down_weight, true, backend);
+    auto activated = gb->multiply(gb->gelu(gate), up);
+    return gb->matmul(activated, layer.ffn_down_weight, true, backend);
 }
 
 

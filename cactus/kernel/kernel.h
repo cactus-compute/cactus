@@ -46,10 +46,6 @@ void cactus_gemv_int8(const int8_t* A, float A_scale,
                       const int8_t* B, const __fp16* B_scales,
                       __fp16* C, size_t K, size_t N, size_t group_size);
 
-void cactus_gemv_sparse_int8(const int8_t* A, float A_scale,
-                             const int8_t* B, const __fp16* B_scales,
-                             __fp16* C, size_t K, size_t N, size_t group_size);
-
 void cactus_gemm_int8(const int8_t* A, const float* A_scales,
                       const int8_t* B, const __fp16* B_scales,
                       __fp16* C, size_t M, size_t K, size_t N, size_t group_size);

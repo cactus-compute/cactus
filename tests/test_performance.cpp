@@ -943,72 +943,6 @@ bool test_grouped_int8_matmul_performance(TestUtils::TestRunner& runner) {
     return true;
 }
 
-void benchmark_gemv_sparse_int8(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
-    const size_t group_size = 32;
-
-    std::vector<std::pair<size_t, size_t>> shapes = {
-        {2048, 2048},
-        {4096, 4096},
-        {4096, 16384},
-    };
-
-    std::vector<float> sparsity_levels = {0.0f, 0.5f, 0.75f, 0.90f};
-
-    std::mt19937 rng(42);
-
-    for (const auto& [K, N] : shapes) {
-        size_t N_blocks = (N + 3) / 4;
-
-        std::vector<int8_t> B(N_blocks * K * 4);
-        for (auto& v : B) v = static_cast<int8_t>(rng() % 256 - 128);
-
-        size_t num_groups_total = N_blocks * (K / group_size);
-        std::vector<__fp16> B_scales(num_groups_total * 4);
-        for (auto& v : B_scales) v = static_cast<__fp16>(0.01f + (rng() % 100) * 0.0005f);
-
-        for (float sparsity : sparsity_levels) {
-            std::vector<int8_t> A(K);
-            for (size_t i = 0; i < K; i++) {
-                float r = static_cast<float>(rng() % 10000) / 10000.0f;
-                A[i] = (r < sparsity) ? 0 : static_cast<int8_t>(rng() % 256 - 128);
-            }
-
-            float max_abs = 0;
-            for (size_t i = 0; i < K; i++) max_abs = std::max(max_abs, std::abs((float)A[i]));
-            float A_scale = max_abs > 0 ? max_abs / 127.0f : 1e-10f;
-
-            std::vector<__fp16> C_dense(N);
-            std::vector<__fp16> C_sparse(N);
-
-            int sp_pct = static_cast<int>(sparsity * 100);
-
-            double dense_ms = time_operation<__fp16>([&]() {
-                cactus_gemv_int8(A.data(), A_scale, B.data(), B_scales.data(), C_dense.data(), K, N, group_size);
-            }, config.iterations);
-
-            double sparse_ms = time_operation<__fp16>([&]() {
-                cactus_gemv_sparse_int8(A.data(), A_scale, B.data(), B_scales.data(), C_sparse.data(), K, N, group_size);
-            }, config.iterations);
-
-            double speedup = dense_ms / sparse_ms;
-
-            std::ostringstream details;
-            details << std::fixed << std::setprecision(3)
-                    << "dense=" << dense_ms << "ms, sparse=" << sparse_ms << "ms, "
-                    << std::setprecision(2) << speedup << "x";
-            runner.log_performance(
-                "GEMV INT8 " + std::to_string(K) + "x" + std::to_string(N) + " " + std::to_string(sp_pct) + "% sparse",
-                details.str());
-        }
-    }
-}
-
-bool test_sparse_gemv_int8_performance(TestUtils::TestRunner& runner) {
-    BenchmarkConfig config;
-    benchmark_gemv_sparse_int8(runner, config);
-    return true;
-}
-
 bool test_unary_operations_performance(TestUtils::TestRunner& runner) {
     BenchmarkConfig config;
     benchmark_unary_ops<__fp16>(runner, config);
@@ -1187,7 +1121,6 @@ int main() {
     runner.run_test("Matrix Multiplication", test_matrix_multiplication_performance(runner));
     runner.run_test("F16 MatMul", test_gemm_f16_direct_performance(runner));
     runner.run_test("Grouped INT8 MatMul", test_grouped_int8_matmul_performance(runner));
-    runner.run_test("Sparse GEMV INT8", test_sparse_gemv_int8_performance(runner));
     runner.run_test("Unary Operations", test_unary_operations_performance(runner));
     runner.run_test("Reduction Operations", test_reduction_operations_performance(runner));
     runner.run_test("Advanced Operations", test_advanced_operations_performance(runner));
