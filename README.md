@@ -240,8 +240,10 @@ graph.hard_reset();
 | LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |                                                                                                            
 | LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |                                                                                                               
 | UsefulSensors/moonshine-base | transcription, speech embed |                                                                                                         
+| openai/whisper-tiny | transcription, speech embed, Apple NPU |
+| openai/whisper-base | transcription, speech embed, Apple NPU |
 | openai/whisper-small | transcription, speech embed, Apple NPU |                                                                                                                 
-| openai/whisper-medium | transcribe, speech embed, Apple NPU |
+| openai/whisper-medium | transcription, speech embed, Apple NPU |
 | nvidia/parakeet-ctc-0.6b | transcribe, speech embed, Apple NPU |
 | nvidia/parakeet-ctc-1.1b | transcribe, speech embed, Apple NPU |
 | snakers4/silero-vad | vad |

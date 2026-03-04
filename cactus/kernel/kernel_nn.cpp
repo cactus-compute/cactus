@@ -513,24 +513,6 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
                        const float* bias_values, const uint32_t* bias_indices,
                        size_t bias_count) {
 
-    if (temperature == 0.0f && top_p <= 0.0f && top_k == 0) {
-        if (vocab_size == 0) {
-            output[0] = 0;
-            return;
-        }
-        size_t best_idx = 0;
-        float best_val = logits[0];
-        for (size_t i = 1; i < vocab_size; ++i) {
-            float val = logits[i];
-            if (val > best_val) {
-                best_val = val;
-                best_idx = i;
-            }
-        }
-        output[0] = static_cast<uint32_t>(best_idx);
-        return;
-    }
-
     std::vector<float> filtered_logits(vocab_size);
 
     for (size_t i = 0; i < vocab_size; ++i) {
@@ -544,6 +526,16 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
                 filtered_logits[idx] += bias_values[i];
             }
         }
+    }
+
+    if (temperature == 0.0f && top_p <= 0.0f && top_k == 0) {
+        if (vocab_size == 0) {
+            output[0] = 0;
+            return;
+        }
+        auto it = std::max_element(filtered_logits.begin(), filtered_logits.end());
+        output[0] = static_cast<uint32_t>(std::distance(filtered_logits.begin(), it));
+        return;
     }
 
     if (temperature > 0) {
@@ -711,16 +703,19 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
             output[0] = 0;
             return;
         }
-        size_t best_idx = 0;
-        float best_val = static_cast<float>(logits[0]);
-        for (size_t i = 1; i < vocab_size; ++i) {
-            float val = static_cast<float>(logits[i]);
-            if (val > best_val) {
-                best_val = val;
-                best_idx = i;
+        std::vector<float> biased(vocab_size);
+        for (size_t i = 0; i < vocab_size; ++i) {
+            biased[i] = static_cast<float>(logits[i]);
+        }
+        if (bias_values && bias_indices && bias_count > 0) {
+            for (size_t i = 0; i < bias_count; ++i) {
+                if (bias_indices[i] < vocab_size) {
+                    biased[bias_indices[i]] += bias_values[i];
+                }
             }
         }
-        output[0] = static_cast<uint32_t>(best_idx);
+        auto it = std::max_element(biased.begin(), biased.end());
+        output[0] = static_cast<uint32_t>(std::distance(biased.begin(), it));
         return;
     }
 

@@ -658,6 +658,9 @@ private:
 
     bool first_decode_step_ = true;
 
+    std::unordered_map<uint32_t, float> suppress_bias_;
+    std::unordered_map<uint32_t, float> suppress_bias_first_step_;
+
     std::vector<size_t> encoder_k_persistent_;
     std::vector<size_t> encoder_v_persistent_;
 
