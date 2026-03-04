@@ -146,7 +146,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         filename = output_path.name
         if any(x in filename for x in ['norm', 'bias', 'vision', 'position_embeddings', 'embed_positions']):
             precision = 'FP16'
-        elif precision == 'INT4' and any(x in filename for x in EMBED_NAMES):
+        elif precision == 'INT4' and any(x in filename for x in list(EMBED_NAMES) + ['token_embeddings', 'embed_tokens_per_layer']):
             precision = 'INT8'
 
     shape = list(data.shape)
