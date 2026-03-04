@@ -405,15 +405,13 @@ void cactus_gemv_sparse_int8(
     if (K == 0 || N == 0) return;
 
     const size_t num_groups = K / group_size;
-    const size_t num_chunks = K / 32;
+    const size_t num_halves = K / 16;
     const size_t N_blocks = (N + 3) / 4;
 
-    std::vector<uint8_t> a_zero(num_chunks);
-    for (size_t c = 0; c < num_chunks; c++) {
-        uint64x2_t lo = vreinterpretq_u64_s8(vld1q_s8(A + c * 32));
-        uint64x2_t hi = vreinterpretq_u64_s8(vld1q_s8(A + c * 32 + 16));
-        a_zero[c] = !((vgetq_lane_u64(lo, 0) | vgetq_lane_u64(lo, 1)) |
-                       (vgetq_lane_u64(hi, 0) | vgetq_lane_u64(hi, 1)));
+    std::vector<uint8_t> a_zero(num_halves);
+    for (size_t h = 0; h < num_halves; h++) {
+        uint64x2_t w = vreinterpretq_u64_s8(vld1q_s8(A + h * 16));
+        a_zero[h] = !(vgetq_lane_u64(w, 0) | vgetq_lane_u64(w, 1));
     }
 
     auto process_blocks = [=](size_t block_start, size_t block_end) {
@@ -425,9 +423,9 @@ void cactus_gemv_sparse_int8(
 
             size_t g = 0;
             for (; g + 1 < num_groups; g += 2) {
-                const size_t c0 = g * (group_size / 32);
+                const size_t h0 = g * (group_size / 16);
 
-                if (a_zero[c0] & a_zero[c0+1])
+                if (a_zero[h0] & a_zero[h0+1] & a_zero[h0+2] & a_zero[h0+3])
                     continue;
 
                 const size_t k_base0 = g * group_size;
@@ -438,32 +436,36 @@ void cactus_gemv_sparse_int8(
                 int32x4_t acc0 = vdupq_n_s32(0);
                 int32x4_t acc1 = vdupq_n_s32(0);
 
-                if (!a_zero[c0]) {
-                    int8x16_t a_lo = vld1q_s8(A + k_base0);
-                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0),      a_lo, 0);
-                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 16), a_lo, 1);
-                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 32), a_lo, 2);
-                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 48), a_lo, 3);
-
-                    int8x16_t a_hi = vld1q_s8(A + k_base0 + 16);
-                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 64),  a_hi, 0);
-                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 80),  a_hi, 1);
-                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 96),  a_hi, 2);
-                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 112), a_hi, 3);
+                if (!a_zero[h0]) {
+                    int8x16_t a_vec = vld1q_s8(A + k_base0);
+                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0),      a_vec, 0);
+                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 16), a_vec, 1);
+                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 32), a_vec, 2);
+                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 48), a_vec, 3);
                 }
 
-                if (!a_zero[c0+1]) {
-                    int8x16_t a_lo = vld1q_s8(A + k_base1);
-                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1),      a_lo, 0);
-                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 16), a_lo, 1);
-                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 32), a_lo, 2);
-                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 48), a_lo, 3);
+                if (!a_zero[h0+1]) {
+                    int8x16_t a_vec = vld1q_s8(A + k_base0 + 16);
+                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 64),  a_vec, 0);
+                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 80),  a_vec, 1);
+                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 96),  a_vec, 2);
+                    acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + 112), a_vec, 3);
+                }
 
-                    int8x16_t a_hi = vld1q_s8(A + k_base1 + 16);
-                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 64),  a_hi, 0);
-                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 80),  a_hi, 1);
-                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 96),  a_hi, 2);
-                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 112), a_hi, 3);
+                if (!a_zero[h0+2]) {
+                    int8x16_t a_vec = vld1q_s8(A + k_base1);
+                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1),      a_vec, 0);
+                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 16), a_vec, 1);
+                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 32), a_vec, 2);
+                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 48), a_vec, 3);
+                }
+
+                if (!a_zero[h0+3]) {
+                    int8x16_t a_vec = vld1q_s8(A + k_base1 + 16);
+                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 64),  a_vec, 0);
+                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 80),  a_vec, 1);
+                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 96),  a_vec, 2);
+                    acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + 112), a_vec, 3);
                 }
 
                 float32x4_t s0 = vcvt_f32_f16(vld1_f16(B_scales + (n_block * num_groups + g) * 4));
@@ -473,9 +475,9 @@ void cactus_gemv_sparse_int8(
             }
 
             for (; g < num_groups; g++) {
-                const size_t c0 = g * (group_size / 32);
+                const size_t h0 = g * (group_size / 16);
 
-                if (a_zero[c0])
+                if (a_zero[h0] & a_zero[h0+1])
                     continue;
 
                 const size_t k_base = g * group_size;
@@ -483,17 +485,21 @@ void cactus_gemv_sparse_int8(
 
                 int32x4_t acc = vdupq_n_s32(0);
 
-                int8x16_t a_lo = vld1q_s8(A + k_base);
-                acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base),      a_lo, 0);
-                acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 16), a_lo, 1);
-                acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 32), a_lo, 2);
-                acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 48), a_lo, 3);
+                if (!a_zero[h0]) {
+                    int8x16_t a_vec = vld1q_s8(A + k_base);
+                    acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base),      a_vec, 0);
+                    acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 16), a_vec, 1);
+                    acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 32), a_vec, 2);
+                    acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 48), a_vec, 3);
+                }
 
-                int8x16_t a_hi = vld1q_s8(A + k_base + 16);
-                acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 64),  a_hi, 0);
-                acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 80),  a_hi, 1);
-                acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 96),  a_hi, 2);
-                acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 112), a_hi, 3);
+                if (!a_zero[h0+1]) {
+                    int8x16_t a_vec = vld1q_s8(A + k_base + 16);
+                    acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 64),  a_vec, 0);
+                    acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 80),  a_vec, 1);
+                    acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 96),  a_vec, 2);
+                    acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + 112), a_vec, 3);
+                }
 
                 float32x4_t s = vcvt_f32_f16(vld1_f16(B_scales + (n_block * num_groups + g) * 4));
                 running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc), s);
