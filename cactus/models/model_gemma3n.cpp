@@ -1,6 +1,7 @@
 #include "model.h"
 #include "../graph/graph.h"
 #include <cmath>
+#include <cassert>
 #include <stdexcept>
 
 namespace cactus {
@@ -18,7 +19,7 @@ void GemmaModel3n::post_init() {
     kv_cache_.set_window_size(0, 0);
 
     uint32_t n = config_.num_layers;
-    uint32_t num_shared = 10;
+    uint32_t num_shared = config_.num_kv_shared_layers;
     uint32_t first_shared = (n > num_shared) ? n - num_shared : n;
 
     kv_share_map_.resize(n, -1);
@@ -45,6 +46,7 @@ void GemmaModel3n::post_init() {
 }
 
 void GemmaModel3n::load_weights_to_graph(CactusGraph* gb) {
+    assert(config_.altup_num_inputs == 4 && "WeightNodeIDs altup arrays assume exactly 4 AltUp streams");
     embedding_node_id_ = gb->mmap_embeddings(embedding_file_path_);
     weight_nodes_.output_norm_weight = gb->mmap_weights(model_folder_path_ + "/output_norm.weights");
     weight_nodes_.output_weight = gb->mmap_weights(model_folder_path_ + "/output_weight.weights");
@@ -193,7 +195,7 @@ size_t GemmaModel3n::build_attention(CactusGraph* gb, size_t input, uint32_t lay
         is_global = (layer_idx % 5) == 4;
     }
     float rope_freq   = is_global ? config_.rope_theta : config_.rope_local_base_freq;
-    size_t window     = is_global ? 0 : 512;
+    size_t window     = is_global ? 0 : config_.sliding_window;
 
     auto q = gb->matmul(input, layer.attn_q_weight, true, backend);
     q = gb->reshape(q, {seq_len * num_heads, head_dim});
@@ -339,7 +341,12 @@ size_t GemmaModel3n::forward(const std::vector<uint32_t>& tokens, bool use_cache
     gb->set_input(token_input, input_data.data(), Precision::FP32);
     gb->set_input(pli_input, input_data.data(), Precision::FP32);
 
-    return gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
+    auto output = gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
+    if (config_.final_logit_softcapping > 0.0f) {
+        float cap = config_.final_logit_softcapping;
+        output = gb->scalar_multiply(gb->tanh(gb->scalar_multiply(output, 1.0f / cap)), cap);
+    }
+    return output;
 }
 
 }

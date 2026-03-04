@@ -218,6 +218,11 @@ def extract_gemma3n_config(cfg, root_config):
     rope_local_base_freq = float(cfg_get(cfg, 'rope_local_base_freq',
         cfg_get(root_config, 'rope_local_base_freq', 10000.0)))
 
+    num_kv_shared_layers = int(cfg_get(cfg, 'num_kv_shared_layers',
+        cfg_get(root_config, 'num_kv_shared_layers', 0)))
+    sliding_window = int(cfg_get(cfg, 'sliding_window',
+        cfg_get(root_config, 'sliding_window', 512)))
+
     rope_theta = cfg_get(root_config, 'rope_theta', None)
     if rope_theta is None:
         rope_theta = cfg_get(cfg, 'rope_theta', 1000000.0)
@@ -261,6 +266,8 @@ def extract_gemma3n_config(cfg, root_config):
         'altup_num_inputs': altup_num_inputs,
         'laurel_rank': laurel_rank,
         'hidden_size_per_layer_input': hidden_size_per_layer_input,
+        'num_kv_shared_layers': num_kv_shared_layers,
+        'sliding_window': sliding_window,
         'rope_local_base_freq': rope_local_base_freq,
         'rope_theta': float(rope_theta),
         'final_logit_softcapping': final_logit_softcapping,

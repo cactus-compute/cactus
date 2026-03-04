@@ -141,6 +141,8 @@ struct Config {
     uint32_t altup_num_inputs = 4;
     uint32_t laurel_rank = 64;
     uint32_t hidden_size_per_layer_input = 256;
+    uint32_t num_kv_shared_layers = 0;
+    uint32_t sliding_window = 512;
     float rope_local_base_freq = 10000.0f;
     float final_logit_softcapping = 0.0f;
     std::vector<float> activation_sparsity_ppf;

@@ -561,6 +561,8 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "altup_num_inputs") altup_num_inputs = static_cast<uint32_t>(std::stoul(value));
         else if (key == "laurel_rank") laurel_rank = static_cast<uint32_t>(std::stoul(value));
         else if (key == "hidden_size_per_layer_input") hidden_size_per_layer_input = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "num_kv_shared_layers") num_kv_shared_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "sliding_window") sliding_window = static_cast<uint32_t>(std::stoul(value));
         else if (key == "rope_local_base_freq") rope_local_base_freq = std::stof(value);
         else if (key == "final_logit_softcapping") final_logit_softcapping = std::stof(value);
         else if (key == "activation_sparsity_ppf") {
