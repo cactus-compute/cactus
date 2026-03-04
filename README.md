@@ -222,30 +222,34 @@ graph.hard_reset();
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Supported Models                                                                                                                                                     
-                                                                                                                                                                          
-| Model | Features |                                                                                                                                             
-|-------|----------|                                                                                                                                             
-| google/gemma-3-270m-it | completion |                                                                                                                         
-| google/functiongemma-270m-it | completion, tools |                                                                                                            
-| LiquidAI/LFM2-350M | completion, tools, embed |                                                                                                               
-| Qwen/Qwen3-0.6B | completion, tools, embed |                                                                                                                  
-| LiquidAI/LFM2-700M | completion, tools, embed |                                                                                                               
-| LiquidAI/LFM2-8B-A1B | completion, tools, embed |                                                                                                                
-| google/gemma-3-1b-it | completion |                                                                                                                           
-| LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |                                                                                                    
-| LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |                                                                                                      
+## Supported Models
+
+| Model | Features |                                                      
+|-------|----------|
+| google/gemma-3-270m-it | completion |
+| google/functiongemma-270m-it | completion, tools |
+| LiquidAI/LFM2-350M | completion, tools, embed |
+| Qwen/Qwen3-0.6B | completion, tools, embed |
+| LiquidAI/LFM2-700M | completion, tools, embed |
+| LiquidAI/LFM2-8B-A1B | completion, tools, embed |
+| google/gemma-3-1b-it | completion |
+| LiquidAI/LFM2-1.2B | completion, tools, embed |
+| LiquidAI/LFM2-1.2B-Tool | completion, tools, embed |
+| LiquidAI/LFM2-1.2B-RAG | completion, tools, embed |
+| LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |
+| LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |
 | Qwen/Qwen3-1.7B | completion, tools, embed | 
-| LiquidAI/LFM2-2.6B | completion, tools, embed |                                                                                                                
-| LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |                                                                                                            
-| LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |                                                                                                               
-| UsefulSensors/moonshine-base | transcription, speech embed |                                                                                                         
-| openai/whisper-small | transcription, speech embed, Apple NPU |                                                                                                                 
+| LiquidAI/LFM2-2.6B | completion, tools, embed |
+| LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |
+| LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |
+| UsefulSensors/moonshine-base | transcription, speech embed |
+| openai/whisper-small | transcription, speech embed, Apple NPU |
 | openai/whisper-medium | transcribe, speech embed, Apple NPU |
 | nvidia/parakeet-ctc-0.6b | transcribe, speech embed, Apple NPU |
 | nvidia/parakeet-ctc-1.1b | transcribe, speech embed, Apple NPU |
+| nvidia/parakeet-tdt-0.6b-v3 | transcribe, speech embed, Apple NPU |
 | snakers4/silero-vad | vad |
-| nomic-ai/nomic-embed-text-v2-moe | embed |                                                                                                                    
+| nomic-ai/nomic-embed-text-v2-moe | embed |
 | Qwen/Qwen3-Embedding-0.6B | embed | 
 
 ## Maintaining Organisations
