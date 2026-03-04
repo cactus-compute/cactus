@@ -6,7 +6,7 @@
 namespace cactus {
 namespace engine {
 
-static constexpr float RSQRT2 = 0.70710678118f;
+static const float RSQRT2 = 1.0f / std::sqrt(2.0f);
 
 GemmaModel3n::GemmaModel3n() : Model() {}
 
