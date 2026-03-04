@@ -250,6 +250,9 @@ static bool build_corpus_index(CactusModelHandle* handle, const std::string& cor
     std::string index_path = corpus_dir + "/index.bin";
     std::string data_path = corpus_dir + "/data.bin";
 
+    std::remove(index_path.c_str());
+    std::remove(data_path.c_str());
+
     try {
         handle->corpus_index = std::make_unique<index::Index>(index_path, data_path, embedding_dim);
     } catch (const std::exception& e) {

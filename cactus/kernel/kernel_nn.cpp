@@ -7,7 +7,6 @@
 #include <cstring>
 #include <limits>
 #include <random>
-#include <iostream>
 
 void cactus_relu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
     for (size_t i = 0; i < num_elements; ++i) {
