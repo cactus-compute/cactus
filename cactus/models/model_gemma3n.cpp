@@ -111,7 +111,7 @@ size_t GemmaModel3n::build_magnitude_normalize(CactusGraph* gb, size_t reference
     auto ref_sq = gb->mean(gb->multiply(reference, reference), -1);
     auto tgt_sq = gb->mean(gb->multiply(target, target), -1);
     auto ref_mag = gb->scalar_sqrt(ref_sq);
-    auto tgt_mag = gb->scalar_add(gb->scalar_sqrt(tgt_sq), 1e-5f);
+    auto tgt_mag = gb->scalar_sqrt(gb->scalar_add(tgt_sq, 1e-5f));
     auto ratio = gb->divide(ref_mag, tgt_mag);
     return gb->multiply(target, ratio);
 }
@@ -295,7 +295,7 @@ size_t GemmaModel3n::build_preamble(CactusGraph* gb, size_t seq_len, ComputeBack
     auto pli_embed = gb->scalar_multiply(gb->embedding(weight_nodes_.embed_tokens_per_layer, pli_input),
                                          std::sqrt(static_cast<float>(pli_dim)));
     auto pli_proj = gb->scalar_multiply(gb->matmul(x, weight_nodes_.per_layer_model_proj, true, backend),
-                                        1.0f / static_cast<float>(config_.hidden_dim));
+                                        1.0f / std::sqrt(static_cast<float>(config_.hidden_dim)));
     pli_proj = gb->reshape(pli_proj, {seq_len * num_layers, pli_dim});
     pli_proj = gb->rms_norm(pli_proj, weight_nodes_.per_layer_proj_norm, config_.layer_norm_eps);
     pli_proj = gb->reshape(pli_proj, {seq_len, num_layers * pli_dim});
