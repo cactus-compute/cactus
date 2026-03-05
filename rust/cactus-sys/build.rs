@@ -68,6 +68,11 @@ fn ensure_macos_deployment_target() {
     if current.is_empty() || version_less_than(&current, MIN_VERSION) {
         unsafe { env::set_var("MACOSX_DEPLOYMENT_TARGET", MIN_VERSION) };
     }
+
+    // The env var above affects CMake compilation, but Rust's linker invocation
+    // determines -mmacosx-version-min separately. Pass it explicitly so the
+    // linker knows SME2 runtime symbols (___arm_tpidr2_save/restore) are available.
+    println!("cargo:rustc-link-arg=-mmacosx-version-min={MIN_VERSION}");
 }
 
 #[cfg(target_os = "macos")]
