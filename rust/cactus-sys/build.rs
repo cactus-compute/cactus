@@ -7,6 +7,7 @@ fn main() {
     apply_linux_compiler_workaround();
 
     let build_dir = build_native_library(&cactus_src);
+    build_sme2_stubs(&cactus_src);
     link_native_library(&build_dir);
     link_platform_dependencies();
 
@@ -55,6 +56,15 @@ fn apply_linux_compiler_workaround() {
 
 #[cfg(not(target_os = "linux"))]
 fn apply_linux_compiler_workaround() {}
+
+fn build_sme2_stubs(cactus_src: &Path) {
+    let stubs = cactus_src.join("kernel/sme2_stubs.c");
+    if stubs.exists() {
+        cc::Build::new()
+            .file(&stubs)
+            .compile("sme2_stubs");
+    }
+}
 
 fn build_native_library(cactus_src: &Path) -> PathBuf {
     cmake::Config::new(cactus_src)
