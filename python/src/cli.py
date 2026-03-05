@@ -7,6 +7,8 @@ import json
 import subprocess
 import shutil
 import platform
+import time
+import tempfile
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -14,6 +16,16 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 DEFAULT_MODEL_ID = "LiquidAI/LFM2.5-1.2B-Instruct"
 DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_TEST_WHISPER_MODEL_ID = "openai/whisper-small"
+DEFAULT_BENCHMARK_TRANSCRIBE_MODELS = [
+    "UsefulSensors/moonshine-base",
+    "openai/whisper-tiny",
+    "openai/whisper-base",
+    "openai/whisper-small",
+    "openai/whisper-medium",
+    "nvidia/parakeet-ctc-0.6b",
+    "nvidia/parakeet-tdt-0.6b-v3",
+    "nvidia/parakeet-ctc-1.1b",
+]
 
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
@@ -1408,6 +1420,925 @@ def cmd_test(args):
     return result.returncode
 
 
+def _benchmark_audio_duration_sec(audio_path):
+    if audio_path.suffix.lower() != ".wav":
+        return None
+    try:
+        import wave
+        with wave.open(str(audio_path), "rb") as wav_file:
+            n_frames = wav_file.getnframes()
+            sample_rate = wav_file.getframerate()
+            if sample_rate <= 0:
+                return None
+            return n_frames / float(sample_rate)
+    except Exception:
+        return None
+
+
+def _benchmark_split_words(text):
+    words = []
+    for token in text.split():
+        cleaned = "".join(ch.lower() for ch in token if ch.isalnum())
+        if cleaned:
+            words.append(cleaned)
+    return words
+
+
+def _benchmark_wer(hypothesis, reference):
+    hyp = _benchmark_split_words(hypothesis)
+    ref = _benchmark_split_words(reference)
+    if not ref:
+        return 0.0 if not hyp else 1.0
+
+    n, m = len(ref), len(hyp)
+    dp = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n + 1):
+        dp[i][0] = i
+    for j in range(m + 1):
+        dp[0][j] = j
+
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            if ref[i - 1] == hyp[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1]
+            else:
+                dp[i][j] = 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+
+    return float(dp[n][m]) / float(n)
+
+
+def _benchmark_parse_reference(reference_text, reference_file, audio_path):
+    if reference_text:
+        return reference_text.strip()
+
+    if not reference_file:
+        return None
+
+    ref_path = Path(reference_file).expanduser().resolve()
+    if not ref_path.exists():
+        raise FileNotFoundError(f"Reference file not found: {ref_path}")
+
+    content = ref_path.read_text(encoding="utf-8").strip()
+    if "|" not in content:
+        return content if content else None
+
+    audio_name = audio_path.name
+    fallback = None
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or "|" not in line:
+            continue
+        key, value = line.split("|", 1)
+        key = key.strip()
+        value = value.strip()
+        if not value:
+            continue
+        if key == "*":
+            fallback = value
+            continue
+        if key == str(audio_path) or Path(key).name == audio_name:
+            return value
+    return fallback
+
+
+def _benchmark_prompt_for_model(model_path):
+    model_l = str(model_path).lower()
+    if "whisper" in model_l:
+        return "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>"
+    return ""
+
+
+def _benchmark_ensure_python_lib():
+    lib_name = "libcactus.dylib" if platform.system() == "Darwin" else "libcactus.so"
+    lib_path = PROJECT_ROOT / "cactus" / "build" / lib_name
+    if lib_path.exists():
+        return 0
+
+    print_color(YELLOW, "Python shared library not found. Building with --python...")
+
+    class BuildArgs:
+        pass
+
+    build_args = BuildArgs()
+    build_args.apple = False
+    build_args.android = False
+    build_args.flutter = False
+    build_args.python = True
+    return cmd_build_python(build_args)
+
+
+def _benchmark_expand_models(models):
+    out = []
+    for entry in models:
+        parts = [p.strip() for p in entry.split(",") if p.strip()]
+        out.extend(parts)
+    return out
+
+
+def _benchmark_short_name(model_name, width=40):
+    if len(model_name) <= width:
+        return model_name
+    return model_name[:width - 3] + "..."
+
+
+def _benchmark_to_float(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _benchmark_parse_json_from_output(text):
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("No output")
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in reversed(lines):
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+    return json.loads(text)
+
+
+def _benchmark_run_apple_speech(audio_path, locale, on_device, timeout_sec):
+    if platform.system() != "Darwin":
+        return {
+            "success": False,
+            "error": "Apple Speech benchmark requires macOS",
+        }
+
+    timeout_sec = max(1.0, float(timeout_sec))
+
+    xcode_check = subprocess.run(["xcodebuild", "-version"], capture_output=True, text=True)
+    if xcode_check.returncode != 0:
+        active_dev_dir = ""
+        try:
+            active_dev_dir = subprocess.check_output(["xcode-select", "-p"], text=True).strip()
+        except Exception:
+            pass
+        return {
+            "success": False,
+            "error": "Apple Speech requires full Xcode toolchain (xcodebuild unavailable)",
+            "details": (xcode_check.stderr or xcode_check.stdout or "").strip(),
+            "active_developer_dir": active_dev_dir,
+            "hint": (
+                "Install Xcode from the App Store, then run:\n"
+                "1) sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer\n"
+                "2) xcodebuild -runFirstLaunch"
+            ),
+            "returncode": xcode_check.returncode,
+        }
+
+    swift_source = r'''
+import Foundation
+import Speech
+
+func authStatusName(_ status: SFSpeechRecognizerAuthorizationStatus) -> String {
+    switch status {
+    case .authorized: return "authorized"
+    case .denied: return "denied"
+    case .restricted: return "restricted"
+    case .notDetermined: return "not_determined"
+    @unknown default: return "unknown"
+    }
+}
+
+func emit(_ payload: [String: Any], _ outputPath: String) {
+    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+          let str = String(data: data, encoding: .utf8) else {
+        if outputPath.isEmpty {
+            print("{\"success\":false,\"error\":\"json_encode_failed\"}")
+        } else {
+            try? "{\"success\":false,\"error\":\"json_encode_failed\"}".write(
+                toFile: outputPath,
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+        return
+    }
+
+    if outputPath.isEmpty {
+        print(str)
+    } else {
+        try? str.write(toFile: outputPath, atomically: true, encoding: .utf8)
+    }
+}
+
+func finish(_ payload: [String: Any], _ outputPath: String, _ code: Int32 = 0) -> Never {
+    emit(payload, outputPath)
+    exit(code)
+}
+
+guard CommandLine.arguments.count >= 5 else {
+    finish(["success": false, "error": "invalid_arguments"], "", 2)
+}
+
+let audioPath = CommandLine.arguments[1]
+let localeId = CommandLine.arguments[2]
+let onDevice = CommandLine.arguments[3] == "1"
+let timeoutSec = Double(CommandLine.arguments[4]) ?? 120.0
+let outputPath = CommandLine.arguments.count >= 6 ? CommandLine.arguments[5] : ""
+let timeout = DispatchTime.now() + timeoutSec
+
+let authSem = DispatchSemaphore(value: 0)
+var authStatus: SFSpeechRecognizerAuthorizationStatus = .notDetermined
+SFSpeechRecognizer.requestAuthorization { status in
+    authStatus = status
+    authSem.signal()
+}
+
+if authSem.wait(timeout: timeout) == .timedOut {
+    finish([
+        "success": false,
+        "error": "speech_authorization_timeout",
+        "auth_status": authStatusName(authStatus)
+    ], outputPath, 1)
+}
+
+if authStatus != .authorized {
+    finish([
+        "success": false,
+        "error": "speech_authorization_failed",
+        "auth_status": authStatusName(authStatus)
+    ], outputPath, 1)
+}
+
+let locale = Locale(identifier: localeId)
+guard let recognizer = SFSpeechRecognizer(locale: locale) else {
+    finish(["success": false, "error": "speech_recognizer_init_failed"], outputPath, 1)
+}
+
+if !recognizer.isAvailable {
+    finish([
+        "success": false,
+        "error": "speech_recognizer_unavailable",
+        "auth_status": authStatusName(authStatus)
+    ], outputPath, 1)
+}
+
+let url = URL(fileURLWithPath: audioPath)
+let request = SFSpeechURLRecognitionRequest(url: url)
+request.shouldReportPartialResults = true
+if #available(macOS 10.15, *) {
+    request.requiresOnDeviceRecognition = onDevice
+}
+
+var finished = false
+var bestTranscript = ""
+var errorMessage = ""
+
+let t0 = CFAbsoluteTimeGetCurrent()
+let task = recognizer.recognitionTask(with: request) { result, error in
+    if let result = result {
+        bestTranscript = result.bestTranscription.formattedString
+        if result.isFinal && !finished {
+            finished = true
+        }
+    }
+    if let error = error {
+        errorMessage = error.localizedDescription
+        if !finished {
+            finished = true
+        }
+    }
+}
+
+while !finished && DispatchTime.now() < timeout {
+    RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
+}
+
+if !finished {
+    task.cancel()
+    let wallMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000.0
+    let trimmedPartial = bestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedPartial.isEmpty {
+        finish([
+            "success": true,
+            "transcript": bestTranscript,
+            "wall_ms": wallMs,
+            "auth_status": authStatusName(authStatus),
+            "on_device": onDevice,
+            "partial": true,
+            "timed_out": true
+        ], outputPath, 0)
+    }
+    finish([
+        "success": false,
+        "error": "speech_recognition_timeout",
+        "wall_ms": wallMs,
+        "auth_status": authStatusName(authStatus)
+    ], outputPath, 1)
+}
+
+task.cancel()
+let wallMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000.0
+
+if !errorMessage.isEmpty {
+    finish([
+        "success": false,
+        "error": errorMessage,
+        "wall_ms": wallMs,
+        "auth_status": authStatusName(authStatus)
+    ], outputPath, 1)
+}
+
+let trimmed = bestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+if trimmed.isEmpty {
+    finish([
+        "success": false,
+        "error": "empty_transcript",
+        "wall_ms": wallMs,
+        "auth_status": authStatusName(authStatus)
+    ], outputPath, 1)
+}
+
+finish([
+    "success": true,
+    "transcript": bestTranscript,
+    "wall_ms": wallMs,
+    "auth_status": authStatusName(authStatus),
+    "on_device": onDevice
+], outputPath, 0)
+'''
+
+    info_plist = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.cactus.benchmark.applespeech</string>
+    <key>CFBundleName</key>
+    <string>CactusAppleSpeechBenchmark</string>
+    <key>CFBundleExecutable</key>
+    <string>CactusAppleSpeechBenchmark</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Cactus benchmark needs Speech Recognition to compare STT engines.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Cactus benchmark may use microphone access for speech benchmarking.</string>
+</dict>
+</plist>
+"""
+
+    try:
+        env = os.environ.copy()
+        xcode_dev_dir = "/Applications/Xcode.app/Contents/Developer"
+        if Path(xcode_dev_dir).exists() and not env.get("DEVELOPER_DIR"):
+            env["DEVELOPER_DIR"] = xcode_dev_dir
+
+        with tempfile.TemporaryDirectory(prefix="cactus_ios_stt_") as temp_dir:
+            temp_path = Path(temp_dir)
+            swift_path = temp_path / "apple_speech_bench.swift"
+            app_path = temp_path / "CactusAppleSpeechBenchmark.app"
+            contents_path = app_path / "Contents"
+            macos_path = contents_path / "MacOS"
+            plist_path = contents_path / "Info.plist"
+            bin_path = macos_path / "CactusAppleSpeechBenchmark"
+            output_path = temp_path / "apple_speech_result.json"
+
+            macos_path.mkdir(parents=True, exist_ok=True)
+            swift_path.write_text(swift_source, encoding="utf-8")
+            plist_path.write_text(info_plist, encoding="utf-8")
+
+            xcrun_bin = shutil.which("xcrun")
+            swiftc_bin = shutil.which("swiftc")
+
+            if xcrun_bin:
+                compile_cmd = [
+                    xcrun_bin,
+                    "swiftc",
+                    str(swift_path),
+                    "-o",
+                    str(bin_path),
+                    "-framework",
+                    "Speech",
+                    "-framework",
+                    "Foundation",
+                ]
+            elif swiftc_bin:
+                compile_cmd = [
+                    swiftc_bin,
+                    str(swift_path),
+                    "-o",
+                    str(bin_path),
+                    "-framework",
+                    "Speech",
+                    "-framework",
+                    "Foundation",
+                ]
+            else:
+                return {
+                    "success": False,
+                    "error": "Neither xcrun nor swiftc found in PATH",
+                }
+
+            compile_proc = subprocess.run(compile_cmd, capture_output=True, text=True, env=env)
+            compile_stdout = (compile_proc.stdout or "").strip()
+            compile_stderr = (compile_proc.stderr or "").strip()
+            if compile_proc.returncode != 0:
+                hint = None
+                compile_err_l = compile_stderr.lower()
+                if "sdk is built with" in compile_err_l or "toolchain which matches the sdk" in compile_err_l:
+                    hint = (
+                        "Swift/Xcode toolchain mismatch detected. Try:\n"
+                        "1) sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer\n"
+                        "2) xcodebuild -runFirstLaunch\n"
+                        "3) rerun the benchmark."
+                    )
+                return {
+                    "success": False,
+                    "error": "Apple Speech runner build failed",
+                    "details": "; ".join([p for p in [compile_stderr, compile_stdout] if p]) or "swiftc compilation failed",
+                    "returncode": compile_proc.returncode,
+                    "hint": hint,
+                    "command": " ".join(compile_cmd),
+                }
+
+            open_bin = shutil.which("open")
+            if not open_bin:
+                return {
+                    "success": False,
+                    "error": "open command not found on macOS PATH",
+                }
+
+            run_cmd = [
+                open_bin,
+                "-W",
+                "-n",
+                str(app_path),
+                "--args",
+                str(audio_path),
+                locale,
+                "1" if on_device else "0",
+                str(timeout_sec),
+                str(output_path),
+            ]
+            proc = subprocess.run(run_cmd, capture_output=True, text=True, env=env)
+            stdout = (proc.stdout or "").strip()
+            stderr = (proc.stderr or "").strip()
+
+            result_text = ""
+            if output_path.exists():
+                result_text = output_path.read_text(encoding="utf-8", errors="ignore").strip()
+
+            parsed = None
+            parse_error = None
+
+            if result_text:
+                try:
+                    parsed = _benchmark_parse_json_from_output(result_text)
+                except Exception as e:
+                    parse_error = f"result file parse error: {e}"
+
+            if parsed is None and stdout:
+                try:
+                    parsed = _benchmark_parse_json_from_output(stdout)
+                except Exception as e:
+                    parse_error = f"stdout parse error: {e}"
+
+            if parsed is None and stderr:
+                try:
+                    parsed = _benchmark_parse_json_from_output(stderr)
+                except Exception as e:
+                    parse_error = f"stderr parse error: {e}"
+
+            if parsed is None:
+                details = []
+                if parse_error:
+                    details.append(parse_error)
+                if result_text:
+                    details.append(f"result_file: {result_text}")
+                if stderr:
+                    details.append(f"stderr: {stderr}")
+                if stdout:
+                    details.append(f"stdout: {stdout}")
+                if not details:
+                    details.append("no stdout/stderr produced")
+
+                hint = None
+                stderr_l = stderr.lower()
+                if "sdk is built with" in stderr_l or "toolchain which matches the sdk" in stderr_l:
+                    hint = (
+                        "Swift/Xcode toolchain mismatch detected. Try:\n"
+                        "1) sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer\n"
+                        "2) xcodebuild -runFirstLaunch\n"
+                        "3) rerun the benchmark."
+                    )
+                elif "__tcc_crashing_due_to_privacy_violation__" in stderr_l or proc.returncode in (-6, 134):
+                    hint = (
+                        "macOS Speech privacy crash detected. If you ran this from VS Code terminal,\n"
+                        "run the same command from Terminal.app or iTerm and allow Speech Recognition."
+                    )
+
+                return {
+                    "success": False,
+                    "error": "Apple Speech runner produced no parseable JSON",
+                    "details": "; ".join(details),
+                    "returncode": proc.returncode,
+                    "signal": (-proc.returncode) if proc.returncode < 0 else None,
+                    "hint": hint,
+                    "command": " ".join(run_cmd),
+                }
+
+            if proc.returncode != 0 and parsed.get("success") is not True:
+                if stderr and not parsed.get("error"):
+                    parsed["error"] = stderr
+                parsed.setdefault("returncode", proc.returncode)
+                if proc.returncode < 0:
+                    parsed.setdefault("signal", -proc.returncode)
+
+            return parsed
+    except Exception as e:
+        return {"success": False, "error": f"Apple Speech runner failed: {e}"}
+
+
+def _benchmark_capture_native_logs(fn):
+    stdout_fd = sys.stdout.fileno()
+    stderr_fd = sys.stderr.fileno()
+    saved_stdout_fd = os.dup(stdout_fd)
+    saved_stderr_fd = os.dup(stderr_fd)
+
+    logs = ""
+    result = None
+    error = None
+
+    try:
+        with tempfile.TemporaryFile(mode="w+b") as temp_file:
+            try:
+                os.dup2(temp_file.fileno(), stdout_fd)
+                os.dup2(temp_file.fileno(), stderr_fd)
+                result = fn()
+            except Exception as e:
+                error = e
+            finally:
+                try:
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+
+                os.dup2(saved_stdout_fd, stdout_fd)
+                os.dup2(saved_stderr_fd, stderr_fd)
+                os.close(saved_stdout_fd)
+                os.close(saved_stderr_fd)
+
+            temp_file.seek(0)
+            logs = temp_file.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        if error is None:
+            error = e
+        try:
+            os.dup2(saved_stdout_fd, stdout_fd)
+            os.dup2(saved_stderr_fd, stderr_fd)
+            os.close(saved_stdout_fd)
+            os.close(saved_stderr_fd)
+        except Exception:
+            pass
+
+    return result, logs, error
+
+
+def _benchmark_detect_npu_usage(native_logs, weights_dir):
+    logs_l = native_logs.lower()
+    npu_lines = [line.strip() for line in native_logs.splitlines() if "[npu]" in line.lower()]
+    npu_note = npu_lines[-1] if npu_lines else ""
+
+    if (
+        "not using npu" in logs_l
+        or "is_npu_available: false" in logs_l
+        or "model load failed" in logs_l
+        or "model file not found" in logs_l
+    ):
+        return False, npu_note or "native logs indicate NPU unavailable"
+
+    if "model loaded successfully" in logs_l:
+        return True, npu_note or "native logs indicate NPU model loaded"
+
+    has_mlpackage = (weights_dir / "model.mlpackage").exists()
+    if platform.system() == "Darwin" and has_mlpackage:
+        return True, npu_note or "model.mlpackage present"
+
+    if platform.system() != "Darwin":
+        return False, npu_note or "non-Apple platform"
+
+    return False, npu_note or "no NPU load signal detected"
+
+
+def _cmd_benchmark_transcribe(args):
+    audio_path = Path(args.audio_file).expanduser().resolve()
+    if not audio_path.exists():
+        print_color(RED, f"Error: audio file not found: {audio_path}")
+        return 1
+
+    try:
+        reference = _benchmark_parse_reference(args.reference_text, args.reference_file, audio_path)
+    except Exception as e:
+        print_color(RED, f"Error: {e}")
+        return 1
+
+    if _benchmark_ensure_python_lib() != 0:
+        return 1
+
+    try:
+        from . import cactus as cactus_py
+    except Exception as e:
+        print_color(RED, f"Error: failed to import cactus python bindings: {e}")
+        print("Try: cactus build --python")
+        return 1
+
+    model_list = _benchmark_expand_models(args.models or [])
+    if not model_list:
+        print_color(RED, "Error: no transcription models provided")
+        return 1
+
+    options_json = json.dumps({
+        "max_tokens": int(args.max_tokens),
+        "telemetry_enabled": False,
+    })
+    duration_sec = _benchmark_audio_duration_sec(audio_path)
+
+    print_color(BLUE, "Running transcription benchmark...")
+    print("=" * 36)
+    print(f"Audio: {audio_path}")
+    if duration_sec:
+        print(f"Audio duration: {duration_sec:.3f}s")
+    print(f"Models: {len(model_list)}")
+    if getattr(args, "ios_stt", False):
+        print(f"Apple STT: enabled (locale={args.ios_locale}, on_device={bool(args.ios_on_device)})")
+    print()
+
+    results = []
+    for idx, model_id in enumerate(model_list, 1):
+        print_color(BLUE, f"[{idx}/{len(model_list)}] {model_id}")
+        row = {
+            "model": model_id,
+            "success": False,
+            "error": "",
+            "weights_dir": "",
+            "wall_ms": None,
+            "model_ms": None,
+            "ttft_ms": None,
+            "decode_tps": None,
+            "rtf": None,
+            "wer": None,
+            "cloud_handoff": False,
+            "npu_used": None,
+            "npu_note": "",
+            "transcript": "",
+        }
+
+        local_path = Path(model_id).expanduser()
+        if local_path.exists() and (local_path / "config.txt").exists():
+            weights_dir = local_path.resolve()
+            print_color(GREEN, f"Using local weights: {weights_dir}")
+        else:
+            class DownloadArgs:
+                pass
+
+            dl_args = DownloadArgs()
+            dl_args.model_id = model_id
+            dl_args.precision = args.precision
+            dl_args.cache_dir = args.cache_dir
+            dl_args.token = args.token
+            dl_args.reconvert = args.reconvert
+            if cmd_download(dl_args) != 0:
+                row["error"] = "download_failed"
+                results.append(row)
+                print_color(RED, "Download/conversion failed\n")
+                continue
+            weights_dir = get_weights_dir(model_id)
+
+        row["weights_dir"] = str(weights_dir)
+
+        model_handle = None
+        try:
+            def _native_transcribe():
+                nonlocal model_handle
+                model_handle = cactus_py.cactus_init(str(weights_dir), None, False)
+                prompt = _benchmark_prompt_for_model(weights_dir)
+                t0 = time.perf_counter()
+                response_json_local = cactus_py.cactus_transcribe(
+                    model_handle,
+                    str(audio_path),
+                    prompt,
+                    options_json,
+                    None,
+                    None,
+                )
+                wall_ms_local = (time.perf_counter() - t0) * 1000.0
+                return response_json_local, wall_ms_local
+
+            native_result, native_logs, native_error = _benchmark_capture_native_logs(_native_transcribe)
+            if native_error:
+                raise native_error
+            if native_result is None:
+                raise RuntimeError("native transcription returned no result")
+
+            response_json, wall_ms = native_result
+            npu_used, npu_note = _benchmark_detect_npu_usage(native_logs, weights_dir)
+
+            try:
+                payload = json.loads(response_json)
+            except json.JSONDecodeError:
+                payload = {}
+
+            success = bool(payload.get("success", True))
+            transcript = payload.get("response", "")
+            model_ms = float(payload.get("total_time_ms", wall_ms) or wall_ms)
+            ttft_ms = _benchmark_to_float(payload.get("time_to_first_token_ms"))
+            decode_tps = _benchmark_to_float(payload.get("decode_tps"))
+            cloud_handoff = bool(payload.get("cloud_handoff", False))
+            error = payload.get("error", "")
+
+            row["success"] = success
+            row["error"] = error or ""
+            row["transcript"] = transcript
+            row["wall_ms"] = wall_ms
+            row["model_ms"] = model_ms
+            row["ttft_ms"] = ttft_ms
+            row["decode_tps"] = decode_tps
+            row["cloud_handoff"] = cloud_handoff
+            row["npu_used"] = npu_used
+            row["npu_note"] = npu_note
+
+            if duration_sec and duration_sec > 0:
+                row["rtf"] = (wall_ms / 1000.0) / duration_sec
+
+            if reference and transcript:
+                row["wer"] = _benchmark_wer(transcript, reference)
+
+            if success:
+                print_color(GREEN, f"Done in {wall_ms:.2f}ms\n")
+            else:
+                print_color(RED, f"Failed: {row['error']}\n")
+
+        except Exception as e:
+            row["error"] = str(e)
+            print_color(RED, f"Failed: {e}\n")
+        finally:
+            if model_handle is not None:
+                try:
+                    cactus_py.cactus_destroy(model_handle)
+                except Exception:
+                    pass
+
+        results.append(row)
+
+    if getattr(args, "ios_stt", False):
+        print_color(BLUE, "[ios-stt] Apple Speech")
+        ios_row = {
+            "model": f"apple/speech ({args.ios_locale})",
+            "success": False,
+            "error": "",
+            "weights_dir": "",
+            "wall_ms": None,
+            "model_ms": None,
+            "ttft_ms": None,
+            "decode_tps": None,
+            "rtf": None,
+            "wer": None,
+            "cloud_handoff": False,
+            "npu_used": None,
+            "npu_note": "",
+            "transcript": "",
+        }
+
+        ios_result = _benchmark_run_apple_speech(
+            audio_path,
+            str(args.ios_locale),
+            bool(args.ios_on_device),
+            float(args.ios_timeout_sec),
+        )
+
+        ios_success = bool(ios_result.get("success"))
+        ios_wall_ms = _benchmark_to_float(ios_result.get("wall_ms"))
+        ios_transcript = str(ios_result.get("transcript", "") or "")
+
+        ios_row["success"] = ios_success
+        ios_row["error"] = str(ios_result.get("error", "") or "")
+        ios_row["wall_ms"] = ios_wall_ms
+        ios_row["model_ms"] = ios_wall_ms
+        ios_row["transcript"] = ios_transcript
+
+        if duration_sec and duration_sec > 0 and ios_wall_ms is not None:
+            ios_row["rtf"] = (ios_wall_ms / 1000.0) / duration_sec
+
+        if reference and ios_transcript:
+            ios_row["wer"] = _benchmark_wer(ios_transcript, reference)
+
+        if ios_success:
+            if ios_wall_ms is not None:
+                print_color(GREEN, f"Done in {ios_wall_ms:.2f}ms\n")
+            else:
+                print_color(GREEN, "Done\n")
+        else:
+            print_color(RED, f"Failed: {ios_row['error'] or 'ios_stt_failed'}")
+            details = str(ios_result.get("details", "") or "").strip()
+            hint = str(ios_result.get("hint", "") or "").strip()
+            active_dev_dir = str(ios_result.get("active_developer_dir", "") or "").strip()
+            if details:
+                print(f"  details: {details}")
+            if active_dev_dir:
+                print(f"  active_developer_dir: {active_dev_dir}")
+            if hint:
+                print(f"  hint: {hint}")
+            print()
+
+        results.append(ios_row)
+
+    successful = [r for r in results if r["success"] and r["wall_ms"] is not None]
+    successful.sort(key=lambda r: r["wall_ms"])
+    for rank, row in enumerate(successful, 1):
+        row["rank"] = rank
+
+    print()
+    print_color(BLUE, "Benchmark Summary")
+    header = (
+        f"{'#':>2}  {'Model':40}  {'Status':7}  {'Wall ms':>9}  {'Model ms':>9}  "
+        f"{'TTFT ms':>8}  {'Decode tps':>10}  {'NPU':>5}  {'RTF':>7}"
+    )
+    if reference:
+        header += f"  {'WER':>7}"
+    summary_width = max(86, len(header))
+    print("=" * summary_width)
+
+    print(header)
+    print("-" * summary_width)
+
+    for row in results:
+        rank = row.get("rank", "-")
+        model_name = _benchmark_short_name(row["model"], 40)
+        status = "OK" if row["success"] else "FAIL"
+        wall_ms = f"{row['wall_ms']:.2f}" if row["wall_ms"] is not None else "-"
+        model_ms = f"{row['model_ms']:.2f}" if row["model_ms"] is not None else "-"
+        ttft_ms = f"{row['ttft_ms']:.2f}" if row["ttft_ms"] is not None else "-"
+        decode_tps = f"{row['decode_tps']:.2f}" if row["decode_tps"] is not None else "-"
+        npu_used = "yes" if row["npu_used"] is True else ("no" if row["npu_used"] is False else "-")
+        rtf = f"{row['rtf']:.4f}" if row["rtf"] is not None else "-"
+
+        line = (
+            f"{str(rank):>2}  {model_name:40}  {status:7}  {wall_ms:>9}  {model_ms:>9}  "
+            f"{ttft_ms:>8}  {decode_tps:>10}  {npu_used:>5}  {rtf:>7}"
+        )
+        if reference:
+            wer = f"{row['wer']:.4f}" if row["wer"] is not None else "-"
+            line += f"  {wer:>7}"
+        print(line)
+
+    if args.show_transcripts:
+        print()
+        print_color(BLUE, "Transcripts")
+        print("=" * summary_width)
+        for row in results:
+            print(f"[{row['model']}]")
+            if row["success"]:
+                print(row["transcript"] or "<empty>")
+            else:
+                print(f"<failed> {row['error']}")
+            print()
+
+    if args.json_out:
+        out_path = Path(args.json_out).expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        report = {
+            "audio": str(audio_path),
+            "audio_duration_sec": duration_sec,
+            "precision": args.precision,
+            "max_tokens": int(args.max_tokens),
+            "ios_stt": bool(getattr(args, "ios_stt", False)),
+            "ios_locale": str(getattr(args, "ios_locale", "en-US")),
+            "ios_on_device": bool(getattr(args, "ios_on_device", False)),
+            "reference": reference,
+            "results": results,
+        }
+        out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(f"Saved JSON report: {out_path}")
+
+    if not successful:
+        print_color(RED, "No successful benchmark runs.")
+        return 1
+
+    failed = len(results) - len(successful)
+    if failed > 0:
+        print_color(YELLOW, f"{failed} benchmark run(s) failed. See summary above.")
+    return 0
+
+
+def cmd_benchmark(args):
+    if getattr(args, 'transcribe', False):
+        return _cmd_benchmark_transcribe(args)
+
+    print_color(RED, "Error: choose a benchmark mode (e.g. --transcribe)")
+    return 1
+
+
 def cmd_clean(args):
     """Remove all build artifacts, caches, and downloaded weights."""
     print_color(BLUE, "Cleaning all build artifacts from Cactus project...")
@@ -1703,6 +2634,23 @@ def create_parser():
 
    -----------------------------------------------------------------
 
+  cactus benchmark --transcribe        benchmark STT models on one audio file
+                                       compares latency and optional WER
+
+    Optional flags:
+    --file <audio.wav>                 benchmark audio file (default: tests/assets/test.wav)
+    --models <m1> <m2> ...             model IDs or local weights dirs
+    --precision INT4|INT8|FP16         default: INT8
+    --ios-stt                          include Apple Speech in benchmark summary
+    --ios-locale <locale>              locale for --ios-stt (default: en-US)
+    --ios-on-device                    require on-device Apple Speech recognition
+    --reference-text <text>            optional reference transcript for WER
+    --reference-file <path>            optional file with transcript mappings
+    --show-transcripts                 print full transcript from each model
+    --json-out <path>                  save full JSON report
+
+   -----------------------------------------------------------------
+
   cactus download <model>              downloads model to ./weights
                                        see supported weights on ReadMe
 
@@ -1848,6 +2796,39 @@ def create_parser():
     transcribe_parser.add_argument('--device', default=None,
                                    help='ADB device ID to use with --android')
 
+    benchmark_parser = subparsers.add_parser('benchmark', help='Run benchmark suites')
+    benchmark_parser.add_argument('--transcribe', action='store_true',
+                                  help='Benchmark STT models against each other')
+    benchmark_parser.add_argument('--file', dest='audio_file',
+                                  default=str(PROJECT_ROOT / "tests" / "assets" / "test.wav"),
+                                  help='Audio file for transcription benchmark (default: tests/assets/test.wav)')
+    benchmark_parser.add_argument('--models', nargs='+', default=DEFAULT_BENCHMARK_TRANSCRIBE_MODELS,
+                                  help='Model IDs or local weight directories to benchmark')
+    benchmark_parser.add_argument('--max-tokens', type=int, default=500,
+                                  help='max_tokens for cactus_transcribe (default: 500)')
+    benchmark_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'], default='INT8',
+                                  help='Precision used when downloading/converting missing weights (default: INT8)')
+    benchmark_parser.add_argument('--ios-stt', action='store_true',
+                                  help='Include Apple Speech STT (macOS) in benchmark summary')
+    benchmark_parser.add_argument('--ios-locale', default='en-US',
+                                  help='Locale for --ios-stt (default: en-US)')
+    benchmark_parser.add_argument('--ios-on-device', action='store_true',
+                                  help='Require on-device recognition for --ios-stt')
+    benchmark_parser.add_argument('--ios-timeout-sec', type=float, default=120.0,
+                                  help='Timeout in seconds for --ios-stt runs (default: 120)')
+    benchmark_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
+    benchmark_parser.add_argument('--token', help='HuggingFace API token')
+    benchmark_parser.add_argument('--reconvert', action='store_true',
+                                  help='Force reconversion for all benchmark models before running')
+    benchmark_parser.add_argument('--reference-text', default=None,
+                                  help='Reference transcript text used to compute WER')
+    benchmark_parser.add_argument('--reference-file', default=None,
+                                  help='Reference file. Supports plain text or lines like \"audio.wav|transcript\"')
+    benchmark_parser.add_argument('--show-transcripts', action='store_true',
+                                  help='Print full transcript output from each model')
+    benchmark_parser.add_argument('--json-out', default=None,
+                                  help='Optional output path for JSON benchmark report')
+
     eval_parser = subparsers.add_parser('eval', help='Run evaluation scripts outside the cactus submodule')
     eval_parser.add_argument('model_id', nargs='?', default=DEFAULT_MODEL_ID,
                              help=f'HuggingFace model ID (default: {DEFAULT_MODEL_ID})')
@@ -1945,6 +2926,8 @@ def main():
         sys.exit(cmd_run(args))
     elif args.command == 'transcribe':
         sys.exit(cmd_transcribe(args))
+    elif args.command == 'benchmark':
+        sys.exit(cmd_benchmark(args))
     elif args.command == 'test':
         sys.exit(cmd_test(args))
     elif args.command == 'eval':
