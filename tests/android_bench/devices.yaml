@@ -1,0 +1,96 @@
+# Device registry for the Cactus Android benchmark harness.
+#
+# This file is a reference template.  The adb_serial field is left blank
+# because serials change between USB sessions.  Set it at runtime via the
+# --serial CLI flag; the harness reads device metadata directly from the
+# device over ADB (ro.product.model, etc.) and records it in results.json.
+#
+# The entries below serve two purposes:
+#   1. Document which devices have been benchmarked so contributors can see
+#      what coverage gaps remain before adding a new device to the table.
+#   2. Provide human-readable chipset names that Android system properties
+#      don't always expose cleanly (ro.hardware returns the BSP codename,
+#      not the marketing chipset name).
+#
+# To add a new device:
+#   1. Connect it and run `adb devices` to find the serial.
+#   2. Add an entry below.
+#   3. Run: python bench.py --serial <serial>
+#   4. Copy the generated results/results.md into docs/android_benchmarks.md.
+
+devices:
+
+  # -----------------------------------------------------------------------
+  # Flagship — already in README table
+  # -----------------------------------------------------------------------
+  - device_name: Samsung Galaxy S25 Ultra
+    chipset: Snapdragon 8 Elite (SM8750)
+    ram_gb: 12
+    android_version: "15"
+    adb_serial: ""   # populate at runtime
+
+  # -----------------------------------------------------------------------
+  # Google Pixel — popular developer device, DVFS behaviour well-documented
+  # -----------------------------------------------------------------------
+  - device_name: Google Pixel 9 Pro
+    chipset: Google Tensor G4
+    ram_gb: 16
+    android_version: "15"
+    adb_serial: ""
+
+  - device_name: Google Pixel 8a
+    chipset: Google Tensor G3
+    ram_gb: 8
+    android_version: "14"
+    adb_serial: ""
+
+  - device_name: Google Pixel 6a
+    chipset: Google Tensor G1
+    ram_gb: 6
+    android_version: "14"
+    adb_serial: ""
+
+  # -----------------------------------------------------------------------
+  # OnePlus / Nothing — Snapdragon mid-range coverage
+  # -----------------------------------------------------------------------
+  - device_name: OnePlus 13
+    chipset: Snapdragon 8 Elite (SM8750)
+    ram_gb: 12
+    android_version: "15"
+    adb_serial: ""
+
+  - device_name: Nothing Phone (2a) Plus
+    chipset: MediaTek Dimensity 7350 Pro
+    ram_gb: 12
+    android_version: "14"
+    adb_serial: ""
+
+  # -----------------------------------------------------------------------
+  # Mid-range Snapdragon — the reference device used in android_benchmarks.md
+  # -----------------------------------------------------------------------
+  - device_name: Motorola Edge 50 Neo
+    chipset: Snapdragon 7s Gen 3 (SM7635)
+    ram_gb: 12
+    android_version: "14"
+    adb_serial: ""
+
+  - device_name: Xiaomi Redmi Note 14 Pro
+    chipset: Snapdragon 7s Gen 3 (SM7635)
+    ram_gb: 8
+    android_version: "14"
+    adb_serial: ""
+
+  # -----------------------------------------------------------------------
+  # Budget / entry-level — stress-tests memory pressure and thermal limits
+  # -----------------------------------------------------------------------
+  - device_name: Samsung Galaxy A17 5G
+    chipset: Exynos 850
+    ram_gb: 4
+    android_version: "14"
+    adb_serial: ""
+
+  - device_name: CMF Phone 2 Pro
+    chipset: MediaTek Dimensity 7300 Pro
+    ram_gb: 8
+    android_version: "14"
+    adb_serial: ""

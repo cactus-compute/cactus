@@ -1,0 +1,95 @@
+# Benchmark scenario definitions for the Cactus Android harness.
+#
+# Each scenario maps to one row in the output table.  The three primary
+# scenarios mirror the columns in the Cactus README benchmarks table:
+#
+#   LFM 1.2B      → lfm_1_2b       (completion, 1k-prefill / 100-decode)
+#   LFMVL 1.6B    → lfmvl_1_6b     (VLM, 256px input)
+#   Parakeet 1.1B → parakeet_1_1b  (STT, 30s audio)
+#
+# Two additional scenarios extend the table with 4k-context numbers (needed
+# for the RAM column) and an INT8 precision comparison for lfm_1_2b.
+#
+# Precision defaults to INT4 for all scenarios.  Pass --precision INT8 on the
+# CLI to override all scenarios at once for a precision sweep.
+
+scenarios:
+
+  # -------------------------------------------------------------------------
+  # LFM 1.2B — completion, 1k prefill + 100 decode tokens
+  # Matches the "LFM 1.2B" column in the README table.
+  # -------------------------------------------------------------------------
+  - name: lfm_1_2b_int4_1k
+    model: LiquidAI/LFM2.5-1.2B-Instruct
+    precision: INT4
+    task: completion
+    context_length: 1024
+    max_tokens: 100
+    prompt: >
+      You are a helpful assistant. Explain the key architectural differences
+      between transformer and state-space models for on-device inference in
+      under 80 words.
+
+  # 4k context — used for the RAM column (peak memory under sustained load)
+  - name: lfm_1_2b_int4_4k
+    model: LiquidAI/LFM2.5-1.2B-Instruct
+    precision: INT4
+    task: completion
+    context_length: 4096
+    max_tokens: 100
+    prompt: >
+      You are a helpful assistant. Explain the key architectural differences
+      between transformer and state-space models for on-device inference in
+      under 80 words.
+
+  # INT8 variant — forward-looking comparison column
+  - name: lfm_1_2b_int8_1k
+    model: LiquidAI/LFM2.5-1.2B-Instruct
+    precision: INT8
+    task: completion
+    context_length: 1024
+    max_tokens: 100
+    prompt: >
+      You are a helpful assistant. Explain the key architectural differences
+      between transformer and state-space models for on-device inference in
+      under 80 words.
+
+  # -------------------------------------------------------------------------
+  # LFMVL 1.6B — vision-language, 256px input
+  # Matches the "LFMVL 1.6B" column in the README table.
+  # latency = TTFT (time to first token), decode = decode tps
+  # -------------------------------------------------------------------------
+  - name: lfmvl_1_6b_int4
+    model: LiquidAI/LFM2.5-VL-1.6B
+    precision: INT4
+    task: vlm
+    context_length: 1024
+    max_tokens: 50
+    prompt: "Describe what you see in this image in one sentence."
+    image_file: test_monkey.png   # from tests/assets/
+
+  # -------------------------------------------------------------------------
+  # Parakeet 1.1B — speech-to-text, 30-second audio clip
+  # Matches the "Parakeet 1.1B" column in the README table.
+  # -------------------------------------------------------------------------
+  - name: parakeet_1_1b_int4
+    model: nvidia/parakeet-ctc-1.1b
+    precision: INT4
+    task: stt
+    context_length: 1024
+    max_tokens: 200
+    prompt: ""
+    audio_file: test_long.wav     # from tests/assets/ (~30s)
+
+  # -------------------------------------------------------------------------
+  # Quick validation scenario — uses the lighter LFM2-VL-450M model.
+  # Run this first to confirm ADB connectivity and binary correctness before
+  # committing to the full 30-min benchmark suite.
+  # -------------------------------------------------------------------------
+  - name: quick_lfm2vl_450m
+    model: LiquidAI/LFM2-VL-450M
+    precision: INT4
+    task: completion
+    context_length: 512
+    max_tokens: 50
+    prompt: "Say hello in one sentence."
