@@ -26,6 +26,13 @@ DEFAULT_BENCHMARK_TRANSCRIBE_MODELS = [
     "nvidia/parakeet-tdt-0.6b-v3",
     "nvidia/parakeet-ctc-1.1b",
 ]
+DEFAULT_BENCHMARK_REFERENCE_BY_AUDIO = {
+    "test.wav": (
+        "Hello, hello, hello. Just um quickly testing out creating a WAV file through voice memos. "
+        "Um the goal is to use this WAV file to test out whisper. Hopefully this will transcribe properly. "
+        "That's all I can hope for. Alright, here we go."
+    ),
+}
 
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
@@ -1472,6 +1479,9 @@ def _benchmark_parse_reference(reference_text, reference_file, audio_path):
         return reference_text.strip()
 
     if not reference_file:
+        default_audio = (PROJECT_ROOT / "tests" / "assets" / "test.wav").resolve()
+        if audio_path == default_audio:
+            return DEFAULT_BENCHMARK_REFERENCE_BY_AUDIO.get("test.wav")
         return None
 
     ref_path = Path(reference_file).expanduser().resolve()
@@ -2069,6 +2079,8 @@ def _cmd_benchmark_transcribe(args):
     print(f"Audio: {audio_path}")
     if duration_sec:
         print(f"Audio duration: {duration_sec:.3f}s")
+    if reference and not args.reference_text and not args.reference_file:
+        print("Reference: built-in transcript for tests/assets/test.wav")
     print(f"Models: {len(model_list)}")
     if getattr(args, "ios_stt", False):
         print(f"Apple STT: enabled (locale={args.ios_locale}, on_device={bool(args.ios_on_device)})")
@@ -2645,6 +2657,7 @@ def create_parser():
     --ios-locale <locale>              locale for --ios-stt (default: en-US)
     --ios-on-device                    require on-device Apple Speech recognition
     --reference-text <text>            optional reference transcript for WER
+                                       if omitted, tests/assets/test.wav uses built-in reference
     --reference-file <path>            optional file with transcript mappings
     --show-transcripts                 print full transcript from each model
     --json-out <path>                  save full JSON report
@@ -2821,7 +2834,7 @@ def create_parser():
     benchmark_parser.add_argument('--reconvert', action='store_true',
                                   help='Force reconversion for all benchmark models before running')
     benchmark_parser.add_argument('--reference-text', default=None,
-                                  help='Reference transcript text used to compute WER')
+                                  help='Reference transcript text used to compute WER (default built-in for tests/assets/test.wav)')
     benchmark_parser.add_argument('--reference-file', default=None,
                                   help='Reference file. Supports plain text or lines like \"audio.wav|transcript\"')
     benchmark_parser.add_argument('--show-transcripts', action='store_true',
