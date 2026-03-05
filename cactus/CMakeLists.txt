@@ -76,6 +76,7 @@ file(GLOB MODEL_SOURCES "models/*.cpp")
 file(GLOB TELEMETRY_SOURCES "telemetry/*.cpp")
 
 set(SME2_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_sme2.cpp")
+set(SME2_STUBS_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/sme2_stubs.c")
 list(REMOVE_ITEM KERNEL_SOURCES "${SME2_SOURCE}")
 
 if(APPLE)
@@ -150,9 +151,7 @@ if(ENABLE_SME2 STREQUAL "AUTO")
 		set(CMAKE_REQUIRED_FLAGS "-arch arm64 ${SME2_MARCH_FLAG}")
 		check_cxx_source_compiles("
 			#include <arm_sme.h>
-			__arm_new(\"za\") __arm_locally_streaming
-			void sme2_test_fn() {}
-			int main() { sme2_test_fn(); return 0; }
+			int main() { return 0; }
 		" COMPILER_SUPPORTS_SME2)
 		unset(CMAKE_REQUIRED_FLAGS)
 
@@ -170,9 +169,9 @@ if(ENABLE_SME2 STREQUAL "AUTO")
 endif()
 
 if(BUILD_SME2)
-	add_library(cactus_sme2_obj OBJECT ${SME2_SOURCE})
+	add_library(cactus_sme2_obj OBJECT ${SME2_SOURCE} ${SME2_STUBS_SOURCE})
 	target_include_directories(cactus_sme2_obj PRIVATE ${COMMON_INCLUDES})
-	target_compile_options(cactus_sme2_obj PRIVATE ${SME2_MARCH_FLAG})
+	set_source_files_properties(${SME2_SOURCE} PROPERTIES COMPILE_OPTIONS "${SME2_MARCH_FLAG}")
 	set_target_properties(cactus_sme2_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 	target_compile_definitions(cactus_sme2_obj PRIVATE CACTUS_COMPILE_SME2)
 endif()
