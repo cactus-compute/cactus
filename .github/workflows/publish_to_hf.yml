@@ -82,7 +82,7 @@ env:
 
 jobs:
   publish:
-    runs-on: macos-latest-xlarge
+    runs-on: macos-latest
     steps:
       - name: Get version
         id: version
