@@ -59,7 +59,6 @@ env:
       {"model": "LiquidAI/LFM2-350M",               "int4": true,  "int8": true,  "fp16": false, "apple": false, "pipeline_tag": "text-generation",              "tags": ["completion","tools","embed"],                    "description": "LFM2 350M compact hybrid language model from Liquid AI designed for edge deployment."},
       {"model": "Qwen/Qwen3-0.6B",                  "int4": true,  "int8": true,  "fp16": false, "apple": false, "pipeline_tag": "text-generation",              "tags": ["completion","tools","embed"],                    "description": "Qwen3 0.6B compact model supporting thinking and non-thinking modes for on-device chat."},
       {"model": "LiquidAI/LFM2-700M",               "int4": true,  "int8": true,  "fp16": false, "apple": false, "pipeline_tag": "text-generation",              "tags": ["completion","tools","embed"],                    "description": "LFM2 700M hybrid language model from Liquid AI optimized for edge devices."},
-      {"model": "LiquidAI/LFM2-8B-A1B",             "int4": true,  "int8": true,  "fp16": false, "apple": false, "pipeline_tag": "text-generation",              "tags": ["completion","tools","embed"],                    "description": "LFM2 8B MoE model with 1.5B active parameters for high-quality on-device inference."},
       {"model": "google/gemma-3-1b-it",             "int4": true,  "int8": true,  "fp16": false, "apple": false, "pipeline_tag": "text-generation",              "tags": ["completion"],                                    "description": "Gemma 3 1B instruction-tuned model for on-device text completion."},
       {"model": "LiquidAI/LFM2.5-1.2B-Thinking",    "int4": true,  "int8": true,  "fp16": false, "apple": false, "pipeline_tag": "text-generation",              "tags": ["completion","tools","embed"],                    "description": "LFM2.5 1.2B reasoning model from Liquid AI with extended thinking for on-device deployment."},
       {"model": "LiquidAI/LFM2.5-1.2B-Instruct",    "int4": true,  "int8": true,  "fp16": false, "apple": false, "pipeline_tag": "text-generation",              "tags": ["completion","tools","embed"],                    "description": "LFM2.5 1.2B instruction-tuned language model from Liquid AI designed for edge deployment."},
@@ -77,12 +76,13 @@ env:
       {"model": "Qwen/Qwen3-Embedding-0.6B",        "int4": true,  "int8": true,  "fp16": false, "apple": false, "pipeline_tag": "feature-extraction",           "tags": ["embed"],                                         "description": "Qwen3 0.6B text embedding model supporting 100+ languages with 1024-dimensional vectors."},
       {"model": "nvidia/parakeet-ctc-0.6b",         "int4": true,  "int8": true,  "fp16": false, "apple": true,  "pipeline_tag": "automatic-speech-recognition", "tags": ["transcription","speech-embed","apple-npu"],      "description": "Parakeet CTC 0.6b is a speech recognition model optimized for on-device performance and live transcription."},
       {"model": "nvidia/parakeet-ctc-1.1b",         "int4": true,  "int8": true,  "fp16": false, "apple": true,  "pipeline_tag": "automatic-speech-recognition", "tags": ["transcription","speech-embed","apple-npu"],      "description": "Parakeet CTC 1.1b is a speech recognition model optimized for on-device performance and live transcription."},
-      {"model": "nvidia/parakeet-tdt-0.6b-v3",      "int4": true,  "int8": true,  "fp16": false, "apple": true,  "pipeline_tag": "automatic-speech-recognition", "tags": ["transcription","speech-embed","apple-npu"],      "description": "Parakeet TDT 0.6b is a speech recognition model optimized for on-device performance and live transcription."}
+      {"model": "nvidia/parakeet-tdt-0.6b-v3",      "int4": true,  "int8": true,  "fp16": false, "apple": true,  "pipeline_tag": "automatic-speech-recognition", "tags": ["transcription","speech-embed","apple-npu"],      "description": "Parakeet TDT 0.6b is a speech recognition model optimized for on-device performance and live transcription."},
+      {"model": "LiquidAI/LFM2-8B-A1B",             "int4": true,  "int8": true,  "fp16": false, "apple": false, "pipeline_tag": "text-generation",              "tags": ["completion","tools","embed"],                    "description": "LFM2 8B MoE model with 1.5B active parameters for high-quality on-device inference."}
     ]
 
 jobs:
   publish:
-    runs-on: macos-latest
+    runs-on: macos-latest-xlarge
     steps:
       - name: Get version
         id: version
@@ -153,6 +153,7 @@ jobs:
           fi
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_HUB_DISABLE_XET: "1"
 
       - name: Update organization README
         if: "!github.event.inputs.model"
