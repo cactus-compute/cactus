@@ -150,7 +150,9 @@ if(ENABLE_SME2 STREQUAL "AUTO")
 		set(CMAKE_REQUIRED_FLAGS "-arch arm64 ${SME2_MARCH_FLAG}")
 		check_cxx_source_compiles("
 			#include <arm_sme.h>
-			int main() { return 0; }
+			__arm_new(\"za\") __arm_locally_streaming
+			void sme2_test_fn() {}
+			int main() { sme2_test_fn(); return 0; }
 		" COMPILER_SUPPORTS_SME2)
 		unset(CMAKE_REQUIRED_FLAGS)
 
