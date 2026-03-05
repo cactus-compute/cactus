@@ -199,7 +199,6 @@ CACTUS_FFI_EXPORT void cactus_index_destroy(cactus_index_t index);
 
 CACTUS_FFI_EXPORT const char* cactus_get_last_error(void);
 
-// Logging control
 // level: 0=DEBUG, 1=INFO, 2=WARN (default), 3=ERROR, 4=NONE
 CACTUS_FFI_EXPORT void cactus_log_set_level(int level);
 
