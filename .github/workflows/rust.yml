@@ -39,7 +39,9 @@ jobs:
       - run: cargo test --manifest-path rust/Cargo.toml --test llm -- --nocapture
         env:
           CACTUS_MODEL_PATH: ${{ github.workspace }}/weights/gemma-3-270m-it
+          MACOSX_DEPLOYMENT_TARGET: '14.0'
       - run: cargo test --manifest-path rust/Cargo.toml --test stt -- --nocapture
         env:
           CACTUS_STT_MODEL_PATH: ${{ github.workspace }}/weights/whisper-small
           CACTUS_STT_AUDIO_PATH: ${{ runner.temp }}/jfk.wav
+          MACOSX_DEPLOYMENT_TARGET: '14.0'

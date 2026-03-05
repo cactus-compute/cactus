@@ -56,41 +56,7 @@ fn apply_linux_compiler_workaround() {
 #[cfg(not(target_os = "linux"))]
 fn apply_linux_compiler_workaround() {}
 
-/// SME2 runtime helpers (___arm_tpidr2_save/___arm_tpidr2_restore) require macOS 14.0+.
-/// Rust defaults to -mmacosx-version-min=11.0, which prevents linking these symbols.
-/// Bump the deployment target so SME2 kernels can link; runtime detection (cpu_has_sme2)
-/// still gates execution to Apple M4+ only.
-#[cfg(target_os = "macos")]
-fn ensure_macos_deployment_target() {
-    const MIN_VERSION: &str = "14.0";
-
-    let current = env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_default();
-    if current.is_empty() || version_less_than(&current, MIN_VERSION) {
-        unsafe { env::set_var("MACOSX_DEPLOYMENT_TARGET", MIN_VERSION) };
-    }
-
-    // The env var above affects CMake compilation, but Rust's linker invocation
-    // determines -mmacosx-version-min separately. Pass it explicitly so the
-    // linker knows SME2 runtime symbols (___arm_tpidr2_save/restore) are available.
-    println!("cargo:rustc-link-arg=-mmacosx-version-min={MIN_VERSION}");
-}
-
-#[cfg(target_os = "macos")]
-fn version_less_than(a: &str, b: &str) -> bool {
-    let parse = |s: &str| -> Vec<u32> {
-        s.split('.').filter_map(|p| p.parse().ok()).collect()
-    };
-    let va = parse(a);
-    let vb = parse(b);
-    va < vb
-}
-
-#[cfg(not(target_os = "macos"))]
-fn ensure_macos_deployment_target() {}
-
 fn build_native_library(cactus_src: &Path) -> PathBuf {
-    ensure_macos_deployment_target();
-
     cmake::Config::new(cactus_src)
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("CMAKE_BUILD_TYPE", "Release")
