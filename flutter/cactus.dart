@@ -13,7 +13,7 @@ typedef TokenCallbackDart = void Function(
     Pointer<Utf8> token, int tokenId, Pointer<Void> userData);
 
 typedef CactusInitNative = CactusModelT Function(
-    Pointer<Utf8> modelPath, Pointer<Utf8> corpusDir);
+    Pointer<Utf8> modelPath, Pointer<Utf8> corpusDir, Bool cacheIndex);
 typedef CactusDestroyNative = Void Function(CactusModelT model);
 typedef CactusResetNative = Void Function(CactusModelT model);
 typedef CactusStopNative = Void Function(CactusModelT model);
@@ -57,19 +57,16 @@ typedef CactusTranscribeNative = Int32 Function(
     Pointer<Uint8> pcmBuffer,
     IntPtr pcmBufferSize);
 
-typedef CactusStreamTranscribeInitNative = CactusStreamTranscribeT Function(
-    CactusModelT model);
-typedef CactusStreamTranscribeInsertNative = Int32 Function(
-    CactusStreamTranscribeT stream, Pointer<Uint8> pcmBuffer, IntPtr pcmBufferSize);
+typedef CactusStreamTranscribeStartNative = CactusStreamTranscribeT Function(
+    CactusModelT model, Pointer<Utf8> optionsJson);
 typedef CactusStreamTranscribeProcessNative = Int32 Function(
     CactusStreamTranscribeT stream,
+    Pointer<Uint8> pcmBuffer,
+    IntPtr pcmBufferSize,
     Pointer<Utf8> responseBuffer,
-    IntPtr bufferSize,
-    Pointer<Utf8> optionsJson);
-typedef CactusStreamTranscribeFinalizeNative = Int32 Function(
+    IntPtr bufferSize);
+typedef CactusStreamTranscribeStopNative = Int32 Function(
     CactusStreamTranscribeT stream, Pointer<Utf8> responseBuffer, IntPtr bufferSize);
-typedef CactusStreamTranscribeDestroyNative = Void Function(
-    CactusStreamTranscribeT stream);
 
 typedef CactusEmbedNative = Int32 Function(
     CactusModelT model,
@@ -140,7 +137,7 @@ typedef CactusSetTelemetryEnvironmentNative = Void Function(
     Pointer<Utf8> framework, Pointer<Utf8> cacheLocation, Pointer<Utf8> version);
 
 typedef CactusInitDart = CactusModelT Function(
-    Pointer<Utf8> modelPath, Pointer<Utf8> corpusDir);
+    Pointer<Utf8> modelPath, Pointer<Utf8> corpusDir, bool cacheIndex);
 typedef CactusDestroyDart = void Function(CactusModelT model);
 typedef CactusResetDart = void Function(CactusModelT model);
 typedef CactusStopDart = void Function(CactusModelT model);
@@ -184,19 +181,16 @@ typedef CactusTranscribeDart = int Function(
     Pointer<Uint8> pcmBuffer,
     int pcmBufferSize);
 
-typedef CactusStreamTranscribeInitDart = CactusStreamTranscribeT Function(
-    CactusModelT model);
-typedef CactusStreamTranscribeInsertDart = int Function(
-    CactusStreamTranscribeT stream, Pointer<Uint8> pcmBuffer, int pcmBufferSize);
+typedef CactusStreamTranscribeStartDart = CactusStreamTranscribeT Function(
+    CactusModelT model, Pointer<Utf8> optionsJson);
 typedef CactusStreamTranscribeProcessDart = int Function(
     CactusStreamTranscribeT stream,
+    Pointer<Uint8> pcmBuffer,
+    int pcmBufferSize,
     Pointer<Utf8> responseBuffer,
-    int bufferSize,
-    Pointer<Utf8> optionsJson);
-typedef CactusStreamTranscribeFinalizeDart = int Function(
+    int bufferSize);
+typedef CactusStreamTranscribeStopDart = int Function(
     CactusStreamTranscribeT stream, Pointer<Utf8> responseBuffer, int bufferSize);
-typedef CactusStreamTranscribeDestroyDart = void Function(
-    CactusStreamTranscribeT stream);
 
 typedef CactusEmbedDart = int Function(
     CactusModelT model,
@@ -266,8 +260,35 @@ typedef CactusGetLastErrorDart = Pointer<Utf8> Function();
 typedef CactusSetTelemetryEnvironmentDart = void Function(
     Pointer<Utf8> framework, Pointer<Utf8> cacheLocation, Pointer<Utf8> version);
 
+typedef CactusSetAppIdNative = Void Function(Pointer<Utf8> appId);
+typedef CactusSetAppIdDart = void Function(Pointer<Utf8> appId);
+
 typedef CactusTelemetryFlushNative = Void Function();
 typedef CactusTelemetryFlushDart = void Function();
+
+typedef CactusTelemetryShutdownNative = Void Function();
+typedef CactusTelemetryShutdownDart = void Function();
+
+typedef CactusIndexGetNative = Int32 Function(
+    CactusIndexT index,
+    Pointer<Int32> ids,
+    IntPtr idsCount,
+    Pointer<Pointer<Utf8>> documentBuffers,
+    Pointer<IntPtr> documentBufferSizes,
+    Pointer<Pointer<Utf8>> metadataBuffers,
+    Pointer<IntPtr> metadataBufferSizes,
+    Pointer<Pointer<Float>> embeddingBuffers,
+    Pointer<IntPtr> embeddingBufferSizes);
+typedef CactusIndexGetDart = int Function(
+    CactusIndexT index,
+    Pointer<Int32> ids,
+    int idsCount,
+    Pointer<Pointer<Utf8>> documentBuffers,
+    Pointer<IntPtr> documentBufferSizes,
+    Pointer<Pointer<Utf8>> metadataBuffers,
+    Pointer<IntPtr> metadataBufferSizes,
+    Pointer<Pointer<Float>> embeddingBuffers,
+    Pointer<IntPtr> embeddingBufferSizes);
 
 
 DynamicLibrary _loadLibrary() {
@@ -276,6 +297,8 @@ DynamicLibrary _loadLibrary() {
   } else if (Platform.isIOS) {
     return DynamicLibrary.process();
   } else if (Platform.isMacOS) {
+    final explicit = Platform.environment['CACTUS_DYLIB_PATH'];
+    if (explicit != null) return DynamicLibrary.open(explicit);
     return DynamicLibrary.process();
   } else {
     throw UnsupportedError('Platform not supported: ${Platform.operatingSystem}');
@@ -301,21 +324,15 @@ final _cactusScoreWindow = _lib
     .lookupFunction<CactusScoreWindowNative, CactusScoreWindowDart>('cactus_score_window');
 final _cactusTranscribe =
     _lib.lookupFunction<CactusTranscribeNative, CactusTranscribeDart>('cactus_transcribe');
-final _cactusStreamTranscribeInit = _lib.lookupFunction<
-    CactusStreamTranscribeInitNative,
-    CactusStreamTranscribeInitDart>('cactus_stream_transcribe_init');
-final _cactusStreamTranscribeInsert = _lib.lookupFunction<
-    CactusStreamTranscribeInsertNative,
-    CactusStreamTranscribeInsertDart>('cactus_stream_transcribe_insert');
+final _cactusStreamTranscribeStart = _lib.lookupFunction<
+    CactusStreamTranscribeStartNative,
+    CactusStreamTranscribeStartDart>('cactus_stream_transcribe_start');
 final _cactusStreamTranscribeProcess = _lib.lookupFunction<
     CactusStreamTranscribeProcessNative,
     CactusStreamTranscribeProcessDart>('cactus_stream_transcribe_process');
-final _cactusStreamTranscribeFinalize = _lib.lookupFunction<
-    CactusStreamTranscribeFinalizeNative,
-    CactusStreamTranscribeFinalizeDart>('cactus_stream_transcribe_finalize');
-final _cactusStreamTranscribeDestroy = _lib.lookupFunction<
-    CactusStreamTranscribeDestroyNative,
-    CactusStreamTranscribeDestroyDart>('cactus_stream_transcribe_destroy');
+final _cactusStreamTranscribeStop = _lib.lookupFunction<
+    CactusStreamTranscribeStopNative,
+    CactusStreamTranscribeStopDart>('cactus_stream_transcribe_stop');
 final _cactusEmbed =
     _lib.lookupFunction<CactusEmbedNative, CactusEmbedDart>('cactus_embed');
 final _cactusImageEmbed =
@@ -346,10 +363,17 @@ final _cactusSetTelemetryEnvironment = _lib.lookupFunction<
 final _cactusTelemetryFlush = _lib.lookupFunction<
     CactusTelemetryFlushNative,
     CactusTelemetryFlushDart>('cactus_telemetry_flush');
+final _cactusTelemetryShutdown = _lib.lookupFunction<
+    CactusTelemetryShutdownNative,
+    CactusTelemetryShutdownDart>('cactus_telemetry_shutdown');
+final _cactusSetAppId = _lib.lookupFunction<
+    CactusSetAppIdNative,
+    CactusSetAppIdDart>('cactus_set_app_id');
+final _cactusIndexGet = _lib.lookupFunction<
+    CactusIndexGetNative,
+    CactusIndexGetDart>('cactus_index_get');
 
-// ----------------------------------------------------------------------------
-// Helper Extensions
-// ----------------------------------------------------------------------------
+final class Utf8 extends Opaque {}
 
 extension Utf8Pointer on String {
   Pointer<Utf8> toNativeUtf8({Allocator allocator = malloc}) {
@@ -377,9 +401,11 @@ extension Utf8PointerExtension on Pointer<Utf8> {
   }
 }
 
-final malloc = _MallocAllocator();
+const malloc = _MallocAllocator();
 
 class _MallocAllocator implements Allocator {
+  const _MallocAllocator();
+
   @override
   Pointer<T> allocate<T extends NativeType>(int byteCount, {int? alignment}) {
     return calloc.allocate<T>(byteCount, alignment: alignment);
@@ -410,993 +436,607 @@ class _Calloc implements Allocator {
   }
 }
 
-class Message {
-  final String role;
-  final String content;
+bool _frameworkSet = false;
 
-  Message._(this.role, this.content);
-
-  factory Message.system(String content) => Message._('system', content);
-  factory Message.user(String content) => Message._('user', content);
-  factory Message.assistant(String content) => Message._('assistant', content);
-
-  Map<String, String> toJson() => {'role': role, 'content': content};
-}
-
-class CompletionOptions {
-  final double temperature;
-  final double topP;
-  final int topK;
-  final int maxTokens;
-  final List<String> stopSequences;
-  final double confidenceThreshold;
-
-  const CompletionOptions({
-    this.temperature = 0.7,
-    this.topP = 0.9,
-    this.topK = 40,
-    this.maxTokens = 512,
-    this.stopSequences = const [],
-    this.confidenceThreshold = 0.0,
-  });
-
-  static const defaultOptions = CompletionOptions();
-
-  Map<String, dynamic> toJson() => {
-        'temperature': temperature,
-        'top_p': topP,
-        'top_k': topK,
-        'max_tokens': maxTokens,
-        'stop_sequences': stopSequences,
-        'confidence_threshold': confidenceThreshold,
-      };
-}
-
-class CompletionResult {
-  final String text;
-  final List<Map<String, dynamic>>? functionCalls;
-  final int promptTokens;
-  final int completionTokens;
-  final double timeToFirstToken;
-  final double totalTime;
-  final double prefillTokensPerSecond;
-  final double decodeTokensPerSecond;
-  final double confidence;
-  final bool needsCloudHandoff;
-
-  CompletionResult({
-    required this.text,
-    this.functionCalls,
-    this.promptTokens = 0,
-    this.completionTokens = 0,
-    this.timeToFirstToken = 0.0,
-    this.totalTime = 0.0,
-    this.prefillTokensPerSecond = 0.0,
-    this.decodeTokensPerSecond = 0.0,
-    this.confidence = 1.0,
-    this.needsCloudHandoff = false,
-  });
-
-  factory CompletionResult.fromJson(Map<String, dynamic> json) {
-    return CompletionResult(
-      text: json['response'] ?? '',
-      functionCalls: json['function_calls'] != null
-          ? List<Map<String, dynamic>>.from(json['function_calls'])
-          : null,
-      promptTokens: json['prefill_tokens'] ?? 0,
-      completionTokens: json['decode_tokens'] ?? 0,
-      timeToFirstToken: (json['time_to_first_token_ms'] ?? 0.0).toDouble(),
-      totalTime: (json['total_time_ms'] ?? 0.0).toDouble(),
-      prefillTokensPerSecond: (json['prefill_tps'] ?? 0.0).toDouble(),
-      decodeTokensPerSecond: (json['decode_tps'] ?? 0.0).toDouble(),
-      confidence: (json['confidence'] ?? 1.0).toDouble(),
-      needsCloudHandoff: json['cloud_handoff'] ?? false,
-    );
+void _ensureFramework() {
+  if (!_frameworkSet) {
+    final frameworkPtr = 'flutter'.toNativeUtf8();
+    _cactusSetTelemetryEnvironment(frameworkPtr, nullptr, nullptr);
+    calloc.free(frameworkPtr);
+    _frameworkSet = true;
   }
 }
 
-class TranscriptionOptions {
-  final String? language;
-  final bool translate;
-
-  const TranscriptionOptions({
-    this.language,
-    this.translate = false,
-  });
-
-  static const defaultOptions = TranscriptionOptions();
-
-  Map<String, dynamic> toJson() => {
-        if (language != null) 'language': language,
-        'translate': translate,
-      };
+/// Returns the last error message.
+String cactusGetLastError() {
+  return _cactusGetLastError().toDartString();
 }
 
-class TranscriptionResult {
-  final String text;
-  final List<Map<String, dynamic>>? segments;
-  final double totalTime;
-
-  TranscriptionResult({
-    required this.text,
-    this.segments,
-    this.totalTime = 0.0,
-  });
-
-  factory TranscriptionResult.fromJson(Map<String, dynamic> json) {
-    return TranscriptionResult(
-      text: json['response'] ?? '',
-      segments: json['segments'] != null
-          ? List<Map<String, dynamic>>.from(json['segments'])
-          : null,
-      totalTime: (json['total_time_ms'] ?? 0.0).toDouble(),
-    );
-  }
+/// Sets the telemetry cache directory.
+void cactusSetTelemetryEnvironment(String cacheLocation) {
+  _ensureFramework();
+  final pathPtr = cacheLocation.toNativeUtf8();
+  _cactusSetTelemetryEnvironment(nullptr, pathPtr, nullptr);
+  calloc.free(pathPtr);
 }
 
-class VADSegment {
-  final int start;
-  final int end;
-
-  VADSegment({required this.start, required this.end});
-
-  factory VADSegment.fromJson(Map<String, dynamic> json) {
-    return VADSegment(
-      start: json['start'] ?? 0,
-      end: json['end'] ?? 0,
-    );
-  }
+/// Sets the application identifier for telemetry.
+void cactusSetAppId(String appId) {
+  final appIdPtr = appId.toNativeUtf8();
+  _cactusSetAppId(appIdPtr);
+  calloc.free(appIdPtr);
 }
 
-class VADResult {
-  final List<VADSegment> segments;
-  final double totalTime;
-  final double ramUsage;
-
-  VADResult({
-    required this.segments,
-    this.totalTime = 0.0,
-    this.ramUsage = 0.0,
-  });
-
-  factory VADResult.fromJson(Map<String, dynamic> json) {
-    final segmentsList = json['segments'] as List<dynamic>? ?? [];
-    return VADResult(
-      segments: segmentsList
-          .map((s) => VADSegment.fromJson(s as Map<String, dynamic>))
-          .toList(),
-      totalTime: (json['total_time_ms'] ?? 0.0).toDouble(),
-      ramUsage: (json['ram_usage_mb'] ?? 0.0).toDouble(),
-    );
-  }
+/// Flushes pending telemetry events.
+void cactusTelemetryFlush() {
+  _cactusTelemetryFlush();
 }
 
-class VADOptions {
-  final double? threshold;
-  final double? negThreshold;
-  final int? minSpeechDurationMs;
-  final double? maxSpeechDurationS;
-  final int? minSilenceDurationMs;
-  final int? speechPadMs;
-  final int? windowSizeSamples;
-  final int? samplingRate;
-
-  const VADOptions({
-    this.threshold,
-    this.negThreshold,
-    this.minSpeechDurationMs,
-    this.maxSpeechDurationS,
-    this.minSilenceDurationMs,
-    this.speechPadMs,
-    this.windowSizeSamples,
-    this.samplingRate,
-  });
-
-  static const defaultOptions = VADOptions();
-
-  Map<String, dynamic> toJson() {
-    final map = <String, dynamic>{};
-    if (threshold != null) map['threshold'] = threshold;
-    if (negThreshold != null) map['neg_threshold'] = negThreshold;
-    if (minSpeechDurationMs != null) map['min_speech_duration_ms'] = minSpeechDurationMs;
-    if (maxSpeechDurationS != null) map['max_speech_duration_s'] = maxSpeechDurationS;
-    if (minSilenceDurationMs != null) map['min_silence_duration_ms'] = minSilenceDurationMs;
-    if (speechPadMs != null) map['speech_pad_ms'] = speechPadMs;
-    if (windowSizeSamples != null) map['window_size_samples'] = windowSizeSamples;
-    if (samplingRate != null) map['sampling_rate'] = samplingRate;
-    return map;
-  }
+/// Flushes and shuts down the telemetry subsystem.
+void cactusTelemetryShutdown() {
+  _cactusTelemetryShutdown();
 }
 
-class IndexResult {
-  final int id;
-  final double score;
-
-  IndexResult({required this.id, required this.score});
-}
-
-class Cactus {
-  final CactusModelT _handle;
-  bool _disposed = false;
-  static bool _frameworkSet = false;
-
-  Cactus._(this._handle);
-
-  static Cactus create(String modelPath, {String? corpusDir}) {
-    if (!_frameworkSet) {
-      final frameworkPtr = 'flutter'.toNativeUtf8();
-      _cactusSetTelemetryEnvironment(frameworkPtr, nullptr, nullptr);
-      calloc.free(frameworkPtr);
-      _frameworkSet = true;
-    }
-    final modelPathPtr = modelPath.toNativeUtf8();
-    final corpusDirPtr = corpusDir?.toNativeUtf8() ?? nullptr;
-
-    try {
-      final handle = _cactusInit(modelPathPtr, corpusDirPtr);
-      if (handle == nullptr) {
-        throw CactusException('Failed to initialize model: ${getLastError()}');
-      }
-      return Cactus._(handle);
-    } finally {
-      calloc.free(modelPathPtr);
-      if (corpusDirPtr != nullptr) calloc.free(corpusDirPtr);
-    }
-  }
-
-  static void setTelemetryEnvironment(String path) {
-    final pathPtr = path.toNativeUtf8();
-    _cactusSetTelemetryEnvironment(nullptr, pathPtr, nullptr);
-    calloc.free(pathPtr);
-  }
-
-  void _checkNotDisposed() {
-    if (_disposed) {
-      throw StateError('Cactus instance has been disposed');
-    }
-  }
-
-  CompletionResult complete(
-    String prompt, {
-    CompletionOptions options = CompletionOptions.defaultOptions,
-    void Function(String token, int tokenId)? onToken,
-  }) {
-    return completeMessages(
-      [Message.user(prompt)],
-      options: options,
-      onToken: onToken,
-    );
-  }
-
-  CompletionResult completeMessages(
-    List<Message> messages, {
-    CompletionOptions options = CompletionOptions.defaultOptions,
-    List<Map<String, dynamic>>? tools,
-    void Function(String token, int tokenId)? onToken,
-  }) {
-    _checkNotDisposed();
-
-    final messagesJson = jsonEncode(messages.map((m) => m.toJson()).toList());
-    final optionsJson = jsonEncode(options.toJson());
-    final toolsJson = tools != null ? jsonEncode(tools) : null;
-
-    const bufferSize = 1024 * 1024; // 1MB buffer
-    final responseBuffer = calloc<Uint8>(bufferSize);
-    final messagesPtr = messagesJson.toNativeUtf8();
-    final optionsPtr = optionsJson.toNativeUtf8();
-    final toolsPtr = toolsJson?.toNativeUtf8() ?? nullptr;
-
-    Pointer<NativeFunction<TokenCallbackNative>> callbackPtr = nullptr;
-    NativeCallable<TokenCallbackNative>? nativeCallable;
-    if (onToken != null) {
-      nativeCallable = NativeCallable<TokenCallbackNative>.isolateLocal(
-        (Pointer<Utf8> token, int tokenId, Pointer<Void> _) {
-          onToken(token.toDartString(), tokenId);
-        },
-      );
-      callbackPtr = nativeCallable.nativeFunction;
-    }
-
-    try {
-      final result = _cactusComplete(
-        _handle,
-        messagesPtr,
-        responseBuffer.cast(),
-        bufferSize,
-        optionsPtr,
-        toolsPtr,
-        callbackPtr,
-        nullptr,
-      );
-
-      if (result < 0) {
-        throw CactusException('Completion failed: ${getLastError()}');
-      }
-
-      final responseStr = responseBuffer.cast<Utf8>().toDartString();
-      final responseJson = jsonDecode(responseStr) as Map<String, dynamic>;
-      return CompletionResult.fromJson(responseJson);
-    } finally {
-      calloc.free(responseBuffer);
-      calloc.free(messagesPtr);
-      calloc.free(optionsPtr);
-      if (toolsPtr != nullptr) calloc.free(toolsPtr);
-      nativeCallable?.close();
-    }
-  }
-
-  List<int> tokenize(String text) {
-    _checkNotDisposed();
-
-    const maxTokens = 8192;
-    final tokenBuffer = calloc<Uint32>(maxTokens);
-    final outTokenLen = calloc<IntPtr>(1);
-    final textPtr = text.toNativeUtf8();
-
-    try {
-      final result = _cactusTokenize(
-        _handle,
-        textPtr,
-        tokenBuffer,
-        maxTokens,
-        outTokenLen,
-      );
-
-      if (result < 0) {
-        throw CactusException('Tokenization failed: ${getLastError()}');
-      }
-
-      final tokenCount = outTokenLen.value;
-      return List<int>.generate(tokenCount, (i) => tokenBuffer[i]);
-    } finally {
-      calloc.free(tokenBuffer);
-      calloc.free(outTokenLen);
-      calloc.free(textPtr);
-    }
-  }
-
-  String scoreWindow(List<int> tokens, int start, int end, int context) {
-    _checkNotDisposed();
-
-    final tokenBuffer = calloc<Uint32>(tokens.length);
-    for (var i = 0; i < tokens.length; i++) {
-      tokenBuffer[i] = tokens[i];
-    }
-
-    const bufferSize = 65536;
-    final responseBuffer = calloc<Uint8>(bufferSize);
-
-    try {
-      final result = _cactusScoreWindow(
-        _handle,
-        tokenBuffer,
-        tokens.length,
-        start,
-        end,
-        context,
-        responseBuffer.cast(),
-        bufferSize,
-      );
-
-      if (result < 0) {
-        throw CactusException('Score window failed: ${getLastError()}');
-      }
-
-      return responseBuffer.cast<Utf8>().toDartString();
-    } finally {
-      calloc.free(tokenBuffer);
-      calloc.free(responseBuffer);
-    }
-  }
-
-  TranscriptionResult transcribe(
-    String audioPath, {
-    String? prompt,
-    TranscriptionOptions options = TranscriptionOptions.defaultOptions,
-  }) {
-    _checkNotDisposed();
-
-    const bufferSize = 1024 * 1024;
-    final responseBuffer = calloc<Uint8>(bufferSize);
-    final audioPathPtr = audioPath.toNativeUtf8();
-    final promptPtr = prompt?.toNativeUtf8() ?? nullptr;
-    final optionsJson = jsonEncode(options.toJson());
-    final optionsPtr = optionsJson.toNativeUtf8();
-
-    try {
-      final result = _cactusTranscribe(
-        _handle,
-        audioPathPtr,
-        promptPtr,
-        responseBuffer.cast(),
-        bufferSize,
-        optionsPtr,
-        nullptr,
-        nullptr,
-        nullptr,
-        0,
-      );
-
-      if (result < 0) {
-        throw CactusException('Transcription failed: ${getLastError()}');
-      }
-
-      final responseStr = responseBuffer.cast<Utf8>().toDartString();
-      final responseJson = jsonDecode(responseStr) as Map<String, dynamic>;
-      return TranscriptionResult.fromJson(responseJson);
-    } finally {
-      calloc.free(responseBuffer);
-      calloc.free(audioPathPtr);
-      if (promptPtr != nullptr) calloc.free(promptPtr);
-      calloc.free(optionsPtr);
-    }
-  }
-
-  TranscriptionResult transcribePcm(
-    Uint8List pcmData, {
-    String? prompt,
-    TranscriptionOptions options = TranscriptionOptions.defaultOptions,
-  }) {
-    _checkNotDisposed();
-
-    const bufferSize = 1024 * 1024;
-    final responseBuffer = calloc<Uint8>(bufferSize);
-    final promptPtr = prompt?.toNativeUtf8() ?? nullptr;
-    final optionsJson = jsonEncode(options.toJson());
-    final optionsPtr = optionsJson.toNativeUtf8();
-    final pcmBuffer = calloc<Uint8>(pcmData.length);
-    pcmBuffer.asTypedList(pcmData.length).setAll(0, pcmData);
-
-    try {
-      final result = _cactusTranscribe(
-        _handle,
-        nullptr,
-        promptPtr,
-        responseBuffer.cast(),
-        bufferSize,
-        optionsPtr,
-        nullptr,
-        nullptr,
-        pcmBuffer,
-        pcmData.length,
-      );
-
-      if (result < 0) {
-        throw CactusException('Transcription failed: ${getLastError()}');
-      }
-
-      final responseStr = responseBuffer.cast<Utf8>().toDartString();
-      final responseJson = jsonDecode(responseStr) as Map<String, dynamic>;
-      return TranscriptionResult.fromJson(responseJson);
-    } finally {
-      calloc.free(responseBuffer);
-      if (promptPtr != nullptr) calloc.free(promptPtr);
-      calloc.free(optionsPtr);
-      calloc.free(pcmBuffer);
-    }
-  }
-
-  StreamTranscriber createStreamTranscriber() {
-    _checkNotDisposed();
-    final handle = _cactusStreamTranscribeInit(_handle);
+/// Initializes a model from the given path.
+CactusModelT cactusInit(String modelPath, String? corpusDir, bool cacheIndex) {
+  _ensureFramework();
+  final modelPathPtr = modelPath.toNativeUtf8();
+  final corpusDirPtr = corpusDir?.toNativeUtf8() ?? nullptr;
+  try {
+    final handle = _cactusInit(modelPathPtr, corpusDirPtr, cacheIndex);
     if (handle == nullptr) {
-      throw CactusException('Failed to create stream transcriber: ${getLastError()}');
+      throw Exception('Failed to initialize model: ${cactusGetLastError()}');
     }
-    return StreamTranscriber._(handle);
-  }
-
-  List<double> embed(String text, {bool normalize = true}) {
-    _checkNotDisposed();
-
-    const maxDim = 8192;
-    final embeddingsBuffer = calloc<Float>(maxDim);
-    final embeddingDim = calloc<IntPtr>(1);
-    final textPtr = text.toNativeUtf8();
-
-    try {
-      final result = _cactusEmbed(
-        _handle,
-        textPtr,
-        embeddingsBuffer,
-        maxDim,
-        embeddingDim,
-        normalize,
-      );
-
-      if (result < 0) {
-        throw CactusException('Embedding failed: ${getLastError()}');
-      }
-
-      final dim = embeddingDim.value;
-      return List<double>.generate(dim, (i) => embeddingsBuffer[i]);
-    } finally {
-      calloc.free(embeddingsBuffer);
-      calloc.free(embeddingDim);
-      calloc.free(textPtr);
-    }
-  }
-
-  List<double> imageEmbed(String imagePath) {
-    _checkNotDisposed();
-
-    const maxDim = 8192;
-    final embeddingsBuffer = calloc<Float>(maxDim);
-    final embeddingDim = calloc<IntPtr>(1);
-    final imagePathPtr = imagePath.toNativeUtf8();
-
-    try {
-      final result = _cactusImageEmbed(
-        _handle,
-        imagePathPtr,
-        embeddingsBuffer,
-        maxDim,
-        embeddingDim,
-      );
-
-      if (result < 0) {
-        throw CactusException('Image embedding failed: ${getLastError()}');
-      }
-
-      final dim = embeddingDim.value;
-      return List<double>.generate(dim, (i) => embeddingsBuffer[i]);
-    } finally {
-      calloc.free(embeddingsBuffer);
-      calloc.free(embeddingDim);
-      calloc.free(imagePathPtr);
-    }
-  }
-
-  List<double> audioEmbed(String audioPath) {
-    _checkNotDisposed();
-
-    const maxDim = 8192;
-    final embeddingsBuffer = calloc<Float>(maxDim);
-    final embeddingDim = calloc<IntPtr>(1);
-    final audioPathPtr = audioPath.toNativeUtf8();
-
-    try {
-      final result = _cactusAudioEmbed(
-        _handle,
-        audioPathPtr,
-        embeddingsBuffer,
-        maxDim,
-        embeddingDim,
-      );
-
-      if (result < 0) {
-        throw CactusException('Audio embedding failed: ${getLastError()}');
-      }
-
-      final dim = embeddingDim.value;
-      return List<double>.generate(dim, (i) => embeddingsBuffer[i]);
-    } finally {
-      calloc.free(embeddingsBuffer);
-      calloc.free(embeddingDim);
-      calloc.free(audioPathPtr);
-    }
-  }
-
-  VADResult vad(
-    String audioPath, {
-    VADOptions options = VADOptions.defaultOptions,
-  }) {
-    _checkNotDisposed();
-
-    const bufferSize = 1024 * 1024;
-    final responseBuffer = calloc<Uint8>(bufferSize);
-    final audioPathPtr = audioPath.toNativeUtf8();
-    final optionsMap = options.toJson();
-    final optionsJson = optionsMap.isNotEmpty ? jsonEncode(optionsMap) : null;
-    final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
-
-    try {
-      final result = _cactusVad(
-        _handle,
-        audioPathPtr,
-        responseBuffer.cast(),
-        bufferSize,
-        optionsPtr,
-        nullptr,
-        0,
-      );
-
-      if (result < 0) {
-        throw CactusException('VAD failed: ${getLastError()}');
-      }
-
-      final responseStr = responseBuffer.cast<Utf8>().toDartString();
-      final responseJson = jsonDecode(responseStr) as Map<String, dynamic>;
-
-      if (responseJson['error'] != null) {
-        throw CactusException('VAD error: ${responseJson['error']}');
-      }
-
-      return VADResult.fromJson(responseJson);
-    } finally {
-      calloc.free(responseBuffer);
-      calloc.free(audioPathPtr);
-      if (optionsPtr != nullptr) calloc.free(optionsPtr);
-    }
-  }
-
-  VADResult vadPcm(
-    Uint8List pcmData, {
-    VADOptions options = VADOptions.defaultOptions,
-  }) {
-    _checkNotDisposed();
-
-    const bufferSize = 1024 * 1024;
-    final responseBuffer = calloc<Uint8>(bufferSize);
-    final optionsMap = options.toJson();
-    final optionsJson = optionsMap.isNotEmpty ? jsonEncode(optionsMap) : null;
-    final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
-    final pcmBuffer = calloc<Uint8>(pcmData.length);
-    pcmBuffer.asTypedList(pcmData.length).setAll(0, pcmData);
-
-    try {
-      final result = _cactusVad(
-        _handle,
-        nullptr,
-        responseBuffer.cast(),
-        bufferSize,
-        optionsPtr,
-        pcmBuffer,
-        pcmData.length,
-      );
-
-      if (result < 0) {
-        throw CactusException('VAD failed: ${getLastError()}');
-      }
-
-      final responseStr = responseBuffer.cast<Utf8>().toDartString();
-      final responseJson = jsonDecode(responseStr) as Map<String, dynamic>;
-
-      if (responseJson['error'] != null) {
-        throw CactusException('VAD error: ${responseJson['error']}');
-      }
-
-      return VADResult.fromJson(responseJson);
-    } finally {
-      calloc.free(responseBuffer);
-      if (optionsPtr != nullptr) calloc.free(optionsPtr);
-      calloc.free(pcmBuffer);
-    }
-  }
-
-  String ragQuery(String query, {int topK = 5}) {
-    _checkNotDisposed();
-
-    const bufferSize = 1024 * 1024;
-    final responseBuffer = calloc<Uint8>(bufferSize);
-    final queryPtr = query.toNativeUtf8();
-
-    try {
-      final result = _cactusRagQuery(
-        _handle,
-        queryPtr,
-        responseBuffer.cast(),
-        bufferSize,
-        topK,
-      );
-
-      if (result < 0) {
-        throw CactusException('RAG query failed: ${getLastError()}');
-      }
-
-      return responseBuffer.cast<Utf8>().toDartString();
-    } finally {
-      calloc.free(responseBuffer);
-      calloc.free(queryPtr);
-    }
-  }
-
-  void reset() {
-    _checkNotDisposed();
-    _cactusReset(_handle);
-  }
-
-  void stop() {
-    _checkNotDisposed();
-    _cactusStop(_handle);
-  }
-
-  void dispose() {
-    if (!_disposed) {
-      _cactusDestroy(_handle);
-      _cactusTelemetryFlush();
-      _disposed = true;
-    }
-  }
-
-  static String getLastError() {
-    return _cactusGetLastError().toDartString();
+    return handle;
+  } finally {
+    calloc.free(modelPathPtr);
+    if (corpusDirPtr != nullptr) calloc.free(corpusDirPtr);
   }
 }
 
-class StreamTranscriber {
-  final CactusStreamTranscribeT _handle;
-  bool _disposed = false;
-
-  StreamTranscriber._(this._handle);
-
-  void _checkNotDisposed() {
-    if (_disposed) {
-      throw StateError('StreamTranscriber has been disposed');
-    }
-  }
-
-  void insert(Uint8List pcmData) {
-    _checkNotDisposed();
-
-    final pcmBuffer = calloc<Uint8>(pcmData.length);
-    pcmBuffer.asTypedList(pcmData.length).setAll(0, pcmData);
-
-    try {
-      final result = _cactusStreamTranscribeInsert(_handle, pcmBuffer, pcmData.length);
-      if (result < 0) {
-        throw CactusException('Stream insert failed: ${Cactus.getLastError()}');
-      }
-    } finally {
-      calloc.free(pcmBuffer);
-    }
-  }
-
-  TranscriptionResult process({String? language}) {
-    _checkNotDisposed();
-
-    const bufferSize = 1024 * 1024;
-    final responseBuffer = calloc<Uint8>(bufferSize);
-    final optionsJson = language != null ? jsonEncode({'language': language}) : null;
-    final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
-
-    try {
-      final result = _cactusStreamTranscribeProcess(
-        _handle,
-        responseBuffer.cast(),
-        bufferSize,
-        optionsPtr,
-      );
-
-      if (result < 0) {
-        throw CactusException('Stream process failed: ${Cactus.getLastError()}');
-      }
-
-      final responseStr = responseBuffer.cast<Utf8>().toDartString();
-      final responseJson = jsonDecode(responseStr) as Map<String, dynamic>;
-      return TranscriptionResult.fromJson(responseJson);
-    } finally {
-      calloc.free(responseBuffer);
-      if (optionsPtr != nullptr) calloc.free(optionsPtr);
-    }
-  }
-
-  TranscriptionResult finalize() {
-    _checkNotDisposed();
-
-    const bufferSize = 1024 * 1024;
-    final responseBuffer = calloc<Uint8>(bufferSize);
-
-    try {
-      final result = _cactusStreamTranscribeFinalize(
-        _handle,
-        responseBuffer.cast(),
-        bufferSize,
-      );
-
-      if (result < 0) {
-        throw CactusException('Stream finalize failed: ${Cactus.getLastError()}');
-      }
-
-      final responseStr = responseBuffer.cast<Utf8>().toDartString();
-      final responseJson = jsonDecode(responseStr) as Map<String, dynamic>;
-      return TranscriptionResult.fromJson(responseJson);
-    } finally {
-      calloc.free(responseBuffer);
-    }
-  }
-
-  void dispose() {
-    if (!_disposed) {
-      _cactusStreamTranscribeDestroy(_handle);
-      _cactusTelemetryFlush();
-      _disposed = true;
-    }
-  }
+/// Frees all model resources.
+void cactusDestroy(CactusModelT model) {
+  _cactusDestroy(model);
 }
 
-class CactusIndex {
-  final CactusIndexT _handle;
-  final int embeddingDim;
-  bool _disposed = false;
+/// Clears the KV cache.
+void cactusReset(CactusModelT model) {
+  _cactusReset(model);
+}
 
-  CactusIndex._(this._handle, this.embeddingDim);
+/// Signals the current generation to stop.
+void cactusStop(CactusModelT model) {
+  _cactusStop(model);
+}
 
-  static CactusIndex create(String indexDir, {required int embeddingDim}) {
-    final indexDirPtr = indexDir.toNativeUtf8();
+/// Runs chat completion. Returns the assistant response.
+String cactusComplete(
+  CactusModelT model,
+  String messagesJson,
+  String? optionsJson,
+  String? toolsJson,
+  void Function(String token, int tokenId)? onToken,
+) {
+  const bufferSize = 65536;
+  final responseBuffer = calloc<Uint8>(bufferSize);
+  final messagesPtr = messagesJson.toNativeUtf8();
+  final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
+  final toolsPtr = toolsJson?.toNativeUtf8() ?? nullptr;
 
-    try {
-      final handle = _cactusIndexInit(indexDirPtr, embeddingDim);
-      if (handle == nullptr) {
-        throw CactusException('Failed to create index: ${Cactus.getLastError()}');
-      }
-      return CactusIndex._(handle, embeddingDim);
-    } finally {
-      calloc.free(indexDirPtr);
-    }
+  Pointer<NativeFunction<TokenCallbackNative>> callbackPtr = nullptr;
+  NativeCallable<TokenCallbackNative>? nativeCallable;
+  if (onToken != null) {
+    nativeCallable = NativeCallable<TokenCallbackNative>.isolateLocal(
+      (Pointer<Utf8> token, int tokenId, Pointer<Void> _) {
+        onToken(token.toDartString(), tokenId);
+      },
+    );
+    callbackPtr = nativeCallable.nativeFunction;
   }
 
-  void _checkNotDisposed() {
-    if (_disposed) {
-      throw StateError('CactusIndex has been disposed');
-    }
-  }
-
-  void add({
-    required List<int> ids,
-    required List<String> documents,
-    required List<List<double>> embeddings,
-    List<String>? metadatas,
-  }) {
-    _checkNotDisposed();
-
-    if (ids.length != documents.length || ids.length != embeddings.length) {
-      throw ArgumentError('ids, documents, and embeddings must have the same length');
-    }
-
-    final count = ids.length;
-    final idsPtr = calloc<Int32>(count);
-    for (var i = 0; i < count; i++) {
-      idsPtr[i] = ids[i];
-    }
-
-    final documentsPtr = calloc<Pointer<Utf8>>(count);
-    for (var i = 0; i < count; i++) {
-      documentsPtr[i] = documents[i].toNativeUtf8();
-    }
-
-    final metadatasPtr = metadatas != null ? calloc<Pointer<Utf8>>(count) : nullptr;
-    if (metadatas != null) {
-      for (var i = 0; i < count; i++) {
-        metadatasPtr[i] = metadatas[i].toNativeUtf8();
-      }
-    }
-
-    final embeddingsPtr = calloc<Pointer<Float>>(count);
-    for (var i = 0; i < count; i++) {
-      final embedding = embeddings[i];
-      final embPtr = calloc<Float>(embedding.length);
-      for (var j = 0; j < embedding.length; j++) {
-        embPtr[j] = embedding[j];
-      }
-      embeddingsPtr[i] = embPtr;
-    }
-
-    try {
-      final result = _cactusIndexAdd(
-        _handle,
-        idsPtr,
-        documentsPtr,
-        metadatasPtr,
-        embeddingsPtr,
-        count,
-        embeddingDim,
-      );
-
-      if (result < 0) {
-        throw CactusException('Index add failed: ${Cactus.getLastError()}');
-      }
-    } finally {
-      calloc.free(idsPtr);
-      for (var i = 0; i < count; i++) {
-        calloc.free(documentsPtr[i]);
-        calloc.free(embeddingsPtr[i]);
-        if (metadatasPtr != nullptr) calloc.free(metadatasPtr[i]);
-      }
-      calloc.free(documentsPtr);
-      calloc.free(embeddingsPtr);
-      if (metadatasPtr != nullptr) calloc.free(metadatasPtr);
-    }
-  }
-
-  void delete(List<int> ids) {
-    _checkNotDisposed();
-
-    final idsPtr = calloc<Int32>(ids.length);
-    for (var i = 0; i < ids.length; i++) {
-      idsPtr[i] = ids[i];
-    }
-
-    try {
-      final result = _cactusIndexDelete(_handle, idsPtr, ids.length);
-      if (result < 0) {
-        throw CactusException('Index delete failed: ${Cactus.getLastError()}');
-      }
-    } finally {
-      calloc.free(idsPtr);
-    }
-  }
-
-  List<IndexResult> query(List<double> embedding, {int topK = 5}) {
-    _checkNotDisposed();
-
-    final embPtr = calloc<Float>(embedding.length);
-    for (var i = 0; i < embedding.length; i++) {
-      embPtr[i] = embedding[i];
-    }
-
-    final embPtrPtr = calloc<Pointer<Float>>(1);
-    embPtrPtr[0] = embPtr;
-
-    final optionsJson = jsonEncode({'top_k': topK});
-    final optionsPtr = optionsJson.toNativeUtf8();
-
-    final idBuffers = calloc<Pointer<Int32>>(1);
-    final idBufferSizes = calloc<IntPtr>(1);
-    final scoreBuffers = calloc<Pointer<Float>>(1);
-    final scoreBufferSizes = calloc<IntPtr>(1);
-
-    try {
-      final result = _cactusIndexQuery(
-        _handle,
-        embPtrPtr,
-        1,
-        embedding.length,
-        optionsPtr,
-        idBuffers,
-        idBufferSizes,
-        scoreBuffers,
-        scoreBufferSizes,
-      );
-
-      if (result < 0) {
-        throw CactusException('Index query failed: ${Cactus.getLastError()}');
-      }
-
-      final resultCount = idBufferSizes[0];
-      final results = <IndexResult>[];
-      for (var i = 0; i < resultCount; i++) {
-        results.add(IndexResult(
-          id: idBuffers[0][i],
-          score: scoreBuffers[0][i],
-        ));
-      }
-
-      if (idBuffers[0] != nullptr) calloc.free(idBuffers[0]);
-      if (scoreBuffers[0] != nullptr) calloc.free(scoreBuffers[0]);
-
-      return results;
-    } finally {
-      calloc.free(embPtr);
-      calloc.free(embPtrPtr);
-      calloc.free(optionsPtr);
-      calloc.free(idBuffers);
-      calloc.free(idBufferSizes);
-      calloc.free(scoreBuffers);
-      calloc.free(scoreBufferSizes);
-    }
-  }
-
-  void compact() {
-    _checkNotDisposed();
-    final result = _cactusIndexCompact(_handle);
+  try {
+    final result = _cactusComplete(
+      model, messagesPtr, responseBuffer.cast(), bufferSize,
+      optionsPtr, toolsPtr, callbackPtr, nullptr,
+    );
     if (result < 0) {
-      throw CactusException('Index compact failed: ${Cactus.getLastError()}');
+      throw Exception('Completion failed: ${cactusGetLastError()}');
     }
-  }
-
-  void dispose() {
-    if (!_disposed) {
-      _cactusIndexDestroy(_handle);
-      _cactusTelemetryFlush();
-      _disposed = true;
-    }
+    return responseBuffer.cast<Utf8>().toDartString();
+  } finally {
+    calloc.free(responseBuffer);
+    calloc.free(messagesPtr);
+    if (optionsPtr != nullptr) calloc.free(optionsPtr);
+    if (toolsPtr != nullptr) calloc.free(toolsPtr);
+    nativeCallable?.close();
   }
 }
 
-class CactusException implements Exception {
-  final String message;
-  CactusException(this.message);
+/// Transcribes audio to text.
+String cactusTranscribe(
+  CactusModelT model,
+  String? audioPath,
+  String? prompt,
+  String? optionsJson,
+  void Function(String token, int tokenId)? onToken,
+  Uint8List? pcmData,
+) {
+  const bufferSize = 65536;
+  final responseBuffer = calloc<Uint8>(bufferSize);
+  final audioPathPtr = audioPath?.toNativeUtf8() ?? nullptr;
+  final promptPtr = prompt?.toNativeUtf8() ?? nullptr;
+  final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
 
-  @override
-  String toString() => 'CactusException: $message';
+  Pointer<Uint8> pcmBuffer = nullptr;
+  int pcmSize = 0;
+  if (pcmData != null) {
+    pcmBuffer = calloc<Uint8>(pcmData.length);
+    pcmBuffer.asTypedList(pcmData.length).setAll(0, pcmData);
+    pcmSize = pcmData.length;
+  }
+
+  Pointer<NativeFunction<TokenCallbackNative>> callbackPtr = nullptr;
+  NativeCallable<TokenCallbackNative>? nativeCallable;
+  if (onToken != null) {
+    nativeCallable = NativeCallable<TokenCallbackNative>.isolateLocal(
+      (Pointer<Utf8> token, int tokenId, Pointer<Void> _) {
+        onToken(token.toDartString(), tokenId);
+      },
+    );
+    callbackPtr = nativeCallable.nativeFunction;
+  }
+
+  try {
+    final result = _cactusTranscribe(
+      model, audioPathPtr, promptPtr,
+      responseBuffer.cast(), bufferSize,
+      optionsPtr, callbackPtr, nullptr,
+      pcmBuffer, pcmSize,
+    );
+    if (result < 0) {
+      throw Exception('Transcription failed: ${cactusGetLastError()}');
+    }
+    return responseBuffer.cast<Utf8>().toDartString();
+  } finally {
+    calloc.free(responseBuffer);
+    if (audioPathPtr != nullptr) calloc.free(audioPathPtr);
+    if (promptPtr != nullptr) calloc.free(promptPtr);
+    if (optionsPtr != nullptr) calloc.free(optionsPtr);
+    if (pcmBuffer != nullptr) calloc.free(pcmBuffer);
+    nativeCallable?.close();
+  }
 }
+
+/// Generates a text embedding.
+Float32List cactusEmbed(CactusModelT model, String text, bool normalize) {
+  const maxDim = 4096;
+  final embeddingsBuffer = calloc<Float>(maxDim);
+  final embeddingDim = calloc<IntPtr>(1);
+  final textPtr = text.toNativeUtf8();
+
+  try {
+    final result = _cactusEmbed(model, textPtr, embeddingsBuffer, maxDim, embeddingDim, normalize);
+    if (result < 0) {
+      throw Exception('Embedding failed: ${cactusGetLastError()}');
+    }
+    final dim = embeddingDim.value;
+    return Float32List.fromList(embeddingsBuffer.asTypedList(dim));
+  } finally {
+    calloc.free(embeddingsBuffer);
+    calloc.free(embeddingDim);
+    calloc.free(textPtr);
+  }
+}
+
+/// Generates an image embedding.
+Float32List cactusImageEmbed(CactusModelT model, String imagePath) {
+  const maxDim = 4096;
+  final embeddingsBuffer = calloc<Float>(maxDim);
+  final embeddingDim = calloc<IntPtr>(1);
+  final imagePathPtr = imagePath.toNativeUtf8();
+
+  try {
+    final result = _cactusImageEmbed(model, imagePathPtr, embeddingsBuffer, maxDim, embeddingDim);
+    if (result < 0) {
+      throw Exception('Image embedding failed: ${cactusGetLastError()}');
+    }
+    final dim = embeddingDim.value;
+    return Float32List.fromList(embeddingsBuffer.asTypedList(dim));
+  } finally {
+    calloc.free(embeddingsBuffer);
+    calloc.free(embeddingDim);
+    calloc.free(imagePathPtr);
+  }
+}
+
+/// Generates an audio embedding.
+Float32List cactusAudioEmbed(CactusModelT model, String audioPath) {
+  const maxDim = 4096;
+  final embeddingsBuffer = calloc<Float>(maxDim);
+  final embeddingDim = calloc<IntPtr>(1);
+  final audioPathPtr = audioPath.toNativeUtf8();
+
+  try {
+    final result = _cactusAudioEmbed(model, audioPathPtr, embeddingsBuffer, maxDim, embeddingDim);
+    if (result < 0) {
+      throw Exception('Audio embedding failed: ${cactusGetLastError()}');
+    }
+    final dim = embeddingDim.value;
+    return Float32List.fromList(embeddingsBuffer.asTypedList(dim));
+  } finally {
+    calloc.free(embeddingsBuffer);
+    calloc.free(embeddingDim);
+    calloc.free(audioPathPtr);
+  }
+}
+
+/// Runs voice activity detection. Returns JSON.
+String cactusVad(
+  CactusModelT model,
+  String? audioPath,
+  String? optionsJson,
+  Uint8List? pcmData,
+) {
+  const bufferSize = 65536;
+  final responseBuffer = calloc<Uint8>(bufferSize);
+  final audioPathPtr = audioPath?.toNativeUtf8() ?? nullptr;
+  final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
+
+  Pointer<Uint8> pcmBuffer = nullptr;
+  int pcmSize = 0;
+  if (pcmData != null) {
+    pcmBuffer = calloc<Uint8>(pcmData.length);
+    pcmBuffer.asTypedList(pcmData.length).setAll(0, pcmData);
+    pcmSize = pcmData.length;
+  }
+
+  try {
+    final result = _cactusVad(
+      model, audioPathPtr, responseBuffer.cast(), bufferSize, optionsPtr, pcmBuffer, pcmSize,
+    );
+    if (result < 0) {
+      throw Exception('VAD failed: ${cactusGetLastError()}');
+    }
+    return responseBuffer.cast<Utf8>().toDartString();
+  } finally {
+    calloc.free(responseBuffer);
+    if (audioPathPtr != nullptr) calloc.free(audioPathPtr);
+    if (optionsPtr != nullptr) calloc.free(optionsPtr);
+    if (pcmBuffer != nullptr) calloc.free(pcmBuffer);
+  }
+}
+
+/// Queries the RAG corpus. Returns JSON.
+String cactusRagQuery(CactusModelT model, String query, int topK) {
+  const bufferSize = 65536;
+  final responseBuffer = calloc<Uint8>(bufferSize);
+  final queryPtr = query.toNativeUtf8();
+
+  try {
+    final result = _cactusRagQuery(model, queryPtr, responseBuffer.cast(), bufferSize, topK);
+    if (result < 0) {
+      throw Exception('RAG query failed: ${cactusGetLastError()}');
+    }
+    return responseBuffer.cast<Utf8>().toDartString();
+  } finally {
+    calloc.free(responseBuffer);
+    calloc.free(queryPtr);
+  }
+}
+
+/// Tokenizes text into token IDs.
+List<int> cactusTokenize(CactusModelT model, String text) {
+  const maxTokens = 8192;
+  final tokenBuffer = calloc<Uint32>(maxTokens);
+  final outTokenLen = calloc<IntPtr>(1);
+  final textPtr = text.toNativeUtf8();
+
+  try {
+    final result = _cactusTokenize(model, textPtr, tokenBuffer, maxTokens, outTokenLen);
+    if (result < 0) {
+      throw Exception('Tokenization failed: ${cactusGetLastError()}');
+    }
+    final tokenCount = outTokenLen.value;
+    return List<int>.generate(tokenCount, (i) => tokenBuffer[i]);
+  } finally {
+    calloc.free(tokenBuffer);
+    calloc.free(outTokenLen);
+    calloc.free(textPtr);
+  }
+}
+
+/// Scores a window of tokens. Returns JSON.
+String cactusScoreWindow(CactusModelT model, List<int> tokens, int start, int end, int context) {
+  final tokenBuffer = calloc<Uint32>(tokens.length);
+  for (var i = 0; i < tokens.length; i++) {
+    tokenBuffer[i] = tokens[i];
+  }
+  const bufferSize = 65536;
+  final responseBuffer = calloc<Uint8>(bufferSize);
+
+  try {
+    final result = _cactusScoreWindow(
+      model, tokenBuffer, tokens.length, start, end, context, responseBuffer.cast(), bufferSize,
+    );
+    if (result < 0) {
+      throw Exception('Score window failed: ${cactusGetLastError()}');
+    }
+    return responseBuffer.cast<Utf8>().toDartString();
+  } finally {
+    calloc.free(tokenBuffer);
+    calloc.free(responseBuffer);
+  }
+}
+
+/// Creates a streaming transcription session.
+CactusStreamTranscribeT cactusStreamTranscribeStart(CactusModelT model, String? optionsJson) {
+  final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
+  try {
+    final handle = _cactusStreamTranscribeStart(model, optionsPtr);
+    if (handle == nullptr) {
+      throw Exception('Failed to create stream transcriber: ${cactusGetLastError()}');
+    }
+    return handle;
+  } finally {
+    if (optionsPtr != nullptr) calloc.free(optionsPtr);
+  }
+}
+
+/// Processes a chunk of PCM audio. Returns partial text.
+String cactusStreamTranscribeProcess(CactusStreamTranscribeT stream, Uint8List pcmData) {
+  const bufferSize = 65536;
+  final pcmBuffer = calloc<Uint8>(pcmData.length);
+  pcmBuffer.asTypedList(pcmData.length).setAll(0, pcmData);
+  final responseBuffer = calloc<Uint8>(bufferSize);
+
+  try {
+    final result = _cactusStreamTranscribeProcess(
+      stream, pcmBuffer, pcmData.length, responseBuffer.cast(), bufferSize,
+    );
+    if (result < 0) {
+      throw Exception('Stream process failed: ${cactusGetLastError()}');
+    }
+    return responseBuffer.cast<Utf8>().toDartString();
+  } finally {
+    calloc.free(pcmBuffer);
+    calloc.free(responseBuffer);
+  }
+}
+
+/// Finalizes transcription and returns the result.
+String cactusStreamTranscribeStop(CactusStreamTranscribeT stream) {
+  const bufferSize = 65536;
+  final responseBuffer = calloc<Uint8>(bufferSize);
+
+  try {
+    final result = _cactusStreamTranscribeStop(stream, responseBuffer.cast(), bufferSize);
+    if (result < 0) {
+      throw Exception('Stream stop failed: ${cactusGetLastError()}');
+    }
+    return responseBuffer.cast<Utf8>().toDartString();
+  } finally {
+    calloc.free(responseBuffer);
+  }
+}
+
+/// Initializes a vector index in the given directory.
+CactusIndexT cactusIndexInit(String indexDir, int embeddingDim) {
+  final indexDirPtr = indexDir.toNativeUtf8();
+  try {
+    final handle = _cactusIndexInit(indexDirPtr, embeddingDim);
+    if (handle == nullptr) {
+      throw Exception('Failed to create index: ${cactusGetLastError()}');
+    }
+    return handle;
+  } finally {
+    calloc.free(indexDirPtr);
+  }
+}
+
+/// Frees all index resources.
+void cactusIndexDestroy(CactusIndexT index) {
+  _cactusIndexDestroy(index);
+}
+
+/// Adds documents with embeddings to the index.
+int cactusIndexAdd(
+  CactusIndexT index,
+  List<int> ids,
+  List<String> documents,
+  List<List<double>> embeddings,
+  List<String>? metadatas,
+) {
+  final count = ids.length;
+  final embDim = embeddings[0].length;
+
+  final idsPtr = calloc<Int32>(count);
+  for (var i = 0; i < count; i++) idsPtr[i] = ids[i];
+
+  final documentsPtr = calloc<Pointer<Utf8>>(count);
+  for (var i = 0; i < count; i++) documentsPtr[i] = documents[i].toNativeUtf8();
+
+  final metadatasPtr = metadatas != null ? calloc<Pointer<Utf8>>(count) : nullptr;
+  if (metadatas != null) {
+    for (var i = 0; i < count; i++) metadatasPtr[i] = metadatas[i].toNativeUtf8();
+  }
+
+  final embeddingsPtr = calloc<Pointer<Float>>(count);
+  for (var i = 0; i < count; i++) {
+    final embPtr = calloc<Float>(embeddings[i].length);
+    for (var j = 0; j < embeddings[i].length; j++) embPtr[j] = embeddings[i][j];
+    embeddingsPtr[i] = embPtr;
+  }
+
+  try {
+    final result = _cactusIndexAdd(index, idsPtr, documentsPtr, metadatasPtr, embeddingsPtr, count, embDim);
+    if (result < 0) {
+      throw Exception('Index add failed: ${cactusGetLastError()}');
+    }
+    return result;
+  } finally {
+    calloc.free(idsPtr);
+    for (var i = 0; i < count; i++) {
+      calloc.free(documentsPtr[i]);
+      calloc.free(embeddingsPtr[i]);
+      if (metadatasPtr != nullptr) calloc.free(metadatasPtr[i]);
+    }
+    calloc.free(documentsPtr);
+    calloc.free(embeddingsPtr);
+    if (metadatasPtr != nullptr) calloc.free(metadatasPtr);
+  }
+}
+
+/// Removes documents by ID.
+int cactusIndexDelete(CactusIndexT index, List<int> ids) {
+  final idsPtr = calloc<Int32>(ids.length);
+  for (var i = 0; i < ids.length; i++) idsPtr[i] = ids[i];
+
+  try {
+    final result = _cactusIndexDelete(index, idsPtr, ids.length);
+    if (result < 0) {
+      throw Exception('Index delete failed: ${cactusGetLastError()}');
+    }
+    return result;
+  } finally {
+    calloc.free(idsPtr);
+  }
+}
+
+/// Retrieves documents by ID. Returns JSON.
+String cactusIndexGet(CactusIndexT index, List<int> ids) {
+  final count = ids.length;
+  if (count == 0) return '{"results":[]}';
+
+  final idsPtr = calloc<Int32>(count);
+  for (var i = 0; i < count; i++) idsPtr[i] = ids[i];
+
+  const docBufSize = 4096;
+  const embBufSize = 4096;
+
+  final docRaw = List.generate(count, (_) => calloc<Uint8>(docBufSize));
+  final metaRaw = List.generate(count, (_) => calloc<Uint8>(docBufSize));
+  final embRaw = List.generate(count, (_) => calloc<Float>(embBufSize));
+
+  final docBuffers = calloc<Pointer<Utf8>>(count);
+  final docBufferSizes = calloc<IntPtr>(count);
+  final metaBuffers = calloc<Pointer<Utf8>>(count);
+  final metaBufferSizes = calloc<IntPtr>(count);
+  final embBuffers = calloc<Pointer<Float>>(count);
+  final embBufferSizes = calloc<IntPtr>(count);
+
+  for (var i = 0; i < count; i++) {
+    docBuffers[i] = docRaw[i].cast<Utf8>();
+    docBufferSizes[i] = docBufSize;
+    metaBuffers[i] = metaRaw[i].cast<Utf8>();
+    metaBufferSizes[i] = docBufSize;
+    embBuffers[i] = embRaw[i];
+    embBufferSizes[i] = embBufSize;
+  }
+
+  try {
+    final result = _cactusIndexGet(
+      index, idsPtr, count,
+      docBuffers, docBufferSizes,
+      metaBuffers, metaBufferSizes,
+      embBuffers, embBufferSizes,
+    );
+    if (result < 0) {
+      throw Exception('Index get failed: ${cactusGetLastError()}');
+    }
+
+    final sb = StringBuffer('{"results":[');
+    for (var i = 0; i < count; i++) {
+      if (i > 0) sb.write(',');
+      final doc = docBuffers[i].toDartString();
+      final metaStr = metaBuffers[i].toDartString();
+      final meta = metaStr.isNotEmpty ? metaStr : null;
+      final embDim = embBufferSizes[i];
+      sb.write('{"document":"$doc"');
+      if (meta != null) sb.write(',"metadata":"$meta"'); else sb.write(',"metadata":null');
+      sb.write(',"embedding":[');
+      for (var j = 0; j < embDim; j++) {
+        if (j > 0) sb.write(',');
+        sb.write(embBuffers[i][j]);
+      }
+      sb.write(']}');
+    }
+    sb.write(']}');
+    return sb.toString();
+  } finally {
+    calloc.free(idsPtr);
+    for (var i = 0; i < count; i++) {
+      calloc.free(docRaw[i]);
+      calloc.free(metaRaw[i]);
+      calloc.free(embRaw[i]);
+    }
+    calloc.free(docBuffers);
+    calloc.free(docBufferSizes);
+    calloc.free(metaBuffers);
+    calloc.free(metaBufferSizes);
+    calloc.free(embBuffers);
+    calloc.free(embBufferSizes);
+  }
+}
+
+/// Searches the index by embedding. Returns JSON.
+String cactusIndexQuery(CactusIndexT index, List<double> embedding, String? optionsJson) {
+  const resultCapacity = 1000;
+  final embPtr = calloc<Float>(embedding.length);
+  for (var i = 0; i < embedding.length; i++) embPtr[i] = embedding[i];
+
+  final embPtrPtr = calloc<Pointer<Float>>(1);
+  embPtrPtr[0] = embPtr;
+
+  final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
+
+  final idBuf = calloc<Int32>(resultCapacity);
+  final scoreBuf = calloc<Float>(resultCapacity);
+  final idBuffers = calloc<Pointer<Int32>>(1);
+  final idBufferSizes = calloc<IntPtr>(1);
+  final scoreBuffers = calloc<Pointer<Float>>(1);
+  final scoreBufferSizes = calloc<IntPtr>(1);
+
+  idBuffers[0] = idBuf;
+  idBufferSizes[0] = resultCapacity;
+  scoreBuffers[0] = scoreBuf;
+  scoreBufferSizes[0] = resultCapacity;
+
+  try {
+    final result = _cactusIndexQuery(
+      index, embPtrPtr, 1, embedding.length, optionsPtr,
+      idBuffers, idBufferSizes, scoreBuffers, scoreBufferSizes,
+    );
+    if (result < 0) {
+      throw Exception('Index query failed: ${cactusGetLastError()}');
+    }
+
+    final resultCount = idBufferSizes[0];
+    final sb = StringBuffer('{"results":[');
+    for (var i = 0; i < resultCount; i++) {
+      if (i > 0) sb.write(',');
+      sb.write('{"id":${idBuffers[0][i]},"score":${scoreBuffers[0][i]}}');
+    }
+    sb.write(']}');
+    return sb.toString();
+  } finally {
+    calloc.free(embPtr);
+    calloc.free(embPtrPtr);
+    if (optionsPtr != nullptr) calloc.free(optionsPtr);
+    calloc.free(idBuf);
+    calloc.free(scoreBuf);
+    calloc.free(idBuffers);
+    calloc.free(idBufferSizes);
+    calloc.free(scoreBuffers);
+    calloc.free(scoreBufferSizes);
+  }
+}
+
+/// Compacts the index storage.
+int cactusIndexCompact(CactusIndexT index) {
+  final result = _cactusIndexCompact(index);
+  if (result < 0) {
+    throw Exception('Index compact failed: ${cactusGetLastError()}');
+  }
+  return result;
+}
+

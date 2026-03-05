@@ -28,251 +28,162 @@ cactus auth
 ## Quick Example
 
 ```python
-from cactus import CactusModel
+from cactus import cactus_init, cactus_complete, cactus_destroy
 import json
 
-with CactusModel("weights/lfm2-vl-450m") as model:
-    messages = [{"role": "user", "content": "What is 2+2?"}]
-    response = json.loads(model.complete(messages))
-    print(response["response"])
+model = cactus_init("weights/lfm2-vl-450m", None, False)
+messages = json.dumps([{"role": "user", "content": "What is 2+2?"}])
+result = json.loads(cactus_complete(model, messages, None, None, None))
+print(result["response"])
+cactus_destroy(model)
 ```
 
 ## API Reference
 
-### `CactusModel(model_path, corpus_dir=None)`
+All functions are module-level and mirror the C FFI directly. Handles are plain `int` values (C pointers).
 
-Initialize a model and act as a context manager.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `model_path` | `str` | Path to model weights directory |
-| `corpus_dir` | `str` | Optional path to RAG corpus directory for document Q&A |
+### Init / Lifecycle
 
 ```python
-with CactusModel("weights/lfm2-vl-450m") as model:
-    # use model...
+handle = cactus_init(model_path: str, corpus_dir: str | None, cache_index: bool) -> int
+cactus_destroy(handle: int)
+cactus_reset(handle: int)   # clear KV cache
+cactus_stop(handle: int)    # abort ongoing generation
+cactus_get_last_error() -> str | None
+```
+
+### Completion
+
+Returns a JSON string with `response`, `function_calls`, timing stats, and `cloud_handoff`.
+
+```python
+result_json = cactus_complete(
+    handle: int,
+    messages_json: str,              # JSON array of {role, content}
+    options_json: str | None,        # optional inference options
+    tools_json: str | None,          # optional tool definitions
+    callback: Callable[[str, int], None] | None   # streaming token callback
+) -> str
+```
+
+```python
+# With options and streaming
+options = json.dumps({"max_tokens": 256, "temperature": 0.7})
+def on_token(token, token_id): print(token, end="", flush=True)
+
+result = json.loads(cactus_complete(model, messages_json, options, None, on_token))
+if result["cloud_handoff"]:
+    # confidence below threshold — defer to cloud
     pass
-
-# Or without context manager
-rag_model = CactusModel("weights/lfm2-rag", corpus_dir="./documents")
-# rag_model.destroy() must be called
 ```
 
-### `model.complete(messages, **options)`
-
-Run chat completion. Returns JSON string with response and metrics.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `messages` | `list\|str` | List of message dicts or JSON string |
-| `tools` | `list` | Optional tool definitions for function calling |
-| `temperature` | `float` | Sampling temperature |
-| `top_p` | `float` | Top-p sampling |
-| `top_k` | `int` | Top-k sampling |
-| `max_tokens` | `int` | Maximum tokens to generate |
-| `stop_sequences` | `list` | Stop sequences |
-| `include_stop_sequences` | `bool` | Include matched stop sequences in output (default: `False`) |
-| `force_tools` | `bool` | Constrain output to tool call format |
-| `tool_rag_top_k` | `int` | Select top-k relevant tools via Tool RAG (default: 2, 0 = use all tools) |
-| `confidence_threshold` | `float` | Minimum confidence for local generation (default: 0.7, triggers cloud_handoff when below) |
-| `callback` | `fn` | Streaming callback `fn(token, token_id, user_data)` |
-
-```python
-# Basic completion
-with CactusModel("weights/lfm2-vl-450m") as model:
-    messages = [{"role": "user", "content": "Hello!"}]
-    response = model.complete(messages, max_tokens=100)
-    print(json.loads(response)["response"])
-
-# With tools
-tools = [{
-    "name": "get_weather",
-    "description": "Get weather for a location",
-    "parameters": {
-        "type": "object",
-        "properties": {"location": {"type": "string"}},
-        "required": ["location"]
-    }
-}]
-with CactusModel("weights/lfm2-vl-450m") as model:
-    response = model.complete(messages, tools=tools)
-
-# Streaming
-def on_token(token, token_id, user_data):
-    print(token, end="", flush=True)
-
-with CactusModel("weights/lfm2-vl-450m") as model:
-    model.complete(messages, callback=on_token)
-```
-
-**Response format** (all fields always present):
+**Response format:**
 ```json
 {
     "success": true,
-    "error": null,
-    "cloud_handoff": false,
-    "response": "Hello! How can I help?",
+    "response": "4",
     "function_calls": [],
-    "confidence": 0.85,
+    "cloud_handoff": false,
+    "confidence": 0.92,
     "time_to_first_token_ms": 45.2,
     "total_time_ms": 163.7,
     "prefill_tps": 619.5,
     "decode_tps": 168.4,
-    "ram_usage_mb": 245.67,
     "prefill_tokens": 28,
-    "decode_tokens": 50,
-    "total_tokens": 78
+    "decode_tokens": 12,
+    "total_tokens": 40
 }
 ```
 
-**Cloud handoff response** (when model detects low confidence):
-```json
-{
-    "success": false,
-    "error": null,
-    "cloud_handoff": true,
-    "response": null,
-    "function_calls": [],
-    "confidence": 0.18,
-    "time_to_first_token_ms": 45.2,
-    "total_time_ms": 45.2,
-    "prefill_tps": 619.5,
-    "decode_tps": 0.0,
-    "ram_usage_mb": 245.67,
-    "prefill_tokens": 28,
-    "decode_tokens": 0,
-    "total_tokens": 28
-}
-```
-
-When `cloud_handoff` is `True`, the model's confidence dropped below `confidence_threshold` (default: 0.7) and recommends deferring to a cloud-based model for better results. Handle this in your application:
+### Transcription
 
 ```python
-with CactusModel("weights/lfm2-vl-450m") as model:
-    result = json.loads(model.complete(messages))
-    if result["cloud_handoff"]:
-        # Defer to cloud API (e.g., OpenAI, Anthropic)
-        response = call_cloud_api(messages)
-    else:
-        response = result["response"]
+result_json = cactus_transcribe(
+    handle: int,
+    audio_path: str | None,
+    prompt: str | None,
+    options_json: str | None,
+    callback: Callable[[str, int], None] | None,
+    pcm_data: bytes | None
+) -> str
 ```
 
-### `model.transcribe(audio_path, prompt="")`
-
-Transcribe audio using a Whisper model. Returns JSON string.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `audio_path` | `str` | Path to audio file (WAV) |
-| `prompt` | `str` | Whisper prompt for language/task |
+Streaming transcription:
 
 ```python
-with CactusModel("weights/whisper-small") as whisper:
-    prompt = "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>"
-    response = whisper.transcribe("audio.wav", prompt=prompt)
-    print(json.loads(response)["response"])
+stream = cactus_stream_transcribe_start(handle: int, options_json: str | None) -> int
+partial = cactus_stream_transcribe_process(stream: int, pcm_data: bytes) -> str
+final   = cactus_stream_transcribe_stop(stream: int) -> str
 ```
 
-### `model.embed(text, normalize=False)`
-
-Get text embeddings. Returns list of floats.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `text` | `str` | Text to embed |
-| `normalize` | `bool` | L2-normalize embeddings (default: False) |
+### Embeddings
 
 ```python
-with CactusModel("weights/lfm2-vl-450m") as model:
-    embedding = model.embed("Hello world")
-    print(f"Dimension: {len(embedding)}")
+embedding = cactus_embed(handle: int, text: str, normalize: bool) -> list[float]
+embedding = cactus_image_embed(handle: int, image_path: str) -> list[float]
+embedding = cactus_audio_embed(handle: int, audio_path: str) -> list[float]
 ```
 
-### `model.image_embed(image_path)`
-
-Get image embeddings from a VLM. Returns list of floats.
+### Tokenization
 
 ```python
-with CactusModel("weights/lfm2-vl-450m") as model:
-    embedding = model.image_embed("image.png")
+tokens     = cactus_tokenize(handle: int, text: str) -> list[int]
+result_json = cactus_score_window(handle: int, tokens: list[int], start: int, end: int, context: int) -> str
 ```
 
-### `model.audio_embed(audio_path)`
-
-Get audio embeddings from a Whisper model. Returns list of floats.
+### VAD
 
 ```python
-with CactusModel("weights/whisper-small") as whisper:
-    embedding = whisper.audio_embed("audio.wav")
+result_json = cactus_vad(
+    handle: int,
+    audio_path: str | None,
+    options_json: str | None,
+    pcm_data: bytes | None
+) -> str
 ```
 
-### `model.reset()`
-
-Reset model state (clear KV cache). Call between unrelated conversations.
+### RAG
 
 ```python
-model.reset()
+result_json = cactus_rag_query(handle: int, query: str, top_k: int) -> str
 ```
 
-### `model.stop()`
-
-Stop an ongoing generation (useful with streaming callbacks).
+### Vector Index
 
 ```python
-model.stop()
+index = cactus_index_init(index_dir: str, embedding_dim: int) -> int
+cactus_index_add(index: int, ids: list[int], documents: list[str],
+                 embeddings: list[list[float]], metadatas: list[str] | None)
+cactus_index_delete(index: int, ids: list[int])
+result_json = cactus_index_get(index: int, ids: list[int]) -> str
+result_json = cactus_index_query(index: int, embedding: list[float], options_json: str | None) -> str
+cactus_index_compact(index: int)
+cactus_index_destroy(index: int)
 ```
 
-### `model.tokenize(text)`
-
-Tokenize text. Returns list of token IDs.
+### Telemetry
 
 ```python
-with CactusModel("weights/lfm2-vl-450m") as model:
-    tokens = model.tokenize("Hello world")
-    print(tokens)  # [1234, 5678, ...]
+cactus_set_telemetry_environment(cache_dir: str)
+cactus_set_app_id(app_id: str)
+cactus_telemetry_flush()
+cactus_telemetry_shutdown()
 ```
 
-### `model.rag_query(query, top_k=5)`
-
-Query RAG corpus for relevant text chunks. Requires model initialized with `corpus_dir`.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `query` | `str` | Query text |
-| `top_k` | `int` | Number of chunks to retrieve (default: 5) |
-
-```python
-with CactusModel("weights/lfm2-rag", corpus_dir="./documents") as model:
-    chunks = model.rag_query("What is machine learning?", top_k=3)
-    for chunk in chunks:
-        print(f"Score: {chunk['score']:.2f} - {chunk['text'][:100]}...")
-```
+All functions raise `RuntimeError` on failure.
 
 ## Vision (VLM)
 
-Pass images in the messages for vision-language models:
+Pass images in the messages content for vision-language models:
 
 ```python
-with CactusModel("weights/lfm2-vl-450m") as vlm:
-    messages = [{
-        "role": "user",
-        "content": "Describe this image",
-        "images": ["path/to/image.png"]
-    }]
-    response = vlm.complete(messages)
-    print(json.loads(response)["response"])
-```
-
-## Full Example
-
-See `python/example.py` for a complete example covering:
-- Text completion
-- Text/image/audio embeddings
-- Vision (VLM)
-- Speech transcription
-
-```bash
-python python/example.py
+messages = json.dumps([{
+    "role": "user",
+    "content": "Describe this image",
+    "images": ["path/to/image.png"]
+}])
+result = json.loads(cactus_complete(model, messages, None, None, None))
+print(result["response"])
 ```
 
 ## See Also
