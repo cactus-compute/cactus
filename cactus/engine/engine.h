@@ -115,7 +115,14 @@ struct Config {
     uint32_t linear_k_proj_dim = 0;
     uint32_t linear_v_proj_dim = 0;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12};
+    uint32_t predictor_hidden_dim = 0;
+    uint32_t predictor_num_layers = 0;
+    uint32_t tdt_joint_dim = 0;
+    uint32_t tdt_num_durations = 0;
+    uint32_t tdt_blank_id = 0;
+    std::vector<uint32_t> tdt_durations;
+
     ModelType model_type = ModelType::QWEN;
 
     enum class ModelVariant {DEFAULT = 0, VLM = 1, EXTRACT = 2, RAG = 3};

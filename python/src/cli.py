@@ -9,10 +9,44 @@ import shutil
 import platform
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).parent.resolve()
-PROJECT_ROOT = SCRIPT_DIR.parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def _looks_like_project_root(path: Path) -> bool:
+    return (
+        (path / "python" / "src" / "cli.py").exists()
+        and (path / "cactus").exists()
+        and (path / "tests").exists()
+    )
+
+
+def _resolve_project_root() -> Path:
+    # Optional explicit override for environments running from installed packages.
+    env_root = os.getenv("CACTUS_PROJECT_ROOT", "").strip()
+    if env_root:
+        candidate = Path(env_root).expanduser().resolve()
+        if _looks_like_project_root(candidate):
+            return candidate
+
+    # Prefer the repo containing this CLI module.
+    module_root = SCRIPT_DIR.parent.parent
+    if _looks_like_project_root(module_root):
+        return module_root
+
+    # Fallback: repo containing current working directory.
+    cwd = Path.cwd().resolve()
+    for candidate in [cwd, *cwd.parents]:
+        if _looks_like_project_root(candidate):
+            return candidate
+
+    # Final fallback for unusual layouts.
+    return module_root
+
+
+PROJECT_ROOT = _resolve_project_root()
 DEFAULT_MODEL_ID = "LiquidAI/LFM2.5-1.2B-Instruct"
-DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "UsefulSensors/moonshine-base"
+DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
+DEFAULT_TEST_WHISPER_MODEL_ID = "openai/whisper-small"
 
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
@@ -163,6 +197,8 @@ def download_from_hf(model_id, weights_dir, precision):
 def cmd_download(args):
     """Download model weights. By default downloads pre-converted weights from Cactus-Compute."""
     model_id = args.model_id
+    model_name = getattr(args, 'original_model_id', model_id)
+    is_local = Path(model_id).is_dir()
     weights_dir = get_weights_dir(model_id)
     reconvert = getattr(args, 'reconvert', False)
     precision = getattr(args, 'precision', 'INT4')
@@ -180,10 +216,12 @@ def cmd_download(args):
     print_color(YELLOW, f"Model weights not found. Downloading {model_id}...")
     print("=" * 45)
 
-    if not reconvert:
+    if not reconvert and not is_local:
         if download_from_hf(model_id, weights_dir, precision):
             ensure_vad_weights(model_id, weights_dir, precision)
             return 0
+
+    tokenizer_labels = None
 
     try:
         import torch
@@ -213,22 +251,66 @@ def cmd_download(args):
     import transformers
     transformers.logging.set_verbosity_error()
 
-    def _download_config_json(repo_id):
-        from huggingface_hub import hf_hub_download
-        config_path = hf_hub_download(repo_id=repo_id, filename="config.json", cache_dir=cache_dir, token=token)
+    def _download_config_json(repo_id, revision=None):
+        if Path(repo_id).is_dir():
+            config_path = Path(repo_id) / "config.json"
+        else:
+            from huggingface_hub import hf_hub_download
+            config_path = hf_hub_download(
+                repo_id=repo_id,
+                filename="config.json",
+                cache_dir=cache_dir,
+                token=token,
+                revision=revision,
+            )
         with open(config_path, 'r', encoding='utf-8') as fh:
             return json.load(fh)
 
+    def _resolve_hf_revision(repo_id):
+        env_revision = os.getenv("CACTUS_HF_REVISION", "").strip()
+        if env_revision:
+            return env_revision
+        if repo_id.lower() == "nvidia/parakeet-tdt-0.6b-v3":
+            return "refs/pr/7"
+        return None
+
+    class _MinimalTokenizer:
+        """Fallback tokenizer for Parakeet-TDT when HF tokenizer load fails."""
+        def __init__(self, name_or_path, config_obj=None):
+            self.name_or_path = name_or_path
+            self.model_max_length = 131072
+            self.pad_token_id = 0
+            self.eos_token_id = 0
+
+            try:
+                pad_id = config_obj.get('pad_token_id', 0) if isinstance(config_obj, dict) else 0
+                self.pad_token_id = int(pad_id) if pad_id is not None else 0
+            except Exception:
+                self.pad_token_id = 0
+
+            try:
+                decoding = config_obj.get('decoding', {}) if isinstance(config_obj, dict) else {}
+                blank_id = decoding.get('blank_id', None) if isinstance(decoding, dict) else None
+                if blank_id is not None:
+                    self.eos_token_id = int(blank_id)
+                else:
+                    self.eos_token_id = self.pad_token_id
+            except Exception:
+                self.eos_token_id = self.pad_token_id
+
     def _load_raw_hf_state_dict(repo_id):
-        from huggingface_hub import snapshot_download
         from safetensors.torch import load_file as load_safetensors_file
 
-        snapshot_path = Path(snapshot_download(
-            repo_id=repo_id,
-            cache_dir=cache_dir,
-            token=token,
-            allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.bin", "*.bin.index.json"],
-        ))
+        if Path(repo_id).is_dir():
+            snapshot_path = Path(repo_id)
+        else:
+            from huggingface_hub import snapshot_download
+            snapshot_path = Path(snapshot_download(
+                repo_id=repo_id,
+                cache_dir=cache_dir,
+                token=token,
+                allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.bin", "*.bin.index.json"],
+            ))
 
         index_candidates = [
             "model.safetensors.index.json",
@@ -271,10 +353,10 @@ def cmd_download(args):
     except ImportError:
         Lfm2VlForConditionalGeneration = None
 
-    is_vlm = 'vl' in model_id.lower() or 'vlm' in model_id.lower()
-    is_whisper = 'whisper' in model_id.lower()
-    is_parakeet = 'parakeet' in model_id.lower()
-    is_vad = 'silero-vad' in model_id.lower()
+    is_vlm = 'vl' in model_name.lower() or 'vlm' in model_name.lower()
+    is_whisper = 'whisper' in model_name.lower()
+    is_parakeet = 'parakeet' in model_name.lower()
+    is_vad = 'silero-vad' in model_name.lower()
 
     try:
         if is_vlm:
@@ -342,12 +424,45 @@ def cmd_download(args):
             model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
 
         elif is_parakeet:
-            from transformers import AutoConfig
             from huggingface_hub import hf_hub_download, snapshot_download
             from safetensors.torch import load_file as load_safetensors
 
-            tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
-            config_obj = AutoConfig.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+            revision = _resolve_hf_revision(model_id)
+            config_obj = _download_config_json(model_id, revision=revision)
+            is_parakeet_tdt = 'parakeet-tdt' in model_id.lower()
+            if 'parakeet-tdt' in model_id.lower():
+                cfg_labels = config_obj.get('labels', [])
+                if isinstance(cfg_labels, list) and cfg_labels:
+                    tokenizer_labels = cfg_labels
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    model_id,
+                    cache_dir=cache_dir,
+                    trust_remote_code=True,
+                    token=token,
+                    revision=revision,
+                )
+            except Exception as tok_err:
+                tokenizer = None
+                if "TokenizersBackend" in str(tok_err) or "does not exist or is not currently imported" in str(tok_err):
+                    from transformers import PreTrainedTokenizerFast
+                    print("  Note: Using PreTrainedTokenizerFast fallback for Parakeet tokenizer...")
+                    try:
+                        tokenizer = PreTrainedTokenizerFast.from_pretrained(
+                            model_id,
+                            cache_dir=cache_dir,
+                            token=token,
+                            revision=revision,
+                        )
+                    except Exception as fast_tok_err:
+                        tok_err = fast_tok_err
+
+                if tokenizer is None:
+                    if is_parakeet_tdt and isinstance(tokenizer_labels, list) and tokenizer_labels:
+                        print(f"  Note: Parakeet-TDT tokenizer load failed, using labels fallback ({tok_err})")
+                        tokenizer = _MinimalTokenizer(model_id, config_obj)
+                    else:
+                        raise
 
             state_dict = None
             try:
@@ -355,11 +470,17 @@ def cmd_download(args):
                     repo_id=model_id,
                     filename="model.safetensors",
                     cache_dir=cache_dir,
-                    token=token
+                    token=token,
+                    revision=revision,
                 )
                 state_dict = load_safetensors(weights_path, device="cpu")
             except Exception:
-                snapshot_path = snapshot_download(repo_id=model_id, cache_dir=cache_dir, token=token)
+                snapshot_path = snapshot_download(
+                    repo_id=model_id,
+                    cache_dir=cache_dir,
+                    token=token,
+                    revision=revision,
+                )
                 index_path = Path(snapshot_path) / "model.safetensors.index.json"
                 if not index_path.exists():
                     raise
@@ -443,12 +564,12 @@ def cmd_download(args):
 
         config = convert_hf_model_weights(model, weights_dir, precision, args)
 
-        model_name_l = model_id.lower()
-        if 'extract' in model_name_l:
+        model_name_lower = model_name.lower()
+        if 'extract' in model_name_lower:
             config['model_variant'] = 'extract'
-        elif 'vlm' in model_name_l:
+        elif 'vlm' in model_name_lower:
             config['model_variant'] = 'vlm'
-        elif 'rag' in model_name_l:
+        elif 'rag' in model_name_lower:
             config['model_variant'] = 'rag'
         else:
             config.setdefault('model_variant', 'default')
@@ -464,7 +585,13 @@ def cmd_download(args):
             for key, value in config.items():
                 f.write(f"{key}={format_config_value(value)}\n")
 
-        convert_hf_tokenizer(tokenizer, weights_dir, token=token)
+        convert_hf_tokenizer(
+            tokenizer,
+            weights_dir,
+            token=token,
+            model_id=model_name,
+            labels=tokenizer_labels,
+        )
 
         del model
         del tokenizer
@@ -1255,6 +1382,7 @@ def cmd_test(args):
         for model_id in [
             getattr(args, 'model', 'LiquidAI/LFM2-VL-450M'),
             getattr(args, 'transcribe_model', DEFAULT_TEST_TRANSCRIBE_MODEL_ID),
+            getattr(args, 'whisper_model', DEFAULT_TEST_WHISPER_MODEL_ID),
             getattr(args, 'vad_model', 'snakers4/silero-vad')
         ]:
             class DownloadArgs:
@@ -1285,6 +1413,8 @@ def cmd_test(args):
         cmd.extend(["--model", args.model])
     if args.transcribe_model:
         cmd.extend(["--transcribe_model", args.transcribe_model])
+    if getattr(args, 'whisper_model', None):
+        cmd.extend(["--whisper_model", args.whisper_model])
     if args.vad_model:
         cmd.extend(["--vad_model", args.vad_model])
     if args.precision:
@@ -1509,6 +1639,21 @@ def cmd_convert(args):
         merged_model.save_pretrained(temp_merged_dir)
         tokenizer.save_pretrained(temp_merged_dir)
 
+        # Copy SentencePiece .model file and tokenizer_config.json if they exist
+        # in the LoRA adapter directory
+        lora_sp = next(Path(lora_path).glob("*.model"), None)
+        if lora_sp:
+            shutil.copy2(lora_sp, Path(temp_merged_dir) / lora_sp.name)
+        else:
+            from .tokenizer import _find_sentencepiece_model
+            base_sp = _find_sentencepiece_model(args.model_name, token=token)
+            if base_sp:
+                shutil.copy2(base_sp, Path(temp_merged_dir) / Path(base_sp).name)
+
+        lora_tok_config = Path(lora_path) / "tokenizer_config.json"
+        if lora_tok_config.exists():
+            shutil.copy2(lora_tok_config, Path(temp_merged_dir) / "tokenizer_config.json")
+
         del merged_model
         import torch
         if torch.cuda.is_available():
@@ -1521,6 +1666,7 @@ def cmd_convert(args):
 
     download_args = DownloadArgs()
     download_args.model_id = model_id
+    download_args.original_model_id = args.model_name
     download_args.precision = args.precision
     download_args.cache_dir = cache_dir
     download_args.token = token
@@ -1630,6 +1776,7 @@ def create_parser():
     Optional flags:
     --model <model>                    default: LFM2-VL-450M
     --transcribe_model <model>         default: UsefulSensors/moonshine-base
+    --whisper_model <model>            default: openai/whisper-small (language detection)
     --benchmark                        use larger models (LFM2.5-VL-1.6B + nvidia/parakeet-ctc-1.1b)
     --precision INT4|INT8|FP16         regenerates weights with precision
     --reconvert                        force model weights reconversion from source
@@ -1759,6 +1906,8 @@ def create_parser():
                              help='Model to use for tests')
     test_parser.add_argument('--transcribe_model', default=DEFAULT_TEST_TRANSCRIBE_MODEL_ID,
                              help='Transcribe model to use')
+    test_parser.add_argument('--whisper_model', default=DEFAULT_TEST_WHISPER_MODEL_ID,
+                             help='Whisper model to use for language detection tests')
     test_parser.add_argument('--vad_model', default='snakers4/silero-vad',
                              help='VAD model to use')
     test_parser.add_argument('--benchmark', action='store_true',

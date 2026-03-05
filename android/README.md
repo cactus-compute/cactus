@@ -85,229 +85,193 @@ kotlin {
 
 ## Usage
 
+Handles are plain `Long` values (C pointers). All functions are top-level.
+
 ### Basic Completion
 
 ```kotlin
 import com.cactus.*
+import org.json.JSONObject
 
-val model = Cactus.create("/path/to/model")
-val result = model.complete("What is the capital of France?")
-model.close()
+val model = cactusInit("/path/to/model", null, false)
+val messages = """[{"role":"user","content":"What is the capital of France?"}]"""
+val resultJson = cactusComplete(model, messages, null, null, null)
+val result = JSONObject(resultJson)
+println(result.getString("response"))
+cactusDestroy(model)
 ```
 
-### Chat Messages
+### Completion with Options and Streaming
 
 ```kotlin
-Cactus.create(modelPath).use { model ->
-    val result = model.complete(
-        messages = listOf(
-            Message.system("You are a helpful assistant."),
-            Message.user("What is 2 + 2?")
-        )
-    )
-    println(result.text)
+val options = """{"max_tokens":256,"temperature":0.7}"""
+val tokens = mutableListOf<String>()
+
+val resultJson = cactusComplete(model, messages, options, null) { token, _ ->
+    tokens.add(token)
+    print(token)
 }
-```
-
-### Completion Options
-
-```kotlin
-val options = CompletionOptions(
-    temperature = 0.7f,
-    topP = 0.9f,
-    topK = 40,
-    maxTokens = 256,
-    stopSequences = listOf("\n\n")
-)
-
-val result = model.complete("Write a haiku:", options)
-```
-
-### Streaming Tokens
-
-```kotlin
-val result = model.complete(
-    messages = listOf(Message.user("Tell me a story")),
-    callback = TokenCallback { token, tokenId ->
-        print(token)
-    }
-)
 ```
 
 ### Audio Transcription
 
 ```kotlin
-val result = model.transcribe("/path/to/audio.wav")
+// From file
+val result = cactusTranscribe(model, "/path/to/audio.wav", "", null, null, null)
 
-val pcmData: ByteArray = ... // 16kHz mono PCM
-val result = model.transcribe(pcmData)
-```
-
-### Embeddings
-
-```kotlin
-val embedding = model.embed("Hello, world!")
-val imageEmbedding = model.imageEmbed("/path/to/image.jpg")
-val audioEmbedding = model.audioEmbed("/path/to/audio.wav")
-```
-
-### Tokenization
-
-```kotlin
-val tokens = model.tokenize("Hello, world!")
-val scores = model.scoreWindow(tokens, start = 0, end = tokens.size, context = 512)
+// From PCM data (16 kHz mono)
+val pcmData: ByteArray = ...
+val result = cactusTranscribe(model, null, null, null, null, pcmData)
 ```
 
 ### Streaming Transcription
 
 ```kotlin
-model.createStreamTranscriber().use { stream ->
-    stream.insert(audioChunk1)
-    stream.insert(audioChunk2)
-    val partial = stream.process()
-    println("Partial: ${partial.text}")
-    val final = stream.finalize()
-    println("Final: ${final.text}")
-}
+val stream  = cactusStreamTranscribeStart(model, null)
+val partial = cactusStreamTranscribeProcess(stream, audioChunk)
+val final_  = cactusStreamTranscribeStop(stream)
+```
+
+### Embeddings
+
+```kotlin
+val embedding      = cactusEmbed(model, "Hello, world!", true)   // FloatArray
+val imageEmbedding = cactusImageEmbed(model, "/path/to/image.jpg")
+val audioEmbedding = cactusAudioEmbed(model, "/path/to/audio.wav")
+```
+
+### Tokenization
+
+```kotlin
+val tokens = cactusTokenize(model, "Hello, world!")  // IntArray
+val scores = cactusScoreWindow(model, tokens, 0, tokens.size, 512)
+```
+
+### VAD
+
+```kotlin
+val result = cactusVad(model, "/path/to/audio.wav", null, null)
 ```
 
 ### RAG
 
 ```kotlin
-val model = Cactus.create(
-    modelPath = "/path/to/model",
-    corpusDir = "/path/to/documents"
-)
-val result = model.complete("What does the documentation say about X?")
+val result = cactusRagQuery(model, "What is machine learning?", 5)
 ```
 
 ### Vector Index
 
 ```kotlin
-CactusIndex.create("/path/to/index", embeddingDim = 384).use { index ->
-    val embeddings = arrayOf(model.embed("doc1"), model.embed("doc2"))
-    index.add(
-        ids = intArrayOf(1, 2),
-        documents = arrayOf("Document 1", "Document 2"),
-        embeddings = embeddings
-    )
-    val results = index.query(model.embed("search query"), topK = 5)
-    results.forEach { println("ID: ${it.id}, Score: ${it.score}") }
-}
+val index = cactusIndexInit("/path/to/index", 384)
+
+cactusIndexAdd(
+    index,
+    intArrayOf(1, 2),
+    arrayOf("Document 1", "Document 2"),
+    arrayOf(floatArrayOf(0.1f, 0.2f), floatArrayOf(0.3f, 0.4f)),
+    null
+)
+
+val resultsJson = cactusIndexQuery(index, floatArrayOf(0.1f, 0.2f), null)
+// JSON: {"results":[{"id":1,"score":0.99,...},...]}
+
+cactusIndexDelete(index, intArrayOf(2))
+cactusIndexCompact(index)
+cactusIndexDestroy(index)
 ```
 
 ## API Reference
 
-### Cactus
+All functions are top-level and mirror the C FFI directly. Handles are `Long` values.
+
+### Init / Lifecycle
 
 ```kotlin
-object Cactus {
-    fun create(modelPath: String, corpusDir: String? = null): Cactus
-}
-
-fun complete(prompt: String, options: CompletionOptions = CompletionOptions()): CompletionResult
-fun complete(messages: List<Message>, options: CompletionOptions = CompletionOptions(), tools: List<Map<String, Any>>? = null, callback: TokenCallback? = null): CompletionResult
-fun transcribe(audioPath: String, prompt: String? = null, language: String? = null, translate: Boolean = false): TranscriptionResult
-fun transcribe(pcmData: ByteArray, prompt: String? = null, language: String? = null, translate: Boolean = false): TranscriptionResult
-fun embed(text: String, normalize: Boolean = true): FloatArray
-fun imageEmbed(imagePath: String): FloatArray
-fun audioEmbed(audioPath: String): FloatArray
-fun ragQuery(query: String, topK: Int = 5): String
-fun tokenize(text: String): IntArray
-fun scoreWindow(tokens: IntArray, start: Int, end: Int, context: Int): String
-fun createStreamTranscriber(): StreamTranscriber
-fun reset()
-fun stop()
-fun close()
+fun cactusInit(modelPath: String, corpusDir: String?, cacheIndex: Boolean): Long  // throws RuntimeException
+fun cactusDestroy(model: Long)
+fun cactusReset(model: Long)
+fun cactusStop(model: Long)
+fun cactusGetLastError(): String
 ```
 
-### Message
+### Completion
 
 ```kotlin
-data class Message(val role: String, val content: String) {
-    companion object {
-        fun system(content: String): Message
-        fun user(content: String): Message
-        fun assistant(content: String): Message
-    }
-}
+fun cactusComplete(
+    model: Long,
+    messagesJson: String,
+    optionsJson: String?,
+    toolsJson: String?,
+    callback: CactusTokenCallback?
+): String
 ```
 
-### CompletionOptions
+### Transcription
 
 ```kotlin
-data class CompletionOptions(
-    val temperature: Float = 0.7f,
-    val topP: Float = 0.9f,
-    val topK: Int = 40,
-    val maxTokens: Int = 512,
-    val stopSequences: List<String> = emptyList(),
-    val confidenceThreshold: Float = 0f
-)
+fun cactusTranscribe(
+    model: Long,
+    audioPath: String?,
+    prompt: String?,
+    optionsJson: String?,
+    callback: CactusTokenCallback?,
+    pcmData: ByteArray?
+): String
+
+fun cactusStreamTranscribeStart(model: Long, optionsJson: String?): Long  // throws RuntimeException
+fun cactusStreamTranscribeProcess(stream: Long, pcmData: ByteArray): String
+fun cactusStreamTranscribeStop(stream: Long): String
 ```
 
-### CompletionResult
+### Embeddings
 
 ```kotlin
-data class CompletionResult(
-    val text: String,
-    val functionCalls: List<Map<String, Any>>?,
-    val promptTokens: Int,
-    val completionTokens: Int,
-    val timeToFirstToken: Double,
-    val totalTime: Double,
-    val prefillTokensPerSecond: Double,
-    val decodeTokensPerSecond: Double,
-    val confidence: Double,
-    val needsCloudHandoff: Boolean
-)
+fun cactusEmbed(model: Long, text: String, normalize: Boolean): FloatArray
+fun cactusImageEmbed(model: Long, imagePath: String): FloatArray
+fun cactusAudioEmbed(model: Long, audioPath: String): FloatArray
 ```
 
-### TranscriptionResult
+### Tokenization / Scoring
 
 ```kotlin
-data class TranscriptionResult(
-    val text: String,
-    val segments: List<Map<String, Any>>?,
-    val totalTime: Double
-)
+fun cactusTokenize(model: Long, text: String): IntArray
+fun cactusScoreWindow(model: Long, tokens: IntArray, start: Int, end: Int, context: Int): String
 ```
 
-### TokenCallback
+### VAD / RAG
 
 ```kotlin
-fun interface TokenCallback {
+fun cactusVad(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
+fun cactusRagQuery(model: Long, query: String, topK: Int): String
+```
+
+### Vector Index
+
+```kotlin
+fun cactusIndexInit(indexDir: String, embeddingDim: Int): Long  // throws RuntimeException
+fun cactusIndexDestroy(index: Long)
+fun cactusIndexAdd(index: Long, ids: IntArray, documents: Array<String>, embeddings: Array<FloatArray>, metadatas: Array<String>?): Int
+fun cactusIndexDelete(index: Long, ids: IntArray): Int
+fun cactusIndexGet(index: Long, ids: IntArray): String
+fun cactusIndexQuery(index: Long, embedding: FloatArray, optionsJson: String?): String
+fun cactusIndexCompact(index: Long): Int
+```
+
+### Telemetry
+
+```kotlin
+fun cactusSetTelemetryEnvironment(cacheDir: String)
+fun cactusSetAppId(appId: String)
+fun cactusTelemetryFlush()
+fun cactusTelemetryShutdown()
+```
+
+### Types
+
+```kotlin
+fun interface CactusTokenCallback {
     fun onToken(token: String, tokenId: Int)
 }
-```
-
-### StreamTranscriber
-
-```kotlin
-class StreamTranscriber : Closeable {
-    fun insert(pcmData: ByteArray)
-    fun process(language: String? = null): TranscriptionResult
-    fun finalize(): TranscriptionResult
-    fun close()
-}
-```
-
-### CactusIndex
-
-```kotlin
-class CactusIndex : Closeable {
-    companion object {
-        fun create(indexDir: String, embeddingDim: Int): CactusIndex
-    }
-
-    fun add(ids: IntArray, documents: Array<String>, embeddings: Array<FloatArray>, metadatas: Array<String>? = null)
-    fun delete(ids: IntArray)
-    fun query(embedding: FloatArray, topK: Int = 5): List<IndexResult>
-    fun compact()
-    fun close()
-}
-
-data class IndexResult(val id: Int, val score: Float)
 ```
 
 ## Requirements

@@ -813,23 +813,49 @@ inline void parse_function_calls_from_response(const std::string& response_text,
 
             if (!content.empty() && content.front() == '[' && content.back() == ']') {
                 std::string inner = content.substr(1, content.size() - 2);
-                size_t start = 0;
-                int paren_depth = 0;
 
-                for (size_t i = 0; i < inner.size(); ++i) {
-                    char c = inner[i];
-                    if (c == '(') {
-                        paren_depth++;
-                    } else if (c == ')' && paren_depth > 0) {
-                        paren_depth--;
-                    } else if (c == ',' && paren_depth == 0) {
-                        append_lfm2_call(inner.substr(start, i - start), function_calls);
-                        start = i + 1;
+                size_t inner_first = inner.find_first_not_of(" \t\n\r");
+                if (inner_first != std::string::npos && inner[inner_first] == '{') {
+                    size_t pos = inner_first;
+                    while (pos < inner.size()) {
+                        if (inner[pos] == '{') {
+                            int brace_depth = 1;
+                            size_t obj_start = pos;
+                            pos++;
+                            while (pos < inner.size() && brace_depth > 0) {
+                                if (inner[pos] == '{') brace_depth++;
+                                else if (inner[pos] == '}') brace_depth--;
+                                pos++;
+                            }
+                            if (brace_depth == 0) {
+                                std::string json_obj = inner.substr(obj_start, pos - obj_start);
+                                if (json_obj.find("\"name\"") != std::string::npos) {
+                                    function_calls.push_back(json_obj);
+                                }
+                            }
+                        } else {
+                            pos++;
+                        }
                     }
-                }
+                } else {
+                    size_t start = 0;
+                    int paren_depth = 0;
 
-                if (start < inner.size()) {
-                    append_lfm2_call(inner.substr(start), function_calls);
+                    for (size_t i = 0; i < inner.size(); ++i) {
+                        char c = inner[i];
+                        if (c == '(') {
+                            paren_depth++;
+                        } else if (c == ')' && paren_depth > 0) {
+                            paren_depth--;
+                        } else if (c == ',' && paren_depth == 0) {
+                            append_lfm2_call(inner.substr(start, i - start), function_calls);
+                            start = i + 1;
+                        }
+                    }
+
+                    if (start < inner.size()) {
+                        append_lfm2_call(inner.substr(start), function_calls);
+                    }
                 }
             } else if (!content.empty()) {
                 append_lfm2_call(content, function_calls);
