@@ -6,6 +6,7 @@
 #include <limits>
 #include <cstring>
 #include <vector>
+#include <cassert>
 
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -220,13 +221,14 @@ static inline void cactus_attention_f16_fast(
     size_t head_dim,
     float scale,
     size_t position_offset,
-    bool is_causal
+    bool is_causal,
+    size_t window_size
 ) {
     constexpr size_t BLOCK_SIZE = 32;
     const size_t nblocks = head_dim / 8;
 
 #ifdef __APPLE__
-    if (seq_len >= 64) {
+    if (seq_len >= 64 && window_size == 0) {
         cactus_attention_f16_accelerate(
             queries, keys, values, output,
             batch_size, seq_len, kv_seq_len,
@@ -269,8 +271,9 @@ static inline void cactus_attention_f16_fast(
 
             const size_t abs_q = position_offset + q_pos;
             size_t kv_end = is_causal ? std::min(kv_seq_len, abs_q + 1) : kv_seq_len;
+            size_t kv_start = (window_size > 0 && abs_q > window_size) ? abs_q - window_size : 0;
 
-            for (size_t kv0 = 0; kv0 < kv_end; kv0 += BLOCK_SIZE) {
+            for (size_t kv0 = kv_start; kv0 < kv_end; kv0 += BLOCK_SIZE) {
                 const size_t kv1 = std::min(kv0 + BLOCK_SIZE, kv_end);
                 float block_max = -INFINITY;
 
@@ -366,12 +369,13 @@ void cactus_attention_f16(
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }
     
-    if (head_dim % 8 == 0 && mask == nullptr && window_size == 0) {
+    assert(head_dim % 8 == 0 && "head_dim must be divisible by 8");
+    if (mask == nullptr) {
         cactus_attention_f16_fast(
             queries, keys, values, output,
             batch_size, seq_len, kv_seq_len,
             num_q_heads, num_kv_heads, head_dim,
-            scale, position_offset, is_causal
+            scale, position_offset, is_causal, window_size
         );
         return;
     }
@@ -666,6 +670,8 @@ void cactus_attention_hybrid_int8_fp16(
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }
+
+    assert(head_dim % 8 == 0 && "head_dim must be divisible by 8");
 
     const size_t kv_seq_len = cache_len + new_len;
 
