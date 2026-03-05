@@ -379,6 +379,7 @@ actual class Cactus private constructor(private var handle: COpaquePointer?) : A
             put("max_tokens", options.maxTokens)
             putJsonArray("stop") { options.stopSequences.forEach { add(it) } }
             put("confidence_threshold", options.confidenceThreshold)
+            put("force_tools", options.forceTools)
         }.toString()
     }
 

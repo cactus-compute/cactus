@@ -290,12 +290,19 @@ static inline void cactus_attention_f16_fast(
                     block_max = std::max(block_max, score);
                 }
 
-                float scale_corr = expf(running_max - block_max);
-                running_sum *= scale_corr;
+                float current_block_scale = 1.0f;
+                if (block_max > running_max) {
+                    float scale_correction = expf(running_max - block_max);
+                    running_sum *= scale_correction;
 
-                float16x8_t corr16 = vdupq_n_f16((__fp16)scale_corr);
-                for (size_t d = 0; d < nblocks; d++)
-                    vacc[d] = vmulq_f16(vacc[d], corr16);
+                    float16x8_t corr16 = vdupq_n_f16((__fp16)scale_correction);
+                    for (size_t d = 0; d < nblocks; d++)
+                        vacc[d] = vmulq_f16(vacc[d], corr16);
+
+                    running_max = block_max;
+                } else {
+                    current_block_scale = expf(block_max - running_max);
+                }
 
                 float block_sum = 0.f;
                 for (size_t i = 0; i < kv1 - kv0; i++) {
@@ -304,7 +311,7 @@ static inline void cactus_attention_f16_fast(
                 }
 
                 for (size_t i = 0; i < kv1 - kv0; i++) {
-                    float w = block_scores[i];
+                    float w = block_scores[i] * current_block_scale;
                     if (w == 0.f) continue;
 
                     const __fp16* v = values + batch*kv_batch_stride + (kv0+i)*kv_seq_stride + kv_head*head_dim;
@@ -316,8 +323,7 @@ static inline void cactus_attention_f16_fast(
                     }
                 }
 
-                running_sum += block_sum;
-                running_max = block_max;
+                running_sum += block_sum * current_block_scale;
             }
 
             if (running_sum == 0.f) {

@@ -27,6 +27,14 @@ WhisperModel::WhisperModel(const Config& config) : Model(config) {
     encoder_k_persistent_.assign(config.num_layers, 0);
     encoder_v_persistent_.assign(config.num_layers, 0);
 
+    const float neg_inf = -std::numeric_limits<float>::infinity();
+    for (size_t tok : suppress_tokens_) {
+        suppress_bias_[static_cast<uint32_t>(tok)] = neg_inf;
+    }
+    suppress_bias_first_step_ = suppress_bias_;
+    for (size_t tok : begin_suppress_tokens_) {
+        suppress_bias_first_step_[static_cast<uint32_t>(tok)] = neg_inf;
+    }
 }
 
 void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
@@ -690,12 +698,12 @@ uint32_t WhisperModel::decode_with_audio(
     bool cold_start = !encoder_ready_;
     size_t logits_node = 0;
 
-    uint32_t bos = static_cast<uint32_t>(get_tokenizer()->get_bos_token());
-
     std::vector<uint32_t> full_tokens;
-    full_tokens.reserve(tokens.size() + 1);
-    full_tokens.push_back(bos);
-    full_tokens.insert(full_tokens.end(), tokens.begin(), tokens.end());
+    if (tokens.empty()) {
+        full_tokens.push_back(static_cast<uint32_t>(get_tokenizer()->get_bos_token()));
+    } else {
+        full_tokens = tokens;
+    }
 
     if (cold_start)
     {
@@ -718,7 +726,9 @@ uint32_t WhisperModel::decode_with_audio(
         logits_node = run_decoder_step(last_token_vec, true, true);
     }
 
-    size_t sampled_token_id = gb->sample(logits_node, temperature, top_p, top_k);
+    const auto& bias = first_decode_step_ ? suppress_bias_first_step_ : suppress_bias_;
+    if (first_decode_step_) first_decode_step_ = false;
+    size_t sampled_token_id = gb->sample(logits_node, temperature, top_p, top_k, bias);
     if (!profile_file.empty()) gb->execute(profile_file);
     else gb->execute();
 

@@ -95,6 +95,76 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             'pad_token_id': int(cfg_get(config, 'pad_token_id', cfg_get(root_config, 'pad_token_id', 0))),
             'encoder_hidden_act': cfg_get(encoder_cfg, 'hidden_act', 'silu'),
         })
+    elif detected_model_type == 'parakeet_tdt':
+        encoder_cfg = cfg_get(config, 'encoder', cfg_get(root_config, 'encoder', None))
+        if encoder_cfg is None:
+            raise ValueError("Parakeet TDT conversion requires encoder config")
+
+        preprocessor_cfg = cfg_get(config, 'preprocessor', cfg_get(root_config, 'preprocessor', {}))
+        decoder_cfg = cfg_get(config, 'decoder', cfg_get(root_config, 'decoder', {}))
+        prediction_cfg = cfg_get(decoder_cfg, 'prediction', {})
+        joint_cfg = cfg_get(config, 'joint', cfg_get(root_config, 'joint', {}))
+        jointnet_cfg = cfg_get(joint_cfg, 'jointnet', {})
+        model_defaults_cfg = cfg_get(config, 'model_defaults', cfg_get(root_config, 'model_defaults', {}))
+
+        hidden_dim = int(cfg_get(encoder_cfg, 'd_model', cfg_get(encoder_cfg, 'hidden_size', 0)))
+        num_layers = int(cfg_get(encoder_cfg, 'n_layers', cfg_get(encoder_cfg, 'num_hidden_layers', 0)))
+        attention_heads = int(cfg_get(encoder_cfg, 'n_heads', cfg_get(encoder_cfg, 'num_attention_heads', 0)))
+        attention_kv_heads = int(cfg_get(encoder_cfg, 'n_kv_heads', attention_heads))
+        head_dim = int(hidden_dim // max(1, attention_heads))
+
+        ff_intermediate = int(cfg_get(encoder_cfg, 'ffn_hidden_size', 0))
+        if ff_intermediate == 0:
+            ff_expansion = float(cfg_get(encoder_cfg, 'ff_expansion_factor', 4.0))
+            ff_intermediate = int(round(hidden_dim * ff_expansion))
+
+        layer_norm_eps = float(cfg_get(encoder_cfg, 'layer_norm_eps', cfg_get(encoder_cfg, 'norm_eps', 1e-5)) or 1e-5)
+        rope_theta = float(cfg_get(encoder_cfg, 'rope_theta', 0.0) or 0.0)
+        labels = cfg_get(config, 'labels', cfg_get(root_config, 'labels', []))
+        if not isinstance(labels, (list, tuple)):
+            labels = []
+        tdt_durations = cfg_get(model_defaults_cfg, 'tdt_durations', [])
+        if not isinstance(tdt_durations, (list, tuple)):
+            tdt_durations = []
+
+        vocab_size = int(cfg_get(decoder_cfg, 'vocab_size', len(labels)))
+        blank_id_cfg = cfg_get(cfg_get(config, 'decoding', {}), 'blank_id', cfg_get(decoder_cfg, 'blank_id', None))
+        if blank_id_cfg is None:
+            tdt_blank_id = vocab_size
+        else:
+            try:
+                tdt_blank_id = int(blank_id_cfg)
+            except (TypeError, ValueError):
+                tdt_blank_id = vocab_size
+            if tdt_blank_id < 0:
+                tdt_blank_id = vocab_size
+
+        model_config.update({
+            'vocab_size': vocab_size,
+            'hidden_dim': hidden_dim,
+            'num_layers': num_layers,
+            'attention_heads': attention_heads,
+            'attention_kv_heads': attention_kv_heads,
+            'attention_head_dim': head_dim,
+            'ffn_intermediate_dim': ff_intermediate,
+            'context_length': int(cfg_get(encoder_cfg, 'max_position_embeddings', 0)),
+            'layer_norm_eps': layer_norm_eps,
+            'rope_theta': rope_theta,
+            'conv_kernel_size': int(cfg_get(encoder_cfg, 'conv_kernel_size', 9)),
+            'subsampling_conv_kernel_size': int(cfg_get(encoder_cfg, 'subsampling_conv_kernel_size', 3)),
+            'subsampling_conv_stride': int(cfg_get(encoder_cfg, 'subsampling_conv_stride', 2)),
+            'subsampling_conv_channels': int(cfg_get(encoder_cfg, 'subsampling_conv_channels', 256)),
+            'subsampling_factor': int(cfg_get(encoder_cfg, 'subsampling_factor', 8)),
+            'num_mel_bins': int(cfg_get(preprocessor_cfg, 'features', cfg_get(encoder_cfg, 'feat_in', 128))),
+            'pad_token_id': int(cfg_get(config, 'pad_token_id', cfg_get(root_config, 'pad_token_id', 0))),
+            'encoder_hidden_act': cfg_get(encoder_cfg, 'activation', cfg_get(encoder_cfg, 'hidden_act', 'silu')),
+            'predictor_hidden_dim': int(cfg_get(prediction_cfg, 'pred_hidden', 0)),
+            'predictor_num_layers': int(cfg_get(prediction_cfg, 'pred_rnn_layers', 0)),
+            'tdt_joint_dim': int(cfg_get(jointnet_cfg, 'joint_hidden', 0)),
+            'tdt_num_durations': len(tdt_durations),
+            'tdt_durations': [int(v) for v in tdt_durations],
+            'tdt_blank_id': tdt_blank_id,
+        })
 
     num_layers = model_config['num_layers']
 
@@ -243,8 +313,23 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             if key is None:
                 missing_tensors.append((-1, out_name, candidate_keys))
                 continue
+            tensor = state_dict[key]
+
+            # Some NeMo exports store conv2d kernels as [O, H, W, I].
+            # Runtime expects [O, I, H, W].
+            if out_name in {
+                'subsampling_conv0_weight.weights',
+                'subsampling_depthwise1_weight.weights',
+                'subsampling_pointwise1_weight.weights',
+                'subsampling_depthwise2_weight.weights',
+                'subsampling_pointwise2_weight.weights',
+            } and hasattr(tensor, 'shape') and len(tensor.shape) == 4:
+                is_hwio_k3 = tensor.shape[1] == 3 and tensor.shape[2] == 3 and tensor.shape[3] >= 1
+                is_hwio_pw = tensor.shape[1] == 1 and tensor.shape[2] == 1 and tensor.shape[3] > 1
+                if is_hwio_k3 or is_hwio_pw:
+                    tensor = tensor.permute(0, 3, 1, 2).contiguous()
             save_tensor_with_header(
-                state_dict[key], output_dir / out_name, precision, transpose=False,
+                tensor, output_dir / out_name, precision, transpose=False,
                 stats_tracker=quantization_stats, args=args, model_type=detected_model_type
             )
             saved_tensor_full_names.add(key)
@@ -309,6 +394,261 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             tracked_key = layer_prefix + 'conv.norm.num_batches_tracked'
             if tracked_key in state_dict:
                 saved_tensor_full_names.add(tracked_key)
+    elif detected_model_type == 'parakeet_tdt':
+        global_mappings = [
+            (['encoder.pre_encode.conv.0.weight', 'encoder.subsampling.layers.0.weight'], 'subsampling_conv0_weight.weights'),
+            (['encoder.pre_encode.conv.0.bias', 'encoder.subsampling.layers.0.bias'], 'subsampling_conv0_bias.bias'),
+            (['encoder.pre_encode.conv.2.weight', 'encoder.subsampling.layers.2.weight'], 'subsampling_depthwise1_weight.weights'),
+            (['encoder.pre_encode.conv.2.bias', 'encoder.subsampling.layers.2.bias'], 'subsampling_depthwise1_bias.bias'),
+            (['encoder.pre_encode.conv.3.weight', 'encoder.subsampling.layers.3.weight'], 'subsampling_pointwise1_weight.weights'),
+            (['encoder.pre_encode.conv.3.bias', 'encoder.subsampling.layers.3.bias'], 'subsampling_pointwise1_bias.bias'),
+            (['encoder.pre_encode.conv.5.weight', 'encoder.subsampling.layers.5.weight'], 'subsampling_depthwise2_weight.weights'),
+            (['encoder.pre_encode.conv.5.bias', 'encoder.subsampling.layers.5.bias'], 'subsampling_depthwise2_bias.bias'),
+            (['encoder.pre_encode.conv.6.weight', 'encoder.subsampling.layers.6.weight'], 'subsampling_pointwise2_weight.weights'),
+            (['encoder.pre_encode.conv.6.bias', 'encoder.subsampling.layers.6.bias'], 'subsampling_pointwise2_bias.bias'),
+            (['encoder.pre_encode.out.weight', 'encoder.subsampling.linear.weight'], 'subsampling_linear_weight.weights'),
+            (['encoder.pre_encode.out.bias', 'encoder.subsampling.linear.bias'], 'subsampling_linear_bias.bias'),
+        ]
+
+        for candidate_keys, out_name in global_mappings:
+            key = _find_first_key(state_dict, candidate_keys)
+            if key is None:
+                missing_tensors.append((-1, out_name, candidate_keys))
+                continue
+            tensor = state_dict[key]
+
+            # Some NeMo exports store conv2d kernels as [O, H, W, I].
+            # Runtime expects [O, I, H, W].
+            if out_name in {
+                'subsampling_conv0_weight.weights',
+                'subsampling_depthwise1_weight.weights',
+                'subsampling_pointwise1_weight.weights',
+                'subsampling_depthwise2_weight.weights',
+                'subsampling_pointwise2_weight.weights',
+            } and hasattr(tensor, 'shape') and len(tensor.shape) == 4:
+                is_hwio_k3 = tensor.shape[1] == 3 and tensor.shape[2] == 3 and tensor.shape[3] >= 1
+                is_hwio_pw = tensor.shape[1] == 1 and tensor.shape[2] == 1 and tensor.shape[3] > 1
+                if is_hwio_k3 or is_hwio_pw:
+                    tensor = tensor.permute(0, 3, 1, 2).contiguous()
+            save_tensor_with_header(
+                tensor, output_dir / out_name, precision, transpose=False,
+                stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+            )
+            saved_tensor_full_names.add(key)
+
+        predictor_layers = int(model_config.get('predictor_num_layers', 0))
+        if predictor_layers <= 0:
+            predictor_layers = 2
+
+        predictor_global = [
+            (['decoder.prediction.embed.weight'], 'tdt_predictor_embed.weights'),
+        ]
+        for candidate_keys, out_name in predictor_global:
+            key = _find_first_key(state_dict, candidate_keys)
+            if key is None:
+                missing_tensors.append((-1, out_name, candidate_keys))
+                continue
+            save_tensor_with_header(
+                state_dict[key], output_dir / out_name, "FP16", transpose=False,
+                stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+            )
+            saved_tensor_full_names.add(key)
+
+        for i in range(predictor_layers):
+            lstm_mappings = [
+                ([f'decoder.prediction.dec_rnn.lstm.{i}.Wx'], f'tdt_predictor_lstm_{i}_weight_ih.weights'),
+                ([f'decoder.prediction.dec_rnn.lstm.{i}.Wh'], f'tdt_predictor_lstm_{i}_weight_hh.weights'),
+                ([f'decoder.prediction.dec_rnn.lstm.{i}.bias'], f'tdt_predictor_lstm_{i}_bias.weights'),
+            ]
+            for candidate_keys, out_name in lstm_mappings:
+                key = _find_first_key(state_dict, candidate_keys)
+                if key is None:
+                    missing_tensors.append((-1, out_name, candidate_keys))
+                    continue
+                save_tensor_with_header(
+                    state_dict[key], output_dir / out_name, "FP16", transpose=False,
+                    stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                )
+                saved_tensor_full_names.add(key)
+
+        joint_mappings = [
+            (['joint.enc.weight'], 'tdt_joint_enc.weights'),
+            (['joint.enc.bias'], 'tdt_joint_enc.bias'),
+            (['joint.pred.weight'], 'tdt_joint_pred.weights'),
+            (['joint.pred.bias'], 'tdt_joint_pred.bias'),
+            (['joint.joint_net.2.weight', 'joint.joint_net.0.weight'], 'tdt_joint_out.weights'),
+            (['joint.joint_net.2.bias', 'joint.joint_net.0.bias'], 'tdt_joint_out.bias'),
+        ]
+        for candidate_keys, out_name in joint_mappings:
+            key = _find_first_key(state_dict, candidate_keys)
+            if key is None:
+                missing_tensors.append((-1, out_name, candidate_keys))
+                continue
+            save_tensor_with_header(
+                state_dict[key], output_dir / out_name, precision, transpose=False,
+                stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+            )
+            saved_tensor_full_names.add(key)
+
+        layer_mappings = [
+            (['feed_forward1.linear1.weight'], 'ff1_linear1.weights'),
+            (['feed_forward1.linear1.bias'], 'ff1_linear1.bias'),
+            (['feed_forward1.linear2.weight'], 'ff1_linear2.weights'),
+            (['feed_forward1.linear2.bias'], 'ff1_linear2.bias'),
+            (['feed_forward2.linear1.weight'], 'ff2_linear1.weights'),
+            (['feed_forward2.linear1.bias'], 'ff2_linear1.bias'),
+            (['feed_forward2.linear2.weight'], 'ff2_linear2.weights'),
+            (['feed_forward2.linear2.bias'], 'ff2_linear2.bias'),
+            ([
+                'self_attn.q_proj.weight',
+                'self_attn.linear_q.weight',
+                'self_attention.q_proj.weight',
+                'self_attention.linear_q.weight'
+            ], 'self_attn_q.weights'),
+            ([
+                'self_attn.q_proj.bias',
+                'self_attn.linear_q.bias',
+                'self_attention.q_proj.bias',
+                'self_attention.linear_q.bias'
+            ], 'self_attn_q.bias'),
+            ([
+                'self_attn.k_proj.weight',
+                'self_attn.linear_k.weight',
+                'self_attention.k_proj.weight',
+                'self_attention.linear_k.weight'
+            ], 'self_attn_k.weights'),
+            ([
+                'self_attn.k_proj.bias',
+                'self_attn.linear_k.bias',
+                'self_attention.k_proj.bias',
+                'self_attention.linear_k.bias'
+            ], 'self_attn_k.bias'),
+            ([
+                'self_attn.v_proj.weight',
+                'self_attn.linear_v.weight',
+                'self_attention.v_proj.weight',
+                'self_attention.linear_v.weight'
+            ], 'self_attn_v.weights'),
+            ([
+                'self_attn.v_proj.bias',
+                'self_attn.linear_v.bias',
+                'self_attention.v_proj.bias',
+                'self_attention.linear_v.bias'
+            ], 'self_attn_v.bias'),
+            ([
+                'self_attn.o_proj.weight',
+                'self_attn.linear_out.weight',
+                'self_attention.o_proj.weight',
+                'self_attention.linear_out.weight'
+            ], 'self_attn_output.weights'),
+            ([
+                'self_attn.o_proj.bias',
+                'self_attn.linear_out.bias',
+                'self_attention.o_proj.bias',
+                'self_attention.linear_out.bias'
+            ], 'self_attn_output.bias'),
+            ([
+                'self_attn.relative_k_proj.weight',
+                'self_attn.linear_pos.weight',
+                'self_attention.relative_k_proj.weight',
+                'self_attention.linear_pos.weight'
+            ], 'self_attn_relative_k.weights'),
+            ([
+                'self_attn.bias_u',
+                'self_attn.pos_bias_u',
+                'self_attention.bias_u',
+                'self_attention.pos_bias_u'
+            ], 'self_attn_bias_u.weights'),
+            ([
+                'self_attn.bias_v',
+                'self_attn.pos_bias_v',
+                'self_attention.bias_v',
+                'self_attention.pos_bias_v'
+            ], 'self_attn_bias_v.weights'),
+            (['conv.pointwise_conv1.weight'], 'conv_pointwise1.weights'),
+            (['conv.pointwise_conv1.bias'], 'conv_pointwise1.bias'),
+            (['conv.depthwise_conv.weight'], 'conv_depthwise.weights'),
+            (['conv.depthwise_conv.bias'], 'conv_depthwise.bias'),
+            (['conv.pointwise_conv2.weight'], 'conv_pointwise2.weights'),
+            (['conv.pointwise_conv2.bias'], 'conv_pointwise2.bias'),
+            (['conv.norm.weight', 'conv.batch_norm.weight'], 'conv_batchnorm_weight.weights'),
+            (['conv.norm.bias', 'conv.batch_norm.bias'], 'conv_batchnorm_bias.bias'),
+            (['conv.norm.running_mean', 'conv.batch_norm.running_mean'], 'conv_batchnorm_running_mean.weights'),
+            (['conv.norm.running_var', 'conv.batch_norm.running_var'], 'conv_batchnorm_running_var.weights'),
+            (['norm_feed_forward1.weight'], 'norm_ff1.weights'),
+            (['norm_feed_forward1.bias'], 'norm_ff1.bias'),
+            (['norm_self_att.weight'], 'norm_self_attn.weights'),
+            (['norm_self_att.bias'], 'norm_self_attn.bias'),
+            (['norm_conv.weight'], 'norm_conv.weights'),
+            (['norm_conv.bias'], 'norm_conv.bias'),
+            (['norm_feed_forward2.weight'], 'norm_ff2.weights'),
+            (['norm_feed_forward2.bias'], 'norm_ff2.bias'),
+            (['norm_out.weight'], 'norm_out.weights'),
+            (['norm_out.bias'], 'norm_out.bias'),
+        ]
+
+        # Some Parakeet-TDT checkpoints are bias-free in several encoder submodules.
+        # Runtime currently expects bias files to exist, so synthesize zero biases
+        # from the matching weight output dimension when missing.
+        zero_bias_fallbacks = {
+            'ff1_linear1.bias': ['feed_forward1.linear1.weight'],
+            'ff1_linear2.bias': ['feed_forward1.linear2.weight'],
+            'ff2_linear1.bias': ['feed_forward2.linear1.weight'],
+            'ff2_linear2.bias': ['feed_forward2.linear2.weight'],
+            'self_attn_q.bias': ['self_attn.q_proj.weight', 'self_attn.linear_q.weight', 'self_attention.q_proj.weight', 'self_attention.linear_q.weight'],
+            'self_attn_k.bias': ['self_attn.k_proj.weight', 'self_attn.linear_k.weight', 'self_attention.k_proj.weight', 'self_attention.linear_k.weight'],
+            'self_attn_v.bias': ['self_attn.v_proj.weight', 'self_attn.linear_v.weight', 'self_attention.v_proj.weight', 'self_attention.linear_v.weight'],
+            'self_attn_output.bias': ['self_attn.o_proj.weight', 'self_attn.linear_out.weight', 'self_attention.o_proj.weight', 'self_attention.linear_out.weight'],
+            'conv_pointwise1.bias': ['conv.pointwise_conv1.weight'],
+            'conv_depthwise.bias': ['conv.depthwise_conv.weight'],
+            'conv_pointwise2.bias': ['conv.pointwise_conv2.weight'],
+        }
+
+        for i in range(num_layers):
+            layer_prefix = f'encoder.layers.{i}.'
+            for suffixes, out_suffix in layer_mappings:
+                candidate_keys = [layer_prefix + suffix for suffix in suffixes]
+                key = _find_first_key(state_dict, candidate_keys)
+                out_name = f'layer_{i}_{out_suffix}'
+                if key is None:
+                    fallback_suffixes = zero_bias_fallbacks.get(out_suffix)
+                    if fallback_suffixes is not None and torch is not None:
+                        weight_keys = [layer_prefix + suffix for suffix in fallback_suffixes]
+                        weight_key = _find_first_key(state_dict, weight_keys)
+                        if weight_key is not None:
+                            weight_tensor = state_dict[weight_key]
+                            out_dim = int(weight_tensor.shape[0]) if len(weight_tensor.shape) >= 1 else 0
+                            if out_dim > 0:
+                                zero_bias = torch.zeros((out_dim,), dtype=torch.float32)
+                                save_tensor_with_header(
+                                    zero_bias, output_dir / out_name, "FP16", transpose=False,
+                                    stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                                )
+                                continue
+                    missing_tensors.append((i, out_name, candidate_keys))
+                    continue
+                tensor = state_dict[key]
+
+                # Some NeMo checkpoints store conv1d kernels in [C_out, K, C_in].
+                # Runtime expects [C_out, C_in, K].
+                if out_suffix in {'conv_pointwise1.weights', 'conv_pointwise2.weights'}:
+                    if hasattr(tensor, 'shape') and len(tensor.shape) == 3 and tensor.shape[1] == 1 and tensor.shape[2] > 1:
+                        tensor = tensor.permute(0, 2, 1).contiguous()
+                elif out_suffix == 'conv_depthwise.weights':
+                    if hasattr(tensor, 'shape') and len(tensor.shape) == 3 and tensor.shape[1] == 9 and tensor.shape[2] == 1:
+                        tensor = tensor.permute(0, 2, 1).contiguous()
+                save_tensor_with_header(
+                    tensor, output_dir / out_name, precision, transpose=False,
+                    stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                )
+                saved_tensor_full_names.add(key)
+            tracked_keys = [
+                layer_prefix + 'conv.norm.num_batches_tracked',
+                layer_prefix + 'conv.batch_norm.num_batches_tracked',
+            ]
+            for tracked_key in tracked_keys:
+                if tracked_key in state_dict:
+                    saved_tensor_full_names.add(tracked_key)
     else:
         for i in range(num_layers):
             layer_prefixes = [p.format(i=i) for p in LAYER_PREFIXES]
@@ -497,7 +837,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
 
     print_quantization_summary(quantization_stats, args)
 
-    if detected_model_type in ['whisper', 'moonshine', 'parakeet']:
+    if detected_model_type in ['whisper', 'moonshine', 'parakeet', 'parakeet_tdt']:
         if torch is None:
             print("Warning: torch not available, skipping VAD bundling")
         else:

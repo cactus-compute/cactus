@@ -71,6 +71,12 @@ _lib.cactus_transcribe.argtypes = [
 ]
 _lib.cactus_transcribe.restype = ctypes.c_int
 
+_lib.cactus_detect_language.argtypes = [
+    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
+    ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
+]
+_lib.cactus_detect_language.restype = ctypes.c_int
+
 _lib.cactus_embed.argtypes = [
     ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_float),
     ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t), ctypes.c_bool
@@ -339,6 +345,57 @@ def cactus_transcribe(model, audio_path, prompt="", callback=None):
         None, cb, None, None, 0
     )
     return buf.value.decode()
+
+
+def cactus_detect_language(model, audio_path=None, pcm_data=None, options=None):
+    """
+    Detect spoken language for Whisper audio input.
+
+    Args:
+        model: Whisper model handle from cactus_init
+        audio_path: Path to audio file (WAV format), or None if using pcm_data
+        pcm_data: PCM audio data as bytes (int16, 16kHz), or None if using audio_path
+        options: Optional dict, currently supports {"use_vad": bool}
+
+    Returns:
+        JSON string:
+        {
+            "success": bool,
+            "error": str|null,
+            "language": str,          # e.g. "en"
+            "language_token": str,    # e.g. "<|en|>"
+            "token_id": int,
+            "confidence": float,
+            "entropy": float,
+            "total_time_ms": float,
+            "ram_usage_mb": float
+        }
+    """
+    if (audio_path is None and pcm_data is None) or (audio_path is not None and pcm_data is not None):
+        raise ValueError("Provide exactly one of audio_path or pcm_data")
+
+    options_json = json.dumps(options) if options else None
+    buf = ctypes.create_string_buffer(65536)
+
+    pcm_arr = None
+    pcm_ptr = None
+    pcm_len = 0
+    if pcm_data is not None:
+        if isinstance(pcm_data, bytes):
+            pcm_arr = (ctypes.c_uint8 * len(pcm_data)).from_buffer_copy(pcm_data)
+        else:
+            pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_len = len(pcm_data)
+
+    _lib.cactus_detect_language(
+        model,
+        audio_path.encode() if isinstance(audio_path, str) else audio_path,
+        buf, len(buf),
+        options_json.encode() if options_json else None,
+        pcm_ptr, pcm_len
+    )
+    return buf.value.decode("utf-8", errors="ignore")
 
 
 def cactus_embed(model, text, normalize=False):

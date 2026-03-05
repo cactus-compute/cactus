@@ -37,8 +37,73 @@ def _find_sentencepiece_model(repo_id, token=None):
     return None
 
 
-def convert_hf_tokenizer(tokenizer, output_dir, token=None):
+def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, labels=None):
     """Convert a HuggingFace tokenizer to Cactus format."""
+    model_name_l = (model_id or getattr(tokenizer, 'name_or_path', '') or '').lower()
+
+    # Parakeet-TDT exports labels directly in config.json (8192 token classes).
+    # HF tokenizer object for this repo exposes only a byte-level 256 vocab,
+    # which breaks runtime decode. Prefer labels when provided.
+    if labels and isinstance(labels, (list, tuple)) and 'parakeet-tdt' in model_name_l:
+        id_to_token = [str(tok) for tok in labels]
+        vocab_size = len(id_to_token)
+
+        vocab_output = output_dir / "vocab.txt"
+        with open(vocab_output, 'w', encoding='utf-8') as f:
+            for token_id, token_str in enumerate(id_to_token):
+                f.write(f"{token_id}\t{token_str}\n")
+        print(f"  Saved Parakeet-TDT vocabulary from labels (ID\\ttoken format, {vocab_size} tokens)")
+
+        merges_output = output_dir / "merges.txt"
+        with open(merges_output, 'w', encoding='utf-8', newline='') as f:
+            f.write("#version: 0.2\n")
+
+        token_to_id = {tok: i for i, tok in enumerate(id_to_token)}
+        unk_id = token_to_id.get('<unk>', 0)
+        pad_id = token_to_id.get('<pad>', getattr(tokenizer, 'pad_token_id', 0) or 0)
+        eos_id = token_to_id.get('<|endoftext|>', getattr(tokenizer, 'eos_token_id', None))
+        if eos_id is None:
+            eos_id = pad_id
+        bos_id = token_to_id.get('<|startoftranscript|>', None)
+
+        special_token_ids = {
+            'pad_token_id': int(pad_id),
+            'unk_token_id': int(unk_id),
+            'eos_token_id': int(eos_id),
+        }
+        if bos_id is not None:
+            special_token_ids['bos_token_id'] = int(bos_id)
+
+        # Keep special token map dense for known control tags in labels.
+        special_tokens = {}
+        for token_id, tok in enumerate(id_to_token):
+            if tok.startswith('<') and tok.endswith('>'):
+                special_tokens[token_id] = tok
+        # Ensure core IDs are present even if token strings differ.
+        special_tokens.setdefault(int(pad_id), id_to_token[int(pad_id)] if int(pad_id) < vocab_size else "<pad>")
+        special_tokens.setdefault(int(unk_id), id_to_token[int(unk_id)] if int(unk_id) < vocab_size else "<unk>")
+        special_tokens.setdefault(int(eos_id), id_to_token[int(eos_id)] if int(eos_id) < vocab_size else "<|endoftext|>")
+
+        special_tokens_output = output_dir / "special_tokens.json"
+        with open(special_tokens_output, 'w', encoding='utf-8') as f:
+            json.dump({
+                **special_token_ids,
+                "vocab_size": vocab_size,
+                "model_max_length": getattr(tokenizer, 'model_max_length', 131072),
+                "special_tokens": special_tokens,
+                "additional_special_tokens": [],
+            }, f, indent=2, ensure_ascii=False)
+
+        tokenizer_config_output = output_dir / "tokenizer_config.txt"
+        with open(tokenizer_config_output, 'w') as f:
+            f.write(f"vocab_size={vocab_size}\n")
+            for key, value in special_token_ids.items():
+                f.write(f"{key}={value}\n")
+            f.write(f"model_max_length={getattr(tokenizer, 'model_max_length', 131072)}\n")
+            f.write("tokenizer_type=sentencepiece\n")
+            f.write("has_chat_template=false\n")
+        return
+
     sentencepiece_tokenizer_model_path = _find_sentencepiece_model(tokenizer.name_or_path, token=token)
 
     tokenizer_json_data = {}

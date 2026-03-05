@@ -76,6 +76,16 @@ CACTUS_FFI_EXPORT int cactus_transcribe(
     size_t pcm_buffer_size
 );
 
+CACTUS_FFI_EXPORT int cactus_detect_language(
+    cactus_model_t model,
+    const char* audio_file_path,            // NULL if using pcm_buffer
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,               // optional
+    const uint8_t* pcm_buffer,              // NULL if using audio_file_path
+    size_t pcm_buffer_size
+);
+
 CACTUS_FFI_EXPORT cactus_stream_transcribe_t cactus_stream_transcribe_start(
     cactus_model_t model,
     const char* options_json                // optional

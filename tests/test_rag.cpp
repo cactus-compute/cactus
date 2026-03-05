@@ -2,6 +2,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <dirent.h>
+#include <algorithm>
+#include <cctype>
 
 using namespace EngineTestUtils;
 
@@ -13,6 +15,22 @@ static const char* g_options = R"({
     "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
     "telemetry_enabled": false
     })";
+
+static bool check_correctness(const std::string& response) {
+    const std::vector<std::string> required_keywords = {
+        "henry", "ndubuaku", "roman", "shemet", "founder"
+    };
+    std::string lower = response;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+        [](unsigned char c) { return std::tolower(c); });
+    for (const auto& kw : required_keywords) {
+        if (lower.find(kw) == std::string::npos) {
+            std::cerr << "[✗] Response missing expected keyword: \"" << kw << "\"\n";
+            return false;
+        }
+    }
+    return true;
+}
 
 bool test_rag() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
@@ -71,7 +89,7 @@ bool test_rag() {
 
     std::cout << "├─ Init time: " << std::fixed << std::setprecision(2) << init_time_ms << " ms\n";
 
-    auto print_chunks = [](cactus_model_t m, const char* query) {
+    auto print_chunks = [](cactus_model_t m, const char* query) -> bool {
         char chunks_buf[16384];
         int rc = cactus_rag_query(m, query, chunks_buf, sizeof(chunks_buf), 5);
         if (rc > 0) {
@@ -118,6 +136,10 @@ bool test_rag() {
                 }
                 pos = score_end;
             }
+            return true;
+        } else {
+            std::cerr << "[✗] RAG retrieval failed (rc=" << rc << "): " << chunks_buf << "\n";
+            return false;
         }
     };
 
@@ -132,7 +154,12 @@ bool test_rag() {
     char response[4096];
 
     std::cout << "\n[Query] " << query << "\n";
-    print_chunks(model, query);
+    
+    if (!print_chunks(model, query)) {
+        cactus_destroy(model);
+        return false;
+    }
+
     std::cout << "Response: ";
 
     int result = cactus_complete(model, messages, response, sizeof(response),
@@ -146,7 +173,9 @@ bool test_rag() {
 
     cactus_destroy(model);
 
-    return (result > 0) && (data.token_count > 0);
+    if (!(result > 0 && data.token_count > 0)) return false;
+
+    return check_correctness(metrics.response);
 }
 
 int main() {
