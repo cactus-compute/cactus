@@ -84,19 +84,22 @@ struct TokenPrinter {
         token_count++;
     }
 
-    void print_stats() {
+    void print_stats(double ram_mb = 0.0) {
         auto end_time = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
         double total_seconds = duration.count() / 1000.0;
         double tokens_per_second = token_count / total_seconds;
 
-        // Format the stats with fixed decimal places
         std::ostringstream stats;
         stats << std::fixed << std::setprecision(3);
         stats << "[" << token_count << " tokens | ";
         stats << "latency: " << time_to_first_token << "s | ";
         stats << "total: " << total_seconds << "s | ";
-        stats << std::setprecision(0) << static_cast<int>(tokens_per_second) << " tok/s]";
+        stats << std::setprecision(0) << static_cast<int>(tokens_per_second) << " tok/s";
+        if (ram_mb > 0.0) {
+            stats << std::fixed << std::setprecision(1) << " | RAM: " << ram_mb << " MB";
+        }
+        stats << "]";
 
         std::cout << "\n" << colored(stats.str(), Color::GRAY) << "\n";
     }
@@ -256,8 +259,19 @@ int main(int argc, char* argv[]) {
             nullptr
         );
 
+        std::string json_str(response_buffer.data(), response_buffer.size());
+
+        double ram_mb = 0.0;
+        {
+            const std::string ram_key = "\"ram_usage_mb\":";
+            size_t ram_pos = json_str.find(ram_key);
+            if (ram_pos != std::string::npos) {
+                ram_mb = std::stod(json_str.substr(ram_pos + ram_key.length()));
+            }
+        }
+
         if (result >= 0) {
-            printer.print_stats();
+            printer.print_stats(ram_mb);
         }
 
         std::cout << "\n";
@@ -270,8 +284,6 @@ int main(int argc, char* argv[]) {
             history.pop_back();
             continue;
         }
-
-        std::string json_str(response_buffer.data(), response_buffer.size());
         const std::string search_str = "\"response\":\"";
         size_t response_start = json_str.find(search_str);
         if (response_start != std::string::npos) {
