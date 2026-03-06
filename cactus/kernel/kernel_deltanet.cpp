@@ -15,9 +15,13 @@ inline float safe_exp_gate(float gate_log) {
 }
 
 inline void fold_state_scale(std::vector<float>& state, float factor) {
-    for (float& v : state) {
-        v *= factor;
+    const float32x4_t f4 = vdupq_n_f32(factor);
+    size_t i = 0;
+    for (; i + 8 <= state.size(); i += 8) {
+        vst1q_f32(&state[i],     vmulq_f32(vld1q_f32(&state[i]),     f4));
+        vst1q_f32(&state[i + 4], vmulq_f32(vld1q_f32(&state[i + 4]), f4));
     }
+    for (; i < state.size(); ++i) state[i] *= factor;
 }
 
 struct GatedDeltaChunkScratch {
@@ -105,6 +109,7 @@ void gated_deltanet_step(
     std::fill(proj.begin(), proj.end(), 0.0f);
 
     for (size_t kd = 0; kd < k_dim; ++kd) {
+        if (kd + 2 < k_dim) __builtin_prefetch(state.data() + (kd + 2) * v_dim, 0, 3);
         const float k_val = static_cast<float>(k_ptr[kd]);
         const float* state_row = state.data() + kd * v_dim;
         size_t vd = 0;
@@ -147,6 +152,7 @@ void gated_deltanet_step(
     const float inv_scale = 1.0f / state_scale;
 
     for (size_t kd = 0; kd < k_dim; ++kd) {
+        if (kd + 2 < k_dim) __builtin_prefetch(state.data() + (kd + 2) * v_dim, 1, 3);
         const float k_scaled = static_cast<float>(k_ptr[kd]) * inv_scale;
         float* state_row = state.data() + kd * v_dim;
         size_t vd = 0;
@@ -169,6 +175,7 @@ void gated_deltanet_step(
 
     std::fill(proj.begin(), proj.end(), 0.0f);
     for (size_t kd = 0; kd < k_dim; ++kd) {
+        if (kd + 2 < k_dim) __builtin_prefetch(state.data() + (kd + 2) * v_dim, 0, 3);
         const float q_val = static_cast<float>(q_ptr[kd]);
         const float* state_row = state.data() + kd * v_dim;
         size_t vd = 0;
@@ -325,23 +332,58 @@ void gated_deltanet_prefill_chunked_f16(
                     std::fill(coeff, coeff + CC, 0.0f);
                     std::fill(m_chunk, m_chunk + (K * V), 0.0f);
 
+                    // Fused fp16→fp32 conversion + n0_proj: k_chunk stays in L1
                     for (size_t ct = 0; ct < C; ++ct) {
                         const size_t t = t0 + ct;
                         const size_t qkv_k_base = (((batch * T + t) * Hq + qk_head) * K);
                         const size_t qkv_v_base = (((batch * T + t) * Hv + v_head) * V);
                         const size_t gb_idx = ((batch * T + t) * Hv + v_head);
 
-                        cactus_fp16_to_fp32(q_data + qkv_k_base, q_chunk + ct * K, K);
-                        cactus_fp16_to_fp32(k_data + qkv_k_base, k_chunk + ct * K, K);
-                        cactus_fp16_to_fp32(v_data + qkv_v_base, v_chunk + ct * V, V);
+                        // Inline fp16→fp32 for q
+                        {
+                            const __fp16* src = q_data + qkv_k_base;
+                            float* dst = q_chunk + ct * K;
+                            size_t i = 0;
+                            for (; i + 8 <= K; i += 8) {
+                                float16x8_t in = vld1q_f16(src + i);
+                                vst1q_f32(dst + i,     vcvt_f32_f16(vget_low_f16(in)));
+                                vst1q_f32(dst + i + 4, vcvt_f32_f16(vget_high_f16(in)));
+                            }
+                            for (; i < K; ++i) dst[i] = static_cast<float>(src[i]);
+                        }
+
+                        // Inline fp16→fp32 for k
+                        {
+                            const __fp16* src = k_data + qkv_k_base;
+                            float* dst = k_chunk + ct * K;
+                            size_t i = 0;
+                            for (; i + 8 <= K; i += 8) {
+                                float16x8_t in = vld1q_f16(src + i);
+                                vst1q_f32(dst + i,     vcvt_f32_f16(vget_low_f16(in)));
+                                vst1q_f32(dst + i + 4, vcvt_f32_f16(vget_high_f16(in)));
+                            }
+                            for (; i < K; ++i) dst[i] = static_cast<float>(src[i]);
+                        }
+
+                        // Inline fp16→fp32 for v
+                        {
+                            const __fp16* src = v_data + qkv_v_base;
+                            float* dst = v_chunk + ct * V;
+                            size_t i = 0;
+                            for (; i + 8 <= V; i += 8) {
+                                float16x8_t in = vld1q_f16(src + i);
+                                vst1q_f32(dst + i,     vcvt_f32_f16(vget_low_f16(in)));
+                                vst1q_f32(dst + i + 4, vcvt_f32_f16(vget_high_f16(in)));
+                            }
+                            for (; i < V; ++i) dst[i] = static_cast<float>(src[i]);
+                        }
 
                         const float gate_log = static_cast<float>(g_data[gb_idx]);
                         const float beta = static_cast<float>(b_data[gb_idx]);
                         g_chunk[ct] = safe_exp_gate(std::isfinite(gate_log) ? gate_log : -20.0f);
                         beta_chunk[ct] = std::isfinite(beta) ? std::min(1.0f, std::max(0.0f, beta)) : 0.0f;
-                    }
 
-                    for (size_t ct = 0; ct < C; ++ct) {
+                        // n0_proj fused here so k_chunk[ct] is still in L1
                         const float* k_row = k_chunk + ct * K;
                         float* p_row = n0_proj + ct * V;
                         for (size_t kd = 0; kd < K; ++kd) {
@@ -414,28 +456,18 @@ void gated_deltanet_prefill_chunked_f16(
 
                         size_t vd = 0;
                         const float32x4_t pp4 = vdupq_n_f32(pp);
+                        const float32x4_t bt4 = vdupq_n_f32(bt);
                         for (; vd + 8 <= V; vd += 8) {
-                            float32x4_t acc4 = vmulq_f32(vld1q_f32(n0_row + vd), pp4);
+                            float32x4_t acc_lo = vmulq_f32(vld1q_f32(n0_row + vd), pp4);
+                            float32x4_t acc_hi = vmulq_f32(vld1q_f32(n0_row + vd + 4), pp4);
                             for (size_t j = 0; j < t; ++j) {
                                 const float c = coeff[t * C + j];
-                                if (c == 0.0f) continue;
-                                const float32x4_t dj4 = vld1q_f32(delta_chunk + j * V + vd);
-                                acc4 = vmlaq_n_f32(acc4, dj4, c);
+                                const float* dj = delta_chunk + j * V + vd;
+                                acc_lo = vmlaq_n_f32(acc_lo, vld1q_f32(dj), c);
+                                acc_hi = vmlaq_n_f32(acc_hi, vld1q_f32(dj + 4), c);
                             }
-                            const float32x4_t v4 = vld1q_f32(v_row + vd);
-                            const float32x4_t v4h = vld1q_f32(v_row + vd + 4);
-                            const float32x4_t bt4 = vdupq_n_f32(bt);
-                            const float32x4_t d4 = vmulq_f32(vsubq_f32(v4, acc4), bt4);
-                            vst1q_f32(d_row + vd, d4);
-                            float32x4_t acc4h = vmulq_f32(vld1q_f32(n0_row + vd + 4), pp4);
-                            for (size_t j = 0; j < t; ++j) {
-                                const float c = coeff[t * C + j];
-                                if (c == 0.0f) continue;
-                                const float32x4_t dj4h = vld1q_f32(delta_chunk + j * V + vd + 4);
-                                acc4h = vmlaq_n_f32(acc4h, dj4h, c);
-                            }
-                            const float32x4_t d4h = vmulq_f32(vsubq_f32(v4h, acc4h), bt4);
-                            vst1q_f32(d_row + vd + 4, d4h);
+                            vst1q_f32(d_row + vd,     vmulq_f32(vsubq_f32(vld1q_f32(v_row + vd),     acc_lo), bt4));
+                            vst1q_f32(d_row + vd + 4, vmulq_f32(vsubq_f32(vld1q_f32(v_row + vd + 4), acc_hi), bt4));
                         }
                         for (; vd < V; ++vd) {
                             float acc = pp * n0_row[vd];
