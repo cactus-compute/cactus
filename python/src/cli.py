@@ -933,7 +933,12 @@ def cmd_run(args):
     print_color(GREEN, f"Starting Cactus Chat with model: {model_id}")
     print()
 
-    os.execv(str(chat_binary), [str(chat_binary), str(weights_dir)])
+    cmd_args = [str(chat_binary), str(weights_dir)]
+    system_prompt = getattr(args, 'system', None)
+    if system_prompt:
+        cmd_args.extend(['--system', system_prompt])
+
+    os.execv(str(chat_binary), cmd_args)
 
 
 DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-ctc-1.1b"
@@ -1799,6 +1804,8 @@ def create_parser():
                             help='Disable cloud telemetry (write to cache only)')
     run_parser.add_argument('--reconvert', action='store_true',
                             help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
+    run_parser.add_argument('--system',
+                            help='System prompt to prepend to all messages')
 
     transcribe_parser = subparsers.add_parser('transcribe', help='Download ASR model and run transcription')
     transcribe_parser.add_argument('model_id', nargs='?', default=DEFAULT_ASR_MODEL_ID,

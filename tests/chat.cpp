@@ -47,14 +47,17 @@ void print_separator(char ch = '-', int width = 60) {
     std::cout << colored(std::string(width, ch), Color::DIM) << "\n";
 }
 
-void print_header() {
+void print_header(const std::string& sys_prompt) {
     std::cout << "\n";
     print_separator('=');
     std::cout << colored("           🌵 CACTUS CHAT INTERFACE 🌵", Color::GREEN + Color::BOLD) << "\n";
     print_separator('=');
-    std::cout << colored("Commands:", Color::YELLOW) << "\n";
-    std::cout << "  • " << colored("reset", Color::CYAN) << " - Clear conversation history\n";
-    std::cout << "  • " << colored("exit", Color::CYAN) << " or " << colored("quit", Color::CYAN) << " - Exit the program\n";
+    std::cout << colored("  Commands: ", Color::YELLOW)
+              << colored("reset", Color::CYAN) << colored(" | ", Color::DIM)
+              << colored("exit", Color::CYAN) << "\n";
+    if (!sys_prompt.empty()) {
+        std::cout << colored("  System prompt active", Color::MAGENTA) << "\n";
+    }
     print_separator();
     std::cout << "\n";
 }
@@ -175,14 +178,20 @@ std::string unescape_json(const std::string& s) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc != 2) {
+    if (argc < 2) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
-        std::cerr << "Usage: " << argv[0] << " <model_path>\n";
-        std::cerr << "Example: " << argv[0] << " weights/lfm2-1.2B\n";
+        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>]\n";
         return 1;
     }
 
     const char* model_path = argv[1];
+    std::string system_prompt;
+
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--system" && i + 1 < argc) {
+            system_prompt = argv[++i];
+        }
+    }
 
     std::cout << "\n" << colored("Loading model from ", Color::YELLOW)
               << colored(model_path, Color::CYAN) << colored("...", Color::YELLOW) << "\n";
@@ -196,7 +205,7 @@ int main(int argc, char* argv[]) {
 
     std::cout << colored("Model loaded successfully!\n", Color::GREEN + Color::BOLD);
 
-    print_header();
+    print_header(system_prompt);
 
     std::vector<std::string> history;
     TokenPrinter printer;
@@ -216,17 +225,20 @@ int main(int argc, char* argv[]) {
         if (user_input == "reset") {
             history.clear();
             cactus_reset(model);
-            std::cout << colored("🔄 Conversation reset.\n", Color::YELLOW);
-            print_separator();
-            std::cout << "\n";
+            std::cout << colored("Conversation reset.\n", Color::YELLOW);
+            print_header(system_prompt);
             continue;
         }
 
         history.push_back(user_input);
 
-        // Build the messages JSON
+        // Build messages JSON
         std::ostringstream messages_json;
         messages_json << "[";
+        if (!system_prompt.empty()) {
+            messages_json << "{\"role\":\"system\",\"content\":\""
+                         << escape_json(system_prompt) << "\"},";
+        }
         for (size_t i = 0; i < history.size(); i++) {
             if (i > 0) messages_json << ",";
             if (i % 2 == 0) {
