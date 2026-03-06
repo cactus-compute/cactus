@@ -4,11 +4,10 @@
 #include <string>
 #include <vector>
 #include <sstream>
-#include <cstring>
 #include <cstdlib>
 #include <iomanip>
 #include <chrono>
-#include <thread>
+#include <fstream>
 
 constexpr int MAX_TOKENS = 512;
 constexpr size_t MAX_BYTES_PER_TOKEN = 64;
@@ -47,16 +46,21 @@ void print_separator(char ch = '-', int width = 60) {
     std::cout << colored(std::string(width, ch), Color::DIM) << "\n";
 }
 
-void print_header(const std::string& sys_prompt) {
+void print_header(const std::string& sys_prompt, const std::string& image = "") {
     std::cout << "\n";
     print_separator('=');
     std::cout << colored("           🌵 CACTUS CHAT INTERFACE 🌵", Color::GREEN + Color::BOLD) << "\n";
     print_separator('=');
     std::cout << colored("  Commands: ", Color::YELLOW)
+              << colored("/image <path>", Color::CYAN) << colored(" | ", Color::DIM)
+              << colored("/clear", Color::CYAN) << colored(" | ", Color::DIM)
               << colored("reset", Color::CYAN) << colored(" | ", Color::DIM)
               << colored("exit", Color::CYAN) << "\n";
     if (!sys_prompt.empty()) {
         std::cout << colored("  System prompt active", Color::MAGENTA) << "\n";
+    }
+    if (!image.empty()) {
+        std::cout << colored("  Image: ", Color::MAGENTA) << colored(image, Color::CYAN) << "\n";
     }
     print_separator();
     std::cout << "\n";
@@ -177,19 +181,38 @@ std::string unescape_json(const std::string& s) {
     return result;
 }
 
+std::string expand_tilde(const std::string& path) {
+    if (path.size() < 2 || path[0] != '~' || path[1] != '/') return path;
+    const char* home = std::getenv("HOME");
+    if (!home) return path;
+    return std::string(home) + path.substr(1);
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
-        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>]\n";
+        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>] [--image <path>]\n";
         return 1;
     }
 
     const char* model_path = argv[1];
     std::string system_prompt;
+    std::string current_image;
 
     for (int i = 2; i < argc; ++i) {
         if (std::string(argv[i]) == "--system" && i + 1 < argc) {
             system_prompt = argv[++i];
+        } else if (std::string(argv[i]) == "--image" && i + 1 < argc) {
+            current_image = expand_tilde(argv[++i]);
+        }
+    }
+
+    if (!current_image.empty()) {
+        std::ifstream f(current_image);
+        if (!f.good()) {
+            std::cerr << colored("Error: ", Color::RED + Color::BOLD)
+                      << "Image not found: " << current_image << "\n";
+            return 1;
         }
     }
 
@@ -205,32 +228,64 @@ int main(int argc, char* argv[]) {
 
     std::cout << colored("Model loaded successfully!\n", Color::GREEN + Color::BOLD);
 
-    print_header(system_prompt);
+    print_header(system_prompt, current_image);
 
     std::vector<std::string> history;
+    std::vector<std::string> history_images;
     TokenPrinter printer;
     g_printer = &printer;
 
     while (true) {
-        std::cout << colored("You: ", Color::BLUE + Color::BOLD);
-        std::string user_input;
-        std::getline(std::cin, user_input);
+        std::string prompt = current_image.empty() ? "You: " : "You \xf0\x9f\x93\x8e: ";
+        std::cout << colored(prompt, Color::BLUE + Color::BOLD);
+        std::string input;
+        std::getline(std::cin, input);
 
-        if (user_input.empty()) continue;
+        while (!input.empty() && (input.back() == ' ' || input.back() == '\t')) input.pop_back();
+        if (input.empty()) continue;
+        if (input == "exit" || input == "quit") break;
 
-        if (user_input == "quit" || user_input == "exit") {
-            break;
-        }
-
-        if (user_input == "reset") {
+        if (input == "reset") {
             history.clear();
+            history_images.clear();
+            current_image.clear();
             cactus_reset(model);
             std::cout << colored("Conversation reset.\n", Color::YELLOW);
-            print_header(system_prompt);
+            print_header(system_prompt, current_image);
             continue;
         }
 
-        history.push_back(user_input);
+        if (input == "/clear") {
+            current_image.clear();
+            std::cout << colored("Image cleared.\n", Color::YELLOW);
+            continue;
+        }
+
+        if (input.substr(0, 7) == "/image ") {
+            std::string rest = input.substr(7);
+            // Split: first token is path, rest is optional message
+            size_t space = rest.find(' ');
+            std::string path = (space != std::string::npos) ? rest.substr(0, space) : rest;
+            while (!path.empty() && (path.back() == ' ' || path.back() == '\t')) path.pop_back();
+            path = expand_tilde(path);
+            std::ifstream f(path);
+            if (!f.good()) {
+                std::cerr << colored("  File not found: ", Color::RED) << path << "\n";
+                continue;
+            }
+            current_image = path;
+            // If there's a message after the path, send it now
+            if (space != std::string::npos) {
+                input = rest.substr(space + 1);
+                while (!input.empty() && (input.front() == ' ' || input.front() == '\t')) input.erase(input.begin());
+                if (input.empty()) continue;
+            } else {
+                continue;
+            }
+        }
+
+        history.push_back(input);
+        history_images.push_back(current_image);
 
         // Build messages JSON
         std::ostringstream messages_json;
@@ -243,7 +298,11 @@ int main(int argc, char* argv[]) {
             if (i > 0) messages_json << ",";
             if (i % 2 == 0) {
                 messages_json << "{\"role\":\"user\",\"content\":\""
-                             << escape_json(history[i]) << "\"}";
+                             << escape_json(history[i]) << "\"";
+                if (!history_images[i].empty()) {
+                    messages_json << ",\"images\":[\"" << escape_json(history_images[i]) << "\"]";
+                }
+                messages_json << "}";
             } else {
                 messages_json << "{\"role\":\"assistant\",\"content\":\""
                              << escape_json(history[i]) << "\"}";
@@ -257,6 +316,9 @@ int main(int argc, char* argv[]) {
 
         std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
 
+        if (!current_image.empty()) {
+            std::cout << colored("  [" + current_image + "]\n", Color::MAGENTA);
+        }
         std::cout << colored("Assistant: ", Color::GREEN + Color::BOLD);
 
         printer.reset();
@@ -294,6 +356,7 @@ int main(int argc, char* argv[]) {
             std::cerr << colored("Error: ", Color::RED + Color::BOLD)
                       << response_buffer.data() << "\n\n";
             history.pop_back();
+            history_images.pop_back();
             continue;
         }
         const std::string search_str = "\"response\":\"";
@@ -315,6 +378,7 @@ int main(int argc, char* argv[]) {
                 std::string response = json_str.substr(response_start,
                                                        response_end - response_start);
                 history.push_back(unescape_json(response));
+                history_images.push_back("");
             }
         }
     }

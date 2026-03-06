@@ -933,7 +933,20 @@ def cmd_run(args):
     print_color(GREEN, f"Starting Cactus Chat with model: {model_id}")
     print()
 
+    image_path = getattr(args, 'image', None)
+    if image_path:
+        image_path = str(Path(image_path).resolve())
+        if not Path(image_path).exists():
+            print_color(RED, f"Error: Image file not found: {image_path}")
+            return 1
+        valid_exts = {'.png', '.jpg', '.jpeg', '.bmp'}
+        if Path(image_path).suffix.lower() not in valid_exts:
+            print_color(RED, f"Error: Unsupported image format. Supported: {', '.join(valid_exts)}")
+            return 1
+
     cmd_args = [str(chat_binary), str(weights_dir)]
+    if image_path:
+        cmd_args.extend(['--image', image_path])
     system_prompt = getattr(args, 'system', None)
     if system_prompt:
         cmd_args.extend(['--system', system_prompt])
@@ -1804,6 +1817,8 @@ def create_parser():
                             help='Disable cloud telemetry (write to cache only)')
     run_parser.add_argument('--reconvert', action='store_true',
                             help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
+    run_parser.add_argument('--image',
+                            help='Path to image file for VLM inference (attached to first message)')
     run_parser.add_argument('--system',
                             help='System prompt to prepend to all messages')
 
