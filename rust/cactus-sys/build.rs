@@ -1,5 +1,6 @@
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn main() {
     let cactus_src = locate_cactus_source();
@@ -9,6 +10,7 @@ fn main() {
     let build_dir = build_native_library(&cactus_src);
     link_native_library(&build_dir);
     link_platform_dependencies();
+    link_clang_runtime_for_sme2();
 
     generate_bindings(&cactus_src);
 }
@@ -55,6 +57,40 @@ fn apply_linux_compiler_workaround() {
 
 #[cfg(not(target_os = "linux"))]
 fn apply_linux_compiler_workaround() {}
+
+/// `kernel_sme2.cpp` uses SME2 attributes that reference `__arm_tpidr2_*` helpers.
+/// Rust links with `-nodefaultlibs`, so we explicitly link Apple's clang runtime
+/// archive that defines those helpers (`libclang_rt.osx.a`).
+#[cfg(target_os = "macos")]
+fn link_clang_runtime_for_sme2() {
+    let output = Command::new("clang")
+        .arg("--print-resource-dir")
+        .output()
+        .expect("failed to execute `clang --print-resource-dir`");
+    assert!(
+        output.status.success(),
+        "`clang --print-resource-dir` failed with status {}",
+        output.status
+    );
+
+    let resource_dir = String::from_utf8(output.stdout)
+        .expect("`clang --print-resource-dir` produced non-UTF-8 output")
+        .trim()
+        .to_string();
+    let darwin_rt_dir = PathBuf::from(resource_dir).join("lib").join("darwin");
+    let clang_rt = darwin_rt_dir.join("libclang_rt.osx.a");
+    assert!(
+        clang_rt.exists(),
+        "missing clang runtime archive at {}",
+        clang_rt.display()
+    );
+
+    println!("cargo:rustc-link-search=native={}", darwin_rt_dir.display());
+    println!("cargo:rustc-link-lib=static=clang_rt.osx");
+}
+
+#[cfg(not(target_os = "macos"))]
+fn link_clang_runtime_for_sme2() {}
 
 fn build_native_library(cactus_src: &Path) -> PathBuf {
     cmake::Config::new(cactus_src)

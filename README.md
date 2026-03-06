@@ -233,19 +233,16 @@ graph.hard_reset();
 | LiquidAI/LFM2-700M | completion, tools, embed |
 | LiquidAI/LFM2-8B-A1B | completion, tools, embed |
 | google/gemma-3-1b-it | completion |
-| LiquidAI/LFM2-1.2B | completion, tools, embed |
-| LiquidAI/LFM2-1.2B-Tool | completion, tools, embed |
-| LiquidAI/LFM2-1.2B-RAG | completion, tools, embed |
 | LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |
 | LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |
 | Qwen/Qwen3-1.7B | completion, tools, embed | 
-| LiquidAI/LFM2-2.6B | completion, tools, embed |                                                                                                                
-| LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |                                                                                                            
-| LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |                                                                                                               
-| UsefulSensors/moonshine-base | transcription, speech embed |                                                                                                         
+| LiquidAI/LFM2-2.6B | completion, tools, embed |
+| LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |
+| LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |
+| UsefulSensors/moonshine-base | transcription, speech embed |
 | openai/whisper-tiny | transcription, speech embed, Apple NPU |
 | openai/whisper-base | transcription, speech embed, Apple NPU |
-| openai/whisper-small | transcription, speech embed, Apple NPU |                                                                                                                 
+| openai/whisper-small | transcription, speech embed, Apple NPU |
 | openai/whisper-medium | transcription, speech embed, Apple NPU |
 | nvidia/parakeet-ctc-0.6b | transcribe, speech embed, Apple NPU |
 | nvidia/parakeet-ctc-1.1b | transcribe, speech embed, Apple NPU |

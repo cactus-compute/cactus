@@ -208,7 +208,6 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
         special_token_ids['unk_token_id'] = tokenizer.unk_token_id
         special_tokens[tokenizer.unk_token_id] = tokenizer.unk_token or "<|unknown|>"
 
-    model_name_l = getattr(tokenizer, 'name_or_path', '').lower()
     if 'eos_token_id' not in special_token_ids and 'parakeet' in model_name_l:
         pad_id = special_token_ids.get('pad_token_id')
         if pad_id is not None:
@@ -222,7 +221,7 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
                 special_tokens[token_id] = token_str
                 additional_special_tokens.append({"token": token_str, "id": token_id})
 
-    model_type = getattr(tokenizer, 'name_or_path', '').lower()
+    model_type = model_name_l or getattr(tokenizer, 'name_or_path', '').lower()
     if 'gemma' in model_type:
         gemma_special_tokens = {
             '<start_of_turn>': None,
@@ -288,7 +287,11 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
         config_path = None
         if hasattr(tokenizer, 'name_or_path') and hf_hub_download:
             try:
-                config_path = hf_hub_download(repo_id=tokenizer.name_or_path, filename="tokenizer_config.json", token=token)
+                local_candidate = Path(tokenizer.name_or_path) / "tokenizer_config.json"
+                if Path(tokenizer.name_or_path).is_dir() and local_candidate.exists():
+                    config_path = str(local_candidate)
+                else:
+                    config_path = hf_hub_download(repo_id=tokenizer.name_or_path, filename="tokenizer_config.json", token=token)
                 with open(config_path, 'r') as f:
                     tokenizer_full_config = json.load(f)
 

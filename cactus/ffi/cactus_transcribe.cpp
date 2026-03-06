@@ -192,6 +192,13 @@ int cactus_transcribe(
             audio_samples = resample_to_16k_fp32(audio.samples, audio.sample_rate);
         }
 
+        if (opts.find("\"max_tokens\"") == std::string::npos) {
+            const float audio_length_sec = static_cast<float>(audio_samples.size()) / static_cast<float>(WHISPER_SAMPLE_RATE);
+            const float tps = is_parakeet ? 30.0f : 20.0f;
+            const size_t estimated = static_cast<size_t>(audio_length_sec * tps);
+            max_tokens = std::max<size_t>(estimated, 100);
+        }
+
         std::vector<std::vector<float>> chunks;
 
         if (use_vad) {
