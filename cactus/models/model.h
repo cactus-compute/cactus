@@ -52,6 +52,81 @@ private:
     } weight_nodes_;
 };
 
+class Qwen3p5Model : public Model {
+public:
+    Qwen3p5Model();
+    explicit Qwen3p5Model(const Config& config);
+    ~Qwen3p5Model() override = default;
+
+protected:
+    size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                    ComputeBackend backend) const override;
+
+    size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    void load_weights_to_graph(CactusGraph* gb) override;
+    void post_init() override;
+    void post_execute_updates(CactusGraph* gb, size_t seq_len) override;
+    void reset_cache() override;
+
+private:
+    size_t build_gated_deltanet(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                                ComputeBackend backend, bool use_cache, size_t position_offset);
+
+    struct WeightNodeIDs {
+        size_t output_weight = 0;
+        size_t output_norm_weight = 0;
+
+        enum class LayerType : uint8_t { ATTENTION, DELTANET };
+
+        struct LayerWeights {
+            size_t attn_q_weight = 0;
+            size_t attn_k_weight = 0;
+            size_t attn_v_weight = 0;
+            size_t attn_output_weight = 0;
+            size_t input_layernorm_weight = 0;
+            size_t attn_q_norm_weight = 0;
+            size_t attn_k_norm_weight = 0;
+            size_t deltanet_qkv_weight = 0;
+            size_t deltanet_gate_weight = 0;
+            size_t deltanet_beta_weight = 0;
+            size_t deltanet_gate_bias = 0;
+            size_t deltanet_beta_bias = 0;
+            size_t deltanet_z_weight = 0;
+            size_t deltanet_conv_weight = 0;
+            size_t ffn_gate_weight = 0;
+            size_t ffn_up_weight = 0;
+            size_t ffn_down_weight = 0;
+            size_t post_attention_layernorm_weight = 0;
+        };
+
+        struct LayerEntry {
+            LayerType type = LayerType::ATTENTION;
+            LayerWeights weights;
+        };
+
+        std::vector<LayerEntry> layers;
+    } weight_nodes_;
+
+    ConvCache conv_cache_;
+    std::vector<size_t> conv_cache_state_nodes_;
+    bool last_forward_used_cache_ = false;
+    size_t deltanet_total_seq_len_ = 0;
+    size_t deltanet_heads_ = 0;
+    size_t deltanet_key_dim_ = 0;
+    size_t deltanet_value_dim_ = 0;
+    size_t deltanet_state_flat_dim_ = 0;
+    size_t deltanet_mixed_dim_ = 0;
+    size_t deltanet_conv_history_len_ = 0;
+    size_t deltanet_conv_flat_dim_ = 0;
+    size_t deltanet_cache_row_dim_ = 0;
+};
+
 
 
 class GemmaModel : public Model {

@@ -124,6 +124,7 @@ jobs:
           fi
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_HUB_DISABLE_XET: "1"
 
       - name: Update organization README
         if: "!github.event.inputs.model"

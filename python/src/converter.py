@@ -37,7 +37,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
 
     config = text_config if text_config is not None else root_config
 
-    model_type_str = cfg_get(config, 'model_type', cfg_get(root_config, 'model_type', '')).lower()
+    model_type_str = str(cfg_get(config, 'model_type', cfg_get(root_config, 'model_type', '')) or '').lower().strip()
     tie_word_embeddings = cfg_get(config, 'tie_word_embeddings', cfg_get(root_config, 'tie_word_embeddings', None))
     if tie_word_embeddings is None:
         # HF snapshots for lfm2_moe may omit this field; runtime expects tied embeddings by default.
@@ -242,6 +242,41 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             save_tensor_with_header(tensor, output_dir / "output_norm.weights", precision, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
             saved_tensor_full_names.add(name)
             break
+
+    mtp_global_mappings = [
+        ('mtp.norm.weight', 'mtp_norm.weights'),
+        ('mtp.fc.weight', 'mtp_fc.weights'),
+        ('mtp.pre_fc_norm_embedding.weight', 'mtp_pre_fc_norm_embedding.weights'),
+        ('mtp.pre_fc_norm_hidden.weight', 'mtp_pre_fc_norm_hidden.weights'),
+    ]
+    for key, out_name in mtp_global_mappings:
+        if key in state_dict:
+            save_tensor_with_header(
+                state_dict[key], output_dir / out_name, precision, transpose=False,
+                stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+            )
+            saved_tensor_full_names.add(key)
+
+    mtp_layer_mappings = [
+        ('mtp.layers.0.input_layernorm.weight', 'mtp_layer_0_input_norm.weights'),
+        ('mtp.layers.0.self_attn.q_proj.weight', 'mtp_layer_0_attn_q.weights'),
+        ('mtp.layers.0.self_attn.k_proj.weight', 'mtp_layer_0_attn_k.weights'),
+        ('mtp.layers.0.self_attn.v_proj.weight', 'mtp_layer_0_attn_v.weights'),
+        ('mtp.layers.0.self_attn.o_proj.weight', 'mtp_layer_0_attn_output.weights'),
+        ('mtp.layers.0.self_attn.q_norm.weight', 'mtp_layer_0_attn_q_norm.weights'),
+        ('mtp.layers.0.self_attn.k_norm.weight', 'mtp_layer_0_attn_k_norm.weights'),
+        ('mtp.layers.0.mlp.gate_proj.weight', 'mtp_layer_0_ffn_gate.weights'),
+        ('mtp.layers.0.mlp.up_proj.weight', 'mtp_layer_0_ffn_up.weights'),
+        ('mtp.layers.0.mlp.down_proj.weight', 'mtp_layer_0_ffn_down.weights'),
+        ('mtp.layers.0.post_attention_layernorm.weight', 'mtp_layer_0_post_attn_norm.weights'),
+    ]
+    for key, out_name in mtp_layer_mappings:
+        if key in state_dict:
+            save_tensor_with_header(
+                state_dict[key], output_dir / out_name, precision, transpose=False,
+                stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+            )
+            saved_tensor_full_names.add(key)
 
     if is_vlm:
         for key, outname in VISION_ITEMS:
@@ -727,6 +762,42 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                                         saved_tensor_full_names.add(b_name)
                                     found = True
                                     break
+
+                            if model_type_str.startswith('qwen3_5') and pattern == 'linear_attn.in_proj_qkv.weight':
+                                if tensor.ndim != 2:
+                                    raise ValueError(f"Invalid qwen3_5 linear_attn.in_proj_qkv shape: {tensor.shape}")
+
+                                q_dim = int(model_config.get('linear_q_proj_dim', 0))
+                                k_dim = int(model_config.get('linear_k_proj_dim', 0))
+                                v_dim = int(model_config.get('linear_v_proj_dim', 0))
+                                row_dim = int(tensor.shape[0])
+
+                                save_tensor_with_header(
+                                    tensor, output_dir / output_name, tensor_precision, transpose=should_transpose,
+                                    stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                                )
+
+                                if q_dim > 0 and k_dim > 0 and v_dim > 0 and row_dim == (q_dim + k_dim + v_dim):
+                                    q_weight = tensor[:q_dim, :]
+                                    k_weight = tensor[q_dim:q_dim + k_dim, :]
+                                    v_weight = tensor[q_dim + k_dim:, :]
+
+                                    save_tensor_with_header(
+                                        q_weight, output_dir / f'layer_{i}_linear_attn_q.weights', tensor_precision, transpose=False,
+                                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                                    )
+                                    save_tensor_with_header(
+                                        k_weight, output_dir / f'layer_{i}_linear_attn_k.weights', tensor_precision, transpose=False,
+                                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                                    )
+                                    save_tensor_with_header(
+                                        v_weight, output_dir / f'layer_{i}_linear_attn_v.weights', tensor_precision, transpose=False,
+                                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                                    )
+
+                                saved_tensor_full_names.add(full_name)
+                                found = True
+                                break
 
                             if pattern.startswith('attn.Wqkv.') and model_type_str == 'nomic_bert':
                                 if tensor.ndim == 1:

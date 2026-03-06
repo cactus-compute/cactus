@@ -478,6 +478,8 @@ bool Config::from_json(const std::string& config_path) {
             else precision = Precision::FP32;
         }
         else if (key == "model_type") {
+            std::string model_type_value = value;
+            std::transform(model_type_value.begin(), model_type_value.end(), model_type_value.begin(), ::tolower);
             if (value == "gemma" || value == "GEMMA") model_type = ModelType::GEMMA;
             else if (value == "lfm2" || value == "LFM2" || value == "lfm2_moe" || value == "LFM2_MOE") model_type = ModelType::LFM2;
             else if (value == "bert" || value == "BERT") model_type = ModelType::NOMIC;
@@ -485,6 +487,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "moonshine" || value == "MOONSHINE") model_type = ModelType::MOONSHINE;
             else if (value == "silero_vad" || value == "SILERO_VAD") model_type = ModelType::SILERO_VAD;
             else if (value == "parakeet" || value == "PARAKEET") model_type = ModelType::PARAKEET;
+            else if (model_type_value.rfind("qwen3_5", 0) == 0) model_type = ModelType::QWEN3P5;
             else if (value == "parakeet_tdt" || value == "PARAKEET_TDT") model_type = ModelType::PARAKEET_TDT;
             else model_type = ModelType::QWEN;
         }
@@ -530,6 +533,13 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "subsampling_factor") subsampling_factor = static_cast<uint32_t>(std::stoul(value));
         else if (key == "num_mel_bins") num_mel_bins = static_cast<uint32_t>(std::stoul(value));
         else if (key == "encoder_hidden_act") encoder_hidden_act = value;
+        else if (key == "linear_num_key_heads") linear_num_key_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_key_head_dim") linear_key_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_num_value_heads") linear_num_value_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_value_head_dim") linear_value_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_q_proj_dim") linear_q_proj_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_k_proj_dim") linear_k_proj_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_v_proj_dim") linear_v_proj_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "predictor_hidden_dim") predictor_hidden_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "predictor_num_layers") predictor_num_layers = static_cast<uint32_t>(std::stoul(value));
         else if (key == "tdt_joint_dim") tdt_joint_dim = static_cast<uint32_t>(std::stoul(value));
@@ -561,7 +571,7 @@ bool Config::from_json(const std::string& config_path) {
         default_temperature = 0.6f;
         default_top_p = 0.95f;
         default_top_k = 20;
-    } else if (model_type == ModelType::QWEN) {
+    } else if (model_type == ModelType::QWEN3P5) {
         default_temperature = 0.7f;
         default_top_p = 0.8f;
         default_top_k = 20;
@@ -621,6 +631,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
     switch (config.model_type) {
         case Config::ModelType::QWEN:
             return std::make_unique<QwenModel>(config);
+        case Config::ModelType::QWEN3P5:
+            return std::make_unique<Qwen3p5Model>(config);
         case Config::ModelType::GEMMA:
             return std::make_unique<GemmaModel>(config);
         case Config::ModelType::LFM2:

@@ -179,6 +179,38 @@ void cactus_attention_hybrid_int8_fp16(
     float scale, size_t position_offset = 0, bool is_causal = true, size_t window_size = 0,
     size_t group_size = KV_QUANT_GROUP_SIZE);
 
+void cactus_gated_deltanet_decode_f16(
+    const __fp16* q_data,
+    const __fp16* k_data,
+    const __fp16* v_data,
+    const __fp16* g_data,
+    const __fp16* b_data,
+    const __fp16* s_data,
+    __fp16* out,
+    size_t B,
+    size_t Hq,
+    size_t Hv,
+    size_t K,
+    size_t V,
+    float scale);
+
+void cactus_gated_deltanet_prefill_f16(
+    const __fp16* q_data,
+    const __fp16* k_data,
+    const __fp16* v_data,
+    const __fp16* g_data,
+    const __fp16* b_data,
+    const __fp16* s_data,
+    __fp16* out,
+    size_t B,
+    size_t T,
+    size_t Hq,
+    size_t Hv,
+    size_t K,
+    size_t V,
+    size_t requested_chunk_size,
+    float scale);
+
 void cactus_conv1d_causal_depthwise_f16(
     const __fp16* input,
     const __fp16* weight,
