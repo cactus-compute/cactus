@@ -46,15 +46,17 @@ void print_separator(char ch = '-', int width = 60) {
     std::cout << colored(std::string(width, ch), Color::DIM) << "\n";
 }
 
-void print_header(const std::string& sys_prompt, const std::string& image = "") {
+void print_header(const std::string& sys_prompt, const std::string& image = "", bool has_vision = true) {
     std::cout << "\n";
     print_separator('=');
     std::cout << colored("           🌵 CACTUS CHAT INTERFACE 🌵", Color::GREEN + Color::BOLD) << "\n";
     print_separator('=');
-    std::cout << colored("  Commands: ", Color::YELLOW)
-              << colored("/image <path>", Color::CYAN) << colored(" | ", Color::DIM)
-              << colored("/clear", Color::CYAN) << colored(" | ", Color::DIM)
-              << colored("reset", Color::CYAN) << colored(" | ", Color::DIM)
+    std::cout << colored("  Commands: ", Color::YELLOW);
+    if (has_vision) {
+        std::cout << colored("/image <path>", Color::CYAN) << colored(" | ", Color::DIM)
+                  << colored("/clear", Color::CYAN) << colored(" | ", Color::DIM);
+    }
+    std::cout << colored("reset", Color::CYAN) << colored(" | ", Color::DIM)
               << colored("exit", Color::CYAN) << "\n";
     if (!sys_prompt.empty()) {
         std::cout << colored("  System prompt active", Color::MAGENTA) << "\n";
@@ -228,7 +230,26 @@ int main(int argc, char* argv[]) {
 
     std::cout << colored("Model loaded successfully!\n", Color::GREEN + Color::BOLD);
 
-    print_header(system_prompt, current_image);
+    // Check if model supports vision by reading config.txt
+    bool has_vision = false;
+    {
+        std::ifstream cfg(std::string(model_path) + "/config.txt");
+        std::string line;
+        while (std::getline(cfg, line)) {
+            if (line.substr(0, 19) == "vision_hidden_size=") {
+                has_vision = std::stoi(line.substr(19)) > 0;
+                break;
+            }
+        }
+    }
+
+    if (!current_image.empty() && !has_vision) {
+        std::cerr << colored("Warning: ", Color::YELLOW + Color::BOLD)
+                  << "This model does not support vision — image will be ignored.\n";
+        current_image.clear();
+    }
+
+    print_header(system_prompt, current_image, has_vision);
 
     std::vector<std::string> history;
     std::vector<std::string> history_images;
@@ -251,7 +272,7 @@ int main(int argc, char* argv[]) {
             current_image.clear();
             cactus_reset(model);
             std::cout << colored("Conversation reset.\n", Color::YELLOW);
-            print_header(system_prompt, current_image);
+            print_header(system_prompt, current_image, has_vision);
             continue;
         }
 
@@ -262,6 +283,10 @@ int main(int argc, char* argv[]) {
         }
 
         if (input.substr(0, 7) == "/image ") {
+            if (!has_vision) {
+                std::cerr << colored("  This model does not support vision.\n", Color::RED);
+                continue;
+            }
             std::string rest = input.substr(7);
             // Split: first token is path, rest is optional message
             size_t space = rest.find(' ');
