@@ -923,16 +923,6 @@ def cmd_run(args):
             return download_result
         weights_dir = get_weights_dir(model_id)
 
-    chat_binary = PROJECT_ROOT / "tests" / "build" / "chat"
-
-    if not chat_binary.exists():
-        print_color(RED, f"Error: Chat binary not found at {chat_binary}")
-        return 1
-
-    os.system('clear' if platform.system() != 'Windows' else 'cls')
-    print_color(GREEN, f"Starting Cactus Chat with model: {model_id}")
-    print()
-
     image_path = getattr(args, 'image', None)
     if image_path:
         image_path = str(Path(image_path).resolve())
@@ -943,6 +933,16 @@ def cmd_run(args):
         if Path(image_path).suffix.lower() not in valid_exts:
             print_color(RED, f"Error: Unsupported image format. Supported: {', '.join(valid_exts)}")
             return 1
+
+    chat_binary = PROJECT_ROOT / "tests" / "build" / "chat"
+
+    if not chat_binary.exists():
+        print_color(RED, f"Error: Chat binary not found at {chat_binary}")
+        return 1
+
+    os.system('clear' if platform.system() != 'Windows' else 'cls')
+    print_color(GREEN, f"Starting Cactus Chat with model: {model_id}")
+    print()
 
     cmd_args = [str(chat_binary), str(weights_dir)]
     if image_path:

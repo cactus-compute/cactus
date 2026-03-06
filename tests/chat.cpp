@@ -28,7 +28,7 @@ namespace Color {
 
 bool supports_color() {
 #ifdef _WIN32
-    return false; 
+    return false;
 #else
     const char* term = std::getenv("TERM");
     return term && std::string(term) != "dumb";
@@ -46,7 +46,7 @@ void print_separator(char ch = '-', int width = 60) {
     std::cout << colored(std::string(width, ch), Color::DIM) << "\n";
 }
 
-void print_header(const std::string& sys_prompt, const std::string& image = "", bool has_vision = true) {
+void print_header(const std::string& sys_prompt, const std::string& image, bool has_vision = true) {
     std::cout << "\n";
     print_separator('=');
     std::cout << colored("           🌵 CACTUS CHAT INTERFACE 🌵", Color::GREEN + Color::BOLD) << "\n";
@@ -124,7 +124,7 @@ void print_token(const char* token, uint32_t /*token_id*/, void* /*user_data*/) 
 
 std::string escape_json(const std::string& s) {
     std::ostringstream o;
-    for (unsigned char c : s) {  
+    for (unsigned char c : s) {
         switch (c) {
             case '"': o << "\\\""; break;
             case '\\': o << "\\\\"; break;
@@ -134,7 +134,7 @@ std::string escape_json(const std::string& s) {
             case '\r': o << "\\r"; break;
             case '\t': o << "\\t"; break;
             default:
-                if (c < 0x20) {  
+                if (c < 0x20) {
                     o << "\\u" << std::hex << std::setw(4) << std::setfill('0') << (int)c;
                 } else {
                     o << c;
@@ -159,22 +159,22 @@ std::string unescape_json(const std::string& s) {
                 case 'n':  result += '\n'; i++; break;
                 case 'r':  result += '\r'; i++; break;
                 case 't':  result += '\t'; i++; break;
-                case 'u':  
+                case 'u':
                     if (i + 5 < s.length()) {
                         std::string hex = s.substr(i + 2, 4);
                         char* end;
                         int codepoint = std::strtol(hex.c_str(), &end, 16);
-                        if (end == hex.c_str() + 4) {  
+                        if (end == hex.c_str() + 4) {
                             result += static_cast<char>(codepoint);
                             i += 5;
                         } else {
-                            result += s[i];  
+                            result += s[i];
                         }
                     } else {
                         result += s[i];
                     }
                     break;
-                default:   result += s[i]; break; 
+                default:   result += s[i]; break;
             }
         } else {
             result += s[i];
@@ -384,6 +384,7 @@ int main(int argc, char* argv[]) {
             history_images.pop_back();
             continue;
         }
+
         const std::string search_str = "\"response\":\"";
         size_t response_start = json_str.find(search_str);
         if (response_start != std::string::npos) {
@@ -394,9 +395,7 @@ int main(int argc, char* argv[]) {
                 for (size_t i = response_end; i > response_start && json_str[i - 1] == '\\'; i--) {
                     prior_backslashes++;
                 }
-                if (prior_backslashes % 2 == 0) {
-                    break;
-                }
+                if (prior_backslashes % 2 == 0) break;
                 response_end = json_str.find("\"", response_end + 1);
             }
             if (response_end != std::string::npos) {
