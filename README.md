@@ -233,6 +233,8 @@ graph.hard_reset();
 | LiquidAI/LFM2-700M | completion, tools, embed |
 | LiquidAI/LFM2-8B-A1B | completion, tools, embed |
 | google/gemma-3-1b-it | completion |
+| google/gemma-3n-E2B-it | completion, tools |
+| google/gemma-3n-E4B-it | completion, tools |
 | LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |
 | LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |
 | Qwen/Qwen3-1.7B | completion, tools, embed | 
