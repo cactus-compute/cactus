@@ -15,6 +15,9 @@ DEFAULT_MODEL_ID = "LiquidAI/LFM2.5-1.2B-Instruct"
 DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_TEST_WHISPER_MODEL_ID = "openai/whisper-small"
 
+with open(PROJECT_ROOT / "models.json") as _f:
+    MODELS_REGISTRY = json.load(_f)
+
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
 YELLOW = '\033[1;33m'
@@ -150,6 +153,13 @@ def download_from_hf(model_id, weights_dir, precision):
             if weights_dir.exists():
                 shutil.rmtree(weights_dir)
             return False
+
+        # Ensure quantization field exists in config.txt (older zips may lack it)
+        config_path = weights_dir / "config.txt"
+        config_text = config_path.read_text()
+        if 'quantization=' not in config_text:
+            with open(config_path, 'a') as f:
+                f.write(f"quantization={precision}\n")
 
         print_color(GREEN, f"Successfully downloaded pre-converted model to {weights_dir}")
         return True
@@ -535,6 +545,7 @@ def cmd_download(args):
             config['precision'] = "FP16"
         else:
             config['precision'] = precision
+        config['quantization'] = precision # this is for CLI display only
 
         config_path = weights_dir / "config.txt"
         with open(config_path, 'w') as f:
@@ -1648,6 +1659,118 @@ def cmd_convert(args):
             shutil.rmtree(temp_merged_dir)
 
 
+def cmd_list(args):
+    """List all supported models and their download status."""
+    PIPELINE_DISPLAY = {
+        "text-generation": "Text Generation",
+        "image-text-to-text": "Vision",
+        "automatic-speech-recognition": "Speech Recognition",
+        "feature-extraction": "Embeddings",
+        "voice-activity-detection": "Voice Activity Detection",
+    }
+    PIPELINE_ORDER = list(PIPELINE_DISPLAY.keys())
+    SHOW_TAGS = {"tools", "vision", "embed", "transcription"}
+    EMBED_ALIASES = {"text-embed", "image-embed", "speech-embed"}
+
+    DIM = '\033[2m'
+    BOLD = '\033[1m'
+
+    def filter_tags(tags):
+        result = set()
+        for t in tags:
+            if t in SHOW_TAGS:
+                result.add(t)
+            elif t in EMBED_ALIASES:
+                result.add("embed")
+        return sorted(result)
+
+    def get_dir_size(path):
+        total = 0
+        for entry in path.rglob('*'):
+            if entry.is_file():
+                total += entry.stat().st_size
+        return total
+
+    def format_size(size_bytes):
+        if size_bytes >= 1_000_000_000:
+            return f"{size_bytes / 1_073_741_824:.1f} GB"
+        return f"{size_bytes / 1_048_576:.0f} MB"
+
+    # Group models by pipeline_tag preserving order
+    groups = {}
+    for entry in MODELS_REGISTRY:
+        tag = entry["pipeline_tag"]
+        groups.setdefault(tag, []).append(entry)
+
+    # Find max model name length for alignment
+    max_name = max(len(e["model"]) for e in MODELS_REGISTRY)
+    max_tags_len = 20
+
+    only_downloaded = getattr(args, 'downloaded', False)
+
+    if only_downloaded:
+        print(f"\n {BOLD}Downloaded Models{NC}")
+    else:
+        print(f"\n {BOLD}Supported Models{NC}")
+    print(f" {'─' * 66}")
+
+    for ptag in PIPELINE_ORDER:
+        models = groups.get(ptag)
+        if not models:
+            continue
+
+        section = PIPELINE_DISPLAY[ptag]
+        section_printed = False
+
+        for entry in models:
+            model_id = entry["model"]
+            tags = filter_tags(entry["tags"])
+            tags_str = ", ".join(tags)
+
+            weights_dir = get_weights_dir(model_id)
+            config_path = weights_dir / "config.txt"
+            downloaded = config_path.exists()
+
+            if only_downloaded and not downloaded:
+                continue
+
+            if not section_printed:
+                print(f"\n {BOLD}{section}{NC}")
+                section_printed = True
+
+            if downloaded:
+                prefix = f" {GREEN}\u2b07{NC}  "
+                # Read quantization (weight quantization level, not compute precision)
+                quantization = ""
+                try:
+                    for line in config_path.read_text().splitlines():
+                        if line.startswith("quantization="):
+                            quantization = line.split("=", 1)[1].strip()
+                            break
+                except OSError:
+                    pass
+                dir_size = get_dir_size(weights_dir)
+                size_str = format_size(dir_size)
+                if quantization:
+                    info = f"{size_str} ({quantization})"
+                else:
+                    info = size_str
+            else:
+                prefix = "    "
+                info = ""
+
+            name_pad = model_id.ljust(max_name)
+            tags_pad = tags_str.ljust(max_tags_len)
+
+            if info:
+                print(f"{prefix}{name_pad}  {DIM}{tags_pad}{NC}  {info}")
+            else:
+                print(f"{prefix}{name_pad}  {DIM}{tags_pad}{NC}")
+
+    print()
+    return 0
+
+
 def create_parser():
     """Create the argument parser with all subcommands."""
     parser = argparse.ArgumentParser(
@@ -1751,6 +1874,11 @@ def create_parser():
     --performance                      run only performance benchmarks
     --ios                              run on connected iPhone
     --android                          run on connected Android
+
+  -----------------------------------------------------------------
+
+  cactus list                          list all supported models
+                                       shows download status
 
   -----------------------------------------------------------------
 
@@ -1902,6 +2030,10 @@ def create_parser():
 
     clean_parser = subparsers.add_parser('clean', help='Remove all build artifacts')
 
+    list_parser = subparsers.add_parser('list', help='List supported models')
+    list_parser.add_argument('--downloaded', action='store_true',
+                             help='Only show downloaded models')
+
     convert_parser = subparsers.add_parser('convert', help='Convert model to custom output directory')
     convert_parser.add_argument('model_name', help='HuggingFace model name')
     convert_parser.add_argument('output_dir', nargs='?', default=None,
@@ -1951,6 +2083,8 @@ def main():
         sys.exit(cmd_auth(args))
     elif args.command == 'clean':
         sys.exit(cmd_clean(args))
+    elif args.command == 'list':
+        sys.exit(cmd_list(args))
     elif args.command == 'convert':
         sys.exit(cmd_convert(args))
     else:
