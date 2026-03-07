@@ -1,7 +1,7 @@
 #include "kernel.h"
 #include <arm_neon.h>
-#include <cassert>
 #include <cstddef>
+#include <stdexcept>
 #include <cmath>
 
 void cactus_gaussian_topk_f16(
@@ -98,7 +98,7 @@ void cactus_altup_predict_f16(
     size_t seq_len,
     size_t hidden_dim
 ) {
-    assert(n <= 8 && "cactus_altup_predict_f16 expects n <= 8");
+    if (n > 8) throw std::runtime_error("cactus_altup_predict_f16 expects n <= 8");
     const size_t coef_stride = n * n;
 
     for (size_t i = 0; i < n; i++) {
