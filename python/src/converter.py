@@ -216,14 +216,6 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 saved_tensor_full_names.add(name)
 
     if tie_word_embeddings:
-        src = output_dir / "token_embeddings.weights"
-        dst = output_dir / "output_weight.weights"
-        if src.exists():
-            if dst.exists():
-                dst.unlink()
-            os.link(src, dst)
-        else:
-            print(f"Warning: tie_word_embeddings is True but {src} not found")
         if embedding_found:
             for name in OUTPUT_NAMES:
                 if name in state_dict:
