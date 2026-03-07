@@ -125,7 +125,7 @@ graph.hard_reset();
 - All weights INT4 quantised
 - LFM: 1k-prefill / 100-decode, values are prefill tps / decode tps
 - LFM-VL: 256px input, values are latency / decode tps
-- Parakeet: 30s audio input, values are latency / decode tps
+- Parakeet: 20s audio input, values are latency / decode tps
 - Missing latency = no NPU support yet
 
 | Device | LFM 1.2B | LFMVL 1.6B | Parakeet 1.1B | RAM |
@@ -139,6 +139,45 @@ graph.hard_reset();
 | Galaxy A17 5G | 32/10 | -/11 | -/40k+ | 727MB |
 | CMF Phone 2 Pro | - | - | - | - |
 | Raspberry Pi 5 | 69/11 | 13.3s/11 | 4.5s/180k+ | 869MB |
+
+## Supported Transcription Model
+
+- STT: 20s audio input on Macbook Air M3 chip
+- Benchmark dataset: internal evals with production users
+
+| Model | Params | End2End ms | Latency ms | Decode toks/sec | NPU | RTF | WER |
+|-------|--------|------------|------------|------------|-----|-----|-----|
+| UsefulSensors/moonshine-base | 61M | 361.35 | 182 | 262 | yes | 0.0180 | 0.1395 |
+| openai/whisper-tiny | 39M | 232.03 | 137.38 | 581 | yes | 0.0116 | 0.1860 |
+| openai/whisper-base | 74M | 329.37 | 178.65 | 358 | yes | 0.0164 | 0.1628 |
+| openai/whisper-small | 244M | 856.79 | 332.63 | 108 | yes | 0.0428 | 0.0930 |
+| openai/whisper-medium | 769M | 2085.87 | 923.33 | 49 | yes | 0.1041 | 0.0930 |
+| nvidia/parakeet-ctc-0.6b | 600M | 201.77 | 201.44 | 5214285 | yes | 0.0101 | 0.0930 |
+| nvidia/parakeet-tdt-0.6b-v3 | 600M | 718.91 | 718.82 | 3583333 | no | 0.0359 | 0.0465 |
+| nvidia/parakeet-ctc-1.1b | 1.1B | 279.03 | 278.92 | 4562500 | yes | 0.0139 | 0.1628 |
+
+## Supported LLMs
+
+| Model | Features |                                                      
+|-------|----------|
+| google/gemma-3-270m-it | completion |
+| google/functiongemma-270m-it | completion, tools |
+| LiquidAI/LFM2-350M | completion, tools, embed |
+| Qwen/Qwen3-0.6B | completion, tools, embed | 
+| Qwen/Qwen3.5-0.8B | vision, completion, tools, embed |
+| LiquidAI/LFM2-700M | completion, tools, embed |
+| LiquidAI/LFM2-8B-A1B | completion, tools, embed |
+| google/gemma-3-1b-it | completion |
+| LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |
+| LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |
+| Qwen/Qwen3-1.7B | completion, tools, embed | 
+| Qwen/Qwen3.5-2B | vision, completion, tools, embed | 
+| LiquidAI/LFM2-2.6B | completion, tools, embed |
+| LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |
+| LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |
+| snakers4/silero-vad | vad |
+| nomic-ai/nomic-embed-text-v2-moe | embed |
+| Qwen/Qwen3-Embedding-0.6B | embed | 
 
 ## Roadmap
 
@@ -224,12 +263,13 @@ graph.hard_reset();
 
 ## Supported Models
 
-| Model | Features |                                                      
+| Model | Features |
 |-------|----------|
 | google/gemma-3-270m-it | completion |
 | google/functiongemma-270m-it | completion, tools |
 | LiquidAI/LFM2-350M | completion, tools, embed |
 | Qwen/Qwen3-0.6B | completion, tools, embed |
+| Qwen/Qwen3.5-0.8B | vision, completion, tools, embed |
 | LiquidAI/LFM2-700M | completion, tools, embed |
 | LiquidAI/LFM2-8B-A1B | completion, tools, embed |
 | google/gemma-3-1b-it | completion |
@@ -237,7 +277,8 @@ graph.hard_reset();
 | google/gemma-3n-E4B-it | completion, tools |
 | LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |
 | LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |
-| Qwen/Qwen3-1.7B | completion, tools, embed | 
+| Qwen/Qwen3-1.7B | completion, tools, embed |
+| Qwen/Qwen3.5-2B | vision, completion, tools, embed |
 | LiquidAI/LFM2-2.6B | completion, tools, embed |
 | LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |
 | LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |
@@ -251,8 +292,7 @@ graph.hard_reset();
 | nvidia/parakeet-tdt-0.6b-v3 | transcribe, speech embed, Apple NPU |
 | snakers4/silero-vad | vad |
 | nomic-ai/nomic-embed-text-v2-moe | embed |
-| Qwen/Qwen3-Embedding-0.6B | embed | 
-
+| Qwen/Qwen3-Embedding-0.6B | embed |
 ## Maintaining Organisations
 
 1. [Cactus Compute, Inc. (YC S25)](https://cactuscompute.com/)

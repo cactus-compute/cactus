@@ -19,7 +19,10 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
         if (pos != std::string::npos) {
             std::transform(line.begin(), line.end(), line.begin(), ::tolower);
 
-            if (line.find("qwen") != std::string::npos) {
+            if (line.find("qwen3_5") != std::string::npos) {
+                model_type_ = ModelType::QWEN3P5;
+                break;
+            } else if (line.find("qwen") != std::string::npos) {
                 model_type_ = ModelType::QWEN;
                 break;
             } else if (line.find("gemma") != std::string::npos) {
@@ -71,6 +74,7 @@ std::string Tokenizer::get_default_stop_sequence() const {
         case ModelType::GEMMA:
             return "<end_of_turn>";
         case ModelType::QWEN:
+        case ModelType::QWEN3P5:
         case ModelType::LFM2:
             return "<|im_end|>";
         default:
@@ -97,6 +101,7 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
     
     switch (model_type_) {
         case ModelType::QWEN:
+        case ModelType::QWEN3P5:
             return format_qwen_style(messages, add_generation_prompt, tools_json);
         case ModelType::GEMMA:
             return format_gemma_style(messages, add_generation_prompt, tools_json);
@@ -157,10 +162,9 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
     }
 
     if (add_generation_prompt) {
-        if (!tools_json.empty()) {
-            result += "<|im_start|>assistant\n<think>\n</think>\n\n";
-        } else {
-            result += "<|im_start|>assistant\n";
+        result += "<|im_start|>assistant\n";
+        if (model_type_ == ModelType::QWEN3P5) {
+            result += "<think>\n\n</think>\n\n";
         }
     }
 

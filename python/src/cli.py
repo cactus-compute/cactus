@@ -9,11 +9,47 @@ import shutil
 import platform
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).parent.resolve()
-PROJECT_ROOT = SCRIPT_DIR.parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def _looks_like_project_root(path: Path) -> bool:
+    return (
+        (path / "python" / "src" / "cli.py").exists()
+        and (path / "cactus").exists()
+        and (path / "tests").exists()
+    )
+
+
+def _resolve_project_root() -> Path:
+    # Optional explicit override for environments running from installed packages.
+    env_root = os.getenv("CACTUS_PROJECT_ROOT", "").strip()
+    if env_root:
+        candidate = Path(env_root).expanduser().resolve()
+        if _looks_like_project_root(candidate):
+            return candidate
+
+    # Prefer the repo containing this CLI module.
+    module_root = SCRIPT_DIR.parent.parent
+    if _looks_like_project_root(module_root):
+        return module_root
+
+    # Fallback: repo containing current working directory.
+    cwd = Path.cwd().resolve()
+    for candidate in [cwd, *cwd.parents]:
+        if _looks_like_project_root(candidate):
+            return candidate
+
+    # Final fallback for unusual layouts.
+    return module_root
+
+
+PROJECT_ROOT = _resolve_project_root()
 DEFAULT_MODEL_ID = "LiquidAI/LFM2.5-1.2B-Instruct"
 DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_TEST_WHISPER_MODEL_ID = "openai/whisper-small"
+
+with open(PROJECT_ROOT / "models.json") as _f:
+    MODELS_REGISTRY = json.load(_f)
 
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
@@ -150,6 +186,13 @@ def download_from_hf(model_id, weights_dir, precision):
             if weights_dir.exists():
                 shutil.rmtree(weights_dir)
             return False
+
+        # Ensure quantization field exists in config.txt (older zips may lack it)
+        config_path = weights_dir / "config.txt"
+        config_text = config_path.read_text()
+        if 'quantization=' not in config_text:
+            with open(config_path, 'a') as f:
+                f.write(f"quantization={precision}\n")
 
         print_color(GREEN, f"Successfully downloaded pre-converted model to {weights_dir}")
         return True
@@ -507,8 +550,11 @@ def cmd_download(args):
                 else:
                     raise
 
-            if model_type == 'lfm2_moe':
-                print("  Note: Loading raw checkpoint tensors for lfm2_moe conversion...")
+            if model_type == 'lfm2_moe' or model_type.startswith('qwen3_5'):
+                if model_type == 'lfm2_moe':
+                    print("  Note: Loading raw checkpoint tensors for lfm2_moe conversion...")
+                else:
+                    print(f"  Note: Loading raw checkpoint tensors for {model_type} conversion...")
                 raw_state_dict = _load_raw_hf_state_dict(model_id)
 
                 class _RawModelWrapper:
@@ -543,6 +589,7 @@ def cmd_download(args):
             config['precision'] = "FP16"
         else:
             config['precision'] = precision
+        config['quantization'] = precision # this is for CLI display only
 
         config_path = weights_dir / "config.txt"
         with open(config_path, 'w') as f:
@@ -931,6 +978,17 @@ def cmd_run(args):
             return download_result
         weights_dir = get_weights_dir(model_id)
 
+    image_path = getattr(args, 'image', None)
+    if image_path:
+        image_path = str(Path(image_path).resolve())
+        if not Path(image_path).exists():
+            print_color(RED, f"Error: Image file not found: {image_path}")
+            return 1
+        valid_exts = {'.png', '.jpg', '.jpeg', '.bmp'}
+        if Path(image_path).suffix.lower() not in valid_exts:
+            print_color(RED, f"Error: Unsupported image format. Supported: {', '.join(valid_exts)}")
+            return 1
+
     chat_binary = PROJECT_ROOT / "tests" / "build" / "chat"
 
     if not chat_binary.exists():
@@ -941,7 +999,14 @@ def cmd_run(args):
     print_color(GREEN, f"Starting Cactus Chat with model: {model_id}")
     print()
 
-    os.execv(str(chat_binary), [str(chat_binary), str(weights_dir)])
+    cmd_args = [str(chat_binary), str(weights_dir)]
+    if image_path:
+        cmd_args.extend(['--image', image_path])
+    system_prompt = getattr(args, 'system', None)
+    if system_prompt:
+        cmd_args.extend(['--system', system_prompt])
+
+    os.execv(str(chat_binary), cmd_args)
 
 
 DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-ctc-1.1b"
@@ -1654,6 +1719,118 @@ def cmd_convert(args):
             shutil.rmtree(temp_merged_dir)
 
 
+def cmd_list(args):
+    """List all supported models and their download status."""
+    PIPELINE_DISPLAY = {
+        "text-generation": "Text Generation",
+        "image-text-to-text": "Vision",
+        "automatic-speech-recognition": "Speech Recognition",
+        "feature-extraction": "Embeddings",
+        "voice-activity-detection": "Voice Activity Detection",
+    }
+    PIPELINE_ORDER = list(PIPELINE_DISPLAY.keys())
+    SHOW_TAGS = {"tools", "vision", "embed", "transcription"}
+    EMBED_ALIASES = {"text-embed", "image-embed", "speech-embed"}
+
+    DIM = '\033[2m'
+    BOLD = '\033[1m'
+
+    def filter_tags(tags):
+        result = set()
+        for t in tags:
+            if t in SHOW_TAGS:
+                result.add(t)
+            elif t in EMBED_ALIASES:
+                result.add("embed")
+        return sorted(result)
+
+    def get_dir_size(path):
+        total = 0
+        for entry in path.rglob('*'):
+            if entry.is_file():
+                total += entry.stat().st_size
+        return total
+
+    def format_size(size_bytes):
+        if size_bytes >= 1_000_000_000:
+            return f"{size_bytes / 1_073_741_824:.1f} GB"
+        return f"{size_bytes / 1_048_576:.0f} MB"
+
+    # Group models by pipeline_tag preserving order
+    groups = {}
+    for entry in MODELS_REGISTRY:
+        tag = entry["pipeline_tag"]
+        groups.setdefault(tag, []).append(entry)
+
+    # Find max model name length for alignment
+    max_name = max(len(e["model"]) for e in MODELS_REGISTRY)
+    max_tags_len = 20
+
+    only_downloaded = getattr(args, 'downloaded', False)
+
+    if only_downloaded:
+        print(f"\n {BOLD}Downloaded Models{NC}")
+    else:
+        print(f"\n {BOLD}Supported Models{NC}")
+    print(f" {'─' * 66}")
+
+    for ptag in PIPELINE_ORDER:
+        models = groups.get(ptag)
+        if not models:
+            continue
+
+        section = PIPELINE_DISPLAY[ptag]
+        section_printed = False
+
+        for entry in models:
+            model_id = entry["model"]
+            tags = filter_tags(entry["tags"])
+            tags_str = ", ".join(tags)
+
+            weights_dir = get_weights_dir(model_id)
+            config_path = weights_dir / "config.txt"
+            downloaded = config_path.exists()
+
+            if only_downloaded and not downloaded:
+                continue
+
+            if not section_printed:
+                print(f"\n {BOLD}{section}{NC}")
+                section_printed = True
+
+            if downloaded:
+                prefix = f" {GREEN}\u2b07{NC}  "
+                # Read quantization (weight quantization level, not compute precision)
+                quantization = ""
+                try:
+                    for line in config_path.read_text().splitlines():
+                        if line.startswith("quantization="):
+                            quantization = line.split("=", 1)[1].strip()
+                            break
+                except OSError:
+                    pass
+                dir_size = get_dir_size(weights_dir)
+                size_str = format_size(dir_size)
+                if quantization:
+                    info = f"{size_str} ({quantization})"
+                else:
+                    info = size_str
+            else:
+                prefix = "    "
+                info = ""
+
+            name_pad = model_id.ljust(max_name)
+            tags_pad = tags_str.ljust(max_tags_len)
+
+            if info:
+                print(f"{prefix}{name_pad}  {DIM}{tags_pad}{NC}  {info}")
+            else:
+                print(f"{prefix}{name_pad}  {DIM}{tags_pad}{NC}")
+
+    print()
+    return 0
+
+
 def create_parser():
     """Create the argument parser with all subcommands."""
     parser = argparse.ArgumentParser(
@@ -1760,6 +1937,11 @@ def create_parser():
 
   -----------------------------------------------------------------
 
+  cactus list                          list all supported models
+                                       shows download status
+
+  -----------------------------------------------------------------
+
   cactus clean                         removes all build artifacts
 
   -----------------------------------------------------------------
@@ -1823,6 +2005,10 @@ def create_parser():
                             help='Disable cloud telemetry (write to cache only)')
     run_parser.add_argument('--reconvert', action='store_true',
                             help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
+    run_parser.add_argument('--image',
+                            help='Path to image file for VLM inference (attached to first message)')
+    run_parser.add_argument('--system',
+                            help='System prompt to prepend to all messages')
 
     transcribe_parser = subparsers.add_parser('transcribe', help='Download ASR model and run transcription')
     transcribe_parser.add_argument('model_id', nargs='?', default=DEFAULT_ASR_MODEL_ID,
@@ -1904,6 +2090,10 @@ def create_parser():
 
     clean_parser = subparsers.add_parser('clean', help='Remove all build artifacts')
 
+    list_parser = subparsers.add_parser('list', help='List supported models')
+    list_parser.add_argument('--downloaded', action='store_true',
+                             help='Only show downloaded models')
+
     convert_parser = subparsers.add_parser('convert', help='Convert model to custom output directory')
     convert_parser.add_argument('model_name', help='HuggingFace model name')
     convert_parser.add_argument('output_dir', nargs='?', default=None,
@@ -1953,6 +2143,8 @@ def main():
         sys.exit(cmd_auth(args))
     elif args.command == 'clean':
         sys.exit(cmd_clean(args))
+    elif args.command == 'list':
+        sys.exit(cmd_list(args))
     elif args.command == 'convert':
         sys.exit(cmd_convert(args))
     else:
