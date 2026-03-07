@@ -244,7 +244,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     last_hidden = gb->reshape(last_hidden, {1, hidden_dim});
 
     auto logits_node_id = gb->matmul(last_hidden, output_weight_node_id_, true, backend);
-    auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k, tool_constrainer_.get_bias());
+    auto sampled_token_id = sample_token(gb, logits_node_id, temperature, top_p, top_k);
 
     gb->execute(profile_file);
 
@@ -295,6 +295,20 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
 
     auto* output_ptr = gb->get_output(sampled_token_id);
     return *static_cast<uint32_t*>(output_ptr);
+}
+
+size_t Model::sample_token(CactusGraph* gb, size_t logits_node_id, float temperature, float top_p, size_t top_k,
+                           const std::unordered_map<uint32_t, float>* extra_bias) const {
+    auto combined_bias = tool_constrainer_.get_bias();
+    for (const auto& [token_id, boost] : vocab_bias_) {
+        combined_bias[token_id] += boost;
+    }
+    if (extra_bias) {
+        for (const auto& [token_id, boost] : *extra_bias) {
+            combined_bias[token_id] += boost;
+        }
+    }
+    return gb->sample(logits_node_id, temperature, top_p, top_k, combined_bias);
 }
 
 uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& /*mel_bins*/, float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy){

@@ -704,6 +704,196 @@ static bool test_vad_process() {
 
     return result > 0 && !segments.empty();
 }
+static bool test_vocab_bias_base_class() {
+    if (!g_transcribe_model_path || !g_assets_path) {
+        std::cout << "⊘ SKIP │ VOCAB BIAS BASE CLASS │ test model/assets not set\n";
+        return true;
+    }
+
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║       VOCAB BIAS BASE CLASS TEST         ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    char response_no_bias[1 << 15] = {0};
+    char response_with_bias[1 << 15] = {0};
+
+    {
+        cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
+        if (!model) return false;
+        StreamingData stream; stream.model = model;
+        std::string audio_path = std::string(g_assets_path) + "/hotword.wav";
+        cactus_transcribe(model, audio_path.c_str(), g_whisper_prompt,
+                          response_no_bias, sizeof(response_no_bias),
+                          R"({"max_tokens": 100, "telemetry_enabled": false})",
+                          stream_callback, &stream, nullptr, 0);
+        cactus_destroy(model);
+    }
+
+    {
+        cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
+        if (!model) return false;
+        StreamingData stream; stream.model = model;
+        std::string audio_path = std::string(g_assets_path) + "/hotword.wav";
+        cactus_transcribe(model, audio_path.c_str(), g_whisper_prompt,
+                          response_with_bias, sizeof(response_with_bias),
+                          R"({
+                              "max_tokens": 100,
+                              "telemetry_enabled": false,
+                              "custom_vocabulary": ["Omeprazole", "HIPAA", "Cactus"],
+                              "vocabulary_boost": 3.0
+                          })",
+                          stream_callback, &stream, nullptr, 0);
+        cactus_destroy(model);
+    }
+
+    std::string no_bias_text = json_string(std::string(response_no_bias), "response");
+    std::string with_bias_text = json_string(std::string(response_with_bias), "response");
+
+    std::cout << "├─ Without bias: \"" << no_bias_text << "\"\n";
+    std::cout << "└─ With bias:    \"" << with_bias_text << "\"\n";
+
+    bool outputs_differ = (no_bias_text != with_bias_text);
+    std::cout << (outputs_differ ? "✓ Bias affected output\n" : "⚠ Bias had no effect on output\n");
+
+    return !with_bias_text.empty();
+}
+static bool test_pcm_transcription() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║       PCM BUFFER TRANSCRIPTION           ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    if (!g_transcribe_model_path) {
+        std::cout << "⊘ SKIP │ CACTUS_TEST_TRANSCRIBE_MODEL not set\n";
+        return true;
+    }
+
+    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize Whisper model\n";
+        return false;
+    }
+
+    const size_t sample_rate = 16000;
+    bool use_microphone = false;
+    bool test_passed = false;
+
+#ifdef HAVE_SDL2
+    {
+        std::cout << "Using microphone input (SDL2)...\n";
+
+        AudioCapture audio_capture(10000);
+        if (audio_capture.init(0, sample_rate)) {
+            std::cout << "\n🎤 Recording for 10 seconds... Speak now!\n\n";
+
+            audio_capture.resume();
+            use_microphone = true;
+
+            std::this_thread::sleep_for(std::chrono::seconds(10));
+
+            audio_capture.pause();
+
+            std::vector<float> audio_float;
+            size_t num_samples = audio_capture.get_all(audio_float);
+
+            if (num_samples == 0) {
+                std::cerr << "[!] No audio captured\n";
+                use_microphone = false;
+            } else {
+                std::cout << "Captured " << (num_samples / sample_rate)
+                          << " seconds of audio, transcribing...\n";
+
+                std::vector<int16_t> pcm_samples(num_samples);
+                for (size_t i = 0; i < num_samples; i++) {
+                    float clamped = std::max(-1.0f, std::min(1.0f, audio_float[i]));
+                    pcm_samples[i] = static_cast<int16_t>(clamped * 32767.0f);
+                }
+
+                // Transcribe
+                char response[1 << 15] = {0};
+                StreamingData stream;
+                stream.model = model;
+
+                std::cout << "Transcript: ";
+                int rc = cactus_transcribe(
+                    model,
+                    nullptr,
+                    g_whisper_prompt,
+                    response,
+                    sizeof(response),
+                    R"({"max_tokens": 100, "telemetry_enabled": false})",
+                    stream_callback,
+                    &stream,
+                    reinterpret_cast<const uint8_t*>(pcm_samples.data()),
+                    pcm_samples.size() * sizeof(int16_t)
+                );
+
+                std::cout << "\n\n[Results]\n";
+                if (rc > 0) {
+                    Metrics m;
+                    m.parse(response);
+                    m.print_json();
+                    test_passed = (rc > 0 && m.completion_tokens >= 1);
+                } else {
+                    std::cerr << "Transcription failed\n";
+                }
+            }
+        } else {
+            std::cerr << "[!] Failed to initialize audio capture, falling back to synthetic audio\n";
+        }
+    }
+#endif
+    if (!use_microphone) {
+        std::cout << "Using synthetic audio (440Hz sine wave)...\n";
+        const size_t duration_seconds = 3;
+        const size_t num_samples = sample_rate * duration_seconds;
+        std::vector<int16_t> pcm_samples(num_samples);
+
+        for (size_t i = 0; i < num_samples; i++) {
+            float t = static_cast<float>(i) / sample_rate;
+            float amplitude = 0.3f;
+            float value = amplitude * std::sin(2.0f * M_PI * 440.0f * t);
+            pcm_samples[i] = static_cast<int16_t>(value * 32767.0f);
+        }
+
+        char response[1 << 15] = {0};
+        StreamingData stream;
+        stream.model = model;
+
+        std::cout << "Transcript: ";
+        int rc = cactus_transcribe(
+            model,
+            nullptr,
+            g_whisper_prompt,
+            response,
+            sizeof(response),
+            R"({"max_tokens": 100, "telemetry_enabled": false})",
+            stream_callback,
+            &stream,
+            reinterpret_cast<const uint8_t*>(pcm_samples.data()),
+            pcm_samples.size() * sizeof(int16_t)
+        );
+
+        std::cout << "\n\n[Results]\n";
+        if (rc <= 0) {
+            std::cerr << "failed\n";
+            cactus_destroy(model);
+            return false;
+        }
+
+        Metrics m;
+        m.parse(response);
+        m.print_json();
+
+        std::cout << "├─ PCM samples: " << pcm_samples.size() << "\n"
+                  << "├─ Duration: " << duration_seconds << "s\n"
+                  << "└─ Sample rate: " << sample_rate << "Hz\n";
+
+        test_passed = (rc > 0 && m.completion_tokens >= 1);
+    }
+
+    cactus_destroy(model);
+    return test_passed;
+}
 
 int main() {
     TestUtils::TestRunner runner("STT Tests");
@@ -713,6 +903,8 @@ int main() {
     runner.run_test("transcription", test_transcription());
     runner.run_test("transcription_long", test_transcription_long());
     runner.run_test("language_detection", test_language_detection());
+    runner.run_test("vocab_bias_base_class", test_vocab_bias_base_class());
+    runner.run_test("pcm_transcription", test_pcm_transcription());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

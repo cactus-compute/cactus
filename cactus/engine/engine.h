@@ -562,7 +562,22 @@ public:
 
     void* graph_handle_;
 
+    void set_vocab_bias(const std::unordered_map<uint32_t, float>& bias) {
+        vocab_bias_ = bias;
+    }
+
+    void clear_vocab_bias() {
+        vocab_bias_.clear();
+    }
+
+    bool has_vocab_bias() const {
+        return !vocab_bias_.empty();
+    }
+
 protected:
+    size_t sample_token(CactusGraph* gb, size_t logits_node_id, float temperature, float top_p, size_t top_k,
+                        const std::unordered_map<uint32_t, float>* extra_bias = nullptr) const;
+
     virtual size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) = 0;
     
     virtual size_t forward(const std::vector<float>& audio_features, const std::vector<uint32_t>& tokens, bool use_cache = false);
@@ -609,6 +624,9 @@ protected:
     virtual std::vector<__fp16> get_token_embeddings(const std::vector<uint32_t>& tokens);
 
     ToolCallConstrainer tool_constrainer_;
+
+private:
+    std::unordered_map<uint32_t, float> vocab_bias_;
 };
 
 std::unique_ptr<Model> create_model(const std::string& model_folder);

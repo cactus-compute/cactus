@@ -538,8 +538,161 @@ inline std::vector<ToolFunction> parse_tools_json(const std::string& json) {
         
         pos = json.find("\"function\"", name_pos);
     }
-    
+
     return tools;
+}
+
+inline bool try_parse_json_float(const std::string& json, const std::string& key, float& out_value) {
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return false;
+
+    size_t start = pos + pattern.size();
+    while (start < json.size() && std::isspace(static_cast<unsigned char>(json[start]))) ++start;
+
+    size_t end = start;
+    while (end < json.size() && std::string(",}] \t\n\r").find(json[end]) == std::string::npos) ++end;
+
+    try {
+        out_value = std::stof(json.substr(start, end - start));
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline std::vector<std::string> parse_json_string_array_field(const std::string& json, const std::string& key) {
+    std::vector<std::string> out;
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return out;
+
+    size_t start = pos + pattern.size();
+    while (start < json.size() && std::isspace(static_cast<unsigned char>(json[start]))) ++start;
+    if (start >= json.size() || json[start] != '[') return out;
+
+    int depth = 1;
+    bool in_string = false;
+    bool escaped = false;
+    size_t end = start + 1;
+
+    while (end < json.size() && depth > 0) {
+        char c = json[end];
+        if (in_string) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"') in_string = false;
+        } else {
+            if (c == '"') in_string = true;
+            else if (c == '[') depth++;
+            else if (c == ']') depth--;
+        }
+        ++end;
+    }
+
+    if (depth != 0) return out;
+    const std::string array_json = json.substr(start, end - start);
+    if (array_json.size() < 2 || array_json.front() != '[' || array_json.back() != ']') return out;
+
+    size_t i = 1;
+    while (i + 1 < array_json.size()) {
+        while (i + 1 < array_json.size() &&
+               (std::isspace(static_cast<unsigned char>(array_json[i])) || array_json[i] == ',')) {
+            ++i;
+        }
+        if (i + 1 >= array_json.size() || array_json[i] == ']') break;
+        if (array_json[i] != '"') break;
+
+        ++i;
+        std::string value;
+        bool escaped = false;
+        while (i < array_json.size()) {
+            char c = array_json[i++];
+            if (escaped) {
+                switch (c) {
+                    case '"': value.push_back('"'); break;
+                    case '\\': value.push_back('\\'); break;
+                    case '/': value.push_back('/'); break;
+                    case 'b': value.push_back('\b'); break;
+                    case 'f': value.push_back('\f'); break;
+                    case 'n': value.push_back('\n'); break;
+                    case 'r': value.push_back('\r'); break;
+                    case 't': value.push_back('\t'); break;
+                    default: value.push_back(c); break;
+                }
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '"') {
+                out.push_back(value);
+                break;
+            }
+            value.push_back(c);
+        }
+    }
+
+    return out;
+}
+
+inline void parse_custom_vocabulary_options(const std::string& json,
+                                            std::vector<std::string>& custom_vocabulary,
+                                            float& vocabulary_boost) {
+    custom_vocabulary.clear();
+    vocabulary_boost = 5.0f;
+    if (json.empty()) return;
+
+    float parsed_boost = vocabulary_boost;
+    if (try_parse_json_float(json, "vocabulary_boost", parsed_boost)) {
+        vocabulary_boost = std::clamp(parsed_boost, 0.0f, 20.0f);
+    }
+
+    custom_vocabulary = parse_json_string_array_field(json, "custom_vocabulary");
+}
+
+inline std::unordered_map<uint32_t, float> build_token_bias_map(const std::vector<std::vector<uint32_t>>& tokenized_entries,
+                                                                float vocabulary_boost) {
+    std::unordered_map<uint32_t, float> vocab_bias;
+    const float clamped_boost = std::clamp(vocabulary_boost, 0.0f, 20.0f);
+    if (clamped_boost == 0.0f) return vocab_bias;
+
+    for (const auto& token_ids : tokenized_entries) {
+        for (uint32_t token_id : token_ids) {
+            float& entry = vocab_bias[token_id];
+            if (entry < clamped_boost) {
+                entry = clamped_boost;
+            }
+        }
+    }
+
+    return vocab_bias;
+}
+
+inline std::unordered_map<uint32_t, float> build_custom_vocabulary_bias(cactus::engine::Tokenizer* tokenizer,
+                                                                        const std::vector<std::string>& custom_vocabulary,
+                                                                        float vocabulary_boost) {
+    if (!tokenizer || custom_vocabulary.empty()) return {};
+    std::vector<std::vector<uint32_t>> tokenized_entries;
+    tokenized_entries.reserve(custom_vocabulary.size());
+
+    for (const auto& word : custom_vocabulary) {
+        if (word.empty()) continue;
+        tokenized_entries.push_back(tokenizer->encode(word));
+    }
+
+    return build_token_bias_map(tokenized_entries, vocabulary_boost);
+}
+
+inline void apply_custom_vocabulary_options(cactus::engine::Model* model, const std::string& json) {
+    if (!model) return;
+
+    std::vector<std::string> custom_vocabulary;
+    float vocabulary_boost = 5.0f;
+    parse_custom_vocabulary_options(json, custom_vocabulary, vocabulary_boost);
+    model->set_vocab_bias(build_custom_vocabulary_bias(model->get_tokenizer(), custom_vocabulary, vocabulary_boost));
 }
 
 inline void parse_options_json(const std::string& json,
