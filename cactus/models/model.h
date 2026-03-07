@@ -188,6 +188,9 @@ private:
     std::vector<int> kv_share_map_;
     std::vector<size_t> shared_k_nodes_;
     std::vector<size_t> shared_v_nodes_;
+
+    std::vector<__fp16> v_norm_ones_weight_;
+    size_t v_norm_ones_node_ = 0;
 };
 
 class Siglip2VisionModel : public Model {

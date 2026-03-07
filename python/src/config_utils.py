@@ -230,6 +230,8 @@ def extract_gemma3n_config(cfg, root_config):
     attention_types = cfg_get(cfg, 'attention_type_pattern', cfg_get(root_config, 'attention_type_pattern', None))
     if attention_types is None:
         attention_types = cfg_get(cfg, 'attention_types', cfg_get(root_config, 'attention_types', None))
+    if attention_types is None:
+        attention_types = cfg_get(cfg, 'layer_types', cfg_get(root_config, 'layer_types', None))
     layer_types = []
     if attention_types:
         num_layers = int(cfg_get(cfg, 'num_hidden_layers', cfg_get(cfg, 'num_layers', 30)))

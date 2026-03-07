@@ -9,6 +9,9 @@ namespace cactus {
 namespace engine {
 
 static const float RSQRT2 = 1.0f / std::sqrt(2.0f);
+static int g_forward_count = 0;
+static bool g_debug_enabled = true;
+#define DEBUG_NODE(layer, name, node) do { if (g_debug_enabled) gb->register_debug_node(layer, name, node); } while(0)
 
 GemmaModel3n::GemmaModel3n() : Model() {}
 
@@ -97,19 +100,23 @@ void GemmaModel3n::load_weights_to_graph(CactusGraph* gb) {
         layer.per_layer_proj             = gb->mmap_weights(prefix + "per_layer_proj.weights");
         layer.post_per_layer_norm        = gb->mmap_weights(prefix + "post_per_layer_norm.weights");
     }
+
+    size_t head_dim = config_.attention_head_dim;
+    v_norm_ones_weight_.assign(head_dim, static_cast<__fp16>(1.0f));
+    v_norm_ones_node_ = gb->input({head_dim}, Precision::FP16);
+    gb->set_external_input(v_norm_ones_node_, v_norm_ones_weight_.data(), Precision::FP16);
 }
 
 
 size_t GemmaModel3n::build_rms_norm_no_weight(CactusGraph* gb, size_t input, size_t num_rows, size_t row_dim) const {
     auto flat = gb->reshape(input, {num_rows, row_dim});
-    auto variance = gb->mean(gb->multiply(flat, flat), -1);
-    auto rms = gb->scalar_sqrt(gb->scalar_add(variance, config_.layer_norm_eps));
-    return gb->divide(flat, rms);
+    return gb->rms_norm(flat, v_norm_ones_node_, config_.layer_norm_eps);
 }
 
 size_t GemmaModel3n::build_magnitude_normalize(CactusGraph* gb, size_t reference, size_t target) const {
-    auto ref_sq = gb->mean(gb->multiply(reference, reference), -1);
-    auto tgt_sq = gb->mean(gb->multiply(target, target), -1);
+    size_t rows = gb->get_output_buffer(reference).shape[0];
+    auto ref_sq = gb->reshape(gb->mean(gb->multiply(reference, reference), 1), {rows, 1});
+    auto tgt_sq = gb->reshape(gb->mean(gb->multiply(target, target), 1), {rows, 1});
     auto ref_mag = gb->scalar_sqrt(ref_sq);
     auto tgt_mag = gb->scalar_sqrt(gb->scalar_add(tgt_sq, 1e-5f));
     auto ratio = gb->divide(ref_mag, tgt_mag);
@@ -117,10 +124,13 @@ size_t GemmaModel3n::build_magnitude_normalize(CactusGraph* gb, size_t reference
 }
 
 size_t GemmaModel3n::build_gaussian_topk(CactusGraph* gb, size_t input, float ppf) const {
-    auto mu    = gb->mean(input, -1);
+    size_t rows = gb->get_output_buffer(input).shape[0];
+    static constexpr float STD_RESCALE = 1.0f / 256.0f;
+    auto mu    = gb->reshape(gb->mean(input, 1), {rows, 1});
     auto diff  = gb->subtract(input, mu);
-    auto var   = gb->mean(gb->multiply(diff, diff), -1);
-    auto sigma = gb->scalar_sqrt(var);
+    auto diff_scaled = gb->scalar_multiply(diff, STD_RESCALE);
+    auto var_scaled = gb->reshape(gb->mean(gb->multiply(diff_scaled, diff_scaled), 1), {rows, 1});
+    auto sigma = gb->scalar_multiply(gb->scalar_sqrt(var_scaled), 1.0f / STD_RESCALE);
     auto cutoff = gb->add(mu, gb->scalar_multiply(sigma, ppf));
     return gb->relu(gb->subtract(input, cutoff));
 }
@@ -202,11 +212,16 @@ size_t GemmaModel3n::build_attention(CactusGraph* gb, size_t input, uint32_t lay
     float rope_freq   = is_global ? config_.rope_theta : config_.rope_local_base_freq;
     size_t window     = is_global ? 0 : config_.sliding_window;
 
+    auto L = std::to_string(layer_idx);
+
     auto q = gb->matmul(input, layer.attn_q_weight, true, backend);
+    DEBUG_NODE(layer_idx, "L" + L + "_attn_q_proj", q);
     q = gb->reshape(q, {seq_len * num_heads, head_dim});
     q = gb->rms_norm(q, layer.attn_q_norm_weight, config_.layer_norm_eps);
+    DEBUG_NODE(layer_idx, "L" + L + "_attn_q_norm", q);
     q = gb->reshape(q, {1, seq_len, num_heads, head_dim});
     auto q4 = gb->rope(q, rope_freq, position_offset);
+    DEBUG_NODE(layer_idx, "L" + L + "_attn_q_rope", q4);
 
     size_t k4, v4;
     if (share_src >= 0 && shared_k_nodes_[share_src] != 0) {
@@ -214,12 +229,18 @@ size_t GemmaModel3n::build_attention(CactusGraph* gb, size_t input, uint32_t lay
         v4 = shared_v_nodes_[share_src];
     } else {
         auto k = gb->matmul(input, layer.attn_k_weight, true, backend);
+        DEBUG_NODE(layer_idx, "L" + L + "_attn_k_proj", k);
         k = gb->reshape(k, {seq_len * kv_heads, head_dim});
         k = gb->rms_norm(k, layer.attn_k_norm_weight, config_.layer_norm_eps);
+        DEBUG_NODE(layer_idx, "L" + L + "_attn_k_norm", k);
         k = gb->reshape(k, {1, seq_len, kv_heads, head_dim});
         k4 = gb->rope(k, rope_freq, position_offset);
+        DEBUG_NODE(layer_idx, "L" + L + "_attn_k_rope", k4);
 
-        auto v = build_rms_norm_no_weight(gb, gb->matmul(input, layer.attn_v_weight, true, backend), seq_len * kv_heads, head_dim);
+        auto v_proj = gb->matmul(input, layer.attn_v_weight, true, backend);
+        DEBUG_NODE(layer_idx, "L" + L + "_attn_v_proj", v_proj);
+        auto v = build_rms_norm_no_weight(gb, v_proj, seq_len * kv_heads, head_dim);
+        DEBUG_NODE(layer_idx, "L" + L + "_attn_v_norm", v);
         v4 = gb->reshape(v, {1, seq_len, kv_heads, head_dim});
 
         shared_k_nodes_[layer_idx] = k4;
@@ -242,22 +263,31 @@ size_t GemmaModel3n::build_attention(CactusGraph* gb, size_t input, uint32_t lay
     } else {
         attn = gb->attention(q4, k4, v4, attention_scale_, position_offset, window);
     }
+    DEBUG_NODE(layer_idx, "L" + L + "_attn_output_pre_oproj", attn);
 
-    return gb->matmul(gb->reshape(attn, {seq_len, num_heads * head_dim}), layer.attn_output_weight, true, backend);
+    auto o_proj = gb->matmul(gb->reshape(attn, {seq_len, num_heads * head_dim}), layer.attn_output_weight, true, backend);
+    DEBUG_NODE(layer_idx, "L" + L + "_attn_o_proj", o_proj);
+    return o_proj;
 }
 
 
 size_t GemmaModel3n::build_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                ComputeBackend backend) const {
     const auto& layer = weight_nodes_.layers[layer_idx];
+    auto L = std::to_string(layer_idx);
 
     auto gate = gb->matmul(input, layer.ffn_gate_weight, true, backend);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_mlp_gate_raw", gate);
     auto up   = gb->matmul(input, layer.ffn_up_weight, true, backend);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_mlp_up", up);
 
     if (layer_idx < config_.activation_sparsity_ppf.size() && config_.activation_sparsity_ppf[layer_idx] > 0.0f)
         gate = build_gaussian_topk(gb, gate, config_.activation_sparsity_ppf[layer_idx]);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_mlp_gate_topk", gate);
 
-    auto activated = gb->multiply(gb->gelu(gate), up);
+    auto gate_activated = gb->gelu(gate);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_mlp_activated", gate_activated);
+    auto activated = gb->multiply(gate_activated, up);
     return gb->matmul(activated, layer.ffn_down_weight, true, backend);
 }
 
@@ -265,19 +295,31 @@ size_t GemmaModel3n::build_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx
 size_t GemmaModel3n::build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
                                              ComputeBackend backend, bool use_cache, size_t position_offset) {
     const auto& layer = weight_nodes_.layers[layer_idx];
+    auto L = std::to_string(layer_idx);
     auto normed = gb->rms_norm(hidden, layer.input_layernorm_weight, config_.layer_norm_eps);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_normed", normed);
 
     auto laurel   = build_laurel(gb, normed, layer_idx, backend);
-    auto attn     = gb->rms_norm(build_attention(gb, normed, layer_idx, backend, use_cache, position_offset),
-                                 layer.post_attention_layernorm_weight, config_.layer_norm_eps);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_laurel", laurel);
+    auto attn_raw = build_attention(gb, normed, layer_idx, backend, use_cache, position_offset);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_attn_raw", attn_raw);
+    auto attn     = gb->rms_norm(attn_raw, layer.post_attention_layernorm_weight, config_.layer_norm_eps);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_post_attn_norm", attn);
     auto combined = gb->add(gb->add(hidden, attn), laurel);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_combined_pre_rsqrt2", combined);
     auto residual = gb->scalar_multiply(combined, RSQRT2);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_post_attn", residual);
 
     auto pre_mlp = gb->rms_norm(residual, layer.pre_feedforward_layernorm_weight, config_.layer_norm_eps);
-    auto mlp = build_mlp(gb, pre_mlp, layer_idx, backend);
-    mlp = gb->rms_norm(mlp, layer.post_feedforward_layernorm_weight, config_.layer_norm_eps);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_pre_ffn_norm", pre_mlp);
+    auto mlp_raw = build_mlp(gb, pre_mlp, layer_idx, backend);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_mlp_raw", mlp_raw);
+    auto mlp = gb->rms_norm(mlp_raw, layer.post_feedforward_layernorm_weight, config_.layer_norm_eps);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_post_ffn_norm", mlp);
 
-    return gb->add(residual, mlp);
+    auto block_out = gb->add(residual, mlp);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_output", block_out);
+    return block_out;
 }
 
 
@@ -290,38 +332,53 @@ size_t GemmaModel3n::build_preamble(CactusGraph* gb, size_t seq_len, ComputeBack
     token_input = gb->input({seq_len}, Precision::FP32);
     auto x = gb->scalar_multiply(gb->embedding(embedding_node_id_, token_input),
                                  std::sqrt(static_cast<float>(config_.hidden_dim)));
+    DEBUG_NODE(0, "preamble_embed_scaled", x);
 
     pli_input = gb->input({seq_len}, Precision::FP32);
     auto pli_embed = gb->scalar_multiply(gb->embedding(weight_nodes_.embed_tokens_per_layer, pli_input),
                                          std::sqrt(static_cast<float>(pli_dim)));
+    DEBUG_NODE(0, "preamble_pli_embed", pli_embed);
     auto pli_proj = gb->scalar_multiply(gb->matmul(x, weight_nodes_.per_layer_model_proj, true, backend),
                                         1.0f / std::sqrt(static_cast<float>(config_.hidden_dim)));
+    DEBUG_NODE(0, "preamble_pli_proj_prescale", pli_proj);
     pli_proj = gb->reshape(pli_proj, {seq_len * num_layers, pli_dim});
     pli_proj = gb->rms_norm(pli_proj, weight_nodes_.per_layer_proj_norm, config_.layer_norm_eps);
     pli_proj = gb->reshape(pli_proj, {seq_len, num_layers * pli_dim});
+    DEBUG_NODE(0, "preamble_pli_proj_normed", pli_proj);
     auto pli_combined = gb->scalar_multiply(gb->add(pli_proj, pli_embed), RSQRT2);
+    DEBUG_NODE(0, "preamble_pli_combined", pli_combined);
 
     streams[0] = x;
-    for (uint32_t i = 1; i < num_altup; i++)
+    for (uint32_t i = 1; i < num_altup; i++) {
         streams[i] = build_magnitude_normalize(gb, x, gb->matmul(x, weight_nodes_.altup_proj_weights[i - 1], true, backend));
+        DEBUG_NODE(0, "preamble_stream_" + std::to_string(i), streams[i]);
+    }
 
     return pli_combined;
 }
 
 void GemmaModel3n::build_layer(CactusGraph* gb, uint32_t layer_idx, ComputeBackend backend,
                                       bool use_cache, size_t pos_offset, size_t pli, size_t* streams) {
+    auto L = std::to_string(layer_idx);
+    DEBUG_NODE(layer_idx, "L" + L + "_input_stream0", streams[0]);
+
     auto modalities = build_altup_router_modalities(gb, streams[0], layer_idx, backend);
 
     size_t predictions[4];
     build_altup_predict(gb, modalities, layer_idx, streams, predictions);
 
     auto activated = build_transformer_block(gb, predictions[0], layer_idx, backend, use_cache, pos_offset);
+    DEBUG_NODE(layer_idx, "L" + L + "_block_output_pre_altup", activated);
 
-    build_altup_correct(gb, activated, build_altup_router_modalities(gb, activated, layer_idx, backend),
-                        layer_idx, backend, predictions, streams);
+    auto modalities_post = build_altup_router_modalities(gb, activated, layer_idx, backend);
 
-    if (config_.hidden_size_per_layer_input > 0)
+    build_altup_correct(gb, activated, modalities_post, layer_idx, backend, predictions, streams);
+    DEBUG_NODE(layer_idx, "L" + L + "_post_correct_stream0", streams[0]);
+
+    if (config_.hidden_size_per_layer_input > 0) {
         build_per_layer_input(gb, pli, layer_idx, backend, streams);
+        DEBUG_NODE(layer_idx, "L" + L + "_post_pli_stream0", streams[0]);
+    }
 }
 
 size_t GemmaModel3n::build_output_head(CactusGraph* gb, size_t* streams, ComputeBackend backend) {
@@ -336,8 +393,11 @@ size_t GemmaModel3n::build_output_head(CactusGraph* gb, size_t* streams, Compute
     for (uint32_t i = 1; i < num_altup; i++)
         hidden = gb->add(hidden, streams[i]);
     hidden = gb->scalar_multiply(hidden, 1.0f / static_cast<float>(num_altup));
+    DEBUG_NODE(99, "output_head_averaged", hidden);
 
-    return gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
+    auto final_normed = gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
+    DEBUG_NODE(99, "output_head_normed", final_normed);
+    return final_normed;
 }
 
 void GemmaModel3n::set_token_inputs(CactusGraph* gb, size_t token_input, size_t pli_input,
@@ -358,6 +418,12 @@ size_t GemmaModel3n::forward(const std::vector<uint32_t>& tokens, bool use_cache
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
+
+    bool prefill_only = std::getenv("CACTUS_CAPTURE_PREFILL_ONLY") != nullptr;
+    if (prefill_only) {
+        g_debug_enabled = (tokens.size() > 1 && g_forward_count < 2);
+    }
+    g_forward_count++;
 
     size_t pos_offset = use_cache ? kv_cache_.get_total_seq_len() : 0;
     auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
