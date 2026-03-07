@@ -1408,3 +1408,34 @@ void CactusGraph::invalidate_persistent(size_t persistent_node_id) {
     populated_node_ids_.erase(persistent_node_id);
     persistent_node_ids_.erase(persistent_node_id);
 }
+
+size_t CactusGraph::altup_predict(size_t coefs, const size_t* streams, size_t num_streams) {
+    const auto& coefs_buf = get_output_buffer(coefs);
+    const auto& stream0_buf = get_output_buffer(streams[0]);
+
+    size_t seq_len = stream0_buf.shape[0];
+    size_t hidden_dim = stream0_buf.shape[1];
+
+    std::vector<size_t> input_ids = {coefs};
+    for (size_t i = 0; i < num_streams; i++)
+        input_ids.push_back(streams[i]);
+
+    OpParams params;
+    params.num_altup_inputs = num_streams;
+    return add_node(OpType::ALTUP_PREDICT, input_ids, {num_streams * seq_len, hidden_dim}, params);
+}
+
+size_t CactusGraph::altup_correct(size_t coefs, size_t innovation, const size_t* predictions, size_t num_predictions) {
+    const auto& pred0_buf = get_output_buffer(predictions[0]);
+
+    size_t seq_len = pred0_buf.shape[0];
+    size_t hidden_dim = pred0_buf.shape[1];
+
+    std::vector<size_t> input_ids = {coefs, innovation};
+    for (size_t i = 0; i < num_predictions; i++)
+        input_ids.push_back(predictions[i]);
+
+    OpParams params;
+    params.num_altup_inputs = num_predictions;
+    return add_node(OpType::ALTUP_CORRECT, input_ids, {num_predictions * seq_len, hidden_dim}, params);
+}

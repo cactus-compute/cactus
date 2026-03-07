@@ -157,12 +157,10 @@ void GemmaModel3n::build_altup_predict(CactusGraph* gb, size_t modalities, uint3
     uint32_t n = config_.altup_num_inputs;
     auto coefs = gb->matmul(modalities, weight_nodes_.layers[layer_idx].altup_prediction_coefs, true, ComputeBackend::CPU);
 
+    size_t seq_len = gb->get_output_buffer(streams[0]).shape[0];
+    auto fused = gb->altup_predict(coefs, streams, n);
     for (uint32_t i = 0; i < n; i++) {
-        predictions[i] = streams[i];
-        for (uint32_t j = 0; j < n; j++) {
-            auto c = gb->slice(coefs, 1, i * n + j, 1);
-            predictions[i] = gb->add(predictions[i], gb->multiply(c, streams[j]));
-        }
+        predictions[i] = gb->slice(fused, 0, i * seq_len, seq_len);
     }
 }
 
@@ -172,9 +170,10 @@ void GemmaModel3n::build_altup_correct(CactusGraph* gb, size_t activated, size_t
     auto coefs = gb->scalar_add(gb->matmul(modalities, weight_nodes_.layers[layer_idx].altup_correction_coefs, true, backend), 1.0f);
     auto innovation = gb->subtract(activated, predictions[0]);
 
+    size_t seq_len = gb->get_output_buffer(predictions[0]).shape[0];
+    auto fused = gb->altup_correct(coefs, innovation, predictions, n);
     for (uint32_t i = 0; i < n; i++) {
-        auto c = gb->slice(coefs, 1, i, 1);
-        corrected[i] = gb->add(predictions[i], gb->multiply(c, innovation));
+        corrected[i] = gb->slice(fused, 0, i * seq_len, seq_len);
     }
 }
 

@@ -155,29 +155,34 @@ graph.hard_reset();
 | nvidia/parakeet-ctc-0.6b | 600M | 201.77 | 201.44 | 5214285 | yes | 0.0101 | 0.0930 |
 | nvidia/parakeet-tdt-0.6b-v3 | 600M | 718.91 | 718.82 | 3583333 | no | 0.0359 | 0.0465 |
 | nvidia/parakeet-ctc-1.1b | 1.1B | 279.03 | 278.92 | 4562500 | yes | 0.0139 | 0.1628 |
+| snakers4/silero-vad | - | - | - | - | - | - | - |
 
 ## Supported LLMs
+
+- Gemma weights are often **gated** on HuggingFace, needs tokens 
+- Run `hf auth login` and input your huggingface token
 
 | Model | Features |                                                      
 |-------|----------|
 | google/gemma-3-270m-it | completion |
-| google/functiongemma-270m-it | completion, tools |
-| LiquidAI/LFM2-350M | completion, tools, embed |
+| google/functiongemma-270m-it | tools |
+| google/gemma-3-1b-it | completion, gated |
+| google/gemma-3n-E2B-it | completion, tools |
+| google/gemma-3n-E4B-it | completion, tools |
 | Qwen/Qwen3-0.6B | completion, tools, embed | 
+| Qwen/Qwen3-Embedding-0.6B | embed | 
 | Qwen/Qwen3.5-0.8B | vision, completion, tools, embed |
-| LiquidAI/LFM2-700M | completion, tools, embed |
-| LiquidAI/LFM2-8B-A1B | completion, tools, embed |
-| google/gemma-3-1b-it | completion |
-| LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |
-| LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |
 | Qwen/Qwen3-1.7B | completion, tools, embed | 
 | Qwen/Qwen3.5-2B | vision, completion, tools, embed | 
+| LiquidAI/LFM2-350M | completion, tools, embed |
+| LiquidAI/LFM2-700M | completion, tools, embed |
+| LiquidAI/LFM2-8B-A1B | completion, tools, embed |
+| LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |
+| LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |
 | LiquidAI/LFM2-2.6B | completion, tools, embed |
 | LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |
 | LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |
-| snakers4/silero-vad | vad |
 | nomic-ai/nomic-embed-text-v2-moe | embed |
-| Qwen/Qwen3-Embedding-0.6B | embed | 
 
 ## Roadmap
 
@@ -261,38 +266,6 @@ graph.hard_reset();
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Supported Models
-
-| Model | Features |
-|-------|----------|
-| google/gemma-3-270m-it | completion |
-| google/functiongemma-270m-it | completion, tools |
-| LiquidAI/LFM2-350M | completion, tools, embed |
-| Qwen/Qwen3-0.6B | completion, tools, embed |
-| Qwen/Qwen3.5-0.8B | vision, completion, tools, embed |
-| LiquidAI/LFM2-700M | completion, tools, embed |
-| LiquidAI/LFM2-8B-A1B | completion, tools, embed |
-| google/gemma-3-1b-it | completion |
-| google/gemma-3n-E2B-it | completion, tools |
-| google/gemma-3n-E4B-it | completion, tools |
-| LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |
-| LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |
-| Qwen/Qwen3-1.7B | completion, tools, embed |
-| Qwen/Qwen3.5-2B | vision, completion, tools, embed |
-| LiquidAI/LFM2-2.6B | completion, tools, embed |
-| LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |
-| LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |
-| UsefulSensors/moonshine-base | transcription, speech embed |
-| openai/whisper-tiny | transcription, speech embed, Apple NPU |
-| openai/whisper-base | transcription, speech embed, Apple NPU |
-| openai/whisper-small | transcription, speech embed, Apple NPU |
-| openai/whisper-medium | transcription, speech embed, Apple NPU |
-| nvidia/parakeet-ctc-0.6b | transcribe, speech embed, Apple NPU |
-| nvidia/parakeet-ctc-1.1b | transcribe, speech embed, Apple NPU |
-| nvidia/parakeet-tdt-0.6b-v3 | transcribe, speech embed, Apple NPU |
-| snakers4/silero-vad | vad |
-| nomic-ai/nomic-embed-text-v2-moe | embed |
-| Qwen/Qwen3-Embedding-0.6B | embed |
 ## Maintaining Organisations
 
 1. [Cactus Compute, Inc. (YC S25)](https://cactuscompute.com/)

@@ -46,6 +46,8 @@ extern void compute_lstm_cell_node(GraphNode& node, const std::vector<std::uniqu
 extern void compute_gated_deltanet_decode_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_stft_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_altup_predict_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 extern void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
@@ -82,7 +84,9 @@ static const char* op_type_names[] = {
     "LSTM_CELL",
     "GATED_DELTANET_DECODE",
     "GATED_DELTANET_PREFILL",
-    "STFT"
+    "STFT",
+    "ALTUP_PREDICT",
+    "ALTUP_CORRECT"
 };
 
 static const char* get_op_name(OpType op) {
@@ -289,6 +293,14 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
 
         case OpType::STFT:
             compute_stft_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::ALTUP_PREDICT:
+            compute_altup_predict_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::ALTUP_CORRECT:
+            compute_altup_correct_node(node, nodes, node_index_map);
             break;
 
         default:

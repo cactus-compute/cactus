@@ -2137,3 +2137,44 @@ void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<G
         }
     }
 }
+
+void compute_altup_predict_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    size_t n = node.params.num_altup_inputs;
+    const auto& coefs_buf = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+
+    std::vector<const __fp16*> stream_ptrs(n);
+    for (size_t i = 0; i < n; i++) {
+        stream_ptrs[i] = nodes[node_index_map.at(node.input_ids[1 + i])]->output_buffer.data_as<__fp16>();
+    }
+
+    const auto& stream0_buf = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    size_t seq_len = stream0_buf.shape[0];
+    size_t hidden_dim = stream0_buf.shape[1];
+
+    cactus_altup_predict_f16(
+        coefs_buf.data_as<__fp16>(),
+        stream_ptrs.data(),
+        node.output_buffer.data_as<__fp16>(),
+        n, seq_len, hidden_dim);
+}
+
+void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    size_t n = node.params.num_altup_inputs;
+    const auto& coefs_buf = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& innov_buf = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+
+    std::vector<const __fp16*> pred_ptrs(n);
+    for (size_t i = 0; i < n; i++) {
+        pred_ptrs[i] = nodes[node_index_map.at(node.input_ids[2 + i])]->output_buffer.data_as<__fp16>();
+    }
+
+    size_t seq_len = innov_buf.shape[0];
+    size_t hidden_dim = innov_buf.shape[1];
+
+    cactus_altup_correct_f16(
+        coefs_buf.data_as<__fp16>(),
+        innov_buf.data_as<__fp16>(),
+        pred_ptrs.data(),
+        node.output_buffer.data_as<__fp16>(),
+        n, seq_len, hidden_dim);
+}
