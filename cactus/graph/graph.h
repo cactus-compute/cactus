@@ -140,7 +140,8 @@ enum class OpType {
     GATED_DELTANET_PREFILL,
     STFT,
     ALTUP_PREDICT,
-    ALTUP_CORRECT
+    ALTUP_CORRECT,
+    GAUSSIAN_TOPK
 };
 
 struct PrecisionTraits {
@@ -561,6 +562,8 @@ public:
 
     size_t altup_predict(size_t coefs, const size_t* streams, size_t num_streams);
     size_t altup_correct(size_t coefs, size_t innovation, const size_t* predictions, size_t num_predictions);
+
+    size_t gaussian_topk(size_t input, float ppf);
 
     size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20,
                   const std::unordered_map<uint32_t, float>& logit_bias = {});

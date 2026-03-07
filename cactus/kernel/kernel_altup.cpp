@@ -1,6 +1,93 @@
 #include "kernel.h"
 #include <arm_neon.h>
 #include <cstddef>
+#include <cmath>
+
+void cactus_gaussian_topk_f16(
+    const __fp16* input,
+    __fp16* output,
+    size_t rows,
+    size_t cols,
+    float ppf
+) {
+    static constexpr float MAX_SAFE_ABS = 240.0f;
+
+    for (size_t r = 0; r < rows; r++) {
+        const __fp16* row_in = input + r * cols;
+        __fp16* row_out = output + r * cols;
+
+        // Pass 1: compute mean and max absolute deviation
+        float32x4_t sum_vec = vdupq_n_f32(0.0f);
+        size_t d = 0;
+        for (; d + 8 <= cols; d += 8) {
+            float16x8_t v = vld1q_f16(row_in + d);
+            sum_vec = vaddq_f32(sum_vec, vcvt_f32_f16(vget_low_f16(v)));
+            sum_vec = vaddq_f32(sum_vec, vcvt_f32_f16(vget_high_f16(v)));
+        }
+        float sum = vaddvq_f32(sum_vec);
+        for (; d < cols; d++) {
+            sum += static_cast<float>(row_in[d]);
+        }
+        float mu = sum / static_cast<float>(cols);
+
+        float32x4_t mu_vec = vdupq_n_f32(mu);
+        float32x4_t max_abs_vec = vdupq_n_f32(0.0f);
+        d = 0;
+        for (; d + 8 <= cols; d += 8) {
+            float16x8_t v = vld1q_f16(row_in + d);
+            float32x4_t lo = vsubq_f32(vcvt_f32_f16(vget_low_f16(v)), mu_vec);
+            float32x4_t hi = vsubq_f32(vcvt_f32_f16(vget_high_f16(v)), mu_vec);
+            max_abs_vec = vmaxq_f32(max_abs_vec, vabsq_f32(lo));
+            max_abs_vec = vmaxq_f32(max_abs_vec, vabsq_f32(hi));
+        }
+        float max_abs = vmaxvq_f32(max_abs_vec);
+        for (; d < cols; d++) {
+            float diff = static_cast<float>(row_in[d]) - mu;
+            float a = diff < 0.0f ? -diff : diff;
+            if (a > max_abs) max_abs = a;
+        }
+
+        // Safe scaling: scale = max(max_abs / 240, 1)
+        float scale = max_abs * (1.0f / MAX_SAFE_ABS);
+        if (scale < 1.0f) scale = 1.0f;
+        float inv_scale = 1.0f / scale;
+
+        // Pass 2: compute variance of scaled deviations
+        float32x4_t inv_scale_vec = vdupq_n_f32(inv_scale);
+        float32x4_t var_sum_vec = vdupq_n_f32(0.0f);
+        d = 0;
+        for (; d + 8 <= cols; d += 8) {
+            float16x8_t v = vld1q_f16(row_in + d);
+            float32x4_t lo = vmulq_f32(vsubq_f32(vcvt_f32_f16(vget_low_f16(v)), mu_vec), inv_scale_vec);
+            float32x4_t hi = vmulq_f32(vsubq_f32(vcvt_f32_f16(vget_high_f16(v)), mu_vec), inv_scale_vec);
+            var_sum_vec = vfmaq_f32(var_sum_vec, lo, lo);
+            var_sum_vec = vfmaq_f32(var_sum_vec, hi, hi);
+        }
+        float var_sum = vaddvq_f32(var_sum_vec);
+        for (; d < cols; d++) {
+            float ds = (static_cast<float>(row_in[d]) - mu) * inv_scale;
+            var_sum += ds * ds;
+        }
+        float variance = var_sum / static_cast<float>(cols);
+        float sigma = sqrtf(variance) * scale;
+
+        // cutoff = mu + ppf * sigma, output = relu(input - cutoff)
+        float cutoff = mu + ppf * sigma;
+        float32x4_t cutoff_vec = vdupq_n_f32(cutoff);
+        float32x4_t zero_vec = vdupq_n_f32(0.0f);
+        d = 0;
+        for (; d + 8 <= cols; d += 8) {
+            float16x8_t v = vld1q_f16(row_in + d);
+            float32x4_t lo = vmaxq_f32(vsubq_f32(vcvt_f32_f16(vget_low_f16(v)), cutoff_vec), zero_vec);
+            float32x4_t hi = vmaxq_f32(vsubq_f32(vcvt_f32_f16(vget_high_f16(v)), cutoff_vec), zero_vec);
+            vst1q_f16(row_out + d, vcombine_f16(vcvt_f16_f32(lo), vcvt_f16_f32(hi)));
+        }
+        for (; d < cols; d++) {
+            float val = static_cast<float>(row_in[d]) - cutoff;
+            row_out[d] = static_cast<__fp16>(val > 0.0f ? val : 0.0f);
+        }
+    }
+}
 
 void cactus_altup_predict_f16(
     const __fp16* coefs,

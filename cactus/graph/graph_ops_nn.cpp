@@ -2158,6 +2158,18 @@ void compute_altup_predict_node(GraphNode& node, const std::vector<std::unique_p
         n, seq_len, hidden_dim);
 }
 
+void compute_gaussian_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input_buf = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const __fp16* input = input_buf.data_as<__fp16>();
+    __fp16* output = node.output_buffer.data_as<__fp16>();
+
+    size_t rows = input_buf.shape[0];
+    size_t cols = input_buf.shape[1];
+    float ppf = node.params.scalar;
+
+    cactus_gaussian_topk_f16(input, output, rows, cols, ppf);
+}
+
 void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     size_t n = node.params.num_altup_inputs;
     const auto& coefs_buf = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;

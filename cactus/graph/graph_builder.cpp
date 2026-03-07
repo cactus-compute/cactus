@@ -1410,7 +1410,6 @@ void CactusGraph::invalidate_persistent(size_t persistent_node_id) {
 }
 
 size_t CactusGraph::altup_predict(size_t coefs, const size_t* streams, size_t num_streams) {
-    const auto& coefs_buf = get_output_buffer(coefs);
     const auto& stream0_buf = get_output_buffer(streams[0]);
 
     size_t seq_len = stream0_buf.shape[0];
@@ -1438,4 +1437,11 @@ size_t CactusGraph::altup_correct(size_t coefs, size_t innovation, const size_t*
     OpParams params;
     params.num_altup_inputs = num_predictions;
     return add_node(OpType::ALTUP_CORRECT, input_ids, {num_predictions * seq_len, hidden_dim}, params);
+}
+
+size_t CactusGraph::gaussian_topk(size_t input, float ppf) {
+    const auto& in_buf = get_output_buffer(input);
+    OpParams params;
+    params.scalar = ppf;
+    return add_node(OpType::GAUSSIAN_TOPK, {input}, in_buf.shape, params);
 }

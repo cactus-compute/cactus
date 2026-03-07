@@ -48,6 +48,7 @@ extern void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vect
 extern void compute_stft_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_altup_predict_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_gaussian_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 extern void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
@@ -86,7 +87,8 @@ static const char* op_type_names[] = {
     "GATED_DELTANET_PREFILL",
     "STFT",
     "ALTUP_PREDICT",
-    "ALTUP_CORRECT"
+    "ALTUP_CORRECT",
+    "GAUSSIAN_TOPK"
 };
 
 static const char* get_op_name(OpType op) {
@@ -301,6 +303,10 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
 
         case OpType::ALTUP_CORRECT:
             compute_altup_correct_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::GAUSSIAN_TOPK:
+            compute_gaussian_topk_node(node, nodes, node_index_map);
             break;
 
         default:

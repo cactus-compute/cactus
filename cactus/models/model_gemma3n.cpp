@@ -121,19 +121,7 @@ size_t GemmaModel3n::build_magnitude_normalize(CactusGraph* gb, size_t reference
 }
 
 size_t GemmaModel3n::build_gaussian_topk(CactusGraph* gb, size_t input, float ppf) const {
-    size_t rows = gb->get_output_buffer(input).shape[0];
-    static constexpr float MAX_SAFE_ABS = 240.0f;
-    auto mu    = gb->reshape(gb->mean(input, 1), {rows, 1});
-    auto diff  = gb->subtract(input, mu);
-    auto abs_diff = gb->add(gb->relu(diff), gb->relu(gb->scalar_multiply(diff, -1.0f)));
-    auto max_abs = gb->reshape(gb->max(abs_diff, 1), {rows, 1});
-    auto raw_scale = gb->scalar_multiply(max_abs, 1.0f / MAX_SAFE_ABS);
-    auto scale = gb->scalar_add(gb->relu(gb->scalar_add(raw_scale, -1.0f)), 1.0f);
-    auto diff_scaled = gb->divide(diff, scale);
-    auto var = gb->reshape(gb->mean(gb->multiply(diff_scaled, diff_scaled), 1), {rows, 1});
-    auto sigma = gb->multiply(gb->scalar_sqrt(var), scale);
-    auto cutoff = gb->add(mu, gb->scalar_multiply(sigma, ppf));
-    return gb->relu(gb->subtract(input, cutoff));
+    return gb->gaussian_topk(input, ppf);
 }
 
 size_t GemmaModel3n::build_laurel(CactusGraph* gb, size_t normed_input, uint32_t layer_idx,
