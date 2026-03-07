@@ -511,6 +511,11 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
                        float temperature, float top_p, size_t top_k, size_t random_seed,
                        const float* bias_values, const uint32_t* bias_indices,
                        size_t bias_count) {
+    if (vocab_size == 0) {
+        output[0] = 0;
+        return;
+    }
+
     const bool has_bias = bias_values && bias_indices && bias_count > 0;
 
     std::vector<float> filtered_logits(vocab_size);
@@ -526,10 +531,6 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
     }
 
     if (temperature == 0.0f && top_p <= 0.0f && top_k == 0) {
-        if (vocab_size == 0) {
-            output[0] = 0;
-            return;
-        }
         auto it = std::max_element(filtered_logits.begin(), filtered_logits.end());
         output[0] = static_cast<uint32_t>(std::distance(filtered_logits.begin(), it));
         return;
@@ -694,6 +695,11 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
                        float temperature, float top_p, size_t top_k, size_t random_seed,
                        const float* bias_values, const uint32_t* bias_indices,
                        size_t bias_count) {
+    if (vocab_size == 0) {
+        output[0] = 0;
+        return;
+    }
+
     const bool has_bias = bias_values && bias_indices && bias_count > 0;
 
     std::vector<__fp16> filtered_logits(vocab_size);
@@ -709,10 +715,6 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
     }
 
     if (temperature == 0.0f && top_p <= 0.0f && top_k == 0) {
-        if (vocab_size == 0) {
-            output[0] = 0;
-            return;
-        }
         auto it = std::max_element(filtered_logits.begin(), filtered_logits.end());
         output[0] = static_cast<uint32_t>(std::distance(filtered_logits.begin(), it));
         return;
