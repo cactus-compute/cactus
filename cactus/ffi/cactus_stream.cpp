@@ -154,6 +154,8 @@ struct CactusStreamTranscribeHandle {
         size_t min_chunk_size;
         std::string language;
     } options;
+    std::string transcribe_options_json;
+    bool has_custom_vocabulary_bias = false;
 
     std::vector<uint8_t> audio_buffer;
 
@@ -290,6 +292,21 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, 
         );
 
         stream_handle->options = { confirmation_threshold, min_chunk_size, language };
+        stream_handle->transcribe_options_json = options_json ? options_json : "";
+        {
+            std::vector<std::string> custom_vocabulary;
+            float vocabulary_boost = 5.0f;
+            parse_custom_vocabulary_options(stream_handle->transcribe_options_json, custom_vocabulary, vocabulary_boost);
+            auto vocab_bias = build_custom_vocabulary_bias(
+                model_handle->model->get_tokenizer(),
+                custom_vocabulary,
+                vocabulary_boost
+            );
+            stream_handle->has_custom_vocabulary_bias = !vocab_bias.empty();
+            if (stream_handle->has_custom_vocabulary_bias) {
+                model_handle->model->set_vocab_bias(vocab_bias);
+            }
+        }
 
         CACTUS_LOG_INFO("stream_transcribe_start",
             "Stream transcription initialized for model: " << model_handle->model_name);
@@ -376,7 +393,7 @@ int cactus_stream_transcribe_process(
             (is_moonshine || is_parakeet) ? "" : "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>",
             handle->transcribe_response_buffer,
             sizeof(handle->transcribe_response_buffer),
-            nullptr,
+            handle->transcribe_options_json.empty() ? nullptr : handle->transcribe_options_json.c_str(),
             nullptr,
             nullptr,
             handle->audio_buffer.data(),
@@ -569,8 +586,16 @@ int cactus_stream_transcribe_stop(
     }
 
     auto* handle = static_cast<CactusStreamTranscribeHandle*>(stream);
+    auto clear_stream_vocab_bias = [&]() {
+        if (handle->has_custom_vocabulary_bias &&
+            handle->model_handle &&
+            handle->model_handle->model) {
+            handle->model_handle->model->clear_vocab_bias();
+        }
+    };
 
     if (!response_buffer || buffer_size == 0) {
+        clear_stream_vocab_bias();
         delete handle;
         return 0;
     }
@@ -607,11 +632,13 @@ int cactus_stream_transcribe_stop(
             CACTUS_LOG_ERROR("stream_transcribe_stop", last_error_message);
             handle_error_response(last_error_message, response_buffer, buffer_size);
             cactus::telemetry::recordStreamTranscription(handle->model_handle ? handle->model_handle->model_name.c_str() : nullptr, false, handle->stream_first_token_ms, 0.0, 0.0, handle->stream_total_tokens, handle->stream_session_first_token_ms, 0.0, 0.0, handle->stream_cumulative_tokens, last_error_message.c_str());
+            clear_stream_vocab_bias();
             delete handle;
             return -1;
         }
 
         std::strcpy(response_buffer, json_response.c_str());
+        clear_stream_vocab_bias();
         delete handle;
         return static_cast<int>(json_response.length());
     } catch (const std::exception& e) {
@@ -619,6 +646,7 @@ int cactus_stream_transcribe_stop(
         CACTUS_LOG_ERROR("stream_transcribe_stop", last_error_message);
         handle_error_response(e.what(), response_buffer, buffer_size);
         cactus::telemetry::recordStreamTranscription(handle->model_handle ? handle->model_handle->model_name.c_str() : nullptr, false, handle->stream_first_token_ms, 0.0, 0.0, handle->stream_total_tokens, handle->stream_session_first_token_ms, 0.0, 0.0, handle->stream_cumulative_tokens, e.what());
+        clear_stream_vocab_bias();
         delete handle;
         return -1;
     } catch (...) {
@@ -626,6 +654,7 @@ int cactus_stream_transcribe_stop(
         CACTUS_LOG_ERROR("stream_transcribe_stop", last_error_message);
         handle_error_response("Unknown error during stream stop", response_buffer, buffer_size);
         cactus::telemetry::recordStreamTranscription(handle->model_handle ? handle->model_handle->model_name.c_str() : nullptr, false, handle->stream_first_token_ms, 0.0, 0.0, handle->stream_total_tokens, handle->stream_session_first_token_ms, 0.0, 0.0, handle->stream_cumulative_tokens, "Unknown error during stream stop");
+        clear_stream_vocab_bias();
         delete handle;
         return -1;
     }

@@ -726,9 +726,9 @@ uint32_t WhisperModel::decode_with_audio(
         logits_node = run_decoder_step(last_token_vec, true, true);
     }
 
-    const auto& bias = first_decode_step_ ? suppress_bias_first_step_ : suppress_bias_;
+    const auto& suppress_bias = first_decode_step_ ? suppress_bias_first_step_ : suppress_bias_;
     if (first_decode_step_) first_decode_step_ = false;
-    size_t sampled_token_id = gb->sample(logits_node, temperature, top_p, top_k, bias);
+    size_t sampled_token_id = sample_token(gb, logits_node, temperature, top_p, top_k, &suppress_bias);
     if (!profile_file.empty()) gb->execute(profile_file);
     else gb->execute();
 
