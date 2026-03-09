@@ -147,9 +147,8 @@ static void cactus_attention_f16_h64_accelerate(
                         float32x4_t x_floor = vrndmq_f32(x);
                         int32x4_t xi = vcvtq_s32_f32(x_floor);
                         float32x4_t xf = vsubq_f32(x, x_floor);
-                        float32x4_t t = vfmaq_n_f32(vdupq_n_f32(0.2246932f), xf, 0.0789673f);
-                        t = vfmaq_f32(vdupq_n_f32(0.6963248f), t, xf);
-                        float32x4_t y = vfmaq_f32(vdupq_n_f32(0.9999003f), t, xf);
+                        float32x4_t y = vfmaq_n_f32(vdupq_n_f32(1.0f), xf, 0.6931472f);
+                        y = vfmaq_f32(y, vmulq_f32(xf, xf), vdupq_n_f32(0.2402265f));
                         xi = vshlq_n_s32(vaddq_s32(xi, vdupq_n_s32(127)), 23);
                         y = vmulq_f32(y, vreinterpretq_f32_s32(xi));
                         uint32x4_t underflow = vcltq_f32(x, vdupq_n_f32(-126.0f));
@@ -580,9 +579,8 @@ void cactus_attention_f16(
                             int32x4_t xi = vcvtq_s32_f32(x_floor);
                             float32x4_t xf = vsubq_f32(x, x_floor);
 
-                            float32x4_t t = vfmaq_n_f32(vdupq_n_f32(0.2246932f), xf, 0.0789673f);
-                            t = vfmaq_f32(vdupq_n_f32(0.6963248f), t, xf);
-                            float32x4_t y = vfmaq_f32(vdupq_n_f32(0.9999003f), t, xf);
+                            float32x4_t y = vfmaq_n_f32(vdupq_n_f32(1.0f), xf, 0.6931472f);
+                            y = vfmaq_f32(y, vmulq_f32(xf, xf), vdupq_n_f32(0.2402265f));
 
                             xi = vaddq_s32(xi, vdupq_n_s32(127));
                             xi = vshlq_n_s32(xi, 23);
