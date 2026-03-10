@@ -1005,6 +1005,8 @@ def cmd_run(args):
     system_prompt = getattr(args, 'system', None)
     if system_prompt:
         cmd_args.extend(['--system', system_prompt])
+    if getattr(args, 'no_thinking', False):
+        cmd_args.append('--no-thinking')
 
     os.execv(str(chat_binary), cmd_args)
 
@@ -2009,6 +2011,8 @@ def create_parser():
                             help='Path to image file for VLM inference (attached to first message)')
     run_parser.add_argument('--system',
                             help='System prompt to prepend to all messages')
+    run_parser.add_argument('--no-thinking', action='store_true',
+                            help='Disable thinking/reasoning for models that support it')
 
     transcribe_parser = subparsers.add_parser('transcribe', help='Download ASR model and run transcription')
     transcribe_parser.add_argument('model_id', nargs='?', default=DEFAULT_ASR_MODEL_ID,

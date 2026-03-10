@@ -210,12 +210,14 @@ int cactus_complete(
         bool force_tools, include_stop_sequences, use_vad, telemetry_enabled;
         bool auto_handoff = true;
         bool handoff_with_images = true;
+        bool enable_thinking = true;
         parse_options_json(
             options_json ? options_json : "", temperature,
             top_p, top_k, max_tokens, stop_sequences,
             force_tools, tool_rag_top_k, confidence_threshold,
             include_stop_sequences, use_vad, telemetry_enabled,
-            &auto_handoff, &cloud_timeout_ms, &handoff_with_images
+            &auto_handoff, &cloud_timeout_ms, &handoff_with_images,
+            &enable_thinking
         );
 
         std::vector<ToolFunction> tools;
@@ -238,7 +240,7 @@ int cactus_complete(
         } else {
             formatted_tools = serialize_tools_json(tools);
         }
-        std::string full_prompt = tokenizer->format_chat_prompt(messages, true, formatted_tools);
+        std::string full_prompt = tokenizer->format_chat_prompt(messages, true, formatted_tools, enable_thinking);
 
         if (full_prompt.find("ERROR:") == 0) {
             CACTUS_LOG_ERROR("complete", "Prompt formatting failed: " << full_prompt.substr(6));
@@ -381,6 +383,13 @@ int cactus_complete(
         std::vector<std::string> function_calls;
         parse_function_calls_from_response(response_text, regular_response, function_calls);
 
+        std::string thinking_text;
+        if (enable_thinking) {
+            std::string stripped_content;
+            strip_thinking_block(regular_response, thinking_text, stripped_content);
+            regular_response = stripped_content;
+        }
+
         if (confidence < confidence_threshold) {
             maybe_start_cloud_handoff(regular_response, function_calls);
         }
@@ -417,7 +426,8 @@ int cactus_complete(
         const bool handoff_succeeded = cloud_used;
         std::string result = construct_response_json(primary_response, primary_function_calls, time_to_first_token,
                                                      total_time_ms, prefill_tps, decode_tps, prompt_tokens,
-                                                     completion_tokens, confidence, handoff_succeeded);
+                                                     completion_tokens, confidence, handoff_succeeded,
+                                                     thinking_text);
 
         if (result.length() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);

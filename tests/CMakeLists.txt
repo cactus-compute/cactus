@@ -30,8 +30,8 @@ endif()
 set(CACTUS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../cactus)
 set(CACTUS_BUILD_DIR ${CACTUS_ROOT}/build)
 
-find_library(CACTUS_LIB 
-    NAMES cactus
+find_library(CACTUS_LIB
+    NAMES libcactus.dylib libcactus.so cactus
     PATHS ${CACTUS_BUILD_DIR} ${CACTUS_BUILD_DIR}/lib
     REQUIRED
 )

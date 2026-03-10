@@ -163,9 +163,7 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
 
     if (add_generation_prompt) {
         result += "<|im_start|>assistant\n";
-        if (enable_thinking_if_supported) {
-            result += "<think>\n";
-        } else {
+        if (!enable_thinking_if_supported) {
             result += "<think>\n\n</think>\n\n";
         }
     }
