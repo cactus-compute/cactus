@@ -160,6 +160,7 @@ struct Metrics {
     double prefill_tokens = 0.0;
     double completion_tokens = 0.0;
     double total_tokens = 0.0;
+    std::string segments;
 
     void parse(const std::string& json);
     void print_json() const;

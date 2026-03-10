@@ -21,7 +21,7 @@ static const char* get_transcribe_prompt() {
         std::string path = g_transcribe_model_path;
         std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c){ return std::tolower(c); });
         if (path.find("whisper") != std::string::npos) {
-            return "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>";
+            return "<|startoftranscript|><|en|><|transcribe|>";
         }
     }
     return "";

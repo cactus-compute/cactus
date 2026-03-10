@@ -322,6 +322,7 @@ void Metrics::parse(const std::string& json) {
     prefill_tokens = json_number(json, "prefill_tokens");
     completion_tokens = json_number(json, "decode_tokens");
     total_tokens = json_number(json, "total_tokens");
+    segments = json_array(json, "segments");
 }
 
 void Metrics::print_json() const {
@@ -330,6 +331,7 @@ void Metrics::print_json() const {
               << "  \"cloud_handoff\": " << (cloud_handoff ? "true" : "false") << ",\n"
               << "  \"response\": \"" << response << "\",\n"
               << "  \"function_calls\": " << function_calls << ",\n"
+              << "  \"segments\": " << segments << ",\n"
               << "  \"confidence\": " << std::fixed << std::setprecision(4) << confidence << ",\n"
               << "  \"time_to_first_token_ms\": " << std::setprecision(2) << ttft << ",\n"
               << "  \"total_time_ms\": " << total_ms << ",\n"

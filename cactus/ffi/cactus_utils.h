@@ -1119,6 +1119,12 @@ inline void strip_thinking_block(const std::string& input, std::string& thinking
     trim(content);
 }
 
+struct TranscriptSegment {
+    float start;
+    float end;
+    std::string text;
+};
+
 inline std::string construct_response_json(const std::string& regular_response,
                                            const std::vector<std::string>& function_calls,
                                            double time_to_first_token,
@@ -1129,7 +1135,8 @@ inline std::string construct_response_json(const std::string& regular_response,
                                            size_t completion_tokens,
                                            float confidence = 0.0f,
                                            bool cloud_handoff = false,
-                                           const std::string& thinking = "") {
+                                           const std::string& thinking = "",
+                                           const std::vector<TranscriptSegment>& segments = {}) {
     std::ostringstream json;
     json << "{";
     json << "\"success\":true,";
@@ -1143,6 +1150,14 @@ inline std::string construct_response_json(const std::string& regular_response,
     for (size_t i = 0; i < function_calls.size(); ++i) {
         if (i > 0) json << ",";
         json << function_calls[i];
+    }
+    json << "],";
+    json << "\"segments\":[";
+    for (size_t i = 0; i < segments.size(); ++i) {
+        if (i > 0) json << ",";
+        json << "{\"start\":" << std::fixed << std::setprecision(3) << segments[i].start
+             << ",\"end\":" << std::fixed << std::setprecision(3) << segments[i].end
+             << ",\"text\":\"" << escape_json_string(segments[i].text) << "\"}";
     }
     json << "],";
     json << "\"confidence\":" << std::fixed << std::setprecision(4) << confidence << ",";
