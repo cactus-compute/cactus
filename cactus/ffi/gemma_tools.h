@@ -499,8 +499,11 @@ inline std::string args_to_json(const std::string& args_content) {
 }
 
 inline void parse_function_calls(std::string& response, std::vector<std::string>& function_calls) {
-    const std::string CALL_START = "<start_function_call>";
-    const std::string CALL_END = "<end_function_call>";
+
+    const std::string CALL_START = (response.find("<|tool_call>") != std::string::npos)
+        ? "<|tool_call>" : "<start_function_call>";
+    const std::string CALL_END = (CALL_START == "<|tool_call>")
+        ? "<tool_call|>" : "<end_function_call>";
     size_t pos = 0;
 
     while ((pos = response.find(CALL_START, pos)) != std::string::npos) {

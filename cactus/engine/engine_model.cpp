@@ -136,7 +136,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
                                  config_.model_type == Config::ModelType::PARAKEET_TDT)
                                ? Precision::FP16
                                : Precision::INT8;
-    kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, config_.attention_head_dim, cache_precision);
+    kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, get_kv_layer_dims(), cache_precision);
 
     size_t window_size = std::min(context_size, size_t(512));
     size_t sink_size = 4;
@@ -339,9 +339,13 @@ std::vector<float> Model::get_audio_embeddings(const std::vector<float>& /*mel_b
 }
 
 void Model::update_kv_cache(CactusGraph* gb, size_t seq_len) {
-    kv_cache_.update_from_graph(gb, cache_k_output_nodes_, cache_v_output_nodes_, 
-                               seq_len, config_.num_layers, config_.attention_kv_heads, 
-                               config_.attention_head_dim);
+    kv_cache_.update_from_graph(gb, cache_k_output_nodes_, cache_v_output_nodes_,
+                               seq_len, config_.num_layers, config_.attention_kv_heads);
+}
+
+void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) {
+    for (auto it = ranges.rbegin(); it != ranges.rend(); ++it)
+        kv_cache_.remove_token_range(it->first, it->second);
 }
 
 

@@ -87,7 +87,7 @@ std::vector<uint32_t> Tokenizer::apply_chat_template(const std::vector<ChatMessa
     return encode(formatted_prompt);
 }
 
-std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported) const {
     bool has_images = false;
     for (const auto& msg : messages) {
         if (!msg.images.empty()) {
@@ -102,7 +102,7 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
     switch (model_type_) {
         case ModelType::QWEN:
         case ModelType::QWEN3P5:
-            return format_qwen_style(messages, add_generation_prompt, tools_json);
+            return format_qwen_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
         case ModelType::GEMMA:
             return format_gemma_style(messages, add_generation_prompt, tools_json);
         case ModelType::LFM2:
@@ -112,7 +112,7 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
     }
 }
 
-std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported) const {
     std::string result;
 
     if (!tools_json.empty()) {
@@ -163,7 +163,9 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
 
     if (add_generation_prompt) {
         result += "<|im_start|>assistant\n";
-        if (model_type_ == ModelType::QWEN3P5) {
+        if (enable_thinking_if_supported) {
+            result += "<think>\n";
+        } else {
             result += "<think>\n\n</think>\n\n";
         }
     }

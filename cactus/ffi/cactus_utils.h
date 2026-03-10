@@ -707,7 +707,8 @@ inline void parse_options_json(const std::string& json,
                                bool& telemetry_enabled,
                                bool* auto_handoff = nullptr,
                                size_t* cloud_timeout_ms = nullptr,
-                               bool* handoff_with_images = nullptr) {
+                               bool* handoff_with_images = nullptr,
+                               bool* enable_thinking_if_supported = nullptr) {
     temperature = 0.0f;
     top_p = 0.0f;
     top_k = 0;
@@ -721,6 +722,7 @@ inline void parse_options_json(const std::string& json,
     if (auto_handoff) *auto_handoff = true;
     if (cloud_timeout_ms) *cloud_timeout_ms = 15000;
     if (handoff_with_images) *handoff_with_images = true;
+    if (enable_thinking_if_supported) *enable_thinking_if_supported = true;
     stop_sequences.clear();
 
     if (json.empty()) return;
@@ -812,6 +814,15 @@ inline void parse_options_json(const std::string& json,
             pos = json.find(':', pos) + 1;
             while (pos < json.length() && std::isspace(json[pos])) pos++;
             *handoff_with_images = (json.substr(pos, 4) == "true");
+        }
+    }
+
+    if (enable_thinking_if_supported) {
+        pos = json.find("\"enable_thinking_if_supported\"");
+        if (pos != std::string::npos) {
+            pos = json.find(':', pos) + 1;
+            while (pos < json.length() && std::isspace(json[pos])) pos++;
+            *enable_thinking_if_supported = (json.substr(pos, 4) == "true");
         }
     }
 
@@ -1051,6 +1062,63 @@ inline void parse_function_calls_from_response(const std::string& response_text,
     }
 }
 
+inline void strip_tag_blocks(std::string& text, std::string& extracted,
+                             const std::string& open_tag, const std::string& close_tag) {
+    std::string result;
+    size_t pos = 0;
+
+    size_t first_close = text.find(close_tag);
+    size_t first_open = text.find(open_tag);
+    if (first_close != std::string::npos &&
+        (first_open == std::string::npos || first_close < first_open)) {
+        extracted += text.substr(0, first_close);
+        pos = first_close + close_tag.size();
+    }
+
+    while (pos < text.size()) {
+        size_t open_pos = text.find(open_tag, pos);
+        if (open_pos == std::string::npos) {
+            result += text.substr(pos);
+            break;
+        }
+        result += text.substr(pos, open_pos - pos);
+        size_t content_start = open_pos + open_tag.size();
+        size_t close_pos = text.find(close_tag, content_start);
+        if (close_pos == std::string::npos) {
+            if (!extracted.empty()) extracted += "\n";
+            extracted += text.substr(content_start);
+            break;
+        }
+        if (!extracted.empty()) extracted += "\n";
+        extracted += text.substr(content_start, close_pos - content_start);
+        pos = close_pos + close_tag.size();
+    }
+    text = result;
+}
+
+inline void strip_thinking_block(const std::string& input, std::string& thinking, std::string& content) {
+    thinking.clear();
+    content = input;
+
+    auto trim = [](std::string& s) {
+        size_t first = s.find_first_not_of(" \t\n\r");
+        size_t last = s.find_last_not_of(" \t\n\r");
+        if (first != std::string::npos && last != std::string::npos)
+            s = s.substr(first, last - first + 1);
+        else
+            s.clear();
+    };
+
+    if (content.find("<think>") != std::string::npos || content.find("</think>") != std::string::npos) {
+        strip_tag_blocks(content, thinking, "<think>", "</think>");
+    } else {
+        return;
+    }
+
+    trim(thinking);
+    trim(content);
+}
+
 inline std::string construct_response_json(const std::string& regular_response,
                                            const std::vector<std::string>& function_calls,
                                            double time_to_first_token,
@@ -1060,13 +1128,17 @@ inline std::string construct_response_json(const std::string& regular_response,
                                            size_t prompt_tokens,
                                            size_t completion_tokens,
                                            float confidence = 0.0f,
-                                           bool cloud_handoff = false) {
+                                           bool cloud_handoff = false,
+                                           const std::string& thinking = "") {
     std::ostringstream json;
     json << "{";
     json << "\"success\":true,";
     json << "\"error\":null,";
     json << "\"cloud_handoff\":" << (cloud_handoff ? "true" : "false") << ",";
     json << "\"response\":\"" << escape_json_string(regular_response) << "\",";
+    if (!thinking.empty()) {
+        json << "\"thinking\":\"" << escape_json_string(thinking) << "\",";
+    }
     json << "\"function_calls\":[";
     for (size_t i = 0; i < function_calls.size(); ++i) {
         if (i > 0) json << ",";

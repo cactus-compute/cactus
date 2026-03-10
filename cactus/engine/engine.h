@@ -189,7 +189,7 @@ public:
     virtual std::string decode(const std::vector<uint32_t>& tokens) const = 0;
 
     virtual std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const;
-    virtual std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "") const;
+    virtual std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "", bool enable_thinking_if_supported = true) const;
 
     virtual uint32_t get_vocab_size() const = 0;
     virtual uint32_t get_unk_token() const = 0;
@@ -217,7 +217,7 @@ protected:
     uint32_t global_img_token_id_ = 49152;
 
     void detect_model_type(const std::string& config_path);
-    std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = true) const;
     std::string format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_lfm2_vl_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
@@ -372,8 +372,9 @@ struct KVCache {
     struct LayerCache {
         std::vector<uint8_t> keys;
         std::vector<uint8_t> values;
-        std::vector<float> key_scales;   
-        std::vector<float> value_scales; 
+        std::vector<float> key_scales;
+        std::vector<float> value_scales;
+        size_t head_dim = 0;
     };
 
     std::vector<LayerCache> layer_caches;
@@ -384,7 +385,6 @@ struct KVCache {
     size_t total_seq_len = 0;
     size_t max_seq_len = 2048;
     size_t num_kv_heads = 0;
-    size_t head_dim = 0;
     size_t num_layers = 0;
     Precision precision;
     size_t element_size = 4;
@@ -392,12 +392,13 @@ struct KVCache {
     void set_window_size(size_t window, size_t sink = DEFAULT_SINK_SIZE);
     size_t get_effective_seq_len() const { return current_seq_len; }
     size_t get_total_seq_len() const { return total_seq_len; }
+    size_t get_layer_head_dim(size_t layer_idx) const { return layer_caches[layer_idx].head_dim; }
 
-    void init(size_t num_layers, size_t max_seq, size_t num_kv_heads, size_t head_dim, Precision model_precision);
+    void init(size_t num_layers, size_t max_seq, size_t num_kv_heads, const std::vector<size_t>& layer_dims, Precision model_precision);
     void reset();
     void update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_nodes,
                           const std::vector<size_t>& v_nodes, size_t seq_len,
-                          size_t num_layers, size_t kv_heads, size_t head_dim);
+                          size_t num_layers, size_t kv_heads);
 
     void update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp16* v_data,
                          size_t num_tokens, size_t kv_heads, size_t head_dim);
@@ -421,6 +422,9 @@ struct KVCache {
     const int8_t* get_values_int8(size_t layer) const;
     const float* get_key_scales(size_t layer) const;
     const float* get_value_scales(size_t layer) const;
+
+    void remove_token_range(size_t start, size_t count);
+    void compact_to_windows(const std::vector<size_t>& target_windows);
 };
 
 class ToolCallConstrainer {
@@ -565,6 +569,9 @@ public:
     bool has_npu_prefill() const;
     size_t get_prefill_chunk_size() const;
 
+    void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
+    virtual void compact_kv_cache() {}
+
     void set_tool_constraints(const std::vector<std::string>& function_names);
     void clear_tool_constraints();
     void update_tool_constraints(uint32_t token_id);
@@ -601,6 +608,9 @@ protected:
     virtual size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
                                   ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) = 0;
     void update_kv_cache(CactusGraph* gb, size_t seq_len);
+    virtual std::vector<size_t> get_kv_layer_dims() const {
+        return std::vector<size_t>(config_.num_layers, config_.attention_head_dim);
+    }
     virtual void post_init() {}
     virtual void post_execute_updates(CactusGraph*, size_t) {}
     Config config_;

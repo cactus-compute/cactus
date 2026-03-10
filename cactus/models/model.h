@@ -194,6 +194,7 @@ protected:
     void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "") override;
     void load_weights_to_graph(CactusGraph* gb) override;
     void post_init() override;
+    std::vector<size_t> get_kv_layer_dims() const override;
 
 private:
     size_t forward_split(const std::vector<uint32_t>& tokens, bool use_cache);

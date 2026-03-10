@@ -16,6 +16,18 @@ GemmaModel3n::GemmaModel3n(const Config& config) : Model(config) {
     weight_nodes_.layers.resize(config.num_layers);
 }
 
+std::vector<size_t> GemmaModel3n::get_kv_layer_dims() const {
+    uint32_t n = config_.num_layers;
+    uint32_t num_shared = config_.num_kv_shared_layers;
+    uint32_t first_shared = (n > num_shared) ? n - num_shared : n;
+
+    std::vector<size_t> dims(n);
+    for (uint32_t i = 0; i < n; i++) {
+        dims[i] = (i >= first_shared) ? 0 : config_.attention_head_dim;
+    }
+    return dims;
+}
+
 void GemmaModel3n::post_init() {
     kv_cache_.set_window_size(0, 0);
 
