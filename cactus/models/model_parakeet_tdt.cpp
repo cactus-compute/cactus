@@ -704,7 +704,7 @@ size_t ParakeetTDTModel::forward(const std::vector<float>& audio_features,
     return build_encoder(gb, audio_features);
 }
 
-std::vector<uint32_t> ParakeetTDTModel::greedy_decode_tdt_tokens(CactusGraph* gb, size_t encoder_hidden_node) const {
+std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::greedy_decode_tdt_tokens(CactusGraph* gb, size_t encoder_hidden_node) const {
     const auto& enc_buf = gb->get_output_buffer(encoder_hidden_node);
     if (enc_buf.shape.size() != 2) {
         throw std::runtime_error("ParakeetTDT encoder output must be rank-2 [T, D]");
@@ -839,7 +839,10 @@ std::vector<uint32_t> ParakeetTDTModel::greedy_decode_tdt_tokens(CactusGraph* gb
         gb->set_input(bias_hh_zero_nodes[i], bias_hh_zero_state[i].data(), Precision::FP16);
     }
 
-    std::vector<uint32_t> output_tokens;
+    constexpr float kHopSec = 160.0f / 16000.0f;
+    const float frame_sec = kHopSec * static_cast<float>(config_.subsampling_factor);
+
+    std::vector<TDTToken> output_tokens;
     output_tokens.reserve(T * 2);
 
     uint32_t last_token = blank_id;
@@ -870,7 +873,7 @@ std::vector<uint32_t> ParakeetTDTModel::greedy_decode_tdt_tokens(CactusGraph* gb
             const uint32_t skip = durations[best_duration_idx];
 
             if (best_token != blank_id) {
-                output_tokens.push_back(static_cast<uint32_t>(best_token));
+                output_tokens.push_back({static_cast<uint32_t>(best_token), time_idx * frame_sec, (time_idx + skip) * frame_sec});
                 last_token = static_cast<uint32_t>(best_token);
 
                 for (size_t i = 0; i < predictor_layers; ++i) {
@@ -913,7 +916,9 @@ uint32_t ParakeetTDTModel::decode_with_audio(
     float top_p,
     size_t top_k,
     const std::string& profile_file,
-    float* out_entropy)
+    float* out_entropy,
+    float* out_token_time_start,
+    float* out_token_time_end)
 {
     (void)temperature;
     (void)top_p;
@@ -950,7 +955,10 @@ uint32_t ParakeetTDTModel::decode_with_audio(
     }
 
     if (tdt_emit_index_ < tdt_tokens_.size()) {
-        return tdt_tokens_[tdt_emit_index_++];
+        const auto& tok = tdt_tokens_[tdt_emit_index_++];
+        if (out_token_time_start) *out_token_time_start = tok.time_start;
+        if (out_token_time_end)   *out_token_time_end   = tok.time_end;
+        return tok.id;
     }
 
     return get_tokenizer()->get_eos_token();

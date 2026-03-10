@@ -320,7 +320,7 @@ size_t Model::sample_token(CactusGraph* gb, size_t logits_node_id, float tempera
     return gb->sample(logits_node_id, temperature, top_p, top_k, combined_bias);
 }
 
-uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& /*mel_bins*/, float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy){
+uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& /*mel_bins*/, float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy, float* /*out_token_time_start*/, float* /*out_token_time_end*/){
     return decode(tokens, temperature, top_p, top_k, profile_file, out_entropy);
 }
 

@@ -549,7 +549,8 @@ public:
                                           size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr);
 
     virtual uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features, float temperature = 0.0f, float top_p = 0.0f,
-                      size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr);
+                      size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                      float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, bool normalize = false, const std::string& profile_file = "");
     
