@@ -350,9 +350,6 @@ int cactus_transcribe(
         float total_entropy_sum = 0.0f;
         float max_token_entropy_norm = 0.0f;
 
-        static const std::vector<std::string> tokens_to_remove = {
-            "<|startoftranscript|>"
-        };
         const std::regex whisper_timestamp_re(R"(<\|(\d+(?:\.\d+)?)\|>)");
         std::vector<TranscriptSegment> segments;
 
@@ -456,10 +453,6 @@ int cactus_transcribe(
                 if (is_terminal_transcription_piece(piece)) {
                     break;
                 }
-                if (std::find(tokens_to_remove.begin(), tokens_to_remove.end(), piece) != tokens_to_remove.end()) {
-                    continue;
-                }
-
                 tokens.emplace_back(next_token);
                 completion_tokens++;
 
@@ -479,6 +472,7 @@ int cactus_transcribe(
                             ? (segment_text.erase(0, 1), std::move(segment_text))
                             : std::move(segment_text)
                         );
+                        segment_text.clear();
                     }
                     if (segment_text.empty()) segment_start = tok_time_start + orig_offset;
                     segment_text += piece;
