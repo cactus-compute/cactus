@@ -1,0 +1,2155 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Energy-efficient AI inference engine for phones, wearables, Macs, and ARM devices.">
+      
+      
+        <meta name="author" content="Cactus Compute">
+      
+      
+        <link rel="canonical" href="https://cactus-compute.github.io/cactus/">
+      
+      
+      
+        <link rel="next" href="docs/compatibility/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="assets/logo.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.5">
+    
+    
+      
+        <title>Cactus - Cactus Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="white">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#quick-demo" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="." title="Cactus Docs" class="md-header__button md-logo" aria-label="Cactus Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Cactus Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Cactus
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="white"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="black"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/cactus-compute/cactus" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cactus-compute/cactus
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="docs/compatibility/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="docs/cactus_engine/" class="md-tabs__link">
+          
+  
+  
+  Core APIs
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="docs/finetuning/" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="python/" class="md-tabs__link">
+          
+  
+  
+  SDKs
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="blog/" class="md-tabs__link">
+          
+  
+  
+  Blog
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="." title="Cactus Docs" class="md-nav__button md-logo" aria-label="Cactus Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Cactus Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/cactus-compute/cactus" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cactus-compute/cactus
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="." class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-demo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Demo
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cactus-engine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cactus Engine
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cactus-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cactus Graph
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#api-sdk-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        API &amp; SDK References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmarks-cpu-only-no-gpu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmarks (CPU-only, no GPU)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#supported-transcription-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported Transcription Model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#supported-llms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported LLMs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#roadmap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Roadmap
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#using-this-repo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Using this repo
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#maintaining-organisations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Maintaining Organisations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#citation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Citation
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="docs/compatibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime Compatibility
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core APIs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core APIs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="docs/cactus_engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engine API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="docs/cactus_graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Graph API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="docs/cactus_index/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Index API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="docs/finetuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Fine-tuning & Deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SDKs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    SDKs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="python/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="apple/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Swift
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="android/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kotlin / Android
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="flutter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Flutter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="rust/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Blog
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Blog
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="blog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    All Posts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="blog/hybrid_transcription/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid Transcription
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="blog/lfm2_24b_a2b/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LFM2-24B on Mac
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-demo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Demo
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cactus-engine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cactus Engine
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cactus-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cactus Graph
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#api-sdk-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        API &amp; SDK References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmarks-cpu-only-no-gpu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmarks (CPU-only, no GPU)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#supported-transcription-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported Transcription Model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#supported-llms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported LLMs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#roadmap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Roadmap
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#using-this-repo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Using this repo
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#maintaining-organisations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Maintaining Organisations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#citation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Citation
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+  <h1>Home</h1>
+
+<p><img src="assets/banner.jpg" alt="Logo" style="border-radius: 30px; width: 100%;"></p>
+<p><a href="https://cactus-compute.github.io/cactus/"><img alt="Docs" src="https://img.shields.io/badge/Docs-555?style=for-the-badge&amp;logo=readthedocs&amp;logoColor=white" /></a>
+<a href="https://cactuscompute.com/"><img alt="Website" src="https://img.shields.io/badge/Website-555?style=for-the-badge&amp;logo=safari&amp;logoColor=white" /></a>
+<a href="https://github.com/cactus-compute/cactus"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-555?style=for-the-badge&amp;logo=github&amp;logoColor=white" /></a>
+<a href="https://huggingface.co/Cactus-Compute"><img alt="HuggingFace" src="https://img.shields.io/badge/HuggingFace-555?style=for-the-badge&amp;logo=huggingface&amp;logoColor=white" /></a>
+<a href="https://www.reddit.com/r/cactuscompute/"><img alt="Reddit" src="https://img.shields.io/badge/Reddit-555?style=for-the-badge&amp;logo=reddit&amp;logoColor=white" /></a>
+<a href="https://cactus-compute.github.io/cactus/blog/"><img alt="Blog" src="https://img.shields.io/badge/Blog-555?style=for-the-badge&amp;logo=hashnode&amp;logoColor=white" /></a></p>
+<p>A hybrid low-latency energy-efficient AI engine for mobile devices &amp; wearables.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>┌─────────────────┐
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>│  Cactus Engine  │ ←── OpenAI-compatible APIs for all major languages
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>└─────────────────┘     Chat, vision, STT, RAG, tool call, cloud handoff
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>         │
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>┌─────────────────┐
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│  Cactus Graph   │ ←── Zero-copy computation graph (PyTorch for mobile)
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>└─────────────────┘     Custom models, optimised for RAM &amp; quantisation
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>         │
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>┌─────────────────┐
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>│ Cactus Kernels  │ ←── ARM SIMD kernels (Apple, Snapdragon, Exynos, etc)
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>└─────────────────┘     Custom attention, KV-cache quant, chunked prefill
+</code></pre></div>
+<h2 id="quick-demo">Quick Demo<a class="headerlink" href="#quick-demo" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Step 1: <code>brew install cactus-compute/cactus/cactus</code></li>
+<li>Step 2: <code>cactus transcribe</code> or <code>cactus run</code> </li>
+</ul>
+<h2 id="cactus-engine">Cactus Engine<a class="headerlink" href="#cactus-engine" title="Permanent link">&para;</a></h2>
+<p><div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="cp">#include cactus.h</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">cactus_model_t</span><span class="w"> </span><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactus_init</span><span class="p">(</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="s">&quot;path/to/weight/folder&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="s">&quot;path to txt or dir of txts for auto-rag&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="p">);</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">messages</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="sa">R</span><span class="s">&quot;</span><span class="dl">(</span><span class="s">[</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="s">    {&quot;role&quot;: &quot;system&quot;, &quot;content&quot;: &quot;You are a helpful assistant.&quot;},</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="s">    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;My name is Henry Ndubuaku&quot;}</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="s">]</span><span class="dl">)</span><span class="s">&quot;</span><span class="p">;</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">options</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="sa">R</span><span class="s">&quot;</span><span class="dl">(</span><span class="s">{</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="s">    &quot;max_tokens&quot;: 50,</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="s">    &quot;stop_sequences&quot;: [&quot;&lt;|im_end|&gt;&quot;]</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="s">}</span><span class="dl">)</span><span class="s">&quot;</span><span class="p">;</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="kt">char</span><span class="w"> </span><span class="n">response</span><span class="p">[</span><span class="mi">4096</span><span class="p">];</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="kt">int</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactus_complete</span><span class="p">(</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="n">model</span><span class="p">,</span><span class="w">            </span><span class="c1">// model handle</span>
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">    </span><span class="n">messages</span><span class="p">,</span><span class="w">         </span><span class="c1">// JSON chat messages</span>
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">    </span><span class="n">response</span><span class="p">,</span><span class="w">         </span><span class="c1">// response buffer</span>
+<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">    </span><span class="k">sizeof</span><span class="p">(</span><span class="n">response</span><span class="p">),</span><span class="w"> </span><span class="c1">// buffer size</span>
+<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">    </span><span class="n">options</span><span class="p">,</span><span class="w">          </span><span class="c1">// generation options</span>
+<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">    </span><span class="k">nullptr</span><span class="p">,</span><span class="w">          </span><span class="c1">// tools JSON</span>
+<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">    </span><span class="k">nullptr</span><span class="p">,</span><span class="w">          </span><span class="c1">// streaming callback</span>
+<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a><span class="w">    </span><span class="k">nullptr</span><span class="w">           </span><span class="c1">// user data</span>
+<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a><span class="p">);</span>
+</code></pre></div>
+Example response from Gemma3-270m
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">    </span><span class="nt">&quot;success&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w">        </span><span class="c1">// generation succeeded</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w">          </span><span class="c1">// error details if failed</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">&quot;cloud_handoff&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="c1">// true if cloud model used</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">&quot;response&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Hi there!&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">&quot;function_calls&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span><span class="w">   </span><span class="c1">// parsed tool calls</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">&quot;confidence&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.8193</span><span class="p">,</span><span class="w">   </span><span class="c1">// model confidence</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">&quot;time_to_first_token_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">45.23</span><span class="p">,</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">&quot;total_time_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">163.67</span><span class="p">,</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">&quot;prefill_tps&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1621.89</span><span class="p">,</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">&quot;decode_tps&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">168.42</span><span class="p">,</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="nt">&quot;ram_usage_mb&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">245.67</span><span class="p">,</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">&quot;prefill_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">28</span><span class="p">,</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">&quot;decode_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">50</span><span class="p">,</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span><span class="nt">&quot;total_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">78</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="p">}</span>
+</code></pre></div></p>
+<h2 id="cactus-graph">Cactus Graph<a class="headerlink" href="#cactus-graph" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="cp">#include cactus.h</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">CactusGraph</span><span class="w"> </span><span class="n">graph</span><span class="p">;</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="k">auto</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">graph</span><span class="p">.</span><span class="n">input</span><span class="p">({</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">},</span><span class="w"> </span><span class="n">Precision</span><span class="o">::</span><span class="n">FP16</span><span class="p">);</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">auto</span><span class="w"> </span><span class="n">b</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">graph</span><span class="p">.</span><span class="n">input</span><span class="p">({</span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">4</span><span class="p">},</span><span class="w"> </span><span class="n">Precision</span><span class="o">::</span><span class="n">INT8</span><span class="p">);</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="k">auto</span><span class="w"> </span><span class="n">x1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">graph</span><span class="p">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">,</span><span class="w"> </span><span class="nb">false</span><span class="p">);</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="k">auto</span><span class="w"> </span><span class="n">x2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">graph</span><span class="p">.</span><span class="n">transpose</span><span class="p">(</span><span class="n">x1</span><span class="p">);</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="k">auto</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">graph</span><span class="p">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">b</span><span class="p">,</span><span class="w"> </span><span class="n">x2</span><span class="p">,</span><span class="w"> </span><span class="nb">true</span><span class="p">);</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="kt">float</span><span class="w"> </span><span class="n">a_data</span><span class="p">[</span><span class="mi">6</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="mf">1.1f</span><span class="p">,</span><span class="w"> </span><span class="mf">2.3f</span><span class="p">,</span><span class="w"> </span><span class="mf">3.4f</span><span class="p">,</span><span class="w"> </span><span class="mf">4.2f</span><span class="p">,</span><span class="w"> </span><span class="mf">5.7f</span><span class="p">,</span><span class="w"> </span><span class="mf">6.8f</span><span class="p">};</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="kt">float</span><span class="w"> </span><span class="n">b_data</span><span class="p">[</span><span class="mi">12</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span><span class="w"> </span><span class="mi">9</span><span class="p">,</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="mi">11</span><span class="p">,</span><span class="w"> </span><span class="mi">12</span><span class="p">};</span>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="n">graph</span><span class="p">.</span><span class="n">set_input</span><span class="p">(</span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">a_data</span><span class="p">,</span><span class="w"> </span><span class="n">Precision</span><span class="o">::</span><span class="n">FP16</span><span class="p">);</span>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="n">graph</span><span class="p">.</span><span class="n">set_input</span><span class="p">(</span><span class="n">b</span><span class="p">,</span><span class="w"> </span><span class="n">b_data</span><span class="p">,</span><span class="w"> </span><span class="n">Precision</span><span class="o">::</span><span class="n">INT8</span><span class="p">);</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="n">graph</span><span class="p">.</span><span class="n">execute</span><span class="p">();</span>
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="kt">void</span><span class="o">*</span><span class="w"> </span><span class="n">output_data</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">graph</span><span class="p">.</span><span class="n">get_output</span><span class="p">(</span><span class="n">result</span><span class="p">);</span>
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>
+<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="n">graph</span><span class="p">.</span><span class="n">hard_reset</span><span class="p">();</span><span class="w"> </span>
+</code></pre></div>
+<h2 id="api-sdk-references">API &amp; SDK References<a class="headerlink" href="#api-sdk-references" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Reference</th>
+<th>Language</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="docs/cactus_engine/">Engine API</a></td>
+<td>C</td>
+<td>Chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, VAD, vector index, cloud handoff</td>
+</tr>
+<tr>
+<td><a href="docs/cactus_graph/">Graph API</a></td>
+<td>C++</td>
+<td>Tensor operations, matrix multiplication, attention, normalization, activation functions</td>
+</tr>
+<tr>
+<td><a href="python/">Python SDK</a></td>
+<td>Python</td>
+<td>Mac, Linux</td>
+</tr>
+<tr>
+<td><a href="apple/">Swift SDK</a></td>
+<td>Swift</td>
+<td>iOS, macOS, tvOS, watchOS, Android</td>
+</tr>
+<tr>
+<td><a href="android/">Kotlin SDK</a></td>
+<td>Kotlin</td>
+<td>Android, iOS (via KMP)</td>
+</tr>
+<tr>
+<td><a href="flutter/">Flutter SDK</a></td>
+<td>Dart</td>
+<td>iOS, macOS, Android</td>
+</tr>
+<tr>
+<td><a href="rust/">Rust SDK</a></td>
+<td>Rust</td>
+<td>Mac, Linux</td>
+</tr>
+<tr>
+<td><a href="https://github.com/cactus-compute/cactus-react-native">React Native</a></td>
+<td>JavaScript</td>
+<td>iOS, Android</td>
+</tr>
+</tbody>
+</table>
+<h2 id="benchmarks-cpu-only-no-gpu">Benchmarks (CPU-only, no GPU)<a class="headerlink" href="#benchmarks-cpu-only-no-gpu" title="Permanent link">&para;</a></h2>
+<ul>
+<li>All weights INT4 quantised</li>
+<li>LFM: 1k-prefill / 100-decode, values are prefill tps / decode tps</li>
+<li>LFM-VL: 256px input, values are latency / decode tps</li>
+<li>Parakeet: 20s audio input, values are latency / decode tps</li>
+<li>Missing latency = no NPU support yet</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Device</th>
+<th>LFM 1.2B</th>
+<th>LFMVL 1.6B</th>
+<th>Parakeet 1.1B</th>
+<th>RAM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mac M4 Pro</td>
+<td>582/100</td>
+<td>0.2s/98</td>
+<td>0.1s/900k+</td>
+<td>76MB</td>
+</tr>
+<tr>
+<td>iPad/Mac M3</td>
+<td>350/60</td>
+<td>0.3s/69</td>
+<td>0.3s/800k+</td>
+<td>70MB</td>
+</tr>
+<tr>
+<td>iPhone 17 Pro</td>
+<td>327/48</td>
+<td>0.3s/48</td>
+<td>0.3s/300k+</td>
+<td>108MB</td>
+</tr>
+<tr>
+<td>iPhone 13 Mini</td>
+<td>148/34</td>
+<td>0.3s/35</td>
+<td>0.7s/90k+</td>
+<td>1GB</td>
+</tr>
+<tr>
+<td>Galaxy S25 Ultra</td>
+<td>255/37</td>
+<td>-/34</td>
+<td>-/250k+</td>
+<td>1.5GB</td>
+</tr>
+<tr>
+<td>Pixel 6a</td>
+<td>70/15</td>
+<td>-/15</td>
+<td>-/17k+</td>
+<td>1GB</td>
+</tr>
+<tr>
+<td>Galaxy A17 5G</td>
+<td>32/10</td>
+<td>-/11</td>
+<td>-/40k+</td>
+<td>727MB</td>
+</tr>
+<tr>
+<td>CMF Phone 2 Pro</td>
+<td>-</td>
+<td>-</td>
+<td>-</td>
+<td>-</td>
+</tr>
+<tr>
+<td>Raspberry Pi 5</td>
+<td>69/11</td>
+<td>13.3s/11</td>
+<td>4.5s/180k+</td>
+<td>869MB</td>
+</tr>
+</tbody>
+</table>
+<h2 id="supported-transcription-model">Supported Transcription Model<a class="headerlink" href="#supported-transcription-model" title="Permanent link">&para;</a></h2>
+<ul>
+<li>STT: 20s audio input on Macbook Air M3 chip</li>
+<li>Benchmark dataset: internal evals with production users</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Params</th>
+<th>End2End ms</th>
+<th>Latency ms</th>
+<th>Decode toks/sec</th>
+<th>NPU</th>
+<th>RTF</th>
+<th>WER</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>UsefulSensors/moonshine-base</td>
+<td>61M</td>
+<td>361.35</td>
+<td>182</td>
+<td>262</td>
+<td>yes</td>
+<td>0.0180</td>
+<td>0.1395</td>
+</tr>
+<tr>
+<td>openai/whisper-tiny</td>
+<td>39M</td>
+<td>232.03</td>
+<td>137.38</td>
+<td>581</td>
+<td>yes</td>
+<td>0.0116</td>
+<td>0.1860</td>
+</tr>
+<tr>
+<td>openai/whisper-base</td>
+<td>74M</td>
+<td>329.37</td>
+<td>178.65</td>
+<td>358</td>
+<td>yes</td>
+<td>0.0164</td>
+<td>0.1628</td>
+</tr>
+<tr>
+<td>openai/whisper-small</td>
+<td>244M</td>
+<td>856.79</td>
+<td>332.63</td>
+<td>108</td>
+<td>yes</td>
+<td>0.0428</td>
+<td>0.0930</td>
+</tr>
+<tr>
+<td>openai/whisper-medium</td>
+<td>769M</td>
+<td>2085.87</td>
+<td>923.33</td>
+<td>49</td>
+<td>yes</td>
+<td>0.1041</td>
+<td>0.0930</td>
+</tr>
+<tr>
+<td>nvidia/parakeet-ctc-0.6b</td>
+<td>600M</td>
+<td>201.77</td>
+<td>201.44</td>
+<td>5214285</td>
+<td>yes</td>
+<td>0.0101</td>
+<td>0.0930</td>
+</tr>
+<tr>
+<td>nvidia/parakeet-tdt-0.6b-v3</td>
+<td>600M</td>
+<td>718.91</td>
+<td>718.82</td>
+<td>3583333</td>
+<td>no</td>
+<td>0.0359</td>
+<td>0.0465</td>
+</tr>
+<tr>
+<td>nvidia/parakeet-ctc-1.1b</td>
+<td>1.1B</td>
+<td>279.03</td>
+<td>278.92</td>
+<td>4562500</td>
+<td>yes</td>
+<td>0.0139</td>
+<td>0.1628</td>
+</tr>
+<tr>
+<td>snakers4/silero-vad</td>
+<td>-</td>
+<td>-</td>
+<td>-</td>
+<td>-</td>
+<td>-</td>
+<td>-</td>
+<td>-</td>
+</tr>
+</tbody>
+</table>
+<h2 id="supported-llms">Supported LLMs<a class="headerlink" href="#supported-llms" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Gemma weights are often <strong>gated</strong> on HuggingFace, needs tokens </li>
+<li>Run <code>hf auth login</code> and input your huggingface token</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Features</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>google/gemma-3-270m-it</td>
+<td>completion</td>
+</tr>
+<tr>
+<td>google/functiongemma-270m-it</td>
+<td>tools</td>
+</tr>
+<tr>
+<td>google/gemma-3-1b-it</td>
+<td>completion, gated</td>
+</tr>
+<tr>
+<td>google/gemma-3n-E2B-it</td>
+<td>completion, tools</td>
+</tr>
+<tr>
+<td>google/gemma-3n-E4B-it</td>
+<td>completion, tools</td>
+</tr>
+<tr>
+<td>Qwen/Qwen3-0.6B</td>
+<td>completion, tools, embed</td>
+</tr>
+<tr>
+<td>Qwen/Qwen3-Embedding-0.6B</td>
+<td>embed</td>
+</tr>
+<tr>
+<td>Qwen/Qwen3.5-0.8B</td>
+<td>vision, completion, tools, embed</td>
+</tr>
+<tr>
+<td>Qwen/Qwen3-1.7B</td>
+<td>completion, tools, embed</td>
+</tr>
+<tr>
+<td>Qwen/Qwen3.5-2B</td>
+<td>vision, completion, tools, embed</td>
+</tr>
+<tr>
+<td>LiquidAI/LFM2-350M</td>
+<td>completion, tools, embed</td>
+</tr>
+<tr>
+<td>LiquidAI/LFM2-700M</td>
+<td>completion, tools, embed</td>
+</tr>
+<tr>
+<td>LiquidAI/LFM2-8B-A1B</td>
+<td>completion, tools, embed</td>
+</tr>
+<tr>
+<td>LiquidAI/LFM2.5-1.2B-Thinking</td>
+<td>completion, tools, embed</td>
+</tr>
+<tr>
+<td>LiquidAI/LFM2.5-1.2B-Instruct</td>
+<td>completion, tools, embed</td>
+</tr>
+<tr>
+<td>LiquidAI/LFM2-2.6B</td>
+<td>completion, tools, embed</td>
+</tr>
+<tr>
+<td>LiquidAI/LFM2-VL-450M</td>
+<td>vision, txt &amp; img embed, Apple NPU</td>
+</tr>
+<tr>
+<td>LiquidAI/LFM2.5-VL-1.6B</td>
+<td>vision, txt &amp; img embed, Apple NPU</td>
+</tr>
+<tr>
+<td>nomic-ai/nomic-embed-text-v2-moe</td>
+<td>embed</td>
+</tr>
+</tbody>
+</table>
+<h2 id="roadmap">Roadmap<a class="headerlink" href="#roadmap" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Status</th>
+<th>Milestone</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sep 2025</td>
+<td>Done</td>
+<td>Released v1</td>
+</tr>
+<tr>
+<td>Oct 2025</td>
+<td>Done</td>
+<td>Chunked prefill, KVCache Quant (2x prefill)</td>
+</tr>
+<tr>
+<td>Nov 2025</td>
+<td>Done</td>
+<td>Cactus Attention (10 &amp; 1k prefill = same decode)</td>
+</tr>
+<tr>
+<td>Dec 2025</td>
+<td>Done</td>
+<td>Team grows to +6 Research Engineers</td>
+</tr>
+<tr>
+<td>Jan 2026</td>
+<td>Done</td>
+<td>Apple NPU/RAM, 5-11x faster iOS/Mac</td>
+</tr>
+<tr>
+<td>Feb 2026</td>
+<td>Done</td>
+<td>Hybrid inference, INT4, lossless Quant (1.5x)</td>
+</tr>
+<tr>
+<td>Mar 2026</td>
+<td>Coming</td>
+<td>Qualcomm/Google NPUs, 5-11x faster Android</td>
+</tr>
+<tr>
+<td>Apr 2026</td>
+<td>Coming</td>
+<td>Mediatek/Exynos NPUs, Cactus@ICLR</td>
+</tr>
+<tr>
+<td>May 2026</td>
+<td>Coming</td>
+<td>Kernel→C++, Graph/Engine→Rust, Mac GPU &amp; VR</td>
+</tr>
+<tr>
+<td>Jun 2026</td>
+<td>Coming</td>
+<td>Torch/JAX model transpilers</td>
+</tr>
+<tr>
+<td>Jul 2026</td>
+<td>Coming</td>
+<td>Wearables optimisations, Cactus@ICML</td>
+</tr>
+<tr>
+<td>Aug 2026</td>
+<td>Coming</td>
+<td>Orchestration</td>
+</tr>
+<tr>
+<td>Sep 2026</td>
+<td>Coming</td>
+<td>Full Cactus paper, chip manufacturer partners</td>
+</tr>
+</tbody>
+</table>
+<h2 id="using-this-repo">Using this repo<a class="headerlink" href="#using-this-repo" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>┌──────────────────────────────────────────────────────────────────────────────┐
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>│                                                                              │
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>│ Step 0: if on Linux (Ubuntu/Debian)                                          │
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>│ sudo apt-get install python3 python3-venv python3-pip cmake                  │
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>│   build-essential libcurl4-openssl-dev                                       │
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>│                                                                              │
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>│ Step 1: clone and setup                                                      │
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>│ git clone https://github.com/cactus-compute/cactus &amp;&amp; cd cactus              │
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>│ source ./setup                                                               │
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>│                                                                              │
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>│ Step 2: use the commands                                                     │
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>│──────────────────────────────────────────────────────────────────────────────│
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>│                                                                              │
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>│  cactus auth                         manage Cloud API key                    │
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>│    --status                          show key status                         │
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>│    --clear                           remove saved key                        │
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>│                                                                              │
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>│  cactus run &lt;model&gt;                  opens playground (auto downloads)       │
+<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>│    --precision INT4|INT8|FP16        quantization (default: INT4)            │
+<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>│    --token &lt;token&gt;                   HF token (gated models)                 │
+<a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>│    --reconvert                       force reconversion from source          │
+<a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a>│                                                                              │
+<a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a>│  cactus transcribe [model]           live mic transcription (parakeet-1.1b)  │
+<a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a>│    --file &lt;audio.wav&gt;                transcribe file instead of mic          │
+<a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a>│    --precision INT4|INT8|FP16        quantization (default: INT4)            │
+<a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a>│    --token &lt;token&gt;                   HF token (gated models)                 │
+<a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a>│    --reconvert                       force reconversion from source          │
+<a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a>│                                                                              │
+<a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>│  cactus download &lt;model&gt;             downloads model to ./weights            │
+<a id="__codelineno-4-30" name="__codelineno-4-30" href="#__codelineno-4-30"></a>│    --precision INT4|INT8|FP16        quantization (default: INT4)            │
+<a id="__codelineno-4-31" name="__codelineno-4-31" href="#__codelineno-4-31"></a>│    --token &lt;token&gt;                   HuggingFace API token                   │
+<a id="__codelineno-4-32" name="__codelineno-4-32" href="#__codelineno-4-32"></a>│    --reconvert                       force reconversion from source          │
+<a id="__codelineno-4-33" name="__codelineno-4-33" href="#__codelineno-4-33"></a>│                                                                              │
+<a id="__codelineno-4-34" name="__codelineno-4-34" href="#__codelineno-4-34"></a>│  cactus convert &lt;model&gt; [dir]        convert model, supports LoRA merge      │
+<a id="__codelineno-4-35" name="__codelineno-4-35" href="#__codelineno-4-35"></a>│    --precision INT4|INT8|FP16        quantization (default: INT4)            │
+<a id="__codelineno-4-36" name="__codelineno-4-36" href="#__codelineno-4-36"></a>│    --lora &lt;path&gt;                     LoRA adapter to merge                   │
+<a id="__codelineno-4-37" name="__codelineno-4-37" href="#__codelineno-4-37"></a>│    --token &lt;token&gt;                   HuggingFace API token                   │
+<a id="__codelineno-4-38" name="__codelineno-4-38" href="#__codelineno-4-38"></a>│                                                                              │
+<a id="__codelineno-4-39" name="__codelineno-4-39" href="#__codelineno-4-39"></a>│  cactus build                        build for ARM → build/libcactus.a       │
+<a id="__codelineno-4-40" name="__codelineno-4-40" href="#__codelineno-4-40"></a>│    --apple                           Apple (iOS/macOS)                       │
+<a id="__codelineno-4-41" name="__codelineno-4-41" href="#__codelineno-4-41"></a>│    --android                         Android                                 │
+<a id="__codelineno-4-42" name="__codelineno-4-42" href="#__codelineno-4-42"></a>│    --flutter                         Flutter (all platforms)                 │
+<a id="__codelineno-4-43" name="__codelineno-4-43" href="#__codelineno-4-43"></a>│    --python                          shared lib for Python FFI               │
+<a id="__codelineno-4-44" name="__codelineno-4-44" href="#__codelineno-4-44"></a>│                                                                              │
+<a id="__codelineno-4-45" name="__codelineno-4-45" href="#__codelineno-4-45"></a>│  cactus test                         run unit tests and benchmarks           │
+<a id="__codelineno-4-46" name="__codelineno-4-46" href="#__codelineno-4-46"></a>│    --model &lt;model&gt;                   default: LFM2-VL-450M                   │
+<a id="__codelineno-4-47" name="__codelineno-4-47" href="#__codelineno-4-47"></a>│    --transcribe_model &lt;model&gt;        default: moonshine-base                 │
+<a id="__codelineno-4-48" name="__codelineno-4-48" href="#__codelineno-4-48"></a>│    --benchmark                       use larger models                       │
+<a id="__codelineno-4-49" name="__codelineno-4-49" href="#__codelineno-4-49"></a>│    --precision INT4|INT8|FP16        regenerate weights with precision       │
+<a id="__codelineno-4-50" name="__codelineno-4-50" href="#__codelineno-4-50"></a>│    --reconvert                       force reconversion from source          │
+<a id="__codelineno-4-51" name="__codelineno-4-51" href="#__codelineno-4-51"></a>│    --no-rebuild                      skip building library                   │
+<a id="__codelineno-4-52" name="__codelineno-4-52" href="#__codelineno-4-52"></a>│    --llm / --stt / --performance     run specific test suite                 │
+<a id="__codelineno-4-53" name="__codelineno-4-53" href="#__codelineno-4-53"></a>│    --ios                             run on connected iPhone                 │
+<a id="__codelineno-4-54" name="__codelineno-4-54" href="#__codelineno-4-54"></a>│    --android                         run on connected Android                │
+<a id="__codelineno-4-55" name="__codelineno-4-55" href="#__codelineno-4-55"></a>│                                                                              │
+<a id="__codelineno-4-56" name="__codelineno-4-56" href="#__codelineno-4-56"></a>│  cactus clean                        remove all build artifacts              │
+<a id="__codelineno-4-57" name="__codelineno-4-57" href="#__codelineno-4-57"></a>│  cactus --help                       show all commands and flags             │
+<a id="__codelineno-4-58" name="__codelineno-4-58" href="#__codelineno-4-58"></a>│                                                                              │
+<a id="__codelineno-4-59" name="__codelineno-4-59" href="#__codelineno-4-59"></a>└──────────────────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+<h2 id="maintaining-organisations">Maintaining Organisations<a class="headerlink" href="#maintaining-organisations" title="Permanent link">&para;</a></h2>
+<ol>
+<li><a href="https://cactuscompute.com/">Cactus Compute, Inc. (YC S25)</a></li>
+<li><a href="https://bruinai.org/">UCLA's BruinAI</a></li>
+<li><a href="https://char.com/">Char (YC S25)</a></li>
+<li><a href="https://www.yale-ai.org/team">Yale's AI Society</a></li>
+<li><a href="https://www.nusaisociety.org/">National Unoversity of Singapore's AI Society</a></li>
+<li><a href="https://aiclub.ics.uci.edu/">UC Irvine's AI@UCI</a></li>
+<li><a href="https://www.imperialcollegeunion.org/csp/1391">Imperial College's AI Society</a></li>
+<li><a href="https://ai-at-penn-main-105.vercel.app/">University of Pennsylvania's AI@Penn</a></li>
+<li><a href="https://msail.github.io/">University of Michigan Ann-Arbor MSAIL</a></li>
+<li><a href="https://www.cuaiclub.org/">University of Colorado Boulder's AI Club</a></li>
+</ol>
+<h2 id="citation">Citation<a class="headerlink" href="#citation" title="Permanent link">&para;</a></h2>
+<p>If you use Cactus in your research, please cite it as follows:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nc">@software</span><span class="p">{</span><span class="nl">cactus</span><span class="p">,</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="na">title</span><span class="w">        </span><span class="p">=</span><span class="w"> </span><span class="s">{Cactus: AI Inference Engine for Phones &amp; Wearables}</span><span class="p">,</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="na">author</span><span class="w">       </span><span class="p">=</span><span class="w"> </span><span class="s">{Ndubuaku, Henry and Cactus Team}</span><span class="p">,</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span><span class="na">url</span><span class="w">          </span><span class="p">=</span><span class="w"> </span><span class="s">{https://github.com/cactus-compute/cactus}</span><span class="p">,</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span><span class="na">year</span><span class="w">         </span><span class="p">=</span><span class="w"> </span><span class="s">{2025}</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">}</span>
+</code></pre></div>
+<p><strong>N/B:</strong> Scroll all the way up and click the shields link for resources!</p>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+        
+          
+          <a href="docs/compatibility/" class="md-footer__link md-footer__link--next" aria-label="Next: Runtime Compatibility">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Runtime Compatibility
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/cactus-compute/cactus" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://www.reddit.com/r/cactuscompute/" target="_blank" rel="noopener" title="www.reddit.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M0 256C0 114.6 114.6 0 256 0s256 114.6 256 256-114.6 256-256 256H37.1c-13.7 0-20.5-16.5-10.9-26.2L75 437C28.7 390.7 0 326.7 0 256m349.6-102.4c23.6 0 42.7-19.1 42.7-42.7s-19.1-42.7-42.7-42.7c-20.6 0-37.8 14.6-41.8 34-34.5 3.7-61.4 33-61.4 68.4v.2c-37.5 1.6-71.8 12.3-99 29.1-10.1-7.8-22.8-12.5-36.5-12.5-33 0-59.8 26.8-59.8 59.8 0 24 14.1 44.6 34.4 54.1 2 69.4 77.6 125.2 170.6 125.2s168.7-55.9 170.6-125.3c20.2-9.6 34.1-30.2 34.1-54 0-33-26.8-59.8-59.8-59.8-13.7 0-26.3 4.6-36.4 12.4-27.4-17-62.1-27.7-100-29.1v-.2c0-25.4 18.9-46.5 43.4-49.9 4.4 18.8 21.3 32.8 41.5 32.8zm-172.5 93.3c16.7 0 29.5 17.6 28.5 39.3s-13.5 29.6-30.3 29.6-31.4-8.8-30.4-30.5S160.3 247 177 247zm190.1 38.3c1 21.7-13.7 30.5-30.4 30.5s-29.3-7.9-30.3-29.6 11.8-39.3 28.5-39.3 31.2 16.6 32.1 38.3zm-48.1 56.7c-10.3 24.6-34.6 41.9-63 41.9s-52.7-17.3-63-41.9c-1.2-2.9.8-6.2 3.9-6.5 18.4-1.9 38.3-2.9 59.1-2.9s40.7 1 59.1 2.9c3.1.3 5.1 3.6 3.9 6.5"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
