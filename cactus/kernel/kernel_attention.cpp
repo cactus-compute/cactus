@@ -383,8 +383,7 @@ void cactus_attention_f16(
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }
     
-    assert(head_dim % 8 == 0 && "head_dim must be divisible by 8");
-    if (mask == nullptr) {
+    if (mask == nullptr && head_dim % 8 == 0) {
         cactus_attention_f16_fast(
             queries, keys, values, output,
             batch_size, seq_len, kv_seq_len,
