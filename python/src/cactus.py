@@ -184,6 +184,14 @@ _lib.cactus_telemetry_flush.restype = None
 _lib.cactus_telemetry_shutdown.argtypes = []
 _lib.cactus_telemetry_shutdown.restype = None
 
+LogCallback = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p)
+
+_lib.cactus_log_set_level.argtypes = [ctypes.c_int]
+_lib.cactus_log_set_level.restype = None
+
+_lib.cactus_log_set_callback.argtypes = [LogCallback, ctypes.c_void_p]
+_lib.cactus_log_set_callback.restype = None
+
 
 def _enc(s):
     if s is None:
@@ -259,6 +267,24 @@ def cactus_complete(model, messages_json, options_json, tools_json, callback):
     )
     if rc < 0:
         raise RuntimeError(_err("Completion failed"))
+    return buf.value.decode("utf-8", errors="ignore")
+
+
+def cactus_detect_language(model, audio_path, options_json, pcm_data):
+    """Detects the spoken language in audio. Returns JSON string."""
+    buf = ctypes.create_string_buffer(65536)
+    if pcm_data is not None:
+        pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_size = len(pcm_data)
+    else:
+        pcm_ptr = None
+        pcm_size = 0
+    rc = _lib.cactus_detect_language(
+        model, _enc(audio_path), buf, len(buf), _enc(options_json), pcm_ptr, pcm_size
+    )
+    if rc < 0:
+        raise RuntimeError(_err("Detect language failed"))
     return buf.value.decode("utf-8", errors="ignore")
 
 
@@ -530,3 +556,30 @@ def cactus_index_compact(index):
 def cactus_index_destroy(index):
     """Frees all index resources."""
     _lib.cactus_index_destroy(index)
+
+
+def cactus_log_set_level(level):
+    """Sets the log level. 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR, 4=NONE."""
+    _lib.cactus_log_set_level(level)
+
+
+_log_callback_ref = None
+
+
+def cactus_log_set_callback(callback):
+    """Sets a log callback. Pass None to clear. Callback signature: (level: int, component: str, message: str)."""
+    global _log_callback_ref
+    if callback is None:
+        _log_callback_ref = None
+        _lib.cactus_log_set_callback(LogCallback(), None)
+        return
+
+    def _bridge(level, component_bytes, message_bytes, _):
+        callback(
+            level,
+            component_bytes.decode("utf-8", errors="ignore") if component_bytes else "",
+            message_bytes.decode("utf-8", errors="ignore") if message_bytes else "",
+        )
+
+    _log_callback_ref = LogCallback(_bridge)
+    _lib.cactus_log_set_callback(_log_callback_ref, None)

@@ -8,6 +8,8 @@ keywords: ["Rust SDK", "FFI bindings", "bindgen", "on-device AI", "Cactus infere
 
 Raw FFI bindings to the Cactus C API. Auto-generated via `bindgen`.
 
+> **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
+
 ## Installation
 
 Add to your `Cargo.toml`:
@@ -34,9 +36,12 @@ For usage examples, see:
 
 ## Testing
 
+> **Model weights** must be in Cactus format. Pre-converted weights for all supported models are available at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
+
 ```bash
 export CACTUS_MODEL_PATH=/path/to/model
 export CACTUS_STT_MODEL_PATH=/path/to/whisper-model
+export CACTUS_STT_AUDIO_PATH=/path/to/audio.wav
 cargo test --manifest-path rust/Cargo.toml -- --nocapture
 ```
 

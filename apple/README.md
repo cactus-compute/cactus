@@ -1,12 +1,14 @@
 ---
 title: "Cactus Swift Multiplatform SDK"
-description: "Swift API for running AI models on-device on iOS, macOS, tvOS, watchOS, and Android. Supports transcription, embeddings, RAG, and tool calling."
+description: "Swift API for running AI models on-device on iOS, macOS, and Android. Supports transcription, embeddings, RAG, and tool calling."
 keywords: ["Swift SDK", "iOS", "macOS", "XCFramework", "on-device AI", "Apple Silicon", "NPU"]
 ---
 
 # Cactus for Swift Multiplatform
 
 Run AI models on-device with a simple Swift API on iOS, macOS, and Android.
+
+> **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
 
 ## Building
 
@@ -79,6 +81,8 @@ swift build --swift-sdk aarch64-unknown-linux-android28 \
 3. Bundle `libcactus.so` with your APK in `jniLibs/arm64-v8a/`
 
 ## Usage
+
+> **Model weights** must be in Cactus format. Pre-converted weights for all supported models are available at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
 
 Handles are typed as `CactusModelT`, `CactusIndexT`, and `CactusStreamTranscribeT` (all `UnsafeMutableRawPointer` aliases).
 
@@ -239,6 +243,12 @@ func cactusTokenize(_ model: CactusModelT, _ text: String) throws -> [UInt32]
 func cactusScoreWindow(_ model: CactusModelT, _ tokens: [UInt32], _ start: Int, _ end: Int, _ context: Int) throws -> String
 ```
 
+### Detect Language
+
+```swift
+func cactusDetectLanguage(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?) throws -> String
+```
+
 ### VAD / RAG
 
 ```swift
@@ -258,10 +268,17 @@ func cactusIndexQuery(_ index: CactusIndexT, _ embedding: [Float], _ optionsJson
 func cactusIndexCompact(_ index: CactusIndexT) throws
 ```
 
+### Logging
+
+```swift
+func cactusLogSetLevel(_ level: Int32)  // 0=DEBUG 1=INFO 2=WARN 3=ERROR 4=NONE
+func cactusLogSetCallback(_ callback: ((Int32, String, String) -> Void)?)
+```
+
 ### Telemetry
 
 ```swift
-func cactusSetTelemetryEnvironment(_ cacheDir: String)
+func cactusSetTelemetryEnvironment(_ path: String)
 func cactusSetAppId(_ appId: String)
 func cactusTelemetryFlush()
 func cactusTelemetryShutdown()
@@ -270,7 +287,7 @@ func cactusTelemetryShutdown()
 ## Requirements
 
 **Apple Platforms:**
-- iOS 14.0+ / macOS 13.0+ / tvOS 14.0+ / watchOS 7.0+
+- iOS 13.0+ / macOS 13.0+
 - Xcode 14.0+
 - Swift 5.7+
 

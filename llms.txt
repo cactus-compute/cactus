@@ -4,7 +4,7 @@
 
 Cactus has three layers: Cactus Kernels (ARM SIMD kernels for Apple, Snapdragon, Google Tensor, Exynos, MediaTek, Raspberry Pi), Cactus Graph (zero-copy computation graph, like PyTorch for mobile), and Cactus Engine (high-level inference API with OpenAI-compatible chat completion, tool calling, auto-RAG, vision, transcription, embeddings, and cloud handoff).
 
-Supported models include Gemma 3, Qwen 3, LiquidAI LFM2/LFM2.5, Whisper, Moonshine, Parakeet, Nomic Embed, and Silero VAD. Models run at INT4/INT8 precision with Apple NPU acceleration on supported hardware.
+Supported models include Gemma 3, Qwen 3, LiquidAI LFM2/LFM2.5, Whisper, Moonshine, Parakeet, Nomic Embed, and Silero VAD. Models run at INT4/INT8 precision with Apple NPU acceleration on supported hardware. Pre-converted weights at https://huggingface.co/Cactus-Compute.
 
 ## Docs
 

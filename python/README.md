@@ -8,6 +8,8 @@ keywords: ["Python SDK", "on-device AI", "LLM inference", "Python FFI", "embeddi
 
 Python bindings for Cactus Engine via FFI. Auto-installed when you run `source ./setup`.
 
+> **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
+
 ## Getting Started
 
 ```bash
@@ -17,7 +19,7 @@ source ./setup
 # Build shared library for Python
 cactus build --python
 
-# Download models
+# Download models (weights must be in Cactus format — pre-converted at huggingface.co/Cactus-Compute)
 cactus download LiquidAI/LFM2-VL-450M
 cactus download openai/whisper-small
 
@@ -131,6 +133,17 @@ tokens     = cactus_tokenize(handle: int, text: str) -> list[int]
 result_json = cactus_score_window(handle: int, tokens: list[int], start: int, end: int, context: int) -> str
 ```
 
+### Detect Language
+
+```python
+result_json = cactus_detect_language(
+    handle: int,
+    audio_path: str | None,
+    options_json: str | None,
+    pcm_data: bytes | None
+) -> str
+```
+
 ### VAD
 
 ```python
@@ -161,10 +174,17 @@ cactus_index_compact(index: int)
 cactus_index_destroy(index: int)
 ```
 
+### Logging
+
+```python
+cactus_log_set_level(level: int)  # 0=DEBUG 1=INFO 2=WARN 3=ERROR 4=NONE
+cactus_log_set_callback(callback: Callable[[int, str, str], None] | None)
+```
+
 ### Telemetry
 
 ```python
-cactus_set_telemetry_environment(cache_dir: str)
+cactus_set_telemetry_environment(cache_location: str)
 cactus_set_app_id(app_id: str)
 cactus_telemetry_flush()
 cactus_telemetry_shutdown()

@@ -132,6 +132,31 @@ public func cactusScoreWindow(_ model: CactusModelT, _ tokens: [UInt32], _ start
     return String(cString: buffer)
 }
 
+public func cactusDetectLanguage(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?) throws -> String {
+    var buffer = [CChar](repeating: 0, count: _defaultBufferSize)
+
+    let result: Int32
+    if let pcmData = pcmData {
+        result = pcmData.withUnsafeBytes { pcmPtr in
+            buffer.withUnsafeMutableBufferPointer { bufferPtr in
+                cactus_detect_language(
+                    model, audioPath,
+                    bufferPtr.baseAddress, bufferPtr.count,
+                    optionsJson,
+                    pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), pcmData.count
+                )
+            }
+        }
+    } else {
+        result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
+            cactus_detect_language(model, audioPath, bufferPtr.baseAddress, bufferPtr.count, optionsJson, nil, 0)
+        }
+    }
+
+    if result < 0 { throw _err("Detect language failed") }
+    return String(cString: buffer)
+}
+
 public func cactusTranscribe(_ model: CactusModelT, _ audioPath: String?, _ prompt: String?, _ optionsJson: String?, _ onToken: ((String, UInt32) -> Void)?, _ pcmData: Data?) throws -> String {
     var buffer = [CChar](repeating: 0, count: _defaultBufferSize)
     let callbackContext = onToken.map { TokenCallbackContext(callback: $0) }
@@ -511,4 +536,26 @@ public func cactusIndexQuery(_ index: CactusIndexT, _ embedding: [Float], _ opti
 public func cactusIndexCompact(_ index: CactusIndexT) throws {
     let result = cactus_index_compact(index)
     if result < 0 { throw _err("Failed to compact index") }
+}
+
+// MARK: - Logging
+
+public func cactusLogSetLevel(_ level: Int32) {
+    cactus_log_set_level(level)
+}
+
+private var _logCallbackContext: ((Int32, String, String) -> Void)?
+
+private func logCallbackBridge(level: Int32, component: UnsafePointer<CChar>?, message: UnsafePointer<CChar>?, userData: UnsafeMutableRawPointer?) {
+    guard let component = component, let message = message else { return }
+    _logCallbackContext?(level, String(cString: component), String(cString: message))
+}
+
+public func cactusLogSetCallback(_ callback: ((Int32, String, String) -> Void)?) {
+    _logCallbackContext = callback
+    if callback != nil {
+        cactus_log_set_callback(logCallbackBridge, nil)
+    } else {
+        cactus_log_set_callback(nil, nil)
+    }
 }

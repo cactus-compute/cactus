@@ -4,6 +4,10 @@ fun interface CactusTokenCallback {
     fun onToken(token: String, tokenId: Int)
 }
 
+fun interface CactusLogCallback {
+    fun onLog(level: Int, component: String, message: String)
+}
+
 private object CactusJNI {
     init {
         System.loadLibrary("cactus")
@@ -39,6 +43,9 @@ private object CactusJNI {
     @JvmStatic external fun nativeIndexQuery(handle: Long, embedding: FloatArray, topK: Long, optionsJson: String?): String
     @JvmStatic external fun nativeIndexCompact(handle: Long): Int
     @JvmStatic external fun nativeIndexDestroy(handle: Long)
+    @JvmStatic external fun nativeDetectLanguage(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
+    @JvmStatic external fun nativeLogSetLevel(level: Int)
+    @JvmStatic external fun nativeLogSetCallback(callback: CactusLogCallback?)
 }
 
 fun cactusInit(modelPath: String, corpusDir: String?, cacheIndex: Boolean): Long {
@@ -98,3 +105,9 @@ fun cactusIndexCompact(index: Long): Int =
     CactusJNI.nativeIndexCompact(index)
 fun cactusIndexDestroy(index: Long) =
     CactusJNI.nativeIndexDestroy(index)
+fun cactusDetectLanguage(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String =
+    CactusJNI.nativeDetectLanguage(model, audioPath, optionsJson, pcmData)
+fun cactusLogSetLevel(level: Int) =
+    CactusJNI.nativeLogSetLevel(level)
+fun cactusLogSetCallback(callback: CactusLogCallback?) =
+    CactusJNI.nativeLogSetCallback(callback)
