@@ -75,6 +75,7 @@ struct Config {
     bool use_pixel_shuffle = false;
     uint32_t pixel_shuffle_factor = 1;
     bool use_image_tokens = false;
+    uint32_t image_token_id = 0;
     bool use_layout_tags = false;
     uint32_t image_seq_len = 64;
 
@@ -153,7 +154,42 @@ struct Config {
     uint32_t sliding_window = 512;
     float rope_local_base_freq = 10000.0f;
     float final_logit_softcapping = 0.0f;
+    float global_partial_rotary_factor = 1.0f;
     std::vector<float> activation_sparsity_ppf;
+
+    uint32_t vision_head_dim = 64;
+    uint32_t vision_kv_heads = 12;
+    uint32_t vision_intermediate_size = 3072;
+    uint32_t vision_position_embedding_size = 10240;
+    uint32_t vision_pooling_kernel_size = 3;
+    uint32_t vision_default_output_length = 280;
+    float vision_rope_theta = 100.0f;
+
+    uint32_t audio_hidden_dim = 0;
+    uint32_t audio_num_layers = 0;
+    uint32_t audio_num_heads = 0;
+    uint32_t audio_head_dim = 0;
+    uint32_t audio_input_feat_size = 128;
+    uint32_t audio_conf_conv_kernel_size = 5;
+    uint32_t audio_chunk_size = 12;
+    uint32_t audio_context_left = 13;
+    uint32_t audio_context_right = 0;
+    float audio_logit_cap = 50.0f;
+    float audio_residual_weight = 0.5f;
+    uint32_t audio_output_proj_dims = 0;
+    uint32_t audio_vocab_size = 128;
+    uint32_t audio_vocab_offset = 0;
+    uint32_t audio_soft_tokens = 188;
+    uint32_t audio_sscp_conv0_channels = 128;
+    uint32_t audio_sscp_conv1_channels = 32;
+    float audio_rms_norm_eps = 1e-6f;
+    uint32_t audio_token_id = 0;
+    uint32_t channel_open_token_id = 100;
+    uint32_t channel_close_token_id = 101;
+
+    static bool is_gemma_family(ModelType t) {
+        return t == ModelType::GEMMA || t == ModelType::GEMMA3N;
+    }
 
     bool from_json(const std::string& json_path);
     std::string to_json() const;
@@ -215,6 +251,11 @@ protected:
     uint32_t image_token_id_ = 396;
     uint32_t fake_token_id_ = 49189;
     uint32_t global_img_token_id_ = 49152;
+
+    uint32_t vision_patch_size_ = 16;
+    uint32_t vision_pooling_kernel_size_ = 3;
+    uint32_t vision_default_output_length_ = 280;
+    uint32_t vision_image_size_ = 768;
 
     void detect_model_type(const std::string& config_path);
     std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = true) const;
@@ -478,9 +519,14 @@ private:
     Config::ModelType model_type_ = Config::ModelType::QWEN;
     Tokenizer* tokenizer_ = nullptr;
 
+    bool is_gemma_family() const { return Config::is_gemma_family(model_type_); }
+
     std::vector<std::string> function_names_;
     std::string generated_text_;
-    int brace_depth_ = 0;  
+    int brace_depth_ = 0;
+
+    std::string call_start_tag_;
+    std::string call_end_tag_;
 
     std::unordered_set<uint32_t> qwen_tool_call_start_tokens_; 
     std::unordered_set<uint32_t> qwen_tool_call_end_tokens_;   
@@ -570,7 +616,7 @@ public:
     bool has_npu_prefill() const;
     size_t get_prefill_chunk_size() const;
 
-    void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
+    virtual void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     virtual void compact_kv_cache() {}
 
     void set_tool_constraints(const std::vector<std::string>& function_names);
@@ -594,6 +640,8 @@ public:
 protected:
     size_t sample_token(CactusGraph* gb, size_t logits_node_id, float temperature, float top_p, size_t top_k,
                         const std::unordered_map<uint32_t, float>* extra_bias = nullptr) const;
+
+    static void compute_entropy(CactusGraph* gb, size_t logits_node_id, float* out_entropy);
 
     virtual size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) = 0;
     
@@ -751,13 +799,15 @@ public:
         bool remove_dc_offset = false;
         float preemphasis = 0.0f;
         bool hann_periodic = true;
+        size_t fft_override = 0;
     };
 
     AudioProcessor();
     ~AudioProcessor();
 
     void init_mel_filters(size_t num_frequency_bins, size_t num_mel_filters,
-                          float min_freq, float max_freq, size_t sampling_rate);
+                          float min_freq, float max_freq, size_t sampling_rate,
+                          const char* norm = "slaney", const char* mel_scale = "slaney");
 
     std::vector<float> compute_spectrogram(
         const std::vector<float>& waveform,

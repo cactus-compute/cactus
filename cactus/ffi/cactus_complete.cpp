@@ -41,6 +41,23 @@ void inject_rag_context(CactusModelHandle* handle, std::vector<ChatMessage>& mes
     }
 }
 
+void strip_thinking_from_cache(CactusModelHandle* handle,
+                               const std::vector<uint32_t>& generated_tokens,
+                               size_t prompt_len) {
+    const auto& cfg = handle->model->get_config();
+    uint32_t open_id = cfg.channel_open_token_id;
+    uint32_t close_id = cfg.channel_close_token_id;
+    auto ranges = find_channel_token_ranges(generated_tokens, prompt_len,
+                                            open_id, close_id);
+    if (ranges.empty()) return;
+
+    handle->model->remove_thinking_tokens(ranges);
+    for (auto it = ranges.rbegin(); it != ranges.rend(); ++it) {
+        auto start = handle->processed_tokens.begin() + it->first;
+        handle->processed_tokens.erase(start, start + it->second);
+    }
+}
+
 void setup_tool_constraints(CactusModelHandle* handle, const std::vector<ToolFunction>& tools,
                            bool force_tools, float& temperature) {
     if (!force_tools || tools.empty()) return;
@@ -235,7 +252,7 @@ int cactus_complete(
 
         Config::ModelType model_type = handle->model->get_config().model_type;
         std::string formatted_tools;
-        if (model_type == Config::ModelType::GEMMA || model_type == Config::ModelType::GEMMA3N) {
+        if (Config::is_gemma_family(model_type)) {
             formatted_tools = gemma::format_tools(tools);
         } else {
             formatted_tools = serialize_tools_json(tools);

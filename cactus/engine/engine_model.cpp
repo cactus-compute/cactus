@@ -257,47 +257,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
 
     gb->execute(profile_file);
 
-    if (out_entropy) {
-        const auto& logits_buf = gb->get_output_buffer(logits_node_id);
-        void* logits_ptr = gb->get_output(logits_node_id);
-        size_t vocab_size = logits_buf.shape.back();
-        size_t seq_len = 1;
-        if (logits_buf.shape.size() >= 2) {
-            seq_len = logits_buf.shape[logits_buf.shape.size() - 2];
-        }
-        size_t row_offset = (seq_len > 0 ? (seq_len - 1) * vocab_size : 0);
-
-        std::vector<float> logits(vocab_size);
-        if (logits_buf.precision == Precision::FP32) {
-            float* src = static_cast<float*>(logits_ptr) + row_offset;
-            std::copy(src, src + vocab_size, logits.begin());
-        } else if (logits_buf.precision == Precision::FP16) {
-            __fp16* src = static_cast<__fp16*>(logits_ptr) + row_offset;
-            Quantization::fp16_to_fp32(src, logits.data(), vocab_size);
-        } else {
-            int8_t* src = static_cast<int8_t*>(logits_ptr) + row_offset;
-            Quantization::int8_to_fp32(src, logits.data(), vocab_size, 1.0f);
-        }
-
-        float max_logit = *std::max_element(logits.begin(), logits.end());
-        double sum_exp = 0.0;
-        for (size_t i = 0; i < vocab_size; ++i) {
-            sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
-        }
-        double log_sum_exp = static_cast<double>(max_logit) + std::log(sum_exp);
-
-        double entropy = 0.0;
-        for (size_t i = 0; i < vocab_size; ++i) {
-            double log_prob = static_cast<double>(logits[i]) - log_sum_exp;
-            double prob = std::exp(log_prob);
-            if (prob > 1e-10) {
-                entropy -= prob * log_prob;
-            }
-        }
-
-        double max_entropy = std::log(static_cast<double>(vocab_size));
-        *out_entropy = static_cast<float>(entropy / max_entropy);
-    }
+    compute_entropy(gb, logits_node_id, out_entropy);
 
     post_execute_updates(gb, tokens.size());
     update_kv_cache(gb, tokens.size());
@@ -318,6 +278,47 @@ size_t Model::sample_token(CactusGraph* gb, size_t logits_node_id, float tempera
         }
     }
     return gb->sample(logits_node_id, temperature, top_p, top_k, combined_bias);
+}
+
+void Model::compute_entropy(CactusGraph* gb, size_t logits_node_id, float* out_entropy) {
+    if (!out_entropy) return;
+
+    const auto& logits_buf = gb->get_output_buffer(logits_node_id);
+    void* logits_ptr = gb->get_output(logits_node_id);
+    size_t vocab_size = logits_buf.shape.back();
+    size_t seq_len = 1;
+    if (logits_buf.shape.size() >= 2)
+        seq_len = logits_buf.shape[logits_buf.shape.size() - 2];
+    size_t row_offset = (seq_len > 0 ? (seq_len - 1) * vocab_size : 0);
+
+    std::vector<float> logits(vocab_size);
+    if (logits_buf.precision == Precision::FP32) {
+        float* src = static_cast<float*>(logits_ptr) + row_offset;
+        std::copy(src, src + vocab_size, logits.begin());
+    } else if (logits_buf.precision == Precision::FP16) {
+        __fp16* src = static_cast<__fp16*>(logits_ptr) + row_offset;
+        Quantization::fp16_to_fp32(src, logits.data(), vocab_size);
+    } else {
+        int8_t* src = static_cast<int8_t*>(logits_ptr) + row_offset;
+        Quantization::int8_to_fp32(src, logits.data(), vocab_size, 1.0f);
+    }
+
+    float max_logit = *std::max_element(logits.begin(), logits.end());
+    double sum_exp = 0.0;
+    for (size_t i = 0; i < vocab_size; ++i)
+        sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
+    double log_sum_exp = static_cast<double>(max_logit) + std::log(sum_exp);
+
+    double entropy = 0.0;
+    for (size_t i = 0; i < vocab_size; ++i) {
+        double log_prob = static_cast<double>(logits[i]) - log_sum_exp;
+        double prob = std::exp(log_prob);
+        if (prob > 1e-10)
+            entropy -= prob * log_prob;
+    }
+
+    double max_entropy = std::log(static_cast<double>(vocab_size));
+    *out_entropy = static_cast<float>(entropy / max_entropy);
 }
 
 uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& /*mel_bins*/, float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy, float* /*out_token_time_start*/, float* /*out_token_time_end*/){
@@ -472,7 +473,7 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "use_expert_bias") use_expert_bias = (value == "true" || value == "1");
         else if (key == "routed_scaling_factor") routed_scaling_factor = std::stof(value);
         else if (key == "tie_word_embeddings") tie_word_embeddings = (value == "true" || value == "1");
-        else if (key == "vision_hidden_dim") vision_hidden_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_hidden_dim" || key == "vision_hidden_size") vision_hidden_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "vision_num_layers") vision_num_layers = static_cast<uint32_t>(std::stoul(value));
         else if (key == "vision_attention_heads") vision_attention_heads = static_cast<uint32_t>(std::stoul(value));
         else if (key == "vision_image_size") vision_image_size = static_cast<uint32_t>(std::stoul(value));
@@ -483,6 +484,7 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "use_pixel_shuffle") use_pixel_shuffle = (value == "true" || value == "1");
         else if (key == "pixel_shuffle_factor") pixel_shuffle_factor = static_cast<uint32_t>(std::stoul(value));
         else if (key == "use_image_tokens") use_image_tokens = (value == "true" || value == "1");
+        else if (key == "image_token_id") image_token_id = static_cast<uint32_t>(std::stoul(value));
         else if (key == "use_layout_tags") use_layout_tags = (value == "true" || value == "1");
         else if (key == "image_seq_len") image_seq_len = static_cast<uint32_t>(std::stoul(value));
         else if (key == "global_image_size") global_image_size = static_cast<uint32_t>(std::stoul(value));
@@ -592,6 +594,35 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "sliding_window") sliding_window = static_cast<uint32_t>(std::stoul(value));
         else if (key == "rope_local_base_freq") rope_local_base_freq = std::stof(value);
         else if (key == "final_logit_softcapping") final_logit_softcapping = std::stof(value);
+        else if (key == "global_partial_rotary_factor") global_partial_rotary_factor = std::stof(value);
+        else if (key == "vision_head_dim") vision_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_kv_heads") vision_kv_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_intermediate_size") vision_intermediate_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_position_embedding_size") vision_position_embedding_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_pooling_kernel_size") vision_pooling_kernel_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_default_output_length") vision_default_output_length = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_rope_theta") vision_rope_theta = std::stof(value);
+        else if (key == "audio_hidden_dim") audio_hidden_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_num_layers") audio_num_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_num_heads") audio_num_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_head_dim") audio_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_input_feat_size") audio_input_feat_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_conf_conv_kernel_size") audio_conf_conv_kernel_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_chunk_size") audio_chunk_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_context_left") audio_context_left = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_context_right") audio_context_right = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_logit_cap") audio_logit_cap = std::stof(value);
+        else if (key == "audio_residual_weight") audio_residual_weight = std::stof(value);
+        else if (key == "audio_output_proj_dims") audio_output_proj_dims = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_vocab_size") audio_vocab_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_vocab_offset") audio_vocab_offset = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_soft_tokens") audio_soft_tokens = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_sscp_conv0_channels") audio_sscp_conv0_channels = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_sscp_conv1_channels") audio_sscp_conv1_channels = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_rms_norm_eps") audio_rms_norm_eps = std::stof(value);
+        else if (key == "audio_token_id") audio_token_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "channel_open_token_id") channel_open_token_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "channel_close_token_id") channel_close_token_id = static_cast<uint32_t>(std::stoul(value));
         else if (key == "activation_sparsity_ppf") {
             activation_sparsity_ppf.clear();
             std::stringstream ss(value);
@@ -606,7 +637,7 @@ bool Config::from_json(const std::string& config_path) {
         }
     }
 
-    if (model_type == ModelType::GEMMA || model_type == ModelType::GEMMA3N) {
+    if (is_gemma_family(model_type)) {
         default_temperature = 1.0f;
         default_top_p = 0.95f;
         default_top_k = 64;
@@ -826,7 +857,7 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
         throw std::runtime_error("Failed to get token embeddings for NPU prefill");
     }
 
-    if (config_.model_type == Config::ModelType::GEMMA || config_.model_type == Config::ModelType::GEMMA3N) {
+    if (Config::is_gemma_family(config_.model_type)) {
         float scale = std::sqrt(static_cast<float>(hidden_dim));
         for (size_t i = 0; i < all_embeddings.size(); i++) {
             all_embeddings[i] = __fp16(static_cast<float>(all_embeddings[i]) * scale);

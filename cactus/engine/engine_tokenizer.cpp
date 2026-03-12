@@ -2,6 +2,11 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cmath>
+
+extern "C" {
+    #include "../../libs/stb/stb_image.h"
+}
 
 namespace cactus {
 namespace engine {
@@ -66,6 +71,22 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
             }
         }
     }
+
+    file.clear();
+    file.seekg(0);
+    while (std::getline(file, line)) {
+        auto parse_uint = [&](const std::string& key, uint32_t& out) {
+            size_t p = line.find(key + "=");
+            if (p != std::string::npos) {
+                out = static_cast<uint32_t>(std::stoul(line.substr(p + key.size() + 1)));
+            }
+        };
+        parse_uint("vision_patch_size", vision_patch_size_);
+        parse_uint("vision_pooling_kernel_size", vision_pooling_kernel_size_);
+        parse_uint("vision_default_output_length", vision_default_output_length_);
+        parse_uint("vision_image_size", vision_image_size_);
+    }
+
     file.close();
 }
 

@@ -234,6 +234,7 @@ def get_layer_weight_patterns(i, precision, model_type=None, skip_kv=False):
         (['per_layer_projection.weight'], precision, f'layer_{i}_per_layer_proj.weights', False),
         (['per_layer_input_gate.weight'], precision, f'layer_{i}_per_layer_gate.weights', False),
         (['post_per_layer_input_norm.weight'], precision, f'layer_{i}_post_per_layer_norm.weights', False),
+        (['layer_scalar'], 'FP16', f'layer_{i}_layer_scalar.weights', False),
     ]
 
     return [p for p in patterns if p is not None]

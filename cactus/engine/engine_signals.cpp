@@ -657,7 +657,9 @@ void AudioProcessor::init_mel_filters(size_t num_frequency_bins,
                                       size_t num_mel_filters,
                                       float min_freq,
                                       float max_freq,
-                                      size_t sampling_rate) {
+                                      size_t sampling_rate,
+                                      const char* norm,
+                                      const char* mel_scale) {
     num_frequency_bins_ = num_frequency_bins;
     num_mel_filters_ = num_mel_filters;
     mel_filters_.resize(num_mel_filters * num_frequency_bins);
@@ -669,8 +671,8 @@ void AudioProcessor::init_mel_filters(size_t num_frequency_bins,
         min_freq,
         max_freq,
         sampling_rate,
-        "slaney",
-        "slaney",
+        norm,
+        mel_scale,
         false
     );
 }
@@ -684,6 +686,7 @@ std::vector<float> AudioProcessor::compute_spectrogram(
     }
 
     const size_t n_samples = waveform.size();
+    const size_t fft_size = config.fft_override > 0 ? config.fft_override : config.n_fft;
     const size_t analysis_frame_length = config.n_fft;
     const size_t window_length = std::min(config.frame_length, analysis_frame_length);
     const size_t pad_length = config.center ? analysis_frame_length / 2 : 0;
@@ -715,7 +718,7 @@ std::vector<float> AudioProcessor::compute_spectrogram(
         window.size(),
         analysis_frame_length,
         config.hop_length,
-        &config.n_fft,
+        &fft_size,
         output.data(),
         config.power,
         config.center,

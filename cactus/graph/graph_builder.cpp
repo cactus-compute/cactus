@@ -78,7 +78,10 @@ size_t CactusGraph::matmul(size_t input1, size_t input2, bool pretransposed_rhs,
     }
 
     if (K != rhs_K) {
-        std::cout << "Matrix dimensions incompatible for multiplication: " << K << " != " << rhs_K << std::endl;
+        std::cout << "Matrix dimensions incompatible for multiplication: "
+                  << "lhs=[" << M << "," << K << "] rhs=[" << rhs_buffer.shape[0] << "," << rhs_buffer.shape[1] << "]"
+                  << " pretransposed=" << pretransposed_rhs
+                  << " (K=" << K << " != rhs_K=" << rhs_K << ")" << std::endl;
         throw std::invalid_argument("Matrix dimensions incompatible for multiplication");
     }
 

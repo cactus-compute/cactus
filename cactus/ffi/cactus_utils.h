@@ -124,6 +124,37 @@ inline cactus::engine::AudioProcessor::SpectrogramConfig get_parakeet_spectrogra
     return cfg;
 }
 
+inline cactus::engine::AudioProcessor::SpectrogramConfig get_htk_spectrogram_config() {
+    cactus::engine::AudioProcessor::SpectrogramConfig cfg{};
+    cfg.n_fft        = 321;
+    cfg.frame_length = 320;
+    cfg.fft_override = 1024;
+    cfg.hop_length   = 160;
+    cfg.power        = 1.0f;
+    cfg.center       = false;
+    cfg.pad_mode     = "constant";
+    cfg.onesided     = true;
+    cfg.dither       = 0.0f;
+    cfg.mel_floor    = 0.001f;
+    cfg.log_mel      = "log";
+    cfg.reference    = 1.0f;
+    cfg.min_value    = 0.001f;
+    cfg.remove_dc_offset = false;
+    cfg.hann_periodic = true;
+    return cfg;
+}
+
+inline std::vector<float> transpose_mel_to_frame_major(const std::vector<float>& mel,
+                                                        size_t num_mels, size_t num_frames) {
+    std::vector<float> transposed(num_frames * num_mels);
+    for (size_t m = 0; m < num_mels; m++) {
+        for (size_t t = 0; t < num_frames; t++) {
+            transposed[t * num_mels + m] = mel[m * num_frames + t];
+        }
+    }
+    return transposed;
+}
+
 inline void apply_preemphasis(std::vector<float>& waveform, float coefficient = 0.97f) {
     if (waveform.size() < 2 || coefficient == 0.0f) {
         return;
@@ -1096,6 +1127,30 @@ inline void strip_tag_blocks(std::string& text, std::string& extracted,
     text = result;
 }
 
+inline std::vector<std::pair<size_t, size_t>> find_channel_token_ranges(
+    const std::vector<uint32_t>& tokens, size_t offset,
+    uint32_t channel_open_id, uint32_t channel_close_id) {
+    std::vector<std::pair<size_t, size_t>> ranges;
+    size_t pos = 0;
+    while (pos < tokens.size()) {
+        if (tokens[pos] != channel_open_id) {
+            pos++;
+            continue;
+        }
+
+        size_t block_start = pos;
+        pos++;
+        while (pos < tokens.size() && tokens[pos] != channel_close_id) {
+            pos++;
+        }
+        if (pos < tokens.size()) {
+            pos++;
+        }
+        ranges.push_back({offset + block_start, pos - block_start});
+    }
+    return ranges;
+}
+
 inline void strip_thinking_block(const std::string& input, std::string& thinking, std::string& content) {
     thinking.clear();
     content = input;
@@ -1109,7 +1164,9 @@ inline void strip_thinking_block(const std::string& input, std::string& thinking
             s.clear();
     };
 
-    if (content.find("<think>") != std::string::npos || content.find("</think>") != std::string::npos) {
+    if (content.find("<|channel>") != std::string::npos || content.find("<channel|>") != std::string::npos) {
+        strip_tag_blocks(content, thinking, "<|channel>", "<channel|>");
+    } else if (content.find("<think>") != std::string::npos || content.find("</think>") != std::string::npos) {
         strip_tag_blocks(content, thinking, "<think>", "</think>");
     } else {
         return;

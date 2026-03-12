@@ -253,7 +253,7 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
                         M, K, N, rhs_buffer.group_size);
     } else {
         if (lhs_buffer.precision != Precision::FP16) {
-            throw std::runtime_error("FP16 matmul requires FP16 activations");
+            throw std::runtime_error("FP16 matmul requires FP16 activations (got precision " + std::to_string(static_cast<int>(lhs_buffer.precision)) + ")");
         }
 
         const __fp16* lhs = lhs_buffer.data_as<__fp16>();

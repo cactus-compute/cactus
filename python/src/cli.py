@@ -356,6 +356,10 @@ def cmd_download(args):
                 continue
             merged_state_dict.update(shard_state)
 
+        for k, v in merged_state_dict.items():
+            if v.is_floating_point() and v.dtype != torch.bfloat16:
+                merged_state_dict[k] = v.to(torch.bfloat16)
+
         return merged_state_dict
 
     try:
@@ -426,12 +430,12 @@ def cmd_download(args):
         elif 'moonshine' in model_id.lower():
             from transformers import MoonshineForConditionalGeneration
             print(f"  Note: Loading Moonshine model using MoonshineForConditionalGeneration...")
-            model = MoonshineForConditionalGeneration.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+            model = MoonshineForConditionalGeneration.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, dtype=torch.bfloat16, token=token)
             tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
 
         elif is_whisper:
             tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
-            model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+            model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, dtype=torch.bfloat16, token=token)
 
         elif is_parakeet:
             from huggingface_hub import hf_hub_download, snapshot_download
@@ -568,11 +572,12 @@ def cmd_download(args):
                 model = _RawModelWrapper(raw_state_dict, config_json)
             else:
                 try:
-                    model = AutoModelForCausalLM.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+                    model = AutoModelForCausalLM.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, dtype=torch.bfloat16, token=token)
                 except ValueError:
-                    model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+                    model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, dtype=torch.bfloat16, token=token)
 
         config = convert_hf_model_weights(model, weights_dir, precision, args)
+        del model
 
         model_name_lower = model_name.lower()
         if 'extract' in model_name_lower:
@@ -602,9 +607,9 @@ def cmd_download(args):
             token=token,
             model_id=model_name,
             labels=tokenizer_labels,
+            model_type=config.get('model_type'),
         )
 
-        del model
         del tokenizer
         import torch
         if torch.cuda.is_available():
@@ -1623,6 +1628,7 @@ def merge_lora_adapter(base_model_id, lora_path, cache_dir=None, token=None):
         base_model_id,
         cache_dir=cache_dir,
         trust_remote_code=True,
+        dtype=torch.bfloat16,
         token=token
     )
     tokenizer = AutoTokenizer.from_pretrained(
@@ -1669,17 +1675,6 @@ def cmd_convert(args):
         print_color(YELLOW, f"Saving merged model to temp directory: {temp_merged_dir}")
         merged_model.save_pretrained(temp_merged_dir)
         tokenizer.save_pretrained(temp_merged_dir)
-
-        # Copy SentencePiece .model file and tokenizer_config.json if they exist
-        # in the LoRA adapter directory
-        lora_sp = next(Path(lora_path).glob("*.model"), None)
-        if lora_sp:
-            shutil.copy2(lora_sp, Path(temp_merged_dir) / lora_sp.name)
-        else:
-            from .tokenizer import _find_sentencepiece_model
-            base_sp = _find_sentencepiece_model(args.model_name, token=token)
-            if base_sp:
-                shutil.copy2(base_sp, Path(temp_merged_dir) / Path(base_sp).name)
 
         lora_tok_config = Path(lora_path) / "tokenizer_config.json"
         if lora_tok_config.exists():
