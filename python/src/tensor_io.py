@@ -158,7 +158,6 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         if K % GROUP_SIZE != 0:
             pad_k = GROUP_SIZE - (K % GROUP_SIZE)
             data = np.pad(data, ((0, 0), (0, pad_k)), mode='constant', constant_values=0)
-            data = np.pad(data, ((0, 0), (0, pad_k)), mode='constant', constant_values=0)
             K = data.shape[1]
 
         num_groups = K // GROUP_SIZE
@@ -243,7 +242,6 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         if K % GROUP_SIZE != 0:
             pad_k = GROUP_SIZE - (K % GROUP_SIZE)
             data = np.pad(data, ((0, 0), (0, pad_k)), mode='constant', constant_values=0)
-            data = np.pad(data, ((0, 0), (0, pad_k)), mode='constant', constant_values=0)
             K = data.shape[1]
 
         num_groups = K // GROUP_SIZE
@@ -327,7 +325,6 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
 
         if K % GROUP_SIZE != 0:
             pad_k = GROUP_SIZE - (K % GROUP_SIZE)
-            data = np.pad(data, (0, pad_k), mode='constant', constant_values=0)
             data = np.pad(data, (0, pad_k), mode='constant', constant_values=0)
             K = data.shape[0]
             shape = [K]
