@@ -36,8 +36,6 @@ For usage examples, see:
 
 ## Testing
 
-> **Model weights** must be in Cactus format. Pre-converted weights for all supported models are available at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
-
 ```bash
 export CACTUS_MODEL_PATH=/path/to/model
 export CACTUS_STT_MODEL_PATH=/path/to/whisper-model

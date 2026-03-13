@@ -19,7 +19,7 @@ source ./setup
 # Build shared library for Python
 cactus build --python
 
-# Download models (weights must be in Cactus format — pre-converted at huggingface.co/Cactus-Compute)
+# Download models
 cactus download LiquidAI/LFM2-VL-450M
 cactus download openai/whisper-small
 

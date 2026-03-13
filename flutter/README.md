@@ -51,8 +51,6 @@ see the main [README.md](../README.md) for how to use CLI & download weight
 
 ## Usage
 
-> **Model weights** must be in Cactus format. Pre-converted weights for all supported models are available at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
-
 Handles are typed as `CactusModelT`, `CactusIndexT`, and `CactusStreamTranscribeT` (all `Pointer<Void>` aliases). All functions are top-level.
 
 ### Basic Completion

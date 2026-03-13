@@ -82,8 +82,6 @@ swift build --swift-sdk aarch64-unknown-linux-android28 \
 
 ## Usage
 
-> **Model weights** must be in Cactus format. Pre-converted weights for all supported models are available at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
-
 Handles are typed as `CactusModelT`, `CactusIndexT`, and `CactusStreamTranscribeT` (all `UnsafeMutableRawPointer` aliases).
 
 ### Basic Completion

@@ -161,8 +161,6 @@ graph.hard_reset();
 
 ## Supported LLMs
 
-> **Model weights** must be in Cactus format. Pre-converted weights for all supported models are available at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
-
 - Gemma weights are often **gated** on HuggingFace, needs tokens 
 - Run `hf auth login` and input your huggingface token
 
