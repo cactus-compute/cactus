@@ -6,6 +6,7 @@
 #include <vector>
 #include <stdexcept>
 #include <limits>
+#include <random>
 
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -561,11 +562,10 @@ static void compute_spectrogram_f32(
             std::copy(input_waveform + timestep, input_waveform + timestep + available_length, local_buffer.data());
 
             if (dither != 0.0f) {
+                thread_local std::mt19937 rng(std::random_device{}());
+                std::normal_distribution<float> dist(0.0f, 1.0f);
                 for (size_t i = 0; i < frame_length; i++) {
-                    float u1 = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-                    float u2 = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-                    float randn = std::sqrt(-2.0f * std::log(u1)) * std::cos(2.0f * static_cast<float>(M_PI) * u2);
-                    local_buffer[i] += dither * randn;
+                    local_buffer[i] += dither * dist(rng);
                 }
             }
 
