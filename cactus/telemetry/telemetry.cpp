@@ -72,7 +72,10 @@ static std::string device_os;
 static std::string device_os_version;
 static std::string device_brand;
 static std::string cactus_version;
-static std::string framework = "cpp";
+#ifndef CACTUS_DEFAULT_FRAMEWORK
+#define CACTUS_DEFAULT_FRAMEWORK "cpp"
+#endif
+static std::string framework = CACTUS_DEFAULT_FRAMEWORK;
 static std::string custom_cache_location;
 static std::string app_id;
 static std::string device_registered_file;
