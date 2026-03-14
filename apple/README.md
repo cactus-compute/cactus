@@ -10,13 +10,13 @@ Run AI models on-device with a simple Swift API on iOS, macOS, and Android.
 
 ## Building
 
+<!-- --8<-- [start:install] -->
 ```bash
+git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
 cactus build --apple
 ```
 
 Build outputs (in `apple/`):
-
-see the main [README.md](../README.md) for how to use CLI & download weight
 
 | File | Description |
 |------|-------------|
@@ -24,6 +24,9 @@ see the main [README.md](../README.md) for how to use CLI & download weight
 | `cactus-macos.xcframework/` | macOS framework |
 | `libcactus-device.a` | Static library for iOS device |
 | `libcactus-simulator.a` | Static library for iOS simulator |
+<!-- --8<-- [end:install] -->
+
+see the main [README.md](../README.md) for how to use CLI & download weight
 
 For Android, build `libcactus.so` from the `android/` directory.
 
@@ -44,6 +47,7 @@ CACTUS_CURL_ROOT=/absolute/path/to/curl cactus build --apple
 
 ## Integration
 
+<!-- --8<-- [start:integration] -->
 ### iOS/macOS: XCFramework (Recommended)
 
 1. Drag `cactus-ios.xcframework` (or `cactus-macos.xcframework`) into your Xcode project
@@ -57,6 +61,7 @@ CACTUS_CURL_ROOT=/absolute/path/to/curl cactus build --apple
    - "Header Search Paths" → path to folder
    - "Import Paths" (Swift) → path to folder
 3. Copy `Cactus.swift` into your project
+<!-- --8<-- [end:integration] -->
 
 ### Android (Swift SDK)
 
@@ -84,6 +89,7 @@ Handles are typed as `CactusModelT`, `CactusIndexT`, and `CactusStreamTranscribe
 
 ### Basic Completion
 
+<!-- --8<-- [start:example] -->
 ```swift
 import Foundation
 
@@ -92,12 +98,14 @@ defer { cactusDestroy(model) }
 
 let messages = #"[{"role":"user","content":"What is the capital of France?"}]"#
 let resultJson = try cactusComplete(model, messages, nil, nil, nil)
-// resultJson is a JSON string: {"response":"Paris","success":true,...}
 if let data = resultJson.data(using: .utf8),
    let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
     print(result["response"] as? String ?? "")
 }
 ```
+<!-- --8<-- [end:example] -->
+
+For vision models (LFM2-VL, LFM2.5-VL), add `"images": ["path/to/image.png"]` to any message. See [Engine API](/docs/cactus_engine.md) for details.
 
 ### Completion with Options and Streaming
 

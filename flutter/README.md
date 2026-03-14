@@ -10,7 +10,9 @@ Run AI models on-device with dart:ffi direct bindings for iOS, macOS, and Androi
 
 ## Building
 
+<!-- --8<-- [start:install] -->
 ```bash
+git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
 cactus build --flutter
 ```
 
@@ -21,11 +23,13 @@ Build output:
 | `libcactus.so` | Android (arm64-v8a) |
 | `cactus-ios.xcframework` | iOS |
 | `cactus-macos.xcframework` | macOS |
+<!-- --8<-- [end:install] -->
 
 see the main [README.md](../README.md) for how to use CLI & download weight
 
 ## Integration
 
+<!-- --8<-- [start:integration] -->
 ### Android
 
 1. Copy `libcactus.so` to `android/app/src/main/jniLibs/arm64-v8a/`
@@ -46,6 +50,7 @@ see the main [README.md](../README.md) for how to use CLI & download weight
 3. Drag the xcframework into the project
 4. In Runner target > General > "Frameworks, Libraries, and Embedded Content", set to "Embed & Sign"
 5. Copy `cactus.dart` to your `lib/` folder
+<!-- --8<-- [end:integration] -->
 
 ## Usage
 
@@ -53,6 +58,7 @@ Handles are typed as `CactusModelT`, `CactusIndexT`, and `CactusStreamTranscribe
 
 ### Basic Completion
 
+<!-- --8<-- [start:example] -->
 ```dart
 import 'cactus.dart';
 import 'dart:convert';
@@ -64,6 +70,9 @@ final result = jsonDecode(resultJson);
 print(result['response']);
 cactusDestroy(model);
 ```
+<!-- --8<-- [end:example] -->
+
+For vision models (LFM2-VL, LFM2.5-VL), add `"images": ["path/to/image.png"]` to any message. See [Engine API](/docs/cactus_engine.md) for details.
 
 ### Completion with Options and Streaming
 

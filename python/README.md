@@ -10,13 +10,14 @@ Python bindings for Cactus Engine via FFI. Auto-installed when you run `source .
 
 ## Getting Started
 
+<!-- --8<-- [start:install] -->
 ```bash
-# Setup environment
-source ./setup
-
-# Build shared library for Python
+git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
 cactus build --python
+```
+<!-- --8<-- [end:install] -->
 
+```bash
 # Download models
 cactus download LiquidAI/LFM2-VL-450M
 cactus download openai/whisper-small
@@ -27,6 +28,7 @@ cactus auth
 
 ## Quick Example
 
+<!-- --8<-- [start:example] -->
 ```python
 from cactus import cactus_init, cactus_complete, cactus_destroy
 import json
@@ -37,6 +39,7 @@ result = json.loads(cactus_complete(model, messages, None, None, None))
 print(result["response"])
 cactus_destroy(model)
 ```
+<!-- --8<-- [end:example] -->
 
 ## API Reference
 

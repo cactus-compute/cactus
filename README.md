@@ -9,7 +9,13 @@
 [![Reddit][reddit-shield]][reddit-url]
 [![Blog][blog-shield]][blog-url]
 
-A hybrid low-latency energy-efficient AI engine for mobile devices & wearables.
+A low-latency AI engine for mobile devices & wearables. Main features:
+
+- **Fast:** fastest inference on ARM CPU
+- **Low RAM:** zero-copy memory mapping ensures 10x lower RAM use than other engines
+- **Multimodal:** one SDK for speech, vision, and language models
+- **Cloud fallback:** automatically route requests to cloud models if needed
+- **Energy-efficient:** NPU-accelerated prefill
 
 ```
 ┌─────────────────┐
@@ -25,7 +31,7 @@ A hybrid low-latency energy-efficient AI engine for mobile devices & wearables.
 └─────────────────┘     Custom attention, KV-cache quant, chunked prefill
 ```
 
-## Quick Demo 
+## Quick Demo (Mac)
 
 - Step 1: `brew install cactus-compute/cactus/cactus`
 - Step 2: `cactus transcribe` or `cactus run` 

@@ -10,6 +10,7 @@ Raw FFI bindings to the Cactus C API. Auto-generated via `bindgen`.
 
 ## Installation
 
+<!-- --8<-- [start:install] -->
 Add to your `Cargo.toml`:
 
 ```toml
@@ -17,15 +18,12 @@ Add to your `Cargo.toml`:
 cactus-sys = { path = "rust/cactus-sys" }
 ```
 
-Build requirements:
-- CMake
-- C++20 compiler
-- On macOS: Xcode command line tools
-- On Linux: `build-essential`, `libcurl4-openssl-dev`, `libclang-dev`
+Build requirements: CMake, C++20 compiler, and platform tools (Xcode CLI on macOS, `build-essential` + `libcurl4-openssl-dev` + `libclang-dev` on Linux).
+<!-- --8<-- [end:install] -->
 
 ## Usage
 
-All functions mirror the C API documented in `docs/cactus_engine.md`.
+All functions mirror the C API documented in `docs/cactus_engine.md`. For vision models (LFM2-VL, LFM2.5-VL), add `"images": ["path/to/image.png"]` to any message.
 
 For usage examples, see:
 - Test files: `rust/cactus-sys/tests/`

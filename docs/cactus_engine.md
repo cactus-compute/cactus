@@ -54,7 +54,8 @@ Initializes a model from disk and prepares it for inference.
 ```c
 cactus_model_t cactus_init(
     const char* model_path,   // Path to the model directory
-    const char* corpus_dir    // Optional path to corpus directory for RAG (can be NULL)
+    const char* corpus_dir,   // Optional path to corpus directory for RAG (can be NULL)
+    bool cache_index          // true = load cached corpus index if available, false = always rebuild
 );
 ```
 
@@ -62,14 +63,14 @@ cactus_model_t cactus_init(
 
 **Example:**
 ```c
-cactus_model_t model = cactus_init("../../weights/qwen3-600m", NULL);
+cactus_model_t model = cactus_init("../../weights/qwen3-600m", NULL, false);
 if (!model) {
     fprintf(stderr, "Failed to initialize model\n");
     return -1;
 }
 
-// with RAG corpus
-cactus_model_t rag_model = cactus_init("../../weights/lfm2-rag", "./documents");
+// with RAG corpus (cache the index for faster subsequent loads)
+cactus_model_t rag_model = cactus_init("../../weights/lfm2-rag", "./documents", true);
 ```
 
 ### `cactus_complete`
