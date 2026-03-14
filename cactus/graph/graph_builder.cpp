@@ -10,7 +10,7 @@ size_t CactusGraph::input(const std::vector<size_t>& shape, Precision precision)
 
 size_t CactusGraph::add(size_t input1, size_t input2) {
     const auto& lhs_buffer = get_output_buffer(input1);
-    const auto& rhs_buffer = get_output_buffer(input2);                  
+    const auto& rhs_buffer = get_output_buffer(input2);
     BroadcastInfo broadcast_info = BroadcastInfo::compute(lhs_buffer.shape, rhs_buffer.shape);
     OpParams params{.broadcast_info = broadcast_info};
 
@@ -446,7 +446,7 @@ size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scal
 
 size_t CactusGraph::attention_masked(size_t query, size_t key, size_t value, size_t mask, float scale,
                                      bool is_causal, ComputeBackend backend, bool additive_mask,
-                                     size_t position_offset, size_t window_size) {
+                                     size_t position_offset, size_t window_size, float logit_cap) {
     OpParams params{
         .scale = scale,
         .position_offset = position_offset,
@@ -455,6 +455,7 @@ size_t CactusGraph::attention_masked(size_t query, size_t key, size_t value, siz
         .backend = backend
     };
     params.attention_mask_is_additive = additive_mask;
+    params.logit_cap = logit_cap;
     return add_node(OpType::ATTENTION, {query, key, value, mask}, {}, params);
 }
 
@@ -1328,8 +1329,7 @@ size_t CactusGraph::embedding(size_t embedding_tensor, size_t indices) {
     output_shape.push_back(emb_buffer.shape[1]);
 
     OpParams params;
-    params.output_precision = (emb_buffer.precision == Precision::INT8) ? Precision::FP16 : emb_buffer.precision;
-
+    params.output_precision = Precision::FP16;
     return add_node(OpType::EMBEDDING, {embedding_tensor, indices}, output_shape, params);
 }
 

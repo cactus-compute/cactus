@@ -1,5 +1,6 @@
 #include "graph.h"
 #include "../kernel/kernel.h"
+#include "../kernel/kernel_utils.h"
 #include <cstring>
 #include <cmath>
 #include <stdexcept>
@@ -234,7 +235,8 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
     __fp16* output = node.output_buffer.data_as<__fp16>();
 
-    if (embeddings_buffer.precision == Precision::INT8 && embeddings_buffer.is_grouped_int8()) {
+    Precision emb_prec = embeddings_buffer.precision;
+    if (PrecisionTraits::is_integer(emb_prec) && embeddings_buffer.group_size > 0) {
         const int8_t* embeddings = embeddings_buffer.data_as<int8_t>();
         const __fp16* scales = embeddings_buffer.scales_as_fp16();
         size_t group_size = embeddings_buffer.group_size;
@@ -245,6 +247,17 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
             {4, 5, 6, 7, 20, 21, 22, 23, 36, 37, 38, 39, 52, 53, 54, 55},  // lane 1
             {8, 9, 10, 11, 24, 25, 26, 27, 40, 41, 42, 43, 56, 57, 58, 59}, // lane 2
             {12, 13, 14, 15, 28, 29, 30, 31, 44, 45, 46, 47, 60, 61, 62, 63} // lane 3
+        };
+
+        auto load_table = [emb_prec](const int8_t* base) -> int8x16x4_t {
+            if (emb_prec == Precision::INT4) {
+                const uint8_t* ubase = reinterpret_cast<const uint8_t*>(base);
+                int8x16_t low_a, high_a, low_b, high_b;
+                unpack_int4_as_int8x16x2(ubase, high_a, low_a);
+                unpack_int4_as_int8x16x2(ubase + 16, high_b, low_b);
+                return {low_a, high_a, low_b, high_b};
+            }
+            return vld1q_s8_x4(base);
         };
 
         for (size_t i = 0; i < num_indices; i++) {
@@ -266,12 +279,12 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
                 size_t k_start = g * group_size;
                 size_t k_end = std::min(k_start + group_size, hidden_dim);
 
-                const int8_t* group_base = embeddings + (block * hidden_dim + k_start) * 4;
+                const int8_t* group_base = embeddings + PrecisionTraits::byte_offset_of(emb_prec, (block * hidden_dim + k_start) * 4);
 
                 size_t k = k_start;
                 for (; k + 16 <= k_end; k += 16) {
-                    const int8_t* chunk_base = group_base + (k - k_start) * 4;
-                    int8x16x4_t table = vld1q_s8_x4(chunk_base);
+                    const int8_t* chunk_base = group_base + PrecisionTraits::byte_offset_of(emb_prec, (k - k_start) * 4);
+                    int8x16x4_t table = load_table(chunk_base);
 
                     int8x16_t values = vqtbl4q_s8(table, indices_vec);
 
@@ -287,6 +300,8 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
                     vst1q_f16(out_row + k + 8, vcombine_f16(vcvt_f16_f32(f2), vcvt_f16_f32(f3)));
                 }
 
+                if (k < k_end)
+                    assert (embeddings_buffer.precision != Precision::INT4 && "grouped INT4 embeddings must have hidden_dim that is a multiple of 32");
                 for (; k < k_end; k++) {
                     size_t k_group = k / 4;
                     size_t k_within = k % 4;
@@ -305,7 +320,7 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
             std::memcpy(output + i * hidden_dim, embeddings + idx * hidden_dim, hidden_dim * sizeof(__fp16));
         }
     } else {
-        throw std::runtime_error("Embedding requires interleaved grouped INT8 or FP16");
+        throw std::runtime_error("Embedding requires interleaved grouped INT4/INT8 or FP16");
     }
 }
 
