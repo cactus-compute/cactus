@@ -320,6 +320,7 @@ struct OpParams {
     size_t window_size = 0;
     bool is_causal = true;  
     bool attention_mask_is_additive = false;
+    float logit_cap = 0.0f;
     std::vector<size_t> new_shape;
     std::vector<size_t> permutation;
     Precision output_precision = Precision::INT8;
@@ -529,7 +530,8 @@ public:
     size_t attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, size_t window_size, ComputeBackend backend = ComputeBackend::CPU);
     size_t attention_masked(size_t query, size_t key, size_t value, size_t mask, float scale,
                             bool is_causal = true, ComputeBackend backend = ComputeBackend::CPU,
-                            bool additive_mask = false, size_t position_offset = 0, size_t window_size = 0);
+                            bool additive_mask = false, size_t position_offset = 0, size_t window_size = 0,
+                            float logit_cap = 0.0f);
     size_t rel_pos_bias(size_t query, size_t relative_key, float scale);
 
     size_t attention_int8_hybrid(size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,
