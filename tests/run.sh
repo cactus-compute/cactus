@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --transcribe_model <name> Transcribe model to use (default: $DEFAULT_TRANSCRIBE_MODEL)"
             echo "  --whisper_model <name>    Whisper model for language detection (default: $DEFAULT_WHISPER_MODEL)"
             echo "  --vad_model <name>        VAD model to use (default: $DEFAULT_VAD_MODEL)"
-            echo "  --precision <type>        Precision for model conversion (MIXED, FP16, INT8, INT4)"
+            echo "  --precision <type>        Precision for model conversion (MIXED, FP16, INT8, INT4, TERNARY)"
             echo "  --android                 Run tests on Android device or emulator"
             echo "  --ios                     Run tests on iOS device or simulator"
             echo "  --no-rebuild              Skip building cactus library and tests"

@@ -7,6 +7,134 @@
 #include <iostream>
 #include <cstdio>
 
+namespace {
+
+std::vector<int8_t> interleave_int8_rows_4(const std::vector<int8_t>& rowmajor, size_t rows, size_t cols) {
+    const size_t block = 4;
+    const size_t row_blocks = rows / block;
+    const size_t col_blocks = cols / block;
+    std::vector<int8_t> interleaved(rows * cols);
+    for (size_t row_block = 0; row_block < row_blocks; ++row_block) {
+        for (size_t col_block = 0; col_block < col_blocks; ++col_block) {
+            for (size_t lane = 0; lane < block; ++lane) {
+                for (size_t col_lane = 0; col_lane < block; ++col_lane) {
+                    size_t src_row = row_block * block + lane;
+                    size_t src_col = col_block * block + col_lane;
+                    size_t dst_idx = (row_block * col_blocks + col_block) * block * block
+                                     + lane * block + col_lane;
+                    interleaved[dst_idx] = rowmajor[src_row * cols + src_col];
+                }
+            }
+        }
+    }
+    return interleaved;
+}
+
+std::vector<uint8_t> pack_ternary_2bit(const std::vector<int8_t>& signs) {
+    std::vector<uint8_t> packed((signs.size() + 3) / 4, 0);
+    for (size_t i = 0; i < signs.size(); ++i) {
+        uint8_t code = 0;
+        if (signs[i] > 0) code = 1;
+        else if (signs[i] < 0) code = 2;
+        packed[i / 4] |= static_cast<uint8_t>(code << ((i % 4) * 2));
+    }
+    return packed;
+}
+
+std::vector<int8_t> make_ternary_signs(size_t rows, size_t cols) {
+    std::vector<int8_t> signs(rows * cols);
+    for (size_t row = 0; row < rows; ++row) {
+        for (size_t col = 0; col < cols; ++col) {
+            const int selector = static_cast<int>((row * 5 + col * 3) % 3);
+            signs[row * cols + col] = selector == 0 ? -1 : (selector == 1 ? 0 : 1);
+        }
+    }
+    return signs;
+}
+
+std::string ternary_temp_file(const char* suffix) {
+    return std::string("test_ternary_") + suffix + ".bin";
+}
+
+bool compare_fp16_values(const __fp16* actual, const std::vector<__fp16>& expected, float tolerance = 0.05f) {
+    for (size_t i = 0; i < expected.size(); ++i) {
+        if (std::abs(static_cast<float>(actual[i]) - static_cast<float>(expected[i])) > tolerance) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<__fp16> ternary_matmul_reference(
+    const std::vector<__fp16>& lhs_fp16,
+    size_t M,
+    size_t K,
+    const std::vector<int8_t>& rhs_rowmajor,
+    size_t N,
+    TernaryScaleMode mode,
+    const std::vector<__fp16>& scales,
+    bool lhs_prequantized = false) {
+    std::vector<__fp16> working_lhs = lhs_fp16;
+
+    if (lhs_prequantized) {
+        std::vector<int8_t> lhs_quantized(M * K);
+        for (size_t row = 0; row < M; ++row) {
+            float scale = cactus_fp16_max_abs(lhs_fp16.data() + row * K, K) / 127.0f;
+            if (scale < 1e-10f) scale = 1e-10f;
+            cactus_fp16_to_int8(lhs_fp16.data() + row * K, lhs_quantized.data() + row * K, K, scale);
+            cactus_int8_to_fp16(lhs_quantized.data() + row * K, working_lhs.data() + row * K, K, scale);
+        }
+    }
+
+    std::vector<__fp16> transformed_lhs = working_lhs;
+    std::vector<__fp16> rhs_row_scales(N, static_cast<__fp16>(1.0f));
+
+    switch (mode) {
+        case TernaryScaleMode::TENSOR:
+            std::fill(rhs_row_scales.begin(), rhs_row_scales.end(), scales[0]);
+            break;
+        case TernaryScaleMode::ROW:
+            rhs_row_scales = scales;
+            break;
+        case TernaryScaleMode::COLUMN:
+            for (size_t row = 0; row < M; ++row) {
+                for (size_t col = 0; col < K; ++col) {
+                    transformed_lhs[row * K + col] = static_cast<__fp16>(
+                        static_cast<float>(working_lhs[row * K + col]) * static_cast<float>(scales[col]));
+                }
+            }
+            break;
+        case TernaryScaleMode::NONE:
+            break;
+    }
+
+    std::vector<int8_t> lhs_quantized(M * K);
+    std::vector<float> lhs_scales(M, 1.0f);
+    for (size_t row = 0; row < M; ++row) {
+        float scale = cactus_fp16_max_abs(transformed_lhs.data() + row * K, K) / 127.0f;
+        if (scale < 1e-10f) scale = 1e-10f;
+        lhs_scales[row] = scale;
+        cactus_fp16_to_int8(transformed_lhs.data() + row * K, lhs_quantized.data() + row * K, K, scale);
+    }
+
+    std::vector<__fp16> expected(M * N, static_cast<__fp16>(0.0f));
+    for (size_t row = 0; row < M; ++row) {
+        for (size_t out = 0; out < N; ++out) {
+            int32_t dot = 0;
+            for (size_t col = 0; col < K; ++col) {
+                dot += static_cast<int32_t>(lhs_quantized[row * K + col]) *
+                       static_cast<int32_t>(rhs_rowmajor[out * K + col]);
+            }
+            expected[row * N + out] = static_cast<__fp16>(
+                static_cast<float>(dot) * lhs_scales[row] * static_cast<float>(rhs_row_scales[out]));
+        }
+    }
+
+    return expected;
+}
+
+}  // namespace
+
 bool test_basic_operations() {
     TestUtils::FP16TestFixture fixture("Basic Operations");
 
@@ -526,6 +654,81 @@ bool test_graph_save_load() {
     }
 }
 
+bool test_ternary_weight_roundtrip() {
+    const size_t N = 4;
+    const size_t K = 8;
+    const auto signs_rowmajor = make_ternary_signs(N, K);
+    const auto signs_interleaved = interleave_int8_rows_4(signs_rowmajor, N, K);
+    const auto packed_interleaved = pack_ternary_2bit(signs_interleaved);
+
+    struct TernaryCase {
+        const char* suffix;
+        TernaryScaleMode mode;
+        std::vector<__fp16> scales;
+    };
+
+    const std::vector<TernaryCase> cases = {
+        {"tensor_roundtrip", TernaryScaleMode::TENSOR, {static_cast<__fp16>(0.25f)}},
+        {"row_roundtrip", TernaryScaleMode::ROW, {static_cast<__fp16>(0.10f), static_cast<__fp16>(0.20f), static_cast<__fp16>(0.30f), static_cast<__fp16>(0.40f)}},
+        {"column_roundtrip", TernaryScaleMode::COLUMN, {static_cast<__fp16>(0.15f), static_cast<__fp16>(0.20f), static_cast<__fp16>(0.25f), static_cast<__fp16>(0.30f), static_cast<__fp16>(0.35f), static_cast<__fp16>(0.40f), static_cast<__fp16>(0.45f), static_cast<__fp16>(0.50f)}},
+    };
+
+    for (const auto& test_case : cases) {
+        const std::string filename = ternary_temp_file(test_case.suffix);
+        std::remove(filename.c_str());
+
+        {
+            CactusGraph graph;
+            size_t weight = graph.input({N, K}, Precision::INT8);
+            graph.set_input(weight, signs_interleaved.data(), Precision::INT8);
+            graph.set_ternary_scales(weight, test_case.mode, test_case.scales.size(),
+                                     const_cast<__fp16*>(test_case.scales.data()));
+            graph.set_interleaved(weight, true, N);
+            GraphFile::save_node(graph, weight, filename);
+        }
+
+        bool passed = true;
+        {
+            GraphFile::MappedFile mapped(filename);
+            passed = passed &&
+                     mapped.precision() == Precision::INT8 &&
+                     mapped.quantization_kind() == QuantizationKind::TERNARY &&
+                     mapped.ternary_scale_mode() == test_case.mode &&
+                     mapped.ternary_scale_count() == test_case.scales.size() &&
+                     mapped.ternary_storage() == TernaryStorage::PACKED_2BIT &&
+                     mapped.is_interleaved() &&
+                     mapped.original_N() == N &&
+                     mapped.byte_size() == packed_interleaved.size();
+
+            if (passed) {
+                passed = std::memcmp(mapped.data(), packed_interleaved.data(),
+                                     packed_interleaved.size() * sizeof(uint8_t)) == 0;
+            }
+
+            if (passed) {
+                const __fp16* mapped_scales = static_cast<const __fp16*>(mapped.scales_data());
+                if (mapped_scales == nullptr) {
+                    passed = false;
+                } else {
+                    for (size_t i = 0; i < test_case.scales.size(); ++i) {
+                        if (std::abs(static_cast<float>(mapped_scales[i]) - static_cast<float>(test_case.scales[i])) > 1e-3f) {
+                            passed = false;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        std::remove(filename.c_str());
+        if (!passed) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool test_complex_graph_structure() {
     TestUtils::FP16TestFixture fixture("Complex Graph Structure");
 
@@ -548,6 +751,113 @@ bool test_complex_graph_structure() {
 
     std::vector<__fp16> expected = {7, 11, 15, 19};
     return fixture.verify_output(scalar_result, expected);
+}
+
+bool test_ternary_mmap_matmul_column() {
+    const size_t M = 2;
+    const size_t K = 32;
+    const size_t N = 4;
+
+    const auto signs_rowmajor = make_ternary_signs(N, K);
+    const auto signs_interleaved = interleave_int8_rows_4(signs_rowmajor, N, K);
+    std::vector<__fp16> column_scales(K);
+    for (size_t col = 0; col < K; ++col) {
+        column_scales[col] = static_cast<__fp16>(0.20f + 0.02f * static_cast<float>(col % 8));
+    }
+    std::vector<__fp16> lhs(M * K);
+    for (size_t i = 0; i < lhs.size(); ++i) {
+        lhs[i] = static_cast<__fp16>((static_cast<float>((i * 9) % 23) - 11.0f) / 7.0f);
+    }
+
+    const std::string filename = ternary_temp_file("column_matmul");
+    std::remove(filename.c_str());
+
+    try {
+        {
+            CactusGraph graph;
+            size_t weight = graph.input({N, K}, Precision::INT8);
+            graph.set_input(weight, signs_interleaved.data(), Precision::INT8);
+            graph.set_ternary_scales(weight, TernaryScaleMode::COLUMN, column_scales.size(),
+                                     const_cast<__fp16*>(column_scales.data()));
+            graph.set_interleaved(weight, true, N);
+            GraphFile::save_node(graph, weight, filename);
+        }
+
+        CactusGraph graph;
+        size_t lhs_id = graph.input({M, K}, Precision::FP16);
+        size_t rhs_id = graph.mmap_weights(filename);
+        const auto& rhs_buffer = graph.get_output_buffer(rhs_id);
+        if (!rhs_buffer.is_ternary_int8() ||
+            !rhs_buffer.is_ternary_packed_2bit() ||
+            rhs_buffer.ternary_scale_mode != TernaryScaleMode::COLUMN ||
+            !rhs_buffer.is_interleaved) {
+            std::remove(filename.c_str());
+            return false;
+        }
+
+        size_t output_id = graph.matmul(lhs_id, rhs_id, true);
+        graph.set_input(lhs_id, lhs.data(), Precision::FP16);
+        graph.execute();
+
+        const auto expected = ternary_matmul_reference(
+            lhs, M, K, signs_rowmajor, N, TernaryScaleMode::COLUMN, column_scales, false);
+        const bool passed = compare_fp16_values(static_cast<__fp16*>(graph.get_output(output_id)), expected);
+        std::remove(filename.c_str());
+        return passed;
+    } catch (const std::exception&) {
+        std::remove(filename.c_str());
+        return false;
+    }
+}
+
+bool test_ternary_mmap_matmul_column_prequantized_lhs() {
+    const size_t M = 2;
+    const size_t K = 32;
+    const size_t N = 4;
+
+    const auto signs_rowmajor = make_ternary_signs(N, K);
+    const auto signs_interleaved = interleave_int8_rows_4(signs_rowmajor, N, K);
+    std::vector<__fp16> column_scales(K);
+    for (size_t col = 0; col < K; ++col) {
+        column_scales[col] = static_cast<__fp16>(0.15f + 0.015f * static_cast<float>(col % 10));
+    }
+    std::vector<__fp16> lhs(M * K);
+    for (size_t i = 0; i < lhs.size(); ++i) {
+        lhs[i] = static_cast<__fp16>((static_cast<float>((i * 5) % 19) - 9.0f) / 6.0f);
+    }
+
+    const std::string filename = ternary_temp_file("column_prequantized");
+    std::remove(filename.c_str());
+
+    try {
+        {
+            CactusGraph graph;
+            size_t weight = graph.input({N, K}, Precision::INT8);
+            graph.set_input(weight, signs_interleaved.data(), Precision::INT8);
+            graph.set_ternary_scales(weight, TernaryScaleMode::COLUMN, column_scales.size(),
+                                     const_cast<__fp16*>(column_scales.data()));
+            graph.set_interleaved(weight, true, N);
+            GraphFile::save_node(graph, weight, filename);
+        }
+
+        CactusGraph graph;
+        size_t lhs_id = graph.input({M, K}, Precision::FP16);
+        size_t lhs_quantized_id = graph.quantize_activations(lhs_id);
+        size_t rhs_id = graph.mmap_weights(filename);
+        size_t output_id = graph.matmul(lhs_quantized_id, rhs_id, true);
+
+        graph.set_input(lhs_id, lhs.data(), Precision::FP16);
+        graph.execute();
+
+        const auto expected = ternary_matmul_reference(
+            lhs, M, K, signs_rowmajor, N, TernaryScaleMode::COLUMN, column_scales, true);
+        const bool passed = compare_fp16_values(static_cast<__fp16*>(graph.get_output(output_id)), expected);
+        std::remove(filename.c_str());
+        return passed;
+    } catch (const std::exception&) {
+        std::remove(filename.c_str());
+        return false;
+    }
 }
 
 bool test_multiple_outputs() {
@@ -1068,6 +1378,7 @@ int main() {
     runner.run_test("Graph Precision Construction", test_graph_precision_construction());
     runner.run_test("Precision Conversion", test_precision_conversion());
     runner.run_test("Graph Save/Load", test_graph_save_load());
+    runner.run_test("Ternary Weight Roundtrip", test_ternary_weight_roundtrip());
     runner.run_test("Complex Graph Structure", test_complex_graph_structure());
     runner.run_test("Multiple Outputs", test_multiple_outputs());
     runner.run_test("Graph Reset", test_graph_reset());
@@ -1076,6 +1387,8 @@ int main() {
     runner.run_test("Gather 3D Tensor", test_gather_3d_tensor());
     runner.run_test("Gather FP16", test_gather_fp16());
     runner.run_test("Memory-Mapped Gather", test_mmap_gather());
+    runner.run_test("Ternary Memory-Mapped Column MatMul", test_ternary_mmap_matmul_column());
+    runner.run_test("Ternary Prequantized Column MatMul", test_ternary_mmap_matmul_column_prequantized_lhs());
     runner.run_test("Embedding Operation", test_embedding_operation());
     runner.run_test("Embedding from File", test_embedding_from_file());
     runner.run_test("STFT Complex", test_stft());

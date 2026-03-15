@@ -5,6 +5,139 @@
 #include <random>
 #include <algorithm>
 
+namespace {
+
+std::vector<int8_t> interleave_int8_rows_4(const std::vector<int8_t>& rowmajor, size_t rows, size_t cols) {
+    const size_t block = 4;
+    const size_t row_blocks = rows / block;
+    const size_t col_blocks = cols / block;
+    std::vector<int8_t> interleaved(rows * cols);
+    for (size_t row_block = 0; row_block < row_blocks; ++row_block) {
+        for (size_t col_block = 0; col_block < col_blocks; ++col_block) {
+            for (size_t lane = 0; lane < block; ++lane) {
+                for (size_t col_lane = 0; col_lane < block; ++col_lane) {
+                    size_t src_row = row_block * block + lane;
+                    size_t src_col = col_block * block + col_lane;
+                    size_t dst_idx = (row_block * col_blocks + col_block) * block * block
+                                     + lane * block + col_lane;
+                    interleaved[dst_idx] = rowmajor[src_row * cols + src_col];
+                }
+            }
+        }
+    }
+    return interleaved;
+}
+
+std::vector<uint8_t> pack_ternary_2bit(const std::vector<int8_t>& signs) {
+    std::vector<uint8_t> packed((signs.size() + 3) / 4, 0);
+    for (size_t i = 0; i < signs.size(); ++i) {
+        uint8_t code = 0;
+        if (signs[i] > 0) code = 1;
+        else if (signs[i] < 0) code = 2;
+        packed[i / 4] |= static_cast<uint8_t>(code << ((i % 4) * 2));
+    }
+    return packed;
+}
+
+std::vector<int8_t> make_ternary_signs(size_t rows, size_t cols) {
+    std::vector<int8_t> signs(rows * cols);
+    for (size_t row = 0; row < rows; ++row) {
+        for (size_t col = 0; col < cols; ++col) {
+            const int selector = static_cast<int>((row * 7 + col * 5) % 3);
+            signs[row * cols + col] = selector == 0 ? -1 : (selector == 1 ? 0 : 1);
+        }
+    }
+    return signs;
+}
+
+std::vector<__fp16> expand_ternary_group_scales(
+    size_t rows,
+    size_t cols,
+    TernaryScaleMode mode,
+    const std::vector<__fp16>& scales) {
+    constexpr size_t group_size = 32;
+    const size_t num_groups = cols / group_size;
+    const size_t row_blocks = rows / 4;
+    std::vector<__fp16> expanded(rows * num_groups, static_cast<__fp16>(1.0f));
+
+    if (mode == TernaryScaleMode::COLUMN) {
+        return expanded;
+    }
+
+    if (mode == TernaryScaleMode::TENSOR) {
+        std::fill(expanded.begin(), expanded.end(), scales[0]);
+        return expanded;
+    }
+
+    for (size_t row_block = 0; row_block < row_blocks; ++row_block) {
+        for (size_t group = 0; group < num_groups; ++group) {
+            for (size_t lane = 0; lane < 4; ++lane) {
+                const size_t row = row_block * 4 + lane;
+                expanded[(row_block * num_groups + group) * 4 + lane] = scales[row];
+            }
+        }
+    }
+
+    return expanded;
+}
+
+std::vector<__fp16> ternary_reference_output(
+    const std::vector<__fp16>& lhs_fp16,
+    size_t M,
+    size_t K,
+    const std::vector<int8_t>& rhs_rowmajor,
+    size_t N,
+    TernaryScaleMode mode,
+    const std::vector<__fp16>& scales) {
+    std::vector<__fp16> transformed_lhs = lhs_fp16;
+    std::vector<__fp16> rhs_row_scales(N, static_cast<__fp16>(1.0f));
+
+    switch (mode) {
+        case TernaryScaleMode::TENSOR:
+            std::fill(rhs_row_scales.begin(), rhs_row_scales.end(), scales[0]);
+            break;
+        case TernaryScaleMode::ROW:
+            rhs_row_scales = scales;
+            break;
+        case TernaryScaleMode::COLUMN:
+            for (size_t row = 0; row < M; ++row) {
+                for (size_t col = 0; col < K; ++col) {
+                    transformed_lhs[row * K + col] = static_cast<__fp16>(
+                        static_cast<float>(lhs_fp16[row * K + col]) * static_cast<float>(scales[col]));
+                }
+            }
+            break;
+        case TernaryScaleMode::NONE:
+            break;
+    }
+
+    std::vector<int8_t> lhs_quantized(M * K);
+    std::vector<float> lhs_scales(M, 1.0f);
+    for (size_t row = 0; row < M; ++row) {
+        float scale = cactus_fp16_max_abs(transformed_lhs.data() + row * K, K) / 127.0f;
+        if (scale < 1e-10f) scale = 1e-10f;
+        lhs_scales[row] = scale;
+        cactus_fp16_to_int8(transformed_lhs.data() + row * K, lhs_quantized.data() + row * K, K, scale);
+    }
+
+    std::vector<__fp16> expected(M * N, static_cast<__fp16>(0.0f));
+    for (size_t row = 0; row < M; ++row) {
+        for (size_t out = 0; out < N; ++out) {
+            int32_t dot = 0;
+            for (size_t col = 0; col < K; ++col) {
+                dot += static_cast<int32_t>(lhs_quantized[row * K + col]) *
+                       static_cast<int32_t>(rhs_rowmajor[out * K + col]);
+            }
+            expected[row * N + out] = static_cast<__fp16>(
+                static_cast<float>(dot) * lhs_scales[row] * static_cast<float>(rhs_row_scales[out]));
+        }
+    }
+
+    return expected;
+}
+
+}  // namespace
+
 bool test_neon_add_fp16_correctness() {
     const size_t size = 16;
     std::vector<__fp16> a(size), b(size), result(size), expected(size);
@@ -429,6 +562,85 @@ bool test_int4_matmul_correctness() {
     return true;
 }
 
+bool test_ternary_matmul_correctness() {
+    const size_t M = 3;
+    const size_t K = 128;
+    const size_t N = 8;
+    constexpr size_t group_size = 32;
+
+    std::vector<__fp16> lhs(M * K);
+    for (size_t i = 0; i < lhs.size(); ++i) {
+        lhs[i] = static_cast<__fp16>((static_cast<float>((i * 13) % 29) - 14.0f) / 11.0f);
+    }
+
+    const auto rhs_rowmajor = make_ternary_signs(N, K);
+    const auto rhs_interleaved = interleave_int8_rows_4(rhs_rowmajor, N, K);
+    const auto rhs_packed = pack_ternary_2bit(rhs_interleaved);
+
+    struct TernaryCase {
+        const char* label;
+        TernaryScaleMode mode;
+        std::vector<__fp16> scales;
+    };
+
+    std::vector<__fp16> column_scales(K);
+    for (size_t col = 0; col < K; ++col) {
+        column_scales[col] = static_cast<__fp16>(0.15f + 0.01f * static_cast<float>(col % 9));
+    }
+
+    const std::vector<TernaryCase> cases = {
+        {"tensor", TernaryScaleMode::TENSOR, {static_cast<__fp16>(0.30f)}},
+        {"row", TernaryScaleMode::ROW, {static_cast<__fp16>(0.10f), static_cast<__fp16>(0.15f), static_cast<__fp16>(0.20f), static_cast<__fp16>(0.25f),
+                                         static_cast<__fp16>(0.30f), static_cast<__fp16>(0.35f), static_cast<__fp16>(0.40f), static_cast<__fp16>(0.45f)}},
+        {"column", TernaryScaleMode::COLUMN, column_scales},
+    };
+
+    for (const auto& test_case : cases) {
+        std::vector<__fp16> effective_lhs = lhs;
+
+        if (test_case.mode == TernaryScaleMode::COLUMN) {
+            for (size_t row = 0; row < M; ++row) {
+                for (size_t col = 0; col < K; ++col) {
+                    effective_lhs[row * K + col] = static_cast<__fp16>(
+                        static_cast<float>(lhs[row * K + col]) * static_cast<float>(test_case.scales[col]));
+                }
+            }
+        }
+
+        const auto rhs_group_scales = expand_ternary_group_scales(N, K, test_case.mode, test_case.scales);
+
+        std::vector<int8_t> lhs_quantized(M * K);
+        std::vector<float> lhs_scales(M, 1.0f);
+        for (size_t row = 0; row < M; ++row) {
+            float scale = cactus_fp16_max_abs(effective_lhs.data() + row * K, K) / 127.0f;
+            if (scale < 1e-10f) scale = 1e-10f;
+            lhs_scales[row] = scale;
+            cactus_fp16_to_int8(effective_lhs.data() + row * K, lhs_quantized.data() + row * K, K, scale);
+        }
+
+        std::vector<__fp16> output(M * N, static_cast<__fp16>(0.0f));
+        cactus_matmul_ternary_packed2(lhs_quantized.data(), lhs_scales.data(),
+                                      rhs_packed.data(), rhs_group_scales.data(),
+                                      output.data(), M, K, N, group_size);
+
+        const auto expected = ternary_reference_output(
+            lhs, M, K, rhs_rowmajor, N, test_case.mode, test_case.scales);
+
+        float max_err = 0.0f;
+        for (size_t i = 0; i < output.size(); ++i) {
+            float err = std::abs(static_cast<float>(output[i]) - static_cast<float>(expected[i]));
+            if (err > max_err) max_err = err;
+        }
+
+        std::cout << "  TERNARY " << test_case.label << " max abs error: " << max_err << std::endl;
+        if (max_err >= 0.1f) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool test_stft_kernel_correctness() {
     const size_t N = 2, C_in = 1, L = 8, K = 4, stride = 2, num_fft_bins = 2;
     const size_t C_out = 2 * num_fft_bins;
@@ -490,6 +702,7 @@ int main() {
     runner.run_test("Kernel Attention FP16 Correctness", test_neon_attention_fp16_correctness());
     runner.run_test("Kernel Grouped INT8 MatMul Correctness", test_matmul_int8_grouped_correctness());
     runner.run_test("Kernel INT4 MatMul Correctness", test_int4_matmul_correctness());
+    runner.run_test("Kernel Ternary MatMul Correctness", test_ternary_matmul_correctness());
     runner.run_test("Kernel STFT Complex Correctness", test_stft_kernel_correctness());
 
     runner.print_summary();

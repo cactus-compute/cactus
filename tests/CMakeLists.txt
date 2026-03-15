@@ -96,6 +96,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
             ${ACCELERATE_FRAMEWORK}
             ${COREML_FRAMEWORK}
             ${FOUNDATION_FRAMEWORK}
+            ${ACCELERATE_FRAMEWORK}
             ${SECURITY_FRAMEWORK}
             ${SYSTEMCONFIGURATION_FRAMEWORK}
             ${CFNETWORK_FRAMEWORK}
@@ -130,6 +131,7 @@ foreach(APP_NAME chat asr)
                 ${ACCELERATE_FRAMEWORK}
                 ${COREML_FRAMEWORK}
                 ${FOUNDATION_FRAMEWORK}
+                ${ACCELERATE_FRAMEWORK}
                 ${SECURITY_FRAMEWORK}
                 ${SYSTEMCONFIGURATION_FRAMEWORK}
                 ${CFNETWORK_FRAMEWORK}

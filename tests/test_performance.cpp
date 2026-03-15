@@ -64,6 +64,80 @@ double calculate_gflops(size_t ops, double time_ms) {
     return ops / (time_ms * 1e6);
 }
 
+std::vector<int8_t> interleave_int8_rows_4(const std::vector<int8_t>& rowmajor, size_t rows, size_t cols) {
+    const size_t block = 4;
+    const size_t row_blocks = rows / block;
+    const size_t col_blocks = cols / block;
+    std::vector<int8_t> interleaved(rows * cols);
+    for (size_t row_block = 0; row_block < row_blocks; ++row_block) {
+        for (size_t col_block = 0; col_block < col_blocks; ++col_block) {
+            for (size_t lane = 0; lane < block; ++lane) {
+                for (size_t col_lane = 0; col_lane < block; ++col_lane) {
+                    size_t src_row = row_block * block + lane;
+                    size_t src_col = col_block * block + col_lane;
+                    size_t dst_idx = (row_block * col_blocks + col_block) * block * block
+                                     + lane * block + col_lane;
+                    interleaved[dst_idx] = rowmajor[src_row * cols + src_col];
+                }
+            }
+        }
+    }
+    return interleaved;
+}
+
+std::vector<int8_t> make_ternary_signs(size_t rows, size_t cols) {
+    std::vector<int8_t> signs(rows * cols);
+    for (size_t row = 0; row < rows; ++row) {
+        for (size_t col = 0; col < cols; ++col) {
+            const int selector = static_cast<int>((row * 11 + col * 7) % 3);
+            signs[row * cols + col] = selector == 0 ? -1 : (selector == 1 ? 0 : 1);
+        }
+    }
+    return signs;
+}
+
+std::vector<uint8_t> pack_ternary_2bit(const std::vector<int8_t>& signs) {
+    std::vector<uint8_t> packed((signs.size() + 3) / 4, 0);
+    for (size_t i = 0; i < signs.size(); ++i) {
+        uint8_t code = 0;
+        if (signs[i] > 0) code = 1;
+        else if (signs[i] < 0) code = 2;
+        packed[i / 4] |= static_cast<uint8_t>(code << ((i % 4) * 2));
+    }
+    return packed;
+}
+
+std::vector<__fp16> expand_ternary_group_scales(
+    size_t rows,
+    size_t cols,
+    TernaryScaleMode mode,
+    const std::vector<__fp16>& scales) {
+    constexpr size_t group_size = 32;
+    const size_t num_groups = cols / group_size;
+    const size_t row_blocks = rows / 4;
+    std::vector<__fp16> expanded(rows * num_groups, static_cast<__fp16>(1.0f));
+
+    if (mode == TernaryScaleMode::COLUMN) {
+        return expanded;
+    }
+
+    if (mode == TernaryScaleMode::TENSOR) {
+        std::fill(expanded.begin(), expanded.end(), scales[0]);
+        return expanded;
+    }
+
+    for (size_t row_block = 0; row_block < row_blocks; ++row_block) {
+        for (size_t group = 0; group < num_groups; ++group) {
+            for (size_t lane = 0; lane < 4; ++lane) {
+                const size_t row = row_block * 4 + lane;
+                expanded[(row_block * num_groups + group) * 4 + lane] = scales[row];
+            }
+        }
+    }
+
+    return expanded;
+}
+
 void benchmark_streaming_stores(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
     std::vector<size_t> sizes = {1024*1024, 4*1024*1024};
 
@@ -350,6 +424,94 @@ void benchmark_matmul_int8_grouped(TestUtils::TestRunner& runner, const Benchmar
         runner.log_performance(
             "MatMul INT8 " + std::to_string(M) + "x" + std::to_string(K_aligned) + "x" + std::to_string(N),
             details.str());
+    }
+}
+
+void benchmark_matmul_ternary(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
+    constexpr size_t group_size = 32;
+    std::vector<std::tuple<size_t, size_t, size_t>> shapes = {
+        {1, 1024, 1024},
+        {256, 1024, 1024},
+    };
+
+    for (const auto& [M, K, N] : shapes) {
+        std::vector<__fp16> A(M * K);
+        for (size_t i = 0; i < A.size(); ++i) {
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
+        }
+
+        const auto B_rowmajor = make_ternary_signs(N, K);
+        const auto B_interleaved = interleave_int8_rows_4(B_rowmajor, N, K);
+        const auto B_packed = pack_ternary_2bit(B_interleaved);
+
+        std::vector<__fp16> row_scales(N);
+        for (size_t n = 0; n < N; ++n) {
+            row_scales[n] = static_cast<__fp16>(0.05f + 0.005f * static_cast<float>(n % 9));
+        }
+        const auto row_group_scales = expand_ternary_group_scales(N, K, TernaryScaleMode::ROW, row_scales);
+
+        std::vector<__fp16> column_scales(K);
+        for (size_t k = 0; k < K; ++k) {
+            column_scales[k] = static_cast<__fp16>(0.10f + 0.01f * static_cast<float>(k % 7));
+        }
+
+        std::vector<int8_t> A_row_quant(M * K);
+        std::vector<float> A_row_quant_scales(M);
+        for (size_t m = 0; m < M; ++m) {
+            float scale = cactus_fp16_max_abs(A.data() + m * K, K) / 127.0f;
+            if (scale < 1e-10f) scale = 1e-10f;
+            A_row_quant_scales[m] = scale;
+            cactus_fp16_to_int8(A.data() + m * K, A_row_quant.data() + m * K, K, scale);
+        }
+
+        std::vector<__fp16> A_column_scaled(M * K);
+        for (size_t m = 0; m < M; ++m) {
+            for (size_t k = 0; k < K; ++k) {
+                A_column_scaled[m * K + k] = static_cast<__fp16>(
+                    static_cast<float>(A[m * K + k]) * static_cast<float>(column_scales[k]));
+            }
+        }
+
+        std::vector<int8_t> A_column_quant(M * K);
+        std::vector<float> A_column_quant_scales(M);
+        for (size_t m = 0; m < M; ++m) {
+            float scale = cactus_fp16_max_abs(A_column_scaled.data() + m * K, K) / 127.0f;
+            if (scale < 1e-10f) scale = 1e-10f;
+            A_column_quant_scales[m] = scale;
+            cactus_fp16_to_int8(A_column_scaled.data() + m * K, A_column_quant.data() + m * K, K, scale);
+        }
+
+        const auto ones = expand_ternary_group_scales(
+            N, K, TernaryScaleMode::COLUMN, {static_cast<__fp16>(1.0f)});
+        std::vector<__fp16> C(M * N);
+
+        double row_time_ms = time_operation<__fp16>([&]() {
+            cactus_matmul_ternary_packed2(A_row_quant.data(), A_row_quant_scales.data(),
+                                          B_packed.data(), row_group_scales.data(),
+                                          C.data(), M, K, N, group_size);
+        }, config.iterations);
+
+        double row_gflops = calculate_gflops(2ULL * M * K * N, row_time_ms);
+        std::ostringstream row_details;
+        row_details << std::fixed << std::setprecision(3) << row_time_ms << "ms, "
+                    << std::setprecision(2) << row_gflops << " GFLOPS";
+        runner.log_performance(
+            "MatMul TERNARY row-scale " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N),
+            row_details.str());
+
+        double column_time_ms = time_operation<__fp16>([&]() {
+            cactus_matmul_ternary_packed2(A_column_quant.data(), A_column_quant_scales.data(),
+                                          B_packed.data(), ones.data(),
+                                          C.data(), M, K, N, group_size);
+        }, config.iterations);
+
+        double column_gflops = calculate_gflops(2ULL * M * K * N, column_time_ms);
+        std::ostringstream column_details;
+        column_details << std::fixed << std::setprecision(3) << column_time_ms << "ms, "
+                       << std::setprecision(2) << column_gflops << " GFLOPS";
+        runner.log_performance(
+            "MatMul TERNARY column-scale " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N),
+            column_details.str());
     }
 }
 
@@ -1109,6 +1271,12 @@ bool test_layernorm_performance(TestUtils::TestRunner& runner) {
     return true;
 }
 
+bool test_ternary_matmul_performance(TestUtils::TestRunner& runner) {
+    BenchmarkConfig config;
+    benchmark_matmul_ternary(runner, config);
+    return true;
+}
+
 
 int main() {
     TestUtils::TestRunner runner("Performance Benchmarks");
@@ -1121,6 +1289,7 @@ int main() {
     runner.run_test("Matrix Multiplication", test_matrix_multiplication_performance(runner));
     runner.run_test("F16 MatMul", test_gemm_f16_direct_performance(runner));
     runner.run_test("Grouped INT8 MatMul", test_grouped_int8_matmul_performance(runner));
+    runner.run_test("Ternary MatMul", test_ternary_matmul_performance(runner));
     runner.run_test("Unary Operations", test_unary_operations_performance(runner));
     runner.run_test("Reduction Operations", test_reduction_operations_performance(runner));
     runner.run_test("Advanced Operations", test_advanced_operations_performance(runner));
