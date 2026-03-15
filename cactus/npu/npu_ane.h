@@ -48,6 +48,11 @@ public:
 
     size_t get_output_buffer_size() const override;
 
+    size_t encode_multimodal_input(
+        const std::vector<NPUNamedInput>& inputs,
+        __fp16* output,
+        const std::string& output_name = "") override;
+
 private:
     void* impl_;
 };
@@ -114,6 +119,11 @@ public:
     __fp16* get_output_buffer() override { return nullptr; }
 
     size_t get_output_buffer_size() const override { return 0; }
+
+    size_t encode_multimodal_input(
+        const std::vector<NPUNamedInput>&,
+        __fp16*,
+        const std::string& = "") override { return 0; }
 };
 
 class ANEPrefill : public NPUPrefill {
