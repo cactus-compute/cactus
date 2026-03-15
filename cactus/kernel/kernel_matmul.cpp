@@ -2,9 +2,11 @@
 #include "kernel_utils.h"
 #include "../graph/graph.h"
 #include <arm_neon.h>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <stdexcept>
 #include <vector>
 
 #ifdef __APPLE__
@@ -71,6 +73,57 @@ static inline __fp16 hsum_f16x8(float16x8_t v) {
     float16x4_t sum2 = vadd_f16(sum4, vext_f16(sum4, sum4, 2));
     float16x4_t sum1 = vadd_f16(sum2, vext_f16(sum2, sum2, 1));
     return vget_lane_f16(sum1, 0);
+}
+
+static const std::array<int8_t, 16> kTernaryPacked2DecodeNibbleLo = []() {
+    std::array<int8_t, 16> lut{};
+    for (size_t nibble = 0; nibble < lut.size(); ++nibble) {
+        const uint8_t code = static_cast<uint8_t>(nibble & 0x3u);
+        lut[nibble] = code == 0x1u ? static_cast<int8_t>(1)
+                     : code == 0x2u ? static_cast<int8_t>(-1)
+                                    : static_cast<int8_t>(0);
+    }
+    return lut;
+}();
+
+static const std::array<int8_t, 16> kTernaryPacked2DecodeNibbleHi = []() {
+    std::array<int8_t, 16> lut{};
+    for (size_t nibble = 0; nibble < lut.size(); ++nibble) {
+        const uint8_t code = static_cast<uint8_t>((nibble >> 2) & 0x3u);
+        lut[nibble] = code == 0x1u ? static_cast<int8_t>(1)
+                     : code == 0x2u ? static_cast<int8_t>(-1)
+                                    : static_cast<int8_t>(0);
+    }
+    return lut;
+}();
+
+static inline void unpack_ternary_packed2_as_int8x16x4(
+    const uint8_t* src,
+    int8x16_t& out0,
+    int8x16_t& out1,
+    int8x16_t& out2,
+    int8x16_t& out3
+) {
+    const uint8x16_t packed = vld1q_u8(src);
+    const uint8x16_t low_nibbles = vandq_u8(packed, vdupq_n_u8(0x0Fu));
+    const uint8x16_t high_nibbles = vshrq_n_u8(packed, 4);
+    const int8x16_t lut_lo = vld1q_s8(kTernaryPacked2DecodeNibbleLo.data());
+    const int8x16_t lut_hi = vld1q_s8(kTernaryPacked2DecodeNibbleHi.data());
+
+    const int8x16_t d0 = vqtbl1q_s8(lut_lo, low_nibbles);
+    const int8x16_t d1 = vqtbl1q_s8(lut_hi, low_nibbles);
+    const int8x16_t d2 = vqtbl1q_s8(lut_lo, high_nibbles);
+    const int8x16_t d3 = vqtbl1q_s8(lut_hi, high_nibbles);
+
+    const int16x8_t pair01_lo = vreinterpretq_s16_s8(vzip1q_s8(d0, d1));
+    const int16x8_t pair01_hi = vreinterpretq_s16_s8(vzip2q_s8(d0, d1));
+    const int16x8_t pair23_lo = vreinterpretq_s16_s8(vzip1q_s8(d2, d3));
+    const int16x8_t pair23_hi = vreinterpretq_s16_s8(vzip2q_s8(d2, d3));
+
+    out0 = vreinterpretq_s8_s16(vzip1q_s16(pair01_lo, pair23_lo));
+    out1 = vreinterpretq_s8_s16(vzip2q_s16(pair01_lo, pair23_lo));
+    out2 = vreinterpretq_s8_s16(vzip1q_s16(pair01_hi, pair23_hi));
+    out3 = vreinterpretq_s8_s16(vzip2q_s16(pair01_hi, pair23_hi));
 }
 
 static void cactus_matmul_f16_worker(
@@ -756,6 +809,253 @@ void cactus_matmul_int4(const int8_t* A, const float* A_scales,
         cactus_gemv_int4(A, A_scales[0], B_packed, B_scales, C, K, N, group_size);
     } else {
         cactus_gemm_int4(A, A_scales, B_packed, B_scales, C, M, K, N, group_size);
+    }
+}
+
+void cactus_gemv_ternary_packed2(
+    const int8_t* A,
+    float A_scale,
+    const uint8_t* B_packed,
+    const __fp16* B_scales,
+    __fp16* C,
+    size_t K, size_t N,
+    size_t group_size
+) {
+    if (K == 0 || N == 0) return;
+    if ((group_size % 32) != 0) {
+        throw std::runtime_error("Packed ternary matmul requires group_size to be a multiple of 32");
+    }
+
+    const size_t num_groups = K / group_size;
+    const size_t N_blocks = (N + 3) / 4;
+
+    auto process_blocks = [=](size_t block_start, size_t block_end) {
+        size_t n_block = block_start;
+
+        for (; n_block + 1 < block_end; n_block += 2) {
+            float32x4_t sum_a = vdupq_n_f32(0.0f);
+            float32x4_t sum_b = vdupq_n_f32(0.0f);
+
+            for (size_t g = 0; g < num_groups; ++g) {
+                const size_t k_base = g * group_size;
+                const int8_t* a_ptr = A + k_base;
+                const uint8_t* ba = B_packed + (n_block * K + k_base);
+                const uint8_t* bb = B_packed + ((n_block + 1) * K + k_base);
+
+                int32x4_t acc_a = vdupq_n_s32(0);
+                int32x4_t acc_b = vdupq_n_s32(0);
+
+                for (size_t chunk = 0; chunk < group_size; chunk += 32) {
+                    const int8_t* a_chunk = a_ptr + chunk;
+                    const uint8_t* ba_chunk = ba + chunk;
+                    const uint8_t* bb_chunk = bb + chunk;
+
+                    const int8x16_t a_lo = vld1q_s8(a_chunk);
+                    const int8x16_t a_hi = vld1q_s8(a_chunk + 16);
+
+                    int8x16_t b0, b1, b2, b3;
+                    unpack_ternary_packed2_as_int8x16x4(ba_chunk, b0, b1, b2, b3);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b0, a_lo, 0);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b1, a_lo, 1);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b2, a_lo, 2);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b3, a_lo, 3);
+                    unpack_ternary_packed2_as_int8x16x4(ba_chunk + 16, b0, b1, b2, b3);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b0, a_hi, 0);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b1, a_hi, 1);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b2, a_hi, 2);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b3, a_hi, 3);
+
+                    unpack_ternary_packed2_as_int8x16x4(bb_chunk, b0, b1, b2, b3);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b0, a_lo, 0);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b1, a_lo, 1);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b2, a_lo, 2);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b3, a_lo, 3);
+                    unpack_ternary_packed2_as_int8x16x4(bb_chunk + 16, b0, b1, b2, b3);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b0, a_hi, 0);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b1, a_hi, 1);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b2, a_hi, 2);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b3, a_hi, 3);
+                }
+
+                const float32x4_t scale_a = vcvt_f32_f16(vld1_f16(B_scales + (n_block * num_groups + g) * 4));
+                const float32x4_t scale_b = vcvt_f32_f16(vld1_f16(B_scales + ((n_block + 1) * num_groups + g) * 4));
+                sum_a = vmlaq_f32(sum_a, vcvtq_f32_s32(acc_a), scale_a);
+                sum_b = vmlaq_f32(sum_b, vcvtq_f32_s32(acc_b), scale_b);
+            }
+
+            vst1_f16(C + n_block * 4, vcvt_f16_f32(vmulq_n_f32(sum_a, A_scale)));
+            vst1_f16(C + (n_block + 1) * 4, vcvt_f16_f32(vmulq_n_f32(sum_b, A_scale)));
+        }
+
+        for (; n_block < block_end; ++n_block) {
+            const size_t n_start = n_block * 4;
+            const size_t actual_n = std::min(size_t(4), N - n_start);
+            float32x4_t running_sum = vdupq_n_f32(0.0f);
+
+            for (size_t g = 0; g < num_groups; ++g) {
+                const size_t k_base = g * group_size;
+                const int8_t* a_ptr = A + k_base;
+                const uint8_t* b_base = B_packed + (n_block * K + k_base);
+
+                __builtin_prefetch(b_base + group_size, 0, 3);
+
+                int32x4_t acc = vdupq_n_s32(0);
+
+                for (size_t chunk = 0; chunk < group_size; chunk += 32) {
+                    const int8_t* a_chunk = a_ptr + chunk;
+                    const uint8_t* b_chunk = b_base + chunk;
+
+                    int8x16_t a_lo = vld1q_s8(a_chunk);
+                    int8x16_t b0, b1, b2, b3;
+                    unpack_ternary_packed2_as_int8x16x4(b_chunk, b0, b1, b2, b3);
+
+                    acc = CACTUS_DOTQ_LANE(acc, b0, a_lo, 0);
+                    acc = CACTUS_DOTQ_LANE(acc, b1, a_lo, 1);
+                    acc = CACTUS_DOTQ_LANE(acc, b2, a_lo, 2);
+                    acc = CACTUS_DOTQ_LANE(acc, b3, a_lo, 3);
+
+                    int8x16_t a_hi = vld1q_s8(a_chunk + 16);
+                    unpack_ternary_packed2_as_int8x16x4(b_chunk + 16, b0, b1, b2, b3);
+
+                    acc = CACTUS_DOTQ_LANE(acc, b0, a_hi, 0);
+                    acc = CACTUS_DOTQ_LANE(acc, b1, a_hi, 1);
+                    acc = CACTUS_DOTQ_LANE(acc, b2, a_hi, 2);
+                    acc = CACTUS_DOTQ_LANE(acc, b3, a_hi, 3);
+                }
+
+                float32x4_t scales = vcvt_f32_f16(vld1_f16(B_scales + (n_block * num_groups + g) * 4));
+                running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc), scales);
+            }
+
+            float16x4_t result_f16 = vcvt_f16_f32(vmulq_n_f32(running_sum, A_scale));
+            if (actual_n == 4) {
+                vst1_f16(C + n_start, result_f16);
+            } else {
+                for (size_t ni = 0; ni < actual_n; ++ni) {
+                    C[n_start + ni] = vget_lane_f16(result_f16, 0);
+                    result_f16 = vext_f16(result_f16, result_f16, 1);
+                }
+            }
+        }
+    };
+
+    auto& pool = CactusThreading::get_thread_pool();
+    size_t num_threads = CactusThreading::GemmThreading::get_gemv_threads(N_blocks, pool.num_workers());
+    num_threads = std::min(num_threads, N_blocks);
+
+    if (num_threads <= 1) {
+        process_blocks(0, N_blocks);
+    } else {
+        pool.enqueue_n_threads(N_blocks, num_threads, process_blocks);
+        pool.wait_all();
+    }
+}
+
+void cactus_gemm_ternary_packed2(
+    const int8_t* A,
+    const float* A_scales,
+    const uint8_t* B_packed,
+    const __fp16* B_scales,
+    __fp16* C,
+    size_t M, size_t K, size_t N,
+    size_t group_size
+) {
+    if (M == 0 || K == 0 || N == 0) return;
+    if ((group_size % 32) != 0) {
+        throw std::runtime_error("Packed ternary matmul requires group_size to be a multiple of 32");
+    }
+
+    constexpr size_t TILE_M = 4;
+    constexpr size_t TILE_N = 4;
+
+    const size_t num_groups = K / group_size;
+    const size_t N_blocks = (N + TILE_N - 1) / TILE_N;
+    const size_t num_row_tiles = (M + TILE_M - 1) / TILE_M;
+    const size_t total_tiles = num_row_tiles * N_blocks;
+
+    CactusThreading::parallel_gemm_tiles(M, total_tiles,
+        [=](size_t tile_start, size_t tile_end) {
+            for (size_t tile_idx = tile_start; tile_idx < tile_end; ++tile_idx) {
+                const size_t tile_row = tile_idx / N_blocks;
+                const size_t n_block = tile_idx % N_blocks;
+                const size_t m_start = tile_row * TILE_M;
+                const size_t m_end = std::min(m_start + TILE_M, M);
+                const size_t n_start = n_block * TILE_N;
+                const size_t actual_m = m_end - m_start;
+                const size_t actual_n = std::min(size_t(4), N - n_start);
+
+                const int8_t* a_rows[TILE_M];
+                for (size_t mi = 0; mi < TILE_M; ++mi) {
+                    const size_t row = m_start + (mi < actual_m ? mi : actual_m - 1);
+                    a_rows[mi] = A + row * K;
+                }
+
+                float32x4_t running_sum[TILE_M] = {
+                    vdupq_n_f32(0.0f), vdupq_n_f32(0.0f),
+                    vdupq_n_f32(0.0f), vdupq_n_f32(0.0f)
+                };
+
+                for (size_t g = 0; g < num_groups; ++g) {
+                    const size_t k_base = g * group_size;
+                    const uint8_t* b_base = B_packed + (n_block * K + k_base);
+                    __builtin_prefetch(b_base + group_size, 0, 3);
+                    const float32x4_t scales = vcvt_f32_f16(vld1_f16(B_scales + (n_block * num_groups + g) * 4));
+
+                    for (size_t chunk = 0; chunk < group_size; chunk += 32) {
+                        const uint8_t* b_chunk = b_base + chunk;
+                        int8x16_t b0, b1, b2, b3;
+                        int8x16_t b4, b5, b6, b7;
+                        unpack_ternary_packed2_as_int8x16x4(b_chunk, b0, b1, b2, b3);
+                        unpack_ternary_packed2_as_int8x16x4(b_chunk + 16, b4, b5, b6, b7);
+
+                        #define CACTUS_TERNARY_GEMM_ROW(ROW) do { \
+                            const int8_t* a_ptr_##ROW = a_rows[ROW] + k_base + chunk; \
+                            int32x4_t acc_##ROW = vdupq_n_s32(0); \
+                            const int8x16_t a_lo_##ROW = vld1q_s8(a_ptr_##ROW); \
+                            const int8x16_t a_hi_##ROW = vld1q_s8(a_ptr_##ROW + 16); \
+                            acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b0, a_lo_##ROW, 0); \
+                            acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b1, a_lo_##ROW, 1); \
+                            acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b2, a_lo_##ROW, 2); \
+                            acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b3, a_lo_##ROW, 3); \
+                            acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b4, a_hi_##ROW, 0); \
+                            acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b5, a_hi_##ROW, 1); \
+                            acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b6, a_hi_##ROW, 2); \
+                            acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b7, a_hi_##ROW, 3); \
+                            running_sum[ROW] = vmlaq_f32(running_sum[ROW], vcvtq_f32_s32(acc_##ROW), scales); \
+                        } while (0)
+
+                        CACTUS_TERNARY_GEMM_ROW(0);
+                        CACTUS_TERNARY_GEMM_ROW(1);
+                        CACTUS_TERNARY_GEMM_ROW(2);
+                        CACTUS_TERNARY_GEMM_ROW(3);
+                        #undef CACTUS_TERNARY_GEMM_ROW
+                    }
+                }
+
+                for (size_t mi = 0; mi < actual_m; ++mi) {
+                    float16x4_t result_f16 = vcvt_f16_f32(vmulq_n_f32(running_sum[mi], A_scales[m_start + mi]));
+                    if (actual_n == 4) {
+                        vst1_f16(C + (m_start + mi) * N + n_start, result_f16);
+                    } else {
+                        for (size_t ni = 0; ni < actual_n; ++ni) {
+                            C[(m_start + mi) * N + n_start + ni] = vget_lane_f16(result_f16, 0);
+                            result_f16 = vext_f16(result_f16, result_f16, 1);
+                        }
+                    }
+                }
+            }
+        });
+}
+
+void cactus_matmul_ternary_packed2(const int8_t* A, const float* A_scales,
+                                   const uint8_t* B_packed, const __fp16* B_scales,
+                                   __fp16* C, size_t M, size_t K, size_t N, size_t group_size) {
+    if (M == 0 || K == 0 || N == 0) return;
+
+    if (M == 1) {
+        cactus_gemv_ternary_packed2(A, A_scales[0], B_packed, B_scales, C, K, N, group_size);
+    } else {
+        cactus_gemm_ternary_packed2(A, A_scales, B_packed, B_scales, C, M, K, N, group_size);
     }
 }
 

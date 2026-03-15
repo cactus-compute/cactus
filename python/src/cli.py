@@ -47,6 +47,7 @@ PROJECT_ROOT = _resolve_project_root()
 DEFAULT_MODEL_ID = "LiquidAI/LFM2.5-1.2B-Instruct"
 DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_TEST_WHISPER_MODEL_ID = "openai/whisper-small"
+PRECISION_CHOICES = ['INT4', 'INT8', 'FP16', 'TERNARY']
 
 with open(PROJECT_ROOT / "models.json") as _f:
     MODELS_REGISTRY = json.load(_f)
@@ -226,7 +227,7 @@ def cmd_download(args):
     print_color(YELLOW, f"Model weights not found. Downloading {model_id}...")
     print("=" * 45)
 
-    if not reconvert and not is_local:
+    if precision != 'TERNARY' and not reconvert and not is_local:
         if download_from_hf(model_id, weights_dir, precision):
             ensure_vad_weights(model_id, weights_dir, precision)
             return 0
@@ -585,7 +586,7 @@ def cmd_download(args):
             config.setdefault('model_variant', 'default')
 
         # Config precision stores the compute precision (weights are quantized, activations stay FP16)
-        if precision in ('INT8', 'INT4'):
+        if precision in ('INT8', 'INT4', 'TERNARY'):
             config['precision'] = "FP16"
         else:
             config['precision'] = precision
@@ -1857,7 +1858,7 @@ def create_parser():
                                        auto downloads and spins up
 
     Optional flags:
-    --precision INT4|INT8|FP16         default: INT4
+    --precision INT4|INT8|FP16|TERNARY default: INT4
     --token <token>                    HF token (for gated models)
     --reconvert                        force model weights reconversion from source
 
@@ -1868,7 +1869,7 @@ def create_parser():
 
     Optional flags:
     --file <audio.wav>                 transcribe audio file instead of mic
-    --precision INT4|INT8|FP16         default: INT4
+    --precision INT4|INT8|FP16|TERNARY default: INT4
     --token <token>                    HF token (for gated models)
     --reconvert                        force model weights reconversion from source
 
@@ -1884,7 +1885,7 @@ def create_parser():
                                        see supported weights on ReadMe
 
     Optional flags:
-    --precision INT4|INT8|FP16         quantization (default: INT4)
+    --precision INT4|INT8|FP16|TERNARY quantization (default: INT4)
     --token <token>                    HuggingFace API token
     --reconvert                        force model weights reconversion from source
 
@@ -1894,7 +1895,7 @@ def create_parser():
                                        supports LoRA adapter merging
 
     Optional flags:
-    --precision INT4|INT8|FP16   quantization (default: INT4)
+    --precision INT4|INT8|FP16|TERNARY quantization (default: INT4)
     --lora <path>                      LoRA adapter path to merge
     --token <token>                    HuggingFace API token
 
@@ -1919,7 +1920,7 @@ def create_parser():
     --transcribe_model <model>         default: UsefulSensors/moonshine-base
     --whisper_model <model>            default: openai/whisper-small (language detection)
     --benchmark                        use larger models (LFM2.5-VL-1.6B + nvidia/parakeet-ctc-1.1b)
-    --precision INT4|INT8|FP16         regenerates weights with precision
+    --precision INT4|INT8|FP16|TERNARY regenerates weights with precision
     --reconvert                        force model weights reconversion from source
     --no-rebuild                       skip building library and tests
     --llm                              run only LLM tests
@@ -1977,7 +1978,7 @@ def create_parser():
     download_parser = subparsers.add_parser('download', help='Download and convert model weights')
     download_parser.add_argument('model_id', nargs='?', default=DEFAULT_MODEL_ID,
                                  help=f'HuggingFace model ID (default: {DEFAULT_MODEL_ID})')
-    download_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'], default='INT4',
+    download_parser.add_argument('--precision', choices=PRECISION_CHOICES, default='INT4',
                                  help='Quantization precision (default: INT4)')
     download_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     download_parser.add_argument('--token', help='HuggingFace API token')
@@ -1997,7 +1998,7 @@ def create_parser():
     run_parser = subparsers.add_parser('run', help='Build, download (if needed), and run chat')
     run_parser.add_argument('model_id', nargs='?', default=DEFAULT_MODEL_ID,
                             help=f'HuggingFace model ID (default: {DEFAULT_MODEL_ID})')
-    run_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'], default='INT4',
+    run_parser.add_argument('--precision', choices=PRECISION_CHOICES, default='INT4',
                             help='Quantization precision (default: INT4)')
     run_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     run_parser.add_argument('--token', help='HuggingFace API token')
@@ -2017,7 +2018,7 @@ def create_parser():
                                    help='Audio file to transcribe (WAV format). Omit for live microphone.')
     transcribe_parser.add_argument('--language', default='en',
                                    help='Language code for transcription (default: en). Examples: es, fr, de, zh, ja')
-    transcribe_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'], default='INT4',
+    transcribe_parser.add_argument('--precision', choices=PRECISION_CHOICES, default='INT4',
                                    help='Quantization precision (default: INT4)')
     transcribe_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     transcribe_parser.add_argument('--token', help='HuggingFace API token')
@@ -2037,7 +2038,7 @@ def create_parser():
     eval_parser = subparsers.add_parser('eval', help='Run evaluation scripts outside the cactus submodule')
     eval_parser.add_argument('model_id', nargs='?', default=DEFAULT_MODEL_ID,
                              help=f'HuggingFace model ID (default: {DEFAULT_MODEL_ID})')
-    eval_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'], default='INT4',
+    eval_parser.add_argument('--precision', choices=PRECISION_CHOICES, default='INT4',
                              help='Quantization precision (default: INT4)')
     eval_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     eval_parser.add_argument('--token', help='HuggingFace API token')
@@ -2062,7 +2063,7 @@ def create_parser():
                              help='VAD model to use')
     test_parser.add_argument('--benchmark', action='store_true',
                              help='Use larger models (LFM2.5-VL-1.6B + nvidia/parakeet-ctc-1.1b)')
-    test_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'],
+    test_parser.add_argument('--precision', choices=PRECISION_CHOICES,
                              help='Regenerate weights with this precision (deletes existing weights)')
     test_parser.add_argument('--no-rebuild', action='store_true',
                              help='Skip building cactus library and tests')
@@ -2098,7 +2099,7 @@ def create_parser():
     convert_parser.add_argument('model_name', help='HuggingFace model name')
     convert_parser.add_argument('output_dir', nargs='?', default=None,
                                 help='Output directory (default: weights/<model_name>)')
-    convert_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'], default='INT4',
+    convert_parser.add_argument('--precision', choices=PRECISION_CHOICES, default='INT4',
                                 help='Quantization precision (default: INT4)')
     convert_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     convert_parser.add_argument('--token', help='HuggingFace API token')

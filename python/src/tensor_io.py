@@ -19,7 +19,18 @@ CACTUS_ALIGNMENT = 32
 FLAG_HAS_SCALES = 1 << 0
 FLAG_PAGE_ALIGNED = 1 << 1
 FLAG_TRANSPOSED = 1 << 2
-FLAG_INTERLEAVED = 1 << 3 
+FLAG_INTERLEAVED = 1 << 3
+FLAG_TERNARY = 1 << 4
+FLAG_TERNARY_MODE_SHIFT = 5
+FLAG_TERNARY_MODE_MASK = 0x3 << FLAG_TERNARY_MODE_SHIFT
+FLAG_TERNARY_PACKED_2BIT = 1 << 7
+TERNARY_MODE_TENSOR = 0
+TERNARY_MODE_ROW = 1
+TERNARY_MODE_COLUMN = 2
+
+TERNARY_ATOL = 5e-3
+TERNARY_RTOL = 5e-3
+TERNARY_FP16_SCALE_DTYPE = np.float16
 
 
 def align_offset(offset: int, alignment: int) -> int:
@@ -111,6 +122,84 @@ def pack_int4_pairs(data: np.ndarray) -> np.ndarray:
     return (low | high).astype(np.uint8).reshape(-1)
 
 
+def ternary_mode_flag(mode: str) -> int:
+    if mode == 'tensor':
+        mode_value = TERNARY_MODE_TENSOR
+    elif mode == 'row':
+        mode_value = TERNARY_MODE_ROW
+    elif mode == 'column':
+        mode_value = TERNARY_MODE_COLUMN
+    else:
+        raise ValueError(f"Unknown ternary mode: {mode}")
+    return mode_value << FLAG_TERNARY_MODE_SHIFT
+
+
+def ternary_signs(data: np.ndarray, atol: float = TERNARY_ATOL) -> np.ndarray:
+    signs = np.zeros_like(data, dtype=np.int8)
+    signs[data > atol] = 1
+    signs[data < -atol] = -1
+    return signs
+
+
+def pack_ternary_quads(data: np.ndarray) -> np.ndarray:
+    """Pack ternary sign values {-1,0,+1} into 2-bit codes, 4 weights per byte."""
+    flat = data.reshape(-1).astype(np.int8)
+    if flat.size % 4 != 0:
+        pad = 4 - (flat.size % 4)
+        flat = np.pad(flat, (0, pad), mode='constant', constant_values=0)
+
+    codes = np.zeros(flat.shape[0], dtype=np.uint8)
+    codes[flat > 0] = 1
+    codes[flat < 0] = 2
+
+    groups = codes.reshape(-1, 4)
+    packed = (
+        groups[:, 0]
+        | (groups[:, 1] << 2)
+        | (groups[:, 2] << 4)
+        | (groups[:, 3] << 6)
+    )
+    return packed.astype(np.uint8)
+
+
+def ternary_candidate(data: np.ndarray, mode: str) -> tuple[np.ndarray, np.ndarray]:
+    if mode == 'tensor':
+        scales = np.array([float(np.max(np.abs(data)))], dtype=np.float32)
+        reconstructed = ternary_signs(data).astype(np.float32) * scales[0]
+        return scales, reconstructed
+
+    if mode == 'row':
+        scales = np.max(np.abs(data), axis=1).astype(np.float32)
+        reconstructed = ternary_signs(data).astype(np.float32) * scales[:, np.newaxis]
+        return scales, reconstructed
+
+    if mode == 'column':
+        scales = np.max(np.abs(data), axis=0).astype(np.float32)
+        reconstructed = ternary_signs(data).astype(np.float32) * scales[np.newaxis, :]
+        return scales, reconstructed
+
+    raise ValueError(f"Unknown ternary mode: {mode}")
+
+
+def detect_ternary_representation(data: np.ndarray) -> tuple[str, np.ndarray, np.ndarray]:
+    for mode in ('tensor', 'row', 'column'):
+        scales, reconstructed = ternary_candidate(data, mode)
+        if np.allclose(data.astype(np.float32), reconstructed, atol=TERNARY_ATOL, rtol=TERNARY_RTOL):
+            return mode, ternary_signs(data), scales
+    raise ValueError("Tensor is not representable as ternary {-alpha, 0, +alpha}")
+
+
+def is_ternary_fp16_fallback(filename: str) -> bool:
+    return any(x in filename for x in ['norm', 'bias', 'vision', 'position_embeddings', 'embed_positions'])
+
+
+def is_ternary_int8_fallback(filename: str) -> bool:
+    return any(
+        x in filename
+        for x in list(EMBED_NAMES) + ['token_embeddings', 'embed_tokens_per_layer', 'output_weight', 'router']
+    )
+
+
 def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=False, stats_tracker=None, args=None, model_type=None):
     """Save a tensor to binary format with header metadata and group-wise quantization.
 
@@ -122,7 +211,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
     Args:
         tensor: The tensor to save (PyTorch or NumPy)
         output_path: Path to save the tensor
-        precision: Quantization precision ('INT4', 'INT8', 'FP16')
+        precision: Quantization precision ('INT4', 'INT8', 'FP16', 'TERNARY')
         transpose: Whether to transpose 2D tensors
         stats_tracker: Optional dict to track quantization statistics
         args: Optional args object with additional settings
@@ -144,9 +233,15 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
 
     if precision in ('INT8', 'INT4'):
         filename = output_path.name
-        if any(x in filename for x in ['norm', 'bias', 'vision', 'position_embeddings', 'embed_positions']):
+        if is_ternary_fp16_fallback(filename):
             precision = 'FP16'
         elif precision == 'INT4' and any(x in filename for x in list(EMBED_NAMES) + ['token_embeddings', 'embed_tokens_per_layer']):
+            precision = 'INT8'
+    elif precision == 'TERNARY':
+        filename = output_path.name
+        if is_ternary_fp16_fallback(filename):
+            precision = 'FP16'
+        elif is_ternary_int8_fallback(filename):
             precision = 'INT8'
 
     shape = list(data.shape)
@@ -154,6 +249,78 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         data = data.T
         original_data = original_data.T
         shape = [shape[1], shape[0]]
+
+    if precision == 'TERNARY' and len(shape) == 2:
+        N, K = shape
+        original_N = N
+        mode, signs, ternary_scales = detect_ternary_representation(data.astype(np.float32))
+
+        if K % GROUP_SIZE != 0:
+            pad_k = GROUP_SIZE - (K % GROUP_SIZE)
+            signs = np.pad(signs, ((0, 0), (0, pad_k)), mode='constant', constant_values=0)
+            if mode == 'column':
+                ternary_scales = np.pad(ternary_scales, (0, pad_k), mode='constant', constant_values=0)
+            K = signs.shape[1]
+
+        quantized_interleaved, N_padded = interleave_weights(signs, INTERLEAVE_BLOCK)
+        packed_ternary = pack_ternary_quads(quantized_interleaved)
+
+        if mode == 'tensor':
+            scales_fp16 = ternary_scales.astype(TERNARY_FP16_SCALE_DTYPE)
+        elif mode == 'row':
+            row_scales = ternary_scales.reshape(N, 1)
+            scales_interleaved, _ = interleave_scales(row_scales, INTERLEAVE_BLOCK)
+            scales_fp16 = scales_interleaved.astype(TERNARY_FP16_SCALE_DTYPE)
+        else:
+            scales_fp16 = ternary_scales.astype(TERNARY_FP16_SCALE_DTYPE)
+
+        if stats_tracker:
+            stats_tracker['ternary_tensors'] += 1
+            stats_tracker['quantized_parameters'] += original_N * K
+            stats_tracker['total_tensors'] += 1
+            stats_tracker['total_parameters'] += original_N * K
+
+        with open(output_path, 'wb') as f:
+            ndim = 2
+            data_bytes = packed_ternary.size
+            scales_bytes = scales_fp16.size * 2
+            flags = (
+                FLAG_HAS_SCALES
+                | FLAG_INTERLEAVED
+                | FLAG_TERNARY
+                | FLAG_TERNARY_PACKED_2BIT
+                | ternary_mode_flag(mode)
+            )
+            if transpose:
+                flags |= FLAG_TRANSPOSED
+
+            f.write(CACTUS_MAGIC)
+            f.write(struct.pack('<I', flags))
+            f.write(struct.pack('<I', CACTUS_ALIGNMENT))
+            f.write(struct.pack('<I', ndim))
+
+            f.write(struct.pack('<Q', N_padded))
+            f.write(struct.pack('<Q', K))
+            f.write(struct.pack('<Q', 0))
+            f.write(struct.pack('<Q', 0))
+
+            f.write(struct.pack('<I', 0))
+            f.write(struct.pack('<Q', data_bytes))
+            f.write(struct.pack('<Q', scales_bytes))
+            f.write(struct.pack('<I', 0))
+            f.write(struct.pack('<I', 0))
+            f.write(struct.pack('<Q', original_N))
+
+            header_size = 84
+            f.write(compute_padding(header_size, CACTUS_ALIGNMENT))
+
+            f.write(scales_fp16.tobytes())
+            scales_end = align_offset(header_size, CACTUS_ALIGNMENT) + scales_bytes
+            f.write(compute_padding(scales_end, CACTUS_ALIGNMENT))
+
+            f.write(packed_ternary.tobytes())
+
+        return
 
     if precision == 'INT8' and len(shape) == 2:
         N, K = shape
@@ -453,6 +620,7 @@ def create_quantization_stats():
         'total_tensors': 0,
         'int8_tensors': 0,
         'int4_tensors': 0,
+        'ternary_tensors': 0,
         'fp16_tensors': 0,
         'total_parameters': 0,
         'quantized_parameters': 0,
@@ -467,8 +635,9 @@ def print_quantization_summary(quantization_stats, args=None):
     """Print a summary of quantization statistics."""
     int8_count = quantization_stats.get('int8_tensors', 0)
     int4_count = quantization_stats.get('int4_tensors', 0)
+    ternary_count = quantization_stats.get('ternary_tensors', 0)
     fp16_count = quantization_stats.get('fp16_tensors', 0)
-    quantized_count = int8_count + int4_count
+    quantized_count = int8_count + int4_count + ternary_count
 
     if quantized_count > 0:
         mse_values = np.array(quantization_stats['mse_values'])
@@ -479,4 +648,4 @@ def print_quantization_summary(quantization_stats, args=None):
         print(f"MSE - Mean: {np.mean(mse_values):.2e}, Max: {np.max(mse_values):.2e}, Median: {np.median(mse_values):.2e}, Min: {np.min(mse_values):.2e}")
         print(f"SNR - Mean: {np.mean(snr_values):.1f}dB, Max: {np.max(snr_values):.1f}dB, Median: {np.median(snr_values):.1f}dB, Min: {np.min(snr_values):.1f}dB")
         print(f"CosSim - Mean: {np.mean(cos_sim_values):.6f}, Max: {np.max(cos_sim_values):.6f}, Median: {np.median(cos_sim_values):.6f}, Min: {np.min(cos_sim_values):.6f}")
-        print(f"Processed {int8_count} INT8 tensors, {int4_count} INT4 tensors, {fp16_count} FP16 tensors")
+        print(f"Processed {int8_count} INT8 tensors, {int4_count} INT4 tensors, {ternary_count} TERNARY tensors, {fp16_count} FP16 tensors")

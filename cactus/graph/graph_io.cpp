@@ -11,12 +11,68 @@ namespace {
     constexpr uint32_t CACTUS_MAGIC = 0x54434143;
     constexpr uint32_t FLAG_HAS_SCALES = 1 << 0;
     constexpr uint32_t FLAG_INTERLEAVED = 1 << 3;
+    constexpr uint32_t FLAG_TERNARY = 1 << 4;
+    constexpr uint32_t FLAG_TERNARY_MODE_SHIFT = 5;
+    constexpr uint32_t FLAG_TERNARY_MODE_MASK = 0x3u << FLAG_TERNARY_MODE_SHIFT;
+    constexpr uint32_t FLAG_TERNARY_PACKED_2BIT = 1 << 7;
     constexpr size_t HEADER_SIZE = 84;
 
     inline size_t align_offset(size_t offset, size_t alignment) {
         size_t remainder = offset % alignment;
         if (remainder == 0) return offset;
         return offset + (alignment - remainder);
+    }
+
+    uint32_t ternary_mode_bits(TernaryScaleMode mode) {
+        switch (mode) {
+            case TernaryScaleMode::TENSOR: return 0u << FLAG_TERNARY_MODE_SHIFT;
+            case TernaryScaleMode::ROW: return 1u << FLAG_TERNARY_MODE_SHIFT;
+            case TernaryScaleMode::COLUMN: return 2u << FLAG_TERNARY_MODE_SHIFT;
+            case TernaryScaleMode::NONE: break;
+        }
+        return 0;
+    }
+
+    TernaryScaleMode ternary_mode_from_flags(uint32_t flags) {
+        const uint32_t mode_bits = (flags & FLAG_TERNARY_MODE_MASK) >> FLAG_TERNARY_MODE_SHIFT;
+        switch (mode_bits) {
+            case 0: return TernaryScaleMode::TENSOR;
+            case 1: return TernaryScaleMode::ROW;
+            case 2: return TernaryScaleMode::COLUMN;
+            default: return TernaryScaleMode::NONE;
+        }
+    }
+
+    size_t ternary_scale_count_for_buffer(const BufferDesc& buffer) {
+        switch (buffer.ternary_scale_mode) {
+            case TernaryScaleMode::TENSOR:
+                return 1;
+            case TernaryScaleMode::ROW:
+                return !buffer.shape.empty() ? buffer.shape[0] : 0;
+            case TernaryScaleMode::COLUMN:
+                return buffer.shape.size() >= 2 ? buffer.shape[1] : 0;
+            case TernaryScaleMode::NONE:
+                return 0;
+        }
+        return 0;
+    }
+
+    size_t ternary_packed_2bit_bytes(size_t count) {
+        return (count + 3) / 4;
+    }
+
+    uint8_t ternary_code(int8_t value) {
+        if (value > 0) return 0x1u;
+        if (value < 0) return 0x2u;
+        return 0x0u;
+    }
+
+    std::vector<uint8_t> pack_ternary_2bit(const int8_t* src, size_t count) {
+        std::vector<uint8_t> packed(ternary_packed_2bit_bytes(count), 0);
+        for (size_t i = 0; i < count; ++i) {
+            packed[i / 4] |= static_cast<uint8_t>(ternary_code(src[i]) << ((i % 4) * 2));
+        }
+        return packed;
     }
 
 }
@@ -29,13 +85,17 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
     if (shape.size() != 2) {
         throw std::runtime_error("Memory-mapped embeddings must be 2D [vocab_size, embedding_dim]");
     }
+    if (mapped_file->quantization_kind() == QuantizationKind::TERNARY) {
+        throw std::runtime_error("Ternary embeddings are not supported");
+    }
 
     Precision precision = mapped_file->precision();
 
     size_t node_id = input(shape, precision);
     set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
 
-    if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
+    if (mapped_file->quantization_kind() == QuantizationKind::GROUPED &&
+        PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
         set_grouped_scales(node_id, mapped_file->group_size(), mapped_file->num_groups(),
                           const_cast<void*>(mapped_file->scales_data()));
 
@@ -66,15 +126,20 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
     size_t node_id = input(shape, precision);
     set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
 
-    if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
+    if (mapped_file->quantization_kind() == QuantizationKind::GROUPED &&
+        PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
         set_grouped_scales(node_id, mapped_file->group_size(), mapped_file->num_groups(),
                           const_cast<void*>(mapped_file->scales_data()));
-
-        if (mapped_file->is_interleaved()) {
-            auto& buffer = nodes_[node_index_map_.at(node_id)]->output_buffer;
-            buffer.set_interleaved(true, mapped_file->original_N());
-        }
+    } else if (mapped_file->quantization_kind() == QuantizationKind::TERNARY) {
+        set_ternary_scales(node_id, mapped_file->ternary_scale_mode(), mapped_file->ternary_scale_count(),
+                           const_cast<void*>(mapped_file->scales_data()), mapped_file->ternary_storage());
     }
+
+    if (mapped_file->is_interleaved()) {
+        auto& buffer = nodes_[node_index_map_.at(node_id)]->output_buffer;
+        buffer.set_interleaved(true, mapped_file->original_N());
+    }
+    nodes_[node_index_map_.at(node_id)]->output_buffer.byte_size = mapped_file->byte_size();
 
     size_t file_idx = mapped_files_.size();
     mapped_files_.push_back(std::move(mapped_file));
@@ -110,6 +175,14 @@ void CactusGraph::set_grouped_scales(size_t node_id, size_t group_size, size_t n
     }
 }
 
+void CactusGraph::set_ternary_scales(size_t node_id, TernaryScaleMode mode, size_t scale_count, void* scales_ptr,
+                                     TernaryStorage storage) {
+    auto it = node_index_map_.find(node_id);
+    if (it != node_index_map_.end()) {
+        nodes_[it->second]->output_buffer.set_ternary_scales(mode, scale_count, scales_ptr, storage);
+    }
+}
+
 void CactusGraph::set_interleaved(size_t node_id, bool interleaved, size_t original_N) {
     auto it = node_index_map_.find(node_id);
     if (it != node_index_map_.end()) {
@@ -124,12 +197,16 @@ size_t CactusGraph::embedding(const std::string& filename, size_t indices) {
     if (shape.size() != 2) {
         throw std::runtime_error("Embedding file must contain 2D tensor [vocab_size, hidden_dim]");
     }
+    if (mapped_file->quantization_kind() == QuantizationKind::TERNARY) {
+        throw std::runtime_error("Embedding requires FP16 or grouped INT8 weights");
+    }
 
     Precision precision = mapped_file->precision();
     size_t embeddings_node = input(shape, precision);
     set_external_input(embeddings_node, const_cast<void*>(mapped_file->data()), precision);
 
-    if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
+    if (mapped_file->quantization_kind() == QuantizationKind::GROUPED &&
+        precision == Precision::INT8 && mapped_file->group_size() > 0) {
         set_grouped_scales(embeddings_node, mapped_file->group_size(), mapped_file->num_groups(),
                           const_cast<void*>(mapped_file->scales_data()));
 
@@ -174,14 +251,28 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
 
     size_t byte_size = PrecisionTraits::packed_size_of(precision, total_elements);
 
-    bool has_scales = (precision == Precision::INT8 && buffer.is_grouped_int8() && buffer.scales_data);
+    bool has_grouped_scales = (precision == Precision::INT8 && buffer.is_grouped_int8() && buffer.scales_data);
+    bool has_ternary_scales = (precision == Precision::INT8 && buffer.is_ternary_int8() && buffer.scales_data);
+    const bool ternary_packed_2bit = has_ternary_scales;
     size_t N = shape.size() >= 1 ? shape[0] : 1;
-    size_t scales_bytes = has_scales ? (N * buffer.num_groups * sizeof(__fp16)) : 0;
+    size_t scales_bytes = 0;
+    if (has_grouped_scales) {
+        scales_bytes = N * buffer.num_groups * sizeof(__fp16);
+    } else if (has_ternary_scales) {
+        scales_bytes = ternary_scale_count_for_buffer(buffer) * sizeof(__fp16);
+        byte_size = ternary_packed_2bit_bytes(total_elements);
+    }
 
     uint32_t ndim = static_cast<uint32_t>(shape.size());
-    uint32_t flags = has_scales ? FLAG_HAS_SCALES : 0;
+    uint32_t flags = (has_grouped_scales || has_ternary_scales) ? FLAG_HAS_SCALES : 0;
     if (buffer.is_interleaved) {
         flags |= FLAG_INTERLEAVED;
+    }
+    if (has_ternary_scales) {
+        flags |= FLAG_TERNARY | ternary_mode_bits(buffer.ternary_scale_mode);
+        if (ternary_packed_2bit) {
+            flags |= FLAG_TERNARY_PACKED_2BIT;
+        }
     }
     uint32_t alignment = 32;
 
@@ -204,8 +295,8 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
     file.write(reinterpret_cast<const char*>(&data_bytes), sizeof(data_bytes));
     file.write(reinterpret_cast<const char*>(&scales_bytes_val), sizeof(scales_bytes_val));
 
-    uint32_t group_size = has_scales ? static_cast<uint32_t>(buffer.group_size) : 0;
-    uint32_t num_groups = has_scales ? static_cast<uint32_t>(buffer.num_groups) : 0;
+    uint32_t group_size = has_grouped_scales ? static_cast<uint32_t>(buffer.group_size) : 0;
+    uint32_t num_groups = has_grouped_scales ? static_cast<uint32_t>(buffer.num_groups) : 0;
     file.write(reinterpret_cast<const char*>(&group_size), sizeof(group_size));
     file.write(reinterpret_cast<const char*>(&num_groups), sizeof(num_groups));
 
@@ -220,7 +311,7 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
         file.write(&zero, 1);
     }
 
-    if (has_scales) {
+    if (has_grouped_scales || has_ternary_scales) {
         file.write(static_cast<const char*>(buffer.scales_data), scales_bytes);
 
         size_t scales_end = aligned_header + scales_bytes;
@@ -232,7 +323,17 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
         }
     }
 
-    file.write(static_cast<const char*>(data), byte_size);
+    if (has_ternary_scales) {
+        if (buffer.is_ternary_packed_2bit()) {
+            file.write(static_cast<const char*>(data), byte_size);
+        } else {
+            const int8_t* ternary_signs = static_cast<const int8_t*>(data);
+            const auto packed = pack_ternary_2bit(ternary_signs, total_elements);
+            file.write(reinterpret_cast<const char*>(packed.data()), packed.size());
+        }
+    } else {
+        file.write(static_cast<const char*>(data), byte_size);
+    }
 
     if (!file) {
         throw std::runtime_error("Error writing node data to file: " + filename);
@@ -284,6 +385,10 @@ MappedFile::MappedFile(MappedFile&& other) noexcept
     : fd_(other.fd_), mapped_data_(other.mapped_data_), file_size_(other.file_size_),
       data_offset_(other.data_offset_), shape_(std::move(other.shape_)),
       precision_(other.precision_), byte_size_(other.byte_size_),
+      quantization_kind_(other.quantization_kind_),
+      ternary_scale_mode_(other.ternary_scale_mode_),
+      ternary_scale_count_(other.ternary_scale_count_),
+      ternary_storage_(other.ternary_storage_),
       group_size_(other.group_size_), num_groups_(other.num_groups_),
       scales_offset_(other.scales_offset_), scales_bytes_(other.scales_bytes_),
       alignment_(other.alignment_),
@@ -292,6 +397,10 @@ MappedFile::MappedFile(MappedFile&& other) noexcept
     other.fd_ = -1;
     other.mapped_data_ = nullptr;
     other.file_size_ = 0;
+    other.quantization_kind_ = QuantizationKind::NONE;
+    other.ternary_scale_mode_ = TernaryScaleMode::NONE;
+    other.ternary_scale_count_ = 0;
+    other.ternary_storage_ = TernaryStorage::INT8;
     other.is_interleaved_ = false;
     other.original_N_ = 0;
 }
@@ -312,6 +421,10 @@ MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
         shape_ = std::move(other.shape_);
         precision_ = other.precision_;
         byte_size_ = other.byte_size_;
+        quantization_kind_ = other.quantization_kind_;
+        ternary_scale_mode_ = other.ternary_scale_mode_;
+        ternary_scale_count_ = other.ternary_scale_count_;
+        ternary_storage_ = other.ternary_storage_;
         group_size_ = other.group_size_;
         num_groups_ = other.num_groups_;
         scales_offset_ = other.scales_offset_;
@@ -322,6 +435,10 @@ MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
         other.fd_ = -1;
         other.mapped_data_ = nullptr;
         other.file_size_ = 0;
+        other.quantization_kind_ = QuantizationKind::NONE;
+        other.ternary_scale_mode_ = TernaryScaleMode::NONE;
+        other.ternary_scale_count_ = 0;
+        other.ternary_storage_ = TernaryStorage::INT8;
         other.is_interleaved_ = false;
         other.original_N_ = 0;
     }
@@ -374,6 +491,8 @@ void MappedFile::parse_header() {
     uint32_t flags = *reinterpret_cast<const uint32_t*>(ptr + offset);
     offset += sizeof(uint32_t);
     is_interleaved_ = (flags & FLAG_INTERLEAVED) != 0;
+    const bool is_ternary = (flags & FLAG_TERNARY) != 0;
+    const bool ternary_packed_2bit = (flags & FLAG_TERNARY_PACKED_2BIT) != 0;
 
     alignment_ = *reinterpret_cast<const uint32_t*>(ptr + offset);
     offset += sizeof(uint32_t);
@@ -409,6 +528,35 @@ void MappedFile::parse_header() {
 
     original_N_ = *reinterpret_cast<const uint64_t*>(ptr + offset);
     offset += sizeof(uint64_t);
+
+    if (is_ternary) {
+        quantization_kind_ = QuantizationKind::TERNARY;
+        ternary_scale_mode_ = ternary_mode_from_flags(flags);
+        ternary_storage_ = ternary_packed_2bit ? TernaryStorage::PACKED_2BIT : TernaryStorage::INT8;
+        switch (ternary_scale_mode_) {
+            case TernaryScaleMode::TENSOR:
+                ternary_scale_count_ = 1;
+                break;
+            case TernaryScaleMode::ROW:
+                ternary_scale_count_ = !shape_.empty() ? shape_[0] : 0;
+                break;
+            case TernaryScaleMode::COLUMN:
+                ternary_scale_count_ = shape_.size() >= 2 ? shape_[1] : 0;
+                break;
+            case TernaryScaleMode::NONE:
+                throw std::runtime_error("Invalid ternary tensor file: missing ternary scale mode");
+        }
+    } else if (scales_bytes_ > 0 && group_size_ > 0) {
+        quantization_kind_ = QuantizationKind::GROUPED;
+        ternary_scale_mode_ = TernaryScaleMode::NONE;
+        ternary_scale_count_ = 0;
+        ternary_storage_ = TernaryStorage::INT8;
+    } else {
+        quantization_kind_ = QuantizationKind::NONE;
+        ternary_scale_mode_ = TernaryScaleMode::NONE;
+        ternary_scale_count_ = 0;
+        ternary_storage_ = TernaryStorage::INT8;
+    }
 
     size_t aligned_header = align_offset(HEADER_SIZE, alignment_);
 

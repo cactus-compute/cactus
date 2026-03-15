@@ -87,6 +87,10 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
       num_groups(other.num_groups),
       scales_data(other.scales_data),
       owned_scales(std::move(other.owned_scales)),
+      quantization_kind(other.quantization_kind),
+      ternary_scale_mode(other.ternary_scale_mode),
+      ternary_scale_count(other.ternary_scale_count),
+      ternary_storage(other.ternary_storage),
       is_interleaved(other.is_interleaved),
       original_N(other.original_N),
       activation_scales_data(other.activation_scales_data),
@@ -99,6 +103,10 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
     other.group_size = 0;
     other.num_groups = 0;
     other.scales_data = nullptr;
+    other.quantization_kind = QuantizationKind::NONE;
+    other.ternary_scale_mode = TernaryScaleMode::NONE;
+    other.ternary_scale_count = 0;
+    other.ternary_storage = TernaryStorage::INT8;
     other.is_interleaved = false;
     other.original_N = 0;
     other.activation_scales_data = nullptr;
@@ -122,6 +130,10 @@ BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
         num_groups = other.num_groups;
         scales_data = other.scales_data;
         owned_scales = std::move(other.owned_scales);
+        quantization_kind = other.quantization_kind;
+        ternary_scale_mode = other.ternary_scale_mode;
+        ternary_scale_count = other.ternary_scale_count;
+        ternary_storage = other.ternary_storage;
         is_interleaved = other.is_interleaved;
         original_N = other.original_N;
         activation_scales_data = other.activation_scales_data;
@@ -135,6 +147,10 @@ BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
         other.group_size = 0;
         other.num_groups = 0;
         other.scales_data = nullptr;
+        other.quantization_kind = QuantizationKind::NONE;
+        other.ternary_scale_mode = TernaryScaleMode::NONE;
+        other.ternary_scale_count = 0;
+        other.ternary_storage = TernaryStorage::INT8;
         other.is_interleaved = false;
         other.original_N = 0;
         other.activation_scales_data = nullptr;

@@ -83,7 +83,7 @@ size_t CactusGraph::matmul(size_t input1, size_t input2, bool pretransposed_rhs,
     }
 
     std::vector<size_t> output_shape = {M, N};
-    OpParams params{.pretransposed_rhs = pretransposed_rhs, .backend = backend};
+    OpParams params{.pretransposed_rhs = pretransposed_rhs, .backend = backend, .output_precision = Precision::FP16};
     return add_node(OpType::MATMUL, {input1, input2}, output_shape, params);
 }
 
@@ -1372,7 +1372,7 @@ size_t CactusGraph::add_node(OpType op_type, const std::vector<size_t>& inputs, 
     }
 
     Precision result_precision = params.output_precision;
-    if (op_type == OpType::PRECISION_CAST) {
+    if (op_type == OpType::PRECISION_CAST || op_type == OpType::QUANTIZE_ACTIVATIONS) {
         result_precision = params.output_precision;
     } else if (result_precision == Precision::INT8 && !inputs.empty()) {
         result_precision = nodes_[node_index_map_[inputs[0]]]->output_buffer.precision;

@@ -105,6 +105,24 @@ enum class Precision {
     INT4 
 };
 
+enum class QuantizationKind {
+    NONE,
+    GROUPED,
+    TERNARY
+};
+
+enum class TernaryScaleMode {
+    NONE,
+    TENSOR,
+    ROW,
+    COLUMN
+};
+
+enum class TernaryStorage {
+    INT8,
+    PACKED_2BIT
+};
+
 enum class ComputeBackend {
     CPU,
     NPU
@@ -232,6 +250,10 @@ struct BufferDesc {
     size_t num_groups = 0;
     void* scales_data = nullptr;
     std::unique_ptr<char[]> owned_scales;
+    QuantizationKind quantization_kind = QuantizationKind::NONE;
+    TernaryScaleMode ternary_scale_mode = TernaryScaleMode::NONE;
+    size_t ternary_scale_count = 0;
+    TernaryStorage ternary_storage = TernaryStorage::INT8;
 
     bool is_interleaved = false;
     size_t original_N = 0;  
@@ -264,17 +286,48 @@ struct BufferDesc {
     }
 
     bool is_grouped_int8() const {
-        return precision == Precision::INT8 && group_size > 0;
+        return precision == Precision::INT8 &&
+               quantization_kind == QuantizationKind::GROUPED &&
+               group_size > 0;
     }
 
     bool is_grouped_int4() const {
-        return precision == Precision::INT4 && group_size > 0;
+        return precision == Precision::INT4 &&
+               quantization_kind == QuantizationKind::GROUPED &&
+               group_size > 0;
+    }
+
+    bool is_ternary_int8() const {
+        return precision == Precision::INT8 &&
+               quantization_kind == QuantizationKind::TERNARY &&
+               ternary_scale_mode != TernaryScaleMode::NONE &&
+               scales_data != nullptr;
+    }
+
+    bool is_ternary_packed_2bit() const {
+        return is_ternary_int8() &&
+               ternary_storage == TernaryStorage::PACKED_2BIT;
     }
 
     void set_grouped_scales(size_t gs, size_t ng, void* scales_ptr) {
         group_size = gs;
         num_groups = ng;
         scales_data = scales_ptr;
+        quantization_kind = QuantizationKind::GROUPED;
+        ternary_scale_mode = TernaryScaleMode::NONE;
+        ternary_scale_count = 0;
+        ternary_storage = TernaryStorage::INT8;
+    }
+
+    void set_ternary_scales(TernaryScaleMode mode, size_t scale_count, void* scales_ptr,
+                            TernaryStorage storage = TernaryStorage::INT8) {
+        group_size = 0;
+        num_groups = 0;
+        scales_data = scales_ptr;
+        quantization_kind = QuantizationKind::TERNARY;
+        ternary_scale_mode = mode;
+        ternary_scale_count = scale_count;
+        ternary_storage = storage;
     }
 
     void set_interleaved(bool interleaved, size_t orig_n) {
@@ -484,6 +537,8 @@ public:
     size_t mmap_embeddings(const std::string& filename);
     size_t mmap_weights(const std::string& filename);
     void set_grouped_scales(size_t node_id, size_t group_size, size_t num_groups, void* scales_ptr);
+    void set_ternary_scales(size_t node_id, TernaryScaleMode mode, size_t scale_count, void* scales_ptr,
+                            TernaryStorage storage = TernaryStorage::INT8);
     void set_interleaved(size_t node_id, bool interleaved, size_t original_N);
 
     void release_weight_pages(size_t node_id);
@@ -635,6 +690,10 @@ namespace GraphFile {
         const std::vector<size_t>& shape() const;
         Precision precision() const;
         size_t byte_size() const;
+        QuantizationKind quantization_kind() const { return quantization_kind_; }
+        TernaryScaleMode ternary_scale_mode() const { return ternary_scale_mode_; }
+        size_t ternary_scale_count() const { return ternary_scale_count_; }
+        TernaryStorage ternary_storage() const { return ternary_storage_; }
 
         size_t group_size() const { return group_size_; }
         size_t num_groups() const { return num_groups_; }
@@ -659,6 +718,10 @@ namespace GraphFile {
         std::vector<size_t> shape_;
         Precision precision_;
         size_t byte_size_;
+        QuantizationKind quantization_kind_ = QuantizationKind::NONE;
+        TernaryScaleMode ternary_scale_mode_ = TernaryScaleMode::NONE;
+        size_t ternary_scale_count_ = 0;
+        TernaryStorage ternary_storage_ = TernaryStorage::INT8;
         size_t group_size_ = 0;
         size_t num_groups_ = 0;
         size_t scales_offset_ = 0;
