@@ -312,6 +312,7 @@ void Metrics::parse(const std::string& json) {
     error = json_string(json, "error");
     cloud_handoff = json_bool(json, "cloud_handoff", false);
     response = json_string(json, "response");
+    thinking = json_string(json, "thinking");
     function_calls = json_array(json, "function_calls");
     confidence = json_number(json, "confidence", -1.0);
     ttft = json_number(json, "time_to_first_token_ms");
@@ -330,6 +331,7 @@ void Metrics::print_json() const {
               << "  \"error\": " << (error.empty() ? "null" : "\"" + error + "\"") << ",\n"
               << "  \"cloud_handoff\": " << (cloud_handoff ? "true" : "false") << ",\n"
               << "  \"response\": \"" << response << "\",\n"
+              << "  \"thinking\": " << (thinking.empty() ? "null" : "\"" + thinking + "\"") << ",\n"
               << "  \"function_calls\": " << function_calls << ",\n"
               << "  \"segments\": " << segments << ",\n"
               << "  \"confidence\": " << std::fixed << std::setprecision(4) << confidence << ",\n"

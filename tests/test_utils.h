@@ -150,6 +150,7 @@ struct Metrics {
     std::string error;
     bool cloud_handoff = false;
     std::string response;
+    std::string thinking;
     std::string function_calls;
     double confidence = -1.0;
     double ttft = 0.0;
