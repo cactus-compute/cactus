@@ -21,6 +21,7 @@ mkdir -p site_docs/stylesheets
 cp .github/docs-overrides/stylesheets/custom.css site_docs/stylesheets/custom.css
 
 cp CONTRIBUTING.md site_docs/CONTRIBUTING.md
+cp DCO.md site_docs/DCO.md
 
 cp docs/*.md site_docs/docs/
 
@@ -82,6 +83,7 @@ sedi 's|(/flutter/)|(flutter/README.md)|g' site_docs/index.md
 sedi 's|(/rust/)|(rust/README.md)|g' site_docs/index.md
 sedi 's|(/blog/hybrid_transcription\.md)|(blog/hybrid_transcription.md)|g' site_docs/index.md
 sedi 's|(/blog/lfm2_24b_a2b\.md)|(blog/lfm2_24b_a2b.md)|g' site_docs/index.md
+sedi 's|(/blog/parakeet\.md)|(blog/parakeet.md)|g' site_docs/index.md
 sedi 's|(quickstart\.md)|(docs/quickstart.md)|g' site_docs/index.md
 sedi 's|(choose-sdk\.md)|(docs/choose-sdk.md)|g' site_docs/index.md
 
@@ -148,8 +150,10 @@ if ls site_docs/blog/*.md >/dev/null 2>&1; then
     sedi 's|(/apple/)|(../apple/README.md)|g' "$f"
     sedi 's|(/android/)|(../android/README.md)|g' "$f"
     sedi 's|(/flutter/)|(../flutter/README.md)|g' "$f"
+    sedi 's|(/rust/)|(../rust/README.md)|g' "$f"
     sedi 's|(/blog/hybrid_transcription\.md)|(hybrid_transcription.md)|g' "$f"
     sedi 's|(/blog/lfm2_24b_a2b\.md)|(lfm2_24b_a2b.md)|g' "$f"
+    sedi 's|(/blog/parakeet\.md)|(parakeet.md)|g' "$f"
   done
 fi
 
