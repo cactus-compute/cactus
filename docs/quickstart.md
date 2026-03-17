@@ -167,6 +167,7 @@ Install Cactus and run your first on-device AI completion.
     cactus_model_t model = cactus_init(
         "path/to/weight/folder",
         "path/to/rag/documents",
+        false
     );
 
     const char* messages = R"([
@@ -185,9 +186,9 @@ Install Cactus and run your first on-device AI completion.
 
 ## Supported Models
 
-- **LLMs:** Gemma-3, LiquidAI LFM2/LFM2.5, Qwen3 (completion, tools, embeddings)
-- **Vision:** LFM2-VL, LFM2.5-VL (with Apple NPU support)
-- **Transcription:** Whisper (Small/Medium with Apple NPU), Moonshine-Base
+- **LLMs:** Gemma-3 (270M, FunctionGemma-270M, 1B), LiquidAI LFM2 (350M, 2.6B) / LFM2.5 (1.2B-Instruct, 1.2B-Thinking) / LFM2-8B-A1B, Qwen3 (0.6B, 1.7B) (completion, tools, embeddings)
+- **Vision:** LFM2-VL, LFM2.5-VL (with Apple NPU), Qwen3.5 (0.8B, 2B)
+- **Transcription:** Whisper (Tiny/Base/Small/Medium with Apple NPU), Parakeet (CTC-0.6B/CTC-1.1B/TDT-0.6B-v3 with Apple NPU), Moonshine-Base
 - **VAD:** Silero VAD for voice activity detection
 - **Embeddings:** Nomic-Embed, Qwen3-Embedding
 

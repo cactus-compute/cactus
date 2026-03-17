@@ -99,13 +99,11 @@ Handles are plain `Long` values (C pointers). All functions are top-level.
 <!-- --8<-- [start:example] -->
 ```kotlin
 import com.cactus.*
-import org.json.JSONObject
 
 val model = cactusInit("/path/to/model", null, false)
 val messages = """[{"role":"user","content":"What is the capital of France?"}]"""
 val resultJson = cactusComplete(model, messages, null, null, null)
-val result = JSONObject(resultJson)
-println(result.getString("response"))
+println(resultJson)
 cactusDestroy(model)
 ```
 <!-- --8<-- [end:example] -->
@@ -115,13 +113,14 @@ For vision models (LFM2-VL, LFM2.5-VL), add `"images": ["path/to/image.png"]` to
 ### Completion with Options and Streaming
 
 ```kotlin
+import com.cactus.*
+
 val options = """{"max_tokens":256,"temperature":0.7}"""
-val tokens = mutableListOf<String>()
 
 val resultJson = cactusComplete(model, messages, options, null) { token, _ ->
-    tokens.add(token)
     print(token)
 }
+println(resultJson)
 ```
 
 ### Prefill
@@ -192,18 +191,35 @@ val completion = cactusComplete(model, completionMessages, null, tools, null)
 ### Audio Transcription
 
 ```kotlin
+import com.cactus.*
+
 // From file
-val result = cactusTranscribe(model, "/path/to/audio.wav", "", null, null, null)
+val resultJson = cactusTranscribe(model, "/path/to/audio.wav", null, null, null, null)
+println(resultJson)
 
 // From PCM data (16 kHz mono)
 val pcmData: ByteArray = ...
-val result = cactusTranscribe(model, null, null, null, null, pcmData)
+val resultJson2 = cactusTranscribe(model, null, null, null, null, pcmData)
+println(resultJson2)
+```
+
+`segments` contains timestamps (seconds): phrase-level for Whisper, word-level for Parakeet TDT, one segment per transcription window for Parakeet CTC and Moonshine (consecutive VAD speech regions up to 30s).
+
+```kotlin
+import org.json.JSONObject
+
+val result = JSONObject(resultJson)
+val segments = result.getJSONArray("segments")
+for (i in 0 until segments.length()) {
+    val seg = segments.getJSONObject(i)
+    println("[${seg.getDouble("start")}s - ${seg.getDouble("end")}s] ${seg.getString("text")}")
+}
 ```
 
 ### Streaming Transcription
 
 ```kotlin
-val stream  = cactusStreamTranscribeStart(model, null)
+val stream = cactusStreamTranscribeStart(model, null)
 val partial = cactusStreamTranscribeProcess(stream, audioChunk)
 val final_  = cactusStreamTranscribeStop(stream)
 ```
@@ -238,19 +254,17 @@ val result = cactusRagQuery(model, "What is machine learning?", 5)
 ### Vector Index
 
 ```kotlin
-val index = cactusIndexInit("/path/to/index", 384)
+val index = cactusIndexInit("/path/to/index", 3)
 
 cactusIndexAdd(
     index,
     intArrayOf(1, 2),
     arrayOf("Document 1", "Document 2"),
-    arrayOf(floatArrayOf(0.1f, 0.2f), floatArrayOf(0.3f, 0.4f)),
+    arrayOf(floatArrayOf(0.1f, 0.2f, 0.3f), floatArrayOf(0.4f, 0.5f, 0.6f)),
     null
 )
 
-val resultsJson = cactusIndexQuery(index, floatArrayOf(0.1f, 0.2f), null)
-// JSON: {"results":[{"id":1,"score":0.99,...},...]}
-
+val resultsJson = cactusIndexQuery(index, floatArrayOf(0.1f, 0.2f, 0.3f), null)
 cactusIndexDelete(index, intArrayOf(2))
 cactusIndexCompact(index)
 cactusIndexDestroy(index)
@@ -380,7 +394,7 @@ fun interface CactusLogCallback {
 
 ## Requirements
 
-- Android API 24+ / arm64-v8a
+- Android API 21+ / arm64-v8a
 - iOS 13+ / arm64 (KMP only)
 
 ## See Also

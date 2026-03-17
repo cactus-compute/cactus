@@ -1913,7 +1913,7 @@ def create_parser():
 
     Optional flags:
     --model <model>                    default: LFM2-VL-450M
-    --transcribe_model <model>         default: UsefulSensors/moonshine-base
+    --transcribe_model <model>         default: nvidia/parakeet-tdt-0.6b-v3
     --whisper_model <model>            default: openai/whisper-small (language detection)
     --benchmark                        use larger models (LFM2.5-VL-1.6B + nvidia/parakeet-ctc-1.1b)
     --precision INT4|INT8|FP16         regenerates weights with precision

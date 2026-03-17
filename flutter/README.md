@@ -27,7 +27,7 @@ Build output:
 | `cactus-macos.xcframework` | macOS |
 <!-- --8<-- [end:install] -->
 
-see the main [README.md](../README.md) for how to use CLI & download weight
+See the main [README.md](../README.md) for how to use CLI & download weights
 
 ## Integration
 
@@ -58,34 +58,34 @@ see the main [README.md](../README.md) for how to use CLI & download weight
 
 Handles are typed as `CactusModelT`, `CactusIndexT`, and `CactusStreamTranscribeT` (all `Pointer<Void>` aliases). All functions are top-level.
 
+<!-- --8<-- [start:example] -->
 ### Basic Completion
 
-<!-- --8<-- [start:example] -->
 ```dart
 import 'cactus.dart';
-import 'dart:convert';
 
 final model = cactusInit('/path/to/model', null, false);
-final messages = jsonEncode([{'role': 'user', 'content': 'What is the capital of France?'}]);
+final messages = '[{"role":"user","content":"What is the capital of France?"}]';
 final resultJson = cactusComplete(model, messages, null, null, null);
-final result = jsonDecode(resultJson);
-print(result['response']);
+print(resultJson);
 cactusDestroy(model);
 ```
 <!-- --8<-- [end:example] -->
 
-For vision models (LFM2-VL, LFM2.5-VL), add `"images": ["path/to/image.png"]` to any message. See [Engine API](/docs/cactus_engine.md) for details.
+For vision models (LFM2-VL-450M, LFM2.5-VL-1.6B), add `"images": ["path/to/image.png"]` to any message. See [Engine API](/docs/cactus_engine.md) for details.
 
 ### Completion with Options and Streaming
 
 ```dart
-final options = jsonEncode({'max_tokens': 256, 'temperature': 0.7});
-final tokens = <String>[];
+import 'cactus.dart';
+import 'dart:io';
 
-final resultJson = cactusComplete(model, messages, options, null, (token, _) {
-  tokens.add(token);
+final options = '{"max_tokens":256,"temperature":0.7}';
+
+final resultJson = cactusComplete(model, messages, options, null, (token, tokenId) {
   stdout.write(token);
 });
+print(resultJson);
 ```
 
 ### Prefill
@@ -102,41 +102,13 @@ String cactusPrefill(
 ```
 
 ```dart
-final tools = jsonEncode([
-  {
-    'type': 'function',
-    'function': {
-      'name': 'get_weather',
-      'description': 'Get weather for a location',
-      'parameters': {
-        'type': 'object',
-        'properties': {
-          'location': {'type': 'string', 'description': 'City, State, Country'}
-        },
-        'required': ['location']
-      }
-    }
-  }
-]);
+final tools = '[{"type":"function","function":{"name":"get_weather","description":"Get weather for a location","parameters":{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}}}]';
 
-final messages = jsonEncode([
-  {'role': 'system', 'content': 'You are a helpful assistant.'},
-  {'role': 'user', 'content': 'What is the weather in Paris?'},
-  {'role': 'assistant', 'content': '<|tool_call_start|>get_weather(location="Paris")<|tool_call_end|>'},
-  {'role': 'tool', 'content': '{"name": "get_weather", "content": "Sunny, 72°F"}'},
-  {'role': 'assistant', 'content': "It's sunny and 72°F in Paris!"}
-]);
+final messages = '[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"What is the weather in Paris?"}]';
 
 final resultJson = cactusPrefill(model, messages, null, tools);
 
-final completionMessages = jsonEncode([
-  {'role': 'system', 'content': 'You are a helpful assistant.'},
-  {'role': 'user', 'content': 'What is the weather in Paris?'},
-  {'role': 'assistant', 'content': '<|tool_call_start|>get_weather(location="Paris")<|tool_call_end|>'},
-  {'role': 'tool', 'content': '{"name": "get_weather", "content": "Sunny, 72°F"}'},
-  {'role': 'assistant', 'content': "It's sunny and 72°F in Paris!"},
-  {'role': 'user', 'content': 'What about SF?'}
-]);
+final completionMessages = '[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"What is the weather in Paris?"},{"role":"user","content":"What about SF?"}]';
 
 final completion = cactusComplete(model, completionMessages, null, tools, null);
 ```
@@ -156,64 +128,118 @@ final completion = cactusComplete(model, completionMessages, null, tools, null);
 ### Audio Transcription
 
 ```dart
+import 'cactus.dart';
+import 'dart:typed_data';
+
 // From file
-final result = cactusTranscribe(model, '/path/to/audio.wav', '', null, null, null);
+final resultJson = cactusTranscribe(model, '/path/to/audio.wav', null, null, null, null);
+print(resultJson);
 
 // From PCM data (16 kHz mono)
 final pcmData = Uint8List.fromList([...]);
-final result = cactusTranscribe(model, null, null, null, null, pcmData);
+final resultJson2 = cactusTranscribe(model, null, null, null, null, pcmData);
+print(resultJson2);
+```
+
+`segments` contains timestamps (seconds): phrase-level for Whisper, word-level for Parakeet TDT, one segment per transcription window for Parakeet CTC and Moonshine (consecutive VAD speech regions up to 30s).
+
+```dart
+import 'dart:convert';
+
+final result = jsonDecode(resultJson) as Map<String, dynamic>;
+for (final seg in result['segments'] as List) {
+  print('[${seg['start']}s - ${seg['end']}s] ${seg['text']}');
+}
 ```
 
 ### Streaming Transcription
 
 ```dart
-final stream  = cactusStreamTranscribeStart(model, null);
-final partial = cactusStreamTranscribeProcess(stream, audioChunk);
-final final_  = cactusStreamTranscribeStop(stream);
+import 'cactus.dart';
+import 'dart:typed_data';
+
+final stream = cactusStreamTranscribeStart(model, null);
+
+final Uint8List audioChunk = ...;
+final partialJson = cactusStreamTranscribeProcess(stream, audioChunk);
+print(partialJson);
+
+final finalJson = cactusStreamTranscribeStop(stream);
+print(finalJson);
 ```
 
 ### Embeddings
 
 ```dart
-final embedding      = cactusEmbed(model, 'Hello, world!', true);   // Float32List
-final imageEmbedding = cactusImageEmbed(model, '/path/to/image.jpg');
-final audioEmbedding = cactusAudioEmbed(model, '/path/to/audio.wav');
+import 'cactus.dart';
+import 'dart:typed_data';
+
+final Float32List embedding      = cactusEmbed(model, 'Hello, world!', true);
+final Float32List imageEmbedding = cactusImageEmbed(model, '/path/to/image.jpg');
+final Float32List audioEmbedding = cactusAudioEmbed(model, '/path/to/audio.wav');
 ```
 
 ### Tokenization
 
 ```dart
-final tokens = cactusTokenize(model, 'Hello, world!');  // List<int>
-final scores = cactusScoreWindow(model, tokens, 0, tokens.length, 512);
+import 'cactus.dart';
+
+final List<int> tokens = cactusTokenize(model, 'Hello, world!');
+final String scores = cactusScoreWindow(model, tokens, 0, tokens.length, 512);
+```
+
+### Language Detection
+
+```dart
+import 'cactus.dart';
+import 'dart:typed_data';
+
+// From file
+final resultJson = cactusDetectLanguage(model, '/path/to/audio.wav', null, null);
+print(resultJson);
+
+// From PCM data (16 kHz mono)
+final Uint8List pcmData = ...;
+final resultJson2 = cactusDetectLanguage(model, null, null, pcmData);
+print(resultJson2);
 ```
 
 ### VAD
 
 ```dart
-final result = cactusVad(model, '/path/to/audio.wav', null, null);
+import 'cactus.dart';
+
+final String vadJson = cactusVad(model, '/path/to/audio.wav', null, null);
+print(vadJson);
 ```
 
 ### RAG
 
 ```dart
-final result = cactusRagQuery(model, 'What is machine learning?', 5);
+import 'cactus.dart';
+
+final String result = cactusRagQuery(model, 'What is machine learning?', 5);
+print(result);
 ```
 
 ### Vector Index
 
 ```dart
-final index = cactusIndexInit('/path/to/index', 384);
+import 'cactus.dart';
+
+final embDim = 4;
+final index = cactusIndexInit('/path/to/index', embDim);
 
 cactusIndexAdd(
   index,
   [1, 2],
   ['Document 1', 'Document 2'],
-  [[0.1, 0.2], [0.3, 0.4]],
+  [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]],
   null,
 );
 
-final resultsJson = cactusIndexQuery(index, [0.1, 0.2], null);
-// JSON: {"results":[{"id":1,"score":0.99,...},...]}
+final resultsJson = cactusIndexQuery(index, [0.1, 0.2, 0.3, 0.4], null);
+final getJson = cactusIndexGet(index, [1, 2]);
 
 cactusIndexDelete(index, [2]);
 cactusIndexCompact(index);
@@ -222,7 +248,7 @@ cactusIndexDestroy(index);
 
 ## API Reference
 
-All functions are top-level and mirror the C FFI directly. All functions throw `Exception` on failure.
+All functions are top-level and mirror the C FFI directly. Functions that return a value throw `Exception` on failure;
 
 ### Types
 
@@ -273,7 +299,7 @@ String cactusTranscribe(
   String? audioPath,
   String? prompt,
   String? optionsJson,
-  void Function(String, int)? callback,
+  void Function(String token, int tokenId)? callback,
   Uint8List? pcmData,
 )
 
@@ -338,8 +364,6 @@ void cactusTelemetryFlush()
 void cactusTelemetryShutdown()
 ```
 
-All functions throw a standard `Exception` on failure.
-
 ## Bundling Model Weights
 
 Models must be accessible via file path at runtime.
@@ -371,7 +395,7 @@ Future<String> getModelPath() async {
 Add model to bundle and access via path:
 
 ```dart
-import 'package:path_provider/path_provider.dart';
+import 'dart:io';
 
 final path = '${Directory.current.path}/model';
 ```
@@ -381,7 +405,7 @@ final path = '${Directory.current.path}/model';
 - Flutter 3.0+
 - Dart 2.17+
 - iOS 13.0+ / macOS 13.0+
-- Android API 24+ / arm64-v8a
+- Android API 21+ / arm64-v8a
 
 ## See Also
 

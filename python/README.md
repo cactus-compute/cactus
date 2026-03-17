@@ -50,20 +50,20 @@ All functions are module-level and mirror the C FFI directly. Handles are plain 
 ### Init / Lifecycle
 
 ```python
-handle = cactus_init(model_path: str, corpus_dir: str | None, cache_index: bool) -> int
-cactus_destroy(handle: int)
-cactus_reset(handle: int)   # clear KV cache
-cactus_stop(handle: int)    # abort ongoing generation
+model = cactus_init(model_path: str, corpus_dir: str | None, cache_index: bool) -> int
+cactus_destroy(model: int)
+cactus_reset(model: int)   # clear KV cache
+cactus_stop(model: int)    # abort ongoing generation
 cactus_get_last_error() -> str | None
 ```
 
 ### Completion
 
-Returns a JSON string with `response`, `function_calls`, timing stats, and `cloud_handoff`.
+Returns a JSON string with `success`, `error`, `cloud_handoff`, `response`, optional `thinking` (only present when the model emits chain-of-thought content, placed before `function_calls`), `function_calls`, `segments` (always `[]` for completion — populated only in transcription responses), `confidence`, timing stats (`time_to_first_token_ms`, `total_time_ms`, `prefill_tps`, `decode_tps`, `ram_usage_mb`), and token counts (`prefill_tokens`, `decode_tokens`, `total_tokens`).
 
 ```python
 result_json = cactus_complete(
-    handle: int,
+    model: int,
     messages_json: str,              # JSON array of {role, content}
     options_json: str | None,        # optional inference options
     tools_json: str | None,          # optional tool definitions
@@ -78,7 +78,7 @@ def on_token(token, token_id): print(token, end="", flush=True)
 
 result = json.loads(cactus_complete(model, messages_json, options, None, on_token))
 if result["cloud_handoff"]:
-    # confidence below threshold — defer to cloud
+    # response already contains cloud result
     pass
 ```
 
@@ -86,15 +86,17 @@ if result["cloud_handoff"]:
 ```json
 {
     "success": true,
+    "error": null,
+    "cloud_handoff": false,
     "response": "4",
     "function_calls": [],
-    "cloud_handoff": false,
+    "segments": [],
     "confidence": 0.92,
     "time_to_first_token_ms": 45.2,
     "total_time_ms": 163.7,
     "prefill_tps": 619.5,
     "decode_tps": 168.4,
-    "ram_usage_mb": 245.7,
+    "ram_usage_mb": 512.3,
     "prefill_tokens": 28,
     "decode_tokens": 12,
     "total_tokens": 40
@@ -106,12 +108,12 @@ if result["cloud_handoff"]:
 Pre-processes input text and populates the KV cache without generating output tokens. This reduces latency for subsequent calls to `cactus_complete`.
 
 ```python
-result_json = cactus_prefill(
-    handle: int,
+cactus_prefill(
+    model: int,
     messages_json: str,              # JSON array of {role, content}
     options_json: str | None,        # optional inference options
     tools_json: str | None           # optional tool definitions
-) -> str
+) -> None
 ```
 
 ```python
@@ -137,7 +139,7 @@ messages = json.dumps([
     {"role": "tool", "content": "{\"name\": \"get_weather\", \"content\": \"Sunny, 72°F\"}"},
     {"role": "assistant", "content": "It's sunny and 72°F in Paris!"}
 ])
-result = json.loads(cactus_prefill(model, messages, None, tools))
+cactus_prefill(model, messages, None, tools)
 
 completion_messages = json.dumps([
     {"role": "system", "content": "You are a helpful assistant."},
@@ -164,9 +166,11 @@ result = json.loads(cactus_complete(model, completion_messages, None, tools, Non
 
 ### Transcription
 
+Returns a JSON string. Use `json.loads()` to access the `response` field (transcribed text), the `segments` array (timestamped segments as `{"start": <sec>, "end": <sec>, "text": "<str>"}` — Whisper: phrase-level from timestamp tokens; Parakeet TDT: word-level from frame timing; Parakeet CTC and Moonshine: one segment per transcription window (consecutive VAD speech regions up to 30s)), and other metadata.
+
 ```python
 result_json = cactus_transcribe(
-    handle: int,
+    model: int,
     audio_path: str | None,
     prompt: str | None,
     options_json: str | None,
@@ -175,55 +179,78 @@ result_json = cactus_transcribe(
 ) -> str
 ```
 
-Streaming transcription:
+Streaming transcription also returns JSON strings:
 
 ```python
-stream = cactus_stream_transcribe_start(handle: int, options_json: str | None) -> int
-partial = cactus_stream_transcribe_process(stream: int, pcm_data: bytes) -> str
-final   = cactus_stream_transcribe_stop(stream: int) -> str
+stream       = cactus_stream_transcribe_start(model: int, options_json: str | None) -> int
+partial_json = cactus_stream_transcribe_process(stream: int, pcm_data: bytes) -> str
+final_json   = cactus_stream_transcribe_stop(stream: int) -> str
+```
+
+In `cactus_stream_transcribe_process` responses: `confirmed` is the stable text from segments that have been finalised across two consecutive decode passes (potentially replaced by a cloud result); `confirmed_local` is the same text before any cloud substitution; `pending` is the current window's unconfirmed transcription text; `segments` contains timestamped segments for the current audio window.
+
+```python
+result = json.loads(cactus_transcribe(model, "/path/to/audio.wav", None, None, None, None))
+print(result["response"])
+for seg in result["segments"]:
+    print(f"[{seg['start']:.3f}s - {seg['end']:.3f}s] {seg['text']}")
 ```
 
 ### Embeddings
 
 ```python
-embedding = cactus_embed(handle: int, text: str, normalize: bool) -> list[float]
-embedding = cactus_image_embed(handle: int, image_path: str) -> list[float]
-embedding = cactus_audio_embed(handle: int, audio_path: str) -> list[float]
+embedding = cactus_embed(model: int, text: str, normalize: bool) -> list[float]
+embedding = cactus_image_embed(model: int, image_path: str) -> list[float]
+embedding = cactus_audio_embed(model: int, audio_path: str) -> list[float]
 ```
 
 ### Tokenization
 
 ```python
-tokens     = cactus_tokenize(handle: int, text: str) -> list[int]
-result_json = cactus_score_window(handle: int, tokens: list[int], start: int, end: int, context: int) -> str
+tokens     = cactus_tokenize(model: int, text: str) -> list[int]
+result_json = cactus_score_window(model: int, tokens: list[int], start: int, end: int, context: int) -> str
 ```
 
 ### Detect Language
 
 ```python
 result_json = cactus_detect_language(
-    handle: int,
+    model: int,
     audio_path: str | None,
     options_json: str | None,
     pcm_data: bytes | None
 ) -> str
 ```
+
+Returns a JSON string with fields: `success`, `error`, `language` (BCP-47 code), `language_token`, `token_id`, `confidence`, `entropy`, `total_time_ms`, `ram_usage_mb`.
 
 ### VAD
 
 ```python
 result_json = cactus_vad(
-    handle: int,
+    model: int,
     audio_path: str | None,
     options_json: str | None,
     pcm_data: bytes | None
 ) -> str
 ```
 
+Returns a JSON string: `{"success":true,"error":null,"segments":[{"start":<sample_index>,"end":<sample_index>},...],"total_time_ms":...,"ram_usage_mb":...}`. VAD segments contain only `start` and `end` as integer sample indices — no `text` field.
+
 ### RAG
 
 ```python
-result_json = cactus_rag_query(handle: int, query: str, top_k: int) -> str
+result_json = cactus_rag_query(model: int, query: str, top_k: int) -> str
+```
+
+Returns a JSON string with a `chunks` array. Each chunk has `score` (float), `source` (str, from document metadata), and `content` (str):
+
+```json
+{
+    "chunks": [
+        {"score": 0.0142, "source": "doc.txt", "content": "relevant passage..."}
+    ]
+}
 ```
 
 ### Vector Index
@@ -239,10 +266,12 @@ cactus_index_compact(index: int)
 cactus_index_destroy(index: int)
 ```
 
+`cactus_index_query` returns `{"results":[{"id":<int>,"score":<float>}, ...]}`. `cactus_index_get` returns `{"results":[{"document":"...","metadata":<str|null>,"embedding":[...]}, ...]}`.
+
 ### Logging
 
 ```python
-cactus_log_set_level(level: int)  # 0=DEBUG 1=INFO 2=WARN 3=ERROR 4=NONE
+cactus_log_set_level(level: int)  # 0=DEBUG 1=INFO 2=WARN (default) 3=ERROR 4=NONE
 cactus_log_set_callback(callback: Callable[[int, str, str], None] | None)
 ```
 
@@ -255,7 +284,7 @@ cactus_telemetry_flush()
 cactus_telemetry_shutdown()
 ```
 
-All functions raise `RuntimeError` on failure.
+Functions that return a value raise `RuntimeError` on failure. `cactus_prefill`, `cactus_index_add`, `cactus_index_delete`, and `cactus_index_compact` also raise `RuntimeError` on failure despite not returning a value. Truly void functions that never raise: `cactus_destroy`, `cactus_reset`, `cactus_stop`, `cactus_index_destroy`, logging and telemetry functions.
 
 ## Vision (VLM)
 

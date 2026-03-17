@@ -161,10 +161,10 @@ For integrating Parakeet into your own applications, use the Python FFI bindings
 import json
 from cactus import cactus_init, cactus_transcribe, cactus_destroy
 
-model = cactus_init("weights/parakeet-ctc-1.1b")
+model = cactus_init("weights/parakeet-ctc-1.1b", None, False)
 
 result = json.loads(
-    cactus_transcribe(model, "/path/to/audio.wav")
+    cactus_transcribe(model, "/path/to/audio.wav", None, None, None, None)
 )
 
 if not result["success"]:
@@ -194,11 +194,10 @@ from cactus import (
     cactus_destroy,
 )
 
-model = cactus_init("weights/parakeet-ctc-1.1b")
+model = cactus_init("weights/parakeet-ctc-1.1b", None, False)
 stream = cactus_stream_transcribe_start(
     model,
-    {"min_chunk_size": 16000, "confirmation_threshold": 0.99},
-    language="en",
+    json.dumps({"min_chunk_size": 16000, "language": "en"}),
 )
 
 audio_q = queue.Queue()
@@ -218,11 +217,15 @@ with sd.RawInputStream(
         while True:
             pcm_chunk = audio_q.get()
             out = json.loads(cactus_stream_transcribe_process(stream, pcm_chunk))
+            if out.get("confirmed"):
+                print(out["confirmed"], end="\n", flush=True)
+            if out.get("pending"):
+                print(out["pending"], end="\r", flush=True)
     except KeyboardInterrupt:
         pass
 
 final = json.loads(cactus_stream_transcribe_stop(stream))
-print(final["confirmed"], end=" ", flush=True)
+print(final["confirmed"], end="\n", flush=True)
 
 cactus_destroy(model)
 ```
@@ -246,7 +249,7 @@ int main() {
         NULL, NULL, NULL, NULL, 0
     );
 
-    if (rc > 0) printf("Transcript: %s\n", response);
+    if (rc >= 0) printf("Transcript: %s\n", response);
 
     cactus_destroy(model);
     return 0;
@@ -258,7 +261,7 @@ Streaming works the same way — start a stream, feed PCM chunks, then stop:
 ```c
 cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(
     model,
-    "{\"min_chunk_size\": 16000, \"confirmation_threshold\": 0.99, \"language\": \"en\"}"
+    "{\"min_chunk_size\": 16000, \"language\": \"en\"}"
 );
 
 char buf[8192];
@@ -300,8 +303,8 @@ fn main() {
         )
     };
 
-    if rc > 0 {
-        let response = String::from_utf8_lossy(&buf[..rc as usize]);
+    if rc >= 0 {
+        let response = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr() as *const c_char).to_string_lossy() };
         println!("Transcript: {}", response);
     }
 
@@ -311,52 +314,52 @@ fn main() {
 
 ### 7. Use the [Swift SDK](/apple/)
 
-The Swift SDK provides a high-level `Cactus` class with native Swift types:
+The Swift SDK exposes top-level functions that map directly to the C FFI:
 
 ```swift
 import Foundation
 
-let model = try Cactus(modelPath: "weights/parakeet-ctc-1.1b")
+let model = try cactusInit("weights/parakeet-ctc-1.1b", nil, false)
 
 // File-based transcription
-let result = try model.transcribe(audioPath: "/path/to/audio.wav")
-print(result.text)
+let resultJson = try cactusTranscribe(model, "/path/to/audio.wav", nil, nil, nil, nil)
+print(resultJson)
 
 // Streaming transcription
-let stream = try model.createStreamTranscriber()
+let stream = try cactusStreamTranscribeStart(model, "{\"min_chunk_size\": 16000}")
 // Feed PCM chunks from your audio source (16-bit, 16kHz, mono)
-let partial = try stream.process(pcmData: audioChunk)
-print("Partial: \(partial.text)")
+let partial = try cactusStreamTranscribeProcess(stream, audioChunk)
+print("Partial: \(partial)")
 
-let final = try stream.stop()
-print("Final: \(final.text)")
-stream.close()
+let finalResult = try cactusStreamTranscribeStop(stream)
+print("Final: \(finalResult)")
+
+cactusDestroy(model)
 ```
 
 ### 8. Use the [Kotlin SDK](/android/)
 
-The Kotlin SDK supports Android and iOS via Kotlin Multiplatform:
+The Kotlin SDK exposes top-level functions that map directly to the C FFI:
 
 ```kotlin
 import com.cactus.*
 
-val model = Cactus.create("weights/parakeet-ctc-1.1b")
+val model = cactusInit("weights/parakeet-ctc-1.1b", null, false)
 
 // File-based transcription
-val result = model.transcribe("/path/to/audio.wav")
-println(result.text)
+val resultJson = cactusTranscribe(model, "/path/to/audio.wav", null, null, null, null)
+println(resultJson)
 
 // Streaming transcription
-model.createStreamTranscriber().use { stream ->
-    stream.insert(audioChunk)
-    val partial = stream.process()
-    println("Partial: ${partial.text}")
+val stream = cactusStreamTranscribeStart(model, "{\"min_chunk_size\": 16000}")
+// Feed PCM chunks from your audio source (16-bit, 16kHz, mono)
+val partial = cactusStreamTranscribeProcess(stream, audioChunk)
+println("Partial: $partial")
 
-    val final = stream.finalize()
-    println("Final: ${final.text}")
-}
+val finalResult = cactusStreamTranscribeStop(stream)
+println("Final: $finalResult")
 
-model.close()
+cactusDestroy(model)
 ```
 
 ### 9. Use the [Flutter SDK](/flutter/)
@@ -366,26 +369,22 @@ The Flutter SDK brings Cactus transcription to iOS, macOS, and Android:
 ```dart
 import 'cactus.dart';
 
-final model = Cactus.create('weights/parakeet-ctc-1.1b');
+final model = cactusInit('weights/parakeet-ctc-1.1b', null, false);
 
 // File-based transcription
-final result = model.transcribe('/path/to/audio.wav');
-print(result.text);
+final resultJson = cactusTranscribe(model, '/path/to/audio.wav', null, null, null, null);
+print(resultJson);
 
 // Streaming transcription
-final stream = model.createStreamTranscriber();
-stream.insert(audioChunk);
-final partial = stream.process();
-print('Partial: ${partial.text}');
+final stream = cactusStreamTranscribeStart(model, '{"min_chunk_size": 16000}');
+final partial = cactusStreamTranscribeProcess(stream, audioChunk);
+print('Partial: $partial');
 
-final finalResult = stream.finalize();
-print('Final: ${finalResult.text}');
+final finalResult = cactusStreamTranscribeStop(stream);
+print('Final: $finalResult');
 
-stream.dispose();
-model.dispose();
+cactusDestroy(model);
 ```
-
-## Conclusion
 
 ## See Also
 

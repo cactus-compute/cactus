@@ -28,7 +28,7 @@ Build outputs (in `apple/`):
 | `libcactus-simulator.a` | Static library for iOS simulator |
 <!-- --8<-- [end:install] -->
 
-see the main [README.md](../README.md) for how to use CLI & download weight
+See the main [README.md](../README.md) for how to use CLI & download weights
 
 For Android, build `libcactus.so` from the `android/` directory.
 
@@ -100,10 +100,7 @@ defer { cactusDestroy(model) }
 
 let messages = #"[{"role":"user","content":"What is the capital of France?"}]"#
 let resultJson = try cactusComplete(model, messages, nil, nil, nil)
-if let data = resultJson.data(using: .utf8),
-   let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-    print(result["response"] as? String ?? "")
-}
+print(resultJson)
 ```
 <!-- --8<-- [end:example] -->
 
@@ -114,9 +111,10 @@ For vision models (LFM2-VL, LFM2.5-VL), add `"images": ["path/to/image.png"]` to
 ```swift
 let options = #"{"max_tokens":256,"temperature":0.7}"#
 
-let resultJson = try cactusComplete(model, messages, options, nil) { token, _ in
+let resultJson = try cactusComplete(model, messages, options, nil as String?) { token, _ in
     print(token, terminator: "")
 }
+print(resultJson)
 ```
 
 ### Prefill
@@ -187,19 +185,40 @@ let completion = try cactusComplete(model, completionMessages, nil, tools, nil)
 
 ```swift
 // From file
-let result = try cactusTranscribe(model, "/path/to/audio.wav", "", nil, nil as ((String, UInt32) -> Void)?, nil as Data?)
+let resultJson = try cactusTranscribe(model, "/path/to/audio.wav", nil, nil, nil as ((String, UInt32) -> Void)?, nil as Data?)
+print(resultJson)
 
 // From PCM data (16 kHz mono)
 let pcmData: Data = ...
-let result = try cactusTranscribe(model, nil, nil, nil, nil as ((String, UInt32) -> Void)?, pcmData)
+let resultJson2 = try cactusTranscribe(model, nil, nil, nil, nil as ((String, UInt32) -> Void)?, pcmData)
+print(resultJson2)
+```
+
+`segments` contains timestamps (seconds): phrase-level for Whisper, word-level for Parakeet TDT, one segment per transcription window for Parakeet CTC and Moonshine (consecutive VAD speech regions up to 30s).
+
+```swift
+if let data = resultJson.data(using: .utf8),
+   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+   let segments = obj["segments"] as? [[String: Any]] {
+    for seg in segments {
+        let start = seg["start"] as? Double ?? 0
+        let end = seg["end"] as? Double ?? 0
+        let text = seg["text"] as? String ?? ""
+        print(String(format: "[%.3fs - %.3fs] %@", start, end, text))
+    }
+}
 ```
 
 ### Streaming Transcription
 
 ```swift
 let stream = try cactusStreamTranscribeStart(model, nil as String?)
-let partial = try cactusStreamTranscribeProcess(stream, audioChunk)
-let final_  = try cactusStreamTranscribeStop(stream)
+
+let partialJson = try cactusStreamTranscribeProcess(stream, audioChunk)
+print(partialJson)
+
+let finalJson = try cactusStreamTranscribeStop(stream)
+print(finalJson)
 ```
 
 ### Embeddings
@@ -214,19 +233,29 @@ let audioEmbedding = try cactusAudioEmbed(model, "/path/to/audio.wav")
 
 ```swift
 let tokens = try cactusTokenize(model, "Hello, world!")
-let scores = try cactusScoreWindow(model, tokens, 0, tokens.count, min(tokens.count, 512))
+let scoresJson = try cactusScoreWindow(model, tokens, 0, tokens.count, min(tokens.count, 512))
+print(scoresJson)
+```
+
+### Detect Language
+
+```swift
+let langJson = try cactusDetectLanguage(model, "/path/to/audio.wav", nil, nil)
+print(langJson)
 ```
 
 ### VAD
 
 ```swift
-let result = try cactusVad(model, "/path/to/audio.wav", nil as String?, nil as Data?)
+let vadJson = try cactusVad(model, "/path/to/audio.wav", nil as String?, nil as Data?)
+print(vadJson)
 ```
 
 ### RAG
 
 ```swift
-let result = try cactusRagQuery(model, "What is machine learning?", 5)
+let ragJson = try cactusRagQuery(model, "What is machine learning?", 5)
+print(ragJson)
 ```
 
 ### Vector Index
@@ -236,12 +265,11 @@ let index = try cactusIndexInit("/path/to/index", 384)
 defer { cactusIndexDestroy(index) }
 
 try cactusIndexAdd(index, [Int32(1), Int32(2)], ["doc1", "doc2"],
-                   [[0.1, 0.2, ...], [0.3, 0.4, ...]], nil)
+                   [[Float(0.1), Float(0.2), ...], [Float(0.3), Float(0.4), ...]], nil)
 
-let results = try cactusIndexQuery(index, [0.1, 0.2, ...], nil)
-// results is a JSON string: {"results":[{"id":1,"score":0.99,...},...]}
+let results = try cactusIndexQuery(index, [Float(0.1), Float(0.2), ...], nil)
 
-try cactusIndexDelete(index, [2])
+try cactusIndexDelete(index, [Int32(2)])
 try cactusIndexCompact(index)
 ```
 
@@ -352,7 +380,7 @@ func cactusIndexCompact(_ index: CactusIndexT) throws
 ### Logging
 
 ```swift
-func cactusLogSetLevel(_ level: Int32)  // 0=DEBUG 1=INFO 2=WARN 3=ERROR 4=NONE
+func cactusLogSetLevel(_ level: Int32)  // 0=DEBUG, 1=INFO, 2=WARN (default), 3=ERROR, 4=NONE
 func cactusLogSetCallback(_ callback: ((Int32, String, String) -> Void)?)
 ```
 
