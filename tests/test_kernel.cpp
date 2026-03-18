@@ -607,8 +607,6 @@ bool test_ternary_matmul_correctness() {
             }
         }
 
-        const auto rhs_group_scales = expand_ternary_group_scales(N, K, test_case.mode, test_case.scales);
-
         std::vector<int8_t> lhs_quantized(M * K);
         std::vector<float> lhs_scales(M, 1.0f);
         for (size_t row = 0; row < M; ++row) {
@@ -620,7 +618,7 @@ bool test_ternary_matmul_correctness() {
 
         std::vector<__fp16> output(M * N, static_cast<__fp16>(0.0f));
         cactus_matmul_ternary_packed2(lhs_quantized.data(), lhs_scales.data(),
-                                      rhs_packed.data(), rhs_group_scales.data(),
+                                      rhs_packed.data(), test_case.scales.data(), test_case.mode,
                                       output.data(), M, K, N, group_size);
 
         const auto expected = ternary_reference_output(

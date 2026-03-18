@@ -347,8 +347,6 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         const int8_t* rhs = rhs_buffer.data_as<int8_t>();
         __fp16* output = node.output_buffer.data_as<__fp16>();
         const size_t rhs_stored_rows = (rhs_buffer.is_interleaved && !rhs_shape.empty()) ? rhs_shape[0] : N;
-        const __fp16* rhs_scales = ternary_rhs_group_scales(rhs_buffer, rhs_stored_rows, K);
-
         const int8_t* lhs_int8 = nullptr;
         const float* lhs_scales = nullptr;
 
@@ -410,11 +408,13 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         }
 
         if (rhs_buffer.is_ternary_packed_2bit()) {
+            const __fp16* rhs_scales = rhs_buffer.scales_as_fp16();
             cactus_matmul_ternary_packed2(
                 lhs_int8, lhs_scales,
-                reinterpret_cast<const uint8_t*>(rhs), rhs_scales, output,
+                reinterpret_cast<const uint8_t*>(rhs), rhs_scales, rhs_buffer.ternary_scale_mode, output,
                 M, K, N, WEIGHT_QUANT_GROUP_SIZE);
         } else {
+            const __fp16* rhs_scales = ternary_rhs_group_scales(rhs_buffer, rhs_stored_rows, K);
             cactus_matmul_integer(Precision::INT8,
                                   lhs_int8, lhs_scales,
                                   rhs, rhs_scales, output,
@@ -519,7 +519,6 @@ namespace {
             }
             const int8_t* rhs = rhs_buffer.data_as<int8_t>();
             const size_t rhs_stored_rows = (rhs_buffer.is_interleaved && !rhs_buffer.shape.empty()) ? rhs_buffer.shape[0] : N;
-            const __fp16* rhs_scales = ternary_rhs_group_scales(rhs_buffer, rhs_stored_rows, K);
             int8_t* lhs_q = moe_lhs_q_buf.data();
             float* lhs_scales = moe_lhs_scales_buf.data();
 
@@ -547,12 +546,15 @@ namespace {
 
             (void)lhs_prequantized;
             if (rhs_buffer.is_ternary_packed_2bit()) {
+                const __fp16* rhs_scales = rhs_buffer.scales_as_fp16();
                 cactus_matmul_ternary_packed2(
                     lhs_q, lhs_scales,
                     reinterpret_cast<const uint8_t*>(rhs),
                     rhs_scales,
+                    rhs_buffer.ternary_scale_mode,
                     output, M, K, N, WEIGHT_QUANT_GROUP_SIZE);
             } else {
+                const __fp16* rhs_scales = ternary_rhs_group_scales(rhs_buffer, rhs_stored_rows, K);
                 cactus_matmul_integer(Precision::INT8,
                                lhs_q, lhs_scales,
                                rhs,

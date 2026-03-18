@@ -5,6 +5,7 @@
 #include <arm_neon.h>
 
 enum class Precision;
+enum class TernaryScaleMode : int;
 
 enum class ScalarOpType {
     ADD,
@@ -68,14 +69,22 @@ void cactus_matmul_int4(const int8_t* A, const float* A_scales,
 
 void cactus_gemv_ternary_packed2(const int8_t* A, float A_scale,
                                  const uint8_t* B_packed, const __fp16* B_scales,
+                                 TernaryScaleMode scale_mode,
                                  __fp16* C, size_t K, size_t N, size_t group_size);
+
+void cactus_gemv_ternary_lut16_benchmark(const int8_t* A, float A_scale,
+                                         const uint8_t* B_codes,
+                                         const __fp16* row_scales, float tensor_scale,
+                                         __fp16* C, size_t K, size_t N, size_t N_padded);
 
 void cactus_gemm_ternary_packed2(const int8_t* A, const float* A_scales,
                                  const uint8_t* B_packed, const __fp16* B_scales,
+                                 TernaryScaleMode scale_mode,
                                  __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
 
 void cactus_matmul_ternary_packed2(const int8_t* A, const float* A_scales,
                                    const uint8_t* B_packed, const __fp16* B_scales,
+                                   TernaryScaleMode scale_mode,
                                    __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
 
 void cactus_matmul_integer(Precision precision,
