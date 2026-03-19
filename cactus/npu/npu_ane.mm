@@ -367,7 +367,7 @@ static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* ar
     }
     if (!result || error) return 0;
 
-    if (_cachedMultiOutputArray) {
+    if (_multiPredictionOptions && _cachedMultiOutputArray) {
         return copyMLArrayToFP16(_cachedMultiOutputArray, output);
     }
 
