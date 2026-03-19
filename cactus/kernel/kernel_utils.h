@@ -44,6 +44,34 @@ inline void stream_store_f16x8(__fp16* dst, float16x8_t val) {
 #endif
 }
 
+inline bool cpu_has_sme2() {
+#if defined(__aarch64__)
+	static std::once_flag once;
+	static bool has = false;
+	
+	std::call_once(once, []() {
+
+#if defined(__APPLE__)
+	int ret = 0;
+	size_t size = sizeof(ret);
+	if (sysctlbyname("hw.optional.arm.FEAT_SME2", &ret, &size, nullptr, 0) == 0) {
+		has = ret == 1;
+	}
+
+#elif defined(__ANDROID__)
+	unsigned long hwcap2 = getauxval(AT_HWCAP2);
+#ifdef HWCAP2_SME2
+	has = (hwcap2 & HWCAP2_SME2) != 0;
+#endif
+
+#endif
+	});
+	
+	return has;
+#else
+	return false;
+#endif
+}
 
 inline float32x4_t fast_exp_f32x4(float32x4_t x) {
     const float32x4_t log2e = vdupq_n_f32(1.4426950408889634f);

@@ -7,6 +7,99 @@
 #include <iostream>
 #include <cstdio>
 
+bool test_abs() {
+    TestUtils::FP16TestFixture fixture("absval");
+    size_t input = fixture.create_input({2, 3});
+
+    size_t abs_result = fixture.graph().abs(input);
+    std::vector<__fp16> data = {1, -2, 3, 4, -5, -6};
+
+    fixture.set_input_data(input, data);
+    fixture.execute();
+
+    std::vector<__fp16> expected = {1, 2, 3, 4, 5, 6};
+    return fixture.verify_output(abs_result, expected);
+}
+
+bool test_concat() {
+    TestUtils::FP16TestFixture fixture("Concat");
+
+    size_t input_a = fixture.create_input({2, 3});
+    size_t input_b = fixture.create_input({2, 5});
+    size_t concat_result = fixture.graph().concat(input_a, input_b, 1);
+
+    std::vector<__fp16> data_a = {1, 2, 3, 4, 5, 6};
+    std::vector<__fp16> data_b = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    std::vector<__fp16> expected = {1, 2, 3, 1, 2, 3, 4, 5, 4, 5, 6, 6, 7, 8, 9, 10};
+    fixture.set_input_data(input_a, data_a);
+    fixture.set_input_data(input_b, data_b);
+    fixture.execute();
+
+    return fixture.verify_output(concat_result, expected);
+}
+
+bool test_cat() {
+    TestUtils::FP16TestFixture fixture("Cat (multiple input tensors)");
+
+    size_t input_a = fixture.create_input({2, 3});
+    size_t input_b = fixture.create_input({2, 5});
+    size_t input_c = fixture.create_input({2, 2});
+
+    size_t cat_result = fixture.graph().cat({input_a, input_b, input_c}, 1);
+
+    std::vector<__fp16> data_a = {1, 2, 3,
+                                  4, 5, 6};
+
+    std::vector<__fp16> data_b = {1, 2, 3, 4, 5,
+                                  6, 7, 8, 9, 10};
+
+    std::vector<__fp16> data_c = {-1, -2,
+                                  -1, -2};
+
+    std::vector<__fp16> expected = {
+        1, 2, 3, 1, 2, 3, 4, 5, -1, -2,
+        4, 5, 6, 6, 7, 8, 9, 10, -1, -2
+    };
+
+    fixture.set_input_data(input_a, data_a);
+    fixture.set_input_data(input_b, data_b);
+    fixture.set_input_data(input_c, data_c);
+
+    fixture.execute();
+
+    return fixture.verify_output(cat_result, expected);
+}
+
+bool test_view() {
+    TestUtils::FP16TestFixture fixture("View");
+
+    size_t input = fixture.create_input({2, 3});
+    size_t view_result = fixture.graph().view(input, {3, 2});
+
+    std::vector<__fp16> data = {1, 2, 3, 4, 5, 6};
+    std::vector<__fp16> expected = {1, 2, 3, 4, 5, 6};
+
+    fixture.set_input_data(input, data);
+    fixture.execute();
+
+    return fixture.verify_output(view_result, expected);
+}
+
+bool test_flatten() {
+    TestUtils::FP16TestFixture fixture("Flatten");
+
+    size_t input = fixture.create_input({2, 3});
+    size_t flatten_result = fixture.graph().flatten(input);
+
+    std::vector<__fp16> data = {1, 2, 3, 4, 5, 6};
+    std::vector<__fp16> expected = {1, 2, 3, 4, 5, 6};
+
+    fixture.set_input_data(input, data);
+    fixture.execute();
+
+    return fixture.verify_output(flatten_result, expected);
+}
+
 bool test_basic_operations() {
     TestUtils::FP16TestFixture fixture("Basic Operations");
 
@@ -130,6 +223,22 @@ bool test_scalar_operations() {
 
     std::vector<__fp16> expected = {12, 14, 16, 18};
     return fixture.verify_output(mul_result, expected);
+}
+
+bool test_scalar_operations_with_pow() {
+    TestUtils::FP16TestFixture fixture("Scalar Operations with Pow");
+
+    size_t input_a = fixture.create_input({4});
+    size_t add_result = fixture.graph().scalar_add(input_a, 5.0f);
+    size_t mul_result = fixture.graph().scalar_multiply(add_result, 2.0f);
+    size_t pow_result = fixture.graph().pow(mul_result, 2.0f);
+
+    std::vector<__fp16> data_a = {1, 2, 3, 4};
+    fixture.set_input_data(input_a, data_a);
+    fixture.execute();
+
+    std::vector<__fp16> expected = {144, 196, 256, 324};
+    return fixture.verify_output(pow_result, expected);
 }
 
 bool test_scalar_subtract_divide() {
@@ -952,6 +1061,91 @@ bool test_stft() {
     return true;
 }
 
+template<typename T>
+static bool run_layernorm_case(
+    size_t batch, size_t feat, bool with_bias, float epsilon,
+    float weight_scale, float bias_val)
+{
+    const size_t total = batch * feat;
+
+    std::vector<float> input_f(total), weight_f(feat), bias_f(feat);
+    for (size_t b = 0; b < batch; ++b)
+        for (size_t j = 0; j < feat; ++j)
+            input_f[b * feat + j] = static_cast<float>(j + 1);
+    for (size_t j = 0; j < feat; ++j) {
+        weight_f[j] = weight_scale;
+        bias_f[j]   = bias_val;
+    }
+
+    std::vector<T> inp_data(total), w_data(feat), b_data(feat);
+    for (size_t i = 0; i < total; ++i) inp_data[i] = static_cast<T>(input_f[i]);
+    for (size_t j = 0; j < feat;  ++j) {
+        w_data[j] = static_cast<T>(weight_f[j]);
+        b_data[j] = static_cast<T>(bias_f[j]);
+    }
+
+    TestUtils::TestFixture<T> fx;
+    size_t inp_id = fx.create_input({batch, feat});
+    size_t w_id   = fx.create_input({feat});
+    fx.set_input_data(inp_id, inp_data);
+    fx.set_input_data(w_id,   w_data);
+
+    size_t out_id;
+    if (with_bias) {
+        size_t b_id = fx.create_input({feat});
+        fx.set_input_data(b_id, b_data);
+        out_id = fx.graph().layernorm(inp_id, w_id, b_id, epsilon);
+    } else {
+        out_id = fx.graph().layernorm(inp_id, w_id, epsilon);
+    }
+
+    fx.execute();
+
+    std::vector<T> expected(total);
+    for (size_t b = 0; b < batch; ++b) {
+        float mean = 0.0f;
+        for (size_t j = 0; j < feat; ++j) mean += input_f[b * feat + j];
+        mean /= static_cast<float>(feat);
+        float var = 0.0f;
+        for (size_t j = 0; j < feat; ++j) {
+            float d = input_f[b * feat + j] - mean;
+            var += d * d;
+        }
+        var /= static_cast<float>(feat);
+        float inv_std = 1.0f / std::sqrt(var + epsilon);
+        for (size_t j = 0; j < feat; ++j) {
+            float val = (input_f[b * feat + j] - mean) * inv_std * weight_f[j];
+            if (with_bias) val += bias_f[j];
+            expected[b * feat + j] = static_cast<T>(val);
+        }
+    }
+
+    return fx.verify_output(out_id, expected, TestUtils::default_tolerance<T>());
+}
+
+bool test_layernorm() {
+    struct Case { size_t batch, feat; bool fp32, with_bias; float epsilon, weight_scale, bias_val; };
+    const std::vector<Case> cases = {
+        {1,  1,  false, false, 1e-5f, 1.0f, 0.0f},
+        {1,  7,  false, false, 1e-5f, 1.0f, 0.0f},
+        {1,  8,  false, false, 1e-5f, 1.0f, 0.0f},
+        {4,  8,  false, false, 1e-5f, 1.0f, 0.0f},
+        {4,  8,  false, true,  1e-5f, 1.0f, 0.0f},
+        {4,  8,  true,  false, 1e-5f, 1.0f, 0.0f},
+        {4,  8,  true,  true,  1e-5f, 1.0f, 0.0f},
+        {1,  8,  false, false, 1.0f,  1.0f, 0.0f},
+        {2, 16,  false, true,  1e-5f, 0.5f, 0.3f},
+    };
+
+    for (const auto& c : cases) {
+        bool ok = c.fp32
+            ? run_layernorm_case<float>(c.batch, c.feat, c.with_bias, c.epsilon, c.weight_scale, c.bias_val)
+            : run_layernorm_case<__fp16>(c.batch, c.feat, c.with_bias, c.epsilon, c.weight_scale, c.bias_val);
+        if (!ok) return false;
+    }
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("Graph Operations Tests");
 
@@ -966,6 +1160,14 @@ int main() {
     runner.run_test("Scalar Operations", test_scalar_operations());
     runner.run_test("Scalar Subtract/Divide", test_scalar_subtract_divide());
     runner.run_test("Scalar Math Functions", test_scalar_math_functions());
+    // new tests
+    runner.run_test("Abs Operation", test_abs());
+    runner.run_test("Pow Operation", test_scalar_operations_with_pow());
+    runner.run_test("Concat Operation", test_concat());
+    runner.run_test("Cat Operation", test_cat());
+    runner.run_test("View Operation", test_view());
+    runner.run_test("Flatten Operation", test_flatten());
+
     runner.run_test("Reduction Operations", test_reduction_operations());
     runner.run_test("FP16 Reduction Operations", test_fp16_reduction_operations());
     runner.run_test("Mean Operations", test_mean_operations());
@@ -994,6 +1196,7 @@ int main() {
     runner.run_test("Embedding Operation", test_embedding_operation());
     runner.run_test("Embedding from File", test_embedding_from_file());
     runner.run_test("STFT Complex", test_stft());
+    runner.run_test("LayerNorm", test_layernorm());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

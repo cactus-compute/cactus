@@ -8,13 +8,18 @@ keywords: ["Android SDK", "Kotlin Multiplatform", "on-device AI", "mobile infere
 
 Run AI models on-device with a simple Kotlin API.
 
+> **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
+
 ## Building
 
+<!-- --8<-- [start:install] -->
 ```bash
+git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
 cactus build --android
 ```
 
-Build output: `android/build/lib/libcactus.so`
+Build output: `android/libcactus.so` (and `android/libcactus.a`)
+<!-- --8<-- [end:install] -->
 
 see the main [README.md](../README.md) for how to use CLI & download weight
 
@@ -32,6 +37,7 @@ CACTUS_CURL_ROOT=/absolute/path/to/curl cactus build --android
 
 ## Integration
 
+<!-- --8<-- [start:integration] -->
 ### Android-only
 
 1. Copy `libcactus.so` to `app/src/main/jniLibs/arm64-v8a/`
@@ -82,238 +88,323 @@ kotlin {
     }
 }
 ```
+<!-- --8<-- [end:integration] -->
 
 ## Usage
 
+Handles are plain `Long` values (C pointers). All functions are top-level.
+
 ### Basic Completion
+
+<!-- --8<-- [start:example] -->
+```kotlin
+import com.cactus.*
+
+val model = cactusInit("/path/to/model", null, false)
+val messages = """[{"role":"user","content":"What is the capital of France?"}]"""
+val resultJson = cactusComplete(model, messages, null, null, null)
+println(resultJson)
+cactusDestroy(model)
+```
+<!-- --8<-- [end:example] -->
+
+For vision models (LFM2-VL, LFM2.5-VL), add `"images": ["path/to/image.png"]` to any message. See [Engine API](/docs/cactus_engine.md) for details.
+
+### Completion with Options and Streaming
 
 ```kotlin
 import com.cactus.*
 
-val model = Cactus.create("/path/to/model")
-val result = model.complete("What is the capital of France?")
-model.close()
-```
+val options = """{"max_tokens":256,"temperature":0.7}"""
 
-### Chat Messages
-
-```kotlin
-Cactus.create(modelPath).use { model ->
-    val result = model.complete(
-        messages = listOf(
-            Message.system("You are a helpful assistant."),
-            Message.user("What is 2 + 2?")
-        )
-    )
-    println(result.text)
+val resultJson = cactusComplete(model, messages, options, null) { token, _ ->
+    print(token)
 }
+println(resultJson)
 ```
 
-### Completion Options
+### Prefill
+
+Pre-processes input text and populates the KV cache without generating output tokens. This reduces latency for subsequent calls to `cactusComplete`.
 
 ```kotlin
-val options = CompletionOptions(
-    temperature = 0.7f,
-    topP = 0.9f,
-    topK = 40,
-    maxTokens = 256,
-    stopSequences = listOf("\n\n")
-)
-
-val result = model.complete("Write a haiku:", options)
+fun cactusPrefill(
+    model: Long,
+    messagesJson: String,
+    optionsJson: String?,
+    toolsJson: String?
+): String
 ```
 
-### Streaming Tokens
-
 ```kotlin
-val result = model.complete(
-    messages = listOf(Message.user("Tell me a story")),
-    callback = TokenCallback { token, tokenId ->
-        print(token)
+val tools = """[
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather for a location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City, State, Country"}
+                },
+                "required": ["location"]
+            }
+        }
     }
-)
+]"""
+
+val messages = """[
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "What is the weather in Paris?"},
+    {"role": "assistant", "content": "<|tool_call_start|>get_weather(location=\"Paris\")<|tool_call_end|>"},
+    {"role": "tool", "content": "{\"name\": \"get_weather\", \"content\": \"Sunny, 72°F\"}"},
+    {"role": "assistant", "content": "It's sunny and 72°F in Paris!"}
+]"""
+
+val resultJson = cactusPrefill(model, messages, null, tools)
+
+val completionMessages = """[
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "What is the weather in Paris?"},
+    {"role": "assistant", "content": "<|tool_call_start|>get_weather(location=\"Paris\")<|tool_call_end|>"},
+    {"role": "tool", "content": "{\"name\": \"get_weather\", \"content\": \"Sunny, 72°F\"}"},
+    {"role": "assistant", "content": "It's sunny and 72°F in Paris!"},
+    {"role": "user", "content": "What about SF?"}
+]"""
+
+val completion = cactusComplete(model, completionMessages, null, tools, null)
+```
+
+**Response format:**
+```json
+{
+    "success": true,
+    "error": null,
+    "prefill_tokens": 25,
+    "prefill_tps": 166.1,
+    "total_time_ms": 150.5,
+    "ram_usage_mb": 245.67
+}
 ```
 
 ### Audio Transcription
 
 ```kotlin
-val result = model.transcribe("/path/to/audio.wav")
+import com.cactus.*
 
-val pcmData: ByteArray = ... // 16kHz mono PCM
-val result = model.transcribe(pcmData)
+// From file
+val resultJson = cactusTranscribe(model, "/path/to/audio.wav", null, null, null, null)
+println(resultJson)
+
+// From PCM data (16 kHz mono)
+val pcmData: ByteArray = ...
+val resultJson2 = cactusTranscribe(model, null, null, null, null, pcmData)
+println(resultJson2)
 ```
 
-### Embeddings
+`segments` contains timestamps (seconds): phrase-level for Whisper, word-level for Parakeet TDT, one segment per transcription window for Parakeet CTC and Moonshine (consecutive VAD speech regions up to 30s).
 
 ```kotlin
-val embedding = model.embed("Hello, world!")
-val imageEmbedding = model.imageEmbed("/path/to/image.jpg")
-val audioEmbedding = model.audioEmbed("/path/to/audio.wav")
+import org.json.JSONObject
+
+val result = JSONObject(resultJson)
+val segments = result.getJSONArray("segments")
+for (i in 0 until segments.length()) {
+    val seg = segments.getJSONObject(i)
+    println("[${seg.getDouble("start")}s - ${seg.getDouble("end")}s] ${seg.getString("text")}")
+}
 ```
 
-### Tokenization
+**Custom vocabulary** biases the decoder toward domain-specific words (supported for Whisper and Moonshine models). Pass `custom_vocabulary` and `vocabulary_boost` in the options JSON:
 
 ```kotlin
-val tokens = model.tokenize("Hello, world!")
-val scores = model.scoreWindow(tokens, start = 0, end = tokens.size, context = 512)
+val options = """{"custom_vocabulary": ["Omeprazole", "HIPAA", "Cactus"], "vocabulary_boost": 3.0}"""
+val result = cactusTranscribe(model, "/path/to/audio.wav", "", options, null, null)
 ```
 
 ### Streaming Transcription
 
 ```kotlin
-model.createStreamTranscriber().use { stream ->
-    stream.insert(audioChunk1)
-    stream.insert(audioChunk2)
-    val partial = stream.process()
-    println("Partial: ${partial.text}")
-    val final = stream.finalize()
-    println("Final: ${final.text}")
-}
+val stream = cactusStreamTranscribeStart(model, null)
+val partial = cactusStreamTranscribeProcess(stream, audioChunk)
+val final_  = cactusStreamTranscribeStop(stream)
+```
+
+Streaming also accepts `custom_vocabulary` in the options passed to `cactusStreamTranscribeStart`. The bias is applied for the lifetime of the stream session.
+
+### Embeddings
+
+```kotlin
+val embedding      = cactusEmbed(model, "Hello, world!", true)   // FloatArray
+val imageEmbedding = cactusImageEmbed(model, "/path/to/image.jpg")
+val audioEmbedding = cactusAudioEmbed(model, "/path/to/audio.wav")
+```
+
+### Tokenization
+
+```kotlin
+val tokens = cactusTokenize(model, "Hello, world!")  // IntArray
+val scores = cactusScoreWindow(model, tokens, 0, tokens.size, 512)
+```
+
+### VAD
+
+```kotlin
+val result = cactusVad(model, "/path/to/audio.wav", null, null)
 ```
 
 ### RAG
 
 ```kotlin
-val model = Cactus.create(
-    modelPath = "/path/to/model",
-    corpusDir = "/path/to/documents"
-)
-val result = model.complete("What does the documentation say about X?")
+val result = cactusRagQuery(model, "What is machine learning?", 5)
 ```
 
 ### Vector Index
 
 ```kotlin
-CactusIndex.create("/path/to/index", embeddingDim = 384).use { index ->
-    val embeddings = arrayOf(model.embed("doc1"), model.embed("doc2"))
-    index.add(
-        ids = intArrayOf(1, 2),
-        documents = arrayOf("Document 1", "Document 2"),
-        embeddings = embeddings
-    )
-    val results = index.query(model.embed("search query"), topK = 5)
-    results.forEach { println("ID: ${it.id}, Score: ${it.score}") }
-}
+val index = cactusIndexInit("/path/to/index", 3)
+
+cactusIndexAdd(
+    index,
+    intArrayOf(1, 2),
+    arrayOf("Document 1", "Document 2"),
+    arrayOf(floatArrayOf(0.1f, 0.2f, 0.3f), floatArrayOf(0.4f, 0.5f, 0.6f)),
+    null
+)
+
+val resultsJson = cactusIndexQuery(index, floatArrayOf(0.1f, 0.2f, 0.3f), null)
+cactusIndexDelete(index, intArrayOf(2))
+cactusIndexCompact(index)
+cactusIndexDestroy(index)
 ```
 
 ## API Reference
 
-### Cactus
+All functions are top-level and mirror the C FFI directly. Handles are `Long` values.
+
+### Init / Lifecycle
 
 ```kotlin
-object Cactus {
-    fun create(modelPath: String, corpusDir: String? = null): Cactus
-}
-
-fun complete(prompt: String, options: CompletionOptions = CompletionOptions()): CompletionResult
-fun complete(messages: List<Message>, options: CompletionOptions = CompletionOptions(), tools: List<Map<String, Any>>? = null, callback: TokenCallback? = null): CompletionResult
-fun transcribe(audioPath: String, prompt: String? = null, language: String? = null, translate: Boolean = false): TranscriptionResult
-fun transcribe(pcmData: ByteArray, prompt: String? = null, language: String? = null, translate: Boolean = false): TranscriptionResult
-fun embed(text: String, normalize: Boolean = true): FloatArray
-fun imageEmbed(imagePath: String): FloatArray
-fun audioEmbed(audioPath: String): FloatArray
-fun ragQuery(query: String, topK: Int = 5): String
-fun tokenize(text: String): IntArray
-fun scoreWindow(tokens: IntArray, start: Int, end: Int, context: Int): String
-fun createStreamTranscriber(): StreamTranscriber
-fun reset()
-fun stop()
-fun close()
+fun cactusInit(modelPath: String, corpusDir: String?, cacheIndex: Boolean): Long  // throws RuntimeException
+fun cactusDestroy(model: Long)
+fun cactusReset(model: Long)
+fun cactusStop(model: Long)
+fun cactusGetLastError(): String
 ```
 
-### Message
+### Prefill
 
 ```kotlin
-data class Message(val role: String, val content: String) {
-    companion object {
-        fun system(content: String): Message
-        fun user(content: String): Message
-        fun assistant(content: String): Message
-    }
-}
+fun cactusPrefill(
+    model: Long,
+    messagesJson: String,
+    optionsJson: String?,
+    toolsJson: String?
+): String
 ```
 
-### CompletionOptions
+### Completion
 
 ```kotlin
-data class CompletionOptions(
-    val temperature: Float = 0.7f,
-    val topP: Float = 0.9f,
-    val topK: Int = 40,
-    val maxTokens: Int = 512,
-    val stopSequences: List<String> = emptyList(),
-    val confidenceThreshold: Float = 0f
-)
+fun cactusComplete(
+    model: Long,
+    messagesJson: String,
+    optionsJson: String?,
+    toolsJson: String?,
+    callback: CactusTokenCallback?
+): String
 ```
 
-### CompletionResult
+### Transcription
 
 ```kotlin
-data class CompletionResult(
-    val text: String,
-    val functionCalls: List<Map<String, Any>>?,
-    val promptTokens: Int,
-    val completionTokens: Int,
-    val timeToFirstToken: Double,
-    val totalTime: Double,
-    val prefillTokensPerSecond: Double,
-    val decodeTokensPerSecond: Double,
-    val confidence: Double,
-    val needsCloudHandoff: Boolean
-)
+fun cactusTranscribe(
+    model: Long,
+    audioPath: String?,
+    prompt: String?,
+    optionsJson: String?,
+    callback: CactusTokenCallback?,
+    pcmData: ByteArray?
+): String
+
+fun cactusStreamTranscribeStart(model: Long, optionsJson: String?): Long  // throws RuntimeException
+fun cactusStreamTranscribeProcess(stream: Long, pcmData: ByteArray): String
+fun cactusStreamTranscribeStop(stream: Long): String
 ```
 
-### TranscriptionResult
+### Embeddings
 
 ```kotlin
-data class TranscriptionResult(
-    val text: String,
-    val segments: List<Map<String, Any>>?,
-    val totalTime: Double
-)
+fun cactusEmbed(model: Long, text: String, normalize: Boolean): FloatArray
+fun cactusImageEmbed(model: Long, imagePath: String): FloatArray
+fun cactusAudioEmbed(model: Long, audioPath: String): FloatArray
 ```
 
-### TokenCallback
+### Tokenization / Scoring
 
 ```kotlin
-fun interface TokenCallback {
+fun cactusTokenize(model: Long, text: String): IntArray
+fun cactusScoreWindow(model: Long, tokens: IntArray, start: Int, end: Int, context: Int): String
+```
+
+### Detect Language
+
+```kotlin
+fun cactusDetectLanguage(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
+```
+
+### VAD / RAG
+
+```kotlin
+fun cactusVad(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
+fun cactusRagQuery(model: Long, query: String, topK: Int): String
+```
+
+### Vector Index
+
+```kotlin
+fun cactusIndexInit(indexDir: String, embeddingDim: Int): Long  // throws RuntimeException
+fun cactusIndexDestroy(index: Long)
+fun cactusIndexAdd(index: Long, ids: IntArray, documents: Array<String>, embeddings: Array<FloatArray>, metadatas: Array<String>?): Int
+fun cactusIndexDelete(index: Long, ids: IntArray): Int
+fun cactusIndexGet(index: Long, ids: IntArray): String
+fun cactusIndexQuery(index: Long, embedding: FloatArray, optionsJson: String?): String
+fun cactusIndexCompact(index: Long): Int
+```
+
+### Logging
+
+```kotlin
+fun cactusLogSetLevel(level: Int)  // 0=DEBUG 1=INFO 2=WARN 3=ERROR 4=NONE
+fun cactusLogSetCallback(callback: CactusLogCallback?)
+```
+
+### Telemetry
+
+```kotlin
+fun cactusSetTelemetryEnvironment(cacheDir: String)
+fun cactusSetAppId(appId: String)
+fun cactusTelemetryFlush()
+fun cactusTelemetryShutdown()
+```
+
+### Types
+
+```kotlin
+fun interface CactusTokenCallback {
     fun onToken(token: String, tokenId: Int)
 }
-```
 
-### StreamTranscriber
-
-```kotlin
-class StreamTranscriber : Closeable {
-    fun insert(pcmData: ByteArray)
-    fun process(language: String? = null): TranscriptionResult
-    fun finalize(): TranscriptionResult
-    fun close()
+fun interface CactusLogCallback {
+    fun onLog(level: Int, component: String, message: String)
 }
-```
-
-### CactusIndex
-
-```kotlin
-class CactusIndex : Closeable {
-    companion object {
-        fun create(indexDir: String, embeddingDim: Int): CactusIndex
-    }
-
-    fun add(ids: IntArray, documents: Array<String>, embeddings: Array<FloatArray>, metadatas: Array<String>? = null)
-    fun delete(ids: IntArray)
-    fun query(embedding: FloatArray, topK: Int = 5): List<IndexResult>
-    fun compact()
-    fun close()
-}
-
-data class IndexResult(val id: Int, val score: Float)
 ```
 
 ## Requirements
 
-- Android API 24+ / arm64-v8a
-- iOS 14+ / arm64 (KMP only)
+- Android API 21+ / arm64-v8a
+- iOS 13+ / arm64 (KMP only)
 
 ## See Also
 

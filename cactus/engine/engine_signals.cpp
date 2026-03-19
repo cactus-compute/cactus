@@ -6,6 +6,7 @@
 #include <vector>
 #include <stdexcept>
 #include <limits>
+#include <random>
 
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -561,11 +562,10 @@ static void compute_spectrogram_f32(
             std::copy(input_waveform + timestep, input_waveform + timestep + available_length, local_buffer.data());
 
             if (dither != 0.0f) {
+                thread_local std::mt19937 rng(std::random_device{}());
+                std::normal_distribution<float> dist(0.0f, 1.0f);
                 for (size_t i = 0; i < frame_length; i++) {
-                    float u1 = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-                    float u2 = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-                    float randn = std::sqrt(-2.0f * std::log(u1)) * std::cos(2.0f * static_cast<float>(M_PI) * u2);
-                    local_buffer[i] += dither * randn;
+                    local_buffer[i] += dither * dist(rng);
                 }
             }
 
@@ -657,7 +657,9 @@ void AudioProcessor::init_mel_filters(size_t num_frequency_bins,
                                       size_t num_mel_filters,
                                       float min_freq,
                                       float max_freq,
-                                      size_t sampling_rate) {
+                                      size_t sampling_rate,
+                                      const char* norm,
+                                      const char* mel_scale) {
     num_frequency_bins_ = num_frequency_bins;
     num_mel_filters_ = num_mel_filters;
     mel_filters_.resize(num_mel_filters * num_frequency_bins);
@@ -669,8 +671,8 @@ void AudioProcessor::init_mel_filters(size_t num_frequency_bins,
         min_freq,
         max_freq,
         sampling_rate,
-        "slaney",
-        "slaney",
+        norm,
+        mel_scale,
         false
     );
 }
@@ -684,6 +686,7 @@ std::vector<float> AudioProcessor::compute_spectrogram(
     }
 
     const size_t n_samples = waveform.size();
+    const size_t fft_size = config.fft_override > 0 ? config.fft_override : config.n_fft;
     const size_t analysis_frame_length = config.n_fft;
     const size_t window_length = std::min(config.frame_length, analysis_frame_length);
     const size_t pad_length = config.center ? analysis_frame_length / 2 : 0;
@@ -715,7 +718,7 @@ std::vector<float> AudioProcessor::compute_spectrogram(
         window.size(),
         analysis_frame_length,
         config.hop_length,
-        &config.n_fft,
+        &fft_size,
         output.data(),
         config.power,
         config.center,

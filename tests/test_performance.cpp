@@ -537,11 +537,12 @@ template<typename T>
 void benchmark_attention(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
     Precision precision = TestUtils::default_precision<T>();
 
-    for (size_t dim : config.dimensions) {
+    {
+        // Qwen3 0.6B config — simulates prefill
         size_t batch_size = 1;
         size_t seq_len = 1024;
         size_t num_heads = 16;
-        size_t head_dim = dim / 16;
+        size_t head_dim = 128;
         size_t total_elements = batch_size * seq_len * num_heads * head_dim;
 
         CactusGraph graph;
@@ -570,7 +571,78 @@ void benchmark_attention(TestUtils::TestRunner& runner, const BenchmarkConfig& c
         std::ostringstream details;
         details << std::fixed << std::setprecision(3) << time_ms << "ms, "
                 << std::setprecision(2) << gflops << " GFLOPS";
-        runner.log_performance("Attention " + std::to_string(seq_len) + "x" + std::to_string(num_heads) + "x" + std::to_string(head_dim),
+        details << " (seq=" << seq_len << " h=" << num_heads << " d=" << head_dim << ")";
+        runner.log_performance("Attention FP16 Qwen3-0.6B prefill",
+                             details.str());
+
+        graph.hard_reset();
+    }
+}
+
+template<typename T>
+void benchmark_attention_hybrid_int8(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
+    static_assert(std::is_same_v<T, __fp16>, "Hybrid attention benchmark requires FP16");
+
+    {
+        size_t batch_size = 1;
+        size_t num_q_heads = 16;
+        size_t num_kv_heads = 8;
+        size_t head_dim = 128;
+        size_t new_len = 1;     
+        size_t cache_len = 1024;  
+        constexpr size_t group_size = KV_QUANT_GROUP_SIZE;
+
+        size_t q_elements = batch_size * new_len * num_q_heads * head_dim;
+        size_t kv_new_elements = batch_size * new_len * num_kv_heads * head_dim;
+        size_t kv_cached_elements = cache_len * num_kv_heads * head_dim;
+        size_t num_scales = kv_scales_count(cache_len, num_kv_heads, head_dim, group_size);
+
+        std::vector<__fp16> q_data(q_elements), k_new_data(kv_new_elements), v_new_data(kv_new_elements);
+        setup_random_data(q_data);
+        setup_random_data(k_new_data);
+        setup_random_data(v_new_data);
+
+        std::vector<__fp16> k_src(kv_cached_elements), v_src(kv_cached_elements);
+        setup_random_data(k_src);
+        setup_random_data(v_src);
+
+        std::vector<int8_t> k_cached(kv_cached_elements), v_cached(kv_cached_elements);
+        std::vector<float> k_scales(num_scales), v_scales(num_scales);
+
+        cactus_quantize_kv_fp16_to_int8(k_src.data(), k_cached.data(), k_scales.data(),
+                                         cache_len, num_kv_heads, head_dim, group_size);
+        cactus_quantize_kv_fp16_to_int8(v_src.data(), v_cached.data(), v_scales.data(),
+                                         cache_len, num_kv_heads, head_dim, group_size);
+
+        CactusGraph graph;
+        Precision precision = Precision::FP16;
+        size_t query = graph.input({batch_size, new_len, num_q_heads, head_dim}, precision);
+        size_t key_new = graph.input({batch_size, new_len, num_kv_heads, head_dim}, precision);
+        size_t value_new = graph.input({batch_size, new_len, num_kv_heads, head_dim}, precision);
+
+        graph.set_input(query, q_data.data(), precision);
+        graph.set_input(key_new, k_new_data.data(), precision);
+        graph.set_input(value_new, v_new_data.data(), precision);
+
+        float scale = 1.0f / sqrtf(static_cast<float>(head_dim));
+        graph.attention_int8_hybrid(query, key_new, value_new, scale, 0,
+                                    k_cached.data(), v_cached.data(),
+                                    k_scales.data(), v_scales.data(),
+                                    cache_len, num_kv_heads, head_dim);
+
+        double time_ms = time_operation<T>([&]() {
+            graph.execute();
+        }, config.iterations);
+
+        size_t total_len = cache_len + new_len;
+        double gflops = calculate_gflops(2ULL * batch_size * num_q_heads * new_len * total_len * head_dim, time_ms);
+
+        std::ostringstream details;
+        details << std::fixed << std::setprecision(3) << time_ms << "ms, "
+                << std::setprecision(2) << gflops << " GFLOPS"
+                << " (cache=" << cache_len << " new=" << new_len
+                << " qh=" << num_q_heads << " kvh=" << num_kv_heads << ")";
+        runner.log_performance("Attention Hybrid INT8 Qwen3-0.6B",
                              details.str());
 
         graph.hard_reset();
@@ -966,12 +1038,12 @@ bool test_engine_operations_performance(TestUtils::TestRunner& runner) {
     benchmark_rms_norm<__fp16>(runner, config);
     benchmark_rope<__fp16>(runner, config);
     benchmark_attention<__fp16>(runner, config);
+    benchmark_attention_hybrid_int8<__fp16>(runner, config);
     return true;
 }
 
 bool test_gather_operations_performance(TestUtils::TestRunner& runner) {
     BenchmarkConfig config;
-    // INT8 for storage, FP16 for computation
     benchmark_gather_ops<int8_t>(runner, config);
     benchmark_gather_ops<__fp16>(runner, config);
     return true;
@@ -1046,6 +1118,69 @@ bool test_stft_performance(TestUtils::TestRunner& runner) {
     return true;
 }
 
+template<typename T>
+void run_layernorm_case(TestUtils::TestRunner& runner,
+    size_t batch, size_t feat, const char* tag, bool with_bias, int iterations)
+{
+    const size_t total = batch * feat;
+    const Precision prec = TestUtils::default_precision<T>();
+
+    CactusGraph graph;
+    size_t inp = graph.input({batch, feat}, prec);
+    size_t w   = graph.input({feat},        prec);
+
+    std::vector<T> inp_data(total), w_data(feat), b_data(feat);
+    setup_random_data(inp_data);
+    for (size_t i = 0; i < feat; ++i) {
+        w_data[i] = static_cast<T>(1.0f);
+        b_data[i] = static_cast<T>(0.0f);
+    }
+    graph.set_input(inp, inp_data.data(), prec);
+    graph.set_input(w,   w_data.data(),   prec);
+
+    if (with_bias) {
+        size_t bias_id = graph.input({feat}, prec);
+        graph.set_input(bias_id, b_data.data(), prec);
+        graph.layernorm(inp, w, bias_id, 1e-5f);
+    } else {
+        graph.layernorm(inp, w, 1e-5f);
+    }
+
+    double ms = time_operation<T>([&]() { graph.execute(); }, iterations);
+    double gb = (total * sizeof(T) * 2) / (ms * 1e6);
+
+    std::ostringstream det;
+    det << std::fixed << std::setprecision(3) << ms << "ms, "
+        << std::setprecision(2) << gb << " GB/s";
+
+    std::string label = std::string("LayerNorm ") + precision_to_string(prec)
+        + (with_bias ? " +bias " : " no-bias") + " " + tag;
+    runner.log_performance(label, det.str());
+    graph.hard_reset();
+}
+
+void benchmark_layernorm(TestUtils::TestRunner& runner, const BenchmarkConfig&) {
+    struct ShapeCase { size_t batch; size_t feat; const char* tag; };
+    const std::vector<ShapeCase> shapes = {
+        {128,  512,  "prod:whisper-128"},
+        {1500, 512,  "prod:whisper-full"},
+        {128, 1024,  "prod:bert-128  "},
+    };
+    const int iterations = 100;
+
+    for (const auto& [batch, feat, tag] : shapes) {
+        for (bool with_bias : {false, true}) {
+            run_layernorm_case<__fp16>(runner, batch, feat, tag, with_bias, iterations);
+        }
+    }
+}
+
+bool test_layernorm_performance(TestUtils::TestRunner& runner) {
+    BenchmarkConfig config;
+    benchmark_layernorm(runner, config);
+    return true;
+}
+
 
 int main() {
     TestUtils::TestRunner runner("Performance Benchmarks");
@@ -1065,6 +1200,7 @@ int main() {
     runner.run_test("Gather Operations", test_gather_operations_performance(runner));
     runner.run_test("Signals Operations", test_signals_performance(runner));
     runner.run_test("STFT Operations", test_stft_performance(runner));
+    runner.run_test("LayerNorm Operations", test_layernorm_performance(runner));
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

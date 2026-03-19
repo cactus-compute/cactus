@@ -27,10 +27,11 @@ bool test_sliding_window_basic() {
     const size_t sink_size = 4;
 
     KVCache cache;
-    cache.init(num_layers, max_seq, num_kv_heads, head_dim, Precision::INT8);
+    cache.init(num_layers, max_seq, num_kv_heads, std::vector<size_t>(num_layers, head_dim), Precision::INT8);
     cache.set_window_size(window_size, sink_size);
 
     CactusGraph graph;
+    graph.input({1}, Precision::FP32);
 
     {
         size_t seq_len = 10;
@@ -51,7 +52,7 @@ bool test_sliding_window_basic() {
         }
 
         graph.execute();
-        cache.update_from_graph(&graph, k_nodes, v_nodes, seq_len, num_layers, num_kv_heads, head_dim);
+        cache.update_from_graph(&graph, k_nodes, v_nodes, seq_len, num_layers, num_kv_heads);
 
         assert(cache.get_effective_seq_len() == seq_len);
     }
@@ -75,7 +76,7 @@ bool test_sliding_window_basic() {
         }
 
         graph.execute();
-        cache.update_from_graph(&graph, k_nodes, v_nodes, additional_seq, num_layers, num_kv_heads, head_dim);
+        cache.update_from_graph(&graph, k_nodes, v_nodes, additional_seq, num_layers, num_kv_heads);
 
         assert(cache.get_effective_seq_len() == window_size);
     }
@@ -101,7 +102,7 @@ bool test_sliding_window_basic() {
         }
 
         graph.execute();
-        cache.update_from_graph(&graph, k_nodes, v_nodes, additional_seq, num_layers, num_kv_heads, head_dim);
+        cache.update_from_graph(&graph, k_nodes, v_nodes, additional_seq, num_layers, num_kv_heads);
 
         assert(cache.get_effective_seq_len() == window_size);
 
@@ -137,10 +138,11 @@ bool test_incremental_updates() {
     const size_t sink_size = 2;
 
     KVCache cache;
-    cache.init(num_layers, 2048, num_kv_heads, head_dim, Precision::FP16);
+    cache.init(num_layers, 2048, num_kv_heads, std::vector<size_t>(num_layers, head_dim), Precision::FP16);
     cache.set_window_size(window_size, sink_size);
 
     CactusGraph graph;
+    graph.input({1}, Precision::FP32);
 
     for (size_t token = 0; token < 12; token++) {
         vector<size_t> k_nodes, v_nodes;
@@ -160,7 +162,7 @@ bool test_incremental_updates() {
         v_nodes.push_back(v_node);
 
         graph.execute();
-        cache.update_from_graph(&graph, k_nodes, v_nodes, seq_len, num_layers, num_kv_heads, head_dim);
+        cache.update_from_graph(&graph, k_nodes, v_nodes, seq_len, num_layers, num_kv_heads);
 
         size_t expected_len = min(token + 1, window_size);
         assert(cache.get_effective_seq_len() == expected_len);
@@ -179,10 +181,11 @@ bool test_incremental_updates() {
 
 bool test_reset_functionality() {
     KVCache cache;
-    cache.init(2, 1024, 8, 64, Precision::FP16);
+    cache.init(2, 1024, 8, std::vector<size_t>(2, 64), Precision::FP16);
     cache.set_window_size(16, 4);
 
     CactusGraph graph;
+    graph.input({1}, Precision::FP32);
     vector<size_t> k_nodes, v_nodes;
 
     for (size_t layer = 0; layer < 2; layer++) {
@@ -199,7 +202,7 @@ bool test_reset_functionality() {
     }
 
     graph.execute();
-    cache.update_from_graph(&graph, k_nodes, v_nodes, 10, 2, 8, 64);
+    cache.update_from_graph(&graph, k_nodes, v_nodes, 10, 2, 8);
 
     assert(cache.get_effective_seq_len() == 10);
     assert(cache.get_total_seq_len() == 10);
@@ -221,10 +224,11 @@ bool test_large_window() {
     const size_t window_size = 512;
 
     KVCache cache;
-    cache.init(num_layers, 2048, num_kv_heads, head_dim, Precision::FP16);
+    cache.init(num_layers, 2048, num_kv_heads, std::vector<size_t>(num_layers, head_dim), Precision::FP16);
     cache.set_window_size(window_size, 4);
 
     CactusGraph graph;
+    graph.input({1}, Precision::FP32);
 
     size_t seq_len = 600;
     vector<size_t> k_nodes, v_nodes;
@@ -245,7 +249,7 @@ bool test_large_window() {
     }
 
     graph.execute();
-    cache.update_from_graph(&graph, k_nodes, v_nodes, seq_len, num_layers, num_kv_heads, head_dim);
+    cache.update_from_graph(&graph, k_nodes, v_nodes, seq_len, num_layers, num_kv_heads);
 
     assert(cache.get_effective_seq_len() == window_size);
     assert(cache.get_total_seq_len() == seq_len);

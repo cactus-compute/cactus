@@ -64,7 +64,6 @@ bool BPETokenizer::load_vocabulary_mmap(const std::string& vocab_file, const std
 
     while (std::getline(vocab_stream, line)) {
         rtrim_cr(line);
-        if (line.empty()) continue;
         token_to_id_[line] = id;
         id_to_token_.push_back(line);
 

@@ -6,31 +6,7 @@
 #include <limits>
 #include <cstring>
 #include <vector>
-#include <atomic>
-#include <chrono>
-#include <cstdio>
-
-static std::atomic<int> g_decode_attention_variant{0};
-static std::atomic<uint64_t> g_attn_total_ns{0};
-static std::atomic<uint64_t> g_attn_call_count{0};
-
-void cactus_set_decode_attention_variant(int v) {
-    g_decode_attention_variant.store(v, std::memory_order_relaxed);
-}
-
-int cactus_get_decode_attention_variant() {
-    return g_decode_attention_variant.load(std::memory_order_relaxed);
-}
-
-void cactus_reset_attn_counters() {
-    g_attn_total_ns.store(0, std::memory_order_relaxed);
-    g_attn_call_count.store(0, std::memory_order_relaxed);
-}
-
-void cactus_get_attn_counters(uint64_t* total_ns, uint64_t* call_count) {
-    *total_ns = g_attn_total_ns.load(std::memory_order_relaxed);
-    *call_count = g_attn_call_count.load(std::memory_order_relaxed);
-}
+#include <cassert>
 
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -172,8 +148,9 @@ static void cactus_attention_f16_accelerate(
                         float32x4_t x_floor = vrndmq_f32(x);
                         int32x4_t xi = vcvtq_s32_f32(x_floor);
                         float32x4_t xf = vsubq_f32(x, x_floor);
-                        float32x4_t y = vfmaq_n_f32(vdupq_n_f32(1.0f), xf, 0.6931472f);
-                        y = vfmaq_f32(y, vmulq_f32(xf, xf), vdupq_n_f32(0.2402265f));
+                        float32x4_t t = vfmaq_n_f32(vdupq_n_f32(0.2246932f), xf, 0.0789673f);
+                        t = vfmaq_f32(vdupq_n_f32(0.6963248f), t, xf);
+                        float32x4_t y = vfmaq_f32(vdupq_n_f32(0.9999003f), t, xf);
                         xi = vshlq_n_s32(vaddq_s32(xi, vdupq_n_s32(127)), 23);
                         y = vmulq_f32(y, vreinterpretq_f32_s32(xi));
                         uint32x4_t underflow = vcltq_f32(x, vdupq_n_f32(-126.0f));
@@ -245,14 +222,14 @@ static inline void cactus_attention_f16_fast(
     size_t head_dim,
     float scale,
     size_t position_offset,
-    bool is_causal
+    bool is_causal,
+    size_t window_size
 ) {
     constexpr size_t BLOCK_SIZE = 32;
-    constexpr float NEG_INF = -INFINITY;
     const size_t nblocks = head_dim / 8;
 
 #ifdef __APPLE__
-    if (seq_len >= 64) {
+    if (seq_len >= 64 && window_size == 0) {
         cactus_attention_f16_accelerate(
             queries, keys, values, output,
             batch_size, seq_len, kv_seq_len,
@@ -292,15 +269,16 @@ static inline void cactus_attention_f16_fast(
                 acc_hi[i] = vdupq_n_f32(0.f);
             }
 
-            float running_max = NEG_INF;
+            float running_max = -INFINITY;
             float running_sum = 0.f;
 
             const size_t abs_q = position_offset + q_pos;
             size_t kv_end = is_causal ? std::min(kv_seq_len, abs_q + 1) : kv_seq_len;
+            size_t kv_start = (window_size > 0 && abs_q > window_size) ? abs_q - window_size : 0;
 
-            for (size_t kv0 = 0; kv0 < kv_end; kv0 += BLOCK_SIZE) {
+            for (size_t kv0 = kv_start; kv0 < kv_end; kv0 += BLOCK_SIZE) {
                 const size_t kv1 = std::min(kv0 + BLOCK_SIZE, kv_end);
-                float block_max = NEG_INF;
+                float block_max = -INFINITY;
 
                 for (size_t i = kv0; i < kv1; i++) {
                     float32x4_t s0 = vdupq_n_f32(0.f);
@@ -326,12 +304,18 @@ static inline void cactus_attention_f16_fast(
                     block_max = std::max(block_max, score);
                 }
 
-                float scale_corr = expf(running_max - block_max);
-                running_sum *= scale_corr;
+                float current_block_scale = 1.0f;
+                if (block_max > running_max) {
+                    float scale_correction = expf(running_max - block_max);
+                    running_sum *= scale_correction;
 
-                for (size_t d = 0; d < nblocks; d++) {
-                    acc_lo[d] = vmulq_n_f32(acc_lo[d], scale_corr);
-                    acc_hi[d] = vmulq_n_f32(acc_hi[d], scale_corr);
+                    for (size_t d = 0; d < nblocks; d++) {
+                        acc_lo[d] = vmulq_n_f32(acc_lo[d], scale_correction);
+                        acc_hi[d] = vmulq_n_f32(acc_hi[d], scale_correction);
+                    }
+                    running_max = block_max;
+                } else {
+                    current_block_scale = expf(block_max - running_max);
                 }
 
                 float block_sum = 0.f;
@@ -341,11 +325,11 @@ static inline void cactus_attention_f16_fast(
                 }
 
                 for (size_t i = 0; i < kv1 - kv0; i++) {
-                    float w = block_scores[i];
-                    if (w == 0.f) continue;
+                    const float attn_weight = block_scores[i] * current_block_scale;
+                    if (attn_weight == 0.f) continue;
 
                     const __fp16* v = values + batch*kv_batch_stride + (kv0+i)*kv_seq_stride + kv_head*head_dim;
-                    float32x4_t wv = vdupq_n_f32(w);
+                    float32x4_t wv = vdupq_n_f32(attn_weight);
 
                     for (size_t d = 0; d < nblocks; d++) {
                         float16x8_t vv = vld1q_f16(v + d*8);
@@ -354,8 +338,7 @@ static inline void cactus_attention_f16_fast(
                     }
                 }
 
-                running_sum += block_sum;
-                running_max = block_max;
+                running_sum += block_sum * current_block_scale;
             }
 
             if (running_sum == 0.f) {
@@ -400,12 +383,12 @@ void cactus_attention_f16(
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }
     
-    if (head_dim % 8 == 0 && mask == nullptr && window_size == 0) {
+    if (mask == nullptr && head_dim % 8 == 0) {
         cactus_attention_f16_fast(
             queries, keys, values, output,
             batch_size, seq_len, kv_seq_len,
             num_q_heads, num_kv_heads, head_dim,
-            scale, position_offset, is_causal
+            scale, position_offset, is_causal, window_size
         );
         return;
     }
@@ -595,8 +578,9 @@ void cactus_attention_f16(
                             int32x4_t xi = vcvtq_s32_f32(x_floor);
                             float32x4_t xf = vsubq_f32(x, x_floor);
 
-                            float32x4_t y = vfmaq_n_f32(vdupq_n_f32(1.0f), xf, 0.6931472f);
-                            y = vfmaq_f32(y, vmulq_f32(xf, xf), vdupq_n_f32(0.2402265f));
+                            float32x4_t t = vfmaq_n_f32(vdupq_n_f32(0.2246932f), xf, 0.0789673f);
+                            t = vfmaq_f32(vdupq_n_f32(0.6963248f), t, xf);
+                            float32x4_t y = vfmaq_f32(vdupq_n_f32(0.9999003f), t, xf);
 
                             xi = vaddq_s32(xi, vdupq_n_s32(127));
                             xi = vshlq_n_s32(xi, 23);

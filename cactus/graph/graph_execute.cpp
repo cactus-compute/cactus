@@ -43,13 +43,19 @@ extern void compute_groupnorm_node(GraphNode& node, const std::vector<std::uniqu
 extern void compute_rope_gptj_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void shrink_thread_local_buffers();
 extern void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_gated_deltanet_decode_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_stft_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_altup_predict_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_gaussian_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 extern void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_concat_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_cat_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_bilinear_interpolation_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
@@ -63,12 +69,13 @@ extern void compute_quantize_activations_node(GraphNode& node, const std::vector
 static const char* op_type_names[] = {
     "INPUT", "PRECISION_CAST",
     "ADD", "ADD_CLIPPED", "SUBTRACT", "MULTIPLY", "DIVIDE",
-    "MATMUL", "TRANSPOSE", "RESHAPE", "SLICE", "GATHER", "EMBEDDING",
+    "MATMUL", "TRANSPOSE", "RESHAPE", "SLICE", "GATHER", "EMBEDDING", "VIEW", "FLATTEN",
     "BILINEAR_INTERPOLATION",
     "SUM", "MEAN", "VARIANCE", "MIN", "MAX",
     "RMS_NORM", "ROPE", "ROPE_GPTJ", "SOFTMAX", "ATTENTION", "ATTENTION_INT8_HYBRID", "REL_POS_BIAS", "CONV1D_CAUSAL", "CONV1D_K3", "CONV1D_K7S3", "CONV1D", "CONV1D_SAME_DEPTHWISE_K9", "CONV1D_POINTWISE", "CONV2D_K3S2P1", "CONV2D_DEPTHWISE_K3S2P1", "CONV2D_POINTWISE_1X1", "GLU", "BATCHNORM",
     "SCALAR_ADD", "SCALAR_SUBTRACT", "SCALAR_MULTIPLY", "SCALAR_DIVIDE",
     "SCALAR_EXP", "SCALAR_SQRT", "SCALAR_COS", "SCALAR_SIN", "SCALAR_LOG",
+    "ABS", "POW", 
     "RELU", "SILU", "GELU", "GELU_ERF", "SIGMOID", "TANH",
     "SAMPLE", "CONCAT",
     "SCATTER_TOPK",
@@ -78,7 +85,12 @@ static const char* op_type_names[] = {
     "PERSISTENT",
     "QUANTIZE_ACTIVATIONS",
     "LSTM_CELL",
-    "STFT"
+    "GATED_DELTANET_DECODE",
+    "GATED_DELTANET_PREFILL",
+    "STFT",
+    "ALTUP_PREDICT",
+    "ALTUP_CORRECT",
+    "GAUSSIAN_TOPK"
 };
 
 static const char* get_op_name(OpType op) {
@@ -107,6 +119,8 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
         case OpType::SCALAR_COS:
         case OpType::SCALAR_SIN:
         case OpType::SCALAR_LOG:
+        case OpType::ABS:
+        case OpType::POW:
             compute_unary_op_node(node, nodes, node_index_map);
             break;
 
@@ -127,6 +141,8 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
             compute_reduce_node(node, nodes, node_index_map);
             break;
 
+        case OpType::FLATTEN:
+        case OpType::VIEW:
         case OpType::RESHAPE:
             compute_reshape_node(node, nodes, node_index_map);
             break;
@@ -243,6 +259,10 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
             compute_concat_node(node, nodes, node_index_map);
             break;
 
+        case OpType::CAT:
+            compute_cat_node(node, nodes, node_index_map);
+            break;
+
         case OpType::INDEX:
             compute_index_node(node, nodes, node_index_map);
             break;
@@ -275,8 +295,28 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
             compute_lstm_cell_node(node, nodes, node_index_map);
             break;
 
+        case OpType::GATED_DELTANET_DECODE:
+            compute_gated_deltanet_decode_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::GATED_DELTANET_PREFILL:
+            compute_gated_deltanet_prefill_node(node, nodes, node_index_map);
+            break;
+
         case OpType::STFT:
             compute_stft_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::ALTUP_PREDICT:
+            compute_altup_predict_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::ALTUP_CORRECT:
+            compute_altup_correct_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::GAUSSIAN_TOPK:
+            compute_gaussian_topk_node(node, nodes, node_index_map);
             break;
 
         default:

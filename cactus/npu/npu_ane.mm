@@ -125,9 +125,15 @@
 
     NSError* error = nil;
 
+    MLMultiArrayDataType inputDataType = MLMultiArrayDataTypeFloat16;
+    MLFeatureDescription* inputDesc = _modelDescription.inputDescriptionsByName[inputName];
+    if (inputDesc && inputDesc.multiArrayConstraint) {
+        inputDataType = inputDesc.multiArrayConstraint.dataType;
+    }
+
     _cachedInputArray = [[MLMultiArray alloc]
         initWithShape:shape
-             dataType:MLMultiArrayDataTypeFloat16
+             dataType:inputDataType
                 error:&error];
 
     if (error) {
@@ -143,10 +149,11 @@
     MLFeatureDescription* outputDesc = _modelDescription.outputDescriptionsByName[_cachedOutputName];
     if (outputDesc && outputDesc.type == MLFeatureTypeMultiArray) {
         NSArray<NSNumber*>* outputShape = outputDesc.multiArrayConstraint.shape;
+        MLMultiArrayDataType outputDataType = outputDesc.multiArrayConstraint.dataType;
 
         _cachedOutputArray = [[MLMultiArray alloc]
             initWithShape:outputShape
-                 dataType:MLMultiArrayDataTypeFloat16
+                 dataType:outputDataType
                     error:&error];
 
         if (error) {
@@ -196,14 +203,21 @@
     NSError* error = nil;
     MLMultiArray* inputArray = nil;
 
-    BOOL useCached = [self canUseCachedBufferWithInput:inputName shape:shape outputName:outputName];
+    MLMultiArrayDataType expectedDataType = MLMultiArrayDataTypeFloat16;
+    MLFeatureDescription* inputDesc = _modelDescription.inputDescriptionsByName[inputName];
+    if (inputDesc && inputDesc.multiArrayConstraint) {
+        expectedDataType = inputDesc.multiArrayConstraint.dataType;
+    }
+
+    BOOL useCached = (expectedDataType == MLMultiArrayDataTypeFloat16) &&
+        [self canUseCachedBufferWithInput:inputName shape:shape outputName:outputName];
 
     if (useCached) {
         inputArray = _cachedInputArray;
     } else {
         inputArray = [[MLMultiArray alloc]
             initWithShape:shape
-                 dataType:MLMultiArrayDataTypeFloat16
+                 dataType:expectedDataType
                     error:&error];
 
         if (error) {
@@ -217,8 +231,15 @@
         totalElements *= [dim unsignedIntegerValue];
     }
 
-    __fp16* inputPtr = (__fp16*)inputArray.dataPointer;
-    memcpy(inputPtr, data, totalElements * sizeof(__fp16));
+    if (expectedDataType == MLMultiArrayDataTypeFloat16) {
+        __fp16* inputPtr = (__fp16*)inputArray.dataPointer;
+        memcpy(inputPtr, data, totalElements * sizeof(__fp16));
+    } else {
+        float* inputPtr = (float*)inputArray.dataPointer;
+        for (NSUInteger i = 0; i < totalElements; i++) {
+            inputPtr[i] = (float)data[i];
+        }
+    }
 
     MLFeatureValue* inputFeature = [MLFeatureValue featureValueWithMultiArray:inputArray];
     NSDictionary* inputDict = @{inputName: inputFeature};
@@ -381,9 +402,16 @@ size_t ANEEncoder::encode(const __fp16* input,
 
         if (mlOutput) {
             size_t count = mlOutput.count;
-            __fp16* outputPtr = (__fp16*)mlOutput.dataPointer;
-            if (output != outputPtr) {
-                memcpy(output, outputPtr, count * sizeof(__fp16));
+            if (mlOutput.dataType == MLMultiArrayDataTypeFloat16) {
+                __fp16* outputPtr = (__fp16*)mlOutput.dataPointer;
+                if (output != outputPtr) {
+                    memcpy(output, outputPtr, count * sizeof(__fp16));
+                }
+            } else {
+                const float* fp32Ptr = (const float*)mlOutput.dataPointer;
+                for (size_t i = 0; i < count; i++) {
+                    output[i] = (__fp16)fp32Ptr[i];
+                }
             }
             return count;
         }
@@ -431,6 +459,90 @@ size_t ANEEncoder::get_output_buffer_size() const {
     if (!impl_) return 0;
     CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
     return impl.cachedOutputSize;
+}
+
+size_t ANEEncoder::encode_multimodal_input(
+    const std::vector<NPUNamedInput>& inputs,
+    __fp16* output,
+    const std::string& output_name) {
+    if (!impl_ || !output || inputs.empty()) return 0;
+
+    @autoreleasepool {
+        CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
+
+        NSMutableDictionary<NSString*, MLFeatureValue*>* inputDict = [NSMutableDictionary new];
+
+        MLMultiArrayDataType inputDataType = MLMultiArrayDataTypeFloat16;
+        NSDictionary<NSString*, MLFeatureDescription*>* inputDescs = impl.modelDescription.inputDescriptionsByName;
+        for (MLFeatureDescription* desc in inputDescs.allValues) {
+            if (desc.multiArrayConstraint) {
+                inputDataType = desc.multiArrayConstraint.dataType;
+                break;
+            }
+        }
+
+        for (const auto& input : inputs) {
+            NSMutableArray<NSNumber*>* shapeArray = [NSMutableArray arrayWithCapacity:input.shape.size()];
+            for (int dim : input.shape) {
+                [shapeArray addObject:@(dim)];
+            }
+
+            size_t total = 1;
+            for (int dim : input.shape) total *= dim;
+
+            NSError* arrayError = nil;
+            MLMultiArray* array = [[MLMultiArray alloc] initWithShape:shapeArray
+                                                            dataType:inputDataType
+                                                               error:&arrayError];
+            if (!array || arrayError) {
+                CACTUS_LOG_ERROR("npu", "ANE encode_multimodal_input: failed to create input array for " << input.name);
+                return 0;
+            }
+            if (inputDataType == MLMultiArrayDataTypeFloat16) {
+                memcpy(array.dataPointer, input.data, total * sizeof(__fp16));
+            } else {
+                float* fp32_ptr = (float*)array.dataPointer;
+                for (size_t i = 0; i < total; i++) {
+                    fp32_ptr[i] = (float)input.data[i];
+                }
+            }
+
+            NSString* nsName = [NSString stringWithUTF8String:input.name.c_str()];
+            inputDict[nsName] = [MLFeatureValue featureValueWithMultiArray:array];
+        }
+
+        NSError* error = nil;
+        MLDictionaryFeatureProvider* provider =
+            [[MLDictionaryFeatureProvider alloc] initWithDictionary:inputDict error:&error];
+        if (!provider || error) return 0;
+
+        id<MLFeatureProvider> result = [impl.model predictionFromFeatures:provider error:&error];
+        if (!result || error) return 0;
+
+        NSString* outName = nil;
+        if (!output_name.empty()) {
+            outName = [NSString stringWithUTF8String:output_name.c_str()];
+        } else {
+            NSArray<NSString*>* outputNames = impl.modelDescription.outputDescriptionsByName.allKeys;
+            if (outputNames.count > 0) outName = outputNames[0];
+        }
+
+        if (!outName) return 0;
+        MLFeatureValue* outFeature = [result featureValueForName:outName];
+        if (!outFeature || !outFeature.multiArrayValue) return 0;
+
+        MLMultiArray* outArray = outFeature.multiArrayValue;
+        size_t count = outArray.count;
+        if (outArray.dataType == MLMultiArrayDataTypeFloat16) {
+            memcpy(output, outArray.dataPointer, count * sizeof(__fp16));
+        } else {
+            const float* fp32_ptr = (const float*)outArray.dataPointer;
+            for (size_t i = 0; i < count; i++) {
+                output[i] = (__fp16)fp32_ptr[i];
+            }
+        }
+        return count;
+    }
 }
 
 std::unique_ptr<NPUEncoder> create_encoder() {

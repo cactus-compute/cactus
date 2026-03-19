@@ -24,6 +24,8 @@ endif()
 file(GLOB ENGINE_SOURCES "${SOURCE_DIR}/engine/*.cpp")
 file(GLOB GRAPH_SOURCES "${SOURCE_DIR}/graph/*.cpp")
 file(GLOB KERNEL_SOURCES "${SOURCE_DIR}/kernel/*.cpp")
+set(SME2_SOURCE "${SOURCE_DIR}/kernel/kernel_sme2.cpp")
+list(REMOVE_ITEM KERNEL_SOURCES "${SME2_SOURCE}")
 file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
 file(GLOB TELEMETRY_SOURCES "${SOURCE_DIR}/telemetry/*.cpp")
@@ -169,12 +171,47 @@ if (${ANDROID_ABI} STREQUAL "arm64-v8a")
         __ARM_FEATURE_FP16_VECTOR_ARITHMETIC=1
         __ARM_FEATURE_DOTPROD=1
     )
-    
+
     target_compile_options(cactus PRIVATE ${ARM_OPTIONS})
     target_compile_options(cactus_static PRIVATE ${ARM_OPTIONS})
-    
+
     target_compile_definitions(cactus PRIVATE ${ARM_DEFINITIONS})
     target_compile_definitions(cactus_static PRIVATE ${ARM_DEFINITIONS})
+
+    # SME2 support: compile kernel_sme2.cpp separately with armv9.2-a if the NDK supports it
+    set(ENABLE_SME2 "AUTO" CACHE STRING "SME2 build mode: AUTO or OFF")
+    set_property(CACHE ENABLE_SME2 PROPERTY STRINGS AUTO OFF)
+    set(BUILD_SME2 0)
+    set(SME2_MARCH_FLAG "-march=armv9.2-a+nosve+nosve2+sme2")
+
+    if(ENABLE_SME2 STREQUAL "AUTO")
+        include(CheckCXXSourceCompiles)
+        set(CMAKE_REQUIRED_FLAGS "${SME2_MARCH_FLAG}")
+        check_cxx_source_compiles("
+            #include <arm_sme.h>
+            int main() { return 0; }
+        " COMPILER_SUPPORTS_SME2)
+        unset(CMAKE_REQUIRED_FLAGS)
+        if(COMPILER_SUPPORTS_SME2)
+            set(BUILD_SME2 1)
+            message(STATUS "NDK supports SME2 - building SME2 kernels")
+        else()
+            message(STATUS "NDK does not support SME2 - building without SME2")
+        endif()
+    endif()
+
+    if(BUILD_SME2)
+        add_library(cactus_sme2_obj OBJECT ${SME2_SOURCE})
+        target_include_directories(cactus_sme2_obj PRIVATE ${COMMON_INCLUDE_DIRS})
+        target_compile_options(cactus_sme2_obj PRIVATE ${SME2_MARCH_FLAG} ${COMMON_COMPILE_OPTIONS} ${OPTIMIZATION_OPTIONS})
+        target_compile_definitions(cactus_sme2_obj PRIVATE CACTUS_COMPILE_SME2 ${COMMON_COMPILE_DEFINITIONS})
+        set_target_properties(cactus_sme2_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+        target_sources(cactus PRIVATE $<TARGET_OBJECTS:cactus_sme2_obj>)
+        target_sources(cactus_static PRIVATE $<TARGET_OBJECTS:cactus_sme2_obj>)
+        target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_SME2)
+        target_compile_definitions(cactus_static PRIVATE CACTUS_COMPILE_SME2)
+    endif()
 else()
     message(FATAL_ERROR "Unsupported Android ABI: ${ANDROID_ABI}. Cactus only supports arm64-v8a due to ARM NEON requirements.")
 endif()

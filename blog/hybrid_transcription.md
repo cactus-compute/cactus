@@ -14,14 +14,14 @@ tags: ["transcription", "hybrid AI", "edge AI", "whisper", "cloud handoff"]
 ## The Voice Interface Dilemma
 Voice is no longer a novelty; it is quickly becoming the default interface. From meeting transcriptions and dictation to voice notes and ambient computing, users expect to speak to their devices.
 
-But building a seamless voice experience is hard. If you've ever built a voice product, you are intimately familiar with the iron triangle of AI: Cheap, Accurate, Fast. 
+But building a seamless voice experience is hard. If you've ever built a voice product, you are intimately familiar with the iron triangle of AI: Cheap, Accurate, Fast.
 
 Historically, you could only pick two:
 - **Fast and Accurate?** It won't be cheap. You'll need heavy cloud compute.
 - **Fast and Cheap?** It won't be accurate. You're running tiny, compromised models.
 - **Cheap and Accurate?** It won't be fast. You're waiting in API queues.
 
-The logic is simple. High-accuracy transcription requires large models. Large models require massive cloud resources. This introduces network latency and high infrastructure costs. 
+The logic is simple. High-accuracy transcription requires large models. Large models require massive cloud resources. This introduces network latency and high infrastructure costs.
 
 Or, you can run small models on-device. The latency is practically zero, and compute is free. But smaller models struggle with noisy environments, accents, and complex vocabulary.
 
@@ -32,7 +32,7 @@ We didn't want to choose, so we spent the last few months building a third optio
 
 > What if we had small, fast on-device models that were self-aware enough to **know** when they are struggling?
 
-Instead of routing 100% of user audio to an expensive cloud API, the Cactus engine processes speech locally by default. Our on-device inference provides real-time transcription with sub-150ms latency. 
+Instead of routing 100% of user audio to an expensive cloud API, the Cactus engine processes speech locally by default. Our on-device inference provides real-time transcription with sub-150ms latency.
 
 However, when the engine detects messy audio (think background noise, static, or multiple speakers), it automatically hands that specific segment off to a larger model in the cloud to clean it up.
 
@@ -74,8 +74,8 @@ Check out the open-source engine and documentation on GitHub.
 ## See Also
 
 - [Cactus Engine API Reference](/docs/cactus_engine.md) — Full transcription API docs (`cactus_transcribe`, `cactus_stream_transcribe_*`)
-- [Python SDK](/python/) — Python bindings with transcription support
-- [Swift SDK](/apple/) — Swift API with async streaming transcription
-- [Kotlin/Android SDK](/android/) — Kotlin API with transcription support
+- [Python SDK](/python/) — Python bindings with streaming transcription support
+- [Swift SDK](/apple/) — Swift API with streaming transcription
+- [Kotlin/Android SDK](/android/) — Kotlin API with streaming transcription support
 - [Flutter SDK](/flutter/) — Flutter bindings with streaming transcription
 - [LFM2 24B Review](/blog/lfm2_24b_a2b.md) — Running large MoE models locally with Cactus

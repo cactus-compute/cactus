@@ -40,6 +40,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: actions/setup-python@v5
+        if: steps.version.outputs.skip == 'false'
+        with:
+          python-version: "3.x"
+
+      - name: Deploy versioned docs
+        if: steps.version.outputs.skip == 'false'
+        run: |
+          pip install "mkdocs<2" mkdocs-material mike
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          TAG=${{ steps.version.outputs.tag }}
+          bash .github/assemble-docs.sh "$TAG"
+          mike deploy ${TAG} latest --update-aliases --push
+          mike set-default latest --push
+
       - name: Get tarball SHA256
         if: steps.version.outputs.skip == 'false'
         id: sha

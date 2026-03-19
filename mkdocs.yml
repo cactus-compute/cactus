@@ -1,6 +1,6 @@
 site_name: Cactus Docs
 site_url: https://cactus-compute.github.io/cactus/
-site_description: "Low-latency energy-efficient AI engine for mobile devices and wearables"
+site_description: "Low-latency AI engine for mobile devices and wearables"
 site_author: Cactus Compute
 repo_url: https://github.com/cactus-compute/cactus
 repo_name: cactus-compute/cactus
@@ -9,7 +9,10 @@ docs_dir: site_docs
 
 theme:
   name: material
-  favicon: assets/logo.png
+  custom_dir: .github/docs-overrides
+  logo: assets/logo_white.png
+  favicon: assets/logo_white.png
+  font: false
   features:
     - navigation.tabs
     - navigation.sections
@@ -44,41 +47,54 @@ markdown_extensions:
   - admonition
   - pymdownx.details
   - attr_list
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - md_in_html
   - toc:
       permalink: true
   - tables
   - pymdownx.inlinehilite
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      base_path: [site_docs]
 
 plugins:
   - search
 
 extra:
+  version:
+    provider: mike
+    default: latest
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/cactus-compute/cactus
     - icon: fontawesome/brands/reddit
       link: https://www.reddit.com/r/cactuscompute/
 
+extra_css:
+  - stylesheets/custom.css
+
 nav:
   - Home: index.md
-  - Getting Started:
-    - Runtime Compatibility: docs/compatibility.md
-    - Contributing: CONTRIBUTING.md
-  - Core APIs:
-    - Engine API: docs/cactus_engine.md
-    - Graph API: docs/cactus_graph.md
-    - Index API: docs/cactus_index.md
-  - Guides:
-    - Fine-tuning & Deployment: docs/finetuning.md
+  - Quickstart: docs/quickstart.md
+  - Choose Your SDK: docs/choose-sdk.md
   - SDKs:
+    - React Native: react-native/README.md
     - Python: python/README.md
     - Swift: apple/README.md
     - Kotlin / Android: android/README.md
     - Flutter: flutter/README.md
     - Rust: rust/README.md
+  - Core APIs (C++):
+    - Engine API: docs/cactus_engine.md
+    - Graph API: docs/cactus_graph.md
+    - Index API: docs/cactus_index.md
+  - Guides:
+    - Fine-tuning & Deployment: docs/finetuning.md
+    - Runtime Compatibility: docs/compatibility.md
+  - Contributing: CONTRIBUTING.md
   - Blog:
     - All Posts: blog/README.md
     - Hybrid Transcription: blog/hybrid_transcription.md
     - "LFM2-24B on Mac": blog/lfm2_24b_a2b.md
+    - "Parakeet CTC 1.1B": blog/parakeet.md

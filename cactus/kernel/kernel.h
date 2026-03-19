@@ -11,7 +11,9 @@ enum class ScalarOpType {
     SUBTRACT,
     MULTIPLY,
     DIVIDE,
+    ABS,
     EXP,
+    POW,
     SQRT,
     COS,
     SIN,
@@ -179,73 +181,37 @@ void cactus_attention_hybrid_int8_fp16(
     float scale, size_t position_offset = 0, bool is_causal = true, size_t window_size = 0,
     size_t group_size = KV_QUANT_GROUP_SIZE);
 
-void cactus_attention_hybrid_int8_fp16_transposed(
-    const __fp16* queries,
-    const int8_t* keys_cached,
-    const int8_t* values_cached,
-    const float* k_scales,
-    const float* v_scales,
-    const __fp16* keys_new,
-    const __fp16* values_new,
-    __fp16* output,
-    size_t batch_size, size_t seq_len, size_t cache_len, size_t new_len,
-    size_t num_q_heads, size_t num_kv_heads, size_t head_dim,
-    float scale, size_t position_offset = 0, bool is_causal = true, size_t window_size = 0,
-    size_t group_size = KV_QUANT_GROUP_SIZE);
+void cactus_gated_deltanet_decode_f16(
+    const __fp16* q_data,
+    const __fp16* k_data,
+    const __fp16* v_data,
+    const __fp16* g_data,
+    const __fp16* b_data,
+    const __fp16* s_data,
+    __fp16* out,
+    size_t B,
+    size_t Hq,
+    size_t Hv,
+    size_t K,
+    size_t V,
+    float scale);
 
-void cactus_attention_hybrid_int8_fp16_packed(
-    const __fp16* queries,
-    const int8_t* kv_packed,
-    const float* k_scales,
-    const float* v_scales,
-    const __fp16* keys_new,
-    const __fp16* values_new,
-    __fp16* output,
-    size_t batch_size, size_t seq_len, size_t cache_len, size_t new_len,
-    size_t num_q_heads, size_t num_kv_heads, size_t head_dim,
-    float scale, size_t position_offset = 0, bool is_causal = true, size_t window_size = 0,
-    size_t group_size = KV_QUANT_GROUP_SIZE);
-
-void cactus_attention_hybrid_int8_fp16_stdpacked(
-    const __fp16* queries,
-    const int8_t* kv_packed,
-    const float* k_scales,
-    const float* v_scales,
-    const __fp16* keys_new,
-    const __fp16* values_new,
-    __fp16* output,
-    size_t batch_size, size_t seq_len, size_t cache_len, size_t new_len,
-    size_t num_q_heads, size_t num_kv_heads, size_t head_dim,
-    float scale, size_t position_offset = 0, bool is_causal = true, size_t window_size = 0,
-    size_t group_size = KV_QUANT_GROUP_SIZE);
-
-void cactus_attention_hybrid_int8_fp16_deferscale(
-    const __fp16* queries,
-    const int8_t* keys_cached,
-    const int8_t* values_cached,
-    const float* k_scales,
-    const float* v_scales,
-    const __fp16* keys_new,
-    const __fp16* values_new,
-    __fp16* output,
-    size_t batch_size, size_t seq_len, size_t cache_len, size_t new_len,
-    size_t num_q_heads, size_t num_kv_heads, size_t head_dim,
-    float scale, size_t position_offset = 0, bool is_causal = true, size_t window_size = 0,
-    size_t group_size = KV_QUANT_GROUP_SIZE);
-
-void cactus_attention_hybrid_int8_fp16_interleaved(
-    const __fp16* queries,
-    const int8_t* keys_cached,
-    const int8_t* values_cached,
-    const float* k_scales,
-    const float* v_scales,
-    const __fp16* keys_new,
-    const __fp16* values_new,
-    __fp16* output,
-    size_t batch_size, size_t seq_len, size_t cache_len, size_t new_len,
-    size_t num_q_heads, size_t num_kv_heads, size_t head_dim,
-    float scale, size_t position_offset = 0, bool is_causal = true, size_t window_size = 0,
-    size_t group_size = KV_QUANT_GROUP_SIZE);
+void cactus_gated_deltanet_prefill_f16(
+    const __fp16* q_data,
+    const __fp16* k_data,
+    const __fp16* v_data,
+    const __fp16* g_data,
+    const __fp16* b_data,
+    const __fp16* s_data,
+    __fp16* out,
+    size_t B,
+    size_t T,
+    size_t Hq,
+    size_t Hv,
+    size_t K,
+    size_t V,
+    size_t requested_chunk_size,
+    float scale);
 
 void cactus_conv1d_causal_depthwise_f16(
     const __fp16* input,
@@ -373,6 +339,8 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
 void cactus_concat_f16(const __fp16* input1, const __fp16* input2, __fp16* output,
                        const size_t* shape1, const size_t* shape2, const size_t* output_shape,
                        size_t ndims, int axis);
+void cactus_cat_f16(const __fp16** inputs, __fp16* output, const size_t** input_shapes,
+                      const size_t* output_shape, size_t num_inputs, int axis);
 
 void cactus_int8_to_fp32(const int8_t* src, float* dst, size_t count, float scale = 1.0f);
 void cactus_fp32_to_int8(const float* src, int8_t* dst, size_t count, float scale = 1.0f);
@@ -405,6 +373,30 @@ inline size_t kv_scales_count(size_t seq_len, size_t kv_heads, size_t head_dim, 
 
 void cactus_unpack_int4_to_int8(const uint8_t* packed, int8_t* unpacked, size_t unpacked_count);
 
+void cactus_gaussian_topk_f16(
+    const __fp16* input,
+    __fp16* output,
+    size_t rows,
+    size_t cols,
+    float ppf);
+
+void cactus_altup_predict_f16(
+    const __fp16* coefs,
+    const __fp16* const* streams,
+    __fp16* output,
+    size_t n,
+    size_t seq_len,
+    size_t hidden_dim);
+
+void cactus_altup_correct_f16(
+    const __fp16* coefs,
+    const __fp16* innovation,
+    const __fp16* const* predictions,
+    __fp16* output,
+    size_t n,
+    size_t seq_len,
+    size_t hidden_dim);
+
 void cactus_lstm_cell_f16(
     const __fp16* x_input,
     const __fp16* h_prev,
@@ -419,10 +411,5 @@ void cactus_lstm_cell_f16(
     size_t input_size,
     size_t hidden_size
 );
-
-void cactus_set_decode_attention_variant(int variant);
-int cactus_get_decode_attention_variant();
-void cactus_reset_attn_counters();
-void cactus_get_attn_counters(uint64_t* total_ns, uint64_t* call_count);
 
 #endif

@@ -87,6 +87,8 @@ void dispatch_unary_op_f16(OpType op, const __fp16* input, __fp16* output, size_
         case OpType::SCALAR_COS: scalar_op = ScalarOpType::COS; break;
         case OpType::SCALAR_SIN: scalar_op = ScalarOpType::SIN; break;
         case OpType::SCALAR_LOG: scalar_op = ScalarOpType::LOG; break;
+        case OpType::ABS: scalar_op = ScalarOpType::ABS; break;
+        case OpType::POW: scalar_op = ScalarOpType::POW; break;
         default: return;
     }
 
@@ -98,7 +100,7 @@ void compute_binary_op_node(GraphNode& node, const std::vector<std::unique_ptr<G
     const auto& rhs = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
 
     if (lhs.precision != Precision::FP16) {
-        throw std::runtime_error("Binary operations only support FP16 precision");
+        throw std::runtime_error("Binary operations only support FP16 precision (got " + std::to_string(static_cast<int>(lhs.precision)) + ")");
     }
 
     if (node.params.broadcast_info.needs_broadcasting) {

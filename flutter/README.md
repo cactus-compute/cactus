@@ -8,9 +8,13 @@ keywords: ["Flutter SDK", "dart FFI", "on-device AI", "mobile inference", "iOS",
 
 Run AI models on-device with dart:ffi direct bindings for iOS, macOS, and Android.
 
+> **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
+
 ## Building
 
+<!-- --8<-- [start:install] -->
 ```bash
+git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
 cactus build --flutter
 ```
 
@@ -21,11 +25,13 @@ Build output:
 | `libcactus.so` | Android (arm64-v8a) |
 | `cactus-ios.xcframework` | iOS |
 | `cactus-macos.xcframework` | macOS |
+<!-- --8<-- [end:install] -->
 
-see the main [README.md](../README.md) for how to use CLI & download weight
+See the main [README.md](../README.md) for how to use CLI & download weights
 
 ## Integration
 
+<!-- --8<-- [start:integration] -->
 ### Android
 
 1. Copy `libcactus.so` to `android/app/src/main/jniLibs/arm64-v8a/`
@@ -46,232 +52,325 @@ see the main [README.md](../README.md) for how to use CLI & download weight
 3. Drag the xcframework into the project
 4. In Runner target > General > "Frameworks, Libraries, and Embedded Content", set to "Embed & Sign"
 5. Copy `cactus.dart` to your `lib/` folder
+<!-- --8<-- [end:integration] -->
 
 ## Usage
 
+Handles are typed as `CactusModelT`, `CactusIndexT`, and `CactusStreamTranscribeT` (all `Pointer<Void>` aliases). All functions are top-level.
+
+<!-- --8<-- [start:example] -->
 ### Basic Completion
 
 ```dart
 import 'cactus.dart';
 
-final model = Cactus.create('/path/to/model.gguf');
-final result = model.complete('What is the capital of France?');
-print(result.text);
-model.dispose();
+final model = cactusInit('/path/to/model', null, false);
+final messages = '[{"role":"user","content":"What is the capital of France?"}]';
+final resultJson = cactusComplete(model, messages, null, null, null);
+print(resultJson);
+cactusDestroy(model);
 ```
+<!-- --8<-- [end:example] -->
 
-### Chat Messages
+For vision models (LFM2-VL-450M, LFM2.5-VL-1.6B), add `"images": ["path/to/image.png"]` to any message. See [Engine API](/docs/cactus_engine.md) for details.
+
+### Completion with Options and Streaming
 
 ```dart
-final model = Cactus.create(modelPath);
-final result = model.completeMessages([
-  Message.system('You are a helpful assistant.'),
-  Message.user('What is 2 + 2?'),
-]);
-print(result.text);
-model.dispose();
+import 'cactus.dart';
+import 'dart:io';
+
+final options = '{"max_tokens":256,"temperature":0.7}';
+
+final resultJson = cactusComplete(model, messages, options, null, (token, tokenId) {
+  stdout.write(token);
+});
+print(resultJson);
 ```
 
-### Completion Options
+### Prefill
+
+Pre-processes input text and populates the KV cache without generating output tokens. This reduces latency for subsequent calls to `cactusComplete`.
 
 ```dart
-final options = CompletionOptions(
-  temperature: 0.7,
-  topP: 0.9,
-  topK: 40,
-  maxTokens: 256,
-  stopSequences: ['\n\n'],
-);
+String cactusPrefill(
+  CactusModelT model,
+  String messagesJson,
+  String? optionsJson,
+  String? toolsJson,
+)
+```
 
-final result = model.complete('Write a haiku:', options: options);
+```dart
+final tools = '[{"type":"function","function":{"name":"get_weather","description":"Get weather for a location","parameters":{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}}}]';
+
+final messages = '[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"What is the weather in Paris?"}]';
+
+final resultJson = cactusPrefill(model, messages, null, tools);
+
+final completionMessages = '[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"What is the weather in Paris?"},{"role":"user","content":"What about SF?"}]';
+
+final completion = cactusComplete(model, completionMessages, null, tools, null);
+```
+
+**Response format:**
+```json
+{
+    "success": true,
+    "error": null,
+    "prefill_tokens": 25,
+    "prefill_tps": 166.1,
+    "total_time_ms": 150.5,
+    "ram_usage_mb": 245.67
+}
 ```
 
 ### Audio Transcription
 
 ```dart
-// From file
-final result = model.transcribe('/path/to/audio.wav');
+import 'cactus.dart';
+import 'dart:typed_data';
 
-// From PCM data (16kHz mono)
-final pcmData = Uint8List.fromList([...]); // Your PCM bytes
-final result = model.transcribePcm(pcmData);
+// From file
+final resultJson = cactusTranscribe(model, '/path/to/audio.wav', null, null, null, null);
+print(resultJson);
+
+// From PCM data (16 kHz mono)
+final pcmData = Uint8List.fromList([...]);
+final resultJson2 = cactusTranscribe(model, null, null, null, null, pcmData);
+print(resultJson2);
+```
+
+`segments` contains timestamps (seconds): phrase-level for Whisper, word-level for Parakeet TDT, one segment per transcription window for Parakeet CTC and Moonshine (consecutive VAD speech regions up to 30s).
+
+```dart
+import 'dart:convert';
+
+final result = jsonDecode(resultJson) as Map<String, dynamic>;
+for (final seg in result['segments'] as List) {
+  print('[${seg['start']}s - ${seg['end']}s] ${seg['text']}');
+}
+```
+
+**Custom vocabulary** biases the decoder toward domain-specific words (supported for Whisper and Moonshine models). Pass `custom_vocabulary` and `vocabulary_boost` in the options JSON:
+
+```dart
+final options = '{"custom_vocabulary": ["Omeprazole", "HIPAA", "Cactus"], "vocabulary_boost": 3.0}';
+final result = cactusTranscribe(model, '/path/to/audio.wav', '', options, null, null);
 ```
 
 ### Streaming Transcription
 
 ```dart
-final stream = model.createStreamTranscriber();
-stream.insert(audioChunk1);
-stream.insert(audioChunk2);
+import 'cactus.dart';
+import 'dart:typed_data';
 
-final partial = stream.process();
-print('Partial: ${partial.text}');
+final stream = cactusStreamTranscribeStart(model, null);
 
-final finalResult = stream.finalize();
-print('Final: ${finalResult.text}');
+final Uint8List audioChunk = ...;
+final partialJson = cactusStreamTranscribeProcess(stream, audioChunk);
+print(partialJson);
 
-stream.dispose();
+final finalJson = cactusStreamTranscribeStop(stream);
+print(finalJson);
 ```
+
+Streaming also accepts `custom_vocabulary` in the options passed to `cactusStreamTranscribeStart`. The bias is applied for the lifetime of the stream session.
 
 ### Embeddings
 
 ```dart
-final embedding = model.embed('Hello, world!');
-final imageEmbedding = model.imageEmbed('/path/to/image.jpg');
-final audioEmbedding = model.audioEmbed('/path/to/audio.wav');
+import 'cactus.dart';
+import 'dart:typed_data';
+
+final Float32List embedding      = cactusEmbed(model, 'Hello, world!', true);
+final Float32List imageEmbedding = cactusImageEmbed(model, '/path/to/image.jpg');
+final Float32List audioEmbedding = cactusAudioEmbed(model, '/path/to/audio.wav');
 ```
 
 ### Tokenization
 
 ```dart
-final tokens = model.tokenize('Hello, world!');
-final scores = model.scoreWindow(tokens, 0, tokens.length, 512);
+import 'cactus.dart';
+
+final List<int> tokens = cactusTokenize(model, 'Hello, world!');
+final String scores = cactusScoreWindow(model, tokens, 0, tokens.length, 512);
 ```
 
-### RAG (Retrieval-Augmented Generation)
+### Language Detection
 
 ```dart
-final model = Cactus.create(
-  '/path/to/model.gguf',
-  corpusDir: '/path/to/documents',
-);
+import 'cactus.dart';
+import 'dart:typed_data';
 
-final result = model.complete('What does the documentation say about X?');
+// From file
+final resultJson = cactusDetectLanguage(model, '/path/to/audio.wav', null, null);
+print(resultJson);
+
+// From PCM data (16 kHz mono)
+final Uint8List pcmData = ...;
+final resultJson2 = cactusDetectLanguage(model, null, null, pcmData);
+print(resultJson2);
+```
+
+### VAD
+
+```dart
+import 'cactus.dart';
+
+final String vadJson = cactusVad(model, '/path/to/audio.wav', null, null);
+print(vadJson);
+```
+
+### RAG
+
+```dart
+import 'cactus.dart';
+
+final String result = cactusRagQuery(model, 'What is machine learning?', 5);
+print(result);
 ```
 
 ### Vector Index
 
 ```dart
-final index = CactusIndex.create('/path/to/index', embeddingDim: 384);
+import 'cactus.dart';
 
-index.add(
-  ids: [1, 2],
-  documents: ['Document 1', 'Document 2'],
-  embeddings: [
-    model.embed('Document 1'),
-    model.embed('Document 2'),
-  ],
+final embDim = 4;
+final index = cactusIndexInit('/path/to/index', embDim);
+
+cactusIndexAdd(
+  index,
+  [1, 2],
+  ['Document 1', 'Document 2'],
+  [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]],
+  null,
 );
 
-final results = index.query(model.embed('search query'), topK: 5);
-for (final r in results) {
-  print('ID: ${r.id}, Score: ${r.score}');
-}
+final resultsJson = cactusIndexQuery(index, [0.1, 0.2, 0.3, 0.4], null);
+final getJson = cactusIndexGet(index, [1, 2]);
 
-index.dispose();
+cactusIndexDelete(index, [2]);
+cactusIndexCompact(index);
+cactusIndexDestroy(index);
 ```
 
 ## API Reference
 
-### Cactus
+All functions are top-level and mirror the C FFI directly. Functions that return a value throw `Exception` on failure;
+
+### Types
 
 ```dart
-class Cactus {
-  static Cactus create(String modelPath, {String? corpusDir});
-
-  CompletionResult complete(String prompt, {CompletionOptions options, void Function(String, int)? onToken});
-  CompletionResult completeMessages(List<Message> messages, {CompletionOptions options, List<Map<String, dynamic>>? tools, void Function(String, int)? onToken});
-
-  TranscriptionResult transcribe(String audioPath, {String? prompt, TranscriptionOptions options});
-  TranscriptionResult transcribePcm(Uint8List pcmData, {String? prompt, TranscriptionOptions options});
-
-  List<double> embed(String text, {bool normalize = true});
-  List<double> imageEmbed(String imagePath);
-  List<double> audioEmbed(String audioPath);
-  String ragQuery(String query, {int topK = 5});
-
-  List<int> tokenize(String text);
-  String scoreWindow(List<int> tokens, int start, int end, int context);
-  StreamTranscriber createStreamTranscriber();
-
-  void reset();
-  void stop();
-  void dispose();
-
-  static String getLastError();
-}
+typedef CactusModelT            = Pointer<Void>;
+typedef CactusIndexT            = Pointer<Void>;
+typedef CactusStreamTranscribeT = Pointer<Void>;
 ```
 
-### Message
+### Init / Lifecycle
 
 ```dart
-class Message {
-  static Message system(String content);
-  static Message user(String content);
-  static Message assistant(String content);
-}
+CactusModelT cactusInit(String modelPath, String? corpusDir, bool cacheIndex)
+void cactusDestroy(CactusModelT model)
+void cactusReset(CactusModelT model)
+void cactusStop(CactusModelT model)
+String cactusGetLastError()
 ```
 
-### CompletionOptions
+### Prefill
 
 ```dart
-class CompletionOptions {
-  final double temperature; 
-  final double topP;  
-  final int topK;   
-  final int maxTokens;       
-  final List<String> stopSequences;
-  final double confidenceThreshold;
-
-  static const defaultOptions;
-}
+String cactusPrefill(
+  CactusModelT model,
+  String messagesJson,
+  String? optionsJson,
+  String? toolsJson,
+)
 ```
 
-### CompletionResult
+### Completion
 
 ```dart
-class CompletionResult {
-  final String text;
-  final List<Map<String, dynamic>>? functionCalls;
-  final int promptTokens;
-  final int completionTokens;
-  final double timeToFirstToken;
-  final double totalTime;
-  final double prefillTokensPerSecond;
-  final double decodeTokensPerSecond;
-  final double confidence;
-  final bool needsCloudHandoff;
-}
+String cactusComplete(
+  CactusModelT model,
+  String messagesJson,
+  String? optionsJson,
+  String? toolsJson,
+  void Function(String token, int tokenId)? callback,
+)
 ```
 
-### TranscriptionResult
+### Transcription
 
 ```dart
-class TranscriptionResult {
-  final String text;
-  final List<Map<String, dynamic>>? segments;
-  final double totalTime;
-}
+String cactusTranscribe(
+  CactusModelT model,
+  String? audioPath,
+  String? prompt,
+  String? optionsJson,
+  void Function(String token, int tokenId)? callback,
+  Uint8List? pcmData,
+)
+
+CactusStreamTranscribeT cactusStreamTranscribeStart(CactusModelT model, String? optionsJson)
+String cactusStreamTranscribeProcess(CactusStreamTranscribeT stream, Uint8List pcmData)
+String cactusStreamTranscribeStop(CactusStreamTranscribeT stream)
 ```
 
-### StreamTranscriber
+### Embeddings
 
 ```dart
-class StreamTranscriber {
-  void insert(Uint8List pcmData);
-  TranscriptionResult process({String? language});
-  TranscriptionResult finalize();
-  void dispose();
-}
+Float32List cactusEmbed(CactusModelT model, String text, bool normalize)
+Float32List cactusImageEmbed(CactusModelT model, String imagePath)
+Float32List cactusAudioEmbed(CactusModelT model, String audioPath)
 ```
 
-### CactusIndex
+### Tokenization / Scoring
 
 ```dart
-class CactusIndex {
-  static CactusIndex create(String indexDir, {required int embeddingDim});
+List<int> cactusTokenize(CactusModelT model, String text)
+String cactusScoreWindow(CactusModelT model, List<int> tokens, int start, int end, int context)
+```
 
-  void add({required List<int> ids, required List<String> documents, required List<List<double>> embeddings, List<String>? metadatas});
-  void delete(List<int> ids);
-  List<IndexResult> query(List<double> embedding, {int topK = 5});
-  void compact();
-  void dispose();
-}
+### Detect Language
 
-class IndexResult {
-  final int id;
-  final double score;
-}
+```dart
+String cactusDetectLanguage(CactusModelT model, String? audioPath, String? optionsJson, Uint8List? pcmData)
+```
+
+### VAD / RAG
+
+```dart
+String cactusVad(CactusModelT model, String? audioPath, String? optionsJson, Uint8List? pcmData)
+String cactusRagQuery(CactusModelT model, String query, int topK)
+```
+
+### Vector Index
+
+```dart
+CactusIndexT cactusIndexInit(String indexDir, int embeddingDim)
+void cactusIndexDestroy(CactusIndexT index)
+int cactusIndexAdd(CactusIndexT index, List<int> ids, List<String> documents, List<List<double>> embeddings, List<String>? metadatas)
+int cactusIndexDelete(CactusIndexT index, List<int> ids)
+String cactusIndexGet(CactusIndexT index, List<int> ids)
+String cactusIndexQuery(CactusIndexT index, List<double> embedding, String? optionsJson)
+int cactusIndexCompact(CactusIndexT index)
+```
+
+### Logging
+
+```dart
+void cactusLogSetLevel(int level)  // 0=DEBUG 1=INFO 2=WARN 3=ERROR 4=NONE
+void cactusLogSetCallback(void Function(int level, String component, String message)? onLog)
+```
+
+### Telemetry
+
+```dart
+void cactusSetTelemetryEnvironment(String cacheLocation)
+void cactusSetAppId(String appId)
+void cactusTelemetryFlush()
+void cactusTelemetryShutdown()
 ```
 
 ## Bundling Model Weights
@@ -289,10 +388,10 @@ import 'dart:io';
 
 Future<String> getModelPath() async {
   final dir = await getApplicationDocumentsDirectory();
-  final modelFile = File('${dir.path}/model.gguf');
+  final modelFile = File('${dir.path}/model');
 
   if (!await modelFile.exists()) {
-    final data = await rootBundle.load('assets/model.gguf');
+    final data = await rootBundle.load('assets/model');
     await modelFile.writeAsBytes(data.buffer.asUint8List());
   }
 
@@ -305,17 +404,17 @@ Future<String> getModelPath() async {
 Add model to bundle and access via path:
 
 ```dart
-import 'package:path_provider/path_provider.dart';
+import 'dart:io';
 
-final path = '${Directory.current.path}/model.gguf';
+final path = '${Directory.current.path}/model';
 ```
 
 ## Requirements
 
 - Flutter 3.0+
 - Dart 2.17+
-- iOS 14.0+ / macOS 13.0+
-- Android API 24+ / arm64-v8a
+- iOS 13.0+ / macOS 13.0+
+- Android API 21+ / arm64-v8a
 
 ## See Also
 

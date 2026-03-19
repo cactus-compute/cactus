@@ -429,6 +429,36 @@ void cactus_concat_f16(const __fp16* input1, const __fp16* input2, __fp16* outpu
         });
 }
 
+void cactus_cat_f16(const __fp16** inputs, __fp16* output, const size_t** input_shapes,
+                      const size_t* output_shape, size_t ndims, int axis) {
+    if (axis < 0) axis += output_shape[0];
+
+    size_t outer_size = 1;
+    for (size_t i = 0; i < static_cast<size_t>(axis); ++i) {
+        outer_size *= output_shape[i];
+    }
+
+    size_t inner_size = 1;
+    for (size_t i = axis + 1; i < output_shape[0]; ++i) {
+        inner_size *= output_shape[i];
+    }
+
+    CactusThreading::parallel_for(outer_size, CactusThreading::Thresholds::ELEMENT_WISE,
+        [&](size_t start, size_t end) {
+            for (size_t outer = start; outer < end; ++outer) {
+                __fp16* out_ptr = output + outer * inner_size * output_shape[axis];
+                size_t offset = 0;
+
+                for (size_t input_idx = 0; input_idx < ndims; ++input_idx) {
+                    const __fp16* in_ptr = inputs[input_idx] + outer * inner_size * input_shapes[input_idx][axis];
+                    size_t copy_size = input_shapes[input_idx][axis] * inner_size;
+                    std::memcpy(out_ptr + offset, in_ptr, copy_size * sizeof(__fp16));
+                    offset += copy_size;
+                }
+            }
+        });
+}
+
 void cactus_transpose_2d_f16(const __fp16* source, __fp16* destination, size_t num_rows, size_t num_cols, size_t start_row, size_t end_row) {
     constexpr size_t TILE_SIZE = 32;
     constexpr size_t VECTOR_WIDTH = 8;

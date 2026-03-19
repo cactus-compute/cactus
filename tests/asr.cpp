@@ -184,7 +184,7 @@ std::string get_transcribe_prompt(const std::string& model_path, const std::stri
                    [](unsigned char c) { return std::tolower(c); });
 
     if (path_lower.find("whisper") != std::string::npos) {
-        return "<|startoftranscript|><|" + language + "|><|transcribe|><|notimestamps|>";
+        return "<|startoftranscript|><|" + language + "|><|transcribe|>";
     }
     return "";
 }

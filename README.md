@@ -9,7 +9,13 @@
 [![Reddit][reddit-shield]][reddit-url]
 [![Blog][blog-shield]][blog-url]
 
-A hybrid low-latency energy-efficient AI engine for mobile devices & wearables.
+A low-latency AI engine for mobile devices & wearables. Main features:
+
+- **Fast:** fastest inference on ARM CPU
+- **Low RAM:** zero-copy memory mapping ensures 10x lower RAM use than other engines
+- **Multimodal:** one SDK for speech, vision, and language models
+- **Cloud fallback:** automatically route requests to cloud models if needed
+- **Energy-efficient:** NPU-accelerated prefill
 
 ```
 ┌─────────────────┐
@@ -25,7 +31,7 @@ A hybrid low-latency energy-efficient AI engine for mobile devices & wearables.
 └─────────────────┘     Custom attention, KV-cache quant, chunked prefill
 ```
 
-## Quick Demo 
+## Quick Demo (Mac)
 
 - Step 1: `brew install cactus-compute/cactus/cactus`
 - Step 2: `cactus transcribe` or `cactus run` 
@@ -33,11 +39,12 @@ A hybrid low-latency energy-efficient AI engine for mobile devices & wearables.
 ## Cactus Engine
 
 ```cpp
-#include cactus.h
+#include "cactus.h"
 
 cactus_model_t model = cactus_init(
     "path/to/weight/folder",
     "path to txt or dir of txts for auto-rag",
+    false
 );
 
 const char* messages = R"([
@@ -85,7 +92,7 @@ Example response from Gemma3-270m
 ## Cactus Graph
 
 ```cpp
-#include cactus.h
+#include "cactus.h"
 
 CactusGraph graph;
 auto a = graph.input({2, 3}, Precision::FP16);
@@ -111,8 +118,8 @@ graph.hard_reset();
 
 | Reference | Language | Description |
 |-----------|----------|-------------|
-| [Engine API](cactus_engine.md) | C | Chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, VAD, vector index, cloud handoff |
-| [Graph API](cactus_graph.md) | C++ | Tensor operations, matrix multiplication, attention, normalization, activation functions |
+| [Engine API](docs/cactus_engine.md) | C | Chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, VAD, vector index, cloud handoff |
+| [Graph API](docs/cactus_graph.md) | C++ | Tensor operations, matrix multiplication, attention, normalization, activation functions |
 | [Python SDK](/python/) | Python | Mac, Linux |
 | [Swift SDK](/apple/) | Swift | iOS, macOS, tvOS, watchOS, Android |
 | [Kotlin SDK](/android/) | Kotlin | Android, iOS (via KMP) |
@@ -120,12 +127,14 @@ graph.hard_reset();
 | [Rust SDK](/rust/) | Rust | Mac, Linux |
 | [React Native](https://github.com/cactus-compute/cactus-react-native) | JavaScript | iOS, Android |
 
-## Benchmarks
+> **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
+
+## Benchmarks (CPU-only, no GPU)
 
 - All weights INT4 quantised
 - LFM: 1k-prefill / 100-decode, values are prefill tps / decode tps
 - LFM-VL: 256px input, values are latency / decode tps
-- Parakeet: 30s audio input, values are latency / decode tps
+- Parakeet: 20s audio input, values are latency / decode tps
 - Missing latency = no NPU support yet
 
 | Device | LFM 1.2B | LFMVL 1.6B | Parakeet 1.1B | RAM |
@@ -139,6 +148,50 @@ graph.hard_reset();
 | Galaxy A17 5G | 32/10 | -/11 | -/40k+ | 727MB |
 | CMF Phone 2 Pro | - | - | - | - |
 | Raspberry Pi 5 | 69/11 | 13.3s/11 | 4.5s/180k+ | 869MB |
+
+## Supported Transcription Model
+
+- STT: 20s audio input on Macbook Air M3 chip
+- Benchmark dataset: internal evals with production users
+
+| Model | Params | End2End ms | Latency ms | Decode toks/sec | NPU | RTF | WER |
+|-------|--------|------------|------------|------------|-----|-----|-----|
+| UsefulSensors/moonshine-base | 61M | 361.35 | 182 | 262 | yes | 0.0180 | 0.1395 |
+| openai/whisper-tiny | 39M | 232.03 | 137.38 | 581 | yes | 0.0116 | 0.1860 |
+| openai/whisper-base | 74M | 329.37 | 178.65 | 358 | yes | 0.0164 | 0.1628 |
+| openai/whisper-small | 244M | 856.79 | 332.63 | 108 | yes | 0.0428 | 0.0930 |
+| openai/whisper-medium | 769M | 2085.87 | 923.33 | 49 | yes | 0.1041 | 0.0930 |
+| nvidia/parakeet-ctc-0.6b | 600M | 201.77 | 201.44 | 5214285 | yes | 0.0101 | 0.0930 |
+| nvidia/parakeet-tdt-0.6b-v3 | 600M | 718.91 | 718.82 | 3583333 | yes | 0.0359 | 0.0465 |
+| nvidia/parakeet-ctc-1.1b | 1.1B | 279.03 | 278.92 | 4562500 | yes | 0.0139 | 0.1628 |
+| snakers4/silero-vad | - | - | - | - | - | - | - |
+
+## Supported LLMs
+
+- Gemma weights are often **gated** on HuggingFace, needs tokens 
+- Run `huggingface-cli login` and input your huggingface token
+
+| Model | Features |                                                      
+|-------|----------|
+| google/gemma-3-270m-it | completion |
+| google/functiongemma-270m-it | tools |
+| google/gemma-3-1b-it | completion, gated |
+| google/gemma-3n-E2B-it | completion, tools |
+| google/gemma-3n-E4B-it | completion, tools |
+| Qwen/Qwen3-0.6B | completion, tools, embed | 
+| Qwen/Qwen3-Embedding-0.6B | embed | 
+| Qwen/Qwen3.5-0.8B | vision, completion, tools, embed |
+| Qwen/Qwen3-1.7B | completion, tools, embed | 
+| Qwen/Qwen3.5-2B | vision, completion, tools, embed | 
+| LiquidAI/LFM2-350M | completion, tools, embed |
+| LiquidAI/LFM2-700M | completion, tools, embed |
+| LiquidAI/LFM2-8B-A1B | completion, tools, embed |
+| LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |
+| LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |
+| LiquidAI/LFM2-2.6B | completion, tools, embed |
+| LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |
+| LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |
+| nomic-ai/nomic-embed-text-v2-moe | embed |
 
 ## Roadmap
 
@@ -212,7 +265,7 @@ graph.hard_reset();
 │    --precision INT4|INT8|FP16        regenerate weights with precision       │
 │    --reconvert                       force reconversion from source          │
 │    --no-rebuild                      skip building library                   │
-│    --only <test>                     specific test (llm, vlm, stt, etc)      │
+│    --llm / --stt / --performance     run specific test suite                 │
 │    --ios                             run on connected iPhone                 │
 │    --android                         run on connected Android                │
 │                                                                              │
@@ -222,39 +275,13 @@ graph.hard_reset();
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Supported Models                                                                                                                                                     
-                                                                                                                                                                          
-| Model | Features |                                                                                                                                             
-|-------|----------|                                                                                                                                             
-| google/gemma-3-270m-it | completion |                                                                                                                         
-| google/functiongemma-270m-it | completion, tools |                                                                                                            
-| LiquidAI/LFM2-350M | completion, tools, embed |                                                                                                               
-| Qwen/Qwen3-0.6B | completion, tools, embed |                                                                                                                  
-| LiquidAI/LFM2-700M | completion, tools, embed |                                                                                                               
-| LiquidAI/LFM2-8B-A1B | completion, tools, embed |                                                                                                                
-| google/gemma-3-1b-it | completion |                                                                                                                           
-| LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |                                                                                                    
-| LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |                                                                                                      
-| Qwen/Qwen3-1.7B | completion, tools, embed | 
-| LiquidAI/LFM2-2.6B | completion, tools, embed |                                                                                                                
-| LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |                                                                                                            
-| LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |                                                                                                               
-| UsefulSensors/moonshine-base | transcription, speech embed |                                                                                                         
-| openai/whisper-small | transcription, speech embed, Apple NPU |                                                                                                                 
-| openai/whisper-medium | transcribe, speech embed, Apple NPU |
-| nvidia/parakeet-ctc-0.6b | transcribe, speech embed, Apple NPU |
-| nvidia/parakeet-ctc-1.1b | transcribe, speech embed, Apple NPU |
-| snakers4/silero-vad | vad |
-| nomic-ai/nomic-embed-text-v2-moe | embed |                                                                                                                    
-| Qwen/Qwen3-Embedding-0.6B | embed | 
-
 ## Maintaining Organisations
 
 1. [Cactus Compute, Inc. (YC S25)](https://cactuscompute.com/)
 2. [UCLA's BruinAI](https://bruinai.org/)
 3. [Char (YC S25)](https://char.com/)
 4. [Yale's AI Society](https://www.yale-ai.org/team)
-5. [National Unoversity of Singapore's AI Society](https://www.nusaisociety.org/)
+5. [National University of Singapore's AI Society](https://www.nusaisociety.org/)
 6. [UC Irvine's AI@UCI](https://aiclub.ics.uci.edu/)
 7. [Imperial College's AI Society](https://www.imperialcollegeunion.org/csp/1391)
 8. [University of Pennsylvania's AI@Penn](https://ai-at-penn-main-105.vercel.app/)

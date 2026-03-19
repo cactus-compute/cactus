@@ -44,6 +44,15 @@ CACTUS_FFI_EXPORT int cactus_complete(
     void* user_data                         // optional
 );
 
+CACTUS_FFI_EXPORT int cactus_prefill(
+    cactus_model_t model,
+    const char* messages_json,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,               // optional
+    const char* tools_json                  // optional
+);
+
 CACTUS_FFI_EXPORT int cactus_tokenize(
     cactus_model_t model,
     const char* text,
@@ -72,6 +81,16 @@ CACTUS_FFI_EXPORT int cactus_transcribe(
     const char* options_json,               // optional
     cactus_token_callback callback,         // optional
     void* user_data,                        // optional
+    const uint8_t* pcm_buffer,              // NULL if using audio_file_path
+    size_t pcm_buffer_size
+);
+
+CACTUS_FFI_EXPORT int cactus_detect_language(
+    cactus_model_t model,
+    const char* audio_file_path,            // NULL if using pcm_buffer
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,               // optional
     const uint8_t* pcm_buffer,              // NULL if using audio_file_path
     size_t pcm_buffer_size
 );
@@ -188,6 +207,12 @@ CACTUS_FFI_EXPORT int cactus_index_compact(cactus_index_t index);
 CACTUS_FFI_EXPORT void cactus_index_destroy(cactus_index_t index);
 
 CACTUS_FFI_EXPORT const char* cactus_get_last_error(void);
+
+// level: 0=DEBUG, 1=INFO, 2=WARN (default), 3=ERROR, 4=NONE
+CACTUS_FFI_EXPORT void cactus_log_set_level(int level);
+
+typedef void (*cactus_log_callback_t)(int level, const char* component, const char* message, void* user_data);
+CACTUS_FFI_EXPORT void cactus_log_set_callback(cactus_log_callback_t callback, void* user_data);
 
 CACTUS_FFI_EXPORT void cactus_set_telemetry_environment(const char* framework, const char* cache_location, const char* version);
 CACTUS_FFI_EXPORT void cactus_set_app_id(const char* app_id);

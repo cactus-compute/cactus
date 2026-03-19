@@ -153,6 +153,41 @@ void cactus_scalar_op_f16(const __fp16* input, __fp16* output, size_t num_elemen
             break;
         }
 
+        case ScalarOpType::ABS: {
+            CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_BASIC,
+                [&](size_t start_idx, size_t end_idx) {
+                    constexpr size_t SIMD_WIDTH = 8;
+                    constexpr size_t UNROLL = 4;
+                    const size_t unrolled_end = start_idx + ((end_idx - start_idx) / (SIMD_WIDTH * UNROLL)) * (SIMD_WIDTH * UNROLL);
+                    const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
+
+                    if (use_streaming) {
+                        for (size_t i = start_idx; i < unrolled_end; i += SIMD_WIDTH * UNROLL) {
+                            __builtin_prefetch(&input[i + 256], 0, 0);
+                            float16x8_t v0 = vabsq_f16(vld1q_f16(&input[i]));
+                            float16x8_t v1 = vabsq_f16(vld1q_f16(&input[i + 8]));
+                            float16x8_t v2 = vabsq_f16(vld1q_f16(&input[i + 16]));
+                            float16x8_t v3 = vabsq_f16(vld1q_f16(&input[i + 24]));
+                            stream_store_f16x8(&output[i], v0);
+                            stream_store_f16x8(&output[i + 8], v1);
+                            stream_store_f16x8(&output[i + 16], v2);
+                            stream_store_f16x8(&output[i + 24], v3);
+                        }
+                        for (size_t i = unrolled_end; i < vectorized_end; i += SIMD_WIDTH) {
+                            stream_store_f16x8(&output[i], vabsq_f16(vld1q_f16(&input[i])));
+                        }
+                    } else {
+                        for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
+                            vst1q_f16(&output[i], vabsq_f16(vld1q_f16(&input[i])));
+                        }
+                    }
+                    for (size_t i = vectorized_end; i < end_idx; ++i) {
+                        output[i] = std::abs(input[i]);
+                    }
+                });
+            break;
+        }
+
         case ScalarOpType::EXP: {
             CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
                 [&](size_t start_idx, size_t end_idx) {
@@ -197,7 +232,23 @@ void cactus_scalar_op_f16(const __fp16* input, __fp16* output, size_t num_elemen
                 });
             break;
         }
-
+        
+        case ScalarOpType::POW: {
+          // manual impl for now
+          CactusThreading::parallel_for(
+              num_elements,
+              CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+              [&](size_t start_idx, size_t end_idx) {
+                  for (size_t i = start_idx; i < end_idx; ++i) {
+                      output[i] = static_cast<__fp16>(
+                          std::pow(static_cast<float>(input[i]), static_cast<float>(scalar_f16))
+                      );
+                  }
+              }
+          );
+          break;
+        }
+        
         case ScalarOpType::SQRT: {
             CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
                 [&](size_t start_idx, size_t end_idx) {

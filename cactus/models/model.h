@@ -52,6 +52,81 @@ private:
     } weight_nodes_;
 };
 
+class Qwen3p5Model : public Model {
+public:
+    Qwen3p5Model();
+    explicit Qwen3p5Model(const Config& config);
+    ~Qwen3p5Model() override = default;
+
+protected:
+    size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                    ComputeBackend backend) const override;
+
+    size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    void load_weights_to_graph(CactusGraph* gb) override;
+    void post_init() override;
+    void post_execute_updates(CactusGraph* gb, size_t seq_len) override;
+    void reset_cache() override;
+
+private:
+    size_t build_gated_deltanet(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                                ComputeBackend backend, bool use_cache, size_t position_offset);
+
+    struct WeightNodeIDs {
+        size_t output_weight = 0;
+        size_t output_norm_weight = 0;
+
+        enum class LayerType : uint8_t { ATTENTION, DELTANET };
+
+        struct LayerWeights {
+            size_t attn_q_weight = 0;
+            size_t attn_k_weight = 0;
+            size_t attn_v_weight = 0;
+            size_t attn_output_weight = 0;
+            size_t input_layernorm_weight = 0;
+            size_t attn_q_norm_weight = 0;
+            size_t attn_k_norm_weight = 0;
+            size_t deltanet_qkv_weight = 0;
+            size_t deltanet_gate_weight = 0;
+            size_t deltanet_beta_weight = 0;
+            size_t deltanet_gate_bias = 0;
+            size_t deltanet_beta_bias = 0;
+            size_t deltanet_z_weight = 0;
+            size_t deltanet_conv_weight = 0;
+            size_t ffn_gate_weight = 0;
+            size_t ffn_up_weight = 0;
+            size_t ffn_down_weight = 0;
+            size_t post_attention_layernorm_weight = 0;
+        };
+
+        struct LayerEntry {
+            LayerType type = LayerType::ATTENTION;
+            LayerWeights weights;
+        };
+
+        std::vector<LayerEntry> layers;
+    } weight_nodes_;
+
+    ConvCache conv_cache_;
+    std::vector<size_t> conv_cache_state_nodes_;
+    bool last_forward_used_cache_ = false;
+    size_t deltanet_total_seq_len_ = 0;
+    size_t deltanet_heads_ = 0;
+    size_t deltanet_key_dim_ = 0;
+    size_t deltanet_value_dim_ = 0;
+    size_t deltanet_state_flat_dim_ = 0;
+    size_t deltanet_mixed_dim_ = 0;
+    size_t deltanet_conv_history_len_ = 0;
+    size_t deltanet_conv_flat_dim_ = 0;
+    size_t deltanet_cache_row_dim_ = 0;
+};
+
 
 
 class GemmaModel : public Model {
@@ -98,6 +173,102 @@ private:
         std::vector<LayerWeights> layers;
     } weight_nodes_;
 };
+
+class GemmaModel3n : public Model {
+public:
+    GemmaModel3n();
+    explicit GemmaModel3n(const Config& config);
+    ~GemmaModel3n() override = default;
+
+protected:
+    size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                    ComputeBackend backend) const override;
+
+    size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "") override;
+    void load_weights_to_graph(CactusGraph* gb) override;
+    void post_init() override;
+    std::vector<size_t> get_kv_layer_dims() const override;
+
+private:
+    size_t forward_split(const std::vector<uint32_t>& tokens, bool use_cache);
+
+    size_t build_preamble(CactusGraph* gb, size_t seq_len, ComputeBackend backend,
+                          size_t& token_input, size_t& pli_input, size_t* streams);
+    void build_layer(CactusGraph* gb, uint32_t layer_idx, ComputeBackend backend,
+                     bool use_cache, size_t pos_offset, size_t pli, size_t* streams);
+    size_t build_output_head(CactusGraph* gb, size_t* streams, ComputeBackend backend);
+    void set_token_inputs(CactusGraph* gb, size_t token_input, size_t pli_input,
+                          const std::vector<uint32_t>& tokens);
+
+    size_t build_laurel(CactusGraph* gb, size_t normed_input, uint32_t layer_idx, ComputeBackend backend) const;
+    size_t build_gaussian_topk(CactusGraph* gb, size_t input, float ppf) const;
+    size_t build_rms_norm_no_weight(CactusGraph* gb, size_t input, size_t num_rows, size_t row_dim) const;
+    size_t build_magnitude_normalize(CactusGraph* gb, size_t reference, size_t target) const;
+
+    size_t build_altup_router_modalities(CactusGraph* gb, size_t stream0, uint32_t layer_idx, ComputeBackend backend) const;
+    void build_altup_predict(CactusGraph* gb, size_t modalities, uint32_t layer_idx,
+                             const size_t* streams, size_t* predictions) const;
+    void build_altup_correct(CactusGraph* gb, size_t activated, size_t modalities, uint32_t layer_idx,
+                             ComputeBackend backend, const size_t* predictions, size_t* corrected) const;
+    void build_per_layer_input(CactusGraph* gb, size_t pli_combined, uint32_t layer_idx,
+                               ComputeBackend backend, size_t* streams) const;
+
+    struct WeightNodeIDs {
+        size_t output_weight;
+        size_t output_norm_weight;
+
+        size_t altup_proj_weights[3];
+        size_t altup_unembed_proj_weights[3];
+        size_t embed_tokens_per_layer;
+        size_t per_layer_model_proj;
+        size_t per_layer_proj_norm;
+
+        struct LayerWeights {
+            size_t attn_q_weight;
+            size_t attn_k_weight;
+            size_t attn_v_weight;
+            size_t attn_output_weight;
+            size_t input_layernorm_weight;
+            size_t attn_q_norm_weight;
+            size_t attn_k_norm_weight;
+            size_t pre_feedforward_layernorm_weight;
+            size_t post_feedforward_layernorm_weight;
+            size_t ffn_gate_weight;
+            size_t ffn_up_weight;
+            size_t ffn_down_weight;
+            size_t post_attention_layernorm_weight;
+
+            size_t altup_router_norm;
+            size_t altup_prediction_coefs;
+            size_t altup_correction_coefs;
+            size_t altup_correct_output_scale;
+            size_t altup_modality_router;
+            size_t laurel_left;
+            size_t laurel_right;
+            size_t laurel_norm;
+            size_t per_layer_gate;
+            size_t per_layer_proj;
+            size_t post_per_layer_norm;
+        };
+
+        std::vector<LayerWeights> layers;
+    } weight_nodes_;
+
+    std::vector<int> kv_share_map_;
+    std::vector<size_t> shared_k_nodes_;
+    std::vector<size_t> shared_v_nodes_;
+
+    std::vector<__fp16> v_norm_ones_weight_;
+    size_t v_norm_ones_node_ = 0;
+};
+
 class Siglip2VisionModel : public Model {
     friend class Lfm2VlModel;  
     
@@ -458,7 +629,8 @@ protected:
     size_t build_conv1d(CactusGraph* gb, size_t input);
 
     uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
-                                    float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr) override;
+                                    float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                                    float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
 
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
     
@@ -658,6 +830,9 @@ private:
 
     bool first_decode_step_ = true;
 
+    std::unordered_map<uint32_t, float> suppress_bias_;
+    std::unordered_map<uint32_t, float> suppress_bias_first_step_;
+
     std::vector<size_t> encoder_k_persistent_;
     std::vector<size_t> encoder_v_persistent_;
 
@@ -725,7 +900,8 @@ protected:
     size_t build_audio_preprocessor(CactusGraph* gb, size_t input);
 
     uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
-                                    float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr) override;
+                                    float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                                    float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
 
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
     
@@ -855,7 +1031,8 @@ protected:
     void load_weights_to_graph(CactusGraph* gb) override;
     uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
                                float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0,
-                               const std::string& profile_file = "", float* out_entropy = nullptr) override;
+                               const std::string& profile_file = "", float* out_entropy = nullptr,
+                               float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
     void reset_cache() override;
 
@@ -945,6 +1122,136 @@ private:
     bool use_npu_encoder_ = false;
 };
 
+class ParakeetTDTModel : public Model {
+public:
+    ParakeetTDTModel();
+    explicit ParakeetTDTModel(const Config& config);
+    ~ParakeetTDTModel() override = default;
+
+protected:
+    size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("ParakeetTDT: build_attention unused");
+    }
+
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("ParakeetTDT: build_mlp unused");
+    }
+
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("ParakeetTDT: build_transformer_block unused");
+    }
+
+    size_t forward(const std::vector<uint32_t>& /*tokens*/, bool /*use_cache*/ = false) override {
+        throw std::runtime_error("ParakeetTDT requires audio feature forward().");
+    }
+
+    size_t forward(const std::vector<float>& audio_features, const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    void load_weights_to_graph(CactusGraph* gb) override;
+    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+                               float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0,
+                               const std::string& profile_file = "", float* out_entropy = nullptr,
+                               float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
+    std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
+    void reset_cache() override;
+
+private:
+    size_t build_encoder(CactusGraph* gb, const std::vector<float>& audio_features);
+    size_t build_subsampling(CactusGraph* gb, const std::vector<float>& audio_features);
+    size_t build_relative_position_embeddings(CactusGraph* gb, size_t seq_len);
+    size_t build_self_attention(CactusGraph* gb, size_t hidden, size_t position_embeddings, uint32_t layer_idx, ComputeBackend backend);
+    size_t build_feed_forward(CactusGraph* gb, size_t hidden, uint32_t layer_idx, bool second_ff, ComputeBackend backend);
+    size_t build_convolution_module(CactusGraph* gb, size_t hidden, uint32_t layer_idx, ComputeBackend backend);
+    size_t build_encoder_block(CactusGraph* gb, size_t hidden, size_t position_embeddings, uint32_t layer_idx, ComputeBackend backend);
+    struct TDTToken { uint32_t id; float time_start; float time_end; };
+    std::vector<TDTToken> greedy_decode_tdt_tokens(CactusGraph* gb, size_t encoder_hidden_node) const;
+
+    struct WeightNodeIDs {
+        size_t subsampling_conv0_weight = 0;
+        size_t subsampling_conv0_bias = 0;
+        size_t subsampling_depthwise1_weight = 0;
+        size_t subsampling_depthwise1_bias = 0;
+        size_t subsampling_pointwise1_weight = 0;
+        size_t subsampling_pointwise1_bias = 0;
+        size_t subsampling_depthwise2_weight = 0;
+        size_t subsampling_depthwise2_bias = 0;
+        size_t subsampling_pointwise2_weight = 0;
+        size_t subsampling_pointwise2_bias = 0;
+        size_t subsampling_linear_weight = 0;
+        size_t subsampling_linear_bias = 0;
+
+        struct LayerWeights {
+            size_t ff1_linear1_weight = 0;
+            size_t ff1_linear1_bias = 0;
+            size_t ff1_linear2_weight = 0;
+            size_t ff1_linear2_bias = 0;
+
+            size_t ff2_linear1_weight = 0;
+            size_t ff2_linear1_bias = 0;
+            size_t ff2_linear2_weight = 0;
+            size_t ff2_linear2_bias = 0;
+
+            size_t self_attn_q_weight = 0;
+            size_t self_attn_q_bias = 0;
+            size_t self_attn_k_weight = 0;
+            size_t self_attn_k_bias = 0;
+            size_t self_attn_v_weight = 0;
+            size_t self_attn_v_bias = 0;
+            size_t self_attn_output_weight = 0;
+            size_t self_attn_output_bias = 0;
+            size_t self_attn_relative_k_weight = 0;
+            size_t self_attn_bias_u = 0;
+            size_t self_attn_bias_v = 0;
+
+            size_t norm_ff1_weight = 0;
+            size_t norm_ff1_bias = 0;
+            size_t norm_self_attn_weight = 0;
+            size_t norm_self_attn_bias = 0;
+            size_t norm_conv_weight = 0;
+            size_t norm_conv_bias = 0;
+            size_t norm_ff2_weight = 0;
+            size_t norm_ff2_bias = 0;
+            size_t norm_out_weight = 0;
+            size_t norm_out_bias = 0;
+
+            size_t conv_pointwise1_weight = 0;
+            size_t conv_pointwise1_bias = 0;
+            size_t conv_depthwise_weight = 0;
+            size_t conv_depthwise_bias = 0;
+            size_t conv_pointwise2_weight = 0;
+            size_t conv_pointwise2_bias = 0;
+            size_t conv_batchnorm_weight = 0;
+            size_t conv_batchnorm_bias = 0;
+            size_t conv_batchnorm_running_mean = 0;
+            size_t conv_batchnorm_running_var = 0;
+        };
+
+        struct PredictorLayerWeights {
+            size_t weight_ih = 0;
+            size_t weight_hh = 0;
+            size_t bias = 0;
+        };
+
+        size_t predictor_embed = 0;
+        std::vector<PredictorLayerWeights> predictor_layers;
+        size_t joint_enc_weight = 0;
+        size_t joint_enc_bias = 0;
+        size_t joint_pred_weight = 0;
+        size_t joint_pred_bias = 0;
+        size_t joint_out_weight = 0;
+        size_t joint_out_bias = 0;
+
+        std::vector<LayerWeights> layers;
+    } weight_nodes_;
+
+    bool tdt_tokens_ready_ = false;
+    size_t tdt_emit_index_ = 0;
+    std::vector<TDTToken> tdt_tokens_;
+    size_t last_input_token_count_ = 0;
+
+    std::unique_ptr<npu::NPUEncoder> npu_encoder_;
+    bool use_npu_encoder_ = false;
+};
+
 
 class Lfm2VlModel : public Model {
 public:
@@ -963,6 +1270,9 @@ public:
                       float* out_entropy = nullptr) override;
 
     void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "") override;
+
+    void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
+                             const std::string& profile_file = "") override;
 
     uint32_t decode_with_images(
         const std::vector<uint32_t>& tokens,

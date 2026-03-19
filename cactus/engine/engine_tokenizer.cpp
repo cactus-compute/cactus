@@ -2,6 +2,11 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cmath>
+
+extern "C" {
+    #include "../../libs/stb/stb_image.h"
+}
 
 namespace cactus {
 namespace engine {
@@ -19,7 +24,10 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
         if (pos != std::string::npos) {
             std::transform(line.begin(), line.end(), line.begin(), ::tolower);
 
-            if (line.find("qwen") != std::string::npos) {
+            if (line.find("qwen3_5") != std::string::npos) {
+                model_type_ = ModelType::QWEN3P5;
+                break;
+            } else if (line.find("qwen") != std::string::npos) {
                 model_type_ = ModelType::QWEN;
                 break;
             } else if (line.find("gemma") != std::string::npos) {
@@ -63,6 +71,22 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
             }
         }
     }
+
+    file.clear();
+    file.seekg(0);
+    while (std::getline(file, line)) {
+        auto parse_uint = [&](const std::string& key, uint32_t& out) {
+            size_t p = line.find(key + "=");
+            if (p != std::string::npos) {
+                out = static_cast<uint32_t>(std::stoul(line.substr(p + key.size() + 1)));
+            }
+        };
+        parse_uint("vision_patch_size", vision_patch_size_);
+        parse_uint("vision_pooling_kernel_size", vision_pooling_kernel_size_);
+        parse_uint("vision_default_output_length", vision_default_output_length_);
+        parse_uint("vision_image_size", vision_image_size_);
+    }
+
     file.close();
 }
 
@@ -71,6 +95,7 @@ std::string Tokenizer::get_default_stop_sequence() const {
         case ModelType::GEMMA:
             return "<end_of_turn>";
         case ModelType::QWEN:
+        case ModelType::QWEN3P5:
         case ModelType::LFM2:
             return "<|im_end|>";
         default:
@@ -83,7 +108,7 @@ std::vector<uint32_t> Tokenizer::apply_chat_template(const std::vector<ChatMessa
     return encode(formatted_prompt);
 }
 
-std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported) const {
     bool has_images = false;
     for (const auto& msg : messages) {
         if (!msg.images.empty()) {
@@ -97,7 +122,8 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
     
     switch (model_type_) {
         case ModelType::QWEN:
-            return format_qwen_style(messages, add_generation_prompt, tools_json);
+        case ModelType::QWEN3P5:
+            return format_qwen_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
         case ModelType::GEMMA:
             return format_gemma_style(messages, add_generation_prompt, tools_json);
         case ModelType::LFM2:
@@ -107,7 +133,7 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
     }
 }
 
-std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported) const {
     std::string result;
 
     if (!tools_json.empty()) {
@@ -157,10 +183,9 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
     }
 
     if (add_generation_prompt) {
-        if (!tools_json.empty()) {
-            result += "<|im_start|>assistant\n<think>\n</think>\n\n";
-        } else {
-            result += "<|im_start|>assistant\n";
+        result += "<|im_start|>assistant\n";
+        if (!enable_thinking_if_supported) {
+            result += "<think>\n\n</think>\n\n";
         }
     }
 
@@ -327,10 +352,8 @@ std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messag
             }
         }
         if (!tools_json.empty()) {
-            result += "You are a model that can do function calling with the following functions.";
+            result += "You are a model that can do function calling with the following functions";
             result += tools_json;
-            result += "\n\nWhen you decide to call a function, output it in this exact format:\n";
-            result += "<start_function_call>call:function_name{arg1:<escape>value1<escape>,arg2:<escape>value2<escape>}<end_function_call>";
         }
         result += "<end_of_turn>\n";
     }
@@ -341,24 +364,35 @@ std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messag
         const auto& msg = messages[i];
 
         if (msg.role == "tool") {
-            std::string func_name = msg.name.empty() ? "tool" : msg.name;
-            result += "<start_function_response>response:" + func_name + "{value:<escape>" + msg.content + "<escape>}<end_function_response>";
-            prev_message_type = "tool_response";
-        } else if (msg.role == "user") {
             if (prev_message_type != "tool_response") {
-                result += "<start_of_turn>user\n";
+                result += "<start_of_turn>developer\n";
             }
+            std::string func_name = msg.name.empty() ? "tool" : msg.name;
+            result += "<start_function_response>response:" + func_name + "{" + msg.content + "}<end_function_response>";
+            prev_message_type = "tool_response";
+            
+        } else if (msg.role == "user") {
+            if (prev_message_type == "tool_response") {
+                result += "<end_of_turn>\n";
+            }
+            result += "<start_of_turn>user\n";
             result += msg.content;
             result += "<end_of_turn>\n";
             prev_message_type = "content";
+            
         } else if (msg.role == "assistant" || msg.role == "model") {
-            if (prev_message_type != "tool_response") {
-                result += "<start_of_turn>model\n";
+            if (prev_message_type == "tool_response") {
+                result += "<end_of_turn>\n";
             }
+            result += "<start_of_turn>model\n";
             result += msg.content;
             result += "<end_of_turn>\n";
             prev_message_type = "content";
         }
+    }
+
+    if (prev_message_type == "tool_response") {
+        result += "<end_of_turn>\n";
     }
 
     if (add_generation_prompt) {

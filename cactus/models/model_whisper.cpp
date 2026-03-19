@@ -27,6 +27,14 @@ WhisperModel::WhisperModel(const Config& config) : Model(config) {
     encoder_k_persistent_.assign(config.num_layers, 0);
     encoder_v_persistent_.assign(config.num_layers, 0);
 
+    const float neg_inf = -std::numeric_limits<float>::infinity();
+    for (size_t tok : suppress_tokens_) {
+        suppress_bias_[static_cast<uint32_t>(tok)] = neg_inf;
+    }
+    suppress_bias_first_step_ = suppress_bias_;
+    for (size_t tok : begin_suppress_tokens_) {
+        suppress_bias_first_step_[static_cast<uint32_t>(tok)] = neg_inf;
+    }
 }
 
 void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
@@ -678,7 +686,9 @@ uint32_t WhisperModel::decode_with_audio(
     float top_p,
     size_t top_k,
     const std::string& profile_file,
-    float* out_entropy)
+    float* out_entropy,
+    float* /*out_token_time_start*/,
+    float* /*out_token_time_end*/)
 {
     if (!initialized_ || !graph_handle_)
         throw std::runtime_error("Model not initialized - call init() first");
@@ -690,12 +700,12 @@ uint32_t WhisperModel::decode_with_audio(
     bool cold_start = !encoder_ready_;
     size_t logits_node = 0;
 
-    uint32_t bos = static_cast<uint32_t>(get_tokenizer()->get_bos_token());
-
     std::vector<uint32_t> full_tokens;
-    full_tokens.reserve(tokens.size() + 1);
-    full_tokens.push_back(bos);
-    full_tokens.insert(full_tokens.end(), tokens.begin(), tokens.end());
+    if (tokens.empty()) {
+        full_tokens.push_back(static_cast<uint32_t>(get_tokenizer()->get_bos_token()));
+    } else {
+        full_tokens = tokens;
+    }
 
     if (cold_start)
     {
@@ -718,47 +728,14 @@ uint32_t WhisperModel::decode_with_audio(
         logits_node = run_decoder_step(last_token_vec, true, true);
     }
 
-    size_t sampled_token_id = gb->sample(logits_node, temperature, top_p, top_k);
+    const auto& suppress_bias = first_decode_step_ ? suppress_bias_first_step_ : suppress_bias_;
+    if (first_decode_step_) first_decode_step_ = false;
+    size_t sampled_token_id = sample_token(gb, logits_node, temperature, top_p, top_k, &suppress_bias);
     if (!profile_file.empty()) gb->execute(profile_file);
     else gb->execute();
 
 
-    if (out_entropy) {
-        const auto& logits_buf = gb->get_output_buffer(logits_node);
-        void* logits_ptr = gb->get_output(logits_node);
-        size_t vocab_size = logits_buf.shape.back();
-
-        std::vector<float> logits(vocab_size);
-        if (logits_buf.precision == Precision::FP32) {
-            float* src = static_cast<float*>(logits_ptr);
-            std::copy(src, src + vocab_size, logits.begin());
-        } else if (logits_buf.precision == Precision::FP16) {
-            __fp16* src = static_cast<__fp16*>(logits_ptr);
-            Quantization::fp16_to_fp32(src, logits.data(), vocab_size);
-        } else {
-            int8_t* src = static_cast<int8_t*>(logits_ptr);
-            Quantization::int8_to_fp32(src, logits.data(), vocab_size, 1.0f);
-        }
-
-        float max_logit = *std::max_element(logits.begin(), logits.end());
-        double sum_exp = 0.0;
-        for (size_t i = 0; i < vocab_size; ++i) {
-            sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
-        }
-        double log_sum_exp = static_cast<double>(max_logit) + std::log(sum_exp);
-
-        double entropy = 0.0;
-        for (size_t i = 0; i < vocab_size; ++i) {
-            double log_prob = static_cast<double>(logits[i]) - log_sum_exp;
-            double prob = std::exp(log_prob);
-            if (prob > 1e-10) {
-                entropy -= prob * log_prob;
-            }
-        }
-
-        double max_entropy = std::log(static_cast<double>(vocab_size));
-        *out_entropy = static_cast<float>(entropy / max_entropy);
-    }
+    compute_entropy(gb, logits_node, out_entropy);
 
     post_execute_updates(gb, full_tokens.size());
     update_kv_cache(gb, last_new_tokens_);

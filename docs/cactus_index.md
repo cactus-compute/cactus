@@ -280,7 +280,7 @@ int cactus_index_query(
 
 **Returns:** 0 on success, -1 on error (if buffers too small, no data copied)
 
-**Example**
+**Example:**
 ```c
 float query1[768] = {/* ... */};
 float query2[768] = {/* ... */};
@@ -336,6 +336,15 @@ Releases all resources associated with the index.
 
 ```c
 void cactus_index_destroy(cactus_index_t index);
+```
+
+**Parameters:**
+- `index`: Index handle from `cactus_index_init` (required)
+
+**Example:**
+```c
+cactus_index_destroy(index);
+index = NULL;
 ```
 
 ## Examples
@@ -559,6 +568,6 @@ cactus_index_destroy(new_index);
 - [Cactus Engine API](/docs/cactus_engine.md) — LLM inference, embeddings (`cactus_embed`), and RAG query APIs
 - [Cactus Graph API](/docs/cactus_graph.md) — Low-level computational graph for custom tensor operations
 - [Python SDK](/python/) — Python bindings with vector index support
-- [Swift SDK](/apple/) — Swift `CactusIndex` class
-- [Kotlin/Android SDK](/android/) — Kotlin `CactusIndex` class
-- [Flutter SDK](/flutter/) — Dart `CactusIndex` class
+- [Swift SDK](/apple/) — Swift vector index functions
+- [Kotlin/Android SDK](/android/) — Kotlin vector index functions
+- [Flutter SDK](/flutter/) — Dart vector index functions
