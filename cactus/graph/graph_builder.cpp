@@ -365,7 +365,9 @@ size_t CactusGraph::moe_layer(size_t hidden,
                               size_t num_experts_per_tok,
                               bool normalize_routing,
                               float epsilon,
-                              float routed_scaling_factor) {
+                              float routed_scaling_factor,
+                              Activation activation,
+                              size_t per_expert_scale) {
     const auto& hidden_buffer = get_output_buffer(hidden);
     const auto& routing_buffer = get_output_buffer(routing_probs);
     const auto& topk_buffer = get_output_buffer(topk_indices);
@@ -384,13 +386,14 @@ size_t CactusGraph::moe_layer(size_t hidden,
     }
 
     std::vector<size_t> input_ids;
-    input_ids.reserve(3 + 3 * num_experts);
+    input_ids.reserve(3 + 3 * num_experts + 1);
     input_ids.push_back(hidden);
     input_ids.push_back(routing_probs);
     input_ids.push_back(topk_indices);
     for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w1_weights[i]);
     for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w3_weights[i]);
     for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w2_weights[i]);
+    if (per_expert_scale != 0) input_ids.push_back(per_expert_scale);
 
     OpParams params;
     params.num_experts = num_experts;
@@ -399,6 +402,8 @@ size_t CactusGraph::moe_layer(size_t hidden,
     params.epsilon = epsilon;
     params.scalar = routed_scaling_factor;
     params.output_precision = hidden_buffer.precision;
+    params.activation = activation;
+    params.moe_gated = true;
 
     return add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params);
 }

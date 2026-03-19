@@ -706,7 +706,10 @@ std::vector<float> AudioProcessor::compute_spectrogram(
             : static_cast<float>(window_length - 1);
         const size_t left_pad = (analysis_frame_length - window_length) / 2;
         for (size_t i = 0; i < window_length; ++i) {
-            const float w = 0.5f * (1.0f - std::cos(2.0f * static_cast<float>(M_PI) * static_cast<float>(i) / denom));
+            float idx = config.hann_shifted
+                ? (static_cast<float>(i) + 0.5f)
+                : static_cast<float>(i);
+            const float w = 0.5f * (1.0f - std::cos(2.0f * static_cast<float>(M_PI) * idx / denom));
             window[left_pad + i] = w;
         }
     }

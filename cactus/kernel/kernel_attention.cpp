@@ -377,13 +377,14 @@ void cactus_attention_f16(
     size_t window_size,
     bool is_causal,
     bool mask_is_additive,
-    bool mask_per_head
+    bool mask_per_head,
+    float logit_cap
 ) {
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }
-    
-    if (mask == nullptr && head_dim % 8 == 0) {
+
+    if (mask == nullptr && head_dim % 8 == 0 && logit_cap == 0.0f) {
         cactus_attention_f16_fast(
             queries, keys, values, output,
             batch_size, seq_len, kv_seq_len,
@@ -541,10 +542,14 @@ void cactus_attention_f16(
                                 }
                             }
                             
+                            if (logit_cap > 0.0f && std::isfinite(score)) {
+                                score = logit_cap * tanhf(score / logit_cap);
+                            }
+
                             block_scores[kv_idx] = score;
                             block_max = std::max(block_max, score);
                         }
-                        
+
                         float current_block_scale = 1.0f;
 
                         if (block_max > NEG_INF) {

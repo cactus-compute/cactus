@@ -155,6 +155,11 @@ struct Config {
     float rope_local_base_freq = 10000.0f;
     float final_logit_softcapping = 0.0f;
     float global_partial_rotary_factor = 1.0f;
+    uint32_t expert_intermediate_size = 0;
+    uint32_t global_head_dim = 0;
+    uint32_t num_global_kv_heads = 0;
+    bool attention_k_eq_v = false;
+    bool enable_moe_block = false;
     std::vector<float> activation_sparsity_ppf;
 
     uint32_t vision_head_dim = 64;
@@ -416,16 +421,16 @@ struct KVCache {
         std::vector<float> key_scales;
         std::vector<float> value_scales;
         size_t head_dim = 0;
+        size_t kv_heads = 0;
     };
 
     std::vector<LayerCache> layer_caches;
 
-    size_t window_size = DEFAULT_WINDOW_SIZE;  
-    size_t sink_size = DEFAULT_SINK_SIZE;    
+    size_t window_size = DEFAULT_WINDOW_SIZE;
+    size_t sink_size = DEFAULT_SINK_SIZE;
     size_t current_seq_len = 0;
     size_t total_seq_len = 0;
     size_t max_seq_len = 2048;
-    size_t num_kv_heads = 0;
     size_t num_layers = 0;
     Precision precision;
     size_t element_size = 4;
@@ -434,12 +439,13 @@ struct KVCache {
     size_t get_effective_seq_len() const { return current_seq_len; }
     size_t get_total_seq_len() const { return total_seq_len; }
     size_t get_layer_head_dim(size_t layer_idx) const { return layer_caches[layer_idx].head_dim; }
+    size_t get_layer_kv_heads(size_t layer_idx) const { return layer_caches[layer_idx].kv_heads; }
 
-    void init(size_t num_layers, size_t max_seq, size_t num_kv_heads, const std::vector<size_t>& layer_dims, Precision model_precision);
+    void init(size_t num_layers, size_t max_seq, const std::vector<size_t>& layer_dims, const std::vector<size_t>& layer_kv_heads, Precision model_precision);
     void reset();
     void update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_nodes,
                           const std::vector<size_t>& v_nodes, size_t seq_len,
-                          size_t num_layers, size_t kv_heads);
+                          size_t num_layers);
 
     void update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp16* v_data,
                          size_t num_tokens, size_t kv_heads, size_t head_dim);
@@ -663,6 +669,9 @@ protected:
     virtual std::vector<size_t> get_kv_layer_dims() const {
         return std::vector<size_t>(config_.num_layers, config_.attention_head_dim);
     }
+    virtual std::vector<size_t> get_kv_layer_heads() const {
+        return std::vector<size_t>(config_.num_layers, config_.attention_kv_heads);
+    }
     virtual void post_init() {}
     virtual void post_execute_updates(CactusGraph*, size_t) {}
     Config config_;
@@ -802,6 +811,7 @@ public:
         bool remove_dc_offset = false;
         float preemphasis = 0.0f;
         bool hann_periodic = true;
+        bool hann_shifted = false;
         size_t fft_override = 0;
     };
 

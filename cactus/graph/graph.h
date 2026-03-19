@@ -514,7 +514,9 @@ public:
                      size_t num_experts_per_tok,
                      bool normalize_routing,
                      float epsilon,
-                     float routed_scaling_factor);
+                     float routed_scaling_factor,
+                     Activation activation = Activation::SILU,
+                     size_t per_expert_scale = 0);
     size_t moe_layer(size_t hidden,
                      size_t routing_probs,
                      size_t topk_indices,

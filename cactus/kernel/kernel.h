@@ -165,7 +165,8 @@ void cactus_batchnorm_f32(
 void cactus_attention_f16(const __fp16* queries, const __fp16* keys, const __fp16* values, __fp16* output,
                           size_t batch_size, size_t seq_len, size_t kv_seq_len, size_t num_q_heads, size_t num_kv_heads,
                           size_t head_dim, float scale, const __fp16* mask, size_t position_offset = 0, size_t window_size = 0,
-                          bool is_causal = true, bool mask_is_additive = false, bool mask_per_head = false);
+                          bool is_causal = true, bool mask_is_additive = false, bool mask_per_head = false,
+                          float logit_cap = 0.0f);
 
 void cactus_attention_hybrid_int8_fp16(
     const __fp16* queries,        

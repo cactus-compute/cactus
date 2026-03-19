@@ -136,7 +136,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
                                  config_.model_type == Config::ModelType::PARAKEET_TDT)
                                ? Precision::FP16
                                : Precision::INT8;
-    kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, get_kv_layer_dims(), cache_precision);
+    kv_cache_.init(config_.num_layers, context_size, get_kv_layer_dims(), get_kv_layer_heads(), cache_precision);
 
     size_t window_size = std::min(context_size, size_t(512));
     size_t sink_size = 4;
@@ -347,7 +347,7 @@ std::vector<float> Model::get_audio_embeddings(const std::vector<float>& /*mel_b
 
 void Model::update_kv_cache(CactusGraph* gb, size_t seq_len) {
     kv_cache_.update_from_graph(gb, cache_k_output_nodes_, cache_v_output_nodes_,
-                               seq_len, config_.num_layers, config_.attention_kv_heads);
+                               seq_len, config_.num_layers);
 }
 
 void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) {
@@ -601,6 +601,11 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "rope_local_base_freq") rope_local_base_freq = std::stof(value);
         else if (key == "final_logit_softcapping") final_logit_softcapping = std::stof(value);
         else if (key == "global_partial_rotary_factor") global_partial_rotary_factor = std::stof(value);
+        else if (key == "expert_intermediate_size") expert_intermediate_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "global_head_dim") global_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "num_global_kv_heads" || key == "num_global_key_value_heads") num_global_kv_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "attention_k_eq_v") attention_k_eq_v = (value == "true" || value == "1");
+        else if (key == "enable_moe_block") enable_moe_block = (value == "true" || value == "1");
         else if (key == "vision_head_dim") vision_head_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "vision_kv_heads") vision_kv_heads = static_cast<uint32_t>(std::stoul(value));
         else if (key == "vision_intermediate_size") vision_intermediate_size = static_cast<uint32_t>(std::stoul(value));

@@ -151,6 +151,7 @@ inline cactus::engine::AudioProcessor::SpectrogramConfig get_htk_spectrogram_con
     cfg.min_value    = 0.001f;
     cfg.remove_dc_offset = false;
     cfg.hann_periodic = true;
+    cfg.hann_shifted = true;
     return cfg;
 }
 
