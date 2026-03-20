@@ -23,8 +23,9 @@ echo "docs.cactuscompute.com" > site_docs/CNAME
 mkdir -p site_docs/stylesheets
 cp .github/docs-overrides/stylesheets/custom.css site_docs/stylesheets/custom.css
 
-cp CONTRIBUTING.md site_docs/CONTRIBUTING.md
-cp DCO.md site_docs/DCO.md
+# These may not exist in older versions
+[ -f CONTRIBUTING.md ] && cp CONTRIBUTING.md site_docs/CONTRIBUTING.md
+[ -f DCO.md ] && cp DCO.md site_docs/DCO.md
 
 cp docs/*.md site_docs/docs/
 
@@ -160,10 +161,12 @@ if ls site_docs/blog/*.md >/dev/null 2>&1; then
   done
 fi
 
-sedi 's|(/docs/cactus_engine\.md)|(docs/cactus_engine.md)|g' site_docs/CONTRIBUTING.md
-sedi 's|(/docs/cactus_graph\.md)|(docs/cactus_graph.md)|g' site_docs/CONTRIBUTING.md
-sedi 's|(/docs/cactus_index\.md)|(docs/cactus_index.md)|g' site_docs/CONTRIBUTING.md
-sedi 's|(/docs/index\.md)|(index.md)|g' site_docs/CONTRIBUTING.md
+if [ -f site_docs/CONTRIBUTING.md ]; then
+  sedi 's|(/docs/cactus_engine\.md)|(docs/cactus_engine.md)|g' site_docs/CONTRIBUTING.md
+  sedi 's|(/docs/cactus_graph\.md)|(docs/cactus_graph.md)|g' site_docs/CONTRIBUTING.md
+  sedi 's|(/docs/cactus_index\.md)|(docs/cactus_index.md)|g' site_docs/CONTRIBUTING.md
+  sedi 's|(/docs/index\.md)|(index.md)|g' site_docs/CONTRIBUTING.md
+fi
 
 if [ -n "$DOCS_VERSION" ]; then
   {
@@ -172,4 +175,25 @@ if [ -n "$DOCS_VERSION" ]; then
     echo ""
     cat site_docs/docs/quickstart.md
   } > site_docs/docs/quickstart.tmp && mv site_docs/docs/quickstart.tmp site_docs/docs/quickstart.md
+fi
+
+# --- Strip nav entries for files that don't exist in site_docs/ ---
+# This handles older versions where some SDKs/pages didn't exist yet.
+for nav_path in \
+  "rust/README.md" \
+  "react-native/README.md" \
+  "blog/README.md" \
+  "blog/hybrid_transcription.md" \
+  "blog/lfm2_24b_a2b.md" \
+  "blog/parakeet.md" \
+  "CONTRIBUTING.md" \
+  "docs/compatibility.md"; do
+  if [ ! -f "site_docs/$nav_path" ]; then
+    grep -v "$nav_path" mkdocs.yml > mkdocs.yml.tmp && mv mkdocs.yml.tmp mkdocs.yml
+  fi
+done
+
+# Remove empty section headers
+if ! ls site_docs/blog/*.md >/dev/null 2>&1; then
+  grep -v "^  - Blog:" mkdocs.yml > mkdocs.yml.tmp && mv mkdocs.yml.tmp mkdocs.yml
 fi
