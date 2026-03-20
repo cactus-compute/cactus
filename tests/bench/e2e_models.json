@@ -1,0 +1,18 @@
+{
+  "models": [
+    {
+      "name": "qwen3-0.6b",
+      "variants": {
+        "cactus": "/Users/noahcylich/Documents/Desert/cactus/weights/qwen3-0.6b",
+        "llama_cpp": "/Users/noahcylich/Documents/Desert/cactus/weights/Qwen3-0.6B-Q4_K_M.gguf"
+      }
+    },
+    {
+      "name": "gemma3-270m",
+      "variants": {
+        "cactus": "/Users/noahcylich/Documents/Desert/cactus/weights/gemma-3-270m-it",
+        "llama_cpp": "/Users/noahcylich/Documents/Desert/cactus/weights/gemma-3-270m-it-Q4_K_M.gguf"
+      }
+    }
+  ]
+}

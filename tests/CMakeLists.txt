@@ -10,6 +10,10 @@ option(WITH_EXECUTORCH "Build with Executorch for matmul benchmarks" OFF)
 option(WITH_MLX "Build with MLX for matmul benchmarks (Apple-only)" OFF)
 option(WITH_MLC "Build with MLC for matmul benchmarks" OFF)
 option(WITH_ONNXRT "Build with ONNX Runtime for matmul benchmarks" OFF)
+option(WITH_LLAMA_CPP "Build with llama.cpp for E2E benchmarks" OFF)
+option(WITH_ONNXRT_GENAI "Build with ONNX Runtime GenAI for E2E benchmarks" OFF)
+option(WITH_E2E_EXECUTORCH "Build with ExecuTorch for E2E benchmarks" OFF)
+option(WITH_E2E_LITERT "Build with LiteRT-LM for E2E benchmarks" OFF)
 
 if(WITH_LITERT)
     set(LITERT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/litert)
@@ -277,6 +281,110 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/attn_bench.cpp")
     endif()
     message(STATUS "Added benchmark: attn_bench")
 endif()
+
+# ── E2E Generation Benchmark ──────────────────────────────────────────────────
+set(E2E_BENCH_SOURCES
+    bench/e2e_bench.cpp
+    bench/e2e_driver.cpp
+    bench/e2e_backend_cactus.cpp
+)
+
+if(WITH_LLAMA_CPP)
+    list(APPEND E2E_BENCH_SOURCES bench/e2e_backend_llama_cpp.cpp)
+endif()
+if(WITH_E2E_EXECUTORCH)
+    list(APPEND E2E_BENCH_SOURCES bench/e2e_backend_executorch.cpp)
+endif()
+if(WITH_ONNXRT_GENAI)
+    list(APPEND E2E_BENCH_SOURCES bench/e2e_backend_onnxrt.cpp)
+endif()
+if(WITH_E2E_LITERT)
+    list(APPEND E2E_BENCH_SOURCES bench/e2e_backend_litert.cpp)
+endif()
+
+add_executable(e2e_bench ${E2E_BENCH_SOURCES})
+target_include_directories(e2e_bench PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CACTUS_ROOT}
+)
+target_link_libraries(e2e_bench PRIVATE ${CACTUS_LIB})
+
+if(MMAN_LIB)
+    target_link_libraries(e2e_bench PRIVATE ${MMAN_LIB})
+endif()
+if(APPLE)
+    target_link_libraries(e2e_bench PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})
+    target_include_directories(e2e_bench PRIVATE ${CACTUS_CURL_INCLUDE_DIR})
+    target_link_libraries(e2e_bench PRIVATE
+        ${ACCELERATE_FRAMEWORK}
+        ${COREML_FRAMEWORK}
+        ${FOUNDATION_FRAMEWORK}
+        ${SECURITY_FRAMEWORK}
+        ${SYSTEMCONFIGURATION_FRAMEWORK}
+        ${CFNETWORK_FRAMEWORK}
+    )
+elseif(CURL_FOUND)
+    target_link_libraries(e2e_bench PRIVATE ${CURL_LIBRARIES})
+    target_include_directories(e2e_bench PRIVATE ${CURL_INCLUDE_DIRS})
+endif()
+
+if(WITH_LLAMA_CPP)
+    set(LLAMA_CPP_DIR "" CACHE PATH "Path to llama.cpp installation (auto-detected from Homebrew if empty)")
+    if(LLAMA_CPP_DIR STREQUAL "")
+        # Try Homebrew
+        execute_process(COMMAND brew --prefix llama.cpp OUTPUT_VARIABLE LLAMA_CPP_BREW OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(LLAMA_CPP_BREW)
+            set(LLAMA_CPP_DIR ${LLAMA_CPP_BREW})
+        endif()
+    endif()
+    if(LLAMA_CPP_DIR)
+        find_library(LLAMA_LIB llama PATHS ${LLAMA_CPP_DIR}/lib REQUIRED)
+        find_library(GGML_LLAMA_LIB ggml PATHS ${LLAMA_CPP_DIR}/lib)
+        target_include_directories(e2e_bench PRIVATE ${LLAMA_CPP_DIR}/include)
+        target_link_libraries(e2e_bench PRIVATE ${LLAMA_LIB})
+        if(GGML_LLAMA_LIB)
+            target_link_libraries(e2e_bench PRIVATE ${GGML_LLAMA_LIB})
+        endif()
+        target_compile_definitions(e2e_bench PRIVATE WITH_LLAMA_CPP)
+        message(STATUS "E2E bench: llama.cpp enabled from ${LLAMA_CPP_DIR}")
+    else()
+        message(WARNING "WITH_LLAMA_CPP enabled but llama.cpp not found")
+    endif()
+endif()
+
+if(WITH_E2E_EXECUTORCH)
+    target_compile_definitions(e2e_bench PRIVATE WITH_EXECUTORCH)
+    message(STATUS "E2E bench: ExecuTorch enabled")
+endif()
+
+if(WITH_ONNXRT_GENAI)
+    set(ONNXRT_GENAI_DIR "" CACHE PATH "Path to ONNX RT GenAI (auto-detected from pip if empty)")
+    if(ONNXRT_GENAI_DIR STREQUAL "")
+        execute_process(
+            COMMAND python3 -c "import onnxruntime_genai as og; import os; print(os.path.dirname(og.__file__))"
+            OUTPUT_VARIABLE ONNXRT_GENAI_PIP OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(ONNXRT_GENAI_PIP)
+            set(ONNXRT_GENAI_DIR ${ONNXRT_GENAI_PIP})
+        endif()
+    endif()
+    if(ONNXRT_GENAI_DIR)
+        find_library(ONNXRT_GENAI_LIB onnxruntime-genai PATHS ${ONNXRT_GENAI_DIR} REQUIRED)
+        # Use downloaded C header
+        target_include_directories(e2e_bench PRIVATE /tmp)
+        target_link_libraries(e2e_bench PRIVATE ${ONNXRT_GENAI_LIB})
+        target_compile_definitions(e2e_bench PRIVATE WITH_ONNXRT_GENAI)
+        message(STATUS "E2E bench: ONNX RT GenAI enabled from ${ONNXRT_GENAI_DIR}")
+    else()
+        message(WARNING "WITH_ONNXRT_GENAI enabled but onnxruntime-genai not found")
+    endif()
+endif()
+
+if(WITH_E2E_LITERT)
+    target_compile_definitions(e2e_bench PRIVATE WITH_LITERT)
+    message(STATUS "E2E bench: LiteRT-LM enabled")
+endif()
+
+message(STATUS "Added benchmark: e2e_bench")
 
 file(GLOB TEST_SOURCES "test_*.cpp")
 list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_utils.cpp")
