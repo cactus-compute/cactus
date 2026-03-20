@@ -17,6 +17,9 @@ mkdir -p site_docs/docs site_docs/python site_docs/apple site_docs/android \
 
 cp -r assets/* site_docs/assets/
 
+# Preserve custom domain for GitHub Pages
+echo "docs.cactuscompute.com" > site_docs/CNAME
+
 mkdir -p site_docs/stylesheets
 cp .github/docs-overrides/stylesheets/custom.css site_docs/stylesheets/custom.css
 
