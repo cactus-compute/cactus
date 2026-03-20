@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Flutter bindings for Cactus on-device AI inference. Run LLMs, vision models, and speech models on iOS, macOS, and Android with dart:ffi.">
+        <meta name="description" content="Low-latency AI engine for mobile devices and wearables">
       
       
         <meta name="author" content="Cactus Compute">
@@ -29,7 +29,7 @@
     
     
       
-        <title>Cactus Flutter SDK - Cactus Docs</title>
+        <title>Flutter - Cactus Docs</title>
       
     
     
@@ -125,7 +125,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Cactus Flutter SDK
+              Flutter
             
           </span>
         </div>
@@ -835,10 +835,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#completion-with-options-and-streaming" class="md-nav__link">
+  <a href="#chat-messages" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Completion with Options and Streaming
+        Chat Messages
       
     </span>
   </a>
@@ -846,10 +846,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#prefill" class="md-nav__link">
+  <a href="#completion-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Prefill
+        Completion Options
       
     </span>
   </a>
@@ -901,32 +901,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#language-detection" class="md-nav__link">
+  <a href="#rag-retrieval-augmented-generation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Language Detection
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#vad" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        VAD
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#rag" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        RAG
+        RAG (Retrieval-Augmented Generation)
       
     </span>
   </a>
@@ -962,10 +940,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#types" class="md-nav__link">
+  <a href="#cactus" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Types
+        Cactus
       
     </span>
   </a>
@@ -973,10 +951,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#init-lifecycle" class="md-nav__link">
+  <a href="#message" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Init / Lifecycle
+        Message
       
     </span>
   </a>
@@ -984,10 +962,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#prefill_1" class="md-nav__link">
+  <a href="#completionoptions" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Prefill
+        CompletionOptions
       
     </span>
   </a>
@@ -995,10 +973,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#completion" class="md-nav__link">
+  <a href="#completionresult" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Completion
+        CompletionResult
       
     </span>
   </a>
@@ -1006,10 +984,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#transcription" class="md-nav__link">
+  <a href="#transcriptionresult" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Transcription
+        TranscriptionResult
       
     </span>
   </a>
@@ -1017,10 +995,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#embeddings_1" class="md-nav__link">
+  <a href="#streamtranscriber" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Embeddings
+        StreamTranscriber
       
     </span>
   </a>
@@ -1028,65 +1006,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#tokenization-scoring" class="md-nav__link">
+  <a href="#cactusindex" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Tokenization / Scoring
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#detect-language" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Detect Language
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#vad-rag" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        VAD / RAG
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#vector-index_1" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Vector Index
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#logging" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Logging
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#telemetry" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Telemetry
+        CactusIndex
       
     </span>
   </a>
@@ -1142,17 +1065,6 @@
     <span class="md-ellipsis">
       
         Requirements
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#see-also" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        See Also
       
     </span>
   </a>
@@ -1776,10 +1688,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#completion-with-options-and-streaming" class="md-nav__link">
+  <a href="#chat-messages" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Completion with Options and Streaming
+        Chat Messages
       
     </span>
   </a>
@@ -1787,10 +1699,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#prefill" class="md-nav__link">
+  <a href="#completion-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Prefill
+        Completion Options
       
     </span>
   </a>
@@ -1842,32 +1754,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#language-detection" class="md-nav__link">
+  <a href="#rag-retrieval-augmented-generation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Language Detection
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#vad" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        VAD
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#rag" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        RAG
+        RAG (Retrieval-Augmented Generation)
       
     </span>
   </a>
@@ -1903,10 +1793,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#types" class="md-nav__link">
+  <a href="#cactus" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Types
+        Cactus
       
     </span>
   </a>
@@ -1914,10 +1804,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#init-lifecycle" class="md-nav__link">
+  <a href="#message" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Init / Lifecycle
+        Message
       
     </span>
   </a>
@@ -1925,10 +1815,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#prefill_1" class="md-nav__link">
+  <a href="#completionoptions" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Prefill
+        CompletionOptions
       
     </span>
   </a>
@@ -1936,10 +1826,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#completion" class="md-nav__link">
+  <a href="#completionresult" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Completion
+        CompletionResult
       
     </span>
   </a>
@@ -1947,10 +1837,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#transcription" class="md-nav__link">
+  <a href="#transcriptionresult" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Transcription
+        TranscriptionResult
       
     </span>
   </a>
@@ -1958,10 +1848,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#embeddings_1" class="md-nav__link">
+  <a href="#streamtranscriber" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Embeddings
+        StreamTranscriber
       
     </span>
   </a>
@@ -1969,65 +1859,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#tokenization-scoring" class="md-nav__link">
+  <a href="#cactusindex" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Tokenization / Scoring
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#detect-language" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Detect Language
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#vad-rag" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        VAD / RAG
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#vector-index_1" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Vector Index
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#logging" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Logging
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#telemetry" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Telemetry
+        CactusIndex
       
     </span>
   </a>
@@ -2089,17 +1924,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#see-also" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        See Also
-      
-    </span>
-  </a>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -2122,12 +1946,8 @@
 
 <h1 id="cactus-for-flutter">Cactus for Flutter<a class="headerlink" href="#cactus-for-flutter" title="Permanent link">&para;</a></h1>
 <p>Run AI models on-device with dart:ffi direct bindings for iOS, macOS, and Android.</p>
-<blockquote>
-<p><strong>Model weights:</strong> Pre-converted weights for all supported models at <a href="https://huggingface.co/Cactus-Compute">huggingface.co/Cactus-Compute</a>.</p>
-</blockquote>
 <h2 id="building">Building<a class="headerlink" href="#building" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/cactus-compute/cactus<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>cactus<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">source</span><span class="w"> </span>./setup
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>cactus<span class="w"> </span>build<span class="w"> </span>--flutter
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cactus<span class="w"> </span>build<span class="w"> </span>--flutter
 </code></pre></div>
 <p>Build output:</p>
 <table>
@@ -2152,7 +1972,7 @@
 </tr>
 </tbody>
 </table>
-<p>See the main <a href="../">README.md</a> for how to use CLI &amp; download weights</p>
+<p>see the main <a href="../">README.md</a> for how to use CLI &amp; download weight</p>
 <h2 id="integration">Integration<a class="headerlink" href="#integration" title="Permanent link">&para;</a></h2>
 <h3 id="android">Android<a class="headerlink" href="#android" title="Permanent link">&para;</a></h3>
 <ol>
@@ -2176,276 +1996,214 @@
 <li>Copy <code>cactus.dart</code> to your <code>lib/</code> folder</li>
 </ol>
 <h2 id="usage">Usage<a class="headerlink" href="#usage" title="Permanent link">&para;</a></h2>
-<p>Handles are typed as <code>CactusModelT</code>, <code>CactusIndexT</code>, and <code>CactusStreamTranscribeT</code> (all <code>Pointer&lt;Void&gt;</code> aliases). All functions are top-level.</p>
 <h3 id="basic-completion">Basic Completion<a class="headerlink" href="#basic-completion" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;cactus.dart&#39;</span><span class="p">;</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="kd">final</span><span class="w"> </span><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusInit</span><span class="p">(</span><span class="s1">&#39;/path/to/model&#39;</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">false</span><span class="p">);</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="kd">final</span><span class="w"> </span><span class="n">messages</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;What is the capital of France?&quot;}]&#39;</span><span class="p">;</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="kd">final</span><span class="w"> </span><span class="n">resultJson</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusComplete</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="n">messages</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">);</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">print</span><span class="p">(</span><span class="n">resultJson</span><span class="p">);</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">cactusDestroy</span><span class="p">(</span><span class="n">model</span><span class="p">);</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="kd">final</span><span class="w"> </span><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Cactus</span><span class="p">.</span><span class="n">create</span><span class="p">(</span><span class="s1">&#39;/path/to/model.gguf&#39;</span><span class="p">);</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="kd">final</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">model</span><span class="p">.</span><span class="n">complete</span><span class="p">(</span><span class="s1">&#39;What is the capital of France?&#39;</span><span class="p">);</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">print</span><span class="p">(</span><span class="n">result</span><span class="p">.</span><span class="n">text</span><span class="p">);</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">model</span><span class="p">.</span><span class="n">dispose</span><span class="p">();</span>
 </code></pre></div>
-<p>For vision models (LFM2-VL-450M, LFM2.5-VL-1.6B), add <code>"images": ["path/to/image.png"]</code> to any message. See <a href="../docs/cactus_engine/">Engine API</a> for details.</p>
-<h3 id="completion-with-options-and-streaming">Completion with Options and Streaming<a class="headerlink" href="#completion-with-options-and-streaming" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;cactus.dart&#39;</span><span class="p">;</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;dart:io&#39;</span><span class="p">;</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="kd">final</span><span class="w"> </span><span class="n">options</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;{&quot;max_tokens&quot;:256,&quot;temperature&quot;:0.7}&#39;</span><span class="p">;</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="kd">final</span><span class="w"> </span><span class="n">resultJson</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusComplete</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="n">messages</span><span class="p">,</span><span class="w"> </span><span class="n">options</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="n">token</span><span class="p">,</span><span class="w"> </span><span class="n">tokenId</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span><span class="n">stdout</span><span class="p">.</span><span class="n">write</span><span class="p">(</span><span class="n">token</span><span class="p">);</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="p">});</span>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">print</span><span class="p">(</span><span class="n">resultJson</span><span class="p">);</span>
+<h3 id="chat-messages">Chat Messages<a class="headerlink" href="#chat-messages" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kd">final</span><span class="w"> </span><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Cactus</span><span class="p">.</span><span class="n">create</span><span class="p">(</span><span class="n">modelPath</span><span class="p">);</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kd">final</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">model</span><span class="p">.</span><span class="n">completeMessages</span><span class="p">([</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="n">Message</span><span class="p">.</span><span class="n">system</span><span class="p">(</span><span class="s1">&#39;You are a helpful assistant.&#39;</span><span class="p">),</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="n">Message</span><span class="p">.</span><span class="n">user</span><span class="p">(</span><span class="s1">&#39;What is 2 + 2?&#39;</span><span class="p">),</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="p">]);</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">print</span><span class="p">(</span><span class="n">result</span><span class="p">.</span><span class="n">text</span><span class="p">);</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">model</span><span class="p">.</span><span class="n">dispose</span><span class="p">();</span>
 </code></pre></div>
-<h3 id="prefill">Prefill<a class="headerlink" href="#prefill" title="Permanent link">&para;</a></h3>
-<p>Pre-processes input text and populates the KV cache without generating output tokens. This reduces latency for subsequent calls to <code>cactusComplete</code>.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusPrefill</span><span class="p">(</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="kt">String</span><span class="w"> </span><span class="n">messagesJson</span><span class="p">,</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">optionsJson</span><span class="p">,</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">toolsJson</span><span class="p">,</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">)</span>
+<h3 id="completion-options">Completion Options<a class="headerlink" href="#completion-options" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kd">final</span><span class="w"> </span><span class="n">options</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">CompletionOptions</span><span class="p">(</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nl">temperature:</span><span class="w"> </span><span class="m">0.7</span><span class="p">,</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nl">topP:</span><span class="w"> </span><span class="m">0.9</span><span class="p">,</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="nl">topK:</span><span class="w"> </span><span class="m">40</span><span class="p">,</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="nl">maxTokens:</span><span class="w"> </span><span class="m">256</span><span class="p">,</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span><span class="nl">stopSequences:</span><span class="w"> </span><span class="p">[</span><span class="s1">&#39;</span><span class="se">\n\n</span><span class="s1">&#39;</span><span class="p">],</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="p">);</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="kd">final</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">model</span><span class="p">.</span><span class="n">complete</span><span class="p">(</span><span class="s1">&#39;Write a haiku:&#39;</span><span class="p">,</span><span class="w"> </span><span class="nl">options:</span><span class="w"> </span><span class="n">options</span><span class="p">);</span>
 </code></pre></div>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kd">final</span><span class="w"> </span><span class="n">tools</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;[{&quot;type&quot;:&quot;function&quot;,&quot;function&quot;:{&quot;name&quot;:&quot;get_weather&quot;,&quot;description&quot;:&quot;Get weather for a location&quot;,&quot;parameters&quot;:{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{&quot;location&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;required&quot;:[&quot;location&quot;]}}}]&#39;</span><span class="p">;</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="kd">final</span><span class="w"> </span><span class="n">messages</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;[{&quot;role&quot;:&quot;system&quot;,&quot;content&quot;:&quot;You are a helpful assistant.&quot;},{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;What is the weather in Paris?&quot;}]&#39;</span><span class="p">;</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="kd">final</span><span class="w"> </span><span class="n">resultJson</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusPrefill</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="n">messages</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="n">tools</span><span class="p">);</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="kd">final</span><span class="w"> </span><span class="n">completionMessages</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;[{&quot;role&quot;:&quot;system&quot;,&quot;content&quot;:&quot;You are a helpful assistant.&quot;},{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;What is the weather in Paris?&quot;},{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;What about SF?&quot;}]&#39;</span><span class="p">;</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="kd">final</span><span class="w"> </span><span class="n">completion</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusComplete</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="n">completionMessages</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="n">tools</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">);</span>
-</code></pre></div>
-<p><strong>Response format:</strong>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span><span class="nt">&quot;success&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="nt">&quot;prefill_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">25</span><span class="p">,</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="nt">&quot;prefill_tps&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">166.1</span><span class="p">,</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="nt">&quot;total_time_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">150.5</span><span class="p">,</span>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">    </span><span class="nt">&quot;ram_usage_mb&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">245.67</span>
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="p">}</span>
-</code></pre></div></p>
 <h3 id="audio-transcription">Audio Transcription<a class="headerlink" href="#audio-transcription" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;cactus.dart&#39;</span><span class="p">;</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;dart:typed_data&#39;</span><span class="p">;</span>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1">// From file</span>
-<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="kd">final</span><span class="w"> </span><span class="n">resultJson</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusTranscribe</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;/path/to/audio.wav&#39;</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">);</span>
-<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="n">print</span><span class="p">(</span><span class="n">resultJson</span><span class="p">);</span>
-<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>
-<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="c1">// From PCM data (16 kHz mono)</span>
-<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="kd">final</span><span class="w"> </span><span class="n">pcmData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Uint8List</span><span class="p">.</span><span class="n">fromList</span><span class="p">([...]);</span>
-<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="kd">final</span><span class="w"> </span><span class="n">resultJson2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusTranscribe</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="n">pcmData</span><span class="p">);</span>
-<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="n">print</span><span class="p">(</span><span class="n">resultJson2</span><span class="p">);</span>
-</code></pre></div>
-<p><code>segments</code> contains timestamps (seconds): phrase-level for Whisper, word-level for Parakeet TDT, one segment per transcription window for Parakeet CTC and Moonshine (consecutive VAD speech regions up to 30s).</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;dart:convert&#39;</span><span class="p">;</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="kd">final</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">jsonDecode</span><span class="p">(</span><span class="n">resultJson</span><span class="p">)</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="n">Map</span><span class="o">&lt;</span><span class="kt">String</span><span class="p">,</span><span class="w"> </span><span class="kt">dynamic</span><span class="o">&gt;</span><span class="p">;</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">final</span><span class="w"> </span><span class="n">seg</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">result</span><span class="p">[</span><span class="s1">&#39;segments&#39;</span><span class="p">]</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="n">List</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="n">print</span><span class="p">(</span><span class="s1">&#39;[</span><span class="si">${</span><span class="n">seg</span><span class="p">[</span><span class="s1">&#39;start&#39;</span><span class="p">]</span><span class="si">}</span><span class="s1">s - </span><span class="si">${</span><span class="n">seg</span><span class="p">[</span><span class="s1">&#39;end&#39;</span><span class="p">]</span><span class="si">}</span><span class="s1">s] </span><span class="si">${</span><span class="n">seg</span><span class="p">[</span><span class="s1">&#39;text&#39;</span><span class="p">]</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">);</span>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="p">}</span>
-</code></pre></div>
-<p><strong>Custom vocabulary</strong> biases the decoder toward domain-specific words (supported for Whisper and Moonshine models). Pass <code>custom_vocabulary</code> and <code>vocabulary_boost</code> in the options JSON:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kd">final</span><span class="w"> </span><span class="n">options</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;{&quot;custom_vocabulary&quot;: [&quot;Omeprazole&quot;, &quot;HIPAA&quot;, &quot;Cactus&quot;], &quot;vocabulary_boost&quot;: 3.0}&#39;</span><span class="p">;</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="kd">final</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusTranscribe</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;/path/to/audio.wav&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">options</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">);</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1">// From file</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="kd">final</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">model</span><span class="p">.</span><span class="n">transcribe</span><span class="p">(</span><span class="s1">&#39;/path/to/audio.wav&#39;</span><span class="p">);</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1">// From PCM data (16kHz mono)</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="kd">final</span><span class="w"> </span><span class="n">pcmData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Uint8List</span><span class="p">.</span><span class="n">fromList</span><span class="p">([...]);</span><span class="w"> </span><span class="c1">// Your PCM bytes</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="kd">final</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">model</span><span class="p">.</span><span class="n">transcribePcm</span><span class="p">(</span><span class="n">pcmData</span><span class="p">);</span>
 </code></pre></div>
 <h3 id="streaming-transcription">Streaming Transcription<a class="headerlink" href="#streaming-transcription" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;cactus.dart&#39;</span><span class="p">;</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;dart:typed_data&#39;</span><span class="p">;</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="kd">final</span><span class="w"> </span><span class="n">stream</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusStreamTranscribeStart</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">);</span>
-<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>
-<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="kd">final</span><span class="w"> </span><span class="n">Uint8List</span><span class="w"> </span><span class="n">audioChunk</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">...;</span>
-<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="kd">final</span><span class="w"> </span><span class="n">partialJson</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusStreamTranscribeProcess</span><span class="p">(</span><span class="n">stream</span><span class="p">,</span><span class="w"> </span><span class="n">audioChunk</span><span class="p">);</span>
-<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="n">print</span><span class="p">(</span><span class="n">partialJson</span><span class="p">);</span>
-<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>
-<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="kd">final</span><span class="w"> </span><span class="n">finalJson</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusStreamTranscribeStop</span><span class="p">(</span><span class="n">stream</span><span class="p">);</span>
-<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="n">print</span><span class="p">(</span><span class="n">finalJson</span><span class="p">);</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kd">final</span><span class="w"> </span><span class="n">stream</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">model</span><span class="p">.</span><span class="n">createStreamTranscriber</span><span class="p">();</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">stream</span><span class="p">.</span><span class="n">insert</span><span class="p">(</span><span class="n">audioChunk1</span><span class="p">);</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">stream</span><span class="p">.</span><span class="n">insert</span><span class="p">(</span><span class="n">audioChunk2</span><span class="p">);</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="kd">final</span><span class="w"> </span><span class="n">partial</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">stream</span><span class="p">.</span><span class="n">process</span><span class="p">();</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">print</span><span class="p">(</span><span class="s1">&#39;Partial: </span><span class="si">${</span><span class="n">partial</span><span class="p">.</span><span class="n">text</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">);</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="kd">final</span><span class="w"> </span><span class="n">finalResult</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">stream</span><span class="p">.</span><span class="n">finalize</span><span class="p">();</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="n">print</span><span class="p">(</span><span class="s1">&#39;Final: </span><span class="si">${</span><span class="n">finalResult</span><span class="p">.</span><span class="n">text</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">);</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="n">stream</span><span class="p">.</span><span class="n">dispose</span><span class="p">();</span>
 </code></pre></div>
-<p>Streaming also accepts <code>custom_vocabulary</code> in the options passed to <code>cactusStreamTranscribeStart</code>. The bias is applied for the lifetime of the stream session.</p>
 <h3 id="embeddings">Embeddings<a class="headerlink" href="#embeddings" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;cactus.dart&#39;</span><span class="p">;</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;dart:typed_data&#39;</span><span class="p">;</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="kd">final</span><span class="w"> </span><span class="n">Float32List</span><span class="w"> </span><span class="n">embedding</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="n">cactusEmbed</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;Hello, world!&#39;</span><span class="p">,</span><span class="w"> </span><span class="kc">true</span><span class="p">);</span>
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="kd">final</span><span class="w"> </span><span class="n">Float32List</span><span class="w"> </span><span class="n">imageEmbedding</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusImageEmbed</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;/path/to/image.jpg&#39;</span><span class="p">);</span>
-<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="kd">final</span><span class="w"> </span><span class="n">Float32List</span><span class="w"> </span><span class="n">audioEmbedding</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusAudioEmbed</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;/path/to/audio.wav&#39;</span><span class="p">);</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kd">final</span><span class="w"> </span><span class="n">embedding</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">model</span><span class="p">.</span><span class="n">embed</span><span class="p">(</span><span class="s1">&#39;Hello, world!&#39;</span><span class="p">);</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="kd">final</span><span class="w"> </span><span class="n">imageEmbedding</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">model</span><span class="p">.</span><span class="n">imageEmbed</span><span class="p">(</span><span class="s1">&#39;/path/to/image.jpg&#39;</span><span class="p">);</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="kd">final</span><span class="w"> </span><span class="n">audioEmbedding</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">model</span><span class="p">.</span><span class="n">audioEmbed</span><span class="p">(</span><span class="s1">&#39;/path/to/audio.wav&#39;</span><span class="p">);</span>
 </code></pre></div>
 <h3 id="tokenization">Tokenization<a class="headerlink" href="#tokenization" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;cactus.dart&#39;</span><span class="p">;</span>
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="kd">final</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">&gt;</span><span class="w"> </span><span class="n">tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusTokenize</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;Hello, world!&#39;</span><span class="p">);</span>
-<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="kd">final</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">scores</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusScoreWindow</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="n">tokens</span><span class="p">,</span><span class="w"> </span><span class="m">0</span><span class="p">,</span><span class="w"> </span><span class="n">tokens</span><span class="p">.</span><span class="n">length</span><span class="p">,</span><span class="w"> </span><span class="m">512</span><span class="p">);</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kd">final</span><span class="w"> </span><span class="n">tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">model</span><span class="p">.</span><span class="n">tokenize</span><span class="p">(</span><span class="s1">&#39;Hello, world!&#39;</span><span class="p">);</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="kd">final</span><span class="w"> </span><span class="n">scores</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">model</span><span class="p">.</span><span class="n">scoreWindow</span><span class="p">(</span><span class="n">tokens</span><span class="p">,</span><span class="w"> </span><span class="m">0</span><span class="p">,</span><span class="w"> </span><span class="n">tokens</span><span class="p">.</span><span class="n">length</span><span class="p">,</span><span class="w"> </span><span class="m">512</span><span class="p">);</span>
 </code></pre></div>
-<h3 id="language-detection">Language Detection<a class="headerlink" href="#language-detection" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;cactus.dart&#39;</span><span class="p">;</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;dart:typed_data&#39;</span><span class="p">;</span>
-<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
-<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="c1">// From file</span>
-<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="kd">final</span><span class="w"> </span><span class="n">resultJson</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusDetectLanguage</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;/path/to/audio.wav&#39;</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">);</span>
-<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="n">print</span><span class="p">(</span><span class="n">resultJson</span><span class="p">);</span>
-<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>
-<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="c1">// From PCM data (16 kHz mono)</span>
-<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="kd">final</span><span class="w"> </span><span class="n">Uint8List</span><span class="w"> </span><span class="n">pcmData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">...;</span>
-<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a><span class="kd">final</span><span class="w"> </span><span class="n">resultJson2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusDetectLanguage</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="n">pcmData</span><span class="p">);</span>
-<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a><span class="n">print</span><span class="p">(</span><span class="n">resultJson2</span><span class="p">);</span>
-</code></pre></div>
-<h3 id="vad">VAD<a class="headerlink" href="#vad" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;cactus.dart&#39;</span><span class="p">;</span>
-<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
-<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="kd">final</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">vadJson</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusVad</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;/path/to/audio.wav&#39;</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">);</span>
-<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="n">print</span><span class="p">(</span><span class="n">vadJson</span><span class="p">);</span>
-</code></pre></div>
-<h3 id="rag">RAG<a class="headerlink" href="#rag" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;cactus.dart&#39;</span><span class="p">;</span>
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>
-<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="kd">final</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusRagQuery</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;What is machine learning?&#39;</span><span class="p">,</span><span class="w"> </span><span class="m">5</span><span class="p">);</span>
-<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="n">print</span><span class="p">(</span><span class="n">result</span><span class="p">);</span>
+<h3 id="rag-retrieval-augmented-generation">RAG (Retrieval-Augmented Generation)<a class="headerlink" href="#rag-retrieval-augmented-generation" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kd">final</span><span class="w"> </span><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Cactus</span><span class="p">.</span><span class="n">create</span><span class="p">(</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="s1">&#39;/path/to/model.gguf&#39;</span><span class="p">,</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span><span class="nl">corpusDir:</span><span class="w"> </span><span class="s1">&#39;/path/to/documents&#39;</span><span class="p">,</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="p">);</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="kd">final</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">model</span><span class="p">.</span><span class="n">complete</span><span class="p">(</span><span class="s1">&#39;What does the documentation say about X?&#39;</span><span class="p">);</span>
 </code></pre></div>
 <h3 id="vector-index">Vector Index<a class="headerlink" href="#vector-index" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;cactus.dart&#39;</span><span class="p">;</span>
-<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>
-<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="kd">final</span><span class="w"> </span><span class="n">embDim</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">4</span><span class="p">;</span>
-<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="kd">final</span><span class="w"> </span><span class="n">index</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusIndexInit</span><span class="p">(</span><span class="s1">&#39;/path/to/index&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">embDim</span><span class="p">);</span>
-<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>
-<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="n">cactusIndexAdd</span><span class="p">(</span>
-<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="w">  </span><span class="n">index</span><span class="p">,</span>
-<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="w">  </span><span class="p">[</span><span class="m">1</span><span class="p">,</span><span class="w"> </span><span class="m">2</span><span class="p">],</span>
-<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">  </span><span class="p">[</span><span class="s1">&#39;Document 1&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;Document 2&#39;</span><span class="p">],</span>
-<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">  </span><span class="p">[[</span><span class="m">0.1</span><span class="p">,</span><span class="w"> </span><span class="m">0.2</span><span class="p">,</span><span class="w"> </span><span class="m">0.3</span><span class="p">,</span><span class="w"> </span><span class="m">0.4</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="m">0.5</span><span class="p">,</span><span class="w"> </span><span class="m">0.6</span><span class="p">,</span><span class="w"> </span><span class="m">0.7</span><span class="p">,</span><span class="w"> </span><span class="m">0.8</span><span class="p">]],</span>
-<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">  </span><span class="kc">null</span><span class="p">,</span>
-<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="p">);</span>
-<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a>
-<a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a><span class="kd">final</span><span class="w"> </span><span class="n">resultsJson</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusIndexQuery</span><span class="p">(</span><span class="n">index</span><span class="p">,</span><span class="w"> </span><span class="p">[</span><span class="m">0.1</span><span class="p">,</span><span class="w"> </span><span class="m">0.2</span><span class="p">,</span><span class="w"> </span><span class="m">0.3</span><span class="p">,</span><span class="w"> </span><span class="m">0.4</span><span class="p">],</span><span class="w"> </span><span class="kc">null</span><span class="p">);</span>
-<a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a><span class="kd">final</span><span class="w"> </span><span class="n">getJson</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactusIndexGet</span><span class="p">(</span><span class="n">index</span><span class="p">,</span><span class="w"> </span><span class="p">[</span><span class="m">1</span><span class="p">,</span><span class="w"> </span><span class="m">2</span><span class="p">]);</span>
-<a id="__codelineno-15-16" name="__codelineno-15-16" href="#__codelineno-15-16"></a>
-<a id="__codelineno-15-17" name="__codelineno-15-17" href="#__codelineno-15-17"></a><span class="n">cactusIndexDelete</span><span class="p">(</span><span class="n">index</span><span class="p">,</span><span class="w"> </span><span class="p">[</span><span class="m">2</span><span class="p">]);</span>
-<a id="__codelineno-15-18" name="__codelineno-15-18" href="#__codelineno-15-18"></a><span class="n">cactusIndexCompact</span><span class="p">(</span><span class="n">index</span><span class="p">);</span>
-<a id="__codelineno-15-19" name="__codelineno-15-19" href="#__codelineno-15-19"></a><span class="n">cactusIndexDestroy</span><span class="p">(</span><span class="n">index</span><span class="p">);</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kd">final</span><span class="w"> </span><span class="n">index</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">CactusIndex</span><span class="p">.</span><span class="n">create</span><span class="p">(</span><span class="s1">&#39;/path/to/index&#39;</span><span class="p">,</span><span class="w"> </span><span class="nl">embeddingDim:</span><span class="w"> </span><span class="m">384</span><span class="p">);</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">index</span><span class="p">.</span><span class="n">add</span><span class="p">(</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nl">ids:</span><span class="w"> </span><span class="p">[</span><span class="m">1</span><span class="p">,</span><span class="w"> </span><span class="m">2</span><span class="p">],</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span><span class="nl">documents:</span><span class="w"> </span><span class="p">[</span><span class="s1">&#39;Document 1&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;Document 2&#39;</span><span class="p">],</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span><span class="nl">embeddings:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">    </span><span class="n">model</span><span class="p">.</span><span class="n">embed</span><span class="p">(</span><span class="s1">&#39;Document 1&#39;</span><span class="p">),</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">    </span><span class="n">model</span><span class="p">.</span><span class="n">embed</span><span class="p">(</span><span class="s1">&#39;Document 2&#39;</span><span class="p">),</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">  </span><span class="p">],</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="p">);</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="kd">final</span><span class="w"> </span><span class="n">results</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">index</span><span class="p">.</span><span class="n">query</span><span class="p">(</span><span class="n">model</span><span class="p">.</span><span class="n">embed</span><span class="p">(</span><span class="s1">&#39;search query&#39;</span><span class="p">),</span><span class="w"> </span><span class="nl">topK:</span><span class="w"> </span><span class="m">5</span><span class="p">);</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">final</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">results</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="w">  </span><span class="n">print</span><span class="p">(</span><span class="s1">&#39;ID: </span><span class="si">${</span><span class="n">r</span><span class="p">.</span><span class="n">id</span><span class="si">}</span><span class="s1">, Score: </span><span class="si">${</span><span class="n">r</span><span class="p">.</span><span class="n">score</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">);</span>
+<a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a><span class="p">}</span>
+<a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a>
+<a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a><span class="n">index</span><span class="p">.</span><span class="n">dispose</span><span class="p">();</span>
 </code></pre></div>
 <h2 id="api-reference">API Reference<a class="headerlink" href="#api-reference" title="Permanent link">&para;</a></h2>
-<p>All functions are top-level and mirror the C FFI directly. Functions that return a value throw <code>Exception</code> on failure;</p>
-<h3 id="types">Types<a class="headerlink" href="#types" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="kd">typedef</span><span class="w"> </span><span class="n">CactusModelT</span><span class="w">            </span><span class="o">=</span><span class="w"> </span><span class="n">Pointer</span><span class="o">&lt;</span><span class="n">Void</span><span class="o">&gt;</span><span class="p">;</span>
-<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="kd">typedef</span><span class="w"> </span><span class="n">CactusIndexT</span><span class="w">            </span><span class="o">=</span><span class="w"> </span><span class="n">Pointer</span><span class="o">&lt;</span><span class="n">Void</span><span class="o">&gt;</span><span class="p">;</span>
-<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="kd">typedef</span><span class="w"> </span><span class="n">CactusStreamTranscribeT</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Pointer</span><span class="o">&lt;</span><span class="n">Void</span><span class="o">&gt;</span><span class="p">;</span>
+<h3 id="cactus">Cactus<a class="headerlink" href="#cactus" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kd">class</span><span class="w"> </span><span class="nc">Cactus</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="kd">static</span><span class="w"> </span><span class="n">Cactus</span><span class="w"> </span><span class="n">create</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">modelPath</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">corpusDir</span><span class="p">});</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span><span class="n">CompletionResult</span><span class="w"> </span><span class="n">complete</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">prompt</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="n">CompletionOptions</span><span class="w"> </span><span class="n">options</span><span class="p">,</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="kt">Function</span><span class="p">(</span><span class="kt">String</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="p">)</span><span class="o">?</span><span class="w"> </span><span class="n">onToken</span><span class="p">});</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">  </span><span class="n">CompletionResult</span><span class="w"> </span><span class="n">completeMessages</span><span class="p">(</span><span class="n">List</span><span class="o">&lt;</span><span class="n">Message</span><span class="o">&gt;</span><span class="w"> </span><span class="n">messages</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="n">CompletionOptions</span><span class="w"> </span><span class="n">options</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">Map</span><span class="o">&lt;</span><span class="kt">String</span><span class="p">,</span><span class="w"> </span><span class="kt">dynamic</span><span class="o">&gt;&gt;?</span><span class="w"> </span><span class="n">tools</span><span class="p">,</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="kt">Function</span><span class="p">(</span><span class="kt">String</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="p">)</span><span class="o">?</span><span class="w"> </span><span class="n">onToken</span><span class="p">});</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">  </span><span class="n">TranscriptionResult</span><span class="w"> </span><span class="n">transcribe</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">audioPath</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">prompt</span><span class="p">,</span><span class="w"> </span><span class="n">TranscriptionOptions</span><span class="w"> </span><span class="n">options</span><span class="p">});</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">  </span><span class="n">TranscriptionResult</span><span class="w"> </span><span class="n">transcribePcm</span><span class="p">(</span><span class="n">Uint8List</span><span class="w"> </span><span class="n">pcmData</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">prompt</span><span class="p">,</span><span class="w"> </span><span class="n">TranscriptionOptions</span><span class="w"> </span><span class="n">options</span><span class="p">});</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">double</span><span class="o">&gt;</span><span class="w"> </span><span class="n">embed</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">text</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="kt">bool</span><span class="w"> </span><span class="n">normalize</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="p">});</span>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">double</span><span class="o">&gt;</span><span class="w"> </span><span class="n">imageEmbed</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">imagePath</span><span class="p">);</span>
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">double</span><span class="o">&gt;</span><span class="w"> </span><span class="n">audioEmbed</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">audioPath</span><span class="p">);</span>
+<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="w">  </span><span class="kt">String</span><span class="w"> </span><span class="n">ragQuery</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">query</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="kt">int</span><span class="w"> </span><span class="n">topK</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">5</span><span class="p">});</span>
+<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>
+<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">&gt;</span><span class="w"> </span><span class="n">tokenize</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">text</span><span class="p">);</span>
+<a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="w">  </span><span class="kt">String</span><span class="w"> </span><span class="n">scoreWindow</span><span class="p">(</span><span class="n">List</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">&gt;</span><span class="w"> </span><span class="n">tokens</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">start</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">end</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
+<a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="w">  </span><span class="n">StreamTranscriber</span><span class="w"> </span><span class="n">createStreamTranscriber</span><span class="p">();</span>
+<a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a>
+<a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a><span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="n">reset</span><span class="p">();</span>
+<a id="__codelineno-10-20" name="__codelineno-10-20" href="#__codelineno-10-20"></a><span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="n">stop</span><span class="p">();</span>
+<a id="__codelineno-10-21" name="__codelineno-10-21" href="#__codelineno-10-21"></a><span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="n">dispose</span><span class="p">();</span>
+<a id="__codelineno-10-22" name="__codelineno-10-22" href="#__codelineno-10-22"></a>
+<a id="__codelineno-10-23" name="__codelineno-10-23" href="#__codelineno-10-23"></a><span class="w">  </span><span class="kd">static</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">getLastError</span><span class="p">();</span>
+<a id="__codelineno-10-24" name="__codelineno-10-24" href="#__codelineno-10-24"></a><span class="p">}</span>
 </code></pre></div>
-<h3 id="init-lifecycle">Init / Lifecycle<a class="headerlink" href="#init-lifecycle" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="n">CactusModelT</span><span class="w"> </span><span class="n">cactusInit</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">modelPath</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">corpusDir</span><span class="p">,</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="n">cacheIndex</span><span class="p">)</span>
-<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="kt">void</span><span class="w"> </span><span class="n">cactusDestroy</span><span class="p">(</span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">)</span>
-<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="kt">void</span><span class="w"> </span><span class="n">cactusReset</span><span class="p">(</span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">)</span>
-<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="kt">void</span><span class="w"> </span><span class="n">cactusStop</span><span class="p">(</span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">)</span>
-<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusGetLastError</span><span class="p">()</span>
+<h3 id="message">Message<a class="headerlink" href="#message" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kd">class</span><span class="w"> </span><span class="nc">Message</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="kd">static</span><span class="w"> </span><span class="n">Message</span><span class="w"> </span><span class="n">system</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">content</span><span class="p">);</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span><span class="kd">static</span><span class="w"> </span><span class="n">Message</span><span class="w"> </span><span class="n">user</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">content</span><span class="p">);</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span><span class="kd">static</span><span class="w"> </span><span class="n">Message</span><span class="w"> </span><span class="n">assistant</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">content</span><span class="p">);</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="p">}</span>
 </code></pre></div>
-<h3 id="prefill_1">Prefill<a class="headerlink" href="#prefill_1" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusPrefill</span><span class="p">(</span>
-<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="w">  </span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span>
-<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="w">  </span><span class="kt">String</span><span class="w"> </span><span class="n">messagesJson</span><span class="p">,</span>
-<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a><span class="w">  </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">optionsJson</span><span class="p">,</span>
-<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="w">  </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">toolsJson</span><span class="p">,</span>
-<a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="p">)</span>
+<h3 id="completionoptions">CompletionOptions<a class="headerlink" href="#completionoptions" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kd">class</span><span class="w"> </span><span class="nc">CompletionOptions</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">temperature</span><span class="p">;</span><span class="w"> </span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">topP</span><span class="p">;</span><span class="w">  </span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">topK</span><span class="p">;</span><span class="w">   </span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">maxTokens</span><span class="p">;</span><span class="w">       </span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">stopSequences</span><span class="p">;</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">confidenceThreshold</span><span class="p">;</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="w">  </span><span class="kd">static</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="n">defaultOptions</span><span class="p">;</span>
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a><span class="p">}</span>
 </code></pre></div>
-<h3 id="completion">Completion<a class="headerlink" href="#completion" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusComplete</span><span class="p">(</span>
-<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="w">  </span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span>
-<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="w">  </span><span class="kt">String</span><span class="w"> </span><span class="n">messagesJson</span><span class="p">,</span>
-<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="w">  </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">optionsJson</span><span class="p">,</span>
-<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="w">  </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">toolsJson</span><span class="p">,</span>
-<a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a><span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="kt">Function</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">token</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">tokenId</span><span class="p">)</span><span class="o">?</span><span class="w"> </span><span class="n">callback</span><span class="p">,</span>
-<a id="__codelineno-19-7" name="__codelineno-19-7" href="#__codelineno-19-7"></a><span class="p">)</span>
+<h3 id="completionresult">CompletionResult<a class="headerlink" href="#completionresult" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kd">class</span><span class="w"> </span><span class="nc">CompletionResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">text</span><span class="p">;</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">Map</span><span class="o">&lt;</span><span class="kt">String</span><span class="p">,</span><span class="w"> </span><span class="kt">dynamic</span><span class="o">&gt;&gt;?</span><span class="w"> </span><span class="n">functionCalls</span><span class="p">;</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">promptTokens</span><span class="p">;</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">completionTokens</span><span class="p">;</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">timeToFirstToken</span><span class="p">;</span>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">totalTime</span><span class="p">;</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">prefillTokensPerSecond</span><span class="p">;</span>
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">decodeTokensPerSecond</span><span class="p">;</span>
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">confidence</span><span class="p">;</span>
+<a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="n">needsCloudHandoff</span><span class="p">;</span>
+<a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a><span class="p">}</span>
 </code></pre></div>
-<h3 id="transcription">Transcription<a class="headerlink" href="#transcription" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusTranscribe</span><span class="p">(</span>
-<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="w">  </span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span>
-<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="w">  </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">audioPath</span><span class="p">,</span>
-<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="w">  </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">prompt</span><span class="p">,</span>
-<a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="w">  </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">optionsJson</span><span class="p">,</span>
-<a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a><span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="kt">Function</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">token</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">tokenId</span><span class="p">)</span><span class="o">?</span><span class="w"> </span><span class="n">callback</span><span class="p">,</span>
-<a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a><span class="w">  </span><span class="n">Uint8List</span><span class="o">?</span><span class="w"> </span><span class="n">pcmData</span><span class="p">,</span>
-<a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a><span class="p">)</span>
-<a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a>
-<a id="__codelineno-20-10" name="__codelineno-20-10" href="#__codelineno-20-10"></a><span class="n">CactusStreamTranscribeT</span><span class="w"> </span><span class="n">cactusStreamTranscribeStart</span><span class="p">(</span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">optionsJson</span><span class="p">)</span>
-<a id="__codelineno-20-11" name="__codelineno-20-11" href="#__codelineno-20-11"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusStreamTranscribeProcess</span><span class="p">(</span><span class="n">CactusStreamTranscribeT</span><span class="w"> </span><span class="n">stream</span><span class="p">,</span><span class="w"> </span><span class="n">Uint8List</span><span class="w"> </span><span class="n">pcmData</span><span class="p">)</span>
-<a id="__codelineno-20-12" name="__codelineno-20-12" href="#__codelineno-20-12"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusStreamTranscribeStop</span><span class="p">(</span><span class="n">CactusStreamTranscribeT</span><span class="w"> </span><span class="n">stream</span><span class="p">)</span>
+<h3 id="transcriptionresult">TranscriptionResult<a class="headerlink" href="#transcriptionresult" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="kd">class</span><span class="w"> </span><span class="nc">TranscriptionResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">text</span><span class="p">;</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">Map</span><span class="o">&lt;</span><span class="kt">String</span><span class="p">,</span><span class="w"> </span><span class="kt">dynamic</span><span class="o">&gt;&gt;?</span><span class="w"> </span><span class="n">segments</span><span class="p">;</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">totalTime</span><span class="p">;</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="p">}</span>
 </code></pre></div>
-<h3 id="embeddings_1">Embeddings<a class="headerlink" href="#embeddings_1" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="n">Float32List</span><span class="w"> </span><span class="n">cactusEmbed</span><span class="p">(</span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">text</span><span class="p">,</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="n">normalize</span><span class="p">)</span>
-<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="n">Float32List</span><span class="w"> </span><span class="n">cactusImageEmbed</span><span class="p">(</span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">imagePath</span><span class="p">)</span>
-<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="n">Float32List</span><span class="w"> </span><span class="n">cactusAudioEmbed</span><span class="p">(</span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">audioPath</span><span class="p">)</span>
+<h3 id="streamtranscriber">StreamTranscriber<a class="headerlink" href="#streamtranscriber" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="kd">class</span><span class="w"> </span><span class="nc">StreamTranscriber</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="n">insert</span><span class="p">(</span><span class="n">Uint8List</span><span class="w"> </span><span class="n">pcmData</span><span class="p">);</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">  </span><span class="n">TranscriptionResult</span><span class="w"> </span><span class="n">process</span><span class="p">({</span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">language</span><span class="p">});</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="w">  </span><span class="n">TranscriptionResult</span><span class="w"> </span><span class="n">finalize</span><span class="p">();</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="n">dispose</span><span class="p">();</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="p">}</span>
 </code></pre></div>
-<h3 id="tokenization-scoring">Tokenization / Scoring<a class="headerlink" href="#tokenization-scoring" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="n">List</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">&gt;</span><span class="w"> </span><span class="n">cactusTokenize</span><span class="p">(</span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">text</span><span class="p">)</span>
-<a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusScoreWindow</span><span class="p">(</span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">&gt;</span><span class="w"> </span><span class="n">tokens</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">start</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">end</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">context</span><span class="p">)</span>
-</code></pre></div>
-<h3 id="detect-language">Detect Language<a class="headerlink" href="#detect-language" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusDetectLanguage</span><span class="p">(</span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">audioPath</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">optionsJson</span><span class="p">,</span><span class="w"> </span><span class="n">Uint8List</span><span class="o">?</span><span class="w"> </span><span class="n">pcmData</span><span class="p">)</span>
-</code></pre></div>
-<h3 id="vad-rag">VAD / RAG<a class="headerlink" href="#vad-rag" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusVad</span><span class="p">(</span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">audioPath</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">optionsJson</span><span class="p">,</span><span class="w"> </span><span class="n">Uint8List</span><span class="o">?</span><span class="w"> </span><span class="n">pcmData</span><span class="p">)</span>
-<a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusRagQuery</span><span class="p">(</span><span class="n">CactusModelT</span><span class="w"> </span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">query</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">topK</span><span class="p">)</span>
-</code></pre></div>
-<h3 id="vector-index_1">Vector Index<a class="headerlink" href="#vector-index_1" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="n">CactusIndexT</span><span class="w"> </span><span class="n">cactusIndexInit</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">indexDir</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">embeddingDim</span><span class="p">)</span>
-<a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a><span class="kt">void</span><span class="w"> </span><span class="n">cactusIndexDestroy</span><span class="p">(</span><span class="n">CactusIndexT</span><span class="w"> </span><span class="n">index</span><span class="p">)</span>
-<a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a><span class="kt">int</span><span class="w"> </span><span class="n">cactusIndexAdd</span><span class="p">(</span><span class="n">CactusIndexT</span><span class="w"> </span><span class="n">index</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">&gt;</span><span class="w"> </span><span class="n">ids</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">documents</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">List</span><span class="o">&lt;</span><span class="kt">double</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="n">embeddings</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">String</span><span class="o">&gt;?</span><span class="w"> </span><span class="n">metadatas</span><span class="p">)</span>
-<a id="__codelineno-25-4" name="__codelineno-25-4" href="#__codelineno-25-4"></a><span class="kt">int</span><span class="w"> </span><span class="n">cactusIndexDelete</span><span class="p">(</span><span class="n">CactusIndexT</span><span class="w"> </span><span class="n">index</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">&gt;</span><span class="w"> </span><span class="n">ids</span><span class="p">)</span>
-<a id="__codelineno-25-5" name="__codelineno-25-5" href="#__codelineno-25-5"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusIndexGet</span><span class="p">(</span><span class="n">CactusIndexT</span><span class="w"> </span><span class="n">index</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">&gt;</span><span class="w"> </span><span class="n">ids</span><span class="p">)</span>
-<a id="__codelineno-25-6" name="__codelineno-25-6" href="#__codelineno-25-6"></a><span class="kt">String</span><span class="w"> </span><span class="n">cactusIndexQuery</span><span class="p">(</span><span class="n">CactusIndexT</span><span class="w"> </span><span class="n">index</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">double</span><span class="o">&gt;</span><span class="w"> </span><span class="n">embedding</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="o">?</span><span class="w"> </span><span class="n">optionsJson</span><span class="p">)</span>
-<a id="__codelineno-25-7" name="__codelineno-25-7" href="#__codelineno-25-7"></a><span class="kt">int</span><span class="w"> </span><span class="n">cactusIndexCompact</span><span class="p">(</span><span class="n">CactusIndexT</span><span class="w"> </span><span class="n">index</span><span class="p">)</span>
-</code></pre></div>
-<h3 id="logging">Logging<a class="headerlink" href="#logging" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="kt">void</span><span class="w"> </span><span class="n">cactusLogSetLevel</span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">level</span><span class="p">)</span><span class="w">  </span><span class="c1">// 0=DEBUG 1=INFO 2=WARN 3=ERROR 4=NONE</span>
-<a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a><span class="kt">void</span><span class="w"> </span><span class="n">cactusLogSetCallback</span><span class="p">(</span><span class="kt">void</span><span class="w"> </span><span class="kt">Function</span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">level</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">component</span><span class="p">,</span><span class="w"> </span><span class="kt">String</span><span class="w"> </span><span class="n">message</span><span class="p">)</span><span class="o">?</span><span class="w"> </span><span class="n">onLog</span><span class="p">)</span>
-</code></pre></div>
-<h3 id="telemetry">Telemetry<a class="headerlink" href="#telemetry" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="kt">void</span><span class="w"> </span><span class="n">cactusSetTelemetryEnvironment</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">cacheLocation</span><span class="p">)</span>
-<a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="kt">void</span><span class="w"> </span><span class="n">cactusSetAppId</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">appId</span><span class="p">)</span>
-<a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a><span class="kt">void</span><span class="w"> </span><span class="n">cactusTelemetryFlush</span><span class="p">()</span>
-<a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="kt">void</span><span class="w"> </span><span class="n">cactusTelemetryShutdown</span><span class="p">()</span>
+<h3 id="cactusindex">CactusIndex<a class="headerlink" href="#cactusindex" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="kd">class</span><span class="w"> </span><span class="nc">CactusIndex</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="w">  </span><span class="kd">static</span><span class="w"> </span><span class="n">CactusIndex</span><span class="w"> </span><span class="n">create</span><span class="p">(</span><span class="kt">String</span><span class="w"> </span><span class="n">indexDir</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="kd">required</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">embeddingDim</span><span class="p">});</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="n">add</span><span class="p">({</span><span class="kd">required</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">&gt;</span><span class="w"> </span><span class="n">ids</span><span class="p">,</span><span class="w"> </span><span class="kd">required</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">documents</span><span class="p">,</span><span class="w"> </span><span class="kd">required</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">List</span><span class="o">&lt;</span><span class="kt">double</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="n">embeddings</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="kt">String</span><span class="o">&gt;?</span><span class="w"> </span><span class="n">metadatas</span><span class="p">});</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="n">delete</span><span class="p">(</span><span class="n">List</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">&gt;</span><span class="w"> </span><span class="n">ids</span><span class="p">);</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">IndexResult</span><span class="o">&gt;</span><span class="w"> </span><span class="n">query</span><span class="p">(</span><span class="n">List</span><span class="o">&lt;</span><span class="kt">double</span><span class="o">&gt;</span><span class="w"> </span><span class="n">embedding</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="kt">int</span><span class="w"> </span><span class="n">topK</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">5</span><span class="p">});</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="n">compact</span><span class="p">();</span>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="n">dispose</span><span class="p">();</span>
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a><span class="p">}</span>
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a><span class="kd">class</span><span class="w"> </span><span class="nc">IndexResult</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">id</span><span class="p">;</span>
+<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="kt">double</span><span class="w"> </span><span class="n">score</span><span class="p">;</span>
+<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a><span class="p">}</span>
 </code></pre></div>
 <h2 id="bundling-model-weights">Bundling Model Weights<a class="headerlink" href="#bundling-model-weights" title="Permanent link">&para;</a></h2>
 <p>Models must be accessible via file path at runtime.</p>
 <h3 id="android_1">Android<a class="headerlink" href="#android_1" title="Permanent link">&para;</a></h3>
 <p>Copy from assets to internal storage on first launch:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;package:flutter/services.dart&#39;</span><span class="p">;</span>
-<a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;package:path_provider/path_provider.dart&#39;</span><span class="p">;</span>
-<a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;dart:io&#39;</span><span class="p">;</span>
-<a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a>
-<a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a><span class="n">Future</span><span class="o">&lt;</span><span class="kt">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">getModelPath</span><span class="p">()</span><span class="w"> </span><span class="kd">async</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="n">dir</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kd">await</span><span class="w"> </span><span class="n">getApplicationDocumentsDirectory</span><span class="p">();</span>
-<a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="n">modelFile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">File</span><span class="p">(</span><span class="s1">&#39;</span><span class="si">${</span><span class="n">dir</span><span class="p">.</span><span class="n">path</span><span class="si">}</span><span class="s1">/model&#39;</span><span class="p">);</span>
-<a id="__codelineno-28-8" name="__codelineno-28-8" href="#__codelineno-28-8"></a>
-<a id="__codelineno-28-9" name="__codelineno-28-9" href="#__codelineno-28-9"></a><span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="kd">await</span><span class="w"> </span><span class="n">modelFile</span><span class="p">.</span><span class="n">exists</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-28-10" name="__codelineno-28-10" href="#__codelineno-28-10"></a><span class="w">    </span><span class="kd">final</span><span class="w"> </span><span class="n">data</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kd">await</span><span class="w"> </span><span class="n">rootBundle</span><span class="p">.</span><span class="n">load</span><span class="p">(</span><span class="s1">&#39;assets/model&#39;</span><span class="p">);</span>
-<a id="__codelineno-28-11" name="__codelineno-28-11" href="#__codelineno-28-11"></a><span class="w">    </span><span class="kd">await</span><span class="w"> </span><span class="n">modelFile</span><span class="p">.</span><span class="n">writeAsBytes</span><span class="p">(</span><span class="n">data</span><span class="p">.</span><span class="n">buffer</span><span class="p">.</span><span class="n">asUint8List</span><span class="p">());</span>
-<a id="__codelineno-28-12" name="__codelineno-28-12" href="#__codelineno-28-12"></a><span class="w">  </span><span class="p">}</span>
-<a id="__codelineno-28-13" name="__codelineno-28-13" href="#__codelineno-28-13"></a>
-<a id="__codelineno-28-14" name="__codelineno-28-14" href="#__codelineno-28-14"></a><span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="n">modelFile</span><span class="p">.</span><span class="n">path</span><span class="p">;</span>
-<a id="__codelineno-28-15" name="__codelineno-28-15" href="#__codelineno-28-15"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;package:flutter/services.dart&#39;</span><span class="p">;</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;package:path_provider/path_provider.dart&#39;</span><span class="p">;</span>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;dart:io&#39;</span><span class="p">;</span>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="n">Future</span><span class="o">&lt;</span><span class="kt">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">getModelPath</span><span class="p">()</span><span class="w"> </span><span class="kd">async</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="n">dir</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kd">await</span><span class="w"> </span><span class="n">getApplicationDocumentsDirectory</span><span class="p">();</span>
+<a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a><span class="w">  </span><span class="kd">final</span><span class="w"> </span><span class="n">modelFile</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">File</span><span class="p">(</span><span class="s1">&#39;</span><span class="si">${</span><span class="n">dir</span><span class="p">.</span><span class="n">path</span><span class="si">}</span><span class="s1">/model.gguf&#39;</span><span class="p">);</span>
+<a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>
+<a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a><span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="kd">await</span><span class="w"> </span><span class="n">modelFile</span><span class="p">.</span><span class="n">exists</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a><span class="w">    </span><span class="kd">final</span><span class="w"> </span><span class="n">data</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kd">await</span><span class="w"> </span><span class="n">rootBundle</span><span class="p">.</span><span class="n">load</span><span class="p">(</span><span class="s1">&#39;assets/model.gguf&#39;</span><span class="p">);</span>
+<a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a><span class="w">    </span><span class="kd">await</span><span class="w"> </span><span class="n">modelFile</span><span class="p">.</span><span class="n">writeAsBytes</span><span class="p">(</span><span class="n">data</span><span class="p">.</span><span class="n">buffer</span><span class="p">.</span><span class="n">asUint8List</span><span class="p">());</span>
+<a id="__codelineno-17-12" name="__codelineno-17-12" href="#__codelineno-17-12"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-17-13" name="__codelineno-17-13" href="#__codelineno-17-13"></a>
+<a id="__codelineno-17-14" name="__codelineno-17-14" href="#__codelineno-17-14"></a><span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="n">modelFile</span><span class="p">.</span><span class="n">path</span><span class="p">;</span>
+<a id="__codelineno-17-15" name="__codelineno-17-15" href="#__codelineno-17-15"></a><span class="p">}</span>
 </code></pre></div>
 <h3 id="iosmacos">iOS/macOS<a class="headerlink" href="#iosmacos" title="Permanent link">&para;</a></h3>
 <p>Add model to bundle and access via path:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;dart:io&#39;</span><span class="p">;</span>
-<a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>
-<a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a><span class="kd">final</span><span class="w"> </span><span class="n">path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;</span><span class="si">${</span><span class="n">Directory</span><span class="p">.</span><span class="n">current</span><span class="p">.</span><span class="n">path</span><span class="si">}</span><span class="s1">/model&#39;</span><span class="p">;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="k">import</span><span class="w"> </span><span class="s1">&#39;package:path_provider/path_provider.dart&#39;</span><span class="p">;</span>
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="kd">final</span><span class="w"> </span><span class="n">path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;</span><span class="si">${</span><span class="n">Directory</span><span class="p">.</span><span class="n">current</span><span class="p">.</span><span class="n">path</span><span class="si">}</span><span class="s1">/model.gguf&#39;</span><span class="p">;</span>
 </code></pre></div>
 <h2 id="requirements">Requirements<a class="headerlink" href="#requirements" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Flutter 3.0+</li>
 <li>Dart 2.17+</li>
-<li>iOS 13.0+ / macOS 13.0+</li>
-<li>Android API 21+ / arm64-v8a</li>
-</ul>
-<h2 id="see-also">See Also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="../docs/cactus_engine/">Cactus Engine API</a> — Full C API reference underlying the Flutter bindings</li>
-<li><a href="../docs/cactus_index/">Cactus Index API</a> — Vector database API for RAG applications</li>
-<li><a href="../docs/finetuning/">Fine-tuning Guide</a> — Deploy custom fine-tunes to mobile</li>
-<li><a href="../apple/">Swift SDK</a> — Native Swift alternative for Apple platforms</li>
-<li><a href="../android/">Kotlin/Android SDK</a> — Native Kotlin alternative for Android</li>
+<li>iOS 14.0+ / macOS 13.0+</li>
+<li>Android API 24+ / arm64-v8a</li>
 </ul>
 
 
@@ -2453,9 +2211,6 @@
 
 
 
-
-  
-  
 
 
 
