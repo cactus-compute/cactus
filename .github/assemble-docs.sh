@@ -51,7 +51,7 @@ if curl -sfL "https://raw.githubusercontent.com/cactus-compute/cactus-react-nati
 else
   echo "# React Native SDK" > site_docs/react-native/README.md
   echo "" >> site_docs/react-native/README.md
-  echo "See [cactus-react on GitHub](https://github.com/cactus-compute/cactus-react) for full documentation." >> site_docs/react-native/README.md
+  echo "See [cactus-react-native on GitHub](https://github.com/cactus-compute/cactus-react-native) for full documentation." >> site_docs/react-native/README.md
   echo "Warning: Could not fetch React Native README, using fallback"
 fi
 
