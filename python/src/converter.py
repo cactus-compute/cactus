@@ -8,7 +8,7 @@ except ImportError:
     torch = None
 
 from .tensor_io import save_tensor_with_header, create_quantization_stats, print_quantization_summary
-from .config_utils import cfg_get, detect_model_type, extract_base_config, extract_vision_config, extract_lfm2_config, extract_moonshine_config, extract_complex_gemma_config
+from .config_utils import cfg_get, detect_model_type, extract_base_config, extract_vision_config, extract_lfm2_config, extract_moonshine_config, extract_complex_gemma_config, extract_youtu_config
 from .weight_patterns import (
     EMBED_NAMES, OUTPUT_NAMES, OUTPUT_NORM_NAMES, LAYER_PREFIXES,
     VISION_ITEMS, PROJECTOR_WEIGHTS, WHISPER_GLOBAL_WEIGHTS, MOONSHINE_GLOBAL_WEIGHTS,
@@ -76,6 +76,8 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         model_config.update(extract_complex_gemma_config(config, root_config))
     elif detected_model_type == 'lfm2':
         model_config.update(extract_lfm2_config(config))
+    elif detected_model_type == 'youtu':
+        model_config.update(extract_youtu_config(config))
     elif detected_model_type == 'moonshine':
         model_config.update(extract_moonshine_config(config))
     elif detected_model_type == 'parakeet':

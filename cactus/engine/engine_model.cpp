@@ -525,6 +525,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (model_type_value.rfind("qwen3_5", 0) == 0) model_type = ModelType::QWEN3P5;
             else if (value == "parakeet_tdt" || value == "PARAKEET_TDT") model_type = ModelType::PARAKEET_TDT;
             else if (value == "gemma3n" || value == "GEMMA3N") model_type = ModelType::GEMMA3N;
+            else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
             else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {
@@ -574,6 +575,16 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "linear_num_value_heads") linear_num_value_heads = static_cast<uint32_t>(std::stoul(value));
         else if (key == "linear_value_head_dim") linear_value_head_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "linear_q_proj_dim") linear_q_proj_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "kv_lora_rank") kv_lora_rank = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "q_lora_rank") q_lora_rank = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "qk_head_dim") qk_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "qk_nope_head_dim") qk_nope_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "qk_rope_head_dim") qk_rope_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "v_head_dim") v_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "rope_interleave") rope_interleave = (value == "true" || value == "1");
+        else if (key == "attention_bias") attention_bias = (value == "true" || value == "1");
+        else if (key == "rope_scaling_factor") rope_scaling_factor = std::stof(value);
+        else if (key == "rope_mscale_all_dim") rope_mscale_all_dim = std::stof(value);
         else if (key == "linear_k_proj_dim") linear_k_proj_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "linear_v_proj_dim") linear_v_proj_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "predictor_hidden_dim") predictor_hidden_dim = static_cast<uint32_t>(std::stoul(value));
@@ -682,6 +693,10 @@ bool Config::from_json(const std::string& config_path) {
         default_top_k = 0;
         default_max_tps = 8.0f;
         default_cloud_handoff_threshold = 0.35f;
+    } else if (model_type == ModelType::YOUTU) {
+        default_temperature = 1.0f;
+        default_top_p = 0.95f;
+        default_top_k = 20;
     }
 
     return true;
@@ -738,6 +753,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<ParakeetModel>(config);
         case Config::ModelType::PARAKEET_TDT:
             return std::make_unique<ParakeetTDTModel>(config);
+        case Config::ModelType::YOUTU:
+            return std::make_unique<YoutuModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }

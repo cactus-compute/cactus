@@ -118,7 +118,7 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
         add_tokens_for_string("\"arguments\"", args_key_tokens_);
         add_tokens_for_string("arguments", args_key_tokens_);
 
-        tokenize_function_names(true); 
+        tokenize_function_names(true);
     }
 }
 
@@ -286,7 +286,7 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                 break;
 
             case State::QWEN_EXPECT_NAME_KEY:
-                if (generated_text_.find("name") != std::string::npos) {
+                if (generated_text_.find("name\"") != std::string::npos) {
                     state_ = State::QWEN_EXPECT_NAME_COLON;
                     generated_text_.clear();
                 }
@@ -301,7 +301,7 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
 
             case State::QWEN_EXPECT_NAME_VALUE:
                 for (const auto& name : function_names_) {
-                    if (generated_text_.find(name) != std::string::npos) {
+                    if (generated_text_.find(name + "\"") != std::string::npos) {
                         state_ = State::QWEN_EXPECT_COMMA;
                         generated_text_.clear();
                         break;
@@ -320,7 +320,7 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                 break;
 
             case State::QWEN_EXPECT_ARGS_KEY:
-                if (generated_text_.find("arguments") != std::string::npos) {
+                if (generated_text_.find("arguments\"") != std::string::npos) {
                     state_ = State::QWEN_EXPECT_ARGS_COLON;
                     generated_text_.clear();
                 }

@@ -209,7 +209,12 @@ void cactus_matmul_f16(
                     BT_f32.data(), (int)K,
                     0.0f, C_f32.data(), (int)N);
 
-        for (size_t i = 0; i < c_len; i++) c[i] = (__fp16)C_f32[i];
+        for (size_t i = 0; i < c_len; i++) {
+            float v = C_f32[i];
+            if (v > 65504.f) v = 65504.f;
+            else if (v < -65504.f) v = -65504.f;
+            c[i] = (__fp16)v;
+        }
         return;
     }
 #endif

@@ -421,7 +421,7 @@ bool test_tool_call() {
 bool test_multiple_tool_call_invocations() {
     const char* messages = R"([
         {"role": "system", "content": "You are a helpful assistant that can use tools."},
-        {"role": "user", "content": "Send a message to Blob and get the weather for San Francisco."}
+        {"role": "user", "content": "Send a message to Bob and get the weather for San Francisco."}
     ])";
 
     const char* tools = R"([{
@@ -472,7 +472,7 @@ bool test_multiple_tool_call_invocations() {
                       << "├─ Correct tool: " << (has_weather_tool && has_message_tool ? "YES" : "NO") << "\n";
             m.print_json();
             return result > 0 && has_function && has_weather_tool && has_message_tool;
-        }, tools, -1, "Send a message to Blob and get the weather for San Francisco.");
+        }, tools, -1, "Send a message to Bob and get the weather for San Francisco.");
 }
 
 bool test_tool_call_with_three_tools() {

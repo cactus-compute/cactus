@@ -130,11 +130,19 @@ WHISPER_GLOBAL_WEIGHTS = [
 def get_layer_weight_patterns(i, precision, model_type=None, skip_kv=False):
     is_whisper = model_type == 'whisper'
     is_qwen_family = isinstance(model_type, str) and ('qwen' in model_type)
+    is_youtu = model_type == 'youtu'
 
     patterns = [
-        (['self_attn.q_proj.weight', 'attn.q_proj.weight', 'attn.c_attn.weight'], precision, f'layer_{i}_attn_q.weights', False) if not is_whisper else None,
-        (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False) if not is_whisper and not skip_kv else None,
-        (['self_attn.v_proj.weight', 'attn.v_proj.weight'], precision, f'layer_{i}_attn_v.weights', False) if not is_whisper and not skip_kv else None,
+        # Youtu MLA attention weights
+        (['self_attn.q_a_proj.weight'], precision, f'layer_{i}_attn_q_a.weights', False) if is_youtu else None,
+        (['self_attn.q_a_layernorm.weight'], precision, f'layer_{i}_attn_q_a_norm.weights', False) if is_youtu else None,
+        (['self_attn.q_b_proj.weight'], precision, f'layer_{i}_attn_q_b.weights', False) if is_youtu else None,
+        (['self_attn.kv_a_proj_with_mqa.weight'], precision, f'layer_{i}_attn_kv_a.weights', False) if is_youtu else None,
+        (['self_attn.kv_a_layernorm.weight'], precision, f'layer_{i}_attn_kv_a_norm.weights', False) if is_youtu else None,
+        (['self_attn.kv_b_proj.weight'], precision, f'layer_{i}_attn_kv_b.weights', False) if is_youtu else None,
+        (['self_attn.q_proj.weight', 'attn.q_proj.weight', 'attn.c_attn.weight'], precision, f'layer_{i}_attn_q.weights', False) if not is_whisper and not is_youtu else None,
+        (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False) if not is_whisper and not skip_kv and not is_youtu else None,
+        (['self_attn.v_proj.weight', 'attn.v_proj.weight'], precision, f'layer_{i}_attn_v.weights', False) if not is_whisper and not skip_kv and not is_youtu else None,
         (['self_attn.o_proj.weight', 'attn.o_proj.weight', 'attn.c_proj.weight', 'self_attn.out_proj.weight'], precision, f'layer_{i}_attn_output.weights', False) if not is_whisper else None,
         # Qwen3.5 linear-attention path
         (['linear_attn.in_proj_qkv.weight'], precision, f'layer_{i}_linear_attn_qkv.weights', False) if is_qwen_family else None,

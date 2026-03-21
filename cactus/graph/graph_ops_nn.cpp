@@ -680,6 +680,7 @@ void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<G
     size_t head_dim = q_shape[3];
     size_t num_kv_heads = k_shape[2];
     size_t kv_seq_len = key_buffer.shape[1];
+    size_t v_head_dim = value_buffer.shape[3];
     bool mask_per_head = false;
     const __fp16* mask_ptr = nullptr;
 
@@ -714,7 +715,7 @@ void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<G
                          value_buffer.data_as<__fp16>(), node.output_buffer.data_as<__fp16>(),
                          batch_size, seq_len, kv_seq_len, num_q_heads, num_kv_heads, head_dim, node.params.scale, mask_ptr,
                          node.params.position_offset, node.params.window_size, node.params.is_causal,
-                         node.params.attention_mask_is_additive, mask_per_head);
+                         node.params.attention_mask_is_additive, mask_per_head, v_head_dim);
 }
 
 void compute_attention_int8_hybrid_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {

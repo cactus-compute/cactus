@@ -498,17 +498,23 @@ size_t CactusGraph::batchnorm(size_t input, size_t weight, size_t bias, size_t r
 
 size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scale, bool is_causal, ComputeBackend backend) {
     OpParams params{.scale = scale, .is_causal = is_causal, .backend = backend};
-    return add_node(OpType::ATTENTION, {query, key, value}, {}, params);
+    const auto& qs = get_output_buffer(query).shape;
+    const auto& vs = get_output_buffer(value).shape;
+    return add_node(OpType::ATTENTION, {query, key, value}, {qs[0], qs[1], qs[2], vs[3]}, params);
 }
 
 size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, ComputeBackend backend) {
     OpParams params{.scale = scale, .position_offset = position_offset, .backend = backend};
-    return add_node(OpType::ATTENTION, {query, key, value}, {}, params);
+    const auto& qs = get_output_buffer(query).shape;
+    const auto& vs = get_output_buffer(value).shape;
+    return add_node(OpType::ATTENTION, {query, key, value}, {qs[0], qs[1], qs[2], vs[3]}, params);
 }
 
 size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, size_t window_size, ComputeBackend backend) {
     OpParams params{.scale = scale, .position_offset = position_offset, .window_size = window_size, .backend = backend};
-    return add_node(OpType::ATTENTION, {query, key, value}, {}, params);
+    const auto& qs = get_output_buffer(query).shape;
+    const auto& vs = get_output_buffer(value).shape;
+    return add_node(OpType::ATTENTION, {query, key, value}, {qs[0], qs[1], qs[2], vs[3]}, params);
 }
 
 size_t CactusGraph::attention_masked(size_t query, size_t key, size_t value, size_t mask, float scale,
@@ -523,7 +529,9 @@ size_t CactusGraph::attention_masked(size_t query, size_t key, size_t value, siz
     };
     params.attention_mask_is_additive = additive_mask;
     params.logit_cap = logit_cap;
-    return add_node(OpType::ATTENTION, {query, key, value, mask}, {}, params);
+    const auto& qs = get_output_buffer(query).shape;
+    const auto& vs = get_output_buffer(value).shape;
+    return add_node(OpType::ATTENTION, {query, key, value, mask}, {qs[0], qs[1], qs[2], vs[3]}, params);
 }
 
 size_t CactusGraph::rel_pos_bias(size_t query, size_t relative_key, float scale) {

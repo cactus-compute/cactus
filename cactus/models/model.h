@@ -1454,5 +1454,73 @@ private:
     std::string weights_path_;
 };
 
+class YoutuModel : public Model {
+public:
+    YoutuModel();
+    explicit YoutuModel(const Config& config);
+    ~YoutuModel() override = default;
+
+    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256,
+                 const std::string& profile_file = "") override;
+
+    uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f,
+                    float top_p = -1.0f, size_t top_k = 0,
+                    const std::string& profile_file = "",
+                    float* out_entropy = nullptr) override;
+
+    void reset_cache() override;
+
+protected:
+    size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                    ComputeBackend backend) const override;
+
+    size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    void load_weights_to_graph(CactusGraph* gb) override;
+
+private:
+    std::vector<uint32_t> token_history_;
+
+    struct LayerKVCache {
+        std::vector<uint16_t> k;
+        std::vector<uint16_t> v;
+        size_t len = 0;
+    };
+    std::vector<LayerKVCache> kv_cache_;
+    std::vector<std::pair<size_t, size_t>> layer_kv_nodes_;
+    bool kv_cache_valid_ = false;
+
+    struct WeightNodeIDs {
+        size_t output_weight;
+        size_t output_norm_weight;
+
+        struct LayerWeights {
+            size_t attn_q_weight = 0;
+            size_t attn_q_a_weight = 0;
+            size_t attn_q_a_norm_weight = 0;
+            size_t attn_q_b_weight = 0;
+            size_t attn_kv_a_weight = 0;
+            size_t attn_kv_a_norm_weight = 0;
+            size_t attn_kv_b_weight = 0;
+            size_t attn_output_weight = 0;
+            size_t input_layernorm_weight = 0;
+            size_t post_attention_layernorm_weight = 0;
+            size_t ffn_gate_weight = 0;
+            size_t ffn_up_weight = 0;
+            size_t ffn_down_weight = 0;
+            size_t attn_q_a_bias = 0;
+            size_t attn_kv_a_bias = 0;
+            size_t attn_output_bias = 0;
+        };
+
+        std::vector<LayerWeights> layers;
+    } weight_nodes_;
+};
+
 }
 }

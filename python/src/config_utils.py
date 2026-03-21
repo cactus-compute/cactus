@@ -104,6 +104,8 @@ def detect_model_type(cfg, config, output_dir=None):
             return 'smol'
         else:
             return 'llama'
+    elif 'youtu' in model_type_str:
+        return 'youtu'
     elif 'bert' in model_type_str:
         return 'bert'
     elif 'whisper' in model_type_str:
@@ -261,6 +263,23 @@ def extract_lfm2_config(cfg):
         'use_expert_bias': use_expert_bias,
         'routed_scaling_factor': routed_scaling_factor,
     }
+
+
+def extract_youtu_config(cfg):
+    rope_scaling = cfg_get(cfg, 'rope_scaling', {}) or {}
+    return {
+        'kv_lora_rank': int(cfg_get(cfg, 'kv_lora_rank', 0)),
+        'q_lora_rank': int(cfg_get(cfg, 'q_lora_rank', 0)),
+        'qk_head_dim': int(cfg_get(cfg, 'qk_head_dim', 0)),
+        'qk_nope_head_dim': int(cfg_get(cfg, 'qk_nope_head_dim', 0)),
+        'qk_rope_head_dim': int(cfg_get(cfg, 'qk_rope_head_dim', 0)),
+        'v_head_dim': int(cfg_get(cfg, 'v_head_dim', 0)),
+        'rope_interleave': bool(cfg_get(cfg, 'rope_interleave', False)),
+        'attention_bias': bool(cfg_get(cfg, 'attention_bias', False)),
+        'rope_scaling_factor': float(cfg_get(rope_scaling, 'factor', 1.0)),
+        'rope_mscale_all_dim': float(cfg_get(rope_scaling, 'mscale_all_dim', 0.0)),
+    }
+
 
 def extract_moonshine_config(cfg):
     """Extract Moonshine-specific configuration parameters."""

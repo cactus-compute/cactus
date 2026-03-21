@@ -165,7 +165,7 @@ void cactus_batchnorm_f32(
 void cactus_attention_f16(const __fp16* queries, const __fp16* keys, const __fp16* values, __fp16* output,
                           size_t batch_size, size_t seq_len, size_t kv_seq_len, size_t num_q_heads, size_t num_kv_heads,
                           size_t head_dim, float scale, const __fp16* mask, size_t position_offset = 0, size_t window_size = 0,
-                          bool is_causal = true, bool mask_is_additive = false, bool mask_per_head = false);
+                          bool is_causal = true, bool mask_is_additive = false, bool mask_per_head = false, size_t v_head_dim = 0);
 
 void cactus_attention_hybrid_int8_fp16(
     const __fp16* queries,        
@@ -340,7 +340,7 @@ void cactus_concat_f16(const __fp16* input1, const __fp16* input2, __fp16* outpu
                        const size_t* shape1, const size_t* shape2, const size_t* output_shape,
                        size_t ndims, int axis);
 void cactus_cat_f16(const __fp16** inputs, __fp16* output, const size_t** input_shapes,
-                      const size_t* output_shape, size_t num_inputs, int axis);
+                      const size_t* output_shape, size_t num_inputs, int axis, size_t num_tensor_dims);
 
 void cactus_int8_to_fp32(const int8_t* src, float* dst, size_t count, float scale = 1.0f);
 void cactus_fp32_to_int8(const float* src, int8_t* dst, size_t count, float scale = 1.0f);
