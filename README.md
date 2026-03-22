@@ -191,6 +191,7 @@ graph.hard_reset();
 | LiquidAI/LFM2-2.6B | completion, tools, embed |
 | LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |
 | LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |
+| tencent/Youtu-LLM-2B | completion, tools, embed |
 | nomic-ai/nomic-embed-text-v2-moe | embed |
 
 ## Roadmap
