@@ -1460,14 +1460,6 @@ public:
     explicit YoutuModel(const Config& config);
     ~YoutuModel() override = default;
 
-    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256,
-                 const std::string& profile_file = "") override;
-
-    uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f,
-                    float top_p = -1.0f, size_t top_k = 0,
-                    const std::string& profile_file = "",
-                    float* out_entropy = nullptr) override;
-
     void reset_cache() override;
 
 protected:
@@ -1482,22 +1474,17 @@ protected:
 
     size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
     void load_weights_to_graph(CactusGraph* gb) override;
+    std::vector<size_t> get_kv_layer_dims() const override;
+    void post_init() override;
+    void post_execute_updates(CactusGraph* gb, size_t seq_len) override;
 
 private:
-    std::vector<uint32_t> token_history_;
-
-    struct LayerKVCache {
-        std::vector<uint16_t> k;
-        std::vector<uint16_t> v;
-        size_t len = 0;
-    };
-    std::vector<LayerKVCache> kv_cache_;
-    std::vector<std::pair<size_t, size_t>> layer_kv_nodes_;
-    bool kv_cache_valid_ = false;
+    KVCache v_cache_;
+    std::vector<size_t> cache_v_nodes_;
 
     struct WeightNodeIDs {
-        size_t output_weight;
-        size_t output_norm_weight;
+        size_t output_weight = 0;
+        size_t output_norm_weight = 0;
 
         struct LayerWeights {
             size_t attn_q_weight = 0;

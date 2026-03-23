@@ -168,18 +168,18 @@ void cactus_attention_f16(const __fp16* queries, const __fp16* keys, const __fp1
                           bool is_causal = true, bool mask_is_additive = false, bool mask_per_head = false, size_t v_head_dim = 0);
 
 void cactus_attention_hybrid_int8_fp16(
-    const __fp16* queries,        
-    const int8_t* keys_cached, 
-    const int8_t* values_cached, 
+    const __fp16* queries,
+    const int8_t* keys_cached,
+    const int8_t* values_cached,
     const float* k_scales,
-    const float* v_scales, 
-    const __fp16* keys_new, 
-    const __fp16* values_new, 
+    const float* v_scales,
+    const __fp16* keys_new,
+    const __fp16* values_new,
     __fp16* output,
     size_t batch_size, size_t seq_len, size_t cache_len, size_t new_len,
     size_t num_q_heads, size_t num_kv_heads, size_t head_dim,
     float scale, size_t position_offset = 0, bool is_causal = true, size_t window_size = 0,
-    size_t group_size = KV_QUANT_GROUP_SIZE);
+    size_t group_size = KV_QUANT_GROUP_SIZE, size_t v_head_dim = 0);
 
 void cactus_gated_deltanet_decode_f16(
     const __fp16* q_data,

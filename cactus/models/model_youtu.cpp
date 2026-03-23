@@ -10,7 +10,28 @@ YoutuModel::YoutuModel() : Model() {}
 
 YoutuModel::YoutuModel(const Config& config) : Model(config) {
     weight_nodes_.layers.resize(config.num_layers);
-    layer_kv_nodes_.resize(config.num_layers);
+}
+
+std::vector<size_t> YoutuModel::get_kv_layer_dims() const {
+    return std::vector<size_t>(config_.num_layers, static_cast<size_t>(config_.qk_head_dim));
+}
+
+void YoutuModel::post_init() {
+    std::vector<size_t> v_dims(config_.num_layers, static_cast<size_t>(config_.v_head_dim));
+    v_cache_.init(config_.num_layers, kv_cache_.max_seq_len,
+                  config_.attention_kv_heads, v_dims, Precision::INT8);
+    v_cache_.set_window_size(kv_cache_.window_size, kv_cache_.sink_size);
+    cache_v_nodes_.resize(config_.num_layers, 0);
+}
+
+void YoutuModel::post_execute_updates(CactusGraph* gb, size_t seq_len) {
+    v_cache_.update_from_graph(gb, cache_v_nodes_, cache_v_nodes_, seq_len,
+                               config_.num_layers, config_.attention_kv_heads);
+}
+
+void YoutuModel::reset_cache() {
+    kv_cache_.reset();
+    v_cache_.reset();
 }
 
 void YoutuModel::load_weights_to_graph(CactusGraph* gb) {
@@ -76,8 +97,9 @@ size_t YoutuModel::build_attention(CactusGraph* gb, size_t normalized_input, uin
         q_full = gb->matmul(normalized_input, layer.attn_q_weight, true, backend);
     } else {
         auto q_latent = gb->matmul(normalized_input, layer.attn_q_a_weight, true, backend);
-        if (config_.attention_bias)
+        if (config_.attention_bias) {
             q_latent = gb->add(q_latent, layer.attn_q_a_bias);
+        }
         q_latent = gb->rms_norm(q_latent, layer.attn_q_a_norm_weight, eps);
         q_full = gb->matmul(q_latent, layer.attn_q_b_weight, true, backend);
     }
@@ -99,8 +121,9 @@ size_t YoutuModel::build_attention(CactusGraph* gb, size_t normalized_input, uin
     auto q_4d = gb->reshape(q_combined, {1, seq_len, num_heads, qk_head});
 
     auto kv_combined = gb->matmul(normalized_input, layer.attn_kv_a_weight, true, backend);
-    if (config_.attention_bias)
+    if (config_.attention_bias) {
         kv_combined = gb->add(kv_combined, layer.attn_kv_a_bias);
+    }
     auto kv_latent = gb->slice(kv_combined, 1, 0, kv_lora);
     auto k_rope_raw = gb->slice(kv_combined, 1, kv_lora, qk_rope);
 
@@ -126,28 +149,10 @@ size_t YoutuModel::build_attention(CactusGraph* gb, size_t normalized_input, uin
     auto k_4d = gb->reshape(k_combined, {1, seq_len, num_kv_heads, qk_head});
     auto v_4d = gb->reshape(v_flat, {1, seq_len, num_kv_heads, v_dim});
 
-    if (layer_idx < layer_kv_nodes_.size()) {
-        layer_kv_nodes_[layer_idx] = {
-            gb->reshape(k_4d, {seq_len * num_kv_heads, qk_head}),
-            gb->reshape(v_4d, {seq_len * num_kv_heads, v_dim})
-        };
-    }
-
-    size_t k_attn = k_4d;
-    size_t v_attn = v_4d;
-
-    if (use_cache && kv_cache_valid_ && layer_idx < kv_cache_.size() && kv_cache_[layer_idx].len > 0) {
-        const size_t cache_len = kv_cache_[layer_idx].len;
-
-        auto ck = gb->input({cache_len * num_kv_heads, qk_head}, Precision::FP16);
-        gb->set_input(ck, kv_cache_[layer_idx].k.data(), Precision::FP16);
-        auto ck_4d = gb->reshape(ck, {1, cache_len, num_kv_heads, qk_head});
-        k_attn = gb->concat(ck_4d, k_4d, 1);
-
-        auto cv = gb->input({cache_len * num_kv_heads, v_dim}, Precision::FP16);
-        gb->set_input(cv, kv_cache_[layer_idx].v.data(), Precision::FP16);
-        auto cv_4d = gb->reshape(cv, {1, cache_len, num_kv_heads, v_dim});
-        v_attn = gb->concat(cv_4d, v_4d, 1);
+    if (use_cache && layer_idx < cache_k_output_nodes_.size()) {
+        cache_k_output_nodes_[layer_idx] = gb->reshape(k_4d, {seq_len * num_kv_heads, qk_head});
+        cache_v_output_nodes_[layer_idx] = cache_k_output_nodes_[layer_idx];
+        cache_v_nodes_[layer_idx] = gb->reshape(v_4d, {seq_len * num_kv_heads, v_dim});
     }
 
     float scale = 1.0f / sqrtf(static_cast<float>(qk_head));
@@ -155,12 +160,26 @@ size_t YoutuModel::build_attention(CactusGraph* gb, size_t normalized_input, uin
         float mscale = yarn_get_mscale(config_.rope_scaling_factor, config_.rope_mscale_all_dim);
         scale *= mscale * mscale;
     }
-    auto attn_4d = gb->attention(q_4d, k_attn, v_attn, scale, position_offset);
+
+    size_t attn_4d;
+    if (use_cache && !kv_cache_.is_empty()) {
+        attn_4d = gb->attention_int8_hybrid(
+            q_4d, k_4d, v_4d, scale, position_offset,
+            kv_cache_.get_keys_int8(layer_idx),
+            v_cache_.get_values_int8(layer_idx),
+            kv_cache_.get_key_scales(layer_idx),
+            v_cache_.get_value_scales(layer_idx),
+            kv_cache_.current_seq_len, num_kv_heads, qk_head,
+            kv_cache_.window_size, v_dim);
+    } else {
+        attn_4d = gb->attention(q_4d, k_4d, v_4d, scale, position_offset);
+    }
 
     auto attn_out = gb->reshape(attn_4d, {seq_len, num_heads * v_dim});
     size_t out = gb->matmul(attn_out, layer.attn_output_weight, true, backend);
-    if (config_.attention_bias)
+    if (config_.attention_bias) {
         out = gb->add(out, layer.attn_output_bias);
+    }
     return out;
 }
 
@@ -192,7 +211,6 @@ size_t YoutuModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) 
     if (!initialized_ || !graph_handle_) {
         throw std::runtime_error("Model not initialized - call init() first");
     }
-
     if (tokens.empty()) {
         throw std::runtime_error("Token sequence cannot be empty");
     }
@@ -200,12 +218,8 @@ size_t YoutuModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
 
-    auto seq_len = static_cast<size_t>(tokens.size());
-
-    size_t position_offset = 0;
-    if (use_cache && kv_cache_valid_ && !kv_cache_.empty()) {
-        position_offset = kv_cache_[0].len;
-    }
+    const size_t seq_len = tokens.size();
+    const size_t position_offset = use_cache ? kv_cache_.get_total_seq_len() : 0;
 
     auto backend = config_.default_backend == Config::Backend::CPU
         ? ComputeBackend::CPU
@@ -225,140 +239,6 @@ size_t YoutuModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) 
     }
 
     return gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
-}
-
-
-void YoutuModel::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, const std::string& profile_file) {
-    if (!initialized_ || !graph_handle_) return;
-    if (tokens.empty()) return;
-
-    const bool warm = kv_cache_valid_;
-    layer_kv_nodes_.resize(config_.num_layers);
-
-    if (!warm) {
-        token_history_ = tokens;
-        kv_cache_.clear();
-        kv_cache_.resize(config_.num_layers);
-        kv_cache_valid_ = false;
-        forward(token_history_, false);
-    } else {
-        for (auto t : tokens) token_history_.push_back(t);
-        forward(tokens, true);
-    }
-
-    auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    gb->execute(profile_file);
-
-    const size_t Hkv = config_.attention_kv_heads;
-    const size_t qk_head = config_.qk_head_dim;
-    const size_t v_dim = config_.v_head_dim;
-    const size_t new_len = tokens.size();
-
-    if (!warm) {
-        for (uint32_t i = 0; i < config_.num_layers; i++) {
-            const uint16_t* k_ptr = reinterpret_cast<const uint16_t*>(gb->get_output(layer_kv_nodes_[i].first));
-            const uint16_t* v_ptr = reinterpret_cast<const uint16_t*>(gb->get_output(layer_kv_nodes_[i].second));
-            kv_cache_[i].k.assign(k_ptr, k_ptr + new_len * Hkv * qk_head);
-            kv_cache_[i].v.assign(v_ptr, v_ptr + new_len * Hkv * v_dim);
-            kv_cache_[i].len = new_len;
-        }
-        kv_cache_valid_ = true;
-    } else {
-        for (uint32_t i = 0; i < config_.num_layers; i++) {
-            const uint16_t* k_ptr = reinterpret_cast<const uint16_t*>(gb->get_output(layer_kv_nodes_[i].first));
-            const uint16_t* v_ptr = reinterpret_cast<const uint16_t*>(gb->get_output(layer_kv_nodes_[i].second));
-            kv_cache_[i].k.insert(kv_cache_[i].k.end(), k_ptr, k_ptr + new_len * Hkv * qk_head);
-            kv_cache_[i].v.insert(kv_cache_[i].v.end(), v_ptr, v_ptr + new_len * Hkv * v_dim);
-            kv_cache_[i].len += new_len;
-        }
-    }
-}
-
-
-uint32_t YoutuModel::decode(const std::vector<uint32_t>& tokens, float temperature,
-                             float top_p, size_t top_k,
-                             const std::string& profile_file, float* out_entropy) {
-    if (!initialized_ || !graph_handle_) return 0;
-
-    if (temperature < 0) temperature = config_.default_temperature;
-    if (top_p < 0) top_p = config_.default_top_p;
-    if (top_k == 0) top_k = config_.default_top_k;
-
-    for (auto t : tokens) token_history_.push_back(t);
-
-    layer_kv_nodes_.resize(config_.num_layers);
-
-    const bool using_cache = kv_cache_valid_;
-
-    size_t final_hidden;
-    if (using_cache) {
-        final_hidden = forward(tokens, true);
-    } else {
-        kv_cache_.resize(config_.num_layers);
-        final_hidden = forward(token_history_, false);
-    }
-
-    auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    auto backend = config_.default_backend == Config::Backend::CPU
-        ? ComputeBackend::CPU
-        : ComputeBackend::NPU;
-
-    const size_t last_idx = using_cache ? (tokens.size() - 1) : (token_history_.size() - 1);
-    auto last_hidden = gb->index(final_hidden, last_idx, 0);
-    const auto& buf = gb->get_output_buffer(last_hidden);
-    last_hidden = gb->reshape(last_hidden, {1, buf.shape[0]});
-
-    auto logits = gb->matmul(last_hidden, output_weight_node_id_, true, backend);
-    auto sampled = sample_token(gb, logits, temperature, top_p, top_k);
-
-    gb->execute(profile_file);
-
-    compute_entropy(gb, logits, out_entropy);
-
-    const size_t Hkv = config_.attention_kv_heads;
-    const size_t qk_head = config_.qk_head_dim;
-    const size_t v_dim = config_.v_head_dim;
-    const size_t new_len = tokens.size();
-
-    if (using_cache) {
-        for (uint32_t i = 0; i < config_.num_layers; i++) {
-            const size_t k_node = layer_kv_nodes_[i].first;
-            const size_t v_node = layer_kv_nodes_[i].second;
-            const uint16_t* k_ptr = reinterpret_cast<const uint16_t*>(gb->get_output(k_node));
-            const uint16_t* v_ptr = reinterpret_cast<const uint16_t*>(gb->get_output(v_node));
-            const size_t k_chunk = new_len * Hkv * qk_head;
-            const size_t v_chunk = new_len * Hkv * v_dim;
-            kv_cache_[i].k.insert(kv_cache_[i].k.end(), k_ptr, k_ptr + k_chunk);
-            kv_cache_[i].v.insert(kv_cache_[i].v.end(), v_ptr, v_ptr + v_chunk);
-            kv_cache_[i].len += new_len;
-        }
-    } else {
-        const size_t full_len = token_history_.size();
-        for (uint32_t i = 0; i < config_.num_layers; i++) {
-            const size_t k_node = layer_kv_nodes_[i].first;
-            const size_t v_node = layer_kv_nodes_[i].second;
-            const uint16_t* k_ptr = reinterpret_cast<const uint16_t*>(gb->get_output(k_node));
-            const uint16_t* v_ptr = reinterpret_cast<const uint16_t*>(gb->get_output(v_node));
-            const size_t k_total = full_len * Hkv * qk_head;
-            const size_t v_total = full_len * Hkv * v_dim;
-            kv_cache_[i].k.assign(k_ptr, k_ptr + k_total);
-            kv_cache_[i].v.assign(v_ptr, v_ptr + v_total);
-            kv_cache_[i].len = full_len;
-        }
-        kv_cache_valid_ = true;
-    }
-
-    auto* ptr = gb->get_output(sampled);
-    if (!ptr) return 0;
-    return *reinterpret_cast<const uint32_t*>(ptr);
-}
-
-
-void YoutuModel::reset_cache() {
-    token_history_.clear();
-    kv_cache_.clear();
-    kv_cache_valid_ = false;
-    layer_kv_nodes_.clear();
 }
 
 }

@@ -568,7 +568,8 @@ size_t CactusGraph::rel_pos_bias(size_t query, size_t relative_key, float scale)
 size_t CactusGraph::attention_int8_hybrid(size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,
                                           const int8_t* cached_keys, const int8_t* cached_values,
                                           const float* k_scales, const float* v_scales,
-                                          size_t cache_len, size_t num_kv_heads, size_t head_dim, size_t window_size) {
+                                          size_t cache_len, size_t num_kv_heads, size_t head_dim,
+                                          size_t window_size, size_t v_head_dim) {
     OpParams params;
     params.scale = scale;
     params.position_offset = position_offset;
@@ -580,7 +581,13 @@ size_t CactusGraph::attention_int8_hybrid(size_t query, size_t key_new, size_t v
     params.cache_seq_len = cache_len;
     params.num_kv_heads = num_kv_heads;
     params.head_dim = head_dim;
-    return add_node(OpType::ATTENTION_INT8_HYBRID, {query, key_new, value_new}, {}, params);
+    params.v_head_dim = v_head_dim;
+    std::vector<size_t> out_shape;
+    if (v_head_dim != 0 && v_head_dim != head_dim) {
+        const auto& q_buf = get_output_buffer(query);
+        out_shape = {q_buf.shape[0], q_buf.shape[1], q_buf.shape[2], v_head_dim};
+    }
+    return add_node(OpType::ATTENTION_INT8_HYBRID, {query, key_new, value_new}, out_shape, params);
 }
 
 size_t CactusGraph::conv1d_causal(size_t input, size_t weight, size_t, size_t dilation) {

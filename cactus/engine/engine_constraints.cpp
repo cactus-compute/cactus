@@ -264,13 +264,6 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                 }
                 break;
 
-            case State::DONE:
-                if (generated_text_.find(call_start_tag_) != std::string::npos) {
-                    state_ = State::GEMMA_EXPECT_CALL;
-                    generated_text_.clear();
-                }
-                break;
-
             default:
                 break;
         }
@@ -513,12 +506,9 @@ void ToolCallConstrainer::compute_bias() {
                 }
                 break;
 
-            case State::GEMMA_EXPECT_CALL: {
-                bool has_call = generated_text_.find("call") != std::string::npos;
-                if (has_call) {
-                    for (uint32_t t : colon_tokens_) { current_bias_[t] = FORCE_BIAS; }
-                } else {
-                    for (uint32_t t : gemma_call_prefix_tokens_) { current_bias_[t] = FORCE_BIAS; }
+            case State::GEMMA_EXPECT_CALL:
+                for (uint32_t t : gemma_call_prefix_tokens_) {
+                    current_bias_[t] = FORCE_BIAS;
                 }
                 for (uint32_t t : open_brace_tokens_) {
                     current_bias_[t] = BLOCK_BIAS;
@@ -527,36 +517,18 @@ void ToolCallConstrainer::compute_bias() {
                     current_bias_[t] = BLOCK_BIAS;
                 }
                 break;
-            }
 
-            case State::GEMMA_IN_FUNC_NAME: {
-                for (uint32_t t : close_brace_tokens_) { current_bias_[t] = BLOCK_BIAS; }
-                for (uint32_t t : gemma_call_end_tokens_) { current_bias_[t] = BLOCK_BIAS; }
-                for (uint32_t t : open_brace_tokens_) { current_bias_[t] = BLOCK_BIAS; }
-                if (generated_text_.empty()) {
-                    for (const auto& name : function_names_) {
-                        const auto& seq = func_name_sequences_.at(name);
-                        if (!seq.empty()) {
-                            current_bias_[seq[0]] = 5.0f;
-                        }
-                    }
-                } else {
-                    for (uint32_t t : all_func_name_tokens_) { current_bias_[t] = BLOCK_BIAS; }
-                    for (const auto& name : function_names_) {
-                        if (generated_text_.find(name) != std::string::npos) continue; // already complete
-                        const auto& seq = func_name_sequences_.at(name);
-                        std::string accumulated;
-                        for (uint32_t t : seq) {
-                            if (accumulated == generated_text_) {
-                                current_bias_[t] = FORCE_BIAS;
-                                break;
-                            }
-                            if (tokenizer_) accumulated += tokenizer_->decode({t});
-                        }
-                    }
+            case State::GEMMA_IN_FUNC_NAME:
+                for (uint32_t t : all_func_name_tokens_) {
+                    current_bias_[t] = FORCE_BIAS;
+                }
+                for (uint32_t t : close_brace_tokens_) {
+                    current_bias_[t] = BLOCK_BIAS;
+                }
+                for (uint32_t t : gemma_call_end_tokens_) {
+                    current_bias_[t] = BLOCK_BIAS;
                 }
                 break;
-            }
 
             case State::GEMMA_EXPECT_BRACE:
                 for (uint32_t t : open_brace_tokens_) {
