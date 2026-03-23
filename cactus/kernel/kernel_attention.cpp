@@ -754,14 +754,18 @@ void cactus_attention_hybrid_int8_fp16(
                 }
 
                 const size_t absolute_q_pos = position_offset + q_pos;
-                size_t kv_end = is_causal ? std::min(kv_seq_len, absolute_q_pos + 1) : kv_seq_len;
+                size_t kv_end = is_causal ? std::min(kv_seq_len, cache_len + q_pos + 1) : kv_seq_len;
 
                 size_t kv_start = 0;
                 if (window_size > 0 && absolute_q_pos > window_size) {
                     kv_start = absolute_q_pos - window_size;
                 }
 
-                size_t kv_block_start0 = (kv_start / BLOCK_SIZE) * BLOCK_SIZE;
+                constexpr size_t SINK_SIZE = 4;
+                const size_t cache_abs_offset = (position_offset >= cache_len) ? (position_offset - cache_len) : 0;
+
+                const size_t kv_block_start0 = (window_size > 0 && kv_start > 0) ? 0
+                    : (kv_start / BLOCK_SIZE) * BLOCK_SIZE;
 
                 for (size_t kv_block_start = kv_block_start0; kv_block_start < kv_end; kv_block_start += BLOCK_SIZE) {
                     const size_t kv_block_end = std::min(kv_block_start + BLOCK_SIZE, kv_end);
@@ -772,7 +776,18 @@ void cactus_attention_hybrid_int8_fp16(
                     for (size_t kv_idx = 0; kv_idx < block_size; ++kv_idx) {
                         const size_t kv_pos = kv_block_start + kv_idx;
 
-                        if ((is_causal && kv_pos > absolute_q_pos) || (window_size > 0 && kv_pos < kv_start)) {
+                        bool window_masked = false;
+                        if (window_size > 0 && kv_start > 0) {
+                            if (kv_pos < cache_len) {
+                                if (cache_abs_offset == 0 || kv_pos >= SINK_SIZE) {
+                                    window_masked = (cache_abs_offset + kv_pos < kv_start);
+                                }
+                            } else {
+                                window_masked = (kv_pos + cache_abs_offset < kv_start);
+                            }
+                        }
+
+                        if ((is_causal && kv_pos > absolute_q_pos) || window_masked) {
                             block_scores[kv_idx] = -std::numeric_limits<float>::infinity();
                             continue;
                         }
@@ -830,15 +845,20 @@ void cactus_attention_hybrid_int8_fp16(
                         block_max = std::max(block_max, score);
                     }
 
+                    float current_block_scale = 1.0f;
                     if (block_max > -std::numeric_limits<float>::infinity()) {
-                        float scale_correction = expf(running_max - block_max);
-                        running_sum *= scale_correction;
+                        if (block_max > running_max) {
+                            float scale_correction = expf(running_max - block_max);
+                            running_sum *= scale_correction;
 
-                        for (size_t i = 0; i < output_accum_low.size() / 2; ++i) {
-                            output_accum_low[i] = vmulq_n_f32(output_accum_low[i], scale_correction);
-                            output_accum_high[i] = vmulq_n_f32(output_accum_high[i], scale_correction);
+                            for (size_t i = 0; i < output_accum_low.size() / 2; ++i) {
+                                output_accum_low[i] = vmulq_n_f32(output_accum_low[i], scale_correction);
+                                output_accum_high[i] = vmulq_n_f32(output_accum_high[i], scale_correction);
+                            }
+                            running_max = block_max;
+                        } else {
+                            current_block_scale = expf(block_max - running_max);
                         }
-                        running_max = block_max;
                     }
 
                     float block_sum = 0.0f;
@@ -852,7 +872,7 @@ void cactus_attention_hybrid_int8_fp16(
                     }
 
                     for (size_t kv_idx = 0; kv_idx < block_size; ++kv_idx) {
-                        const float attn_weight = block_scores[kv_idx];
+                        const float attn_weight = block_scores[kv_idx] * current_block_scale;
                         if (attn_weight == 0.0f) continue;
 
                         const size_t kv_pos = kv_block_start + kv_idx;
@@ -898,7 +918,7 @@ void cactus_attention_hybrid_int8_fp16(
                         }
                     }
 
-                    running_sum += block_sum;
+                    running_sum += block_sum * current_block_scale;
                 }
 
                 if (running_sum > 0.0f) {
