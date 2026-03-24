@@ -112,13 +112,11 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
         add_tokens_for_string(",", comma_tokens_);
         add_tokens_for_string("\"", quote_tokens_);
 
-        add_tokens_for_string("\"name\"", name_key_tokens_);
         add_tokens_for_string("name", name_key_tokens_);
 
-        add_tokens_for_string("\"arguments\"", args_key_tokens_);
         add_tokens_for_string("arguments", args_key_tokens_);
 
-        tokenize_function_names(true); 
+        tokenize_function_names(true);
     }
 }
 
@@ -278,15 +276,17 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                 }
                 break;
 
-            case State::QWEN_EXPECT_OPEN_BRACE:
-                if (generated_text_.find("{") != std::string::npos) {
+            case State::QWEN_EXPECT_OPEN_BRACE: {
+                size_t pos = generated_text_.find("{");
+                if (pos != std::string::npos) {
                     state_ = State::QWEN_EXPECT_NAME_KEY;
-                    generated_text_.clear();
+                    generated_text_ = generated_text_.substr(pos + 1);
                 }
                 break;
+            }
 
             case State::QWEN_EXPECT_NAME_KEY:
-                if (generated_text_.find("name") != std::string::npos) {
+                if (generated_text_.find("name\"") != std::string::npos) {
                     state_ = State::QWEN_EXPECT_NAME_COLON;
                     generated_text_.clear();
                 }
@@ -301,7 +301,7 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
 
             case State::QWEN_EXPECT_NAME_VALUE:
                 for (const auto& name : function_names_) {
-                    if (generated_text_.find(name) != std::string::npos) {
+                    if (generated_text_.find(name + "\"") != std::string::npos) {
                         state_ = State::QWEN_EXPECT_COMMA;
                         generated_text_.clear();
                         break;
@@ -320,7 +320,7 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                 break;
 
             case State::QWEN_EXPECT_ARGS_KEY:
-                if (generated_text_.find("arguments") != std::string::npos) {
+                if (generated_text_.find("arguments\"") != std::string::npos) {
                     state_ = State::QWEN_EXPECT_ARGS_COLON;
                     generated_text_.clear();
                 }
@@ -341,7 +341,8 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                         if (brace_depth_ > 0) {
                             brace_depth_--;
                         } else {
-                            state_ = State::QWEN_EXPECT_CLOSE_BRACE;
+                            state_ = State::QWEN_EXPECT_END;
+                            generated_text_.clear();
                             break;
                         }
                     }
@@ -358,6 +359,13 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
             case State::QWEN_EXPECT_END:
                 if (generated_text_.find("</tool_call>") != std::string::npos) {
                     state_ = State::DONE;
+                    generated_text_.clear();
+                }
+                break;
+
+            case State::DONE:
+                if (generated_text_.find("<tool_call>") != std::string::npos) {
+                    state_ = State::QWEN_EXPECT_OPEN_BRACE;
                     generated_text_.clear();
                 }
                 break;
@@ -590,20 +598,21 @@ void ToolCallConstrainer::compute_bias() {
                 }
                 break;
 
-            case State::QWEN_EXPECT_NAME_KEY:
-                for (uint32_t t : name_key_tokens_) {
-                    current_bias_[t] = FORCE_BIAS;
-                }
-                for (uint32_t t : quote_tokens_) {
-                    current_bias_[t] = 5.0f;
-                }
-                for (uint32_t t : all_func_name_tokens_) {
-                    current_bias_[t] = BLOCK_BIAS;
-                }
-                for (uint32_t t : args_key_tokens_) {
-                    current_bias_[t] = BLOCK_BIAS;
+            case State::QWEN_EXPECT_NAME_KEY: {
+                bool has_name = generated_text_.find("name") != std::string::npos;
+                bool has_quote = generated_text_.find("\"") != std::string::npos;
+                if (has_name) {
+                    for (uint32_t t : quote_tokens_) { current_bias_[t] = FORCE_BIAS; }
+                } else if (has_quote) {
+                    for (uint32_t t : name_key_tokens_) { current_bias_[t] = FORCE_BIAS; }
+                    for (uint32_t t : quote_tokens_) { current_bias_[t] = BLOCK_BIAS; }
+                } else {
+                    for (uint32_t t : all_func_name_tokens_) { current_bias_[t] = BLOCK_BIAS; }
+                    for (uint32_t t : args_key_tokens_) { current_bias_[t] = BLOCK_BIAS; }
+                    for (uint32_t t : quote_tokens_) { current_bias_[t] = FORCE_BIAS; }
                 }
                 break;
+            }
 
             case State::QWEN_EXPECT_NAME_COLON:
                 for (uint32_t t : colon_tokens_) {
@@ -611,14 +620,22 @@ void ToolCallConstrainer::compute_bias() {
                 }
                 break;
 
-            case State::QWEN_EXPECT_NAME_VALUE:
-                for (uint32_t t : all_func_name_tokens_) {
-                    current_bias_[t] = FORCE_BIAS;
+            case State::QWEN_EXPECT_NAME_VALUE: {
+                bool name_complete = false;
+                for (const auto& name : function_names_) {
+                    if (generated_text_.find(name) != std::string::npos) { name_complete = true; break; }
                 }
-                for (uint32_t t : quote_tokens_) {
-                    current_bias_[t] = 5.0f;
+                bool has_open_quote = generated_text_.find("\"") != std::string::npos;
+                if (name_complete) {
+                    for (uint32_t t : quote_tokens_) { current_bias_[t] = FORCE_BIAS; }
+                } else if (has_open_quote) {
+                    for (uint32_t t : all_func_name_tokens_) { current_bias_[t] = FORCE_BIAS; }
+                    for (uint32_t t : quote_tokens_) { current_bias_[t] = 5.0f; }
+                } else {
+                    for (uint32_t t : quote_tokens_) { current_bias_[t] = FORCE_BIAS; }
                 }
                 break;
+            }
 
             case State::QWEN_EXPECT_COMMA:
                 for (uint32_t t : comma_tokens_) {
@@ -629,14 +646,19 @@ void ToolCallConstrainer::compute_bias() {
                 }
                 break;
 
-            case State::QWEN_EXPECT_ARGS_KEY:
-                for (uint32_t t : args_key_tokens_) {
-                    current_bias_[t] = FORCE_BIAS;
-                }
-                for (uint32_t t : quote_tokens_) {
-                    current_bias_[t] = 5.0f;
+            case State::QWEN_EXPECT_ARGS_KEY: {
+                bool has_args = generated_text_.find("arguments") != std::string::npos;
+                bool has_quote = generated_text_.find("\"") != std::string::npos;
+                if (has_args) {
+                    for (uint32_t t : quote_tokens_) { current_bias_[t] = FORCE_BIAS; }
+                } else if (has_quote) {
+                    for (uint32_t t : args_key_tokens_) { current_bias_[t] = FORCE_BIAS; }
+                    for (uint32_t t : quote_tokens_) { current_bias_[t] = BLOCK_BIAS; }
+                } else {
+                    for (uint32_t t : quote_tokens_) { current_bias_[t] = FORCE_BIAS; }
                 }
                 break;
+            }
 
             case State::QWEN_EXPECT_ARGS_COLON:
                 for (uint32_t t : colon_tokens_) {

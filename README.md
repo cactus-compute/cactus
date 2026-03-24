@@ -137,7 +137,7 @@ graph.hard_reset();
 - Parakeet: 20s audio input, values are latency / decode tps
 - Missing latency = no NPU support yet
 
-| Device | LFM 1.2B | LFMVL 1.6B | Parakeet 1.1B | RAM |
+| Device | LFM 1.2B | LFMVL 1.6B | Parakeet 1.1B | VL RAM Usage |
 |--------|----------|------------|---------------|-----|
 | Mac M4 Pro | 582/100 | 0.2s/98 | 0.1s/900k+ | 76MB |
 | iPad/Mac M3 | 350/60 | 0.3s/69 | 0.3s/800k+ | 70MB |
@@ -156,14 +156,14 @@ graph.hard_reset();
 
 | Model | Params | End2End ms | Latency ms | Decode toks/sec | NPU | RTF | WER |
 |-------|--------|------------|------------|------------|-----|-----|-----|
-| UsefulSensors/moonshine-base | 61M | 361.35 | 182 | 262 | yes | 0.0180 | 0.1395 |
-| openai/whisper-tiny | 39M | 232.03 | 137.38 | 581 | yes | 0.0116 | 0.1860 |
-| openai/whisper-base | 74M | 329.37 | 178.65 | 358 | yes | 0.0164 | 0.1628 |
-| openai/whisper-small | 244M | 856.79 | 332.63 | 108 | yes | 0.0428 | 0.0930 |
-| openai/whisper-medium | 769M | 2085.87 | 923.33 | 49 | yes | 0.1041 | 0.0930 |
-| nvidia/parakeet-ctc-0.6b | 600M | 201.77 | 201.44 | 5214285 | yes | 0.0101 | 0.0930 |
-| nvidia/parakeet-tdt-0.6b-v3 | 600M | 718.91 | 718.82 | 3583333 | yes | 0.0359 | 0.0465 |
-| nvidia/parakeet-ctc-1.1b | 1.1B | 279.03 | 278.92 | 4562500 | yes | 0.0139 | 0.1628 |
+| UsefulSensors/moonshine-base | 61M | 361 | 182 | 262 | yes | 0.0180 | 0.1395 |
+| openai/whisper-tiny | 39M | 232 | 137 | 581 | yes | 0.0116 | 0.1860 |
+| openai/whisper-base | 74M | 329 | 178 | 358 | yes | 0.0164 | 0.1628 |
+| openai/whisper-small | 244M | 856 | 332 | 108 | yes | 0.0428 | 0.0930 |
+| openai/whisper-medium | 769M | 2085 | 923 | 49 | yes | 0.1041 | 0.0930 |
+| nvidia/parakeet-ctc-0.6b | 600M | 201 | 201 | 5214285 | yes | 0.0101 | 0.0930 |
+| nvidia/parakeet-tdt-0.6b-v3 | 600M | 718 | 718 | 3583333 | yes | 0.0359 | 0.0465 |
+| nvidia/parakeet-ctc-1.1b | 1.1B | 279 | 278 | 4562500 | yes | 0.0139 | 0.1628 |
 | snakers4/silero-vad | - | - | - | - | - | - | - |
 
 ## Supported LLMs
@@ -191,6 +191,7 @@ graph.hard_reset();
 | LiquidAI/LFM2-2.6B | completion, tools, embed |
 | LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |
 | LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |
+| tencent/Youtu-LLM-2B | completion, tools, embed |
 | nomic-ai/nomic-embed-text-v2-moe | embed |
 
 ## Roadmap
@@ -205,11 +206,8 @@ graph.hard_reset();
 | Feb 2026 | Done | Hybrid inference, INT4, lossless Quant (1.5x) |
 | Mar 2026 | Coming | Qualcomm/Google NPUs, 5-11x faster Android |
 | Apr 2026 | Coming | Mediatek/Exynos NPUs, Cactus@ICLR |
-| May 2026 | Coming | Kernel→C++, Graph/Engine→Rust, Mac GPU & VR |
+| May 2026 | Coming | Wearables & custom chips optimisations |
 | Jun 2026 | Coming | Torch/JAX model transpilers |
-| Jul 2026 | Coming | Wearables optimisations, Cactus@ICML |
-| Aug 2026 | Coming | Orchestration |
-| Sep 2026 | Coming | Full Cactus paper, chip manufacturer partners |
 
 ## Using this repo
 

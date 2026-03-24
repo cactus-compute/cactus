@@ -430,8 +430,8 @@ void cactus_concat_f16(const __fp16* input1, const __fp16* input2, __fp16* outpu
 }
 
 void cactus_cat_f16(const __fp16** inputs, __fp16* output, const size_t** input_shapes,
-                      const size_t* output_shape, size_t ndims, int axis) {
-    if (axis < 0) axis += output_shape[0];
+                      const size_t* output_shape, size_t ndims, int axis, size_t num_tensor_dims) {
+    if (axis < 0) axis += num_tensor_dims;
 
     size_t outer_size = 1;
     for (size_t i = 0; i < static_cast<size_t>(axis); ++i) {
@@ -439,7 +439,7 @@ void cactus_cat_f16(const __fp16** inputs, __fp16* output, const size_t** input_
     }
 
     size_t inner_size = 1;
-    for (size_t i = axis + 1; i < output_shape[0]; ++i) {
+    for (size_t i = static_cast<size_t>(axis) + 1; i < num_tensor_dims; ++i) {
         inner_size *= output_shape[i];
     }
 
