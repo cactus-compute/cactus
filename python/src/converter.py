@@ -38,7 +38,13 @@ def _gemma_tower_output_name(hf_key, strip_prefix, add_prefix):
     return add_prefix + name + ext
 
 
-def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
+def convert_hf_model_weights(
+    model,
+    output_dir,
+    precision='INT8',
+    args=None,
+    skip_parakeet_encoder_weights=False,
+):
     """Convert HuggingFace model weights to Cactus binary format."""
     import gc
     quantization_stats = create_quantization_stats()
@@ -189,7 +195,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         })
 
     num_layers = model_config['num_layers']
-    skip_parakeet_encoder_weights = bool(getattr(args, "skip_parakeet_encoder_weights", False))
+    skip_parakeet_encoder_weights = bool(skip_parakeet_encoder_weights)
 
     embedding_found = False
     for name in EMBED_NAMES:
