@@ -8,6 +8,7 @@ import subprocess
 import shutil
 import platform
 from pathlib import Path
+from pathlib import PurePosixPath
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -137,6 +138,20 @@ def ensure_vad_weights(model_id, weights_dir, precision='INT8'):
         print("Transcription may fail without VAD. Try: cactus download snakers4/silero-vad")
 
 
+def _is_apple_parakeet_model(model_id):
+    if platform.system() != "Darwin":
+        return False
+    return "parakeet" in str(model_id).lower()
+
+
+def _is_parakeet_encoder_weight_file_name(file_name):
+    is_layer_encoder_file = re.match(r"^layer_\d+_", file_name) is not None
+    return (
+        (file_name.startswith("subsampling_") or is_layer_encoder_file)
+        and (file_name.endswith(".weights") or file_name.endswith(".bias"))
+    )
+
+
 def download_from_hf(model_id, weights_dir, precision):
     """Download pre-converted model from Cactus-Compute HuggingFace."""
     try:
@@ -179,7 +194,23 @@ def download_from_hf(model_id, weights_dir, precision):
 
         print_color(YELLOW, "Extracting model weights...")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(weights_dir)
+            if _is_apple_parakeet_model(model_id):
+                skipped = 0
+                for member in zip_ref.infolist():
+                    if member.is_dir():
+                        continue
+                    file_name = PurePosixPath(member.filename).name
+                    if _is_parakeet_encoder_weight_file_name(file_name):
+                        skipped += 1
+                        continue
+                    zip_ref.extract(member, weights_dir)
+                if skipped:
+                    print_color(
+                        YELLOW,
+                        f"Apple optimization: skipped extracting {skipped} Parakeet encoder weight files",
+                    )
+            else:
+                zip_ref.extractall(weights_dir)
 
         if not (weights_dir / "config.txt").exists():
             print_color(RED, f"Error: Downloaded model is missing config.txt")
@@ -187,7 +218,6 @@ def download_from_hf(model_id, weights_dir, precision):
                 shutil.rmtree(weights_dir)
             return False
 
-        # Ensure quantization field exists in config.txt (older zips may lack it)
         config_path = weights_dir / "config.txt"
         config_text = config_path.read_text()
         if 'quantization=' not in config_text:
@@ -575,6 +605,9 @@ def cmd_download(args):
                     model = AutoModelForCausalLM.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, dtype=torch.bfloat16, token=token)
                 except ValueError:
                     model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, dtype=torch.bfloat16, token=token)
+
+        if platform.system() == "Darwin" and is_parakeet:
+            setattr(args, "skip_parakeet_encoder_weights", True)
 
         config = convert_hf_model_weights(model, weights_dir, precision, args)
         del model

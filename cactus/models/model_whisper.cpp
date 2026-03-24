@@ -8,6 +8,16 @@
 #include <set>
 #include <iostream>
 
+namespace {
+
+#if defined(__APPLE__)
+constexpr bool kSkipEncoderWeightMmapOnApple = true;
+#else
+constexpr bool kSkipEncoderWeightMmapOnApple = false;
+#endif
+
+} // namespace
+
 namespace cactus {
 namespace engine {
 
@@ -67,7 +77,7 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
         }
     }
 
-    if (!use_npu_encoder_) {
+    if (!use_npu_encoder_ && !kSkipEncoderWeightMmapOnApple) {
         weight_nodes_.encoder_position_embeddings = gb->mmap_weights(model_folder_path_ + "/encoder_position_embeddings.weights");
         weight_nodes_.encoder_conv1_weight = gb->mmap_weights(model_folder_path_ + "/encoder_conv1_weight.weights");
         weight_nodes_.encoder_conv1_bias = gb->mmap_weights(model_folder_path_ + "/encoder_conv1_bias.bias");
@@ -113,7 +123,7 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
         layer.decoder_post_attn_layernorm_weight = gb->mmap_weights(layer_prefix + "self_attn_norm.weights");
         layer.decoder_post_attn_layernorm_bias = gb->mmap_weights(layer_prefix + "self_attn_norm.bias");
 
-        if (!use_npu_encoder_) {
+        if (!use_npu_encoder_ && !kSkipEncoderWeightMmapOnApple) {
             layer_prefix = model_folder_path_ + "/encoder.layer_" + std::to_string(i) + "_";
 
             layer.encoder_ffn1_weight = gb->mmap_weights(layer_prefix + "mlp_fc1.weights");
@@ -513,6 +523,12 @@ void WhisperModel::run_encoder(const std::vector<float>& audio_features)
             last_encoder_post_norm_node_ = enc_output_persistent;
             return;
         }
+    }
+
+    if (kSkipEncoderWeightMmapOnApple) {
+        throw std::runtime_error(
+            "Whisper on Apple requires model.mlpackage encoder output; "
+            "CPU encoder weights are intentionally not loaded.");
     }
 
     auto backend =
