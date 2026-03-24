@@ -78,6 +78,12 @@ def get_weights_dir(model_id):
     return PROJECT_ROOT / "weights" / model_dir
 
 
+def is_needle_model_id(model_id):
+    """Return True for the built-in Needle aliases handled by the custom exporter."""
+    normalized = (model_id or "").strip().lower()
+    return normalized in {"needle", "cactus-compute/needle"}
+
+
 def check_command(cmd):
     """Check if a command is available in PATH."""
     return shutil.which(cmd) is not None
@@ -225,6 +231,23 @@ def cmd_download(args):
     print()
     print_color(YELLOW, f"Model weights not found. Downloading {model_id}...")
     print("=" * 45)
+
+    if not is_local and is_needle_model_id(model_id):
+        try:
+            from .needle import export_needle_metadata
+
+            print_color(YELLOW, "Using Needle exporter...")
+            export_needle_metadata(
+                output_dir=weights_dir,
+                hf_token=getattr(args, 'token', None),
+                cache_dir=getattr(args, 'cache_dir', None),
+                requested_precision=precision,
+            )
+            print_color(GREEN, f"Successfully exported Needle weights to {weights_dir}")
+            return 0
+        except Exception as e:
+            print_color(RED, f"Error: {e}")
+            return 1
 
     if not reconvert and not is_local:
         if download_from_hf(model_id, weights_dir, precision):

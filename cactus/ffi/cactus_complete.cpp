@@ -60,6 +60,155 @@ void setup_tool_constraints(CactusModelHandle* handle, const std::vector<ToolFun
     }
 }
 
+size_t find_json_block_end(const std::string& json, size_t start) {
+    if (start >= json.size() || json[start] != '{') {
+        return std::string::npos;
+    }
+
+    int depth = 1;
+    bool in_string = false;
+    bool escaped = false;
+    size_t pos = start + 1;
+    while (pos < json.size() && depth > 0) {
+        char c = json[pos];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+        } else {
+            if (c == '"') {
+                in_string = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+            }
+        }
+        ++pos;
+    }
+
+    return depth == 0 ? pos : std::string::npos;
+}
+
+std::string extract_json_object_field(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\":";
+    size_t key_pos = json.find(pattern);
+    if (key_pos == std::string::npos) {
+        return {};
+    }
+
+    size_t object_start = json.find('{', key_pos + pattern.size());
+    if (object_start == std::string::npos) {
+        return {};
+    }
+
+    size_t object_end = find_json_block_end(json, object_start);
+    if (object_end == std::string::npos) {
+        return {};
+    }
+
+    return json.substr(object_start, object_end - object_start);
+}
+
+std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema) {
+    std::vector<std::pair<std::string, std::string>> properties;
+    std::string properties_object = extract_json_object_field(schema, "properties");
+    if (properties_object.empty() || properties_object.size() < 2) {
+        return properties;
+    }
+
+    size_t pos = 1;
+    while (pos + 1 < properties_object.size()) {
+        size_t key_start = properties_object.find('"', pos);
+        if (key_start == std::string::npos || key_start + 1 >= properties_object.size()) {
+            break;
+        }
+        size_t key_end = properties_object.find('"', key_start + 1);
+        if (key_end == std::string::npos) {
+            break;
+        }
+
+        std::string name = properties_object.substr(key_start + 1, key_end - key_start - 1);
+        size_t value_start = properties_object.find('{', key_end);
+        if (value_start == std::string::npos) {
+            break;
+        }
+        size_t value_end = find_json_block_end(properties_object, value_start);
+        if (value_end == std::string::npos) {
+            break;
+        }
+
+        std::string value = properties_object.substr(value_start, value_end - value_start);
+        std::string type = "string";
+        std::string type_pattern = "\"type\":\"";
+        size_t type_pos = value.find(type_pattern);
+        if (type_pos != std::string::npos) {
+            size_t type_start = type_pos + type_pattern.size();
+            size_t type_end = value.find('"', type_start);
+            if (type_end != std::string::npos) {
+                type = value.substr(type_start, type_end - type_start);
+            }
+        } else if (value.find("\"enum\"") != std::string::npos) {
+            type = "string";
+        } else if (value.find("\"properties\"") != std::string::npos) {
+            type = "object";
+        }
+
+        properties.emplace_back(std::move(name), std::move(type));
+        pos = value_end;
+    }
+
+    return properties;
+}
+
+std::string serialize_needle_tools_json(const std::vector<ToolFunction>& tools, const char* raw_tools_json) {
+    if (tools.empty()) {
+        return (raw_tools_json && std::strlen(raw_tools_json) > 0) ? raw_tools_json : "[]";
+    }
+
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < tools.size(); ++i) {
+        if (i > 0) {
+            oss << ",";
+        }
+
+        oss << "{\"name\":\"" << escape_json_string(tools[i].name) << "\"";
+        if (!tools[i].description.empty()) {
+            oss << ",\"description\":\"" << escape_json_string(tools[i].description) << "\"";
+        }
+
+        oss << ",\"parameters\":";
+        auto schema_it = tools[i].parameters.find("schema");
+        if (schema_it == tools[i].parameters.end()) {
+            oss << "{}";
+        } else {
+            auto properties = extract_schema_property_types(schema_it->second);
+            if (properties.empty()) {
+                oss << schema_it->second;
+            } else {
+                oss << "{";
+                for (size_t p = 0; p < properties.size(); ++p) {
+                    if (p > 0) {
+                        oss << ",";
+                    }
+                    oss << "\"" << escape_json_string(properties[p].first) << "\":"
+                        << "\"" << escape_json_string(properties[p].second) << "\"";
+                }
+                oss << "}";
+            }
+        }
+
+        oss << "}";
+    }
+    oss << "]";
+    return oss.str();
+}
+
 std::vector<std::vector<uint32_t>> build_stop_sequences(
     Tokenizer* tokenizer,
     const std::vector<std::string>& stop_sequences,
@@ -228,6 +377,11 @@ bool prompt_context_matches(
     if (handle->processed_tokens.empty()) {
         return false;
     }
+    if (handle->model &&
+        handle->model->get_config().model_type == Config::ModelType::NEEDLE &&
+        prompt.tokens.size() != handle->processed_tokens.size() + 1) {
+        return false;
+    }
     if (prompt.context_token_count < handle->processed_tokens.size()) {
         return false;
     }
@@ -286,6 +440,8 @@ PreparedPrompt prepare_prompt(
     if (prompt.model_type == Config::ModelType::GEMMA ||
         prompt.model_type == Config::ModelType::GEMMA3N) {
         formatted_tools = gemma::format_tools(prompt.tools);
+    } else if (prompt.model_type == Config::ModelType::NEEDLE) {
+        formatted_tools = serialize_needle_tools_json(prompt.tools, tools_json);
     } else {
         formatted_tools = serialize_tools_json(prompt.tools);
     }

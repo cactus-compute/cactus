@@ -127,7 +127,7 @@ struct Config {
     float rope_scaling_factor = 1.0f;
     float rope_mscale_all_dim = 0.0f;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, NEEDLE = 15};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
@@ -252,7 +252,7 @@ public:
     uint32_t get_global_img_token_id() const { return global_img_token_id_; }
 
 protected:
-    enum class ModelType { UNKNOWN, QWEN, QWEN3P5, GEMMA, LFM2, BERT, WHISPER, PARAKEET, YOUTU};
+    enum class ModelType { UNKNOWN, QWEN, QWEN3P5, GEMMA, LFM2, BERT, WHISPER, PARAKEET, YOUTU, NEEDLE};
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -273,6 +273,7 @@ protected:
     std::string format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_lfm2_vl_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_needle_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_youtu_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
 };
 
@@ -350,6 +351,11 @@ public:
     uint32_t get_eos_token() const override { return eos_token_id_; }
 
 private:
+    enum class SentencePieceModelType {
+        LEGACY = 0,
+        BPE = 1,
+    };
+
     struct TrieNode {
         std::unordered_map<char32_t, std::unique_ptr<TrieNode>> children;
         int32_t token_id = -1;
@@ -366,21 +372,28 @@ private:
     uint32_t bos_token_id_;
     uint32_t eos_token_id_;
     uint32_t pad_token_id_;
+    SentencePieceModelType sp_model_type_ = SentencePieceModelType::LEGACY;
+    bool sp_add_dummy_prefix_ = false;
+    bool sp_remove_extra_whitespaces_ = false;
+    bool sp_escape_whitespaces_ = true;
+    bool sp_byte_fallback_ = false;
     
     void* vocab_mmap_ptr_;
     size_t vocab_mmap_size_;
     
     void build_trie();
     std::vector<std::pair<std::string, uint32_t>> tokenize_with_trie(const std::string& text) const;
+    std::vector<uint32_t> tokenize_with_bpe(const std::string& text) const;
     std::string preprocess_text(const std::string& text) const;
     std::string postprocess_text(const std::string& text) const;
-    std::vector<std::string> split_by_unicode_spaces(const std::string& text) const;
+    bool use_sentencepiece_bpe() const;
     
     void cleanup_mmap();
 
     std::unordered_map<std::string, uint32_t> special_tokens_;
     std::vector<std::string> split_with_special_tokens(const std::string& text) const;
     void load_special_tokens(const std::string& config_file);
+    void load_tokenizer_config(const std::string& config_file);
 
     void load_chat_template(const std::string& template_file);
 };

@@ -133,7 +133,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER ||
                                  config_.model_type == Config::ModelType::MOONSHINE ||
                                  config_.model_type == Config::ModelType::PARAKEET ||
-                                 config_.model_type == Config::ModelType::PARAKEET_TDT)
+                                 config_.model_type == Config::ModelType::PARAKEET_TDT ||
+                                 config_.model_type == Config::ModelType::NEEDLE)
                                ? Precision::FP16
                                : Precision::INT8;
     kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, get_kv_layer_dims(), cache_precision);
@@ -160,7 +161,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         config_.model_type != Config::ModelType::WHISPER &&
         config_.model_type != Config::ModelType::MOONSHINE &&
         config_.model_type != Config::ModelType::PARAKEET &&
-        config_.model_type != Config::ModelType::PARAKEET_TDT) {
+        config_.model_type != Config::ModelType::PARAKEET_TDT &&
+        config_.model_type != Config::ModelType::NEEDLE) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
         forward(warmup_tokens);
@@ -525,6 +527,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (model_type_value.rfind("qwen3_5", 0) == 0) model_type = ModelType::QWEN3P5;
             else if (value == "parakeet_tdt" || value == "PARAKEET_TDT") model_type = ModelType::PARAKEET_TDT;
             else if (value == "gemma3n" || value == "GEMMA3N") model_type = ModelType::GEMMA3N;
+            else if (value == "needle" || value == "NEEDLE") model_type = ModelType::NEEDLE;
             else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
             else model_type = ModelType::QWEN;
         }
@@ -693,6 +696,10 @@ bool Config::from_json(const std::string& config_path) {
         default_top_k = 0;
         default_max_tps = 8.0f;
         default_cloud_handoff_threshold = 0.35f;
+    } else if (model_type == ModelType::NEEDLE) {
+        default_temperature = 0.0f;
+        default_top_p = 0.0f;
+        default_top_k = 0;
     } else if (model_type == ModelType::YOUTU) {
         default_temperature = 1.0f;
         default_top_p = 0.95f;
@@ -753,6 +760,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<ParakeetModel>(config);
         case Config::ModelType::PARAKEET_TDT:
             return std::make_unique<ParakeetTDTModel>(config);
+        case Config::ModelType::NEEDLE:
+            return std::make_unique<NeedleModel>(config);
         case Config::ModelType::YOUTU:
             return std::make_unique<YoutuModel>(config);
         default:

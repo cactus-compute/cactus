@@ -1004,6 +1004,105 @@ private:
 
 };
 
+class NeedleModel : public Model {
+public:
+    NeedleModel();
+    explicit NeedleModel(const Config& config);
+    ~NeedleModel() override = default;
+
+protected:
+    size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("Needle: build_attention unused");
+    }
+
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("Needle: build_mlp unused");
+    }
+
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("Needle: build_transformer_block unused");
+    }
+
+    size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "") override;
+    uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
+                    size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr) override;
+    void load_weights_to_graph(CactusGraph* gb) override;
+    void reset_cache() override;
+
+    void run_encoder(const std::vector<uint32_t>& encoder_tokens);
+    void reset_graph_side_cache_nodes();
+    size_t run_decoder_step(const std::vector<uint32_t>& tokens, bool use_cache, bool last_token_only);
+
+    size_t build_encoder_self_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                                        ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+    size_t build_decoder_self_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                                        ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+    size_t build_decoder_cross_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                                         ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+    size_t build_encoder_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                             ComputeBackend backend) const;
+    size_t build_decoder_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                             ComputeBackend backend) const;
+    size_t build_encoder_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                           ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+    size_t build_decoder_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                           ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
+
+private:
+    struct WeightNodeIDs {
+        size_t output_weight = 0;
+        size_t encoder_norm_weight = 0;
+        size_t decoder_norm_weight = 0;
+
+        struct EncoderLayerWeights {
+            size_t attn_q_weight = 0;
+            size_t attn_k_weight = 0;
+            size_t attn_v_weight = 0;
+            size_t attn_output_weight = 0;
+            size_t input_norm_weight = 0;
+            size_t post_attn_norm_weight = 0;
+            size_t attn_q_norm_weight = 0;
+            size_t attn_k_norm_weight = 0;
+            size_t ffn_gate_weight = 0;
+            size_t ffn_up_weight = 0;
+            size_t ffn_down_weight = 0;
+        };
+
+        struct DecoderLayerWeights {
+            size_t self_attn_q_weight = 0;
+            size_t self_attn_k_weight = 0;
+            size_t self_attn_v_weight = 0;
+            size_t self_attn_output_weight = 0;
+            size_t self_attn_q_norm_weight = 0;
+            size_t self_attn_k_norm_weight = 0;
+
+            size_t encoder_attn_q_weight = 0;
+            size_t encoder_attn_k_weight = 0;
+            size_t encoder_attn_v_weight = 0;
+            size_t encoder_attn_output_weight = 0;
+            size_t encoder_attn_q_norm_weight = 0;
+            size_t encoder_attn_k_norm_weight = 0;
+
+            size_t input_norm_weight = 0;
+            size_t post_attn_norm_weight = 0;
+            size_t final_norm_weight = 0;
+
+            size_t ffn_gate_weight = 0;
+            size_t ffn_up_weight = 0;
+            size_t ffn_down_weight = 0;
+        };
+
+        std::vector<EncoderLayerWeights> encoder_layers;
+        std::vector<DecoderLayerWeights> decoder_layers;
+    } weight_nodes_;
+
+    bool encoder_ready_ = false;
+    size_t last_encoder_post_norm_node_ = 0;
+    std::vector<size_t> encoder_k_persistent_;
+    std::vector<size_t> encoder_v_persistent_;
+};
+
 class ParakeetModel : public Model {
 public:
     ParakeetModel();
