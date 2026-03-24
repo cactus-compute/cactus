@@ -112,6 +112,7 @@ struct CactusStreamTranscribeHandle {
     } options;
     std::string transcribe_options_json;
     bool has_custom_vocabulary_bias = false;
+    std::vector<std::string> custom_vocabulary;
 
     std::vector<uint8_t> audio_buffer;
 
@@ -286,12 +287,12 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, 
         stream_handle->options = { min_chunk_size, language };
         stream_handle->transcribe_options_json = options_json ? options_json : "";
         {
-            std::vector<std::string> custom_vocabulary;
             float vocabulary_boost = 5.0f;
-            parse_custom_vocabulary_options(stream_handle->transcribe_options_json, custom_vocabulary, vocabulary_boost);
+            parse_custom_vocabulary_options(stream_handle->transcribe_options_json,
+                                           stream_handle->custom_vocabulary, vocabulary_boost);
             auto vocab_bias = build_custom_vocabulary_bias(
                 model_handle->model->get_tokenizer(),
-                custom_vocabulary,
+                stream_handle->custom_vocabulary,
                 vocabulary_boost
             );
             stream_handle->has_custom_vocabulary_bias = !vocab_bias.empty();
@@ -430,6 +431,10 @@ int cactus_stream_transcribe_process(
             for (size_t i = 0; i < confirmed_segments; ++i) {
                 if (!confirmed.empty()) confirmed += ' ';
                 confirmed += handle->previous_segments[i].text;
+            }
+
+            if (!handle->custom_vocabulary.empty()) {
+                apply_vocabulary_spelling_correction(confirmed, handle->custom_vocabulary);
             }
 
             if (chunk_decode_tokens > 0.0) {
@@ -612,6 +617,10 @@ int cactus_stream_transcribe_stop(
         for (const auto& seg : handle->previous_segments) {
             if (!final_confirmed.empty()) final_confirmed += ' ';
             final_confirmed += seg.text;
+        }
+
+        if (!handle->custom_vocabulary.empty()) {
+            apply_vocabulary_spelling_correction(final_confirmed, handle->custom_vocabulary);
         }
 
         std::string json_response = "{\"success\":true,\"confirmed\":\"" +

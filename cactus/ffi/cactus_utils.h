@@ -754,6 +754,203 @@ inline void apply_custom_vocabulary_options(cactus::engine::Model* model, const 
     model->set_vocab_bias(build_custom_vocabulary_bias(model->get_tokenizer(), custom_vocabulary, vocabulary_boost));
 }
 
+// Levenshtein distance between two strings (case-insensitive).
+inline size_t levenshtein_ci(const std::string& a, const std::string& b) {
+    const size_t m = a.size(), n = b.size();
+    std::vector<size_t> prev(n + 1), curr(n + 1);
+    for (size_t j = 0; j <= n; ++j) prev[j] = j;
+    for (size_t i = 1; i <= m; ++i) {
+        curr[0] = i;
+        for (size_t j = 1; j <= n; ++j) {
+            const bool match = std::tolower(static_cast<unsigned char>(a[i - 1])) ==
+                               std::tolower(static_cast<unsigned char>(b[j - 1]));
+            curr[j] = std::min({prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + (match ? 0 : 1)});
+        }
+        std::swap(prev, curr);
+    }
+    return prev[n];
+}
+
+// Collapse a string by removing spaces (for merge/split-aware comparison).
+inline std::string collapse_spaces(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c != ' ') out += c;
+    }
+    return out;
+}
+
+// Apply spelling correction to transcribed text using custom vocabulary.
+// Uses n-gram window matching (1-3 words) with collapsed-form Levenshtein comparison.
+// Handles: single-word typos, multi-word phrases, word merge ("rock chip" -> "Rockchip"),
+// and word split ("RomanShemet" -> "Roman Shemet").
+inline void apply_vocabulary_spelling_correction(
+    std::string& text,
+    const std::vector<std::string>& custom_vocabulary)
+{
+    if (custom_vocabulary.empty() || text.empty()) return;
+
+    // Pre-collapse vocab entries once.
+    struct VocabEntry {
+        const std::string* original;
+        std::string collapsed;
+    };
+    std::vector<VocabEntry> vocab_entries;
+    vocab_entries.reserve(custom_vocabulary.size());
+    for (const auto& v : custom_vocabulary) {
+        vocab_entries.push_back({&v, collapse_spaces(v)});
+    }
+
+    // Tokenize text into words and separators.
+    struct Token { std::string text; bool is_word; };
+    std::vector<Token> tokens;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        if (std::isalnum(static_cast<unsigned char>(text[pos])) ||
+            text[pos] == '\'' || text[pos] == '-') {
+            size_t start = pos;
+            while (pos < text.size() && (std::isalnum(static_cast<unsigned char>(text[pos])) ||
+                                          text[pos] == '\'' || text[pos] == '-')) {
+                ++pos;
+            }
+            tokens.push_back({text.substr(start, pos - start), true});
+        } else {
+            size_t start = pos;
+            while (pos < text.size() && !std::isalnum(static_cast<unsigned char>(text[pos])) &&
+                   text[pos] != '\'' && text[pos] != '-') {
+                ++pos;
+            }
+            tokens.push_back({text.substr(start, pos - start), false});
+        }
+    }
+
+    // Build word-only index for n-gram windowing.
+    std::vector<size_t> word_indices;
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (tokens[i].is_word) word_indices.push_back(i);
+    }
+
+    // Track which tokens have been consumed by a match.
+    std::vector<bool> consumed(tokens.size(), false);
+
+    // Strip common English suffixes from a word, returning {stem, suffix}.
+    auto strip_suffix = [](const std::string& word) -> std::pair<std::string, std::string> {
+        if (word.size() >= 3 && word.substr(word.size() - 2) == "'s") {
+            return {word.substr(0, word.size() - 2), "'s"};
+        }
+        if (word.size() >= 3 && word.substr(word.size() - 2) == "'t") {
+            return {word.substr(0, word.size() - 2), "'t"};
+        }
+        if (word.size() >= 4 && word.back() == 's' &&
+            word[word.size() - 2] != 's' && // avoid stripping from "boss", "class"
+            std::isalpha(static_cast<unsigned char>(word[word.size() - 2]))) {
+            return {word.substr(0, word.size() - 1), "s"};
+        }
+        return {word, ""};
+    };
+
+    // Scan word positions with window sizes 3, 2, 1 (longest match wins).
+    size_t wi = 0;
+    while (wi < word_indices.size()) {
+        size_t best_dist = std::numeric_limits<size_t>::max();
+        const std::string* best_match = nullptr;
+        size_t best_window = 0;
+        size_t best_first_token = 0;
+        size_t best_last_token = 0;
+        std::string best_suffix;
+
+        for (size_t window = std::min<size_t>(3, word_indices.size() - wi); window >= 1; --window) {
+            // Collapse the word window (concatenate word tokens, no spaces).
+            std::string window_collapsed;
+            const size_t first_tok = word_indices[wi];
+            const size_t last_tok = word_indices[wi + window - 1];
+            for (size_t w = 0; w < window; ++w) {
+                window_collapsed += tokens[word_indices[wi + w]].text;
+            }
+
+            // Short-word guard: skip single words shorter than 3 characters.
+            if (window == 1 && window_collapsed.size() < 3) break;
+
+            // Try matching with and without suffix stripping.
+            auto [stem, suffix] = strip_suffix(window_collapsed);
+            const std::string* candidates[] = {&window_collapsed, &stem};
+            const std::string suffixes[] = {"", suffix};
+            const size_t num_candidates = suffix.empty() ? 1 : 2;
+
+            for (size_t ci = 0; ci < num_candidates; ++ci) {
+                const std::string& candidate = *candidates[ci];
+                if (candidate.empty()) continue;
+
+                for (const auto& entry : vocab_entries) {
+                    const size_t wlen = candidate.size();
+                    const size_t vlen = entry.collapsed.size();
+
+                    const size_t len_diff = wlen > vlen ? wlen - vlen : vlen - wlen;
+                    const size_t max_dist = std::max<size_t>(1, std::min(wlen, vlen) / 3);
+                    if (len_diff > max_dist) continue;
+
+                    const size_t dist = levenshtein_ci(candidate, entry.collapsed);
+
+                    // Bug 3 fix: for single-edit corrections, require first character match
+                    // to prevent "vortex" → "Cortex" type false positives. For dist >= 2,
+                    // allow first-char mismatch (the word is different enough to be an ASR error).
+                    if (dist == 1 && window == 1) {
+                        const bool first_char_match =
+                            std::tolower(static_cast<unsigned char>(candidate[0])) ==
+                            std::tolower(static_cast<unsigned char>(entry.collapsed[0]));
+                        if (!first_char_match) continue;
+                    }
+
+                    if (dist <= max_dist && dist < best_dist) {
+                        best_dist = dist;
+                        best_match = entry.original;
+                        best_window = window;
+                        best_first_token = first_tok;
+                        best_last_token = last_tok;
+                        best_suffix = suffixes[ci];
+                    }
+                }
+            }
+
+            // If we found an exact match at this window size, stop checking smaller windows.
+            if (best_dist == 0) break;
+        }
+
+        // Bug 1 fix: allow dist==0 for multi-word merges (window > 1 means word boundaries changed).
+        // Single-word exact matches (dist==0, window==1) are left alone.
+        const bool should_replace = best_match &&
+            best_dist != std::numeric_limits<size_t>::max() &&
+            (best_dist > 0 || best_window > 1);
+
+        if (should_replace) {
+            // Bug 2 fix: re-append stripped suffix to preserve possessives/plurals.
+            tokens[best_first_token].text = *best_match + best_suffix;
+            for (size_t t = best_first_token + 1; t <= best_last_token; ++t) {
+                consumed[t] = true;
+            }
+            // Also consume separators between matched word tokens.
+            for (size_t t = best_first_token + 1; t <= best_last_token; ++t) {
+                if (t > 0) consumed[t - 1] = consumed[t - 1] || !tokens[t - 1].is_word;
+            }
+            wi += best_window;
+        } else {
+            ++wi;
+        }
+    }
+
+    // Reassemble text, skipping consumed tokens.
+    std::string result;
+    result.reserve(text.size());
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (!consumed[i]) {
+            result += tokens[i].text;
+        }
+    }
+
+    text = std::move(result);
+}
+
 inline InferenceOptions parse_inference_options_json(const std::string& json) {
     InferenceOptions options;
 
