@@ -22,7 +22,7 @@ fn init_transcribe_destroy() {
     let m = unsafe { cactus_sys::cactus_init(model.as_ptr(), ptr::null(), false) };
     assert!(!m.is_null());
 
-    let prompt = CString::new("<|startoftranscript|><|en|><|transcribe|><|notimestamps|>").unwrap();
+    let prompt = CString::new("<|startoftranscript|><|en|><|transcribe|>").unwrap();
     let mut buf = vec![0u8; 4096];
     let rc = unsafe {
         cactus_sys::cactus_transcribe(

@@ -1,6 +1,6 @@
 ---
 title: "Cactus Swift Multiplatform SDK"
-description: "Swift API for running AI models on-device on iOS, macOS, tvOS, watchOS, and Android. Supports transcription, embeddings, RAG, and tool calling."
+description: "Swift API for running AI models on-device on iOS, macOS, and Android. Supports transcription, embeddings, RAG, and tool calling."
 keywords: ["Swift SDK", "iOS", "macOS", "XCFramework", "on-device AI", "Apple Silicon", "NPU"]
 ---
 
@@ -8,15 +8,17 @@ keywords: ["Swift SDK", "iOS", "macOS", "XCFramework", "on-device AI", "Apple Si
 
 Run AI models on-device with a simple Swift API on iOS, macOS, and Android.
 
+> **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
+
 ## Building
 
+<!-- --8<-- [start:install] -->
 ```bash
+git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
 cactus build --apple
 ```
 
 Build outputs (in `apple/`):
-
-see the main [README.md](../README.md) for how to use CLI & download weight
 
 | File | Description |
 |------|-------------|
@@ -24,6 +26,9 @@ see the main [README.md](../README.md) for how to use CLI & download weight
 | `cactus-macos.xcframework/` | macOS framework |
 | `libcactus-device.a` | Static library for iOS device |
 | `libcactus-simulator.a` | Static library for iOS simulator |
+<!-- --8<-- [end:install] -->
+
+See the main [README.md](../README.md) for how to use CLI & download weights
 
 For Android, build `libcactus.so` from the `android/` directory.
 
@@ -44,6 +49,7 @@ CACTUS_CURL_ROOT=/absolute/path/to/curl cactus build --apple
 
 ## Integration
 
+<!-- --8<-- [start:integration] -->
 ### iOS/macOS: XCFramework (Recommended)
 
 1. Drag `cactus-ios.xcframework` (or `cactus-macos.xcframework`) into your Xcode project
@@ -57,6 +63,7 @@ CACTUS_CURL_ROOT=/absolute/path/to/curl cactus build --apple
    - "Header Search Paths" → path to folder
    - "Import Paths" (Swift) → path to folder
 3. Copy `Cactus.swift` into your project
+<!-- --8<-- [end:integration] -->
 
 ### Android (Swift SDK)
 
@@ -84,6 +91,7 @@ Handles are typed as `CactusModelT`, `CactusIndexT`, and `CactusStreamTranscribe
 
 ### Basic Completion
 
+<!-- --8<-- [start:example] -->
 ```swift
 import Foundation
 
@@ -92,20 +100,84 @@ defer { cactusDestroy(model) }
 
 let messages = #"[{"role":"user","content":"What is the capital of France?"}]"#
 let resultJson = try cactusComplete(model, messages, nil, nil, nil)
-// resultJson is a JSON string: {"response":"Paris","success":true,...}
-if let data = resultJson.data(using: .utf8),
-   let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-    print(result["response"] as? String ?? "")
-}
+print(resultJson)
 ```
+<!-- --8<-- [end:example] -->
+
+For vision models (LFM2-VL, LFM2.5-VL), add `"images": ["path/to/image.png"]` to any message. See [Engine API](/docs/cactus_engine.md) for details.
 
 ### Completion with Options and Streaming
 
 ```swift
 let options = #"{"max_tokens":256,"temperature":0.7}"#
 
-let resultJson = try cactusComplete(model, messages, options, nil) { token, _ in
+let resultJson = try cactusComplete(model, messages, options, nil as String?) { token, _ in
     print(token, terminator: "")
+}
+print(resultJson)
+```
+
+### Prefill
+
+Pre-processes input text and populates the KV cache without generating output tokens. This reduces latency for subsequent calls to `cactusComplete`.
+
+```swift
+func cactusPrefill(
+    _ model: CactusModelT,
+    _ messagesJson: String,
+    _ optionsJson: String?,
+    _ toolsJson: String?
+) throws -> String
+```
+
+```swift
+let tools = #"[
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather for a location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City, State, Country"}
+                },
+                "required": ["location"]
+            }
+        }
+    }
+]"#
+
+let messages = #"[
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "What is the weather in Paris?"},
+    {"role": "assistant", "content": "<|tool_call_start|>get_weather(location=\"Paris\")<|tool_call_end|>"},
+    {"role": "tool", "content": "{\"name\": \"get_weather\", \"content\": \"Sunny, 72°F\"}"},
+    {"role": "assistant", "content": "It's sunny and 72°F in Paris!"}
+]"#
+
+let resultJson = try cactusPrefill(model, messages, nil, tools)
+
+let completionMessages = #"[
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "What is the weather in Paris?"},
+    {"role": "assistant", "content": "<|tool_call_start|>get_weather(location=\"Paris\")<|tool_call_end|>"},
+    {"role": "tool", "content": "{\"name\": \"get_weather\", \"content\": \"Sunny, 72°F\"}"},
+    {"role": "assistant", "content": "It's sunny and 72°F in Paris!"},
+    {"role": "user", "content": "What about SF?"}
+]"#
+let completion = try cactusComplete(model, completionMessages, nil, tools, nil)
+```
+
+**Response format:**
+```json
+{
+    "success": true,
+    "error": null,
+    "prefill_tokens": 25,
+    "prefill_tps": 166.1,
+    "total_time_ms": 150.5,
+    "ram_usage_mb": 245.67
 }
 ```
 
@@ -113,20 +185,50 @@ let resultJson = try cactusComplete(model, messages, options, nil) { token, _ in
 
 ```swift
 // From file
-let result = try cactusTranscribe(model, "/path/to/audio.wav", "", nil, nil as ((String, UInt32) -> Void)?, nil as Data?)
+let resultJson = try cactusTranscribe(model, "/path/to/audio.wav", nil, nil, nil as ((String, UInt32) -> Void)?, nil as Data?)
+print(resultJson)
 
 // From PCM data (16 kHz mono)
 let pcmData: Data = ...
-let result = try cactusTranscribe(model, nil, nil, nil, nil as ((String, UInt32) -> Void)?, pcmData)
+let resultJson2 = try cactusTranscribe(model, nil, nil, nil, nil as ((String, UInt32) -> Void)?, pcmData)
+print(resultJson2)
+```
+
+`segments` contains timestamps (seconds): phrase-level for Whisper, word-level for Parakeet TDT, one segment per transcription window for Parakeet CTC and Moonshine (consecutive VAD speech regions up to 30s).
+
+```swift
+if let data = resultJson.data(using: .utf8),
+   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+   let segments = obj["segments"] as? [[String: Any]] {
+    for seg in segments {
+        let start = seg["start"] as? Double ?? 0
+        let end = seg["end"] as? Double ?? 0
+        let text = seg["text"] as? String ?? ""
+        print(String(format: "[%.3fs - %.3fs] %@", start, end, text))
+    }
+}
+```
+
+**Custom vocabulary** biases the decoder toward domain-specific words (supported for Whisper and Moonshine models). Pass `custom_vocabulary` and `vocabulary_boost` in the options JSON:
+
+```swift
+let options = #"{"custom_vocabulary": ["Omeprazole", "HIPAA", "Cactus"], "vocabulary_boost": 3.0}"#
+let result = try cactusTranscribe(model, "/path/to/audio.wav", nil, options, nil as ((String, UInt32) -> Void)?, nil as Data?)
 ```
 
 ### Streaming Transcription
 
 ```swift
 let stream = try cactusStreamTranscribeStart(model, nil as String?)
-let partial = try cactusStreamTranscribeProcess(stream, audioChunk)
-let final_  = try cactusStreamTranscribeStop(stream)
+
+let partialJson = try cactusStreamTranscribeProcess(stream, audioChunk)
+print(partialJson)
+
+let finalJson = try cactusStreamTranscribeStop(stream)
+print(finalJson)
 ```
+
+Streaming also accepts `custom_vocabulary` in the options passed to `cactusStreamTranscribeStart`. The bias is applied for the lifetime of the stream session.
 
 ### Embeddings
 
@@ -140,19 +242,29 @@ let audioEmbedding = try cactusAudioEmbed(model, "/path/to/audio.wav")
 
 ```swift
 let tokens = try cactusTokenize(model, "Hello, world!")
-let scores = try cactusScoreWindow(model, tokens, 0, tokens.count, min(tokens.count, 512))
+let scoresJson = try cactusScoreWindow(model, tokens, 0, tokens.count, min(tokens.count, 512))
+print(scoresJson)
+```
+
+### Detect Language
+
+```swift
+let langJson = try cactusDetectLanguage(model, "/path/to/audio.wav", nil, nil)
+print(langJson)
 ```
 
 ### VAD
 
 ```swift
-let result = try cactusVad(model, "/path/to/audio.wav", nil as String?, nil as Data?)
+let vadJson = try cactusVad(model, "/path/to/audio.wav", nil as String?, nil as Data?)
+print(vadJson)
 ```
 
 ### RAG
 
 ```swift
-let result = try cactusRagQuery(model, "What is machine learning?", 5)
+let ragJson = try cactusRagQuery(model, "What is machine learning?", 5)
+print(ragJson)
 ```
 
 ### Vector Index
@@ -162,12 +274,11 @@ let index = try cactusIndexInit("/path/to/index", 384)
 defer { cactusIndexDestroy(index) }
 
 try cactusIndexAdd(index, [Int32(1), Int32(2)], ["doc1", "doc2"],
-                   [[0.1, 0.2, ...], [0.3, 0.4, ...]], nil)
+                   [[Float(0.1), Float(0.2), ...], [Float(0.3), Float(0.4), ...]], nil)
 
-let results = try cactusIndexQuery(index, [0.1, 0.2, ...], nil)
-// results is a JSON string: {"results":[{"id":1,"score":0.99,...},...]}
+let results = try cactusIndexQuery(index, [Float(0.1), Float(0.2), ...], nil)
 
-try cactusIndexDelete(index, [2])
+try cactusIndexDelete(index, [Int32(2)])
 try cactusIndexCompact(index)
 ```
 
@@ -193,6 +304,17 @@ func cactusDestroy(_ model: CactusModelT)
 func cactusReset(_ model: CactusModelT)
 func cactusStop(_ model: CactusModelT)
 func cactusGetLastError() -> String
+```
+
+### Prefill
+
+```swift
+func cactusPrefill(
+    _ model: CactusModelT,
+    _ messagesJson: String,
+    _ optionsJson: String?,
+    _ toolsJson: String?
+) throws -> String
 ```
 
 ### Completion
@@ -239,6 +361,12 @@ func cactusTokenize(_ model: CactusModelT, _ text: String) throws -> [UInt32]
 func cactusScoreWindow(_ model: CactusModelT, _ tokens: [UInt32], _ start: Int, _ end: Int, _ context: Int) throws -> String
 ```
 
+### Detect Language
+
+```swift
+func cactusDetectLanguage(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?) throws -> String
+```
+
 ### VAD / RAG
 
 ```swift
@@ -258,10 +386,17 @@ func cactusIndexQuery(_ index: CactusIndexT, _ embedding: [Float], _ optionsJson
 func cactusIndexCompact(_ index: CactusIndexT) throws
 ```
 
+### Logging
+
+```swift
+func cactusLogSetLevel(_ level: Int32)  // 0=DEBUG, 1=INFO, 2=WARN (default), 3=ERROR, 4=NONE
+func cactusLogSetCallback(_ callback: ((Int32, String, String) -> Void)?)
+```
+
 ### Telemetry
 
 ```swift
-func cactusSetTelemetryEnvironment(_ cacheDir: String)
+func cactusSetTelemetryEnvironment(_ path: String)
 func cactusSetAppId(_ appId: String)
 func cactusTelemetryFlush()
 func cactusTelemetryShutdown()
@@ -270,7 +405,7 @@ func cactusTelemetryShutdown()
 ## Requirements
 
 **Apple Platforms:**
-- iOS 14.0+ / macOS 13.0+ / tvOS 14.0+ / watchOS 7.0+
+- iOS 13.0+ / macOS 13.0+
 - Xcode 14.0+
 - Swift 5.7+
 

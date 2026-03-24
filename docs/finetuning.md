@@ -60,16 +60,17 @@ git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setu
 cactus convert Qwen/Qwen3-0.6B ./my-qwen3-0.6b --lora ./my-lora-adapter 
 
 # From HuggingFace Hub: Use the correct base model!
-cactus convert Qwen/Qwen3-0.6B ./my-qwen3-0.6b  --lora username/my-lora-adapter 
+cactus convert Qwen/Qwen3-0.6B ./my-qwen3-0.6b --lora username/my-lora-adapter 
 
 ```
 <img src="../assets/lora.png" alt="Logo" style="border-radius: 30px; width: 70%;">
 
 ### 4. Run
 
-Test your model on Mac:
+Build the native library, then test your model on Mac:
 
 ```bash
+cactus build
 cactus run ./my-qwen3-0.6b
 ```
 <img src="../assets/run.png" alt="Logo" style="border-radius: 30px; width: 70%;">
@@ -91,26 +92,30 @@ XCFrameworks:
   iOS: /Users/henry/Desktop/cactus/apple/cactus-ios.xcframework
   macOS: /Users/henry/Desktop/cactus/apple/cactus-macos.xcframework
 Apple build complete!
-(venv) henry@Henrys-MacBook-Air cactus % 
+(venv) henry@Henrys-MacBook-Air cactus %
 ```
 
 Link `cactus-ios.xcframework` to your Xcode project, then:
 
 ```swift
 import Foundation
+import cactus
 
 // Load model from app bundle
 let modelPath = Bundle.main.path(forResource: "my-model", ofType: nil)!
-let model = cactus_init(modelPath, nil)
+let model = try cactusInit(modelPath, nil, false)
 
 // Run completion
 let messages = "[{\"role\":\"user\",\"content\":\"Hello!\"}]"
-var response = [CChar](repeating: 0, count: 4096)
-cactus_complete(model, messages, &response, response.count, nil, nil, nil, nil)
-print(String(cString: response))
+let resultJson = try cactusComplete(model, messages, nil, nil, nil)
+if let data = resultJson.data(using: .utf8),
+   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+   let response = obj["response"] as? String {
+    print(response)
+}
 
 // Cleanup
-cactus_destroy(model)
+cactusDestroy(model)
 ```
 <img src="../assets/app.png" alt="Logo" style="border-radius: 30px; width: 20%;">
 
@@ -119,11 +124,11 @@ but to see performance on any device while testing,
 run cactus tests by plugging any iphone to your Mac then running:
 
 ```bash
-cactus test --<model-path-or-name> --ios 
+cactus test --model <model-path-or-name> --ios
 ```
 
 Cactus demo apps will eventually expand to using your custom fine-tunes.
-Also, `cactus run` will allow plugging in a phone, 
+Also, `cactus run` will allow plugging in a phone,
 such that the interactive session use the phone chips,
 this way you can test before fully building out your apps.
 
@@ -139,43 +144,40 @@ Build complete!
 Shared library location: /Users/henry/Desktop/cactus/android/libcactus.so
 Static library location: /Users/henry/Desktop/cactus/android/libcactus.a
 Android build complete!
-(venv) henry@Henrys-MacBook-Air cactus % 
+(venv) henry@Henrys-MacBook-Air cactus %
 ```
 
 Copy `libcactus.so` to `app/src/main/jniLibs/arm64-v8a/`, then:
 
 ```kotlin
-class CactusWrapper {
-    init { System.loadLibrary("cactus") }
+import com.cactus.*
+import org.json.JSONObject
 
-    external fun init(modelPath: String, contextSize: Long, corpusDir: String?): Long
-    external fun complete(model: Long, messagesJson: String, bufferSize: Int): String
-    external fun destroy(model: Long)
-}
+val model = cactusInit("/data/local/tmp/my-model", null, false)
 
-// Usage
-val cactus = CactusWrapper()
-val model = cactus.init("/data/local/tmp/my-model", 2048, null)
-val response = cactus.complete(model, """[{"role":"user","content":"Hello!"}]""", 4096)
-cactus.destroy(model)
+// Run completion
+val resultJson = cactusComplete(model, """[{"role":"user","content":"Hello!"}]""", null, null, null)
+val response = JSONObject(resultJson).getString("response")
+println(response)
+cactusDestroy(model)
 ```
 
-You can now build ANdroid apps using the following code, 
+You can now build Android apps using the following code, 
 but to see performance on any device while testing,
 run cactus tests by plugging any android phone to your Mac then running:
 
 ```bash
-cactus test --<model-path-or-name> --android 
+cactus test --model <model-path-or-name> --android
 ```
 
 Cactus demo apps will eventually expand to using your custom fine-tunes.
-Also, `cactus run` will allow plugging in a phone, 
+Also, `cactus run` will allow plugging in a phone,
 such that the interactive session use the phone chips,
 this way you can test before fully building out your apps.
 
 ## Resources
 
-- Supported Base Models: `Qwen3, Gemma3, LFM2, SmolLM2` 
+- Supported Base Models: `Qwen3, Qwen3.5, Gemma3, LFM2, LFM2.5`
 - Full API reference: [Cactus Engine](https://github.com/cactus-compute/cactus/blob/main/docs/cactus_engine.md)
 - Learn more and report bugs: [Cactus](https://github.com/cactus-compute/cactus/tree/main)
 

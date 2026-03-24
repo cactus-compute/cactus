@@ -150,6 +150,7 @@ struct Metrics {
     std::string error;
     bool cloud_handoff = false;
     std::string response;
+    std::string thinking;
     std::string function_calls;
     double confidence = -1.0;
     double ttft = 0.0;
@@ -160,9 +161,23 @@ struct Metrics {
     double prefill_tokens = 0.0;
     double completion_tokens = 0.0;
     double total_tokens = 0.0;
+    std::string segments;
 
     void parse(const std::string& json);
     void print_json() const;
+};
+
+struct PrefillMetrics {
+    bool success = false;
+    std::string error;
+    double prefill_tokens = 0.0;
+    double prefill_tps = 0.0;
+    double total_ms = 0.0;
+    double ram_mb = 0.0;
+
+    void parse(const std::string& json);
+    std::string line() const;
+    void print_line() const;
 };
 
 template<typename TestFunc>

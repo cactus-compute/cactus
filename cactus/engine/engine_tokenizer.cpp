@@ -2,6 +2,11 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cmath>
+
+extern "C" {
+    #include "../../libs/stb/stb_image.h"
+}
 
 namespace cactus {
 namespace engine {
@@ -39,9 +44,12 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
             } else if (line.find("parakeet") != std::string::npos) {
                 model_type_ = ModelType::PARAKEET;
                 break;
+            } else if (line.find("youtu") != std::string::npos) {
+                model_type_ = ModelType::YOUTU;
+                break;
             } else {
                 model_type_ = ModelType::UNKNOWN;
-            } 
+            }
         }
     }
     file.clear();
@@ -66,6 +74,22 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
             }
         }
     }
+
+    file.clear();
+    file.seekg(0);
+    while (std::getline(file, line)) {
+        auto parse_uint = [&](const std::string& key, uint32_t& out) {
+            size_t p = line.find(key + "=");
+            if (p != std::string::npos) {
+                out = static_cast<uint32_t>(std::stoul(line.substr(p + key.size() + 1)));
+            }
+        };
+        parse_uint("vision_patch_size", vision_patch_size_);
+        parse_uint("vision_pooling_kernel_size", vision_pooling_kernel_size_);
+        parse_uint("vision_default_output_length", vision_default_output_length_);
+        parse_uint("vision_image_size", vision_image_size_);
+    }
+
     file.close();
 }
 
@@ -87,7 +111,7 @@ std::vector<uint32_t> Tokenizer::apply_chat_template(const std::vector<ChatMessa
     return encode(formatted_prompt);
 }
 
-std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported) const {
     bool has_images = false;
     for (const auto& msg : messages) {
         if (!msg.images.empty()) {
@@ -102,17 +126,19 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
     switch (model_type_) {
         case ModelType::QWEN:
         case ModelType::QWEN3P5:
-            return format_qwen_style(messages, add_generation_prompt, tools_json);
+            return format_qwen_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
         case ModelType::GEMMA:
             return format_gemma_style(messages, add_generation_prompt, tools_json);
         case ModelType::LFM2:
             return format_lfm2_style(messages, add_generation_prompt, tools_json);
+        case ModelType::YOUTU:
+            return format_youtu_style(messages, add_generation_prompt, tools_json);
         default:
             return format_qwen_style(messages, add_generation_prompt, tools_json);
     }
 }
 
-std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported) const {
     std::string result;
 
     if (!tools_json.empty()) {
@@ -163,7 +189,7 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
 
     if (add_generation_prompt) {
         result += "<|im_start|>assistant\n";
-        if (model_type_ == ModelType::QWEN3P5) {
+        if (!enable_thinking_if_supported) {
             result += "<think>\n\n</think>\n\n";
         }
     }
@@ -378,6 +404,59 @@ std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messag
         if (prev_message_type != "tool_response") {
             result += "<start_of_turn>model\n";
         }
+    }
+
+    return result;
+}
+
+std::string Tokenizer::format_youtu_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+    std::string result = "<|begin_of_text|>";
+
+    std::string system_block;
+    for (const auto& msg : messages) {
+        if (msg.role == "system") { system_block = msg.content; break; }
+    }
+
+    if (!tools_json.empty()) {
+        std::string tool_desc =
+            "<|begin_of_tool_description|>Tool calling capabilities.\n"
+            "You may call one or more functions to assist with the user query. "
+            "You have the following functions available:\n"
+            "```json\n" + tools_json + "\n```\n"
+            "For tool call returns, you MUST use the following format:\n"
+            "<tool_call>{\"name\": \"function-name\", \"arguments\": {\"param1\": \"value1\", \"param2\": \"value2\"}}</tool_call>\n"
+            "<|end_of_tool_description|>";
+        system_block = system_block.empty() ? tool_desc : system_block + "\n\n" + tool_desc;
+    }
+
+    result += system_block;
+
+    bool is_last_user = false;
+    bool is_tool = false;
+    bool is_output_first = true;
+
+    for (const auto& msg : messages) {
+        if (msg.role == "system") {
+            continue;
+        } else if (msg.role == "user") {
+            is_last_user = true; is_tool = false;
+            result += "<|User|>" + msg.content;
+        } else if (msg.role == "tool") {
+            is_tool = true; is_last_user = false;
+            if (is_output_first) {
+                result += "<|User|><tool_response>" + msg.content + "</tool_response>";
+                is_output_first = false;
+            } else {
+                result += "\n<tool_response>" + msg.content + "</tool_response>";
+            }
+        } else if (msg.role == "assistant" || msg.role == "model") {
+            is_last_user = false; is_tool = false; is_output_first = true;
+            result += "<|Assistant|>" + msg.content + "<|end_of_text|>";
+        }
+    }
+
+    if (add_generation_prompt && (is_last_user || is_tool)) {
+        result += "<|Assistant|>";
     }
 
     return result;

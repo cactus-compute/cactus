@@ -134,6 +134,98 @@ std::vector<__fp16> ternary_matmul_reference(
 }
 
 }  // namespace
+bool test_abs() {
+    TestUtils::FP16TestFixture fixture("absval");
+    size_t input = fixture.create_input({2, 3});
+
+    size_t abs_result = fixture.graph().abs(input);
+    std::vector<__fp16> data = {1, -2, 3, 4, -5, -6};
+
+    fixture.set_input_data(input, data);
+    fixture.execute();
+
+    std::vector<__fp16> expected = {1, 2, 3, 4, 5, 6};
+    return fixture.verify_output(abs_result, expected);
+}
+
+bool test_concat() {
+    TestUtils::FP16TestFixture fixture("Concat");
+
+    size_t input_a = fixture.create_input({2, 3});
+    size_t input_b = fixture.create_input({2, 5});
+    size_t concat_result = fixture.graph().concat(input_a, input_b, 1);
+
+    std::vector<__fp16> data_a = {1, 2, 3, 4, 5, 6};
+    std::vector<__fp16> data_b = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    std::vector<__fp16> expected = {1, 2, 3, 1, 2, 3, 4, 5, 4, 5, 6, 6, 7, 8, 9, 10};
+    fixture.set_input_data(input_a, data_a);
+    fixture.set_input_data(input_b, data_b);
+    fixture.execute();
+
+    return fixture.verify_output(concat_result, expected);
+}
+
+bool test_cat() {
+    TestUtils::FP16TestFixture fixture("Cat (multiple input tensors)");
+
+    size_t input_a = fixture.create_input({2, 3});
+    size_t input_b = fixture.create_input({2, 5});
+    size_t input_c = fixture.create_input({2, 2});
+
+    size_t cat_result = fixture.graph().cat({input_a, input_b, input_c}, 1);
+
+    std::vector<__fp16> data_a = {1, 2, 3,
+                                  4, 5, 6};
+
+    std::vector<__fp16> data_b = {1, 2, 3, 4, 5,
+                                  6, 7, 8, 9, 10};
+
+    std::vector<__fp16> data_c = {-1, -2,
+                                  -1, -2};
+
+    std::vector<__fp16> expected = {
+        1, 2, 3, 1, 2, 3, 4, 5, -1, -2,
+        4, 5, 6, 6, 7, 8, 9, 10, -1, -2
+    };
+
+    fixture.set_input_data(input_a, data_a);
+    fixture.set_input_data(input_b, data_b);
+    fixture.set_input_data(input_c, data_c);
+
+    fixture.execute();
+
+    return fixture.verify_output(cat_result, expected);
+}
+
+bool test_view() {
+    TestUtils::FP16TestFixture fixture("View");
+
+    size_t input = fixture.create_input({2, 3});
+    size_t view_result = fixture.graph().view(input, {3, 2});
+
+    std::vector<__fp16> data = {1, 2, 3, 4, 5, 6};
+    std::vector<__fp16> expected = {1, 2, 3, 4, 5, 6};
+
+    fixture.set_input_data(input, data);
+    fixture.execute();
+
+    return fixture.verify_output(view_result, expected);
+}
+
+bool test_flatten() {
+    TestUtils::FP16TestFixture fixture("Flatten");
+
+    size_t input = fixture.create_input({2, 3});
+    size_t flatten_result = fixture.graph().flatten(input);
+
+    std::vector<__fp16> data = {1, 2, 3, 4, 5, 6};
+    std::vector<__fp16> expected = {1, 2, 3, 4, 5, 6};
+
+    fixture.set_input_data(input, data);
+    fixture.execute();
+
+    return fixture.verify_output(flatten_result, expected);
+}
 
 bool test_basic_operations() {
     TestUtils::FP16TestFixture fixture("Basic Operations");
@@ -258,6 +350,22 @@ bool test_scalar_operations() {
 
     std::vector<__fp16> expected = {12, 14, 16, 18};
     return fixture.verify_output(mul_result, expected);
+}
+
+bool test_scalar_operations_with_pow() {
+    TestUtils::FP16TestFixture fixture("Scalar Operations with Pow");
+
+    size_t input_a = fixture.create_input({4});
+    size_t add_result = fixture.graph().scalar_add(input_a, 5.0f);
+    size_t mul_result = fixture.graph().scalar_multiply(add_result, 2.0f);
+    size_t pow_result = fixture.graph().pow(mul_result, 2.0f);
+
+    std::vector<__fp16> data_a = {1, 2, 3, 4};
+    fixture.set_input_data(input_a, data_a);
+    fixture.execute();
+
+    std::vector<__fp16> expected = {144, 196, 256, 324};
+    return fixture.verify_output(pow_result, expected);
 }
 
 bool test_scalar_subtract_divide() {
@@ -1361,6 +1469,14 @@ int main() {
     runner.run_test("Scalar Operations", test_scalar_operations());
     runner.run_test("Scalar Subtract/Divide", test_scalar_subtract_divide());
     runner.run_test("Scalar Math Functions", test_scalar_math_functions());
+    // new tests
+    runner.run_test("Abs Operation", test_abs());
+    runner.run_test("Pow Operation", test_scalar_operations_with_pow());
+    runner.run_test("Concat Operation", test_concat());
+    runner.run_test("Cat Operation", test_cat());
+    runner.run_test("View Operation", test_view());
+    runner.run_test("Flatten Operation", test_flatten());
+
     runner.run_test("Reduction Operations", test_reduction_operations());
     runner.run_test("FP16 Reduction Operations", test_fp16_reduction_operations());
     runner.run_test("Mean Operations", test_mean_operations());

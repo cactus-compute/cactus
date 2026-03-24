@@ -9,7 +9,7 @@
 #include <chrono>
 #include <fstream>
 
-constexpr int MAX_TOKENS = 512;
+constexpr int MAX_TOKENS = 1024;
 constexpr size_t MAX_BYTES_PER_TOKEN = 64;
 constexpr size_t RESPONSE_BUFFER_SIZE = MAX_TOKENS * MAX_BYTES_PER_TOKEN;
 
@@ -193,19 +193,22 @@ std::string expand_tilde(const std::string& path) {
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
-        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>] [--image <path>]\n";
+        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>] [--image <path>] [--no-thinking]\n";
         return 1;
     }
 
     const char* model_path = argv[1];
     std::string system_prompt;
     std::string current_image;
+    bool enable_thinking = true;
 
     for (int i = 2; i < argc; ++i) {
         if (std::string(argv[i]) == "--system" && i + 1 < argc) {
             system_prompt = argv[++i];
         } else if (std::string(argv[i]) == "--image" && i + 1 < argc) {
             current_image = expand_tilde(argv[++i]);
+        } else if (std::string(argv[i]) == "--no-thinking") {
+            enable_thinking = false;
         }
     }
 
@@ -337,6 +340,7 @@ int main(int argc, char* argv[]) {
 
         std::string options = "{\"temperature\":0.7,\"top_p\":0.95,\"top_k\":40,\"max_tokens\":"
                     + std::to_string(MAX_TOKENS)
+                    + ",\"enable_thinking_if_supported\":" + (enable_thinking ? "true" : "false")
                     + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
 
         std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);

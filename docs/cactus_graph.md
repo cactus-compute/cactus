@@ -1,7 +1,7 @@
 ---
 title: "Cactus Graph API Documentation"
 description: "Computational graph framework for building and executing tensor operations on mobile devices. Supports matrix multiplication, attention, normalization, and INT4/INT8/FP16 precision."
-keywords: ["computation graph", "tensor operations", "mobile AI", "matrix multiplication", "attention mechanism", "INT4", "FP16"]
+keywords: ["computation graph", "tensor operations", "mobile AI", "matrix multiplication", "attention mechanism", "INT4", "INT8", "FP16"]
 ---
 
 # Cactus Graph API Documentation
@@ -23,7 +23,7 @@ Before using the Cactus Graph API, set up your development environment:
 
 ```bash
 # Setup the environment and install dependencies
-./setup
+source ./setup
 
 # Build the Cactus library
 cactus build
@@ -63,7 +63,7 @@ For testing, use the provided fixtures that handle memory management:
 
 ```cpp
 TestUtils::Int8TestFixture fixture("My Test");
-TestUtils::FloatTestFixture fixture("Float Test");
+TestUtils::FP16TestFixture fixture("Float Test");
 ```
 
 ## Getting Started
@@ -357,7 +357,7 @@ size_t final_embed = graph.add(embeddings, pos_embed);
 
 ### Similarity Computation
 ```cpp
-TestUtils::FloatTestFixture fixture("Similarity");
+TestUtils::FP16TestFixture fixture("Similarity");
 
 size_t text1 = fixture.create_input({1, 768}, Precision::FP16);
 size_t text2 = fixture.create_input({1, 768}, Precision::FP16);

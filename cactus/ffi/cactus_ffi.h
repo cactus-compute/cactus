@@ -44,6 +44,15 @@ CACTUS_FFI_EXPORT int cactus_complete(
     void* user_data                         // optional
 );
 
+CACTUS_FFI_EXPORT int cactus_prefill(
+    cactus_model_t model,
+    const char* messages_json,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,               // optional
+    const char* tools_json                  // optional
+);
+
 CACTUS_FFI_EXPORT int cactus_tokenize(
     cactus_model_t model,
     const char* text,

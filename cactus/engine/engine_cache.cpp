@@ -8,15 +8,17 @@
 namespace cactus {
 namespace engine {
 
-void KVCache::init(size_t layers, size_t max_seq, size_t kv_heads, size_t dim, Precision model_precision) {
+void KVCache::init(size_t layers, size_t max_seq, size_t kv_heads, const std::vector<size_t>& layer_dims, Precision model_precision) {
     num_layers = layers;
     max_seq_len = max_seq;
     num_kv_heads = kv_heads;
-    head_dim = dim;
     precision = model_precision;
     element_size = PrecisionTraits::size_of(precision);
 
     layer_caches.resize(num_layers);
+    for (size_t i = 0; i < num_layers; i++) {
+        layer_caches[i].head_dim = layer_dims[i];
+    }
 
     current_seq_len = 0;
     total_seq_len = 0;
@@ -26,12 +28,15 @@ void KVCache::set_window_size(size_t window, size_t sink) {
     window_size = window;
     sink_size = sink;
 
-    if (num_kv_heads > 0 && head_dim > 0 && window_size > 0) {
-        size_t cache_bytes = window_size * num_kv_heads * head_dim * element_size;
-        size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-        size_t num_scales = window_size * num_kv_heads * num_groups;
+    if (num_kv_heads > 0 && window_size > 0) {
+        for (size_t layer_idx = 0; layer_idx < num_layers; layer_idx++) {
+            size_t head_dim = get_layer_head_dim(layer_idx);
+            if (head_dim == 0) continue;
+            size_t cache_bytes = window_size * num_kv_heads * head_dim * element_size;
+            size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+            size_t num_scales = window_size * num_kv_heads * num_groups;
+            auto& cache = layer_caches[layer_idx];
 
-        for (auto& cache : layer_caches) {
             cache.keys.resize(cache_bytes);
             cache.values.resize(cache_bytes);
             std::memset(cache.keys.data(), 0, cache_bytes);
@@ -100,13 +105,9 @@ KVCache::CircularView KVCache::get_value_view(size_t layer) {
 
 void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_nodes,
                                const std::vector<size_t>& v_nodes, size_t seq_len,
-                               size_t layers, size_t kv_heads, size_t dim) {
+                               size_t layers, size_t kv_heads) {
     size_t old_seq_len = current_seq_len;
     size_t new_total_len = old_seq_len + seq_len;
-    size_t elements_per_token = kv_heads * dim;
-    size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-    size_t scales_per_token = kv_heads * num_groups;
-    size_t bytes_per_token = elements_per_token * element_size;
 
     total_seq_len += seq_len;
 
@@ -133,6 +134,12 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
         if (k_output && v_output) {
             const auto& k_buffer = gb->get_output_buffer(k_nodes[layer_idx]);
             const auto& v_buffer = gb->get_output_buffer(v_nodes[layer_idx]);
+
+            size_t dim = get_layer_head_dim(layer_idx);
+            size_t elements_per_token = kv_heads * dim;
+            size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+            size_t scales_per_token = kv_heads * num_groups;
+            size_t bytes_per_token = elements_per_token * element_size;
 
             size_t expected_elements = new_total_len * elements_per_token;
 
@@ -463,6 +470,75 @@ void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp
 
     if (layer_idx == num_layers - 1) {
         current_seq_len = effective_seq_len;
+    }
+}
+
+void KVCache::remove_token_range(size_t start, size_t count) {
+    if (count == 0 || start >= current_seq_len || start + count > current_seq_len) return;
+
+    size_t tail_tokens = current_seq_len - start - count;
+
+    auto erase_bytes = [](std::vector<uint8_t>& buf, size_t offset, size_t remove, size_t tail) {
+        std::memmove(buf.data() + offset, buf.data() + offset + remove, tail);
+        buf.resize(buf.size() - remove);
+    };
+
+    auto erase_floats = [](std::vector<float>& buf, size_t offset, size_t remove, size_t tail) {
+        std::memmove(buf.data() + offset, buf.data() + offset + remove, tail * sizeof(float));
+        buf.resize(buf.size() - remove);
+    };
+
+    for (size_t i = 0; i < layer_caches.size(); i++) {
+        size_t dim = get_layer_head_dim(i);
+        if (dim == 0) continue;
+        auto& layer = layer_caches[i];
+        size_t bytes_per_tok = num_kv_heads * dim * element_size;
+
+        erase_bytes(layer.keys,   start * bytes_per_tok, count * bytes_per_tok, tail_tokens * bytes_per_tok);
+        erase_bytes(layer.values, start * bytes_per_tok, count * bytes_per_tok, tail_tokens * bytes_per_tok);
+
+        if (precision == Precision::INT8 && !layer.key_scales.empty()) {
+            size_t scaler_per_tok = num_kv_heads * dim / KV_QUANT_GROUP_SIZE;
+            erase_floats(layer.key_scales, start * scaler_per_tok, count * scaler_per_tok, tail_tokens * scaler_per_tok);
+            erase_floats(layer.value_scales, start * scaler_per_tok, count * scaler_per_tok, tail_tokens * scaler_per_tok);
+        }
+    }
+
+    current_seq_len -= count;
+    total_seq_len -= count;
+}
+
+void KVCache::compact_to_windows(const std::vector<size_t>& target_windows) {
+    for (size_t i = 0; i < layer_caches.size(); i++) {
+        size_t dim = get_layer_head_dim(i);
+        if (dim == 0) continue;
+        size_t target = (i < target_windows.size()) ? target_windows[i] : 0;
+        if (target == 0) continue;
+
+        auto& layer = layer_caches[i];
+        size_t layer_tokens = layer.keys.size() / (num_kv_heads * dim * element_size);
+        if (layer_tokens <= target) continue;
+
+        size_t bytes_per_token = num_kv_heads * dim * element_size;
+        size_t keep_bytes = target * bytes_per_token;
+        size_t discard_bytes = (layer_tokens - target) * bytes_per_token;
+
+        std::memmove(layer.keys.data(), layer.keys.data() + discard_bytes, keep_bytes);
+        layer.keys.resize(keep_bytes);
+        std::memmove(layer.values.data(), layer.values.data() + discard_bytes, keep_bytes);
+        layer.values.resize(keep_bytes);
+
+        if (precision == Precision::INT8 && !layer.key_scales.empty()) {
+            size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+            size_t scales_per_token = num_kv_heads * num_groups;
+            size_t keep_scales = target * scales_per_token;
+            size_t discard_scales = (layer_tokens - target) * scales_per_token;
+
+            std::memmove(layer.key_scales.data(), layer.key_scales.data() + discard_scales, keep_scales * sizeof(float));
+            layer.key_scales.resize(keep_scales);
+            std::memmove(layer.value_scales.data(), layer.value_scales.data() + discard_scales, keep_scales * sizeof(float));
+            layer.value_scales.resize(keep_scales);
+        }
     }
 }
 

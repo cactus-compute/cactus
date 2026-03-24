@@ -198,15 +198,14 @@ size_t CactusGraph::embedding(const std::string& filename, size_t indices) {
         throw std::runtime_error("Embedding file must contain 2D tensor [vocab_size, hidden_dim]");
     }
     if (mapped_file->quantization_kind() == QuantizationKind::TERNARY) {
-        throw std::runtime_error("Embedding requires FP16 or grouped INT8 weights");
+        throw std::runtime_error("Embedding requires interleaved grouped INT4/INT8 or FP16 weights");
     }
 
     Precision precision = mapped_file->precision();
     size_t embeddings_node = input(shape, precision);
     set_external_input(embeddings_node, const_cast<void*>(mapped_file->data()), precision);
 
-    if (mapped_file->quantization_kind() == QuantizationKind::GROUPED &&
-        precision == Precision::INT8 && mapped_file->group_size() > 0) {
+    if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
         set_grouped_scales(embeddings_node, mapped_file->group_size(), mapped_file->num_groups(),
                           const_cast<void*>(mapped_file->scales_data()));
 
@@ -223,8 +222,7 @@ size_t CactusGraph::embedding(const std::string& filename, size_t indices) {
     output_shape.push_back(shape[1]);
 
     OpParams params;
-    params.output_precision = (precision == Precision::INT8) ? Precision::FP16 : precision;
-
+    params.output_precision = Precision::FP16;
     return add_node(OpType::EMBEDDING, {embeddings_node, indices}, output_shape, params);
 }
 
@@ -251,8 +249,15 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
 
     size_t byte_size = PrecisionTraits::packed_size_of(precision, total_elements);
 
-    bool has_grouped_scales = (precision == Precision::INT8 && buffer.is_grouped_int8() && buffer.scales_data);
-    bool has_ternary_scales = (precision == Precision::INT8 && buffer.is_ternary_int8() && buffer.scales_data);
+    bool has_grouped_scales =
+        PrecisionTraits::is_integer(precision) &&
+        buffer.quantization_kind == QuantizationKind::GROUPED &&
+        buffer.group_size > 0 &&
+        buffer.scales_data;
+    bool has_ternary_scales =
+        precision == Precision::INT8 &&
+        buffer.quantization_kind == QuantizationKind::TERNARY &&
+        buffer.scales_data;
     const bool ternary_packed_2bit = has_ternary_scales;
     size_t N = shape.size() >= 1 ? shape[0] : 1;
     size_t scales_bytes = 0;

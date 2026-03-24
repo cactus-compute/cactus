@@ -15,7 +15,7 @@ tags: ["LFM2", "MoE", "coding agents", "Apple Silicon", "Python", "function call
 
 LFM2-24B-A2B is a really great next step to see over the LFM2-8B-A1B model. The model features 24B total parameters, but only activates a sparse subset of 2B during inference. This allows it to be competitive in inference speed to 2B dense models, while delivering far greater performance.
 
-> "LFM2-24B-A1 excels at coding, keen to see on-device coding agents built with these."
+> "LFM2-24B-A2B excels at coding, keen to see on-device coding agents built with these."
 > — Henry Ndubuaku, Cactus Co-founder & CTO
 
 ## Architecture Breakdown
@@ -137,20 +137,20 @@ import json
 from cactus import cactus_init, cactus_complete, cactus_reset, cactus_destroy
 
 # Load the model
-model = cactus_init("weights/lfm2-24b-a2b")
+model = cactus_init("weights/lfm2-24b-a2b", None, False)
 
 # Simple chat completion
-messages = [{"role": "user", "content": "Write a Python function to sort a list"}]
-response = json.loads(cactus_complete(model, messages))
+messages = json.dumps([{"role": "user", "content": "Write a Python function to sort a list"}])
+response = json.loads(cactus_complete(model, messages, None, None, None))
 
 print(response["response"])       # Generated text
 print(f"{response['decode_tps']:.1f} tokens/sec")
 
 # Streaming with a callback
-def on_token(token, token_id, user_data):
-    print(token.decode(), end="", flush=True)
+def on_token(token, token_id):
+    print(token, end="", flush=True)
 
-cactus_complete(model, messages, callback=on_token)
+cactus_complete(model, messages, None, None, on_token)
 
 # Clean up
 cactus_reset(model)
@@ -179,8 +179,8 @@ tools = [
     }
 ]
 
-messages = [{"role": "user", "content": "Calculate the factorial of 10"}]
-response = json.loads(cactus_complete(model, messages, tools=tools))
+messages = json.dumps([{"role": "user", "content": "Calculate the factorial of 10"}])
+response = json.loads(cactus_complete(model, messages, None, json.dumps(tools), None))
 
 if response["function_calls"]:
     print(response["function_calls"])  # Model's tool invocation
@@ -191,7 +191,8 @@ if response["function_calls"]:
 Cactus measures model confidence during generation. When the model isn't confident enough for a query, the response signals `cloud_handoff: true`, letting your agent route complex requests to a cloud API while keeping simple ones fast and local:
 
 ```python
-response = json.loads(cactus_complete(model, messages, confidence_threshold=0.7))
+options = json.dumps({"confidence_threshold": 0.7})
+response = json.loads(cactus_complete(model, messages, options, None, None))
 
 if response["cloud_handoff"]:
     # Route to cloud API for this query

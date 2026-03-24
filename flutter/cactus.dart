@@ -28,6 +28,32 @@ typedef CactusCompleteNative = Int32 Function(
     Pointer<NativeFunction<TokenCallbackNative>> callback,
     Pointer<Void> userData);
 
+typedef CactusPrefillNative = Int32 Function(
+    CactusModelT model,
+    Pointer<Utf8> messagesJson,
+    Pointer<Utf8> responseBuffer,
+    IntPtr bufferSize,
+    Pointer<Utf8> optionsJson,
+    Pointer<Utf8> toolsJson);
+
+typedef CactusCompleteDart = Int32 Function(
+    CactusModelT model,
+    Pointer<Utf8> messagesJson,
+    Pointer<Utf8> responseBuffer,
+    IntPtr bufferSize,
+    Pointer<Utf8> optionsJson,
+    Pointer<Utf8> toolsJson,
+    Pointer<NativeFunction<TokenCallbackNative>> callback,
+    Pointer<Void> userData);
+
+typedef CactusPrefillDart = Int32 Function(
+    CactusModelT model,
+    Pointer<Utf8> messagesJson,
+    Pointer<Utf8> responseBuffer,
+    IntPtr bufferSize,
+    Pointer<Utf8> optionsJson,
+    Pointer<Utf8> toolsJson);
+
 typedef CactusTokenizeNative = Int32 Function(
     CactusModelT model,
     Pointer<Utf8> text,
@@ -54,6 +80,15 @@ typedef CactusTranscribeNative = Int32 Function(
     Pointer<Utf8> optionsJson,
     Pointer<NativeFunction<TokenCallbackNative>> callback,
     Pointer<Void> userData,
+    Pointer<Uint8> pcmBuffer,
+    IntPtr pcmBufferSize);
+
+typedef CactusDetectLanguageNative = Int32 Function(
+    CactusModelT model,
+    Pointer<Utf8> audioFilePath,
+    Pointer<Utf8> responseBuffer,
+    IntPtr bufferSize,
+    Pointer<Utf8> optionsJson,
     Pointer<Uint8> pcmBuffer,
     IntPtr pcmBufferSize);
 
@@ -181,6 +216,15 @@ typedef CactusTranscribeDart = int Function(
     Pointer<Uint8> pcmBuffer,
     int pcmBufferSize);
 
+typedef CactusDetectLanguageDart = int Function(
+    CactusModelT model,
+    Pointer<Utf8> audioFilePath,
+    Pointer<Utf8> responseBuffer,
+    int bufferSize,
+    Pointer<Utf8> optionsJson,
+    Pointer<Uint8> pcmBuffer,
+    int pcmBufferSize);
+
 typedef CactusStreamTranscribeStartDart = CactusStreamTranscribeT Function(
     CactusModelT model, Pointer<Utf8> optionsJson);
 typedef CactusStreamTranscribeProcessDart = int Function(
@@ -269,6 +313,17 @@ typedef CactusTelemetryFlushDart = void Function();
 typedef CactusTelemetryShutdownNative = Void Function();
 typedef CactusTelemetryShutdownDart = void Function();
 
+typedef LogCallbackNative = Void Function(
+    Int32 level, Pointer<Utf8> component, Pointer<Utf8> message, Pointer<Void> userData);
+
+typedef CactusLogSetLevelNative = Void Function(Int32 level);
+typedef CactusLogSetLevelDart = void Function(int level);
+
+typedef CactusLogSetCallbackNative = Void Function(
+    Pointer<NativeFunction<LogCallbackNative>> callback, Pointer<Void> userData);
+typedef CactusLogSetCallbackDart = void Function(
+    Pointer<NativeFunction<LogCallbackNative>> callback, Pointer<Void> userData);
+
 typedef CactusIndexGetNative = Int32 Function(
     CactusIndexT index,
     Pointer<Int32> ids,
@@ -318,6 +373,8 @@ final _cactusStop =
     _lib.lookupFunction<CactusStopNative, CactusStopDart>('cactus_stop');
 final _cactusComplete =
     _lib.lookupFunction<CactusCompleteNative, CactusCompleteDart>('cactus_complete');
+final _cactusPrefill =
+    _lib.lookupFunction<CactusPrefillNative, CactusPrefillDart>('cactus_prefill');
 final _cactusTokenize =
     _lib.lookupFunction<CactusTokenizeNative, CactusTokenizeDart>('cactus_tokenize');
 final _cactusScoreWindow = _lib
@@ -372,6 +429,15 @@ final _cactusSetAppId = _lib.lookupFunction<
 final _cactusIndexGet = _lib.lookupFunction<
     CactusIndexGetNative,
     CactusIndexGetDart>('cactus_index_get');
+final _cactusDetectLanguage = _lib.lookupFunction<
+    CactusDetectLanguageNative,
+    CactusDetectLanguageDart>('cactus_detect_language');
+final _cactusLogSetLevel = _lib.lookupFunction<
+    CactusLogSetLevelNative,
+    CactusLogSetLevelDart>('cactus_log_set_level');
+final _cactusLogSetCallback = _lib.lookupFunction<
+    CactusLogSetCallbackNative,
+    CactusLogSetCallbackDart>('cactus_log_set_callback');
 
 final class Utf8 extends Opaque {}
 
@@ -549,6 +615,36 @@ String cactusComplete(
     if (optionsPtr != nullptr) calloc.free(optionsPtr);
     if (toolsPtr != nullptr) calloc.free(toolsPtr);
     nativeCallable?.close();
+  }
+}
+
+/// Prefills the KV cache with messages.
+String cactusPrefill(
+  CactusModelT model,
+  String messagesJson,
+  String? optionsJson,
+  String? toolsJson,
+) {
+  const bufferSize = 65536;
+  final responseBuffer = calloc<Uint8>(bufferSize);
+  final messagesPtr = messagesJson.toNativeUtf8();
+  final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
+  final toolsPtr = toolsJson?.toNativeUtf8() ?? nullptr;
+
+  try {
+    final result = _cactusPrefill(
+      model, messagesPtr, responseBuffer.cast(), bufferSize,
+      optionsPtr, toolsPtr,
+    );
+    if (result < 0) {
+      throw Exception('Prefill failed: ${cactusGetLastError()}');
+    }
+    return responseBuffer.cast<Utf8>().toDartString();
+  } finally {
+    calloc.free(responseBuffer);
+    calloc.free(messagesPtr);
+    if (optionsPtr != nullptr) calloc.free(optionsPtr);
+    if (toolsPtr != nullptr) calloc.free(toolsPtr);
   }
 }
 
@@ -1038,5 +1134,64 @@ int cactusIndexCompact(CactusIndexT index) {
     throw Exception('Index compact failed: ${cactusGetLastError()}');
   }
   return result;
+}
+
+/// Detects the spoken language in an audio file. Returns JSON.
+String cactusDetectLanguage(
+  CactusModelT model,
+  String? audioPath,
+  String? optionsJson,
+  Uint8List? pcmData,
+) {
+  const bufferSize = 65536;
+  final responseBuffer = calloc<Uint8>(bufferSize);
+  final audioPathPtr = audioPath?.toNativeUtf8() ?? nullptr;
+  final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
+
+  Pointer<Uint8> pcmBuffer = nullptr;
+  int pcmSize = 0;
+  if (pcmData != null) {
+    pcmBuffer = calloc<Uint8>(pcmData.length);
+    pcmBuffer.asTypedList(pcmData.length).setAll(0, pcmData);
+    pcmSize = pcmData.length;
+  }
+
+  try {
+    final result = _cactusDetectLanguage(
+      model, audioPathPtr, responseBuffer.cast(), bufferSize, optionsPtr, pcmBuffer, pcmSize,
+    );
+    if (result < 0) {
+      throw Exception('Detect language failed: ${cactusGetLastError()}');
+    }
+    return responseBuffer.cast<Utf8>().toDartString();
+  } finally {
+    calloc.free(responseBuffer);
+    if (audioPathPtr != nullptr) calloc.free(audioPathPtr);
+    if (optionsPtr != nullptr) calloc.free(optionsPtr);
+    if (pcmBuffer != nullptr) calloc.free(pcmBuffer);
+  }
+}
+
+/// Sets the log level. 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR, 4=NONE.
+void cactusLogSetLevel(int level) {
+  _cactusLogSetLevel(level);
+}
+
+NativeCallable<LogCallbackNative>? _logCallable;
+
+/// Sets a log callback. Pass null to clear.
+void cactusLogSetCallback(void Function(int level, String component, String message)? onLog) {
+  _logCallable?.close();
+  _logCallable = null;
+  if (onLog == null) {
+    _cactusLogSetCallback(nullptr, nullptr);
+    return;
+  }
+  _logCallable = NativeCallable<LogCallbackNative>.isolateLocal(
+    (int level, Pointer<Utf8> component, Pointer<Utf8> message, Pointer<Void> _) {
+      onLog(level, component.toDartString(), message.toDartString());
+    },
+  );
+  _cactusLogSetCallback(_logCallable!.nativeFunction, nullptr);
 }
 

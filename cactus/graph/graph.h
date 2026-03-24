@@ -140,13 +140,14 @@ enum class Activation {
 enum class OpType {
     INPUT, PRECISION_CAST,
     ADD, ADD_CLIPPED, SUBTRACT, MULTIPLY, DIVIDE,
+    ABS, POW, FLATTEN, VIEW,
     MATMUL, TRANSPOSE, RESHAPE, SLICE, GATHER, EMBEDDING,
     BILINEAR_INTERPOLATION,
     SUM, MEAN, VARIANCE, MIN, MAX,
     RMS_NORM, ROPE, ROPE_GPTJ, SOFTMAX, ATTENTION, ATTENTION_INT8_HYBRID, REL_POS_BIAS, CONV1D_CAUSAL, CONV1D_K3, CONV1D_K7S3, CONV1D, CONV1D_SAME_DEPTHWISE_K9, CONV1D_POINTWISE, CONV2D_K3S2P1, CONV2D_DEPTHWISE_K3S2P1, CONV2D_POINTWISE_1X1, GLU, BATCHNORM,
     SCALAR_ADD, SCALAR_SUBTRACT, SCALAR_MULTIPLY, SCALAR_DIVIDE, SCALAR_EXP, SCALAR_SQRT, SCALAR_COS, SCALAR_SIN, SCALAR_LOG,
     RELU, SILU, GELU, GELU_ERF, SIGMOID, TANH,
-    SAMPLE, CONCAT,
+    SAMPLE, CONCAT, CAT,
     SCATTER_TOPK,
     TOPK, LAYERNORM, GROUPNORM,
     MOE_LAYER,
@@ -373,6 +374,7 @@ struct OpParams {
     size_t window_size = 0;
     bool is_causal = true;  
     bool attention_mask_is_additive = false;
+    float logit_cap = 0.0f;
     std::vector<size_t> new_shape;
     std::vector<size_t> permutation;
     Precision output_precision = Precision::INT8;
@@ -410,6 +412,7 @@ struct OpParams {
     size_t num_fft_bins = 0;
     size_t chunk_size = 0;
     size_t num_altup_inputs = 0;
+    size_t v_head_dim = 0;
 };
 
 struct GraphNode {
@@ -501,7 +504,6 @@ public:
     size_t multiply(size_t input1, size_t input2);
     size_t divide(size_t input1, size_t input2);
     
-    
     size_t scalar_add(size_t input, float value);
     size_t scalar_subtract(size_t input, float value);
     size_t scalar_multiply(size_t input, float value);
@@ -519,6 +521,11 @@ public:
     size_t sigmoid(size_t input);
     size_t tanh(size_t input);
     size_t glu(size_t input, int axis = -1);
+
+    size_t abs(size_t input);
+    size_t pow(size_t input, float exponent);
+    size_t view(size_t input, const std::vector<size_t>& new_shape);
+    size_t flatten(size_t input, int start_dim = 0, int end_dim = -1);
     
     size_t matmul(size_t input1, size_t input2, bool pretransposed_rhs = false, ComputeBackend backend = ComputeBackend::CPU);
     size_t transpose(size_t input, ComputeBackend backend = ComputeBackend::CPU);
@@ -584,13 +591,15 @@ public:
     size_t attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, size_t window_size, ComputeBackend backend = ComputeBackend::CPU);
     size_t attention_masked(size_t query, size_t key, size_t value, size_t mask, float scale,
                             bool is_causal = true, ComputeBackend backend = ComputeBackend::CPU,
-                            bool additive_mask = false, size_t position_offset = 0, size_t window_size = 0);
+                            bool additive_mask = false, size_t position_offset = 0, size_t window_size = 0,
+                            float logit_cap = 0.0f);
     size_t rel_pos_bias(size_t query, size_t relative_key, float scale);
 
     size_t attention_int8_hybrid(size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,
                                  const int8_t* cached_keys, const int8_t* cached_values,
                                  const float* k_scales, const float* v_scales,
-                                 size_t cache_len, size_t num_kv_heads, size_t head_dim, size_t window_size = 0);
+                                 size_t cache_len, size_t num_kv_heads, size_t head_dim,
+                                 size_t window_size = 0, size_t v_head_dim = 0);
 
     size_t conv1d_causal(size_t input, size_t weight, size_t kernel_size, size_t dilation = 1);
     size_t conv1d_k3(size_t input, size_t weight, size_t stride);
@@ -624,6 +633,7 @@ public:
                   const std::unordered_map<uint32_t, float>& logit_bias = {});
     
     size_t concat(size_t input1, size_t input2, int axis = 0);
+    size_t cat(const std::vector<size_t>& inputs, int axis);
     size_t scatter_topk(size_t indices, size_t values, size_t num_classes);
     
     void set_input(size_t node_id, const void* data, Precision precision);

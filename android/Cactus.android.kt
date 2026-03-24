@@ -18,6 +18,7 @@ private object CactusJNI {
     @JvmStatic external fun nativeReset(handle: Long)
     @JvmStatic external fun nativeStop(handle: Long)
     @JvmStatic external fun nativeComplete(handle: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, callback: CactusTokenCallback?): String
+    @JvmStatic external fun nativePrefill(handle: Long, messagesJson: String, optionsJson: String?, toolsJson: String?): String
     @JvmStatic external fun nativeTranscribe(handle: Long, audioPath: String?, prompt: String?, optionsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): String
     @JvmStatic external fun nativeEmbed(handle: Long, text: String, normalize: Boolean): FloatArray
     @JvmStatic external fun nativeRagQuery(handle: Long, query: String, topK: Int): String
@@ -53,6 +54,8 @@ actual fun cactusTelemetryFlush() = CactusJNI.nativeTelemetryFlush()
 actual fun cactusTelemetryShutdown() = CactusJNI.nativeTelemetryShutdown()
 actual fun cactusComplete(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, callback: CactusTokenCallback?): String =
     CactusJNI.nativeComplete(model, messagesJson, optionsJson, toolsJson, callback)
+actual fun cactusPrefill(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?): String =
+    CactusJNI.nativePrefill(model, messagesJson, optionsJson, toolsJson)
 actual fun cactusTranscribe(model: Long, audioPath: String?, prompt: String?, optionsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): String =
     CactusJNI.nativeTranscribe(model, audioPath, prompt, optionsJson, callback, pcmData)
 actual fun cactusEmbed(model: Long, text: String, normalize: Boolean): FloatArray =

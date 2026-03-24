@@ -104,6 +104,8 @@ def detect_model_type(cfg, config, output_dir=None):
             return 'smol'
         else:
             return 'llama'
+    elif 'youtu' in model_type_str:
+        return 'youtu'
     elif 'bert' in model_type_str:
         return 'bert'
     elif 'whisper' in model_type_str:
@@ -141,7 +143,7 @@ def extract_base_config(cfg, config):
         'rope_theta': rope_theta,
         'attention_head_dim': int(cfg_get(cfg, 'head_dim', int(cfg_get(cfg, 'hidden_size', cfg_get(cfg, 'hidden_dim', 0)) // max(1, cfg_get(cfg, 'num_attention_heads', 1))))),
         'layer_norm_eps': cfg_get(cfg, 'layer_norm_eps', cfg_get(cfg, 'layer_norm_epsilon', cfg_get(cfg, 'rms_norm_eps', cfg_get(cfg, 'norm_eps', 1e-6)))),
-        'num_experts': cfg_get(cfg, 'num_experts', 0),
+        'num_experts': cfg_get(cfg, 'num_experts', 0) or 0,
         'num_shared_experts': cfg_get(cfg, 'num_shared_experts', 0),
         'num_top_experts': num_experts_per_tok,
         'num_experts_per_tok': num_experts_per_tok,
@@ -198,6 +200,24 @@ def extract_vision_config(config, vision_cfg):
     pixel_shuffle_factor = int(cfg_get(config, 'scale_factor', cfg_get(vision_cfg, 'scale_factor', 1) or 1))
     downsample_factor = int(cfg_get(config, 'downsample_factor', 2))
 
+    vision_head_dim = int(cfg_get(vision_cfg, 'head_dim', 64))
+    vision_kv_heads = int(cfg_get(vision_cfg, 'num_key_value_heads', vision_heads))
+    vision_intermediate_size = int(cfg_get(vision_cfg, 'intermediate_size', 4 * vision_hidden))
+    vision_position_embedding_size = int(cfg_get(vision_cfg, 'position_embedding_size', 10240))
+    vision_pooling_kernel_size = int(cfg_get(vision_cfg, 'pooling_kernel_size', 3))
+    vision_default_output_length = cfg_get(vision_cfg, 'default_output_length', 280)
+    if isinstance(vision_default_output_length, (list, tuple)):
+        vision_default_output_length = vision_default_output_length[0]
+    vision_default_output_length = int(vision_default_output_length)
+
+    vision_rope_params = cfg_get(vision_cfg, 'rope_parameters', {})
+    vision_rope_theta = 100.0
+    if isinstance(vision_rope_params, dict):
+        for v in vision_rope_params.values():
+            if isinstance(v, dict) and 'rope_theta' in v:
+                vision_rope_theta = float(v['rope_theta'])
+                break
+
     return {
         'vision_hidden_size': int(vision_hidden),
         'vision_num_layers': int(vision_num_layers),
@@ -210,8 +230,16 @@ def extract_vision_config(config, vision_cfg):
         'use_pixel_shuffle': bool(pixel_shuffle_factor > 1),
         'pixel_shuffle_factor': int(pixel_shuffle_factor),
         'use_image_tokens': bool(cfg_get(config, 'image_token_id', None) is not None),
+        'image_token_id': int(cfg_get(config, 'image_token_id', 0)),
         'use_layout_tags': False,
         'downsample_factor': int(downsample_factor),
+        'vision_head_dim': vision_head_dim,
+        'vision_kv_heads': vision_kv_heads,
+        'vision_intermediate_size': vision_intermediate_size,
+        'vision_position_embedding_size': vision_position_embedding_size,
+        'vision_pooling_kernel_size': vision_pooling_kernel_size,
+        'vision_default_output_length': vision_default_output_length,
+        'vision_rope_theta': vision_rope_theta,
     }
 
 
@@ -236,6 +264,23 @@ def extract_lfm2_config(cfg):
         'routed_scaling_factor': routed_scaling_factor,
     }
 
+
+def extract_youtu_config(cfg):
+    rope_scaling = cfg_get(cfg, 'rope_scaling', {}) or {}
+    return {
+        'kv_lora_rank': int(cfg_get(cfg, 'kv_lora_rank', 0)),
+        'q_lora_rank': int(cfg_get(cfg, 'q_lora_rank', 0)),
+        'qk_head_dim': int(cfg_get(cfg, 'qk_head_dim', 0)),
+        'qk_nope_head_dim': int(cfg_get(cfg, 'qk_nope_head_dim', 0)),
+        'qk_rope_head_dim': int(cfg_get(cfg, 'qk_rope_head_dim', 0)),
+        'v_head_dim': int(cfg_get(cfg, 'v_head_dim', 0)),
+        'rope_interleave': bool(cfg_get(cfg, 'rope_interleave', False)),
+        'attention_bias': bool(cfg_get(cfg, 'attention_bias', False)),
+        'rope_scaling_factor': float(cfg_get(rope_scaling, 'factor', 1.0)),
+        'rope_mscale_all_dim': float(cfg_get(rope_scaling, 'mscale_all_dim', 0.0)),
+    }
+
+
 def extract_moonshine_config(cfg):
     """Extract Moonshine-specific configuration parameters."""
     rot_factor = getattr(cfg, "partial_rotary_factor", 0.9)
@@ -244,8 +289,8 @@ def extract_moonshine_config(cfg):
     }
 
 
-def extract_gemma3n_config(cfg, root_config):
-    """Extract Gemma3n-specific configuration parameters."""
+def extract_complex_gemma_config(cfg, root_config):
+    """Extract configuration parameters for complex Gemma-family models."""
     altup_num_inputs = int(cfg_get(cfg, 'altup_num_inputs', cfg_get(root_config, 'altup_num_inputs', 4)))
     laurel_rank = int(cfg_get(cfg, 'laurel_rank', cfg_get(root_config, 'laurel_rank', 64)))
     hidden_size_per_layer_input = int(cfg_get(cfg, 'hidden_size_per_layer_input',
@@ -285,6 +330,23 @@ def extract_gemma3n_config(cfg, root_config):
     final_logit_softcapping = float(cfg_get(cfg, 'final_logit_softcapping',
         cfg_get(root_config, 'final_logit_softcapping', 30.0)))
 
+    query_pre_attn_scalar = int(cfg_get(cfg, 'query_pre_attn_scalar',
+        cfg_get(root_config, 'query_pre_attn_scalar', 0)))
+
+    rope_params = cfg_get(cfg, 'rope_parameters', cfg_get(root_config, 'rope_parameters', {}))
+    global_rope = rope_params.get('full_attention', {}) if isinstance(rope_params, dict) else {}
+    global_partial_rotary_factor = float(cfg_get(cfg, 'global_partial_rotary_factor',
+        global_rope.get('partial_rotary_factor', 1.0) if isinstance(global_rope, dict) else 1.0))
+
+    if rope_theta is None or rope_theta == 1000000.0:
+        global_rope_theta = global_rope.get('rope_theta', None) if isinstance(global_rope, dict) else None
+        if global_rope_theta is not None:
+            rope_theta = float(global_rope_theta)
+
+    sliding_rope = rope_params.get('sliding_attention', {}) if isinstance(rope_params, dict) else {}
+    if isinstance(sliding_rope, dict) and 'rope_theta' in sliding_rope:
+        rope_local_base_freq = float(sliding_rope['rope_theta'])
+
     activation_sparsity = cfg_get(cfg, 'activation_sparsity_pattern',
         cfg_get(root_config, 'activation_sparsity_pattern', None))
 
@@ -308,12 +370,46 @@ def extract_gemma3n_config(cfg, root_config):
         'rope_local_base_freq': rope_local_base_freq,
         'rope_theta': float(rope_theta),
         'final_logit_softcapping': final_logit_softcapping,
+        'query_pre_attn_scalar': query_pre_attn_scalar,
+        'global_partial_rotary_factor': global_partial_rotary_factor,
     }
     if layer_types:
         result['layer_types'] = layer_types
     if activation_sparsity_ppf:
         result['activation_sparsity_ppf'] = activation_sparsity_ppf
     return result
+
+def extract_audio_config(config, audio_cfg):
+    """Extract audio encoder configuration for multimodal models."""
+    hidden = int(cfg_get(audio_cfg, 'hidden_size', 1024))
+    num_heads = int(cfg_get(audio_cfg, 'conf_num_attention_heads', 8))
+    sscp_channels = cfg_get(audio_cfg, 'sscp_conv_channel_size', [128, 32])
+    if not isinstance(sscp_channels, (list, tuple)):
+        sscp_channels = [128, 32]
+    output_proj = cfg_get(audio_cfg, 'output_proj_dims', None)
+    if output_proj is None:
+        output_proj = 0
+    return {
+        'audio_hidden_dim': hidden,
+        'audio_num_layers': int(cfg_get(audio_cfg, 'conf_num_hidden_layers', 12)),
+        'audio_num_heads': num_heads,
+        'audio_head_dim': hidden // max(1, num_heads),
+        'audio_input_feat_size': int(cfg_get(audio_cfg, 'input_feat_size', 128)),
+        'audio_conf_conv_kernel_size': int(cfg_get(audio_cfg, 'conf_conv_kernel_size', 5)),
+        'audio_chunk_size': int(cfg_get(audio_cfg, 'conf_attention_chunk_size', 12)),
+        'audio_context_left': int(cfg_get(audio_cfg, 'conf_attention_context_left', 13)),
+        'audio_context_right': int(cfg_get(audio_cfg, 'conf_attention_context_right', 0)),
+        'audio_logit_cap': float(cfg_get(audio_cfg, 'conf_attention_logit_cap', 50.0)),
+        'audio_residual_weight': float(cfg_get(audio_cfg, 'conf_residual_weight', 0.5)),
+        'audio_output_proj_dims': int(output_proj),
+        'audio_vocab_size': int(cfg_get(audio_cfg, 'vocab_size', 128)),
+        'audio_vocab_offset': int(cfg_get(audio_cfg, 'vocab_offset', 0)),
+        'audio_soft_tokens': int(cfg_get(audio_cfg, 'audio_soft_tokens_per_image', 188)),
+        'audio_sscp_conv0_channels': int(sscp_channels[0]),
+        'audio_sscp_conv1_channels': int(sscp_channels[1]),
+        'audio_rms_norm_eps': float(cfg_get(audio_cfg, 'rms_norm_eps', 1e-6)),
+        'audio_token_id': int(cfg_get(config, 'audio_token_id', 0)),
+    }
 
 
 def is_vlm_model(config):
@@ -332,13 +428,13 @@ def is_lfm2_vl(model_name, cfg):
 
 
 def pick_dtype():
-    """Select the best torch dtype based on hardware capabilities."""
+    """Select torch dtype for model loading — bf16 preferred, float16 fallback."""
     import torch
-    if torch.cuda.is_available():
-        if torch.cuda.is_bf16_supported():
-            return torch.bfloat16
+    try:
+        torch.zeros(1, dtype=torch.bfloat16)
+        return torch.bfloat16
+    except Exception:
         return torch.float16
-    return torch.float32
 
 
 def vision_weight_sanity_check(model):

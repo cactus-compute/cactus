@@ -8,7 +8,7 @@ except ImportError:
     torch = None
 
 from .tensor_io import save_tensor_with_header, create_quantization_stats, print_quantization_summary
-from .config_utils import cfg_get, detect_model_type, extract_base_config, extract_vision_config, extract_lfm2_config, is_vlm_model, extract_moonshine_config, extract_gemma3n_config
+from .config_utils import cfg_get, detect_model_type, extract_base_config, extract_vision_config, extract_lfm2_config, extract_moonshine_config, extract_complex_gemma_config, extract_youtu_config
 from .weight_patterns import (
     EMBED_NAMES, OUTPUT_NAMES, OUTPUT_NORM_NAMES, LAYER_PREFIXES,
     VISION_ITEMS, PROJECTOR_WEIGHTS, WHISPER_GLOBAL_WEIGHTS, MOONSHINE_GLOBAL_WEIGHTS,
@@ -24,7 +24,7 @@ def _find_first_key(state_dict, candidates):
     return None
 
 
-def _gemma3n_tower_output_name(hf_key, strip_prefix, add_prefix):
+def _gemma_tower_output_name(hf_key, strip_prefix, add_prefix):
     name = hf_key[len(strip_prefix):]
     if name.endswith('.weight'):
         name = name[:-len('.weight')]
@@ -40,10 +40,13 @@ def _gemma3n_tower_output_name(hf_key, strip_prefix, add_prefix):
 
 def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
     """Convert HuggingFace model weights to Cactus binary format."""
+    import gc
     quantization_stats = create_quantization_stats()
 
     state_dict = model.state_dict()
     root_config = model.config
+    del model
+    gc.collect()
     saved_tensor_full_names = set()
 
     text_config = cfg_get(root_config, 'text_config', None)
@@ -70,9 +73,11 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         model_config.update(extract_vision_config(root_config, vision_config))
 
     if detected_model_type == 'gemma3n':
-        model_config.update(extract_gemma3n_config(config, root_config))
+        model_config.update(extract_complex_gemma_config(config, root_config))
     elif detected_model_type == 'lfm2':
         model_config.update(extract_lfm2_config(config))
+    elif detected_model_type == 'youtu':
+        model_config.update(extract_youtu_config(config))
     elif detected_model_type == 'moonshine':
         model_config.update(extract_moonshine_config(config))
     elif detected_model_type == 'parakeet':
@@ -350,13 +355,13 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
 
         for hf_key in sorted(state_dict.keys()):
             if hf_key.startswith(GEMMA3N_VISION_TOWER_PREFIX) and hf_key not in saved_tensor_full_names:
-                out_name = _gemma3n_tower_output_name(hf_key, GEMMA3N_VISION_TOWER_PREFIX, 'vision_')
+                out_name = _gemma_tower_output_name(hf_key, GEMMA3N_VISION_TOWER_PREFIX, 'vision_')
                 save_tensor_with_header(state_dict[hf_key], output_dir / out_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                 saved_tensor_full_names.add(hf_key)
 
         for hf_key in sorted(state_dict.keys()):
             if hf_key.startswith(GEMMA3N_AUDIO_TOWER_PREFIX) and hf_key not in saved_tensor_full_names:
-                out_name = _gemma3n_tower_output_name(hf_key, GEMMA3N_AUDIO_TOWER_PREFIX, 'audio_')
+                out_name = _gemma_tower_output_name(hf_key, GEMMA3N_AUDIO_TOWER_PREFIX, 'audio_')
                 save_tensor_with_header(state_dict[hf_key], output_dir / out_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                 saved_tensor_full_names.add(hf_key)
 
@@ -931,6 +936,17 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                             save_tensor_with_header(v_weight, output_dir / f'layer_{i}_attn_v.weights', precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                             saved_tensor_full_names.add(attn_name)
                             found = True
+
+    num_kv_shared = int(model_config.get('num_kv_shared_layers', 0))
+    if num_kv_shared > 0:
+        first_shared = num_layers - num_kv_shared if num_layers > num_kv_shared else num_layers
+        for i in range(first_shared, num_layers):
+            for prefix in LAYER_PREFIXES:
+                lp = prefix.format(i=i)
+                for suffix in ['k_proj.weight', 'v_proj.weight', 'k_norm.weight', 'k_layernorm.weight']:
+                    skipped_key = lp + 'self_attn.' + suffix
+                    if skipped_key in state_dict:
+                        saved_tensor_full_names.add(skipped_key)
 
     if saved_tensor_full_names != set(state_dict.keys()):
         print(f"Warning: Unsaved tensors: {set(state_dict.keys()) - saved_tensor_full_names}")

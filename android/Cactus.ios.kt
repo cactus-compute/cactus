@@ -67,6 +67,26 @@ actual fun cactusComplete(model: Long, messagesJson: String, optionsJson: String
 }
 
 @OptIn(ExperimentalForeignApi::class)
+actual fun cactusPrefill(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?): String {
+    memScoped {
+        val buffer = allocArray<ByteVar>(65536)
+        val result = cactus_prefill(
+            model.toCPointer(),
+            messagesJson,
+            buffer,
+            65536u,
+            optionsJson,
+            toolsJson
+        )
+        if (result < 0) {
+            val error = cactus_get_last_error()?.toKString() ?: "Unknown error"
+            throw RuntimeException(error)
+        }
+        return buffer.toKString()
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
 actual fun cactusTranscribe(model: Long, audioPath: String?, prompt: String?, optionsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): String {
     memScoped {
         val buffer = allocArray<ByteVar>(65536)

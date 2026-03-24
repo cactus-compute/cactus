@@ -225,11 +225,8 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
     else:
         data = np.array(tensor)
 
-    original_data = data.copy()
-
     if model_type == 'gemma' and 'norm' in str(output_path):
         data = data + 1.0
-        original_data = data.copy()
 
     if precision in ('INT8', 'INT4'):
         filename = output_path.name
@@ -247,7 +244,6 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
     shape = list(data.shape)
     if transpose and len(shape) == 2:
         data = data.T
-        original_data = original_data.T
         shape = [shape[1], shape[0]]
 
     if precision == 'TERNARY' and len(shape) == 2:
@@ -329,7 +325,6 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         if K % GROUP_SIZE != 0:
             pad_k = GROUP_SIZE - (K % GROUP_SIZE)
             data = np.pad(data, ((0, 0), (0, pad_k)), mode='constant', constant_values=0)
-            original_data = np.pad(original_data, ((0, 0), (0, pad_k)), mode='constant', constant_values=0)
             K = data.shape[1]
 
         num_groups = K // GROUP_SIZE
@@ -346,11 +341,12 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         quantized_2d = quantized.reshape(N, K)
 
         dequantized = (quantized.astype(np.float32) * scales[:, :, np.newaxis]).reshape(N, K)
-        mse_error = np.mean((original_data[:original_N, :] - dequantized[:original_N, :]) ** 2)
-        snr_db = 10 * np.log10(np.var(original_data[:original_N, :]) / mse_error) if mse_error > 0 else float('inf')
-        original_flat = original_data[:original_N, :].flatten()
+        mse_error = np.mean((data[:original_N, :] - dequantized[:original_N, :]) ** 2)
+        snr_db = 10 * np.log10(np.var(data[:original_N, :]) / mse_error) if mse_error > 0 else float('inf')
+        data_flat = data[:original_N, :].flatten()
         dequant_flat = dequantized[:original_N, :].flatten()
-        cos_sim = np.dot(original_flat, dequant_flat) / (np.linalg.norm(original_flat) * np.linalg.norm(dequant_flat) + 1e-10)
+        cos_sim = np.dot(data_flat, dequant_flat) / (np.linalg.norm(data_flat) * np.linalg.norm(dequant_flat) + 1e-10)
+        del data_flat, dequantized
 
         quantized_interleaved, _ = interleave_weights(quantized_2d, INTERLEAVE_BLOCK)
         scales_interleaved, _ = interleave_scales(scales, INTERLEAVE_BLOCK)
@@ -402,6 +398,8 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
 
             f.write(quantized_interleaved.tobytes())
 
+        del data
+
         return
 
     if precision == 'INT4' and len(shape) == 2:
@@ -411,7 +409,6 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         if K % GROUP_SIZE != 0:
             pad_k = GROUP_SIZE - (K % GROUP_SIZE)
             data = np.pad(data, ((0, 0), (0, pad_k)), mode='constant', constant_values=0)
-            original_data = np.pad(original_data, ((0, 0), (0, pad_k)), mode='constant', constant_values=0)
             K = data.shape[1]
 
         num_groups = K // GROUP_SIZE
@@ -428,11 +425,12 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         quantized_2d = quantized.reshape(N, K)
 
         dequantized = (quantized.astype(np.float32) * scales[:, :, np.newaxis]).reshape(N, K)
-        mse_error = np.mean((original_data[:original_N, :] - dequantized[:original_N, :]) ** 2)
-        snr_db = 10 * np.log10(np.var(original_data[:original_N, :]) / mse_error) if mse_error > 0 else float('inf')
-        original_flat = original_data[:original_N, :].flatten()
+        mse_error = np.mean((data[:original_N, :] - dequantized[:original_N, :]) ** 2)
+        snr_db = 10 * np.log10(np.var(data[:original_N, :]) / mse_error) if mse_error > 0 else float('inf')
+        data_flat = data[:original_N, :].flatten()
         dequant_flat = dequantized[:original_N, :].flatten()
-        cos_sim = np.dot(original_flat, dequant_flat) / (np.linalg.norm(original_flat) * np.linalg.norm(dequant_flat) + 1e-10)
+        cos_sim = np.dot(data_flat, dequant_flat) / (np.linalg.norm(data_flat) * np.linalg.norm(dequant_flat) + 1e-10)
+        del data_flat, dequantized
 
         quantized_interleaved, _ = interleave_weights(quantized_2d, INTERLEAVE_BLOCK)
         scales_interleaved, _ = interleave_scales(scales, INTERLEAVE_BLOCK)
@@ -485,6 +483,8 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
 
             f.write(packed_data.tobytes())
 
+        del data
+
         return
 
     if precision == 'INT8' and len(shape) == 1:
@@ -493,7 +493,6 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         if K % GROUP_SIZE != 0:
             pad_k = GROUP_SIZE - (K % GROUP_SIZE)
             data = np.pad(data, (0, pad_k), mode='constant', constant_values=0)
-            original_data = np.pad(original_data, (0, pad_k), mode='constant', constant_values=0)
             K = data.shape[0]
             shape = [K]
 
@@ -513,20 +512,21 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         quantized_flat = quantized.reshape(K)
 
         dequantized = (quantized.astype(np.float32) * scales[:, :, np.newaxis]).reshape(K)
-        mse_error = np.mean((original_data - dequantized) ** 2)
-        snr_db = 10 * np.log10(np.var(original_data) / mse_error) if mse_error > 0 else float('inf')
-        cos_sim = np.dot(original_data, dequantized) / (np.linalg.norm(original_data) * np.linalg.norm(dequantized) + 1e-10)
+        mse_error = np.mean((data - dequantized) ** 2)
+        snr_db = 10 * np.log10(np.var(data) / mse_error) if mse_error > 0 else float('inf')
+        cos_sim = np.dot(data, dequantized) / (np.linalg.norm(data) * np.linalg.norm(dequantized) + 1e-10)
+        del dequantized
 
         scales_fp16 = scales.flatten().astype(np.float16)
 
         if stats_tracker:
             stats_tracker['int8_tensors'] += 1
-            stats_tracker['quantized_parameters'] += original_data.size
+            stats_tracker['quantized_parameters'] += data.size
             stats_tracker['mse_values'].append(mse_error)
             stats_tracker['snr_values'].append(snr_db)
             stats_tracker['cos_sim_values'].append(cos_sim)
             stats_tracker['total_tensors'] += 1
-            stats_tracker['total_parameters'] += original_data.size
+            stats_tracker['total_parameters'] += data.size
 
         with open(output_path, 'wb') as f:
             ndim = len(shape)
@@ -570,7 +570,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
     if stats_tracker:
         stats_tracker['fp16_tensors'] += 1
         stats_tracker['total_tensors'] += 1
-        stats_tracker['total_parameters'] += original_data.size
+        stats_tracker['total_parameters'] += data.size
 
     data_flat = data.flatten()
 

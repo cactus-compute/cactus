@@ -63,6 +63,16 @@ struct CactusModelHandle {
     std::unique_ptr<cactus::engine::Model> vad_model;
     std::atomic<bool> should_stop;
     std::vector<uint32_t> processed_tokens;
+    struct ProcessedImage {
+        std::string path;
+        long long last_modified_timestamp = 0;
+
+        bool operator==(const ProcessedImage& other) const {
+            return path == other.path && last_modified_timestamp == other.last_modified_timestamp;
+        }
+    };
+
+    std::vector<std::vector<ProcessedImage>> processed_images;
     std::mutex model_mutex;
     std::string model_name;
     std::unique_ptr<cactus::engine::index::Index> corpus_index;
@@ -122,6 +132,37 @@ inline cactus::engine::AudioProcessor::SpectrogramConfig get_parakeet_spectrogra
     cfg.remove_dc_offset = false;
     cfg.hann_periodic = false;
     return cfg;
+}
+
+inline cactus::engine::AudioProcessor::SpectrogramConfig get_htk_spectrogram_config() {
+    cactus::engine::AudioProcessor::SpectrogramConfig cfg{};
+    cfg.n_fft        = 321;
+    cfg.frame_length = 320;
+    cfg.fft_override = 1024;
+    cfg.hop_length   = 160;
+    cfg.power        = 1.0f;
+    cfg.center       = false;
+    cfg.pad_mode     = "constant";
+    cfg.onesided     = true;
+    cfg.dither       = 0.0f;
+    cfg.mel_floor    = 0.001f;
+    cfg.log_mel      = "log";
+    cfg.reference    = 1.0f;
+    cfg.min_value    = 0.001f;
+    cfg.remove_dc_offset = false;
+    cfg.hann_periodic = true;
+    return cfg;
+}
+
+inline std::vector<float> transpose_mel_to_frame_major(const std::vector<float>& mel,
+                                                        size_t num_mels, size_t num_frames) {
+    std::vector<float> transposed(num_frames * num_mels);
+    for (size_t m = 0; m < num_mels; m++) {
+        for (size_t t = 0; t < num_frames; t++) {
+            transposed[t * num_mels + m] = mel[m * num_frames + t];
+        }
+    }
+    return transposed;
 }
 
 inline void apply_preemphasis(std::vector<float>& waveform, float coefficient = 0.97f) {
@@ -224,6 +265,24 @@ struct ToolFunction {
     std::string name;
     std::string description;
     std::unordered_map<std::string, std::string> parameters;
+};
+
+struct InferenceOptions {
+    float temperature = 0.0f;
+    float top_p = 0.0f;
+    float confidence_threshold = 0.7f;
+    size_t top_k = 0;
+    size_t max_tokens = 100;
+    size_t tool_rag_top_k = 2;
+    size_t cloud_timeout_ms = 15000;
+    std::vector<std::string> stop_sequences;
+    bool force_tools = false;
+    bool include_stop_sequences = false;
+    bool use_vad = true;
+    bool telemetry_enabled = true;
+    bool auto_handoff = true;
+    bool handoff_with_images = true;
+    bool enable_thinking_if_supported = true;
 };
 
 } // namespace ffi
@@ -695,124 +754,100 @@ inline void apply_custom_vocabulary_options(cactus::engine::Model* model, const 
     model->set_vocab_bias(build_custom_vocabulary_bias(model->get_tokenizer(), custom_vocabulary, vocabulary_boost));
 }
 
-inline void parse_options_json(const std::string& json,
-                               float& temperature, float& top_p,
-                               size_t& top_k, size_t& max_tokens,
-                               std::vector<std::string>& stop_sequences,
-                               bool& force_tools,
-                               size_t& tool_rag_top_k,
-                               float& confidence_threshold,
-                               bool& include_stop_sequences,
-                               bool& use_vad,
-                               bool& telemetry_enabled,
-                               bool* auto_handoff = nullptr,
-                               size_t* cloud_timeout_ms = nullptr,
-                               bool* handoff_with_images = nullptr) {
-    temperature = 0.0f;
-    top_p = 0.0f;
-    top_k = 0;
-    max_tokens = 100;
-    force_tools = false;
-    tool_rag_top_k = 2;
-    confidence_threshold = 0.7f;
-    include_stop_sequences = false;
-    use_vad = true;
-    telemetry_enabled = true;
-    if (auto_handoff) *auto_handoff = true;
-    if (cloud_timeout_ms) *cloud_timeout_ms = 15000;
-    if (handoff_with_images) *handoff_with_images = true;
-    stop_sequences.clear();
+inline InferenceOptions parse_inference_options_json(const std::string& json) {
+    InferenceOptions options;
 
-    if (json.empty()) return;
+    if (json.empty()) return options;
 
     size_t pos = json.find("\"temperature\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
-        temperature = std::stof(json.substr(pos));
+        options.temperature = std::stof(json.substr(pos));
     }
 
     pos = json.find("\"top_p\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
-        top_p = std::stof(json.substr(pos));
+        options.top_p = std::stof(json.substr(pos));
     }
 
     pos = json.find("\"top_k\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
-        top_k = std::stoul(json.substr(pos));
+        options.top_k = std::stoul(json.substr(pos));
     }
 
     pos = json.find("\"max_tokens\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
-        max_tokens = std::stoul(json.substr(pos));
+        options.max_tokens = std::stoul(json.substr(pos));
     }
 
     pos = json.find("\"force_tools\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
-        while (pos < json.length() && std::isspace(json[pos])) pos++;
-        force_tools = (json.substr(pos, 4) == "true");
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.force_tools = (json.substr(pos, 4) == "true");
     }
 
     pos = json.find("\"tool_rag_top_k\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
-        tool_rag_top_k = std::stoul(json.substr(pos));
+        options.tool_rag_top_k = std::stoul(json.substr(pos));
     }
 
     pos = json.find("\"confidence_threshold\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
-        confidence_threshold = std::stof(json.substr(pos));
+        options.confidence_threshold = std::stof(json.substr(pos));
     }
 
     pos = json.find("\"include_stop_sequences\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
-        while (pos < json.length() && std::isspace(json[pos])) pos++;
-        include_stop_sequences = (json.substr(pos, 4) == "true");
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.include_stop_sequences = (json.substr(pos, 4) == "true");
     }
 
     pos = json.find("\"use_vad\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
-        while (pos < json.length() && std::isspace(json[pos])) pos++;
-        use_vad = (json.substr(pos, 4) == "true");
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.use_vad = (json.substr(pos, 4) == "true");
     }
 
     pos = json.find("\"telemetry_enabled\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
-        while (pos < json.length() && std::isspace(json[pos])) pos++;
-        telemetry_enabled = (json.substr(pos, 4) == "true");
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.telemetry_enabled = (json.substr(pos, 4) == "true");
     }
 
-    if (auto_handoff) {
-        pos = json.find("\"auto_handoff\"");
-        if (pos != std::string::npos) {
-            pos = json.find(':', pos) + 1;
-            while (pos < json.length() && std::isspace(json[pos])) pos++;
-            *auto_handoff = (json.substr(pos, 4) == "true");
-        }
+    pos = json.find("\"auto_handoff\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.auto_handoff = (json.substr(pos, 4) == "true");
     }
 
-    if (cloud_timeout_ms) {
-        pos = json.find("\"cloud_timeout_ms\"");
-        if (pos != std::string::npos) {
-            pos = json.find(':', pos) + 1;
-            *cloud_timeout_ms = std::stoul(json.substr(pos));
-        }
+    pos = json.find("\"cloud_timeout_ms\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        options.cloud_timeout_ms = std::stoul(json.substr(pos));
     }
 
-    if (handoff_with_images) {
-        pos = json.find("\"handoff_with_images\"");
-        if (pos != std::string::npos) {
-            pos = json.find(':', pos) + 1;
-            while (pos < json.length() && std::isspace(json[pos])) pos++;
-            *handoff_with_images = (json.substr(pos, 4) == "true");
-        }
+    pos = json.find("\"handoff_with_images\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.handoff_with_images = (json.substr(pos, 4) == "true");
+    }
+
+    pos = json.find("\"enable_thinking_if_supported\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.enable_thinking_if_supported = (json.substr(pos, 4) == "true");
     }
 
     pos = json.find("\"stop_sequences\"");
@@ -826,12 +861,14 @@ inline void parse_options_json(const std::string& json,
                 size_t seq_start = seq_pos + 1;
                 size_t seq_end = json.find('"', seq_start);
                 if (seq_end != std::string::npos) {
-                    stop_sequences.push_back(json.substr(seq_start, seq_end - seq_start));
+                    options.stop_sequences.push_back(json.substr(seq_start, seq_end - seq_start));
                 }
                 seq_pos = json.find('"', seq_end + 1);
             }
         }
     }
+
+    return options;
 }
 
 static inline std::string trim_lfm2_slice(const std::string& value, size_t begin, size_t end) {
@@ -1051,6 +1088,95 @@ inline void parse_function_calls_from_response(const std::string& response_text,
     }
 }
 
+inline void strip_tag_blocks(std::string& text, std::string& extracted,
+                             const std::string& open_tag, const std::string& close_tag) {
+    std::string result;
+    size_t pos = 0;
+
+    size_t first_close = text.find(close_tag);
+    size_t first_open = text.find(open_tag);
+    if (first_close != std::string::npos &&
+        (first_open == std::string::npos || first_close < first_open)) {
+        extracted += text.substr(0, first_close);
+        pos = first_close + close_tag.size();
+    }
+
+    while (pos < text.size()) {
+        size_t open_pos = text.find(open_tag, pos);
+        if (open_pos == std::string::npos) {
+            result += text.substr(pos);
+            break;
+        }
+        result += text.substr(pos, open_pos - pos);
+        size_t content_start = open_pos + open_tag.size();
+        size_t close_pos = text.find(close_tag, content_start);
+        if (close_pos == std::string::npos) {
+            if (!extracted.empty()) extracted += "\n";
+            extracted += text.substr(content_start);
+            break;
+        }
+        if (!extracted.empty()) extracted += "\n";
+        extracted += text.substr(content_start, close_pos - content_start);
+        pos = close_pos + close_tag.size();
+    }
+    text = result;
+}
+
+inline std::vector<std::pair<size_t, size_t>> find_channel_token_ranges(
+    const std::vector<uint32_t>& tokens, size_t offset,
+    uint32_t channel_open_id, uint32_t channel_close_id) {
+    std::vector<std::pair<size_t, size_t>> ranges;
+    size_t pos = 0;
+    while (pos < tokens.size()) {
+        if (tokens[pos] != channel_open_id) {
+            pos++;
+            continue;
+        }
+
+        size_t block_start = pos;
+        pos++;
+        while (pos < tokens.size() && tokens[pos] != channel_close_id) {
+            pos++;
+        }
+        if (pos < tokens.size()) {
+            pos++;
+        }
+        ranges.push_back({offset + block_start, pos - block_start});
+    }
+    return ranges;
+}
+
+inline void strip_thinking_block(const std::string& input, std::string& thinking, std::string& content) {
+    thinking.clear();
+    content = input;
+
+    auto trim = [](std::string& s) {
+        size_t first = s.find_first_not_of(" \t\n\r");
+        size_t last = s.find_last_not_of(" \t\n\r");
+        if (first != std::string::npos && last != std::string::npos)
+            s = s.substr(first, last - first + 1);
+        else
+            s.clear();
+    };
+
+    if (content.find("<|channel>") != std::string::npos || content.find("<channel|>") != std::string::npos) {
+        strip_tag_blocks(content, thinking, "<|channel>", "<channel|>");
+    } else if (content.find("<think>") != std::string::npos || content.find("</think>") != std::string::npos) {
+        strip_tag_blocks(content, thinking, "<think>", "</think>");
+    } else {
+        return;
+    }
+
+    trim(thinking);
+    trim(content);
+}
+
+struct TranscriptSegment {
+    float start;
+    float end;
+    std::string text;
+};
+
 inline std::string construct_response_json(const std::string& regular_response,
                                            const std::vector<std::string>& function_calls,
                                            double time_to_first_token,
@@ -1060,17 +1186,30 @@ inline std::string construct_response_json(const std::string& regular_response,
                                            size_t prompt_tokens,
                                            size_t completion_tokens,
                                            float confidence = 0.0f,
-                                           bool cloud_handoff = false) {
+                                           bool cloud_handoff = false,
+                                           const std::string& thinking = "",
+                                           const std::vector<TranscriptSegment>& segments = {}) {
     std::ostringstream json;
     json << "{";
     json << "\"success\":true,";
     json << "\"error\":null,";
     json << "\"cloud_handoff\":" << (cloud_handoff ? "true" : "false") << ",";
     json << "\"response\":\"" << escape_json_string(regular_response) << "\",";
+    if (!thinking.empty()) {
+        json << "\"thinking\":\"" << escape_json_string(thinking) << "\",";
+    }
     json << "\"function_calls\":[";
     for (size_t i = 0; i < function_calls.size(); ++i) {
         if (i > 0) json << ",";
         json << function_calls[i];
+    }
+    json << "],";
+    json << "\"segments\":[";
+    for (size_t i = 0; i < segments.size(); ++i) {
+        if (i > 0) json << ",";
+        json << "{\"start\":" << std::fixed << std::setprecision(3) << segments[i].start
+             << ",\"end\":" << std::fixed << std::setprecision(3) << segments[i].end
+             << ",\"text\":\"" << escape_json_string(segments[i].text) << "\"}";
     }
     json << "],";
     json << "\"confidence\":" << std::fixed << std::setprecision(4) << confidence << ",";

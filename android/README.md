@@ -8,13 +8,18 @@ keywords: ["Android SDK", "Kotlin Multiplatform", "on-device AI", "mobile infere
 
 Run AI models on-device with a simple Kotlin API.
 
+> **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
+
 ## Building
 
+<!-- --8<-- [start:install] -->
 ```bash
+git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
 cactus build --android
 ```
 
-Build output: `android/build/lib/libcactus.so`
+Build output: `android/libcactus.so` (and `android/libcactus.a`)
+<!-- --8<-- [end:install] -->
 
 see the main [README.md](../README.md) for how to use CLI & download weight
 
@@ -32,6 +37,7 @@ CACTUS_CURL_ROOT=/absolute/path/to/curl cactus build --android
 
 ## Integration
 
+<!-- --8<-- [start:integration] -->
 ### Android-only
 
 1. Copy `libcactus.so` to `app/src/main/jniLibs/arm64-v8a/`
@@ -82,6 +88,7 @@ kotlin {
     }
 }
 ```
+<!-- --8<-- [end:integration] -->
 
 ## Usage
 
@@ -89,48 +96,142 @@ Handles are plain `Long` values (C pointers). All functions are top-level.
 
 ### Basic Completion
 
+<!-- --8<-- [start:example] -->
 ```kotlin
 import com.cactus.*
-import org.json.JSONObject
 
 val model = cactusInit("/path/to/model", null, false)
 val messages = """[{"role":"user","content":"What is the capital of France?"}]"""
 val resultJson = cactusComplete(model, messages, null, null, null)
-val result = JSONObject(resultJson)
-println(result.getString("response"))
+println(resultJson)
 cactusDestroy(model)
 ```
+<!-- --8<-- [end:example] -->
+
+For vision models (LFM2-VL, LFM2.5-VL), add `"images": ["path/to/image.png"]` to any message. See [Engine API](/docs/cactus_engine.md) for details.
 
 ### Completion with Options and Streaming
 
 ```kotlin
+import com.cactus.*
+
 val options = """{"max_tokens":256,"temperature":0.7}"""
-val tokens = mutableListOf<String>()
 
 val resultJson = cactusComplete(model, messages, options, null) { token, _ ->
-    tokens.add(token)
     print(token)
+}
+println(resultJson)
+```
+
+### Prefill
+
+Pre-processes input text and populates the KV cache without generating output tokens. This reduces latency for subsequent calls to `cactusComplete`.
+
+```kotlin
+fun cactusPrefill(
+    model: Long,
+    messagesJson: String,
+    optionsJson: String?,
+    toolsJson: String?
+): String
+```
+
+```kotlin
+val tools = """[
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather for a location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City, State, Country"}
+                },
+                "required": ["location"]
+            }
+        }
+    }
+]"""
+
+val messages = """[
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "What is the weather in Paris?"},
+    {"role": "assistant", "content": "<|tool_call_start|>get_weather(location=\"Paris\")<|tool_call_end|>"},
+    {"role": "tool", "content": "{\"name\": \"get_weather\", \"content\": \"Sunny, 72°F\"}"},
+    {"role": "assistant", "content": "It's sunny and 72°F in Paris!"}
+]"""
+
+val resultJson = cactusPrefill(model, messages, null, tools)
+
+val completionMessages = """[
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "What is the weather in Paris?"},
+    {"role": "assistant", "content": "<|tool_call_start|>get_weather(location=\"Paris\")<|tool_call_end|>"},
+    {"role": "tool", "content": "{\"name\": \"get_weather\", \"content\": \"Sunny, 72°F\"}"},
+    {"role": "assistant", "content": "It's sunny and 72°F in Paris!"},
+    {"role": "user", "content": "What about SF?"}
+]"""
+
+val completion = cactusComplete(model, completionMessages, null, tools, null)
+```
+
+**Response format:**
+```json
+{
+    "success": true,
+    "error": null,
+    "prefill_tokens": 25,
+    "prefill_tps": 166.1,
+    "total_time_ms": 150.5,
+    "ram_usage_mb": 245.67
 }
 ```
 
 ### Audio Transcription
 
 ```kotlin
+import com.cactus.*
+
 // From file
-val result = cactusTranscribe(model, "/path/to/audio.wav", "", null, null, null)
+val resultJson = cactusTranscribe(model, "/path/to/audio.wav", null, null, null, null)
+println(resultJson)
 
 // From PCM data (16 kHz mono)
 val pcmData: ByteArray = ...
-val result = cactusTranscribe(model, null, null, null, null, pcmData)
+val resultJson2 = cactusTranscribe(model, null, null, null, null, pcmData)
+println(resultJson2)
+```
+
+`segments` contains timestamps (seconds): phrase-level for Whisper, word-level for Parakeet TDT, one segment per transcription window for Parakeet CTC and Moonshine (consecutive VAD speech regions up to 30s).
+
+```kotlin
+import org.json.JSONObject
+
+val result = JSONObject(resultJson)
+val segments = result.getJSONArray("segments")
+for (i in 0 until segments.length()) {
+    val seg = segments.getJSONObject(i)
+    println("[${seg.getDouble("start")}s - ${seg.getDouble("end")}s] ${seg.getString("text")}")
+}
+```
+
+**Custom vocabulary** biases the decoder toward domain-specific words (supported for Whisper and Moonshine models). Pass `custom_vocabulary` and `vocabulary_boost` in the options JSON:
+
+```kotlin
+val options = """{"custom_vocabulary": ["Omeprazole", "HIPAA", "Cactus"], "vocabulary_boost": 3.0}"""
+val result = cactusTranscribe(model, "/path/to/audio.wav", "", options, null, null)
 ```
 
 ### Streaming Transcription
 
 ```kotlin
-val stream  = cactusStreamTranscribeStart(model, null)
+val stream = cactusStreamTranscribeStart(model, null)
 val partial = cactusStreamTranscribeProcess(stream, audioChunk)
 val final_  = cactusStreamTranscribeStop(stream)
 ```
+
+Streaming also accepts `custom_vocabulary` in the options passed to `cactusStreamTranscribeStart`. The bias is applied for the lifetime of the stream session.
 
 ### Embeddings
 
@@ -162,19 +263,17 @@ val result = cactusRagQuery(model, "What is machine learning?", 5)
 ### Vector Index
 
 ```kotlin
-val index = cactusIndexInit("/path/to/index", 384)
+val index = cactusIndexInit("/path/to/index", 3)
 
 cactusIndexAdd(
     index,
     intArrayOf(1, 2),
     arrayOf("Document 1", "Document 2"),
-    arrayOf(floatArrayOf(0.1f, 0.2f), floatArrayOf(0.3f, 0.4f)),
+    arrayOf(floatArrayOf(0.1f, 0.2f, 0.3f), floatArrayOf(0.4f, 0.5f, 0.6f)),
     null
 )
 
-val resultsJson = cactusIndexQuery(index, floatArrayOf(0.1f, 0.2f), null)
-// JSON: {"results":[{"id":1,"score":0.99,...},...]}
-
+val resultsJson = cactusIndexQuery(index, floatArrayOf(0.1f, 0.2f, 0.3f), null)
 cactusIndexDelete(index, intArrayOf(2))
 cactusIndexCompact(index)
 cactusIndexDestroy(index)
@@ -192,6 +291,17 @@ fun cactusDestroy(model: Long)
 fun cactusReset(model: Long)
 fun cactusStop(model: Long)
 fun cactusGetLastError(): String
+```
+
+### Prefill
+
+```kotlin
+fun cactusPrefill(
+    model: Long,
+    messagesJson: String,
+    optionsJson: String?,
+    toolsJson: String?
+): String
 ```
 
 ### Completion
@@ -238,6 +348,12 @@ fun cactusTokenize(model: Long, text: String): IntArray
 fun cactusScoreWindow(model: Long, tokens: IntArray, start: Int, end: Int, context: Int): String
 ```
 
+### Detect Language
+
+```kotlin
+fun cactusDetectLanguage(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
+```
+
 ### VAD / RAG
 
 ```kotlin
@@ -257,6 +373,13 @@ fun cactusIndexQuery(index: Long, embedding: FloatArray, optionsJson: String?): 
 fun cactusIndexCompact(index: Long): Int
 ```
 
+### Logging
+
+```kotlin
+fun cactusLogSetLevel(level: Int)  // 0=DEBUG 1=INFO 2=WARN 3=ERROR 4=NONE
+fun cactusLogSetCallback(callback: CactusLogCallback?)
+```
+
 ### Telemetry
 
 ```kotlin
@@ -272,12 +395,16 @@ fun cactusTelemetryShutdown()
 fun interface CactusTokenCallback {
     fun onToken(token: String, tokenId: Int)
 }
+
+fun interface CactusLogCallback {
+    fun onLog(level: Int, component: String, message: String)
+}
 ```
 
 ## Requirements
 
-- Android API 24+ / arm64-v8a
-- iOS 14+ / arm64 (KMP only)
+- Android API 21+ / arm64-v8a
+- iOS 13+ / arm64 (KMP only)
 
 ## See Also
 

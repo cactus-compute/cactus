@@ -8,7 +8,6 @@
 #include <cstdlib>
 #include <future>
 #include <chrono>
-#include <atomic>
 
 using namespace cactus::ffi;
 
@@ -49,7 +48,6 @@ bool json_bool(const std::string& json, const std::string& key) {
     size_t start = pos + pattern.size();
     while (start < json.size() && (json[start] == ' ' || json[start] == '\t')) ++start;
     if (start + 4 <= json.size() && json.substr(start, 4) == "true") return true;
-    if (start + 5 <= json.size() && json.substr(start, 5) == "false") return false;
     return false;
 }
 
@@ -70,39 +68,6 @@ std::string json_array(const std::string& json, const std::string& key) {
     return json.substr(start, end - start);
 }
 
-static bool fuzzy_match(const std::string& a, const std::string& b, size_t n, double threshold) {
-    if (!n) return false;
-    if (a.size() < n || b.size() < n) return false;
-
-    std::vector<size_t> dp(n + 1);
-    size_t dp_im1_jm1;
-
-    for (size_t j = 0; j <= n; ++j) dp[j] = j;
-
-    for (size_t i = 1; i <= n; ++i) {
-        dp_im1_jm1 = dp[0];
-        dp[0] = i;
-
-        for (size_t j = 1; j <= n; ++j) {
-            size_t dp_im1_j = dp[j];
-
-            if (a[i - 1] == b[j - 1]) {
-                dp[j] = dp_im1_jm1;
-            } else {
-                dp[j] = std::min({
-                    dp[j] + 1,
-                    dp[j - 1] + 1,
-                    dp_im1_jm1 + 1
-                });
-            }
-            
-            dp_im1_jm1 = dp_im1_j;
-        }
-    }
-
-    return 1.0 - static_cast<double>(dp[n]) / static_cast<double>(n) >= threshold;
-}
-
 static std::string suppress_unwanted_text(const std::string& text) {
     static const std::regex pattern(R"(\([^)]*\)|\[[^\]]*\]|\.\.\.)");
     std::string result = std::regex_replace(text, pattern, "");
@@ -114,24 +79,16 @@ static std::string suppress_unwanted_text(const std::string& text) {
 }
 
 static void parse_stream_transcribe_init_options(const std::string& json,
-                                                 double& confirmation_threshold,
                                                  size_t& min_chunk_size,
                                                  bool& telemetry_enabled,
                                                  std::string& language) {
-    confirmation_threshold = 0.99;
     min_chunk_size = 32000;
     telemetry_enabled = true;
     language = "en";
 
     if (json.empty()) return;
 
-    size_t pos = json.find("\"confirmation_threshold\"");
-    if (pos != std::string::npos) {
-        pos = json.find(':', pos) + 1;
-        confirmation_threshold = std::stod(json.substr(pos));
-    }
-
-    pos = json.find("\"min_chunk_size\"");
+    size_t pos = json.find("\"min_chunk_size\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
         min_chunk_size = static_cast<size_t>(std::stod(json.substr(pos)));
@@ -150,7 +107,6 @@ struct CactusStreamTranscribeHandle {
     CactusModelHandle* model_handle;
 
     struct CactusStreamTranscribeOptions {
-        double confirmation_threshold;
         size_t min_chunk_size;
         std::string language;
     } options;
@@ -159,9 +115,9 @@ struct CactusStreamTranscribeHandle {
 
     std::vector<uint8_t> audio_buffer;
 
-    std::string previous_transcription;
-    size_t previous_audio_buffer_size;
+    std::vector<TranscriptSegment> previous_segments;
     bool previous_cloud_handoff = false;
+    float stream_audio_offset_sec = 0.0f;
     uint64_t next_cloud_job_id = 1;
 
     struct CloudJob {
@@ -184,13 +140,51 @@ struct CactusStreamTranscribeHandle {
     int stream_cumulative_tokens;
 };
 
+static std::vector<TranscriptSegment> parse_segments(const std::string& transcribe_json) {
+    std::vector<TranscriptSegment> segs;
+    std::string arr = json_array(transcribe_json, "segments");
+    size_t i = 1;
+    while (i < arr.size() - 1) {
+        while (i < arr.size() && (arr[i] == ',' || std::isspace((unsigned char)arr[i]))) ++i;
+        if (i >= arr.size() - 1 || arr[i] != '{') break;
+        int depth = 1;
+        size_t obj_start = i++;
+        while (i < arr.size() && depth > 0) {
+            if (arr[i] == '{') ++depth;
+            else if (arr[i] == '}') --depth;
+            ++i;
+        }
+        std::string obj = arr.substr(obj_start, i - obj_start);
+        segs.emplace_back(
+            static_cast<float>(json_number(obj, "start")),
+            static_cast<float>(json_number(obj, "end")),
+            json_string(obj, "text")
+        );
+    }
+    return segs;
+}
 
+static std::string serialize_segments_with_offset(
+    const std::vector<TranscriptSegment>& segs, float offset_sec) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < segs.size(); ++i) {
+        if (i > 0) out << ",";
+        out << std::fixed << std::setprecision(3)
+            << "{\"start\":" << (segs[i].start + offset_sec)
+            << ",\"end\":" << (segs[i].end + offset_sec)
+            << ",\"text\":\"" << escape_json(segs[i].text) << "\"}";
+    }
+    out << "]";
+    return out.str();
+}
 
 static std::string build_stream_response(
     const std::string& raw_json_str,
     const std::string& error_msg,
     const std::string& confirmed,
     const std::string& pending,
+    const std::string& segments_json,
     bool cloud_handoff,
     double buffer_duration_ms,
     uint64_t cloud_job_id,
@@ -232,6 +226,7 @@ static std::string build_stream_response(
     json_builder << "\"confirmed_local\":\"" << escape_json(confirmed) << "\",";
     json_builder << "\"confirmed\":\"" << escape_json(effective_confirmed) << "\",";
     json_builder << "\"pending\":\"" << escape_json(pending) << "\",";
+    json_builder << "\"segments\":" << segments_json << ",";
     json_builder << "\"function_calls\":" << function_calls << ",";
     json_builder << "\"confidence\":" << confidence << ",";
     json_builder << "\"time_to_first_token_ms\":" << time_to_first_token_ms << ",";
@@ -265,7 +260,6 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, 
 
         auto* stream_handle = new CactusStreamTranscribeHandle();
         stream_handle->model_handle = model_handle;
-        stream_handle->previous_audio_buffer_size = 0;
         stream_handle->transcribe_response_buffer[0] = '\0';
 
         auto session_start_time = std::chrono::steady_clock::now();
@@ -279,19 +273,17 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, 
         stream_handle->stream_session_first_token_ms = 0.0;
         stream_handle->stream_cumulative_tokens = 0;
 
-        double confirmation_threshold;
         size_t min_chunk_size;
         bool telemetry_enabled;
         std::string language;
         parse_stream_transcribe_init_options(
             options_json ? options_json : "",
-            confirmation_threshold,
             min_chunk_size,
             telemetry_enabled,
             language
         );
 
-        stream_handle->options = { confirmation_threshold, min_chunk_size, language };
+        stream_handle->options = { min_chunk_size, language };
         stream_handle->transcribe_options_json = options_json ? options_json : "";
         {
             std::vector<std::string> custom_vocabulary;
@@ -383,14 +375,11 @@ int cactus_stream_transcribe_process(
             model_type == cactus::engine::Config::ModelType::PARAKEET ||
             model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
 
-        std::string prompt = is_moonshine ? "" :
-            "<|startoftranscript|><|" + handle->options.language + "|><|transcribe|><|notimestamps|>";
-
         cactus::telemetry::setStreamMode(true);
         const int result = cactus_transcribe(
             handle->model_handle,
             nullptr,
-            (is_moonshine || is_parakeet) ? "" : "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>",
+            (is_moonshine || is_parakeet) ? "" : ("<|startoftranscript|><|" + handle->options.language + "|><|transcribe|>").c_str(),
             handle->transcribe_response_buffer,
             sizeof(handle->transcribe_response_buffer),
             handle->transcribe_options_json.empty() ? nullptr : handle->transcribe_options_json.c_str(),
@@ -412,6 +401,8 @@ int cactus_stream_transcribe_process(
 
         std::string json_str(handle->transcribe_response_buffer);
         std::string response = suppress_unwanted_text(json_string(json_str, "response"));
+        auto current_segments = parse_segments(json_str);
+        const float segments_offset_sec = static_cast<float>(handle->stream_audio_offset_sec);
 
         std::string confirmed;
         double buffer_duration_ms = 0.0;
@@ -424,13 +415,23 @@ int cactus_stream_transcribe_process(
             chunk_decode_tokens = 0.0;
         }
 
-        const size_t n = std::min(handle->previous_transcription.size(), response.size());
-        if (fuzzy_match(handle->previous_transcription, response, n, handle->options.confirmation_threshold)) {
-            if (handle->previous_audio_buffer_size > 0) {
-                 buffer_duration_ms = (handle->previous_audio_buffer_size / 2.0) / 16000.0 * 1000.0;
+        size_t confirmed_segments = 0;
+        for (size_t i = 0; i < std::min(handle->previous_segments.size(), current_segments.size()); ++i) {
+            if (handle->previous_segments[i].text != current_segments[i].text) {
+                break;
+            }
+            confirmed_segments = i + 1;
+        }
+
+        if (confirmed_segments > 0) {
+            const float confirmed_end_sec = current_segments[confirmed_segments - 1].end;
+            buffer_duration_ms = confirmed_end_sec * 1000.0;
+
+            for (size_t i = 0; i < confirmed_segments; ++i) {
+                if (!confirmed.empty()) confirmed += ' ';
+                confirmed += handle->previous_segments[i].text;
             }
 
-            confirmed = suppress_unwanted_text(handle->previous_transcription);
             if (chunk_decode_tokens > 0.0) {
                 handle->stream_total_tokens += static_cast<int>(std::round(chunk_decode_tokens));
                 handle->stream_cumulative_tokens += static_cast<int>(std::round(chunk_decode_tokens));
@@ -448,11 +449,16 @@ int cactus_stream_transcribe_process(
                 handle->stream_session_first_token_seen = true;
             }
 
+            const size_t confirmed_bytes = std::min(
+                static_cast<size_t>(confirmed_end_sec * 16000.0) * 2,
+                handle->audio_buffer.size()
+            );
+
             if (handle->previous_cloud_handoff && !confirmed.empty()) {
                 cloud_handoff_triggered = true;
                 std::vector<uint8_t> confirmed_audio(
                     handle->audio_buffer.begin(),
-                    handle->audio_buffer.begin() + handle->previous_audio_buffer_size
+                    handle->audio_buffer.begin() + confirmed_bytes
                 );
                 auto wav = cloud_build_wav(confirmed_audio.data(), confirmed_audio.size());
                 std::string b64 = cloud_base64_encode(wav.data(), wav.size());
@@ -468,16 +474,16 @@ int cactus_stream_transcribe_process(
                 });
             }
 
+            handle->stream_audio_offset_sec += confirmed_end_sec;
             handle->audio_buffer.erase(
                 handle->audio_buffer.begin(),
-                handle->audio_buffer.begin() + handle->previous_audio_buffer_size
+                handle->audio_buffer.begin() + confirmed_bytes
             );
-            handle->previous_transcription.clear();
-            handle->previous_audio_buffer_size = 0;
+            handle->previous_segments = std::vector<TranscriptSegment>(
+                current_segments.begin() + confirmed_segments, current_segments.end());
             handle->previous_cloud_handoff = false;
         } else {
-            handle->previous_transcription = response;
-            handle->previous_audio_buffer_size = handle->audio_buffer.size();
+            handle->previous_segments = current_segments;
             handle->previous_cloud_handoff = json_bool(json_str, "cloud_handoff");
         }
 
@@ -542,6 +548,7 @@ int cactus_stream_transcribe_process(
             json_string(json_str, "error"),
             confirmed,
             response,
+            serialize_segments_with_offset(current_segments, segments_offset_sec),
             cloud_handoff_triggered,
             buffer_duration_ms,
             cloud_job_id,
@@ -601,10 +608,14 @@ int cactus_stream_transcribe_stop(
     }
 
     try {
-        std::string suppressed = suppress_unwanted_text(handle->previous_transcription);
+        std::string final_confirmed;
+        for (const auto& seg : handle->previous_segments) {
+            if (!final_confirmed.empty()) final_confirmed += ' ';
+            final_confirmed += seg.text;
+        }
 
         std::string json_response = "{\"success\":true,\"confirmed\":\"" +
-            escape_json(suppressed) + "\"}";
+            escape_json(final_confirmed) + "\"}";
 
         auto now = std::chrono::steady_clock::now();
         double elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - handle->stream_start).count();

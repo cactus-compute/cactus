@@ -24,7 +24,7 @@ Thank you for your interest in contributing to Cactus! This document covers the 
 1. Fork the repository and create a branch from `main`.
 2. Make your changes, keeping the scope focused on the relevant GitHub issue.
 3. Run `cactus test` to verify your changes build and pass all tests.
-4. Run `cactus test --benchmark` if your changes affect performance-critical paths.
+4. Run `cactus test --performance` if your changes affect performance-critical paths.
 5. Update documentation if your changes affect the public API or user-facing behavior.
 6. Submit a pull request with a clear description of what you changed and why.
 
@@ -40,8 +40,8 @@ cactus test --ios
 # Run tests on a connected Android device
 cactus test --android
 
-# Run benchmarks
-cactus test --benchmark
+# Run performance tests
+cactus test --performance
 
 # Test a specific model
 cactus test --model LiquidAI/LFM2.5-1.2B-Instruct
@@ -55,4 +55,4 @@ All contributions must comply with the [Developer Certificate of Origin (DCO)](D
 
 - [Cactus Engine API](/docs/cactus_engine.md) — C API reference
 - [Cactus Graph API](/docs/cactus_graph.md) — Computational graph API reference
-- [Documentation Index](/docs/index.md) — Full documentation table of contents
+- [Cactus Index API](/docs/cactus_index.md) — Vector database API reference

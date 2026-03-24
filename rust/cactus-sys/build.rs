@@ -96,6 +96,7 @@ fn build_native_library(cactus_src: &Path) -> PathBuf {
     cmake::Config::new(cactus_src)
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("CMAKE_BUILD_TYPE", "Release")
+        .cxxflag(r#"-DCACTUS_DEFAULT_FRAMEWORK=\"rust\""#)
         .build_target("cactus")
         .build()
         .join("build")
