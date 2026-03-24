@@ -25,6 +25,47 @@ std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
     return {};
 }
 
+std::string format_needle_query_text(const std::vector<ChatMessage>& messages) {
+    std::string system_text;
+    std::string user_query;
+
+    for (const auto& msg : messages) {
+        if (msg.role == "system") {
+            if (!system_text.empty()) {
+                system_text += "\n";
+            }
+            system_text += msg.content;
+        } else if (msg.role == "user") {
+            user_query = msg.content;
+        }
+    }
+
+    if (user_query.empty() && !messages.empty()) {
+        user_query = messages.back().content;
+    }
+
+    if (system_text.empty()) {
+        return user_query;
+    }
+    if (user_query.empty()) {
+        return system_text;
+    }
+    return system_text + "\n\n" + user_query;
+}
+
+const std::vector<uint32_t>& get_cached_needle_tools_suffix_tokens(
+    CactusModelHandle* handle,
+    Tokenizer* tokenizer,
+    const std::string& formatted_tools
+) {
+    std::string suffix = "<tools>" + formatted_tools + "</s>";
+    if (handle->cached_needle_tools_suffix != suffix) {
+        handle->cached_needle_tools_suffix = suffix;
+        handle->cached_needle_tools_suffix_tokens = tokenizer->encode(suffix);
+    }
+    return handle->cached_needle_tools_suffix_tokens;
+}
+
 void inject_rag_context(CactusModelHandle* handle, std::vector<ChatMessage>& messages) {
     if (!handle->corpus_index) return;
 
@@ -446,17 +487,23 @@ PreparedPrompt prepare_prompt(
         formatted_tools = serialize_tools_json(prompt.tools);
     }
 
-    std::string full_prompt = tokenizer->format_chat_prompt(
-        prompt.messages,
-        add_generation_prompt,
-        formatted_tools,
-        prompt.options.enable_thinking_if_supported
-    );
-    if (full_prompt.find("ERROR:") == 0) {
-        throw std::runtime_error(full_prompt.substr(6));
+    if (prompt.model_type == Config::ModelType::NEEDLE) {
+        std::string query_text = format_needle_query_text(prompt.messages);
+        prompt.tokens = tokenizer->encode(query_text);
+        const auto& suffix_tokens = get_cached_needle_tools_suffix_tokens(handle, tokenizer, formatted_tools);
+        prompt.tokens.insert(prompt.tokens.end(), suffix_tokens.begin(), suffix_tokens.end());
+    } else {
+        std::string full_prompt = tokenizer->format_chat_prompt(
+            prompt.messages,
+            add_generation_prompt,
+            formatted_tools,
+            prompt.options.enable_thinking_if_supported
+        );
+        if (full_prompt.find("ERROR:") == 0) {
+            throw std::runtime_error(full_prompt.substr(6));
+        }
+        prompt.tokens = tokenizer->encode(full_prompt);
     }
-
-    prompt.tokens = tokenizer->encode(full_prompt);
     prompt.context_token_count = prompt.tokens.size();
     prompt.images = images_from_message(prompt.messages);
     return prompt;

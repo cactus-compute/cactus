@@ -73,6 +73,8 @@ struct CactusModelHandle {
     };
 
     std::vector<std::vector<ProcessedImage>> processed_images;
+    std::string cached_needle_tools_suffix;
+    std::vector<uint32_t> cached_needle_tools_suffix_tokens;
     std::mutex model_mutex;
     std::string model_name;
     std::unique_ptr<cactus::engine::index::Index> corpus_index;
