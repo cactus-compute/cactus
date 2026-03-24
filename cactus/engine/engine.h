@@ -385,7 +385,7 @@ private:
     std::vector<std::pair<std::string, uint32_t>> tokenize_with_trie(const std::string& text) const;
     std::vector<uint32_t> tokenize_with_bpe(const std::string& text) const;
     std::string preprocess_text(const std::string& text) const;
-    std::string postprocess_text(const std::string& text) const;
+    std::string postprocess_text(const std::string& text, bool strip_leading_space = true) const;
     bool use_sentencepiece_bpe() const;
     
     void cleanup_mmap();

@@ -326,7 +326,7 @@ std::string SPTokenizer::preprocess_text(const std::string& text) const {
     return processed;
 }
 
-std::string SPTokenizer::postprocess_text(const std::string& text) const {
+std::string SPTokenizer::postprocess_text(const std::string& text, bool strip_leading_space) const {
     std::string result;
     size_t i = 0;
     while (i < text.length()) {
@@ -341,7 +341,7 @@ std::string SPTokenizer::postprocess_text(const std::string& text) const {
             i++;
         }
     }
-    if (!result.empty() && result[0] == ' ') {
+    if (strip_leading_space && !result.empty() && result[0] == ' ') {
         result = result.substr(1);
     }
     return result;
@@ -606,7 +606,7 @@ std::string SPTokenizer::decode(const std::vector<uint32_t>& tokens) const {
         }
     }
 
-    return postprocess_text(raw_text);
+    return postprocess_text(raw_text, tokens.size() != 1);
 }
 
 void SPTokenizer::load_special_tokens(const std::string& config_file) {
