@@ -543,16 +543,18 @@ def cmd_download(args):
         else:
             config_json = _download_config_json(model_id)
             model_type = str(config_json.get('model_type', '')).lower()
+            tokenizer = None
 
-            try:
-                tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
-            except Exception as tok_err:
-                if "TokenizersBackend" in str(tok_err) or "does not exist or is not currently imported" in str(tok_err):
-                    from transformers import PreTrainedTokenizerFast
-                    print("  Note: Using PreTrainedTokenizerFast fallback for invalid tokenizer_class...")
-                    tokenizer = PreTrainedTokenizerFast.from_pretrained(model_id, cache_dir=cache_dir, token=token)
-                else:
-                    raise
+            if model_type != 'sortformer':
+                try:
+                    tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+                except Exception as tok_err:
+                    if "TokenizersBackend" in str(tok_err) or "does not exist or is not currently imported" in str(tok_err):
+                        from transformers import PreTrainedTokenizerFast
+                        print("  Note: Using PreTrainedTokenizerFast fallback for invalid tokenizer_class...")
+                        tokenizer = PreTrainedTokenizerFast.from_pretrained(model_id, cache_dir=cache_dir, token=token)
+                    else:
+                        raise
 
             if model_type == 'lfm2_moe' or model_type.startswith('qwen3_5'):
                 if model_type == 'lfm2_moe':
@@ -601,16 +603,16 @@ def cmd_download(args):
             for key, value in config.items():
                 f.write(f"{key}={format_config_value(value)}\n")
 
-        convert_hf_tokenizer(
-            tokenizer,
-            weights_dir,
-            token=token,
-            model_id=model_name,
-            labels=tokenizer_labels,
-            model_type=config.get('model_type'),
-        )
-
-        del tokenizer
+        if tokenizer is not None:
+            convert_hf_tokenizer(
+                tokenizer,
+                weights_dir,
+                token=token,
+                model_id=model_name,
+                labels=tokenizer_labels,
+                model_type=config.get('model_type'),
+            )
+            del tokenizer
         import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -1722,11 +1724,12 @@ def cmd_list(args):
         "text-generation": "Text Generation",
         "image-text-to-text": "Vision",
         "automatic-speech-recognition": "Speech Recognition",
+        "speaker-diarization": "Speaker Diarization",
         "feature-extraction": "Embeddings",
         "voice-activity-detection": "Voice Activity Detection",
     }
     PIPELINE_ORDER = list(PIPELINE_DISPLAY.keys())
-    SHOW_TAGS = {"tools", "vision", "embed", "transcription"}
+    SHOW_TAGS = {"tools", "vision", "embed", "transcription", "diarization"}
     EMBED_ALIASES = {"text-embed", "image-embed", "speech-embed"}
 
     DIM = '\033[2m'
