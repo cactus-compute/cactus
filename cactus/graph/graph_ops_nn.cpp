@@ -13,10 +13,12 @@
 namespace {
     constexpr size_t WEIGHT_QUANT_GROUP_SIZE = 32;
     thread_local std::vector<__fp16> transpose_buffer_fp16;
-    thread_local std::vector<__fp16> ternary_fp16_buffer;
     thread_local std::vector<__fp16> ternary_rhs_scales_buffer;
     thread_local std::vector<int8_t> quant_activation_buffer;
     thread_local std::vector<float> quant_scales_buffer;
+    thread_local std::vector<int8_t> fused_quant_activation_buffer;
+    thread_local std::vector<float> fused_quant_scales_buffer;
+    thread_local std::vector<__fp16> fused_matmul_output_buffer;
 
     thread_local const __fp16* cached_quant_src = nullptr;
     thread_local size_t cached_quant_M = 0;
@@ -25,12 +27,6 @@ namespace {
     void ensure_transpose_buffer_fp16(size_t required_size) {
         if (transpose_buffer_fp16.size() < required_size) {
             transpose_buffer_fp16.resize(required_size);
-        }
-    }
-
-    void ensure_ternary_fp16_buffer(size_t required_size) {
-        if (ternary_fp16_buffer.size() < required_size) {
-            ternary_fp16_buffer.resize(required_size);
         }
     }
 
@@ -53,6 +49,20 @@ namespace {
         }
         if (quant_scales_buffer.size() < M) {
             quant_scales_buffer.resize(M);
+        }
+    }
+
+    void ensure_fused_quant_buffers(size_t rhs_count, size_t M, size_t K, size_t total_output_elements) {
+        const size_t required_quant = rhs_count * M * K;
+        if (fused_quant_activation_buffer.size() < required_quant) {
+            fused_quant_activation_buffer.resize(required_quant);
+        }
+        const size_t required_scales = rhs_count * M;
+        if (fused_quant_scales_buffer.size() < required_scales) {
+            fused_quant_scales_buffer.resize(required_scales);
+        }
+        if (fused_matmul_output_buffer.size() < total_output_elements) {
+            fused_matmul_output_buffer.resize(total_output_elements);
         }
     }
 
@@ -89,45 +99,214 @@ namespace {
         cached_quant_K = K;
     }
 
-    void dequantize_int8_activations_to_fp16(const int8_t* src, const float* row_scales, __fp16* dst, size_t M, size_t K) {
+    void quantize_fp16_with_column_scales_to_int8(
+        const __fp16* src,
+        const __fp16* column_scales,
+        int8_t* dst,
+        float* scales,
+        size_t M,
+        size_t K
+    ) {
         constexpr size_t PARALLEL_THRESHOLD = 16;
-        if (M >= PARALLEL_THRESHOLD) {
-            CactusThreading::parallel_for(M, CactusThreading::Thresholds::ELEMENT_WISE,
-                [src, row_scales, dst, K](size_t m_start, size_t m_end) {
-                    for (size_t m = m_start; m < m_end; ++m) {
-                        cactus_int8_to_fp16(src + m * K, dst + m * K, K, row_scales[m]);
-                    }
-                });
-        } else {
-            for (size_t m = 0; m < M; ++m) {
-                cactus_int8_to_fp16(src + m * K, dst + m * K, K, row_scales[m]);
+        auto process_rows = [=](size_t m_start, size_t m_end) {
+            for (size_t m = m_start; m < m_end; ++m) {
+                const __fp16* src_row = src + m * K;
+                int8_t* dst_row = dst + m * K;
+
+                float16x8_t max_abs_v = vdupq_n_f16(static_cast<__fp16>(0.0f));
+                size_t k = 0;
+                for (; k + 8 <= K; k += 8) {
+                    const float16x8_t src_v = vld1q_f16(src_row + k);
+                    const float16x8_t scale_v = vld1q_f16(column_scales + k);
+                    const float16x8_t scaled_v = vmulq_f16(src_v, scale_v);
+                    max_abs_v = vmaxq_f16(max_abs_v, vabsq_f16(scaled_v));
+                }
+
+                alignas(16) __fp16 max_abs_lanes[8];
+                vst1q_f16(max_abs_lanes, max_abs_v);
+                float max_abs = 0.0f;
+                for (size_t lane = 0; lane < 8; ++lane) {
+                    max_abs = std::max(max_abs, static_cast<float>(max_abs_lanes[lane]));
+                }
+                for (; k < K; ++k) {
+                    const float scaled = static_cast<float>(src_row[k]) * static_cast<float>(column_scales[k]);
+                    max_abs = std::max(max_abs, std::abs(scaled));
+                }
+
+                float scale = max_abs / 127.0f;
+                if (scale < 1e-10f) scale = 1e-10f;
+                scales[m] = scale;
+                const float inv_scale = 1.0f / scale;
+
+                const int32x4_t clamp_lo = vdupq_n_s32(-128);
+                const int32x4_t clamp_hi = vdupq_n_s32(127);
+                k = 0;
+                for (; k + 8 <= K; k += 8) {
+                    const float16x8_t src_v = vld1q_f16(src_row + k);
+                    const float16x8_t scale_v = vld1q_f16(column_scales + k);
+                    const float16x8_t scaled_v = vmulq_f16(src_v, scale_v);
+
+                    float32x4_t q_lo_f32 = vmulq_n_f32(vcvt_f32_f16(vget_low_f16(scaled_v)), inv_scale);
+                    float32x4_t q_hi_f32 = vmulq_n_f32(vcvt_f32_f16(vget_high_f16(scaled_v)), inv_scale);
+
+                    int32x4_t q_lo = vcvtnq_s32_f32(q_lo_f32);
+                    int32x4_t q_hi = vcvtnq_s32_f32(q_hi_f32);
+                    q_lo = vmaxq_s32(clamp_lo, vminq_s32(clamp_hi, q_lo));
+                    q_hi = vmaxq_s32(clamp_lo, vminq_s32(clamp_hi, q_hi));
+
+                    const int16x8_t q_s16 = vcombine_s16(vqmovn_s32(q_lo), vqmovn_s32(q_hi));
+                    vst1_s8(dst_row + k, vqmovn_s16(q_s16));
+                }
+                for (; k < K; ++k) {
+                    const float scaled = static_cast<float>(src_row[k]) * static_cast<float>(column_scales[k]);
+                    float q = std::round(scaled * inv_scale);
+                    q = std::clamp(q, -128.0f, 127.0f);
+                    dst_row[k] = static_cast<int8_t>(q);
+                }
             }
+        };
+
+        if (M >= PARALLEL_THRESHOLD) {
+            CactusThreading::parallel_for(M, CactusThreading::Thresholds::ELEMENT_WISE, process_rows);
+        } else {
+            process_rows(0, M);
         }
     }
 
-    void apply_column_scales_fp16(const __fp16* src, const __fp16* column_scales, __fp16* dst, size_t M, size_t K) {
+    void quantize_fp16_with_multiple_column_scales_to_int8(
+        const __fp16* src,
+        const std::vector<const __fp16*>& column_scales_list,
+        const std::vector<int8_t*>& dst_list,
+        const std::vector<float*>& scales_list,
+        size_t M,
+        size_t K
+    ) {
+        const size_t rhs_count = column_scales_list.size();
+        if (rhs_count == 0 || rhs_count != dst_list.size() || rhs_count != scales_list.size() || rhs_count > 3) {
+            throw std::runtime_error("invalid fused ternary column-scale quantization request");
+        }
+
         constexpr size_t PARALLEL_THRESHOLD = 16;
-        if (M >= PARALLEL_THRESHOLD) {
-            CactusThreading::parallel_for(M, CactusThreading::Thresholds::ELEMENT_WISE,
-                [src, column_scales, dst, K](size_t m_start, size_t m_end) {
-                    for (size_t m = m_start; m < m_end; ++m) {
-                        const __fp16* src_row = src + m * K;
-                        __fp16* dst_row = dst + m * K;
-                        for (size_t k = 0; k < K; ++k) {
-                            dst_row[k] = static_cast<__fp16>(
-                                static_cast<float>(src_row[k]) * static_cast<float>(column_scales[k]));
-                        }
-                    }
-                });
-        } else {
-            for (size_t m = 0; m < M; ++m) {
+        auto process_rows = [=](size_t m_start, size_t m_end) {
+            for (size_t m = m_start; m < m_end; ++m) {
                 const __fp16* src_row = src + m * K;
-                __fp16* dst_row = dst + m * K;
-                for (size_t k = 0; k < K; ++k) {
-                    dst_row[k] = static_cast<__fp16>(
-                        static_cast<float>(src_row[k]) * static_cast<float>(column_scales[k]));
+
+                float16x8_t max_abs_v[3] = {
+                    vdupq_n_f16(static_cast<__fp16>(0.0f)),
+                    vdupq_n_f16(static_cast<__fp16>(0.0f)),
+                    vdupq_n_f16(static_cast<__fp16>(0.0f))
+                };
+
+                size_t k = 0;
+                for (; k + 8 <= K; k += 8) {
+                    const float16x8_t src_v = vld1q_f16(src_row + k);
+                    for (size_t r = 0; r < rhs_count; ++r) {
+                        const float16x8_t scale_v = vld1q_f16(column_scales_list[r] + k);
+                        const float16x8_t scaled_v = vmulq_f16(src_v, scale_v);
+                        max_abs_v[r] = vmaxq_f16(max_abs_v[r], vabsq_f16(scaled_v));
+                    }
+                }
+
+                float max_abs[3] = {0.0f, 0.0f, 0.0f};
+                alignas(16) __fp16 max_abs_lanes[8];
+                for (size_t r = 0; r < rhs_count; ++r) {
+                    vst1q_f16(max_abs_lanes, max_abs_v[r]);
+                    for (size_t lane = 0; lane < 8; ++lane) {
+                        max_abs[r] = std::max(max_abs[r], static_cast<float>(max_abs_lanes[lane]));
+                    }
+                }
+                for (; k < K; ++k) {
+                    const float src_value = static_cast<float>(src_row[k]);
+                    for (size_t r = 0; r < rhs_count; ++r) {
+                        const float scaled = src_value * static_cast<float>(column_scales_list[r][k]);
+                        max_abs[r] = std::max(max_abs[r], std::abs(scaled));
+                    }
+                }
+
+                float inv_scale[3] = {0.0f, 0.0f, 0.0f};
+                for (size_t r = 0; r < rhs_count; ++r) {
+                    float scale = max_abs[r] / 127.0f;
+                    if (scale < 1e-10f) scale = 1e-10f;
+                    scales_list[r][m] = scale;
+                    inv_scale[r] = 1.0f / scale;
+                }
+
+                const int32x4_t clamp_lo = vdupq_n_s32(-128);
+                const int32x4_t clamp_hi = vdupq_n_s32(127);
+                k = 0;
+                for (; k + 8 <= K; k += 8) {
+                    const float16x8_t src_v = vld1q_f16(src_row + k);
+                    for (size_t r = 0; r < rhs_count; ++r) {
+                        const float16x8_t scale_v = vld1q_f16(column_scales_list[r] + k);
+                        const float16x8_t scaled_v = vmulq_f16(src_v, scale_v);
+                        float32x4_t q_lo_f32 = vmulq_n_f32(vcvt_f32_f16(vget_low_f16(scaled_v)), inv_scale[r]);
+                        float32x4_t q_hi_f32 = vmulq_n_f32(vcvt_f32_f16(vget_high_f16(scaled_v)), inv_scale[r]);
+                        int32x4_t q_lo = vcvtnq_s32_f32(q_lo_f32);
+                        int32x4_t q_hi = vcvtnq_s32_f32(q_hi_f32);
+                        q_lo = vmaxq_s32(clamp_lo, vminq_s32(clamp_hi, q_lo));
+                        q_hi = vmaxq_s32(clamp_lo, vminq_s32(clamp_hi, q_hi));
+                        const int16x8_t q_s16 = vcombine_s16(vqmovn_s32(q_lo), vqmovn_s32(q_hi));
+                        vst1_s8(dst_list[r] + m * K + k, vqmovn_s16(q_s16));
+                    }
+                }
+                for (; k < K; ++k) {
+                    const float src_value = static_cast<float>(src_row[k]);
+                    for (size_t r = 0; r < rhs_count; ++r) {
+                        const float scaled = src_value * static_cast<float>(column_scales_list[r][k]);
+                        float q = std::round(scaled * inv_scale[r]);
+                        q = std::clamp(q, -128.0f, 127.0f);
+                        dst_list[r][m * K + k] = static_cast<int8_t>(q);
+                    }
                 }
             }
+        };
+
+        if (M >= PARALLEL_THRESHOLD) {
+            CactusThreading::parallel_for(M, CactusThreading::Thresholds::ELEMENT_WISE, process_rows);
+        } else {
+            process_rows(0, M);
+        }
+    }
+
+    void requantize_int8_with_column_scales_to_int8(
+        const int8_t* src,
+        const float* src_row_scales,
+        const __fp16* column_scales,
+        int8_t* dst,
+        float* dst_row_scales,
+        size_t M,
+        size_t K
+    ) {
+        constexpr size_t PARALLEL_THRESHOLD = 16;
+        auto process_rows = [=](size_t m_start, size_t m_end) {
+            for (size_t m = m_start; m < m_end; ++m) {
+                const int8_t* src_row = src + m * K;
+                int8_t* dst_row = dst + m * K;
+                const float input_scale = src_row_scales[m];
+
+                float max_abs = 0.0f;
+                for (size_t k = 0; k < K; ++k) {
+                    const float scaled = static_cast<float>(src_row[k]) * input_scale * static_cast<float>(column_scales[k]);
+                    max_abs = std::max(max_abs, std::abs(scaled));
+                }
+
+                float scale = max_abs / 127.0f;
+                if (scale < 1e-10f) scale = 1e-10f;
+                dst_row_scales[m] = scale;
+
+                for (size_t k = 0; k < K; ++k) {
+                    const float scaled = static_cast<float>(src_row[k]) * input_scale * static_cast<float>(column_scales[k]);
+                    float q = std::round(scaled / scale);
+                    q = std::clamp(q, -128.0f, 127.0f);
+                    dst_row[k] = static_cast<int8_t>(q);
+                }
+            }
+        };
+
+        if (M >= PARALLEL_THRESHOLD) {
+            CactusThreading::parallel_for(M, CactusThreading::Thresholds::ELEMENT_WISE, process_rows);
+        } else {
+            process_rows(0, M);
         }
     }
 
@@ -251,7 +430,6 @@ namespace {
 
 void shrink_thread_local_buffers() {
     std::vector<__fp16>().swap(transpose_buffer_fp16);
-    std::vector<__fp16>().swap(ternary_fp16_buffer);
     std::vector<__fp16>().swap(ternary_rhs_scales_buffer);
     std::vector<int8_t>().swap(quant_activation_buffer);
     std::vector<float>().swap(quant_scales_buffer);
@@ -309,6 +487,169 @@ void compute_quantize_activations_node(GraphNode& node, const std::vector<std::u
     }
 }
 
+namespace {
+    void execute_matmul_buffers(
+        const BufferDesc& lhs_buffer,
+        const BufferDesc& rhs_buffer,
+        bool pretransposed_rhs,
+        ComputeBackend backend,
+        __fp16* output
+    ) {
+        const auto& lhs_shape = lhs_buffer.shape;
+        const auto& rhs_shape = rhs_buffer.shape;
+
+        size_t M = lhs_shape[lhs_shape.size() - 2];
+        size_t K = lhs_shape[lhs_shape.size() - 1];
+        size_t N;
+        if (rhs_buffer.is_interleaved && rhs_buffer.original_N > 0) {
+            N = rhs_buffer.original_N;
+        } else {
+            N = pretransposed_rhs ? rhs_shape[rhs_shape.size() - 2] : rhs_shape[rhs_shape.size() - 1];
+        }
+
+        if (backend == ComputeBackend::NPU) {
+            throw std::runtime_error("NPU matrix multiplication not yet implemented");
+        }
+
+        const bool lhs_is_prequantized_int8 = (lhs_buffer.precision == Precision::INT8 &&
+                                               lhs_buffer.has_activation_scales());
+
+        if (rhs_buffer.is_ternary_int8()) {
+            if (!pretransposed_rhs) {
+                throw std::runtime_error("Ternary matmul requires pretransposed weights");
+            }
+            if (K % WEIGHT_QUANT_GROUP_SIZE != 0) {
+                throw std::runtime_error("Ternary matmul requires K padded to a multiple of 32");
+            }
+
+            const int8_t* rhs = rhs_buffer.data_as<int8_t>();
+            const size_t rhs_stored_rows = (rhs_buffer.is_interleaved && !rhs_shape.empty()) ? rhs_shape[0] : N;
+            const int8_t* lhs_int8 = nullptr;
+            const float* lhs_scales = nullptr;
+
+            if (rhs_buffer.ternary_scale_mode == TernaryScaleMode::COLUMN) {
+                const __fp16* column_scales = rhs_buffer.scales_as_fp16();
+                if (lhs_is_prequantized_int8) {
+                    ensure_quant_buffers(M, K);
+                    requantize_int8_with_column_scales_to_int8(
+                        lhs_buffer.data_as<int8_t>(),
+                        lhs_buffer.activation_scales_as_float(),
+                        column_scales,
+                        quant_activation_buffer.data(),
+                        quant_scales_buffer.data(),
+                        M,
+                        K);
+                    lhs_int8 = quant_activation_buffer.data();
+                    lhs_scales = quant_scales_buffer.data();
+                } else if (lhs_buffer.precision == Precision::FP16) {
+                    ensure_quant_buffers(M, K);
+                    quantize_fp16_with_column_scales_to_int8(
+                        lhs_buffer.data_as<__fp16>(),
+                        column_scales,
+                        quant_activation_buffer.data(),
+                        quant_scales_buffer.data(),
+                        M,
+                        K);
+                    lhs_int8 = quant_activation_buffer.data();
+                    lhs_scales = quant_scales_buffer.data();
+                } else {
+                    throw std::runtime_error("Ternary matmul requires INT8 (pre-quantized) or FP16 activations");
+                }
+            } else {
+                if (lhs_is_prequantized_int8) {
+                    lhs_int8 = lhs_buffer.data_as<int8_t>();
+                    lhs_scales = lhs_buffer.activation_scales_as_float();
+                } else if (lhs_buffer.precision == Precision::FP16) {
+                    const __fp16* lhs = lhs_buffer.data_as<__fp16>();
+                    ensure_quant_buffers(M, K);
+                    quantize_activations_fp16_to_int8(lhs, quant_activation_buffer.data(),
+                                                      quant_scales_buffer.data(), M, K);
+                    lhs_int8 = quant_activation_buffer.data();
+                    lhs_scales = quant_scales_buffer.data();
+                } else {
+                    throw std::runtime_error("Ternary matmul requires INT8 (pre-quantized) or FP16 activations");
+                }
+            }
+
+            if (rhs_buffer.is_ternary_packed_2bit()) {
+                const __fp16* rhs_scales = rhs_buffer.scales_as_fp16();
+                cactus_matmul_ternary_packed2(
+                    lhs_int8, lhs_scales,
+                    reinterpret_cast<const uint8_t*>(rhs), rhs_scales, rhs_buffer.ternary_scale_mode, output,
+                    M, K, N, WEIGHT_QUANT_GROUP_SIZE);
+            } else if (rhs_buffer.is_ternary_int4_sign()) {
+                const __fp16* rhs_scales = rhs_buffer.scales_as_fp16();
+                if (M > 1 && rhs_buffer.ternary_scale_mode == TernaryScaleMode::COLUMN) {
+                    cactus_matmul_ternary_int4sign_column(
+                        lhs_int8, lhs_scales,
+                        reinterpret_cast<const uint8_t*>(rhs),
+                        output, M, K, N);
+                } else {
+                    for (size_t row = 0; row < M; ++row) {
+                        cactus_gemv_ternary_int4sign(
+                            lhs_int8 + row * K, lhs_scales[row],
+                            reinterpret_cast<const uint8_t*>(rhs), rhs_scales, rhs_buffer.ternary_scale_mode,
+                            output + row * N, K, N, WEIGHT_QUANT_GROUP_SIZE);
+                    }
+                }
+            } else {
+                const __fp16* rhs_scales = ternary_rhs_group_scales(rhs_buffer, rhs_stored_rows, K);
+                cactus_matmul_integer(Precision::INT8,
+                                      lhs_int8, lhs_scales,
+                                      rhs, rhs_scales, output,
+                                      M, K, N, WEIGHT_QUANT_GROUP_SIZE);
+            }
+        } else if (PrecisionTraits::is_integer(rhs_buffer.precision) && rhs_buffer.group_size > 0) {
+            const int8_t* rhs = rhs_buffer.data_as<int8_t>();
+            const __fp16* rhs_scales = rhs_buffer.scales_as_fp16();
+
+            if (!pretransposed_rhs) {
+                throw std::runtime_error("Group-wise quantized matmul requires pretransposed weights");
+            }
+
+            const int8_t* lhs_int8;
+            const float* lhs_scales;
+
+            if (lhs_is_prequantized_int8) {
+                lhs_int8 = lhs_buffer.data_as<int8_t>();
+                lhs_scales = lhs_buffer.activation_scales_as_float();
+            } else if (lhs_buffer.precision == Precision::FP16) {
+                const __fp16* lhs = lhs_buffer.data_as<__fp16>();
+                ensure_quant_buffers(M, K);
+                quantize_activations_fp16_to_int8(lhs, quant_activation_buffer.data(),
+                                                  quant_scales_buffer.data(), M, K);
+                lhs_int8 = quant_activation_buffer.data();
+                lhs_scales = quant_scales_buffer.data();
+            } else {
+                throw std::runtime_error("Quantized matmul requires INT8 (pre-quantized) or FP16 activations");
+            }
+
+            cactus_matmul_integer(rhs_buffer.precision,
+                                  lhs_int8, lhs_scales,
+                                  rhs, rhs_scales, output,
+                                  M, K, N, rhs_buffer.group_size);
+        } else {
+            if (lhs_buffer.precision != Precision::FP16) {
+                throw std::runtime_error("FP16 matmul requires FP16 activations (got precision " +
+                                         std::to_string(static_cast<int>(lhs_buffer.precision)) + ")");
+            }
+
+            const __fp16* lhs = lhs_buffer.data_as<__fp16>();
+            const __fp16* rhs = rhs_buffer.data_as<__fp16>();
+
+            if (pretransposed_rhs) {
+                cactus_matmul_f16(lhs, rhs, output, M, K, N);
+            } else {
+                const size_t transpose_size = rhs_shape[0] * rhs_shape[1];
+                ensure_transpose_buffer_fp16(transpose_size);
+                cactus_transpose_2d_f16(rhs, transpose_buffer_fp16.data(),
+                                        rhs_shape[0], rhs_shape[1], 0, rhs_shape[0]);
+                cactus_matmul_f16(lhs, transpose_buffer_fp16.data(), output, M, K, N);
+            }
+        }
+    }
+}
+
 void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& lhs_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
     const auto& rhs_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
@@ -352,45 +693,32 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 
         if (rhs_buffer.ternary_scale_mode == TernaryScaleMode::COLUMN) {
             const __fp16* column_scales = rhs_buffer.scales_as_fp16();
-            ensure_ternary_fp16_buffer(M * K);
-
             if (lhs_is_prequantized_int8) {
-                dequantize_int8_activations_to_fp16(
+                ensure_quant_buffers(M, K);
+                requantize_int8_with_column_scales_to_int8(
                     lhs_buffer.data_as<int8_t>(),
                     lhs_buffer.activation_scales_as_float(),
-                    ternary_fp16_buffer.data(),
-                    M,
-                    K);
-                apply_column_scales_fp16(
-                    ternary_fp16_buffer.data(),
                     column_scales,
-                    ternary_fp16_buffer.data(),
+                    quant_activation_buffer.data(),
+                    quant_scales_buffer.data(),
                     M,
                     K);
+                lhs_int8 = quant_activation_buffer.data();
+                lhs_scales = quant_scales_buffer.data();
             } else if (lhs_buffer.precision == Precision::FP16) {
-                apply_column_scales_fp16(
+                ensure_quant_buffers(M, K);
+                quantize_fp16_with_column_scales_to_int8(
                     lhs_buffer.data_as<__fp16>(),
                     column_scales,
-                    ternary_fp16_buffer.data(),
+                    quant_activation_buffer.data(),
+                    quant_scales_buffer.data(),
                     M,
                     K);
+                lhs_int8 = quant_activation_buffer.data();
+                lhs_scales = quant_scales_buffer.data();
             } else {
                 throw std::runtime_error("Ternary matmul requires INT8 (pre-quantized) or FP16 activations");
             }
-
-            ensure_quant_buffers(M, K);
-            for (size_t row = 0; row < M; ++row) {
-                float scale = cactus_fp16_max_abs(ternary_fp16_buffer.data() + row * K, K) / 127.0f;
-                if (scale < 1e-10f) scale = 1e-10f;
-                quant_scales_buffer[row] = scale;
-                cactus_fp16_to_int8(
-                    ternary_fp16_buffer.data() + row * K,
-                    quant_activation_buffer.data() + row * K,
-                    K,
-                    scale);
-            }
-            lhs_int8 = quant_activation_buffer.data();
-            lhs_scales = quant_scales_buffer.data();
         } else {
             if (lhs_is_prequantized_int8) {
                 lhs_int8 = lhs_buffer.data_as<int8_t>();
@@ -413,6 +741,21 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
                 lhs_int8, lhs_scales,
                 reinterpret_cast<const uint8_t*>(rhs), rhs_scales, rhs_buffer.ternary_scale_mode, output,
                 M, K, N, WEIGHT_QUANT_GROUP_SIZE);
+        } else if (rhs_buffer.is_ternary_int4_sign()) {
+            const __fp16* rhs_scales = rhs_buffer.scales_as_fp16();
+            if (M > 1 && rhs_buffer.ternary_scale_mode == TernaryScaleMode::COLUMN) {
+                cactus_matmul_ternary_int4sign_column(
+                    lhs_int8, lhs_scales,
+                    reinterpret_cast<const uint8_t*>(rhs),
+                    output, M, K, N);
+            } else {
+                for (size_t row = 0; row < M; ++row) {
+                    cactus_gemv_ternary_int4sign(
+                        lhs_int8 + row * K, lhs_scales[row],
+                        reinterpret_cast<const uint8_t*>(rhs), rhs_scales, rhs_buffer.ternary_scale_mode,
+                        output + row * N, K, N, WEIGHT_QUANT_GROUP_SIZE);
+                }
+            }
         } else {
             const __fp16* rhs_scales = ternary_rhs_group_scales(rhs_buffer, rhs_stored_rows, K);
             cactus_matmul_integer(Precision::INT8,
@@ -472,6 +815,118 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     }
 }
 
+void compute_matmul_concat_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    if (node.input_ids.size() < 2) {
+        throw std::runtime_error("MATMUL_CONCAT requires one lhs and at least one rhs");
+    }
+
+    const auto& lhs_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const bool pretransposed_rhs = node.params.pretransposed_rhs;
+    const ComputeBackend backend = node.params.backend;
+
+    const size_t M = lhs_buffer.shape.at(lhs_buffer.shape.size() - 2);
+    const size_t K = lhs_buffer.shape.at(lhs_buffer.shape.size() - 1);
+    const size_t total_N = node.output_buffer.shape.at(1);
+    __fp16* output = node.output_buffer.data_as<__fp16>();
+
+    std::vector<const BufferDesc*> rhs_buffers;
+    std::vector<size_t> rhs_widths;
+    rhs_buffers.reserve(node.input_ids.size() - 1);
+    rhs_widths.reserve(node.input_ids.size() - 1);
+
+    for (size_t i = 1; i < node.input_ids.size(); ++i) {
+        const auto& rhs_buffer = nodes[node_index_map.at(node.input_ids[i])]->output_buffer;
+        size_t N = (rhs_buffer.is_interleaved && rhs_buffer.original_N > 0)
+            ? rhs_buffer.original_N
+            : (pretransposed_rhs ? rhs_buffer.shape.at(rhs_buffer.shape.size() - 2)
+                                 : rhs_buffer.shape.at(rhs_buffer.shape.size() - 1));
+        rhs_buffers.push_back(&rhs_buffer);
+        rhs_widths.push_back(N);
+    }
+
+    const bool can_fuse_column_int4sign =
+        backend == ComputeBackend::CPU &&
+        pretransposed_rhs &&
+        lhs_buffer.precision == Precision::FP16 &&
+        rhs_buffers.size() <= 3 &&
+        (K % WEIGHT_QUANT_GROUP_SIZE) == 0 &&
+        std::all_of(rhs_buffers.begin(), rhs_buffers.end(), [](const BufferDesc* rhs) {
+            return rhs->is_ternary_int8() &&
+                   rhs->ternary_scale_mode == TernaryScaleMode::COLUMN &&
+                   rhs->is_ternary_int4_sign();
+        });
+
+    ensure_fused_quant_buffers(rhs_buffers.size(), M, K, node.output_buffer.total_size);
+
+    if (!can_fuse_column_int4sign) {
+        size_t output_offset = 0;
+        size_t temp_offset = 0;
+        for (size_t i = 0; i < rhs_buffers.size(); ++i) {
+            const size_t N = rhs_widths[i];
+            if (M == 1) {
+                execute_matmul_buffers(lhs_buffer, *rhs_buffers[i], pretransposed_rhs, backend, output + output_offset);
+            } else {
+                __fp16* temp_output = fused_matmul_output_buffer.data() + temp_offset;
+                execute_matmul_buffers(lhs_buffer, *rhs_buffers[i], pretransposed_rhs, backend, temp_output);
+                for (size_t row = 0; row < M; ++row) {
+                    std::memcpy(output + row * total_N + output_offset,
+                                temp_output + row * N,
+                                N * sizeof(__fp16));
+                }
+                temp_offset += M * N;
+            }
+            output_offset += N;
+        }
+        return;
+    }
+
+    std::vector<const __fp16*> column_scales_list;
+    std::vector<int8_t*> lhs_quant_list;
+    std::vector<float*> lhs_scales_list;
+    column_scales_list.reserve(rhs_buffers.size());
+    lhs_quant_list.reserve(rhs_buffers.size());
+    lhs_scales_list.reserve(rhs_buffers.size());
+
+    for (size_t i = 0; i < rhs_buffers.size(); ++i) {
+        column_scales_list.push_back(rhs_buffers[i]->scales_as_fp16());
+        lhs_quant_list.push_back(fused_quant_activation_buffer.data() + i * M * K);
+        lhs_scales_list.push_back(fused_quant_scales_buffer.data() + i * M);
+    }
+
+    quantize_fp16_with_multiple_column_scales_to_int8(
+        lhs_buffer.data_as<__fp16>(),
+        column_scales_list,
+        lhs_quant_list,
+        lhs_scales_list,
+        M,
+        K);
+
+    size_t output_offset = 0;
+    size_t temp_offset = 0;
+    for (size_t i = 0; i < rhs_buffers.size(); ++i) {
+        const size_t N = rhs_widths[i];
+        const uint8_t* rhs_data = reinterpret_cast<const uint8_t*>(rhs_buffers[i]->data_as<int8_t>());
+        if (M == 1) {
+            cactus_gemv_ternary_int4sign(
+                lhs_quant_list[i], lhs_scales_list[i][0],
+                rhs_data, rhs_buffers[i]->scales_as_fp16(), TernaryScaleMode::COLUMN,
+                output + output_offset, K, N, WEIGHT_QUANT_GROUP_SIZE);
+        } else {
+            __fp16* temp_output = fused_matmul_output_buffer.data() + temp_offset;
+            cactus_matmul_ternary_int4sign_column(
+                lhs_quant_list[i], lhs_scales_list[i],
+                rhs_data, temp_output, M, K, N);
+            for (size_t row = 0; row < M; ++row) {
+                std::memcpy(output + row * total_N + output_offset,
+                            temp_output + row * N,
+                            N * sizeof(__fp16));
+            }
+            temp_offset += M * N;
+        }
+        output_offset += N;
+    }
+}
+
 namespace {
     thread_local std::vector<__fp16> moe_compact_hidden_buf;
     thread_local std::vector<__fp16> moe_gate_buf;
@@ -523,18 +978,8 @@ namespace {
             float* lhs_scales = moe_lhs_scales_buf.data();
 
             if (rhs_buffer.ternary_scale_mode == TernaryScaleMode::COLUMN) {
-                ensure_ternary_fp16_buffer(M * K);
-                apply_column_scales_fp16(lhs, rhs_buffer.scales_as_fp16(), ternary_fp16_buffer.data(), M, K);
-                for (size_t row = 0; row < M; ++row) {
-                    float scale = cactus_fp16_max_abs(ternary_fp16_buffer.data() + row * K, K) / 127.0f;
-                    if (scale < 1e-10f) scale = 1e-10f;
-                    lhs_scales[row] = scale;
-                    cactus_fp16_to_int8(
-                        ternary_fp16_buffer.data() + row * K,
-                        lhs_q + row * K,
-                        K,
-                        scale);
-                }
+                quantize_fp16_with_column_scales_to_int8(
+                    lhs, rhs_buffer.scales_as_fp16(), lhs_q, lhs_scales, M, K);
             } else {
                 for (size_t row = 0; row < M; ++row) {
                     float scale = cactus_fp16_max_abs(lhs + row * K, K) / 127.0f;
@@ -553,6 +998,23 @@ namespace {
                     rhs_scales,
                     rhs_buffer.ternary_scale_mode,
                     output, M, K, N, WEIGHT_QUANT_GROUP_SIZE);
+            } else if (rhs_buffer.is_ternary_int4_sign()) {
+                const __fp16* rhs_scales = rhs_buffer.scales_as_fp16();
+                if (M > 1 && rhs_buffer.ternary_scale_mode == TernaryScaleMode::COLUMN) {
+                    cactus_matmul_ternary_int4sign_column(
+                        lhs_q, lhs_scales,
+                        reinterpret_cast<const uint8_t*>(rhs),
+                        output, M, K, N);
+                } else {
+                    for (size_t row = 0; row < M; ++row) {
+                        cactus_gemv_ternary_int4sign(
+                            lhs_q + row * K, lhs_scales[row],
+                            reinterpret_cast<const uint8_t*>(rhs),
+                            rhs_scales,
+                            rhs_buffer.ternary_scale_mode,
+                            output + row * N, K, N, WEIGHT_QUANT_GROUP_SIZE);
+                    }
+                }
             } else {
                 const __fp16* rhs_scales = ternary_rhs_group_scales(rhs_buffer, rhs_stored_rows, K);
                 cactus_matmul_integer(Precision::INT8,

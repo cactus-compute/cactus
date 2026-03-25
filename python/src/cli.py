@@ -1972,6 +1972,14 @@ def create_parser():
 
     parser._action_groups = []
 
+    def add_ternary_layout_arg(subparser):
+        subparser.add_argument(
+            '--ternary-layout',
+            choices=['packed2', 'int4sign'],
+            default='int4sign',
+            help='TERNARY-only storage layout (default: int4sign)',
+        )
+
     download_parser = subparsers.add_parser('download', help='Download and convert model weights')
     download_parser.add_argument('model_id', nargs='?', default=DEFAULT_MODEL_ID,
                                  help=f'HuggingFace model ID (default: {DEFAULT_MODEL_ID})')
@@ -1981,6 +1989,7 @@ def create_parser():
     download_parser.add_argument('--token', help='HuggingFace API token')
     download_parser.add_argument('--reconvert', action='store_true',
                                  help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
+    add_ternary_layout_arg(download_parser)
 
     build_parser = subparsers.add_parser('build', help='Build the chat application')
     build_parser.add_argument('--apple', action='store_true',
@@ -2009,6 +2018,7 @@ def create_parser():
                             help='System prompt to prepend to all messages')
     run_parser.add_argument('--no-thinking', action='store_true',
                             help='Disable thinking/reasoning for models that support it')
+    add_ternary_layout_arg(run_parser)
 
     transcribe_parser = subparsers.add_parser('transcribe', help='Download ASR model and run transcription')
     transcribe_parser.add_argument('model_id', nargs='?', default=DEFAULT_ASR_MODEL_ID,
@@ -2033,6 +2043,7 @@ def create_parser():
                                    help='Run transcription on a connected iOS device (requires --file)')
     transcribe_parser.add_argument('--device', default=None,
                                    help='ADB device ID to use with --android')
+    add_ternary_layout_arg(transcribe_parser)
 
     eval_parser = subparsers.add_parser('eval', help='Run evaluation scripts outside the cactus submodule')
     eval_parser.add_argument('model_id', nargs='?', default=DEFAULT_MODEL_ID,
@@ -2050,6 +2061,7 @@ def create_parser():
                              help='Disable cloud telemetry (write to cache only)')
     eval_parser.add_argument('--reconvert', action='store_true',
                              help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
+    add_ternary_layout_arg(eval_parser)
 
     test_parser = subparsers.add_parser('test', help='Run the test suite')
     test_parser.add_argument('--model', default='LiquidAI/LFM2-VL-450M',
@@ -2081,6 +2093,7 @@ def create_parser():
                              help='Enable cloud telemetry (disabled by default in tests)')
     test_parser.add_argument('--reconvert', action='store_true',
                              help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
+    add_ternary_layout_arg(test_parser)
 
     auth_parser = subparsers.add_parser('auth', help='Manage Cactus Cloud API key')
     auth_parser.add_argument('--clear', action='store_true',
@@ -2103,6 +2116,7 @@ def create_parser():
     convert_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     convert_parser.add_argument('--token', help='HuggingFace API token')
     convert_parser.add_argument('--lora', help='Path to LoRA adapter (local path or HuggingFace ID) to merge before conversion')
+    add_ternary_layout_arg(convert_parser)
 
     return parser
 

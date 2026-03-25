@@ -162,113 +162,6 @@ static inline float32x4_t ternary_output_scale_vector(
     return vdupq_n_f32(1.0f);
 }
 
-struct TernaryLutBytes {
-    uint8x16_t lo;
-    uint8x16_t hi;
-};
-
-struct TernaryLut4 {
-    TernaryLutBytes pair01;
-    TernaryLutBytes pair23;
-};
-
-static inline int16_t ternary_pair_sum(uint8_t packed_codes, int8_t a0, int8_t a1) {
-    const uint8_t code0 = packed_codes & 0x3u;
-    const uint8_t code1 = (packed_codes >> 2) & 0x3u;
-    const int16_t s0 = code0 == 0x1u ? static_cast<int16_t>(a0)
-                     : code0 == 0x2u ? static_cast<int16_t>(-a0)
-                                     : static_cast<int16_t>(0);
-    const int16_t s1 = code1 == 0x1u ? static_cast<int16_t>(a1)
-                     : code1 == 0x2u ? static_cast<int16_t>(-a1)
-                                     : static_cast<int16_t>(0);
-    return static_cast<int16_t>(s0 + s1);
-}
-
-static inline TernaryLutBytes build_ternary_pair_lut(int8_t a0, int8_t a1) {
-    alignas(16) uint8_t lo[16];
-    alignas(16) uint8_t hi[16];
-
-    for (size_t code = 0; code < 16; ++code) {
-        const uint16_t value = static_cast<uint16_t>(ternary_pair_sum(
-            static_cast<uint8_t>(code), a0, a1));
-        lo[code] = static_cast<uint8_t>(value & 0xFFu);
-        hi[code] = static_cast<uint8_t>((value >> 8) & 0xFFu);
-    }
-
-    return {vld1q_u8(lo), vld1q_u8(hi)};
-}
-
-static inline TernaryLut4 build_ternary_lut4(const int8_t* a_ptr) {
-    return {
-        build_ternary_pair_lut(a_ptr[0], a_ptr[1]),
-        build_ternary_pair_lut(a_ptr[2], a_ptr[3])
-    };
-}
-
-static inline void accumulate_ternary_lut_tile16(
-    uint8x16_t codes,
-    const TernaryLut4& lut,
-    int32x4_t& acc0,
-    int32x4_t& acc1,
-    int32x4_t& acc2,
-    int32x4_t& acc3
-) {
-    const uint8x16_t idx01 = vandq_u8(codes, vdupq_n_u8(0x0Fu));
-    const uint8x16_t idx23 = vshrq_n_u8(codes, 4);
-
-    const uint8x16_t sum01_lo_bytes = vqtbl1q_u8(lut.pair01.lo, idx01);
-    const uint8x16_t sum01_hi_bytes = vqtbl1q_u8(lut.pair01.hi, idx01);
-    const uint8x16_t sum23_lo_bytes = vqtbl1q_u8(lut.pair23.lo, idx23);
-    const uint8x16_t sum23_hi_bytes = vqtbl1q_u8(lut.pair23.hi, idx23);
-
-    const int16x8_t sum01_lo = vreinterpretq_s16_u8(vzip1q_u8(sum01_lo_bytes, sum01_hi_bytes));
-    const int16x8_t sum01_hi = vreinterpretq_s16_u8(vzip2q_u8(sum01_lo_bytes, sum01_hi_bytes));
-    const int16x8_t sum23_lo = vreinterpretq_s16_u8(vzip1q_u8(sum23_lo_bytes, sum23_hi_bytes));
-    const int16x8_t sum23_hi = vreinterpretq_s16_u8(vzip2q_u8(sum23_lo_bytes, sum23_hi_bytes));
-
-    const int16x8_t total_lo = vaddq_s16(sum01_lo, sum23_lo);
-    const int16x8_t total_hi = vaddq_s16(sum01_hi, sum23_hi);
-
-    acc0 = vaddw_s16(acc0, vget_low_s16(total_lo));
-    acc1 = vaddw_s16(acc1, vget_high_s16(total_lo));
-    acc2 = vaddw_s16(acc2, vget_low_s16(total_hi));
-    acc3 = vaddw_s16(acc3, vget_high_s16(total_hi));
-}
-
-template<size_t K_QUADS>
-static inline void accumulate_ternary_lut_kquads_fixed(
-    const TernaryLut4* luts,
-    const uint8_t* B_codes,
-    size_t N_padded,
-    size_t n_start,
-    int32x4_t& acc0,
-    int32x4_t& acc1,
-    int32x4_t& acc2,
-    int32x4_t& acc3
-) {
-    for (size_t q = 0; q < K_QUADS; ++q) {
-        const uint8x16_t codes = vld1q_u8(B_codes + q * N_padded + n_start);
-        accumulate_ternary_lut_tile16(codes, luts[q], acc0, acc1, acc2, acc3);
-    }
-}
-
-static inline void accumulate_ternary_lut_kquads_dynamic(
-    const TernaryLut4* luts,
-    size_t k_quads,
-    const uint8_t* B_codes,
-    size_t N_padded,
-    size_t n_start,
-    int32x4_t& acc0,
-    int32x4_t& acc1,
-    int32x4_t& acc2,
-    int32x4_t& acc3
-) {
-    for (size_t q = 0; q < k_quads; ++q) {
-        const uint8x16_t codes = vld1q_u8(B_codes + q * N_padded + n_start);
-        accumulate_ternary_lut_tile16(codes, luts[q], acc0, acc1, acc2, acc3);
-    }
-}
-
 static void cactus_matmul_f16_worker(
     const __fp16* a,
     const __fp16* b_transposed,
@@ -783,12 +676,17 @@ void cactus_gemv_int4(
                     acc_b = CACTUS_DOTQ_LANE(acc_b, b3, a_hi, 3);
                 }
 
-                const __fp16* spa = B_scales + (n_block * num_groups + g) * 4;
-                const __fp16* spb = B_scales + ((n_block + 1) * num_groups + g) * 4;
-                float32x4_t sa = vcvt_f32_f16(vld1_f16(spa));
-                float32x4_t sb = vcvt_f32_f16(vld1_f16(spb));
-                sum_a = vmlaq_f32(sum_a, vcvtq_f32_s32(acc_a), sa);
-                sum_b = vmlaq_f32(sum_b, vcvtq_f32_s32(acc_b), sb);
+                if (B_scales != nullptr) {
+                    const __fp16* spa = B_scales + (n_block * num_groups + g) * 4;
+                    const __fp16* spb = B_scales + ((n_block + 1) * num_groups + g) * 4;
+                    float32x4_t sa = vcvt_f32_f16(vld1_f16(spa));
+                    float32x4_t sb = vcvt_f32_f16(vld1_f16(spb));
+                    sum_a = vmlaq_f32(sum_a, vcvtq_f32_s32(acc_a), sa);
+                    sum_b = vmlaq_f32(sum_b, vcvtq_f32_s32(acc_b), sb);
+                } else {
+                    sum_a = vaddq_f32(sum_a, vcvtq_f32_s32(acc_a));
+                    sum_b = vaddq_f32(sum_b, vcvtq_f32_s32(acc_b));
+                }
             }
 
             vst1_f16(C + n_block * 4, vcvt_f16_f32(vmulq_n_f32(sum_a, A_scale)));
@@ -823,8 +721,12 @@ void cactus_gemv_int4(
                 acc = CACTUS_DOTQ_LANE(acc, b2, a_hi, 2);
                 acc = CACTUS_DOTQ_LANE(acc, b3, a_hi, 3);
 
-                float32x4_t scales = vcvt_f32_f16(vld1_f16(B_scales + (n_block * num_groups + g) * 4));
-                running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc), scales);
+                if (B_scales != nullptr) {
+                    float32x4_t scales = vcvt_f32_f16(vld1_f16(B_scales + (n_block * num_groups + g) * 4));
+                    running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc), scales);
+                } else {
+                    running_sum = vaddq_f32(running_sum, vcvtq_f32_s32(acc));
+                }
             }
 
             float32x4_t result = vmulq_n_f32(running_sum, A_scale);
@@ -905,9 +807,12 @@ void cactus_gemm_int4(
                     unpack_int4_as_int8x16x2(b_base + 32, b11, b10);
                     unpack_int4_as_int8x16x2(b_base + 48, b13, b12);
 
-                    const __fp16* scale_ptr = B_scales + (n_block * num_groups + g) * 4;
-                    float16x4_t scales_f16 = vld1_f16(scale_ptr);
-                    float32x4_t scales = vcvt_f32_f16(scales_f16);
+                    float32x4_t scales = vdupq_n_f32(1.0f);
+                    if (B_scales != nullptr) {
+                        const __fp16* scale_ptr = B_scales + (n_block * num_groups + g) * 4;
+                        float16x4_t scales_f16 = vld1_f16(scale_ptr);
+                        scales = vcvt_f32_f16(scales_f16);
+                    }
 
                     for (size_t mi = 0; mi < actual_m; mi++) {
                         const int8_t* a_ptr = A + (m_start + mi) * K + k_base;
@@ -926,7 +831,11 @@ void cactus_gemm_int4(
                         acc = CACTUS_DOTQ_LANE(acc, b12, a_vec, 2);
                         acc = CACTUS_DOTQ_LANE(acc, b13, a_vec, 3);
 
-                        running_sum[mi] = vmlaq_f32(running_sum[mi], vcvtq_f32_s32(acc), scales);
+                        if (B_scales != nullptr) {
+                            running_sum[mi] = vmlaq_f32(running_sum[mi], vcvtq_f32_s32(acc), scales);
+                        } else {
+                            running_sum[mi] = vaddq_f32(running_sum[mi], vcvtq_f32_s32(acc));
+                        }
                     }
                 }
 
@@ -958,6 +867,299 @@ void cactus_matmul_int4(const int8_t* A, const float* A_scales,
     } else {
         cactus_gemm_int4(A, A_scales, B_packed, B_scales, C, M, K, N, group_size);
     }
+}
+
+void cactus_gemv_ternary_int4sign(
+    const int8_t* A,
+    float A_scale,
+    const uint8_t* B_packed,
+    const __fp16* B_scales,
+    TernaryScaleMode scale_mode,
+    __fp16* C,
+    size_t K,
+    size_t N,
+    size_t group_size
+) {
+    if (K == 0 || N == 0) return;
+    if ((group_size % 32) != 0) {
+        throw std::runtime_error("INT4-sign ternary matmul requires group_size to be a multiple of 32");
+    }
+    if (scale_mode != TernaryScaleMode::COLUMN && B_scales == nullptr) {
+        throw std::runtime_error("INT4-sign ternary matmul requires raw tensor/row scales");
+    }
+
+    const size_t num_groups = K / group_size;
+    const size_t N_blocks = (N + 3) / 4;
+
+    auto process_blocks = [=](size_t block_start, size_t block_end) {
+        size_t n_block = block_start;
+
+        for (; n_block + 1 < block_end; n_block += 2) {
+            int32x4_t sum_a = vdupq_n_s32(0);
+            int32x4_t sum_b = vdupq_n_s32(0);
+
+            for (size_t g = 0; g < num_groups; ++g) {
+                const size_t k_base = g * group_size;
+                const int8_t* a_ptr = A + k_base;
+                const uint8_t* ba = B_packed + (n_block * K + k_base) * 2;
+                const uint8_t* bb = B_packed + ((n_block + 1) * K + k_base) * 2;
+
+                int32x4_t acc_a = vdupq_n_s32(0);
+                int32x4_t acc_b = vdupq_n_s32(0);
+
+                for (size_t chunk = 0; chunk < group_size; chunk += 32) {
+                    const int8_t* a_chunk = a_ptr + chunk;
+                    const uint8_t* ba_chunk = ba + chunk * 2;
+                    const uint8_t* bb_chunk = bb + chunk * 2;
+
+                    const int8x16_t a_lo = vld1q_s8(a_chunk);
+                    const int8x16_t a_hi = vld1q_s8(a_chunk + 16);
+
+                    int8x16_t b0, b1, b2, b3;
+                    unpack_int4_as_int8x16x2(ba_chunk, b1, b0);
+                    unpack_int4_as_int8x16x2(ba_chunk + 16, b3, b2);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b0, a_lo, 0);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b1, a_lo, 1);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b2, a_lo, 2);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b3, a_lo, 3);
+                    unpack_int4_as_int8x16x2(ba_chunk + 32, b1, b0);
+                    unpack_int4_as_int8x16x2(ba_chunk + 48, b3, b2);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b0, a_hi, 0);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b1, a_hi, 1);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b2, a_hi, 2);
+                    acc_a = CACTUS_DOTQ_LANE(acc_a, b3, a_hi, 3);
+
+                    unpack_int4_as_int8x16x2(bb_chunk, b1, b0);
+                    unpack_int4_as_int8x16x2(bb_chunk + 16, b3, b2);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b0, a_lo, 0);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b1, a_lo, 1);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b2, a_lo, 2);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b3, a_lo, 3);
+                    unpack_int4_as_int8x16x2(bb_chunk + 32, b1, b0);
+                    unpack_int4_as_int8x16x2(bb_chunk + 48, b3, b2);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b0, a_hi, 0);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b1, a_hi, 1);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b2, a_hi, 2);
+                    acc_b = CACTUS_DOTQ_LANE(acc_b, b3, a_hi, 3);
+                }
+
+                sum_a = vaddq_s32(sum_a, acc_a);
+                sum_b = vaddq_s32(sum_b, acc_b);
+            }
+
+            const size_t n_start_a = n_block * 4;
+            const size_t n_start_b = (n_block + 1) * 4;
+            const float32x4_t out_scale_a = ternary_output_scale_vector(scale_mode, B_scales, n_start_a);
+            const float32x4_t result_a = vmulq_f32(vmulq_n_f32(vcvtq_f32_s32(sum_a), A_scale), out_scale_a);
+            vst1_f16(C + n_start_a, vcvt_f16_f32(result_a));
+
+            const size_t actual_n_b = std::min(size_t(4), N - n_start_b);
+            if (actual_n_b == 4) {
+                const float32x4_t out_scale_b = ternary_output_scale_vector(scale_mode, B_scales, n_start_b);
+                const float32x4_t result_b = vmulq_f32(vmulq_n_f32(vcvtq_f32_s32(sum_b), A_scale), out_scale_b);
+                vst1_f16(C + n_start_b, vcvt_f16_f32(result_b));
+            } else {
+                alignas(16) int32_t sum_b_lanes[4];
+                vst1q_s32(sum_b_lanes, sum_b);
+                for (size_t ni = 0; ni < actual_n_b; ++ni) {
+                    const float scale = A_scale * ternary_output_scale_scalar(scale_mode, B_scales, n_start_b + ni);
+                    C[n_start_b + ni] = static_cast<__fp16>(
+                        static_cast<float>(sum_b_lanes[ni]) * scale);
+                }
+            }
+        }
+
+        for (; n_block < block_end; ++n_block) {
+            const size_t n_start = n_block * 4;
+            const size_t actual_n = std::min(size_t(4), N - n_start);
+            int32x4_t running_sum = vdupq_n_s32(0);
+
+            for (size_t g = 0; g < num_groups; ++g) {
+                const size_t k_base = g * group_size;
+                const int8_t* a_ptr = A + k_base;
+                const uint8_t* b_base = B_packed + (n_block * K + k_base) * 2;
+
+                int32x4_t acc = vdupq_n_s32(0);
+                for (size_t chunk = 0; chunk < group_size; chunk += 32) {
+                    const int8_t* a_chunk = a_ptr + chunk;
+                    const uint8_t* b_chunk = b_base + chunk * 2;
+
+                    const int8x16_t a_lo = vld1q_s8(a_chunk);
+                    const int8x16_t a_hi = vld1q_s8(a_chunk + 16);
+
+                    int8x16_t b0, b1, b2, b3;
+                    unpack_int4_as_int8x16x2(b_chunk, b1, b0);
+                    unpack_int4_as_int8x16x2(b_chunk + 16, b3, b2);
+                    acc = CACTUS_DOTQ_LANE(acc, b0, a_lo, 0);
+                    acc = CACTUS_DOTQ_LANE(acc, b1, a_lo, 1);
+                    acc = CACTUS_DOTQ_LANE(acc, b2, a_lo, 2);
+                    acc = CACTUS_DOTQ_LANE(acc, b3, a_lo, 3);
+                    unpack_int4_as_int8x16x2(b_chunk + 32, b1, b0);
+                    unpack_int4_as_int8x16x2(b_chunk + 48, b3, b2);
+                    acc = CACTUS_DOTQ_LANE(acc, b0, a_hi, 0);
+                    acc = CACTUS_DOTQ_LANE(acc, b1, a_hi, 1);
+                    acc = CACTUS_DOTQ_LANE(acc, b2, a_hi, 2);
+                    acc = CACTUS_DOTQ_LANE(acc, b3, a_hi, 3);
+                }
+                running_sum = vaddq_s32(running_sum, acc);
+            }
+
+            if (actual_n == 4) {
+                const float32x4_t out_scale = ternary_output_scale_vector(scale_mode, B_scales, n_start);
+                const float32x4_t result = vmulq_f32(vmulq_n_f32(vcvtq_f32_s32(running_sum), A_scale), out_scale);
+                vst1_f16(C + n_start, vcvt_f16_f32(result));
+            } else {
+                alignas(16) int32_t lanes[4];
+                vst1q_s32(lanes, running_sum);
+                for (size_t ni = 0; ni < actual_n; ++ni) {
+                    const float scale = A_scale * ternary_output_scale_scalar(scale_mode, B_scales, n_start + ni);
+                    C[n_start + ni] = static_cast<__fp16>(static_cast<float>(lanes[ni]) * scale);
+                }
+            }
+        }
+    };
+
+    auto& pool = CactusThreading::get_thread_pool();
+    size_t num_threads = CactusThreading::GemmThreading::get_gemv_threads(N_blocks, pool.num_workers());
+    num_threads = std::min(num_threads, N_blocks);
+
+    if (num_threads <= 1) {
+        process_blocks(0, N_blocks);
+    } else {
+        pool.enqueue_n_threads(N_blocks, num_threads, process_blocks);
+        pool.wait_all();
+    }
+}
+
+void cactus_gemm_ternary_int4sign_column(
+    const int8_t* A,
+    const float* A_scales,
+    const uint8_t* B_packed,
+    __fp16* C,
+    size_t M,
+    size_t K,
+    size_t N
+) {
+    if (M == 0 || K == 0 || N == 0) return;
+    constexpr size_t kGroupSize = 32;
+    constexpr size_t TILE_M = 8;
+    constexpr size_t TILE_N = 4;
+
+    if ((K % kGroupSize) != 0) {
+        throw std::runtime_error("Column-scale INT4-sign ternary matmul requires K padded to a multiple of 32");
+    }
+
+    const size_t num_groups = K / kGroupSize;
+    const size_t N_blocks = (N + TILE_N - 1) / TILE_N;
+    const size_t num_row_tiles = (M + TILE_M - 1) / TILE_M;
+    const size_t total_tiles = num_row_tiles * N_blocks;
+
+    CactusThreading::parallel_gemm_tiles(M, total_tiles,
+        [=](size_t tile_start, size_t tile_end) {
+            for (size_t tile_idx = tile_start; tile_idx < tile_end; ++tile_idx) {
+                const size_t tile_row = tile_idx / N_blocks;
+                const size_t n_block = tile_idx % N_blocks;
+                const size_t m_start = tile_row * TILE_M;
+                const size_t m_end = std::min(m_start + TILE_M, M);
+                const size_t n_start = n_block * TILE_N;
+                const size_t n_end = std::min(n_start + TILE_N, N);
+                const size_t actual_m = m_end - m_start;
+                const size_t actual_n = n_end - n_start;
+
+                const int8_t* a_rows[TILE_M];
+                for (size_t mi = 0; mi < TILE_M; ++mi) {
+                    const size_t row = m_start + (mi < actual_m ? mi : actual_m - 1);
+                    a_rows[mi] = A + row * K;
+                }
+
+                int32x4_t running_sum[TILE_M] = {
+                    vdupq_n_s32(0), vdupq_n_s32(0),
+                    vdupq_n_s32(0), vdupq_n_s32(0),
+                    vdupq_n_s32(0), vdupq_n_s32(0),
+                    vdupq_n_s32(0), vdupq_n_s32(0)
+                };
+
+                for (size_t g = 0; g < num_groups; ++g) {
+                    const size_t k_base = g * kGroupSize;
+                    const uint8_t* b_base = B_packed + (n_block * K + k_base) * 2;
+
+                    __builtin_prefetch(b_base + kGroupSize * 2, 0, 3);
+
+                    int8x16_t b00, b01, b02, b03;
+                    int8x16_t b10, b11, b12, b13;
+
+                    unpack_int4_as_int8x16x2(b_base, b01, b00);
+                    unpack_int4_as_int8x16x2(b_base + 16, b03, b02);
+                    unpack_int4_as_int8x16x2(b_base + 32, b11, b10);
+                    unpack_int4_as_int8x16x2(b_base + 48, b13, b12);
+
+                    #define CACTUS_TERNARY_INT4SIGN_COLUMN_ROW(ROW) do { \
+                        const int8_t* a_ptr_##ROW = a_rows[ROW] + k_base; \
+                        int32x4_t acc_##ROW = vdupq_n_s32(0); \
+                        const int8x16_t a_lo_##ROW = vld1q_s8(a_ptr_##ROW); \
+                        const int8x16_t a_hi_##ROW = vld1q_s8(a_ptr_##ROW + 16); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b00, a_lo_##ROW, 0); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b01, a_lo_##ROW, 1); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b02, a_lo_##ROW, 2); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b03, a_lo_##ROW, 3); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b10, a_hi_##ROW, 0); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b11, a_hi_##ROW, 1); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b12, a_hi_##ROW, 2); \
+                        acc_##ROW = CACTUS_DOTQ_LANE(acc_##ROW, b13, a_hi_##ROW, 3); \
+                        running_sum[ROW] = vaddq_s32(running_sum[ROW], acc_##ROW); \
+                    } while (0)
+
+                    CACTUS_TERNARY_INT4SIGN_COLUMN_ROW(0);
+                    CACTUS_TERNARY_INT4SIGN_COLUMN_ROW(1);
+                    CACTUS_TERNARY_INT4SIGN_COLUMN_ROW(2);
+                    CACTUS_TERNARY_INT4SIGN_COLUMN_ROW(3);
+                    CACTUS_TERNARY_INT4SIGN_COLUMN_ROW(4);
+                    CACTUS_TERNARY_INT4SIGN_COLUMN_ROW(5);
+                    CACTUS_TERNARY_INT4SIGN_COLUMN_ROW(6);
+                    CACTUS_TERNARY_INT4SIGN_COLUMN_ROW(7);
+                    #undef CACTUS_TERNARY_INT4SIGN_COLUMN_ROW
+                }
+
+                for (size_t mi = 0; mi < actual_m; ++mi) {
+                    const float32x4_t result = vmulq_n_f32(
+                        vcvtq_f32_s32(running_sum[mi]),
+                        A_scales[m_start + mi]);
+                    const float16x4_t result_f16 = vcvt_f16_f32(result);
+
+                    if (actual_n == 4) {
+                        vst1_f16(C + (m_start + mi) * N + n_start, result_f16);
+                    } else {
+                        float16x4_t tmp = result_f16;
+                        for (size_t ni = 0; ni < actual_n; ++ni) {
+                            C[(m_start + mi) * N + n_start + ni] = vget_lane_f16(tmp, 0);
+                            tmp = vext_f16(tmp, tmp, 1);
+                        }
+                    }
+                }
+            }
+        });
+}
+
+void cactus_matmul_ternary_int4sign_column(
+    const int8_t* A,
+    const float* A_scales,
+    const uint8_t* B_packed,
+    __fp16* C,
+    size_t M,
+    size_t K,
+    size_t N
+) {
+    if (M == 0 || K == 0 || N == 0) return;
+
+    if (M == 1) {
+        cactus_gemv_int4(
+            A, A_scales[0],
+            reinterpret_cast<const int8_t*>(B_packed), nullptr,
+            C, K, N, 32);
+        return;
+    }
+
+    cactus_gemm_ternary_int4sign_column(A, A_scales, B_packed, C, M, K, N);
 }
 
 void cactus_gemv_ternary_packed2(
@@ -1118,114 +1320,6 @@ void cactus_gemv_ternary_packed2(
         process_blocks(0, N_blocks);
     } else {
         pool.enqueue_n_threads(N_blocks, num_threads, process_blocks);
-        pool.wait_all();
-    }
-}
-
-void cactus_gemv_ternary_lut16_benchmark(
-    const int8_t* A,
-    float A_scale,
-    const uint8_t* B_codes,
-    const __fp16* row_scales,
-    float tensor_scale,
-    __fp16* C,
-    size_t K,
-    size_t N,
-    size_t N_padded
-) {
-    if (K == 0 || N == 0) return;
-    if ((K % 32) != 0) {
-        throw std::runtime_error("Ternary LUT GEMV requires K padded to a multiple of 32");
-    }
-    if ((N_padded % 16) != 0 || N_padded < N) {
-        throw std::runtime_error("Ternary LUT GEMV requires N padded to a multiple of 16");
-    }
-
-    constexpr size_t TILE_N = 16;
-    const size_t k_quads = K / 4;
-    const size_t num_tiles = N_padded / TILE_N;
-    std::vector<TernaryLut4> luts(k_quads);
-    for (size_t q = 0; q < k_quads; ++q) {
-        luts[q] = build_ternary_lut4(A + q * 4);
-    }
-    const TernaryLut4* luts_ptr = luts.data();
-
-    auto process_tiles = [=](size_t tile_start, size_t tile_end) {
-        std::vector<int32_t> accum((tile_end - tile_start) * TILE_N, 0);
-
-        const float base_scale = A_scale * tensor_scale;
-        for (size_t tile = tile_start; tile < tile_end; ++tile) {
-            const size_t n_start = tile * TILE_N;
-            int32_t* tile_acc = accum.data() + (tile - tile_start) * TILE_N;
-            int32x4_t acc0 = vdupq_n_s32(0);
-            int32x4_t acc1 = vdupq_n_s32(0);
-            int32x4_t acc2 = vdupq_n_s32(0);
-            int32x4_t acc3 = vdupq_n_s32(0);
-
-            switch (k_quads) {
-                case 256:
-                    accumulate_ternary_lut_kquads_fixed<256>(
-                        luts_ptr, B_codes, N_padded, n_start, acc0, acc1, acc2, acc3);
-                    break;
-                case 512:
-                    accumulate_ternary_lut_kquads_fixed<512>(
-                        luts_ptr, B_codes, N_padded, n_start, acc0, acc1, acc2, acc3);
-                    break;
-                case 1536:
-                    accumulate_ternary_lut_kquads_fixed<1536>(
-                        luts_ptr, B_codes, N_padded, n_start, acc0, acc1, acc2, acc3);
-                    break;
-                default:
-                    accumulate_ternary_lut_kquads_dynamic(
-                        luts_ptr, k_quads, B_codes, N_padded, n_start, acc0, acc1, acc2, acc3);
-                    break;
-            }
-
-            vst1q_s32(tile_acc + 0, acc0);
-            vst1q_s32(tile_acc + 4, acc1);
-            vst1q_s32(tile_acc + 8, acc2);
-            vst1q_s32(tile_acc + 12, acc3);
-
-            const size_t actual_n = std::min(TILE_N, N - n_start);
-
-            if (actual_n == TILE_N) {
-                float32x4_t out0 = vmulq_n_f32(vcvtq_f32_s32(vld1q_s32(tile_acc + 0)), base_scale);
-                float32x4_t out1 = vmulq_n_f32(vcvtq_f32_s32(vld1q_s32(tile_acc + 4)), base_scale);
-                float32x4_t out2 = vmulq_n_f32(vcvtq_f32_s32(vld1q_s32(tile_acc + 8)), base_scale);
-                float32x4_t out3 = vmulq_n_f32(vcvtq_f32_s32(vld1q_s32(tile_acc + 12)), base_scale);
-
-                if (row_scales != nullptr) {
-                    out0 = vmulq_f32(out0, vcvt_f32_f16(vld1_f16(row_scales + n_start + 0)));
-                    out1 = vmulq_f32(out1, vcvt_f32_f16(vld1_f16(row_scales + n_start + 4)));
-                    out2 = vmulq_f32(out2, vcvt_f32_f16(vld1_f16(row_scales + n_start + 8)));
-                    out3 = vmulq_f32(out3, vcvt_f32_f16(vld1_f16(row_scales + n_start + 12)));
-                }
-
-                vst1_f16(C + n_start + 0, vcvt_f16_f32(out0));
-                vst1_f16(C + n_start + 4, vcvt_f16_f32(out1));
-                vst1_f16(C + n_start + 8, vcvt_f16_f32(out2));
-                vst1_f16(C + n_start + 12, vcvt_f16_f32(out3));
-                continue;
-            }
-
-            for (size_t ni = 0; ni < actual_n; ++ni) {
-                float scale = base_scale;
-                if (row_scales != nullptr) {
-                    scale *= static_cast<float>(row_scales[n_start + ni]);
-                }
-                C[n_start + ni] = static_cast<__fp16>(static_cast<float>(tile_acc[ni]) * scale);
-            }
-        }
-    };
-
-    auto& pool = CactusThreading::get_thread_pool();
-    size_t num_threads = CactusThreading::GemmThreading::get_gemv_threads(num_tiles, pool.num_workers());
-    num_threads = std::min(num_threads, num_tiles);
-
-    if (num_threads <= 1) {
-        process_tiles(0, num_tiles);
-    } else {
-        pool.enqueue_n_threads(num_tiles, num_threads, process_tiles);
         pool.wait_all();
     }
 }

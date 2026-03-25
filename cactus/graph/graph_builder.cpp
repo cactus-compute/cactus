@@ -157,6 +157,51 @@ size_t CactusGraph::matmul(size_t input1, size_t input2, bool pretransposed_rhs,
     return add_node(OpType::MATMUL, {input1, input2}, output_shape, params);
 }
 
+size_t CactusGraph::matmul_concat(size_t input, const std::vector<size_t>& rhs_nodes,
+                                  bool pretransposed_rhs, ComputeBackend backend) {
+    if (rhs_nodes.empty()) {
+        throw std::invalid_argument("matmul_concat requires at least one RHS tensor");
+    }
+
+    const auto& lhs_buffer = get_output_buffer(input);
+    if (lhs_buffer.shape.size() != 2) {
+        throw std::invalid_argument("matmul_concat requires a 2D lhs tensor");
+    }
+
+    const size_t M = lhs_buffer.shape[0];
+    const size_t K = lhs_buffer.shape[1];
+    size_t total_N = 0;
+
+    std::vector<size_t> inputs;
+    inputs.reserve(rhs_nodes.size() + 1);
+    inputs.push_back(input);
+
+    for (size_t rhs_node : rhs_nodes) {
+        const auto& rhs_buffer = get_output_buffer(rhs_node);
+        if (rhs_buffer.shape.size() != 2) {
+            throw std::invalid_argument("matmul_concat requires 2D rhs tensors");
+        }
+
+        const size_t rhs_K = pretransposed_rhs ? rhs_buffer.shape[1] : rhs_buffer.shape[0];
+        size_t N = 0;
+        if (rhs_buffer.is_interleaved && rhs_buffer.original_N > 0) {
+            N = rhs_buffer.original_N;
+        } else {
+            N = pretransposed_rhs ? rhs_buffer.shape[0] : rhs_buffer.shape[1];
+        }
+
+        if (rhs_K != K) {
+            throw std::invalid_argument("matmul_concat rhs tensor has incompatible K dimension");
+        }
+
+        total_N += N;
+        inputs.push_back(rhs_node);
+    }
+
+    OpParams params{.pretransposed_rhs = pretransposed_rhs, .backend = backend, .output_precision = Precision::FP16};
+    return add_node(OpType::MATMUL_CONCAT, inputs, {M, total_N}, params);
+}
+
 size_t CactusGraph::transpose(size_t input, ComputeBackend backend) {
     const auto& input_buffer = get_output_buffer(input);
     std::vector<size_t> output_shape = input_buffer.shape;

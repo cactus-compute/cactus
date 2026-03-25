@@ -74,10 +74,18 @@ void cactus_gemv_ternary_packed2(const int8_t* A, float A_scale,
                                  TernaryScaleMode scale_mode,
                                  __fp16* C, size_t K, size_t N, size_t group_size);
 
-void cactus_gemv_ternary_lut16_benchmark(const int8_t* A, float A_scale,
-                                         const uint8_t* B_codes,
-                                         const __fp16* row_scales, float tensor_scale,
-                                         __fp16* C, size_t K, size_t N, size_t N_padded);
+void cactus_gemv_ternary_int4sign(const int8_t* A, float A_scale,
+                                  const uint8_t* B_packed, const __fp16* B_scales,
+                                  TernaryScaleMode scale_mode,
+                                  __fp16* C, size_t K, size_t N, size_t group_size);
+
+void cactus_gemm_ternary_int4sign_column(const int8_t* A, const float* A_scales,
+                                         const uint8_t* B_packed,
+                                         __fp16* C, size_t M, size_t K, size_t N);
+
+void cactus_matmul_ternary_int4sign_column(const int8_t* A, const float* A_scales,
+                                           const uint8_t* B_packed,
+                                           __fp16* C, size_t M, size_t K, size_t N);
 
 void cactus_gemm_ternary_packed2(const int8_t* A, const float* A_scales,
                                  const uint8_t* B_packed, const __fp16* B_scales,

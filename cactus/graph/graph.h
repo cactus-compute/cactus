@@ -119,8 +119,9 @@ enum class TernaryScaleMode {
 };
 
 enum class TernaryStorage {
-    INT8,
-    PACKED_2BIT
+    INT8 = 0,
+    PACKED_2BIT = 1,
+    INT4_SIGN = 6
 };
 
 enum class ComputeBackend {
@@ -141,7 +142,7 @@ enum class OpType {
     INPUT, PRECISION_CAST,
     ADD, ADD_CLIPPED, SUBTRACT, MULTIPLY, DIVIDE,
     ABS, POW, FLATTEN, VIEW,
-    MATMUL, TRANSPOSE, RESHAPE, SLICE, GATHER, EMBEDDING,
+    MATMUL, MATMUL_CONCAT, TRANSPOSE, RESHAPE, SLICE, GATHER, EMBEDDING,
     BILINEAR_INTERPOLATION,
     SUM, MEAN, VARIANCE, MIN, MAX,
     RMS_NORM, ROPE, ROPE_GPTJ, SOFTMAX, ATTENTION, ATTENTION_INT8_HYBRID, REL_POS_BIAS, CONV1D_CAUSAL, CONV1D_K3, CONV1D_K7S3, CONV1D, CONV1D_SAME_DEPTHWISE_K9, CONV1D_POINTWISE, CONV2D_K3S2P1, CONV2D_DEPTHWISE_K3S2P1, CONV2D_POINTWISE_1X1, GLU, BATCHNORM,
@@ -310,6 +311,11 @@ struct BufferDesc {
                ternary_storage == TernaryStorage::PACKED_2BIT;
     }
 
+    bool is_ternary_int4_sign() const {
+        return is_ternary_int8() &&
+               ternary_storage == TernaryStorage::INT4_SIGN;
+    }
+
     void set_grouped_scales(size_t gs, size_t ng, void* scales_ptr) {
         group_size = gs;
         num_groups = ng;
@@ -321,7 +327,7 @@ struct BufferDesc {
     }
 
     void set_ternary_scales(TernaryScaleMode mode, size_t scale_count, void* scales_ptr,
-                            TernaryStorage storage = TernaryStorage::INT8) {
+                            TernaryStorage storage = TernaryStorage::PACKED_2BIT) {
         group_size = 0;
         num_groups = 0;
         scales_data = scales_ptr;
@@ -528,6 +534,8 @@ public:
     size_t flatten(size_t input, int start_dim = 0, int end_dim = -1);
     
     size_t matmul(size_t input1, size_t input2, bool pretransposed_rhs = false, ComputeBackend backend = ComputeBackend::CPU);
+    size_t matmul_concat(size_t input, const std::vector<size_t>& rhs_nodes,
+                         bool pretransposed_rhs = true, ComputeBackend backend = ComputeBackend::CPU);
     size_t transpose(size_t input, ComputeBackend backend = ComputeBackend::CPU);
     size_t transposeN(size_t input, const std::vector<size_t>& permutation, ComputeBackend backend = ComputeBackend::CPU);
     size_t reshape(size_t input, const std::vector<size_t>& new_shape);
@@ -545,7 +553,7 @@ public:
     size_t mmap_weights(const std::string& filename);
     void set_grouped_scales(size_t node_id, size_t group_size, size_t num_groups, void* scales_ptr);
     void set_ternary_scales(size_t node_id, TernaryScaleMode mode, size_t scale_count, void* scales_ptr,
-                            TernaryStorage storage = TernaryStorage::INT8);
+                            TernaryStorage storage = TernaryStorage::PACKED_2BIT);
     void set_interleaved(size_t node_id, bool interleaved, size_t original_N);
 
     void release_weight_pages(size_t node_id);

@@ -23,10 +23,15 @@ FLAG_INTERLEAVED = 1 << 3
 FLAG_TERNARY = 1 << 4
 FLAG_TERNARY_MODE_SHIFT = 5
 FLAG_TERNARY_MODE_MASK = 0x3 << FLAG_TERNARY_MODE_SHIFT
-FLAG_TERNARY_PACKED_2BIT = 1 << 7
+FLAG_TERNARY_STORAGE_SHIFT = 7
+FLAG_TERNARY_STORAGE_MASK = 0x7 << FLAG_TERNARY_STORAGE_SHIFT
+FLAG_TERNARY_PACKED_2BIT = 1 << FLAG_TERNARY_STORAGE_SHIFT
 TERNARY_MODE_TENSOR = 0
 TERNARY_MODE_ROW = 1
 TERNARY_MODE_COLUMN = 2
+TERNARY_STORAGE_INT8 = 0
+TERNARY_STORAGE_PACKED_2BIT = 1
+TERNARY_STORAGE_INT4_SIGN = 6
 
 TERNARY_ATOL = 5e-3
 TERNARY_RTOL = 5e-3
@@ -162,6 +167,16 @@ def pack_ternary_quads(data: np.ndarray) -> np.ndarray:
     return packed.astype(np.uint8)
 
 
+def ternary_storage_flag(storage: str) -> int:
+    if storage == 'packed2':
+        storage_value = TERNARY_STORAGE_PACKED_2BIT
+    elif storage == 'int4sign':
+        storage_value = TERNARY_STORAGE_INT4_SIGN
+    else:
+        raise ValueError(f"Unknown ternary storage: {storage}")
+    return storage_value << FLAG_TERNARY_STORAGE_SHIFT
+
+
 def ternary_candidate(data: np.ndarray, mode: str) -> tuple[np.ndarray, np.ndarray]:
     if mode == 'tensor':
         scales = np.array([float(np.max(np.abs(data)))], dtype=np.float32)
@@ -250,6 +265,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         N, K = shape
         original_N = N
         mode, signs, ternary_scales = detect_ternary_representation(data.astype(np.float32))
+        ternary_layout = getattr(args, 'ternary_layout', 'int4sign') if args is not None else 'int4sign'
 
         if K % GROUP_SIZE != 0:
             pad_k = GROUP_SIZE - (K % GROUP_SIZE)
@@ -260,6 +276,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
 
         quantized_interleaved, N_padded = interleave_weights(signs, INTERLEAVE_BLOCK)
         packed_ternary = pack_ternary_quads(quantized_interleaved)
+        packed_int4sign = pack_int4_pairs(quantized_interleaved.astype(np.int8))
 
         if mode == 'tensor':
             scales_fp16 = ternary_scales.astype(TERNARY_FP16_SCALE_DTYPE)
@@ -270,6 +287,19 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         else:
             scales_fp16 = ternary_scales.astype(TERNARY_FP16_SCALE_DTYPE)
 
+        if ternary_layout == 'packed2':
+            ternary_blob = packed_ternary
+            stored_N = N_padded
+            storage_aux0 = 0
+            storage_aux1 = 0
+        elif ternary_layout == 'int4sign':
+            ternary_blob = packed_int4sign
+            stored_N = N_padded
+            storage_aux0 = 0
+            storage_aux1 = 0
+        else:
+            raise ValueError(f"Unsupported ternary layout: {ternary_layout}")
+
         if stats_tracker:
             stats_tracker['ternary_tensors'] += 1
             stats_tracker['quantized_parameters'] += original_N * K
@@ -278,14 +308,14 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
 
         with open(output_path, 'wb') as f:
             ndim = 2
-            data_bytes = packed_ternary.size
+            data_bytes = ternary_blob.size
             scales_bytes = scales_fp16.size * 2
             flags = (
                 FLAG_HAS_SCALES
                 | FLAG_INTERLEAVED
                 | FLAG_TERNARY
-                | FLAG_TERNARY_PACKED_2BIT
                 | ternary_mode_flag(mode)
+                | ternary_storage_flag(ternary_layout)
             )
             if transpose:
                 flags |= FLAG_TRANSPOSED
@@ -295,7 +325,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
             f.write(struct.pack('<I', CACTUS_ALIGNMENT))
             f.write(struct.pack('<I', ndim))
 
-            f.write(struct.pack('<Q', N_padded))
+            f.write(struct.pack('<Q', stored_N))
             f.write(struct.pack('<Q', K))
             f.write(struct.pack('<Q', 0))
             f.write(struct.pack('<Q', 0))
@@ -303,8 +333,8 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
             f.write(struct.pack('<I', 0))
             f.write(struct.pack('<Q', data_bytes))
             f.write(struct.pack('<Q', scales_bytes))
-            f.write(struct.pack('<I', 0))
-            f.write(struct.pack('<I', 0))
+            f.write(struct.pack('<I', storage_aux0))
+            f.write(struct.pack('<I', storage_aux1))
             f.write(struct.pack('<Q', original_N))
 
             header_size = 84
@@ -314,7 +344,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
             scales_end = align_offset(header_size, CACTUS_ALIGNMENT) + scales_bytes
             f.write(compute_padding(scales_end, CACTUS_ALIGNMENT))
 
-            f.write(packed_ternary.tobytes())
+            f.write(ternary_blob.tobytes())
 
         return
 

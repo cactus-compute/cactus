@@ -21,6 +21,7 @@ extern void compute_reshape_node(GraphNode& node, const std::vector<std::unique_
 extern void compute_precision_cast_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 extern void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_matmul_concat_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_rms_norm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_rope_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_softmax_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
@@ -69,7 +70,7 @@ extern void compute_quantize_activations_node(GraphNode& node, const std::vector
 static const char* op_type_names[] = {
     "INPUT", "PRECISION_CAST",
     "ADD", "ADD_CLIPPED", "SUBTRACT", "MULTIPLY", "DIVIDE",
-    "MATMUL", "TRANSPOSE", "RESHAPE", "SLICE", "GATHER", "EMBEDDING", "VIEW", "FLATTEN",
+    "MATMUL", "MATMUL_CONCAT", "TRANSPOSE", "RESHAPE", "SLICE", "GATHER", "EMBEDDING", "VIEW", "FLATTEN",
     "BILINEAR_INTERPOLATION",
     "SUM", "MEAN", "VARIANCE", "MIN", "MAX",
     "RMS_NORM", "ROPE", "ROPE_GPTJ", "SOFTMAX", "ATTENTION", "ATTENTION_INT8_HYBRID", "REL_POS_BIAS", "CONV1D_CAUSAL", "CONV1D_K3", "CONV1D_K7S3", "CONV1D", "CONV1D_SAME_DEPTHWISE_K9", "CONV1D_POINTWISE", "CONV2D_K3S2P1", "CONV2D_DEPTHWISE_K3S2P1", "CONV2D_POINTWISE_1X1", "GLU", "BATCHNORM",
@@ -153,6 +154,10 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
 
         case OpType::MATMUL:
             compute_matmul_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::MATMUL_CONCAT:
+            compute_matmul_concat_node(node, nodes, node_index_map);
             break;
 
         case OpType::RMS_NORM:

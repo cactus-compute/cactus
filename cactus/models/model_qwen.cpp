@@ -52,12 +52,26 @@ size_t QwenModel::build_attention(CactusGraph* gb, size_t normalized_input, uint
                                  ComputeBackend backend, bool use_cache, size_t position_offset) {
     const auto& layer = weight_nodes_.layers[layer_idx];
 
-    auto q_proj = gb->matmul(normalized_input, layer.attn_q_weight, true, backend);
-    auto k_proj = gb->matmul(normalized_input, layer.attn_k_weight, true, backend);
-    auto v_proj = gb->matmul(normalized_input, layer.attn_v_weight, true, backend);
+    size_t q_proj = 0;
+    size_t k_proj = 0;
+    size_t v_proj = 0;
+    const size_t batch_seq = gb->get_output_buffer(normalized_input).shape[0];
+    const bool use_fused_qkv = (backend == ComputeBackend::CPU && batch_seq == 1);
+    if (use_fused_qkv) {
+        const size_t q_dim = config_.attention_heads * config_.attention_head_dim;
+        const size_t kv_dim = config_.attention_kv_heads * config_.attention_head_dim;
+        const size_t qkv = gb->matmul_concat(normalized_input,
+                                             {layer.attn_q_weight, layer.attn_k_weight, layer.attn_v_weight},
+                                             true, backend);
+        q_proj = gb->slice(qkv, 1, 0, q_dim);
+        k_proj = gb->slice(qkv, 1, q_dim, kv_dim);
+        v_proj = gb->slice(qkv, 1, q_dim + kv_dim, kv_dim);
+    } else {
+        q_proj = gb->matmul(normalized_input, layer.attn_q_weight, true, backend);
+        k_proj = gb->matmul(normalized_input, layer.attn_k_weight, true, backend);
+        v_proj = gb->matmul(normalized_input, layer.attn_v_weight, true, backend);
+    }
 
-    const auto& q_shape = gb->get_output_buffer(q_proj).shape;
-    size_t batch_seq = q_shape[0];
     size_t num_heads = config_.attention_heads;
     size_t head_dim = config_.attention_head_dim;
     q_proj = gb->reshape(q_proj, {batch_seq * num_heads, head_dim});
@@ -109,8 +123,21 @@ size_t QwenModel::build_attention(CactusGraph* gb, size_t normalized_input, uint
 size_t QwenModel::build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
                            ComputeBackend backend) const {
     const auto& layer = weight_nodes_.layers[layer_idx];
-    size_t gate_output = gb->matmul(normalized_h, layer.ffn_gate_weight, true, backend);
-    size_t up_output = gb->matmul(normalized_h, layer.ffn_up_weight, true, backend);
+    size_t gate_output = 0;
+    size_t up_output = 0;
+    const size_t batch_seq = gb->get_output_buffer(normalized_h).shape[0];
+    const bool use_fused_gate_up = (backend == ComputeBackend::CPU && batch_seq == 1);
+    if (use_fused_gate_up) {
+        const size_t inter_dim = config_.ffn_intermediate_dim;
+        const size_t gate_up = gb->matmul_concat(normalized_h,
+                                                 {layer.ffn_gate_weight, layer.ffn_up_weight},
+                                                 true, backend);
+        gate_output = gb->slice(gate_up, 1, 0, inter_dim);
+        up_output = gb->slice(gate_up, 1, inter_dim, inter_dim);
+    } else {
+        gate_output = gb->matmul(normalized_h, layer.ffn_gate_weight, true, backend);
+        up_output = gb->matmul(normalized_h, layer.ffn_up_weight, true, backend);
+    }
     size_t gate_silu = gb->silu(gate_output);
     size_t gated = gb->multiply(gate_silu, up_output);
     return gb->matmul(gated, layer.ffn_down_weight, true, backend);

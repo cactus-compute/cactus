@@ -14,7 +14,8 @@ namespace {
     constexpr uint32_t FLAG_TERNARY = 1 << 4;
     constexpr uint32_t FLAG_TERNARY_MODE_SHIFT = 5;
     constexpr uint32_t FLAG_TERNARY_MODE_MASK = 0x3u << FLAG_TERNARY_MODE_SHIFT;
-    constexpr uint32_t FLAG_TERNARY_PACKED_2BIT = 1 << 7;
+    constexpr uint32_t FLAG_TERNARY_STORAGE_SHIFT = 7;
+    constexpr uint32_t FLAG_TERNARY_STORAGE_MASK = 0x7u << FLAG_TERNARY_STORAGE_SHIFT;
     constexpr size_t HEADER_SIZE = 84;
 
     inline size_t align_offset(size_t offset, size_t alignment) {
@@ -59,6 +60,19 @@ namespace {
 
     size_t ternary_packed_2bit_bytes(size_t count) {
         return (count + 3) / 4;
+    }
+
+    uint32_t ternary_storage_bits(TernaryStorage storage) {
+        return static_cast<uint32_t>(storage) << FLAG_TERNARY_STORAGE_SHIFT;
+    }
+
+    TernaryStorage ternary_storage_from_flags(uint32_t flags) {
+        const uint32_t storage_bits = (flags & FLAG_TERNARY_STORAGE_MASK) >> FLAG_TERNARY_STORAGE_SHIFT;
+        switch (storage_bits) {
+            case 1: return TernaryStorage::PACKED_2BIT;
+            case 6: return TernaryStorage::INT4_SIGN;
+            default: return TernaryStorage::INT8;
+        }
     }
 
     uint8_t ternary_code(int8_t value) {
@@ -258,14 +272,23 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
         precision == Precision::INT8 &&
         buffer.quantization_kind == QuantizationKind::TERNARY &&
         buffer.scales_data;
-    const bool ternary_packed_2bit = has_ternary_scales;
+    const TernaryStorage ternary_storage =
+        (has_ternary_scales && buffer.ternary_storage == TernaryStorage::INT8)
+            ? TernaryStorage::PACKED_2BIT
+            : buffer.ternary_storage;
     size_t N = shape.size() >= 1 ? shape[0] : 1;
     size_t scales_bytes = 0;
+    uint32_t storage_aux0 = 0;
+    uint32_t storage_aux1 = 0;
     if (has_grouped_scales) {
         scales_bytes = N * buffer.num_groups * sizeof(__fp16);
     } else if (has_ternary_scales) {
         scales_bytes = ternary_scale_count_for_buffer(buffer) * sizeof(__fp16);
-        byte_size = ternary_packed_2bit_bytes(total_elements);
+        if (ternary_storage == TernaryStorage::PACKED_2BIT) {
+            byte_size = ternary_packed_2bit_bytes(total_elements);
+        } else if (ternary_storage == TernaryStorage::INT4_SIGN) {
+            byte_size = buffer.byte_size;
+        }
     }
 
     uint32_t ndim = static_cast<uint32_t>(shape.size());
@@ -274,10 +297,7 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
         flags |= FLAG_INTERLEAVED;
     }
     if (has_ternary_scales) {
-        flags |= FLAG_TERNARY | ternary_mode_bits(buffer.ternary_scale_mode);
-        if (ternary_packed_2bit) {
-            flags |= FLAG_TERNARY_PACKED_2BIT;
-        }
+        flags |= FLAG_TERNARY | ternary_mode_bits(buffer.ternary_scale_mode) | ternary_storage_bits(ternary_storage);
     }
     uint32_t alignment = 32;
 
@@ -300,8 +320,8 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
     file.write(reinterpret_cast<const char*>(&data_bytes), sizeof(data_bytes));
     file.write(reinterpret_cast<const char*>(&scales_bytes_val), sizeof(scales_bytes_val));
 
-    uint32_t group_size = has_grouped_scales ? static_cast<uint32_t>(buffer.group_size) : 0;
-    uint32_t num_groups = has_grouped_scales ? static_cast<uint32_t>(buffer.num_groups) : 0;
+    uint32_t group_size = has_grouped_scales ? static_cast<uint32_t>(buffer.group_size) : storage_aux0;
+    uint32_t num_groups = has_grouped_scales ? static_cast<uint32_t>(buffer.num_groups) : storage_aux1;
     file.write(reinterpret_cast<const char*>(&group_size), sizeof(group_size));
     file.write(reinterpret_cast<const char*>(&num_groups), sizeof(num_groups));
 
@@ -329,7 +349,11 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
     }
 
     if (has_ternary_scales) {
-        if (buffer.is_ternary_packed_2bit()) {
+        const bool prepacked_storage = ternary_storage == TernaryStorage::INT4_SIGN;
+        const bool already_packed_packed2 =
+            ternary_storage == TernaryStorage::PACKED_2BIT &&
+            buffer.byte_size == ternary_packed_2bit_bytes(total_elements);
+        if (prepacked_storage || already_packed_packed2) {
             file.write(static_cast<const char*>(data), byte_size);
         } else {
             const int8_t* ternary_signs = static_cast<const int8_t*>(data);
@@ -497,7 +521,6 @@ void MappedFile::parse_header() {
     offset += sizeof(uint32_t);
     is_interleaved_ = (flags & FLAG_INTERLEAVED) != 0;
     const bool is_ternary = (flags & FLAG_TERNARY) != 0;
-    const bool ternary_packed_2bit = (flags & FLAG_TERNARY_PACKED_2BIT) != 0;
 
     alignment_ = *reinterpret_cast<const uint32_t*>(ptr + offset);
     offset += sizeof(uint32_t);
@@ -537,7 +560,7 @@ void MappedFile::parse_header() {
     if (is_ternary) {
         quantization_kind_ = QuantizationKind::TERNARY;
         ternary_scale_mode_ = ternary_mode_from_flags(flags);
-        ternary_storage_ = ternary_packed_2bit ? TernaryStorage::PACKED_2BIT : TernaryStorage::INT8;
+        ternary_storage_ = ternary_storage_from_flags(flags);
         switch (ternary_scale_mode_) {
             case TernaryScaleMode::TENSOR:
                 ternary_scale_count_ = 1;
@@ -574,10 +597,15 @@ void MappedFile::parse_header() {
         data_offset_ = aligned_header;
     }
 
+    if (quantization_kind_ == QuantizationKind::TERNARY &&
+        ternary_storage_ != TernaryStorage::PACKED_2BIT &&
+        ternary_storage_ != TernaryStorage::INT4_SIGN) {
+        throw std::runtime_error("Unsupported ternary storage format in tensor file");
+    }
+
     if (data_offset_ + byte_size_ > file_size_) {
         throw std::runtime_error("File corrupted: data extends beyond file size");
     }
-
 }
 
 void MappedFile::apply_madvise_hints() {
