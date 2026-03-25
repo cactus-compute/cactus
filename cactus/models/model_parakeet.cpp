@@ -10,6 +10,12 @@
 
 namespace {
 
+#if defined(__APPLE__)
+constexpr bool kSkipEncoderWeightMmapOnApple = true;
+#else
+constexpr bool kSkipEncoderWeightMmapOnApple = false;
+#endif
+
 size_t shape_elements(const std::vector<int>& shape) {
     if (shape.empty()) return 0;
     size_t total = 1;
@@ -202,19 +208,6 @@ ParakeetModel::ParakeetModel(const Config& config) : Model(config) {
 }
 
 void ParakeetModel::load_weights_to_graph(CactusGraph* gb) {
-    weight_nodes_.subsampling_conv0_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_conv0_weight.weights");
-    weight_nodes_.subsampling_conv0_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_conv0_bias.bias");
-    weight_nodes_.subsampling_depthwise1_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise1_weight.weights");
-    weight_nodes_.subsampling_depthwise1_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise1_bias.bias");
-    weight_nodes_.subsampling_pointwise1_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise1_weight.weights");
-    weight_nodes_.subsampling_pointwise1_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise1_bias.bias");
-    weight_nodes_.subsampling_depthwise2_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise2_weight.weights");
-    weight_nodes_.subsampling_depthwise2_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise2_bias.bias");
-    weight_nodes_.subsampling_pointwise2_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise2_weight.weights");
-    weight_nodes_.subsampling_pointwise2_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise2_bias.bias");
-    weight_nodes_.subsampling_linear_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_weight.weights");
-    weight_nodes_.subsampling_linear_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_bias.bias");
-
     weight_nodes_.ctc_head_weight = gb->mmap_weights(model_folder_path_ + "/ctc_head_weight.weights");
     weight_nodes_.ctc_head_bias = gb->mmap_weights(model_folder_path_ + "/ctc_head_bias.bias");
 
@@ -233,53 +226,68 @@ void ParakeetModel::load_weights_to_graph(CactusGraph* gb) {
         }
     }
 
-    for (uint32_t i = 0; i < config_.num_layers; ++i) {
-        auto& layer = weight_nodes_.layers[i];
-        std::string layer_prefix = model_folder_path_ + "/layer_" + std::to_string(i) + "_";
+    if (!kSkipEncoderWeightMmapOnApple) {
+        weight_nodes_.subsampling_conv0_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_conv0_weight.weights");
+        weight_nodes_.subsampling_conv0_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_conv0_bias.bias");
+        weight_nodes_.subsampling_depthwise1_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise1_weight.weights");
+        weight_nodes_.subsampling_depthwise1_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise1_bias.bias");
+        weight_nodes_.subsampling_pointwise1_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise1_weight.weights");
+        weight_nodes_.subsampling_pointwise1_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise1_bias.bias");
+        weight_nodes_.subsampling_depthwise2_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise2_weight.weights");
+        weight_nodes_.subsampling_depthwise2_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise2_bias.bias");
+        weight_nodes_.subsampling_pointwise2_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise2_weight.weights");
+        weight_nodes_.subsampling_pointwise2_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise2_bias.bias");
+        weight_nodes_.subsampling_linear_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_weight.weights");
+        weight_nodes_.subsampling_linear_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_bias.bias");
 
-        layer.ff1_linear1_weight = gb->mmap_weights(layer_prefix + "ff1_linear1.weights");
-        layer.ff1_linear1_bias = gb->mmap_weights(layer_prefix + "ff1_linear1.bias");
-        layer.ff1_linear2_weight = gb->mmap_weights(layer_prefix + "ff1_linear2.weights");
-        layer.ff1_linear2_bias = gb->mmap_weights(layer_prefix + "ff1_linear2.bias");
+        for (uint32_t i = 0; i < config_.num_layers; ++i) {
+            auto& layer = weight_nodes_.layers[i];
+            std::string layer_prefix = model_folder_path_ + "/layer_" + std::to_string(i) + "_";
 
-        layer.ff2_linear1_weight = gb->mmap_weights(layer_prefix + "ff2_linear1.weights");
-        layer.ff2_linear1_bias = gb->mmap_weights(layer_prefix + "ff2_linear1.bias");
-        layer.ff2_linear2_weight = gb->mmap_weights(layer_prefix + "ff2_linear2.weights");
-        layer.ff2_linear2_bias = gb->mmap_weights(layer_prefix + "ff2_linear2.bias");
+            layer.ff1_linear1_weight = gb->mmap_weights(layer_prefix + "ff1_linear1.weights");
+            layer.ff1_linear1_bias = gb->mmap_weights(layer_prefix + "ff1_linear1.bias");
+            layer.ff1_linear2_weight = gb->mmap_weights(layer_prefix + "ff1_linear2.weights");
+            layer.ff1_linear2_bias = gb->mmap_weights(layer_prefix + "ff1_linear2.bias");
 
-        layer.self_attn_q_weight = gb->mmap_weights(layer_prefix + "self_attn_q.weights");
-        layer.self_attn_q_bias = gb->mmap_weights(layer_prefix + "self_attn_q.bias");
-        layer.self_attn_k_weight = gb->mmap_weights(layer_prefix + "self_attn_k.weights");
-        layer.self_attn_k_bias = gb->mmap_weights(layer_prefix + "self_attn_k.bias");
-        layer.self_attn_v_weight = gb->mmap_weights(layer_prefix + "self_attn_v.weights");
-        layer.self_attn_v_bias = gb->mmap_weights(layer_prefix + "self_attn_v.bias");
-        layer.self_attn_output_weight = gb->mmap_weights(layer_prefix + "self_attn_output.weights");
-        layer.self_attn_output_bias = gb->mmap_weights(layer_prefix + "self_attn_output.bias");
-        layer.self_attn_relative_k_weight = gb->mmap_weights(layer_prefix + "self_attn_relative_k.weights");
-        layer.self_attn_bias_u = gb->mmap_weights(layer_prefix + "self_attn_bias_u.weights");
-        layer.self_attn_bias_v = gb->mmap_weights(layer_prefix + "self_attn_bias_v.weights");
+            layer.ff2_linear1_weight = gb->mmap_weights(layer_prefix + "ff2_linear1.weights");
+            layer.ff2_linear1_bias = gb->mmap_weights(layer_prefix + "ff2_linear1.bias");
+            layer.ff2_linear2_weight = gb->mmap_weights(layer_prefix + "ff2_linear2.weights");
+            layer.ff2_linear2_bias = gb->mmap_weights(layer_prefix + "ff2_linear2.bias");
 
-        layer.norm_ff1_weight = gb->mmap_weights(layer_prefix + "norm_ff1.weights");
-        layer.norm_ff1_bias = gb->mmap_weights(layer_prefix + "norm_ff1.bias");
-        layer.norm_self_attn_weight = gb->mmap_weights(layer_prefix + "norm_self_attn.weights");
-        layer.norm_self_attn_bias = gb->mmap_weights(layer_prefix + "norm_self_attn.bias");
-        layer.norm_conv_weight = gb->mmap_weights(layer_prefix + "norm_conv.weights");
-        layer.norm_conv_bias = gb->mmap_weights(layer_prefix + "norm_conv.bias");
-        layer.norm_ff2_weight = gb->mmap_weights(layer_prefix + "norm_ff2.weights");
-        layer.norm_ff2_bias = gb->mmap_weights(layer_prefix + "norm_ff2.bias");
-        layer.norm_out_weight = gb->mmap_weights(layer_prefix + "norm_out.weights");
-        layer.norm_out_bias = gb->mmap_weights(layer_prefix + "norm_out.bias");
+            layer.self_attn_q_weight = gb->mmap_weights(layer_prefix + "self_attn_q.weights");
+            layer.self_attn_q_bias = gb->mmap_weights(layer_prefix + "self_attn_q.bias");
+            layer.self_attn_k_weight = gb->mmap_weights(layer_prefix + "self_attn_k.weights");
+            layer.self_attn_k_bias = gb->mmap_weights(layer_prefix + "self_attn_k.bias");
+            layer.self_attn_v_weight = gb->mmap_weights(layer_prefix + "self_attn_v.weights");
+            layer.self_attn_v_bias = gb->mmap_weights(layer_prefix + "self_attn_v.bias");
+            layer.self_attn_output_weight = gb->mmap_weights(layer_prefix + "self_attn_output.weights");
+            layer.self_attn_output_bias = gb->mmap_weights(layer_prefix + "self_attn_output.bias");
+            layer.self_attn_relative_k_weight = gb->mmap_weights(layer_prefix + "self_attn_relative_k.weights");
+            layer.self_attn_bias_u = gb->mmap_weights(layer_prefix + "self_attn_bias_u.weights");
+            layer.self_attn_bias_v = gb->mmap_weights(layer_prefix + "self_attn_bias_v.weights");
 
-        layer.conv_pointwise1_weight = gb->mmap_weights(layer_prefix + "conv_pointwise1.weights");
-        layer.conv_pointwise1_bias = gb->mmap_weights(layer_prefix + "conv_pointwise1.bias");
-        layer.conv_depthwise_weight = gb->mmap_weights(layer_prefix + "conv_depthwise.weights");
-        layer.conv_depthwise_bias = gb->mmap_weights(layer_prefix + "conv_depthwise.bias");
-        layer.conv_pointwise2_weight = gb->mmap_weights(layer_prefix + "conv_pointwise2.weights");
-        layer.conv_pointwise2_bias = gb->mmap_weights(layer_prefix + "conv_pointwise2.bias");
-        layer.conv_batchnorm_weight = gb->mmap_weights(layer_prefix + "conv_batchnorm_weight.weights");
-        layer.conv_batchnorm_bias = gb->mmap_weights(layer_prefix + "conv_batchnorm_bias.bias");
-        layer.conv_batchnorm_running_mean = gb->mmap_weights(layer_prefix + "conv_batchnorm_running_mean.weights");
-        layer.conv_batchnorm_running_var = gb->mmap_weights(layer_prefix + "conv_batchnorm_running_var.weights");
+            layer.norm_ff1_weight = gb->mmap_weights(layer_prefix + "norm_ff1.weights");
+            layer.norm_ff1_bias = gb->mmap_weights(layer_prefix + "norm_ff1.bias");
+            layer.norm_self_attn_weight = gb->mmap_weights(layer_prefix + "norm_self_attn.weights");
+            layer.norm_self_attn_bias = gb->mmap_weights(layer_prefix + "norm_self_attn.bias");
+            layer.norm_conv_weight = gb->mmap_weights(layer_prefix + "norm_conv.weights");
+            layer.norm_conv_bias = gb->mmap_weights(layer_prefix + "norm_conv.bias");
+            layer.norm_ff2_weight = gb->mmap_weights(layer_prefix + "norm_ff2.weights");
+            layer.norm_ff2_bias = gb->mmap_weights(layer_prefix + "norm_ff2.bias");
+            layer.norm_out_weight = gb->mmap_weights(layer_prefix + "norm_out.weights");
+            layer.norm_out_bias = gb->mmap_weights(layer_prefix + "norm_out.bias");
+
+            layer.conv_pointwise1_weight = gb->mmap_weights(layer_prefix + "conv_pointwise1.weights");
+            layer.conv_pointwise1_bias = gb->mmap_weights(layer_prefix + "conv_pointwise1.bias");
+            layer.conv_depthwise_weight = gb->mmap_weights(layer_prefix + "conv_depthwise.weights");
+            layer.conv_depthwise_bias = gb->mmap_weights(layer_prefix + "conv_depthwise.bias");
+            layer.conv_pointwise2_weight = gb->mmap_weights(layer_prefix + "conv_pointwise2.weights");
+            layer.conv_pointwise2_bias = gb->mmap_weights(layer_prefix + "conv_pointwise2.bias");
+            layer.conv_batchnorm_weight = gb->mmap_weights(layer_prefix + "conv_batchnorm_weight.weights");
+            layer.conv_batchnorm_bias = gb->mmap_weights(layer_prefix + "conv_batchnorm_bias.bias");
+            layer.conv_batchnorm_running_mean = gb->mmap_weights(layer_prefix + "conv_batchnorm_running_mean.weights");
+            layer.conv_batchnorm_running_var = gb->mmap_weights(layer_prefix + "conv_batchnorm_running_var.weights");
+        }
     }
 }
 
@@ -572,6 +580,13 @@ size_t ParakeetModel::build_encoder(CactusGraph* gb, const std::vector<float>& a
             }
         }
     }
+
+    if (kSkipEncoderWeightMmapOnApple) {
+        throw std::runtime_error(
+            "Parakeet on Apple requires model.mlpackage encoder output; "
+            "CPU encoder weights are intentionally not loaded.");
+    }
+
     ComputeBackend backend = ComputeBackend::CPU;
     size_t hidden = build_subsampling(gb, audio_features);
     const auto& hidden_shape = gb->get_output_buffer(hidden).shape;
@@ -786,6 +801,11 @@ std::vector<float> ParakeetModel::get_audio_embeddings(const std::vector<float>&
         hidden_shape[1] == ctc_vocab_size &&
         ctc_vocab_size != ctc_hidden_dim &&
         use_npu_encoder_) {
+        if (kSkipEncoderWeightMmapOnApple) {
+            throw std::runtime_error(
+                "Parakeet audio embeddings on Apple require hidden-state encoder output; "
+                "CPU encoder fallback is disabled because encoder weights are not loaded.");
+        }
         const bool prev_use_npu = use_npu_encoder_;
         use_npu_encoder_ = false;
         gb->soft_reset();
