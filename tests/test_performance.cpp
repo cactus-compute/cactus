@@ -462,9 +462,6 @@ void benchmark_matmul_ternary(TestUtils::TestRunner& runner, const BenchmarkConf
         const auto B_rowmajor = make_ternary_signs(N, K);
         const auto B_interleaved = interleave_int8_rows_4(B_rowmajor, N, K);
         const auto B_packed = pack_ternary_2bit(B_interleaved);
-        const auto B_lut_codes = build_ternary_lut_codes(B_packed, N, K);
-        const size_t N_lut_padded = ((N + 15) / 16) * 16;
-
         std::vector<__fp16> row_scales(N);
         for (size_t n = 0; n < N; ++n) {
             row_scales[n] = static_cast<__fp16>(0.05f + 0.005f * static_cast<float>(n % 9));
@@ -517,24 +514,6 @@ void benchmark_matmul_ternary(TestUtils::TestRunner& runner, const BenchmarkConf
             "MatMul TERNARY row-scale " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N),
             row_details.str());
 
-        if (M == 1) {
-            std::vector<__fp16> C_lut(N);
-            double row_lut_time_ms = time_operation<__fp16>([&]() {
-                cactus_gemv_ternary_lut16_benchmark(A_row_quant.data(), A_row_quant_scales[0],
-                                                    B_lut_codes.data(),
-                                                    row_scales.data(), 1.0f,
-                                                    C_lut.data(), K, N, N_lut_padded);
-            }, config.iterations);
-
-            double row_lut_gflops = calculate_gflops(2ULL * M * K * N, row_lut_time_ms);
-            std::ostringstream row_lut_details;
-            row_lut_details << std::fixed << std::setprecision(3) << row_lut_time_ms << "ms, "
-                            << std::setprecision(2) << row_lut_gflops << " GFLOPS";
-            runner.log_performance(
-                "MatMul TERNARY LUT row-scale " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N),
-                row_lut_details.str());
-        }
-
         double column_time_ms = time_operation<__fp16>([&]() {
             cactus_matmul_ternary_packed2(A_column_quant.data(), A_column_quant_scales.data(),
                                           B_packed.data(), column_scales.data(), TernaryScaleMode::COLUMN,
@@ -549,23 +528,6 @@ void benchmark_matmul_ternary(TestUtils::TestRunner& runner, const BenchmarkConf
             "MatMul TERNARY column-scale " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N),
             column_details.str());
 
-        if (M == 1) {
-            std::vector<__fp16> C_lut(N);
-            double column_lut_time_ms = time_operation<__fp16>([&]() {
-                cactus_gemv_ternary_lut16_benchmark(A_column_quant.data(), A_column_quant_scales[0],
-                                                    B_lut_codes.data(),
-                                                    nullptr, 1.0f,
-                                                    C_lut.data(), K, N, N_lut_padded);
-            }, config.iterations);
-
-            double column_lut_gflops = calculate_gflops(2ULL * M * K * N, column_lut_time_ms);
-            std::ostringstream column_lut_details;
-            column_lut_details << std::fixed << std::setprecision(3) << column_lut_time_ms << "ms, "
-                               << std::setprecision(2) << column_lut_gflops << " GFLOPS";
-            runner.log_performance(
-                "MatMul TERNARY LUT column-scale " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N),
-                column_lut_details.str());
-        }
     }
 }
 
@@ -588,9 +550,6 @@ void benchmark_tester_decode_ternary_shapes(TestUtils::TestRunner& runner, const
         const auto B_rowmajor = make_ternary_signs(N, K);
         const auto B_interleaved = interleave_int8_rows_4(B_rowmajor, N, K);
         const auto B_packed = pack_ternary_2bit(B_interleaved);
-        const auto B_lut_codes = build_ternary_lut_codes(B_packed, N, K);
-        const size_t N_lut_padded = ((N + 15) / 16) * 16;
-
         std::vector<__fp16> column_scales(K);
         for (size_t k = 0; k < K; ++k) {
             column_scales[k] = static_cast<__fp16>(0.10f + 0.01f * static_cast<float>(k % 7));
@@ -625,20 +584,6 @@ void benchmark_tester_decode_ternary_shapes(TestUtils::TestRunner& runner, const
             std::string("Tester decode TERNARY packed ") + label + " 1x" + std::to_string(K) + "x" + std::to_string(N),
             packed_details.str());
 
-        const double lut_time_ms = time_operation<__fp16>([&]() {
-            cactus_gemv_ternary_lut16_benchmark(A_column_quant.data(), A_column_quant_scales[0],
-                                                B_lut_codes.data(),
-                                                nullptr, 1.0f,
-                                                C.data(), K, N, N_lut_padded);
-        }, config.iterations);
-
-        const double lut_gflops = calculate_gflops(2ULL * M * K * N, lut_time_ms);
-        std::ostringstream lut_details;
-        lut_details << std::fixed << std::setprecision(3) << lut_time_ms << "ms, "
-                    << std::setprecision(2) << lut_gflops << " GFLOPS";
-        runner.log_performance(
-            std::string("Tester decode TERNARY LUT ") + label + " 1x" + std::to_string(K) + "x" + std::to_string(N),
-            lut_details.str());
     }
 }
 
