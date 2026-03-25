@@ -644,10 +644,6 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             (['final_layer_norm.bias'], 'final_layernorm.bias'),
         ]
 
-        optional_tf_layer_mappings = [
-            (['self_attn.k_proj.bias'], 'self_attn_k.bias'),
-        ]
-
         for i in range(int(model_config.get('diar_tf_num_layers', 0))):
             layer_prefix = f'tf_encoder.layers.{i}.'
             for suffixes, out_suffix in tf_layer_mappings:
@@ -663,17 +659,40 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 )
                 saved_tensor_full_names.add(key)
 
-            for suffixes, out_suffix in optional_tf_layer_mappings:
-                candidate_keys = [layer_prefix + suffix for suffix in suffixes]
-                key = _find_first_key(state_dict, candidate_keys)
-                if key is None:
-                    continue
-                out_name = f'tf_layer_{i}_{out_suffix}'
+            # Some Sortformer checkpoints omit K-proj bias in TF layers.
+            # Runtime expects the file, so synthesize a zero bias when absent.
+            k_bias_candidates = [layer_prefix + 'self_attn.k_proj.bias']
+            k_bias_key = _find_first_key(state_dict, k_bias_candidates)
+            k_bias_out = f'tf_layer_{i}_self_attn_k.bias'
+            if k_bias_key is not None:
                 save_tensor_with_header(
-                    state_dict[key], output_dir / out_name, precision, transpose=False,
+                    state_dict[k_bias_key], output_dir / k_bias_out, precision, transpose=False,
                     stats_tracker=quantization_stats, args=args, model_type=detected_model_type
                 )
-                saved_tensor_full_names.add(key)
+                saved_tensor_full_names.add(k_bias_key)
+            else:
+                ref_bias_key = _find_first_key(state_dict, [
+                    layer_prefix + 'self_attn.q_proj.bias',
+                    layer_prefix + 'self_attn.v_proj.bias',
+                ])
+                ref_weight_key = _find_first_key(state_dict, [
+                    layer_prefix + 'self_attn.k_proj.weight',
+                ])
+
+                if ref_bias_key is not None:
+                    zero_bias = torch.zeros_like(state_dict[ref_bias_key])
+                elif ref_weight_key is not None:
+                    out_dim = int(state_dict[ref_weight_key].shape[0])
+                    zero_bias = torch.zeros(out_dim, dtype=state_dict[ref_weight_key].dtype)
+                else:
+                    missing_tensors.append((i, k_bias_out, k_bias_candidates))
+                    zero_bias = None
+
+                if zero_bias is not None:
+                    save_tensor_with_header(
+                        zero_bias, output_dir / k_bias_out, precision, transpose=False,
+                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                    )
     elif detected_model_type == 'parakeet_tdt':
         global_mappings = [
             (['encoder.pre_encode.conv.0.weight', 'encoder.subsampling.layers.0.weight'], 'subsampling_conv0_weight.weights'),

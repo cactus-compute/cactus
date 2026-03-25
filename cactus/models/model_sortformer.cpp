@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -11,17 +12,24 @@
 namespace cactus {
 namespace engine {
 
+namespace {
+
+float sortformer_attention_scale(const Config& config) {
+    float hd = static_cast<float>(config.attention_head_dim);
+    if (hd <= 0.0f) {
+        hd = 64.0f;
+    }
+    return 1.0f / std::sqrt(hd);
+}
+
+}  // namespace
+
 SortformerDiarModel::SortformerDiarModel() : Model() {}
 
 SortformerDiarModel::SortformerDiarModel(const Config& config) : Model(config) {
     weight_nodes_.fc_layers.resize(config.num_layers);
     weight_nodes_.tf_layers.resize(config.diar_tf_num_layers);
-
-    float hd = static_cast<float>(config.attention_head_dim);
-    if (hd <= 0.0f) {
-        hd = 64.0f;
-    }
-    attention_scale_ = 1.0f / std::sqrt(hd);
+    attention_scale_ = sortformer_attention_scale(config);
 }
 
 bool SortformerDiarModel::init(const std::string& model_folder, size_t context_size,
@@ -37,22 +45,7 @@ bool SortformerDiarModel::init(const std::string& model_folder, size_t context_s
     auto* gb = new CactusGraph();
     graph_handle_ = gb;
     owns_graph_ = true;
-
-    bool ok = false;
-    try {
-        ok = init_internal_sortformer(gb, model_folder);
-    } catch (const std::exception&) {
-        ok = false;
-    }
-    if (!ok) {
-        if (graph_handle_ && owns_graph_) {
-            delete gb;
-        }
-        graph_handle_ = nullptr;
-        owns_graph_ = false;
-        initialized_ = false;
-    }
-    return ok;
+    return init_internal_sortformer(gb, model_folder);
 }
 
 bool SortformerDiarModel::init(CactusGraph* external_graph, const std::string& model_folder, size_t context_size,
@@ -73,38 +66,19 @@ bool SortformerDiarModel::init(CactusGraph* external_graph, const std::string& m
 
     graph_handle_ = external_graph;
     owns_graph_ = false;
-    try {
-        return init_internal_sortformer(external_graph, model_folder);
-    } catch (const std::exception&) {
-        graph_handle_ = nullptr;
-        owns_graph_ = false;
-        initialized_ = false;
-        return false;
-    }
+    return init_internal_sortformer(external_graph, model_folder);
 }
 
 bool SortformerDiarModel::init_internal_sortformer(CactusGraph* gb, const std::string& model_folder) {
     model_folder_path_ = model_folder;
-    std::string config_path = model_folder + "/config.txt";
-    if (!config_.from_json(config_path)) {
+    if (!config_.from_json(model_folder + "/config.txt")) {
         return false;
     }
 
     weight_nodes_.fc_layers.resize(config_.num_layers);
     weight_nodes_.tf_layers.resize(config_.diar_tf_num_layers);
-
-    float hd = static_cast<float>(config_.attention_head_dim);
-    if (hd <= 0.0f) {
-        hd = 64.0f;
-    }
-    attention_scale_ = 1.0f / std::sqrt(hd);
-
-    try {
-        load_weights_to_graph(gb);
-    } catch (const std::exception&) {
-        initialized_ = false;
-        throw;
-    }
+    attention_scale_ = sortformer_attention_scale(config_);
+    load_weights_to_graph(gb);
 
     tokenizer_.reset();
     initialized_ = true;
@@ -113,6 +87,10 @@ bool SortformerDiarModel::init_internal_sortformer(CactusGraph* gb, const std::s
 }
 
 void SortformerDiarModel::load_weights_to_graph(CactusGraph* gb) {
+    auto mmap_optional = [&](const std::string& path) -> size_t {
+        return std::filesystem::exists(path) ? gb->mmap_weights(path) : 0;
+    };
+
     weight_nodes_.subsampling_conv0_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_conv0_weight.weights");
     weight_nodes_.subsampling_conv0_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_conv0_bias.bias");
     weight_nodes_.subsampling_depthwise1_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise1_weight.weights");
@@ -126,16 +104,16 @@ void SortformerDiarModel::load_weights_to_graph(CactusGraph* gb) {
     weight_nodes_.subsampling_linear_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_weight.weights");
     weight_nodes_.subsampling_linear_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_bias.bias");
 
-    weight_nodes_.encoder_proj_weight = gb->mmap_weights(model_folder_path_ + "/encoder_proj_weight.weights");
-    weight_nodes_.encoder_proj_bias = gb->mmap_weights(model_folder_path_ + "/encoder_proj_bias.bias");
-    weight_nodes_.tf_embed_positions = gb->mmap_weights(model_folder_path_ + "/tf_embed_positions.weights");
+    weight_nodes_.encoder_proj_weight = mmap_optional(model_folder_path_ + "/encoder_proj_weight.weights");
+    weight_nodes_.encoder_proj_bias = mmap_optional(model_folder_path_ + "/encoder_proj_bias.bias");
+    weight_nodes_.tf_embed_positions = mmap_optional(model_folder_path_ + "/tf_embed_positions.weights");
 
     weight_nodes_.head_hidden_weight = gb->mmap_weights(model_folder_path_ + "/head_hidden_weight.weights");
     weight_nodes_.head_hidden_bias = gb->mmap_weights(model_folder_path_ + "/head_hidden_bias.bias");
     weight_nodes_.head_single_spk_weight = gb->mmap_weights(model_folder_path_ + "/head_single_spk_weight.weights");
     weight_nodes_.head_single_spk_bias = gb->mmap_weights(model_folder_path_ + "/head_single_spk_bias.bias");
-    weight_nodes_.head_pair_spk_weight = gb->mmap_weights(model_folder_path_ + "/head_pair_spk_weight.weights");
-    weight_nodes_.head_pair_spk_bias = gb->mmap_weights(model_folder_path_ + "/head_pair_spk_bias.bias");
+    weight_nodes_.head_pair_spk_weight = mmap_optional(model_folder_path_ + "/head_pair_spk_weight.weights");
+    weight_nodes_.head_pair_spk_bias = mmap_optional(model_folder_path_ + "/head_pair_spk_bias.bias");
 
     for (uint32_t i = 0; i < config_.num_layers; ++i) {
         auto& layer = weight_nodes_.fc_layers[i];
@@ -192,7 +170,7 @@ void SortformerDiarModel::load_weights_to_graph(CactusGraph* gb) {
         layer.self_attn_q_weight = gb->mmap_weights(prefix + "self_attn_q.weights");
         layer.self_attn_q_bias = gb->mmap_weights(prefix + "self_attn_q.bias");
         layer.self_attn_k_weight = gb->mmap_weights(prefix + "self_attn_k.weights");
-        layer.self_attn_k_bias = gb->mmap_weights(prefix + "self_attn_k.bias");
+        layer.self_attn_k_bias = mmap_optional(prefix + "self_attn_k.bias");
         layer.self_attn_v_weight = gb->mmap_weights(prefix + "self_attn_v.weights");
         layer.self_attn_v_bias = gb->mmap_weights(prefix + "self_attn_v.bias");
         layer.self_attn_output_weight = gb->mmap_weights(prefix + "self_attn_output.weights");
@@ -683,6 +661,14 @@ std::vector<SortformerDiarModel::SpeakerTimestamp> SortformerDiarModel::get_spea
     return timestamps;
 }
 
+void SortformerDiarModel::set_diarization_threshold(float threshold) {
+    diarization_threshold_override_ = std::max(0.0f, threshold);
+}
+
+void SortformerDiarModel::clear_diarization_threshold_override() {
+    diarization_threshold_override_ = -1.0f;
+}
+
 void SortformerDiarModel::extract_speaker_segments(CactusGraph* gb, size_t probs_node) {
     speaker_tokens_.clear();
     speaker_token_starts_.clear();
@@ -696,7 +682,10 @@ void SortformerDiarModel::extract_speaker_segments(CactusGraph* gb, size_t probs
     }
 
     const float frame_step = config_.diar_frame_step_seconds > 0.0f ? config_.diar_frame_step_seconds : 0.08f;
-    const float sil_th = std::max(0.0f, config_.diar_sil_threshold);
+    const float sil_th = std::max(
+        0.0f,
+        diarization_threshold_override_ >= 0.0f ? diarization_threshold_override_ : config_.diar_sil_threshold
+    );
 
     struct Seg {
         uint32_t speaker;

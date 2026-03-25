@@ -1281,6 +1281,8 @@ public:
         const std::vector<float>& audio_features,
         const SpeakerTimestampsOptions& options
     );
+    void set_diarization_threshold(float threshold);
+    void clear_diarization_threshold_override();
 
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
@@ -1423,6 +1425,7 @@ private:
     std::vector<float> speaker_token_starts_;
     std::vector<float> speaker_token_ends_;
     size_t last_input_token_count_ = 0;
+    float diarization_threshold_override_ = -1.0f;
 };
 
 

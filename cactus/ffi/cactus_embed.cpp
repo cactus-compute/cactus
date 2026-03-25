@@ -170,10 +170,11 @@ int cactus_audio_embed(
         auto* handle = static_cast<CactusModelHandle*>(model);
 
         CACTUS_LOG_DEBUG("audio_embed", "Processing audio: " << audio_path);
-        const bool is_parakeet =
+        const bool is_parakeet_like =
             handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET ||
-            handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
-        auto mel_bins = compute_mel_from_wav(audio_path, is_parakeet, handle->model->get_config().num_mel_bins);
+            handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET_TDT ||
+            handle->model->get_config().model_type == cactus::engine::Config::ModelType::SORTFORMER_DIAR;
+        auto mel_bins = compute_mel_from_wav(audio_path, is_parakeet_like, handle->model->get_config().num_mel_bins);
         if (mel_bins.empty()) {
             last_error_message = "Failed to compute mel spectrogram";
             CACTUS_LOG_ERROR("audio_embed", last_error_message << " for: " << audio_path);

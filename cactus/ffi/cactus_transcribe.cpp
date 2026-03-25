@@ -191,12 +191,26 @@ int cactus_transcribe(
             options.top_k = 1;
         }
 
-        bool is_whisper = handle->model->get_config().model_type == cactus::engine::Config::ModelType::WHISPER;
-        bool is_moonshine = handle->model->get_config().model_type == cactus::engine::Config::ModelType::MOONSHINE;
-        bool is_parakeet_tdt = handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
+        const auto model_type = handle->model->get_config().model_type;
+        bool is_whisper = model_type == cactus::engine::Config::ModelType::WHISPER;
+        bool is_moonshine = model_type == cactus::engine::Config::ModelType::MOONSHINE;
+        bool is_parakeet_tdt = model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
+        bool is_sortformer = model_type == cactus::engine::Config::ModelType::SORTFORMER_DIAR;
         bool is_parakeet =
-            handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET ||
+            model_type == cactus::engine::Config::ModelType::PARAKEET ||
             is_parakeet_tdt;
+        bool is_parakeet_like = is_parakeet || is_sortformer;
+
+        if (is_sortformer) {
+            auto* sortformer_model = dynamic_cast<SortformerDiarModel*>(handle->model.get());
+            if (sortformer_model) {
+                if (options.diarization_threshold >= 0.0f) {
+                    sortformer_model->set_diarization_threshold(options.diarization_threshold);
+                } else {
+                    sortformer_model->clear_diarization_threshold_override();
+                }
+            }
+        }
 
         std::vector<float> audio_samples;
         if (audio_file_path == nullptr) {
@@ -214,7 +228,7 @@ int cactus_transcribe(
 
         if (opts.find("\"max_tokens\"") == std::string::npos) {
             const float audio_length_sec = static_cast<float>(audio_samples.size()) / static_cast<float>(WHISPER_SAMPLE_RATE);
-            const float tps = is_parakeet ? 30.0f : 20.0f;
+            const float tps = is_parakeet_like ? 30.0f : 20.0f;
             const size_t estimated = static_cast<size_t>(audio_length_sec * tps);
             options.max_tokens = std::max<size_t>(estimated, 100);
         }
@@ -232,6 +246,12 @@ int cactus_transcribe(
         std::vector<AudioChunk> audio_chunks;
 
         if (options.use_vad) {
+            if (!handle->vad_model) {
+                CACTUS_LOG_ERROR("transcribe", "VAD requested but VAD model is unavailable");
+                handle_error_response("VAD requested but VAD model is unavailable", response_buffer, buffer_size);
+                cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, 0.0, "VAD model unavailable");
+                return -1;
+            }
             auto* vad = static_cast<SileroVADModel*>(handle->vad_model.get());
             auto vad_segments = vad->get_speech_timestamps(audio_samples, {});
             audio_chunks.reserve(vad_segments.size());
@@ -286,11 +306,11 @@ int cactus_transcribe(
             }
         }
 
-        auto cfg = is_parakeet ? get_parakeet_spectrogram_config() : get_whisper_spectrogram_config();
+        auto cfg = is_parakeet_like ? get_parakeet_spectrogram_config() : get_whisper_spectrogram_config();
         size_t mel_bins = 0;
         AudioProcessor ap;
         if (!is_moonshine) {
-            if (is_parakeet) {
+            if (is_parakeet_like) {
                 mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
                 ap.init_mel_filters(cfg.n_fft / 2 + 1, mel_bins, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
             } else {
@@ -299,19 +319,22 @@ int cactus_transcribe(
         }
 
         auto* tokenizer = handle->model->get_tokenizer();
-        if (!tokenizer) {
+        if (!tokenizer && !is_sortformer) {
             CACTUS_LOG_ERROR("transcribe", "Tokenizer unavailable");
             handle_error_response("Tokenizer unavailable", response_buffer, buffer_size);
             cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, 0.0, "Tokenizer unavailable");
             return -1;
         }
 
-        std::vector<uint32_t> initial_tokens = tokenizer->encode(
-            prompt && prompt[0] != '\0'
-            ? std::string(prompt)
-            : (is_whisper ? "<|startoftranscript|>" : std::string())
-        );
-        if (initial_tokens.empty() && !is_moonshine && !is_parakeet) {
+        std::vector<uint32_t> initial_tokens;
+        if (!is_sortformer) {
+            initial_tokens = tokenizer->encode(
+                prompt && prompt[0] != '\0'
+                ? std::string(prompt)
+                : (is_whisper ? "<|startoftranscript|>" : std::string())
+            );
+        }
+        if (initial_tokens.empty() && !is_moonshine && !is_parakeet_like && !is_sortformer) {
             CACTUS_LOG_ERROR("transcribe", "Decoder input tokens empty after encoding prompt");
             handle_error_response("Decoder input tokens empty", response_buffer, buffer_size);
             cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, 0.0, "Decoder input tokens empty");
@@ -321,17 +344,20 @@ int cactus_transcribe(
         float max_tps = handle->model->get_config().default_max_tps;
         if (max_tps < 0) max_tps = 100;
 
-        std::vector<std::vector<uint32_t>> stop_token_sequences = {{ tokenizer->get_eos_token() }};
-        auto append_exact_stop_sequence = [&](const char* stop_text) {
-            std::vector<uint32_t> seq = tokenizer->encode(stop_text);
-            if (!seq.empty() && tokenizer->decode(seq) == stop_text) {
-                stop_token_sequences.push_back(std::move(seq));
-            }
-        };
-        append_exact_stop_sequence("<|endoftext|>");
-        append_exact_stop_sequence("<|endoftranscript|>");
-        append_exact_stop_sequence("</s>");
-        append_exact_stop_sequence("<pad>");
+        std::vector<std::vector<uint32_t>> stop_token_sequences;
+        if (!is_sortformer) {
+            stop_token_sequences.push_back({ tokenizer->get_eos_token() });
+            auto append_exact_stop_sequence = [&](const char* stop_text) {
+                std::vector<uint32_t> seq = tokenizer->encode(stop_text);
+                if (!seq.empty() && tokenizer->decode(seq) == stop_text) {
+                    stop_token_sequences.push_back(std::move(seq));
+                }
+            };
+            append_exact_stop_sequence("<|endoftext|>");
+            append_exact_stop_sequence("<|endoftranscript|>");
+            append_exact_stop_sequence("</s>");
+            append_exact_stop_sequence("<pad>");
+        }
 
         double time_to_first_token = 0.0;
         size_t completion_tokens = 0;
@@ -342,11 +368,17 @@ int cactus_transcribe(
         const std::regex whisper_timestamp_re(R"(<\|(\d+(?:\.\d+)?)\|>)");
         std::vector<TranscriptSegment> segments;
 
-        auto sop = tokenizer->encode("<|startofprev|>");
-        auto sot = tokenizer->encode("<|startoftranscript|>");
-        auto zero = tokenizer->encode("<|0.00|>");
-        auto sot_it = std::search(initial_tokens.begin(), initial_tokens.end(), sot.begin(), sot.end());
-        const auto sot_begin = sot_it != initial_tokens.end() ? sot_it : initial_tokens.begin();
+        std::vector<uint32_t> sop;
+        std::vector<uint32_t> sot;
+        std::vector<uint32_t> zero;
+        std::vector<uint32_t>::const_iterator sot_begin = initial_tokens.cbegin();
+        if (!is_sortformer) {
+            sop = tokenizer->encode("<|startofprev|>");
+            sot = tokenizer->encode("<|startoftranscript|>");
+            zero = tokenizer->encode("<|0.00|>");
+            auto sot_it = std::search(initial_tokens.cbegin(), initial_tokens.cend(), sot.cbegin(), sot.cend());
+            sot_begin = sot_it != initial_tokens.cend() ? sot_it : initial_tokens.cbegin();
+        }
 
         for (auto& audio_chunk : audio_chunks) {
             if (handle->should_stop || completion_tokens >= options.max_tokens) break;
@@ -355,7 +387,9 @@ int cactus_transcribe(
             const float audio_chunk_length_sec = static_cast<float>(chunk_audio.size()) / static_cast<float>(WHISPER_SAMPLE_RATE);
 
             std::vector<uint32_t> tokens;
-            if (final_text.empty() || is_parakeet || is_moonshine) {
+            if (is_sortformer) {
+                tokens.clear();
+            } else if (final_text.empty() || is_parakeet || is_moonshine) {
                 tokens = initial_tokens;
             } else {
                 size_t word_count = 0, pos = final_text.size();
@@ -367,7 +401,7 @@ int cactus_transcribe(
                 tokens = sop;
                 auto ctx = tokenizer->encode(final_text.substr(pos));
                 tokens.insert(tokens.end(), ctx.begin(), ctx.end());
-                tokens.insert(tokens.end(), sot_begin, initial_tokens.end());
+                tokens.insert(tokens.end(), sot_begin, initial_tokens.cend());
             }
 
             if (is_whisper && !zero.empty() && (tokens.empty() || tokens.back() != zero.back())) {
@@ -375,7 +409,7 @@ int cactus_transcribe(
             }
 
             if (!is_moonshine) {
-                if (is_parakeet) {
+                if (is_parakeet_like) {
                     size_t waveform_samples = chunk_audio.size();
                     apply_preemphasis(chunk_audio, 0.97f);
                     chunk_audio = ap.compute_spectrogram(chunk_audio, cfg);
@@ -397,7 +431,7 @@ int cactus_transcribe(
             CACTUS_LOG_DEBUG("transcribe", "Chunk audio features size: " << chunk_audio.size());
 
             size_t chunk_max_tokens = options.max_tokens - completion_tokens;
-            if (!is_parakeet) {
+            if (!is_parakeet_like) {
                 size_t max_allowed = tokens.size() < WHISPER_MAX_DECODER_POSITIONS ?
                     WHISPER_MAX_DECODER_POSITIONS - tokens.size() : 0;
                 if (chunk_max_tokens > max_allowed) chunk_max_tokens = max_allowed;
@@ -429,8 +463,8 @@ int cactus_transcribe(
                     options.top_k,
                     "",
                     &token_entropy,
-                    is_parakeet_tdt ? &tok_time_start : nullptr,
-                    is_parakeet_tdt ? &tok_time_end : nullptr
+                    (is_parakeet_tdt || is_sortformer) ? &tok_time_start : nullptr,
+                    (is_parakeet_tdt || is_sortformer) ? &tok_time_end : nullptr
                 );
 
                 if (completion_tokens == 0) [[unlikely]] {
@@ -440,6 +474,31 @@ int cactus_transcribe(
 
                 total_entropy_sum += token_entropy;
                 if (token_entropy > max_token_entropy_norm) max_token_entropy_norm = token_entropy;
+
+                if (is_sortformer) {
+                    if (tok_time_end <= tok_time_start) {
+                        break;
+                    }
+                    while (anchor_idx + 1 < audio_chunk.anchors.size() && audio_chunk.anchors[anchor_idx + 1].first <= tok_time_end) {
+                        ++anchor_idx;
+                        orig_offset = audio_chunk.anchors[anchor_idx].second - audio_chunk.anchors[anchor_idx].first;
+                    }
+                    const float seg_start = tok_time_start + orig_offset;
+                    const float seg_end = tok_time_end + orig_offset;
+                    if (seg_end <= seg_start) {
+                        continue;
+                    }
+                    const std::string speaker_label = "speaker_" + std::to_string(next_token);
+                    if (!final_text.empty()) {
+                        final_text += " ";
+                    }
+                    final_text += speaker_label;
+                    segments.emplace_back(seg_start, seg_end, speaker_label);
+                    tokens.emplace_back(next_token);
+                    completion_tokens++;
+                    if (callback) callback(speaker_label.c_str(), next_token, user_data);
+                    continue;
+                }
 
                 generated_tokens.emplace_back(next_token);
                 if (matches_stop_sequence(generated_tokens, stop_token_sequences)) {
