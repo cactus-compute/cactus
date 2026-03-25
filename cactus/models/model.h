@@ -1120,6 +1120,7 @@ private:
 
     std::unique_ptr<npu::NPUEncoder> npu_encoder_;
     bool use_npu_encoder_ = false;
+    bool has_cpu_encoder_weights_ = false;
 };
 
 class ParakeetTDTModel : public Model {
@@ -1250,6 +1251,7 @@ private:
 
     std::unique_ptr<npu::NPUEncoder> npu_encoder_;
     bool use_npu_encoder_ = false;
+    bool has_cpu_encoder_weights_ = false;
 };
 
 
