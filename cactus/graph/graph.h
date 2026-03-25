@@ -359,7 +359,7 @@ struct OpParams {
     size_t num_fft_bins = 0;
     size_t chunk_size = 0;
     size_t num_altup_inputs = 0;
-    size_t v_head_dim = 0;
+    float logit_cap = 0.0f;
 };
 
 struct GraphNode {
@@ -515,7 +515,9 @@ public:
                      size_t num_experts_per_tok,
                      bool normalize_routing,
                      float epsilon,
-                     float routed_scaling_factor);
+                     float routed_scaling_factor,
+                     Activation activation = Activation::SILU,
+                     size_t per_expert_scale = 0);
     size_t moe_layer(size_t hidden,
                      size_t routing_probs,
                      size_t topk_indices,
@@ -543,8 +545,7 @@ public:
     size_t attention_int8_hybrid(size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,
                                  const int8_t* cached_keys, const int8_t* cached_values,
                                  const float* k_scales, const float* v_scales,
-                                 size_t cache_len, size_t num_kv_heads, size_t head_dim,
-                                 size_t window_size = 0, size_t v_head_dim = 0);
+                                 size_t cache_len, size_t num_kv_heads, size_t head_dim, size_t window_size = 0);
 
     size_t conv1d_causal(size_t input, size_t weight, size_t kernel_size, size_t dilation = 1);
     size_t conv1d_k3(size_t input, size_t weight, size_t stride);

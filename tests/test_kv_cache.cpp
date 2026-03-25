@@ -27,7 +27,7 @@ bool test_sliding_window_basic() {
     const size_t sink_size = 4;
 
     KVCache cache;
-    cache.init(num_layers, max_seq, num_kv_heads, std::vector<size_t>(num_layers, head_dim), Precision::INT8);
+    cache.init(num_layers, max_seq, std::vector<size_t>(num_layers, head_dim), std::vector<size_t>(num_layers, num_kv_heads), Precision::INT8);
     cache.set_window_size(window_size, sink_size);
 
     CactusGraph graph;
@@ -138,7 +138,7 @@ bool test_incremental_updates() {
     const size_t sink_size = 2;
 
     KVCache cache;
-    cache.init(num_layers, 2048, num_kv_heads, std::vector<size_t>(num_layers, head_dim), Precision::FP16);
+    cache.init(num_layers, 2048, std::vector<size_t>(num_layers, head_dim), std::vector<size_t>(num_layers, num_kv_heads), Precision::FP16);
     cache.set_window_size(window_size, sink_size);
 
     CactusGraph graph;
@@ -181,7 +181,7 @@ bool test_incremental_updates() {
 
 bool test_reset_functionality() {
     KVCache cache;
-    cache.init(2, 1024, 8, std::vector<size_t>(2, 64), Precision::FP16);
+    cache.init(2, 1024, std::vector<size_t>(2, 64), std::vector<size_t>(2, 8), Precision::FP16);
     cache.set_window_size(16, 4);
 
     CactusGraph graph;
@@ -224,7 +224,7 @@ bool test_large_window() {
     const size_t window_size = 512;
 
     KVCache cache;
-    cache.init(num_layers, 2048, num_kv_heads, std::vector<size_t>(num_layers, head_dim), Precision::FP16);
+    cache.init(num_layers, 2048, std::vector<size_t>(num_layers, head_dim), std::vector<size_t>(num_layers, num_kv_heads), Precision::FP16);
     cache.set_window_size(window_size, 4);
 
     CactusGraph graph;

@@ -237,9 +237,8 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             lhs_int8 = lhs_buffer.data_as<int8_t>();
             lhs_scales = lhs_buffer.activation_scales_as_float();
         } else if (lhs_buffer.precision == Precision::FP16) {
-            const __fp16* lhs = lhs_buffer.data_as<__fp16>();
             ensure_quant_buffers(M, K);
-            quantize_activations_fp16_to_int8(lhs, quant_activation_buffer.data(),
+            quantize_activations_fp16_to_int8(lhs_buffer.data_as<__fp16>(), quant_activation_buffer.data(),
                                               quant_scales_buffer.data(), M, K);
             lhs_int8 = quant_activation_buffer.data();
             lhs_scales = quant_scales_buffer.data();
@@ -345,9 +344,10 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     const float routed_scaling_factor = node.params.scalar;
     const bool gated = node.params.moe_gated;
     const Activation activation = node.params.activation;
-    const size_t expected_inputs = gated ? (3 + 3 * num_experts) : (3 + 2 * num_experts);
-    if (node.input_ids.size() != expected_inputs) {
-        throw std::runtime_error("moe_layer expects " + std::to_string(expected_inputs) + " inputs, got " + std::to_string(node.input_ids.size()));
+    const size_t base_inputs = gated ? (3 + 3 * num_experts) : (3 + 2 * num_experts);
+    bool has_per_expert_scale = node.input_ids.size() == base_inputs + 1;
+    if (node.input_ids.size() != base_inputs && node.input_ids.size() != base_inputs + 1) {
+        throw std::runtime_error("moe_layer expects " + std::to_string(base_inputs) + " or " + std::to_string(base_inputs + 1) + " inputs, got " + std::to_string(node.input_ids.size()));
     }
 
     const auto& hidden_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
@@ -359,6 +359,15 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     }
     if (topk_idx_buffer.precision != Precision::FP32) {
         throw std::runtime_error("moe_layer expects FP32 topk indices");
+    }
+
+    const __fp16* expert_scales_fp16 = nullptr;
+    if (has_per_expert_scale) {
+        const auto& scale_buffer = nodes[node_index_map.at(node.input_ids[base_inputs])]->output_buffer;
+        if (scale_buffer.precision != Precision::FP16) {
+            throw std::runtime_error("moe_layer expects FP16 per_expert_scale");
+        }
+        expert_scales_fp16 = scale_buffer.data_as<__fp16>();
     }
 
     const size_t token_count = hidden_buffer.shape[0];
@@ -385,7 +394,7 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     size_t* expert_offsets = moe_expert_offsets_buf.data(); 
     size_t* expert_tokens_flat = moe_expert_tokens_buf.data();  
 
-   std::memset(expert_offsets, 0, (num_experts + 1) * sizeof(size_t));
+    std::memset(expert_offsets, 0, (num_experts + 1) * sizeof(size_t));
     for (size_t tok = 0; tok < token_count; ++tok) {
         for (size_t k = 0; k < top_k; ++k) {
             float raw_idx = topk_idx[tok * top_k + k];
@@ -490,6 +499,9 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
                 route_weight = expert_prob / routing_denom[tok];
             }
             route_weight *= routed_scaling_factor;
+            if (expert_scales_fp16) {
+                route_weight *= static_cast<float>(expert_scales_fp16[expert_idx]);
+            }
 
             auto* out_row = output + tok * hidden_dim;
             const auto* expert_row = expert_out + i * hidden_dim;
@@ -680,7 +692,6 @@ void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<G
     size_t head_dim = q_shape[3];
     size_t num_kv_heads = k_shape[2];
     size_t kv_seq_len = key_buffer.shape[1];
-    size_t v_head_dim = value_buffer.shape[3];
     bool mask_per_head = false;
     const __fp16* mask_ptr = nullptr;
 
@@ -715,7 +726,7 @@ void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<G
                          value_buffer.data_as<__fp16>(), node.output_buffer.data_as<__fp16>(),
                          batch_size, seq_len, kv_seq_len, num_q_heads, num_kv_heads, head_dim, node.params.scale, mask_ptr,
                          node.params.position_offset, node.params.window_size, node.params.is_causal,
-                         node.params.attention_mask_is_additive, mask_per_head, v_head_dim);
+                         node.params.attention_mask_is_additive, mask_per_head, node.params.logit_cap);
 }
 
 void compute_attention_int8_hybrid_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -732,7 +743,6 @@ void compute_attention_int8_hybrid_node(GraphNode& node, const std::vector<std::
     size_t seq_len = q_shape[1];
     size_t num_q_heads = q_shape[2];
     size_t head_dim = node.params.head_dim;
-    size_t v_head_dim = node.params.v_head_dim;
     size_t num_kv_heads = node.params.num_kv_heads;
     size_t cache_len = node.params.cache_seq_len;
     size_t new_len = key_new_buffer.shape[1];
@@ -749,7 +759,7 @@ void compute_attention_int8_hybrid_node(GraphNode& node, const std::vector<std::
         batch_size, seq_len, cache_len, new_len,
         num_q_heads, num_kv_heads, head_dim,
         node.params.scale, node.params.position_offset, true,
-        node.params.window_size, KV_QUANT_GROUP_SIZE, v_head_dim
+        node.params.window_size
     );
 }
 

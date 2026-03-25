@@ -87,7 +87,9 @@ def detect_model_type(cfg, config, output_dir=None):
     if decoding_model_type == 'tdt' or loss_name == 'tdt':
         return 'parakeet_tdt'
 
-    if 'gemma3n' in model_type_str:
+    if 'tinyllama' in model_type_str or 'gemma4' in model_type_str:
+        return 'tinyllama'
+    elif 'gemma3n' in model_type_str:
         return 'gemma3n'
     elif 'gemma' in model_type_str:
         return 'gemma'
@@ -104,8 +106,6 @@ def detect_model_type(cfg, config, output_dir=None):
             return 'smol'
         else:
             return 'llama'
-    elif 'youtu' in model_type_str:
-        return 'youtu'
     elif 'bert' in model_type_str:
         return 'bert'
     elif 'whisper' in model_type_str:
@@ -130,7 +130,7 @@ def extract_base_config(cfg, config):
     if rope_theta is None:
         rope_theta = cfg_get(config, 'rope_theta', 10000.0)
 
-    num_experts_per_tok = cfg_get(cfg, 'num_experts_per_tok', cfg_get(cfg, 'moe_top_k', cfg_get(cfg, 'num_top_experts', 0)))
+    num_experts_per_tok = cfg_get(cfg, 'num_experts_per_tok', cfg_get(cfg, 'moe_top_k', cfg_get(cfg, 'num_top_experts', cfg_get(cfg, 'top_k_experts', 0)))) or 0
 
     base = {
         'vocab_size': cfg_get(cfg, 'vocab_size', cfg_get(config, 'vocab_size', 0)),
@@ -264,23 +264,6 @@ def extract_lfm2_config(cfg):
         'routed_scaling_factor': routed_scaling_factor,
     }
 
-
-def extract_youtu_config(cfg):
-    rope_scaling = cfg_get(cfg, 'rope_scaling', {}) or {}
-    return {
-        'kv_lora_rank': int(cfg_get(cfg, 'kv_lora_rank', 0)),
-        'q_lora_rank': int(cfg_get(cfg, 'q_lora_rank', 0)),
-        'qk_head_dim': int(cfg_get(cfg, 'qk_head_dim', 0)),
-        'qk_nope_head_dim': int(cfg_get(cfg, 'qk_nope_head_dim', 0)),
-        'qk_rope_head_dim': int(cfg_get(cfg, 'qk_rope_head_dim', 0)),
-        'v_head_dim': int(cfg_get(cfg, 'v_head_dim', 0)),
-        'rope_interleave': bool(cfg_get(cfg, 'rope_interleave', False)),
-        'attention_bias': bool(cfg_get(cfg, 'attention_bias', False)),
-        'rope_scaling_factor': float(cfg_get(rope_scaling, 'factor', 1.0)),
-        'rope_mscale_all_dim': float(cfg_get(rope_scaling, 'mscale_all_dim', 0.0)),
-    }
-
-
 def extract_moonshine_config(cfg):
     """Extract Moonshine-specific configuration parameters."""
     rot_factor = getattr(cfg, "partial_rotary_factor", 0.9)
@@ -290,11 +273,12 @@ def extract_moonshine_config(cfg):
 
 
 def extract_complex_gemma_config(cfg, root_config):
-    """Extract configuration parameters for complex Gemma-family models."""
+    """Extract configuration parameters for Gemma3n and TinyLlama models."""
     altup_num_inputs = int(cfg_get(cfg, 'altup_num_inputs', cfg_get(root_config, 'altup_num_inputs', 4)))
     laurel_rank = int(cfg_get(cfg, 'laurel_rank', cfg_get(root_config, 'laurel_rank', 64)))
-    hidden_size_per_layer_input = int(cfg_get(cfg, 'hidden_size_per_layer_input',
-        cfg_get(root_config, 'hidden_size_per_layer_input', 256)))
+    hidden_size_per_layer_input_raw = cfg_get(cfg, 'hidden_size_per_layer_input',
+        cfg_get(root_config, 'hidden_size_per_layer_input', None))
+    hidden_size_per_layer_input = int(hidden_size_per_layer_input_raw) if hidden_size_per_layer_input_raw is not None else 0
     rope_local_base_freq = float(cfg_get(cfg, 'rope_local_base_freq',
         cfg_get(root_config, 'rope_local_base_freq', 10000.0)))
 
@@ -361,6 +345,37 @@ def extract_complex_gemma_config(cfg, root_config):
             else:
                 activation_sparsity_ppf.append(0.0)
 
+    query_pre_attn_scalar = int(cfg_get(cfg, 'query_pre_attn_scalar',
+        cfg_get(root_config, 'query_pre_attn_scalar', 0)))
+
+    rope_params = cfg_get(cfg, 'rope_parameters', cfg_get(root_config, 'rope_parameters', {}))
+    global_rope = rope_params.get('full_attention', {}) if isinstance(rope_params, dict) else {}
+    global_partial_rotary_factor = float(cfg_get(cfg, 'global_partial_rotary_factor',
+        global_rope.get('partial_rotary_factor', 1.0) if isinstance(global_rope, dict) else 1.0))
+
+    if rope_theta is None or rope_theta == 1000000.0:
+        global_rope_theta = global_rope.get('rope_theta', None) if isinstance(global_rope, dict) else None
+        if global_rope_theta is not None:
+            rope_theta = float(global_rope_theta)
+
+    sliding_rope = rope_params.get('sliding_attention', {}) if isinstance(rope_params, dict) else {}
+    if isinstance(sliding_rope, dict) and 'rope_theta' in sliding_rope:
+        rope_local_base_freq = float(sliding_rope['rope_theta'])
+
+    global_head_dim = cfg_get(cfg, 'global_head_dim', cfg_get(root_config, 'global_head_dim', None))
+    num_global_kv_heads = cfg_get(cfg, 'num_global_key_value_heads',
+        cfg_get(root_config, 'num_global_key_value_heads', None))
+    expert_intermediate_size = cfg_get(cfg, 'expert_intermediate_size',
+        cfg_get(root_config, 'expert_intermediate_size', None))
+    attention_k_eq_v = bool(cfg_get(cfg, 'attention_k_eq_v',
+        cfg_get(root_config, 'attention_k_eq_v', False)))
+    vocab_size_per_layer_input = cfg_get(cfg, 'vocab_size_per_layer_input',
+        cfg_get(root_config, 'vocab_size_per_layer_input', None))
+    sliding_window_pattern = cfg_get(cfg, '_sliding_window_pattern',
+        cfg_get(root_config, '_sliding_window_pattern', None))
+    enable_moe_block = bool(cfg_get(cfg, 'enable_moe_block',
+        cfg_get(root_config, 'enable_moe_block', False)))
+
     result = {
         'altup_num_inputs': altup_num_inputs,
         'laurel_rank': laurel_rank,
@@ -372,12 +387,57 @@ def extract_complex_gemma_config(cfg, root_config):
         'final_logit_softcapping': final_logit_softcapping,
         'query_pre_attn_scalar': query_pre_attn_scalar,
         'global_partial_rotary_factor': global_partial_rotary_factor,
+        'attention_k_eq_v': attention_k_eq_v,
+        'enable_moe_block': enable_moe_block,
     }
+    if global_head_dim is not None:
+        result['global_head_dim'] = int(global_head_dim)
+    if num_global_kv_heads is not None:
+        result['num_global_key_value_heads'] = int(num_global_kv_heads)
+    if expert_intermediate_size is not None:
+        result['expert_intermediate_size'] = int(expert_intermediate_size)
+    if vocab_size_per_layer_input is not None:
+        result['vocab_size_per_layer_input'] = int(vocab_size_per_layer_input)
+    if sliding_window_pattern is not None:
+        result['sliding_window_pattern'] = int(sliding_window_pattern)
     if layer_types:
         result['layer_types'] = layer_types
     if activation_sparsity_ppf:
         result['activation_sparsity_ppf'] = activation_sparsity_ppf
     return result
+
+def extract_audio_config(config, audio_cfg):
+    """Extract audio encoder configuration for multimodal models."""
+    hidden = int(cfg_get(audio_cfg, 'hidden_size', 1024))
+    num_heads = int(cfg_get(audio_cfg, 'conf_num_attention_heads', 8))
+    sscp_channels = cfg_get(audio_cfg, 'sscp_conv_channel_size', [128, 32])
+    if not isinstance(sscp_channels, (list, tuple)):
+        sscp_channels = [128, 32]
+    output_proj = cfg_get(audio_cfg, 'output_proj_dims', None)
+    if output_proj is None:
+        output_proj = 0
+    return {
+        'audio_hidden_dim': hidden,
+        'audio_num_layers': int(cfg_get(audio_cfg, 'conf_num_hidden_layers', 12)),
+        'audio_num_heads': num_heads,
+        'audio_head_dim': hidden // max(1, num_heads),
+        'audio_input_feat_size': int(cfg_get(audio_cfg, 'input_feat_size', 128)),
+        'audio_conf_conv_kernel_size': int(cfg_get(audio_cfg, 'conf_conv_kernel_size', 5)),
+        'audio_chunk_size': int(cfg_get(audio_cfg, 'conf_attention_chunk_size', 12)),
+        'audio_context_left': int(cfg_get(audio_cfg, 'conf_attention_context_left', 13)),
+        'audio_context_right': int(cfg_get(audio_cfg, 'conf_attention_context_right', 0)),
+        'audio_logit_cap': float(cfg_get(audio_cfg, 'conf_attention_logit_cap', 50.0)),
+        'audio_residual_weight': float(cfg_get(audio_cfg, 'conf_residual_weight', 0.5)),
+        'audio_output_proj_dims': int(output_proj),
+        'audio_vocab_size': int(cfg_get(audio_cfg, 'vocab_size', 128)),
+        'audio_vocab_offset': int(cfg_get(audio_cfg, 'vocab_offset', 0)),
+        'audio_soft_tokens': int(cfg_get(audio_cfg, 'audio_soft_tokens_per_image', 188)),
+        'audio_sscp_conv0_channels': int(sscp_channels[0]),
+        'audio_sscp_conv1_channels': int(sscp_channels[1]),
+        'audio_rms_norm_eps': float(cfg_get(audio_cfg, 'rms_norm_eps', 1e-6)),
+        'audio_token_id': int(cfg_get(config, 'audio_token_id', 0)),
+    }
+
 
 def extract_audio_config(config, audio_cfg):
     """Extract audio encoder configuration for multimodal models."""

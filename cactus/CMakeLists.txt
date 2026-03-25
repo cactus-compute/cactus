@@ -72,7 +72,7 @@ file(GLOB ENGINE_SOURCES "engine/*.cpp")
 file(GLOB GRAPH_SOURCES "graph/*.cpp")
 file(GLOB KERNEL_SOURCES "kernel/*.cpp")
 file(GLOB FFI_SOURCES "ffi/*.cpp")
-file(GLOB MODEL_SOURCES "models/*.cpp")
+file(GLOB MODEL_SOURCES "models/*.cpp" "models/tinyllama/*.cpp")
 file(GLOB TELEMETRY_SOURCES "telemetry/*.cpp")
 
 set(SME2_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_sme2.cpp")

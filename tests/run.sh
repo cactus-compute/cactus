@@ -171,6 +171,7 @@ WHISPER_MODEL_DIR=$(echo "$WHISPER_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' 
 VAD_MODEL_DIR=$(echo "$VAD_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 
 export CACTUS_TEST_MODEL="$PROJECT_ROOT/weights/$MODEL_DIR"
+export CACTUS_TEST_TINYLLAMA_MODEL="$PROJECT_ROOT/weights/tinyllama_int4"
 export CACTUS_TEST_TRANSCRIBE_MODEL="$PROJECT_ROOT/weights/$TRANSCRIBE_MODEL_DIR"
 export CACTUS_TEST_WHISPER_MODEL="$PROJECT_ROOT/weights/$WHISPER_MODEL_DIR"
 export CACTUS_TEST_VAD_MODEL="$PROJECT_ROOT/weights/$VAD_MODEL_DIR"

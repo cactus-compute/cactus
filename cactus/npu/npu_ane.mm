@@ -19,6 +19,10 @@
 @property (nonatomic, strong) NSString* cachedOutputName;
 @property (nonatomic, assign) NSUInteger cachedOutputSize;
 @property (nonatomic, strong) MLPredictionOptions* predictionOptions;
+@property (nonatomic, strong) NSMutableDictionary<NSString*, MLMultiArray*>* cachedMultiInputArrays;
+@property (nonatomic, strong) MLMultiArray* cachedMultiOutputArray;
+@property (nonatomic, strong) MLPredictionOptions* multiPredictionOptions;
+@property (nonatomic, assign) BOOL multiInputPreallocated;
 
 - (instancetype)initWithModelPath:(NSString*)path;
 - (NSArray<NSNumber*>*)getInputShape;
@@ -33,6 +37,10 @@
                              data:(const __fp16*)data
                             shape:(NSArray<NSNumber*>*)shape
                        outputName:(NSString*)outputName;
+- (BOOL)preallocateMultiInputBuffersWithOutputName:(NSString*)outputName;
+- (size_t)predictMultiInputWithDict:(NSMutableDictionary<NSString*, MLFeatureValue*>*)inputDict
+                         outputData:(__fp16*)output
+                         outputName:(NSString*)outputName;
 
 @end
 
@@ -281,6 +289,93 @@
     return outputFeature.multiArrayValue;
 }
 
+static size_t copyMLArrayToFP16(MLMultiArray* array, __fp16* output) {
+    size_t count = array.count;
+    if (array.dataType == MLMultiArrayDataTypeFloat16) {
+        if (output != (__fp16*)array.dataPointer)
+            memcpy(output, array.dataPointer, count * sizeof(__fp16));
+    } else {
+        const float* src = (const float*)array.dataPointer;
+        for (size_t i = 0; i < count; i++) output[i] = (__fp16)src[i];
+    }
+    return count;
+}
+
+static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* array) {
+    if (array.dataType == MLMultiArrayDataTypeFloat16) {
+        memcpy(array.dataPointer, data, count * sizeof(__fp16));
+    } else {
+        float* dst = (float*)array.dataPointer;
+        for (size_t i = 0; i < count; i++) dst[i] = (float)data[i];
+    }
+}
+
+- (BOOL)preallocateMultiInputBuffersWithOutputName:(NSString*)outputName {
+    if (!_model || !_modelDescription) return NO;
+
+    NSError* error = nil;
+    _cachedMultiInputArrays = [NSMutableDictionary new];
+
+    for (NSString* inputName in _modelDescription.inputDescriptionsByName) {
+        MLFeatureDescription* desc = _modelDescription.inputDescriptionsByName[inputName];
+        if (desc.type != MLFeatureTypeMultiArray) continue;
+
+        MLMultiArray* array = [[MLMultiArray alloc]
+            initWithShape:desc.multiArrayConstraint.shape
+                 dataType:desc.multiArrayConstraint.dataType
+                    error:&error];
+        if (!array || error) return NO;
+        _cachedMultiInputArrays[inputName] = array;
+    }
+
+    NSString* outName = (outputName && outputName.length > 0)
+        ? outputName : _modelDescription.outputDescriptionsByName.allKeys.firstObject;
+
+    MLFeatureDescription* outputDesc = _modelDescription.outputDescriptionsByName[outName];
+    if (outputDesc && outputDesc.type == MLFeatureTypeMultiArray) {
+        _cachedMultiOutputArray = [[MLMultiArray alloc]
+            initWithShape:outputDesc.multiArrayConstraint.shape
+                 dataType:outputDesc.multiArrayConstraint.dataType
+                    error:&error];
+        if (!_cachedMultiOutputArray || error) return NO;
+
+        _multiPredictionOptions = [[MLPredictionOptions alloc] init];
+        if (@available(macOS 14.0, iOS 17.0, *)) {
+            _multiPredictionOptions.outputBackings = @{outName: _cachedMultiOutputArray};
+        }
+    }
+
+    _multiInputPreallocated = YES;
+    return YES;
+}
+
+- (size_t)predictMultiInputWithDict:(NSMutableDictionary<NSString*, MLFeatureValue*>*)inputDict
+                         outputData:(__fp16*)output
+                         outputName:(NSString*)outputName {
+    if (!_model) return 0;
+
+    NSError* error = nil;
+    MLDictionaryFeatureProvider* provider =
+        [[MLDictionaryFeatureProvider alloc] initWithDictionary:inputDict error:&error];
+    if (!provider || error) return 0;
+
+    id<MLFeatureProvider> result = nil;
+    if (_multiPredictionOptions) {
+        result = [_model predictionFromFeatures:provider options:_multiPredictionOptions error:&error];
+    } else {
+        result = [_model predictionFromFeatures:provider error:&error];
+    }
+    if (!result || error) return 0;
+
+    if (_multiPredictionOptions && _cachedMultiOutputArray) {
+        return copyMLArrayToFP16(_cachedMultiOutputArray, output);
+    }
+
+    MLFeatureValue* outFeature = [result featureValueForName:outputName];
+    if (!outFeature || !outFeature.multiArrayValue) return 0;
+    return copyMLArrayToFP16(outFeature.multiArrayValue, output);
+}
+
 @end
 
 namespace cactus {
@@ -385,7 +480,6 @@ size_t ANEEncoder::encode(const __fp16* input,
             shapeArray = newShapeArray;
         }
 
-        // Use cached names
         NSString* inName = impl.cachedInputName;
         if (!inName) {
             inName = [NSString stringWithUTF8String:input_name.c_str()];
@@ -401,19 +495,7 @@ size_t ANEEncoder::encode(const __fp16* input,
                                              outputName:outName];
 
         if (mlOutput) {
-            size_t count = mlOutput.count;
-            if (mlOutput.dataType == MLMultiArrayDataTypeFloat16) {
-                __fp16* outputPtr = (__fp16*)mlOutput.dataPointer;
-                if (output != outputPtr) {
-                    memcpy(output, outputPtr, count * sizeof(__fp16));
-                }
-            } else {
-                const float* fp32Ptr = (const float*)mlOutput.dataPointer;
-                for (size_t i = 0; i < count; i++) {
-                    output[i] = (__fp16)fp32Ptr[i];
-                }
-            }
-            return count;
+            return copyMLArrayToFP16(mlOutput, output);
         }
     }
 
@@ -470,78 +552,41 @@ size_t ANEEncoder::encode_multimodal_input(
     @autoreleasepool {
         CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
 
-        NSMutableDictionary<NSString*, MLFeatureValue*>* inputDict = [NSMutableDictionary new];
+        NSString* outName = output_name.empty()
+            ? impl.modelDescription.outputDescriptionsByName.allKeys.firstObject
+            : [NSString stringWithUTF8String:output_name.c_str()];
 
-        MLMultiArrayDataType inputDataType = MLMultiArrayDataTypeFloat16;
-        NSDictionary<NSString*, MLFeatureDescription*>* inputDescs = impl.modelDescription.inputDescriptionsByName;
-        for (MLFeatureDescription* desc in inputDescs.allValues) {
-            if (desc.multiArrayConstraint) {
-                inputDataType = desc.multiArrayConstraint.dataType;
-                break;
-            }
+        if (!impl.multiInputPreallocated) {
+            [impl preallocateMultiInputBuffersWithOutputName:outName];
         }
 
+        NSMutableDictionary<NSString*, MLFeatureValue*>* inputDict = [NSMutableDictionary new];
+
         for (const auto& input : inputs) {
-            NSMutableArray<NSNumber*>* shapeArray = [NSMutableArray arrayWithCapacity:input.shape.size()];
-            for (int dim : input.shape) {
-                [shapeArray addObject:@(dim)];
-            }
+            NSString* nsName = [NSString stringWithUTF8String:input.name.c_str()];
 
             size_t total = 1;
             for (int dim : input.shape) total *= dim;
 
-            NSError* arrayError = nil;
-            MLMultiArray* array = [[MLMultiArray alloc] initWithShape:shapeArray
-                                                            dataType:inputDataType
-                                                               error:&arrayError];
-            if (!array || arrayError) {
-                CACTUS_LOG_ERROR("npu", "ANE encode_multimodal_input: failed to create input array for " << input.name);
-                return 0;
-            }
-            if (inputDataType == MLMultiArrayDataTypeFloat16) {
-                memcpy(array.dataPointer, input.data, total * sizeof(__fp16));
-            } else {
-                float* fp32_ptr = (float*)array.dataPointer;
-                for (size_t i = 0; i < total; i++) {
-                    fp32_ptr[i] = (float)input.data[i];
-                }
+            MLMultiArray* array = impl.cachedMultiInputArrays[nsName];
+            if (!array) {
+                MLMultiArrayDataType dataType = MLMultiArrayDataTypeFloat16;
+                MLFeatureDescription* desc = impl.modelDescription.inputDescriptionsByName[nsName];
+                if (desc && desc.multiArrayConstraint) dataType = desc.multiArrayConstraint.dataType;
+
+                NSMutableArray<NSNumber*>* shapeArray = [NSMutableArray arrayWithCapacity:input.shape.size()];
+                for (int dim : input.shape) [shapeArray addObject:@(dim)];
+
+                NSError* arrayError = nil;
+                array = [[MLMultiArray alloc] initWithShape:shapeArray dataType:dataType error:&arrayError];
+                if (!array || arrayError) return 0;
             }
 
-            NSString* nsName = [NSString stringWithUTF8String:input.name.c_str()];
+            copyFP16ToMLArray(input.data, total, array);
             inputDict[nsName] = [MLFeatureValue featureValueWithMultiArray:array];
         }
 
-        NSError* error = nil;
-        MLDictionaryFeatureProvider* provider =
-            [[MLDictionaryFeatureProvider alloc] initWithDictionary:inputDict error:&error];
-        if (!provider || error) return 0;
-
-        id<MLFeatureProvider> result = [impl.model predictionFromFeatures:provider error:&error];
-        if (!result || error) return 0;
-
-        NSString* outName = nil;
-        if (!output_name.empty()) {
-            outName = [NSString stringWithUTF8String:output_name.c_str()];
-        } else {
-            NSArray<NSString*>* outputNames = impl.modelDescription.outputDescriptionsByName.allKeys;
-            if (outputNames.count > 0) outName = outputNames[0];
-        }
-
-        if (!outName) return 0;
-        MLFeatureValue* outFeature = [result featureValueForName:outName];
-        if (!outFeature || !outFeature.multiArrayValue) return 0;
-
-        MLMultiArray* outArray = outFeature.multiArrayValue;
-        size_t count = outArray.count;
-        if (outArray.dataType == MLMultiArrayDataTypeFloat16) {
-            memcpy(output, outArray.dataPointer, count * sizeof(__fp16));
-        } else {
-            const float* fp32_ptr = (const float*)outArray.dataPointer;
-            for (size_t i = 0; i < count; i++) {
-                output[i] = (__fp16)fp32_ptr[i];
-            }
-        }
-        return count;
+        return [impl predictMultiInputWithDict:inputDict outputData:output outputName:outName];
     }
 }
 

@@ -365,7 +365,9 @@ size_t CactusGraph::moe_layer(size_t hidden,
                               size_t num_experts_per_tok,
                               bool normalize_routing,
                               float epsilon,
-                              float routed_scaling_factor) {
+                              float routed_scaling_factor,
+                              Activation activation,
+                              size_t per_expert_scale) {
     const auto& hidden_buffer = get_output_buffer(hidden);
     const auto& routing_buffer = get_output_buffer(routing_probs);
     const auto& topk_buffer = get_output_buffer(topk_indices);
@@ -384,13 +386,14 @@ size_t CactusGraph::moe_layer(size_t hidden,
     }
 
     std::vector<size_t> input_ids;
-    input_ids.reserve(3 + 3 * num_experts);
+    input_ids.reserve(3 + 3 * num_experts + 1);
     input_ids.push_back(hidden);
     input_ids.push_back(routing_probs);
     input_ids.push_back(topk_indices);
     for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w1_weights[i]);
     for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w3_weights[i]);
     for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w2_weights[i]);
+    if (per_expert_scale != 0) input_ids.push_back(per_expert_scale);
 
     OpParams params;
     params.num_experts = num_experts;
@@ -399,6 +402,8 @@ size_t CactusGraph::moe_layer(size_t hidden,
     params.epsilon = epsilon;
     params.scalar = routed_scaling_factor;
     params.output_precision = hidden_buffer.precision;
+    params.activation = activation;
+    params.moe_gated = true;
 
     return add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params);
 }
@@ -498,23 +503,17 @@ size_t CactusGraph::batchnorm(size_t input, size_t weight, size_t bias, size_t r
 
 size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scale, bool is_causal, ComputeBackend backend) {
     OpParams params{.scale = scale, .is_causal = is_causal, .backend = backend};
-    const auto& qs = get_output_buffer(query).shape;
-    const auto& vs = get_output_buffer(value).shape;
-    return add_node(OpType::ATTENTION, {query, key, value}, {qs[0], qs[1], qs[2], vs[3]}, params);
+    return add_node(OpType::ATTENTION, {query, key, value}, {}, params);
 }
 
 size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, ComputeBackend backend) {
     OpParams params{.scale = scale, .position_offset = position_offset, .backend = backend};
-    const auto& qs = get_output_buffer(query).shape;
-    const auto& vs = get_output_buffer(value).shape;
-    return add_node(OpType::ATTENTION, {query, key, value}, {qs[0], qs[1], qs[2], vs[3]}, params);
+    return add_node(OpType::ATTENTION, {query, key, value}, {}, params);
 }
 
 size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, size_t window_size, ComputeBackend backend) {
     OpParams params{.scale = scale, .position_offset = position_offset, .window_size = window_size, .backend = backend};
-    const auto& qs = get_output_buffer(query).shape;
-    const auto& vs = get_output_buffer(value).shape;
-    return add_node(OpType::ATTENTION, {query, key, value}, {qs[0], qs[1], qs[2], vs[3]}, params);
+    return add_node(OpType::ATTENTION, {query, key, value}, {}, params);
 }
 
 size_t CactusGraph::attention_masked(size_t query, size_t key, size_t value, size_t mask, float scale,
@@ -529,9 +528,7 @@ size_t CactusGraph::attention_masked(size_t query, size_t key, size_t value, siz
     };
     params.attention_mask_is_additive = additive_mask;
     params.logit_cap = logit_cap;
-    const auto& qs = get_output_buffer(query).shape;
-    const auto& vs = get_output_buffer(value).shape;
-    return add_node(OpType::ATTENTION, {query, key, value, mask}, {qs[0], qs[1], qs[2], vs[3]}, params);
+    return add_node(OpType::ATTENTION, {query, key, value, mask}, {}, params);
 }
 
 size_t CactusGraph::rel_pos_bias(size_t query, size_t relative_key, float scale) {
@@ -568,8 +565,7 @@ size_t CactusGraph::rel_pos_bias(size_t query, size_t relative_key, float scale)
 size_t CactusGraph::attention_int8_hybrid(size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,
                                           const int8_t* cached_keys, const int8_t* cached_values,
                                           const float* k_scales, const float* v_scales,
-                                          size_t cache_len, size_t num_kv_heads, size_t head_dim,
-                                          size_t window_size, size_t v_head_dim) {
+                                          size_t cache_len, size_t num_kv_heads, size_t head_dim, size_t window_size) {
     OpParams params;
     params.scale = scale;
     params.position_offset = position_offset;
@@ -581,13 +577,7 @@ size_t CactusGraph::attention_int8_hybrid(size_t query, size_t key_new, size_t v
     params.cache_seq_len = cache_len;
     params.num_kv_heads = num_kv_heads;
     params.head_dim = head_dim;
-    params.v_head_dim = v_head_dim;
-    std::vector<size_t> out_shape;
-    if (v_head_dim != 0 && v_head_dim != head_dim) {
-        const auto& q_buf = get_output_buffer(query);
-        out_shape = {q_buf.shape[0], q_buf.shape[1], q_buf.shape[2], v_head_dim};
-    }
-    return add_node(OpType::ATTENTION_INT8_HYBRID, {query, key_new, value_new}, out_shape, params);
+    return add_node(OpType::ATTENTION_INT8_HYBRID, {query, key_new, value_new}, {}, params);
 }
 
 size_t CactusGraph::conv1d_causal(size_t input, size_t weight, size_t, size_t dilation) {

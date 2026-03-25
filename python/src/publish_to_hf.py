@@ -5,10 +5,8 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 import yaml
 from huggingface_hub import HfApi, hf_hub_download
-from huggingface_hub.constants import HF_HUB_CACHE
 from .cli import cmd_convert, get_weights_dir, PROJECT_ROOT
 
 STAGE_DIR = PROJECT_ROOT / "stage"
@@ -235,10 +233,6 @@ def export_and_publish_model(args, api):
     finally:
         if stage.exists():
             shutil.rmtree(stage)
-        hf_model_cache = Path(HF_HUB_CACHE) / ("models--" + args.model.replace("/", "--"))
-        if hf_model_cache.exists():
-            print(f"Cleaning HF cache: {hf_model_cache}")
-            shutil.rmtree(hf_model_cache)
 
 
 def main():

@@ -116,18 +116,7 @@ struct Config {
     uint32_t linear_k_proj_dim = 0;
     uint32_t linear_v_proj_dim = 0;
 
-    uint32_t kv_lora_rank = 0;
-    uint32_t q_lora_rank = 0;
-    uint32_t qk_head_dim = 0;
-    uint32_t qk_nope_head_dim = 0;
-    uint32_t qk_rope_head_dim = 0;
-    uint32_t v_head_dim = 0;
-    uint32_t rope_interleave = 0;
-    bool attention_bias = false;
-    float rope_scaling_factor = 1.0f;
-    float rope_mscale_all_dim = 0.0f;
-
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, TINYLLAMA = 15};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
@@ -166,6 +155,11 @@ struct Config {
     float rope_local_base_freq = 10000.0f;
     float final_logit_softcapping = 0.0f;
     float global_partial_rotary_factor = 1.0f;
+    uint32_t expert_intermediate_size = 0;
+    uint32_t global_head_dim = 0;
+    uint32_t num_global_kv_heads = 0;
+    bool attention_k_eq_v = false;
+    bool enable_moe_block = false;
     std::vector<float> activation_sparsity_ppf;
 
     uint32_t vision_head_dim = 64;
@@ -199,7 +193,7 @@ struct Config {
     uint32_t channel_close_token_id = 101;
 
     static bool is_gemma_family(ModelType t) {
-        return t == ModelType::GEMMA || t == ModelType::GEMMA3N;
+        return t == ModelType::GEMMA || t == ModelType::GEMMA3N || t == ModelType::TINYLLAMA;
     }
 
     bool from_json(const std::string& json_path);
@@ -252,7 +246,7 @@ public:
     uint32_t get_global_img_token_id() const { return global_img_token_id_; }
 
 protected:
-    enum class ModelType { UNKNOWN, QWEN, QWEN3P5, GEMMA, LFM2, BERT, WHISPER, PARAKEET, YOUTU};
+    enum class ModelType { UNKNOWN, QWEN, QWEN3P5, GEMMA, TINYLLAMA, LFM2, BERT, WHISPER, PARAKEET};
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -263,6 +257,7 @@ protected:
     uint32_t fake_token_id_ = 49189;
     uint32_t global_img_token_id_ = 49152;
 
+
     uint32_t vision_patch_size_ = 16;
     uint32_t vision_pooling_kernel_size_ = 3;
     uint32_t vision_default_output_length_ = 280;
@@ -271,9 +266,9 @@ protected:
     void detect_model_type(const std::string& config_path);
     std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = true) const;
     std::string format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_tinyllama_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = true) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_lfm2_vl_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
-    std::string format_youtu_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
 };
 
 class BPETokenizer : public Tokenizer {
@@ -428,6 +423,7 @@ struct KVCache {
         std::vector<float> key_scales;
         std::vector<float> value_scales;
         size_t head_dim = 0;
+        size_t kv_heads = 0;
     };
 
     std::vector<LayerCache> layer_caches;
@@ -437,7 +433,6 @@ struct KVCache {
     size_t current_seq_len = 0;
     size_t total_seq_len = 0;
     size_t max_seq_len = 2048;
-    size_t num_kv_heads = 0;
     size_t num_layers = 0;
     Precision precision;
     size_t element_size = 4;
@@ -446,12 +441,13 @@ struct KVCache {
     size_t get_effective_seq_len() const { return current_seq_len; }
     size_t get_total_seq_len() const { return total_seq_len; }
     size_t get_layer_head_dim(size_t layer_idx) const { return layer_caches[layer_idx].head_dim; }
+    size_t get_layer_kv_heads(size_t layer_idx) const { return layer_caches[layer_idx].kv_heads; }
 
-    void init(size_t num_layers, size_t max_seq, size_t num_kv_heads, const std::vector<size_t>& layer_dims, Precision model_precision);
+    void init(size_t num_layers, size_t max_seq, const std::vector<size_t>& layer_dims, const std::vector<size_t>& layer_kv_heads, Precision model_precision);
     void reset();
     void update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_nodes,
                           const std::vector<size_t>& v_nodes, size_t seq_len,
-                          size_t num_layers, size_t kv_heads);
+                          size_t num_layers);
 
     void update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp16* v_data,
                          size_t num_tokens, size_t kv_heads, size_t head_dim);
@@ -495,7 +491,7 @@ public:
         QWEN_EXPECT_ARGS_COLON, 
         QWEN_IN_ARGUMENTS,  
         QWEN_EXPECT_CLOSE_BRACE,
-        QWEN_EXPECT_END,
+        QWEN_EXPECT_END, 
 
         LFM_START,              
         LFM_EXPECT_BRACKET, 
@@ -540,8 +536,8 @@ private:
     std::string call_start_tag_;
     std::string call_end_tag_;
 
-    std::unordered_set<uint32_t> qwen_tool_call_start_tokens_;
-    std::unordered_set<uint32_t> qwen_tool_call_end_tokens_;
+    std::unordered_set<uint32_t> qwen_tool_call_start_tokens_; 
+    std::unordered_set<uint32_t> qwen_tool_call_end_tokens_;   
     std::unordered_set<uint32_t> open_brace_tokens_;         
     std::unordered_set<uint32_t> close_brace_tokens_;       
     std::unordered_set<uint32_t> colon_tokens_;            
@@ -551,7 +547,7 @@ private:
     std::unordered_set<uint32_t> quote_tokens_;            
     std::unordered_set<uint32_t> backtick_tokens_;   
     std::unordered_set<uint32_t> all_func_name_tokens_;
-    std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;
+    std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;  
 
     std::unordered_set<uint32_t> tool_start_tokens_;
     std::unordered_set<uint32_t> tool_end_tokens_;
@@ -674,6 +670,9 @@ protected:
     void update_kv_cache(CactusGraph* gb, size_t seq_len);
     virtual std::vector<size_t> get_kv_layer_dims() const {
         return std::vector<size_t>(config_.num_layers, config_.attention_head_dim);
+    }
+    virtual std::vector<size_t> get_kv_layer_heads() const {
+        return std::vector<size_t>(config_.num_layers, config_.attention_kv_heads);
     }
     virtual void post_init() {}
     virtual void post_execute_updates(CactusGraph*, size_t) {}
@@ -814,6 +813,7 @@ public:
         bool remove_dc_offset = false;
         float preemphasis = 0.0f;
         bool hann_periodic = true;
+        bool hann_shifted = false;
         size_t fft_override = 0;
     };
 

@@ -122,7 +122,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
 
     load_weights_to_graph(gb);
 
-    if (config_.model_type == Config::ModelType::GEMMA3N) {
+    if (config_.model_type == Config::ModelType::GEMMA3N || config_.model_type == Config::ModelType::TINYLLAMA) {
         attention_scale_ = 1.0f;
     } else if (config_.model_type == Config::ModelType::GEMMA) {
         attention_scale_ = 1.0f / std::sqrt(256.0f);
@@ -136,7 +136,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
                                  config_.model_type == Config::ModelType::PARAKEET_TDT)
                                ? Precision::FP16
                                : Precision::INT8;
-    kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, get_kv_layer_dims(), cache_precision);
+    kv_cache_.init(config_.num_layers, context_size, get_kv_layer_dims(), get_kv_layer_heads(), cache_precision);
 
     size_t window_size = std::min(context_size, size_t(512));
     size_t sink_size = 4;
@@ -163,6 +163,9 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         config_.model_type != Config::ModelType::PARAKEET_TDT) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
+        if (config_.model_type == Config::ModelType::TINYLLAMA) {
+            warmup_tokens = {2};
+        }
         forward(warmup_tokens);
         auto* gb = static_cast<CactusGraph*>(graph_handle_);
         gb->execute();
@@ -347,14 +350,13 @@ std::vector<float> Model::get_audio_embeddings(const std::vector<float>& /*mel_b
 
 void Model::update_kv_cache(CactusGraph* gb, size_t seq_len) {
     kv_cache_.update_from_graph(gb, cache_k_output_nodes_, cache_v_output_nodes_,
-                               seq_len, config_.num_layers, config_.attention_kv_heads);
+                               seq_len, config_.num_layers);
 }
 
 void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) {
     for (auto it = ranges.rbegin(); it != ranges.rend(); ++it)
         kv_cache_.remove_token_range(it->first, it->second);
 }
-
 
 std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bool pooled, bool normalize, const std::string& profile_file) {
     std::vector<float> embeddings;
@@ -525,7 +527,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (model_type_value.rfind("qwen3_5", 0) == 0) model_type = ModelType::QWEN3P5;
             else if (value == "parakeet_tdt" || value == "PARAKEET_TDT") model_type = ModelType::PARAKEET_TDT;
             else if (value == "gemma3n" || value == "GEMMA3N") model_type = ModelType::GEMMA3N;
-            else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
+            else if (value == "tinyllama" || value == "TINYLLAMA") model_type = ModelType::TINYLLAMA;
             else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {
@@ -575,16 +577,6 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "linear_num_value_heads") linear_num_value_heads = static_cast<uint32_t>(std::stoul(value));
         else if (key == "linear_value_head_dim") linear_value_head_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "linear_q_proj_dim") linear_q_proj_dim = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "kv_lora_rank") kv_lora_rank = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "q_lora_rank") q_lora_rank = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "qk_head_dim") qk_head_dim = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "qk_nope_head_dim") qk_nope_head_dim = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "qk_rope_head_dim") qk_rope_head_dim = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "v_head_dim") v_head_dim = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "rope_interleave") rope_interleave = (value == "true" || value == "1");
-        else if (key == "attention_bias") attention_bias = (value == "true" || value == "1");
-        else if (key == "rope_scaling_factor") rope_scaling_factor = std::stof(value);
-        else if (key == "rope_mscale_all_dim") rope_mscale_all_dim = std::stof(value);
         else if (key == "linear_k_proj_dim") linear_k_proj_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "linear_v_proj_dim") linear_v_proj_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "predictor_hidden_dim") predictor_hidden_dim = static_cast<uint32_t>(std::stoul(value));
@@ -612,6 +604,11 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "rope_local_base_freq") rope_local_base_freq = std::stof(value);
         else if (key == "final_logit_softcapping") final_logit_softcapping = std::stof(value);
         else if (key == "global_partial_rotary_factor") global_partial_rotary_factor = std::stof(value);
+        else if (key == "expert_intermediate_size") expert_intermediate_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "global_head_dim") global_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "num_global_kv_heads" || key == "num_global_key_value_heads") num_global_kv_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "attention_k_eq_v") attention_k_eq_v = (value == "true" || value == "1");
+        else if (key == "enable_moe_block") enable_moe_block = (value == "true" || value == "1");
         else if (key == "vision_head_dim") vision_head_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "vision_kv_heads") vision_kv_heads = static_cast<uint32_t>(std::stoul(value));
         else if (key == "vision_intermediate_size") vision_intermediate_size = static_cast<uint32_t>(std::stoul(value));
@@ -693,10 +690,6 @@ bool Config::from_json(const std::string& config_path) {
         default_top_k = 0;
         default_max_tps = 8.0f;
         default_cloud_handoff_threshold = 0.35f;
-    } else if (model_type == ModelType::YOUTU) {
-        default_temperature = 1.0f;
-        default_top_p = 0.95f;
-        default_top_k = 20;
     }
 
     return true;
@@ -727,6 +720,14 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
         return std::make_unique<Lfm2VlModel>(config);
     }
 
+    const bool has_audio_support =
+        config.audio_num_layers > 0 ||
+        config.audio_hidden_dim > 0;
+
+    if (config.model_type == Config::ModelType::TINYLLAMA && (has_vision_support || has_audio_support)) {
+        return std::make_unique<TinyLlamaMmModel>(config);
+    }
+
     switch (config.model_type) {
         case Config::ModelType::QWEN:
             return std::make_unique<QwenModel>(config);
@@ -753,8 +754,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<ParakeetModel>(config);
         case Config::ModelType::PARAKEET_TDT:
             return std::make_unique<ParakeetTDTModel>(config);
-        case Config::ModelType::YOUTU:
-            return std::make_unique<YoutuModel>(config);
+        case Config::ModelType::TINYLLAMA:
+            return std::make_unique<TinyLlamaModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }

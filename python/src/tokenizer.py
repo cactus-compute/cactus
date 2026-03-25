@@ -10,11 +10,16 @@ SENTENCEPIECE_MODEL_TYPES = {
     'gemma', 'gemma3n', 'llama', 'smol', 'bert', 't5',
 }
 
+SENTENCEPIECE_MODEL_TYPES = {
+    'gemma', 'gemma3n', 'llama', 'tinyllama', 'smol', 'bert', 't5',
+}
+
 BPE_MODEL_TYPES = {
     'qwen', 'qwen3_5', 'lfm2',
     'whisper', 'moonshine',
     'parakeet', 'parakeet_tdt',
 }
+
 
 def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, labels=None, model_type=None):
     """Convert a HuggingFace tokenizer to Cactus format."""
@@ -85,6 +90,7 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
 
     is_sentencepiece = model_type in SENTENCEPIECE_MODEL_TYPES
 
+
     tokenizer_json_data = {}
     tokenizer_json_path = output_dir / "tokenizer.json"
     try:
@@ -94,10 +100,10 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
                 tokenizer_json_data = json.load(f)
 
         unused_files = [
-            "tokenizer_config.json", 
-            "special_tokens_map.json", 
+            "tokenizer_config.json",
+            "special_tokens_map.json",
             "added_tokens.json",
-            "chat_template.jinja",  
+            "chat_template.jinja",
         ]
         for filename in unused_files:
             filepath = output_dir / filename
@@ -105,6 +111,8 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
                 filepath.unlink()
     except Exception as e:
         print(f"  Warning: Could not save tokenizer JSON: {e}")
+
+    is_sentencepiece = model_type in SENTENCEPIECE_MODEL_TYPES
 
     vocab = tokenizer.get_vocab()
 
