@@ -63,19 +63,7 @@ def print_color(color, message):
     print(f"{color}{message}{NC}")
 
 
-def get_model_dir_name(model_id):
-    """Convert HuggingFace model ID to local directory name."""
-    model_name = model_id.split('/')[-1]
-    model_name = model_name.lower()
-    return model_name
-
-
-def get_weights_dir(model_id):
-    """Get the weights directory path for a model."""
-    if 'silero-vad' in model_id.lower():
-        return PROJECT_ROOT / "weights" / "silero-vad"
-    model_dir = get_model_dir_name(model_id)
-    return PROJECT_ROOT / "weights" / model_dir
+from .downloads import get_model_dir_name, get_weights_dir, download_from_hf as _download_from_hf_impl
 
 
 def check_command(cmd):
@@ -139,69 +127,7 @@ def ensure_vad_weights(model_id, weights_dir, precision='INT8'):
 
 def download_from_hf(model_id, weights_dir, precision):
     """Download pre-converted model from Cactus-Compute HuggingFace."""
-    try:
-        from huggingface_hub import hf_hub_download, list_repo_files
-        import zipfile
-    except ImportError:
-        print_color(RED, "Error: huggingface_hub package not found.")
-        print("Please run: pip install huggingface_hub")
-        return False
-
-    model_name = get_model_dir_name(model_id)
-    org = "Cactus-Compute"
-    repo_id = f"{org}/{model_id.split('/')[-1]}"
-
-    try:
-        precision_lower = precision.lower()
-        apple_zip = f"{model_name}-{precision_lower}-apple.zip"
-        standard_zip = f"{model_name}-{precision_lower}.zip"
-
-        repo_files = list_repo_files(repo_id, repo_type="model")
-
-        zip_file = None
-        if f"weights/{apple_zip}" in repo_files:
-            zip_file = apple_zip
-        elif f"weights/{standard_zip}" in repo_files:
-            zip_file = standard_zip
-        else:
-            print_color(YELLOW, f"Pre-converted model not found in {repo_id}")
-            return False
-
-        print_color(BLUE, f"Downloading from {repo_id}...")
-
-        zip_path = hf_hub_download(
-            repo_id=repo_id,
-            filename=f"weights/{zip_file}",
-            repo_type="model"
-        )
-
-        weights_dir.mkdir(parents=True, exist_ok=True)
-
-        print_color(YELLOW, "Extracting model weights...")
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(weights_dir)
-
-        if not (weights_dir / "config.txt").exists():
-            print_color(RED, f"Error: Downloaded model is missing config.txt")
-            if weights_dir.exists():
-                shutil.rmtree(weights_dir)
-            return False
-
-        # Ensure quantization field exists in config.txt (older zips may lack it)
-        config_path = weights_dir / "config.txt"
-        config_text = config_path.read_text()
-        if 'quantization=' not in config_text:
-            with open(config_path, 'a') as f:
-                f.write(f"quantization={precision}\n")
-
-        print_color(GREEN, f"Successfully downloaded pre-converted model to {weights_dir}")
-        return True
-
-    except Exception:
-        print_color(YELLOW, f"Could not download from {repo_id}")
-        if weights_dir.exists():
-            shutil.rmtree(weights_dir)
-        return False
+    return _download_from_hf_impl(model_id, weights_dir, precision)
 
 
 def cmd_download(args):

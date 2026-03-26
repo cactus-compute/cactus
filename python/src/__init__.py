@@ -9,8 +9,14 @@ def __getattr__(name):
         from .cli import convert_hf_to_cactus
         return convert_hf_to_cactus
     if name == "get_model_dir_name":
-        from .cli import get_model_dir_name
+        from .downloads import get_model_dir_name
         return get_model_dir_name
+    if name == "ensure_model":
+        from .downloads import ensure_model
+        return ensure_model
+    if name == "get_weights_dir":
+        from .downloads import get_weights_dir
+        return get_weights_dir
     if name == "save_tensor_with_header":
         from .tensor_io import save_tensor_with_header
         return save_tensor_with_header

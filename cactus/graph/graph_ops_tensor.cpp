@@ -379,8 +379,8 @@ void compute_cat_node(
                    input_shape_ptrs.data(),
                    node.output_buffer.shape.data(),
                    node.input_ids.size(),
-                   node.params.axis,
-                   node.output_buffer.shape.size());
+                   node.output_buffer.shape.size(),
+                   node.params.axis);
 }
 
 void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
