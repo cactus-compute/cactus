@@ -7,6 +7,7 @@ import json
 import subprocess
 import shutil
 import platform
+import time
 from pathlib import Path
 from pathlib import PurePosixPath
 
@@ -495,20 +496,24 @@ def cmd_download(args):
         else:
             config_json = _download_config_json(model_id)
             model_type = str(config_json.get('model_type', '')).lower()
+            tokenizer = None
 
-            try:
-                tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
-            except Exception as tok_err:
-                if "TokenizersBackend" in str(tok_err) or "does not exist or is not currently imported" in str(tok_err):
-                    from transformers import PreTrainedTokenizerFast
-                    print("  Note: Using PreTrainedTokenizerFast fallback for invalid tokenizer_class...")
-                    tokenizer = PreTrainedTokenizerFast.from_pretrained(model_id, cache_dir=cache_dir, token=token)
-                else:
-                    raise
+            if model_type not in ('sortformer', 'sortformer_diar'):
+                try:
+                    tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+                except Exception as tok_err:
+                    if "TokenizersBackend" in str(tok_err) or "does not exist or is not currently imported" in str(tok_err):
+                        from transformers import PreTrainedTokenizerFast
+                        print("  Note: Using PreTrainedTokenizerFast fallback for invalid tokenizer_class...")
+                        tokenizer = PreTrainedTokenizerFast.from_pretrained(model_id, cache_dir=cache_dir, token=token)
+                    else:
+                        raise
 
-            if model_type == 'lfm2_moe' or model_type.startswith('qwen3_5') or model_type == 'youtu':
+            if model_type in ('lfm2_moe', 'sortformer', 'sortformer_diar') or model_type.startswith('qwen3_5') or model_type == 'youtu':
                 if model_type == 'lfm2_moe':
                     print("  Note: Loading raw checkpoint tensors for lfm2_moe conversion...")
+                elif model_type in ('sortformer', 'sortformer_diar'):
+                    print("  Note: Loading raw checkpoint tensors for sortformer conversion...")
                 else:
                     print(f"  Note: Loading raw checkpoint tensors for {model_type} conversion...")
                 raw_state_dict = _load_raw_hf_state_dict(model_id)
@@ -559,16 +564,16 @@ def cmd_download(args):
             for key, value in config.items():
                 f.write(f"{key}={format_config_value(value)}\n")
 
-        convert_hf_tokenizer(
-            tokenizer,
-            weights_dir,
-            token=token,
-            model_id=model_name,
-            labels=tokenizer_labels,
-            model_type=config.get('model_type'),
-        )
-
-        del tokenizer
+        if tokenizer is not None:
+            convert_hf_tokenizer(
+                tokenizer,
+                weights_dir,
+                token=token,
+                model_id=model_name,
+                labels=tokenizer_labels,
+                model_type=config.get('model_type'),
+            )
+            del tokenizer
         import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -1143,6 +1148,181 @@ def _cmd_transcribe_ios(weights_dir, audio_file, args):
     return subprocess.run(cmd, cwd=PROJECT_ROOT / "tests" / "ios", env=env).returncode
 
 
+def _read_model_type_from_weights(weights_dir):
+    config_path = Path(weights_dir) / "config.txt"
+    if not config_path.exists():
+        return ""
+    try:
+        for line in config_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("model_type="):
+                return line.split("=", 1)[1].strip().lower()
+    except OSError:
+        return ""
+    return ""
+
+
+def _is_diarization_weights(weights_dir):
+    mt = _read_model_type_from_weights(weights_dir)
+    return mt in {"sortformer", "sortformer_diar", "diar_sortformer"}
+
+
+def _segment_overlap(a, b):
+    return max(0.0, min(float(a.get("end", 0.0)), float(b.get("end", 0.0))) - max(float(a.get("start", 0.0)), float(b.get("start", 0.0))))
+
+
+def _align_asr_with_diar(asr_segments, diar_segments):
+    global_coverage = {}
+    for dseg in diar_segments:
+        spk = str(dseg.get("text", "speaker_unknown"))
+        start = float(dseg.get("start", 0.0))
+        end = float(dseg.get("end", 0.0))
+        if end > start:
+            global_coverage[spk] = global_coverage.get(spk, 0.0) + (end - start)
+
+    aligned = []
+    for seg in asr_segments:
+        overlap_by_speaker = {}
+        for dseg in diar_segments:
+            ov = _segment_overlap(seg, dseg)
+            if ov <= 0.0:
+                continue
+            speaker = str(dseg.get("text", "speaker_unknown"))
+            overlap_by_speaker[speaker] = overlap_by_speaker.get(speaker, 0.0) + ov
+
+        if overlap_by_speaker:
+            best_overlap = max(overlap_by_speaker.values())
+            tied = sorted([spk for spk, ov in overlap_by_speaker.items() if abs(ov - best_overlap) <= 1e-6])
+            if len(tied) == 1:
+                speaker_label = tied[0]
+            else:
+                # Resolve ties by speaker with greater global coverage.
+                speaker_label = sorted(
+                    tied,
+                    key=lambda spk: (global_coverage.get(spk, 0.0), spk),
+                    reverse=True
+                )[0]
+        else:
+            speaker_label = "speaker_unknown"
+        aligned.append({
+            "start": float(seg.get("start", 0.0)),
+            "end": float(seg.get("end", 0.0)),
+            "text": str(seg.get("text", "")),
+            "speaker": speaker_label,
+        })
+    return aligned
+
+
+def _extract_transcribe_metrics(result_json):
+    return {
+        "time_to_first_token_ms": result_json.get("time_to_first_token_ms"),
+        "total_time_ms": result_json.get("total_time_ms"),
+        "prefill_tps": result_json.get("prefill_tps"),
+        "decode_tps": result_json.get("decode_tps"),
+        "prefill_tokens": result_json.get("prefill_tokens"),
+        "decode_tokens": result_json.get("decode_tokens"),
+        "total_tokens": result_json.get("total_tokens"),
+        "confidence": result_json.get("confidence"),
+        "ram_usage_mb": result_json.get("ram_usage_mb"),
+        "cloud_handoff": result_json.get("cloud_handoff"),
+    }
+
+
+def _cmd_transcribe_with_diarization(asr_weights_dir, diar_weights_dir, audio_file, args):
+    lib_name = "libcactus.dylib" if platform.system() == "Darwin" else "libcactus.so"
+    ffi_lib = PROJECT_ROOT / "cactus" / "build" / lib_name
+    if not ffi_lib.exists():
+        print_color(YELLOW, "Building Python FFI library for combined ASR + diarization mode...")
+        if cmd_build_python(args) != 0:
+            return 1
+
+    from .cactus import cactus_init, cactus_destroy, cactus_transcribe
+
+    if not audio_file:
+        print_color(RED, "Error: diarization mode requires --file <audio.wav>")
+        return 1
+
+    audio_path = Path(audio_file).expanduser().resolve()
+    if not audio_path.exists():
+        print_color(RED, f"Error: audio file not found: {audio_path}")
+        return 1
+
+    print_color(BLUE, f"Running ASR + diarization on: {audio_path}")
+    print_color(BLUE, f"ASR model: {asr_weights_dir}")
+    print_color(BLUE, f"Diarization model: {diar_weights_dir}")
+
+    diarization_threshold = 0.35
+    diar_threshold_env = os.environ.get("CACTUS_DIAR_THRESHOLD", "").strip()
+    if diar_threshold_env:
+        try:
+            diarization_threshold = float(diar_threshold_env)
+        except ValueError:
+            diarization_threshold = 0.35
+
+    asr_handle = None
+    diar_handle = None
+    try:
+        run_start = time.perf_counter()
+        asr_handle = cactus_init(str(asr_weights_dir), None, False)
+        diar_handle = cactus_init(str(diar_weights_dir), None, False)
+
+        asr_options = json.dumps({
+            "max_tokens": 1000,
+            "telemetry_enabled": True,
+            "use_vad": True,
+        })
+        diar_options = json.dumps({
+            "max_tokens": 3000,
+            "telemetry_enabled": True,
+            # Sortformer diarization models don't bundle Silero VAD weights.
+            "use_vad": False,
+            # Higher threshold avoids "all speakers active" from low default config thresholds.
+            "diarization_threshold": diarization_threshold,
+        })
+
+        asr_start = time.perf_counter()
+        asr_json = json.loads(cactus_transcribe(asr_handle, str(audio_path), "", asr_options, None, None))
+        asr_wall_ms = (time.perf_counter() - asr_start) * 1000.0
+
+        diar_start = time.perf_counter()
+        diar_json = json.loads(cactus_transcribe(diar_handle, str(audio_path), "", diar_options, None, None))
+        diar_wall_ms = (time.perf_counter() - diar_start) * 1000.0
+        combined_wall_ms = (time.perf_counter() - run_start) * 1000.0
+
+        asr_segments = asr_json.get("segments", []) or []
+        diar_segments = diar_json.get("segments", []) or []
+        aligned_segments = _align_asr_with_diar(asr_segments, diar_segments)
+
+        combined = {
+            "success": bool(asr_json.get("success", True) and diar_json.get("success", True)),
+            "error": asr_json.get("error") or diar_json.get("error"),
+            "response": asr_json.get("response", ""),
+            "segments": asr_segments,
+            "diarization_segments": diar_segments,
+            "aligned_segments": aligned_segments,
+            "asr_model": str(asr_weights_dir),
+            "diarization_model": str(diar_weights_dir),
+            "audio_file": str(audio_path),
+            "diarization_threshold": diarization_threshold,
+            "asr_metrics": _extract_transcribe_metrics(asr_json),
+            "diarization_metrics": _extract_transcribe_metrics(diar_json),
+            "timing": {
+                "asr_wall_time_ms": round(asr_wall_ms, 2),
+                "diarization_wall_time_ms": round(diar_wall_ms, 2),
+                "combined_wall_time_ms": round(combined_wall_ms, 2),
+            },
+        }
+        print(json.dumps(combined, indent=2))
+        return 0
+    except Exception as e:
+        print_color(RED, f"Error: {e}")
+        return 1
+    finally:
+        if asr_handle:
+            cactus_destroy(asr_handle)
+        if diar_handle:
+            cactus_destroy(diar_handle)
+
+
 def cmd_transcribe(args):
     """Download ASR model if needed and start transcription."""
     from .config_utils import CactusConfig
@@ -1183,6 +1363,38 @@ def cmd_transcribe(args):
     if getattr(args, 'android', False) and getattr(args, 'ios', False):
         print_color(RED, "Error: choose only one of --android or --ios")
         return 1
+
+    if _is_diarization_weights(weights_dir):
+        if getattr(args, 'android', False) or getattr(args, 'ios', False):
+            print_color(RED, "Error: diarization+transcription combined mode currently supports local file mode only")
+            return 1
+
+        if not audio_file:
+            print_color(RED, "Error: diarization model requires --file <audio.wav> to run combined ASR + diarization")
+            return 1
+
+        class DownloadArgs:
+            pass
+
+        asr_dl = DownloadArgs()
+        asr_dl.model_id = DEFAULT_ASR_MODEL_ID
+        asr_dl.original_model_id = DEFAULT_ASR_MODEL_ID
+        asr_dl.precision = getattr(args, 'precision', 'INT4')
+        asr_dl.cache_dir = getattr(args, 'cache_dir', None)
+        asr_dl.token = getattr(args, 'token', None)
+        asr_dl.reconvert = getattr(args, 'reconvert', False)
+
+        asr_local = Path(DEFAULT_ASR_MODEL_ID)
+        if asr_local.exists() and (asr_local / "config.txt").exists():
+            asr_weights_dir = asr_local
+        else:
+            download_result = cmd_download(asr_dl)
+            if download_result != 0:
+                return download_result
+            asr_weights_dir = get_weights_dir(DEFAULT_ASR_MODEL_ID)
+
+        return _cmd_transcribe_with_diarization(asr_weights_dir, weights_dir, audio_file, args)
+
     if getattr(args, 'android', False):
         return _cmd_transcribe_android(weights_dir, audio_file, args)
     if getattr(args, 'ios', False):
@@ -1683,11 +1895,12 @@ def cmd_list(args):
         "text-generation": "Text Generation",
         "image-text-to-text": "Vision",
         "automatic-speech-recognition": "Speech Recognition",
+        "speaker-diarization": "Speaker Diarization",
         "feature-extraction": "Embeddings",
         "voice-activity-detection": "Voice Activity Detection",
     }
     PIPELINE_ORDER = list(PIPELINE_DISPLAY.keys())
-    SHOW_TAGS = {"tools", "vision", "embed", "transcription"}
+    SHOW_TAGS = {"tools", "vision", "embed", "transcription", "diarization"}
     EMBED_ALIASES = {"text-embed", "image-embed", "speech-embed"}
 
     DIM = '\033[2m'

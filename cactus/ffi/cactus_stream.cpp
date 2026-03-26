@@ -374,12 +374,13 @@ int cactus_stream_transcribe_process(
         bool is_parakeet =
             model_type == cactus::engine::Config::ModelType::PARAKEET ||
             model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
+        bool is_sortformer = model_type == cactus::engine::Config::ModelType::SORTFORMER_DIAR;
 
         cactus::telemetry::setStreamMode(true);
         const int result = cactus_transcribe(
             handle->model_handle,
             nullptr,
-            (is_moonshine || is_parakeet) ? "" : ("<|startoftranscript|><|" + handle->options.language + "|><|transcribe|>").c_str(),
+            (is_moonshine || is_parakeet || is_sortformer) ? "" : ("<|startoftranscript|><|" + handle->options.language + "|><|transcribe|>").c_str(),
             handle->transcribe_response_buffer,
             sizeof(handle->transcribe_response_buffer),
             handle->transcribe_options_json.empty() ? nullptr : handle->transcribe_options_json.c_str(),

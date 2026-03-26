@@ -110,6 +110,8 @@ def detect_model_type(cfg, config, output_dir=None):
         return 'bert'
     elif 'whisper' in model_type_str:
         return 'whisper'
+    elif 'sortformer' in model_type_str:
+        return 'sortformer_diar'
     elif 'parakeet' in model_type_str:
         return 'parakeet'
     else:

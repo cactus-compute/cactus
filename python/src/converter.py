@@ -123,6 +123,54 @@ def convert_hf_model_weights(
             'pad_token_id': int(cfg_get(config, 'pad_token_id', cfg_get(root_config, 'pad_token_id', 0))),
             'encoder_hidden_act': cfg_get(encoder_cfg, 'hidden_act', 'silu'),
         })
+    elif detected_model_type == 'sortformer_diar':
+        fc_cfg = cfg_get(config, 'fc_encoder_config', cfg_get(root_config, 'fc_encoder_config', None))
+        tf_cfg = cfg_get(config, 'tf_encoder_config', cfg_get(root_config, 'tf_encoder_config', None))
+        modules_cfg = cfg_get(config, 'modules_config', cfg_get(root_config, 'modules_config', None))
+        if fc_cfg is None or tf_cfg is None or modules_cfg is None:
+            raise ValueError("Sortformer conversion requires fc_encoder_config, tf_encoder_config, and modules_config")
+
+        fc_hidden = int(cfg_get(fc_cfg, 'hidden_size', 0))
+        fc_layers = int(cfg_get(fc_cfg, 'num_hidden_layers', 0))
+        fc_heads = int(cfg_get(fc_cfg, 'num_attention_heads', 0))
+        fc_kv_heads = int(cfg_get(fc_cfg, 'num_key_value_heads', fc_heads))
+        fc_head_dim = int(fc_hidden // max(1, fc_heads))
+
+        tf_hidden = int(cfg_get(tf_cfg, 'd_model', 0))
+        tf_layers = int(cfg_get(tf_cfg, 'encoder_layers', 0))
+        tf_heads = int(cfg_get(tf_cfg, 'encoder_attention_heads', 0))
+        tf_ffn = int(cfg_get(tf_cfg, 'encoder_ffn_dim', 0))
+
+        num_speakers = int(cfg_get(modules_cfg, 'num_speakers', cfg_get(config, 'num_speakers', 4)))
+        subsampling_factor = int(cfg_get(fc_cfg, 'subsampling_factor', cfg_get(modules_cfg, 'subsampling_factor', 8)))
+        frame_step = float(subsampling_factor) * 0.01
+
+        model_config.update({
+            'vocab_size': num_speakers,
+            'hidden_dim': fc_hidden,
+            'num_layers': fc_layers,
+            'attention_heads': fc_heads,
+            'attention_kv_heads': fc_kv_heads,
+            'attention_head_dim': fc_head_dim,
+            'ffn_intermediate_dim': int(cfg_get(fc_cfg, 'intermediate_size', 0)),
+            'context_length': int(cfg_get(fc_cfg, 'max_position_embeddings', cfg_get(tf_cfg, 'max_source_positions', 0))),
+            'layer_norm_eps': float(cfg_get(fc_cfg, 'layer_norm_eps', 1e-5)),
+            'rope_theta': float(cfg_get(fc_cfg, 'rope_theta', 0.0) or 0.0),
+            'conv_kernel_size': int(cfg_get(fc_cfg, 'conv_kernel_size', 9)),
+            'subsampling_conv_kernel_size': int(cfg_get(fc_cfg, 'subsampling_conv_kernel_size', 3)),
+            'subsampling_conv_stride': int(cfg_get(fc_cfg, 'subsampling_conv_stride', 2)),
+            'subsampling_conv_channels': int(cfg_get(fc_cfg, 'subsampling_conv_channels', 256)),
+            'subsampling_factor': subsampling_factor,
+            'num_mel_bins': int(cfg_get(fc_cfg, 'num_mel_bins', 80)),
+            'encoder_hidden_act': cfg_get(fc_cfg, 'hidden_act', 'silu'),
+            'diar_tf_hidden_dim': tf_hidden,
+            'diar_tf_num_layers': tf_layers,
+            'diar_tf_attention_heads': tf_heads,
+            'diar_tf_ffn_intermediate_dim': tf_ffn,
+            'diar_num_speakers': num_speakers,
+            'diar_frame_step_seconds': frame_step,
+            'diar_sil_threshold': float(cfg_get(modules_cfg, 'sil_threshold', 0.1)),
+        })
     elif detected_model_type == 'parakeet_tdt':
         encoder_cfg = cfg_get(config, 'encoder', cfg_get(root_config, 'encoder', None))
         if encoder_cfg is None:
@@ -485,6 +533,181 @@ def convert_hf_model_weights(
                 tracked_key = layer_prefix + 'conv.norm.num_batches_tracked'
                 if tracked_key in state_dict:
                     saved_tensor_full_names.add(tracked_key)
+    elif detected_model_type == 'sortformer_diar':
+        global_mappings = [
+            (['fc_encoder.subsampling.layers.0.weight'], 'subsampling_conv0_weight.weights'),
+            (['fc_encoder.subsampling.layers.0.bias'], 'subsampling_conv0_bias.bias'),
+            (['fc_encoder.subsampling.layers.2.weight'], 'subsampling_depthwise1_weight.weights'),
+            (['fc_encoder.subsampling.layers.2.bias'], 'subsampling_depthwise1_bias.bias'),
+            (['fc_encoder.subsampling.layers.3.weight'], 'subsampling_pointwise1_weight.weights'),
+            (['fc_encoder.subsampling.layers.3.bias'], 'subsampling_pointwise1_bias.bias'),
+            (['fc_encoder.subsampling.layers.5.weight'], 'subsampling_depthwise2_weight.weights'),
+            (['fc_encoder.subsampling.layers.5.bias'], 'subsampling_depthwise2_bias.bias'),
+            (['fc_encoder.subsampling.layers.6.weight'], 'subsampling_pointwise2_weight.weights'),
+            (['fc_encoder.subsampling.layers.6.bias'], 'subsampling_pointwise2_bias.bias'),
+            (['fc_encoder.subsampling.linear.weight'], 'subsampling_linear_weight.weights'),
+            (['fc_encoder.subsampling.linear.bias'], 'subsampling_linear_bias.bias'),
+            (['sortformer_modules.encoder_proj.weight'], 'encoder_proj_weight.weights'),
+            (['sortformer_modules.encoder_proj.bias'], 'encoder_proj_bias.bias'),
+            (['tf_encoder.embed_positions.weight'], 'tf_embed_positions.weights'),
+            (['sortformer_modules.first_hidden_to_hidden.weight'], 'head_hidden_weight.weights'),
+            (['sortformer_modules.first_hidden_to_hidden.bias'], 'head_hidden_bias.bias'),
+            (['sortformer_modules.single_hidden_to_spks.weight'], 'head_single_spk_weight.weights'),
+            (['sortformer_modules.single_hidden_to_spks.bias'], 'head_single_spk_bias.bias'),
+        ]
+
+        optional_global_mappings = [
+            (['sortformer_modules.hidden_to_spks.weight'], 'head_pair_spk_weight.weights'),
+            (['sortformer_modules.hidden_to_spks.bias'], 'head_pair_spk_bias.bias'),
+        ]
+
+        for candidate_keys, out_name in global_mappings:
+            key = _find_first_key(state_dict, candidate_keys)
+            if key is None:
+                missing_tensors.append((-1, out_name, candidate_keys))
+                continue
+            save_tensor_with_header(
+                state_dict[key], output_dir / out_name, precision, transpose=False,
+                stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+            )
+            saved_tensor_full_names.add(key)
+
+        for candidate_keys, out_name in optional_global_mappings:
+            key = _find_first_key(state_dict, candidate_keys)
+            if key is None:
+                continue
+            save_tensor_with_header(
+                state_dict[key], output_dir / out_name, precision, transpose=False,
+                stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+            )
+            saved_tensor_full_names.add(key)
+
+        fc_layer_mappings = [
+            ('feed_forward1.linear1.weight', 'ff1_linear1.weights'),
+            ('feed_forward1.linear1.bias', 'ff1_linear1.bias'),
+            ('feed_forward1.linear2.weight', 'ff1_linear2.weights'),
+            ('feed_forward1.linear2.bias', 'ff1_linear2.bias'),
+            ('feed_forward2.linear1.weight', 'ff2_linear1.weights'),
+            ('feed_forward2.linear1.bias', 'ff2_linear1.bias'),
+            ('feed_forward2.linear2.weight', 'ff2_linear2.weights'),
+            ('feed_forward2.linear2.bias', 'ff2_linear2.bias'),
+            ('self_attn.q_proj.weight', 'self_attn_q.weights'),
+            ('self_attn.q_proj.bias', 'self_attn_q.bias'),
+            ('self_attn.k_proj.weight', 'self_attn_k.weights'),
+            ('self_attn.k_proj.bias', 'self_attn_k.bias'),
+            ('self_attn.v_proj.weight', 'self_attn_v.weights'),
+            ('self_attn.v_proj.bias', 'self_attn_v.bias'),
+            ('self_attn.o_proj.weight', 'self_attn_output.weights'),
+            ('self_attn.o_proj.bias', 'self_attn_output.bias'),
+            ('self_attn.relative_k_proj.weight', 'self_attn_relative_k.weights'),
+            ('self_attn.bias_u', 'self_attn_bias_u.weights'),
+            ('self_attn.bias_v', 'self_attn_bias_v.weights'),
+            ('conv.pointwise_conv1.weight', 'conv_pointwise1.weights'),
+            ('conv.pointwise_conv1.bias', 'conv_pointwise1.bias'),
+            ('conv.depthwise_conv.weight', 'conv_depthwise.weights'),
+            ('conv.depthwise_conv.bias', 'conv_depthwise.bias'),
+            ('conv.pointwise_conv2.weight', 'conv_pointwise2.weights'),
+            ('conv.pointwise_conv2.bias', 'conv_pointwise2.bias'),
+            ('conv.norm.weight', 'conv_batchnorm_weight.weights'),
+            ('conv.norm.bias', 'conv_batchnorm_bias.bias'),
+            ('conv.norm.running_mean', 'conv_batchnorm_running_mean.weights'),
+            ('conv.norm.running_var', 'conv_batchnorm_running_var.weights'),
+            ('norm_feed_forward1.weight', 'norm_ff1.weights'),
+            ('norm_feed_forward1.bias', 'norm_ff1.bias'),
+            ('norm_self_att.weight', 'norm_self_attn.weights'),
+            ('norm_self_att.bias', 'norm_self_attn.bias'),
+            ('norm_conv.weight', 'norm_conv.weights'),
+            ('norm_conv.bias', 'norm_conv.bias'),
+            ('norm_feed_forward2.weight', 'norm_ff2.weights'),
+            ('norm_feed_forward2.bias', 'norm_ff2.bias'),
+            ('norm_out.weight', 'norm_out.weights'),
+            ('norm_out.bias', 'norm_out.bias'),
+        ]
+
+        for i in range(int(model_config.get('num_layers', 0))):
+            layer_prefix = f'fc_encoder.layers.{i}.'
+            for suffix, out_suffix in fc_layer_mappings:
+                key = layer_prefix + suffix
+                out_name = f'layer_{i}_{out_suffix}'
+                if key not in state_dict:
+                    missing_tensors.append((i, out_name, [key]))
+                    continue
+                save_tensor_with_header(
+                    state_dict[key], output_dir / out_name, precision, transpose=False,
+                    stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                )
+                saved_tensor_full_names.add(key)
+            tracked_key = layer_prefix + 'conv.norm.num_batches_tracked'
+            if tracked_key in state_dict:
+                saved_tensor_full_names.add(tracked_key)
+
+        tf_layer_mappings = [
+            (['self_attn.q_proj.weight'], 'self_attn_q.weights'),
+            (['self_attn.q_proj.bias'], 'self_attn_q.bias'),
+            (['self_attn.k_proj.weight'], 'self_attn_k.weights'),
+            (['self_attn.v_proj.weight'], 'self_attn_v.weights'),
+            (['self_attn.v_proj.bias'], 'self_attn_v.bias'),
+            (['self_attn.out_proj.weight'], 'self_attn_output.weights'),
+            (['self_attn.out_proj.bias'], 'self_attn_output.bias'),
+            (['self_attn_layer_norm.weight'], 'self_attn_layernorm.weights'),
+            (['self_attn_layer_norm.bias'], 'self_attn_layernorm.bias'),
+            (['fc1.weight'], 'ff1.weights'),
+            (['fc1.bias'], 'ff1.bias'),
+            (['fc2.weight'], 'ff2.weights'),
+            (['fc2.bias'], 'ff2.bias'),
+            (['final_layer_norm.weight'], 'final_layernorm.weights'),
+            (['final_layer_norm.bias'], 'final_layernorm.bias'),
+        ]
+
+        for i in range(int(model_config.get('diar_tf_num_layers', 0))):
+            layer_prefix = f'tf_encoder.layers.{i}.'
+            for suffixes, out_suffix in tf_layer_mappings:
+                candidate_keys = [layer_prefix + suffix for suffix in suffixes]
+                key = _find_first_key(state_dict, candidate_keys)
+                out_name = f'tf_layer_{i}_{out_suffix}'
+                if key is None:
+                    missing_tensors.append((i, out_name, candidate_keys))
+                    continue
+                save_tensor_with_header(
+                    state_dict[key], output_dir / out_name, precision, transpose=False,
+                    stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                )
+                saved_tensor_full_names.add(key)
+
+            # Some Sortformer checkpoints omit K-proj bias in TF layers.
+            # Runtime expects the file, so synthesize a zero bias when absent.
+            k_bias_candidates = [layer_prefix + 'self_attn.k_proj.bias']
+            k_bias_key = _find_first_key(state_dict, k_bias_candidates)
+            k_bias_out = f'tf_layer_{i}_self_attn_k.bias'
+            if k_bias_key is not None:
+                save_tensor_with_header(
+                    state_dict[k_bias_key], output_dir / k_bias_out, precision, transpose=False,
+                    stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                )
+                saved_tensor_full_names.add(k_bias_key)
+            else:
+                ref_bias_key = _find_first_key(state_dict, [
+                    layer_prefix + 'self_attn.q_proj.bias',
+                    layer_prefix + 'self_attn.v_proj.bias',
+                ])
+                ref_weight_key = _find_first_key(state_dict, [
+                    layer_prefix + 'self_attn.k_proj.weight',
+                ])
+
+                if ref_bias_key is not None:
+                    zero_bias = torch.zeros_like(state_dict[ref_bias_key])
+                elif ref_weight_key is not None:
+                    out_dim = int(state_dict[ref_weight_key].shape[0])
+                    zero_bias = torch.zeros(out_dim, dtype=state_dict[ref_weight_key].dtype)
+                else:
+                    missing_tensors.append((i, k_bias_out, k_bias_candidates))
+                    zero_bias = None
+
+                if zero_bias is not None:
+                    save_tensor_with_header(
+                        zero_bias, output_dir / k_bias_out, precision, transpose=False,
+                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                    )
     elif detected_model_type == 'parakeet_tdt':
         global_mappings = []
         if not skip_parakeet_encoder_weights:

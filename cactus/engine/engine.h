@@ -127,13 +127,20 @@ struct Config {
     float rope_scaling_factor = 1.0f;
     float rope_mscale_all_dim = 0.0f;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, SORTFORMER_DIAR = 15};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
     uint32_t tdt_num_durations = 0;
     uint32_t tdt_blank_id = 0;
     std::vector<uint32_t> tdt_durations;
+    uint32_t diar_tf_hidden_dim = 0;
+    uint32_t diar_tf_num_layers = 0;
+    uint32_t diar_tf_attention_heads = 0;
+    uint32_t diar_tf_ffn_intermediate_dim = 0;
+    uint32_t diar_num_speakers = 0;
+    float diar_frame_step_seconds = 0.08f;
+    float diar_sil_threshold = 0.1f;
 
     ModelType model_type = ModelType::QWEN;
 

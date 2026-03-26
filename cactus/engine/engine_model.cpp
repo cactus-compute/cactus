@@ -133,7 +133,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER ||
                                  config_.model_type == Config::ModelType::MOONSHINE ||
                                  config_.model_type == Config::ModelType::PARAKEET ||
-                                 config_.model_type == Config::ModelType::PARAKEET_TDT)
+                                 config_.model_type == Config::ModelType::PARAKEET_TDT ||
+                                 config_.model_type == Config::ModelType::SORTFORMER_DIAR)
                                ? Precision::FP16
                                : Precision::INT8;
     kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, get_kv_layer_dims(), cache_precision);
@@ -160,7 +161,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         config_.model_type != Config::ModelType::WHISPER &&
         config_.model_type != Config::ModelType::MOONSHINE &&
         config_.model_type != Config::ModelType::PARAKEET &&
-        config_.model_type != Config::ModelType::PARAKEET_TDT) {
+        config_.model_type != Config::ModelType::PARAKEET_TDT &&
+        config_.model_type != Config::ModelType::SORTFORMER_DIAR) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
         forward(warmup_tokens);
@@ -524,6 +526,9 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "parakeet" || value == "PARAKEET") model_type = ModelType::PARAKEET;
             else if (model_type_value.rfind("qwen3_5", 0) == 0) model_type = ModelType::QWEN3P5;
             else if (value == "parakeet_tdt" || value == "PARAKEET_TDT") model_type = ModelType::PARAKEET_TDT;
+            else if (value == "sortformer_diar" || value == "SORTFORMER_DIAR" ||
+                     value == "sortformer" || value == "SORTFORMER" ||
+                     value == "diar_sortformer" || value == "DIAR_SORTFORMER") model_type = ModelType::SORTFORMER_DIAR;
             else if (value == "gemma3n" || value == "GEMMA3N") model_type = ModelType::GEMMA3N;
             else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
             else model_type = ModelType::QWEN;
@@ -604,6 +609,13 @@ bool Config::from_json(const std::string& config_path) {
                 tdt_durations.push_back(static_cast<uint32_t>(std::stoul(item)));
             }
         }
+        else if (key == "diar_tf_hidden_dim") diar_tf_hidden_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "diar_tf_num_layers") diar_tf_num_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "diar_tf_attention_heads") diar_tf_attention_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "diar_tf_ffn_intermediate_dim") diar_tf_ffn_intermediate_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "diar_num_speakers") diar_num_speakers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "diar_frame_step_seconds") diar_frame_step_seconds = std::stof(value);
+        else if (key == "diar_sil_threshold") diar_sil_threshold = std::stof(value);
         else if (key == "altup_num_inputs") altup_num_inputs = static_cast<uint32_t>(std::stoul(value));
         else if (key == "laurel_rank") laurel_rank = static_cast<uint32_t>(std::stoul(value));
         else if (key == "hidden_size_per_layer_input") hidden_size_per_layer_input = static_cast<uint32_t>(std::stoul(value));
@@ -697,6 +709,10 @@ bool Config::from_json(const std::string& config_path) {
         default_temperature = 1.0f;
         default_top_p = 0.95f;
         default_top_k = 20;
+    } else if (model_type == ModelType::SORTFORMER_DIAR) {
+        default_temperature = 0.0f;
+        default_top_p = 0.0f;
+        default_top_k = 0;
     }
 
     return true;
@@ -755,6 +771,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<ParakeetTDTModel>(config);
         case Config::ModelType::YOUTU:
             return std::make_unique<YoutuModel>(config);
+        case Config::ModelType::SORTFORMER_DIAR:
+            return std::make_unique<SortformerDiarModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }

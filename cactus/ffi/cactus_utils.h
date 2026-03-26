@@ -279,6 +279,7 @@ struct InferenceOptions {
     bool force_tools = false;
     bool include_stop_sequences = false;
     bool use_vad = true;
+    float diarization_threshold = -1.0f;
     bool telemetry_enabled = true;
     bool auto_handoff = true;
     bool handoff_with_images = true;
@@ -814,6 +815,12 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
         pos = json.find(':', pos) + 1;
         while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
         options.use_vad = (json.substr(pos, 4) == "true");
+    }
+
+    pos = json.find("\"diarization_threshold\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        options.diarization_threshold = std::stof(json.substr(pos));
     }
 
     pos = json.find("\"telemetry_enabled\"");

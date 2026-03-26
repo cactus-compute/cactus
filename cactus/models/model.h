@@ -1252,6 +1252,182 @@ private:
     bool use_npu_encoder_ = false;
 };
 
+class SortformerDiarModel : public Model {
+public:
+    struct SpeakerTimestamp {
+        float start;
+        float end;
+        uint32_t speaker;
+    };
+
+    struct SpeakerTimestampsOptions {
+        float threshold = 0.5f;
+        int min_speech_duration_ms = 200;
+        int min_silence_duration_ms = 100;
+    };
+
+    SortformerDiarModel();
+    explicit SortformerDiarModel(const Config& config);
+    ~SortformerDiarModel() override = default;
+
+    bool init(const std::string& model_folder, size_t context_size = 0,
+              const std::string& system_prompt = "", bool do_warmup = false) override;
+    bool init(CactusGraph* external_graph, const std::string& model_folder, size_t context_size = 0,
+              const std::string& system_prompt = "", bool do_warmup = false) override;
+    std::vector<float> get_speaker_activity(const std::vector<float>& audio_features, size_t* out_frames = nullptr,
+                                            size_t* out_speakers = nullptr);
+    std::vector<SpeakerTimestamp> get_speaker_timestamps(const std::vector<float>& audio_features);
+    std::vector<SpeakerTimestamp> get_speaker_timestamps(
+        const std::vector<float>& audio_features,
+        const SpeakerTimestampsOptions& options
+    );
+    void set_diarization_threshold(float threshold);
+    void clear_diarization_threshold_override();
+
+protected:
+    size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("SortformerDiar: build_attention unused");
+    }
+
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("SortformerDiar: build_mlp unused");
+    }
+
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("SortformerDiar: build_transformer_block unused");
+    }
+
+    size_t forward(const std::vector<uint32_t>& /*tokens*/, bool /*use_cache*/ = false) override {
+        throw std::runtime_error("SortformerDiar requires audio feature forward().");
+    }
+
+    size_t forward(const std::vector<float>& audio_features, const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    void load_weights_to_graph(CactusGraph* gb) override;
+    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+                               float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0,
+                               const std::string& profile_file = "", float* out_entropy = nullptr,
+                               float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
+    std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
+    void reset_cache() override;
+
+private:
+    bool init_internal_sortformer(CactusGraph* gb, const std::string& model_folder);
+    size_t build_subsampling(CactusGraph* gb, const std::vector<float>& audio_features);
+    size_t build_relative_position_embeddings(CactusGraph* gb, size_t seq_len);
+    size_t build_fc_self_attention(CactusGraph* gb, size_t hidden, size_t position_embeddings, uint32_t layer_idx, ComputeBackend backend);
+    size_t build_fc_feed_forward(CactusGraph* gb, size_t hidden, uint32_t layer_idx, bool second_ff, ComputeBackend backend);
+    size_t build_fc_convolution_module(CactusGraph* gb, size_t hidden, uint32_t layer_idx, ComputeBackend backend);
+    size_t build_fc_encoder_block(CactusGraph* gb, size_t hidden, size_t position_embeddings, uint32_t layer_idx, ComputeBackend backend);
+    size_t build_fc_encoder(CactusGraph* gb, const std::vector<float>& audio_features);
+    size_t build_tf_encoder_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx, ComputeBackend backend);
+    size_t build_tf_encoder(CactusGraph* gb, size_t fc_hidden);
+    size_t build_speaker_probs(CactusGraph* gb, size_t hidden);
+    void extract_speaker_segments(CactusGraph* gb, size_t probs_node);
+    std::vector<float> extract_probabilities(CactusGraph* gb, size_t probs_node, size_t* out_frames, size_t* out_speakers) const;
+
+    struct WeightNodeIDs {
+        size_t subsampling_conv0_weight = 0;
+        size_t subsampling_conv0_bias = 0;
+        size_t subsampling_depthwise1_weight = 0;
+        size_t subsampling_depthwise1_bias = 0;
+        size_t subsampling_pointwise1_weight = 0;
+        size_t subsampling_pointwise1_bias = 0;
+        size_t subsampling_depthwise2_weight = 0;
+        size_t subsampling_depthwise2_bias = 0;
+        size_t subsampling_pointwise2_weight = 0;
+        size_t subsampling_pointwise2_bias = 0;
+        size_t subsampling_linear_weight = 0;
+        size_t subsampling_linear_bias = 0;
+
+        size_t encoder_proj_weight = 0;
+        size_t encoder_proj_bias = 0;
+        size_t tf_embed_positions = 0;
+
+        size_t head_hidden_weight = 0;
+        size_t head_hidden_bias = 0;
+        size_t head_single_spk_weight = 0;
+        size_t head_single_spk_bias = 0;
+        size_t head_pair_spk_weight = 0;
+        size_t head_pair_spk_bias = 0;
+
+        struct FcLayerWeights {
+            size_t ff1_linear1_weight = 0;
+            size_t ff1_linear1_bias = 0;
+            size_t ff1_linear2_weight = 0;
+            size_t ff1_linear2_bias = 0;
+
+            size_t ff2_linear1_weight = 0;
+            size_t ff2_linear1_bias = 0;
+            size_t ff2_linear2_weight = 0;
+            size_t ff2_linear2_bias = 0;
+
+            size_t self_attn_q_weight = 0;
+            size_t self_attn_q_bias = 0;
+            size_t self_attn_k_weight = 0;
+            size_t self_attn_k_bias = 0;
+            size_t self_attn_v_weight = 0;
+            size_t self_attn_v_bias = 0;
+            size_t self_attn_output_weight = 0;
+            size_t self_attn_output_bias = 0;
+            size_t self_attn_relative_k_weight = 0;
+            size_t self_attn_bias_u = 0;
+            size_t self_attn_bias_v = 0;
+
+            size_t norm_ff1_weight = 0;
+            size_t norm_ff1_bias = 0;
+            size_t norm_self_attn_weight = 0;
+            size_t norm_self_attn_bias = 0;
+            size_t norm_conv_weight = 0;
+            size_t norm_conv_bias = 0;
+            size_t norm_ff2_weight = 0;
+            size_t norm_ff2_bias = 0;
+            size_t norm_out_weight = 0;
+            size_t norm_out_bias = 0;
+
+            size_t conv_pointwise1_weight = 0;
+            size_t conv_pointwise1_bias = 0;
+            size_t conv_depthwise_weight = 0;
+            size_t conv_depthwise_bias = 0;
+            size_t conv_pointwise2_weight = 0;
+            size_t conv_pointwise2_bias = 0;
+            size_t conv_batchnorm_weight = 0;
+            size_t conv_batchnorm_bias = 0;
+            size_t conv_batchnorm_running_mean = 0;
+            size_t conv_batchnorm_running_var = 0;
+        };
+
+        struct TfLayerWeights {
+            size_t self_attn_q_weight = 0;
+            size_t self_attn_q_bias = 0;
+            size_t self_attn_k_weight = 0;
+            size_t self_attn_k_bias = 0;
+            size_t self_attn_v_weight = 0;
+            size_t self_attn_v_bias = 0;
+            size_t self_attn_output_weight = 0;
+            size_t self_attn_output_bias = 0;
+            size_t self_attn_layernorm_weight = 0;
+            size_t self_attn_layernorm_bias = 0;
+            size_t ff1_weight = 0;
+            size_t ff1_bias = 0;
+            size_t ff2_weight = 0;
+            size_t ff2_bias = 0;
+            size_t final_layernorm_weight = 0;
+            size_t final_layernorm_bias = 0;
+        };
+
+        std::vector<FcLayerWeights> fc_layers;
+        std::vector<TfLayerWeights> tf_layers;
+    } weight_nodes_;
+
+    bool speaker_segments_ready_ = false;
+    size_t speaker_emit_index_ = 0;
+    std::vector<uint32_t> speaker_tokens_;
+    std::vector<float> speaker_token_starts_;
+    std::vector<float> speaker_token_ends_;
+    size_t last_input_token_count_ = 0;
+    float diarization_threshold_override_ = -1.0f;
+};
+
 
 class Lfm2VlModel : public Model {
 public:
