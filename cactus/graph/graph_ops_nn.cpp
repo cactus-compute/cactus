@@ -2192,3 +2192,54 @@ void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_p
         node.output_buffer.data_as<__fp16>(),
         n, seq_len, hidden_dim);
 }
+
+void compute_leaky_relu_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                              const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    cactus_leaky_relu_f16(input.data_as<__fp16>(), node.output_buffer.data_as<__fp16>(),
+                          input.total_size, node.params.scalar);
+}
+
+void compute_bilstm_sequence_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                   const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& w_ih_fwd = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& w_hh_fwd = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    const auto& b_ih_fwd = nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
+    const auto& b_hh_fwd = nodes[node_index_map.at(node.input_ids[4])]->output_buffer;
+    const auto& w_ih_bwd = nodes[node_index_map.at(node.input_ids[5])]->output_buffer;
+    const auto& w_hh_bwd = nodes[node_index_map.at(node.input_ids[6])]->output_buffer;
+    const auto& b_ih_bwd = nodes[node_index_map.at(node.input_ids[7])]->output_buffer;
+    const auto& b_hh_bwd = nodes[node_index_map.at(node.input_ids[8])]->output_buffer;
+
+    size_t batch_size = input.shape[0];
+    size_t seq_len = input.shape[1];
+    size_t input_size = input.shape[2];
+    size_t hidden_size = w_ih_fwd.shape[0] / 4;
+
+    cactus_bilstm_sequence_f16(
+        input.data_as<__fp16>(),
+        w_ih_fwd.data_as<__fp16>(), w_hh_fwd.data_as<__fp16>(),
+        b_ih_fwd.data_as<__fp16>(), b_hh_fwd.data_as<__fp16>(),
+        w_ih_bwd.data_as<__fp16>(), w_hh_bwd.data_as<__fp16>(),
+        b_ih_bwd.data_as<__fp16>(), b_hh_bwd.data_as<__fp16>(),
+        node.output_buffer.data_as<__fp16>(),
+        batch_size, seq_len, input_size, hidden_size);
+}
+
+void compute_maxpool1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                            const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+
+    size_t batch_size = input.shape[0];
+    size_t channels = input.shape[1];
+    size_t input_length = input.shape[2];
+    size_t kernel_size = node.params.kernel_size;
+    size_t stride = node.params.stride;
+
+    cactus_maxpool1d_f16(
+        input.data_as<__fp16>(),
+        node.output_buffer.data_as<__fp16>(),
+        batch_size, channels, input_length,
+        kernel_size, stride);
+}

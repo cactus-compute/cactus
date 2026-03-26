@@ -133,7 +133,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER ||
                                  config_.model_type == Config::ModelType::MOONSHINE ||
                                  config_.model_type == Config::ModelType::PARAKEET ||
-                                 config_.model_type == Config::ModelType::PARAKEET_TDT)
+                                 config_.model_type == Config::ModelType::PARAKEET_TDT ||
+                                 config_.model_type == Config::ModelType::PYANNOTE)
                                ? Precision::FP16
                                : Precision::INT8;
     kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, get_kv_layer_dims(), cache_precision);
@@ -160,7 +161,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         config_.model_type != Config::ModelType::WHISPER &&
         config_.model_type != Config::ModelType::MOONSHINE &&
         config_.model_type != Config::ModelType::PARAKEET &&
-        config_.model_type != Config::ModelType::PARAKEET_TDT) {
+        config_.model_type != Config::ModelType::PARAKEET_TDT &&
+        config_.model_type != Config::ModelType::PYANNOTE) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
         forward(warmup_tokens);
@@ -526,7 +528,14 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "parakeet_tdt" || value == "PARAKEET_TDT") model_type = ModelType::PARAKEET_TDT;
             else if (value == "gemma3n" || value == "GEMMA3N") model_type = ModelType::GEMMA3N;
             else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
-            else model_type = ModelType::QWEN;
+            else if (value == "pyannote" || value == "PYANNOTE") {
+                model_type = ModelType::PYANNOTE;
+                CACTUS_LOG_INFO("config", "Detected pyannote model type");
+            }
+            else {
+                CACTUS_LOG_INFO("config", "Unknown model_type: '" << value << "', defaulting to QWEN");
+                model_type = ModelType::QWEN;
+            }
         }
         else if (key == "model_variant") {
             std::string v = value;
@@ -755,6 +764,9 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<ParakeetTDTModel>(config);
         case Config::ModelType::YOUTU:
             return std::make_unique<YoutuModel>(config);
+        case Config::ModelType::PYANNOTE:
+            CACTUS_LOG_INFO("model", "Creating PyAnnoteModel");
+            return std::make_unique<PyAnnoteModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }

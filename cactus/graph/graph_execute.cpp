@@ -90,7 +90,10 @@ static const char* op_type_names[] = {
     "STFT",
     "ALTUP_PREDICT",
     "ALTUP_CORRECT",
-    "GAUSSIAN_TOPK"
+    "GAUSSIAN_TOPK",
+    "MAXPOOL1D",
+    "BILSTM_SEQUENCE",
+    "LEAKY_RELU"
 };
 
 static const char* get_op_name(OpType op) {
@@ -317,6 +320,18 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
 
         case OpType::GAUSSIAN_TOPK:
             compute_gaussian_topk_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::MAXPOOL1D:
+            compute_maxpool1d_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::BILSTM_SEQUENCE:
+            compute_bilstm_sequence_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::LEAKY_RELU:
+            compute_leaky_relu_node(node, nodes, node_index_map);
             break;
 
         default:

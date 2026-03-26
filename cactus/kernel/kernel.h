@@ -403,4 +403,33 @@ void cactus_lstm_cell_f16(
     size_t hidden_size
 );
 
+void cactus_leaky_relu_f16(const __fp16* input, __fp16* output, size_t num_elements, float negative_slope);
+
+void cactus_bilstm_sequence_f16(
+    const __fp16* input,
+    const __fp16* weight_ih_fwd,
+    const __fp16* weight_hh_fwd,
+    const __fp16* bias_ih_fwd,
+    const __fp16* bias_hh_fwd,
+    const __fp16* weight_ih_bwd,
+    const __fp16* weight_hh_bwd,
+    const __fp16* bias_ih_bwd,
+    const __fp16* bias_hh_bwd,
+    __fp16* output,
+    size_t batch_size,
+    size_t seq_len,
+    size_t input_size,
+    size_t hidden_size
+);
+
+void cactus_maxpool1d_f16(
+    const __fp16* input,
+    __fp16* output,
+    size_t batch_size,
+    size_t channels,
+    size_t input_length,
+    size_t kernel_size,
+    size_t stride
+);
+
 #endif

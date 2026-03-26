@@ -1509,5 +1509,58 @@ private:
     } weight_nodes_;
 };
 
+class PyAnnoteModel : public Model {
+public:
+    PyAnnoteModel();
+    explicit PyAnnoteModel(const Config& config);
+    ~PyAnnoteModel() override = default;
+
+    // Override init to skip tokenizer loading (PyAnnote has no tokenizer)
+    bool init(const std::string& model_folder, size_t context_size,
+              const std::string& system_prompt = "", bool do_warmup = true) override;
+
+    // Run diarization on raw float32 PCM audio. Returns flat vector of (num_frames × 7) probabilities.
+    std::vector<float> diarize(const float* pcm_f32, size_t num_samples);
+
+protected:
+    size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("PyAnnote: build_attention unused");
+    }
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("PyAnnote: build_mlp unused");
+    }
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("PyAnnote: build_transformer_block unused");
+    }
+    size_t forward(const std::vector<uint32_t>&, bool = false) override {
+        throw std::runtime_error("PyAnnote requires audio input via diarize().");
+    }
+
+    void load_weights_to_graph(CactusGraph* gb) override;
+
+private:
+    size_t audio_input_ = 0;
+    size_t output_node_ = 0;
+
+    struct LSTMLayerWeights {
+        size_t w_ih_fwd, w_hh_fwd, b_ih_fwd, b_hh_fwd;
+        size_t w_ih_bwd, w_hh_bwd, b_ih_bwd, b_hh_bwd;
+    };
+
+    struct WeightNodes {
+        size_t sinc_filters;
+        size_t wav_norm_weight, wav_norm_bias;
+        size_t norm0_weight, norm0_bias;
+        size_t conv1_weight, conv1_bias;
+        size_t norm1_weight, norm1_bias;
+        size_t conv2_weight, conv2_bias;
+        size_t norm2_weight, norm2_bias;
+        LSTMLayerWeights lstm_layers[4];
+        size_t linear0_weight, linear0_bias;
+        size_t linear1_weight, linear1_bias;
+        size_t classifier_weight, classifier_bias;
+    } w_;
+};
+
 }
 }

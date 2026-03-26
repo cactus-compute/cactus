@@ -1562,3 +1562,38 @@ size_t CactusGraph::gaussian_topk(size_t input, float ppf) {
     params.scalar = ppf;
     return add_node(OpType::GAUSSIAN_TOPK, {input}, in_buf.shape, params);
 }
+
+size_t CactusGraph::leaky_relu(size_t input, float negative_slope) {
+    const auto& in_buf = get_output_buffer(input);
+    OpParams params;
+    params.scalar = negative_slope;
+    return add_node(OpType::LEAKY_RELU, {input}, in_buf.shape, params);
+}
+
+size_t CactusGraph::bilstm_sequence(size_t input, size_t w_ih_fwd, size_t w_hh_fwd, size_t b_ih_fwd, size_t b_hh_fwd,
+                                     size_t w_ih_bwd, size_t w_hh_bwd, size_t b_ih_bwd, size_t b_hh_bwd) {
+    const auto& in_buf = get_output_buffer(input);
+    const auto& w_ih = get_output_buffer(w_ih_fwd);
+    // Input shape: (batch, seq_len, input_size)
+    size_t batch = in_buf.shape[0];
+    size_t seq_len = in_buf.shape[1];
+    // w_ih shape: (4*hidden, input_size) → hidden_size = w_ih.shape[0] / 4
+    size_t hidden_size = w_ih.shape[0] / 4;
+    return add_node(OpType::BILSTM_SEQUENCE,
+                    {input, w_ih_fwd, w_hh_fwd, b_ih_fwd, b_hh_fwd, w_ih_bwd, w_hh_bwd, b_ih_bwd, b_hh_bwd},
+                    {batch, seq_len, 2 * hidden_size}, {});
+}
+
+size_t CactusGraph::maxpool1d(size_t input, size_t kernel_size, size_t stride) {
+    const auto& in_buf = get_output_buffer(input);
+    // Input shape: (batch, channels, time)
+    size_t batch = in_buf.shape[0];
+    size_t channels = in_buf.shape[1];
+    size_t input_length = in_buf.shape[2];
+    size_t output_length = (input_length - kernel_size) / stride + 1;
+
+    OpParams params;
+    params.kernel_size = kernel_size;
+    params.stride = stride;
+    return add_node(OpType::MAXPOOL1D, {input}, {batch, channels, output_length}, params);
+}
