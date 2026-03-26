@@ -175,6 +175,19 @@ static std::string call_cloud_endpoint(const std::string& url,
     headers = curl_slist_append(headers, ("X-API-Key: " + api_key).c_str());
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
+    const char* extra_hdrs = std::getenv("CACTUS_CLOUD_HEADERS");
+    if (extra_hdrs && extra_hdrs[0] != '\0') {
+        std::istringstream stream(extra_hdrs);
+        std::string pair;
+        while (std::getline(stream, pair, ',')) {
+            auto eq = pair.find('=');
+            if (eq != std::string::npos && eq > 0) {
+                std::string header = pair.substr(0, eq) + ": " + pair.substr(eq + 1);
+                headers = curl_slist_append(headers, header.c_str());
+            }
+        }
+    }
+
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
