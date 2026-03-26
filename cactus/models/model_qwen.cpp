@@ -2,16 +2,47 @@
 #include "../graph/graph.h"
 #include "../npu/npu.h"
 #include <cmath>
-#include <stdexcept>
+#include <cstdlib>
+#include <cstdint>
 #include <set>
+#include <stdexcept>
 
 namespace cactus {
 namespace engine {
+
+namespace {
+
+bool qwen_theoretical_1bit_enabled() {
+    const char* env = std::getenv("CACTUS_QWEN_V_THEORETICAL_1BIT");
+    if (env == nullptr || env[0] == '\0') {
+        return false;
+    }
+    return env[0] != '0';
+}
+
+uint64_t qwen_theoretical_1bit_seed() {
+    const char* env = std::getenv("CACTUS_QWEN_V_THEORETICAL_1BIT_SEED");
+    if (env == nullptr || env[0] == '\0') {
+        return 1234;
+    }
+    return static_cast<uint64_t>(std::strtoull(env, nullptr, 10));
+}
+
+} // namespace
 
 QwenModel::QwenModel() : Model() {}
 
 QwenModel::QwenModel(const Config& config) : Model(config) {
     weight_nodes_.layers.resize(config.num_layers);
+}
+
+void QwenModel::post_init() {
+    if (kv_cache_.precision != Precision::INT8 || !qwen_theoretical_1bit_enabled()) {
+        return;
+    }
+
+    kv_cache_.set_value_quantization(KVValueQuantization::THEORETICAL_1BIT, qwen_theoretical_1bit_seed());
+    kv_cache_.set_window_size(kv_cache_.window_size, kv_cache_.sink_size);
 }
 
 void QwenModel::load_weights_to_graph(CactusGraph* gb) {
@@ -109,7 +140,9 @@ size_t QwenModel::build_attention(CactusGraph* gb, size_t normalized_input, uint
             kv_cache_.get_values_int8(layer_idx),
             kv_cache_.get_key_scales(layer_idx),
             kv_cache_.get_value_scales(layer_idx),
-            kv_cache_.current_seq_len, num_kv_heads, head_dim
+            kv_cache_.current_seq_len, num_kv_heads, head_dim, 0, 0,
+            kv_cache_.get_value_inverse_rotation_scaled(layer_idx),
+            kv_cache_.get_value_quantization() == KVValueQuantization::THEORETICAL_1BIT
         );
     } else {
         attn_output_4d = gb->attention(q_proj_4d, k_proj_4d, v_proj_4d, attention_scale_, position_offset);

@@ -3,6 +3,7 @@
 #include <arm_neon.h>
 #include <cmath>
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <cstring>
 #include <vector>
@@ -11,6 +12,171 @@
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
 #endif
+
+namespace {
+
+struct Theoretical1BitFloatLUT {
+    alignas(16) float low[256][4];
+    alignas(16) float high[256][4];
+};
+
+struct HybridInt8AttentionScratch {
+    std::vector<float> block_scores;
+    std::vector<float32x4_t> output_accum_low;
+    std::vector<float32x4_t> output_accum_high;
+    std::vector<float> cached_rotated_output_accum;
+    std::vector<float> new_output_accum;
+
+    void ensure_capacity(size_t block_size, size_t accum_count, size_t v_head_dim, bool use_theoretical_1bit) {
+        if (block_scores.size() < block_size) {
+            block_scores.resize(block_size);
+        }
+        if (output_accum_low.size() < accum_count) {
+            output_accum_low.resize(accum_count);
+        }
+        if (output_accum_high.size() < accum_count) {
+            output_accum_high.resize(accum_count);
+        }
+        if (use_theoretical_1bit) {
+            if (cached_rotated_output_accum.size() < v_head_dim) {
+                cached_rotated_output_accum.resize(v_head_dim);
+            }
+            if (new_output_accum.size() < v_head_dim) {
+                new_output_accum.resize(v_head_dim);
+            }
+        }
+    }
+};
+
+static thread_local HybridInt8AttentionScratch g_hybrid_int8_attention_scratch;
+
+const Theoretical1BitFloatLUT& theoretical_1bit_float_lut() {
+    static const Theoretical1BitFloatLUT lut = [] {
+        Theoretical1BitFloatLUT table{};
+        for (size_t value = 0; value < 256; ++value) {
+            for (size_t bit = 0; bit < 4; ++bit) {
+                table.low[value][bit] = ((value >> bit) & 1u) ? 1.0f : -1.0f;
+                table.high[value][bit] = ((value >> (bit + 4)) & 1u) ? 1.0f : -1.0f;
+            }
+        }
+        return table;
+    }();
+    return lut;
+}
+
+inline void accumulate_theoretical_1bit_cached_vector(
+    const uint8_t* v_bits,
+    size_t packed_v_head_dim,
+    float coeff,
+    float* accum
+) {
+    const auto& sign_lut = theoretical_1bit_float_lut();
+    for (size_t byte_idx = 0; byte_idx < packed_v_head_dim; ++byte_idx) {
+        const uint8_t packed = v_bits[byte_idx];
+        const float32x4_t sign_low = vld1q_f32(sign_lut.low[packed]);
+        const float32x4_t sign_high = vld1q_f32(sign_lut.high[packed]);
+
+        float32x4_t acc_low = vld1q_f32(accum + byte_idx * 8);
+        float32x4_t acc_high = vld1q_f32(accum + byte_idx * 8 + 4);
+        acc_low = vfmaq_n_f32(acc_low, sign_low, coeff);
+        acc_high = vfmaq_n_f32(acc_high, sign_high, coeff);
+        vst1q_f32(accum + byte_idx * 8, acc_low);
+        vst1q_f32(accum + byte_idx * 8 + 4, acc_high);
+    }
+}
+
+inline void accumulate_fp16_vector_weighted(
+    const __fp16* src,
+    size_t count,
+    float coeff,
+    float* accum
+) {
+    const float32x4_t coeff_vec = vdupq_n_f32(coeff);
+    size_t dim = 0;
+    for (; dim + 8 <= count; dim += 8) {
+        const float16x8_t src_f16 = vld1q_f16(src + dim);
+        float32x4_t src_low = vcvt_f32_f16(vget_low_f16(src_f16));
+        float32x4_t src_high = vcvt_f32_f16(vget_high_f16(src_f16));
+        float32x4_t acc_low = vld1q_f32(accum + dim);
+        float32x4_t acc_high = vld1q_f32(accum + dim + 4);
+        acc_low = vfmaq_f32(acc_low, src_low, coeff_vec);
+        acc_high = vfmaq_f32(acc_high, src_high, coeff_vec);
+        vst1q_f32(accum + dim, acc_low);
+        vst1q_f32(accum + dim + 4, acc_high);
+    }
+    for (; dim < count; ++dim) {
+        accum[dim] += coeff * static_cast<float>(src[dim]);
+    }
+}
+
+inline void matvec_add_scale_to_fp16_neon(
+    const float* matrix,
+    const float* vector,
+    const float* addend,
+    __fp16* output,
+    size_t rows,
+    size_t cols,
+    float scale
+) {
+    const float32x4_t scale_vec = vdupq_n_f32(scale);
+    size_t row = 0;
+    for (; row + 4 <= rows; row += 4) {
+        float32x4_t acc0 = vdupq_n_f32(0.0f);
+        float32x4_t acc1 = vdupq_n_f32(0.0f);
+        float32x4_t acc2 = vdupq_n_f32(0.0f);
+        float32x4_t acc3 = vdupq_n_f32(0.0f);
+
+        const float* row0 = matrix + (row + 0) * cols;
+        const float* row1 = matrix + (row + 1) * cols;
+        const float* row2 = matrix + (row + 2) * cols;
+        const float* row3 = matrix + (row + 3) * cols;
+
+        size_t col = 0;
+        for (; col + 4 <= cols; col += 4) {
+            const float32x4_t v = vld1q_f32(vector + col);
+            acc0 = vfmaq_f32(acc0, vld1q_f32(row0 + col), v);
+            acc1 = vfmaq_f32(acc1, vld1q_f32(row1 + col), v);
+            acc2 = vfmaq_f32(acc2, vld1q_f32(row2 + col), v);
+            acc3 = vfmaq_f32(acc3, vld1q_f32(row3 + col), v);
+        }
+
+        float sums[4] = {
+            vaddvq_f32(acc0),
+            vaddvq_f32(acc1),
+            vaddvq_f32(acc2),
+            vaddvq_f32(acc3),
+        };
+
+        for (; col < cols; ++col) {
+            const float v = vector[col];
+            sums[0] += row0[col] * v;
+            sums[1] += row1[col] * v;
+            sums[2] += row2[col] * v;
+            sums[3] += row3[col] * v;
+        }
+
+        float32x4_t sums_vec = vld1q_f32(sums);
+        float32x4_t add_vec = vld1q_f32(addend + row);
+        float32x4_t out_vec = vmulq_f32(vaddq_f32(sums_vec, add_vec), scale_vec);
+        vst1_f16(output + row, vcvt_f16_f32(out_vec));
+    }
+
+    for (; row < rows; ++row) {
+        const float* mat_row = matrix + row * cols;
+        float32x4_t acc = vdupq_n_f32(0.0f);
+        size_t col = 0;
+        for (; col + 4 <= cols; col += 4) {
+            acc = vfmaq_f32(acc, vld1q_f32(mat_row + col), vld1q_f32(vector + col));
+        }
+        float sum = vaddvq_f32(acc);
+        for (; col < cols; ++col) {
+            sum += mat_row[col] * vector[col];
+        }
+        output[row] = static_cast<__fp16>((sum + addend[row]) * scale);
+    }
+}
+
+} // namespace
 
 #ifdef __APPLE__
 static void cactus_attention_f16_accelerate(
@@ -692,9 +858,14 @@ void cactus_attention_hybrid_int8_fp16(
     bool is_causal,
     size_t window_size,
     size_t quant_group_size,
-    size_t v_head_dim
+    size_t v_head_dim,
+    const float* v_inverse_rotation_scaled,
+    bool v_theoretical_1bit
 ) {
     if (v_head_dim == 0) v_head_dim = head_dim;
+    if (v_theoretical_1bit && v_inverse_rotation_scaled == nullptr) {
+        throw std::runtime_error("Theoretical 1-bit V cache requires inverse rotation data");
+    }
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }
@@ -709,23 +880,31 @@ void cactus_attention_hybrid_int8_fp16(
     const size_t gqa_group_size = num_q_heads / num_kv_heads;
     const size_t num_quant_groups_k = (head_dim + quant_group_size - 1) / quant_group_size;
     const size_t num_quant_groups_v = (v_head_dim + quant_group_size - 1) / quant_group_size;
+    const size_t packed_v_head_dim = (v_head_dim + 7) / 8;
 
     const size_t q_batch_stride = seq_len * num_q_heads * head_dim;
     const size_t k_cached_batch_stride = cache_len * num_kv_heads * head_dim;
-    const size_t v_cached_batch_stride = cache_len * num_kv_heads * v_head_dim;
+    const size_t v_cached_batch_stride = cache_len * num_kv_heads * (v_theoretical_1bit ? packed_v_head_dim : v_head_dim);
     const size_t k_new_batch_stride = new_len * num_kv_heads * head_dim;
     const size_t v_new_batch_stride = new_len * num_kv_heads * v_head_dim;
     const size_t o_batch_stride = seq_len * num_q_heads * v_head_dim;
     const size_t q_seq_stride = num_q_heads  * head_dim;
     const size_t k_seq_stride = num_kv_heads * head_dim;
     const size_t v_seq_stride = num_kv_heads * v_head_dim;
+    const size_t v_cached_seq_stride = num_kv_heads * (v_theoretical_1bit ? packed_v_head_dim : v_head_dim);
     const size_t o_seq_stride = num_q_heads * v_head_dim;
 
     CactusThreading::parallel_for(batch_size * num_q_heads * seq_len, CactusThreading::Thresholds::ATTENTION,
         [=](size_t start_idx, size_t end_idx) {
-            std::vector<float> block_scores(BLOCK_SIZE);
-            std::vector<float32x4_t> output_accum_low(v_head_dim_aligned / VECTOR_WIDTH * 2);
-            std::vector<float32x4_t> output_accum_high(v_head_dim_aligned / VECTOR_WIDTH * 2);
+            auto& scratch = g_hybrid_int8_attention_scratch;
+            const size_t accum_count = v_head_dim_aligned / VECTOR_WIDTH * 2;
+            scratch.ensure_capacity(BLOCK_SIZE, accum_count, v_head_dim, v_theoretical_1bit);
+
+            auto& block_scores = scratch.block_scores;
+            auto& output_accum_low = scratch.output_accum_low;
+            auto& output_accum_high = scratch.output_accum_high;
+            auto& cached_rotated_output_accum = scratch.cached_rotated_output_accum;
+            auto& new_output_accum = scratch.new_output_accum;
 
             for (size_t work_idx = start_idx; work_idx < end_idx; ++work_idx) {
                 const size_t batch_idx = work_idx / (num_q_heads * seq_len);
@@ -748,9 +927,13 @@ void cactus_attention_hybrid_int8_fp16(
                 float running_max = -std::numeric_limits<float>::infinity();
                 float running_sum = 0.0f;
 
-                for (size_t i = 0; i < output_accum_low.size(); ++i) {
+                for (size_t i = 0; i < accum_count; ++i) {
                     output_accum_low[i] = vdupq_n_f32(0.0f);
                     output_accum_high[i] = vdupq_n_f32(0.0f);
+                }
+                if (v_theoretical_1bit) {
+                    std::fill(cached_rotated_output_accum.begin(), cached_rotated_output_accum.begin() + v_head_dim, 0.0f);
+                    std::fill(new_output_accum.begin(), new_output_accum.begin() + v_head_dim, 0.0f);
                 }
 
                 const size_t absolute_q_pos = position_offset + q_pos;
@@ -851,9 +1034,15 @@ void cactus_attention_hybrid_int8_fp16(
                             float scale_correction = expf(running_max - block_max);
                             running_sum *= scale_correction;
 
-                            for (size_t i = 0; i < output_accum_low.size() / 2; ++i) {
+                            for (size_t i = 0; i < accum_count / 2; ++i) {
                                 output_accum_low[i] = vmulq_n_f32(output_accum_low[i], scale_correction);
                                 output_accum_high[i] = vmulq_n_f32(output_accum_high[i], scale_correction);
+                            }
+                            if (v_theoretical_1bit) {
+                                for (size_t i = 0; i < v_head_dim; ++i) {
+                                    cached_rotated_output_accum[i] *= scale_correction;
+                                    new_output_accum[i] *= scale_correction;
+                                }
                             }
                             running_max = block_max;
                         } else {
@@ -879,41 +1068,61 @@ void cactus_attention_hybrid_int8_fp16(
                         const float32x4_t weight_vec = vdupq_n_f32(attn_weight);
 
                         if (kv_pos < cache_len) {
-                            const int8_t* v_vec = V_cached_base + kv_pos * v_seq_stride + kv_head_idx * v_head_dim;
-                            const float* v_scale_base = v_scales + (kv_pos * num_kv_heads + kv_head_idx) * num_quant_groups_v;
+                            if (v_theoretical_1bit) {
+                                const uint8_t* v_bits = reinterpret_cast<const uint8_t*>(V_cached_base) +
+                                    kv_pos * v_cached_seq_stride + kv_head_idx * packed_v_head_dim;
+                                const float magnitude = v_scales[kv_pos * num_kv_heads + kv_head_idx];
+                                const float coeff = attn_weight * magnitude;
+                                accumulate_theoretical_1bit_cached_vector(
+                                    v_bits,
+                                    packed_v_head_dim,
+                                    coeff,
+                                    cached_rotated_output_accum.data());
+                            } else {
+                                const int8_t* v_vec = V_cached_base + kv_pos * v_cached_seq_stride + kv_head_idx * v_head_dim;
+                                const float* v_scale_base = v_scales + (kv_pos * num_kv_heads + kv_head_idx) * num_quant_groups_v;
 
-                            for (size_t quant_group = 0; quant_group < num_quant_groups_v; quant_group++) {
-                                const size_t dim_base = quant_group * quant_group_size;
-                                const float v_scale = v_scale_base[quant_group];
-                                const float32x4_t v_scale_vec = vdupq_n_f32(v_scale);
+                                for (size_t quant_group = 0; quant_group < num_quant_groups_v; quant_group++) {
+                                    const size_t dim_base = quant_group * quant_group_size;
+                                    const float v_scale = v_scale_base[quant_group];
+                                    const float32x4_t v_scale_vec = vdupq_n_f32(v_scale);
 
-                                #pragma unroll
-                                for (size_t i = 0; i < 4; i++) {
-                                    const size_t dim_block = dim_base + i * VECTOR_WIDTH;
-                                    if (dim_block >= v_head_dim_aligned) break;
+                                    #pragma unroll
+                                    for (size_t i = 0; i < 4; i++) {
+                                        const size_t dim_block = dim_base + i * VECTOR_WIDTH;
+                                        if (dim_block >= v_head_dim_aligned) break;
 
-                                    int8x8_t v_vec_i8 = vld1_s8(&v_vec[dim_block]);
-                                    int16x8_t v_vec_i16 = vmovl_s8(v_vec_i8);
-                                    float32x4_t v_low = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(v_vec_i16))), v_scale_vec);
-                                    float32x4_t v_high = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(v_vec_i16))), v_scale_vec);
+                                        int8x8_t v_vec_i8 = vld1_s8(&v_vec[dim_block]);
+                                        int16x8_t v_vec_i16 = vmovl_s8(v_vec_i8);
+                                        float32x4_t v_low = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(v_vec_i16))), v_scale_vec);
+                                        float32x4_t v_high = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(v_vec_i16))), v_scale_vec);
 
-                                    size_t idx = dim_block / VECTOR_WIDTH;
-                                    output_accum_low[idx] = vfmaq_f32(output_accum_low[idx], v_low, weight_vec);
-                                    output_accum_high[idx] = vfmaq_f32(output_accum_high[idx], v_high, weight_vec);
+                                        size_t idx = dim_block / VECTOR_WIDTH;
+                                        output_accum_low[idx] = vfmaq_f32(output_accum_low[idx], v_low, weight_vec);
+                                        output_accum_high[idx] = vfmaq_f32(output_accum_high[idx], v_high, weight_vec);
+                                    }
                                 }
                             }
                         } else {
                             const size_t new_pos = kv_pos - cache_len;
                             const __fp16* v_vec = V_new_base + new_pos * v_seq_stride + kv_head_idx * v_head_dim;
 
-                            for (size_t dim_block = 0; dim_block < v_head_dim_aligned; dim_block += VECTOR_WIDTH) {
-                                float16x8_t v_vec_f16 = vld1q_f16(&v_vec[dim_block]);
-                                float32x4_t v_low = vcvt_f32_f16(vget_low_f16(v_vec_f16));
-                                float32x4_t v_high = vcvt_f32_f16(vget_high_f16(v_vec_f16));
+                            if (v_theoretical_1bit) {
+                                accumulate_fp16_vector_weighted(
+                                    v_vec,
+                                    v_head_dim,
+                                    attn_weight,
+                                    new_output_accum.data());
+                            } else {
+                                for (size_t dim_block = 0; dim_block < v_head_dim_aligned; dim_block += VECTOR_WIDTH) {
+                                    float16x8_t v_vec_f16 = vld1q_f16(&v_vec[dim_block]);
+                                    float32x4_t v_low = vcvt_f32_f16(vget_low_f16(v_vec_f16));
+                                    float32x4_t v_high = vcvt_f32_f16(vget_high_f16(v_vec_f16));
 
-                                size_t idx = dim_block / VECTOR_WIDTH;
-                                output_accum_low[idx] = vfmaq_f32(output_accum_low[idx], v_low, weight_vec);
-                                output_accum_high[idx] = vfmaq_f32(output_accum_high[idx], v_high, weight_vec);
+                                    size_t idx = dim_block / VECTOR_WIDTH;
+                                    output_accum_low[idx] = vfmaq_f32(output_accum_low[idx], v_low, weight_vec);
+                                    output_accum_high[idx] = vfmaq_f32(output_accum_high[idx], v_high, weight_vec);
+                                }
                             }
                         }
                     }
@@ -925,16 +1134,27 @@ void cactus_attention_hybrid_int8_fp16(
                     const float inv_sum = 1.0f / running_sum;
                     const float32x4_t inv_sum_vec = vdupq_n_f32(inv_sum);
 
-                    for (size_t dim_block = 0; dim_block < v_head_dim_aligned; dim_block += VECTOR_WIDTH) {
-                        size_t idx = dim_block / VECTOR_WIDTH;
-                        float32x4_t final_low = vmulq_f32(output_accum_low[idx], inv_sum_vec);
-                        float32x4_t final_high = vmulq_f32(output_accum_high[idx], inv_sum_vec);
+                    if (v_theoretical_1bit) {
+                        matvec_add_scale_to_fp16_neon(
+                            v_inverse_rotation_scaled,
+                            cached_rotated_output_accum.data(),
+                            new_output_accum.data(),
+                            o_vec,
+                            v_head_dim,
+                            v_head_dim,
+                            inv_sum);
+                    } else {
+                        for (size_t dim_block = 0; dim_block < v_head_dim_aligned; dim_block += VECTOR_WIDTH) {
+                            size_t idx = dim_block / VECTOR_WIDTH;
+                            float32x4_t final_low = vmulq_f32(output_accum_low[idx], inv_sum_vec);
+                            float32x4_t final_high = vmulq_f32(output_accum_high[idx], inv_sum_vec);
 
-                        float16x4_t low_f16 = vcvt_f16_f32(final_low);
-                        float16x4_t high_f16 = vcvt_f16_f32(final_high);
-                        float16x8_t combined = vcombine_f16(low_f16, high_f16);
+                            float16x4_t low_f16 = vcvt_f16_f32(final_low);
+                            float16x4_t high_f16 = vcvt_f16_f32(final_high);
+                            float16x8_t combined = vcombine_f16(low_f16, high_f16);
 
-                        vst1q_f16(&o_vec[dim_block], combined);
+                            vst1q_f16(&o_vec[dim_block], combined);
+                        }
                     }
                 } else {
                     for (size_t dim = 0; dim < v_head_dim; ++dim) {

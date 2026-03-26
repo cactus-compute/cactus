@@ -4,6 +4,7 @@
 #include <iostream>
 #include <random>
 #include <algorithm>
+#include <limits>
 
 namespace {
 
@@ -48,37 +49,6 @@ std::vector<int8_t> make_ternary_signs(size_t rows, size_t cols) {
         }
     }
     return signs;
-}
-
-std::vector<__fp16> expand_ternary_group_scales(
-    size_t rows,
-    size_t cols,
-    TernaryScaleMode mode,
-    const std::vector<__fp16>& scales) {
-    constexpr size_t group_size = 32;
-    const size_t num_groups = cols / group_size;
-    const size_t row_blocks = rows / 4;
-    std::vector<__fp16> expanded(rows * num_groups, static_cast<__fp16>(1.0f));
-
-    if (mode == TernaryScaleMode::COLUMN) {
-        return expanded;
-    }
-
-    if (mode == TernaryScaleMode::TENSOR) {
-        std::fill(expanded.begin(), expanded.end(), scales[0]);
-        return expanded;
-    }
-
-    for (size_t row_block = 0; row_block < row_blocks; ++row_block) {
-        for (size_t group = 0; group < num_groups; ++group) {
-            for (size_t lane = 0; lane < 4; ++lane) {
-                const size_t row = row_block * 4 + lane;
-                expanded[(row_block * num_groups + group) * 4 + lane] = scales[row];
-            }
-        }
-    }
-
-    return expanded;
 }
 
 std::vector<__fp16> ternary_reference_output(
@@ -134,6 +104,96 @@ std::vector<__fp16> ternary_reference_output(
     }
 
     return expected;
+}
+
+std::vector<float> make_test_rotation_matrix(size_t head_dim, uint64_t seed) {
+    std::vector<float> rotation(head_dim * head_dim, 0.0f);
+    std::mt19937_64 rng(seed);
+    std::normal_distribution<float> normal(0.0f, 1.0f);
+
+    std::vector<float> col(head_dim);
+    for (size_t j = 0; j < head_dim; ++j) {
+        for (size_t i = 0; i < head_dim; ++i) {
+            col[i] = normal(rng);
+        }
+
+        for (size_t k = 0; k < j; ++k) {
+            float dot = 0.0f;
+            for (size_t i = 0; i < head_dim; ++i) {
+                dot += col[i] * rotation[i * head_dim + k];
+            }
+            for (size_t i = 0; i < head_dim; ++i) {
+                col[i] -= dot * rotation[i * head_dim + k];
+            }
+        }
+
+        float norm_sq = 0.0f;
+        for (float v : col) norm_sq += v * v;
+        float norm = std::sqrt(std::max(norm_sq, 1e-12f));
+        float sign = (col[j] < 0.0f) ? -1.0f : 1.0f;
+        float inv = sign / norm;
+        for (size_t i = 0; i < head_dim; ++i) {
+            rotation[i * head_dim + j] = col[i] * inv;
+        }
+    }
+
+    return rotation;
+}
+
+std::vector<float> make_inverse_rotation_scaled(const std::vector<float>& rotation, size_t head_dim) {
+    std::vector<float> inv(head_dim * head_dim, 0.0f);
+    const float inv_sqrt_dim = 1.0f / std::sqrt(static_cast<float>(head_dim));
+    for (size_t row = 0; row < head_dim; ++row) {
+        for (size_t col = 0; col < head_dim; ++col) {
+            inv[row * head_dim + col] = rotation[row * head_dim + col] * inv_sqrt_dim;
+        }
+    }
+    return inv;
+}
+
+std::vector<float> dequantize_kv_key_reference(
+    const int8_t* cached_keys,
+    const float* key_scales,
+    size_t token_idx,
+    size_t kv_heads,
+    size_t head_dim,
+    size_t group_size = KV_QUANT_GROUP_SIZE) {
+    const size_t num_groups = (head_dim + group_size - 1) / group_size;
+    std::vector<float> result(kv_heads * head_dim, 0.0f);
+    for (size_t head = 0; head < kv_heads; ++head) {
+        const int8_t* src = cached_keys + token_idx * kv_heads * head_dim + head * head_dim;
+        const float* scales = key_scales + (token_idx * kv_heads + head) * num_groups;
+        for (size_t dim = 0; dim < head_dim; ++dim) {
+            result[head * head_dim + dim] = static_cast<float>(src[dim]) * scales[dim / group_size];
+        }
+    }
+    return result;
+}
+
+std::vector<float> dequantize_theoretical_v_reference(
+    const uint8_t* packed_values,
+    const float* magnitudes,
+    const float* inverse_rotation_scaled,
+    size_t token_idx,
+    size_t kv_heads,
+    size_t head_dim) {
+    const size_t packed_head_dim = (head_dim + 7) / 8;
+    std::vector<float> result(kv_heads * head_dim, 0.0f);
+    for (size_t head = 0; head < kv_heads; ++head) {
+        const uint8_t* bits = packed_values + token_idx * kv_heads * packed_head_dim + head * packed_head_dim;
+        const float magnitude = magnitudes[token_idx * kv_heads + head];
+        for (size_t out_dim = 0; out_dim < head_dim; ++out_dim) {
+            float sum = 0.0f;
+            const float* inv_row = inverse_rotation_scaled + out_dim * head_dim;
+            for (size_t rot_dim = 0; rot_dim < head_dim; ++rot_dim) {
+                const uint8_t packed = bits[rot_dim >> 3];
+                const float sign = ((packed >> (rot_dim & 7)) & 1u) ? 1.0f : -1.0f;
+                sum += sign * inv_row[rot_dim];
+            }
+            result[head * head_dim + out_dim] = magnitude * sum;
+        }
+    }
+    return result;
 }
 
 }  // namespace
@@ -343,6 +403,146 @@ bool test_neon_attention_fp16_correctness() {
     }
 
     return has_non_zero;
+}
+
+bool test_theoretical_1bit_hybrid_attention_correctness() {
+    const size_t batch_size = 1;
+    const size_t seq_len = 1;
+    const size_t cache_len = 5;
+    const size_t new_len = 1;
+    const size_t num_q_heads = 4;
+    const size_t num_kv_heads = 2;
+    const size_t head_dim = 32;
+    const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+    const size_t num_groups = head_dim / KV_QUANT_GROUP_SIZE;
+    const size_t packed_head_dim = (head_dim + 7) / 8;
+    const size_t gqa_group_size = num_q_heads / num_kv_heads;
+
+    std::mt19937 gen(123);
+    std::uniform_real_distribution<float> dis(-0.5f, 0.5f);
+
+    std::vector<__fp16> query(batch_size * seq_len * num_q_heads * head_dim);
+    std::vector<__fp16> keys_cached_fp16(cache_len * num_kv_heads * head_dim);
+    std::vector<__fp16> values_cached_fp16(cache_len * num_kv_heads * head_dim);
+    std::vector<__fp16> keys_new(new_len * num_kv_heads * head_dim);
+    std::vector<__fp16> values_new(new_len * num_kv_heads * head_dim);
+    for (auto* vec : {&query, &keys_cached_fp16, &values_cached_fp16, &keys_new, &values_new}) {
+        for (auto& v : *vec) v = static_cast<__fp16>(dis(gen));
+    }
+
+    std::vector<int8_t> keys_cached_q(cache_len * num_kv_heads * head_dim);
+    std::vector<float> key_scales(cache_len * num_kv_heads * num_groups, 1.0f);
+    cactus_quantize_kv_fp16_to_int8(
+        keys_cached_fp16.data(),
+        keys_cached_q.data(),
+        key_scales.data(),
+        cache_len,
+        num_kv_heads,
+        head_dim);
+
+    const std::vector<float> rotation = make_test_rotation_matrix(head_dim, 1234);
+    const std::vector<float> inverse_rotation_scaled = make_inverse_rotation_scaled(rotation, head_dim);
+
+    std::vector<uint8_t> values_cached_bits(cache_len * num_kv_heads * packed_head_dim, 0);
+    std::vector<float> value_magnitudes(cache_len * num_kv_heads, 0.0f);
+    cactus_quantize_kv_fp16_to_theoretical_1bit(
+        values_cached_fp16.data(),
+        values_cached_bits.data(),
+        value_magnitudes.data(),
+        rotation.data(),
+        cache_len,
+        num_kv_heads,
+        head_dim);
+
+    std::vector<__fp16> output(batch_size * seq_len * num_q_heads * head_dim, static_cast<__fp16>(0.0f));
+    cactus_attention_hybrid_int8_fp16(
+        query.data(),
+        keys_cached_q.data(),
+        reinterpret_cast<const int8_t*>(values_cached_bits.data()),
+        key_scales.data(),
+        value_magnitudes.data(),
+        keys_new.data(),
+        values_new.data(),
+        output.data(),
+        batch_size,
+        seq_len,
+        cache_len,
+        new_len,
+        num_q_heads,
+        num_kv_heads,
+        head_dim,
+        scale,
+        cache_len,
+        true,
+        0,
+        KV_QUANT_GROUP_SIZE,
+        head_dim,
+        inverse_rotation_scaled.data(),
+        true);
+
+    float max_abs_err = 0.0f;
+    for (size_t q_head_idx = 0; q_head_idx < num_q_heads; ++q_head_idx) {
+        const size_t kv_head_idx = q_head_idx / gqa_group_size;
+        std::vector<float> scores(cache_len + new_len, 0.0f);
+
+        for (size_t kv_pos = 0; kv_pos < cache_len; ++kv_pos) {
+            auto key = dequantize_kv_key_reference(keys_cached_q.data(), key_scales.data(), kv_pos, num_kv_heads, head_dim);
+            float dot = 0.0f;
+            const size_t q_offset = q_head_idx * head_dim;
+            const size_t k_offset = kv_head_idx * head_dim;
+            for (size_t dim = 0; dim < head_dim; ++dim) {
+                dot += static_cast<float>(query[q_offset + dim]) * key[k_offset + dim];
+            }
+            scores[kv_pos] = dot * scale;
+        }
+        {
+            float dot = 0.0f;
+            const size_t q_offset = q_head_idx * head_dim;
+            const size_t k_offset = kv_head_idx * head_dim;
+            for (size_t dim = 0; dim < head_dim; ++dim) {
+                dot += static_cast<float>(query[q_offset + dim]) * static_cast<float>(keys_new[k_offset + dim]);
+            }
+            scores[cache_len] = dot * scale;
+        }
+
+        const float max_score = *std::max_element(scores.begin(), scores.end());
+        float sum_exp = 0.0f;
+        for (float& s : scores) {
+            s = std::exp(s - max_score);
+            sum_exp += s;
+        }
+        for (float& s : scores) s /= sum_exp;
+
+        std::vector<float> expected(head_dim, 0.0f);
+        for (size_t kv_pos = 0; kv_pos < cache_len; ++kv_pos) {
+            auto value = dequantize_theoretical_v_reference(
+                values_cached_bits.data(),
+                value_magnitudes.data(),
+                inverse_rotation_scaled.data(),
+                kv_pos,
+                num_kv_heads,
+                head_dim);
+            const size_t v_offset = kv_head_idx * head_dim;
+            for (size_t dim = 0; dim < head_dim; ++dim) {
+                expected[dim] += scores[kv_pos] * value[v_offset + dim];
+            }
+        }
+        {
+            const size_t v_offset = kv_head_idx * head_dim;
+            for (size_t dim = 0; dim < head_dim; ++dim) {
+                expected[dim] += scores[cache_len] * static_cast<float>(values_new[v_offset + dim]);
+            }
+        }
+
+        const size_t out_offset = q_head_idx * head_dim;
+        for (size_t dim = 0; dim < head_dim; ++dim) {
+            max_abs_err = std::max(max_abs_err, std::abs(static_cast<float>(output[out_offset + dim]) - expected[dim]));
+        }
+    }
+    if (max_abs_err >= 1e-2f) {
+        std::cerr << "Theoretical 1-bit hybrid attention max abs error: " << max_abs_err << std::endl;
+    }
+    return max_abs_err < 1e-2f;
 }
 
 bool test_matmul_int8_grouped_correctness() {
@@ -698,6 +898,7 @@ int main() {
     runner.run_test("Kernel Softmax Correctness", test_neon_softmax_correctness());
     runner.run_test("Kernel RoPE Correctness", test_neon_rope_correctness());
     runner.run_test("Kernel Attention FP16 Correctness", test_neon_attention_fp16_correctness());
+    runner.run_test("Kernel Theoretical 1-bit Hybrid Attention Correctness", test_theoretical_1bit_hybrid_attention_correctness());
     runner.run_test("Kernel Grouped INT8 MatMul Correctness", test_matmul_int8_grouped_correctness());
     runner.run_test("Kernel INT4 MatMul Correctness", test_int4_matmul_correctness());
     runner.run_test("Kernel Ternary MatMul Correctness", test_ternary_matmul_correctness());

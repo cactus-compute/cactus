@@ -614,7 +614,9 @@ size_t CactusGraph::attention_int8_hybrid(size_t query, size_t key_new, size_t v
                                           const int8_t* cached_keys, const int8_t* cached_values,
                                           const float* k_scales, const float* v_scales,
                                           size_t cache_len, size_t num_kv_heads, size_t head_dim,
-                                          size_t window_size, size_t v_head_dim) {
+                                          size_t window_size, size_t v_head_dim,
+                                          const float* v_inverse_rotation_scaled,
+                                          bool v_theoretical_1bit) {
     OpParams params;
     params.scale = scale;
     params.position_offset = position_offset;
@@ -623,6 +625,8 @@ size_t CactusGraph::attention_int8_hybrid(size_t query, size_t key_new, size_t v
     params.cached_values_int8 = cached_values;
     params.cached_k_scales = k_scales;
     params.cached_v_scales = v_scales;
+    params.cached_v_inverse_rotation_scaled = v_inverse_rotation_scaled;
+    params.cached_v_theoretical_1bit = v_theoretical_1bit;
     params.cache_seq_len = cache_len;
     params.num_kv_heads = num_kv_heads;
     params.head_dim = head_dim;

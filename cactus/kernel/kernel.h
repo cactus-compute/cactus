@@ -208,7 +208,9 @@ void cactus_attention_hybrid_int8_fp16(
     size_t batch_size, size_t seq_len, size_t cache_len, size_t new_len,
     size_t num_q_heads, size_t num_kv_heads, size_t head_dim,
     float scale, size_t position_offset = 0, bool is_causal = true, size_t window_size = 0,
-    size_t group_size = KV_QUANT_GROUP_SIZE, size_t v_head_dim = 0);
+    size_t group_size = KV_QUANT_GROUP_SIZE, size_t v_head_dim = 0,
+    const float* v_inverse_rotation_scaled = nullptr,
+    bool v_theoretical_1bit = false);
 
 void cactus_gated_deltanet_decode_f16(
     const __fp16* q_data,
@@ -385,6 +387,13 @@ void cactus_quantize_kv_fp16_to_int8(
     float* scales,
     size_t seq_len, size_t kv_heads, size_t head_dim,
     size_t group_size = KV_QUANT_GROUP_SIZE);
+
+void cactus_quantize_kv_fp16_to_theoretical_1bit(
+    const __fp16* src,
+    uint8_t* dst_packed,
+    float* magnitudes,
+    const float* rotation,
+    size_t seq_len, size_t kv_heads, size_t head_dim);
 
 inline size_t kv_scales_count(size_t seq_len, size_t kv_heads, size_t head_dim, size_t group_size = KV_QUANT_GROUP_SIZE) {
     size_t num_groups = (head_dim + group_size - 1) / group_size;

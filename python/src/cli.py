@@ -1013,6 +1013,8 @@ def cmd_run(args):
         cmd_args.extend(['--system', system_prompt])
     if getattr(args, 'no_thinking', False):
         cmd_args.append('--no-thinking')
+    if getattr(args, 'no_handoff', False):
+        cmd_args.append('--no-handoff')
 
     os.execv(str(chat_binary), cmd_args)
 
@@ -2018,6 +2020,8 @@ def create_parser():
                             help='System prompt to prepend to all messages')
     run_parser.add_argument('--no-thinking', action='store_true',
                             help='Disable thinking/reasoning for models that support it')
+    run_parser.add_argument('--no-handoff', action='store_true',
+                            help='Disable cloud handoff in interactive chat')
     add_ternary_layout_arg(run_parser)
 
     transcribe_parser = subparsers.add_parser('transcribe', help='Download ASR model and run transcription')

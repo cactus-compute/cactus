@@ -4,6 +4,44 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <vector>
+
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+#endif
+
+namespace {
+
+struct Theoretical1BitQuantScratch {
+    std::vector<float> src_f32;
+    std::vector<float> rotated;
+
+    void ensure_capacity(size_t element_count) {
+        if (src_f32.size() < element_count) {
+            src_f32.resize(element_count);
+        }
+        if (rotated.size() < element_count) {
+            rotated.resize(element_count);
+        }
+    }
+};
+
+static thread_local Theoretical1BitQuantScratch g_theoretical_1bit_quant_scratch;
+
+inline void fp16_to_fp32_small(const __fp16* src, float* dst, size_t count) {
+    size_t i = 0;
+    const size_t simd_end = (count / 8) * 8;
+    for (; i < simd_end; i += 8) {
+        float16x8_t input = vld1q_f16(src + i);
+        vst1q_f32(dst + i, vcvt_f32_f16(vget_low_f16(input)));
+        vst1q_f32(dst + i + 4, vcvt_f32_f16(vget_high_f16(input)));
+    }
+    for (; i < count; ++i) {
+        dst[i] = static_cast<float>(src[i]);
+    }
+}
+
+} // namespace
 
 void cactus_int8_to_fp32(const int8_t* src, float* dst, size_t count, float scale) {
     CactusThreading::parallel_for(count, CactusThreading::Thresholds::ELEMENT_WISE, 
@@ -288,6 +326,114 @@ void cactus_quantize_kv_fp16_to_int8(
                         head_dst + group_start,
                         group_count
                     );
+                }
+            }
+        });
+}
+
+void cactus_quantize_kv_fp16_to_theoretical_1bit(
+    const __fp16* src,
+    uint8_t* dst_packed,
+    float* magnitudes,
+    const float* rotation,
+    size_t seq_len, size_t kv_heads, size_t head_dim
+) {
+    const size_t packed_head_dim = (head_dim + 7) / 8;
+    const size_t total_heads = seq_len * kv_heads;
+
+#ifdef __APPLE__
+    if (total_heads > 0 && head_dim > 0) {
+        const size_t element_count = total_heads * head_dim;
+        auto& scratch = g_theoretical_1bit_quant_scratch;
+        scratch.ensure_capacity(element_count);
+        float* src_f32 = scratch.src_f32.data();
+        float* rotated = scratch.rotated.data();
+
+        if (element_count <= 4096) {
+            fp16_to_fp32_small(src, src_f32, element_count);
+        } else {
+            cactus_fp16_to_fp32(src, src_f32, element_count);
+        }
+
+        cblas_sgemm(
+            CblasRowMajor,
+            CblasNoTrans,
+            CblasNoTrans,
+            static_cast<int>(total_heads),
+            static_cast<int>(head_dim),
+            static_cast<int>(head_dim),
+            1.0f,
+            src_f32,
+            static_cast<int>(head_dim),
+            rotation,
+            static_cast<int>(head_dim),
+            0.0f,
+            rotated,
+            static_cast<int>(head_dim));
+
+        CactusThreading::parallel_for(total_heads, CactusThreading::Thresholds::ELEMENT_WISE,
+            [&](size_t start, size_t end) {
+                for (size_t idx = start; idx < end; ++idx) {
+                    const float* head_src = src_f32 + idx * head_dim;
+                    const float* head_rot = rotated + idx * head_dim;
+                    uint8_t* head_dst = dst_packed + idx * packed_head_dim;
+
+                    float32x4_t norm_acc0 = vdupq_n_f32(0.0f);
+                    float32x4_t norm_acc1 = vdupq_n_f32(0.0f);
+                    size_t dim = 0;
+                    for (; dim + 8 <= head_dim; dim += 8) {
+                        float32x4_t x0 = vld1q_f32(head_src + dim);
+                        float32x4_t x1 = vld1q_f32(head_src + dim + 4);
+                        norm_acc0 = vfmaq_f32(norm_acc0, x0, x0);
+                        norm_acc1 = vfmaq_f32(norm_acc1, x1, x1);
+                    }
+                    float norm_sq = vaddvq_f32(vaddq_f32(norm_acc0, norm_acc1));
+                    for (; dim < head_dim; ++dim) {
+                        norm_sq += head_src[dim] * head_src[dim];
+                    }
+                    magnitudes[idx] = std::sqrt(std::max(norm_sq, 1e-12f));
+
+                    std::fill(head_dst, head_dst + packed_head_dim, static_cast<uint8_t>(0));
+                    for (size_t byte_idx = 0; byte_idx < packed_head_dim; ++byte_idx) {
+                        uint8_t packed = 0;
+                        const size_t base = byte_idx * 8;
+                        for (size_t bit = 0; bit < 8; ++bit) {
+                            const size_t col = base + bit;
+                            if (col < head_dim && head_rot[col] >= 0.0f) {
+                                packed |= static_cast<uint8_t>(1u << bit);
+                            }
+                        }
+                        head_dst[byte_idx] = packed;
+                    }
+                }
+            });
+        return;
+    }
+#endif
+
+    CactusThreading::parallel_for(total_heads, CactusThreading::Thresholds::ELEMENT_WISE,
+        [=](size_t start, size_t end) {
+            for (size_t idx = start; idx < end; ++idx) {
+                const __fp16* head_src = src + idx * head_dim;
+                uint8_t* head_dst = dst_packed + idx * packed_head_dim;
+
+                float norm_sq = 0.0f;
+                for (size_t i = 0; i < head_dim; ++i) {
+                    float v = static_cast<float>(head_src[i]);
+                    norm_sq += v * v;
+                }
+                magnitudes[idx] = std::sqrt(std::max(norm_sq, 1e-12f));
+
+                std::fill(head_dst, head_dst + packed_head_dim, static_cast<uint8_t>(0));
+
+                for (size_t col = 0; col < head_dim; ++col) {
+                    float acc = 0.0f;
+                    for (size_t row = 0; row < head_dim; ++row) {
+                        acc += static_cast<float>(head_src[row]) * rotation[row * head_dim + col];
+                    }
+                    if (acc >= 0.0f) {
+                        head_dst[col >> 3] |= static_cast<uint8_t>(1u << (col & 7));
+                    }
                 }
             }
         });

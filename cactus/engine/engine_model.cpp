@@ -760,37 +760,6 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
     }
 }
 
-void Model::capture_debug_node(uint32_t layer_idx, const std::string& name, size_t node_id) const {
-    auto* graph = static_cast<CactusGraph*>(graph_handle_);
-    if (!graph) {
-        return;
-    }
-    graph->capture_debug_node(layer_idx, name, node_id);
-}
-
-void Model::clear_debug_nodes() {
-    auto* graph = static_cast<CactusGraph*>(graph_handle_);
-    if (!graph) {
-        return;
-    }
-    graph->clear_debug_nodes();
-}
-
-const std::vector<Model::DebugNode>& Model::get_debug_nodes() const {
-    auto* graph = static_cast<CactusGraph*>(graph_handle_);
-    debug_nodes_.clear();
-    if (!graph) {
-        return debug_nodes_;
-    }
-
-    const auto& entries = graph->get_debug_nodes();
-    debug_nodes_.reserve(entries.size());
-    for (const auto& entry : entries) {
-        debug_nodes_.push_back({entry.layer_idx, entry.name, entry.node_id});
-    }
-    return debug_nodes_;
-}
-
 bool Model::load_npu_prefill(const std::string& model_path) {
     CACTUS_LOG_DEBUG("npu", "Attempting to load NPU prefill from: " << model_path);
 

@@ -193,7 +193,7 @@ std::string expand_tilde(const std::string& path) {
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
-        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>] [--image <path>] [--no-thinking]\n";
+        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>] [--image <path>] [--no-thinking] [--no-handoff]\n";
         return 1;
     }
 
@@ -201,6 +201,7 @@ int main(int argc, char* argv[]) {
     std::string system_prompt;
     std::string current_image;
     bool enable_thinking = true;
+    bool auto_handoff = true;
 
     for (int i = 2; i < argc; ++i) {
         if (std::string(argv[i]) == "--system" && i + 1 < argc) {
@@ -209,6 +210,8 @@ int main(int argc, char* argv[]) {
             current_image = expand_tilde(argv[++i]);
         } else if (std::string(argv[i]) == "--no-thinking") {
             enable_thinking = false;
+        } else if (std::string(argv[i]) == "--no-handoff") {
+            auto_handoff = false;
         }
     }
 
@@ -341,6 +344,7 @@ int main(int argc, char* argv[]) {
         std::string options = "{\"temperature\":0.7,\"top_p\":0.95,\"top_k\":40,\"max_tokens\":"
                     + std::to_string(MAX_TOKENS)
                     + ",\"enable_thinking_if_supported\":" + (enable_thinking ? "true" : "false")
+                    + ",\"auto_handoff\":" + (auto_handoff ? "true" : "false")
                     + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
 
         std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);

@@ -40,6 +40,11 @@ namespace engine {
 
 class Siglip2Preprocessor;
 
+enum class KVValueQuantization {
+    INT8_GROUPED = 0,
+    THEORETICAL_1BIT = 1
+};
+
 struct Config {
     uint32_t vocab_size = 151936;
     uint32_t bos_token_id = 151643;
@@ -427,6 +432,8 @@ struct KVCache {
         std::vector<uint8_t> values;
         std::vector<float> key_scales;
         std::vector<float> value_scales;
+        std::vector<float> value_rotation;
+        std::vector<float> value_inverse_rotation_scaled;
         size_t head_dim = 0;
     };
 
@@ -441,8 +448,11 @@ struct KVCache {
     size_t num_layers = 0;
     Precision precision;
     size_t element_size = 4;
+    KVValueQuantization value_quantization = KVValueQuantization::INT8_GROUPED;
 
     void set_window_size(size_t window, size_t sink = DEFAULT_SINK_SIZE);
+    void set_value_quantization(KVValueQuantization quantization, uint64_t seed = 1234);
+    KVValueQuantization get_value_quantization() const { return value_quantization; }
     size_t get_effective_seq_len() const { return current_seq_len; }
     size_t get_total_seq_len() const { return total_seq_len; }
     size_t get_layer_head_dim(size_t layer_idx) const { return layer_caches[layer_idx].head_dim; }
@@ -475,6 +485,8 @@ struct KVCache {
     const int8_t* get_values_int8(size_t layer) const;
     const float* get_key_scales(size_t layer) const;
     const float* get_value_scales(size_t layer) const;
+    const float* get_value_rotation(size_t layer) const;
+    const float* get_value_inverse_rotation_scaled(size_t layer) const;
 
     void remove_token_range(size_t start, size_t count);
     void compact_to_windows(const std::vector<size_t>& target_windows);
@@ -578,19 +590,12 @@ private:
 
 class Model {
 public:
-    struct DebugNode {
-        uint32_t layer_idx;
-        std::string name;
-        size_t node_id;
-    };
-
     Model();
     explicit Model(const Config& config);
     virtual ~Model();
 
     const Config& get_config() const { return config_; }
     Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
-    const std::vector<DebugNode>& get_debug_nodes() const;
 
     virtual bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true);
     
@@ -692,11 +697,6 @@ protected:
     size_t embedding_node_id_;
     std::string model_folder_path_;
     size_t output_weight_node_id_;
-
-    mutable std::vector<DebugNode> debug_nodes_;
-
-    void capture_debug_node(uint32_t layer_idx, const std::string& name, size_t node_id) const;
-    void clear_debug_nodes();
 
     bool init_internal(CactusGraph* gb, const std::string& model_folder, size_t context_size,
                        const std::string& system_prompt, bool do_warmup);

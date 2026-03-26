@@ -1461,7 +1461,9 @@ void compute_attention_int8_hybrid_node(GraphNode& node, const std::vector<std::
         batch_size, seq_len, cache_len, new_len,
         num_q_heads, num_kv_heads, head_dim,
         node.params.scale, node.params.position_offset, true,
-        node.params.window_size, KV_QUANT_GROUP_SIZE, v_head_dim
+        node.params.window_size, KV_QUANT_GROUP_SIZE, v_head_dim,
+        node.params.cached_v_inverse_rotation_scaled,
+        node.params.cached_v_theoretical_1bit
     );
 }
 
