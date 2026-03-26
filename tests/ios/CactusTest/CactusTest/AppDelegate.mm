@@ -11,20 +11,6 @@
 #include <string>
 #include <vector>
 
-extern int test_curl_main();
-extern int test_embed_main();
-extern int test_exhaustive_main();
-extern int test_graph_main();
-extern int test_index_main();
-extern int test_kernel_main();
-extern int test_kv_cache_main();
-extern int test_llm_main();
-extern int test_model_loading_main();
-extern int test_performance_main();
-extern int test_rag_main();
-extern int test_stt_main();
-extern int test_telemetry_main();
-extern int test_vlm_main();
 
 static void asr_token_callback(const char* token, uint32_t, void*) {
     if (!token) return;
@@ -79,6 +65,7 @@ static void asr_token_callback(const char* token, uint32_t, void*) {
     NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
     [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_MODEL")];
     [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_TRANSCRIBE_MODEL")];
+    [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_WHISPER_MODEL")];
     [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_VAD_MODEL")];
     [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_ASSETS")];
     [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_ASR_AUDIO_FILE")];
@@ -162,20 +149,27 @@ static void asr_token_callback(const char* token, uint32_t, void*) {
     }
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        test_curl_main();
-        test_embed_main();
-        test_exhaustive_main();
-        test_graph_main();
-        test_index_main();
-        test_kernel_main();
-        test_kv_cache_main();
-        test_llm_main();
-        test_model_loading_main();
-        test_performance_main();
-        test_rag_main();
-        test_stt_main();
-        test_telemetry_main();
-        test_vlm_main();
+        const char* only = getenv("CACTUS_TEST_ONLY");
+        std::string filter = (only && only[0]) ? std::string(only) : "";
+
+        auto should_run = [&](const char* name) {
+            return filter.empty() || filter == name;
+        };
+
+        if (should_run("curl"))           test_curl_main();
+        if (should_run("embed"))          test_embed_main();
+        if (should_run("exhaustive"))     test_exhaustive_main();
+        if (should_run("graph"))          test_graph_main();
+        if (should_run("index"))          test_index_main();
+        if (should_run("kernel"))         test_kernel_main();
+        if (should_run("kv_cache"))       test_kv_cache_main();
+        if (should_run("llm"))            test_llm_main();
+        if (should_run("model_loading"))  test_model_loading_main();
+        if (should_run("performance"))    test_performance_main();
+        if (should_run("rag"))            test_rag_main();
+        if (should_run("stt"))            test_stt_main();
+        if (should_run("telemetry"))      test_telemetry_main();
+        if (should_run("vlm"))            test_vlm_main();
         exit(0);
     });
 
