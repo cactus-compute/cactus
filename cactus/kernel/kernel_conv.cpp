@@ -405,15 +405,13 @@ static void conv1d_f16_gemm(
     // Convert weight to FP32 once (weight is C_out × C_in × K, contiguous row-major
     // which is already C_out × col_K when flattened)
     std::vector<float> W_f32(C_out * col_K);
-    for (size_t i = 0; i < C_out * col_K; ++i)
-        W_f32[i] = static_cast<float>(weight[i]);
+    cactus_fp16_to_fp32(weight, W_f32.data(), C_out * col_K);
 
     // Pre-convert bias
     std::vector<float> bias_f32;
     if (bias) {
         bias_f32.resize(C_out);
-        for (size_t i = 0; i < C_out; ++i)
-            bias_f32[i] = static_cast<float>(bias[i]);
+        cactus_fp16_to_fp32(bias, bias_f32.data(), C_out);
     }
 
     // Allocate im2col buffer and output buffer (reused across batches)

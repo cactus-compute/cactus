@@ -251,22 +251,6 @@ void cactus_bilstm_sequence_f16(
     const size_t combined_K = input_size + hidden_size;
     const size_t output_size = 2 * hidden_size;
 
-    // ── Pre-concatenate weights: [W_ih | W_hh] per gate row ────────────────
-
-    std::vector<__fp16> W_fwd_f16(gate_size * combined_K);
-    std::vector<__fp16> W_bwd_f16(gate_size * combined_K);
-
-    for (size_t g = 0; g < gate_size; ++g) {
-        memcpy(W_fwd_f16.data() + g * combined_K,
-               weight_ih_fwd + g * input_size, input_size * sizeof(__fp16));
-        memcpy(W_fwd_f16.data() + g * combined_K + input_size,
-               weight_hh_fwd + g * hidden_size, hidden_size * sizeof(__fp16));
-        memcpy(W_bwd_f16.data() + g * combined_K,
-               weight_ih_bwd + g * input_size, input_size * sizeof(__fp16));
-        memcpy(W_bwd_f16.data() + g * combined_K + input_size,
-               weight_hh_bwd + g * hidden_size, hidden_size * sizeof(__fp16));
-    }
-
     // ── Pre-add biases (FP32) ──────────────────────────────────────────────
 
     std::vector<float> bias_fwd_f32(gate_size);
@@ -278,13 +262,21 @@ void cactus_bilstm_sequence_f16(
 
 #ifdef __APPLE__
     // ── Apple: cblas_sgemv (AMX) with FP32 inner loop ──────────────────────
-    // Weights pre-converted to FP32 once. State (h, c) kept in FP32.
-    // Only x_t converted from FP16 per timestep.
+    // Pre-concatenate [W_ih | W_hh] directly into FP32 (skip FP16 intermediate).
+    // State (h, c) kept in FP32. Only x_t converted from FP16 per timestep.
 
     std::vector<float> W_fwd_f32(gate_size * combined_K);
     std::vector<float> W_bwd_f32(gate_size * combined_K);
-    fp16_to_fp32_neon(W_fwd_f16.data(), W_fwd_f32.data(), gate_size * combined_K);
-    fp16_to_fp32_neon(W_bwd_f16.data(), W_bwd_f32.data(), gate_size * combined_K);
+    for (size_t g = 0; g < gate_size; ++g) {
+        fp16_to_fp32_neon(weight_ih_fwd + g * input_size,
+                          W_fwd_f32.data() + g * combined_K, input_size);
+        fp16_to_fp32_neon(weight_hh_fwd + g * hidden_size,
+                          W_fwd_f32.data() + g * combined_K + input_size, hidden_size);
+        fp16_to_fp32_neon(weight_ih_bwd + g * input_size,
+                          W_bwd_f32.data() + g * combined_K, input_size);
+        fp16_to_fp32_neon(weight_hh_bwd + g * hidden_size,
+                          W_bwd_f32.data() + g * combined_K + input_size, hidden_size);
+    }
 
     for (size_t b = 0; b < batch_size; ++b) {
         const __fp16* batch_in = input + b * seq_len * input_size;
@@ -342,6 +334,20 @@ void cactus_bilstm_sequence_f16(
 
 #else
     // ── Non-Apple: NEON FP16 GEMV ──────────────────────────────────────────
+
+    // Pre-concatenate weights in FP16
+    std::vector<__fp16> W_fwd_f16(gate_size * combined_K);
+    std::vector<__fp16> W_bwd_f16(gate_size * combined_K);
+    for (size_t g = 0; g < gate_size; ++g) {
+        memcpy(W_fwd_f16.data() + g * combined_K,
+               weight_ih_fwd + g * input_size, input_size * sizeof(__fp16));
+        memcpy(W_fwd_f16.data() + g * combined_K + input_size,
+               weight_hh_fwd + g * hidden_size, hidden_size * sizeof(__fp16));
+        memcpy(W_bwd_f16.data() + g * combined_K,
+               weight_ih_bwd + g * input_size, input_size * sizeof(__fp16));
+        memcpy(W_bwd_f16.data() + g * combined_K + input_size,
+               weight_hh_bwd + g * hidden_size, hidden_size * sizeof(__fp16));
+    }
 
     std::vector<__fp16> bias_fwd_f16(gate_size);
     std::vector<__fp16> bias_bwd_f16(gate_size);
