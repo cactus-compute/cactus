@@ -257,8 +257,6 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
 
             f.write(quantized_interleaved.tobytes())
 
-        del data
-
         return
 
     if precision == 'INT4' and len(shape) == 2:
@@ -343,8 +341,6 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
             f.write(compute_padding(scales_end, CACTUS_ALIGNMENT))
 
             f.write(packed_data.tobytes())
-
-        del data
 
         return
 

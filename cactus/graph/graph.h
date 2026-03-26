@@ -359,7 +359,6 @@ struct OpParams {
     size_t num_fft_bins = 0;
     size_t chunk_size = 0;
     size_t num_altup_inputs = 0;
-    float logit_cap = 0.0f;
 };
 
 struct GraphNode {

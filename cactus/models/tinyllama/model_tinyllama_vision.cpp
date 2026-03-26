@@ -2,6 +2,7 @@
 #include "../../graph/graph.h"
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <stdexcept>
 
 extern "C" {
@@ -110,7 +111,7 @@ void TinyLlamaVisionModel::load_weights_to_graph(CactusGraph* gb) {
             layer.mlp_gate_proj = gb->mmap_weights(prefix + "mlp_gate_proj.weights");
             layer.mlp_up_proj = gb->mmap_weights(prefix + "mlp_up_proj.weights");
             layer.mlp_down_proj = gb->mmap_weights(prefix + "mlp_down_proj.weights");
-            layer.layer_scalar = gb->mmap_weights(prefix + "layer_scalar.weights");
+            layer.layer_scalar = std::filesystem::exists(prefix + "layer_scalar.weights") ? gb->mmap_weights(prefix + "layer_scalar.weights") : 0;
         }
     }
 

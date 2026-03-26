@@ -319,6 +319,35 @@ void TinyLlamaMmModel::prefill(const std::vector<uint32_t>& tokens, size_t chunk
     language_model_.prefill(tokens, chunk_size, profile_file);
 }
 
+void TinyLlamaMmModel::prefill_with_images(const std::vector<uint32_t>& tokens,
+                                            const std::vector<std::string>& image_paths,
+                                            const std::string& profile_file) {
+    if (!initialized_ || !graph_handle_)
+        throw std::runtime_error("Model not initialized - call init() first");
+
+    if (image_paths.empty()) {
+        prefill(tokens, get_prefill_chunk_size(), profile_file);
+        return;
+    }
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    gb->soft_reset();
+    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+
+    auto result = forward_multimodal(gb, tokens, image_paths, nullptr, 0, backend, true);
+
+    if (!profile_file.empty())
+        gb->execute(profile_file);
+    else
+        gb->execute();
+
+    language_model_.post_execute_updates(gb, result.seq_len);
+    language_model_.update_kv_cache(gb, result.seq_len);
+
+    prefill_completed_ = true;
+    last_token_count_ = tokens.size();
+}
+
 uint32_t TinyLlamaMmModel::decode_with_images(
     const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
     float temperature, float top_p, size_t top_k,

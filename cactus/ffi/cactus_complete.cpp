@@ -571,11 +571,11 @@ int cactus_complete(
             handle->model->clear_tool_constraints();
         }
 
-        if (model_type == Config::ModelType::TINYLLAMA && enable_thinking && !generated_tokens.empty()) {
-            strip_thinking_from_cache(handle, generated_tokens, current_prompt_tokens.size());
+        if (prompt.model_type == Config::ModelType::TINYLLAMA && prompt.options.enable_thinking_if_supported && !generated_tokens.empty()) {
+            strip_thinking_from_cache(handle, generated_tokens, prompt.tokens.size());
         }
 
-        if (model_type == Config::ModelType::TINYLLAMA) {
+        if (prompt.model_type == Config::ModelType::TINYLLAMA) {
             handle->model->compact_kv_cache();
         }
 

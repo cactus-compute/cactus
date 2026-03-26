@@ -2,6 +2,7 @@
 #include "../../graph/graph.h"
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <stdexcept>
 
 namespace cactus {
@@ -129,7 +130,7 @@ void TinyLlamaModel::load_weights_to_graph(CactusGraph* gb) {
             layer.per_layer_proj               = gb->mmap_weights(prefix + "per_layer_proj.weights");
             layer.post_per_layer_norm          = gb->mmap_weights(prefix + "post_per_layer_norm.weights");
         }
-        layer.layer_scalar                     = is_global_layer(i) ? gb->mmap_weights(prefix + "layer_scalar.weights") : 0;
+        layer.layer_scalar                     = std::filesystem::exists(prefix + "layer_scalar.weights") ? gb->mmap_weights(prefix + "layer_scalar.weights") : 0;
 
         if (has_moe) {
             uint32_t num_experts = config_.num_experts;

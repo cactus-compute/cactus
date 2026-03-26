@@ -1147,30 +1147,6 @@ inline void strip_tag_blocks(std::string& text, std::string& extracted,
     text = result;
 }
 
-inline std::vector<std::pair<size_t, size_t>> find_channel_token_ranges(
-    const std::vector<uint32_t>& tokens, size_t offset,
-    uint32_t channel_open_id, uint32_t channel_close_id) {
-    std::vector<std::pair<size_t, size_t>> ranges;
-    size_t pos = 0;
-    while (pos < tokens.size()) {
-        if (tokens[pos] != channel_open_id) {
-            pos++;
-            continue;
-        }
-
-        size_t block_start = pos;
-        pos++;
-        while (pos < tokens.size() && tokens[pos] != channel_close_id) {
-            pos++;
-        }
-        if (pos < tokens.size()) {
-            pos++;
-        }
-        ranges.push_back({offset + block_start, pos - block_start});
-    }
-    return ranges;
-}
-
 inline void strip_thinking_block(const std::string& input, std::string& thinking, std::string& content) {
     thinking.clear();
     content = input;

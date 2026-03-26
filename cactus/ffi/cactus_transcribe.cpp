@@ -217,7 +217,7 @@ int cactus_transcribe(
 
         if (opts.find("\"max_tokens\"") == std::string::npos) {
             const float audio_length_sec = static_cast<float>(audio_samples.size()) / static_cast<float>(WHISPER_SAMPLE_RATE);
-            const float tps = is_parakeet ? 30.0f : (is_tinyllama ? 10.0f : 20.0f);
+            const float tps = is_parakeet ? 30.0f : (is_tinyllama ? 30.0f : 20.0f);
             const size_t estimated = static_cast<size_t>(audio_length_sec * tps);
             options.max_tokens = std::max<size_t>(estimated, 100);
         }
@@ -251,12 +251,14 @@ int cactus_transcribe(
             size_t num_frames = mel.size() / tinyllama_mel_bins;
 
             // vDSP's FFT returns 2x standard DFT magnitudes; in log domain: log(2x) = log(x) + log(2).
-            // Other models absorb this offset during training/calibration, but TinyLlama was trained
-            // with standard magnitudes so we correct here. The non-Accelerate FFT path is standard.
 #ifdef __APPLE__
             {
                 static constexpr float LN2 = 0.693147180559945f;
-                for (auto& v : mel) v -= LN2;
+                const float log_floor = std::log(tinyllama_cfg.mel_floor);
+                for (auto& v : mel) {
+                    v -= LN2;
+                    if (v < log_floor) v = log_floor;
+                }
             }
 #endif
 
@@ -301,13 +303,13 @@ int cactus_transcribe(
             float total_entropy_sum = 0.0f;
             float max_token_entropy_norm = 0.0f;
             std::vector<uint32_t> generated_tokens;
-            generated_tokens.reserve(max_tokens);
+            generated_tokens.reserve(options.max_tokens);
 
-            for (size_t i = 0; i < max_tokens; ++i) {
+            for (size_t i = 0; i < options.max_tokens; ++i) {
                 if (handle->should_stop) break;
 
                 float token_entropy = 0.0f;
-                uint32_t next_token = handle->model->decode_with_audio(tokens, audio_features, temperature, top_p, top_k, "", &token_entropy);
+                uint32_t next_token = handle->model->decode_with_audio(tokens, audio_features, options.temperature, options.top_p, options.top_k, "", &token_entropy);
 
                 if (completion_tokens == 0) [[unlikely]] {
                     auto t_first = std::chrono::high_resolution_clock::now();
@@ -341,6 +343,18 @@ int cactus_transcribe(
 
             if (!final_text.empty() && final_text[0] == ' ')
                 final_text.erase(0, 1);
+
+            // Strip thinking channel content: <|channel>thought...<channel|>
+            {
+                auto chan_start = final_text.find("<|channel>");
+                auto chan_end = final_text.find("<channel|>");
+                if (chan_start != std::string::npos && chan_end != std::string::npos && chan_end > chan_start) {
+                    size_t after = chan_end + std::string("<channel|>").length();
+                    final_text = final_text.substr(after);
+                    if (!final_text.empty() && final_text[0] == ' ')
+                        final_text.erase(0, 1);
+                }
+            }
 
             const bool cloud_handoff = !final_text.empty() && final_text.length() > 5 &&
                 cloud_handoff_threshold > 0.0f && max_token_entropy_norm > cloud_handoff_threshold;
