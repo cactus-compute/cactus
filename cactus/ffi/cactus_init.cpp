@@ -407,27 +407,19 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
             model_type == Config::ModelType::PARAKEET ||
             model_type == Config::ModelType::PARAKEET_TDT) {
 
-            std::string diarize_path = model_path_str + "/diarize";
-            auto diarize_candidate = create_model(diarize_path);
-            if (diarize_candidate && diarize_candidate->init(diarize_path, 0, "", false)) {
-                handle->diarize_model = std::move(diarize_candidate);
+            std::string vad_path = model_path_str + "/vad";
+            handle->vad_model = create_model(vad_path);
+            if (!handle->vad_model) {
+                last_error_message = "Failed to create VAD model - check VAD weights at: " + vad_path;
+                CACTUS_LOG_ERROR("init", last_error_message);
+                delete handle;
+                return nullptr;
             }
-
-            if (!handle->diarize_model) {
-                std::string vad_path = model_path_str + "/vad";
-                handle->vad_model = create_model(vad_path);
-                if (!handle->vad_model) {
-                    last_error_message = "Failed to create VAD model - check VAD weights at: " + vad_path;
-                    CACTUS_LOG_ERROR("init", last_error_message);
-                    delete handle;
-                    return nullptr;
-                }
-                if (!handle->vad_model->init(vad_path, 0, "", false)) {
-                    last_error_message = "Failed to initialize VAD model - check VAD weight files at: " + vad_path;
-                    CACTUS_LOG_ERROR("init", last_error_message);
-                    delete handle;
-                    return nullptr;
-                }
+            if (!handle->vad_model->init(vad_path, 0, "", false)) {
+                last_error_message = "Failed to initialize VAD model - check VAD weight files at: " + vad_path;
+                CACTUS_LOG_ERROR("init", last_error_message);
+                delete handle;
+                return nullptr;
             }
         }
 

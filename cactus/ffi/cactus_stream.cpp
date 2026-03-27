@@ -174,9 +174,6 @@ static std::string serialize_segments_with_offset(
             << "{\"start\":" << (segs[i].start + offset_sec)
             << ",\"end\":" << (segs[i].end + offset_sec)
             << ",\"text\":\"" << escape_json(segs[i].text) << "\"";
-        if (segs[i].speaker >= 0) {
-            out << ",\"speaker\":" << segs[i].speaker;
-        }
         out << "}";
     }
     out << "]";
@@ -193,8 +190,7 @@ static std::string build_stream_response(
     double buffer_duration_ms,
     uint64_t cloud_job_id,
     uint64_t cloud_result_job_id,
-    const CloudResponse& cloud_result,
-    int confirmed_speaker = -1
+    const CloudResponse& cloud_result
 ) {
     std::string function_calls = json_array(raw_json_str, "function_calls");
     double confidence = json_number(raw_json_str, "confidence");
@@ -230,7 +226,6 @@ static std::string build_stream_response(
     json_builder << "\"cloud_result_source\":\"" << (cloud_result.used_cloud ? "cloud" : "fallback") << "\",";
     json_builder << "\"confirmed_local\":\"" << escape_json(confirmed) << "\",";
     json_builder << "\"confirmed\":\"" << escape_json(effective_confirmed) << "\",";
-    json_builder << "\"confirmed_speaker\":" << confirmed_speaker << ",";
     json_builder << "\"pending\":\"" << escape_json(pending) << "\",";
     json_builder << "\"segments\":" << segments_json << ",";
     json_builder << "\"function_calls\":" << function_calls << ",";
@@ -411,7 +406,6 @@ int cactus_stream_transcribe_process(
         const float segments_offset_sec = static_cast<float>(handle->stream_audio_offset_sec);
 
         std::string confirmed;
-        int confirmed_speaker = -1;
         double buffer_duration_ms = 0.0;
         bool cloud_handoff_triggered = false;
         uint64_t cloud_job_id = 0;
@@ -437,9 +431,6 @@ int cactus_stream_transcribe_process(
             for (size_t i = 0; i < confirmed_segments; ++i) {
                 if (!confirmed.empty()) confirmed += ' ';
                 confirmed += handle->previous_segments[i].text;
-                if (handle->previous_segments[i].speaker >= 0) {
-                    confirmed_speaker = handle->previous_segments[i].speaker;
-                }
             }
 
             if (chunk_decode_tokens > 0.0) {
@@ -563,8 +554,7 @@ int cactus_stream_transcribe_process(
             buffer_duration_ms,
             cloud_job_id,
             cloud_result_job_id,
-            cloud_result,
-            confirmed_speaker
+            cloud_result
         );
 
         if (json_response.length() >= buffer_size) {

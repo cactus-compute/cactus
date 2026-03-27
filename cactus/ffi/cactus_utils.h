@@ -61,7 +61,6 @@ inline double get_ram_usage_mb() {
 struct CactusModelHandle {
     std::unique_ptr<cactus::engine::Model> model;
     std::unique_ptr<cactus::engine::Model> vad_model;
-    std::unique_ptr<cactus::engine::Model> diarize_model;
     std::atomic<bool> should_stop;
     std::vector<uint32_t> processed_tokens;
     struct ProcessedImage {
@@ -1176,7 +1175,6 @@ struct TranscriptSegment {
     float start;
     float end;
     std::string text;
-    int speaker = -1;
 };
 
 inline std::string construct_response_json(const std::string& regular_response,
@@ -1211,11 +1209,7 @@ inline std::string construct_response_json(const std::string& regular_response,
         if (i > 0) json << ",";
         json << "{\"start\":" << std::fixed << std::setprecision(3) << segments[i].start
              << ",\"end\":" << std::fixed << std::setprecision(3) << segments[i].end
-             << ",\"text\":\"" << escape_json_string(segments[i].text) << "\"";
-        if (segments[i].speaker >= 0) {
-            json << ",\"speaker\":" << segments[i].speaker;
-        }
-        json << "}";
+             << ",\"text\":\"" << escape_json_string(segments[i].text) << "\"}";
     }
     json << "],";
     json << "\"confidence\":" << std::fixed << std::setprecision(4) << confidence << ",";
