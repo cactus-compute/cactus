@@ -1,11 +1,3 @@
-/*
- * pyannote/segmentation-3.0 (PyanNet) speaker diarization model.
- *
- * SincNet (waveform features) → 4-layer BiLSTM → 2 Linear+LeakyReLU → Classifier
- * Input:  10s of 16kHz mono audio (160,000 samples)
- * Output: (589, 7) speaker segmentation probabilities (powerset encoding)
- */
-
 #include "model.h"
 
 namespace cactus { namespace engine {

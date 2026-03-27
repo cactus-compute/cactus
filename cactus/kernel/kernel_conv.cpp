@@ -374,20 +374,6 @@ static void conv1d_f16_neon(
     });
 }
 
-// ── im2col + GEMM conv1d via Accelerate cblas_sgemm ─────────────────────
-//
-// Standard approach used by PyTorch/TensorFlow. Converts conv1d into a single
-// matrix multiply which Accelerate handles at near-peak throughput via AMX.
-//
-// 1. im2col: unfold input (N, C_in, L) → column matrix (C_in*K, out_len)
-//    Each column of the matrix corresponds to one output position, containing
-//    the K elements from each of the C_in input channels.
-// 2. GEMM: output = weight(C_out, C_in*K) × col(C_in*K, out_len) + bias
-//
-// This eliminates two critical performance bugs:
-// - K<8 conv1d falling entirely to scalar (K=5 gets zero NEON utilization)
-// - stride>1 computing full convolution then subsampling (10× wasted FLOPs)
-
 #ifdef __APPLE__
 static void conv1d_f16_gemm(
     const __fp16* input,
@@ -402,19 +388,15 @@ static void conv1d_f16_gemm(
     const size_t out_len = (L - K) / stride + 1;
     const size_t col_K = C_in * K;
 
-    // Convert weight to FP32 once (weight is C_out × C_in × K, contiguous row-major
-    // which is already C_out × col_K when flattened)
     std::vector<float> W_f32(C_out * col_K);
     cactus_fp16_to_fp32(weight, W_f32.data(), C_out * col_K);
 
-    // Pre-convert bias
     std::vector<float> bias_f32;
     if (bias) {
         bias_f32.resize(C_out);
         cactus_fp16_to_fp32(bias, bias_f32.data(), C_out);
     }
 
-    // Allocate im2col buffer and output buffer (reused across batches)
     std::vector<float> col(col_K * out_len);
     std::vector<float> Y_f32(C_out * out_len);
 
@@ -422,16 +404,12 @@ static void conv1d_f16_gemm(
         const __fp16* Xn = input + n * C_in * L;
         __fp16* Yn = output + n * C_out * out_len;
 
-        // im2col: fill col matrix (col_K × out_len)
-        // col[(ic*K + k) * out_len + t] = X[n, ic, t*stride + k]
         if (stride == 1) {
-            // Optimized: each row is a contiguous slice of an input channel
             for (size_t ic = 0; ic < C_in; ++ic) {
                 const __fp16* Xc = Xn + ic * L;
                 for (size_t k = 0; k < K; ++k) {
                     float* dst = col.data() + (ic * K + k) * out_len;
                     const __fp16* src = Xc + k;
-                    // Vectorized FP16→FP32 conversion of contiguous data
                     size_t t = 0;
                     for (; t + 8 <= out_len; t += 8) {
                         float16x8_t v = vld1q_f16(src + t);
@@ -443,7 +421,6 @@ static void conv1d_f16_gemm(
                 }
             }
         } else {
-            // Strided: gather elements
             for (size_t ic = 0; ic < C_in; ++ic) {
                 const __fp16* Xc = Xn + ic * L;
                 for (size_t k = 0; k < K; ++k) {
@@ -454,14 +431,12 @@ static void conv1d_f16_gemm(
             }
         }
 
-        // GEMM: Y(C_out, out_len) = W(C_out, col_K) × col(col_K, out_len)
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                     static_cast<int>(C_out), static_cast<int>(out_len), static_cast<int>(col_K),
                     1.0f, W_f32.data(), static_cast<int>(col_K),
                     col.data(), static_cast<int>(out_len),
                     0.0f, Y_f32.data(), static_cast<int>(out_len));
 
-        // Add bias and convert FP32 → FP16
         if (bias) {
             for (size_t oc = 0; oc < C_out; ++oc) {
                 float b = bias_f32[oc];
@@ -505,7 +480,6 @@ void cactus_conv1d_f16(
     size_t stride
 ){
 #ifdef __APPLE__
-    // Use im2col + GEMM for all conv1d on Apple — single cblas_sgemm via AMX
     conv1d_f16_gemm(input, weight, bias, output, N, L, C_in, C_out, K, stride);
     return;
 #endif

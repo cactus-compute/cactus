@@ -16,7 +16,6 @@ void cactus_relu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
 }
 
 void cactus_leaky_relu_f16(const __fp16* input, __fp16* output, size_t num_elements, float negative_slope) {
-    const __fp16 alpha = static_cast<__fp16>(negative_slope);
     for (size_t i = 0; i < num_elements; ++i) {
         __fp16 x = input[i];
         output[i] = x >= static_cast<__fp16>(0) ? x : static_cast<__fp16>(static_cast<float>(x) * negative_slope);

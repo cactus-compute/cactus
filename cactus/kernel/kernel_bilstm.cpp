@@ -1,15 +1,3 @@
-/**
- * kernel_bilstm.cpp — Optimized Bidirectional LSTM sequence kernel
- *
- * Fused gate matmul + Accelerate cblas_sgemv (AMX) + FP32 inner loop
- * + direction parallelism.
- *
- * On Apple: GEMV via cblas_sgemv (AMX), state kept in FP32 to avoid
- * FP16↔FP32 conversion overhead at every gate activation boundary.
- * Only the input x_t is converted from FP16 per timestep; h and c
- * stay in FP32 throughout.
- */
-
 #include "kernel.h"
 #include "kernel_utils.h"
 #include <arm_neon.h>
@@ -20,10 +8,6 @@
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
 #endif
-
-// ── FP32 LSTM gate activations (used with cblas_sgemv path) ─────────────────
-//
-// Gates, c, h all in FP32. No FP16 conversion overhead.
 
 static void apply_lstm_gates_f32(
     const float* __restrict gates,
@@ -62,8 +46,6 @@ static void apply_lstm_gates_f32(
         h[i] = og * tanhf(cv);
     }
 }
-
-// ── FP16 LSTM gate activations (used on non-Apple path) ─────────────────────
 
 #ifndef __APPLE__
 static void apply_lstm_gates_f16(
@@ -128,35 +110,7 @@ static void apply_lstm_gates_f16(
         h[i] = static_cast<__fp16>(og * tanhf(cv));
     }
 }
-#endif // !__APPLE__
 
-// ── Vectorized FP16→FP32 conversion ────────────────────────────────────────
-
-static inline void fp16_to_fp32_neon(const __fp16* src, float* dst, size_t n) {
-    size_t i = 0;
-    for (; i + 8 <= n; i += 8) {
-        float16x8_t v = vld1q_f16(src + i);
-        vst1q_f32(dst + i, vcvt_f32_f16(vget_low_f16(v)));
-        vst1q_f32(dst + i + 4, vcvt_f32_f16(vget_high_f16(v)));
-    }
-    for (; i < n; ++i)
-        dst[i] = static_cast<float>(src[i]);
-}
-
-static inline void fp32_to_fp16_neon(const float* src, __fp16* dst, size_t n) {
-    size_t i = 0;
-    for (; i + 8 <= n; i += 8) {
-        float32x4_t lo = vld1q_f32(src + i);
-        float32x4_t hi = vld1q_f32(src + i + 4);
-        vst1q_f16(dst + i, vcombine_f16(vcvt_f16_f32(lo), vcvt_f16_f32(hi)));
-    }
-    for (; i < n; ++i)
-        dst[i] = static_cast<__fp16>(src[i]);
-}
-
-// ── NEON FP16 GEMV (non-Apple fallback) ─────────────────────────────────────
-
-#ifndef __APPLE__
 static inline float hsum_f16x8_f32(float16x8_t v) {
     float16x4_t lo = vget_low_f16(v);
     float16x4_t hi = vget_high_f16(v);
@@ -229,7 +183,27 @@ static void lstm_gemv_f16_neon(
 }
 #endif
 
-// ── Main BiLSTM sequence kernel ─────────────────────────────────────────────
+static inline void fp16_to_fp32_neon(const __fp16* src, float* dst, size_t n) {
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        float16x8_t v = vld1q_f16(src + i);
+        vst1q_f32(dst + i, vcvt_f32_f16(vget_low_f16(v)));
+        vst1q_f32(dst + i + 4, vcvt_f32_f16(vget_high_f16(v)));
+    }
+    for (; i < n; ++i)
+        dst[i] = static_cast<float>(src[i]);
+}
+
+static inline void fp32_to_fp16_neon(const float* src, __fp16* dst, size_t n) {
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        float32x4_t lo = vld1q_f32(src + i);
+        float32x4_t hi = vld1q_f32(src + i + 4);
+        vst1q_f16(dst + i, vcombine_f16(vcvt_f16_f32(lo), vcvt_f16_f32(hi)));
+    }
+    for (; i < n; ++i)
+        dst[i] = static_cast<__fp16>(src[i]);
+}
 
 void cactus_bilstm_sequence_f16(
     const __fp16* input,
@@ -251,8 +225,6 @@ void cactus_bilstm_sequence_f16(
     const size_t combined_K = input_size + hidden_size;
     const size_t output_size = 2 * hidden_size;
 
-    // ── Pre-add biases (FP32) ──────────────────────────────────────────────
-
     std::vector<float> bias_fwd_f32(gate_size);
     std::vector<float> bias_bwd_f32(gate_size);
     for (size_t g = 0; g < gate_size; ++g) {
@@ -261,10 +233,6 @@ void cactus_bilstm_sequence_f16(
     }
 
 #ifdef __APPLE__
-    // ── Apple: cblas_sgemv (AMX) with FP32 inner loop ──────────────────────
-    // Pre-concatenate [W_ih | W_hh] directly into FP32 (skip FP16 intermediate).
-    // State (h, c) kept in FP32. Only x_t converted from FP16 per timestep.
-
     std::vector<float> W_fwd_f32(gate_size * combined_K);
     std::vector<float> W_bwd_f32(gate_size * combined_K);
     for (size_t g = 0; g < gate_size; ++g) {
@@ -333,9 +301,6 @@ void cactus_bilstm_sequence_f16(
     }
 
 #else
-    // ── Non-Apple: NEON FP16 GEMV ──────────────────────────────────────────
-
-    // Pre-concatenate weights in FP16
     std::vector<__fp16> W_fwd_f16(gate_size * combined_K);
     std::vector<__fp16> W_bwd_f16(gate_size * combined_K);
     for (size_t g = 0; g < gate_size; ++g) {

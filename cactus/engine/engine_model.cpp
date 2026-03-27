@@ -528,14 +528,8 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "parakeet_tdt" || value == "PARAKEET_TDT") model_type = ModelType::PARAKEET_TDT;
             else if (value == "gemma3n" || value == "GEMMA3N") model_type = ModelType::GEMMA3N;
             else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
-            else if (value == "pyannote" || value == "PYANNOTE") {
-                model_type = ModelType::PYANNOTE;
-                CACTUS_LOG_INFO("config", "Detected pyannote model type");
-            }
-            else {
-                CACTUS_LOG_INFO("config", "Unknown model_type: '" << value << "', defaulting to QWEN");
-                model_type = ModelType::QWEN;
-            }
+            else if (value == "pyannote" || value == "PYANNOTE") model_type = ModelType::PYANNOTE;
+            else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {
             std::string v = value;
@@ -765,7 +759,6 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
         case Config::ModelType::YOUTU:
             return std::make_unique<YoutuModel>(config);
         case Config::ModelType::PYANNOTE:
-            CACTUS_LOG_INFO("model", "Creating PyAnnoteModel");
             return std::make_unique<PyAnnoteModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
