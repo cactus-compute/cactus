@@ -745,6 +745,43 @@ if (result >= 0) {
 cactus_stream_transcribe_stop(stream, NULL, 0);
 ```
 
+### `cactus_diarize`
+Runs speaker diarization on raw audio. Takes 10 seconds of 16 kHz mono float32 PCM and returns per-frame speaker probabilities using the pyannote/segmentation-3.0 model.
+
+```c
+int cactus_diarize(
+    cactus_model_t model,           // Model handle (must be PyAnnote model)
+    const float* pcm_data,          // Raw float32 PCM audio samples (16 kHz mono)
+    size_t pcm_size,                // Number of samples (up to 160,000 for 10s)
+    float* output_buffer,           // Buffer for output probabilities
+    size_t output_size              // Size of output buffer in bytes
+);
+```
+
+**Returns:** 0 on success, -1 on error
+
+The model processes 10-second chunks (160,000 samples at 16 kHz). Shorter input is zero-padded. Output is a flat array of 589 × 7 = 4,123 float32 values representing frame-level speaker probabilities in powerset encoding.
+
+**Architecture:** SincNet waveform frontend → 4-layer bidirectional LSTM → linear classifier → softmax. On Apple Silicon, the BiLSTM uses Accelerate cblas_sgemv (AMX) and conv1d uses im2col + cblas_sgemm for optimal throughput (~10ms per chunk on M4 Pro).
+
+**Example:**
+```c
+cactus_model_t model = cactus_init("weights/pyannote-seg3", NULL, false);
+
+float audio[160000];  // 10s of 16kHz mono audio
+// ... fill audio buffer ...
+
+float output[4123];  // 589 frames × 7 classes
+int result = cactus_diarize(model, audio, 160000, output, sizeof(output));
+
+if (result == 0) {
+    for (int frame = 0; frame < 589; frame++) {
+        float* probs = &output[frame * 7];
+        // probs[0..6] are speaker activity probabilities for this frame
+    }
+}
+```
+
 ### `cactus_detect_language`
 Detects the spoken language in an audio file or PCM buffer.
 
@@ -1466,6 +1503,7 @@ int find_similar_image(cactus_model_t model, const char* query,
 | Whisper | - | - | ✓ | ✓ | OpenAI Whisper transcription |
 | Moonshine | - | - | ✓ | ✓ | UsefulSensors Moonshine transcription |
 | Parakeet | - | - | ✓ | ✓ | Nvidia Parakeet CTC/TDT transcription |
+| PyAnnote | - | - | ✓ | - | Speaker diarization (segmentation-3.0) |
 | Silero VAD | - | - | ✓ | - | Voice activity detection |
 
 ## Environment Variables
