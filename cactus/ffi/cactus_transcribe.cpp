@@ -86,6 +86,164 @@ static bool is_terminal_transcription_piece(const std::string& piece) {
            piece == "<pad>";
 }
 
+static constexpr size_t DIARIZE_CHUNK_SAMPLES = 160000;
+static constexpr size_t DIARIZE_STEP_SAMPLES = 120000;
+static constexpr size_t DIARIZE_NUM_FRAMES = 589;
+static constexpr size_t DIARIZE_NUM_CLASSES = 7;
+static constexpr float DIARIZE_FRAME_DURATION = 10.0f / 589.0f;
+
+struct DiarizeTimeline {
+    struct Frame {
+        float time;
+        int speaker;
+        bool is_speech;
+    };
+    std::vector<Frame> frames;
+
+    int speaker_at(float time_sec) const {
+        if (frames.empty()) return -1;
+        size_t idx = static_cast<size_t>(time_sec / DIARIZE_FRAME_DURATION);
+        if (idx >= frames.size()) idx = frames.size() - 1;
+        return frames[idx].speaker;
+    }
+};
+
+static const int DIARIZE_CLASS_SPEAKERS[][2] = {
+    {-1, -1}, {0, -1}, {1, -1}, {2, -1}, {0, 1}, {0, 2}, {1, 2}
+};
+
+static DiarizeTimeline run_diarization(PyAnnoteModel* diarize, const std::vector<float>& audio) {
+    const size_t total_samples = audio.size();
+    const size_t overlap_frames = static_cast<size_t>((DIARIZE_CHUNK_SAMPLES - DIARIZE_STEP_SAMPLES) /
+                                                       static_cast<float>(DIARIZE_CHUNK_SAMPLES) * DIARIZE_NUM_FRAMES);
+
+    struct ChunkResult {
+        size_t offset;
+        size_t actual_frames;
+        std::vector<float> probs;
+    };
+    std::vector<ChunkResult> chunks;
+
+    size_t offset = 0;
+    while (offset < total_samples) {
+        size_t actual = std::min(DIARIZE_CHUNK_SAMPLES, total_samples - offset);
+        std::vector<float> padded(DIARIZE_CHUNK_SAMPLES, 0.0f);
+        std::copy(audio.begin() + offset, audio.begin() + offset + actual, padded.begin());
+
+        auto result = diarize->diarize(padded.data(), DIARIZE_CHUNK_SAMPLES);
+        size_t af = static_cast<size_t>(static_cast<float>(actual) / DIARIZE_CHUNK_SAMPLES * DIARIZE_NUM_FRAMES);
+
+        chunks.push_back({offset, af, std::move(result)});
+        offset += DIARIZE_STEP_SAMPLES;
+    }
+
+    // Stitch: permute labels in overlap regions
+    for (size_t ci = 1; ci < chunks.size(); ++ci) {
+        auto& prev = chunks[ci - 1];
+        auto& curr = chunks[ci];
+
+        auto get_activity = [](const std::vector<float>& probs, size_t start, size_t end) {
+            std::vector<std::array<bool, 3>> act(end - start);
+            for (size_t fi = start; fi < end; ++fi) {
+                int label = 0;
+                float best = probs[fi * DIARIZE_NUM_CLASSES];
+                for (size_t c = 1; c < DIARIZE_NUM_CLASSES; ++c) {
+                    if (probs[fi * DIARIZE_NUM_CLASSES + c] > best) {
+                        best = probs[fi * DIARIZE_NUM_CLASSES + c];
+                        label = static_cast<int>(c);
+                    }
+                }
+                act[fi - start] = {false, false, false};
+                if (DIARIZE_CLASS_SPEAKERS[label][0] >= 0) act[fi - start][DIARIZE_CLASS_SPEAKERS[label][0]] = true;
+                if (DIARIZE_CLASS_SPEAKERS[label][1] >= 0) act[fi - start][DIARIZE_CLASS_SPEAKERS[label][1]] = true;
+            }
+            return act;
+        };
+
+        size_t prev_start = DIARIZE_NUM_FRAMES > overlap_frames ? DIARIZE_NUM_FRAMES - overlap_frames : 0;
+        auto prev_act = get_activity(prev.probs, prev_start, DIARIZE_NUM_FRAMES);
+        size_t curr_end = std::min(overlap_frames, curr.actual_frames);
+        auto curr_act = get_activity(curr.probs, 0, curr_end);
+
+        size_t min_len = std::min(prev_act.size(), curr_act.size());
+        if (min_len == 0) continue;
+
+        int best_perm[3] = {0, 1, 2};
+        int best_score = -1;
+        int perms[][3] = {{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
+        for (auto& p : perms) {
+            int score = 0;
+            for (size_t fi = 0; fi < min_len; ++fi) {
+                for (int s = 0; s < 3; ++s) {
+                    if (curr_act[fi][s] == prev_act[fi][p[s]]) ++score;
+                }
+            }
+            if (score > best_score) {
+                best_score = score;
+                best_perm[0] = p[0]; best_perm[1] = p[1]; best_perm[2] = p[2];
+            }
+        }
+
+        if (best_perm[0] != 0 || best_perm[1] != 1 || best_perm[2] != 2) {
+            std::vector<float> remapped(curr.probs.size());
+            for (size_t fi = 0; fi < DIARIZE_NUM_FRAMES; ++fi) {
+                size_t base = fi * DIARIZE_NUM_CLASSES;
+                remapped[base] = curr.probs[base];
+                for (int s = 0; s < 3; ++s)
+                    remapped[base + best_perm[s] + 1] = curr.probs[base + s + 1];
+                int pairs[][3] = {{0,1,4},{0,2,5},{1,2,6}};
+                for (auto& pr : pairs) {
+                    int na = std::min(best_perm[pr[0]], best_perm[pr[1]]);
+                    int nb = std::max(best_perm[pr[0]], best_perm[pr[1]]);
+                    for (auto& pr2 : pairs) {
+                        if (pr2[0] == na && pr2[1] == nb) {
+                            remapped[base + pr2[2]] = curr.probs[base + pr[2]];
+                            break;
+                        }
+                    }
+                }
+            }
+            curr.probs = std::move(remapped);
+        }
+    }
+
+    // Build global timeline
+    float total_duration = static_cast<float>(total_samples) / WHISPER_SAMPLE_RATE;
+    size_t global_count = static_cast<size_t>(total_duration / DIARIZE_FRAME_DURATION) + 1;
+    DiarizeTimeline timeline;
+    timeline.frames.resize(global_count, {0.0f, -1, false});
+
+    std::vector<float> confidence(global_count, -1.0f);
+
+    for (auto& chunk : chunks) {
+        float chunk_start = static_cast<float>(chunk.offset) / WHISPER_SAMPLE_RATE;
+        for (size_t fi = 0; fi < chunk.actual_frames; ++fi) {
+            float t = chunk_start + fi * DIARIZE_FRAME_DURATION;
+            size_t gi = static_cast<size_t>(t / DIARIZE_FRAME_DURATION);
+            if (gi >= global_count) continue;
+
+            float dist = static_cast<float>(std::min(fi, chunk.actual_frames - 1 - fi));
+            if (dist <= confidence[gi]) continue;
+
+            int label = 0;
+            float best = chunk.probs[fi * DIARIZE_NUM_CLASSES];
+            for (size_t c = 1; c < DIARIZE_NUM_CLASSES; ++c) {
+                if (chunk.probs[fi * DIARIZE_NUM_CLASSES + c] > best) {
+                    best = chunk.probs[fi * DIARIZE_NUM_CLASSES + c];
+                    label = static_cast<int>(c);
+                }
+            }
+
+            timeline.frames[gi].time = t;
+            timeline.frames[gi].is_speech = (label != 0);
+            timeline.frames[gi].speaker = DIARIZE_CLASS_SPEAKERS[label][0];
+            confidence[gi] = dist;
+        }
+    }
+
+    return timeline;
+}
+
 extern "C" {
 
 int cactus_transcribe(
@@ -230,8 +388,80 @@ int cactus_transcribe(
             std::vector<std::pair<float, float>> anchors;
         };
         std::vector<AudioChunk> audio_chunks;
+        DiarizeTimeline diarize_timeline;
 
-        if (options.use_vad) {
+        if (options.use_vad && handle->diarize_model) {
+            auto* diarize = static_cast<PyAnnoteModel*>(handle->diarize_model.get());
+            diarize_timeline = run_diarization(diarize, audio_samples);
+
+            struct SpeechRegion { size_t start; size_t end; };
+            std::vector<SpeechRegion> speech_regions;
+
+            bool in_speech = false;
+            size_t region_start = 0;
+            for (size_t fi = 0; fi < diarize_timeline.frames.size(); ++fi) {
+                if (diarize_timeline.frames[fi].is_speech) {
+                    if (!in_speech) {
+                        region_start = fi;
+                        in_speech = true;
+                    }
+                } else {
+                    if (in_speech) {
+                        size_t start_sample = static_cast<size_t>(region_start * DIARIZE_FRAME_DURATION * WHISPER_SAMPLE_RATE);
+                        size_t end_sample = static_cast<size_t>(fi * DIARIZE_FRAME_DURATION * WHISPER_SAMPLE_RATE);
+                        end_sample = std::min(end_sample, audio_samples.size());
+                        if (end_sample > start_sample + WHISPER_SAMPLE_RATE / 4) {
+                            speech_regions.push_back({start_sample, end_sample});
+                        }
+                        in_speech = false;
+                    }
+                }
+            }
+            if (in_speech) {
+                size_t start_sample = static_cast<size_t>(region_start * DIARIZE_FRAME_DURATION * WHISPER_SAMPLE_RATE);
+                size_t end_sample = audio_samples.size();
+                if (end_sample > start_sample + WHISPER_SAMPLE_RATE / 4) {
+                    speech_regions.push_back({start_sample, end_sample});
+                }
+            }
+
+            std::vector<float> current;
+            std::vector<std::pair<float, float>> current_anchors;
+            size_t chunk_start_sample = 0;
+            size_t chunk_end_sample = 0;
+            float concat_cursor = 0.0f;
+            for (const auto& seg : speech_regions) {
+                if (current.size() + (seg.end - seg.start) > MAX_CHUNK_SAMPLES) {
+                    audio_chunks.emplace_back(std::move(current), to_sec(chunk_start_sample), to_sec(chunk_end_sample), std::move(current_anchors));
+                    current.clear();
+                    current_anchors.clear();
+                    concat_cursor = 0.0f;
+                }
+                if (current.empty()) chunk_start_sample = seg.start;
+                chunk_end_sample = seg.end;
+                current_anchors.emplace_back(concat_cursor, to_sec(seg.start));
+                concat_cursor += to_sec(seg.end - seg.start);
+                current.insert(current.end(), audio_samples.begin() + seg.start, audio_samples.begin() + seg.end);
+            }
+            if (!current.empty()) {
+                audio_chunks.emplace_back(std::move(current), to_sec(chunk_start_sample), to_sec(chunk_end_sample), std::move(current_anchors));
+            }
+
+            if (audio_chunks.empty()) {
+                auto vad_end_time = std::chrono::high_resolution_clock::now();
+                double vad_total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(vad_end_time - start_time).count() / 1000.0;
+                std::string json = construct_response_json("", {}, 0.0, vad_total_time_ms, 0.0, 0.0, 0, 0, 1.0f);
+                if (json.size() >= buffer_size) {
+                    handle_error_response("Response buffer too small", response_buffer, buffer_size);
+                    cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, 0.0, "Response buffer too small");
+                    return -1;
+                }
+                cactus::telemetry::recordTranscription(handle->model_name.c_str(), true, 0.0, 0.0, vad_total_time_ms, 0, get_ram_usage_mb(), "");
+                std::strcpy(response_buffer, json.c_str());
+                return static_cast<int>(json.size());
+            }
+
+        } else if (options.use_vad && handle->vad_model) {
             auto* vad = static_cast<SileroVADModel*>(handle->vad_model.get());
             auto vad_segments = vad->get_speech_timestamps(audio_samples, {});
             audio_chunks.reserve(vad_segments.size());
@@ -253,19 +483,13 @@ int cactus_transcribe(
                 chunk_end_sample = end;
                 current_anchors.emplace_back(concat_cursor, to_sec(seg.start));
                 concat_cursor += to_sec(end - seg.start);
-                current.insert(
-                    current.end(),
-                    audio_samples.begin() + seg.start,
-                    audio_samples.begin() + end
-                );
+                current.insert(current.end(), audio_samples.begin() + seg.start, audio_samples.begin() + end);
             }
-
             if (!current.empty()) {
                 audio_chunks.emplace_back(std::move(current), to_sec(chunk_start_sample), to_sec(chunk_end_sample), std::move(current_anchors));
             }
 
             if (audio_chunks.empty()) {
-                CACTUS_LOG_DEBUG("transcribe", "VAD detected only silence, returning empty transcription");
                 auto vad_end_time = std::chrono::high_resolution_clock::now();
                 double vad_total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(vad_end_time - start_time).count() / 1000.0;
                 std::string json = construct_response_json("", {}, 0.0, vad_total_time_ms, 0.0, 0.0, 0, 0, 1.0f);
@@ -530,6 +754,24 @@ int cactus_transcribe(
 
         const bool cloud_handoff = !final_text.empty() && final_text.length() > 5 &&
             cloud_handoff_threshold > 0.0f && max_token_entropy_norm > cloud_handoff_threshold;
+
+        if (!diarize_timeline.frames.empty()) {
+            for (auto& seg : segments) {
+                int counts[3] = {0, 0, 0};
+                size_t start_fi = static_cast<size_t>(seg.start / DIARIZE_FRAME_DURATION);
+                size_t end_fi = static_cast<size_t>(seg.end / DIARIZE_FRAME_DURATION);
+                end_fi = std::min(end_fi, diarize_timeline.frames.size());
+                for (size_t fi = start_fi; fi < end_fi; ++fi) {
+                    int spk = diarize_timeline.frames[fi].speaker;
+                    if (spk >= 0 && spk < 3) counts[spk]++;
+                }
+                int best = -1, best_count = 0;
+                for (int s = 0; s < 3; ++s) {
+                    if (counts[s] > best_count) { best_count = counts[s]; best = s; }
+                }
+                seg.speaker = best;
+            }
+        }
 
         std::string json = construct_response_json(final_text, {}, time_to_first_token, total_time_ms, prefill_tps, decode_tps, prompt_tokens, completion_tokens, confidence, cloud_handoff, "", segments);
 
