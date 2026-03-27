@@ -373,7 +373,6 @@ size_t TinyLlamaVisionModel::build_vision_pooler(CactusGraph* gb, size_t hidden,
                                                   ComputeBackend backend) {
     size_t k = config_.vision_pooling_kernel_size;
     size_t output_length = config_.vision_default_output_length;
-    size_t hidden_size = config_.vision_embed_dim;
     size_t num_patches = img.num_patches;
     size_t k_squared = k * k;
 

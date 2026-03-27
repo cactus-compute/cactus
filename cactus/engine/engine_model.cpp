@@ -773,8 +773,6 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<TinyLlamaModel>(config);
         case Config::ModelType::YOUTU:
             return std::make_unique<YoutuModel>(config);
-        case Config::ModelType::TINYLLAMA:
-            return std::make_unique<TinyLlamaModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }

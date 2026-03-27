@@ -18,15 +18,16 @@ std::vector<size_t> YoutuModel::get_kv_layer_dims() const {
 
 void YoutuModel::post_init() {
     std::vector<size_t> v_dims(config_.num_layers, static_cast<size_t>(config_.v_head_dim));
+    std::vector<size_t> v_kv_heads(config_.num_layers, static_cast<size_t>(config_.attention_kv_heads));
     v_cache_.init(config_.num_layers, kv_cache_.max_seq_len,
-                  config_.attention_kv_heads, v_dims, Precision::INT8);
+                  v_dims, v_kv_heads, Precision::INT8);
     v_cache_.set_window_size(kv_cache_.window_size, kv_cache_.sink_size);
     cache_v_nodes_.resize(config_.num_layers, 0);
 }
 
 void YoutuModel::post_execute_updates(CactusGraph* gb, size_t seq_len) {
     v_cache_.update_from_graph(gb, cache_v_nodes_, cache_v_nodes_, seq_len,
-                               config_.num_layers, config_.attention_kv_heads);
+                               config_.num_layers);
 }
 
 void YoutuModel::reset_cache() {
