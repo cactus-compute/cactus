@@ -174,6 +174,24 @@ size_t find_safe_split_index(const std::string& s, size_t limit) {
     return std::string::npos;
 }
 
+static const std::string SPEAKER_COLORS[] = {Color::CYAN, Color::MAGENTA, Color::YELLOW};
+
+std::string speaker_label(int speaker) {
+    if (speaker < 0) return "";
+    std::string color = SPEAKER_COLORS[speaker % 3];
+    return colored("[Speaker " + std::to_string(speaker + 1) + "] ", color + Color::BOLD);
+}
+
+int extract_json_int(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\":";
+    size_t start = json.find(pattern);
+    if (start == std::string::npos) return -1;
+    start += pattern.length();
+    while (start < json.length() && std::isspace(json[start])) start++;
+    if (start >= json.length() || (json[start] != '-' && !std::isdigit(json[start]))) return -1;
+    return std::atoi(json.c_str() + start);
+}
+
 void print_token(const char* token, uint32_t /*token_id*/, void* /*user_data*/) {
     std::cout << token << std::flush;
 }
@@ -233,6 +251,28 @@ int transcribe_file(cactus_model_t model, const std::string& audio_path, const s
     std::string json_str(response_buffer.data());
     std::string local_response = extract_json_value(json_str, "response");
     bool cloud_handoff = json_str.find("\"cloud_handoff\":true") != std::string::npos;
+
+    bool has_speakers = json_str.find("\"speaker\":") != std::string::npos;
+    if (has_speakers) {
+        std::cout << "\n\n";
+        int last_spk = -2;
+        size_t pos = 0;
+        std::string segs_str = json_str;
+        while ((pos = segs_str.find("{\"start\":", pos)) != std::string::npos) {
+            size_t end = segs_str.find("}", pos);
+            if (end == std::string::npos) break;
+            std::string seg = segs_str.substr(pos, end - pos + 1);
+            int spk = extract_json_int(seg, "speaker");
+            std::string text = extract_json_value(seg, "text");
+            if (spk != last_spk && spk >= 0) {
+                if (last_spk >= 0) std::cout << "\n";
+                std::cout << speaker_label(spk);
+                last_spk = spk;
+            }
+            std::cout << text << " ";
+            pos = end + 1;
+        }
+    }
     bool cloud_key_detected = !get_cloud_api_key().empty();
 
     bool cloud_result_used_cloud = false;
@@ -356,6 +396,7 @@ std::vector<uint8_t> resample_audio(const std::vector<uint8_t>& input, int sourc
 
 struct Segment {
     std::string text;
+    int speaker = -1;
     bool pending_cloud = false;
     std::chrono::steady_clock::time_point cloud_start_time;
     int64_t cloud_job_id = -1;
@@ -449,7 +490,8 @@ int run_live_transcription(cactus_model_t model, const std::string& language = "
     std::deque<Segment> segments;
     std::string confirmed_text;
     std::string current_line_confirmed;
-    
+    int last_displayed_speaker = -1;
+
     int last_pending_line_count = 0;
     std::string last_stats;
 
@@ -525,6 +567,7 @@ int run_live_transcription(cactus_model_t model, const std::string& language = "
                     if (should_enqueue_confirmed) {
                         Segment seg;
                         seg.text = confirmed;
+                        seg.speaker = extract_json_int(json_str, "confirmed_speaker");
 
                         bool is_cloud = json_str.find("\"cloud_handoff\":true") != std::string::npos;
                         int64_t parsed_cloud_job_id = cloud_job_id.empty() ? 0 : std::stoll(cloud_job_id);
@@ -559,6 +602,15 @@ int run_live_transcription(cactus_model_t model, const std::string& language = "
                     }
 
                     while (!segments.empty() && !segments.front().pending_cloud) {
+                        int spk = segments.front().speaker;
+                        if (spk >= 0 && spk != last_displayed_speaker) {
+                            if (!current_line_confirmed.empty()) {
+                                std::cout << "\r\033[K" << current_line_confirmed + Color::RESET << "\n";
+                                current_line_confirmed.clear();
+                            }
+                            current_line_confirmed += speaker_label(spk);
+                            last_displayed_speaker = spk;
+                        }
                         current_line_confirmed += colored(segments.front().text, Color::GREEN) + " ";
                         confirmed_text += segments.front().text + " ";
                         segments.pop_front();
