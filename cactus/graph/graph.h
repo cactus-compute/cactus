@@ -145,7 +145,9 @@ enum class OpType {
     GAUSSIAN_TOPK,
     MAXPOOL1D,
     BILSTM_SEQUENCE,
-    LEAKY_RELU
+    LEAKY_RELU,
+    CONV2D_K3S1P1,
+    STATS_POOL
 };
 
 struct PrecisionTraits {
@@ -404,6 +406,8 @@ void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_p
 void compute_maxpool1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_bilstm_sequence_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_leaky_relu_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 void shrink_thread_local_buffers();
 class BufferPool {
@@ -588,6 +592,10 @@ public:
     // Inputs: x, w_ih_fwd, w_hh_fwd, b_ih_fwd, b_hh_fwd, w_ih_bwd, w_hh_bwd, b_ih_bwd, b_hh_bwd
     size_t bilstm_sequence(size_t input, size_t w_ih_fwd, size_t w_hh_fwd, size_t b_ih_fwd, size_t b_hh_fwd,
                            size_t w_ih_bwd, size_t w_hh_bwd, size_t b_ih_bwd, size_t b_hh_bwd);
+
+    size_t conv2d_k3s1p1(size_t input, size_t weight);
+    size_t conv2d_k3s1p1(size_t input, size_t weight, size_t bias);
+    size_t stats_pool(size_t input);
 
     size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20,
                   const std::unordered_map<uint32_t, float>& logit_bias = {});

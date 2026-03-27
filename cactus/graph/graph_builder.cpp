@@ -1597,3 +1597,27 @@ size_t CactusGraph::maxpool1d(size_t input, size_t kernel_size, size_t stride) {
     params.stride = stride;
     return add_node(OpType::MAXPOOL1D, {input}, {batch, channels, output_length}, params);
 }
+
+size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight) {
+    const auto& xin = get_output_buffer(input);
+    const auto& w = get_output_buffer(weight);
+    size_t N = xin.shape[0], C_out = w.shape[0];
+    size_t H = xin.shape[2], W_dim = xin.shape[3];
+    return add_node(OpType::CONV2D_K3S1P1, {input, weight}, {N, C_out, H, W_dim});
+}
+
+size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight, size_t bias) {
+    const auto& xin = get_output_buffer(input);
+    const auto& w = get_output_buffer(weight);
+    size_t N = xin.shape[0], C_out = w.shape[0];
+    size_t H = xin.shape[2], W_dim = xin.shape[3];
+    return add_node(OpType::CONV2D_K3S1P1, {input, weight, bias}, {N, C_out, H, W_dim});
+}
+
+size_t CactusGraph::stats_pool(size_t input) {
+    const auto& xin = get_output_buffer(input);
+    size_t batch = xin.shape[0];
+    size_t features = 1;
+    for (size_t i = 1; i < xin.shape.size() - 1; ++i) features *= xin.shape[i];
+    return add_node(OpType::STATS_POOL, {input}, {batch, features * 2});
+}

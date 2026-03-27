@@ -278,6 +278,18 @@ void cactus_conv1d_same_depthwise_f16_k9(
     size_t C
 );
 
+void cactus_conv2d_f16_k3s1p1_nchw(
+    const __fp16* input,
+    const __fp16* weight,
+    const __fp16* bias,
+    __fp16* output,
+    size_t N,
+    size_t C_in,
+    size_t H,
+    size_t W,
+    size_t C_out
+);
+
 void cactus_conv2d_f16_k3s2p1_nchw(
     const __fp16* input,
     const __fp16* weight,

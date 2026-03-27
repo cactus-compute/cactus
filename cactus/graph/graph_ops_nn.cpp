@@ -2243,3 +2243,48 @@ void compute_maxpool1d_node(GraphNode& node, const std::vector<std::unique_ptr<G
         batch_size, channels, input_length,
         kernel_size, stride);
 }
+
+void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                 const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const __fp16* bias_ptr = nullptr;
+    if (node.input_ids.size() >= 3) {
+        bias_ptr = nodes[node_index_map.at(node.input_ids[2])]->output_buffer.data_as<__fp16>();
+    }
+    cactus_conv2d_f16_k3s1p1_nchw(
+        X.data_as<__fp16>(), W.data_as<__fp16>(), bias_ptr,
+        node.output_buffer.data_as<__fp16>(),
+        X.shape[0], X.shape[1], X.shape[2], X.shape[3], W.shape[0]);
+}
+
+void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                              const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const __fp16* src = input.data_as<__fp16>();
+    __fp16* dst = node.output_buffer.data_as<__fp16>();
+
+    size_t batch = input.shape[0];
+    size_t total_per_batch = input.total_size / batch;
+    size_t T = input.shape.back();
+    size_t features = total_per_batch / T;
+
+    for (size_t b = 0; b < batch; ++b) {
+        const __fp16* batch_src = src + b * total_per_batch;
+        __fp16* batch_dst = dst + b * features * 2;
+
+        for (size_t f = 0; f < features; ++f) {
+            float sum = 0.0f, sum_sq = 0.0f;
+            for (size_t t = 0; t < T; ++t) {
+                float v = static_cast<float>(batch_src[f * T + t]);
+                sum += v;
+                sum_sq += v * v;
+            }
+            float mean = sum / static_cast<float>(T);
+            float var = sum_sq / static_cast<float>(T) - mean * mean;
+            float std_val = sqrtf(var > 0.0f ? var : 0.0f);
+            batch_dst[f] = static_cast<__fp16>(mean);
+            batch_dst[features + f] = static_cast<__fp16>(std_val);
+        }
+    }
+}

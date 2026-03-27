@@ -93,7 +93,9 @@ static const char* op_type_names[] = {
     "GAUSSIAN_TOPK",
     "MAXPOOL1D",
     "BILSTM_SEQUENCE",
-    "LEAKY_RELU"
+    "LEAKY_RELU",
+    "CONV2D_K3S1P1",
+    "STATS_POOL"
 };
 
 static const char* get_op_name(OpType op) {
@@ -332,6 +334,14 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
 
         case OpType::LEAKY_RELU:
             compute_leaky_relu_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::CONV2D_K3S1P1:
+            compute_conv2d_k3s1p1_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::STATS_POOL:
+            compute_stats_pool_node(node, nodes, node_index_map);
             break;
 
         default:
