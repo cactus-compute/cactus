@@ -390,7 +390,9 @@ int cactus_transcribe(
         std::vector<AudioChunk> audio_chunks;
         DiarizeTimeline diarize_timeline;
 
-        if (options.use_vad && handle->diarize_model) {
+        bool use_diarize = options.use_vad && handle->diarize_model &&
+                           audio_samples.size() >= DIARIZE_CHUNK_SAMPLES;
+        if (use_diarize) {
             auto* diarize = static_cast<PyAnnoteModel*>(handle->diarize_model.get());
             diarize_timeline = run_diarization(diarize, audio_samples);
 
