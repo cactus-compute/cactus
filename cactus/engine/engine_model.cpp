@@ -134,7 +134,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
                                  config_.model_type == Config::ModelType::MOONSHINE ||
                                  config_.model_type == Config::ModelType::PARAKEET ||
                                  config_.model_type == Config::ModelType::PARAKEET_TDT ||
-                                 config_.model_type == Config::ModelType::PYANNOTE)
+                                 config_.model_type == Config::ModelType::PYANNOTE ||
+                                 config_.model_type == Config::ModelType::WESPEAKER)
                                ? Precision::FP16
                                : Precision::INT8;
     kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, get_kv_layer_dims(), cache_precision);
@@ -162,7 +163,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         config_.model_type != Config::ModelType::MOONSHINE &&
         config_.model_type != Config::ModelType::PARAKEET &&
         config_.model_type != Config::ModelType::PARAKEET_TDT &&
-        config_.model_type != Config::ModelType::PYANNOTE) {
+        config_.model_type != Config::ModelType::PYANNOTE &&
+        config_.model_type != Config::ModelType::WESPEAKER) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
         forward(warmup_tokens);
@@ -529,6 +531,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "gemma3n" || value == "GEMMA3N") model_type = ModelType::GEMMA3N;
             else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
             else if (value == "pyannote" || value == "PYANNOTE") model_type = ModelType::PYANNOTE;
+            else if (value == "wespeaker" || value == "WESPEAKER") model_type = ModelType::WESPEAKER;
             else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {
@@ -760,6 +763,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<YoutuModel>(config);
         case Config::ModelType::PYANNOTE:
             return std::make_unique<PyAnnoteModel>(config);
+        case Config::ModelType::WESPEAKER:
+            return std::make_unique<WeSpeakerModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }

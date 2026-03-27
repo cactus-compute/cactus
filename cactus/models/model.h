@@ -1562,5 +1562,54 @@ private:
     } w_;
 };
 
+class WeSpeakerModel : public Model {
+public:
+    WeSpeakerModel();
+    explicit WeSpeakerModel(const Config& config);
+    ~WeSpeakerModel() override = default;
+
+    bool init(const std::string& model_folder, size_t context_size,
+              const std::string& system_prompt = "", bool do_warmup = true) override;
+
+    std::vector<float> embed(const float* pcm_f32, size_t num_samples);
+
+protected:
+    size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("WeSpeaker: build_attention unused");
+    }
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("WeSpeaker: build_mlp unused");
+    }
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("WeSpeaker: build_transformer_block unused");
+    }
+    size_t forward(const std::vector<uint32_t>&, bool = false) override {
+        throw std::runtime_error("WeSpeaker requires audio input via embed().");
+    }
+
+    void load_weights_to_graph(CactusGraph* gb) override;
+
+public:
+    struct ResBlockWeights {
+        size_t conv1_w, conv2_w;
+        size_t bn1_w, bn1_b, bn1_mean, bn1_var;
+        size_t bn2_w, bn2_b, bn2_mean, bn2_var;
+        size_t shortcut_conv_w;
+        size_t shortcut_bn_w, shortcut_bn_b, shortcut_bn_mean, shortcut_bn_var;
+        bool has_shortcut = false;
+    };
+
+private:
+    size_t audio_input_ = 0;
+    size_t output_node_ = 0;
+
+    struct WeightNodes {
+        size_t conv1_w;
+        size_t bn1_w, bn1_b, bn1_mean, bn1_var;
+        std::vector<ResBlockWeights> layer1, layer2, layer3, layer4;
+        size_t seg1_w, seg1_b;
+    } w_;
+};
+
 }
 }

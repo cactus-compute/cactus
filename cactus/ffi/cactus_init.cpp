@@ -491,6 +491,28 @@ int cactus_diarize(cactus_model_t model, const float* pcm_data, size_t pcm_size,
     }
 }
 
+int cactus_embed_speaker(cactus_model_t model, const float* pcm_data, size_t pcm_size, float* output_buffer, size_t output_size) {
+    if (!model || !pcm_data || !output_buffer) {
+        last_error_message = "Invalid arguments to cactus_embed_speaker";
+        return -1;
+    }
+    try {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        auto* wespeaker = dynamic_cast<cactus::engine::WeSpeakerModel*>(handle->model.get());
+        if (!wespeaker) {
+            last_error_message = "Model is not a WeSpeaker embedding model";
+            return -1;
+        }
+        auto result = wespeaker->embed(pcm_data, pcm_size);
+        size_t copy_size = std::min(result.size() * sizeof(float), output_size);
+        std::memcpy(output_buffer, result.data(), copy_size);
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = "Speaker embedding failed: " + std::string(e.what());
+        return -1;
+    }
+}
+
 void cactus_reset(cactus_model_t model) {
     if (!model) return;
     auto* handle = static_cast<CactusModelHandle*>(model);

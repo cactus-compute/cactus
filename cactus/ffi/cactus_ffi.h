@@ -44,6 +44,13 @@ CACTUS_FFI_EXPORT int cactus_diarize(
     float* output_buffer,
     size_t output_size
 );
+CACTUS_FFI_EXPORT int cactus_embed_speaker(
+    cactus_model_t model,
+    const float* pcm_data,
+    size_t pcm_size,
+    float* output_buffer,
+    size_t output_size
+);
 CACTUS_FFI_EXPORT void cactus_reset(cactus_model_t model);
 CACTUS_FFI_EXPORT void cactus_stop(cactus_model_t model);
 
