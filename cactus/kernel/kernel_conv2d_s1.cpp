@@ -19,9 +19,9 @@ void cactus_conv2d_f16_k3s1p1_nchw(
 ) {
     const size_t H_out = H;
     const size_t W_out = W;
-    const size_t col_K = C_in * 9;
 
 #ifdef __APPLE__
+    const size_t col_K = C_in * 9;
     std::vector<float> W_f32(C_out * col_K);
     for (size_t oc = 0; oc < C_out; ++oc) {
         for (size_t ic = 0; ic < C_in; ++ic) {
@@ -60,7 +60,6 @@ void cactus_conv2d_f16_k3s1p1_nchw(
                         const __fp16* src_row = Xn + ic * H * W + ih * W;
                         float* dst_row = dst + oh * W_out;
                         ptrdiff_t iw_offset = static_cast<ptrdiff_t>(kw) - 1;
-
                         for (size_t ow = 0; ow < W_out; ++ow) {
                             ptrdiff_t iw = static_cast<ptrdiff_t>(ow) + iw_offset;
                             if (iw < 0 || iw >= static_cast<ptrdiff_t>(W))
@@ -101,15 +100,15 @@ void cactus_conv2d_f16_k3s1p1_nchw(
                                  : CactusThreading::Thresholds::ATTENTION;
 
     CactusThreading::parallel_for_2d(N, C_out, cfg, [&](size_t n, size_t oc) {
-        float b0 = bias ? static_cast<float>(bias[oc]) : 0.0f;
+        const float b0 = bias ? static_cast<float>(bias[oc]) : 0.0f;
         for (size_t oh = 0; oh < H_out; ++oh) {
             for (size_t ow = 0; ow < W_out; ++ow) {
                 float acc = b0;
                 for (size_t ic = 0; ic < C_in; ++ic) {
                     for (size_t kh = 0; kh < 3; ++kh) {
                         for (size_t kw = 0; kw < 3; ++kw) {
-                            ptrdiff_t ih = static_cast<ptrdiff_t>(oh) + kh - 1;
-                            ptrdiff_t iw = static_cast<ptrdiff_t>(ow) + kw - 1;
+                            const ptrdiff_t ih = static_cast<ptrdiff_t>(oh) + kh - 1;
+                            const ptrdiff_t iw = static_cast<ptrdiff_t>(ow) + kw - 1;
                             if (ih >= 0 && ih < static_cast<ptrdiff_t>(H) &&
                                 iw >= 0 && iw < static_cast<ptrdiff_t>(W)) {
                                 acc += static_cast<float>(input[((n * C_in + ic) * H + ih) * W + iw]) *

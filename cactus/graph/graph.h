@@ -405,7 +405,6 @@ void compute_altup_predict_node(GraphNode& node, const std::vector<std::unique_p
 void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_maxpool1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_bilstm_sequence_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-void compute_leaky_relu_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
@@ -587,12 +586,8 @@ public:
 
     size_t maxpool1d(size_t input, size_t kernel_size, size_t stride);
     size_t leaky_relu(size_t input, float negative_slope = 0.01f);
-
-    // Bidirectional LSTM: processes full sequence, returns (batch, seq_len, 2*hidden_size)
-    // Inputs: x, w_ih_fwd, w_hh_fwd, b_ih_fwd, b_hh_fwd, w_ih_bwd, w_hh_bwd, b_ih_bwd, b_hh_bwd
     size_t bilstm_sequence(size_t input, size_t w_ih_fwd, size_t w_hh_fwd, size_t b_ih_fwd, size_t b_hh_fwd,
                            size_t w_ih_bwd, size_t w_hh_bwd, size_t b_ih_bwd, size_t b_hh_bwd);
-
     size_t conv2d_k3s1p1(size_t input, size_t weight);
     size_t conv2d_k3s1p1(size_t input, size_t weight, size_t bias);
     size_t stats_pool(size_t input);

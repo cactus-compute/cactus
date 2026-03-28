@@ -1517,39 +1517,39 @@ public:
     explicit PyAnnoteModel(const Config& config);
     ~PyAnnoteModel() override = default;
 
-    // Override init to skip tokenizer loading (PyAnnote has no tokenizer)
-    bool init(const std::string& model_folder, size_t context_size,
-              const std::string& system_prompt = "", bool do_warmup = true) override;
+    bool init(const std::string& model_folder, size_t context_size = 0,
+              const std::string& system_prompt = "", bool do_warmup = false) override;
 
-    // Run diarization on raw float32 PCM audio. Returns flat vector of (num_frames × 7) probabilities.
     std::vector<float> diarize(const float* pcm_f32, size_t num_samples);
 
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
         throw std::runtime_error("PyAnnote: build_attention unused");
     }
+
     size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
         throw std::runtime_error("PyAnnote: build_mlp unused");
     }
+
     size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
         throw std::runtime_error("PyAnnote: build_transformer_block unused");
     }
+
     size_t forward(const std::vector<uint32_t>&, bool = false) override {
-        throw std::runtime_error("PyAnnote requires audio input via diarize().");
+        throw std::runtime_error("PyAnnote: use diarize() instead");
     }
 
     void load_weights_to_graph(CactusGraph* gb) override;
 
 private:
-    size_t audio_input_ = 0;
-    size_t output_node_ = 0;
+    void build_graph();
 
     struct LSTMLayerWeights {
         size_t w_ih_fwd, w_hh_fwd, b_ih_fwd, b_hh_fwd;
         size_t w_ih_bwd, w_hh_bwd, b_ih_bwd, b_hh_bwd;
     };
 
-    struct WeightNodes {
+    struct WeightNodeIDs {
         size_t sinc_filters;
         size_t wav_norm_weight, wav_norm_bias;
         size_t norm0_weight, norm0_bias;
@@ -1561,7 +1561,11 @@ private:
         size_t linear0_weight, linear0_bias;
         size_t linear1_weight, linear1_bias;
         size_t classifier_weight, classifier_bias;
-    } w_;
+    } weight_nodes_;
+
+    CactusGraph graph_;
+    size_t audio_input_ = 0;
+    size_t output_node_ = 0;
 };
 
 class WeSpeakerModel : public Model {
@@ -1570,28 +1574,33 @@ public:
     explicit WeSpeakerModel(const Config& config);
     ~WeSpeakerModel() override = default;
 
-    bool init(const std::string& model_folder, size_t context_size,
-              const std::string& system_prompt = "", bool do_warmup = true) override;
+    bool init(const std::string& model_folder, size_t context_size = 0,
+              const std::string& system_prompt = "", bool do_warmup = false) override;
 
-    std::vector<float> embed(const float* pcm_f32, size_t num_samples);
+    std::vector<float> embed(const float* fbank_features, size_t num_features);
 
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
         throw std::runtime_error("WeSpeaker: build_attention unused");
     }
+
     size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
         throw std::runtime_error("WeSpeaker: build_mlp unused");
     }
+
     size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
         throw std::runtime_error("WeSpeaker: build_transformer_block unused");
     }
+
     size_t forward(const std::vector<uint32_t>&, bool = false) override {
-        throw std::runtime_error("WeSpeaker requires audio input via embed().");
+        throw std::runtime_error("WeSpeaker: use embed() instead");
     }
 
     void load_weights_to_graph(CactusGraph* gb) override;
 
-public:
+private:
+    void build_graph();
+
     struct ResBlockWeights {
         size_t conv1_w, conv2_w;
         size_t bn1_w, bn1_b, bn1_mean, bn1_var;
@@ -1601,16 +1610,19 @@ public:
         bool has_shortcut = false;
     };
 
-private:
-    size_t audio_input_ = 0;
-    size_t output_node_ = 0;
+    static ResBlockWeights load_resblock(CactusGraph* gb, const std::string& prefix, bool has_shortcut);
+    static size_t build_resblock(CactusGraph* gb, size_t x, const ResBlockWeights& rb, bool stride2);
 
-    struct WeightNodes {
+    struct WeightNodeIDs {
         size_t conv1_w;
         size_t bn1_w, bn1_b, bn1_mean, bn1_var;
         std::vector<ResBlockWeights> layer1, layer2, layer3, layer4;
         size_t seg1_w, seg1_b;
-    } w_;
+    } weight_nodes_;
+
+    CactusGraph graph_;
+    size_t audio_input_ = 0;
+    size_t output_node_ = 0;
 };
 
 }

@@ -165,6 +165,8 @@ graph.hard_reset();
 | nvidia/parakeet-tdt-0.6b-v3 | 600M | 718 | 718 | 3583333 | yes | 0.0359 | 0.0465 |
 | nvidia/parakeet-ctc-1.1b | 1.1B | 279 | 278 | 4562500 | yes | 0.0139 | 0.1628 |
 | snakers4/silero-vad | - | - | - | - | - | - | - |
+| pyannote/segmentation-3.0 | - | - | - | - | - | - | - |
+| pyannote/wespeaker-voxceleb-resnet34-LM | - | - | - | - | - | - | - |
 
 ## Supported LLMs
 

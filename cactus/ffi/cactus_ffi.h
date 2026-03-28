@@ -30,27 +30,6 @@ CACTUS_FFI_EXPORT cactus_model_t cactus_init(
 );
 
 CACTUS_FFI_EXPORT void cactus_destroy(cactus_model_t model);
-
-// Speaker diarization — runs PyAnnote segmentation model on PCM audio.
-// pcm_data: float32 mono 16kHz PCM samples
-// pcm_size: number of samples (max 160000 = 10 seconds)
-// output_buffer: receives float32 probabilities (num_frames × 7)
-// output_size: size of output buffer in bytes
-// Returns: 0 on success, -1 on error
-CACTUS_FFI_EXPORT int cactus_diarize(
-    cactus_model_t model,
-    const float* pcm_data,
-    size_t pcm_size,
-    float* output_buffer,
-    size_t output_size
-);
-CACTUS_FFI_EXPORT int cactus_embed_speaker(
-    cactus_model_t model,
-    const float* pcm_data,
-    size_t pcm_size,
-    float* output_buffer,
-    size_t output_size
-);
 CACTUS_FFI_EXPORT void cactus_reset(cactus_model_t model);
 CACTUS_FFI_EXPORT void cactus_stop(cactus_model_t model);
 
@@ -170,6 +149,24 @@ CACTUS_FFI_EXPORT int cactus_vad(
     size_t pcm_buffer_size
 );
 
+CACTUS_FFI_EXPORT int cactus_diarize(
+    cactus_model_t model,
+    const char* audio_file_path,
+    char* response_buffer,
+    size_t buffer_size,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+);
+
+CACTUS_FFI_EXPORT int cactus_embed_speaker(
+    cactus_model_t model,
+    const char* audio_file_path,
+    char* response_buffer,
+    size_t buffer_size,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+);
+
 CACTUS_FFI_EXPORT int cactus_rag_query(
     cactus_model_t model,
     const char* query,
@@ -177,7 +174,6 @@ CACTUS_FFI_EXPORT int cactus_rag_query(
     size_t buffer_size,
     size_t top_k
 );
-
 
 CACTUS_FFI_EXPORT cactus_index_t cactus_index_init(
     const char* index_dir,
@@ -240,7 +236,7 @@ CACTUS_FFI_EXPORT void cactus_set_app_id(const char* app_id);
 CACTUS_FFI_EXPORT void cactus_telemetry_flush(void);
 CACTUS_FFI_EXPORT void cactus_telemetry_shutdown(void);
 
-// cactus graph export 
+// cactus graph export
 typedef void* cactus_graph_t;
 typedef uint64_t cactus_node_t;
 
@@ -413,8 +409,6 @@ CACTUS_FFI_EXPORT int cactus_graph_altup_correct(
     cactus_graph_t graph, cactus_node_t coefs, cactus_node_t innovation, const cactus_node_t* predictions, size_t num_predictions, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_gaussian_topk(
     cactus_graph_t graph, cactus_node_t input, float ppf, cactus_node_t* out);
-CACTUS_FFI_EXPORT int cactus_graph_maxpool1d(
-    cactus_graph_t graph, cactus_node_t input, size_t kernel_size, size_t stride, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_moe_layer_gated(
     cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,

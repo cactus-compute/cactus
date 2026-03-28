@@ -128,15 +128,17 @@ static void lstm_gemv_f16_neon(
     size_t K, size_t N
 ) {
     const size_t K16 = (K / 16) * 16;
-    const size_t K8  = (K / 8) * 8;
+    const size_t K8 = (K / 8) * 8;
     size_t n = 0;
     for (; n + 4 <= N; n += 4) {
         const __fp16* w0 = W + n * K;
         const __fp16* w1 = W + (n + 1) * K;
         const __fp16* w2 = W + (n + 2) * K;
         const __fp16* w3 = W + (n + 3) * K;
-        float16x8_t a0 = vdupq_n_f16(0), a1 = vdupq_n_f16(0);
-        float16x8_t a2 = vdupq_n_f16(0), a3 = vdupq_n_f16(0);
+        float16x8_t a0 = vdupq_n_f16(0);
+        float16x8_t a1 = vdupq_n_f16(0);
+        float16x8_t a2 = vdupq_n_f16(0);
+        float16x8_t a3 = vdupq_n_f16(0);
         for (size_t k = 0; k < K16; k += 16) {
             float16x8_t xlo = vld1q_f16(x + k);
             float16x8_t xhi = vld1q_f16(x + k + 8);
@@ -156,8 +158,10 @@ static void lstm_gemv_f16_neon(
             a2 = vfmaq_f16(a2, xv, vld1q_f16(w2 + k));
             a3 = vfmaq_f16(a3, xv, vld1q_f16(w3 + k));
         }
-        float s0 = hsum_f16x8_f32(a0), s1 = hsum_f16x8_f32(a1);
-        float s2 = hsum_f16x8_f32(a2), s3 = hsum_f16x8_f32(a3);
+        float s0 = hsum_f16x8_f32(a0);
+        float s1 = hsum_f16x8_f32(a1);
+        float s2 = hsum_f16x8_f32(a2);
+        float s3 = hsum_f16x8_f32(a3);
         for (size_t k = K8; k < K; ++k) {
             float xv = static_cast<float>(x[k]);
             s0 += xv * static_cast<float>(w0[k]);
@@ -165,7 +169,7 @@ static void lstm_gemv_f16_neon(
             s2 += xv * static_cast<float>(w2[k]);
             s3 += xv * static_cast<float>(w3[k]);
         }
-        out[n]     = static_cast<__fp16>(s0 + static_cast<float>(bias[n]));
+        out[n] = static_cast<__fp16>(s0 + static_cast<float>(bias[n]));
         out[n + 1] = static_cast<__fp16>(s1 + static_cast<float>(bias[n + 1]));
         out[n + 2] = static_cast<__fp16>(s2 + static_cast<float>(bias[n + 2]));
         out[n + 3] = static_cast<__fp16>(s3 + static_cast<float>(bias[n + 3]));
@@ -259,7 +263,6 @@ void cactus_bilstm_sequence_f16(
 
             for (size_t idx = 0; idx < seq_len; ++idx) {
                 const size_t t = seq_len - 1 - idx;
-
                 fp16_to_fp32_neon(batch_in + t * input_size, xh.data(), input_size);
                 memcpy(xh.data() + input_size, h.data(), hidden_size * sizeof(float));
 

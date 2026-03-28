@@ -48,6 +48,8 @@ PROJECT_ROOT = _resolve_project_root()
 DEFAULT_MODEL_ID = "LiquidAI/LFM2.5-1.2B-Instruct"
 DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_TEST_WHISPER_MODEL_ID = "openai/whisper-small"
+DEFAULT_TEST_DIARIZE_MODEL_ID = "pyannote/segmentation-3.0"
+DEFAULT_TEST_EMBED_SPEAKER_MODEL_ID = "pyannote/wespeaker-voxceleb-resnet34-LM"
 WEIGHTS_VARIANT_CHOICES = ["auto", "apple", "standard"]
 
 with open(PROJECT_ROOT / "models.json") as _f:
@@ -323,6 +325,8 @@ def cmd_download(args):
     is_whisper = 'whisper' in model_name.lower()
     is_parakeet = 'parakeet' in model_name.lower()
     is_vad = 'silero-vad' in model_name.lower()
+    is_pyannote = 'segmentation-3.0' in model_name.lower()
+    is_wespeaker = 'wespeaker' in model_name.lower()
 
     try:
         if is_vlm:
@@ -485,6 +489,31 @@ def cmd_download(args):
             convert_silero_vad_weights(model, weights_dir, precision, args)
 
             del model
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            print_color(GREEN, f"Successfully downloaded and converted weights to {weights_dir}")
+            return 0
+
+        elif is_pyannote or is_wespeaker:
+            try:
+                from pyannote.audio import Model as PyannoteModel
+            except ImportError:
+                print_color(RED, "Error: pyannote.audio is required. Install with: pip install pyannote.audio")
+                return 1
+            from .converter import convert_pyannote_weights, convert_wespeaker_weights
+
+            print(f"  Note: Loading {model_id} via pyannote.audio...")
+            pyannote_model = PyannoteModel.from_pretrained(model_id, token=token)
+            pyannote_model.eval()
+
+            if is_pyannote:
+                convert_pyannote_weights(pyannote_model, weights_dir, precision, args)
+            else:
+                convert_wespeaker_weights(pyannote_model, weights_dir, precision, args)
+
+            del pyannote_model
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -1374,12 +1403,15 @@ def cmd_test(args):
         print_color(BLUE, f"Using large models: {args.model}, {args.transcribe_model}, {args.vad_model}")
 
     if getattr(args, 'reconvert', False):
-        for model_id in [
+        reconvert_models = [
             getattr(args, 'model', 'LiquidAI/LFM2-VL-450M'),
             getattr(args, 'transcribe_model', DEFAULT_TEST_TRANSCRIBE_MODEL_ID),
             getattr(args, 'whisper_model', DEFAULT_TEST_WHISPER_MODEL_ID),
-            getattr(args, 'vad_model', 'snakers4/silero-vad')
-        ]:
+            getattr(args, 'vad_model', 'snakers4/silero-vad'),
+            getattr(args, 'diarize_model', DEFAULT_TEST_DIARIZE_MODEL_ID),
+            getattr(args, 'embed_speaker_model', DEFAULT_TEST_EMBED_SPEAKER_MODEL_ID),
+        ]
+        for model_id in reconvert_models:
             class DownloadArgs:
                 pass
             dl_args = DownloadArgs()
@@ -1390,7 +1422,8 @@ def cmd_test(args):
                 dl_args.precision = args.precision
             else:
                 is_asr = 'whisper' in model_id.lower() or 'moonshine' in model_id.lower() or 'silero-vad' in model_id.lower()
-                dl_args.precision = 'INT8' if is_asr else 'INT4'
+                is_fp16_only = 'segmentation-3.0' in model_id.lower() or 'wespeaker' in model_id.lower()
+                dl_args.precision = 'FP16' if is_fp16_only else ('INT8' if is_asr else 'INT4')
             if args.token:
                 dl_args.token = args.token
             dl_args.weights_variant = getattr(args, 'weights_variant', 'auto')
@@ -1411,8 +1444,12 @@ def cmd_test(args):
         cmd.extend(["--transcribe_model", args.transcribe_model])
     if getattr(args, 'whisper_model', None):
         cmd.extend(["--whisper_model", args.whisper_model])
-    if args.vad_model:
+    if getattr(args, 'vad_model', None):
         cmd.extend(["--vad_model", args.vad_model])
+    if getattr(args, 'diarize_model', None):
+        cmd.extend(["--diarize_model", args.diarize_model])
+    if getattr(args, 'embed_speaker_model', None):
+        cmd.extend(["--embed_speaker_model", args.embed_speaker_model])
     if args.precision:
         cmd.extend(["--precision", args.precision])
     if getattr(args, 'no_rebuild', False):
@@ -2028,6 +2065,10 @@ def create_parser():
                              help='Whisper model to use for language detection tests')
     test_parser.add_argument('--vad_model', default='snakers4/silero-vad',
                              help='VAD model to use')
+    test_parser.add_argument('--diarize_model', default=DEFAULT_TEST_DIARIZE_MODEL_ID,
+                             help='Diarization model to use')
+    test_parser.add_argument('--embed_speaker_model', default=DEFAULT_TEST_EMBED_SPEAKER_MODEL_ID,
+                             help='Speaker embedding model to use')
     test_parser.add_argument('--benchmark', action='store_true',
                              help='Use larger models (LFM2.5-VL-1.6B + nvidia/parakeet-ctc-1.1b)')
     test_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'],

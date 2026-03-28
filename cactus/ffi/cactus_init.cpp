@@ -1,7 +1,6 @@
 #include "cactus_ffi.h"
 #include "cactus_utils.h"
 #include "telemetry/telemetry.h"
-#include "../models/model.h"
 #include <string>
 #include <cstring>
 #include <algorithm>
@@ -406,7 +405,6 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
             model_type == Config::ModelType::MOONSHINE ||
             model_type == Config::ModelType::PARAKEET ||
             model_type == Config::ModelType::PARAKEET_TDT) {
-
             std::string vad_path = model_path_str + "/vad";
             handle->vad_model = create_model(vad_path);
             if (!handle->vad_model) {
@@ -467,50 +465,6 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
 
 void cactus_destroy(cactus_model_t model) {
     if (model) delete static_cast<CactusModelHandle*>(model);
-}
-
-int cactus_diarize(cactus_model_t model, const float* pcm_data, size_t pcm_size, float* output_buffer, size_t output_size) {
-    if (!model || !pcm_data || !output_buffer) {
-        last_error_message = "Invalid arguments to cactus_diarize";
-        return -1;
-    }
-    try {
-        auto* handle = static_cast<CactusModelHandle*>(model);
-        auto* pyannote = dynamic_cast<cactus::engine::PyAnnoteModel*>(handle->model.get());
-        if (!pyannote) {
-            last_error_message = "Model is not a PyAnnote diarization model";
-            return -1;
-        }
-        auto result = pyannote->diarize(pcm_data, pcm_size);
-        size_t copy_size = std::min(result.size() * sizeof(float), output_size);
-        std::memcpy(output_buffer, result.data(), copy_size);
-        return 0;
-    } catch (const std::exception& e) {
-        last_error_message = "Diarization failed: " + std::string(e.what());
-        return -1;
-    }
-}
-
-int cactus_embed_speaker(cactus_model_t model, const float* pcm_data, size_t pcm_size, float* output_buffer, size_t output_size) {
-    if (!model || !pcm_data || !output_buffer) {
-        last_error_message = "Invalid arguments to cactus_embed_speaker";
-        return -1;
-    }
-    try {
-        auto* handle = static_cast<CactusModelHandle*>(model);
-        auto* wespeaker = dynamic_cast<cactus::engine::WeSpeakerModel*>(handle->model.get());
-        if (!wespeaker) {
-            last_error_message = "Model is not a WeSpeaker embedding model";
-            return -1;
-        }
-        auto result = wespeaker->embed(pcm_data, pcm_size);
-        size_t copy_size = std::min(result.size() * sizeof(float), output_size);
-        std::memcpy(output_buffer, result.data(), copy_size);
-        return 0;
-    } catch (const std::exception& e) {
-        last_error_message = "Speaker embedding failed: " + std::string(e.what());
-        return -1;
-    }
 }
 
 void cactus_reset(cactus_model_t model) {

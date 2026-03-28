@@ -10,11 +10,15 @@ DEFAULT_MODEL="LiquidAI/LFM2-VL-450M"
 DEFAULT_TRANSCRIBE_MODEL="nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_WHISPER_MODEL="openai/whisper-small"
 DEFAULT_VAD_MODEL="snakers4/silero-vad"
+DEFAULT_DIARIZE_MODEL="pyannote/segmentation-3.0"
+DEFAULT_EMBED_SPEAKER_MODEL="pyannote/wespeaker-voxceleb-resnet34-LM"
 
 MODEL_NAME="$DEFAULT_MODEL"
 TRANSCRIBE_MODEL_NAME="$DEFAULT_TRANSCRIBE_MODEL"
 WHISPER_MODEL_NAME="$DEFAULT_WHISPER_MODEL"
 VAD_MODEL_NAME="$DEFAULT_VAD_MODEL"
+DIARIZE_MODEL_NAME="$DEFAULT_DIARIZE_MODEL"
+EMBED_SPEAKER_MODEL_NAME="$DEFAULT_EMBED_SPEAKER_MODEL"
 ANDROID_MODE=false
 IOS_MODE=false
 NO_REBUILD=false
@@ -37,6 +41,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --vad_model)
             VAD_MODEL_NAME="$2"
+            shift 2
+            ;;
+        --diarize_model)
+            DIARIZE_MODEL_NAME="$2"
+            shift 2
+            ;;
+        --embed_speaker_model)
+            EMBED_SPEAKER_MODEL_NAME="$2"
             shift 2
             ;;
         --android)
@@ -71,6 +83,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --transcribe_model <name> Transcribe model to use (default: $DEFAULT_TRANSCRIBE_MODEL)"
             echo "  --whisper_model <name>    Whisper model for language detection (default: $DEFAULT_WHISPER_MODEL)"
             echo "  --vad_model <name>        VAD model to use (default: $DEFAULT_VAD_MODEL)"
+            echo "  --diarize_model <name>    Diarization model to use (default: $DEFAULT_DIARIZE_MODEL)"
+            echo "  --embed_speaker_model <name> Speaker embedding model to use (default: $DEFAULT_EMBED_SPEAKER_MODEL)"
             echo "  --precision <type>        Precision for model conversion (MIXED, FP16, INT8, INT4)"
             echo "  --android                 Run tests on Android device or emulator"
             echo "  --ios                     Run tests on iOS device or simulator"
@@ -93,7 +107,9 @@ echo "Using model: $MODEL_NAME"
 echo "Using transcribe model: $TRANSCRIBE_MODEL_NAME"
 echo "Using whisper model: $WHISPER_MODEL_NAME"
 echo "Using vad model: $VAD_MODEL_NAME"
-if [ ! -z "$PRECISION" ]; then
+echo "Using diarize model: $DIARIZE_MODEL_NAME"
+echo "Using embed_speaker model: $EMBED_SPEAKER_MODEL_NAME"
+if [ -n "$PRECISION" ]; then
     echo "Using precision: $PRECISION"
     PRECISION_FLAG="--precision $PRECISION"
 else
@@ -122,15 +138,25 @@ if ! cactus download "$VAD_MODEL_NAME" $PRECISION_FLAG; then
     exit 1
 fi
 
+if ! cactus download "$DIARIZE_MODEL_NAME" $PRECISION_FLAG; then
+    echo "Failed to download diarize model weights"
+    exit 1
+fi
+
+if ! cactus download "$EMBED_SPEAKER_MODEL_NAME" $PRECISION_FLAG; then
+    echo "Failed to download embed_speaker model weights"
+    exit 1
+fi
+
 echo ""
 if [ "$ANDROID_MODE" = true ]; then
     export CACTUS_TEST_ONLY="$ONLY_EXEC"
-    exec "$SCRIPT_DIR/android/run.sh" "$MODEL_NAME" "$TRANSCRIBE_MODEL_NAME" "$WHISPER_MODEL_NAME" "$VAD_MODEL_NAME"
+    exec "$SCRIPT_DIR/android/run.sh" "$MODEL_NAME" "$TRANSCRIBE_MODEL_NAME" "$WHISPER_MODEL_NAME" "$VAD_MODEL_NAME" "$DIARIZE_MODEL_NAME" "$EMBED_SPEAKER_MODEL_NAME"
 fi
 
 if [ "$IOS_MODE" = true ]; then
     export CACTUS_TEST_ONLY="$ONLY_EXEC"
-    exec "$SCRIPT_DIR/ios/run.sh" "$MODEL_NAME" "$TRANSCRIBE_MODEL_NAME" "$WHISPER_MODEL_NAME" "$VAD_MODEL_NAME"
+    exec "$SCRIPT_DIR/ios/run.sh" "$MODEL_NAME" "$TRANSCRIBE_MODEL_NAME" "$WHISPER_MODEL_NAME" "$VAD_MODEL_NAME" "$DIARIZE_MODEL_NAME" "$EMBED_SPEAKER_MODEL_NAME"
 fi
 
 if [ "$NO_REBUILD" = false ]; then
@@ -171,11 +197,15 @@ MODEL_DIR=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 TRANSCRIBE_MODEL_DIR=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 WHISPER_MODEL_DIR=$(echo "$WHISPER_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 VAD_MODEL_DIR=$(echo "$VAD_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+DIARIZE_MODEL_DIR=$(echo "$DIARIZE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+EMBED_SPEAKER_MODEL_DIR=$(echo "$EMBED_SPEAKER_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 
 export CACTUS_TEST_MODEL="$PROJECT_ROOT/weights/$MODEL_DIR"
 export CACTUS_TEST_TRANSCRIBE_MODEL="$PROJECT_ROOT/weights/$TRANSCRIBE_MODEL_DIR"
 export CACTUS_TEST_WHISPER_MODEL="$PROJECT_ROOT/weights/$WHISPER_MODEL_DIR"
 export CACTUS_TEST_VAD_MODEL="$PROJECT_ROOT/weights/$VAD_MODEL_DIR"
+export CACTUS_TEST_DIARIZE_MODEL="$PROJECT_ROOT/weights/$DIARIZE_MODEL_DIR"
+export CACTUS_TEST_EMBED_SPEAKER_MODEL="$PROJECT_ROOT/weights/$EMBED_SPEAKER_MODEL_DIR"
 export CACTUS_TEST_ASSETS="$PROJECT_ROOT/tests/assets"
 export CACTUS_INDEX_PATH="$PROJECT_ROOT/tests/assets"
 
@@ -183,6 +213,8 @@ echo "Using model path: $CACTUS_TEST_MODEL"
 echo "Using transcribe model path: $CACTUS_TEST_TRANSCRIBE_MODEL"
 echo "Using whisper model path: $CACTUS_TEST_WHISPER_MODEL"
 echo "Using VAD model path: $CACTUS_TEST_VAD_MODEL"
+echo "Using diarize model path: $CACTUS_TEST_DIARIZE_MODEL"
+echo "Using embed_speaker model path: $CACTUS_TEST_EMBED_SPEAKER_MODEL"
 echo "Using assets path: $CACTUS_TEST_ASSETS"
 echo "Using index path: $CACTUS_INDEX_PATH"
 

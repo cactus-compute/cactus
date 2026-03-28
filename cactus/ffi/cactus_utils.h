@@ -154,6 +154,24 @@ inline cactus::engine::AudioProcessor::SpectrogramConfig get_htk_spectrogram_con
     return cfg;
 }
 
+inline cactus::engine::AudioProcessor::SpectrogramConfig get_wespeaker_spectrogram_config() {
+    cactus::engine::AudioProcessor::SpectrogramConfig cfg{};
+    cfg.n_fft        = 512;
+    cfg.frame_length = 400;
+    cfg.hop_length   = 160;
+    cfg.power        = 2.0f;
+    cfg.center       = true;
+    cfg.pad_mode     = "reflect";
+    cfg.onesided     = true;
+    cfg.dither       = 0.0f;
+    cfg.mel_floor    = 1e-10f;
+    cfg.log_mel      = "log";
+    cfg.reference    = 1.0f;
+    cfg.min_value    = 1e-10f;
+    cfg.remove_dc_offset = false;
+    return cfg;
+}
+
 inline std::vector<float> transpose_mel_to_frame_major(const std::vector<float>& mel,
                                                         size_t num_mels, size_t num_frames) {
     std::vector<float> transposed(num_frames * num_mels);

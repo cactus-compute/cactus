@@ -2193,13 +2193,6 @@ void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_p
         n, seq_len, hidden_dim);
 }
 
-void compute_leaky_relu_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
-                              const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    cactus_leaky_relu_f16(input.data_as<__fp16>(), node.output_buffer.data_as<__fp16>(),
-                          input.total_size, node.params.scalar);
-}
-
 void compute_bilstm_sequence_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                                    const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
@@ -2252,6 +2245,7 @@ void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_p
     if (node.input_ids.size() >= 3) {
         bias_ptr = nodes[node_index_map.at(node.input_ids[2])]->output_buffer.data_as<__fp16>();
     }
+
     cactus_conv2d_f16_k3s1p1_nchw(
         X.data_as<__fp16>(), W.data_as<__fp16>(), bias_ptr,
         node.output_buffer.data_as<__fp16>(),

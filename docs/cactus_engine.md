@@ -746,39 +746,86 @@ cactus_stream_transcribe_stop(stream, NULL, 0);
 ```
 
 ### `cactus_diarize`
-Runs speaker diarization on raw audio. Takes 10 seconds of 16 kHz mono float32 PCM and returns per-frame speaker probabilities using the pyannote/segmentation-3.0 model.
+Runs speaker diarization on audio using the pyannote/segmentation-3.0 model. Supports both file-based and buffer-based audio input.
 
 ```c
 int cactus_diarize(
     cactus_model_t model,           // Model handle (must be PyAnnote model)
-    const float* pcm_data,          // Raw float32 PCM audio samples (16 kHz mono)
-    size_t pcm_size,                // Number of samples (up to 160,000 for 10s)
-    float* output_buffer,           // Buffer for output probabilities
-    size_t output_size              // Size of output buffer in bytes
+    const char* audio_file_path,    // Path to WAV file (16-bit PCM) - can be NULL if using pcm_buffer
+    char* response_buffer,          // Buffer for response JSON
+    size_t buffer_size,             // Size of response buffer
+    const uint8_t* pcm_buffer,      // Optional raw int16 PCM buffer (can be NULL if using file)
+    size_t pcm_buffer_size          // Size of PCM buffer in bytes (must be even and >= 2)
 );
 ```
 
-**Returns:** 0 on success, -1 on error
+**Returns:** Number of bytes written to response_buffer on success, negative value on error
 
-The model processes 10-second chunks (160,000 samples at 16 kHz). Shorter input is zero-padded. Output is a flat array of 589 × 7 = 4,123 float32 values representing frame-level speaker probabilities in powerset encoding.
+**Note:** Exactly one of `audio_file_path` or `pcm_buffer` must be provided; passing both or neither returns -1. The file path must point to a 16-bit PCM WAV file. The `pcm_buffer` must contain 16-bit signed PCM samples at 16 kHz and `pcm_buffer_size` must be even and at least 2.
 
-**Architecture:** SincNet waveform frontend → 4-layer bidirectional LSTM → linear classifier → softmax. On Apple Silicon, the BiLSTM uses Accelerate cblas_sgemv (AMX) and conv1d uses im2col + cblas_sgemm for optimal throughput (~10ms per chunk on M4 Pro).
+The model processes 10-second windows (160,000 samples at 16 kHz). Shorter input is zero-padded. Output scores are a flat array of T × 7 float32 values representing frame-level speaker probabilities in powerset encoding, where T is the number of output frames (typically ~589 for a full 10-second window).
+
+**Response Format:**
+```json
+{
+    "success": true,
+    "error": null,
+    "scores": [0.0, 0.1, ...],
+    "total_time_ms": 12.34,
+    "ram_usage_mb": 256.0
+}
+```
 
 **Example:**
 ```c
-cactus_model_t model = cactus_init("weights/pyannote-seg3", NULL, false);
+cactus_model_t pyannote = cactus_init("../../weights/segmentation-3.0", NULL, false);
 
-float audio[160000];  // 10s of 16kHz mono audio
-// ... fill audio buffer ...
+char response[1 << 20];
+int result = cactus_diarize(pyannote, "audio.wav", response, sizeof(response), NULL, 0);
 
-float output[4123];  // 589 frames × 7 classes
-int result = cactus_diarize(model, audio, 160000, output, sizeof(output));
+if (result >= 0) {
+    printf("Response: %s\n", response);
+}
+```
 
-if (result == 0) {
-    for (int frame = 0; frame < 589; frame++) {
-        float* probs = &output[frame * 7];
-        // probs[0..6] are speaker activity probabilities for this frame
-    }
+### `cactus_embed_speaker`
+Extracts a speaker embedding vector from audio using the WeSpeaker ResNet34-LM model. Supports both file-based and buffer-based audio input. Filter bank features are computed internally from raw audio.
+
+```c
+int cactus_embed_speaker(
+    cactus_model_t model,           // Model handle (must be WeSpeaker model)
+    const char* audio_file_path,    // Path to WAV file (16-bit PCM) - can be NULL if using pcm_buffer
+    char* response_buffer,          // Buffer for response JSON
+    size_t buffer_size,             // Size of response buffer
+    const uint8_t* pcm_buffer,      // Optional raw int16 PCM buffer (can be NULL if using file)
+    size_t pcm_buffer_size          // Size of PCM buffer in bytes (must be even and >= 2)
+);
+```
+
+**Returns:** Number of bytes written to response_buffer on success, negative value on error
+
+**Note:** Exactly one of `audio_file_path` or `pcm_buffer` must be provided; passing both or neither returns -1. The file path must point to a 16-bit PCM WAV file. The `pcm_buffer` must contain 16-bit signed PCM samples at 16 kHz and `pcm_buffer_size` must be even and at least 2. Output is a 256-dimensional speaker embedding.
+
+**Response Format:**
+```json
+{
+    "success": true,
+    "error": null,
+    "embedding": [0.123, -0.456, ...],
+    "total_time_ms": 8.12,
+    "ram_usage_mb": 128.0
+}
+```
+
+**Example:**
+```c
+cactus_model_t wespeaker = cactus_init("../../weights/wespeaker-voxceleb-resnet34-lm", NULL, false);
+
+char response[1 << 16];
+int result = cactus_embed_speaker(wespeaker, "audio.wav", response, sizeof(response), NULL, 0);
+
+if (result >= 0) {
+    printf("Response: %s\n", response);
 }
 ```
 
@@ -1504,6 +1551,7 @@ int find_similar_image(cactus_model_t model, const char* query,
 | Moonshine | - | - | ✓ | ✓ | UsefulSensors Moonshine transcription |
 | Parakeet | - | - | ✓ | ✓ | Nvidia Parakeet CTC/TDT transcription |
 | PyAnnote | - | - | ✓ | - | Speaker diarization (segmentation-3.0) |
+| WeSpeaker | - | - | ✓ | - | Speaker embedding (ResNet34-LM) |
 | Silero VAD | - | - | ✓ | - | Voice activity detection |
 
 ## Environment Variables

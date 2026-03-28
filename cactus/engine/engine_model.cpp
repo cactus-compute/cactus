@@ -133,9 +133,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER ||
                                  config_.model_type == Config::ModelType::MOONSHINE ||
                                  config_.model_type == Config::ModelType::PARAKEET ||
-                                 config_.model_type == Config::ModelType::PARAKEET_TDT ||
-                                 config_.model_type == Config::ModelType::PYANNOTE ||
-                                 config_.model_type == Config::ModelType::WESPEAKER)
+                                 config_.model_type == Config::ModelType::PARAKEET_TDT)
                                ? Precision::FP16
                                : Precision::INT8;
     kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, get_kv_layer_dims(), cache_precision);
@@ -162,9 +160,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         config_.model_type != Config::ModelType::WHISPER &&
         config_.model_type != Config::ModelType::MOONSHINE &&
         config_.model_type != Config::ModelType::PARAKEET &&
-        config_.model_type != Config::ModelType::PARAKEET_TDT &&
-        config_.model_type != Config::ModelType::PYANNOTE &&
-        config_.model_type != Config::ModelType::WESPEAKER) {
+        config_.model_type != Config::ModelType::PARAKEET_TDT) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
         forward(warmup_tokens);

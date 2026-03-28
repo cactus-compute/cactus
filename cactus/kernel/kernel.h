@@ -110,6 +110,8 @@ void cactus_softmax_f16(const __fp16* input, __fp16* output, size_t batch_size,
 
 void cactus_relu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 
+void cactus_leaky_relu_f16(const __fp16* input, __fp16* output, size_t num_elements, float negative_slope);
+
 void cactus_silu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 
 void cactus_gelu_f16(const __fp16* input, __fp16* output, size_t num_elements);
@@ -414,8 +416,6 @@ void cactus_lstm_cell_f16(
     size_t input_size,
     size_t hidden_size
 );
-
-void cactus_leaky_relu_f16(const __fp16* input, __fp16* output, size_t num_elements, float negative_slope);
 
 void cactus_bilstm_sequence_f16(
     const __fp16* input,

@@ -1015,6 +1015,81 @@ def convert_hf_model_weights(
     return model_config
 
 
+def convert_pyannote_weights(model, output_dir, precision="FP16", args=None):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sd = model.state_dict()
+
+    def save(filename, key):
+        save_tensor_with_header(sd[key], output_dir / filename, precision=precision)
+
+    save("sincnet_wav_norm_weight.weights", "sincnet.wav_norm1d.weight")
+    save("sincnet_wav_norm_bias.weights", "sincnet.wav_norm1d.bias")
+
+    # SincConv filters - computed from learned parameters via the module
+    with torch.no_grad():
+        sinc_filters = model.sincnet.conv1d[0].filterbank.filters()
+    save_tensor_with_header(sinc_filters, output_dir / "sincnet_sinc_filters.weights", precision=precision)
+
+    save("sincnet_norm0_weight.weights", "sincnet.norm1d.0.weight")
+    save("sincnet_norm0_bias.weights", "sincnet.norm1d.0.bias")
+    save("sincnet_conv1_weight.weights", "sincnet.conv1d.1.weight")
+    save("sincnet_conv1_bias.weights", "sincnet.conv1d.1.bias")
+    save("sincnet_norm1_weight.weights", "sincnet.norm1d.1.weight")
+    save("sincnet_norm1_bias.weights", "sincnet.norm1d.1.bias")
+    save("sincnet_conv2_weight.weights", "sincnet.conv1d.2.weight")
+    save("sincnet_conv2_bias.weights", "sincnet.conv1d.2.bias")
+    save("sincnet_norm2_weight.weights", "sincnet.norm1d.2.weight")
+    save("sincnet_norm2_bias.weights", "sincnet.norm1d.2.bias")
+
+    for i in range(4):
+        for direction, suffix in [("fwd", ""), ("bwd", "_reverse")]:
+            for w in ["weight_ih", "weight_hh", "bias_ih", "bias_hh"]:
+                save(f"lstm_{direction}_{i}_{w}.weights", f"lstm.{w}_l{i}{suffix}")
+
+    save("linear_0_weight.weights", "linear.0.weight")
+    save("linear_0_bias.weights", "linear.0.bias")
+    save("linear_1_weight.weights", "linear.1.weight")
+    save("linear_1_bias.weights", "linear.1.bias")
+    save("classifier_weight.weights", "classifier.weight")
+    save("classifier_bias.weights", "classifier.bias")
+
+    config = {"model_type": "pyannote", "precision": precision}
+    config_path = output_dir / "config.txt"
+    with open(config_path, "w") as f:
+        for key, value in config.items():
+            f.write(f"{key}={value}\n")
+    return config
+
+
+def convert_wespeaker_weights(model, output_dir, precision="FP16", args=None):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sd = model.state_dict()
+
+    for name, tensor in sorted(sd.items()):
+        if "num_batches_tracked" in name:
+            continue
+
+        # Shortcut 1x1 conv - pad to 3x3 to reuse conv2d_k3s2p1 kernel
+        if "shortcut.0.weight" in name:
+            C_out, C_in = tensor.shape[0], tensor.shape[1]
+            padded = torch.zeros(C_out, C_in, 3, 3, dtype=tensor.dtype)
+            padded[:, :, 1, 1] = tensor[:, :, 0, 0]
+            tensor = padded
+
+        save_tensor_with_header(tensor, output_dir / f"{name.replace('.', '_')}.weights", precision=precision)
+
+    config = {"model_type": "wespeaker", "precision": precision}
+    config_path = output_dir / "config.txt"
+    with open(config_path, "w") as f:
+        for key, value in config.items():
+            f.write(f"{key}={value}\n")
+    return config
+
+
 def convert_silero_vad_weights(model, output_dir, precision="FP16", args=None):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

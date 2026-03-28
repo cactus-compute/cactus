@@ -14,6 +14,8 @@ using namespace EngineTestUtils;
 static const char* g_transcribe_model_path = std::getenv("CACTUS_TEST_TRANSCRIBE_MODEL");
 static const char* g_whisper_model_path = std::getenv("CACTUS_TEST_WHISPER_MODEL");
 static const char* g_vad_model_path = std::getenv("CACTUS_TEST_VAD_MODEL");
+static const char* g_diarize_model_path = std::getenv("CACTUS_TEST_DIARIZE_MODEL");
+static const char* g_embed_speaker_model_path = std::getenv("CACTUS_TEST_EMBED_SPEAKER_MODEL");
 static const char* g_assets_path = std::getenv("CACTUS_TEST_ASSETS");
 
 static const char* get_transcribe_prompt() {
@@ -634,13 +636,12 @@ static bool test_vad_process() {
               << "║           VAD PROCESS TEST               ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    const char* vad_model_path = std::getenv("CACTUS_TEST_VAD_MODEL");
-    if (!vad_model_path) {
+    if (!g_vad_model_path) {
         std::cout << "⊘ SKIP │ CACTUS_TEST_VAD_MODEL not set\n";
         return true;
     }
 
-    cactus_model_t model = cactus_init(vad_model_path, nullptr, false);
+    cactus_model_t model = cactus_init(g_vad_model_path, nullptr, false);
     if (!model) {
         std::cerr << "[✗] Failed to initialize VAD model\n";
         return false;
@@ -704,6 +705,122 @@ static bool test_vad_process() {
 
     return result > 0 && !segments.empty();
 }
+
+static bool test_diarize() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║           DIARIZE TEST                   ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    if (!g_diarize_model_path) {
+        std::cout << "⊘ SKIP │ CACTUS_TEST_DIARIZE_MODEL not set\n";
+        return true;
+    }
+    if (!g_assets_path) {
+        std::cout << "⊘ SKIP │ CACTUS_TEST_ASSETS not set\n";
+        return true;
+    }
+
+    cactus_model_t model = cactus_init(g_diarize_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize diarization model\n";
+        return false;
+    }
+
+    std::string audio_path = std::string(g_assets_path) + "/test.wav";
+    char response[1 << 20] = {0};
+
+    int result = cactus_diarize(model, audio_path.c_str(), response, sizeof(response), nullptr, 0);
+
+    cactus_destroy(model);
+
+    if (result < 0) {
+        std::cerr << "[✗] Diarization failed: " << response << "\n";
+        return false;
+    }
+
+    std::string response_str(response);
+    if (response_str.find("\"success\":true") == std::string::npos) {
+        std::cerr << "[✗] Diarization response indicates failure: " << response_str << "\n";
+        return false;
+    }
+
+    size_t scores_start = response_str.find("\"scores\":[");
+    size_t scores_end = response_str.find("]", scores_start);
+    size_t num_scores = 0;
+    for (size_t i = scores_start; i < scores_end; ++i)
+        if (response_str[i] == ',') ++num_scores;
+    ++num_scores;
+
+    double total_time_ms = json_number(response_str, "total_time_ms");
+
+    std::cout << "\n[Results]\n"
+              << "  \"success\": true,\n"
+              << "  \"scores_count\": " << num_scores << ",\n"
+              << "  \"total_time_ms\": " << std::fixed << std::setprecision(2) << total_time_ms << "\n";
+
+    return num_scores > 0 && num_scores % 7 == 0;
+}
+
+static bool test_embed_speaker() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║        EMBED SPEAKER TEST                ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    if (!g_embed_speaker_model_path) {
+        std::cout << "⊘ SKIP │ CACTUS_TEST_EMBED_SPEAKER_MODEL not set\n";
+        return true;
+    }
+
+    cactus_model_t model = cactus_init(g_embed_speaker_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize speaker embedding model\n";
+        return false;
+    }
+
+    constexpr size_t SAMPLE_RATE = 16000;
+    constexpr size_t NUM_SAMPLES = SAMPLE_RATE * 3;
+    std::vector<int16_t> pcm(NUM_SAMPLES);
+    for (size_t i = 0; i < NUM_SAMPLES; ++i)
+        pcm[i] = static_cast<int16_t>(16384.0f * std::sin(static_cast<float>(i) * 0.1745f));
+
+    char response[1 << 16] = {0};
+
+    int result = cactus_embed_speaker(
+        model, nullptr, response, sizeof(response),
+        reinterpret_cast<const uint8_t*>(pcm.data()),
+        NUM_SAMPLES * sizeof(int16_t)
+    );
+
+    cactus_destroy(model);
+
+    if (result < 0) {
+        std::cerr << "[✗] Speaker embedding failed: " << response << "\n";
+        return false;
+    }
+
+    std::string response_str(response);
+    if (response_str.find("\"success\":true") == std::string::npos) {
+        std::cerr << "[✗] Speaker embedding response indicates failure: " << response_str << "\n";
+        return false;
+    }
+
+    size_t embed_start = response_str.find("\"embedding\":[");
+    size_t embed_end = response_str.find("]", embed_start);
+    size_t num_dims = 0;
+    for (size_t i = embed_start; i < embed_end; ++i)
+        if (response_str[i] == ',') ++num_dims;
+    ++num_dims;
+
+    double total_time_ms = json_number(response_str, "total_time_ms");
+
+    std::cout << "\n[Results]\n"
+              << "  \"success\": true,\n"
+              << "  \"embedding_dims\": " << num_dims << ",\n"
+              << "  \"total_time_ms\": " << std::fixed << std::setprecision(2) << total_time_ms << "\n";
+
+    return num_dims == 256;
+}
+
 static bool test_vocab_bias_base_class() {
     if (!g_transcribe_model_path || !g_assets_path) {
         std::cout << "⊘ SKIP │ VOCAB BIAS BASE CLASS │ test model/assets not set\n";
@@ -757,11 +874,14 @@ static bool test_vocab_bias_base_class() {
 
     return !with_bias_text.empty();
 }
+
 int main() {
     TestUtils::TestRunner runner("STT Tests");
     runner.run_test("audio_processor", test_audio_processor());
     runner.run_test("irfft_correctness", test_irfft_correctness());
     runner.run_test("vad_process", test_vad_process());
+    runner.run_test("diarize", test_diarize());
+    runner.run_test("embed_speaker", test_embed_speaker());
     runner.run_test("transcription", test_transcription());
     runner.run_test("transcription_long", test_transcription_long());
     runner.run_test("language_detection", test_language_detection());

@@ -1,6 +1,5 @@
 #include "kernel.h"
 #include "kernel_utils.h"
-#include <arm_neon.h>
 #include <limits>
 
 void cactus_maxpool1d_f16(
@@ -26,12 +25,10 @@ void cactus_maxpool1d_f16(
                 for (size_t i = 0; i < output_length; ++i) {
                     const size_t in_start = i * stride;
                     float max_val = -std::numeric_limits<float>::infinity();
-
                     for (size_t k = 0; k < kernel_size; ++k) {
                         float val = static_cast<float>(src[in_start + k]);
                         if (val > max_val) max_val = val;
                     }
-
                     dst[i] = static_cast<__fp16>(max_val);
                 }
             }
