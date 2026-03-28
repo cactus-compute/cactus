@@ -85,6 +85,7 @@ static bool is_terminal_transcription_piece(const std::string& piece) {
            piece == "</s>" ||
            piece == "<pad>";
 }
+
 extern "C" {
 
 int cactus_transcribe(
@@ -252,13 +253,19 @@ int cactus_transcribe(
                 chunk_end_sample = end;
                 current_anchors.emplace_back(concat_cursor, to_sec(seg.start));
                 concat_cursor += to_sec(end - seg.start);
-                current.insert(current.end(), audio_samples.begin() + seg.start, audio_samples.begin() + end);
+                current.insert(
+                    current.end(),
+                    audio_samples.begin() + seg.start,
+                    audio_samples.begin() + end
+                );
             }
+
             if (!current.empty()) {
                 audio_chunks.emplace_back(std::move(current), to_sec(chunk_start_sample), to_sec(chunk_end_sample), std::move(current_anchors));
             }
 
             if (audio_chunks.empty()) {
+                CACTUS_LOG_DEBUG("transcribe", "VAD detected only silence, returning empty transcription");
                 auto vad_end_time = std::chrono::high_resolution_clock::now();
                 double vad_total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(vad_end_time - start_time).count() / 1000.0;
                 std::string json = construct_response_json("", {}, 0.0, vad_total_time_ms, 0.0, 0.0, 0, 0, 1.0f);

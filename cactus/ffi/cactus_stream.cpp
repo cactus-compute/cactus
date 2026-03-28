@@ -173,8 +173,7 @@ static std::string serialize_segments_with_offset(
         out << std::fixed << std::setprecision(3)
             << "{\"start\":" << (segs[i].start + offset_sec)
             << ",\"end\":" << (segs[i].end + offset_sec)
-            << ",\"text\":\"" << escape_json(segs[i].text) << "\"";
-        out << "}";
+            << ",\"text\":\"" << escape_json(segs[i].text) << "\"}";
     }
     out << "]";
     return out.str();

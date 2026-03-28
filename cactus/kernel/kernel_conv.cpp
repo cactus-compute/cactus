@@ -305,6 +305,69 @@ void cactus_conv1d_f16_k3(
     });
 }
 
+#ifdef __APPLE__
+static void conv1d_f16_accelerate(
+    const __fp16* input,
+    const __fp16* weight,
+    const __fp16* bias,
+    __fp16* output,
+    size_t N, size_t L,
+    size_t C_in, size_t C_out,
+    size_t K,
+    size_t stride
+){
+    const size_t out_len = ((L - K) / stride) + 1;
+    const size_t in_bs   = C_in * L;
+    const size_t out_bs  = C_out * out_len;
+
+    const size_t total_compute = N * C_out * out_len * C_in * K;
+    CactusThreading::ParallelConfig config = (total_compute < 100000)
+        ? CactusThreading::ParallelConfig{SIZE_MAX, SIZE_MAX}
+        : CactusThreading::Thresholds::ATTENTION;
+
+    CactusThreading::parallel_for_2d(
+        N, C_out, config,
+        [&](size_t n, size_t oc) {
+
+        const __fp16* Xb  = input  + n * in_bs;
+        __fp16*       Yoc = output + n * out_bs + oc * out_len;
+        const __fp16* Woc = weight + oc * (C_in * K);
+        const float   b   = bias ? (float)bias[oc] : 0.f;
+
+        std::vector<float> out_f32(out_len, b);
+        std::vector<float> input_f32(L);
+        std::vector<float> weight_f32(K);
+
+        for (size_t ic = 0; ic < C_in; ++ic) {
+            const __fp16* Xc = Xb + ic * L;
+            const __fp16* Wc = Woc + ic * K;
+
+            for (size_t i = 0; i < L; ++i) input_f32[i] = (float)Xc[i];
+            for (size_t k = 0; k < K; ++k) weight_f32[k] = (float)Wc[k];
+
+            if (stride == 1) {
+                std::vector<float> conv_out(out_len);
+                vDSP_conv(input_f32.data(), 1, weight_f32.data(), 1,
+                          conv_out.data(), 1, out_len, K);
+                vDSP_vadd(out_f32.data(), 1, conv_out.data(), 1,
+                          out_f32.data(), 1, out_len);
+            } else {
+                std::vector<float> full_conv(L - K + 1);
+                vDSP_conv(input_f32.data(), 1, weight_f32.data(), 1,
+                          full_conv.data(), 1, L - K + 1, K);
+                for (size_t out_t = 0; out_t < out_len; ++out_t) {
+                    out_f32[out_t] += full_conv[out_t * stride];
+                }
+            }
+        }
+
+        for (size_t out_t = 0; out_t < out_len; ++out_t) {
+            Yoc[out_t] = (__fp16)out_f32[out_t];
+        }
+    });
+}
+#endif
+
 static void conv1d_f16_neon(
     const __fp16* input,
     const __fp16* weight,
@@ -374,101 +437,6 @@ static void conv1d_f16_neon(
     });
 }
 
-#ifdef __APPLE__
-static void conv1d_f16_gemm(
-    const __fp16* input,
-    const __fp16* weight,
-    const __fp16* bias,
-    __fp16* output,
-    size_t N, size_t L,
-    size_t C_in, size_t C_out,
-    size_t K,
-    size_t stride
-) {
-    const size_t out_len = (L - K) / stride + 1;
-    const size_t col_K = C_in * K;
-
-    std::vector<float> W_f32(C_out * col_K);
-    cactus_fp16_to_fp32(weight, W_f32.data(), C_out * col_K);
-
-    std::vector<float> bias_f32;
-    if (bias) {
-        bias_f32.resize(C_out);
-        cactus_fp16_to_fp32(bias, bias_f32.data(), C_out);
-    }
-
-    std::vector<float> col(col_K * out_len);
-    std::vector<float> Y_f32(C_out * out_len);
-
-    for (size_t n = 0; n < N; ++n) {
-        const __fp16* Xn = input + n * C_in * L;
-        __fp16* Yn = output + n * C_out * out_len;
-
-        if (stride == 1) {
-            for (size_t ic = 0; ic < C_in; ++ic) {
-                const __fp16* Xc = Xn + ic * L;
-                for (size_t k = 0; k < K; ++k) {
-                    float* dst = col.data() + (ic * K + k) * out_len;
-                    const __fp16* src = Xc + k;
-                    size_t t = 0;
-                    for (; t + 8 <= out_len; t += 8) {
-                        float16x8_t v = vld1q_f16(src + t);
-                        vst1q_f32(dst + t, vcvt_f32_f16(vget_low_f16(v)));
-                        vst1q_f32(dst + t + 4, vcvt_f32_f16(vget_high_f16(v)));
-                    }
-                    for (; t < out_len; ++t)
-                        dst[t] = static_cast<float>(src[t]);
-                }
-            }
-        } else {
-            for (size_t ic = 0; ic < C_in; ++ic) {
-                const __fp16* Xc = Xn + ic * L;
-                for (size_t k = 0; k < K; ++k) {
-                    float* dst = col.data() + (ic * K + k) * out_len;
-                    for (size_t t = 0; t < out_len; ++t)
-                        dst[t] = static_cast<float>(Xc[t * stride + k]);
-                }
-            }
-        }
-
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    static_cast<int>(C_out), static_cast<int>(out_len), static_cast<int>(col_K),
-                    1.0f, W_f32.data(), static_cast<int>(col_K),
-                    col.data(), static_cast<int>(out_len),
-                    0.0f, Y_f32.data(), static_cast<int>(out_len));
-
-        if (bias) {
-            for (size_t oc = 0; oc < C_out; ++oc) {
-                float b = bias_f32[oc];
-                const float* src = Y_f32.data() + oc * out_len;
-                __fp16* dst = Yn + oc * out_len;
-                size_t t = 0;
-                for (; t + 8 <= out_len; t += 8) {
-                    float32x4_t v0 = vaddq_f32(vld1q_f32(src + t), vdupq_n_f32(b));
-                    float32x4_t v1 = vaddq_f32(vld1q_f32(src + t + 4), vdupq_n_f32(b));
-                    vst1q_f16(dst + t, vcombine_f16(vcvt_f16_f32(v0), vcvt_f16_f32(v1)));
-                }
-                for (; t < out_len; ++t)
-                    dst[t] = static_cast<__fp16>(src[t] + b);
-            }
-        } else {
-            for (size_t oc = 0; oc < C_out; ++oc) {
-                const float* src = Y_f32.data() + oc * out_len;
-                __fp16* dst = Yn + oc * out_len;
-                size_t t = 0;
-                for (; t + 8 <= out_len; t += 8) {
-                    float32x4_t v0 = vld1q_f32(src + t);
-                    float32x4_t v1 = vld1q_f32(src + t + 4);
-                    vst1q_f16(dst + t, vcombine_f16(vcvt_f16_f32(v0), vcvt_f16_f32(v1)));
-                }
-                for (; t < out_len; ++t)
-                    dst[t] = static_cast<__fp16>(src[t]);
-            }
-        }
-    }
-}
-#endif
-
 void cactus_conv1d_f16(
     const __fp16* input,
     const __fp16* weight,
@@ -480,8 +448,10 @@ void cactus_conv1d_f16(
     size_t stride
 ){
 #ifdef __APPLE__
-    conv1d_f16_gemm(input, weight, bias, output, N, L, C_in, C_out, K, stride);
-    return;
+    if (K >= ACCELERATE_K_THRESHOLD && L >= ACCELERATE_L_THRESHOLD) {
+        conv1d_f16_accelerate(input, weight, bias, output, N, L, C_in, C_out, K, stride);
+        return;
+    }
 #endif
     conv1d_f16_neon(input, weight, bias, output, N, L, C_in, C_out, K, stride);
 }

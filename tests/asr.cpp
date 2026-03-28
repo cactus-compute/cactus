@@ -449,6 +449,7 @@ int run_live_transcription(cactus_model_t model, const std::string& language = "
     std::deque<Segment> segments;
     std::string confirmed_text;
     std::string current_line_confirmed;
+    
     int last_pending_line_count = 0;
     std::string last_stats;
 

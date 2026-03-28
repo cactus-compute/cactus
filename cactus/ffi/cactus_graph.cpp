@@ -1073,17 +1073,6 @@ int cactus_graph_gaussian_topk(cactus_graph_t graph, cactus_node_t input, float 
     }
 }
 
-int cactus_graph_maxpool1d(cactus_graph_t graph, cactus_node_t input, size_t kernel_size, size_t stride, cactus_node_t* out) {
-    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_maxpool1d");
-    try {
-        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.maxpool1d(static_cast<size_t>(input), kernel_size, stride));
-        return 0;
-    } catch (const std::exception& e) {
-        last_error_message = e.what();
-        return -1;
-    }
-}
-
 int cactus_graph_moe_layer_gated(cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,
                                  const cactus_node_t* w1_weights, const cactus_node_t* w3_weights, const cactus_node_t* w2_weights,
                                  size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon, float routed_scaling_factor, cactus_node_t* out) {
