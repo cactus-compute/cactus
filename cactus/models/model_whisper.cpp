@@ -4,17 +4,18 @@
 #include "../kernel/kernel.h"
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <stdexcept>
 #include <set>
 #include <iostream>
 
 namespace {
 
-#if defined(__APPLE__)
-constexpr bool kSkipEncoderWeightMmapOnApple = true;
-#else
-constexpr bool kSkipEncoderWeightMmapOnApple = false;
-#endif
+bool has_whisper_cpu_encoder_weights(const std::string& model_folder_path) {
+    const std::filesystem::path model_path(model_folder_path);
+    return std::filesystem::exists(model_path / "encoder_conv1_weight.weights") &&
+           std::filesystem::exists(model_path / "encoder_position_embeddings.weights");
+}
 
 } // namespace
 
@@ -77,7 +78,8 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
         }
     }
 
-    if (!use_npu_encoder_ && !kSkipEncoderWeightMmapOnApple) {
+    const bool has_cpu_encoder_weights = has_whisper_cpu_encoder_weights(model_folder_path_);
+    if (has_cpu_encoder_weights) {
         weight_nodes_.encoder_position_embeddings = gb->mmap_weights(model_folder_path_ + "/encoder_position_embeddings.weights");
         weight_nodes_.encoder_conv1_weight = gb->mmap_weights(model_folder_path_ + "/encoder_conv1_weight.weights");
         weight_nodes_.encoder_conv1_bias = gb->mmap_weights(model_folder_path_ + "/encoder_conv1_bias.bias");
@@ -123,7 +125,7 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
         layer.decoder_post_attn_layernorm_weight = gb->mmap_weights(layer_prefix + "self_attn_norm.weights");
         layer.decoder_post_attn_layernorm_bias = gb->mmap_weights(layer_prefix + "self_attn_norm.bias");
 
-        if (!use_npu_encoder_ && !kSkipEncoderWeightMmapOnApple) {
+        if (has_cpu_encoder_weights) {
             layer_prefix = model_folder_path_ + "/encoder.layer_" + std::to_string(i) + "_";
 
             layer.encoder_ffn1_weight = gb->mmap_weights(layer_prefix + "mlp_fc1.weights");
@@ -525,10 +527,9 @@ void WhisperModel::run_encoder(const std::vector<float>& audio_features)
         }
     }
 
-    if (kSkipEncoderWeightMmapOnApple) {
+    if (!has_whisper_cpu_encoder_weights(model_folder_path_)) {
         throw std::runtime_error(
-            "Whisper on Apple requires model.mlpackage encoder output; "
-            "CPU encoder weights are intentionally not loaded.");
+            "Whisper requires either CPU encoder weights or model.mlpackage encoder output.");
     }
 
     auto backend =

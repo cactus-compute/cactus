@@ -5,16 +5,12 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <filesystem>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
-
-#if defined(__APPLE__)
-constexpr bool kSkipEncoderWeightMmapOnApple = true;
-#else
-constexpr bool kSkipEncoderWeightMmapOnApple = false;
-#endif
 
 size_t shape_elements(const std::vector<int>& shape) {
     if (shape.empty()) return 0;
@@ -226,7 +222,12 @@ void ParakeetModel::load_weights_to_graph(CactusGraph* gb) {
         }
     }
 
-    if (!kSkipEncoderWeightMmapOnApple) {
+    const std::filesystem::path model_path(model_folder_path_);
+    has_cpu_encoder_weights_ =
+        std::filesystem::exists(model_path / "subsampling_conv0_weight.weights") &&
+        std::filesystem::exists(model_path / "subsampling_linear_weight.weights");
+
+    if (has_cpu_encoder_weights_) {
         weight_nodes_.subsampling_conv0_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_conv0_weight.weights");
         weight_nodes_.subsampling_conv0_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_conv0_bias.bias");
         weight_nodes_.subsampling_depthwise1_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise1_weight.weights");
@@ -581,10 +582,9 @@ size_t ParakeetModel::build_encoder(CactusGraph* gb, const std::vector<float>& a
         }
     }
 
-    if (kSkipEncoderWeightMmapOnApple) {
+    if (!has_cpu_encoder_weights_) {
         throw std::runtime_error(
-            "Parakeet on Apple requires model.mlpackage encoder output; "
-            "CPU encoder weights are intentionally not loaded.");
+            "Parakeet requires either CPU encoder weights or model.mlpackage encoder output.");
     }
 
     ComputeBackend backend = ComputeBackend::CPU;
@@ -801,10 +801,10 @@ std::vector<float> ParakeetModel::get_audio_embeddings(const std::vector<float>&
         hidden_shape[1] == ctc_vocab_size &&
         ctc_vocab_size != ctc_hidden_dim &&
         use_npu_encoder_) {
-        if (kSkipEncoderWeightMmapOnApple) {
+        if (!has_cpu_encoder_weights_) {
             throw std::runtime_error(
-                "Parakeet audio embeddings on Apple require hidden-state encoder output; "
-                "CPU encoder fallback is disabled because encoder weights are not loaded.");
+                "Parakeet audio embeddings require hidden-state encoder output; "
+                "CPU encoder fallback weights are not available.");
         }
         const bool prev_use_npu = use_npu_encoder_;
         use_npu_encoder_ = false;
