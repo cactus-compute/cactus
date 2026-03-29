@@ -307,6 +307,54 @@ public func cactusVad(_ model: CactusModelT, _ audioPath: String?, _ optionsJson
     return String(cString: buffer)
 }
 
+public func cactusDiarize(_ model: CactusModelT, _ audioPath: String?, _ pcmData: Data?) throws -> String {
+    var buffer = [CChar](repeating: 0, count: 1 << 20)
+
+    let result: Int32
+    if let pcmData = pcmData {
+        result = pcmData.withUnsafeBytes { pcmPtr in
+            buffer.withUnsafeMutableBufferPointer { bufferPtr in
+                cactus_diarize(
+                    model, audioPath,
+                    bufferPtr.baseAddress, bufferPtr.count,
+                    pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), pcmData.count
+                )
+            }
+        }
+    } else {
+        result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
+            cactus_diarize(model, audioPath, bufferPtr.baseAddress, bufferPtr.count, nil, 0)
+        }
+    }
+
+    if result < 0 { throw _err("Diarize failed") }
+    return String(cString: buffer)
+}
+
+public func cactusEmbedSpeaker(_ model: CactusModelT, _ audioPath: String?, _ pcmData: Data?) throws -> String {
+    var buffer = [CChar](repeating: 0, count: _defaultBufferSize)
+
+    let result: Int32
+    if let pcmData = pcmData {
+        result = pcmData.withUnsafeBytes { pcmPtr in
+            buffer.withUnsafeMutableBufferPointer { bufferPtr in
+                cactus_embed_speaker(
+                    model, audioPath,
+                    bufferPtr.baseAddress, bufferPtr.count,
+                    pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), pcmData.count
+                )
+            }
+        }
+    } else {
+        result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
+            cactus_embed_speaker(model, audioPath, bufferPtr.baseAddress, bufferPtr.count, nil, 0)
+        }
+    }
+
+    if result < 0 { throw _err("EmbedSpeaker failed") }
+    return String(cString: buffer)
+}
+
 public func cactusRagQuery(_ model: CactusModelT, _ query: String, _ topK: Int) throws -> String {
     var buffer = [CChar](repeating: 0, count: _defaultBufferSize)
 
