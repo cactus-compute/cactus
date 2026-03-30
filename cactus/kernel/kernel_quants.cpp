@@ -293,40 +293,6 @@ void cactus_quantize_kv_fp16_to_int8(
         });
 }
 
-void cactus_quantize_kv_packed_fp16_to_int8(
-    const __fp16* k_src,
-    const __fp16* v_src,
-    int8_t* kv_packed_dst,
-    float* k_scales,
-    float* v_scales,
-    size_t seq_len, size_t kv_heads, size_t head_dim,
-    size_t group_size
-) {
-    const size_t num_groups = (head_dim + group_size - 1) / group_size;
-    const size_t packed_pos_stride = 2 * head_dim;
-
-    CactusThreading::parallel_for(seq_len * kv_heads, CactusThreading::Thresholds::ELEMENT_WISE,
-        [k_src, v_src, kv_packed_dst, k_scales, v_scales, head_dim, group_size, num_groups, packed_pos_stride](size_t start, size_t end) {
-            for (size_t idx = start; idx < end; idx++) {
-                const __fp16* k_head_src = k_src + idx * head_dim;
-                const __fp16* v_head_src = v_src + idx * head_dim;
-                int8_t* k_dst = kv_packed_dst + idx * packed_pos_stride;
-                int8_t* v_dst = k_dst + head_dim;
-                float* k_head_scales = k_scales + idx * num_groups;
-                float* v_head_scales = v_scales + idx * num_groups;
-
-                for (size_t g = 0; g < num_groups; g++) {
-                    size_t group_start = g * group_size;
-                    size_t group_count = std::min(group_size, head_dim - group_start);
-                    k_head_scales[g] = quantize_group_fp16_to_int8(
-                        k_head_src + group_start, k_dst + group_start, group_count);
-                    v_head_scales[g] = quantize_group_fp16_to_int8(
-                        v_head_src + group_start, v_dst + group_start, group_count);
-                }
-            }
-        });
-}
-
 void cactus_unpack_int4_to_int8(const uint8_t* packed, int8_t* unpacked, size_t unpacked_count) {
     assert (unpacked_count % 32 == 0 && "Unpacked count must be a multiple of 32 for int4 unpacking");
     const size_t num_groups = unpacked_count / 32;

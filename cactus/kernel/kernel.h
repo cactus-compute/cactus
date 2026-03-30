@@ -357,15 +357,6 @@ void cactus_quantize_kv_fp16_to_int8(
     size_t seq_len, size_t kv_heads, size_t head_dim,
     size_t group_size = KV_QUANT_GROUP_SIZE);
 
-void cactus_quantize_kv_packed_fp16_to_int8(
-    const __fp16* k_src,
-    const __fp16* v_src,
-    int8_t* kv_packed_dst,
-    float* k_scales,
-    float* v_scales,
-    size_t seq_len, size_t kv_heads, size_t head_dim,
-    size_t group_size = KV_QUANT_GROUP_SIZE);
-
 inline size_t kv_scales_count(size_t seq_len, size_t kv_heads, size_t head_dim, size_t group_size = KV_QUANT_GROUP_SIZE) {
     size_t num_groups = (head_dim + group_size - 1) / group_size;
     return seq_len * kv_heads * num_groups;
