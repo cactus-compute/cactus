@@ -143,8 +143,6 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         TINYLLAMA_WEIGHT_SCALE = 16.0
         filename = output_path.name
         is_audio_weight = filename.startswith('audio_')
-        if 'norm' in filename and 'per_layer_proj_norm' not in filename and 'post_proj_norm' not in filename and not is_audio_weight:
-            data = data + 1.0
         if any(x in filename for x in ['input_norm', 'post_attn_norm', 'pre_ffn_norm', 'post_ffn_norm',
                                        'post_per_layer_norm', 'post_proj_norm']):
             data = data / TINYLLAMA_WEIGHT_SCALE

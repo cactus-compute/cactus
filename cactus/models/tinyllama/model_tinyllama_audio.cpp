@@ -3,11 +3,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 
 namespace cactus {
 namespace engine {
 
 static const float INV_LN2 = 1.0f / std::log(2.0f);
+static const float GEMMA4_AUDIO_K_SCALE = std::log(1.0f + std::exp(1.0f)) / std::log(2.0f);
 
 static size_t graph_clamp(CactusGraph* gb, size_t x, float lo, float hi) {
     if (lo >= hi) return x;
@@ -39,13 +41,14 @@ static float read_scalar_weight(CactusGraph* gb, const std::string& path) {
 }
 
 static TinyLlamaAudioModel::AudioWeightNodes::ClipBounds load_clip_bounds(CactusGraph* gb, const std::string& prefix) {
-    TinyLlamaAudioModel::AudioWeightNodes::ClipBounds cb;
-    cb.in_min = read_scalar_weight(gb, prefix + "_input_min.weights");
+    TinyLlamaAudioModel::AudioWeightNodes::ClipBounds cb{0, 0, 0, 0};
+    std::string in_min_path = prefix + "_input_min.weights";
+    if (!std::filesystem::exists(in_min_path))
+        return cb;
+    cb.in_min = read_scalar_weight(gb, in_min_path);
     cb.in_max = read_scalar_weight(gb, prefix + "_input_max.weights");
     cb.out_min = read_scalar_weight(gb, prefix + "_output_min.weights");
     cb.out_max = read_scalar_weight(gb, prefix + "_output_max.weights");
-    if (cb.in_min >= cb.in_max || cb.out_min >= cb.out_max)
-        CACTUS_LOG_WARN("audio", "degenerate clip bounds in " << prefix << " (in=[" << cb.in_min << "," << cb.in_max << "] out=[" << cb.out_min << "," << cb.out_max << "])");
     return cb;
 }
 
@@ -81,7 +84,7 @@ void TinyLlamaAudioModel::load_weights_to_graph(CactusGraph* gb) {
         audio_weights_.sscp_conv0_norm = gb->mmap_weights(resolve("audio_subsample_conv_projection_conv_0_norm.weights"));
         audio_weights_.sscp_conv1_weight = gb->mmap_weights(resolve("audio_subsample_conv_projection_conv_1_conv.weights"));
         audio_weights_.sscp_conv1_norm = gb->mmap_weights(resolve("audio_subsample_conv_projection_conv_1_norm.weights"));
-        audio_weights_.sscp_input_proj = gb->mmap_weights(resolve("audio_subsample_conv_projection_input_proj_linear.weights"));
+        audio_weights_.sscp_input_proj = gb->mmap_weights(resolve("audio_subsample_conv_projection_input_proj.weights"));
 
         audio_weights_.layers.resize(config_.audio_num_layers);
         for (uint32_t i = 0; i < config_.audio_num_layers; i++) {
@@ -102,7 +105,6 @@ void TinyLlamaAudioModel::load_weights_to_graph(CactusGraph* gb) {
             layer.attn_k_clip = load_clip_bounds(gb, prefix + "attention_attn_k_proj");
             layer.attn_v_clip = load_clip_bounds(gb, prefix + "attention_attn_v_proj");
             layer.attn_per_dim_scale = gb->mmap_weights(prefix + "attention_attn_per_dim_scale.weights");
-            layer.attn_per_dim_key_scale = gb->mmap_weights(prefix + "attention_attn_per_dim_key_scale.weights");
             layer.attn_rel_pos_proj = gb->mmap_weights(prefix + "attention_attn_relative_position_embedding_pos_proj.weights");
             layer.attn_post = gb->mmap_weights(prefix + "attention_post.weights");
             layer.attn_post_clip = load_clip_bounds(gb, prefix + "attention_post");
@@ -292,15 +294,7 @@ size_t TinyLlamaAudioModel::build_conformer_attention(CactusGraph* gb, size_t in
     q_flat = gb->multiply(q_flat, q_dim_scale);
     q = gb->reshape(q_flat, {seq_len, hidden_dim});
 
-    size_t k_dim_scale_fp16 = gb->precision_cast(layer.attn_per_dim_key_scale, Precision::FP16);
-    size_t k_dim_scale = gb->scalar_exp(k_dim_scale_fp16);
-    k_dim_scale = gb->scalar_add(k_dim_scale, 1.0f);
-    k_dim_scale = gb->scalar_log(k_dim_scale);
-    k_dim_scale = gb->scalar_multiply(k_dim_scale, INV_LN2);
-
-    size_t k_flat = gb->reshape(k, {seq_len * num_heads, head_dim});
-    k_flat = gb->multiply(k_flat, k_dim_scale);
-    k = gb->reshape(k_flat, {seq_len, hidden_dim});
+    k = gb->scalar_multiply(k, GEMMA4_AUDIO_K_SCALE);
 
     size_t sin_emb = gb->matmul(ctx.timing_fp16, layer.attn_rel_pos_proj, true, backend);
     size_t sin_emb_3d = gb->reshape(sin_emb, {num_positions, num_heads, head_dim});
@@ -424,7 +418,10 @@ size_t TinyLlamaAudioModel::forward_audio(CactusGraph* gb, const std::vector<flo
 size_t TinyLlamaAudioModel::build_audio_projector(CactusGraph* gb, size_t audio_features, ComputeBackend backend) {
     size_t projected = gb->matmul(audio_features, audio_weights_.embed_audio_proj, true, backend);
     size_t normed = gb->rms_norm(projected, audio_proj_norm_ones_node_, config_.audio_rms_norm_eps);
-    return gb->scalar_multiply(normed, 1.0f / 16.0f);
+    if (config_.audio_fft_overdrive) {
+        return gb->scalar_multiply(normed, 1.0f / 16.0f);
+    }
+    return normed;
 }
 
 }

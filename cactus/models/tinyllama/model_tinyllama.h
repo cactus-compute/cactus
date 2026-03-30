@@ -247,7 +247,6 @@ public:
             size_t attn_q = 0, attn_k = 0, attn_v = 0;
             ClipBounds attn_q_clip, attn_k_clip, attn_v_clip;
             size_t attn_per_dim_scale = 0;
-            size_t attn_per_dim_key_scale = 0;
             size_t attn_rel_pos_proj = 0;
             size_t attn_post = 0;
             ClipBounds attn_post_clip;

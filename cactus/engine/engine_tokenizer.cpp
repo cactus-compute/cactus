@@ -348,9 +348,6 @@ std::string Tokenizer::format_tinyllama_style(const std::vector<ChatMessage>& me
 
     if (add_generation_prompt) {
         result += "<|turn>model\n";
-        if (!enable_thinking_if_supported) {
-            result += "<|channel>thought\n<channel|>";
-        }
     }
 
     return result;

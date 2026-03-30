@@ -36,6 +36,8 @@ def _gemma_tower_output_name(hf_key, strip_prefix, add_prefix):
         ext = '.bias'
     else:
         ext = '.weights'
+    if name.endswith('.linear'):
+        name = name[:-len('.linear')]
     name = name.replace('.', '_')
     return add_prefix + name + ext
 
@@ -81,6 +83,13 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         audio_cfg = cfg_get(root_config, 'audio_config', cfg_get(config, 'audio_config', None))
         if audio_cfg is not None:
             model_config.update(extract_audio_config(root_config, audio_cfg))
+        # New models don't use weight pre-scaling; HF inference uses raw weights.
+        if model_config.get('audio_fft_overdrive') == 'false':
+            if args is None:
+                class _Args:
+                    pass
+                args = _Args()
+            args.weight_scale = 1.0
     elif detected_model_type == 'lfm2':
         model_config.update(extract_lfm2_config(config))
     elif detected_model_type == 'youtu':

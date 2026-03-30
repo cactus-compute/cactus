@@ -594,10 +594,13 @@ int cactus_complete(
         parse_function_calls_from_response(response_text, regular_response, function_calls);
 
         std::string thinking_text;
-        if (prompt.options.enable_thinking_if_supported) {
+        if (prompt.model_type == Config::ModelType::TINYLLAMA || prompt.options.enable_thinking_if_supported) {
             std::string stripped_content;
             strip_thinking_block(regular_response, thinking_text, stripped_content);
             regular_response = stripped_content;
+            if (!prompt.options.enable_thinking_if_supported) {
+                thinking_text.clear();
+            }
         }
 
         if (confidence < prompt.options.confidence_threshold) {

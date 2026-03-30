@@ -117,7 +117,9 @@ bool test_prompt_tinyllama_thinking_injection() {
     cactus_destroy(model);
 
     bool ok = enabled.find("<|think|>") != std::string::npos
-           && disabled.find("<|think|>") == std::string::npos;
+           && disabled.find("<|think|>") == std::string::npos
+           && disabled.find("<|channel>") == std::string::npos
+           && disabled.find("<channel|>") == std::string::npos;
     if (!ok) {
         std::cerr << "  thinking injection mismatch in prompt\n";
         std::cerr << "  enabled prompt: " << enabled << "\n";
@@ -188,7 +190,10 @@ bool test_complete_tinyllama_thinking_toggle() {
         R"({"max_tokens":128,"enable_thinking_if_supported":false,"telemetry_enabled":false})",
         nullptr, nullptr, nullptr);
     std::string resp2(buf);
-    bool ok2 = r2 > 0 && resp2.find("\"thinking\"") == std::string::npos;
+    bool ok2 = r2 > 0
+            && resp2.find("\"thinking\"") == std::string::npos
+            && resp2.find("<|channel>") == std::string::npos
+            && resp2.find("<channel|>") == std::string::npos;
 
     cactus_destroy(model);
     if (!ok1) std::cerr << "  thinking-enabled completion failed\n";
