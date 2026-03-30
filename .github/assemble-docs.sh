@@ -17,13 +17,11 @@ mkdir -p site_docs/docs site_docs/python site_docs/apple site_docs/android \
 
 cp -r assets/* site_docs/assets/
 
-# Preserve custom domain for GitHub Pages
 echo "docs.cactuscompute.com" > site_docs/CNAME
 
 mkdir -p site_docs/stylesheets
 cp .github/docs-overrides/stylesheets/custom.css site_docs/stylesheets/custom.css
 
-# These may not exist in older versions
 [ -f CONTRIBUTING.md ] && cp CONTRIBUTING.md site_docs/CONTRIBUTING.md
 [ -f DCO.md ] && cp DCO.md site_docs/DCO.md
 
@@ -177,8 +175,6 @@ if [ -n "$DOCS_VERSION" ]; then
   } > site_docs/docs/quickstart.tmp && mv site_docs/docs/quickstart.tmp site_docs/docs/quickstart.md
 fi
 
-# --- Strip nav entries for files that don't exist in site_docs/ ---
-# This handles older versions where some SDKs/pages didn't exist yet.
 for nav_path in \
   "rust/README.md" \
   "react-native/README.md" \
@@ -193,7 +189,6 @@ for nav_path in \
   fi
 done
 
-# Remove empty section headers
 if ! ls site_docs/blog/*.md >/dev/null 2>&1; then
   grep -v "^  - Blog:" mkdocs.yml > mkdocs.yml.tmp && mv mkdocs.yml.tmp mkdocs.yml
 fi

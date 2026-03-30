@@ -56,7 +56,6 @@ jobs:
           mike deploy ${TAG} latest --update-aliases --push
           mike set-default latest --push
 
-          # Ensure CNAME persists at gh-pages root for custom domain
           git checkout gh-pages
           echo "docs.cactuscompute.com" > CNAME
           git add CNAME
