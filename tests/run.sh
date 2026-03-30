@@ -124,10 +124,12 @@ fi
 
 echo ""
 if [ "$ANDROID_MODE" = true ]; then
+    export CACTUS_TEST_ONLY="$ONLY_EXEC"
     exec "$SCRIPT_DIR/android/run.sh" "$MODEL_NAME" "$TRANSCRIBE_MODEL_NAME" "$WHISPER_MODEL_NAME" "$VAD_MODEL_NAME"
 fi
 
 if [ "$IOS_MODE" = true ]; then
+    export CACTUS_TEST_ONLY="$ONLY_EXEC"
     exec "$SCRIPT_DIR/ios/run.sh" "$MODEL_NAME" "$TRANSCRIBE_MODEL_NAME" "$WHISPER_MODEL_NAME" "$VAD_MODEL_NAME"
 fi
 

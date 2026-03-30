@@ -234,10 +234,23 @@ if ! cmake --build "$android_build_dir" -j "$n_jobs"; then
 fi
 
 echo "Discovering test executables..."
-test_executables=($(find "$android_build_dir" -maxdepth 1 -name "test_*" -type f | sort))
+all_test_executables=($(find "$android_build_dir" -maxdepth 1 -name "test_*" -type f | sort))
+
+if [ ${#all_test_executables[@]} -eq 0 ]; then
+    echo "No test executables found"
+    exit 1
+fi
+
+test_executables=()
+for test_exe in "${all_test_executables[@]}"; do
+    test_name=$(basename "$test_exe" | sed 's/^test_//')
+    if [ -z "${CACTUS_TEST_ONLY:-}" ] || [ "$test_name" = "$CACTUS_TEST_ONLY" ]; then
+        test_executables+=("$test_exe")
+    fi
+done
 
 if [ ${#test_executables[@]} -eq 0 ]; then
-    echo "No test executables found"
+    echo "No test executables match filter: $CACTUS_TEST_ONLY"
     exit 1
 fi
 

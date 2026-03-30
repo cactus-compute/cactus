@@ -20,7 +20,7 @@ cactus build --python
 <!-- --8<-- [end:install] -->
 
 ```bash
-# Download models
+# Download models (CLI)
 cactus download LiquidAI/LFM2-VL-450M
 cactus download openai/whisper-small
 
@@ -32,10 +32,14 @@ cactus auth
 
 <!-- --8<-- [start:example] -->
 ```python
-from cactus import cactus_init, cactus_complete, cactus_destroy
+from src.downloads import ensure_model
+from src.cactus import cactus_init, cactus_complete, cactus_destroy
 import json
 
-model = cactus_init("weights/lfm2-vl-450m", None, False)
+# Downloads weights from HuggingFace if not already present
+weights = ensure_model("LiquidAI/LFM2-VL-450M")
+
+model = cactus_init(str(weights), None, False)
 messages = json.dumps([{"role": "user", "content": "What is 2+2?"}])
 result = json.loads(cactus_complete(model, messages, None, None, None))
 print(result["response"])
@@ -46,6 +50,21 @@ cactus_destroy(model)
 ## API Reference
 
 All functions are module-level and mirror the C FFI directly. Handles are plain `int` values (C pointers).
+
+### Model Downloads
+
+Download pre-converted weights programmatically (no CLI needed):
+
+```python
+from src.downloads import ensure_model, get_weights_dir, download_from_hf
+
+# ensure_model downloads if missing, returns Path to weights dir
+weights = ensure_model("openai/whisper-tiny")
+
+# Or check / download manually
+weights_dir = get_weights_dir("openai/whisper-tiny")  # -> Path("weights/whisper-tiny")
+download_from_hf("openai/whisper-tiny", weights_dir, precision="INT4")  # -> bool
+```
 
 ### Init / Lifecycle
 
@@ -312,6 +331,42 @@ messages = json.dumps([{
 result = json.loads(cactus_complete(model, messages, None, None, None))
 print(result["response"])
 ```
+
+## Compute Graph
+
+The `Graph` API provides a tensor computation graph for building and executing dataflow pipelines on the Cactus kernel layer:
+
+```python
+from src.graph import Graph
+import numpy as np
+
+g = Graph()
+a = g.input((2, 2))
+b = g.input((2, 2))
+y = ((a - b) * (a + b)).abs().pow(2.0).view((4,))
+
+g.set_input(a, np.array([[2, 4], [6, 8]], dtype=np.float16))
+g.set_input(b, np.array([[1, 2], [3, 4]], dtype=np.float16))
+g.execute()
+
+print(y.numpy())  # [9. 36. 81. 144.]
+```
+
+Supported ops: `+`, `-`, `*`, `/`, `abs`, `pow`, `view`, `flatten`, `concat`, `cat`, `relu`, `sigmoid`, `tanh`, `gelu`, `softmax`.
+
+## Testing
+
+Run the full test suite:
+
+```bash
+python python/test.py        # compact output
+python python/test.py -v     # verbose
+```
+
+Tests are in `python/tests/`:
+
+- `test_graph.py` — Graph elementwise, composed, tensor, activation, and softmax ops
+- `test_model.py` — VLM completion/embeddings, Whisper transcription/embeddings (auto-downloads weights if missing)
 
 ## See Also
 

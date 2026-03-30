@@ -386,6 +386,7 @@ if [ "$device_type" = "simulator" ]; then
         "SIMCTL_CHILD_CACTUS_TEST_ASSETS=assets"
         "SIMCTL_CHILD_CACTUS_INDEX_PATH=assets"
         "SIMCTL_CHILD_CACTUS_NO_CLOUD_TELE=$CACTUS_NO_CLOUD_TELE"
+        "SIMCTL_CHILD_CACTUS_TEST_ONLY=${CACTUS_TEST_ONLY:-}"
     )
     if [ "$RUN_ASR" = "1" ]; then
         sim_env+=("SIMCTL_CHILD_CACTUS_RUN_ASR=1")
@@ -434,6 +435,7 @@ else
         "DEVICECTL_CHILD_CACTUS_TEST_ASSETS=assets"
         "DEVICECTL_CHILD_CACTUS_INDEX_PATH=assets"
         "DEVICECTL_CHILD_CACTUS_NO_CLOUD_TELE=$CACTUS_NO_CLOUD_TELE"
+        "DEVICECTL_CHILD_CACTUS_TEST_ONLY=${CACTUS_TEST_ONLY:-}"
     )
     if [ "$RUN_ASR" = "1" ]; then
         device_env+=("DEVICECTL_CHILD_CACTUS_RUN_ASR=1")

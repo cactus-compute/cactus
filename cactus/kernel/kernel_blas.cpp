@@ -430,8 +430,8 @@ void cactus_concat_f16(const __fp16* input1, const __fp16* input2, __fp16* outpu
 }
 
 void cactus_cat_f16(const __fp16** inputs, __fp16* output, const size_t** input_shapes,
-                      const size_t* output_shape, size_t ndims, int axis, size_t num_tensor_dims) {
-    if (axis < 0) axis += num_tensor_dims;
+                      const size_t* output_shape, size_t num_inputs, size_t rank, int axis) {
+    if (axis < 0) axis += rank;
 
     size_t outer_size = 1;
     for (size_t i = 0; i < static_cast<size_t>(axis); ++i) {
@@ -439,7 +439,7 @@ void cactus_cat_f16(const __fp16** inputs, __fp16* output, const size_t** input_
     }
 
     size_t inner_size = 1;
-    for (size_t i = static_cast<size_t>(axis) + 1; i < num_tensor_dims; ++i) {
+    for (size_t i = axis + 1; i < rank; ++i) {
         inner_size *= output_shape[i];
     }
 
@@ -449,7 +449,7 @@ void cactus_cat_f16(const __fp16** inputs, __fp16* output, const size_t** input_
                 __fp16* out_ptr = output + outer * inner_size * output_shape[axis];
                 size_t offset = 0;
 
-                for (size_t input_idx = 0; input_idx < ndims; ++input_idx) {
+                for (size_t input_idx = 0; input_idx < num_inputs; ++input_idx) {
                     const __fp16* in_ptr = inputs[input_idx] + outer * inner_size * input_shapes[input_idx][axis];
                     size_t copy_size = input_shapes[input_idx][axis] * inner_size;
                     std::memcpy(out_ptr + offset, in_ptr, copy_size * sizeof(__fp16));

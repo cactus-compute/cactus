@@ -340,7 +340,7 @@ void cactus_concat_f16(const __fp16* input1, const __fp16* input2, __fp16* outpu
                        const size_t* shape1, const size_t* shape2, const size_t* output_shape,
                        size_t ndims, int axis);
 void cactus_cat_f16(const __fp16** inputs, __fp16* output, const size_t** input_shapes,
-                      const size_t* output_shape, size_t num_inputs, int axis, size_t num_tensor_dims);
+                      const size_t* output_shape, size_t num_inputs, size_t rank, int axis);
 
 void cactus_int8_to_fp32(const int8_t* src, float* dst, size_t count, float scale = 1.0f);
 void cactus_fp32_to_int8(const float* src, int8_t* dst, size_t count, float scale = 1.0f);

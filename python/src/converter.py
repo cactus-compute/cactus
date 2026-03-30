@@ -38,7 +38,13 @@ def _gemma_tower_output_name(hf_key, strip_prefix, add_prefix):
     return add_prefix + name + ext
 
 
-def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
+def convert_hf_model_weights(
+    model,
+    output_dir,
+    precision='INT8',
+    args=None,
+    skip_parakeet_encoder_weights=False,
+):
     """Convert HuggingFace model weights to Cactus binary format."""
     import gc
     quantization_stats = create_quantization_stats()
@@ -189,6 +195,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         })
 
     num_layers = model_config['num_layers']
+    skip_parakeet_encoder_weights = bool(skip_parakeet_encoder_weights)
 
     embedding_found = False
     for name in EMBED_NAMES:
@@ -368,21 +375,24 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
     missing_tensors = []
     if detected_model_type == 'parakeet':
         global_mappings = [
-            (['encoder.subsampling.layers.0.weight'], 'subsampling_conv0_weight.weights'),
-            (['encoder.subsampling.layers.0.bias'], 'subsampling_conv0_bias.bias'),
-            (['encoder.subsampling.layers.2.weight'], 'subsampling_depthwise1_weight.weights'),
-            (['encoder.subsampling.layers.2.bias'], 'subsampling_depthwise1_bias.bias'),
-            (['encoder.subsampling.layers.3.weight'], 'subsampling_pointwise1_weight.weights'),
-            (['encoder.subsampling.layers.3.bias'], 'subsampling_pointwise1_bias.bias'),
-            (['encoder.subsampling.layers.5.weight'], 'subsampling_depthwise2_weight.weights'),
-            (['encoder.subsampling.layers.5.bias'], 'subsampling_depthwise2_bias.bias'),
-            (['encoder.subsampling.layers.6.weight'], 'subsampling_pointwise2_weight.weights'),
-            (['encoder.subsampling.layers.6.bias'], 'subsampling_pointwise2_bias.bias'),
-            (['encoder.subsampling.linear.weight'], 'subsampling_linear_weight.weights'),
-            (['encoder.subsampling.linear.bias'], 'subsampling_linear_bias.bias'),
             (['ctc_head.weight'], 'ctc_head_weight.weights'),
             (['ctc_head.bias'], 'ctc_head_bias.bias'),
         ]
+        if not skip_parakeet_encoder_weights:
+            global_mappings = [
+                (['encoder.subsampling.layers.0.weight'], 'subsampling_conv0_weight.weights'),
+                (['encoder.subsampling.layers.0.bias'], 'subsampling_conv0_bias.bias'),
+                (['encoder.subsampling.layers.2.weight'], 'subsampling_depthwise1_weight.weights'),
+                (['encoder.subsampling.layers.2.bias'], 'subsampling_depthwise1_bias.bias'),
+                (['encoder.subsampling.layers.3.weight'], 'subsampling_pointwise1_weight.weights'),
+                (['encoder.subsampling.layers.3.bias'], 'subsampling_pointwise1_bias.bias'),
+                (['encoder.subsampling.layers.5.weight'], 'subsampling_depthwise2_weight.weights'),
+                (['encoder.subsampling.layers.5.bias'], 'subsampling_depthwise2_bias.bias'),
+                (['encoder.subsampling.layers.6.weight'], 'subsampling_pointwise2_weight.weights'),
+                (['encoder.subsampling.layers.6.bias'], 'subsampling_pointwise2_bias.bias'),
+                (['encoder.subsampling.linear.weight'], 'subsampling_linear_weight.weights'),
+                (['encoder.subsampling.linear.bias'], 'subsampling_linear_bias.bias'),
+            ] + global_mappings
 
         for candidate_keys, out_name in global_mappings:
             key = _find_first_key(state_dict, candidate_keys)
@@ -410,81 +420,88 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             )
             saved_tensor_full_names.add(key)
 
-        layer_mappings = [
-            ('feed_forward1.linear1.weight', 'ff1_linear1.weights'),
-            ('feed_forward1.linear1.bias', 'ff1_linear1.bias'),
-            ('feed_forward1.linear2.weight', 'ff1_linear2.weights'),
-            ('feed_forward1.linear2.bias', 'ff1_linear2.bias'),
-            ('feed_forward2.linear1.weight', 'ff2_linear1.weights'),
-            ('feed_forward2.linear1.bias', 'ff2_linear1.bias'),
-            ('feed_forward2.linear2.weight', 'ff2_linear2.weights'),
-            ('feed_forward2.linear2.bias', 'ff2_linear2.bias'),
-            ('self_attn.q_proj.weight', 'self_attn_q.weights'),
-            ('self_attn.q_proj.bias', 'self_attn_q.bias'),
-            ('self_attn.k_proj.weight', 'self_attn_k.weights'),
-            ('self_attn.k_proj.bias', 'self_attn_k.bias'),
-            ('self_attn.v_proj.weight', 'self_attn_v.weights'),
-            ('self_attn.v_proj.bias', 'self_attn_v.bias'),
-            ('self_attn.o_proj.weight', 'self_attn_output.weights'),
-            ('self_attn.o_proj.bias', 'self_attn_output.bias'),
-            ('self_attn.relative_k_proj.weight', 'self_attn_relative_k.weights'),
-            ('self_attn.bias_u', 'self_attn_bias_u.weights'),
-            ('self_attn.bias_v', 'self_attn_bias_v.weights'),
-            ('conv.pointwise_conv1.weight', 'conv_pointwise1.weights'),
-            ('conv.pointwise_conv1.bias', 'conv_pointwise1.bias'),
-            ('conv.depthwise_conv.weight', 'conv_depthwise.weights'),
-            ('conv.depthwise_conv.bias', 'conv_depthwise.bias'),
-            ('conv.pointwise_conv2.weight', 'conv_pointwise2.weights'),
-            ('conv.pointwise_conv2.bias', 'conv_pointwise2.bias'),
-            ('conv.norm.weight', 'conv_batchnorm_weight.weights'),
-            ('conv.norm.bias', 'conv_batchnorm_bias.bias'),
-            ('conv.norm.running_mean', 'conv_batchnorm_running_mean.weights'),
-            ('conv.norm.running_var', 'conv_batchnorm_running_var.weights'),
-            ('norm_feed_forward1.weight', 'norm_ff1.weights'),
-            ('norm_feed_forward1.bias', 'norm_ff1.bias'),
-            ('norm_self_att.weight', 'norm_self_attn.weights'),
-            ('norm_self_att.bias', 'norm_self_attn.bias'),
-            ('norm_conv.weight', 'norm_conv.weights'),
-            ('norm_conv.bias', 'norm_conv.bias'),
-            ('norm_feed_forward2.weight', 'norm_ff2.weights'),
-            ('norm_feed_forward2.bias', 'norm_ff2.bias'),
-            ('norm_out.weight', 'norm_out.weights'),
-            ('norm_out.bias', 'norm_out.bias'),
-        ]
+        if skip_parakeet_encoder_weights:
+            for key in state_dict.keys():
+                if key.startswith('encoder.subsampling.') or key.startswith('encoder.layers.'):
+                    saved_tensor_full_names.add(key)
+        else:
+            layer_mappings = [
+                ('feed_forward1.linear1.weight', 'ff1_linear1.weights'),
+                ('feed_forward1.linear1.bias', 'ff1_linear1.bias'),
+                ('feed_forward1.linear2.weight', 'ff1_linear2.weights'),
+                ('feed_forward1.linear2.bias', 'ff1_linear2.bias'),
+                ('feed_forward2.linear1.weight', 'ff2_linear1.weights'),
+                ('feed_forward2.linear1.bias', 'ff2_linear1.bias'),
+                ('feed_forward2.linear2.weight', 'ff2_linear2.weights'),
+                ('feed_forward2.linear2.bias', 'ff2_linear2.bias'),
+                ('self_attn.q_proj.weight', 'self_attn_q.weights'),
+                ('self_attn.q_proj.bias', 'self_attn_q.bias'),
+                ('self_attn.k_proj.weight', 'self_attn_k.weights'),
+                ('self_attn.k_proj.bias', 'self_attn_k.bias'),
+                ('self_attn.v_proj.weight', 'self_attn_v.weights'),
+                ('self_attn.v_proj.bias', 'self_attn_v.bias'),
+                ('self_attn.o_proj.weight', 'self_attn_output.weights'),
+                ('self_attn.o_proj.bias', 'self_attn_output.bias'),
+                ('self_attn.relative_k_proj.weight', 'self_attn_relative_k.weights'),
+                ('self_attn.bias_u', 'self_attn_bias_u.weights'),
+                ('self_attn.bias_v', 'self_attn_bias_v.weights'),
+                ('conv.pointwise_conv1.weight', 'conv_pointwise1.weights'),
+                ('conv.pointwise_conv1.bias', 'conv_pointwise1.bias'),
+                ('conv.depthwise_conv.weight', 'conv_depthwise.weights'),
+                ('conv.depthwise_conv.bias', 'conv_depthwise.bias'),
+                ('conv.pointwise_conv2.weight', 'conv_pointwise2.weights'),
+                ('conv.pointwise_conv2.bias', 'conv_pointwise2.bias'),
+                ('conv.norm.weight', 'conv_batchnorm_weight.weights'),
+                ('conv.norm.bias', 'conv_batchnorm_bias.bias'),
+                ('conv.norm.running_mean', 'conv_batchnorm_running_mean.weights'),
+                ('conv.norm.running_var', 'conv_batchnorm_running_var.weights'),
+                ('norm_feed_forward1.weight', 'norm_ff1.weights'),
+                ('norm_feed_forward1.bias', 'norm_ff1.bias'),
+                ('norm_self_att.weight', 'norm_self_attn.weights'),
+                ('norm_self_att.bias', 'norm_self_attn.bias'),
+                ('norm_conv.weight', 'norm_conv.weights'),
+                ('norm_conv.bias', 'norm_conv.bias'),
+                ('norm_feed_forward2.weight', 'norm_ff2.weights'),
+                ('norm_feed_forward2.bias', 'norm_ff2.bias'),
+                ('norm_out.weight', 'norm_out.weights'),
+                ('norm_out.bias', 'norm_out.bias'),
+            ]
 
-        for i in range(num_layers):
-            layer_prefix = f'encoder.layers.{i}.'
-            for suffix, out_suffix in layer_mappings:
-                key = layer_prefix + suffix
-                out_name = f'layer_{i}_{out_suffix}'
-                if key not in state_dict:
-                    if suffix.endswith('num_batches_tracked'):
+            for i in range(num_layers):
+                layer_prefix = f'encoder.layers.{i}.'
+                for suffix, out_suffix in layer_mappings:
+                    key = layer_prefix + suffix
+                    out_name = f'layer_{i}_{out_suffix}'
+                    if key not in state_dict:
+                        if suffix.endswith('num_batches_tracked'):
+                            continue
+                        missing_tensors.append((i, out_name, [key]))
                         continue
-                    missing_tensors.append((i, out_name, [key]))
-                    continue
-                save_tensor_with_header(
-                    state_dict[key], output_dir / out_name, precision, transpose=False,
-                    stats_tracker=quantization_stats, args=args, model_type=detected_model_type
-                )
-                saved_tensor_full_names.add(key)
-            tracked_key = layer_prefix + 'conv.norm.num_batches_tracked'
-            if tracked_key in state_dict:
-                saved_tensor_full_names.add(tracked_key)
+                    save_tensor_with_header(
+                        state_dict[key], output_dir / out_name, precision, transpose=False,
+                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                    )
+                    saved_tensor_full_names.add(key)
+                tracked_key = layer_prefix + 'conv.norm.num_batches_tracked'
+                if tracked_key in state_dict:
+                    saved_tensor_full_names.add(tracked_key)
     elif detected_model_type == 'parakeet_tdt':
-        global_mappings = [
-            (['encoder.pre_encode.conv.0.weight', 'encoder.subsampling.layers.0.weight'], 'subsampling_conv0_weight.weights'),
-            (['encoder.pre_encode.conv.0.bias', 'encoder.subsampling.layers.0.bias'], 'subsampling_conv0_bias.bias'),
-            (['encoder.pre_encode.conv.2.weight', 'encoder.subsampling.layers.2.weight'], 'subsampling_depthwise1_weight.weights'),
-            (['encoder.pre_encode.conv.2.bias', 'encoder.subsampling.layers.2.bias'], 'subsampling_depthwise1_bias.bias'),
-            (['encoder.pre_encode.conv.3.weight', 'encoder.subsampling.layers.3.weight'], 'subsampling_pointwise1_weight.weights'),
-            (['encoder.pre_encode.conv.3.bias', 'encoder.subsampling.layers.3.bias'], 'subsampling_pointwise1_bias.bias'),
-            (['encoder.pre_encode.conv.5.weight', 'encoder.subsampling.layers.5.weight'], 'subsampling_depthwise2_weight.weights'),
-            (['encoder.pre_encode.conv.5.bias', 'encoder.subsampling.layers.5.bias'], 'subsampling_depthwise2_bias.bias'),
-            (['encoder.pre_encode.conv.6.weight', 'encoder.subsampling.layers.6.weight'], 'subsampling_pointwise2_weight.weights'),
-            (['encoder.pre_encode.conv.6.bias', 'encoder.subsampling.layers.6.bias'], 'subsampling_pointwise2_bias.bias'),
-            (['encoder.pre_encode.out.weight', 'encoder.subsampling.linear.weight'], 'subsampling_linear_weight.weights'),
-            (['encoder.pre_encode.out.bias', 'encoder.subsampling.linear.bias'], 'subsampling_linear_bias.bias'),
-        ]
+        global_mappings = []
+        if not skip_parakeet_encoder_weights:
+            global_mappings = [
+                (['encoder.pre_encode.conv.0.weight', 'encoder.subsampling.layers.0.weight'], 'subsampling_conv0_weight.weights'),
+                (['encoder.pre_encode.conv.0.bias', 'encoder.subsampling.layers.0.bias'], 'subsampling_conv0_bias.bias'),
+                (['encoder.pre_encode.conv.2.weight', 'encoder.subsampling.layers.2.weight'], 'subsampling_depthwise1_weight.weights'),
+                (['encoder.pre_encode.conv.2.bias', 'encoder.subsampling.layers.2.bias'], 'subsampling_depthwise1_bias.bias'),
+                (['encoder.pre_encode.conv.3.weight', 'encoder.subsampling.layers.3.weight'], 'subsampling_pointwise1_weight.weights'),
+                (['encoder.pre_encode.conv.3.bias', 'encoder.subsampling.layers.3.bias'], 'subsampling_pointwise1_bias.bias'),
+                (['encoder.pre_encode.conv.5.weight', 'encoder.subsampling.layers.5.weight'], 'subsampling_depthwise2_weight.weights'),
+                (['encoder.pre_encode.conv.5.bias', 'encoder.subsampling.layers.5.bias'], 'subsampling_depthwise2_bias.bias'),
+                (['encoder.pre_encode.conv.6.weight', 'encoder.subsampling.layers.6.weight'], 'subsampling_pointwise2_weight.weights'),
+                (['encoder.pre_encode.conv.6.bias', 'encoder.subsampling.layers.6.bias'], 'subsampling_pointwise2_bias.bias'),
+                (['encoder.pre_encode.out.weight', 'encoder.subsampling.linear.weight'], 'subsampling_linear_weight.weights'),
+                (['encoder.pre_encode.out.bias', 'encoder.subsampling.linear.bias'], 'subsampling_linear_bias.bias'),
+            ]
 
         for candidate_keys, out_name in global_mappings:
             key = _find_first_key(state_dict, candidate_keys)
@@ -566,165 +583,172 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             )
             saved_tensor_full_names.add(key)
 
-        layer_mappings = [
-            (['feed_forward1.linear1.weight'], 'ff1_linear1.weights'),
-            (['feed_forward1.linear1.bias'], 'ff1_linear1.bias'),
-            (['feed_forward1.linear2.weight'], 'ff1_linear2.weights'),
-            (['feed_forward1.linear2.bias'], 'ff1_linear2.bias'),
-            (['feed_forward2.linear1.weight'], 'ff2_linear1.weights'),
-            (['feed_forward2.linear1.bias'], 'ff2_linear1.bias'),
-            (['feed_forward2.linear2.weight'], 'ff2_linear2.weights'),
-            (['feed_forward2.linear2.bias'], 'ff2_linear2.bias'),
-            ([
-                'self_attn.q_proj.weight',
-                'self_attn.linear_q.weight',
-                'self_attention.q_proj.weight',
-                'self_attention.linear_q.weight'
-            ], 'self_attn_q.weights'),
-            ([
-                'self_attn.q_proj.bias',
-                'self_attn.linear_q.bias',
-                'self_attention.q_proj.bias',
-                'self_attention.linear_q.bias'
-            ], 'self_attn_q.bias'),
-            ([
-                'self_attn.k_proj.weight',
-                'self_attn.linear_k.weight',
-                'self_attention.k_proj.weight',
-                'self_attention.linear_k.weight'
-            ], 'self_attn_k.weights'),
-            ([
-                'self_attn.k_proj.bias',
-                'self_attn.linear_k.bias',
-                'self_attention.k_proj.bias',
-                'self_attention.linear_k.bias'
-            ], 'self_attn_k.bias'),
-            ([
-                'self_attn.v_proj.weight',
-                'self_attn.linear_v.weight',
-                'self_attention.v_proj.weight',
-                'self_attention.linear_v.weight'
-            ], 'self_attn_v.weights'),
-            ([
-                'self_attn.v_proj.bias',
-                'self_attn.linear_v.bias',
-                'self_attention.v_proj.bias',
-                'self_attention.linear_v.bias'
-            ], 'self_attn_v.bias'),
-            ([
-                'self_attn.o_proj.weight',
-                'self_attn.linear_out.weight',
-                'self_attention.o_proj.weight',
-                'self_attention.linear_out.weight'
-            ], 'self_attn_output.weights'),
-            ([
-                'self_attn.o_proj.bias',
-                'self_attn.linear_out.bias',
-                'self_attention.o_proj.bias',
-                'self_attention.linear_out.bias'
-            ], 'self_attn_output.bias'),
-            ([
-                'self_attn.relative_k_proj.weight',
-                'self_attn.linear_pos.weight',
-                'self_attention.relative_k_proj.weight',
-                'self_attention.linear_pos.weight'
-            ], 'self_attn_relative_k.weights'),
-            ([
-                'self_attn.bias_u',
-                'self_attn.pos_bias_u',
-                'self_attention.bias_u',
-                'self_attention.pos_bias_u'
-            ], 'self_attn_bias_u.weights'),
-            ([
-                'self_attn.bias_v',
-                'self_attn.pos_bias_v',
-                'self_attention.bias_v',
-                'self_attention.pos_bias_v'
-            ], 'self_attn_bias_v.weights'),
-            (['conv.pointwise_conv1.weight'], 'conv_pointwise1.weights'),
-            (['conv.pointwise_conv1.bias'], 'conv_pointwise1.bias'),
-            (['conv.depthwise_conv.weight'], 'conv_depthwise.weights'),
-            (['conv.depthwise_conv.bias'], 'conv_depthwise.bias'),
-            (['conv.pointwise_conv2.weight'], 'conv_pointwise2.weights'),
-            (['conv.pointwise_conv2.bias'], 'conv_pointwise2.bias'),
-            (['conv.norm.weight', 'conv.batch_norm.weight'], 'conv_batchnorm_weight.weights'),
-            (['conv.norm.bias', 'conv.batch_norm.bias'], 'conv_batchnorm_bias.bias'),
-            (['conv.norm.running_mean', 'conv.batch_norm.running_mean'], 'conv_batchnorm_running_mean.weights'),
-            (['conv.norm.running_var', 'conv.batch_norm.running_var'], 'conv_batchnorm_running_var.weights'),
-            (['norm_feed_forward1.weight'], 'norm_ff1.weights'),
-            (['norm_feed_forward1.bias'], 'norm_ff1.bias'),
-            (['norm_self_att.weight'], 'norm_self_attn.weights'),
-            (['norm_self_att.bias'], 'norm_self_attn.bias'),
-            (['norm_conv.weight'], 'norm_conv.weights'),
-            (['norm_conv.bias'], 'norm_conv.bias'),
-            (['norm_feed_forward2.weight'], 'norm_ff2.weights'),
-            (['norm_feed_forward2.bias'], 'norm_ff2.bias'),
-            (['norm_out.weight'], 'norm_out.weights'),
-            (['norm_out.bias'], 'norm_out.bias'),
-        ]
-
-        # Some Parakeet-TDT checkpoints are bias-free in several encoder submodules.
-        # Runtime currently expects bias files to exist, so synthesize zero biases
-        # from the matching weight output dimension when missing.
-        zero_bias_fallbacks = {
-            'ff1_linear1.bias': ['feed_forward1.linear1.weight'],
-            'ff1_linear2.bias': ['feed_forward1.linear2.weight'],
-            'ff2_linear1.bias': ['feed_forward2.linear1.weight'],
-            'ff2_linear2.bias': ['feed_forward2.linear2.weight'],
-            'self_attn_q.bias': ['self_attn.q_proj.weight', 'self_attn.linear_q.weight', 'self_attention.q_proj.weight', 'self_attention.linear_q.weight'],
-            'self_attn_k.bias': ['self_attn.k_proj.weight', 'self_attn.linear_k.weight', 'self_attention.k_proj.weight', 'self_attention.linear_k.weight'],
-            'self_attn_v.bias': ['self_attn.v_proj.weight', 'self_attn.linear_v.weight', 'self_attention.v_proj.weight', 'self_attention.linear_v.weight'],
-            'self_attn_output.bias': ['self_attn.o_proj.weight', 'self_attn.linear_out.weight', 'self_attention.o_proj.weight', 'self_attention.linear_out.weight'],
-            'conv_pointwise1.bias': ['conv.pointwise_conv1.weight'],
-            'conv_depthwise.bias': ['conv.depthwise_conv.weight'],
-            'conv_pointwise2.bias': ['conv.pointwise_conv2.weight'],
-        }
-
-        for i in range(num_layers):
-            layer_prefix = f'encoder.layers.{i}.'
-            for suffixes, out_suffix in layer_mappings:
-                candidate_keys = [layer_prefix + suffix for suffix in suffixes]
-                key = _find_first_key(state_dict, candidate_keys)
-                out_name = f'layer_{i}_{out_suffix}'
-                if key is None:
-                    fallback_suffixes = zero_bias_fallbacks.get(out_suffix)
-                    if fallback_suffixes is not None and torch is not None:
-                        weight_keys = [layer_prefix + suffix for suffix in fallback_suffixes]
-                        weight_key = _find_first_key(state_dict, weight_keys)
-                        if weight_key is not None:
-                            weight_tensor = state_dict[weight_key]
-                            out_dim = int(weight_tensor.shape[0]) if len(weight_tensor.shape) >= 1 else 0
-                            if out_dim > 0:
-                                zero_bias = torch.zeros((out_dim,), dtype=torch.float32)
-                                save_tensor_with_header(
-                                    zero_bias, output_dir / out_name, "FP16", transpose=False,
-                                    stats_tracker=quantization_stats, args=args, model_type=detected_model_type
-                                )
-                                continue
-                    missing_tensors.append((i, out_name, candidate_keys))
-                    continue
-                tensor = state_dict[key]
-
-                # Some NeMo checkpoints store conv1d kernels in [C_out, K, C_in].
-                # Runtime expects [C_out, C_in, K].
-                if out_suffix in {'conv_pointwise1.weights', 'conv_pointwise2.weights'}:
-                    if hasattr(tensor, 'shape') and len(tensor.shape) == 3 and tensor.shape[1] == 1 and tensor.shape[2] > 1:
-                        tensor = tensor.permute(0, 2, 1).contiguous()
-                elif out_suffix == 'conv_depthwise.weights':
-                    if hasattr(tensor, 'shape') and len(tensor.shape) == 3 and tensor.shape[1] == 9 and tensor.shape[2] == 1:
-                        tensor = tensor.permute(0, 2, 1).contiguous()
-                save_tensor_with_header(
-                    tensor, output_dir / out_name, precision, transpose=False,
-                    stats_tracker=quantization_stats, args=args, model_type=detected_model_type
-                )
-                saved_tensor_full_names.add(key)
-            tracked_keys = [
-                layer_prefix + 'conv.norm.num_batches_tracked',
-                layer_prefix + 'conv.batch_norm.num_batches_tracked',
+        if skip_parakeet_encoder_weights:
+            for key in state_dict.keys():
+                if (key.startswith('encoder.pre_encode.') or
+                    key.startswith('encoder.subsampling.') or
+                    key.startswith('encoder.layers.')):
+                    saved_tensor_full_names.add(key)
+        else:
+            layer_mappings = [
+                (['feed_forward1.linear1.weight'], 'ff1_linear1.weights'),
+                (['feed_forward1.linear1.bias'], 'ff1_linear1.bias'),
+                (['feed_forward1.linear2.weight'], 'ff1_linear2.weights'),
+                (['feed_forward1.linear2.bias'], 'ff1_linear2.bias'),
+                (['feed_forward2.linear1.weight'], 'ff2_linear1.weights'),
+                (['feed_forward2.linear1.bias'], 'ff2_linear1.bias'),
+                (['feed_forward2.linear2.weight'], 'ff2_linear2.weights'),
+                (['feed_forward2.linear2.bias'], 'ff2_linear2.bias'),
+                ([
+                    'self_attn.q_proj.weight',
+                    'self_attn.linear_q.weight',
+                    'self_attention.q_proj.weight',
+                    'self_attention.linear_q.weight'
+                ], 'self_attn_q.weights'),
+                ([
+                    'self_attn.q_proj.bias',
+                    'self_attn.linear_q.bias',
+                    'self_attention.q_proj.bias',
+                    'self_attention.linear_q.bias'
+                ], 'self_attn_q.bias'),
+                ([
+                    'self_attn.k_proj.weight',
+                    'self_attn.linear_k.weight',
+                    'self_attention.k_proj.weight',
+                    'self_attention.linear_k.weight'
+                ], 'self_attn_k.weights'),
+                ([
+                    'self_attn.k_proj.bias',
+                    'self_attn.linear_k.bias',
+                    'self_attention.k_proj.bias',
+                    'self_attention.linear_k.bias'
+                ], 'self_attn_k.bias'),
+                ([
+                    'self_attn.v_proj.weight',
+                    'self_attn.linear_v.weight',
+                    'self_attention.v_proj.weight',
+                    'self_attention.linear_v.weight'
+                ], 'self_attn_v.weights'),
+                ([
+                    'self_attn.v_proj.bias',
+                    'self_attn.linear_v.bias',
+                    'self_attention.v_proj.bias',
+                    'self_attention.linear_v.bias'
+                ], 'self_attn_v.bias'),
+                ([
+                    'self_attn.o_proj.weight',
+                    'self_attn.linear_out.weight',
+                    'self_attention.o_proj.weight',
+                    'self_attention.linear_out.weight'
+                ], 'self_attn_output.weights'),
+                ([
+                    'self_attn.o_proj.bias',
+                    'self_attn.linear_out.bias',
+                    'self_attention.o_proj.bias',
+                    'self_attention.linear_out.bias'
+                ], 'self_attn_output.bias'),
+                ([
+                    'self_attn.relative_k_proj.weight',
+                    'self_attn.linear_pos.weight',
+                    'self_attention.relative_k_proj.weight',
+                    'self_attention.linear_pos.weight'
+                ], 'self_attn_relative_k.weights'),
+                ([
+                    'self_attn.bias_u',
+                    'self_attn.pos_bias_u',
+                    'self_attention.bias_u',
+                    'self_attention.pos_bias_u'
+                ], 'self_attn_bias_u.weights'),
+                ([
+                    'self_attn.bias_v',
+                    'self_attn.pos_bias_v',
+                    'self_attention.bias_v',
+                    'self_attention.pos_bias_v'
+                ], 'self_attn_bias_v.weights'),
+                (['conv.pointwise_conv1.weight'], 'conv_pointwise1.weights'),
+                (['conv.pointwise_conv1.bias'], 'conv_pointwise1.bias'),
+                (['conv.depthwise_conv.weight'], 'conv_depthwise.weights'),
+                (['conv.depthwise_conv.bias'], 'conv_depthwise.bias'),
+                (['conv.pointwise_conv2.weight'], 'conv_pointwise2.weights'),
+                (['conv.pointwise_conv2.bias'], 'conv_pointwise2.bias'),
+                (['conv.norm.weight', 'conv.batch_norm.weight'], 'conv_batchnorm_weight.weights'),
+                (['conv.norm.bias', 'conv.batch_norm.bias'], 'conv_batchnorm_bias.bias'),
+                (['conv.norm.running_mean', 'conv.batch_norm.running_mean'], 'conv_batchnorm_running_mean.weights'),
+                (['conv.norm.running_var', 'conv.batch_norm.running_var'], 'conv_batchnorm_running_var.weights'),
+                (['norm_feed_forward1.weight'], 'norm_ff1.weights'),
+                (['norm_feed_forward1.bias'], 'norm_ff1.bias'),
+                (['norm_self_att.weight'], 'norm_self_attn.weights'),
+                (['norm_self_att.bias'], 'norm_self_attn.bias'),
+                (['norm_conv.weight'], 'norm_conv.weights'),
+                (['norm_conv.bias'], 'norm_conv.bias'),
+                (['norm_feed_forward2.weight'], 'norm_ff2.weights'),
+                (['norm_feed_forward2.bias'], 'norm_ff2.bias'),
+                (['norm_out.weight'], 'norm_out.weights'),
+                (['norm_out.bias'], 'norm_out.bias'),
             ]
-            for tracked_key in tracked_keys:
-                if tracked_key in state_dict:
-                    saved_tensor_full_names.add(tracked_key)
+
+            # Some Parakeet-TDT checkpoints are bias-free in several encoder submodules.
+            # Runtime currently expects bias files to exist, so synthesize zero biases
+            # from the matching weight output dimension when missing.
+            zero_bias_fallbacks = {
+                'ff1_linear1.bias': ['feed_forward1.linear1.weight'],
+                'ff1_linear2.bias': ['feed_forward1.linear2.weight'],
+                'ff2_linear1.bias': ['feed_forward2.linear1.weight'],
+                'ff2_linear2.bias': ['feed_forward2.linear2.weight'],
+                'self_attn_q.bias': ['self_attn.q_proj.weight', 'self_attn.linear_q.weight', 'self_attention.q_proj.weight', 'self_attention.linear_q.weight'],
+                'self_attn_k.bias': ['self_attn.k_proj.weight', 'self_attn.linear_k.weight', 'self_attention.k_proj.weight', 'self_attention.linear_k.weight'],
+                'self_attn_v.bias': ['self_attn.v_proj.weight', 'self_attn.linear_v.weight', 'self_attention.v_proj.weight', 'self_attention.linear_v.weight'],
+                'self_attn_output.bias': ['self_attn.o_proj.weight', 'self_attn.linear_out.weight', 'self_attention.o_proj.weight', 'self_attention.linear_out.weight'],
+                'conv_pointwise1.bias': ['conv.pointwise_conv1.weight'],
+                'conv_depthwise.bias': ['conv.depthwise_conv.weight'],
+                'conv_pointwise2.bias': ['conv.pointwise_conv2.weight'],
+            }
+
+            for i in range(num_layers):
+                layer_prefix = f'encoder.layers.{i}.'
+                for suffixes, out_suffix in layer_mappings:
+                    candidate_keys = [layer_prefix + suffix for suffix in suffixes]
+                    key = _find_first_key(state_dict, candidate_keys)
+                    out_name = f'layer_{i}_{out_suffix}'
+                    if key is None:
+                        fallback_suffixes = zero_bias_fallbacks.get(out_suffix)
+                        if fallback_suffixes is not None and torch is not None:
+                            weight_keys = [layer_prefix + suffix for suffix in fallback_suffixes]
+                            weight_key = _find_first_key(state_dict, weight_keys)
+                            if weight_key is not None:
+                                weight_tensor = state_dict[weight_key]
+                                out_dim = int(weight_tensor.shape[0]) if len(weight_tensor.shape) >= 1 else 0
+                                if out_dim > 0:
+                                    zero_bias = torch.zeros((out_dim,), dtype=torch.float32)
+                                    save_tensor_with_header(
+                                        zero_bias, output_dir / out_name, "FP16", transpose=False,
+                                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                                    )
+                                    continue
+                        missing_tensors.append((i, out_name, candidate_keys))
+                        continue
+                    tensor = state_dict[key]
+
+                    # Some NeMo checkpoints store conv1d kernels in [C_out, K, C_in].
+                    # Runtime expects [C_out, C_in, K].
+                    if out_suffix in {'conv_pointwise1.weights', 'conv_pointwise2.weights'}:
+                        if hasattr(tensor, 'shape') and len(tensor.shape) == 3 and tensor.shape[1] == 1 and tensor.shape[2] > 1:
+                            tensor = tensor.permute(0, 2, 1).contiguous()
+                    elif out_suffix == 'conv_depthwise.weights':
+                        if hasattr(tensor, 'shape') and len(tensor.shape) == 3 and tensor.shape[1] == 9 and tensor.shape[2] == 1:
+                            tensor = tensor.permute(0, 2, 1).contiguous()
+                    save_tensor_with_header(
+                        tensor, output_dir / out_name, precision, transpose=False,
+                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type
+                    )
+                    saved_tensor_full_names.add(key)
+                tracked_keys = [
+                    layer_prefix + 'conv.norm.num_batches_tracked',
+                    layer_prefix + 'conv.batch_norm.num_batches_tracked',
+                ]
+                for tracked_key in tracked_keys:
+                    if tracked_key in state_dict:
+                        saved_tensor_full_names.add(tracked_key)
     else:
         for i in range(num_layers):
             layer_prefixes = [p.format(i=i) for p in LAYER_PREFIXES]
