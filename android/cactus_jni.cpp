@@ -512,10 +512,11 @@ Java_com_cactus_CactusJNI_nativeVad(JNIEnv* env, jobject, jlong handle,
 
 JNIEXPORT jstring JNICALL
 Java_com_cactus_CactusJNI_nativeDiarize(JNIEnv* env, jobject, jlong handle,
-                                          jstring audioPath, jbyteArray pcmData) {
+                                          jstring audioPath, jstring optionsJson, jbyteArray pcmData) {
     if (handle == 0) { throwCactusException(env, "Model not initialized"); return nullptr; }
 
     const char* path = jstring_to_cstr(env, audioPath);
+    const char* opts = jstring_to_cstr(env, optionsJson);
 
     std::vector<char> buffer(1 << 20);
 
@@ -534,6 +535,7 @@ Java_com_cactus_CactusJNI_nativeDiarize(JNIEnv* env, jobject, jlong handle,
         path,
         buffer.data(),
         buffer.size(),
+        opts,
         pcmBuffer,
         pcmSize
     );
@@ -543,6 +545,7 @@ Java_com_cactus_CactusJNI_nativeDiarize(JNIEnv* env, jobject, jlong handle,
     }
 
     release_jstring(env, audioPath, path);
+    release_jstring(env, optionsJson, opts);
 
     if (result < 0) { throwOnError(env); return nullptr; }
     return env->NewStringUTF(buffer.data());
@@ -550,10 +553,11 @@ Java_com_cactus_CactusJNI_nativeDiarize(JNIEnv* env, jobject, jlong handle,
 
 JNIEXPORT jstring JNICALL
 Java_com_cactus_CactusJNI_nativeEmbedSpeaker(JNIEnv* env, jobject, jlong handle,
-                                               jstring audioPath, jbyteArray pcmData) {
+                                               jstring audioPath, jstring optionsJson, jbyteArray pcmData) {
     if (handle == 0) { throwCactusException(env, "Model not initialized"); return nullptr; }
 
     const char* path = jstring_to_cstr(env, audioPath);
+    const char* opts = jstring_to_cstr(env, optionsJson);
 
     std::vector<char> buffer(DEFAULT_BUFFER_SIZE);
 
@@ -572,6 +576,7 @@ Java_com_cactus_CactusJNI_nativeEmbedSpeaker(JNIEnv* env, jobject, jlong handle,
         path,
         buffer.data(),
         buffer.size(),
+        opts,
         pcmBuffer,
         pcmSize
     );
@@ -581,6 +586,7 @@ Java_com_cactus_CactusJNI_nativeEmbedSpeaker(JNIEnv* env, jobject, jlong handle,
     }
 
     release_jstring(env, audioPath, path);
+    release_jstring(env, optionsJson, opts);
 
     if (result < 0) { throwOnError(env); return nullptr; }
     return env->NewStringUTF(buffer.data());

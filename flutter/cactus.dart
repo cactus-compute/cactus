@@ -139,6 +139,7 @@ typedef CactusDiarizeNative = Int32 Function(
     Pointer<Utf8> audioFilePath,
     Pointer<Utf8> responseBuffer,
     IntPtr bufferSize,
+    Pointer<Utf8> optionsJson,
     Pointer<Uint8> pcmBuffer,
     IntPtr pcmBufferSize);
 
@@ -147,6 +148,7 @@ typedef CactusEmbedSpeakerNative = Int32 Function(
     Pointer<Utf8> audioFilePath,
     Pointer<Utf8> responseBuffer,
     IntPtr bufferSize,
+    Pointer<Utf8> optionsJson,
     Pointer<Uint8> pcmBuffer,
     IntPtr pcmBufferSize);
 
@@ -288,6 +290,7 @@ typedef CactusDiarizeDart = int Function(
     Pointer<Utf8> audioFilePath,
     Pointer<Utf8> responseBuffer,
     int bufferSize,
+    Pointer<Utf8> optionsJson,
     Pointer<Uint8> pcmBuffer,
     int pcmBufferSize);
 
@@ -296,6 +299,7 @@ typedef CactusEmbedSpeakerDart = int Function(
     Pointer<Utf8> audioFilePath,
     Pointer<Utf8> responseBuffer,
     int bufferSize,
+    Pointer<Utf8> optionsJson,
     Pointer<Uint8> pcmBuffer,
     int pcmBufferSize);
 
@@ -806,11 +810,13 @@ Float32List cactusAudioEmbed(CactusModelT model, String audioPath) {
 String cactusDiarize(
   CactusModelT model,
   String? audioPath,
+  String? optionsJson,
   Uint8List? pcmData,
 ) {
   const bufferSize = 1 << 20;
   final responseBuffer = calloc<Uint8>(bufferSize);
   final audioPathPtr = audioPath?.toNativeUtf8() ?? nullptr;
+  final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
 
   Pointer<Uint8> pcmBuffer = nullptr;
   int pcmSize = 0;
@@ -822,7 +828,7 @@ String cactusDiarize(
 
   try {
     final result = _cactusDiarize(
-      model, audioPathPtr, responseBuffer.cast(), bufferSize, pcmBuffer, pcmSize,
+      model, audioPathPtr, responseBuffer.cast(), bufferSize, optionsPtr, pcmBuffer, pcmSize,
     );
     if (result < 0) {
       throw Exception('Diarize failed: ${cactusGetLastError()}');
@@ -831,6 +837,7 @@ String cactusDiarize(
   } finally {
     calloc.free(responseBuffer);
     if (audioPathPtr != nullptr) calloc.free(audioPathPtr);
+    if (optionsPtr != nullptr) calloc.free(optionsPtr);
     if (pcmBuffer != nullptr) calloc.free(pcmBuffer);
   }
 }
@@ -839,11 +846,13 @@ String cactusDiarize(
 String cactusEmbedSpeaker(
   CactusModelT model,
   String? audioPath,
+  String? optionsJson,
   Uint8List? pcmData,
 ) {
   const bufferSize = 65536;
   final responseBuffer = calloc<Uint8>(bufferSize);
   final audioPathPtr = audioPath?.toNativeUtf8() ?? nullptr;
+  final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
 
   Pointer<Uint8> pcmBuffer = nullptr;
   int pcmSize = 0;
@@ -855,7 +864,7 @@ String cactusEmbedSpeaker(
 
   try {
     final result = _cactusEmbedSpeaker(
-      model, audioPathPtr, responseBuffer.cast(), bufferSize, pcmBuffer, pcmSize,
+      model, audioPathPtr, responseBuffer.cast(), bufferSize, optionsPtr, pcmBuffer, pcmSize,
     );
     if (result < 0) {
       throw Exception('EmbedSpeaker failed: ${cactusGetLastError()}');
@@ -864,6 +873,7 @@ String cactusEmbedSpeaker(
   } finally {
     calloc.free(responseBuffer);
     if (audioPathPtr != nullptr) calloc.free(audioPathPtr);
+    if (optionsPtr != nullptr) calloc.free(optionsPtr);
     if (pcmBuffer != nullptr) calloc.free(pcmBuffer);
   }
 }

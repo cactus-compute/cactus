@@ -9,7 +9,6 @@ namespace cactus {
 namespace engine {
 
 static constexpr size_t WINDOW_SAMPLES    = 160000;
-static constexpr size_t STEP_SAMPLES      = 16000;
 static constexpr size_t FRAMES_PER_WINDOW = 589;
 static constexpr int    NUM_CLASSES       = 7;
 static constexpr int    NUM_SPEAKERS      = 3;
@@ -141,7 +140,7 @@ bool PyAnnoteModel::init(const std::string& model_folder, size_t context_size,
     }
 }
 
-std::vector<float> PyAnnoteModel::diarize(const float* pcm_f32, size_t num_samples) {
+std::vector<float> PyAnnoteModel::diarize(const float* pcm_f32, size_t num_samples, size_t step_samples) {
     if (!initialized_) throw std::runtime_error("PyAnnote model not initialized");
 
     const size_t total_frames = std::max(
@@ -184,7 +183,7 @@ std::vector<float> PyAnnoteModel::diarize(const float* pcm_f32, size_t num_sampl
 
     const size_t last_start = num_samples > WINDOW_SAMPLES ? num_samples - WINDOW_SAMPLES : 0;
     bool last_processed = false;
-    for (size_t s = 0; s + WINDOW_SAMPLES <= num_samples; s += STEP_SAMPLES) {
+    for (size_t s = 0; s + WINDOW_SAMPLES <= num_samples; s += step_samples) {
         if (s >= last_start) last_processed = true;
         process_chunk(s);
     }

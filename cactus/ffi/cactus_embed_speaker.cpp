@@ -16,9 +16,11 @@ int cactus_embed_speaker(
     const char* audio_file_path,
     char* response_buffer,
     size_t buffer_size,
+    const char* options_json,
     const uint8_t* pcm_buffer,
     size_t pcm_buffer_size
 ) {
+    (void)options_json;
     if (!model) {
         std::string error_msg = last_error_message.empty() ? "Model not initialized." : last_error_message;
         CACTUS_LOG_ERROR("embed_speaker", error_msg);

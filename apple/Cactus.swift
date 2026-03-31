@@ -307,7 +307,7 @@ public func cactusVad(_ model: CactusModelT, _ audioPath: String?, _ optionsJson
     return String(cString: buffer)
 }
 
-public func cactusDiarize(_ model: CactusModelT, _ audioPath: String?, _ pcmData: Data?) throws -> String {
+public func cactusDiarize(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?) throws -> String {
     var buffer = [CChar](repeating: 0, count: 1 << 20)
 
     let result: Int32
@@ -316,14 +316,14 @@ public func cactusDiarize(_ model: CactusModelT, _ audioPath: String?, _ pcmData
             buffer.withUnsafeMutableBufferPointer { bufferPtr in
                 cactus_diarize(
                     model, audioPath,
-                    bufferPtr.baseAddress, bufferPtr.count,
+                    bufferPtr.baseAddress, bufferPtr.count, optionsJson,
                     pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), pcmData.count
                 )
             }
         }
     } else {
         result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
-            cactus_diarize(model, audioPath, bufferPtr.baseAddress, bufferPtr.count, nil, 0)
+            cactus_diarize(model, audioPath, bufferPtr.baseAddress, bufferPtr.count, optionsJson, nil, 0)
         }
     }
 
@@ -331,7 +331,7 @@ public func cactusDiarize(_ model: CactusModelT, _ audioPath: String?, _ pcmData
     return String(cString: buffer)
 }
 
-public func cactusEmbedSpeaker(_ model: CactusModelT, _ audioPath: String?, _ pcmData: Data?) throws -> String {
+public func cactusEmbedSpeaker(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?) throws -> String {
     var buffer = [CChar](repeating: 0, count: _defaultBufferSize)
 
     let result: Int32
@@ -340,14 +340,14 @@ public func cactusEmbedSpeaker(_ model: CactusModelT, _ audioPath: String?, _ pc
             buffer.withUnsafeMutableBufferPointer { bufferPtr in
                 cactus_embed_speaker(
                     model, audioPath,
-                    bufferPtr.baseAddress, bufferPtr.count,
+                    bufferPtr.baseAddress, bufferPtr.count, optionsJson,
                     pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), pcmData.count
                 )
             }
         }
     } else {
         result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
-            cactus_embed_speaker(model, audioPath, bufferPtr.baseAddress, bufferPtr.count, nil, 0)
+            cactus_embed_speaker(model, audioPath, bufferPtr.baseAddress, bufferPtr.count, optionsJson, nil, 0)
         }
     }
 

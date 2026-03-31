@@ -752,7 +752,7 @@ static bool test_diarize() {
     std::string audio_path = std::string(g_assets_path) + "/test.wav";
     char response[1 << 20] = {0};
 
-    int result = cactus_diarize(model, audio_path.c_str(), response, sizeof(response), nullptr, 0);
+    int result = cactus_diarize(model, audio_path.c_str(), response, sizeof(response), nullptr, nullptr, 0);
     cactus_destroy(model);
 
     if (result < 0) {
@@ -874,8 +874,8 @@ static bool test_embed_speaker() {
     char response1[1 << 16] = {0};
     char response2[1 << 16] = {0};
 
-    int r1 = cactus_embed_speaker(model, audio_path.c_str(), response1, sizeof(response1), nullptr, 0);
-    int r2 = cactus_embed_speaker(model, audio_path.c_str(), response2, sizeof(response2), nullptr, 0);
+    int r1 = cactus_embed_speaker(model, audio_path.c_str(), response1, sizeof(response1), nullptr, nullptr, 0);
+    int r2 = cactus_embed_speaker(model, audio_path.c_str(), response2, sizeof(response2), nullptr, nullptr, 0);
     cactus_destroy(model);
 
     if (r1 < 0) { std::cerr << "[✗] Speaker embedding (run 1) failed: " << response1 << "\n"; return false; }

@@ -1519,7 +1519,7 @@ public:
     bool init(const std::string& model_folder, size_t context_size = 0,
               const std::string& system_prompt = "", bool do_warmup = false) override;
 
-    std::vector<float> diarize(const float* pcm_f32, size_t num_samples);
+    std::vector<float> diarize(const float* pcm_f32, size_t num_samples, size_t step_samples = 16000);
 
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {

@@ -227,7 +227,7 @@ print(vadJson);
 ```dart
 import 'cactus.dart';
 
-final String diarizeJson = cactusDiarize(model, '/path/to/audio.wav', null);
+final String diarizeJson = cactusDiarize(model, '/path/to/audio.wav', null, null);
 print(diarizeJson);
 ```
 
@@ -236,7 +236,7 @@ print(diarizeJson);
 ```dart
 import 'cactus.dart';
 
-final String embedJson = cactusEmbedSpeaker(model, '/path/to/audio.wav', null);
+final String embedJson = cactusEmbedSpeaker(model, '/path/to/audio.wav', null, null);
 print(embedJson);
 ```
 

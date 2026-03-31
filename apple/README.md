@@ -263,14 +263,14 @@ print(vadJson)
 ### Diarize
 
 ```swift
-let diarizeJson = try cactusDiarize(model, "/path/to/audio.wav", nil as Data?)
+let diarizeJson = try cactusDiarize(model, "/path/to/audio.wav", nil, nil as Data?)
 print(diarizeJson)
 ```
 
 ### Embed Speaker
 
 ```swift
-let embedJson = try cactusEmbedSpeaker(model, "/path/to/audio.wav", nil as Data?)
+let embedJson = try cactusEmbedSpeaker(model, "/path/to/audio.wav", nil, nil as Data?)
 print(embedJson)
 ```
 
