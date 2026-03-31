@@ -13,16 +13,6 @@ static constexpr size_t FRAMES_PER_WINDOW = 589;
 static constexpr int    NUM_CLASSES       = 7;
 static constexpr int    NUM_SPEAKERS      = 3;
 
-static constexpr int POWERSET_MAPPING[NUM_CLASSES][NUM_SPEAKERS] = {
-    {0, 0, 0},
-    {1, 0, 0},
-    {0, 1, 0},
-    {0, 0, 1},
-    {1, 1, 0},
-    {1, 0, 1},
-    {0, 1, 1},
-};
-
 PyAnnoteModel::PyAnnoteModel() : Model() {}
 PyAnnoteModel::PyAnnoteModel(const Config& config) : Model(config) {}
 
@@ -104,7 +94,7 @@ void PyAnnoteModel::build_graph() {
     x = graph_.leaky_relu(x, 0.01f);
 
     x = graph_.add(graph_.matmul(x, weight_nodes_.classifier_weight, true), weight_nodes_.classifier_bias);
-    x = graph_.scalar_log(graph_.softmax(x, -1));
+    x = graph_.softmax(x, -1);
     x = graph_.reshape(x, {1, T, 7});
 
     output_node_ = x;
@@ -148,7 +138,7 @@ std::vector<float> PyAnnoteModel::diarize(const float* pcm_f32, size_t num_sampl
         static_cast<size_t>(std::round((double)num_samples * FRAMES_PER_WINDOW / WINDOW_SAMPLES))
     );
 
-    std::vector<float> aggregated(total_frames * NUM_SPEAKERS, 0.0f);
+    std::vector<float> aggregated(total_frames * NUM_CLASSES, 0.0f);
     std::vector<float> weight_sum(total_frames, 0.0f);
 
     auto process_chunk = [&](size_t chunk_start) {
@@ -166,18 +156,10 @@ std::vector<float> PyAnnoteModel::diarize(const float* pcm_f32, size_t num_sampl
         for (size_t f = 0; f < FRAMES_PER_WINDOW; ++f) {
             const size_t out_f = frame_offset + f;
             if (out_f >= total_frames) break;
-
-            int best_class = 0;
-            float best_val = static_cast<float>(chunk_scores[f * NUM_CLASSES]);
-            for (int c = 1; c < NUM_CLASSES; ++c) {
-                const float val = static_cast<float>(chunk_scores[f * NUM_CLASSES + c]);
-                if (val > best_val) { best_val = val; best_class = c; }
-            }
-
             const float w = hamming_[f];
             weight_sum[out_f] += w;
-            for (int s = 0; s < NUM_SPEAKERS; ++s)
-                aggregated[out_f * NUM_SPEAKERS + s] += w * static_cast<float>(POWERSET_MAPPING[best_class][s]);
+            for (int c = 0; c < NUM_CLASSES; ++c)
+                aggregated[out_f * NUM_CLASSES + c] += w * static_cast<float>(chunk_scores[f * NUM_CLASSES + c]);
         }
     };
 
@@ -190,15 +172,21 @@ std::vector<float> PyAnnoteModel::diarize(const float* pcm_f32, size_t num_sampl
     if (!last_processed)
         process_chunk(last_start);
 
+    std::vector<float> speaker_probs(total_frames * NUM_SPEAKERS, 0.0f);
     for (size_t f = 0; f < total_frames; ++f) {
+        float* agg = aggregated.data() + f * NUM_CLASSES;
         if (weight_sum[f] > 0.0f) {
             const float inv_w = 1.0f / weight_sum[f];
-            for (int s = 0; s < NUM_SPEAKERS; ++s)
-                aggregated[f * NUM_SPEAKERS + s] *= inv_w;
+            for (int c = 0; c < NUM_CLASSES; ++c)
+                agg[c] *= inv_w;
         }
+        float* dst = speaker_probs.data() + f * NUM_SPEAKERS;
+        dst[0] = agg[1] + agg[4] + agg[5];
+        dst[1] = agg[2] + agg[4] + agg[6];
+        dst[2] = agg[3] + agg[5] + agg[6];
     }
 
-    return aggregated;
+    return speaker_probs;
 }
 
 }

@@ -2275,7 +2275,7 @@ void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<
                 sum_sq += v * v;
             }
             float mean = sum / static_cast<float>(T);
-            float var = (sum_sq - static_cast<float>(T) * mean * mean) / static_cast<float>(T - 1);
+            float var = T > 1 ? (sum_sq - static_cast<float>(T) * mean * mean) / static_cast<float>(T - 1) : 0.0f;
             float std_val = sqrtf(fmaxf(var, 0.0f));
             batch_dst[f] = static_cast<__fp16>(mean);
             batch_dst[features + f] = static_cast<__fp16>(std_val);
