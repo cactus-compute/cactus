@@ -9,6 +9,8 @@
 #if defined(__ANDROID__)
 #include <sys/auxv.h>
 #include <asm/hwcap.h>
+#include <sched.h>
+#include <fstream>
 #endif
 #include <algorithm>
 #include <cmath>
@@ -138,6 +140,80 @@ inline void unpack_int4_as_int8x16x2(const uint8_t* ptr, int8x16_t& high_decoded
 
 namespace CactusThreading {
 
+#if defined(__ANDROID__)
+    struct CoreTopology {
+        std::vector<int> performance_cores;  
+        std::vector<int> all_cores;
+
+        static CoreTopology& get() {
+            static CoreTopology topo = detect();
+            return topo;
+        }
+
+    private:
+        static int read_sysfs_int(const char* path) {
+            std::ifstream f(path);
+            if (!f.is_open()) return -1;
+            int val = -1;
+            f >> val;
+            return val;
+        }
+
+        static CoreTopology detect() {
+            CoreTopology topo;
+            constexpr int MAX_CPUS = 16;
+            std::vector<std::pair<int, int>> core_caps; 
+
+            for (int i = 0; i < MAX_CPUS; ++i) {
+                char path[128];
+
+                snprintf(path, sizeof(path),
+                         "/sys/devices/system/cpu/cpu%d/cpu_capacity", i);
+                int cap = read_sysfs_int(path);
+                if (cap > 0) {
+                    core_caps.push_back({i, cap});
+                    topo.all_cores.push_back(i);
+                    continue;
+                }
+
+                snprintf(path, sizeof(path),
+                         "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+                int freq = read_sysfs_int(path);
+                if (freq > 0) {
+                    core_caps.push_back({i, freq});
+                    topo.all_cores.push_back(i);
+                }
+            }
+
+            if (core_caps.empty()) return topo;
+
+            int max_cap = 0;
+            for (auto& [id, cap] : core_caps) {
+                max_cap = std::max(max_cap, cap);
+            }
+
+            int threshold = static_cast<int>(max_cap * 0.70);
+            for (auto& [id, cap] : core_caps) {
+                if (cap >= threshold) {
+                    topo.performance_cores.push_back(id);
+                }
+            }
+
+            return topo;
+        }
+    };
+
+    inline bool pin_current_thread_to_cores(const std::vector<int>& cores) {
+        if (cores.empty()) return false;
+        cpu_set_t mask;
+        CPU_ZERO(&mask);
+        for (int core : cores) {
+            CPU_SET(core, &mask);
+        }
+        return sched_setaffinity(0, sizeof(mask), &mask) == 0;
+    }
+#endif
+
     class ThreadPool {
     private:
         static constexpr size_t MAX_WORKERS = 16;
@@ -184,9 +260,25 @@ namespace CactusThreading {
             : stop(false), pending_tasks(0) {
             num_workers_ = std::min(num_threads, MAX_WORKERS);
             if (num_workers_ == 0) num_workers_ = 1;
+
+#if defined(__ANDROID__)
+            auto& topo = CoreTopology::get();
+            if (!topo.performance_cores.empty()) {
+                num_workers_ = std::min(num_workers_, topo.performance_cores.size());
+            }
+#endif
+
             workers.reserve(num_workers_);
             for (size_t i = 0; i < num_workers_; ++i) {
-                workers.emplace_back(&ThreadPool::worker_thread, this);
+                workers.emplace_back([this]() {
+#if defined(__ANDROID__)
+                    auto& perf = CoreTopology::get().performance_cores;
+                    if (!perf.empty()) {
+                        pin_current_thread_to_cores(perf);
+                    }
+#endif
+                    worker_thread();
+                });
             }
         }
 
