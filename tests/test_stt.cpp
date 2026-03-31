@@ -767,83 +767,72 @@ static bool test_diarize() {
     }
 
     std::vector<float> scores = parse_float_array(response_str, "scores");
-    if (scores.empty() || scores.size() % 7 != 0) {
-        std::cerr << "[✗] scores array size " << scores.size() << " is not a multiple of 7\n";
+    if (scores.empty() || scores.size() % 3 != 0) {
+        std::cerr << "[✗] scores array size " << scores.size() << " is not a multiple of 3\n";
         return false;
     }
-    const size_t num_frames = scores.size() / 7;
+    const size_t num_frames = scores.size() / 3;
     const double frame_dur_s = 10.0 / 589.0;
 
     bool probs_valid = true;
-    size_t bad_rows = 0;
     for (size_t f = 0; f < num_frames; ++f) {
-        float row_sum = 0.0f;
-        for (int c = 0; c < 7; ++c) {
-            float v = scores[f * 7 + c];
+        for (int s = 0; s < 3; ++s) {
+            float v = scores[f * 3 + s];
             if (v < -0.01f || v > 1.01f) { probs_valid = false; break; }
-            row_sum += v;
         }
-        if (row_sum < 0.99f || row_sum > 1.01f) ++bad_rows;
+        if (!probs_valid) break;
     }
 
-    static const char* CLASS_NAMES[7] = {
-        "silence", "spk_0", "spk_1", "spk_2", "overlap_01", "overlap_02", "overlap_12"
-    };
+    float activity[3] = {0.0f, 0.0f, 0.0f};
+    for (size_t f = 0; f < num_frames; ++f)
+        for (int s = 0; s < 3; ++s)
+            activity[s] += scores[f * 3 + s];
 
-    int class_counts[7] = {0};
-    int last_cls = -1;
-    struct Seg { const char* label; double start, end; };
+    struct Seg { int speaker; double start, end; };
     std::vector<Seg> segments;
+    int last_spk = -1;
+    static constexpr float ACTIVE_THRESHOLD = 0.5f;
 
     for (size_t f = 0; f < num_frames; ++f) {
-        int cls = 0;
-        float best = scores[f * 7];
-        for (int c = 1; c < 7; ++c)
-            if (scores[f * 7 + c] > best) { best = scores[f * 7 + c]; cls = c; }
-        class_counts[cls]++;
+        int dom = -1;
+        float best = ACTIVE_THRESHOLD;
+        for (int s = 0; s < 3; ++s)
+            if (scores[f * 3 + s] > best) { best = scores[f * 3 + s]; dom = s; }
         double t = f * frame_dur_s;
-        if (cls != last_cls) {
+        if (dom != last_spk) {
             if (!segments.empty()) segments.back().end = t;
-            segments.push_back({CLASS_NAMES[cls], t, t + frame_dur_s});
-            last_cls = cls;
+            segments.push_back({dom, t, t + frame_dur_s});
+            last_spk = dom;
         }
     }
     if (!segments.empty()) segments.back().end = num_frames * frame_dur_s;
 
-    int dom_speech_cls = 1;
-    for (int c = 2; c <= 3; ++c)
-        if (class_counts[c] > class_counts[dom_speech_cls]) dom_speech_cls = c;
-    float dom_fraction = (float)class_counts[dom_speech_cls] / (float)num_frames;
+    float max_activity = std::max({activity[0], activity[1], activity[2]});
+    float dom_fraction = max_activity / static_cast<float>(num_frames);
 
     std::cout << "\n[Results]\n"
               << "  frames: " << num_frames
               << "  (" << std::fixed << std::setprecision(1) << frame_dur_s * 1000 << "ms/frame)\n"
               << "  total_time_ms: " << std::fixed << std::setprecision(2)
               << json_number(response_str, "total_time_ms") << "\n"
-              << "  prob_rows_invalid: " << bad_rows << "/" << num_frames << "\n"
-              << "\n[Class distribution]\n";
-    for (int c = 0; c < 7; ++c)
-        if (class_counts[c] > 0)
-            std::cout << "  " << CLASS_NAMES[c] << ": " << class_counts[c]
-                      << " frames (" << std::fixed << std::setprecision(1)
-                      << 100.0f * class_counts[c] / num_frames << "%)\n";
+              << "\n[Speaker activity]\n";
+    for (int s = 0; s < 3; ++s)
+        std::cout << "  speaker_" << s << ": avg_prob=" << std::fixed << std::setprecision(3)
+                  << activity[s] / num_frames << "\n";
 
     std::cout << "\n[Speaker timeline]\n";
     for (const auto& seg : segments) {
-        std::cout << "  " << std::fixed << std::setprecision(2) << seg.start
-                  << "s - " << seg.end << "s  →  " << seg.label << "\n";
+        std::cout << "  " << std::fixed << std::setprecision(2) << seg.start << "s - "
+                  << seg.end << "s  ->  "
+                  << (seg.speaker >= 0 ? ("speaker_" + std::to_string(seg.speaker)) : "silence") << "\n";
     }
 
     if (!probs_valid) {
         std::cerr << "[✗] Scores contain values outside [0, 1]\n";
         return false;
     }
-    if (bad_rows > static_cast<size_t>(num_frames * 0.01)) {
-        std::cerr << "[✗] " << bad_rows << " frames have row sums outside [0.99, 1.01]\n";
-        return false;
-    }
-    if (dom_fraction < 0.5f) {
-        std::cerr << "[✗] No speaker class dominates (max fraction: " << dom_fraction << ")\n";
+    if (dom_fraction < 0.1f) {
+        std::cerr << "[✗] No speaker shows meaningful activity (max avg prob: " << dom_fraction << ")\n";
         return false;
     }
 
