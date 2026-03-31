@@ -114,19 +114,15 @@ size_t GraniteModel::build_transformer_block(CactusGraph* gb, size_t hidden, uin
                                              ComputeBackend backend, bool use_cache, size_t position_offset) {
     const auto& layer = weight_nodes_.layers[layer_idx];
 
-    // Pre-attention: normalize, then attend
     auto normalized_input = gb->rms_norm(hidden, layer.input_layernorm_weight, config_.layer_norm_eps);
     auto attn_output = build_attention(gb, normalized_input, layer_idx, backend, use_cache, position_offset);
 
-    // Residual connection with scaling: hidden + attn_output * residual_multiplier
     auto scaled_attn = gb->scalar_multiply(attn_output, residual_multiplier_);
     auto after_attention = gb->add(hidden, scaled_attn);
 
-    // Pre-MLP: normalize (post_attention_layernorm serves as the pre-FFN norm), then MLP
     auto normalized_for_mlp = gb->rms_norm(after_attention, layer.post_attention_layernorm_weight, config_.layer_norm_eps);
     auto mlp_output = build_mlp(gb, normalized_for_mlp, layer_idx, backend);
 
-    // Residual connection with scaling: after_attention + mlp_output * residual_multiplier
     auto scaled_mlp = gb->scalar_multiply(mlp_output, residual_multiplier_);
     return gb->add(after_attention, scaled_mlp);
 }
@@ -155,7 +151,6 @@ size_t GraniteModel::forward(const std::vector<uint32_t>& tokens, bool use_cache
     auto input_node_id = gb->input({seq_len}, Precision::FP32);
     auto hidden = gb->embedding(embedding_node_id_, input_node_id);
 
-    // Granite scales embeddings up by embedding_multiplier (e.g. 12.0)
     hidden = gb->scalar_multiply(hidden, embedding_multiplier_);
 
     std::vector<float> input_data(seq_len);
@@ -203,7 +198,6 @@ uint32_t GraniteModel::decode(const std::vector<uint32_t>& tokens, float tempera
 
     auto logits_node_id = gb->matmul(last_hidden, output_weight_node_id_, true, backend);
 
-    // Granite divides logits by logits_scaling (e.g. 8.0) before sampling
     if (logits_scaling_ != 1.0f) {
         logits_node_id = gb->scalar_divide(logits_node_id, logits_scaling_);
     }
