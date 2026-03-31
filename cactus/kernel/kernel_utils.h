@@ -46,6 +46,29 @@ inline void stream_store_f16x8(__fp16* dst, float16x8_t val) {
 #endif
 }
 
+inline bool cpu_has_i8mm() {
+#if defined(__aarch64__)
+    static std::once_flag once;
+    static bool has = false;
+
+    std::call_once(once, []() {
+#if defined(__APPLE__)
+    has = true;
+#elif defined(__ANDROID__)
+    unsigned long hwcap2 = getauxval(AT_HWCAP2);
+    #ifndef HWCAP2_I8MM
+    #define HWCAP2_I8MM (1 << 13)
+    #endif
+    has = (hwcap2 & HWCAP2_I8MM) != 0;
+#endif
+    });
+
+    return has;
+#else
+    return false;
+#endif
+}
+
 inline bool cpu_has_sme2() {
 #if defined(__aarch64__)
 	static std::once_flag once;
