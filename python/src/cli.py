@@ -498,13 +498,19 @@ def cmd_download(args):
 
         elif is_pyannote or is_wespeaker:
             try:
-                from pyannote.audio import Model as PyannoteModel
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    from pyannote.audio import Model as PyannoteModel
             except ImportError:
                 print_color(RED, "Error: pyannote.audio is required. Install with: pip install pyannote.audio")
                 return 1
             from .converter import convert_pyannote_weights, convert_wespeaker_weights
 
-            pyannote_model = PyannoteModel.from_pretrained(model_id, token=token)
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                pyannote_model = PyannoteModel.from_pretrained(model_id, token=token)
             pyannote_model.eval()
 
             if is_pyannote:

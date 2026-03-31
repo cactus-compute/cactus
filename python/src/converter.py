@@ -1016,6 +1016,7 @@ def convert_hf_model_weights(
 
 
 def convert_pyannote_weights(model, output_dir, precision="FP16", args=None):
+    precision = 'FP16'
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1063,6 +1064,7 @@ def convert_pyannote_weights(model, output_dir, precision="FP16", args=None):
 
 
 def convert_wespeaker_weights(model, output_dir, precision="FP16", args=None):
+    precision = 'FP16'
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
