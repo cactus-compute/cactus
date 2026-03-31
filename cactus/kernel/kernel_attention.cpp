@@ -1026,6 +1026,132 @@ void cactus_rms_norm_f16(
     }
 }
 
+void cactus_layer_norm_f16(
+    const __fp16* input,
+    const __fp16* weight,
+    const __fp16* bias,
+    __fp16* output,
+    size_t batch_size,
+    size_t dims,
+    float eps
+) {
+    constexpr size_t SIMD_WIDTH = 8;
+    constexpr size_t UNROLL_FACTOR = 3;
+    constexpr size_t TILE_SIZE = SIMD_WIDTH * UNROLL_FACTOR;
+
+    const size_t tile_end = (dims >= TILE_SIZE) ? dims - TILE_SIZE + 1 : 0;
+    const size_t simd_end = (dims >= SIMD_WIDTH) ? dims - SIMD_WIDTH + 1 : 0;
+
+    for (size_t b = 0; b < batch_size; ++b) {
+        const __fp16* input_row = input + b * dims;
+        __fp16* output_row = output + b * dims;
+
+        float32x4_t sum_input_vec[UNROLL_FACTOR * 2];
+        float32x4_t sum_squares_vec[UNROLL_FACTOR * 2];
+        for (size_t u = 0; u < UNROLL_FACTOR * 2; u++) {
+            sum_input_vec[u] = vdupq_n_f32(0.0f);
+            sum_squares_vec[u] = vdupq_n_f32(0.0f);
+        }
+
+        size_t i = 0;
+
+        for (; i < tile_end; i += TILE_SIZE) {
+            for (size_t u = 0; u < UNROLL_FACTOR; u++) {
+                float16x8_t input_vec = vld1q_f16(&input_row[i + u * SIMD_WIDTH]);
+                float32x4_t input_low = vcvt_f32_f16(vget_low_f16(input_vec));
+                float32x4_t input_high = vcvt_f32_f16(vget_high_f16(input_vec));
+
+                sum_input_vec[u * 2] = vaddq_f32(sum_input_vec[u * 2], input_low);
+                sum_input_vec[u * 2 + 1] = vaddq_f32(sum_input_vec[u * 2 + 1], input_high);
+
+                sum_squares_vec[u * 2] = vfmaq_f32(sum_squares_vec[u * 2], input_low, input_low);
+                sum_squares_vec[u * 2 + 1] = vfmaq_f32(sum_squares_vec[u * 2 + 1], input_high, input_high);
+            }
+        }
+
+        for (; i < simd_end; i += SIMD_WIDTH) {
+            float16x8_t input_vec = vld1q_f16(&input_row[i]);
+            float32x4_t input_low = vcvt_f32_f16(vget_low_f16(input_vec));
+            float32x4_t input_high = vcvt_f32_f16(vget_high_f16(input_vec));
+            sum_input_vec[0] = vaddq_f32(sum_input_vec[0], input_low);
+            sum_input_vec[1] = vaddq_f32(sum_input_vec[1], input_high);
+            sum_squares_vec[0] = vfmaq_f32(sum_squares_vec[0], input_low, input_low);
+            sum_squares_vec[1] = vfmaq_f32(sum_squares_vec[1], input_high, input_high);
+        }
+
+        float32x4_t total_sum_inputs = sum_input_vec[0];
+        float32x4_t total_sum_squares = sum_squares_vec[0];
+        for (size_t u = 1; u < UNROLL_FACTOR * 2; u++) {
+            total_sum_inputs = vaddq_f32(total_sum_inputs, sum_input_vec[u]);
+            total_sum_squares = vaddq_f32(total_sum_squares, sum_squares_vec[u]);
+        }
+
+        float sum_inputs = vaddvq_f32(total_sum_inputs);
+        float sum_squares = vaddvq_f32(total_sum_squares);
+        for (; i < dims; ++i) {
+            float val = static_cast<float>(input_row[i]);
+            sum_inputs += val;
+            sum_squares += val * val;
+        }
+
+        float mean = sum_inputs / static_cast<float>(dims);
+        float mean_squares = sum_squares / static_cast<float>(dims);
+        float variance = mean_squares - mean * mean;
+        if (variance < 0.0f) variance = 0.0f;
+        float inv_std = 1.0f / sqrtf(variance + eps);
+
+        float16x8_t mean_vec = vdupq_n_f16(static_cast<__fp16>(mean));
+        float16x8_t inv_std_vec = vdupq_n_f16(static_cast<__fp16>(inv_std));
+
+        i = 0;
+        if (bias) {
+            for (; i < tile_end; i += TILE_SIZE) {
+                for (size_t u = 0; u < UNROLL_FACTOR; u++) {
+                    float16x8_t input_vec = vld1q_f16(&input_row[i + u * SIMD_WIDTH]);
+                    float16x8_t weight_vec = vld1q_f16(&weight[i + u * SIMD_WIDTH]);
+                    float16x8_t bias_vec = vld1q_f16(&bias[i + u * SIMD_WIDTH]);
+                    float16x8_t out_vec = vmulq_f16(vmulq_f16(vsubq_f16(input_vec, mean_vec), inv_std_vec), weight_vec);
+                    out_vec = vaddq_f16(out_vec, bias_vec);
+                    vst1q_f16(&output_row[i + u * SIMD_WIDTH], out_vec);
+                }
+            }
+
+            for (; i < simd_end; i += SIMD_WIDTH) {
+                float16x8_t input_vec = vld1q_f16(&input_row[i]);
+                float16x8_t weight_vec = vld1q_f16(&weight[i]);
+                float16x8_t bias_vec = vld1q_f16(&bias[i]);
+                float16x8_t out_vec = vmulq_f16(vmulq_f16(vsubq_f16(input_vec, mean_vec), inv_std_vec), weight_vec);
+                out_vec = vaddq_f16(out_vec, bias_vec);
+                vst1q_f16(&output_row[i], out_vec);
+            }
+
+            for (; i < dims; ++i) {
+                output_row[i] = static_cast<__fp16>((static_cast<float>(input_row[i]) - mean) * inv_std * static_cast<float>(weight[i]) + static_cast<float>(bias[i]));
+            }
+        } else {
+            for (; i < tile_end; i += TILE_SIZE) {
+                for (size_t u = 0; u < UNROLL_FACTOR; u++) {
+                    float16x8_t input_vec = vld1q_f16(&input_row[i + u * SIMD_WIDTH]);
+                    float16x8_t weight_vec = vld1q_f16(&weight[i + u * SIMD_WIDTH]);
+                    float16x8_t out_vec = vmulq_f16(vmulq_f16(vsubq_f16(input_vec, mean_vec), inv_std_vec), weight_vec);
+                    vst1q_f16(&output_row[i + u * SIMD_WIDTH], out_vec);
+                }
+            }
+
+            for (; i < simd_end; i += SIMD_WIDTH) {
+                float16x8_t input_vec = vld1q_f16(&input_row[i]);
+                float16x8_t weight_vec = vld1q_f16(&weight[i]);
+                float16x8_t out_vec = vmulq_f16(vmulq_f16(vsubq_f16(input_vec, mean_vec), inv_std_vec), weight_vec);
+                vst1q_f16(&output_row[i], out_vec);
+            }
+
+            for (; i < dims; ++i) {
+                output_row[i] = static_cast<__fp16>((static_cast<float>(input_row[i]) - mean) * inv_std * static_cast<float>(weight[i]));
+            }
+        }
+    }
+}
+
 namespace CactusRoPEF16 {
 
 struct RoPECacheF16 {

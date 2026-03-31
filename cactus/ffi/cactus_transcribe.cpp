@@ -181,6 +181,10 @@ int cactus_transcribe(
             handle->model.get(),
             apply_request_scoped_vocabulary_bias
         };
+        std::vector<std::string> custom_vocabulary;
+        float vocabulary_boost_unused = 5.0f;
+        parse_custom_vocabulary_options(opts, custom_vocabulary, vocabulary_boost_unused);
+
         if (apply_request_scoped_vocabulary_bias) {
             apply_custom_vocabulary_options(handle->model.get(), opts);
         }
@@ -527,6 +531,13 @@ int cactus_transcribe(
         double decode_tps = (completion_tokens > 1 && decode_time_ms > 0.0) ? ((completion_tokens - 1) * 1000.0) / decode_time_ms : 0.0;
 
         if (!final_text.empty() && final_text[0] == ' ') final_text.erase(0, 1);
+
+        if (!custom_vocabulary.empty()) {
+            apply_vocabulary_spelling_correction(final_text, custom_vocabulary);
+            for (auto& seg : segments) {
+                apply_vocabulary_spelling_correction(seg.text, custom_vocabulary);
+            }
+        }
 
         const bool cloud_handoff = !final_text.empty() && final_text.length() > 5 &&
             cloud_handoff_threshold > 0.0f && max_token_entropy_norm > cloud_handoff_threshold;

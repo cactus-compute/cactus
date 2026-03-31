@@ -16,7 +16,7 @@ fi
 MODELS=(
     "qwen:Qwen/Qwen3-0.6B:INT8:llm:CACTUS_TEST_MODEL"
     "nomic:nomic-ai/nomic-embed-text-v2-moe:INT8:embedding:CACTUS_TEST_MODEL"
-    "lfm2:LiquidAI/LFM2-350M:INT8:llm:CACTUS_TEST_MODEL"
+    "lfm2:LiquidAI/LFM2.5-350M:INT8:llm:CACTUS_TEST_MODEL"
     "lfm2moe:LiquidAI/LFM2-8B-A1B:INT8:llm:CACTUS_TEST_MODEL"
     "gemma:google/gemma-3-270m-it:INT8:llm:CACTUS_TEST_MODEL"
     "whisper:openai/whisper-small:INT8:stt:CACTUS_TEST_TRANSCRIBE_MODEL"

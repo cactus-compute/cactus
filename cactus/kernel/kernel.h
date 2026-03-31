@@ -99,6 +99,9 @@ void cactus_max_axis_f16(const __fp16* input, __fp16* output, size_t outer_size,
 void cactus_rms_norm_f16(const __fp16* input, const __fp16* weight, __fp16* output,
                           size_t batch_size, size_t dims, float eps);
 
+void cactus_layer_norm_f16(const __fp16* input, const __fp16* weight, const __fp16* bias,
+                            __fp16* output, size_t batch_size, size_t dims, float eps);
+
 void cactus_rope_f16(const __fp16* input, __fp16* output, size_t batch_size, size_t seq_len,
                       size_t num_heads, size_t head_dim, size_t start_pos, float theta);
 

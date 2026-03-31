@@ -337,10 +337,7 @@ PrefillResult do_prefill(
         std::vector<uint32_t> prefill_tokens(tokens_to_process.begin(), tokens_to_process.end() - 1);
         result.prefilled_count = prefill_tokens.size();
         if (has_images) {
-            auto prefill_image_paths = result.was_prefix
-                ? image_paths_from_messages(prompt.messages, handle->processed_images.size())
-                : prompt.image_paths;
-            handle->model->prefill_with_images(prefill_tokens, prefill_image_paths);
+            handle->model->prefill_with_images(prefill_tokens, prompt.image_paths);
         } else {
             handle->model->prefill(prefill_tokens, handle->model->get_prefill_chunk_size());
         }
