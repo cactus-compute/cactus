@@ -52,20 +52,18 @@ void cactus_conv2d_f16_k3s1p1_nchw(
                 for (size_t kw = 0; kw < 3; ++kw) {
                     float* dst = col.data() + (ic * 9 + kh * 3 + kw) * H_out * W_out;
                     for (size_t oh = 0; oh < H_out; ++oh) {
-                        ptrdiff_t ih = static_cast<ptrdiff_t>(oh) + kh - 1;
+                        ptrdiff_t ih = static_cast<ptrdiff_t>(oh) + static_cast<ptrdiff_t>(kh) - 1;
+                        float* dst_row = dst + oh * W_out;
                         if (ih < 0 || ih >= static_cast<ptrdiff_t>(H)) {
-                            memset(dst + oh * W_out, 0, W_out * sizeof(float));
+                            memset(dst_row, 0, W_out * sizeof(float));
                             continue;
                         }
-                        const __fp16* src_row = Xn + ic * H * W + ih * W;
-                        float* dst_row = dst + oh * W_out;
-                        ptrdiff_t iw_offset = static_cast<ptrdiff_t>(kw) - 1;
+                        const __fp16* src_row = Xn + ic * H * W + static_cast<size_t>(ih) * W;
+                        const ptrdiff_t iw_offset = static_cast<ptrdiff_t>(kw) - 1;
                         for (size_t ow = 0; ow < W_out; ++ow) {
                             ptrdiff_t iw = static_cast<ptrdiff_t>(ow) + iw_offset;
-                            if (iw < 0 || iw >= static_cast<ptrdiff_t>(W))
-                                dst_row[ow] = 0.0f;
-                            else
-                                dst_row[ow] = static_cast<float>(src_row[iw]);
+                            dst_row[ow] = (iw < 0 || iw >= static_cast<ptrdiff_t>(W))
+                                ? 0.0f : static_cast<float>(src_row[iw]);
                         }
                     }
                 }

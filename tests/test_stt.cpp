@@ -751,12 +751,11 @@ static bool test_diarize() {
         if (response_str[i] == ',') ++num_scores;
     ++num_scores;
 
-    double total_time_ms = json_number(response_str, "total_time_ms");
-
     std::cout << "\n[Results]\n"
               << "  \"success\": true,\n"
               << "  \"scores_count\": " << num_scores << ",\n"
-              << "  \"total_time_ms\": " << std::fixed << std::setprecision(2) << total_time_ms << "\n";
+              << "  \"total_time_ms\": " << std::fixed << std::setprecision(2)
+              << json_number(response_str, "total_time_ms") << "\n";
 
     return num_scores > 0 && num_scores % 7 == 0;
 }
@@ -770,6 +769,10 @@ static bool test_embed_speaker() {
         std::cout << "⊘ SKIP │ CACTUS_TEST_EMBED_SPEAKER_MODEL not set\n";
         return true;
     }
+    if (!g_assets_path) {
+        std::cout << "⊘ SKIP │ CACTUS_TEST_ASSETS not set\n";
+        return true;
+    }
 
     cactus_model_t model = cactus_init(g_embed_speaker_model_path, nullptr, false);
     if (!model) {
@@ -777,19 +780,10 @@ static bool test_embed_speaker() {
         return false;
     }
 
-    constexpr size_t SAMPLE_RATE = 16000;
-    constexpr size_t NUM_SAMPLES = SAMPLE_RATE * 3;
-    std::vector<int16_t> pcm(NUM_SAMPLES);
-    for (size_t i = 0; i < NUM_SAMPLES; ++i)
-        pcm[i] = static_cast<int16_t>(16384.0f * std::sin(static_cast<float>(i) * 0.1745f));
-
+    std::string audio_path = std::string(g_assets_path) + "/test.wav";
     char response[1 << 16] = {0};
 
-    int result = cactus_embed_speaker(
-        model, nullptr, response, sizeof(response),
-        reinterpret_cast<const uint8_t*>(pcm.data()),
-        NUM_SAMPLES * sizeof(int16_t)
-    );
+    int result = cactus_embed_speaker(model, audio_path.c_str(), response, sizeof(response), nullptr, 0);
 
     cactus_destroy(model);
 
@@ -811,12 +805,11 @@ static bool test_embed_speaker() {
         if (response_str[i] == ',') ++num_dims;
     ++num_dims;
 
-    double total_time_ms = json_number(response_str, "total_time_ms");
-
     std::cout << "\n[Results]\n"
               << "  \"success\": true,\n"
               << "  \"embedding_dims\": " << num_dims << ",\n"
-              << "  \"total_time_ms\": " << std::fixed << std::setprecision(2) << total_time_ms << "\n";
+              << "  \"total_time_ms\": " << std::fixed << std::setprecision(2)
+              << json_number(response_str, "total_time_ms") << "\n";
 
     return num_dims == 256;
 }
