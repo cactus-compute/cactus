@@ -99,6 +99,8 @@ def detect_model_type(cfg, config, output_dir=None):
         return 'qwen'
     elif 'moonshine' in model_type_str:
         return 'moonshine'
+    elif 'granite' in model_type_str:
+        return 'granite'
     elif 'llama' in model_type_str:
         if output_dir and 'smol' in str(output_dir):
             return 'smol'
@@ -409,6 +411,16 @@ def extract_audio_config(config, audio_cfg):
         'audio_sscp_conv1_channels': int(sscp_channels[1]),
         'audio_rms_norm_eps': float(cfg_get(audio_cfg, 'rms_norm_eps', 1e-6)),
         'audio_token_id': int(cfg_get(config, 'audio_token_id', 0)),
+    }
+
+
+def extract_granite_config(cfg):
+    """Extract Granite-specific muP scaling factors."""
+    return {
+        'residual_multiplier': float(cfg_get(cfg, 'residual_multiplier', 1.0)),
+        'embedding_multiplier': float(cfg_get(cfg, 'embedding_multiplier', 1.0)),
+        'logits_scaling': float(cfg_get(cfg, 'logits_scaling', 1.0)),
+        'attention_multiplier': float(cfg_get(cfg, 'attention_multiplier', 0.0)),
     }
 
 
