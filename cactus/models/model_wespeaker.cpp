@@ -2,7 +2,6 @@
 #include "../graph/graph.h"
 #include "../kernel/kernel.h"
 #include <stdexcept>
-#include <algorithm>
 
 namespace cactus {
 namespace engine {
@@ -80,8 +79,8 @@ void WeSpeakerModel::load_weights_to_graph(CactusGraph* gb) {
     weight_nodes_.seg1_b = gb->mmap_weights(p + "/resnet_seg_1_bias.weights");
 }
 
-void WeSpeakerModel::build_graph() {
-    audio_input_ = graph_.input({1, 1, 80, 298}, Precision::FP16);
+void WeSpeakerModel::build_graph(size_t num_frames) {
+    audio_input_ = graph_.input({1, 1, 80, num_frames}, Precision::FP16);
 
     size_t x = graph_.conv2d_k3s1p1(audio_input_, weight_nodes_.conv1_w);
     x = graph_.batchnorm(x, weight_nodes_.bn1_w, weight_nodes_.bn1_b, weight_nodes_.bn1_mean, weight_nodes_.bn1_var);
@@ -112,7 +111,6 @@ bool WeSpeakerModel::init(const std::string& model_folder, size_t context_size,
 
     try {
         load_weights_to_graph(&graph_);
-        build_graph();
         initialized_ = true;
         return true;
     } catch (const std::exception& e) {
@@ -124,14 +122,22 @@ bool WeSpeakerModel::init(const std::string& model_folder, size_t context_size,
 std::vector<float> WeSpeakerModel::embed(const float* fbank_features, size_t num_features) {
     if (!initialized_) throw std::runtime_error("WeSpeaker model not initialized");
 
-    static constexpr size_t INPUT_SIZE = 80 * 298;
-    std::vector<__fp16> input(INPUT_SIZE, static_cast<__fp16>(0.0f));
+    static constexpr size_t NUM_MEL = 80;
+    const size_t num_frames = num_features / NUM_MEL;
+    if (num_frames == 0) throw std::runtime_error("WeSpeaker: empty fbank input");
 
-    size_t copy_len = std::min(num_features, INPUT_SIZE);
-    for (size_t i = 0; i < copy_len; ++i)
-        input[i] = static_cast<__fp16>(fbank_features[i]);
+    if (num_frames != current_num_frames_) {
+        graph_.hard_reset();
+        load_weights_to_graph(&graph_);
+        build_graph(num_frames);
+        current_num_frames_ = num_frames;
+    }
 
-    graph_.set_input(audio_input_, input.data(), Precision::FP16);
+    input_buf_.resize(num_features);
+    for (size_t i = 0; i < num_features; ++i)
+        input_buf_[i] = static_cast<__fp16>(fbank_features[i]);
+
+    graph_.set_input(audio_input_, input_buf_.data(), Precision::FP16);
     graph_.execute();
 
     const auto& out_buf = graph_.get_output_buffer(output_node_);

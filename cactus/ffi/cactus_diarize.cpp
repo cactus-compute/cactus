@@ -62,10 +62,9 @@ int cactus_diarize(
         std::vector<float> audio;
         if (audio_file_path == nullptr) {
             const int16_t* pcm_samples = reinterpret_cast<const int16_t*>(pcm_buffer);
-            size_t num_samples = pcm_buffer_size / 2;
-
+            const size_t num_samples = pcm_buffer_size / 2;
             audio.resize(num_samples);
-            for (size_t i = 0; i < num_samples; i++)
+            for (size_t i = 0; i < num_samples; ++i)
                 audio[i] = static_cast<float>(pcm_samples[i]) / 32768.0f;
         } else {
             AudioFP32 wav_audio = load_wav(audio_file_path);

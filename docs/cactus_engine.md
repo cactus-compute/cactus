@@ -763,7 +763,7 @@ int cactus_diarize(
 
 **Note:** Exactly one of `audio_file_path` or `pcm_buffer` must be provided; passing both or neither returns -1. The file path must point to a 16-bit PCM WAV file. The `pcm_buffer` must contain 16-bit signed PCM samples at 16 kHz and `pcm_buffer_size` must be even and at least 2.
 
-The model processes 10-second windows (160,000 samples at 16 kHz). Shorter input is zero-padded. Output scores are a flat array of T × 7 float32 values representing frame-level speaker probabilities in powerset encoding, where T is the number of output frames (typically ~589 for a full 10-second window).
+The model processes 10-second windows (160,000 samples at 16 kHz) with 1-second steps. Shorter input is zero-padded. Output scores are a flat array of T × 3 float32 values in row-major order (index `f*3+s`), where T is the total number of output frames and 3 is the number of speakers. Each value is the Hamming-weighted mean of hard per-speaker labels across all overlapping windows, in the range [0, 1].
 
 **Response Format:**
 ```json

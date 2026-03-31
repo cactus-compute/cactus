@@ -3,9 +3,26 @@
 #include "../kernel/kernel.h"
 #include <stdexcept>
 #include <algorithm>
+#include <cmath>
 
 namespace cactus {
 namespace engine {
+
+static constexpr size_t WINDOW_SAMPLES    = 160000;
+static constexpr size_t STEP_SAMPLES      = 16000;
+static constexpr size_t FRAMES_PER_WINDOW = 589;
+static constexpr int    NUM_CLASSES       = 7;
+static constexpr int    NUM_SPEAKERS      = 3;
+
+static constexpr int POWERSET_MAPPING[NUM_CLASSES][NUM_SPEAKERS] = {
+    {0, 0, 0},
+    {1, 0, 0},
+    {0, 1, 0},
+    {0, 0, 1},
+    {1, 1, 0},
+    {1, 0, 1},
+    {0, 1, 1},
+};
 
 PyAnnoteModel::PyAnnoteModel() : Model() {}
 PyAnnoteModel::PyAnnoteModel(const Config& config) : Model(config) {}
@@ -88,7 +105,7 @@ void PyAnnoteModel::build_graph() {
     x = graph_.leaky_relu(x, 0.01f);
 
     x = graph_.add(graph_.matmul(x, weight_nodes_.classifier_weight, true), weight_nodes_.classifier_bias);
-    x = graph_.softmax(x, -1);
+    x = graph_.scalar_log(graph_.softmax(x, -1));
     x = graph_.reshape(x, {1, T, 7});
 
     output_node_ = x;
@@ -109,6 +126,13 @@ bool PyAnnoteModel::init(const std::string& model_folder, size_t context_size,
     try {
         load_weights_to_graph(&graph_);
         build_graph();
+
+        chunk_buf_.resize(WINDOW_SAMPLES);
+
+        hamming_.resize(FRAMES_PER_WINDOW);
+        for (size_t i = 0; i < FRAMES_PER_WINDOW; ++i)
+            hamming_[i] = 0.54f - 0.46f * std::cos(2.0f * M_PI * i / (FRAMES_PER_WINDOW - 1));
+
         initialized_ = true;
         return true;
     } catch (const std::exception& e) {
@@ -120,22 +144,62 @@ bool PyAnnoteModel::init(const std::string& model_folder, size_t context_size,
 std::vector<float> PyAnnoteModel::diarize(const float* pcm_f32, size_t num_samples) {
     if (!initialized_) throw std::runtime_error("PyAnnote model not initialized");
 
-    std::vector<__fp16> audio(160000, static_cast<__fp16>(0.0f));
-    size_t copy_len = std::min(num_samples, static_cast<size_t>(160000));
-    for (size_t i = 0; i < copy_len; ++i)
-        audio[i] = static_cast<__fp16>(pcm_f32[i]);
+    const size_t total_frames = std::max(
+        FRAMES_PER_WINDOW,
+        static_cast<size_t>(std::round((double)num_samples * FRAMES_PER_WINDOW / WINDOW_SAMPLES))
+    );
 
-    graph_.set_input(audio_input_, audio.data(), Precision::FP16);
-    graph_.execute();
+    std::vector<float> aggregated(total_frames * NUM_SPEAKERS, 0.0f);
+    std::vector<float> weight_sum(total_frames, 0.0f);
 
-    const auto& out_buf = graph_.get_output_buffer(output_node_);
-    const __fp16* out_data = out_buf.data_as<__fp16>();
-    size_t total = out_buf.total_size;
+    auto process_chunk = [&](size_t chunk_start) {
+        const size_t copy_len = std::min(WINDOW_SAMPLES, num_samples - chunk_start);
+        for (size_t i = 0; i < copy_len; ++i)
+            chunk_buf_[i] = static_cast<__fp16>(pcm_f32[chunk_start + i]);
+        std::fill(chunk_buf_.begin() + copy_len, chunk_buf_.end(), static_cast<__fp16>(0.0f));
 
-    std::vector<float> result(total);
-    for (size_t i = 0; i < total; ++i)
-        result[i] = static_cast<float>(out_data[i]);
-    return result;
+        graph_.set_input(audio_input_, chunk_buf_.data(), Precision::FP16);
+        graph_.execute();
+
+        const __fp16* chunk_scores = graph_.get_output_buffer(output_node_).data_as<__fp16>();
+        const size_t frame_offset = static_cast<size_t>(std::round((double)chunk_start * FRAMES_PER_WINDOW / WINDOW_SAMPLES));
+
+        for (size_t f = 0; f < FRAMES_PER_WINDOW; ++f) {
+            const size_t out_f = frame_offset + f;
+            if (out_f >= total_frames) break;
+
+            int best_class = 0;
+            float best_val = static_cast<float>(chunk_scores[f * NUM_CLASSES]);
+            for (int c = 1; c < NUM_CLASSES; ++c) {
+                const float val = static_cast<float>(chunk_scores[f * NUM_CLASSES + c]);
+                if (val > best_val) { best_val = val; best_class = c; }
+            }
+
+            const float w = hamming_[f];
+            weight_sum[out_f] += w;
+            for (int s = 0; s < NUM_SPEAKERS; ++s)
+                aggregated[out_f * NUM_SPEAKERS + s] += w * static_cast<float>(POWERSET_MAPPING[best_class][s]);
+        }
+    };
+
+    const size_t last_start = num_samples > WINDOW_SAMPLES ? num_samples - WINDOW_SAMPLES : 0;
+    bool last_processed = false;
+    for (size_t s = 0; s + WINDOW_SAMPLES <= num_samples; s += STEP_SAMPLES) {
+        if (s >= last_start) last_processed = true;
+        process_chunk(s);
+    }
+    if (!last_processed)
+        process_chunk(last_start);
+
+    for (size_t f = 0; f < total_frames; ++f) {
+        if (weight_sum[f] > 0.0f) {
+            const float inv_w = 1.0f / weight_sum[f];
+            for (int s = 0; s < NUM_SPEAKERS; ++s)
+                aggregated[f * NUM_SPEAKERS + s] *= inv_w;
+        }
+    }
+
+    return aggregated;
 }
 
 }

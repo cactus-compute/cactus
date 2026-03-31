@@ -658,7 +658,6 @@ private:
         size_t encoder_output;
 
         struct LayerWeights {
-            //Decoder layers
             size_t decoder_output_norm_bias;
             size_t decoder_output_norm_weight;
             size_t decoder_position_embeddings_weight;
@@ -1566,6 +1565,8 @@ private:
     CactusGraph graph_;
     size_t audio_input_ = 0;
     size_t output_node_ = 0;
+    std::vector<float> hamming_;
+    std::vector<__fp16> chunk_buf_;
 };
 
 class WeSpeakerModel : public Model {
@@ -1599,7 +1600,7 @@ protected:
     void load_weights_to_graph(CactusGraph* gb) override;
 
 private:
-    void build_graph();
+    void build_graph(size_t num_frames);
 
     struct ResBlockWeights {
         size_t conv1_w, conv2_w;
@@ -1623,6 +1624,8 @@ private:
     CactusGraph graph_;
     size_t audio_input_ = 0;
     size_t output_node_ = 0;
+    size_t current_num_frames_ = 0;
+    std::vector<__fp16> input_buf_;
 };
 
 }

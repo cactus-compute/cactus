@@ -279,7 +279,7 @@ result_json = cactus_diarize(
 ) -> str
 ```
 
-Returns a JSON string: `{"success":true,"error":null,"scores_count":<int>,"total_time_ms":...,"ram_usage_mb":...}`. The `scores` field is a flat array of T×7 float32 values representing frame-level speaker probabilities in powerset encoding.
+Returns a JSON string: `{"success":true,"error":null,"scores":[<float>, ...],"total_time_ms":...,"ram_usage_mb":...}`. The `scores` field is a flat array of T×3 float32 values (index `f*3+s`), one per output frame per speaker, each in [0,1].
 
 ### Embed Speaker
 

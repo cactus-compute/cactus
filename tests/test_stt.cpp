@@ -8,6 +8,8 @@
 #include <cctype>
 #include <cstdint>
 #include <stdexcept>
+#include <vector>
+#include <cmath>
 
 using namespace EngineTestUtils;
 
@@ -30,6 +32,27 @@ static const char* get_transcribe_prompt() {
 }
 
 static const char* g_whisper_prompt = get_transcribe_prompt();
+
+static std::vector<float> parse_float_array(const std::string& json, const std::string& key) {
+    std::vector<float> values;
+    std::string search = "\"" + key + "\":[";
+    size_t start = json.find(search);
+    if (start == std::string::npos) return values;
+    start += search.size();
+    size_t end = json.find("]", start);
+    if (end == std::string::npos) return values;
+    const char* p = json.c_str() + start;
+    const char* end_p = json.c_str() + end;
+    while (p < end_p) {
+        char* next;
+        float v = strtof(p, &next);
+        if (next == p) break;
+        values.push_back(v);
+        p = next;
+        while (p < end_p && (*p == ',' || *p == ' ')) ++p;
+    }
+    return values;
+}
 
 bool test_audio_processor() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
@@ -730,7 +753,6 @@ static bool test_diarize() {
     char response[1 << 20] = {0};
 
     int result = cactus_diarize(model, audio_path.c_str(), response, sizeof(response), nullptr, 0);
-
     cactus_destroy(model);
 
     if (result < 0) {
@@ -744,20 +766,88 @@ static bool test_diarize() {
         return false;
     }
 
-    size_t scores_start = response_str.find("\"scores\":[");
-    size_t scores_end = response_str.find("]", scores_start);
-    size_t num_scores = 0;
-    for (size_t i = scores_start; i < scores_end; ++i)
-        if (response_str[i] == ',') ++num_scores;
-    ++num_scores;
+    std::vector<float> scores = parse_float_array(response_str, "scores");
+    if (scores.empty() || scores.size() % 7 != 0) {
+        std::cerr << "[✗] scores array size " << scores.size() << " is not a multiple of 7\n";
+        return false;
+    }
+    const size_t num_frames = scores.size() / 7;
+    const double frame_dur_s = 10.0 / 589.0;
+
+    bool probs_valid = true;
+    size_t bad_rows = 0;
+    for (size_t f = 0; f < num_frames; ++f) {
+        float row_sum = 0.0f;
+        for (int c = 0; c < 7; ++c) {
+            float v = scores[f * 7 + c];
+            if (v < -0.01f || v > 1.01f) { probs_valid = false; break; }
+            row_sum += v;
+        }
+        if (row_sum < 0.99f || row_sum > 1.01f) ++bad_rows;
+    }
+
+    static const char* CLASS_NAMES[7] = {
+        "silence", "spk_0", "spk_1", "spk_2", "overlap_01", "overlap_02", "overlap_12"
+    };
+
+    int class_counts[7] = {0};
+    int last_cls = -1;
+    struct Seg { const char* label; double start, end; };
+    std::vector<Seg> segments;
+
+    for (size_t f = 0; f < num_frames; ++f) {
+        int cls = 0;
+        float best = scores[f * 7];
+        for (int c = 1; c < 7; ++c)
+            if (scores[f * 7 + c] > best) { best = scores[f * 7 + c]; cls = c; }
+        class_counts[cls]++;
+        double t = f * frame_dur_s;
+        if (cls != last_cls) {
+            if (!segments.empty()) segments.back().end = t;
+            segments.push_back({CLASS_NAMES[cls], t, t + frame_dur_s});
+            last_cls = cls;
+        }
+    }
+    if (!segments.empty()) segments.back().end = num_frames * frame_dur_s;
+
+    int dom_speech_cls = 1;
+    for (int c = 2; c <= 3; ++c)
+        if (class_counts[c] > class_counts[dom_speech_cls]) dom_speech_cls = c;
+    float dom_fraction = (float)class_counts[dom_speech_cls] / (float)num_frames;
 
     std::cout << "\n[Results]\n"
-              << "  \"success\": true,\n"
-              << "  \"scores_count\": " << num_scores << ",\n"
-              << "  \"total_time_ms\": " << std::fixed << std::setprecision(2)
-              << json_number(response_str, "total_time_ms") << "\n";
+              << "  frames: " << num_frames
+              << "  (" << std::fixed << std::setprecision(1) << frame_dur_s * 1000 << "ms/frame)\n"
+              << "  total_time_ms: " << std::fixed << std::setprecision(2)
+              << json_number(response_str, "total_time_ms") << "\n"
+              << "  prob_rows_invalid: " << bad_rows << "/" << num_frames << "\n"
+              << "\n[Class distribution]\n";
+    for (int c = 0; c < 7; ++c)
+        if (class_counts[c] > 0)
+            std::cout << "  " << CLASS_NAMES[c] << ": " << class_counts[c]
+                      << " frames (" << std::fixed << std::setprecision(1)
+                      << 100.0f * class_counts[c] / num_frames << "%)\n";
 
-    return num_scores > 0 && num_scores % 7 == 0;
+    std::cout << "\n[Speaker timeline]\n";
+    for (const auto& seg : segments) {
+        std::cout << "  " << std::fixed << std::setprecision(2) << seg.start
+                  << "s - " << seg.end << "s  →  " << seg.label << "\n";
+    }
+
+    if (!probs_valid) {
+        std::cerr << "[✗] Scores contain values outside [0, 1]\n";
+        return false;
+    }
+    if (bad_rows > static_cast<size_t>(num_frames * 0.01)) {
+        std::cerr << "[✗] " << bad_rows << " frames have row sums outside [0.99, 1.01]\n";
+        return false;
+    }
+    if (dom_fraction < 0.5f) {
+        std::cerr << "[✗] No speaker class dominates (max fraction: " << dom_fraction << ")\n";
+        return false;
+    }
+
+    return true;
 }
 
 static bool test_embed_speaker() {
@@ -781,37 +871,71 @@ static bool test_embed_speaker() {
     }
 
     std::string audio_path = std::string(g_assets_path) + "/test.wav";
-    char response[1 << 16] = {0};
+    char response1[1 << 16] = {0};
+    char response2[1 << 16] = {0};
 
-    int result = cactus_embed_speaker(model, audio_path.c_str(), response, sizeof(response), nullptr, 0);
-
+    int r1 = cactus_embed_speaker(model, audio_path.c_str(), response1, sizeof(response1), nullptr, 0);
+    int r2 = cactus_embed_speaker(model, audio_path.c_str(), response2, sizeof(response2), nullptr, 0);
     cactus_destroy(model);
 
-    if (result < 0) {
-        std::cerr << "[✗] Speaker embedding failed: " << response << "\n";
+    if (r1 < 0) { std::cerr << "[✗] Speaker embedding (run 1) failed: " << response1 << "\n"; return false; }
+    if (r2 < 0) { std::cerr << "[✗] Speaker embedding (run 2) failed: " << response2 << "\n"; return false; }
+
+    std::string rs1(response1), rs2(response2);
+    if (rs1.find("\"success\":true") == std::string::npos) {
+        std::cerr << "[✗] Embedding response indicates failure: " << rs1 << "\n";
         return false;
     }
 
-    std::string response_str(response);
-    if (response_str.find("\"success\":true") == std::string::npos) {
-        std::cerr << "[✗] Speaker embedding response indicates failure: " << response_str << "\n";
+    std::vector<float> emb1 = parse_float_array(rs1, "embedding");
+    std::vector<float> emb2 = parse_float_array(rs2, "embedding");
+
+    if (emb1.size() != 256) {
+        std::cerr << "[✗] Expected 256-dim embedding, got " << emb1.size() << "\n";
         return false;
     }
 
-    size_t embed_start = response_str.find("\"embedding\":[");
-    size_t embed_end = response_str.find("]", embed_start);
-    size_t num_dims = 0;
-    for (size_t i = embed_start; i < embed_end; ++i)
-        if (response_str[i] == ',') ++num_dims;
-    ++num_dims;
+    bool has_nan = false, has_inf = false;
+    for (float v : emb1) {
+        if (std::isnan(v)) has_nan = true;
+        if (std::isinf(v)) has_inf = true;
+    }
+
+    float norm = 0.0f;
+    for (float v : emb1) norm += v * v;
+    norm = std::sqrt(norm);
+
+    float dot = 0.0f, n1 = 0.0f, n2 = 0.0f;
+    for (size_t i = 0; i < 256; ++i) {
+        dot += emb1[i] * emb2[i];
+        n1  += emb1[i] * emb1[i];
+        n2  += emb2[i] * emb2[i];
+    }
+    float cos_sim = (n1 > 0 && n2 > 0) ? dot / (std::sqrt(n1) * std::sqrt(n2)) : 0.0f;
 
     std::cout << "\n[Results]\n"
-              << "  \"success\": true,\n"
-              << "  \"embedding_dims\": " << num_dims << ",\n"
-              << "  \"total_time_ms\": " << std::fixed << std::setprecision(2)
-              << json_number(response_str, "total_time_ms") << "\n";
+              << "  dims:         " << emb1.size() << "\n"
+              << "  norm:         " << std::fixed << std::setprecision(4) << norm << "\n"
+              << "  has_nan:      " << (has_nan ? "YES" : "no") << "\n"
+              << "  has_inf:      " << (has_inf ? "YES" : "no") << "\n"
+              << "  cos_sim(same file x2): " << std::fixed << std::setprecision(6) << cos_sim
+              << "  (expected 1.0)\n"
+              << "  total_time_ms: " << std::fixed << std::setprecision(2)
+              << json_number(rs1, "total_time_ms") << "\n"
+              << "\n[First 8 values]\n  ";
+    for (int i = 0; i < 8; ++i)
+        std::cout << std::fixed << std::setprecision(4) << emb1[i]
+                  << (i < 7 ? "  " : "\n");
 
-    return num_dims == 256;
+    if (has_nan) { std::cerr << "[✗] Embedding contains NaN\n"; return false; }
+    if (has_inf) { std::cerr << "[✗] Embedding contains Inf\n"; return false; }
+    if (norm < 0.01f) { std::cerr << "[✗] Embedding norm is near zero\n"; return false; }
+    if (cos_sim < 0.9999f) {
+        std::cerr << "[✗] Same-file cosine similarity " << cos_sim << " < 0.9999 (not deterministic)\n";
+        return false;
+    }
+
+    return true;
 }
 
 static bool test_vocab_bias_base_class() {

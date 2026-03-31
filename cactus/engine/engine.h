@@ -814,6 +814,7 @@ public:
         bool remove_dc_offset = false;
         float preemphasis = 0.0f;
         bool hann_periodic = true;
+        float window_a0 = 0.5f;
         size_t fft_override = 0;
     };
 

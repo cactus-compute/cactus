@@ -8,7 +8,6 @@
 using namespace cactus::engine;
 using namespace cactus::ffi;
 using cactus::audio::get_wespeaker_spectrogram_config;
-using cactus::audio::transpose_mel_to_frame_major;
 
 extern "C" {
 
@@ -65,10 +64,9 @@ int cactus_embed_speaker(
 
         if (audio_file_path == nullptr) {
             const int16_t* pcm_samples = reinterpret_cast<const int16_t*>(pcm_buffer);
-            size_t num_samples = pcm_buffer_size / 2;
-
+            const size_t num_samples = pcm_buffer_size / 2;
             audio.resize(num_samples);
-            for (size_t i = 0; i < num_samples; i++)
+            for (size_t i = 0; i < num_samples; ++i)
                 audio[i] = static_cast<float>(pcm_samples[i]) / 32768.0f;
         } else {
             AudioFP32 wav_audio = load_wav(audio_file_path);
@@ -82,15 +80,29 @@ int cactus_embed_speaker(
             return -1;
         }
 
-        auto cfg = get_wespeaker_spectrogram_config();
-        AudioProcessor ap;
-        ap.init_mel_filters(cfg.n_fft / 2 + 1, 80, 20.0f, 7600.0f, 16000, "slaney", "htk");
-        std::vector<float> mel = ap.compute_spectrogram(audio, cfg);
-        size_t num_mel_bins = ap.get_num_mel_filters();
-        size_t num_frames = mel.size() / num_mel_bins;
-        std::vector<float> fbank = transpose_mel_to_frame_major(mel, num_mel_bins, num_frames);
+        static const auto s_cfg = get_wespeaker_spectrogram_config();
+        static AudioProcessor s_ap = []() {
+            AudioProcessor p;
+            p.init_mel_filters(get_wespeaker_spectrogram_config().n_fft / 2 + 1,
+                               80, 20.0f, 8000.0f, 16000, nullptr, "htk");
+            return p;
+        }();
 
-        auto embedding = wespeaker->embed(fbank.data(), fbank.size());
+        std::vector<float> mel = s_ap.compute_spectrogram(audio, s_cfg);
+        audio = {};
+
+        static constexpr size_t NUM_MEL_BINS = 80;
+        const size_t num_frames = mel.size() / NUM_MEL_BINS;
+
+        for (size_t m = 0; m < NUM_MEL_BINS; ++m) {
+            float* row = mel.data() + m * num_frames;
+            float sum = 0.0f;
+            for (size_t t = 0; t < num_frames; ++t) sum += row[t];
+            const float mean = sum / static_cast<float>(num_frames);
+            for (size_t t = 0; t < num_frames; ++t) row[t] -= mean;
+        }
+
+        auto embedding = wespeaker->embed(mel.data(), mel.size());
 
         auto end_time = std::chrono::high_resolution_clock::now();
         double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
