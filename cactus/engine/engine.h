@@ -63,6 +63,11 @@ struct Config {
     bool use_expert_bias = false;
     float routed_scaling_factor = 1.0f;
     bool tie_word_embeddings = true;
+    
+    float residual_multiplier = 1.0f;
+    float embedding_multiplier = 1.0f;
+    float logits_scaling = 1.0f;
+    float attention_multiplier = 0.0f;
 
     uint32_t vision_hidden_dim = 0;
     uint32_t vision_num_layers = 0;
@@ -127,7 +132,7 @@ struct Config {
     float rope_scaling_factor = 1.0f;
     float rope_mscale_all_dim = 0.0f;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GRANITE = 15};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
@@ -252,7 +257,7 @@ public:
     uint32_t get_global_img_token_id() const { return global_img_token_id_; }
 
 protected:
-    enum class ModelType { UNKNOWN, QWEN, QWEN3P5, GEMMA, LFM2, BERT, WHISPER, PARAKEET, YOUTU};
+    enum class ModelType { UNKNOWN, QWEN, QWEN3P5, GEMMA, LFM2, BERT, WHISPER, PARAKEET, YOUTU, GRANITE};
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -274,6 +279,7 @@ protected:
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_lfm2_vl_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_youtu_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_granite_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json = "") const;
 };
 
 class BPETokenizer : public Tokenizer {

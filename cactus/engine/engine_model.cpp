@@ -126,6 +126,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         attention_scale_ = 1.0f;
     } else if (config_.model_type == Config::ModelType::GEMMA) {
         attention_scale_ = 1.0f / std::sqrt(256.0f);
+    } else if (config_.model_type == Config::ModelType::GRANITE) {
+        attention_scale_ = config_.attention_multiplier;
     } else {
         attention_scale_ = 1.0f / std::sqrt(static_cast<float>(config_.attention_head_dim));
     }
@@ -479,6 +481,10 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "use_expert_bias") use_expert_bias = (value == "true" || value == "1");
         else if (key == "routed_scaling_factor") routed_scaling_factor = std::stof(value);
         else if (key == "tie_word_embeddings") tie_word_embeddings = (value == "true" || value == "1");
+        else if (key == "residual_multiplier") residual_multiplier = std::stof(value);
+        else if (key == "embedding_multiplier") embedding_multiplier = std::stof(value);
+        else if (key == "logits_scaling") logits_scaling = std::stof(value);
+        else if (key == "attention_multiplier") attention_multiplier = std::stof(value);
         else if (key == "vision_hidden_dim" || key == "vision_hidden_size") vision_hidden_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "vision_num_layers") vision_num_layers = static_cast<uint32_t>(std::stoul(value));
         else if (key == "vision_attention_heads") vision_attention_heads = static_cast<uint32_t>(std::stoul(value));
@@ -526,6 +532,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "parakeet_tdt" || value == "PARAKEET_TDT") model_type = ModelType::PARAKEET_TDT;
             else if (value == "gemma3n" || value == "GEMMA3N") model_type = ModelType::GEMMA3N;
             else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
+            else if (value == "granite" || value == "GRANITE") model_type = ModelType::GRANITE;
             else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {
@@ -697,6 +704,10 @@ bool Config::from_json(const std::string& config_path) {
         default_temperature = 1.0f;
         default_top_p = 0.95f;
         default_top_k = 20;
+    } else if (model_type == ModelType::GRANITE) {
+        default_temperature = 0.6f;
+        default_top_p = 0.95f;
+        default_top_k = 50;
     }
 
     return true;
@@ -755,6 +766,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<ParakeetTDTModel>(config);
         case Config::ModelType::YOUTU:
             return std::make_unique<YoutuModel>(config);
+        case Config::ModelType::GRANITE:
+            return std::make_unique<GraniteModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }

@@ -35,6 +35,9 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
                 break;
             } else if(line.find("lfm2") != std::string::npos) {
                 model_type_ = ModelType::LFM2;
+            } else if (line.find("granite") != std::string::npos) {
+                model_type_ = ModelType::GRANITE;
+                break;
             } else if (line.find("bert") != std::string::npos) {
                 model_type_ = ModelType::BERT;
                 break;
@@ -97,6 +100,8 @@ std::string Tokenizer::get_default_stop_sequence() const {
     switch (model_type_) {
         case ModelType::GEMMA:
             return "<end_of_turn>";
+        case ModelType::GRANITE:
+            return "<|end_of_text|>";
         case ModelType::QWEN:
         case ModelType::QWEN3P5:
         case ModelType::LFM2:
@@ -133,6 +138,8 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
             return format_lfm2_style(messages, add_generation_prompt, tools_json);
         case ModelType::YOUTU:
             return format_youtu_style(messages, add_generation_prompt, tools_json);
+        case ModelType::GRANITE:
+            return format_granite_style(messages, add_generation_prompt, tools_json);
         default:
             return format_qwen_style(messages, add_generation_prompt, tools_json);
     }
@@ -457,6 +464,60 @@ std::string Tokenizer::format_youtu_style(const std::vector<ChatMessage>& messag
 
     if (add_generation_prompt && (is_last_user || is_tool)) {
         result += "<|Assistant|>";
+    }
+
+    return result;
+}
+
+std::string Tokenizer::format_granite_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+    std::string result;
+
+    bool has_system = false;
+    for (const auto& msg : messages) {
+        if (msg.role == "system") {
+            has_system = true;
+            break;
+        }
+    }
+
+    if (!tools_json.empty()) {
+        result += "<|start_of_role|>system<|end_of_role|>";
+        if (has_system) {
+            for (const auto& msg : messages) {
+                if (msg.role == "system") {
+                    result += msg.content + "\n\n";
+                    break;
+                }
+            }
+        } else {
+            result += "Knowledge Cutoff Date: April 2024.\nYou are Granite, developed by IBM. You are a helpful AI assistant.\n\n";
+        }
+        result += "You have access to the following functions. Use them when appropriate:\n\n";
+        result += tools_json + "\n";
+        result += "<|end_of_text|>\n";
+
+        for (const auto& msg : messages) {
+            if (msg.role == "system") continue;
+            result += "<|start_of_role|>" + msg.role + "<|end_of_role|>";
+            result += msg.content;
+            result += "<|end_of_text|>\n";
+        }
+    } else {
+        if (!has_system) {
+            result += "<|start_of_role|>system<|end_of_role|>";
+            result += "Knowledge Cutoff Date: April 2024.\nYou are Granite, developed by IBM. You are a helpful AI assistant.";
+            result += "<|end_of_text|>\n";
+        }
+
+        for (const auto& msg : messages) {
+            result += "<|start_of_role|>" + msg.role + "<|end_of_role|>";
+            result += msg.content;
+            result += "<|end_of_text|>\n";
+        }
+    }
+
+    if (add_generation_prompt) {
+        result += "<|start_of_role|>assistant<|end_of_role|>";
     }
 
     return result;
