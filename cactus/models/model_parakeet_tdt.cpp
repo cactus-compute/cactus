@@ -409,6 +409,7 @@ void ParakeetTDTModel::load_weights_to_graph(CactusGraph* gb) {
         weight_nodes_.subsampling_pointwise2_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise2_bias.bias");
         weight_nodes_.subsampling_linear_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_weight.weights");
         weight_nodes_.subsampling_linear_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_bias.bias");
+    }
 
     for (uint32_t i = 0; i < config_.num_layers; ++i) {
         auto& layer = weight_nodes_.layers[i];
