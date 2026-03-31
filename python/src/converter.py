@@ -1027,7 +1027,6 @@ def convert_pyannote_weights(model, output_dir, precision="FP16", args=None):
     save("sincnet_wav_norm_weight.weights", "sincnet.wav_norm1d.weight")
     save("sincnet_wav_norm_bias.weights", "sincnet.wav_norm1d.bias")
 
-    # SincConv filters - computed from learned parameters via the module
     with torch.no_grad():
         sinc_filters = model.sincnet.conv1d[0].filterbank.filters()
     save_tensor_with_header(sinc_filters, output_dir / "sincnet_sinc_filters.weights", precision=precision)

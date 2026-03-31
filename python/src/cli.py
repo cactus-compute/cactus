@@ -504,7 +504,6 @@ def cmd_download(args):
                 return 1
             from .converter import convert_pyannote_weights, convert_wespeaker_weights
 
-            print(f"  Note: Loading {model_id} via pyannote.audio...")
             pyannote_model = PyannoteModel.from_pretrained(model_id, token=token)
             pyannote_model.eval()
 
@@ -514,7 +513,6 @@ def cmd_download(args):
                 convert_wespeaker_weights(pyannote_model, weights_dir, precision, args)
 
             del pyannote_model
-            import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
