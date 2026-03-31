@@ -646,6 +646,7 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "audio_sscp_conv1_channels") audio_sscp_conv1_channels = static_cast<uint32_t>(std::stoul(value));
         else if (key == "audio_rms_norm_eps") audio_rms_norm_eps = std::stof(value);
         else if (key == "audio_token_id") audio_token_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_fft_overdrive") audio_fft_overdrive = (value == "true" || value == "1");
         else if (key == "channel_open_token_id") channel_open_token_id = static_cast<uint32_t>(std::stoul(value));
         else if (key == "channel_close_token_id") channel_close_token_id = static_cast<uint32_t>(std::stoul(value));
         else if (key == "activation_sparsity_ppf") {

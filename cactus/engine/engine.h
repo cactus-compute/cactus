@@ -200,6 +200,7 @@ struct Config {
     uint32_t audio_sscp_conv1_channels = 32;
     float audio_rms_norm_eps = 1e-6f;
     uint32_t audio_token_id = 0;
+    bool audio_fft_overdrive = false;
     uint32_t channel_open_token_id = 100;
     uint32_t channel_close_token_id = 101;
 

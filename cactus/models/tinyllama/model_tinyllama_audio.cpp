@@ -68,14 +68,16 @@ void TinyLlamaAudioModel::load_weights_to_graph(CactusGraph* gb) {
 
     if (!disable_npu_ && npu::is_npu_available()) {
         std::string npu_path = model_folder_path_ + "/audio_encoder.mlpackage";
-        npu_encoder_ = npu::create_encoder();
-        if (npu_encoder_ && npu_encoder_->load(npu_path)) {
-            use_npu_encoder_ = true;
-            std::vector<int> input_shape = npu_encoder_->get_input_shape();
-            npu_encoder_->preallocate(input_shape, "mel", "");
-        } else {
-            use_npu_encoder_ = false;
-            npu_encoder_.reset();
+        if (std::filesystem::exists(npu_path)) {
+            npu_encoder_ = npu::create_encoder();
+            if (npu_encoder_ && npu_encoder_->load(npu_path)) {
+                use_npu_encoder_ = true;
+                std::vector<int> input_shape = npu_encoder_->get_input_shape();
+                npu_encoder_->preallocate(input_shape, "mel", "");
+            } else {
+                use_npu_encoder_ = false;
+                npu_encoder_.reset();
+            }
         }
     }
 
@@ -84,7 +86,11 @@ void TinyLlamaAudioModel::load_weights_to_graph(CactusGraph* gb) {
         audio_weights_.sscp_conv0_norm = gb->mmap_weights(resolve("audio_subsample_conv_projection_conv_0_norm.weights"));
         audio_weights_.sscp_conv1_weight = gb->mmap_weights(resolve("audio_subsample_conv_projection_conv_1_conv.weights"));
         audio_weights_.sscp_conv1_norm = gb->mmap_weights(resolve("audio_subsample_conv_projection_conv_1_norm.weights"));
-        audio_weights_.sscp_input_proj = gb->mmap_weights(resolve("audio_subsample_conv_projection_input_proj.weights"));
+        std::string sscp_input_proj_path = resolve("audio_subsample_conv_projection_input_proj.weights");
+        if (!std::filesystem::exists(sscp_input_proj_path)) {
+            sscp_input_proj_path = resolve("audio_subsample_conv_projection_input_proj_linear.weights");
+        }
+        audio_weights_.sscp_input_proj = gb->mmap_weights(sscp_input_proj_path);
 
         audio_weights_.layers.resize(config_.audio_num_layers);
         for (uint32_t i = 0; i < config_.audio_num_layers; i++) {

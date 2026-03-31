@@ -76,16 +76,18 @@ void TinyLlamaVisionModel::load_weights_to_graph(CactusGraph* gb) {
 
     if (!disable_npu_ && npu::is_npu_available()) {
         std::string npu_path = model_folder_path_ + "/vision_encoder.mlpackage";
-        npu_encoder_ = npu::create_encoder();
-        if (npu_encoder_ && npu_encoder_->load(npu_path)) {
-            use_npu_encoder_ = true;
-            std::vector<int> input_shape = {static_cast<int>(config_.vision_default_output_length *
-                config_.vision_pooling_kernel_size * config_.vision_pooling_kernel_size),
-                static_cast<int>(config_.vision_embed_dim)};
-            npu_encoder_->preallocate(input_shape, "hidden_states", "output");
-        } else {
-            use_npu_encoder_ = false;
-            npu_encoder_.reset();
+        if (std::filesystem::exists(npu_path)) {
+            npu_encoder_ = npu::create_encoder();
+            if (npu_encoder_ && npu_encoder_->load(npu_path)) {
+                use_npu_encoder_ = true;
+                std::vector<int> input_shape = {static_cast<int>(config_.vision_default_output_length *
+                    config_.vision_pooling_kernel_size * config_.vision_pooling_kernel_size),
+                    static_cast<int>(config_.vision_embed_dim)};
+                npu_encoder_->preallocate(input_shape, "hidden_states", "output");
+            } else {
+                use_npu_encoder_ = false;
+                npu_encoder_.reset();
+            }
         }
     }
 

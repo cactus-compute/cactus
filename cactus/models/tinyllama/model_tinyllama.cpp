@@ -195,6 +195,11 @@ void TinyLlamaModel::load_weights_to_graph(CactusGraph* gb) {
     gb->set_external_input(v_norm_ones_node_, v_norm_ones_weight_.data(), Precision::FP16);
     v_norm_ones_global_node_ = gb->input({global_head_dim}, Precision::FP16);
     gb->set_external_input(v_norm_ones_global_node_, v_norm_ones_weight_.data(), Precision::FP16);
+
+    if (npu::is_npu_available()) {
+        std::string npu_prefill_path = model_folder_path_ + "/model.mlpackage";
+        load_npu_prefill(npu_prefill_path);
+    }
 }
 
 size_t TinyLlamaModel::build_per_layer_input(CactusGraph* gb, size_t hidden, size_t pli_combined, uint32_t layer_idx,
@@ -515,6 +520,14 @@ size_t TinyLlamaModel::forward_split(const std::vector<uint32_t>& tokens, bool u
 void TinyLlamaModel::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, const std::string& profile_file) {
     if (tokens.empty())
         return;
+
+    if (has_npu_prefill()) {
+        size_t npu_chunk_size = static_cast<size_t>(npu_prefill_->get_chunk_size());
+        if (tokens.size() > npu_chunk_size) {
+            Model::prefill(tokens, chunk_size, profile_file);
+            return;
+        }
+    }
 
     static constexpr size_t SPLIT_PREFILL_MIN_TOKENS = 32;
     bool use_split = config_.num_kv_shared_layers > 0
