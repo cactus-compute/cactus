@@ -37,10 +37,11 @@ int main() {
     auto backend = ComputeBackend::CPU;
     auto& enc = mm->audio_encoder();
     size_t hidden = enc.build_sscp(gb, mel, num_frames, backend);
+    auto ctx = enc.build_conformer_context(gb, hidden);
 
     for (uint32_t i = 0; i < 12; i++) {
         size_t ffw_s = enc.build_conformer_ffw(gb, hidden, i, false, backend);
-        size_t attn = enc.build_conformer_attention(gb, ffw_s, i, backend);
+        size_t attn = enc.build_conformer_attention(gb, ffw_s, i, ctx, backend);
         size_t lconv = enc.build_conformer_lconv1d(gb, attn, i, backend);
         size_t ffw_e = enc.build_conformer_ffw(gb, lconv, i, true, backend);
         hidden = gb->rms_norm(ffw_e, enc.audio_weights_.layers[i].block_norm,

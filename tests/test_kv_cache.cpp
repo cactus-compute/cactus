@@ -52,7 +52,7 @@ bool test_sliding_window_basic() {
         }
 
         graph.execute();
-        cache.update_from_graph(&graph, k_nodes, v_nodes, seq_len, num_layers, num_kv_heads);
+        cache.update_from_graph(&graph, k_nodes, v_nodes, seq_len, num_layers);
 
         assert(cache.get_effective_seq_len() == seq_len);
     }
@@ -76,7 +76,7 @@ bool test_sliding_window_basic() {
         }
 
         graph.execute();
-        cache.update_from_graph(&graph, k_nodes, v_nodes, additional_seq, num_layers, num_kv_heads);
+        cache.update_from_graph(&graph, k_nodes, v_nodes, additional_seq, num_layers);
 
         assert(cache.get_effective_seq_len() == window_size);
     }
@@ -102,7 +102,7 @@ bool test_sliding_window_basic() {
         }
 
         graph.execute();
-        cache.update_from_graph(&graph, k_nodes, v_nodes, additional_seq, num_layers, num_kv_heads);
+        cache.update_from_graph(&graph, k_nodes, v_nodes, additional_seq, num_layers);
 
         assert(cache.get_effective_seq_len() == window_size);
 
@@ -162,7 +162,7 @@ bool test_incremental_updates() {
         v_nodes.push_back(v_node);
 
         graph.execute();
-        cache.update_from_graph(&graph, k_nodes, v_nodes, seq_len, num_layers, num_kv_heads);
+        cache.update_from_graph(&graph, k_nodes, v_nodes, seq_len, num_layers);
 
         size_t expected_len = min(token + 1, window_size);
         assert(cache.get_effective_seq_len() == expected_len);
@@ -202,7 +202,7 @@ bool test_reset_functionality() {
     }
 
     graph.execute();
-    cache.update_from_graph(&graph, k_nodes, v_nodes, 10, 2, 8);
+    cache.update_from_graph(&graph, k_nodes, v_nodes, 10, 2);
 
     assert(cache.get_effective_seq_len() == 10);
     assert(cache.get_total_seq_len() == 10);
@@ -249,7 +249,7 @@ bool test_large_window() {
     }
 
     graph.execute();
-    cache.update_from_graph(&graph, k_nodes, v_nodes, seq_len, num_layers, num_kv_heads);
+    cache.update_from_graph(&graph, k_nodes, v_nodes, seq_len, num_layers);
 
     assert(cache.get_effective_seq_len() == window_size);
     assert(cache.get_total_seq_len() == seq_len);
