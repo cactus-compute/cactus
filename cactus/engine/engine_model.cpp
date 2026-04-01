@@ -898,8 +898,12 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
     const int chunk_size = npu_prefill_->get_chunk_size();
     const int hidden_dim = npu_prefill_->get_hidden_dim();
     const int num_layers = npu_prefill_->get_num_layers();
-    const int num_kv_heads = npu_prefill_->get_num_kv_heads();
-    const int head_dim = npu_prefill_->get_head_dim();
+    const int fallback_num_kv_heads = npu_prefill_->get_num_kv_heads();
+    const int fallback_head_dim = npu_prefill_->get_head_dim();
+
+    const std::vector<size_t> layer_dims = get_kv_layer_dims();
+    const std::vector<size_t> layer_heads = get_kv_layer_heads();
+    const int layers_to_update = std::min<int>(num_layers, static_cast<int>(config_.num_layers));
 
     std::vector<__fp16> all_embeddings = get_token_embeddings(tokens);
     if (all_embeddings.empty()) {
@@ -930,13 +934,30 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
         npu::NPUPrefillDirectResult direct_result = npu_prefill_->prefill_chunk_direct(chunk_embeddings, position_offset);
 
         if (direct_result.valid) {
-            for (int layer_idx = 0; layer_idx < num_layers; layer_idx++) {
+            for (int layer_idx = 0; layer_idx < layers_to_update; layer_idx++) {
                 const auto& k_ref = direct_result.k_caches[layer_idx];
                 const auto& v_ref = direct_result.v_caches[layer_idx];
 
                 if (k_ref.data && v_ref.data) {
+                    size_t layer_kv_heads = layer_idx < static_cast<int>(layer_heads.size())
+                        ? layer_heads[layer_idx]
+                        : static_cast<size_t>(fallback_num_kv_heads);
+                    size_t layer_head_dim = layer_idx < static_cast<int>(layer_dims.size())
+                        ? layer_dims[layer_idx]
+                        : static_cast<size_t>(fallback_head_dim);
+
+                    size_t expected = static_cast<size_t>(chunk_size) * layer_kv_heads * layer_head_dim;
+                    if (expected > 0 && (k_ref.count < expected || v_ref.count < expected)) {
+                        CACTUS_LOG_WARN(
+                            "npu",
+                            "NPU prefill cache output too small for layer " << layer_idx
+                            << " (expected>=" << expected
+                            << ", got k=" << k_ref.count << ", v=" << v_ref.count << "); skipping layer");
+                        continue;
+                    }
+
                     kv_cache_.update_from_npu(layer_idx, k_ref.data, v_ref.data,
-                                               actual_tokens, num_kv_heads, head_dim);
+                                               actual_tokens, layer_kv_heads, layer_head_dim);
                 }
             }
         }

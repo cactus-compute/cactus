@@ -87,8 +87,13 @@ void TinyLlamaVisionModel::load_weights_to_graph(CactusGraph* gb) {
             } else {
                 use_npu_encoder_ = false;
                 npu_encoder_.reset();
+                CACTUS_LOG_WARN("npu", "[tinyllama-vision] found vision_encoder.mlpackage but failed to enable NPU vision encoder; using CPU");
             }
+        } else {
+            CACTUS_LOG_WARN("npu", "[tinyllama-vision] vision_encoder.mlpackage not found; using CPU vision encoder");
         }
+    } else if (!disable_npu_) {
+        CACTUS_LOG_WARN("npu", "[tinyllama-vision] NPU backend unavailable on this device; using CPU vision encoder");
     }
 
     vision_weights_.patch_input_proj = gb->mmap_weights(resolve("vision_patch_embedder_input_proj.weights"));

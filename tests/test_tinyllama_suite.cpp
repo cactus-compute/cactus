@@ -2,6 +2,8 @@
 #include "../cactus/models/tinyllama/model_tinyllama.h"
 #include "../cactus/ffi/cactus_utils.h"
 #include "../libs/audio/wav.h"
+#include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -34,9 +36,55 @@ static bool has_npu_package(const char* model_path, const std::string& name) {
 
 static const char* g_options = R"({
     "max_tokens": 256,
-    "stop_sequences": ["<turn|>", "<eos>"],
+    "temperature": 0,
+    "top_k": 1,
+    "stop_sequences": ["<turn|>", "<eos>", "<end_of_turn>", "<|im_end|>"],
+    "enable_thinking_if_supported": false,
+    "auto_handoff": false,
     "telemetry_enabled": false
 })";
+
+struct LocalPerfMetrics {
+    double time_to_first_token_ms = 0.0;
+    double total_time_ms = 0.0;
+    double prefill_tps = 0.0;
+    double decode_tps = 0.0;
+    size_t prompt_tokens = 0;
+    size_t completion_tokens = 0;
+};
+
+static LocalPerfMetrics compute_local_perf_metrics(size_t prompt_tokens,
+                                                   size_t completion_tokens,
+                                                   double ttft_ms,
+                                                   double total_time_ms) {
+    LocalPerfMetrics m;
+    m.time_to_first_token_ms = ttft_ms;
+    m.total_time_ms = total_time_ms;
+    m.prompt_tokens = prompt_tokens;
+    m.completion_tokens = completion_tokens;
+    m.prefill_tps = ttft_ms > 0.0 ? (static_cast<double>(prompt_tokens) * 1000.0) / ttft_ms : 0.0;
+    const double decode_time_ms = std::max(0.0, total_time_ms - ttft_ms);
+    m.decode_tps = (completion_tokens > 1 && decode_time_ms > 0.0)
+                   ? ((static_cast<double>(completion_tokens) - 1.0) * 1000.0) / decode_time_ms
+                   : 0.0;
+    return m;
+}
+
+static void print_local_perf_metrics(const LocalPerfMetrics& m) {
+    std::streamsize old_precision = std::cout.precision();
+    std::ios::fmtflags old_flags = std::cout.flags();
+    std::cout << std::fixed << std::setprecision(2);
+    std::cout << "  Metrics: "
+              << "ttft_ms=" << m.time_to_first_token_ms
+              << ", total_time_ms=" << m.total_time_ms
+              << ", prefill_tps=" << m.prefill_tps
+              << ", decode_tps=" << m.decode_tps
+              << ", prompt_tokens=" << m.prompt_tokens
+              << ", completion_tokens=" << m.completion_tokens
+              << "\n";
+    std::cout.flags(old_flags);
+    std::cout.precision(old_precision);
+}
 
 
 bool test_text_generation() {
@@ -96,7 +144,11 @@ bool test_tool_call() {
 
     const char* options = R"({
         "max_tokens": 256,
-        "stop_sequences": ["<turn|>", "<eos>"],
+        "temperature": 0,
+        "top_k": 1,
+        "stop_sequences": ["<turn|>", "<eos>", "<end_of_turn>", "<|im_end|>"],
+        "enable_thinking_if_supported": false,
+        "auto_handoff": false,
         "force_tools": true,
         "telemetry_enabled": false
     })";
@@ -181,19 +233,34 @@ bool test_tinyllama_vision(bool expect_npu) {
     for (auto t : tokens)
         if (t == 262145) vision_count++;
     std::cout << "  tokens: " << tokens.size() << ", vision soft tokens: " << vision_count << "\n";
+    const size_t prompt_token_count = tokens.size();
 
     std::vector<std::string> images = {image_path};
     std::string output;
+    size_t completion_tokens = 0;
+    double ttft_ms = 0.0;
+    bool saw_first_token = false;
+    auto start_time = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < 150; i++) {
         uint32_t token = model->decode_with_images(tokens, images, 0.0f, 1.0f, 1, "");
+        if (!saw_first_token) {
+            auto t_first = std::chrono::high_resolution_clock::now();
+            ttft_ms = std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
+            saw_first_token = true;
+        }
         std::string piece = tokenizer->decode({token});
         output += piece;
         tokens.push_back(token);
+        completion_tokens++;
         if (piece.find("<turn|>") != std::string::npos || piece.find("<eos>") != std::string::npos)
             break;
     }
+    auto end_time = std::chrono::high_resolution_clock::now();
+    double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
+    auto metrics = compute_local_perf_metrics(prompt_token_count, completion_tokens, ttft_ms, total_time_ms);
 
+    print_local_perf_metrics(metrics);
     std::cout << "  Output: " << output.substr(0, 300) << "\n";
     std::cout << "  NPU" << (expect_npu ? " (expected)" : " (not required)") << ": "
               << (has_npu_package(model_path, "vision_encoder.mlpackage") ? "available" : "not available") << "\n";
@@ -292,17 +359,32 @@ bool test_tinyllama_audio(bool expect_npu) {
     for (size_t i = 0; i < num_soft_tokens; i++)
         tokens.push_back(audio_token_id);
     tokens.insert(tokens.end(), suffix.begin(), suffix.end());
+    const size_t prompt_token_count = tokens.size();
 
     std::string output;
+    size_t completion_tokens = 0;
+    double ttft_ms = 0.0;
+    bool saw_first_token = false;
+    auto start_time = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < 200; i++) {
         uint32_t token = model->decode_with_audio(tokens, audio_features, 0.0f, 1.0f, 1, "");
+        if (!saw_first_token) {
+            auto t_first = std::chrono::high_resolution_clock::now();
+            ttft_ms = std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
+            saw_first_token = true;
+        }
         std::string piece = tokenizer->decode({token});
         output += piece;
         tokens.push_back(token);
+        completion_tokens++;
         if (output.find("<turn|>") != std::string::npos || output.find("<eos>") != std::string::npos)
             break;
     }
+    auto end_time = std::chrono::high_resolution_clock::now();
+    double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
+    auto metrics = compute_local_perf_metrics(prompt_token_count, completion_tokens, ttft_ms, total_time_ms);
 
+    print_local_perf_metrics(metrics);
     std::cout << "  Transcript: " << output << "\n";
 
     if (output.empty()) {

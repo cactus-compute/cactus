@@ -106,8 +106,13 @@ void TinyLlamaAudioModel::load_weights_to_graph(CactusGraph* gb) {
             } else {
                 use_npu_encoder_ = false;
                 npu_encoder_.reset();
+                CACTUS_LOG_WARN("npu", "[tinyllama-audio] found audio_encoder.mlpackage but failed to enable NPU audio encoder; using CPU");
             }
+        } else {
+            CACTUS_LOG_WARN("npu", "[tinyllama-audio] audio_encoder.mlpackage not found; using CPU audio encoder");
         }
+    } else if (!disable_npu_) {
+        CACTUS_LOG_WARN("npu", "[tinyllama-audio] NPU backend unavailable on this device; using CPU audio encoder");
     }
 
     if (!use_npu_encoder_) {
