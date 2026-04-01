@@ -28,7 +28,9 @@ file(GLOB ENGINE_SOURCES "${SOURCE_DIR}/engine/*.cpp")
 file(GLOB GRAPH_SOURCES "${SOURCE_DIR}/graph/*.cpp")
 file(GLOB KERNEL_SOURCES "${SOURCE_DIR}/kernel/*.cpp")
 set(SME2_SOURCE "${SOURCE_DIR}/kernel/kernel_sme2.cpp")
+set(I8MM_SOURCE "${SOURCE_DIR}/kernel/kernel_i8mm.cpp")
 list(REMOVE_ITEM KERNEL_SOURCES "${SME2_SOURCE}")
+list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
 file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
 file(GLOB TELEMETRY_SOURCES "${SOURCE_DIR}/telemetry/*.cpp")
@@ -239,6 +241,19 @@ if(BUILD_SME2)
     target_sources(cactus PRIVATE $<TARGET_OBJECTS:cactus_sme2_obj>)
     target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_SME2)
 endif()
+
+# I8MM support: all Apple Silicon supports I8MM
+add_library(cactus_i8mm_obj OBJECT ${I8MM_SOURCE})
+target_include_directories(cactus_i8mm_obj PRIVATE
+    ${SOURCE_DIR} ${SOURCE_DIR}/engine ${SOURCE_DIR}/graph
+    ${SOURCE_DIR}/kernel ${SOURCE_DIR}/ffi ${SOURCE_DIR}/telemetry ${SOURCE_DIR}/npu
+)
+target_compile_options(cactus_i8mm_obj PRIVATE -march=armv8.2-a+fp16+simd+dotprod+i8mm ${APPLE_COMMON_OPTIONS})
+target_compile_definitions(cactus_i8mm_obj PRIVATE CACTUS_COMPILE_I8MM __ARM_FEATURE_MATMUL_INT8=1 PLATFORM_CPU_ONLY=1)
+set_target_properties(cactus_i8mm_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+target_sources(cactus PRIVATE $<TARGET_OBJECTS:cactus_i8mm_obj>)
+target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_I8MM)
 
 target_link_options(cactus PRIVATE -Wl,-dead_strip)
 target_link_options(cactus PRIVATE -flto)

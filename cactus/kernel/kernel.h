@@ -56,6 +56,14 @@ void cactus_matmul_int8(const int8_t* A, const float* A_scales,
                         const int8_t* B, const __fp16* B_scales,
                         __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
 
+void cactus_gemv_int8_i8mm(const int8_t* A, float A_scale,
+                            const int8_t* B, const __fp16* B_scales,
+                            __fp16* C, size_t K, size_t N, size_t group_size);
+
+void cactus_gemm_int8_i8mm(const int8_t* A, const float* A_scales,
+                            const int8_t* B, const __fp16* B_scales,
+                            __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
+
 void cactus_gemv_int4(const int8_t* A, float A_scale,
                       const int8_t* B_packed, const __fp16* B_scales,
                       __fp16* C, size_t K, size_t N, size_t group_size);
@@ -98,6 +106,9 @@ void cactus_max_axis_f16(const __fp16* input, __fp16* output, size_t outer_size,
 
 void cactus_rms_norm_f16(const __fp16* input, const __fp16* weight, __fp16* output,
                           size_t batch_size, size_t dims, float eps);
+
+void cactus_layer_norm_f16(const __fp16* input, const __fp16* weight, const __fp16* bias,
+                            __fp16* output, size_t batch_size, size_t dims, float eps);
 
 void cactus_rope_f16(const __fp16* input, __fp16* output, size_t batch_size, size_t seq_len,
                       size_t num_heads, size_t head_dim, size_t start_pos, float theta);

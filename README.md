@@ -183,7 +183,7 @@ graph.hard_reset();
 | Qwen/Qwen3.5-0.8B | vision, completion, tools, embed |
 | Qwen/Qwen3-1.7B | completion, tools, embed | 
 | Qwen/Qwen3.5-2B | vision, completion, tools, embed | 
-| LiquidAI/LFM2-350M | completion, tools, embed |
+| LiquidAI/LFM2.5-350M | completion, tools, embed |
 | LiquidAI/LFM2-700M | completion, tools, embed |
 | LiquidAI/LFM2-8B-A1B | completion, tools, embed |
 | LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |

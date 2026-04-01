@@ -25,7 +25,9 @@ file(GLOB ENGINE_SOURCES "${SOURCE_DIR}/engine/*.cpp")
 file(GLOB GRAPH_SOURCES "${SOURCE_DIR}/graph/*.cpp")
 file(GLOB KERNEL_SOURCES "${SOURCE_DIR}/kernel/*.cpp")
 set(SME2_SOURCE "${SOURCE_DIR}/kernel/kernel_sme2.cpp")
+set(I8MM_SOURCE "${SOURCE_DIR}/kernel/kernel_i8mm.cpp")
 list(REMOVE_ITEM KERNEL_SOURCES "${SME2_SOURCE}")
+list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
 file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
 file(GLOB TELEMETRY_SOURCES "${SOURCE_DIR}/telemetry/*.cpp")
@@ -211,6 +213,35 @@ if (${ANDROID_ABI} STREQUAL "arm64-v8a")
         target_sources(cactus_static PRIVATE $<TARGET_OBJECTS:cactus_sme2_obj>)
         target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_SME2)
         target_compile_definitions(cactus_static PRIVATE CACTUS_COMPILE_SME2)
+    endif()
+
+    # I8MM support: compile kernel_i8mm.cpp separately with +i8mm
+    set(I8MM_MARCH_FLAG "-march=armv8.2-a+fp16+simd+dotprod+i8mm")
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "${I8MM_MARCH_FLAG}")
+    check_cxx_source_compiles("
+        #include <arm_neon.h>
+        int main() {
+            int32x4_t acc = vmmlaq_s32(vdupq_n_s32(0), vdupq_n_s8(0), vdupq_n_s8(0));
+            return vgetq_lane_s32(acc, 0);
+        }
+    " COMPILER_SUPPORTS_I8MM)
+    unset(CMAKE_REQUIRED_FLAGS)
+
+    if(COMPILER_SUPPORTS_I8MM)
+        message(STATUS "NDK supports I8MM - building I8MM kernels")
+        add_library(cactus_i8mm_obj OBJECT ${I8MM_SOURCE})
+        target_include_directories(cactus_i8mm_obj PRIVATE ${COMMON_INCLUDE_DIRS})
+        target_compile_options(cactus_i8mm_obj PRIVATE ${I8MM_MARCH_FLAG} ${COMMON_COMPILE_OPTIONS} ${OPTIMIZATION_OPTIONS})
+        target_compile_definitions(cactus_i8mm_obj PRIVATE CACTUS_COMPILE_I8MM __ARM_FEATURE_MATMUL_INT8=1 ${COMMON_COMPILE_DEFINITIONS})
+        set_target_properties(cactus_i8mm_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+        target_sources(cactus PRIVATE $<TARGET_OBJECTS:cactus_i8mm_obj>)
+        target_sources(cactus_static PRIVATE $<TARGET_OBJECTS:cactus_i8mm_obj>)
+        target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_I8MM)
+        target_compile_definitions(cactus_static PRIVATE CACTUS_COMPILE_I8MM)
+    else()
+        message(STATUS "NDK does not support I8MM - building without I8MM")
     endif()
 else()
     message(FATAL_ERROR "Unsupported Android ABI: ${ANDROID_ABI}. Cactus only supports arm64-v8a due to ARM NEON requirements.")

@@ -76,7 +76,9 @@ file(GLOB MODEL_SOURCES "models/*.cpp")
 file(GLOB TELEMETRY_SOURCES "telemetry/*.cpp")
 
 set(SME2_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_sme2.cpp")
+set(I8MM_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_i8mm.cpp")
 list(REMOVE_ITEM KERNEL_SOURCES "${SME2_SOURCE}")
+list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
 
 if(APPLE)
     set(NPU_SOURCES "npu/npu_ane.mm")
@@ -175,27 +177,34 @@ if(BUILD_SME2)
 	target_compile_definitions(cactus_sme2_obj PRIVATE CACTUS_COMPILE_SME2)
 endif()
 
+# I8MM support: compile kernel_i8mm.cpp with +i8mm
+set(I8MM_MARCH_FLAG "-march=armv8.2-a+fp16+simd+dotprod+i8mm")
+add_library(cactus_i8mm_obj OBJECT ${I8MM_SOURCE})
+target_include_directories(cactus_i8mm_obj PRIVATE ${COMMON_INCLUDES})
+target_compile_options(cactus_i8mm_obj PRIVATE ${I8MM_MARCH_FLAG})
+set_target_properties(cactus_i8mm_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_definitions(cactus_i8mm_obj PRIVATE CACTUS_COMPILE_I8MM __ARM_FEATURE_MATMUL_INT8=1)
+
+set(EXTRA_OBJECTS $<TARGET_OBJECTS:cactus_i8mm_obj>)
 if(BUILD_SME2)
-	add_library(cactus STATIC ${COMMON_SOURCES} $<TARGET_OBJECTS:cactus_sme2_obj>)
-else()
-	add_library(cactus STATIC ${COMMON_SOURCES})
+	set(EXTRA_OBJECTS ${EXTRA_OBJECTS} $<TARGET_OBJECTS:cactus_sme2_obj>)
 endif()
+
+add_library(cactus STATIC ${COMMON_SOURCES} ${EXTRA_OBJECTS})
 configure_cactus_target(cactus)
+target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_I8MM)
 
 if(BUILD_SME2)
 	target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_SME2)
 endif()
 
-if(BUILD_SME2)
-	add_library(cactus_ffi SHARED ${COMMON_SOURCES} $<TARGET_OBJECTS:cactus_sme2_obj>)
-else()
-	add_library(cactus_ffi SHARED ${COMMON_SOURCES})
-endif()
+add_library(cactus_ffi SHARED ${COMMON_SOURCES} ${EXTRA_OBJECTS})
 configure_cactus_target(cactus_ffi)
 set_target_properties(cactus_ffi PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     OUTPUT_NAME "cactus"
 )
+target_compile_definitions(cactus_ffi PRIVATE CACTUS_COMPILE_I8MM)
 
 if(BUILD_SME2)
 	target_compile_definitions(cactus_ffi PRIVATE CACTUS_COMPILE_SME2)
