@@ -260,6 +260,20 @@ let vadJson = try cactusVad(model, "/path/to/audio.wav", nil as String?, nil as 
 print(vadJson)
 ```
 
+### Diarize
+
+```swift
+let diarizeJson = try cactusDiarize(model, "/path/to/audio.wav", nil, nil as Data?)
+print(diarizeJson)
+```
+
+### Embed Speaker
+
+```swift
+let embedJson = try cactusEmbedSpeaker(model, "/path/to/audio.wav", nil, nil as Data?)
+print(embedJson)
+```
+
 ### RAG
 
 ```swift

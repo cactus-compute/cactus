@@ -254,6 +254,18 @@ val scores = cactusScoreWindow(model, tokens, 0, tokens.size, 512)
 val result = cactusVad(model, "/path/to/audio.wav", null, null)
 ```
 
+### Diarize
+
+```kotlin
+val result = cactusDiarize(model, "/path/to/audio.wav", null, null)
+```
+
+### Embed Speaker
+
+```kotlin
+val result = cactusEmbedSpeaker(model, "/path/to/audio.wav", null, null)
+```
+
 ### RAG
 
 ```kotlin

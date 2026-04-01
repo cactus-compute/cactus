@@ -419,7 +419,6 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
                 delete handle;
                 return nullptr;
             }
-
         }
 
         if (corpus_dir != nullptr && strlen(corpus_dir) > 0) {

@@ -2183,3 +2183,93 @@ void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_p
         node.output_buffer.data_as<__fp16>(),
         n, seq_len, hidden_dim);
 }
+
+void compute_bilstm_sequence_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                   const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& w_ih_fwd = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& w_hh_fwd = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    const auto& b_ih_fwd = nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
+    const auto& b_hh_fwd = nodes[node_index_map.at(node.input_ids[4])]->output_buffer;
+    const auto& w_ih_bwd = nodes[node_index_map.at(node.input_ids[5])]->output_buffer;
+    const auto& w_hh_bwd = nodes[node_index_map.at(node.input_ids[6])]->output_buffer;
+    const auto& b_ih_bwd = nodes[node_index_map.at(node.input_ids[7])]->output_buffer;
+    const auto& b_hh_bwd = nodes[node_index_map.at(node.input_ids[8])]->output_buffer;
+
+    size_t batch_size = input.shape[0];
+    size_t seq_len = input.shape[1];
+    size_t input_size = input.shape[2];
+    size_t hidden_size = w_ih_fwd.shape[0] / 4;
+
+    cactus_bilstm_sequence_f16(
+        input.data_as<__fp16>(),
+        w_ih_fwd.data_as<__fp16>(), w_hh_fwd.data_as<__fp16>(),
+        b_ih_fwd.data_as<__fp16>(), b_hh_fwd.data_as<__fp16>(),
+        w_ih_bwd.data_as<__fp16>(), w_hh_bwd.data_as<__fp16>(),
+        b_ih_bwd.data_as<__fp16>(), b_hh_bwd.data_as<__fp16>(),
+        node.output_buffer.data_as<__fp16>(),
+        batch_size, seq_len, input_size, hidden_size);
+}
+
+void compute_maxpool1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                            const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+
+    size_t batch_size = input.shape[0];
+    size_t channels = input.shape[1];
+    size_t input_length = input.shape[2];
+    size_t kernel_size = node.params.kernel_size;
+    size_t stride = node.params.stride;
+
+    cactus_maxpool1d_f16(
+        input.data_as<__fp16>(),
+        node.output_buffer.data_as<__fp16>(),
+        batch_size, channels, input_length,
+        kernel_size, stride);
+}
+
+void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                 const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const __fp16* bias_ptr = nullptr;
+    if (node.input_ids.size() >= 3) {
+        bias_ptr = nodes[node_index_map.at(node.input_ids[2])]->output_buffer.data_as<__fp16>();
+    }
+
+    cactus_conv2d_f16_k3s1p1_nchw(
+        X.data_as<__fp16>(), W.data_as<__fp16>(), bias_ptr,
+        node.output_buffer.data_as<__fp16>(),
+        X.shape[0], X.shape[1], X.shape[2], X.shape[3], W.shape[0]);
+}
+
+void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                              const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const __fp16* src = input.data_as<__fp16>();
+    __fp16* dst = node.output_buffer.data_as<__fp16>();
+
+    size_t batch = input.shape[0];
+    size_t total_per_batch = input.total_size / batch;
+    size_t T = input.shape.back();
+    size_t features = total_per_batch / T;
+
+    for (size_t b = 0; b < batch; ++b) {
+        const __fp16* batch_src = src + b * total_per_batch;
+        __fp16* batch_dst = dst + b * features * 2;
+
+        for (size_t f = 0; f < features; ++f) {
+            float sum = 0.0f, sum_sq = 0.0f;
+            for (size_t t = 0; t < T; ++t) {
+                float v = static_cast<float>(batch_src[f * T + t]);
+                sum += v;
+                sum_sq += v * v;
+            }
+            float mean = sum / static_cast<float>(T);
+            float var = T > 1 ? (sum_sq - static_cast<float>(T) * mean * mean) / static_cast<float>(T - 1) : 0.0f;
+            float std_val = sqrtf(fmaxf(var, 0.0f));
+            batch_dst[f] = static_cast<__fp16>(mean);
+            batch_dst[features + f] = static_cast<__fp16>(std_val);
+        }
+    }
+}

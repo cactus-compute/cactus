@@ -531,6 +531,8 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "gemma3n" || value == "GEMMA3N") model_type = ModelType::GEMMA3N;
             else if (value == "gemma4" || value == "GEMMA4" || value == "tinyllama" || value == "TINYLLAMA") model_type = ModelType::GEMMA4;
             else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
+            else if (value == "pyannote" || value == "PYANNOTE") model_type = ModelType::PYANNOTE;
+            else if (value == "wespeaker" || value == "WESPEAKER") model_type = ModelType::WESPEAKER;
             else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {
@@ -781,6 +783,10 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<Gemma4Model>(config);
         case Config::ModelType::YOUTU:
             return std::make_unique<YoutuModel>(config);
+        case Config::ModelType::PYANNOTE:
+            return std::make_unique<PyAnnoteModel>(config);
+        case Config::ModelType::WESPEAKER:
+            return std::make_unique<WeSpeakerModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }

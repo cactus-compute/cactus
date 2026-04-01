@@ -142,6 +142,24 @@ typedef CactusVadNative = Int32 Function(
     Pointer<Uint8> pcmBuffer,
     IntPtr pcmBufferSize);
 
+typedef CactusDiarizeNative = Int32 Function(
+    CactusModelT model,
+    Pointer<Utf8> audioFilePath,
+    Pointer<Utf8> responseBuffer,
+    IntPtr bufferSize,
+    Pointer<Utf8> optionsJson,
+    Pointer<Uint8> pcmBuffer,
+    IntPtr pcmBufferSize);
+
+typedef CactusEmbedSpeakerNative = Int32 Function(
+    CactusModelT model,
+    Pointer<Utf8> audioFilePath,
+    Pointer<Utf8> responseBuffer,
+    IntPtr bufferSize,
+    Pointer<Utf8> optionsJson,
+    Pointer<Uint8> pcmBuffer,
+    IntPtr pcmBufferSize);
+
 typedef CactusRagQueryNative = Int32 Function(
     CactusModelT model,
     Pointer<Utf8> query,
@@ -269,6 +287,24 @@ typedef CactusAudioEmbedDart = int Function(
     Pointer<IntPtr> embeddingDim);
 
 typedef CactusVadDart = int Function(
+    CactusModelT model,
+    Pointer<Utf8> audioFilePath,
+    Pointer<Utf8> responseBuffer,
+    int bufferSize,
+    Pointer<Utf8> optionsJson,
+    Pointer<Uint8> pcmBuffer,
+    int pcmBufferSize);
+
+typedef CactusDiarizeDart = int Function(
+    CactusModelT model,
+    Pointer<Utf8> audioFilePath,
+    Pointer<Utf8> responseBuffer,
+    int bufferSize,
+    Pointer<Utf8> optionsJson,
+    Pointer<Uint8> pcmBuffer,
+    int pcmBufferSize);
+
+typedef CactusEmbedSpeakerDart = int Function(
     CactusModelT model,
     Pointer<Utf8> audioFilePath,
     Pointer<Utf8> responseBuffer,
@@ -408,6 +444,10 @@ final _cactusAudioEmbed =
     _lib.lookupFunction<CactusAudioEmbedNative, CactusAudioEmbedDart>('cactus_audio_embed');
 final _cactusVad =
     _lib.lookupFunction<CactusVadNative, CactusVadDart>('cactus_vad');
+final _cactusDiarize =
+    _lib.lookupFunction<CactusDiarizeNative, CactusDiarizeDart>('cactus_diarize');
+final _cactusEmbedSpeaker =
+    _lib.lookupFunction<CactusEmbedSpeakerNative, CactusEmbedSpeakerDart>('cactus_embed_speaker');
 final _cactusRagQuery =
     _lib.lookupFunction<CactusRagQueryNative, CactusRagQueryDart>('cactus_rag_query');
 final _cactusIndexInit =
@@ -794,6 +834,78 @@ Float32List cactusAudioEmbed(CactusModelT model, String audioPath) {
     calloc.free(embeddingsBuffer);
     calloc.free(embeddingDim);
     calloc.free(audioPathPtr);
+  }
+}
+
+/// Runs speaker diarization. Returns JSON.
+String cactusDiarize(
+  CactusModelT model,
+  String? audioPath,
+  String? optionsJson,
+  Uint8List? pcmData,
+) {
+  const bufferSize = 1 << 20;
+  final responseBuffer = calloc<Uint8>(bufferSize);
+  final audioPathPtr = audioPath?.toNativeUtf8() ?? nullptr;
+  final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
+
+  Pointer<Uint8> pcmBuffer = nullptr;
+  int pcmSize = 0;
+  if (pcmData != null) {
+    pcmBuffer = calloc<Uint8>(pcmData.length);
+    pcmBuffer.asTypedList(pcmData.length).setAll(0, pcmData);
+    pcmSize = pcmData.length;
+  }
+
+  try {
+    final result = _cactusDiarize(
+      model, audioPathPtr, responseBuffer.cast(), bufferSize, optionsPtr, pcmBuffer, pcmSize,
+    );
+    if (result < 0) {
+      throw Exception('Diarize failed: ${cactusGetLastError()}');
+    }
+    return responseBuffer.cast<Utf8>().toDartString();
+  } finally {
+    calloc.free(responseBuffer);
+    if (audioPathPtr != nullptr) calloc.free(audioPathPtr);
+    if (optionsPtr != nullptr) calloc.free(optionsPtr);
+    if (pcmBuffer != nullptr) calloc.free(pcmBuffer);
+  }
+}
+
+/// Extracts a speaker embedding vector. Returns JSON.
+String cactusEmbedSpeaker(
+  CactusModelT model,
+  String? audioPath,
+  String? optionsJson,
+  Uint8List? pcmData,
+) {
+  const bufferSize = 65536;
+  final responseBuffer = calloc<Uint8>(bufferSize);
+  final audioPathPtr = audioPath?.toNativeUtf8() ?? nullptr;
+  final optionsPtr = optionsJson?.toNativeUtf8() ?? nullptr;
+
+  Pointer<Uint8> pcmBuffer = nullptr;
+  int pcmSize = 0;
+  if (pcmData != null) {
+    pcmBuffer = calloc<Uint8>(pcmData.length);
+    pcmBuffer.asTypedList(pcmData.length).setAll(0, pcmData);
+    pcmSize = pcmData.length;
+  }
+
+  try {
+    final result = _cactusEmbedSpeaker(
+      model, audioPathPtr, responseBuffer.cast(), bufferSize, optionsPtr, pcmBuffer, pcmSize,
+    );
+    if (result < 0) {
+      throw Exception('EmbedSpeaker failed: ${cactusGetLastError()}');
+    }
+    return responseBuffer.cast<Utf8>().toDartString();
+  } finally {
+    calloc.free(responseBuffer);
+    if (audioPathPtr != nullptr) calloc.free(audioPathPtr);
+    if (optionsPtr != nullptr) calloc.free(optionsPtr);
+    if (pcmBuffer != nullptr) calloc.free(pcmBuffer);
   }
 }
 

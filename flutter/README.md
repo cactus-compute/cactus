@@ -222,6 +222,24 @@ final String vadJson = cactusVad(model, '/path/to/audio.wav', null, null);
 print(vadJson);
 ```
 
+### Diarize
+
+```dart
+import 'cactus.dart';
+
+final String diarizeJson = cactusDiarize(model, '/path/to/audio.wav', null, null);
+print(diarizeJson);
+```
+
+### Embed Speaker
+
+```dart
+import 'cactus.dart';
+
+final String embedJson = cactusEmbedSpeaker(model, '/path/to/audio.wav', null, null);
+print(embedJson);
+```
+
 ### RAG
 
 ```dart

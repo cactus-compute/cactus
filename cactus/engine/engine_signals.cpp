@@ -704,12 +704,10 @@ std::vector<float> AudioProcessor::compute_spectrogram(
         const float denom = config.hann_periodic
             ? static_cast<float>(window_length)
             : static_cast<float>(window_length - 1);
+        const float a0 = config.window_a0;
         const size_t left_pad = (analysis_frame_length - window_length) / 2;
         for (size_t i = 0; i < window_length; ++i) {
-            float idx = config.hann_shifted
-                ? (static_cast<float>(i) + 0.5f)
-                : static_cast<float>(i);
-            const float w = 0.5f * (1.0f - std::cos(2.0f * static_cast<float>(M_PI) * idx / denom));
+            const float w = 0.5f * (1.0f - std::cos(2.0f * static_cast<float>(M_PI) * static_cast<float>(i) / denom));
             window[left_pad + i] = w;
         }
     }

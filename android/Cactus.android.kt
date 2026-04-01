@@ -27,6 +27,8 @@ private object CactusJNI {
     @JvmStatic external fun nativeImageEmbed(handle: Long, imagePath: String): FloatArray
     @JvmStatic external fun nativeAudioEmbed(handle: Long, audioPath: String): FloatArray
     @JvmStatic external fun nativeVad(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
+    @JvmStatic external fun nativeDiarize(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
+    @JvmStatic external fun nativeEmbedSpeaker(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
     @JvmStatic external fun nativeStreamTranscribeInit(handle: Long, optionsJson: String?): Long
     @JvmStatic external fun nativeStreamTranscribeProcess(handle: Long, pcmData: ByteArray): String
     @JvmStatic external fun nativeStreamTranscribeStop(handle: Long): String
@@ -66,6 +68,10 @@ actual fun cactusAudioEmbed(model: Long, audioPath: String): FloatArray =
     CactusJNI.nativeAudioEmbed(model, audioPath)
 actual fun cactusVad(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String =
     CactusJNI.nativeVad(model, audioPath, optionsJson, pcmData)
+actual fun cactusDiarize(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String =
+    CactusJNI.nativeDiarize(model, audioPath, optionsJson, pcmData)
+actual fun cactusEmbedSpeaker(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String =
+    CactusJNI.nativeEmbedSpeaker(model, audioPath, optionsJson, pcmData)
 actual fun cactusRagQuery(model: Long, query: String, topK: Int): String =
     CactusJNI.nativeRagQuery(model, query, topK)
 actual fun cactusTokenize(model: Long, text: String): IntArray =

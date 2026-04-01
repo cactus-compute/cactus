@@ -49,6 +49,10 @@ extern void compute_stft_node(GraphNode& node, const std::vector<std::unique_ptr
 extern void compute_altup_predict_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_gaussian_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_maxpool1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_bilstm_sequence_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+extern void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 extern void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 extern void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
@@ -90,7 +94,12 @@ static const char* op_type_names[] = {
     "STFT",
     "ALTUP_PREDICT",
     "ALTUP_CORRECT",
-    "GAUSSIAN_TOPK"
+    "GAUSSIAN_TOPK",
+    "MAXPOOL1D",
+    "BILSTM_SEQUENCE",
+    "LEAKY_RELU",
+    "CONV2D_K3S1P1",
+    "STATS_POOL"
 };
 
 static const char* get_op_name(OpType op) {
@@ -130,6 +139,7 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
         case OpType::GELU_ERF:
         case OpType::SIGMOID:
         case OpType::TANH:
+        case OpType::LEAKY_RELU:
             compute_activation_node(node, nodes, node_index_map);
             break;
 
@@ -317,6 +327,22 @@ void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<G
 
         case OpType::GAUSSIAN_TOPK:
             compute_gaussian_topk_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::MAXPOOL1D:
+            compute_maxpool1d_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::BILSTM_SEQUENCE:
+            compute_bilstm_sequence_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::CONV2D_K3S1P1:
+            compute_conv2d_k3s1p1_node(node, nodes, node_index_map);
+            break;
+
+        case OpType::STATS_POOL:
+            compute_stats_pool_node(node, nodes, node_index_map);
             break;
 
         default:

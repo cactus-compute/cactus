@@ -142,7 +142,12 @@ enum class OpType {
     STFT,
     ALTUP_PREDICT,
     ALTUP_CORRECT,
-    GAUSSIAN_TOPK
+    GAUSSIAN_TOPK,
+    MAXPOOL1D,
+    BILSTM_SEQUENCE,
+    LEAKY_RELU,
+    CONV2D_K3S1P1,
+    STATS_POOL
 };
 
 struct PrecisionTraits {
@@ -360,6 +365,7 @@ struct OpParams {
     size_t chunk_size = 0;
     size_t num_altup_inputs = 0;
     size_t v_head_dim = 0;
+    size_t kernel_size = 0;
 };
 
 struct GraphNode {
@@ -397,6 +403,10 @@ void compute_gated_deltanet_decode_node(GraphNode& node, const std::vector<std::
 void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_altup_predict_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_maxpool1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_bilstm_sequence_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 void shrink_thread_local_buffers();
 class BufferPool {
@@ -575,6 +585,14 @@ public:
     size_t altup_correct(size_t coefs, size_t innovation, const size_t* predictions, size_t num_predictions);
 
     size_t gaussian_topk(size_t input, float ppf);
+
+    size_t maxpool1d(size_t input, size_t kernel_size, size_t stride);
+    size_t leaky_relu(size_t input, float negative_slope = 0.01f);
+    size_t bilstm_sequence(size_t input, size_t w_ih_fwd, size_t w_hh_fwd, size_t b_ih_fwd, size_t b_hh_fwd,
+                           size_t w_ih_bwd, size_t w_hh_bwd, size_t b_ih_bwd, size_t b_hh_bwd);
+    size_t conv2d_k3s1p1(size_t input, size_t weight);
+    size_t conv2d_k3s1p1(size_t input, size_t weight, size_t bias);
+    size_t stats_pool(size_t input);
 
     size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20,
                   const std::unordered_map<uint32_t, float>& logit_bias = {});
