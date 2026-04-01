@@ -270,13 +270,15 @@ _lib.cactus_graph_get_output_info.restype = ctypes.c_int
 
 _lib.cactus_complete.argtypes = [
     ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
-    ctypes.c_char_p, ctypes.c_char_p, TokenCallback, ctypes.c_void_p
+    ctypes.c_char_p, ctypes.c_char_p, TokenCallback, ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
 ]
 _lib.cactus_complete.restype = ctypes.c_int
 
 _lib.cactus_prefill.argtypes = [
     ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
-    ctypes.c_char_p, ctypes.c_char_p
+    ctypes.c_char_p, ctypes.c_char_p,
+    ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
 ]
 _lib.cactus_prefill.restype = ctypes.c_int
 
@@ -511,7 +513,7 @@ def cactus_complete(model, messages_json, options_json, tools_json, callback):
         cb = TokenCallback()
     rc = _lib.cactus_complete(
         model, _enc(messages_json), buf, len(buf),
-        _enc(options_json), _enc(tools_json), cb, None
+        _enc(options_json), _enc(tools_json), cb, None, None, 0
     )
     if rc < 0:
         raise RuntimeError(_err("Completion failed"))
@@ -523,7 +525,7 @@ def cactus_prefill(model, messages_json, options_json, tools_json):
     buf = ctypes.create_string_buffer(65536)
     rc = _lib.cactus_prefill(
         model, _enc(messages_json), buf, len(buf),
-        _enc(options_json), _enc(tools_json)
+        _enc(options_json), _enc(tools_json), None, 0
     )
     if rc < 0:
         raise RuntimeError(_err("Prefill failed"))

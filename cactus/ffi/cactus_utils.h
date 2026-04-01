@@ -269,6 +269,18 @@ inline AudioPreprocessResult preprocess_audio_for_gemma4(
     return result;
 }
 
+inline std::vector<float> pcm_buffer_to_float_samples(
+    const uint8_t* pcm_buffer, size_t pcm_buffer_size
+) {
+    const int16_t* pcm_samples = reinterpret_cast<const int16_t*>(pcm_buffer);
+    size_t num_samples = pcm_buffer_size / 2;
+    std::vector<float> waveform_fp32(num_samples);
+    constexpr float inv_32768 = 1.0f / 32768.0f;
+    for (size_t i = 0; i < num_samples; i++)
+        waveform_fp32[i] = static_cast<float>(pcm_samples[i]) * inv_32768;
+    return waveform_fp32;
+}
+
 } // namespace audio
 } // namespace cactus
 

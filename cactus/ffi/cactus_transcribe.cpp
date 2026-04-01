@@ -208,12 +208,7 @@ int cactus_transcribe(
 
         std::vector<float> audio_samples;
         if (audio_file_path == nullptr) {
-            const int16_t* pcm_samples = reinterpret_cast<const int16_t*>(pcm_buffer);
-            size_t num_samples = pcm_buffer_size / 2;
-            std::vector<float> waveform_fp32(num_samples);
-            constexpr float inv_32768 = 1.0f / 32768.0f;
-            for (size_t i = 0; i < num_samples; i++)
-                waveform_fp32[i] = static_cast<float>(pcm_samples[i]) * inv_32768;
+            auto waveform_fp32 = cactus::audio::pcm_buffer_to_float_samples(pcm_buffer, pcm_buffer_size);
             audio_samples = resample_to_16k_fp32(waveform_fp32, WHISPER_SAMPLE_RATE);
         } else {
             AudioFP32 audio = load_wav(audio_file_path);

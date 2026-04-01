@@ -179,7 +179,7 @@ bool test_complete_tinyllama_thinking_toggle() {
 
     int r1 = cactus_complete(model, msgs, buf, sizeof(buf),
         R"({"max_tokens":128,"enable_thinking_if_supported":true,"telemetry_enabled":false})",
-        nullptr, nullptr, nullptr);
+        nullptr, nullptr, nullptr, nullptr, 0);
     std::string resp1(buf);
     bool ok1 = r1 > 0 && resp1.find("\"success\":true") != std::string::npos;
 
@@ -188,7 +188,7 @@ bool test_complete_tinyllama_thinking_toggle() {
 
     int r2 = cactus_complete(model, msgs, buf, sizeof(buf),
         R"({"max_tokens":128,"enable_thinking_if_supported":false,"telemetry_enabled":false})",
-        nullptr, nullptr, nullptr);
+        nullptr, nullptr, nullptr, nullptr, 0);
     std::string resp2(buf);
     bool ok2 = r2 > 0
             && resp2.find("\"thinking\"") == std::string::npos
@@ -222,7 +222,7 @@ bool test_complete_tinyllama_tool_call() {
 
     int r = cactus_complete(model, msgs, buf, sizeof(buf),
         R"({"max_tokens":256,"force_tool_call":true,"enable_thinking_if_supported":true,"telemetry_enabled":false})",
-        tools, nullptr, nullptr);
+        tools, nullptr, nullptr, nullptr, 0);
     std::string resp(buf);
 
     cactus_destroy(model);
@@ -255,7 +255,7 @@ bool test_multiturn_cache_reuse() {
     const char* turn1_msgs = R"([{"role": "user", "content": "My name is Alice. Please remember this."}])";
     char buf[16384];
 
-    int r1 = cactus_complete(model, turn1_msgs, buf, sizeof(buf), options, nullptr, nullptr, nullptr);
+    int r1 = cactus_complete(model, turn1_msgs, buf, sizeof(buf), options, nullptr, nullptr, nullptr, nullptr, 0);
     if (r1 <= 0) { std::cerr << "  Turn 1 failed\n"; cactus_destroy(model); return false; }
 
     std::vector<uint32_t> processed_after_t1 = handle->processed_tokens;
@@ -283,7 +283,7 @@ bool test_multiturn_cache_reuse() {
     std::string turn2_json = R"([{"role": "user", "content": "My name is Alice. Please remember this."},{"role": "assistant", "content": ")"
         + escaped + R"("},{"role": "user", "content": "What is my name?"}])";
 
-    int r2 = cactus_complete(model, turn2_json.c_str(), buf, sizeof(buf), options, nullptr, nullptr, nullptr);
+    int r2 = cactus_complete(model, turn2_json.c_str(), buf, sizeof(buf), options, nullptr, nullptr, nullptr, nullptr, 0);
     if (r2 <= 0) { std::cerr << "  Turn 2 failed\n"; cactus_destroy(model); return false; }
 
     std::string turn2_response(buf);

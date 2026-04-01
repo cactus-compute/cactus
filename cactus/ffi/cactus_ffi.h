@@ -41,7 +41,9 @@ CACTUS_FFI_EXPORT int cactus_complete(
     const char* options_json,               // optional
     const char* tools_json,                 // optional
     cactus_token_callback callback,         // optional
-    void* user_data                         // optional
+    void* user_data,                        // optional
+    const uint8_t* pcm_buffer,             // optional: NULL when not used
+    size_t pcm_buffer_size                 // optional: 0 when not used
 );
 
 CACTUS_FFI_EXPORT int cactus_prefill(
@@ -50,7 +52,9 @@ CACTUS_FFI_EXPORT int cactus_prefill(
     char* response_buffer,
     size_t buffer_size,
     const char* options_json,               // optional
-    const char* tools_json                  // optional
+    const char* tools_json,                 // optional
+    const uint8_t* pcm_buffer,             // optional: NULL when not used
+    size_t pcm_buffer_size                 // optional: 0 when not used
 );
 
 CACTUS_FFI_EXPORT int cactus_tokenize(

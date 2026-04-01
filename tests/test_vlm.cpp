@@ -50,7 +50,7 @@ bool test_vlm_multiturn() {
     std::cout << "Assistant: ";
 
     int result1 = cactus_complete(model, messages1.c_str(), response1, sizeof(response1),
-                                  g_options, nullptr, stream_callback, &stream_data1);
+                                  g_options, nullptr, stream_callback, &stream_data1, nullptr, 0);
 
     std::cout << "\n\n[Results - Turn 1]\n";
     Metrics metrics1;
@@ -85,7 +85,7 @@ bool test_vlm_multiturn() {
     std::cout << "Assistant: ";
 
     int result2 = cactus_complete(model, messages2.c_str(), response2, sizeof(response2),
-                                  g_options, nullptr, stream_callback, &stream_data2);
+                                  g_options, nullptr, stream_callback, &stream_data2, nullptr, 0);
 
     std::cout << "\n\n[Results - Turn 2]\n";
     Metrics metrics2;
@@ -157,13 +157,13 @@ bool test_prefill_invalidated_on_message_change_vlm() {
     })";
 
     char prefill_response[2048] = {0};
-    int prefill_result = cactus_prefill(model, prefill_messages.c_str(), prefill_response, sizeof(prefill_response), nullptr, nullptr);
+    int prefill_result = cactus_prefill(model, prefill_messages.c_str(), prefill_response, sizeof(prefill_response), nullptr, nullptr, nullptr, 0);
     PrefillMetrics prefill_metrics;
     prefill_metrics.parse(prefill_response);
 
     char complete_response_warm[4096] = {0};
     int complete_result_warm = cactus_complete(model, complete_messages.c_str(), complete_response_warm, sizeof(complete_response_warm),
-                                               options, nullptr, nullptr, nullptr);
+                                               options, nullptr, nullptr, nullptr, nullptr, 0);
     Metrics warm_metrics;
     warm_metrics.parse(complete_response_warm);
 
@@ -171,7 +171,7 @@ bool test_prefill_invalidated_on_message_change_vlm() {
 
     char complete_response_cold[4096] = {0};
     int complete_result_cold = cactus_complete(model, complete_messages.c_str(), complete_response_cold, sizeof(complete_response_cold),
-                                               options, nullptr, nullptr, nullptr);
+                                               options, nullptr, nullptr, nullptr, nullptr, 0);
     Metrics cold_metrics;
     cold_metrics.parse(complete_response_cold);
 
@@ -257,13 +257,13 @@ bool test_prefill_with_images() {
     })";
 
     char prefill_response[2048] = {0};
-    int prefill_result = cactus_prefill(model, prefill_messages.c_str(), prefill_response, sizeof(prefill_response), nullptr, nullptr);
+    int prefill_result = cactus_prefill(model, prefill_messages.c_str(), prefill_response, sizeof(prefill_response), nullptr, nullptr, nullptr, 0);
     PrefillMetrics prefill_metrics;
     prefill_metrics.parse(prefill_response);
 
     char complete_response_warm[4096] = {0};
     int complete_result_warm = cactus_complete(model, complete_messages.c_str(), complete_response_warm, sizeof(complete_response_warm),
-                                               options, nullptr, nullptr, nullptr);
+                                               options, nullptr, nullptr, nullptr, nullptr, 0);
     Metrics warm_metrics;
     warm_metrics.parse(complete_response_warm);
 
@@ -271,7 +271,7 @@ bool test_prefill_with_images() {
 
     char complete_response_cold[4096] = {0};
     int complete_result_cold = cactus_complete(model, complete_messages.c_str(), complete_response_cold, sizeof(complete_response_cold),
-                                               options, nullptr, nullptr, nullptr);
+                                               options, nullptr, nullptr, nullptr, nullptr, 0);
     Metrics cold_metrics;
     cold_metrics.parse(complete_response_cold);
 
@@ -355,19 +355,19 @@ bool test_prefill_prefix_extension_reuse_vlm() {
         "]";
 
     char prefill_response1[2048] = {0};
-    int prefill_result1 = cactus_prefill(model, base_messages.c_str(), prefill_response1, sizeof(prefill_response1), nullptr, nullptr);
+    int prefill_result1 = cactus_prefill(model, base_messages.c_str(), prefill_response1, sizeof(prefill_response1), nullptr, nullptr, nullptr, 0);
     PrefillMetrics prefill_metrics1;
     prefill_metrics1.parse(prefill_response1);
 
     char prefill_response2[2048] = {0};
-    int prefill_result2 = cactus_prefill(model, extended_messages.c_str(), prefill_response2, sizeof(prefill_response2), nullptr, nullptr);
+    int prefill_result2 = cactus_prefill(model, extended_messages.c_str(), prefill_response2, sizeof(prefill_response2), nullptr, nullptr, nullptr, 0);
     PrefillMetrics prefill_metrics2;
     prefill_metrics2.parse(prefill_response2);
 
     cactus_reset(model);
 
     char prefill_response3[2048] = {0};
-    int prefill_result3 = cactus_prefill(model, extended_messages.c_str(), prefill_response3, sizeof(prefill_response3), nullptr, nullptr);
+    int prefill_result3 = cactus_prefill(model, extended_messages.c_str(), prefill_response3, sizeof(prefill_response3), nullptr, nullptr, nullptr, 0);
     PrefillMetrics prefill_metrics3;
     prefill_metrics3.parse(prefill_response3);
 

@@ -228,7 +228,7 @@ bool run_test(const char* title, const char* model_path, const char* messages,
     std::cout << "Response: ";
 
     int result = cactus_complete(model, messages, response, sizeof(response),
-                                 options, tools, stream_callback, &data);
+                                 options, tools, stream_callback, &data, nullptr, 0);
 
     std::cout << "\n\n[Results]\n";
 

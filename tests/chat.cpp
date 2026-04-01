@@ -8,6 +8,122 @@
 #include <iomanip>
 #include <chrono>
 #include <fstream>
+#include <atomic>
+#include <thread>
+#include <mutex>
+
+#ifdef HAVE_SDL2
+#include <SDL.h>
+#include <SDL_audio.h>
+
+namespace {
+
+constexpr int RECORD_SAMPLE_RATE = 16000;
+
+struct RecordState {
+    std::mutex mutex;
+    std::vector<uint8_t> buffer;
+    std::atomic<bool> recording{false};
+    int actual_sample_rate{RECORD_SAMPLE_RATE};
+};
+
+RecordState g_record;
+
+void record_callback(void* /*userdata*/, Uint8* stream, int len) {
+    if (!g_record.recording) return;
+    std::lock_guard<std::mutex> lock(g_record.mutex);
+    g_record.buffer.insert(g_record.buffer.end(), stream, stream + len);
+}
+
+std::vector<uint8_t> resample_s16(const std::vector<uint8_t>& input, int source_rate, int target_rate) {
+    if (source_rate == target_rate || input.empty()) return input;
+    size_t num_in = input.size() / 2;
+    if (num_in == 0) return input;
+    const int16_t* in = reinterpret_cast<const int16_t*>(input.data());
+    double ratio = static_cast<double>(target_rate) / source_rate;
+    size_t num_out = static_cast<size_t>(num_in * ratio);
+    if (num_out == 0) return {};
+    std::vector<int16_t> out(num_out);
+    for (size_t i = 0; i < num_out; i++) {
+        double src_idx = i / ratio;
+        size_t i0 = static_cast<size_t>(src_idx);
+        size_t i1 = std::min(i0 + 1, num_in - 1);
+        double frac = src_idx - i0;
+        double sample = in[i0] * (1.0 - frac) + in[i1] * frac;
+        if (sample > 32767.0) sample = 32767.0;
+        if (sample < -32768.0) sample = -32768.0;
+        out[i] = static_cast<int16_t>(sample);
+    }
+    std::vector<uint8_t> result(num_out * 2);
+    std::memcpy(result.data(), out.data(), result.size());
+    return result;
+}
+
+bool record_audio(std::vector<uint8_t>& pcm_out) {
+    if (SDL_Init(SDL_INIT_AUDIO) < 0) {
+        std::cerr << "Failed to init SDL: " << SDL_GetError() << "\n";
+        return false;
+    }
+
+    int num_devices = SDL_GetNumAudioDevices(1);
+    if (num_devices == 0) {
+        std::cerr << "No audio capture devices found\n";
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        return false;
+    }
+
+    SDL_AudioSpec want, have;
+    SDL_zero(want);
+    want.freq = RECORD_SAMPLE_RATE;
+    want.format = AUDIO_S16LSB;
+    want.channels = 1;
+    want.samples = (RECORD_SAMPLE_RATE * 100) / 1000;
+    want.callback = record_callback;
+
+    SDL_AudioDeviceID device = SDL_OpenAudioDevice(nullptr, 1, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+    if (device == 0) {
+        std::cerr << "Failed to open mic: " << SDL_GetError() << "\n";
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        return false;
+    }
+
+    g_record.actual_sample_rate = have.freq;
+    g_record.buffer.clear();
+    g_record.recording = true;
+    SDL_PauseAudioDevice(device, 0);
+
+    std::cout << "Recording... press Enter to stop.\n" << std::flush;
+
+    std::atomic<bool> stop{false};
+    std::thread input_thread([&stop]() {
+        std::string line;
+        std::getline(std::cin, line);
+        stop = true;
+    });
+
+    while (!stop) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    g_record.recording = false;
+    SDL_PauseAudioDevice(device, 1);
+
+    {
+        std::lock_guard<std::mutex> lock(g_record.mutex);
+        pcm_out = resample_s16(g_record.buffer, g_record.actual_sample_rate, RECORD_SAMPLE_RATE);
+    }
+
+    double duration = (pcm_out.size() / 2) / static_cast<double>(RECORD_SAMPLE_RATE);
+    std::cout << "Recorded " << std::fixed << std::setprecision(1) << duration << "s of audio.\n";
+
+    input_thread.join();
+    SDL_CloseAudioDevice(device);
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    return !pcm_out.empty();
+}
+
+} // anonymous namespace
+#endif // HAVE_SDL2
 
 constexpr int MAX_TOKENS = 1024;
 constexpr size_t MAX_BYTES_PER_TOKEN = 64;
@@ -56,6 +172,9 @@ void print_header(const std::string& sys_prompt, const std::string& image, bool 
         std::cout << colored("/image <path>", Color::CYAN) << colored(" | ", Color::DIM);
     }
     std::cout << colored("/audio <path>", Color::CYAN) << colored(" | ", Color::DIM)
+#ifdef HAVE_SDL2
+              << colored("/record", Color::CYAN) << colored(" | ", Color::DIM)
+#endif
               << colored("/clear", Color::CYAN) << colored(" | ", Color::DIM)
               << colored("reset", Color::CYAN) << colored(" | ", Color::DIM)
               << colored("exit", Color::CYAN) << "\n";
@@ -279,6 +398,7 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> history;
     std::vector<std::string> history_images;
     std::vector<std::string> history_audio;
+    std::vector<uint8_t> current_pcm;
     TokenPrinter printer;
     g_printer = &printer;
 
@@ -364,6 +484,24 @@ int main(int argc, char* argv[]) {
             input = msg;
         }
 
+        if (input == "/record") {
+#ifdef HAVE_SDL2
+            if (!has_audio_cap) {
+                std::cerr << colored("  This model does not support audio.\n", Color::RED);
+                continue;
+            }
+            current_pcm.clear();
+            if (!record_audio(current_pcm)) {
+                std::cerr << colored("  Recording failed.\n", Color::RED);
+                continue;
+            }
+            input = "";
+#else
+            std::cerr << colored("  Recording requires SDL2 (not available in this build).\n", Color::RED);
+            continue;
+#endif
+        }
+
         history.push_back(input);
         history_images.push_back(current_image);
         history_audio.push_back(current_audio);
@@ -405,10 +543,19 @@ int main(int argc, char* argv[]) {
             std::cout << colored("  [audio: " + current_audio + "]\n", Color::MAGENTA);
             current_audio.clear();
         }
+        if (!current_pcm.empty()) {
+            double dur = static_cast<double>(current_pcm.size() / 2) / 16000.0;
+            std::cout << colored("  [mic recording: ", Color::MAGENTA)
+                      << std::fixed << std::setprecision(1) << dur << "s"
+                      << colored("]\n", Color::MAGENTA);
+        }
         if (!current_image.empty()) {
             std::cout << colored("  [" + current_image + "]\n", Color::MAGENTA);
         }
         std::cout << colored("Assistant: ", Color::GREEN + Color::BOLD);
+
+        const uint8_t* pcm_ptr = current_pcm.empty() ? nullptr : current_pcm.data();
+        size_t pcm_size = current_pcm.size();
 
         printer.reset();
         int result = cactus_complete(
@@ -419,8 +566,12 @@ int main(int argc, char* argv[]) {
             options.c_str(),
             nullptr,
             print_token,
-            nullptr
+            nullptr,
+            pcm_ptr,
+            pcm_size
         );
+
+        current_pcm.clear();
 
         std::string json_str(response_buffer.data(), response_buffer.size());
 

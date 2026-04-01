@@ -280,7 +280,9 @@ PreparedPrompt prepare_prompt(
     const char* options_json,
     const char* tools_json,
     bool apply_tool_constraints,
-    bool add_generation_prompt
+    bool add_generation_prompt,
+    const uint8_t* pcm_buffer = nullptr,
+    size_t pcm_buffer_size = 0
 ) {
     if (!handle || !handle->model) {
         throw std::runtime_error("Invalid model handle");
@@ -317,18 +319,30 @@ PreparedPrompt prepare_prompt(
 
     prompt.model_type = handle->model->get_config().model_type;
 
-    if (!prompt.audio_paths.empty() && prompt.model_type == Config::ModelType::TINYLLAMA) {
-        for (auto it = prompt.messages.rbegin(); it != prompt.messages.rend(); ++it) {
-            if (!it->audio.empty()) {
-                const std::string& audio_path = it->audio.back();
-                AudioFP32 wav = load_wav(audio_path);
-                std::vector<float> audio_samples = resample_to_16k_fp32(wav.samples, wav.sample_rate);
-
-                auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(audio_samples, handle->model->get_config());
-                prompt.audio_features = std::move(audio_prep.features);
-                prompt.audio_num_frames = audio_prep.num_frames;
-                it->audio_soft_token_count = audio_prep.num_soft_tokens;
-                break;
+    if (prompt.model_type == Config::ModelType::TINYLLAMA) {
+        std::vector<float> audio_samples;
+        if (pcm_buffer != nullptr && pcm_buffer_size > 1) {
+            auto waveform_fp32 = cactus::audio::pcm_buffer_to_float_samples(pcm_buffer, pcm_buffer_size);
+            audio_samples = resample_to_16k_fp32(waveform_fp32, 16000);
+        } else if (!prompt.audio_paths.empty()) {
+            for (auto it = prompt.messages.rbegin(); it != prompt.messages.rend(); ++it) {
+                if (!it->audio.empty()) {
+                    const std::string& audio_path = it->audio.back();
+                    AudioFP32 wav = load_wav(audio_path);
+                    audio_samples = resample_to_16k_fp32(wav.samples, wav.sample_rate);
+                    break;
+                }
+            }
+        }
+        if (!audio_samples.empty()) {
+            auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(audio_samples, handle->model->get_config());
+            prompt.audio_features = std::move(audio_prep.features);
+            prompt.audio_num_frames = audio_prep.num_frames;
+            for (auto it = prompt.messages.rbegin(); it != prompt.messages.rend(); ++it) {
+                if (it->role == "user") {
+                    it->audio_soft_token_count = audio_prep.num_soft_tokens;
+                    break;
+                }
             }
         }
     }
@@ -458,7 +472,9 @@ int cactus_complete(
     const char* options_json,
     const char* tools_json,
     cactus_token_callback callback,
-    void* user_data
+    void* user_data,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
 ) {
     if (!model) {
         std::string error_msg = last_error_message.empty() ?
@@ -480,7 +496,7 @@ int cactus_complete(
         auto* handle = static_cast<CactusModelHandle*>(model);
         handle->should_stop = false;
         auto* tokenizer = handle->model->get_tokenizer();
-        auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, true, true);
+        auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, true, true, pcm_buffer, pcm_buffer_size);
 
         CACTUS_LOG_DEBUG("complete", "Prompt tokens: " << prompt.tokens.size()
             << ", max_tokens: " << prompt.options.max_tokens);
@@ -753,7 +769,9 @@ int cactus_prefill(
     char* response_buffer,
     size_t buffer_size,
     const char* options_json,
-    const char* tools_json
+    const char* tools_json,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
 ) {
     if (!model) {
         std::string error_msg = last_error_message.empty()
@@ -783,7 +801,7 @@ int cactus_prefill(
         auto start_time = std::chrono::high_resolution_clock::now();
 
         auto* handle = static_cast<CactusModelHandle*>(model);
-        auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, false, false);
+        auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, false, false, pcm_buffer, pcm_buffer_size);
 
         std::vector<uint32_t> context_tokens(prompt.tokens.begin(), prompt.tokens.begin() + prompt.context_token_count);
         auto prefill_result = do_prefill(handle, prompt, context_tokens);

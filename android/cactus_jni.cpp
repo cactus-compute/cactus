@@ -122,7 +122,9 @@ Java_com_cactus_CactusJNI_nativeComplete(JNIEnv* env, jobject, jlong handle,
         options,
         tools,
         cb,
-        ctx
+        ctx,
+        nullptr,
+        0
     );
 
     delete ctx;
@@ -153,7 +155,9 @@ Java_com_cactus_CactusJNI_nativePrefill(JNIEnv* env, jobject, jlong handle,
         buffer.data(),
         buffer.size(),
         options,
-        tools
+        tools,
+        nullptr,
+        0
     );
 
     release_jstring(env, messagesJson, messages);
