@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from pathlib import Path
 from typing import Optional, Any, Dict
@@ -118,6 +119,17 @@ def detect_model_type(cfg, config, output_dir=None):
         if model_type_str:
             print(f"  Warning: Unknown model type '{model_type_str}', defaulting to 'qwen'")
         return 'qwen'
+
+
+def resolve_audio_fft_length(audio_cfg):
+    sampling_rate = int(cfg_get(audio_cfg, 'sampling_rate', 16000))
+    frame_length_ms = float(cfg_get(audio_cfg, 'frame_length_ms', 20.0))
+    fft_overdrive = bool(cfg_get(audio_cfg, 'fft_overdrive', False))
+    frame_length = int(round(sampling_rate * frame_length_ms / 1000.0))
+    fft_length = 2 ** math.ceil(math.log2(max(1, frame_length)))
+    if fft_overdrive:
+        fft_length *= 2
+    return fft_length
 
 
 def extract_base_config(cfg, config):
@@ -453,40 +465,9 @@ def extract_audio_config(config, audio_cfg):
         'audio_soft_tokens': int(cfg_get(audio_cfg, 'audio_soft_tokens_per_image', 188)),
         'audio_sscp_conv0_channels': int(sscp_channels[0]),
         'audio_sscp_conv1_channels': int(sscp_channels[1]),
+        'audio_sscp_conv_eps': float(cfg_get(audio_cfg, 'sscp_conv_eps', 1e-3)),
         'audio_rms_norm_eps': float(cfg_get(audio_cfg, 'rms_norm_eps', 1e-6)),
-        'audio_token_id': int(cfg_get(config, 'audio_token_id', 0)),
-    }
-
-
-def extract_audio_config(config, audio_cfg):
-    """Extract audio encoder configuration for multimodal models."""
-    hidden = int(cfg_get(audio_cfg, 'hidden_size', 1024))
-    num_heads = int(cfg_get(audio_cfg, 'conf_num_attention_heads', 8))
-    sscp_channels = cfg_get(audio_cfg, 'sscp_conv_channel_size', [128, 32])
-    if not isinstance(sscp_channels, (list, tuple)):
-        sscp_channels = [128, 32]
-    output_proj = cfg_get(audio_cfg, 'output_proj_dims', None)
-    if output_proj is None:
-        output_proj = 0
-    return {
-        'audio_hidden_dim': hidden,
-        'audio_num_layers': int(cfg_get(audio_cfg, 'conf_num_hidden_layers', 12)),
-        'audio_num_heads': num_heads,
-        'audio_head_dim': hidden // max(1, num_heads),
-        'audio_input_feat_size': int(cfg_get(audio_cfg, 'input_feat_size', 128)),
-        'audio_conf_conv_kernel_size': int(cfg_get(audio_cfg, 'conf_conv_kernel_size', 5)),
-        'audio_chunk_size': int(cfg_get(audio_cfg, 'conf_attention_chunk_size', 12)),
-        'audio_context_left': int(cfg_get(audio_cfg, 'conf_attention_context_left', 13)),
-        'audio_context_right': int(cfg_get(audio_cfg, 'conf_attention_context_right', 0)),
-        'audio_logit_cap': float(cfg_get(audio_cfg, 'conf_attention_logit_cap', 50.0)),
-        'audio_residual_weight': float(cfg_get(audio_cfg, 'conf_residual_weight', 0.5)),
-        'audio_output_proj_dims': int(output_proj),
-        'audio_vocab_size': int(cfg_get(audio_cfg, 'vocab_size', 128)),
-        'audio_vocab_offset': int(cfg_get(audio_cfg, 'vocab_offset', 0)),
-        'audio_soft_tokens': int(cfg_get(audio_cfg, 'audio_soft_tokens_per_image', 188)),
-        'audio_sscp_conv0_channels': int(sscp_channels[0]),
-        'audio_sscp_conv1_channels': int(sscp_channels[1]),
-        'audio_rms_norm_eps': float(cfg_get(audio_cfg, 'rms_norm_eps', 1e-6)),
+        'audio_fft_length': resolve_audio_fft_length(audio_cfg),
         'audio_token_id': int(cfg_get(config, 'audio_token_id', 0)),
     }
 

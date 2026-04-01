@@ -19,6 +19,35 @@ from .weight_patterns import (
 )
 
 
+def _remap_gemma4_audio_keys(state_dict):
+    """Remap Gemma-4 audio tower keys from checkpoint naming to HF model naming.
+
+    The gg-hf-gg/gemma-4-e2b-it checkpoint uses an older naming convention
+    for audio encoder weights that doesn't match the HF Gemma4 model class.
+    When HF loads the model, these weights end up as randomly initialized.
+    This function remaps them so the converter gets the real trained weights.
+    """
+    remapped = {}
+    for key, value in state_dict.items():
+        if 'audio_tower' not in key:
+            remapped[key] = value
+            continue
+        new_key = key
+        new_key = re.sub(r'subsample_conv_projection\.layer(\d+)\.', r'subsample_conv_projection.conv_\1.', new_key)
+        new_key = re.sub(r'audio_tower\.layers\.', 'audio_tower.conformer.', new_key)
+        new_key = new_key.replace('.feed_forward1.', '.ffw_layer_start.')
+        new_key = new_key.replace('.feed_forward2.', '.ffw_layer_end.')
+        new_key = re.sub(r'\.self_attn\.(q_proj|k_proj|v_proj)\.', r'.attention.attn.\1.', new_key)
+        new_key = new_key.replace('.self_attn.per_dim_scale', '.attention.attn.per_dim_scale')
+        new_key = new_key.replace('.self_attn.relative_k_proj.', '.attention.attn.relative_position_embedding.pos_proj.')
+        new_key = new_key.replace('.self_attn.post.', '.attention.post.')
+        new_key = new_key.replace('.norm_pre_attn.', '.attention.pre_attn_norm.')
+        new_key = new_key.replace('.norm_post_attn.', '.attention.post_norm.')
+        new_key = re.sub(r'\.norm_out\.', '.norm.', new_key)
+        remapped[new_key] = value
+    return remapped
+
+
 def _find_first_key(state_dict, candidates):
     for key in candidates:
         if key in state_dict:
@@ -38,6 +67,8 @@ def _gemma_tower_output_name(hf_key, strip_prefix, add_prefix):
         ext = '.weights'
     if name.endswith('.linear'):
         name = name[:-len('.linear')]
+    elif name.endswith('_linear'):
+        name = name[:-len('_linear')]
     name = name.replace('.', '_')
     return add_prefix + name + ext
 
@@ -49,8 +80,38 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
 
     state_dict = model.state_dict()
     root_config = model.config
+    model_name = getattr(model, 'name_or_path', '') or ''
     del model
     gc.collect()
+
+    # Fix Gemma-4 audio tower weights: the checkpoint may use old key names
+    # that HF can't map, leaving audio weights randomly initialized.
+    # Detect this by checking if clip bounds are inf (default init value).
+    audio_needs_fix = False
+    for k, v in state_dict.items():
+        if 'audio_tower' in k and 'input_max' in k:
+            if torch.isinf(v).any():
+                audio_needs_fix = True
+                break
+    if audio_needs_fix and model_name:
+        try:
+            from huggingface_hub import hf_hub_download
+            from safetensors.torch import load_file
+            sf_path = hf_hub_download(repo_id=model_name, filename='model.safetensors')
+            raw_sd = load_file(sf_path)
+            remapped = _remap_gemma4_audio_keys(raw_sd)
+            # Replace audio tower keys in state_dict with correctly loaded ones
+            audio_prefix = 'model.audio_tower.'
+            for k in list(state_dict.keys()):
+                if k.startswith(audio_prefix):
+                    del state_dict[k]
+            for k, v in remapped.items():
+                if k.startswith(audio_prefix):
+                    state_dict[k] = v
+            print("  Fixed audio tower weights from checkpoint (key remapping applied)")
+        except Exception as e:
+            print(f"  Warning: Could not fix audio tower weights: {e}")
+
     saved_tensor_full_names = set()
 
     text_config = cfg_get(root_config, 'text_config', None)
@@ -84,7 +145,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         if audio_cfg is not None:
             model_config.update(extract_audio_config(root_config, audio_cfg))
         # New models don't use weight pre-scaling; HF inference uses raw weights.
-        if model_config.get('audio_fft_overdrive') == 'false':
+        if audio_cfg is not None and not bool(cfg_get(audio_cfg, 'fft_overdrive', False)):
             if args is None:
                 class _Args:
                     pass

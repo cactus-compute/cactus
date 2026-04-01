@@ -151,8 +151,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         elif 'router_scale' in filename:
             data = data / TINYLLAMA_WEIGHT_SCALE
         elif filename in ('token_embeddings.weights', 'output_weight.weights',
-                          'embed_vision_proj.weights', 'embed_vision_embedding.weights',
-                          'embed_audio_proj.weights', 'embed_audio_embedding.weights'):
+                          'embed_vision_proj.weights', 'embed_vision_embedding.weights'):
             data = data / TINYLLAMA_WEIGHT_SCALE
         elif filename == 'output_norm.weights':
             data = data * TINYLLAMA_WEIGHT_SCALE
@@ -161,7 +160,15 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         filename = output_path.name
         if any(x in filename for x in ['norm', 'bias', 'vision', 'position_embeddings', 'embed_positions']):
             precision = 'FP16'
-        elif precision == 'INT4' and any(x in filename for x in EMBED_NAMES):
+        elif model_type == 'tinyllama' and (
+            filename.startswith('audio_') or
+            filename in ('embed_audio_proj.weights', 'embed_audio_embedding.weights')
+        ):
+            precision = 'FP16'
+        elif precision == 'INT4' and (
+            any(x in filename for x in EMBED_NAMES)
+            or filename in ('token_embeddings.weights', 'embed_tokens_per_layer.weights')
+        ):
             precision = 'INT8'
 
     shape = list(data.shape)
@@ -169,7 +176,12 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         data = data.T
         shape = [shape[1], shape[0]]
 
-    if model_type == 'tinyllama' and len(shape) == 3 and 'vision' not in output_path.name:
+    if (
+        model_type == 'tinyllama'
+        and len(shape) == 3
+        and 'vision' not in output_path.name
+        and not output_path.name.startswith('audio_')
+    ):
         data = data.transpose(0, 2, 1)
         shape = [shape[0], shape[2], shape[1]]
 

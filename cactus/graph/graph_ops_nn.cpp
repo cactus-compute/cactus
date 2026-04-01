@@ -904,22 +904,36 @@ void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_p
     const size_t C_in  = X.shape[2];
     const size_t W0    = W.shape[0];
     const size_t W1    = W.shape[1];
-    const size_t K     = W.shape[2];
+    const size_t W2    = W.shape[2];
     const size_t dil   = node.params.dilation;
     if (dil < 1) throw std::runtime_error("dilation must be >= 1");
 
     size_t M = 1;
     size_t C_out = 0;
-
-    assert((W1 == 1) && (W0 % C_in == 0) && "Only depthwise causal convolution is supported currently");
+    const bool standard_layout = (W1 == 1);
+    const bool transposed_layout = (W2 == 1);
+    if ((!standard_layout && !transposed_layout) || (W0 % C_in != 0)) {
+        throw std::runtime_error("Only depthwise causal convolution is supported currently");
+    }
+    const size_t K = standard_layout ? W2 : W1;
     M = W0 / C_in;
     C_out = C_in * M;
 
     Y.shape = { N, L, C_out };
     Y.precision = X.precision;
 
+    auto transpose_depthwise_weights_fp16 = [&](const __fp16* src) {
+        std::vector<__fp16> transposed(W0 * K);
+        for (size_t oc = 0; oc < W0; ++oc) {
+            for (size_t k = 0; k < K; ++k) {
+                transposed[oc * K + k] = src[(oc * W1 + k) * W2];
+            }
+        }
+        return transposed;
+    };
+
     if (W.precision == Precision::INT8) {
-        const size_t W_size = W0 * W1 * K;
+        const size_t W_size = W0 * W1 * W2;
         const int8_t* W_int8 = W.data_as<int8_t>();
 
         std::vector<__fp16> W_fp16(W_size);
@@ -944,13 +958,27 @@ void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_p
             }
         }
 
-        cactus_conv1d_causal_depthwise_f16(
-            X.data_as<__fp16>(), W_fp16.data(), Y.data_as<__fp16>(),
-            N, L, C_in, K, dil);
+        if (transposed_layout && !standard_layout) {
+            auto fixed = transpose_depthwise_weights_fp16(W_fp16.data());
+            cactus_conv1d_causal_depthwise_f16(
+                X.data_as<__fp16>(), fixed.data(), Y.data_as<__fp16>(),
+                N, L, C_in, K, dil);
+        } else {
+            cactus_conv1d_causal_depthwise_f16(
+                X.data_as<__fp16>(), W_fp16.data(), Y.data_as<__fp16>(),
+                N, L, C_in, K, dil);
+        }
     } else if (W.precision == Precision::FP16) {
-        cactus_conv1d_causal_depthwise_f16(
-            X.data_as<__fp16>(), W.data_as<__fp16>(), Y.data_as<__fp16>(),
-            N, L, C_in, K, dil);
+        if (transposed_layout && !standard_layout) {
+            auto fixed = transpose_depthwise_weights_fp16(W.data_as<__fp16>());
+            cactus_conv1d_causal_depthwise_f16(
+                X.data_as<__fp16>(), fixed.data(), Y.data_as<__fp16>(),
+                N, L, C_in, K, dil);
+        } else {
+            cactus_conv1d_causal_depthwise_f16(
+                X.data_as<__fp16>(), W.data_as<__fp16>(), Y.data_as<__fp16>(),
+                N, L, C_in, K, dil);
+        }
     } else {
         throw std::runtime_error("Depthwise causal conv supports INT8/FP16 weights");
     }

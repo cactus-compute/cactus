@@ -14,6 +14,16 @@ public:
     TinyLlamaModel();
     explicit TinyLlamaModel(const Config& config);
     ~TinyLlamaModel() override = default;
+    size_t build_pli_combined_for_debug(CactusGraph* gb, size_t hidden,
+                                        const std::vector<uint32_t>& pli_tokens,
+                                        size_t seq_len, ComputeBackend backend);
+    size_t apply_transformer_layer_for_debug(CactusGraph* gb, size_t hidden, size_t pli,
+                                             uint32_t layer_idx, ComputeBackend backend);
+    size_t apply_output_norm_for_debug(CactusGraph* gb, size_t hidden);
+    size_t compute_logits_for_debug(CactusGraph* gb, size_t hidden, ComputeBackend backend);
+    size_t forward_from_embeddings_for_debug(CactusGraph* gb, size_t hidden, size_t pli_hidden_source,
+                                             const std::vector<uint32_t>& pli_tokens, size_t seq_len,
+                                             ComputeBackend backend, bool use_cache);
 
 protected:
     size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
@@ -38,6 +48,12 @@ protected:
 
     size_t forward_from_embeddings(CactusGraph* gb, size_t hidden, const std::vector<uint32_t>& pli_tokens,
                                    size_t seq_len, ComputeBackend backend, bool use_cache);
+    size_t forward_from_embeddings(CactusGraph* gb, size_t hidden, size_t pli_hidden_source,
+                                   const std::vector<uint32_t>& pli_tokens, size_t seq_len,
+                                   ComputeBackend backend, bool use_cache);
+    size_t build_pli_combined_from_tokens(CactusGraph* gb, size_t hidden,
+                                          const std::vector<uint32_t>& pli_tokens,
+                                          size_t seq_len, ComputeBackend backend);
 
 private:
     size_t forward_split(const std::vector<uint32_t>& tokens, bool use_cache);
@@ -358,12 +374,25 @@ private:
                                const std::string& profile_file, float* out_entropy);
 
 public:
+    struct MultimodalInputs {
+        size_t hidden_node = 0;
+        size_t pli_hidden_source_node = 0;
+        std::vector<uint32_t> pli_tokens;
+        size_t seq_len = 0;
+    };
+
     const TinyLlamaVisionModel& vision_encoder() const { return vision_encoder_; }
     TinyLlamaVisionModel& vision_encoder() { return vision_encoder_; }
     const TinyLlamaAudioModel& audio_encoder() const { return audio_encoder_; }
     TinyLlamaAudioModel& audio_encoder() { return audio_encoder_; }
     const TinyLlamaModel& language_model() const { return language_model_; }
     TinyLlamaModel& language_model() { return language_model_; }
+    MultimodalInputs build_multimodal_inputs(
+        CactusGraph* gb, const std::vector<uint32_t>& tokens,
+        const std::vector<std::string>& image_paths,
+        const std::vector<float>* audio_features,
+        size_t audio_num_frames,
+        ComputeBackend backend);
 
 private:
     TinyLlamaVisionModel vision_encoder_;

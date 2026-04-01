@@ -21,6 +21,7 @@ using cactus::audio::get_whisper_spectrogram_config;
 using cactus::audio::normalize_parakeet_log_mel;
 using cactus::audio::trim_mel_frames;
 using cactus::audio::get_htk_spectrogram_config;
+using cactus::audio::get_tinyllama_audio_spectrogram_config;
 using cactus::audio::transpose_mel_to_frame_major;
 
 static constexpr size_t WHISPER_MAX_DECODER_POSITIONS = 448;
@@ -245,7 +246,10 @@ int cactus_transcribe(
             if (pad_amt < 320)
                 audio_samples.resize(audio_samples.size() + pad_amt, 0.0f);
 
-            auto tinyllama_cfg = get_htk_spectrogram_config();
+            auto tinyllama_cfg = get_tinyllama_audio_spectrogram_config(model_config);
+
+            size_t semicausal_pad = tinyllama_cfg.frame_length / 2;
+            audio_samples.insert(audio_samples.begin(), semicausal_pad, 0.0f);
             AudioProcessor ap;
             size_t fft_for_mel = tinyllama_cfg.fft_override > 0 ? tinyllama_cfg.fft_override : tinyllama_cfg.n_fft;
             ap.init_mel_filters(fft_for_mel / 2 + 1, tinyllama_mel_bins, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE,
@@ -253,18 +257,6 @@ int cactus_transcribe(
             std::vector<float> mel = ap.compute_spectrogram(audio_samples, tinyllama_cfg);
 
             size_t num_frames = mel.size() / tinyllama_mel_bins;
-
-            // vDSP's FFT returns 2x standard DFT magnitudes; in log domain: log(2x) = log(x) + log(2).
-#ifdef __APPLE__
-            {
-                static constexpr float LN2 = 0.693147180559945f;
-                const float log_floor = std::log(tinyllama_cfg.mel_floor);
-                for (auto& v : mel) {
-                    v -= LN2;
-                    if (v < log_floor) v = log_floor;
-                }
-            }
-#endif
 
             std::vector<float> audio_features = transpose_mel_to_frame_major(mel, tinyllama_mel_bins, num_frames);
 

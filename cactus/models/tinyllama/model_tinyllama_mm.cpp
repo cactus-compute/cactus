@@ -78,6 +78,28 @@ TinyLlamaMmModel::ForwardResult TinyLlamaMmModel::forward_multimodal(
     size_t audio_num_frames,
     ComputeBackend backend, bool use_cache) {
 
+    auto inputs = build_multimodal_inputs(
+        gb, tokens, image_paths, audio_features, audio_num_frames, backend);
+
+    size_t final_hidden = language_model_.forward_from_embeddings(
+        gb,
+        inputs.hidden_node,
+        inputs.pli_hidden_source_node,
+        inputs.pli_tokens,
+        inputs.seq_len,
+        backend,
+        use_cache);
+
+    return ForwardResult{final_hidden, inputs.seq_len};
+}
+
+TinyLlamaMmModel::MultimodalInputs TinyLlamaMmModel::build_multimodal_inputs(
+    CactusGraph* gb, const std::vector<uint32_t>& tokens,
+    const std::vector<std::string>& image_paths,
+    const std::vector<float>* audio_features,
+    size_t audio_num_frames,
+    ComputeBackend backend) {
+
     size_t vision_soft_node = 0;
     size_t num_vision_soft_tokens = 0;
     size_t audio_soft_node = 0;
@@ -100,6 +122,7 @@ TinyLlamaMmModel::ForwardResult TinyLlamaMmModel::forward_multimodal(
 
     uint32_t image_token_id = config_.image_token_id;
     uint32_t audio_token_id = config_.audio_token_id;
+    uint32_t pad_token_id = config_.pad_token_id;
 
     std::vector<size_t> sequence_nodes;
     std::vector<uint32_t> current_text;
@@ -129,26 +152,24 @@ TinyLlamaMmModel::ForwardResult TinyLlamaMmModel::forward_multimodal(
         current_text.clear();
     };
 
-    auto flush_vision_region = [&](size_t placeholder_count) {
-        size_t to_insert = std::min(placeholder_count, num_vision_soft_tokens - vision_offset);
+    auto append_soft_region = [&](size_t soft_node, size_t& soft_offset, size_t total_soft_tokens,
+                                  size_t placeholder_count) {
+        size_t to_insert = std::min(placeholder_count, total_soft_tokens - soft_offset);
         if (to_insert > 0) {
-            sequence_nodes.push_back(gb->slice(vision_soft_node, 0, vision_offset, to_insert));
+            sequence_nodes.push_back(gb->slice(soft_node, 0, soft_offset, to_insert));
             for (size_t j = 0; j < to_insert; j++)
-                pli_tokens.push_back(0);
+                pli_tokens.push_back(pad_token_id);
             total_seq_len += to_insert;
-            vision_offset += to_insert;
+            soft_offset += to_insert;
         }
     };
 
+    auto flush_vision_region = [&](size_t placeholder_count) {
+        append_soft_region(vision_soft_node, vision_offset, num_vision_soft_tokens, placeholder_count);
+    };
+
     auto flush_audio_region = [&](size_t placeholder_count) {
-        size_t to_insert = std::min(placeholder_count, num_audio_soft_tokens - audio_offset);
-        if (to_insert > 0) {
-            sequence_nodes.push_back(gb->slice(audio_soft_node, 0, audio_offset, to_insert));
-            for (size_t j = 0; j < to_insert; j++)
-                pli_tokens.push_back(0);
-            total_seq_len += to_insert;
-            audio_offset += to_insert;
-        }
+        append_soft_region(audio_soft_node, audio_offset, num_audio_soft_tokens, placeholder_count);
     };
 
     bool in_image_region = false;
@@ -208,10 +229,12 @@ TinyLlamaMmModel::ForwardResult TinyLlamaMmModel::forward_multimodal(
     for (size_t i = 1; i < sequence_nodes.size(); i++)
         merged = gb->concat(merged, sequence_nodes[i], 0);
 
-    size_t final_hidden = language_model_.forward_from_embeddings(
-        gb, merged, pli_tokens, total_seq_len, backend, use_cache);
-
-    return ForwardResult{final_hidden, total_seq_len};
+    return MultimodalInputs{
+        .hidden_node = merged,
+        .pli_hidden_source_node = merged,
+        .pli_tokens = std::move(pli_tokens),
+        .seq_len = total_seq_len,
+    };
 }
 
 uint32_t TinyLlamaMmModel::decode_multimodal(

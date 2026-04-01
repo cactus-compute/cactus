@@ -11,6 +11,122 @@ extern "C" {
 namespace cactus {
 namespace engine {
 
+namespace {
+
+std::string trim_copy(const std::string& value) {
+    size_t start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return "";
+    size_t end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
+TokenizerRuntimeConfig::TokenizerType parse_tokenizer_type(const std::string& value) {
+    if (value == "bpe") return TokenizerRuntimeConfig::TokenizerType::BPE;
+    if (value == "sentencepiece") return TokenizerRuntimeConfig::TokenizerType::SENTENCEPIECE;
+    return TokenizerRuntimeConfig::TokenizerType::UNKNOWN;
+}
+
+TokenizerRuntimeConfig::VocabFormat parse_vocab_format(const std::string& value) {
+    if (value == "id_tab_token") return TokenizerRuntimeConfig::VocabFormat::ID_TAB_TOKEN;
+    if (value == "line_token") return TokenizerRuntimeConfig::VocabFormat::LINE_TOKEN;
+    return TokenizerRuntimeConfig::VocabFormat::UNKNOWN;
+}
+
+TokenizerRuntimeConfig::Normalizer parse_normalizer(const std::string& value) {
+    if (value == "metaspace") return TokenizerRuntimeConfig::Normalizer::METASPACE;
+    if (value == "byte_level") return TokenizerRuntimeConfig::Normalizer::BYTE_LEVEL;
+    return TokenizerRuntimeConfig::Normalizer::NONE;
+}
+
+TokenizerRuntimeConfig::Decoder parse_decoder(const std::string& value) {
+    if (value == "replace_metaspace") return TokenizerRuntimeConfig::Decoder::REPLACE_METASPACE;
+    if (value == "byte_level") return TokenizerRuntimeConfig::Decoder::BYTE_LEVEL;
+    return TokenizerRuntimeConfig::Decoder::NONE;
+}
+
+}  // namespace
+
+TokenizerRuntimeConfig load_tokenizer_runtime_config(const std::string& config_file) {
+    TokenizerRuntimeConfig config;
+
+    std::ifstream file(config_file);
+    if (!file.is_open()) {
+        return config;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') continue;
+
+        size_t eq_pos = line.find('=');
+        if (eq_pos == std::string::npos) continue;
+
+        const std::string key = trim_copy(line.substr(0, eq_pos));
+        const std::string value = trim_copy(line.substr(eq_pos + 1));
+
+        if (key == "tokenizer_type") {
+            config.tokenizer_type = parse_tokenizer_type(value);
+        } else if (key == "vocab_format") {
+            config.vocab_format = parse_vocab_format(value);
+        } else if (key == "normalizer") {
+            config.normalizer = parse_normalizer(value);
+        } else if (key == "decoder") {
+            config.decoder = parse_decoder(value);
+        } else if (key == "byte_fallback") {
+            config.byte_fallback = (value == "true" || value == "1");
+        } else if (key == "has_chat_template") {
+            config.has_chat_template = (value == "true" || value == "1");
+        }
+    }
+
+    return config;
+}
+
+void load_special_tokens_map(const std::string& config_file, std::unordered_map<std::string, uint32_t>& special_tokens) {
+    special_tokens.clear();
+
+    std::ifstream file(config_file);
+    if (!file.is_open()) {
+        return;
+    }
+
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    size_t pos = content.find("\"special_tokens\"");
+    if (pos == std::string::npos) return;
+
+    pos = content.find("{", pos);
+    if (pos == std::string::npos) return;
+
+    size_t end_pos = content.find("}", pos);
+    if (end_pos == std::string::npos) return;
+
+    std::string special_tokens_section = content.substr(pos + 1, end_pos - pos - 1);
+    std::istringstream iss(special_tokens_section);
+    std::string line;
+
+    while (std::getline(iss, line)) {
+        size_t colon_pos = line.find(":");
+        if (colon_pos == std::string::npos) continue;
+
+        std::string id_part = line.substr(0, colon_pos);
+        std::string token_part = line.substr(colon_pos + 1);
+
+        size_t id_start = id_part.find("\"");
+        size_t id_end = id_part.find("\"", id_start + 1);
+        if (id_start == std::string::npos || id_end == std::string::npos) continue;
+
+        uint32_t token_id = static_cast<uint32_t>(std::stoul(id_part.substr(id_start + 1, id_end - id_start - 1)));
+
+        size_t token_start = token_part.find("\"");
+        size_t token_end = token_part.rfind("\"");
+        if (token_start == std::string::npos || token_end == std::string::npos || token_start >= token_end) continue;
+
+        std::string token_content = token_part.substr(token_start + 1, token_end - token_start - 1);
+        special_tokens[token_content] = token_id;
+    }
+}
+
 void Tokenizer::detect_model_type(const std::string& config_path) {
     std::ifstream file(config_path);
     if (!file.is_open()) {
@@ -100,6 +216,8 @@ std::string Tokenizer::get_default_stop_sequence() const {
     switch (model_type_) {
         case ModelType::GEMMA:
             return "<end_of_turn>";
+        case ModelType::TINYLLAMA:
+            return "<turn|>";
         case ModelType::QWEN:
         case ModelType::QWEN3P5:
         case ModelType::LFM2:

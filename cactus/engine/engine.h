@@ -198,7 +198,9 @@ struct Config {
     uint32_t audio_soft_tokens = 188;
     uint32_t audio_sscp_conv0_channels = 128;
     uint32_t audio_sscp_conv1_channels = 32;
+    float audio_sscp_conv_eps = 1e-3f;
     float audio_rms_norm_eps = 1e-6f;
+    uint32_t audio_fft_length = 1024;
     uint32_t audio_token_id = 0;
     bool audio_fft_overdrive = false;
     uint32_t channel_open_token_id = 100;
@@ -232,6 +234,22 @@ struct ChatMessage {
     std::vector<std::string> images;
 };
 
+struct TokenizerRuntimeConfig {
+    enum class TokenizerType { UNKNOWN, BPE, SENTENCEPIECE };
+    enum class VocabFormat { UNKNOWN, ID_TAB_TOKEN, LINE_TOKEN };
+    enum class Normalizer { NONE, METASPACE, BYTE_LEVEL };
+    enum class Decoder { NONE, REPLACE_METASPACE, BYTE_LEVEL };
+
+    TokenizerType tokenizer_type = TokenizerType::UNKNOWN;
+    VocabFormat vocab_format = VocabFormat::UNKNOWN;
+    Normalizer normalizer = Normalizer::NONE;
+    Decoder decoder = Decoder::NONE;
+    bool byte_fallback = false;
+    bool has_chat_template = false;
+};
+
+TokenizerRuntimeConfig load_tokenizer_runtime_config(const std::string& config_file);
+void load_special_tokens_map(const std::string& config_file, std::unordered_map<std::string, uint32_t>& special_tokens);
 
 
 class Tokenizer {
@@ -274,6 +292,7 @@ protected:
     uint32_t vision_pooling_kernel_size_ = 3;
     uint32_t vision_default_output_length_ = 280;
     uint32_t vision_image_size_ = 768;
+    TokenizerRuntimeConfig runtime_config_;
 
     void detect_model_type(const std::string& config_path);
     std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = true) const;
@@ -323,6 +342,7 @@ private:
     std::string bytes_to_unicode(const std::string& text) const;
     std::string unicode_to_bytes(const std::string& text) const;
     std::vector<std::string> byte_level_split(const std::string& text) const;
+    std::vector<std::string> utf8_split(const std::string& text) const;
 
     void cleanup_mmap();
     
@@ -339,7 +359,6 @@ private:
 
     std::unordered_map<std::string, uint32_t> tool_tokens_;
     bool has_tool_support_;
-    void load_tokenizer_config(const std::string& config_file);
 };
 
 class SPTokenizer : public Tokenizer {
@@ -832,6 +851,7 @@ public:
         bool hann_periodic = true;
         bool hann_shifted = false;
         size_t fft_override = 0;
+        bool mel_floor_additive = false;
     };
 
     AudioProcessor();

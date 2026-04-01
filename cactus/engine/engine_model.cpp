@@ -85,6 +85,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     std::string vocab_file = model_folder + "/vocab.txt";
     std::string merges_file = model_folder + "/merges.txt";
     std::string tokenizer_config_file = model_folder + "/tokenizer_config.txt";
+    TokenizerRuntimeConfig tokenizer_runtime_config = load_tokenizer_runtime_config(tokenizer_config_file);
 
     std::ifstream merges_check(merges_file);
     bool has_merges = false;
@@ -101,7 +102,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         merges_check.close();
     }
 
-    if (has_merges) {
+    if (tokenizer_runtime_config.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::BPE ||
+        (tokenizer_runtime_config.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::UNKNOWN && has_merges)) {
         tokenizer_ = std::make_unique<BPETokenizer>();
     } else {
         tokenizer_ = std::make_unique<SPTokenizer>();
@@ -644,9 +646,14 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "audio_soft_tokens") audio_soft_tokens = static_cast<uint32_t>(std::stoul(value));
         else if (key == "audio_sscp_conv0_channels") audio_sscp_conv0_channels = static_cast<uint32_t>(std::stoul(value));
         else if (key == "audio_sscp_conv1_channels") audio_sscp_conv1_channels = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_sscp_conv_eps") audio_sscp_conv_eps = std::stof(value);
         else if (key == "audio_rms_norm_eps") audio_rms_norm_eps = std::stof(value);
+        else if (key == "audio_fft_length") audio_fft_length = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_fft_overdrive") {
+            audio_fft_overdrive = (value == "true" || value == "1");
+            audio_fft_length = audio_fft_overdrive ? 1024u : 512u;
+        }
         else if (key == "audio_token_id") audio_token_id = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "audio_fft_overdrive") audio_fft_overdrive = (value == "true" || value == "1");
         else if (key == "channel_open_token_id") channel_open_token_id = static_cast<uint32_t>(std::stoul(value));
         else if (key == "channel_close_token_id") channel_close_token_id = static_cast<uint32_t>(std::stoul(value));
         else if (key == "activation_sparsity_ppf") {

@@ -714,6 +714,9 @@ std::vector<float> AudioProcessor::compute_spectrogram(
         }
     }
 
+    float effective_floor = config.mel_floor_additive ? 0.0f : config.mel_floor;
+    const char* effective_log = config.mel_floor_additive ? nullptr : config.log_mel;
+
     compute_spectrogram_f32(
         waveform.data(),
         waveform.size(),
@@ -731,13 +734,25 @@ std::vector<float> AudioProcessor::compute_spectrogram(
         config.preemphasis != 0.0f ? &config.preemphasis : nullptr,
         mel_filters_.data(),
         mel_filters_.size(),
-        config.mel_floor,
-        config.log_mel,
+        effective_floor,
+        effective_log,
         config.reference,
         config.min_value,
         nullptr,
         config.remove_dc_offset
     );
+
+    if (config.mel_floor_additive) {
+        for (size_t i = 0; i < output.size(); i++) {
+#ifdef __APPLE__
+            // vDSP FFT returns 2x standard DFT magnitudes, so raw mel
+            // values are 2x too large. Halve before adding floor and log.
+            output[i] = std::log(output[i] * 0.5f + config.mel_floor);
+#else
+            output[i] = std::log(output[i] + config.mel_floor);
+#endif
+        }
+    }
 
     return output;
 }

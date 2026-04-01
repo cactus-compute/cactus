@@ -155,6 +155,15 @@ inline cactus::engine::AudioProcessor::SpectrogramConfig get_htk_spectrogram_con
     return cfg;
 }
 
+inline cactus::engine::AudioProcessor::SpectrogramConfig get_tinyllama_audio_spectrogram_config(
+    const cactus::engine::Config& model_config) {
+    auto cfg = get_htk_spectrogram_config();
+    cfg.fft_override = model_config.audio_fft_length;
+    cfg.hann_shifted = false;
+    cfg.mel_floor_additive = true;
+    return cfg;
+}
+
 inline std::vector<float> transpose_mel_to_frame_major(const std::vector<float>& mel,
                                                         size_t num_mels, size_t num_frames) {
     std::vector<float> transposed(num_frames * num_mels);
