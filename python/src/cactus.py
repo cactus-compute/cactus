@@ -502,7 +502,7 @@ def cactus_stop(model):
     _lib.cactus_stop(model)
 
 
-def cactus_complete(model, messages_json, options_json, tools_json, callback):
+def cactus_complete(model, messages_json, options_json, tools_json, callback, pcm_data=None):
     """Runs chat completion. Returns response string."""
     buf = ctypes.create_string_buffer(65536)
     if callback:
@@ -511,21 +511,35 @@ def cactus_complete(model, messages_json, options_json, tools_json, callback):
         cb = TokenCallback(_bridge)
     else:
         cb = TokenCallback()
+    if pcm_data is not None:
+        pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_size = len(pcm_data)
+    else:
+        pcm_ptr = None
+        pcm_size = 0
     rc = _lib.cactus_complete(
         model, _enc(messages_json), buf, len(buf),
-        _enc(options_json), _enc(tools_json), cb, None, None, 0
+        _enc(options_json), _enc(tools_json), cb, None, pcm_ptr, pcm_size
     )
     if rc < 0:
         raise RuntimeError(_err("Completion failed"))
     return buf.value.decode("utf-8", errors="ignore")
 
 
-def cactus_prefill(model, messages_json, options_json, tools_json):
+def cactus_prefill(model, messages_json, options_json, tools_json, pcm_data=None):
     """Prefills the KV cache with messages."""
     buf = ctypes.create_string_buffer(65536)
+    if pcm_data is not None:
+        pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_size = len(pcm_data)
+    else:
+        pcm_ptr = None
+        pcm_size = 0
     rc = _lib.cactus_prefill(
         model, _enc(messages_json), buf, len(buf),
-        _enc(options_json), _enc(tools_json), None, 0
+        _enc(options_json), _enc(tools_json), pcm_ptr, pcm_size
     )
     if rc < 0:
         raise RuntimeError(_err("Prefill failed"))

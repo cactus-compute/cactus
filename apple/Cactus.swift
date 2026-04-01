@@ -79,41 +79,79 @@ public func cactusStop(_ model: CactusModelT) {
 
 // MARK: - Inference
 
-public func cactusComplete(_ model: CactusModelT, _ messagesJson: String, _ optionsJson: String?, _ toolsJson: String?, _ onToken: ((String, UInt32) -> Void)?) throws -> String {
+public func cactusComplete(_ model: CactusModelT, _ messagesJson: String, _ optionsJson: String?, _ toolsJson: String?, _ onToken: ((String, UInt32) -> Void)?, _ pcmData: Data? = nil) throws -> String {
     var buffer = [CChar](repeating: 0, count: _defaultBufferSize)
 
     let callbackContext = onToken.map { TokenCallbackContext(callback: $0) }
     let contextPtr = callbackContext.map { Unmanaged.passUnretained($0).toOpaque() }
 
-    let result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
-        cactus_complete(
-            model,
-            messagesJson,
-            bufferPtr.baseAddress,
-            bufferPtr.count,
-            optionsJson,
-            toolsJson,
-            onToken != nil ? tokenCallbackBridge : nil,
-            contextPtr
-        )
+    let result: Int32
+    if let pcmData = pcmData {
+        result = pcmData.withUnsafeBytes { pcmPtr in
+            buffer.withUnsafeMutableBufferPointer { bufferPtr in
+                cactus_complete(
+                    model,
+                    messagesJson,
+                    bufferPtr.baseAddress,
+                    bufferPtr.count,
+                    optionsJson,
+                    toolsJson,
+                    onToken != nil ? tokenCallbackBridge : nil,
+                    contextPtr,
+                    pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), pcmData.count
+                )
+            }
+        }
+    } else {
+        result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
+            cactus_complete(
+                model,
+                messagesJson,
+                bufferPtr.baseAddress,
+                bufferPtr.count,
+                optionsJson,
+                toolsJson,
+                onToken != nil ? tokenCallbackBridge : nil,
+                contextPtr,
+                nil, 0
+            )
+        }
     }
 
     if result < 0 { throw _err("Completion failed") }
     return String(cString: buffer)
 }
 
-public func cactusPrefill(_ model: CactusModelT, _ messagesJson: String, _ optionsJson: String?, _ toolsJson: String?) throws -> String {
+public func cactusPrefill(_ model: CactusModelT, _ messagesJson: String, _ optionsJson: String?, _ toolsJson: String?, _ pcmData: Data? = nil) throws -> String {
     var buffer = [CChar](repeating: 0, count: _defaultBufferSize)
 
-    let result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
-        cactus_prefill(
-            model,
-            messagesJson,
-            bufferPtr.baseAddress,
-            bufferPtr.count,
-            optionsJson,
-            toolsJson
-        )
+    let result: Int32
+    if let pcmData = pcmData {
+        result = pcmData.withUnsafeBytes { pcmPtr in
+            buffer.withUnsafeMutableBufferPointer { bufferPtr in
+                cactus_prefill(
+                    model,
+                    messagesJson,
+                    bufferPtr.baseAddress,
+                    bufferPtr.count,
+                    optionsJson,
+                    toolsJson,
+                    pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), pcmData.count
+                )
+            }
+        }
+    } else {
+        result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
+            cactus_prefill(
+                model,
+                messagesJson,
+                bufferPtr.baseAddress,
+                bufferPtr.count,
+                optionsJson,
+                toolsJson,
+                nil, 0
+            )
+        }
     }
 
     if result < 0 { throw _err("Prefill failed") }

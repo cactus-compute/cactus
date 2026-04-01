@@ -93,7 +93,8 @@ Java_com_cactus_CactusJNI_nativeStop(JNIEnv*, jobject, jlong handle) {
 JNIEXPORT jstring JNICALL
 Java_com_cactus_CactusJNI_nativeComplete(JNIEnv* env, jobject, jlong handle,
                                           jstring messagesJson, jstring optionsJson,
-                                          jstring toolsJson, jobject callback) {
+                                          jstring toolsJson, jobject callback,
+                                          jbyteArray pcmData) {
     if (handle == 0) { throwCactusException(env, "Model not initialized"); return nullptr; }
 
     const char* messages = jstring_to_cstr(env, messagesJson);
@@ -114,6 +115,16 @@ Java_com_cactus_CactusJNI_nativeComplete(JNIEnv* env, jobject, jlong handle,
         }
     }
 
+    const uint8_t* pcmBuffer = nullptr;
+    size_t pcmSize = 0;
+    jbyte* pcmBytes = nullptr;
+
+    if (pcmData != nullptr) {
+        pcmSize = env->GetArrayLength(pcmData);
+        pcmBytes = env->GetByteArrayElements(pcmData, nullptr);
+        pcmBuffer = reinterpret_cast<const uint8_t*>(pcmBytes);
+    }
+
     int result = cactus_complete(
         reinterpret_cast<cactus_model_t>(handle),
         messages,
@@ -123,11 +134,15 @@ Java_com_cactus_CactusJNI_nativeComplete(JNIEnv* env, jobject, jlong handle,
         tools,
         cb,
         ctx,
-        nullptr,
-        0
+        pcmBuffer,
+        pcmSize
     );
 
     delete ctx;
+
+    if (pcmBytes != nullptr) {
+        env->ReleaseByteArrayElements(pcmData, pcmBytes, JNI_ABORT);
+    }
 
     release_jstring(env, messagesJson, messages);
     release_jstring(env, optionsJson, options);
@@ -140,7 +155,7 @@ Java_com_cactus_CactusJNI_nativeComplete(JNIEnv* env, jobject, jlong handle,
 JNIEXPORT jstring JNICALL
 Java_com_cactus_CactusJNI_nativePrefill(JNIEnv* env, jobject, jlong handle,
                                          jstring messagesJson, jstring optionsJson,
-                                         jstring toolsJson) {
+                                         jstring toolsJson, jbyteArray pcmData) {
     if (handle == 0) { throwCactusException(env, "Model not initialized"); return nullptr; }
 
     const char* messages = jstring_to_cstr(env, messagesJson);
@@ -149,6 +164,16 @@ Java_com_cactus_CactusJNI_nativePrefill(JNIEnv* env, jobject, jlong handle,
 
     std::vector<char> buffer(DEFAULT_BUFFER_SIZE);
 
+    const uint8_t* pcmBuffer = nullptr;
+    size_t pcmSize = 0;
+    jbyte* pcmBytes = nullptr;
+
+    if (pcmData != nullptr) {
+        pcmSize = env->GetArrayLength(pcmData);
+        pcmBytes = env->GetByteArrayElements(pcmData, nullptr);
+        pcmBuffer = reinterpret_cast<const uint8_t*>(pcmBytes);
+    }
+
     int result = cactus_prefill(
         reinterpret_cast<cactus_model_t>(handle),
         messages,
@@ -156,9 +181,13 @@ Java_com_cactus_CactusJNI_nativePrefill(JNIEnv* env, jobject, jlong handle,
         buffer.size(),
         options,
         tools,
-        nullptr,
-        0
+        pcmBuffer,
+        pcmSize
     );
+
+    if (pcmBytes != nullptr) {
+        env->ReleaseByteArrayElements(pcmData, pcmBytes, JNI_ABORT);
+    }
 
     release_jstring(env, messagesJson, messages);
     release_jstring(env, optionsJson, options);
