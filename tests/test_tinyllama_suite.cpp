@@ -54,13 +54,15 @@ struct LocalPerfMetrics {
     size_t completion_tokens = 0;
 };
 
-struct AudioEncoderOnlyMetrics {
+struct EncoderOnlyMetrics {
     bool collected = false;
     bool npu_enabled = false;
-    size_t input_frames = 0;
-    size_t output_steps = 0;
+    std::string input_label = "in_units";
+    std::string output_label = "out_units";
+    size_t input_units = 0;
+    size_t output_units = 0;
     double encoder_ms = 0.0;
-    double output_steps_per_s = 0.0;
+    double output_units_per_s = 0.0;
 };
 
 static LocalPerfMetrics compute_local_perf_metrics(size_t prompt_tokens,
@@ -81,7 +83,7 @@ static LocalPerfMetrics compute_local_perf_metrics(size_t prompt_tokens,
 }
 
 static void print_local_perf_metrics(const LocalPerfMetrics& m,
-                                     const AudioEncoderOnlyMetrics* encoder_metrics = nullptr) {
+                                     const EncoderOnlyMetrics* encoder_metrics = nullptr) {
     std::streamsize old_precision = std::cout.precision();
     std::ios::fmtflags old_flags = std::cout.flags();
     std::cout << std::fixed << std::setprecision(2);
@@ -89,9 +91,9 @@ static void print_local_perf_metrics(const LocalPerfMetrics& m,
     if (encoder_metrics && encoder_metrics->collected) {
         std::cout << "    encoder_only : " << encoder_metrics->encoder_ms << " ms"
                   << " | mode=" << (encoder_metrics->npu_enabled ? "npu" : "cpu")
-                  << " | in_frames=" << encoder_metrics->input_frames
-                  << " | out_steps=" << encoder_metrics->output_steps
-                  << " | out_steps_per_s=" << encoder_metrics->output_steps_per_s
+                  << " | " << encoder_metrics->input_label << "=" << encoder_metrics->input_units
+                  << " | " << encoder_metrics->output_label << "=" << encoder_metrics->output_units
+                  << " | " << encoder_metrics->output_label << "_per_s=" << encoder_metrics->output_units_per_s
                   << "\n";
     }
     std::cout << "    end_to_end   : "
@@ -113,6 +115,15 @@ static void print_local_perf_metrics(const LocalPerfMetrics& m,
 static std::string preview_text(const std::string& text, size_t max_chars = 240) {
     if (text.size() <= max_chars) return text;
     return text.substr(0, max_chars) + "...";
+}
+
+static void print_modality_box(const std::string& title, const std::string& prompt) {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║" << std::setw(42) << std::left << std::string("          ") + title << "║\n"
+              << "╚══════════════════════════════════════════╝\n";
+    if (!prompt.empty()) {
+        std::cout << "├─ User prompt: " << prompt << "\n";
+    }
 }
 
 
@@ -231,6 +242,8 @@ bool test_tinyllama_vision(bool expect_npu) {
         return true;
     }
 
+    print_modality_box(expect_npu ? "VISION NPU" : "VISION", "Describe this image briefly.");
+
     auto model = create_model(model_path);
     if (!model) {
         std::cerr << "  FAIL: create_model returned null\n";
@@ -264,6 +277,33 @@ bool test_tinyllama_vision(bool expect_npu) {
     std::cout << "  tokens: " << tokens.size() << ", vision soft tokens: " << vision_count << "\n";
     const size_t prompt_token_count = tokens.size();
 
+    EncoderOnlyMetrics encoder_only_metrics;
+    encoder_only_metrics.input_label = "in_patches";
+    encoder_only_metrics.output_label = "out_steps";
+    if (mm) {
+        auto preprocessed = mm->vision_encoder().preprocess_image(image_path);
+        encoder_only_metrics.input_units = preprocessed.num_patches;
+        encoder_only_metrics.npu_enabled = mm->vision_encoder().use_npu_encoder_;
+        if (model->graph_handle_) {
+            auto* gb = static_cast<CactusGraph*>(model->graph_handle_);
+            auto backend = model->get_config().default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+            gb->soft_reset();
+            auto encoder_start = std::chrono::high_resolution_clock::now();
+            size_t vision_output = mm->vision_encoder().forward_vision(gb, preprocessed, backend);
+            gb->execute();
+            auto encoder_end = std::chrono::high_resolution_clock::now();
+
+            encoder_only_metrics.encoder_ms =
+                std::chrono::duration_cast<std::chrono::microseconds>(encoder_end - encoder_start).count() / 1000.0;
+            const auto& out_buf = gb->get_output_buffer(vision_output);
+            encoder_only_metrics.output_units = out_buf.shape.empty() ? 0 : out_buf.shape[0];
+            encoder_only_metrics.output_units_per_s = encoder_only_metrics.encoder_ms > 0.0
+                ? (static_cast<double>(encoder_only_metrics.output_units) * 1000.0) / encoder_only_metrics.encoder_ms
+                : 0.0;
+            encoder_only_metrics.collected = true;
+        }
+    }
+
     std::vector<std::string> images = {image_path};
     std::string output;
     size_t completion_tokens = 0;
@@ -289,7 +329,7 @@ bool test_tinyllama_vision(bool expect_npu) {
     double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
     auto metrics = compute_local_perf_metrics(prompt_token_count, completion_tokens, ttft_ms, total_time_ms);
 
-    print_local_perf_metrics(metrics);
+    print_local_perf_metrics(metrics, &encoder_only_metrics);
     std::cout << "  Output: " << output.substr(0, 300) << "\n";
     std::cout << "  NPU" << (expect_npu ? " (expected)" : " (not required)") << ": "
               << (has_npu_package(model_path, "vision_encoder.mlpackage") ? "available" : "not available") << "\n";
@@ -324,6 +364,8 @@ bool test_tinyllama_audio(bool expect_npu) {
         std::cerr << "  SKIP: audio_encoder.mlpackage not found in model folder\n";
         return true;
     }
+
+    print_modality_box(expect_npu ? "AUDIO NPU" : "AUDIO", "Transcribe the audio.");
 
     std::string audio_path = assets + "/test.wav";
     struct stat st;
@@ -378,8 +420,10 @@ bool test_tinyllama_audio(bool expect_npu) {
 
     auto audio_features = transpose_mel_to_frame_major(mel, mel_bins, num_frames);
 
-    AudioEncoderOnlyMetrics encoder_only_metrics;
-    encoder_only_metrics.input_frames = num_frames;
+    EncoderOnlyMetrics encoder_only_metrics;
+    encoder_only_metrics.input_label = "in_frames";
+    encoder_only_metrics.output_label = "out_steps";
+    encoder_only_metrics.input_units = num_frames;
     if (mm) {
         encoder_only_metrics.npu_enabled = mm->audio_encoder().use_npu_encoder_;
         if (model->graph_handle_) {
@@ -394,9 +438,9 @@ bool test_tinyllama_audio(bool expect_npu) {
 
             encoder_only_metrics.encoder_ms = std::chrono::duration_cast<std::chrono::microseconds>(encoder_end - encoder_start).count() / 1000.0;
             const auto& encoded_buf = gb->get_output_buffer(encoded_audio);
-            encoder_only_metrics.output_steps = encoded_buf.shape.empty() ? 0 : encoded_buf.shape[0];
-            encoder_only_metrics.output_steps_per_s = encoder_only_metrics.encoder_ms > 0.0
-                ? (static_cast<double>(encoder_only_metrics.output_steps) * 1000.0) / encoder_only_metrics.encoder_ms
+            encoder_only_metrics.output_units = encoded_buf.shape.empty() ? 0 : encoded_buf.shape[0];
+            encoder_only_metrics.output_units_per_s = encoder_only_metrics.encoder_ms > 0.0
+                ? (static_cast<double>(encoder_only_metrics.output_units) * 1000.0) / encoder_only_metrics.encoder_ms
                 : 0.0;
             encoder_only_metrics.collected = true;
         }
