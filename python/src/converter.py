@@ -129,6 +129,13 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         tie_word_embeddings = bool(tie_word_embeddings)
 
     detected_model_type = detect_model_type(config, root_config, output_dir)
+    if detected_model_type == 'tinyllama':
+        # Normalize Gemma-4 audio tower naming variants (legacy -> runtime expected)
+        # before exporting filenames so generated weights match the C++ loader.
+        remapped_state_dict = _remap_gemma4_audio_keys(state_dict)
+        if set(remapped_state_dict.keys()) != set(state_dict.keys()):
+            print("  Normalized tinyllama audio tower key naming for conversion")
+        state_dict = remapped_state_dict
 
     model_config = extract_base_config(config, root_config)
     model_config['tie_word_embeddings'] = tie_word_embeddings

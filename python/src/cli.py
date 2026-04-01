@@ -234,7 +234,7 @@ def cmd_download(args):
             except Exception:
                 self.eos_token_id = self.pad_token_id
 
-    def _load_raw_hf_state_dict(repo_id):
+    def _load_raw_hf_state_dict(repo_id, cast_to_bf16=True):
         from safetensors.torch import load_file as load_safetensors_file
 
         if Path(repo_id).is_dir():
@@ -271,9 +271,11 @@ def cmd_download(args):
         if not shard_files:
             raise RuntimeError("No checkpoint shard files found in HuggingFace snapshot.")
 
+        print(f"  Found {len(shard_files)} checkpoint shard file(s)")
         merged_state_dict = {}
-        for shard_name in shard_files:
+        for idx, shard_name in enumerate(shard_files, 1):
             shard_path = snapshot_path / shard_name
+            print(f"  Loading shard {idx}/{len(shard_files)}: {shard_name}")
             if shard_name.endswith(".safetensors"):
                 shard_state = load_safetensors_file(str(shard_path), device="cpu")
             elif shard_name.endswith(".bin"):
@@ -282,9 +284,20 @@ def cmd_download(args):
                 continue
             merged_state_dict.update(shard_state)
 
-        for k, v in merged_state_dict.items():
-            if v.is_floating_point() and v.dtype != torch.bfloat16:
-                merged_state_dict[k] = v.to(torch.bfloat16)
+        if cast_to_bf16:
+            fp_keys = [
+                k for k, v in merged_state_dict.items()
+                if hasattr(v, "is_floating_point") and v.is_floating_point() and v.dtype != torch.bfloat16
+            ]
+            total_fp = len(fp_keys)
+            if total_fp > 0:
+                print(f"  Normalizing {total_fp} floating tensors to bfloat16...")
+            for i, k in enumerate(fp_keys, 1):
+                merged_state_dict[k] = merged_state_dict[k].to(torch.bfloat16)
+                if i % 200 == 0 or i == total_fp:
+                    print(f"    dtype normalize progress: {i}/{total_fp}")
+        else:
+            print("  Keeping checkpoint dtypes as-is (Gemma4 fast path)")
 
 
         return merged_state_dict
@@ -481,12 +494,20 @@ def cmd_download(args):
                 else:
                     raise
 
-            if model_type == 'lfm2_moe' or model_type.startswith('qwen3_5') or model_type == 'youtu':
+            if (
+                model_type == 'lfm2_moe'
+                or model_type.startswith('qwen3_5')
+                or model_type == 'youtu'
+                or 'gemma4' in model_type
+            ):
                 if model_type == 'lfm2_moe':
                     print("  Note: Loading raw checkpoint tensors for lfm2_moe conversion...")
+                elif 'gemma4' in model_type:
+                    print(f"  Note: Loading raw checkpoint tensors for {model_type} conversion...")
                 else:
                     print(f"  Note: Loading raw checkpoint tensors for {model_type} conversion...")
-                raw_state_dict = _load_raw_hf_state_dict(model_id)
+                cast_to_bf16 = ('gemma4' not in model_type)
+                raw_state_dict = _load_raw_hf_state_dict(model_id, cast_to_bf16=cast_to_bf16)
 
                 class _RawModelWrapper:
                     def __init__(self, state_dict, config):

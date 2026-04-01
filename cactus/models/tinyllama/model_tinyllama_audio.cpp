@@ -65,6 +65,35 @@ void TinyLlamaAudioModel::load_weights_to_graph(CactusGraph* gb) {
     auto resolve = [&](const std::string& name) -> std::string {
         return model_folder_path_ + "/" + name;
     };
+    auto resolve_existing = [&](const std::string& preferred,
+                                const std::string& legacy = std::string()) -> std::string {
+        std::string preferred_path = resolve(preferred);
+        if (std::filesystem::exists(preferred_path)) {
+            return preferred_path;
+        }
+        if (!legacy.empty()) {
+            std::string legacy_path = resolve(legacy);
+            if (std::filesystem::exists(legacy_path)) {
+                return legacy_path;
+            }
+        }
+        return preferred_path;
+    };
+    auto load_weight = [&](const std::string& preferred,
+                           const std::string& legacy = std::string()) -> size_t {
+        return gb->mmap_weights(resolve_existing(preferred, legacy));
+    };
+    auto load_clip_from_weight = [&](const std::string& preferred,
+                                     const std::string& legacy = std::string())
+                                     -> TinyLlamaAudioModel::AudioWeightNodes::ClipBounds {
+        std::string weight_path = resolve_existing(preferred, legacy);
+        static const std::string suffix = ".weights";
+        if (weight_path.size() > suffix.size() &&
+            weight_path.compare(weight_path.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            return load_clip_bounds(gb, weight_path.substr(0, weight_path.size() - suffix.size()));
+        }
+        return TinyLlamaAudioModel::AudioWeightNodes::ClipBounds{0, 0, 0, 0};
+    };
 
     if (!disable_npu_ && npu::is_npu_available()) {
         std::string npu_path = model_folder_path_ + "/audio_encoder.mlpackage";
@@ -82,63 +111,86 @@ void TinyLlamaAudioModel::load_weights_to_graph(CactusGraph* gb) {
     }
 
     if (!use_npu_encoder_) {
-        audio_weights_.sscp_conv0_weight = gb->mmap_weights(resolve("audio_subsample_conv_projection_conv_0_conv.weights"));
-        audio_weights_.sscp_conv0_norm = gb->mmap_weights(resolve("audio_subsample_conv_projection_conv_0_norm.weights"));
-        audio_weights_.sscp_conv1_weight = gb->mmap_weights(resolve("audio_subsample_conv_projection_conv_1_conv.weights"));
-        audio_weights_.sscp_conv1_norm = gb->mmap_weights(resolve("audio_subsample_conv_projection_conv_1_norm.weights"));
-        std::string sscp_input_proj_path = resolve("audio_subsample_conv_projection_input_proj.weights");
-        if (!std::filesystem::exists(sscp_input_proj_path)) {
-            sscp_input_proj_path = resolve("audio_subsample_conv_projection_input_proj_linear.weights");
-        }
-        audio_weights_.sscp_input_proj = gb->mmap_weights(sscp_input_proj_path);
+        audio_weights_.sscp_conv0_weight = load_weight(
+            "audio_subsample_conv_projection_conv_0_conv.weights",
+            "audio_subsample_conv_projection_layer0_conv.weights");
+        audio_weights_.sscp_conv0_norm = load_weight(
+            "audio_subsample_conv_projection_conv_0_norm.weights",
+            "audio_subsample_conv_projection_layer0_norm.weights");
+        audio_weights_.sscp_conv1_weight = load_weight(
+            "audio_subsample_conv_projection_conv_1_conv.weights",
+            "audio_subsample_conv_projection_layer1_conv.weights");
+        audio_weights_.sscp_conv1_norm = load_weight(
+            "audio_subsample_conv_projection_conv_1_norm.weights",
+            "audio_subsample_conv_projection_layer1_norm.weights");
+        audio_weights_.sscp_input_proj = load_weight(
+            "audio_subsample_conv_projection_input_proj.weights",
+            "audio_subsample_conv_projection_input_proj_linear.weights");
 
         audio_weights_.layers.resize(config_.audio_num_layers);
         for (uint32_t i = 0; i < config_.audio_num_layers; i++) {
             auto& layer = audio_weights_.layers[i];
-            std::string prefix = resolve("audio_conformer_" + std::to_string(i) + "_");
 
-            layer.ffw_start_1 = gb->mmap_weights(prefix + "ffw_layer_start_ffw_layer_1.weights");
-            layer.ffw_start_2 = gb->mmap_weights(prefix + "ffw_layer_start_ffw_layer_2.weights");
-            layer.ffw_start_1_clip = load_clip_bounds(gb, prefix + "ffw_layer_start_ffw_layer_1");
-            layer.ffw_start_2_clip = load_clip_bounds(gb, prefix + "ffw_layer_start_ffw_layer_2");
-            layer.ffw_start_pre_norm = gb->mmap_weights(prefix + "ffw_layer_start_pre_layer_norm.weights");
-            layer.ffw_start_post_norm = gb->mmap_weights(prefix + "ffw_layer_start_post_layer_norm.weights");
+            auto layer_weight = [&](const std::string& preferred_suffix,
+                                    const std::string& legacy_suffix = std::string()) -> size_t {
+                std::string legacy = legacy_suffix.empty() ? preferred_suffix : legacy_suffix;
+                return load_weight(
+                    "audio_conformer_" + std::to_string(i) + "_" + preferred_suffix,
+                    "audio_layers_" + std::to_string(i) + "_" + legacy);
+            };
+            auto layer_clip = [&](const std::string& preferred_suffix,
+                                  const std::string& legacy_suffix = std::string())
+                                  -> TinyLlamaAudioModel::AudioWeightNodes::ClipBounds {
+                std::string legacy = legacy_suffix.empty() ? preferred_suffix : legacy_suffix;
+                return load_clip_from_weight(
+                    "audio_conformer_" + std::to_string(i) + "_" + preferred_suffix,
+                    "audio_layers_" + std::to_string(i) + "_" + legacy);
+            };
 
-            layer.attn_q = gb->mmap_weights(prefix + "attention_attn_q_proj.weights");
-            layer.attn_k = gb->mmap_weights(prefix + "attention_attn_k_proj.weights");
-            layer.attn_v = gb->mmap_weights(prefix + "attention_attn_v_proj.weights");
-            layer.attn_q_clip = load_clip_bounds(gb, prefix + "attention_attn_q_proj");
-            layer.attn_k_clip = load_clip_bounds(gb, prefix + "attention_attn_k_proj");
-            layer.attn_v_clip = load_clip_bounds(gb, prefix + "attention_attn_v_proj");
-            layer.attn_per_dim_scale = gb->mmap_weights(prefix + "attention_attn_per_dim_scale.weights");
-            layer.attn_rel_pos_proj = gb->mmap_weights(prefix + "attention_attn_relative_position_embedding_pos_proj.weights");
-            layer.attn_post = gb->mmap_weights(prefix + "attention_post.weights");
-            layer.attn_post_clip = load_clip_bounds(gb, prefix + "attention_post");
-            layer.attn_pre_norm = gb->mmap_weights(prefix + "attention_pre_attn_norm.weights");
-            layer.attn_post_norm = gb->mmap_weights(prefix + "attention_post_norm.weights");
+            layer.ffw_start_1 = layer_weight("ffw_layer_start_ffw_layer_1.weights", "feed_forward1_ffw_layer_1.weights");
+            layer.ffw_start_2 = layer_weight("ffw_layer_start_ffw_layer_2.weights", "feed_forward1_ffw_layer_2.weights");
+            layer.ffw_start_1_clip = layer_clip("ffw_layer_start_ffw_layer_1.weights", "feed_forward1_ffw_layer_1.weights");
+            layer.ffw_start_2_clip = layer_clip("ffw_layer_start_ffw_layer_2.weights", "feed_forward1_ffw_layer_2.weights");
+            layer.ffw_start_pre_norm = layer_weight("ffw_layer_start_pre_layer_norm.weights", "feed_forward1_pre_layer_norm.weights");
+            layer.ffw_start_post_norm = layer_weight("ffw_layer_start_post_layer_norm.weights", "feed_forward1_post_layer_norm.weights");
 
-            layer.lconv_start = gb->mmap_weights(prefix + "lconv1d_linear_start.weights");
-            layer.lconv_depthwise = gb->mmap_weights(prefix + "lconv1d_depthwise_conv1d.weights");
-            layer.lconv_end = gb->mmap_weights(prefix + "lconv1d_linear_end.weights");
-            layer.lconv_start_clip = load_clip_bounds(gb, prefix + "lconv1d_linear_start");
-            layer.lconv_end_clip = load_clip_bounds(gb, prefix + "lconv1d_linear_end");
-            layer.lconv_pre_norm = gb->mmap_weights(prefix + "lconv1d_pre_layer_norm.weights");
-            layer.lconv_conv_norm = gb->mmap_weights(prefix + "lconv1d_conv_norm.weights");
+            layer.attn_q = layer_weight("attention_attn_q_proj.weights", "self_attn_q_proj.weights");
+            layer.attn_k = layer_weight("attention_attn_k_proj.weights", "self_attn_k_proj.weights");
+            layer.attn_v = layer_weight("attention_attn_v_proj.weights", "self_attn_v_proj.weights");
+            layer.attn_q_clip = layer_clip("attention_attn_q_proj.weights", "self_attn_q_proj.weights");
+            layer.attn_k_clip = layer_clip("attention_attn_k_proj.weights", "self_attn_k_proj.weights");
+            layer.attn_v_clip = layer_clip("attention_attn_v_proj.weights", "self_attn_v_proj.weights");
+            layer.attn_per_dim_scale = layer_weight("attention_attn_per_dim_scale.weights", "self_attn_per_dim_scale.weights");
+            layer.attn_rel_pos_proj = layer_weight(
+                "attention_attn_relative_position_embedding_pos_proj.weights",
+                "self_attn_relative_k_proj.weights");
+            layer.attn_post = layer_weight("attention_post.weights", "self_attn_post.weights");
+            layer.attn_post_clip = layer_clip("attention_post.weights", "self_attn_post.weights");
+            layer.attn_pre_norm = layer_weight("attention_pre_attn_norm.weights", "norm_pre_attn.weights");
+            layer.attn_post_norm = layer_weight("attention_post_norm.weights", "norm_post_attn.weights");
 
-            layer.ffw_end_1 = gb->mmap_weights(prefix + "ffw_layer_end_ffw_layer_1.weights");
-            layer.ffw_end_2 = gb->mmap_weights(prefix + "ffw_layer_end_ffw_layer_2.weights");
-            layer.ffw_end_1_clip = load_clip_bounds(gb, prefix + "ffw_layer_end_ffw_layer_1");
-            layer.ffw_end_2_clip = load_clip_bounds(gb, prefix + "ffw_layer_end_ffw_layer_2");
-            layer.ffw_end_pre_norm = gb->mmap_weights(prefix + "ffw_layer_end_pre_layer_norm.weights");
-            layer.ffw_end_post_norm = gb->mmap_weights(prefix + "ffw_layer_end_post_layer_norm.weights");
+            layer.lconv_start = layer_weight("lconv1d_linear_start.weights");
+            layer.lconv_depthwise = layer_weight("lconv1d_depthwise_conv1d.weights");
+            layer.lconv_end = layer_weight("lconv1d_linear_end.weights");
+            layer.lconv_start_clip = layer_clip("lconv1d_linear_start.weights");
+            layer.lconv_end_clip = layer_clip("lconv1d_linear_end.weights");
+            layer.lconv_pre_norm = layer_weight("lconv1d_pre_layer_norm.weights");
+            layer.lconv_conv_norm = layer_weight("lconv1d_conv_norm.weights");
 
-            layer.block_norm = gb->mmap_weights(prefix + "norm.weights");
+            layer.ffw_end_1 = layer_weight("ffw_layer_end_ffw_layer_1.weights", "feed_forward2_ffw_layer_1.weights");
+            layer.ffw_end_2 = layer_weight("ffw_layer_end_ffw_layer_2.weights", "feed_forward2_ffw_layer_2.weights");
+            layer.ffw_end_1_clip = layer_clip("ffw_layer_end_ffw_layer_1.weights", "feed_forward2_ffw_layer_1.weights");
+            layer.ffw_end_2_clip = layer_clip("ffw_layer_end_ffw_layer_2.weights", "feed_forward2_ffw_layer_2.weights");
+            layer.ffw_end_pre_norm = layer_weight("ffw_layer_end_pre_layer_norm.weights", "feed_forward2_pre_layer_norm.weights");
+            layer.ffw_end_post_norm = layer_weight("ffw_layer_end_post_layer_norm.weights", "feed_forward2_post_layer_norm.weights");
+
+            layer.block_norm = layer_weight("norm.weights", "norm_out.weights");
         }
         
-        audio_weights_.output_proj = gb->mmap_weights(resolve("audio_output_proj.weights"));
-        audio_weights_.output_proj_bias = gb->mmap_weights(resolve("audio_output_proj.bias"));
+        audio_weights_.output_proj = load_weight("audio_output_proj.weights");
+        audio_weights_.output_proj_bias = load_weight("audio_output_proj.bias");
     }
-    audio_weights_.embed_audio_proj = gb->mmap_weights(resolve("embed_audio_proj.weights"));
+    audio_weights_.embed_audio_proj = load_weight("embed_audio_proj.weights");
 
     size_t proj_out_dim = config_.audio_output_proj_dims > 0
         ? static_cast<size_t>(config_.audio_output_proj_dims)
