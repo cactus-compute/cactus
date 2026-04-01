@@ -36,21 +36,11 @@ typedef CactusPrefillNative = Int32 Function(
     Pointer<Utf8> optionsJson,
     Pointer<Utf8> toolsJson);
 
-typedef CactusCompleteDart = Int32 Function(
+typedef CactusPrefillDart = int Function(
     CactusModelT model,
     Pointer<Utf8> messagesJson,
     Pointer<Utf8> responseBuffer,
-    IntPtr bufferSize,
-    Pointer<Utf8> optionsJson,
-    Pointer<Utf8> toolsJson,
-    Pointer<NativeFunction<TokenCallbackNative>> callback,
-    Pointer<Void> userData);
-
-typedef CactusPrefillDart = Int32 Function(
-    CactusModelT model,
-    Pointer<Utf8> messagesJson,
-    Pointer<Utf8> responseBuffer,
-    IntPtr bufferSize,
+    int bufferSize,
     Pointer<Utf8> optionsJson,
     Pointer<Utf8> toolsJson);
 
