@@ -14,16 +14,6 @@ public:
     TinyLlamaModel();
     explicit TinyLlamaModel(const Config& config);
     ~TinyLlamaModel() override = default;
-    size_t build_pli_combined_for_debug(CactusGraph* gb, size_t hidden,
-                                        const std::vector<uint32_t>& pli_tokens,
-                                        size_t seq_len, ComputeBackend backend);
-    size_t apply_transformer_layer_for_debug(CactusGraph* gb, size_t hidden, size_t pli,
-                                             uint32_t layer_idx, ComputeBackend backend);
-    size_t apply_output_norm_for_debug(CactusGraph* gb, size_t hidden);
-    size_t compute_logits_for_debug(CactusGraph* gb, size_t hidden, ComputeBackend backend);
-    size_t forward_from_embeddings_for_debug(CactusGraph* gb, size_t hidden, size_t pli_hidden_source,
-                                             const std::vector<uint32_t>& pli_tokens, size_t seq_len,
-                                             ComputeBackend backend, bool use_cache);
 
 protected:
     size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,

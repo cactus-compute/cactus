@@ -11,7 +11,6 @@
 #include <iomanip>
 #include <functional>
 #include <cmath>
-#include <stdexcept>
 #include <atomic>
 #include <mutex>
 
@@ -141,22 +140,6 @@ inline float cosine_sim(const std::vector<float>& a, const std::vector<float>& b
         dot += (double)a[i]*b[i]; na += (double)a[i]*a[i]; nb += (double)b[i]*b[i];
     }
     return (na > 0 && nb > 0) ? (float)(dot / (std::sqrt(na) * std::sqrt(nb))) : 0;
-}
-
-inline std::vector<float> extract_node(CactusGraph* gb, size_t node) {
-    gb->execute();
-    const auto& buf = gb->get_output_buffer(node);
-    std::vector<float> out(buf.total_size);
-    if (buf.precision == Precision::FP16) {
-        const __fp16* src = buf.data_as<__fp16>();
-        for (size_t i = 0; i < buf.total_size; ++i) out[i] = static_cast<float>(src[i]);
-    } else if (buf.precision == Precision::FP32) {
-        const float* src = buf.data_as<float>();
-        std::copy(src, src + buf.total_size, out.begin());
-    } else {
-        throw std::runtime_error("Unsupported precision for extract_node");
-    }
-    return out;
 }
 
 }

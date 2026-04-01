@@ -417,38 +417,6 @@ size_t TinyLlamaModel::build_pli_combined_from_tokens(CactusGraph* gb, size_t hi
     return pli_combined;
 }
 
-size_t TinyLlamaModel::build_pli_combined_for_debug(CactusGraph* gb, size_t hidden,
-                                                     const std::vector<uint32_t>& pli_tokens,
-                                                     size_t seq_len, ComputeBackend backend) {
-    return build_pli_combined_from_tokens(gb, hidden, pli_tokens, seq_len, backend);
-}
-
-size_t TinyLlamaModel::apply_transformer_layer_for_debug(CactusGraph* gb, size_t hidden, size_t pli,
-                                                          uint32_t layer_idx, ComputeBackend backend) {
-    return apply_transformer_layer(gb, hidden, pli, layer_idx, backend, false, 0);
-}
-
-size_t TinyLlamaModel::apply_output_norm_for_debug(CactusGraph* gb, size_t hidden) {
-    return gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
-}
-
-size_t TinyLlamaModel::compute_logits_for_debug(CactusGraph* gb, size_t hidden, ComputeBackend backend) {
-    auto logits = gb->matmul(hidden, output_weight_node_id_, true, backend);
-    if (config_.final_logit_softcapping > 0.0f) {
-        float inv_cap = 1.0f / config_.final_logit_softcapping;
-        logits = gb->scalar_multiply(logits, inv_cap);
-        logits = gb->tanh(logits);
-        logits = gb->scalar_multiply(logits, config_.final_logit_softcapping);
-    }
-    return logits;
-}
-
-size_t TinyLlamaModel::forward_from_embeddings_for_debug(CactusGraph* gb, size_t hidden, size_t pli_hidden_source,
-                                                          const std::vector<uint32_t>& pli_tokens, size_t seq_len,
-                                                          ComputeBackend backend, bool use_cache) {
-    return forward_from_embeddings(gb, hidden, pli_hidden_source, pli_tokens, seq_len, backend, use_cache);
-}
-
 size_t TinyLlamaModel::forward_from_embeddings(CactusGraph* gb, size_t hidden, size_t pli_hidden_source,
                                                 const std::vector<uint32_t>& pli_tokens, size_t seq_len,
                                                 ComputeBackend backend, bool use_cache) {
