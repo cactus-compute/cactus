@@ -62,8 +62,13 @@ void GemmaModel3n::load_weights_to_graph(CactusGraph* gb) {
     assert(config_.altup_num_inputs == 4 && "WeightNodeIDs altup arrays assume exactly 4 AltUp streams");
     embedding_node_id_ = gb->mmap_embeddings(embedding_file_path_);
     weight_nodes_.output_norm_weight = gb->mmap_weights(model_folder_path_ + "/output_norm.weights");
-    weight_nodes_.output_weight = gb->mmap_weights(model_folder_path_ + "/output_weight.weights");
-    output_weight_node_id_ = weight_nodes_.output_weight;
+    if (config_.tie_word_embeddings) {
+        weight_nodes_.output_weight = embedding_node_id_;
+        output_weight_node_id_ = embedding_node_id_;
+    } else {
+        weight_nodes_.output_weight = gb->mmap_weights(model_folder_path_ + "/output_weight.weights");
+        output_weight_node_id_ = weight_nodes_.output_weight;
+    }
 
     for (int i = 0; i < 3; i++) {
         auto idx = std::to_string(i);
