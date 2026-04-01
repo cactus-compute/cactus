@@ -16,6 +16,8 @@ static constexpr size_t ROLLING_ENTROPY_WINDOW = 10;
 
 namespace {
 
+std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema);
+
 std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
     for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
         if (it->role == "user") {
@@ -23,34 +25,6 @@ std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
         }
     }
     return {};
-}
-
-std::string format_needle_query_text(const std::vector<ChatMessage>& messages) {
-    std::string system_text;
-    std::string user_query;
-
-    for (const auto& msg : messages) {
-        if (msg.role == "system") {
-            if (!system_text.empty()) {
-                system_text += "\n";
-            }
-            system_text += msg.content;
-        } else if (msg.role == "user") {
-            user_query = msg.content;
-        }
-    }
-
-    if (user_query.empty() && !messages.empty()) {
-        user_query = messages.back().content;
-    }
-
-    if (system_text.empty()) {
-        return user_query;
-    }
-    if (user_query.empty()) {
-        return system_text;
-    }
-    return system_text + "\n\n" + user_query;
 }
 
 const std::vector<uint32_t>& get_cached_needle_tools_suffix_tokens(
@@ -85,16 +59,34 @@ void inject_rag_context(CactusModelHandle* handle, std::vector<ChatMessage>& mes
     }
 }
 
+std::vector<ToolConstraintSpec> build_tool_constraint_specs(const std::vector<ToolFunction>& tools) {
+    std::vector<ToolConstraintSpec> specs;
+    specs.reserve(tools.size());
+
+    for (const auto& tool : tools) {
+        ToolConstraintSpec spec;
+        spec.name = tool.name;
+
+        auto schema_it = tool.parameters.find("schema");
+        if (schema_it != tool.parameters.end()) {
+            auto properties = extract_schema_property_types(schema_it->second);
+            spec.parameter_names.reserve(properties.size());
+            for (const auto& [name, _] : properties) {
+                spec.parameter_names.push_back(name);
+            }
+        }
+
+        specs.push_back(std::move(spec));
+    }
+
+    return specs;
+}
+
 void setup_tool_constraints(CactusModelHandle* handle, const std::vector<ToolFunction>& tools,
                            bool force_tools, float& temperature) {
     if (!force_tools || tools.empty()) return;
 
-    std::vector<std::string> function_names;
-    function_names.reserve(tools.size());
-    for (const auto& tool : tools) {
-        function_names.push_back(tool.name);
-    }
-    handle->model->set_tool_constraints(function_names);
+    handle->model->set_tool_constraints(build_tool_constraint_specs(tools));
 
     if (temperature == 0.0f) {
         temperature = 0.01f;
@@ -390,19 +382,6 @@ std::vector<std::vector<CactusModelHandle::ProcessedImage>> images_from_message(
     return message_signatures;
 }
 
-std::vector<std::string> image_paths_from_messages(
-    const std::vector<ChatMessage>& messages,
-    size_t start_message_index
-) {
-    std::vector<std::string> image_paths;
-    for (size_t i = start_message_index; i < messages.size(); ++i) {
-        for (const auto& image_path : messages[i].images) {
-            image_paths.push_back(image_path);
-        }
-    }
-    return image_paths;
-}
-
 bool image_context_prefix_matches(
     const std::vector<std::vector<CactusModelHandle::ProcessedImage>>& prefix,
     const std::vector<std::vector<CactusModelHandle::ProcessedImage>>& full
@@ -488,7 +467,7 @@ PreparedPrompt prepare_prompt(
     }
 
     if (prompt.model_type == Config::ModelType::NEEDLE) {
-        std::string query_text = format_needle_query_text(prompt.messages);
+        std::string query_text = cactus::engine::format_needle_query_text(prompt.messages);
         prompt.tokens = tokenizer->encode(query_text);
         const auto& suffix_tokens = get_cached_needle_tools_suffix_tokens(handle, tokenizer, formatted_tools);
         prompt.tokens.insert(prompt.tokens.end(), suffix_tokens.begin(), suffix_tokens.end());

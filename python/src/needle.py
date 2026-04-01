@@ -7,13 +7,39 @@ import argparse
 import json
 import os
 import pickle
+import re
 import sys
 import warnings
 from pathlib import Path
 
-MODEL_REPO = "Cactus-Compute/needle"
+MODEL_REPO = "Cactus-Compute/checkpoints"
 TOKENIZER_REPO = "Cactus-Compute/needle-tokenizer"
-DEFAULT_CHECKPOINT_FILE = "needle_6_512_256_best.pkl"
+DEFAULT_CHECKPOINT_FILE = "needle_12_512_best.pkl"
+DEFAULT_TOKENIZER_REVISION = "662ab737ec41afed5acd215271d6d0e26690dd8b"
+CHECKPOINT_REVISIONS = {
+    "needle_12_512_best.pkl": "c3abe44ccce513833aa1a671a508433a6c4224eb",
+    "needle_8_512_best.pkl": "bb785f03ebaa395bc7eb4cd4b18c713f3a05a58d",
+    "needle_12_768_best.pkl": None,
+    "needle_16_640_best.pkl": "bb785f03ebaa395bc7eb4cd4b18c713f3a05a58d",
+    "needle_16_768_best.pkl": "bb785f03ebaa395bc7eb4cd4b18c713f3a05a58d",
+}
+CHECKPOINT_TOKENIZER_REVISIONS = {
+    # Older 12x512 family
+    "needle_12_512_best.pkl": "662ab737ec41afed5acd215271d6d0e26690dd8b",
+    "needle_12_768_best.pkl": "662ab737ec41afed5acd215271d6d0e26690dd8b",
+    # Newer multilingual tokenizer family
+    "needle_8_512_best.pkl": "f1fd238b770af3175898a5541de69e1e26ef6b20",
+    "needle_16_640_best.pkl": "f1fd238b770af3175898a5541de69e1e26ef6b20",
+    "needle_16_768_best.pkl": "f1fd238b770af3175898a5541de69e1e26ef6b20",
+}
+MODEL_ID_TO_CHECKPOINT_FILE = {
+    "needle": DEFAULT_CHECKPOINT_FILE,
+    "needle-12-512": "needle_12_512_best.pkl",
+    "needle-8-512": "needle_8_512_best.pkl",
+    "needle-12-768": "needle_12_768_best.pkl",
+    "needle-16-640": "needle_16_640_best.pkl",
+    "needle-16-768": "needle_16_768_best.pkl",
+}
 DEFAULT_MODEL_FILE = "needle.model"
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
@@ -36,8 +62,8 @@ def parse_args():
     parser.add_argument(
         "output_dir",
         nargs="?",
-        default=str(PROJECT_ROOT / "weights" / "needle"),
-        help="Output directory (default: weights/needle)",
+        default=None,
+        help="Output directory (default: derived under weights/ from the selected Needle checkpoint)",
     )
     parser.add_argument(
         "--checkpoint-path",
@@ -50,9 +76,19 @@ def parse_args():
         help="Checkpoint filename in the Needle Hugging Face repo",
     )
     parser.add_argument(
+        "--checkpoint-revision",
+        default=None,
+        help="Optional checkpoint revision in the Needle Hugging Face repo (default: automatic per checkpoint)",
+    )
+    parser.add_argument(
         "--tokenizer-path",
         default=None,
         help="Local tokenizer .model path or directory",
+    )
+    parser.add_argument(
+        "--tokenizer-revision",
+        default=None,
+        help="Optional tokenizer revision in the Needle Hugging Face repo",
     )
     parser.add_argument(
         "--hf-token",
@@ -71,6 +107,57 @@ def parse_args():
         help="Requested export precision for config metadata (default: FP16)",
     )
     return parser.parse_args()
+
+
+def normalize_needle_model_id(model_id: str | None) -> str:
+    normalized = (model_id or "").strip().lower()
+    if "/" in normalized:
+        normalized = normalized.split("/")[-1]
+    return normalized
+
+
+def resolve_needle_checkpoint_file(
+    model_id: str | None,
+    checkpoint_file: str | None,
+) -> str:
+    if checkpoint_file:
+        return checkpoint_file
+    normalized = normalize_needle_model_id(model_id)
+    if normalized in MODEL_ID_TO_CHECKPOINT_FILE:
+        return MODEL_ID_TO_CHECKPOINT_FILE[normalized]
+    if normalized.startswith("needle_") and normalized.endswith(".pkl"):
+        return normalized
+    return DEFAULT_CHECKPOINT_FILE
+
+
+def resolve_checkpoint_revision(
+    checkpoint_file: str,
+    checkpoint_revision: str | None,
+):
+    if checkpoint_revision:
+        return checkpoint_revision
+    return CHECKPOINT_REVISIONS.get(checkpoint_file, None)
+
+
+def checkpoint_file_to_weights_dir_name(checkpoint_file: str) -> str:
+    stem = Path(checkpoint_file).stem.lower()
+    if stem == "needle_12_512_best":
+        return "needle"
+    match = re.fullmatch(r"needle_(\d+)_(\d+)_best", stem)
+    if match:
+        return f"needle-{match.group(1)}-{match.group(2)}"
+    return stem.replace("_", "-")
+
+
+def resolve_needle_output_dir(
+    model_id: str | None = None,
+    checkpoint_file: str | None = None,
+    output_dir: str | Path | None = None,
+) -> Path:
+    if output_dir is not None:
+        return Path(output_dir).expanduser().resolve()
+    effective_checkpoint_file = resolve_needle_checkpoint_file(model_id, checkpoint_file)
+    return (PROJECT_ROOT / "weights" / checkpoint_file_to_weights_dir_name(effective_checkpoint_file)).resolve()
 
 
 def format_config_value(value):
@@ -123,6 +210,7 @@ def find_model_file(path: str | Path):
 def get_checkpoint_path(
     local_path: str | None,
     checkpoint_file: str,
+    checkpoint_revision: str | None,
     token: str | None,
     cache_dir: str | None,
 ):
@@ -140,12 +228,26 @@ def get_checkpoint_path(
             repo_type="model",
             cache_dir=cache_dir,
             token=token,
+            revision=checkpoint_revision,
         )
+    )
+
+
+def resolve_tokenizer_revision(
+    checkpoint_file: str,
+    tokenizer_revision: str | None,
+):
+    if tokenizer_revision:
+        return tokenizer_revision
+    return CHECKPOINT_TOKENIZER_REVISIONS.get(
+        checkpoint_file,
+        DEFAULT_TOKENIZER_REVISION,
     )
 
 
 def get_tokenizer_path(
     local_path: str | None,
+    tokenizer_revision: str | None,
     token: str | None,
     cache_dir: str | None,
 ):
@@ -163,6 +265,7 @@ def get_tokenizer_path(
             cache_dir=cache_dir,
             allow_patterns=["*.model"],
             token=token,
+            revision=tokenizer_revision,
         )
     )
     path = find_model_file(snapshot)
@@ -349,6 +452,7 @@ def build_model_config(model_cfg: dict, total_params: int, requested_precision: 
         "contrastive_dim": int(model_cfg.get("contrastive_dim", 0)),
         "conv_kernel_size": int(model_cfg.get("conv_kernel_size", 0)),
         "enable_speech": bool(model_cfg.get("enable_speech", False)),
+        "no_feedforward": bool(model_cfg.get("no_feedforward", False)),
         "architecture": "text-only encoder-decoder transformer",
         "uses_tied_embeddings_for_logits": True,
         "inference_input_format": "[query_tokens] + <tools> + [tools_json_tokens]",
@@ -458,32 +562,40 @@ def export_model_weights(output_dir: Path, params: dict, model_cfg: dict, reques
         for layer_idx in range(int(model_cfg["num_encoder_layers"])):
             block = take_layer(encoder_stack, layer_idx)
             attn = block["self_attn"]
-            ffn = block["FeedForward_0"]
             prefix = f"encoder_layer_{layer_idx}_"
 
             save(prefix + "input_norm.weights", block["ZCRMSNorm_0"]["scale"])
-            save(prefix + "post_attn_norm.weights", block["ZCRMSNorm_1"]["scale"])
+            if "attn_gate" in block:
+                save(prefix + "attn_gate.weights", block["attn_gate"])
+            if "ZCRMSNorm_1" in block:
+                save(prefix + "post_attn_norm.weights", block["ZCRMSNorm_1"]["scale"])
             save(prefix + "attn_q.weights", attn["q_proj"]["kernel"], transpose=True)
             save(prefix + "attn_k.weights", attn["k_proj"]["kernel"], transpose=True)
             save(prefix + "attn_v.weights", attn["v_proj"]["kernel"], transpose=True)
             save(prefix + "attn_output.weights", attn["out_proj"]["kernel"], transpose=True)
             save(prefix + "attn_q_norm.weights", attn["q_norm"]["scale"])
             save(prefix + "attn_k_norm.weights", attn["k_norm"]["scale"])
-            save(prefix + "ffn_gate.weights", ffn["gate_proj"]["kernel"], transpose=True)
-            save(prefix + "ffn_up.weights", ffn["up_proj"]["kernel"], transpose=True)
-            save(prefix + "mlp_fc2.weights", ffn["down_proj"]["kernel"], transpose=True)
+            ffn = block.get("FeedForward_0")
+            if ffn is not None:
+                save(prefix + "ffn_gate.weights", ffn["gate_proj"]["kernel"], transpose=True)
+                save(prefix + "ffn_up.weights", ffn["up_proj"]["kernel"], transpose=True)
+                save(prefix + "mlp_fc2.weights", ffn["down_proj"]["kernel"], transpose=True)
 
         decoder_stack = params["decoder"]["layers"]["DecoderBlock_0"]
         for layer_idx in range(int(model_cfg["num_decoder_layers"])):
             block = take_layer(decoder_stack, layer_idx)
             self_attn = block["self_attn"]
             cross_attn = block["cross_attn"]
-            ffn = block["FeedForward_0"]
             prefix = f"layer_{layer_idx}_"
 
             save(prefix + "input_norm.weights", block["ZCRMSNorm_0"]["scale"])
             save(prefix + "post_attn_norm.weights", block["ZCRMSNorm_1"]["scale"])
-            save(prefix + "final_norm.weights", block["ZCRMSNorm_2"]["scale"])
+            if "self_attn_gate" in block:
+                save(prefix + "self_attn_gate.weights", block["self_attn_gate"])
+            if "cross_attn_gate" in block:
+                save(prefix + "cross_attn_gate.weights", block["cross_attn_gate"])
+            if "ZCRMSNorm_2" in block:
+                save(prefix + "final_norm.weights", block["ZCRMSNorm_2"]["scale"])
 
             save(prefix + "attn_q.weights", self_attn["q_proj"]["kernel"], transpose=True)
             save(prefix + "attn_k.weights", self_attn["k_proj"]["kernel"], transpose=True)
@@ -499,34 +611,48 @@ def export_model_weights(output_dir: Path, params: dict, model_cfg: dict, reques
             save(prefix + "encoder_attn_q_norm.weights", cross_attn["q_norm"]["scale"])
             save(prefix + "encoder_attn_k_norm.weights", cross_attn["k_norm"]["scale"])
 
-            save(prefix + "ffn_gate.weights", ffn["gate_proj"]["kernel"], transpose=True)
-            save(prefix + "ffn_up.weights", ffn["up_proj"]["kernel"], transpose=True)
-            save(prefix + "mlp_fc2.weights", ffn["down_proj"]["kernel"], transpose=True)
+            ffn = block.get("FeedForward_0")
+            if ffn is not None:
+                save(prefix + "ffn_gate.weights", ffn["gate_proj"]["kernel"], transpose=True)
+                save(prefix + "ffn_up.weights", ffn["up_proj"]["kernel"], transpose=True)
+                save(prefix + "mlp_fc2.weights", ffn["down_proj"]["kernel"], transpose=True)
 
     return {"saved_weight_paths": saved_paths, "stats": stats}
 
 
 def export_needle_metadata(
-    output_dir,
+    output_dir=None,
+    model_id: str | None = None,
     checkpoint_path: str | Path | None = None,
     checkpoint_file: str = DEFAULT_CHECKPOINT_FILE,
+    checkpoint_revision: str | None = None,
     tokenizer_path: str | Path | None = None,
+    tokenizer_revision: str | None = None,
     hf_token: str | None = None,
     cache_dir: str | None = None,
     requested_precision: str = "FP16",
 ):
-    output_dir = Path(output_dir).expanduser().resolve()
+    checkpoint_file = resolve_needle_checkpoint_file(model_id, checkpoint_file)
+    checkpoint_revision = resolve_checkpoint_revision(checkpoint_file, checkpoint_revision)
+    output_dir = resolve_needle_output_dir(
+        model_id=model_id,
+        checkpoint_file=checkpoint_file,
+        output_dir=output_dir,
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     token = get_hf_token(hf_token)
+    tokenizer_revision = resolve_tokenizer_revision(checkpoint_file, tokenizer_revision)
     checkpoint_path = get_checkpoint_path(
         str(checkpoint_path) if checkpoint_path is not None else None,
         checkpoint_file,
+        checkpoint_revision,
         token,
         cache_dir,
     )
     tokenizer_path = get_tokenizer_path(
         str(tokenizer_path) if tokenizer_path is not None else None,
+        tokenizer_revision,
         token,
         cache_dir,
     )
@@ -567,9 +693,12 @@ def main():
     args = parse_args()
     result = export_needle_metadata(
         output_dir=args.output_dir,
+        model_id=None,
         checkpoint_path=args.checkpoint_path,
         checkpoint_file=args.checkpoint_file,
+        checkpoint_revision=args.checkpoint_revision,
         tokenizer_path=args.tokenizer_path,
+        tokenizer_revision=args.tokenizer_revision,
         hf_token=args.hf_token,
         cache_dir=args.cache_dir,
         requested_precision=args.precision,

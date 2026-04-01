@@ -55,6 +55,60 @@ std::vector<std::string> split_utf8_codepoints(const std::string& text) {
     return result;
 }
 
+bool decode_utf8_codepoint(const std::string& text, size_t& pos, char32_t& codepoint) {
+    if (pos >= text.size()) {
+        return false;
+    }
+
+    unsigned char byte = static_cast<unsigned char>(text[pos]);
+    if (byte < 0x80) {
+        codepoint = byte;
+        ++pos;
+        return true;
+    }
+    if ((byte & 0xE0) == 0xC0 && pos + 1 < text.size()) {
+        codepoint = ((byte & 0x1F) << 6) | (text[pos + 1] & 0x3F);
+        pos += 2;
+        return true;
+    }
+    if ((byte & 0xF0) == 0xE0 && pos + 2 < text.size()) {
+        codepoint = ((byte & 0x0F) << 12) |
+                    ((text[pos + 1] & 0x3F) << 6) |
+                    (text[pos + 2] & 0x3F);
+        pos += 3;
+        return true;
+    }
+    if ((byte & 0xF8) == 0xF0 && pos + 3 < text.size()) {
+        codepoint = ((byte & 0x07) << 18) |
+                    ((text[pos + 1] & 0x3F) << 12) |
+                    ((text[pos + 2] & 0x3F) << 6) |
+                    (text[pos + 3] & 0x3F);
+        pos += 4;
+        return true;
+    }
+
+    ++pos;
+    return false;
+}
+
+void append_utf8_codepoint(std::string& out, char32_t cp) {
+    if (cp < 0x80) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
+
 bool parse_byte_piece(const std::string& piece, uint8_t& value) {
     if (piece.size() != 6 || piece[0] != '<' || piece[1] != '0' || piece[2] != 'x' || piece[5] != '>') {
         return false;
@@ -108,15 +162,6 @@ void SPTokenizer::cleanup_mmap() {
 bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, const std::string& /*merges_file*/, const std::string& config_file) {
     std::string config_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/config.txt";
     detect_model_type(config_path);
-
-    if (model_type_ == ModelType::NEEDLE) {
-        // Older Needle exports only carry piece ids, so enable the real SP-BPE behavior here by default.
-        sp_model_type_ = SentencePieceModelType::BPE;
-        sp_add_dummy_prefix_ = true;
-        sp_remove_extra_whitespaces_ = true;
-        sp_escape_whitespaces_ = true;
-        sp_byte_fallback_ = true;
-    }
     
     std::ifstream vocab_stream(vocab_file);
     if (!vocab_stream.is_open()) return false;
@@ -208,37 +253,9 @@ void SPTokenizer::build_trie() {
         size_t pos = 0;
         while (pos < token.length()) {
             char32_t codepoint = 0;
-            unsigned char byte = token[pos];
-
-            if (byte < 0x80) {
-                codepoint = byte;
-                pos++;
-            } else if ((byte & 0xE0) == 0xC0) {
-                if (pos + 1 < token.length()) {
-                    codepoint = ((byte & 0x1F) << 6) | (token[pos + 1] & 0x3F);
-                    pos += 2;
-                } else break;
-            } else if ((byte & 0xF0) == 0xE0) {
-                if (pos + 2 < token.length()) {
-                    codepoint = ((byte & 0x0F) << 12) |
-                               ((token[pos + 1] & 0x3F) << 6) |
-                               (token[pos + 2] & 0x3F);
-                    pos += 3;
-                } else break;
-            } else if ((byte & 0xF8) == 0xF0) {
-                if (pos + 3 < token.length()) {
-                    codepoint = ((byte & 0x07) << 18) |
-                               ((token[pos + 1] & 0x3F) << 12) |
-                               ((token[pos + 2] & 0x3F) << 6) |
-                               (token[pos + 3] & 0x3F);
-                    pos += 4;
-                } else break;
-            } else {
-                pos++;
-                continue;
+            if (decode_utf8_codepoint(token, pos, codepoint)) {
+                u32_token.push_back(codepoint);
             }
-
-            u32_token.push_back(codepoint);
         }
 
         if (u32_token.empty()) continue;
@@ -354,37 +371,9 @@ std::vector<std::pair<std::string, uint32_t>> SPTokenizer::tokenize_with_trie(co
     size_t pos = 0;
     while (pos < text.length()) {
         char32_t codepoint = 0;
-        unsigned char byte = text[pos];
-
-        if (byte < 0x80) {
-            codepoint = byte;
-            pos++;
-        } else if ((byte & 0xE0) == 0xC0) {
-            if (pos + 1 < text.length()) {
-                codepoint = ((byte & 0x1F) << 6) | (text[pos + 1] & 0x3F);
-                pos += 2;
-            } else break;
-        } else if ((byte & 0xF0) == 0xE0) {
-            if (pos + 2 < text.length()) {
-                codepoint = ((byte & 0x0F) << 12) |
-                           ((text[pos + 1] & 0x3F) << 6) |
-                           (text[pos + 2] & 0x3F);
-                pos += 3;
-            } else break;
-        } else if ((byte & 0xF8) == 0xF0) {
-            if (pos + 3 < text.length()) {
-                codepoint = ((byte & 0x07) << 18) |
-                           ((text[pos + 1] & 0x3F) << 12) |
-                           ((text[pos + 2] & 0x3F) << 6) |
-                           (text[pos + 3] & 0x3F);
-                pos += 4;
-            } else break;
-        } else {
-            pos++;
-            continue;
+        if (decode_utf8_codepoint(text, pos, codepoint)) {
+            u32_text.push_back(codepoint);
         }
-
-        u32_text.push_back(codepoint);
     }
 
     if (u32_text.empty()) {
@@ -415,42 +404,14 @@ std::vector<std::pair<std::string, uint32_t>> SPTokenizer::tokenize_with_trie(co
             
             std::string token;
             for (char32_t cp : u32_token) {
-                if (cp < 0x80) {
-                    token.push_back(static_cast<char>(cp));
-                } else if (cp < 0x800) {
-                    token.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-                    token.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-                } else if (cp < 0x10000) {
-                    token.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-                    token.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-                    token.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-                } else {
-                    token.push_back(static_cast<char>(0xF0 | (cp >> 18)));
-                    token.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-                    token.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-                    token.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-                }
+                append_utf8_codepoint(token, cp);
             }
             result.push_back({token, static_cast<uint32_t>(best_token_id)});
             pos += best_match_len;
         } else {
             char32_t cp = u32_text[pos];
             std::string char_str;
-            if (cp < 0x80) {
-                char_str.push_back(static_cast<char>(cp));
-            } else if (cp < 0x800) {
-                char_str.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-                char_str.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            } else if (cp < 0x10000) {
-                char_str.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-                char_str.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-                char_str.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            } else {
-                char_str.push_back(static_cast<char>(0xF0 | (cp >> 18)));
-                char_str.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-                char_str.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-                char_str.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            }
+            append_utf8_codepoint(char_str, cp);
             result.push_back({char_str, unk_token_id_});
             pos++;
         }

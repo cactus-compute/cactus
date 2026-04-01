@@ -148,35 +148,8 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
 std::string Tokenizer::format_needle_style(const std::vector<ChatMessage>& messages,
                                            bool /*add_generation_prompt*/,
                                            const std::string& tools_json) const {
-    std::string system_text;
-    std::string user_query;
-
-    for (const auto& msg : messages) {
-        if (msg.role == "system") {
-            if (!system_text.empty()) {
-                system_text += "\n";
-            }
-            system_text += msg.content;
-        } else if (msg.role == "user") {
-            user_query = msg.content;
-        }
-    }
-
-    if (user_query.empty() && !messages.empty()) {
-        user_query = messages.back().content;
-    }
-
-    std::string query = user_query;
-    if (!system_text.empty()) {
-        if (!query.empty()) {
-            query = system_text + "\n\n" + query;
-        } else {
-            query = system_text;
-        }
-    }
-
     std::string serialized_tools = tools_json.empty() ? "[]" : tools_json;
-    return query + "<tools>" + serialized_tools + "</s>";
+    return format_needle_query_text(messages) + "<tools>" + serialized_tools + "</s>";
 }
 
 std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported) const {

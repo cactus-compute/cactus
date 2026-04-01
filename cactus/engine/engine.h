@@ -226,7 +226,37 @@ struct ChatMessage {
     std::vector<std::string> images;
 };
 
+inline std::string format_needle_query_text(const std::vector<ChatMessage>& messages) {
+    std::string system_text;
+    std::string user_query;
 
+    for (const auto& msg : messages) {
+        if (msg.role == "system") {
+            if (!system_text.empty()) {
+                system_text += "\n";
+            }
+            system_text += msg.content;
+        } else if (msg.role == "user") {
+            user_query = msg.content;
+        }
+    }
+
+    if (user_query.empty() && !messages.empty()) {
+        user_query = messages.back().content;
+    }
+    if (system_text.empty()) {
+        return user_query;
+    }
+    if (user_query.empty()) {
+        return system_text;
+    }
+    return system_text + "\n\n" + user_query;
+}
+
+struct ToolConstraintSpec {
+    std::string name;
+    std::vector<std::string> parameter_names;
+};
 
 class Tokenizer {
 public:
@@ -510,6 +540,8 @@ public:
         QWEN_EXPECT_CLOSE_BRACE,
         QWEN_EXPECT_END,
 
+        NEEDLE_START,
+
         LFM_START,              
         LFM_EXPECT_BRACKET, 
         LFM_IN_FUNC_NAME,
@@ -527,7 +559,7 @@ public:
     };
 
     void init(Config::ModelType model_type,
-              const std::vector<std::string>& function_names,
+              const std::vector<ToolConstraintSpec>& tools,
               Tokenizer* tokenizer);
 
     const std::unordered_map<uint32_t, float>& get_bias() const { return current_bias_; }
@@ -545,7 +577,20 @@ private:
     Tokenizer* tokenizer_ = nullptr;
 
     bool is_gemma_family() const { return Config::is_gemma_family(model_type_); }
+    bool is_needle() const { return model_type_ == Config::ModelType::NEEDLE; }
 
+    enum class NeedleJsonState {
+        FREE,
+        IN_NAME,
+        IN_ARG_KEY,
+    };
+
+    struct NeedleTrieNode {
+        std::unordered_map<char, std::unique_ptr<NeedleTrieNode>> children;
+        bool is_terminal = false;
+    };
+
+    std::vector<ToolConstraintSpec> tool_specs_;
     std::vector<std::string> function_names_;
     std::string generated_text_;
     int brace_depth_ = 0;
@@ -564,7 +609,19 @@ private:
     std::unordered_set<uint32_t> quote_tokens_;            
     std::unordered_set<uint32_t> backtick_tokens_;   
     std::unordered_set<uint32_t> all_func_name_tokens_;
-    std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;
+    NeedleJsonState needle_json_state_ = NeedleJsonState::FREE;
+    std::string needle_buffer_;
+    std::string needle_constrained_buf_;
+    std::string needle_current_function_;
+    bool needle_in_arguments_ = false;
+    int needle_arguments_depth_ = 0;
+    int needle_nesting_depth_ = 0;
+    bool needle_in_string_value_ = false;
+    bool needle_prev_char_escape_ = false;
+    std::unique_ptr<NeedleTrieNode> needle_name_trie_;
+    std::unordered_map<std::string, std::unique_ptr<NeedleTrieNode>> needle_param_tries_;
+    std::vector<std::string> needle_token_strings_;
+    std::unordered_map<char, std::vector<uint32_t>> needle_token_index_;
 
     std::unordered_set<uint32_t> tool_start_tokens_;
     std::unordered_set<uint32_t> tool_end_tokens_;
@@ -587,6 +644,15 @@ private:
     void add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set);
     void tokenize_function_names(bool quote_names);
     void init_common_tokens();
+    void init_needle_constraints();
+    void reset_needle_constraints();
+    void feed_needle_text(const std::string& text);
+    void feed_needle_char(char ch);
+    bool needle_at_arg_key_start() const;
+    bool needle_is_value_string_start() const;
+    void needle_insert_word(NeedleTrieNode* root, const std::string& word);
+    const NeedleTrieNode* needle_get_trie_node(const NeedleTrieNode* root, const std::string& prefix) const;
+    bool needle_check_token_valid(const std::string& token_text, const NeedleTrieNode* trie_node) const;
 };
 
 class Model {
@@ -647,7 +713,7 @@ public:
     virtual void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     virtual void compact_kv_cache() {}
 
-    void set_tool_constraints(const std::vector<std::string>& function_names);
+    void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
     void clear_tool_constraints();
     void update_tool_constraints(uint32_t token_id);
 

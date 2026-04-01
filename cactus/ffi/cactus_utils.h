@@ -1115,6 +1115,65 @@ static inline void append_lfm2_call(const std::string& entry,
     function_calls.push_back(json_call);
 }
 
+static inline size_t find_json_container_end(const std::string& text, size_t start) {
+    if (start >= text.size()) return std::string::npos;
+    if (text[start] != '{' && text[start] != '[') return std::string::npos;
+
+    int depth = 1;
+    bool in_string = false;
+    bool escaped = false;
+    size_t pos = start + 1;
+
+    while (pos < text.size() && depth > 0) {
+        char c = text[pos];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+        } else {
+            if (c == '"') {
+                in_string = true;
+            } else if (c == '{' || c == '[') {
+                depth++;
+            } else if (c == '}' || c == ']') {
+                depth--;
+            }
+        }
+        ++pos;
+    }
+
+    return depth == 0 ? pos : std::string::npos;
+}
+
+static inline void append_json_tool_calls_from_array(const std::string& array_json,
+                                                     std::vector<std::string>& function_calls) {
+    if (array_json.size() < 2 || array_json.front() != '[' || array_json.back() != ']') return;
+
+    size_t pos = 1;
+    while (pos + 1 < array_json.size()) {
+        while (pos + 1 < array_json.size() &&
+               (std::isspace(static_cast<unsigned char>(array_json[pos])) || array_json[pos] == ',')) {
+            ++pos;
+        }
+
+        if (pos + 1 >= array_json.size() || array_json[pos] == ']') break;
+        if (array_json[pos] != '{') break;
+
+        size_t obj_end = find_json_container_end(array_json, pos);
+        if (obj_end == std::string::npos) break;
+
+        std::string json_obj = trim_string(array_json.substr(pos, obj_end - pos));
+        if (json_obj.find("\"name\"") != std::string::npos) {
+            function_calls.push_back(json_obj);
+        }
+        pos = obj_end;
+    }
+}
+
 inline void parse_function_calls_from_response(const std::string& response_text,
                                                std::string& regular_response,
                                                std::vector<std::string>& function_calls) {
@@ -1123,42 +1182,60 @@ inline void parse_function_calls_from_response(const std::string& response_text,
 
     gemma::parse_function_calls(regular_response, function_calls);
 
-    // Parse Qwen-style function calls: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
-    const std::string QWEN_TOOL_START = "<tool_call>";
-    const std::string QWEN_TOOL_END = "</tool_call>";
-    size_t qwen_start_pos = 0;
+    // Parse Qwen/Needle-style function calls:
+    //   <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+    //   <tool_call>[{"name":"...", "arguments": {...}}]
+    const std::string TOOL_START = "<tool_call>";
+    const std::string TOOL_END = "</tool_call>";
+    size_t tool_start_pos = 0;
 
-    while ((qwen_start_pos = regular_response.find(QWEN_TOOL_START, qwen_start_pos)) != std::string::npos) {
-        size_t content_start = qwen_start_pos + QWEN_TOOL_START.length();
-        size_t qwen_end_pos = regular_response.find(QWEN_TOOL_END, content_start);
-
-        if (qwen_end_pos != std::string::npos) {
-            std::string json_content = regular_response.substr(content_start, qwen_end_pos - content_start);
-
-            size_t first = json_content.find_first_not_of(" \t\n\r");
-            size_t last = json_content.find_last_not_of(" \t\n\r");
-            if (first != std::string::npos && last != std::string::npos) {
-                json_content = json_content.substr(first, last - first + 1);
-            }
-
-            if (json_content.size() > 2 && json_content[0] == '{' &&
-                json_content.find("\"name\"") != std::string::npos) {
-                function_calls.push_back(json_content);
-            }
-
-            regular_response.erase(qwen_start_pos, qwen_end_pos + QWEN_TOOL_END.length() - qwen_start_pos);
-        } else {
-            break;
+    while ((tool_start_pos = regular_response.find(TOOL_START, tool_start_pos)) != std::string::npos) {
+        size_t content_start = tool_start_pos + TOOL_START.length();
+        while (content_start < regular_response.size() &&
+               std::isspace(static_cast<unsigned char>(regular_response[content_start]))) {
+            ++content_start;
         }
+
+        if (content_start >= regular_response.size()) break;
+        if (regular_response[content_start] != '{' && regular_response[content_start] != '[') {
+            tool_start_pos = content_start;
+            continue;
+        }
+
+        size_t json_end = find_json_container_end(regular_response, content_start);
+        if (json_end == std::string::npos) break;
+
+        std::string json_content = trim_string(regular_response.substr(content_start, json_end - content_start));
+        if (!json_content.empty()) {
+            if (json_content.front() == '{') {
+                if (json_content.find("\"name\"") != std::string::npos) {
+                    function_calls.push_back(json_content);
+                }
+            } else if (json_content.front() == '[') {
+                append_json_tool_calls_from_array(json_content, function_calls);
+            }
+        }
+
+        size_t erase_end = json_end;
+        size_t maybe_end = json_end;
+        while (maybe_end < regular_response.size() &&
+               std::isspace(static_cast<unsigned char>(regular_response[maybe_end]))) {
+            ++maybe_end;
+        }
+        if (regular_response.compare(maybe_end, TOOL_END.length(), TOOL_END) == 0) {
+            erase_end = maybe_end + TOOL_END.length();
+        }
+
+        regular_response.erase(tool_start_pos, erase_end - tool_start_pos);
     }
     
     // Parse LFM2-style function calls: <|tool_call_start|>[name(args)]<|tool_call_end|>
     const std::string TOOL_CALL_START = "<|tool_call_start|>";
     const std::string TOOL_CALL_END = "<|tool_call_end|>";
-    size_t tool_start_pos = 0;
+    size_t lfm2_start_pos = 0;
 
-    while ((tool_start_pos = regular_response.find(TOOL_CALL_START, tool_start_pos)) != std::string::npos) {
-        size_t content_start = tool_start_pos + TOOL_CALL_START.length();
+    while ((lfm2_start_pos = regular_response.find(TOOL_CALL_START, lfm2_start_pos)) != std::string::npos) {
+        size_t content_start = lfm2_start_pos + TOOL_CALL_START.length();
         size_t tool_end_pos = regular_response.find(TOOL_CALL_END, content_start);
 
         if (tool_end_pos != std::string::npos) {
@@ -1229,7 +1306,7 @@ inline void parse_function_calls_from_response(const std::string& response_text,
                 append_lfm2_call(content, function_calls);
             }
 
-            regular_response.erase(tool_start_pos, tool_end_pos + TOOL_CALL_END.length() - tool_start_pos);
+            regular_response.erase(lfm2_start_pos, tool_end_pos + TOOL_CALL_END.length() - lfm2_start_pos);
         } else {
             break;
         }

@@ -1040,10 +1040,6 @@ protected:
                                         ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
     size_t build_decoder_cross_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
                                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
-    size_t build_encoder_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
-                             ComputeBackend backend) const;
-    size_t build_decoder_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
-                             ComputeBackend backend) const;
     size_t build_encoder_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
                                            ComputeBackend backend, bool use_cache = false, size_t position_offset = 0);
     size_t build_decoder_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
@@ -1056,20 +1052,19 @@ private:
         size_t decoder_norm_weight = 0;
 
         struct EncoderLayerWeights {
+            size_t attn_gate_weight = 0;
             size_t attn_q_weight = 0;
             size_t attn_k_weight = 0;
             size_t attn_v_weight = 0;
             size_t attn_output_weight = 0;
             size_t input_norm_weight = 0;
-            size_t post_attn_norm_weight = 0;
             size_t attn_q_norm_weight = 0;
             size_t attn_k_norm_weight = 0;
-            size_t ffn_gate_weight = 0;
-            size_t ffn_up_weight = 0;
-            size_t ffn_down_weight = 0;
         };
 
         struct DecoderLayerWeights {
+            size_t self_attn_gate_weight = 0;
+            size_t cross_attn_gate_weight = 0;
             size_t self_attn_q_weight = 0;
             size_t self_attn_k_weight = 0;
             size_t self_attn_v_weight = 0;
@@ -1086,11 +1081,6 @@ private:
 
             size_t input_norm_weight = 0;
             size_t post_attn_norm_weight = 0;
-            size_t final_norm_weight = 0;
-
-            size_t ffn_gate_weight = 0;
-            size_t ffn_up_weight = 0;
-            size_t ffn_down_weight = 0;
         };
 
         std::vector<EncoderLayerWeights> encoder_layers;

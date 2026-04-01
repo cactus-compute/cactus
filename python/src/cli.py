@@ -71,7 +71,47 @@ from .downloads import get_model_dir_name, get_weights_dir, download_from_hf as 
 def is_needle_model_id(model_id):
     """Return True for the built-in Needle aliases handled by the custom exporter."""
     normalized = (model_id or "").strip().lower()
-    return normalized in {"needle", "cactus-compute/needle"}
+    if "/" in normalized:
+        normalized = normalized.split("/")[-1]
+    return normalized == "needle" or normalized.startswith("needle-") or normalized.startswith("needle_")
+
+
+def get_effective_weights_dir(model_id, args=None):
+    if not is_needle_model_id(model_id):
+        return get_weights_dir(model_id)
+
+    from .needle import resolve_needle_checkpoint_file, resolve_needle_output_dir
+
+    checkpoint_file = resolve_needle_checkpoint_file(
+        model_id,
+        getattr(args, 'checkpoint_file', None) if args is not None else None,
+    )
+    return resolve_needle_output_dir(
+        model_id=model_id,
+        checkpoint_file=checkpoint_file,
+        output_dir=getattr(args, 'output_dir', None) if args is not None else None,
+    )
+
+
+def add_needle_export_args(parser):
+    parser.add_argument('--checkpoint-file',
+                        help='Needle only: checkpoint filename such as needle_16_640_best.pkl')
+    parser.add_argument('--checkpoint-revision',
+                        help='Needle only: optional checkpoint revision')
+    parser.add_argument('--tokenizer-revision',
+                        help='Needle only: optional tokenizer revision')
+    parser.add_argument('--output-dir',
+                        help='Needle only: override the local weights directory (default: derived under weights/)')
+
+
+def copy_needle_download_args(dst, src):
+    for attr in (
+        'checkpoint_file',
+        'checkpoint_revision',
+        'tokenizer_revision',
+        'output_dir',
+    ):
+        setattr(dst, attr, getattr(src, attr, None))
 
 
 def check_command(cmd):
@@ -164,9 +204,8 @@ def download_from_hf(model_id, weights_dir, precision, weights_variant="auto"):
 def cmd_download(args):
     """Download model weights. By default downloads pre-converted weights from Cactus-Compute."""
     model_id = args.model_id
-    model_name = getattr(args, 'original_model_id', model_id)
     is_local = Path(model_id).is_dir()
-    weights_dir = get_weights_dir(model_id)
+    weights_dir = get_effective_weights_dir(model_id, args)
     reconvert = getattr(args, 'reconvert', False)
     precision = getattr(args, 'precision', 'INT4')
     weights_variant = _normalize_weights_variant(getattr(args, 'weights_variant', 'auto'))
@@ -191,6 +230,10 @@ def cmd_download(args):
             print_color(YELLOW, "Using Needle exporter...")
             export_needle_metadata(
                 output_dir=weights_dir,
+                model_id=model_id,
+                checkpoint_file=getattr(args, 'checkpoint_file', None),
+                checkpoint_revision=getattr(args, 'checkpoint_revision', None),
+                tokenizer_revision=getattr(args, 'tokenizer_revision', None),
                 hf_token=getattr(args, 'token', None),
                 cache_dir=getattr(args, 'cache_dir', None),
                 requested_precision=precision,
@@ -962,7 +1005,7 @@ def cmd_run(args):
         download_result = cmd_download(args)
         if download_result != 0:
             return download_result
-        weights_dir = get_weights_dir(model_id)
+        weights_dir = get_effective_weights_dir(model_id, args)
 
     image_path = getattr(args, 'image', None)
     if image_path:
@@ -1282,6 +1325,7 @@ def cmd_eval(args):
     dlargs.precision = getattr(args, 'precision', 'INT4')
     dlargs.cache_dir = getattr(args, 'cache_dir', None)
     dlargs.token = getattr(args, 'token', None)
+    copy_needle_download_args(dlargs, args)
     dlargs.reconvert = getattr(args, 'reconvert', False)
     dlargs.weights_variant = getattr(args, 'weights_variant', 'auto')
 
@@ -1289,7 +1333,7 @@ def cmd_eval(args):
     if download_result != 0:
         return download_result
 
-    weights_dir = get_weights_dir(model_id)
+    weights_dir = get_effective_weights_dir(model_id, args)
     extra = getattr(args, 'extra_args', None) or []
 
     def extra_has_flag(flag: str) -> bool:
@@ -1962,6 +2006,7 @@ def create_parser():
                                  help='Quantization precision (default: INT4)')
     download_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     download_parser.add_argument('--token', help='HuggingFace API token')
+    add_needle_export_args(download_parser)
     download_parser.add_argument('--weights-variant', choices=WEIGHTS_VARIANT_CHOICES, default='auto',
                                  help='Weights package preference: auto (default), apple, or standard')
     download_parser.add_argument('--reconvert', action='store_true',
@@ -1984,6 +2029,7 @@ def create_parser():
                             help='Quantization precision (default: INT4)')
     run_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     run_parser.add_argument('--token', help='HuggingFace API token')
+    add_needle_export_args(run_parser)
     run_parser.add_argument('--weights-variant', choices=WEIGHTS_VARIANT_CHOICES, default='auto',
                             help='Weights package preference for auto-download: auto, apple, or standard')
     run_parser.add_argument('--no-cloud-tele', action='store_true',
@@ -2030,6 +2076,7 @@ def create_parser():
                              help='Quantization precision (default: INT4)')
     eval_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     eval_parser.add_argument('--token', help='HuggingFace API token')
+    add_needle_export_args(eval_parser)
     eval_parser.add_argument('--weights-variant', choices=WEIGHTS_VARIANT_CHOICES, default='auto',
                              help='Weights package preference for auto-download: auto, apple, or standard')
     eval_parser.add_argument('--tools', action='store_true', help='Run tools evals (default)')

@@ -1,8 +1,10 @@
 #include "test_utils.h"
+#include <filesystem>
 #include <fstream>
 #include <cstdlib>
 #include <cstdio>
 #include <iostream>
+#include <sstream>
 #include <thread>
 #include <chrono>
 
@@ -22,6 +24,70 @@ static const char* g_options = R"({
     "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
     "telemetry_enabled": false
     })";
+
+namespace {
+
+bool is_needle_model() {
+    static int cached = -1;
+    if (cached >= 0) {
+        return cached == 1;
+    }
+
+    if (!g_model_path || *g_model_path == '\0') {
+        cached = 0;
+        return false;
+    }
+
+    const std::string model_path_str = g_model_path;
+    if (model_path_str.find("needle") != std::string::npos) {
+        cached = 1;
+        return true;
+    }
+
+    std::ifstream config(std::filesystem::path(g_model_path) / "config.txt");
+    if (!config.is_open()) {
+        cached = 0;
+        return false;
+    }
+
+    std::string line;
+    while (std::getline(config, line)) {
+        if (line == "model_type=needle") {
+            cached = 1;
+            return true;
+        }
+    }
+
+    cached = 0;
+    return false;
+}
+
+std::string make_chat_messages(const std::string& user_content, const char* system_content = nullptr) {
+    std::ostringstream oss;
+    oss << "[";
+    bool first = true;
+
+    if (system_content && *system_content) {
+        oss << "{\"role\":\"system\",\"content\":\"" << escape_json(system_content) << "\"}";
+        first = false;
+    }
+
+    if (!first) {
+        oss << ",";
+    }
+    oss << "{\"role\":\"user\",\"content\":\"" << escape_json(user_content) << "\"}";
+    oss << "]";
+    return oss.str();
+}
+
+std::string make_tool_test_messages(const std::string& user_content) {
+    if (is_needle_model()) {
+        return make_chat_messages(user_content);
+    }
+    return make_chat_messages(user_content, "You are a helpful assistant that can use tools.");
+}
+
+} // namespace
 
 template<typename TestFunc>
 bool run_test(const char* title, const char* messages, TestFunc test_logic,
@@ -381,10 +447,7 @@ bool test_prefill() {
 }
 
 bool test_tool_call() {
-    const char* messages = R"([
-        {"role": "system", "content": "You are a helpful assistant that can use tools."},
-        {"role": "user", "content": "What's the weather in San Francisco?"}
-    ])";
+    std::string messages = make_tool_test_messages("What's the weather in San Francisco?");
 
     const char* tools = R"([{
         "type": "function",
@@ -407,7 +470,7 @@ bool test_tool_call() {
         "force_tools": true
     })";
 
-    return EngineTestUtils::run_test("TOOL CALL TEST", g_model_path, messages, options_with_force_tools,
+    return EngineTestUtils::run_test("TOOL CALL TEST", g_model_path, messages.c_str(), options_with_force_tools,
         [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
             bool has_function = response.find("\"function_calls\":[") != std::string::npos;
             bool has_tool = has_function && response.find("get_weather") != std::string::npos;
@@ -419,10 +482,7 @@ bool test_tool_call() {
 }
 
 bool test_multiple_tool_call_invocations() {
-    const char* messages = R"([
-        {"role": "system", "content": "You are a helpful assistant that can use tools."},
-        {"role": "user", "content": "Send a message to Bob and get the weather for San Francisco."}
-    ])";
+    std::string messages = make_tool_test_messages("Send a message to Bob and get the weather for San Francisco.");
 
     const char* tools = R"([{
         "type": "function",
@@ -459,7 +519,7 @@ bool test_multiple_tool_call_invocations() {
         "force_tools": true
     })";
 
-    return EngineTestUtils::run_test("MULTIPLE TOOLS TEST", g_model_path, messages, options_with_force_tools,
+    return EngineTestUtils::run_test("MULTIPLE TOOLS TEST", g_model_path, messages.c_str(), options_with_force_tools,
         [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
             bool has_function = response.find("\"function_calls\":[") != std::string::npos;
             bool has_weather_tool = has_function
@@ -476,10 +536,7 @@ bool test_multiple_tool_call_invocations() {
 }
 
 bool test_tool_call_with_three_tools() {
-    const char* messages = R"([
-        {"role": "system", "content": "You are a helpful assistant that can use tools."},
-        {"role": "user", "content": "Send a message to John saying hello."}
-    ])";
+    std::string messages = make_tool_test_messages("Send a message to John saying hello.");
 
     const char* tools = R"([{
         "type": "function",
@@ -530,7 +587,7 @@ bool test_tool_call_with_three_tools() {
         "force_tools": true
     })";
 
-    return EngineTestUtils::run_test("TRIPLE TOOLS TEST", g_model_path, messages, options_with_force_tools,
+    return EngineTestUtils::run_test("TRIPLE TOOLS TEST", g_model_path, messages.c_str(), options_with_force_tools,
         [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
             bool has_function = response.find("\"function_calls\":[") != std::string::npos;
             bool has_tool = has_function && response.find("send_message") != std::string::npos;
@@ -561,12 +618,21 @@ bool test_1k_context() {
 
 int main() {
     TestUtils::TestRunner runner("LLM Tests");
-    runner.run_test("1k_context", test_1k_context());
-    runner.run_test("streaming", test_streaming());
-    runner.run_test("prefill", test_prefill());
-    runner.run_test("prefill_idempotent_reuse", test_prefill_idempotent_reuse());
-    runner.run_test("prefill_prefix_extension_reuse", test_prefill_prefix_extension_reuse());
-    runner.run_test("prefill_invalidated_on_message_change", test_prefill_invalidated_on_message_change());
+    if (is_needle_model()) {
+        runner.log_skip("1k_context", "generic QA prompt is off-format for Needle");
+        runner.log_skip("streaming", "Needle test path is single-turn query + tools");
+        runner.log_skip("prefill", "generic chat-format prefill test is not Needle-native");
+        runner.log_skip("prefill_idempotent_reuse", "generic chat-format prefill test is not Needle-native");
+        runner.log_skip("prefill_prefix_extension_reuse", "assistant-turn prefix test is not Needle-native");
+        runner.log_skip("prefill_invalidated_on_message_change", "generic chat-format prefill test is not Needle-native");
+    } else {
+        runner.run_test("1k_context", test_1k_context());
+        runner.run_test("streaming", test_streaming());
+        runner.run_test("prefill", test_prefill());
+        runner.run_test("prefill_idempotent_reuse", test_prefill_idempotent_reuse());
+        runner.run_test("prefill_prefix_extension_reuse", test_prefill_prefix_extension_reuse());
+        runner.run_test("prefill_invalidated_on_message_change", test_prefill_invalidated_on_message_change());
+    }
     runner.run_test("tool_calls", test_tool_call());
     runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
     runner.run_test("tool_calls_with_three_tools", test_tool_call_with_three_tools());
