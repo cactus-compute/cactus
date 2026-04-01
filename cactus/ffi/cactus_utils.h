@@ -231,6 +231,44 @@ inline void trim_mel_frames(std::vector<float>& mel, size_t num_mels, size_t val
     mel.swap(trimmed);
 }
 
+struct AudioPreprocessResult {
+    std::vector<float> features;
+    size_t num_frames = 0;
+    size_t num_soft_tokens = 0;
+};
+
+inline AudioPreprocessResult preprocess_audio_for_gemma4(
+    std::vector<float> audio_samples,
+    const cactus::engine::Config& model_config
+) {
+    AudioPreprocessResult result;
+    if (audio_samples.empty()) return result;
+
+    size_t pad_amt = 320 - (audio_samples.size() % 320);
+    if (pad_amt < 320)
+        audio_samples.resize(audio_samples.size() + pad_amt, 0.0f);
+
+    size_t mel_bins = model_config.audio_input_feat_size;
+    auto cfg = get_tinyllama_audio_spectrogram_config(model_config);
+
+    size_t semicausal_pad = cfg.frame_length / 2;
+    audio_samples.insert(audio_samples.begin(), semicausal_pad, 0.0f);
+
+    cactus::engine::AudioProcessor ap;
+    size_t fft_for_mel = cfg.fft_override > 0 ? cfg.fft_override : cfg.n_fft;
+    ap.init_mel_filters(fft_for_mel / 2 + 1, mel_bins, 0.0f, 8000.0f, 16000,
+                        nullptr, "htk");
+    std::vector<float> mel = ap.compute_spectrogram(audio_samples, cfg);
+
+    result.num_frames = mel.size() / mel_bins;
+    result.features = std::move(transpose_mel_to_frame_major(mel, mel_bins, result.num_frames));
+
+    size_t after_stage1 = (result.num_frames + 1) / 2;
+    result.num_soft_tokens = (after_stage1 + 1) / 2;
+
+    return result;
+}
+
 } // namespace audio
 } // namespace cactus
 
@@ -470,10 +508,12 @@ inline void handle_error_response(const std::string& error_message, char* respon
     }
 }
 
-inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::string& json, 
-                                                                   std::vector<std::string>& out_image_paths) {
+inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::string& json,
+                                                                   std::vector<std::string>& out_image_paths,
+                                                                   std::vector<std::string>* out_audio_paths = nullptr) {
     std::vector<cactus::engine::ChatMessage> messages;
     out_image_paths.clear();
+    if (out_audio_paths) out_audio_paths->clear();
     
     size_t pos = json.find('[');
     if (pos == std::string::npos) {
@@ -526,39 +566,37 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
             }
         }
         
-        size_t images_pos = json.find("\"images\"", pos);
-        if (images_pos != std::string::npos && images_pos < obj_end) {
-            size_t array_start = json.find('[', images_pos);
-            if (array_start != std::string::npos && array_start < obj_end) {
-                size_t array_end = json.find(']', array_start);
-                if (array_end != std::string::npos && array_end < obj_end) {
-                    size_t img_pos = array_start;
-                    while (true) {
-                        img_pos = json.find('"', img_pos + 1);
-                        if (img_pos == std::string::npos || img_pos >= array_end) break;
-                        
-                        size_t img_start = img_pos + 1;
-                        size_t img_end = json.find('"', img_start);
-                        if (img_end == std::string::npos || img_end > array_end) break;
-                        
-                        std::string img_path = json.substr(img_start, img_end - img_start);
-                        
-                        std::filesystem::path p(img_path);
-                        img_path = std::filesystem::absolute(p).string();
-                        
-                        msg.images.push_back(img_path);
-                        out_image_paths.push_back(img_path);
-                        img_pos = img_end;
-                    }
-                }
+        auto parse_path_array = [&](const char* key, std::vector<std::string>& dest,
+                                    std::vector<std::string>* out_paths) {
+            size_t key_pos = json.find(key, pos);
+            if (key_pos == std::string::npos || key_pos >= obj_end) return;
+            size_t array_start = json.find('[', key_pos);
+            if (array_start == std::string::npos || array_start >= obj_end) return;
+            size_t array_end = json.find(']', array_start);
+            if (array_end == std::string::npos || array_end >= obj_end) return;
+            size_t cur = array_start;
+            while (true) {
+                cur = json.find('"', cur + 1);
+                if (cur == std::string::npos || cur >= array_end) break;
+                size_t str_start = cur + 1;
+                size_t str_end = json.find('"', str_start);
+                if (str_end == std::string::npos || str_end > array_end) break;
+                std::string path = std::filesystem::absolute(
+                    std::filesystem::path(json.substr(str_start, str_end - str_start))).string();
+                dest.push_back(path);
+                if (out_paths) out_paths->push_back(path);
+                cur = str_end;
             }
-        }
-        
+        };
+
+        parse_path_array("\"images\"", msg.images, &out_image_paths);
+        parse_path_array("\"audio\"", msg.audio, out_audio_paths);
+
         messages.push_back(msg);
-        
+
         pos = json.find('{', obj_end);
     }
-    
+
     return messages;
 }
 

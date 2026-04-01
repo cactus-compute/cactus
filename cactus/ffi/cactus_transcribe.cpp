@@ -235,33 +235,15 @@ int cactus_transcribe(
             }
 
             const auto& model_config = handle->model->get_config();
-            size_t tinyllama_mel_bins = model_config.audio_input_feat_size;
             uint32_t audio_token_id = model_config.audio_token_id;
             if (audio_token_id == 0) {
                 CACTUS_LOG_WARN("transcribe", "audio_token_id not set in config, using default 258881");
                 audio_token_id = 258881;
             }
 
-            size_t pad_amt = 320 - (audio_samples.size() % 320);
-            if (pad_amt < 320)
-                audio_samples.resize(audio_samples.size() + pad_amt, 0.0f);
-
-            auto tinyllama_cfg = get_tinyllama_audio_spectrogram_config(model_config);
-
-            size_t semicausal_pad = tinyllama_cfg.frame_length / 2;
-            audio_samples.insert(audio_samples.begin(), semicausal_pad, 0.0f);
-            AudioProcessor ap;
-            size_t fft_for_mel = tinyllama_cfg.fft_override > 0 ? tinyllama_cfg.fft_override : tinyllama_cfg.n_fft;
-            ap.init_mel_filters(fft_for_mel / 2 + 1, tinyllama_mel_bins, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE,
-                                nullptr, "htk");
-            std::vector<float> mel = ap.compute_spectrogram(audio_samples, tinyllama_cfg);
-
-            size_t num_frames = mel.size() / tinyllama_mel_bins;
-
-            std::vector<float> audio_features = transpose_mel_to_frame_major(mel, tinyllama_mel_bins, num_frames);
-
-            size_t after_stage1 = (num_frames + 1) / 2;
-            size_t num_soft_tokens = (after_stage1 + 1) / 2;
+            auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(audio_samples, model_config);
+            std::vector<float>& audio_features = audio_prep.features;
+            size_t num_soft_tokens = audio_prep.num_soft_tokens;
 
             auto* tokenizer = handle->model->get_tokenizer();
             if (!tokenizer) {

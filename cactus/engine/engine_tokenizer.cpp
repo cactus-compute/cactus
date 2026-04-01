@@ -460,6 +460,12 @@ std::string Tokenizer::format_tinyllama_style(const std::vector<ChatMessage>& me
                 }
             }
             result += msg.content;
+            if (msg.audio_soft_token_count > 0) {
+                result += "<|audio>";
+                for (size_t j = 0; j < msg.audio_soft_token_count; j++)
+                    result += "<|audio|>";
+                result += "<audio|>";
+            }
         }
         result += "<turn|>\n";
     }

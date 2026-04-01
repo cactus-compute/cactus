@@ -232,6 +232,8 @@ struct ChatMessage {
     std::string content;
     std::string name;
     std::vector<std::string> images;
+    std::vector<std::string> audio;
+    size_t audio_soft_token_count = 0;
 };
 
 struct TokenizerRuntimeConfig {

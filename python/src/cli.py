@@ -931,9 +931,18 @@ def cmd_run(args):
     print_color(GREEN, f"Starting Cactus Chat with model: {model_id}")
     print()
 
+    audio_path = getattr(args, 'audio', None)
+    if audio_path:
+        audio_path = str(Path(audio_path).resolve())
+        if not Path(audio_path).exists():
+            print_color(RED, f"Error: Audio file not found: {audio_path}")
+            return 1
+
     cmd_args = [str(chat_binary), str(weights_dir)]
     if image_path:
         cmd_args.extend(['--image', image_path])
+    if audio_path:
+        cmd_args.extend(['--audio', audio_path])
     system_prompt = getattr(args, 'system', None)
     if system_prompt:
         cmd_args.extend(['--system', system_prompt])
@@ -1931,6 +1940,8 @@ def create_parser():
                             help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
     run_parser.add_argument('--image',
                             help='Path to image file for VLM inference (attached to first message)')
+    run_parser.add_argument('--audio',
+                            help='Path to audio file (WAV) for audio chat (attached to first message)')
     run_parser.add_argument('--system',
                             help='System prompt to prepend to all messages')
     run_parser.add_argument('--no-thinking', action='store_true',

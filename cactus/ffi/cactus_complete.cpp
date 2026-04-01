@@ -2,6 +2,7 @@
 #include "cactus_cloud.h"
 #include "cactus_utils.h"
 #include "telemetry/telemetry.h"
+#include "../../libs/audio/wav.h"
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -172,15 +173,23 @@ struct PreparedPrompt {
     InferenceOptions options;
     Config::ModelType model_type = Config::ModelType::QWEN;
     std::vector<std::string> image_paths;
+    std::vector<std::string> audio_paths;
     std::vector<ChatMessage> messages;
     std::vector<ToolFunction> tools;
     std::vector<uint32_t> tokens;
     size_t context_token_count = 0;
     std::vector<std::vector<CactusModelHandle::ProcessedImage>> images;
 
+    std::vector<float> audio_features;
+    size_t audio_num_frames = 0;
+
     bool has_images() const {
         return std::any_of(images.begin(), images.end(),
             [](const auto& msg_imgs) { return !msg_imgs.empty(); });
+    }
+
+    bool has_audio() const {
+        return !audio_features.empty();
     }
 };
 
@@ -279,7 +288,7 @@ PreparedPrompt prepare_prompt(
 
     PreparedPrompt prompt;
     prompt.options = parse_inference_options_json(options_json ? options_json : "");
-    prompt.messages = parse_messages_json(messages_json, prompt.image_paths);
+    prompt.messages = parse_messages_json(messages_json, prompt.image_paths, &prompt.audio_paths);
     if (prompt.messages.empty()) {
         throw std::runtime_error("No messages provided");
     }
@@ -307,6 +316,23 @@ PreparedPrompt prepare_prompt(
     }
 
     prompt.model_type = handle->model->get_config().model_type;
+
+    if (!prompt.audio_paths.empty() && prompt.model_type == Config::ModelType::TINYLLAMA) {
+        for (auto it = prompt.messages.rbegin(); it != prompt.messages.rend(); ++it) {
+            if (!it->audio.empty()) {
+                const std::string& audio_path = it->audio.back();
+                AudioFP32 wav = load_wav(audio_path);
+                std::vector<float> audio_samples = resample_to_16k_fp32(wav.samples, wav.sample_rate);
+
+                auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(audio_samples, handle->model->get_config());
+                prompt.audio_features = std::move(audio_prep.features);
+                prompt.audio_num_frames = audio_prep.num_frames;
+                it->audio_soft_token_count = audio_prep.num_soft_tokens;
+                break;
+            }
+        }
+    }
+
     std::string formatted_tools;
     if (Config::is_gemma_family(prompt.model_type)) {
         formatted_tools = gemma::format_tools(prompt.tools, prompt.model_type == Config::ModelType::TINYLLAMA);
@@ -460,22 +486,27 @@ int cactus_complete(
             << ", max_tokens: " << prompt.options.max_tokens);
 
         bool has_images = prompt.has_images();
-
-        auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
-        size_t prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
+        bool has_audio = prompt.has_audio();
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());
 
         std::vector<uint32_t> generated_tokens;
         double time_to_first_token = 0.0;
         float first_token_entropy = 0.0f;
+        uint32_t next_token;
+        size_t prompt_tokens;
 
-        uint32_t next_token = generate_first_token(
-            handle,
-            prefill_result,
-            prompt,
-            &first_token_entropy
-        );
+        if (has_audio) {
+            prompt_tokens = prompt.tokens.size();
+            next_token = handle->model->decode_with_audio(
+                prompt.tokens, prompt.audio_features,
+                prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
+                "", &first_token_entropy);
+        } else {
+            auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
+            prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
+            next_token = generate_first_token(handle, prefill_result, prompt, &first_token_entropy);
+        }
 
         handle->processed_tokens = prompt.tokens;
         handle->processed_images = prompt.images;
@@ -533,9 +564,16 @@ int cactus_complete(
                 if (handle->should_stop) break;
 
                 float token_entropy = 0.0f;
-                next_token = decode(handle->model, {next_token}, prompt.options, &token_entropy);
-                generated_tokens.push_back(next_token);
+                if (has_audio) {
+                    next_token = handle->model->decode_with_audio(
+                        handle->processed_tokens, prompt.audio_features,
+                        prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
+                        "", &token_entropy);
+                } else {
+                    next_token = decode(handle->model, {next_token}, prompt.options, &token_entropy);
+                }
                 handle->processed_tokens.push_back(next_token);
+                generated_tokens.push_back(next_token);
 
                 entropy.add(token_entropy);
 
