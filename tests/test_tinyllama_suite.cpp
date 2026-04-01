@@ -2,6 +2,7 @@
 #include "../cactus/models/tinyllama/model_tinyllama.h"
 #include "../cactus/ffi/cactus_utils.h"
 #include "../libs/audio/wav.h"
+#include <algorithm>
 #include <chrono>
 #include <iomanip>
 #include <iostream>
@@ -53,6 +54,15 @@ struct LocalPerfMetrics {
     size_t completion_tokens = 0;
 };
 
+struct AudioEncoderOnlyMetrics {
+    bool collected = false;
+    bool npu_enabled = false;
+    size_t input_frames = 0;
+    size_t output_steps = 0;
+    double encoder_ms = 0.0;
+    double output_steps_per_s = 0.0;
+};
+
 static LocalPerfMetrics compute_local_perf_metrics(size_t prompt_tokens,
                                                    size_t completion_tokens,
                                                    double ttft_ms,
@@ -70,20 +80,39 @@ static LocalPerfMetrics compute_local_perf_metrics(size_t prompt_tokens,
     return m;
 }
 
-static void print_local_perf_metrics(const LocalPerfMetrics& m) {
+static void print_local_perf_metrics(const LocalPerfMetrics& m,
+                                     const AudioEncoderOnlyMetrics* encoder_metrics = nullptr) {
     std::streamsize old_precision = std::cout.precision();
     std::ios::fmtflags old_flags = std::cout.flags();
     std::cout << std::fixed << std::setprecision(2);
-    std::cout << "  Metrics: "
+    std::cout << "  Performance:\n";
+    if (encoder_metrics && encoder_metrics->collected) {
+        std::cout << "    encoder_only : " << encoder_metrics->encoder_ms << " ms"
+                  << " | mode=" << (encoder_metrics->npu_enabled ? "npu" : "cpu")
+                  << " | in_frames=" << encoder_metrics->input_frames
+                  << " | out_steps=" << encoder_metrics->output_steps
+                  << " | out_steps_per_s=" << encoder_metrics->output_steps_per_s
+                  << "\n";
+    }
+    std::cout << "    end_to_end   : "
               << "ttft_ms=" << m.time_to_first_token_ms
-              << ", total_time_ms=" << m.total_time_ms
-              << ", prefill_tps=" << m.prefill_tps
-              << ", decode_tps=" << m.decode_tps
-              << ", prompt_tokens=" << m.prompt_tokens
-              << ", completion_tokens=" << m.completion_tokens
+              << " | total_time_ms=" << m.total_time_ms
+              << "\n";
+    std::cout << "    throughput   : "
+              << "prefill_tps=" << m.prefill_tps
+              << " | decode_tps=" << m.decode_tps
+              << "\n";
+    std::cout << "    token_counts : "
+              << "prompt=" << m.prompt_tokens
+              << " | completion=" << m.completion_tokens
               << "\n";
     std::cout.flags(old_flags);
     std::cout.precision(old_precision);
+}
+
+static std::string preview_text(const std::string& text, size_t max_chars = 240) {
+    if (text.size() <= max_chars) return text;
+    return text.substr(0, max_chars) + "...";
 }
 
 
@@ -310,8 +339,10 @@ bool test_tinyllama_audio(bool expect_npu) {
     }
 
     auto* mm = dynamic_cast<TinyLlamaMmModel*>(model.get());
-    if (mm && !expect_npu)
-        mm->audio_encoder().disable_npu_ = true;
+    if (mm) {
+        if (!expect_npu)
+            mm->audio_encoder().disable_npu_ = true;
+    }
 
     if (!model->init(model_path, 2048, "", true)) {
         std::cerr << "  FAIL: model init\n";
@@ -346,6 +377,30 @@ bool test_tinyllama_audio(bool expect_npu) {
 #endif
 
     auto audio_features = transpose_mel_to_frame_major(mel, mel_bins, num_frames);
+
+    AudioEncoderOnlyMetrics encoder_only_metrics;
+    encoder_only_metrics.input_frames = num_frames;
+    if (mm) {
+        encoder_only_metrics.npu_enabled = mm->audio_encoder().use_npu_encoder_;
+        if (model->graph_handle_) {
+            auto* gb = static_cast<CactusGraph*>(model->graph_handle_);
+            auto backend = cfg.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+            gb->soft_reset();
+
+            auto encoder_start = std::chrono::high_resolution_clock::now();
+            size_t encoded_audio = mm->audio_encoder().forward_audio(gb, audio_features, num_frames, backend);
+            gb->execute();
+            auto encoder_end = std::chrono::high_resolution_clock::now();
+
+            encoder_only_metrics.encoder_ms = std::chrono::duration_cast<std::chrono::microseconds>(encoder_end - encoder_start).count() / 1000.0;
+            const auto& encoded_buf = gb->get_output_buffer(encoded_audio);
+            encoder_only_metrics.output_steps = encoded_buf.shape.empty() ? 0 : encoded_buf.shape[0];
+            encoder_only_metrics.output_steps_per_s = encoder_only_metrics.encoder_ms > 0.0
+                ? (static_cast<double>(encoder_only_metrics.output_steps) * 1000.0) / encoder_only_metrics.encoder_ms
+                : 0.0;
+            encoder_only_metrics.collected = true;
+        }
+    }
 
     size_t after_stage1 = (num_frames + 1) / 2;
     size_t num_soft_tokens = (after_stage1 + 1) / 2;
@@ -384,8 +439,8 @@ bool test_tinyllama_audio(bool expect_npu) {
     double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
     auto metrics = compute_local_perf_metrics(prompt_token_count, completion_tokens, ttft_ms, total_time_ms);
 
-    print_local_perf_metrics(metrics);
-    std::cout << "  Transcript: " << output << "\n";
+    print_local_perf_metrics(metrics, &encoder_only_metrics);
+    std::cout << "  Transcript: " << preview_text(output) << "\n";
 
     if (output.empty()) {
         std::cerr << "  FAIL: empty output\n";
