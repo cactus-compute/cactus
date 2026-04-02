@@ -112,7 +112,7 @@ GEMMA3N_GLOBAL_WEIGHTS = [
 GEMMA3N_VISION_TOWER_PREFIX = 'model.vision_tower.timm_model.'
 GEMMA3N_AUDIO_TOWER_PREFIX = 'model.audio_tower.'
 
-TINYLLAMA_GLOBAL_WEIGHTS = [
+GEMMA4_GLOBAL_WEIGHTS = [
     ('model.language_model.embed_tokens_per_layer.weight', 'embed_tokens_per_layer.weights'),
     ('model.language_model.per_layer_model_projection.weight', 'per_layer_model_proj.weights'),
     ('model.language_model.per_layer_projection_norm.weight', 'per_layer_proj_norm.weights'),
@@ -122,8 +122,8 @@ TINYLLAMA_GLOBAL_WEIGHTS = [
     ('model.embed_audio.embedding_projection.weight', 'embed_audio_proj.weights'),
 ]
 
-TINYLLAMA_VISION_TOWER_PREFIX = 'model.vision_tower.'
-TINYLLAMA_AUDIO_TOWER_PREFIX = 'model.audio_tower.'
+GEMMA4_VISION_TOWER_PREFIX = 'model.vision_tower.'
+GEMMA4_AUDIO_TOWER_PREFIX = 'model.audio_tower.'
 
 WHISPER_GLOBAL_WEIGHTS = [
     ('decoder.embed_tokens.weight', 'decoder_token_embeddings.weights'),

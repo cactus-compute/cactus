@@ -155,7 +155,7 @@ inline cactus::engine::AudioProcessor::SpectrogramConfig get_htk_spectrogram_con
     return cfg;
 }
 
-inline cactus::engine::AudioProcessor::SpectrogramConfig get_tinyllama_audio_spectrogram_config(
+inline cactus::engine::AudioProcessor::SpectrogramConfig get_gemma4_audio_spectrogram_config(
     const cactus::engine::Config& model_config) {
     auto cfg = get_htk_spectrogram_config();
     cfg.fft_override = model_config.audio_fft_length;
@@ -249,7 +249,7 @@ inline AudioPreprocessResult preprocess_audio_for_gemma4(
         audio_samples.resize(audio_samples.size() + pad_amt, 0.0f);
 
     size_t mel_bins = model_config.audio_input_feat_size;
-    auto cfg = get_tinyllama_audio_spectrogram_config(model_config);
+    auto cfg = get_gemma4_audio_spectrogram_config(model_config);
 
     size_t semicausal_pad = cfg.frame_length / 2;
     audio_samples.insert(audio_samples.begin(), semicausal_pad, 0.0f);
@@ -261,7 +261,7 @@ inline AudioPreprocessResult preprocess_audio_for_gemma4(
     std::vector<float> mel = ap.compute_spectrogram(audio_samples, cfg);
 
     result.num_frames = mel.size() / mel_bins;
-    result.features = std::move(transpose_mel_to_frame_major(mel, mel_bins, result.num_frames));
+    result.features = transpose_mel_to_frame_major(mel, mel_bins, result.num_frames);
 
     size_t after_stage1 = (result.num_frames + 1) / 2;
     result.num_soft_tokens = (after_stage1 + 1) / 2;

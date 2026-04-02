@@ -14,7 +14,7 @@ from .weight_patterns import (
     EMBED_NAMES, OUTPUT_NAMES, OUTPUT_NORM_NAMES, LAYER_PREFIXES,
     VISION_ITEMS, PROJECTOR_WEIGHTS, WHISPER_GLOBAL_WEIGHTS, MOONSHINE_GLOBAL_WEIGHTS,
     GEMMA3N_GLOBAL_WEIGHTS, GEMMA3N_VISION_TOWER_PREFIX, GEMMA3N_AUDIO_TOWER_PREFIX,
-    TINYLLAMA_GLOBAL_WEIGHTS, TINYLLAMA_VISION_TOWER_PREFIX, TINYLLAMA_AUDIO_TOWER_PREFIX,
+    GEMMA4_GLOBAL_WEIGHTS, GEMMA4_VISION_TOWER_PREFIX, GEMMA4_AUDIO_TOWER_PREFIX,
     get_layer_weight_patterns, get_vision_layer_weights
 )
 
@@ -129,12 +129,12 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         tie_word_embeddings = bool(tie_word_embeddings)
 
     detected_model_type = detect_model_type(config, root_config, output_dir)
-    if detected_model_type == 'tinyllama':
+    if detected_model_type == 'gemma4':
         # Normalize Gemma-4 audio tower naming variants (legacy -> runtime expected)
         # before exporting filenames so generated weights match the C++ loader.
         remapped_state_dict = _remap_gemma4_audio_keys(state_dict)
         if set(remapped_state_dict.keys()) != set(state_dict.keys()):
-            print("  Normalized tinyllama audio tower key naming for conversion")
+            print("  Normalized gemma4 audio tower key naming for conversion")
         state_dict = remapped_state_dict
 
     model_config = extract_base_config(config, root_config)
@@ -146,7 +146,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
 
     if detected_model_type == 'gemma3n':
         model_config.update(extract_complex_gemma_config(config, root_config))
-    elif detected_model_type == 'tinyllama':
+    elif detected_model_type == 'gemma4':
         model_config.update(extract_complex_gemma_config(config, root_config))
         audio_cfg = cfg_get(root_config, 'audio_config', cfg_get(config, 'audio_config', None))
         if audio_cfg is not None:
@@ -449,7 +449,7 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 save_tensor_with_header(state_dict[hf_key], output_dir / out_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                 saved_tensor_full_names.add(hf_key)
 
-    if detected_model_type == 'tinyllama':
+    if detected_model_type == 'gemma4':
         pli_key = 'model.language_model.embed_tokens_per_layer.weight'
         if pli_key in state_dict:
             pli_tensor = state_dict[pli_key]
@@ -458,27 +458,27 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 pad_rows = main_vocab - pli_tensor.shape[0]
                 state_dict[pli_key] = torch.cat([pli_tensor, pli_tensor[0:1].expand(pad_rows, -1)], dim=0)
 
-        for name, save_name in TINYLLAMA_GLOBAL_WEIGHTS:
+        for name, save_name in GEMMA4_GLOBAL_WEIGHTS:
             if name in state_dict:
                 save_tensor_with_header(state_dict[name], output_dir / save_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                 saved_tensor_full_names.add(name)
 
         text_hidden = int(model_config.get('hidden_dim', 0))
-        assert text_hidden > 0, "Hidden dim must be specified in config for tinyllama model"
+        assert text_hidden > 0, "Hidden dim must be specified in config for gemma4 model"
         proj_norm = np.ones(text_hidden, dtype=np.float32)
         save_tensor_with_header(proj_norm, output_dir / 'embed_vision_post_proj_norm.weights', 'FP16',
                                 stats_tracker=quantization_stats, model_type=detected_model_type)
 
         for hf_key in sorted(state_dict.keys()):
-            if hf_key.startswith(TINYLLAMA_VISION_TOWER_PREFIX) and hf_key not in saved_tensor_full_names:
-                out_name = _gemma_tower_output_name(hf_key, TINYLLAMA_VISION_TOWER_PREFIX, 'vision_')
+            if hf_key.startswith(GEMMA4_VISION_TOWER_PREFIX) and hf_key not in saved_tensor_full_names:
+                out_name = _gemma_tower_output_name(hf_key, GEMMA4_VISION_TOWER_PREFIX, 'vision_')
                 save_tensor_with_header(state_dict[hf_key], output_dir / out_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                 saved_tensor_full_names.add(hf_key)
                 del state_dict[hf_key]
 
         for hf_key in sorted(state_dict.keys()):
-            if hf_key.startswith(TINYLLAMA_AUDIO_TOWER_PREFIX) and hf_key not in saved_tensor_full_names:
-                out_name = _gemma_tower_output_name(hf_key, TINYLLAMA_AUDIO_TOWER_PREFIX, 'audio_')
+            if hf_key.startswith(GEMMA4_AUDIO_TOWER_PREFIX) and hf_key not in saved_tensor_full_names:
+                out_name = _gemma_tower_output_name(hf_key, GEMMA4_AUDIO_TOWER_PREFIX, 'audio_')
                 save_tensor_with_header(state_dict[hf_key], output_dir / out_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                 saved_tensor_full_names.add(hf_key)
                 del state_dict[hf_key]

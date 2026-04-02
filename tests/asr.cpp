@@ -178,10 +178,10 @@ void print_token(const char* token, uint32_t /*token_id*/, void* /*user_data*/) 
     std::cout << token << std::flush;
 }
 
-bool is_tinyllama_model(const std::string& model_path) {
+bool is_gemma4_model(const std::string& model_path) {
     std::string p = model_path;
     std::transform(p.begin(), p.end(), p.begin(), [](unsigned char c) { return std::tolower(c); });
-    return p.find("tinyllama") != std::string::npos ||
+    return p.find("gemma4") != std::string::npos ||
            p.find("gemma-3n") != std::string::npos ||
            p.find("gemma3n") != std::string::npos;
 }
@@ -194,7 +194,7 @@ std::string get_transcribe_prompt(const std::string& model_path, const std::stri
     if (path_lower.find("whisper") != std::string::npos) {
         return "<|startoftranscript|><|" + language + "|><|transcribe|>";
     }
-    if (is_tinyllama_model(model_path)) {
+    if (is_gemma4_model(model_path)) {
         return "Transcribe the audio.";
     }
     return "";
@@ -382,7 +382,7 @@ void audio_callback(void* /*userdata*/, Uint8* stream, int len) {
 }
 
 int run_live_transcription(cactus_model_t model, const std::string& model_path, const std::string& language = "en") {
-    bool tinyllama_mode = is_tinyllama_model(model_path);
+    bool gemma4_mode = is_gemma4_model(model_path);
     if (SDL_Init(SDL_INIT_AUDIO) < 0) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD)
                   << "Failed to initialize SDL: " << SDL_GetError() << "\n";
@@ -429,7 +429,7 @@ int run_live_transcription(cactus_model_t model, const std::string& model_path, 
     std::string options = R"({"confirmation_threshold": 0.99, "min_chunk_size": 16000, "telemetry_enabled": true, "language": ")" + language + R"("})";
     cactus_stream_transcribe_t stream = nullptr;
 
-    if (!tinyllama_mode) {
+    if (!gemma4_mode) {
         stream = cactus_stream_transcribe_start(model, options.c_str());
         if (!stream) {
             std::cerr << colored("Error: ", Color::RED + Color::BOLD)
@@ -474,7 +474,7 @@ int run_live_transcription(cactus_model_t model, const std::string& model_path, 
     const auto process_interval = std::chrono::milliseconds(1000);
 
     while (!should_stop) {
-        if (tinyllama_mode) {
+        if (gemma4_mode) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
@@ -641,14 +641,14 @@ int run_live_transcription(cactus_model_t model, const std::string& model_path, 
     g_audio_state.recording = false;
     SDL_PauseAudioDevice(device, 1);
 
-    if (tinyllama_mode) {
-        std::vector<uint8_t> tinyllama_all_audio;
+    if (gemma4_mode) {
+        std::vector<uint8_t> gemma4_all_audio;
         {
             std::lock_guard<std::mutex> lock(g_audio_state.mutex);
-            tinyllama_all_audio = resample_audio(g_audio_state.buffer, g_audio_state.actual_sample_rate, TARGET_SAMPLE_RATE);
+            gemma4_all_audio = resample_audio(g_audio_state.buffer, g_audio_state.actual_sample_rate, TARGET_SAMPLE_RATE);
         }
 
-        double duration_sec = (tinyllama_all_audio.size() / 2) / static_cast<double>(TARGET_SAMPLE_RATE);
+        double duration_sec = (gemma4_all_audio.size() / 2) / static_cast<double>(TARGET_SAMPLE_RATE);
         std::cout << "\n" << colored("Recorded ", Color::GREEN)
                   << std::fixed << std::setprecision(1) << duration_sec << "s"
                   << colored(" — transcribing...", Color::YELLOW) << "\n\n";
@@ -661,7 +661,7 @@ int run_live_transcription(cactus_model_t model, const std::string& model_path, 
             model, nullptr, prompt.c_str(),
             response_buffer.data(), response_buffer.size(),
             tl_options.c_str(), print_token, nullptr,
-            tinyllama_all_audio.data(), tinyllama_all_audio.size()
+            gemma4_all_audio.data(), gemma4_all_audio.size()
         );
 
         std::cout << "\n\n";

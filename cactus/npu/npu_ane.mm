@@ -92,7 +92,7 @@ static void maybe_apply_compute_units_env(const char* env_name, MLComputeUnits& 
 static MLComputeUnits resolve_compute_units_for_model(NSString* model_path, bool is_prefill) {
     MLComputeUnits units = MLComputeUnitsCPUAndNeuralEngine;
 
-    // Gemma4/TinyLlama multimodal encoders show better fidelity on CPU+GPU.
+    // Gemma4 multimodal encoders show better fidelity on CPU+GPU.
     if (!is_prefill && model_path_looks_like_audio_encoder(model_path)) {
         units = MLComputeUnitsCPUAndGPU;
     }

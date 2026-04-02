@@ -19,9 +19,9 @@ static std::vector<float> extract(CactusGraph* gb, size_t node) {
 }
 
 int main() {
-    const char* model_path = std::getenv("CACTUS_TEST_TINYLLAMA_MODEL");
+    const char* model_path = std::getenv("CACTUS_TEST_GEMMA4_MODEL");
     std::string assets = std::getenv("CACTUS_TEST_ASSETS") ? std::getenv("CACTUS_TEST_ASSETS") : "../assets";
-    if (!model_path) { std::cerr << "Set CACTUS_TEST_TINYLLAMA_MODEL\n"; return 1; }
+    if (!model_path) { std::cerr << "Set CACTUS_TEST_GEMMA4_MODEL\n"; return 1; }
 
     auto mel = load_bin(assets + "/audio_test_mel_input.bin");
     if (mel.empty()) { std::cerr << "No mel input\n"; return 1; }
@@ -29,7 +29,7 @@ int main() {
     auto model = create_model(model_path);
     if (!model || !model->init(model_path, 2048, "", false)) { std::cerr << "Init failed\n"; return 1; }
 
-    auto* mm = dynamic_cast<TinyLlamaMmModel*>(model.get());
+    auto* mm = dynamic_cast<Gemma4MmModel*>(model.get());
     auto* gb = static_cast<CactusGraph*>(model->graph_handle_);
     size_t num_frames = mel.size() / 128;
 

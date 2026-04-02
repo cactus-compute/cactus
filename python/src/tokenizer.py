@@ -11,7 +11,7 @@ SENTENCEPIECE_MODEL_TYPES = {
 }
 
 SENTENCEPIECE_MODEL_TYPES = {
-    'gemma', 'gemma3n', 'llama', 'tinyllama', 'smol', 'bert', 't5',
+    'gemma', 'gemma3n', 'llama', 'gemma4', 'smol', 'bert', 't5',
 }
 
 BPE_MODEL_TYPES = {

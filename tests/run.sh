@@ -102,7 +102,7 @@ fi
 
 echo ""
 SKIP_STANDARD_DOWNLOADS=false
-if [ "$ONLY_EXEC" = "tinyllama_suite" ]; then
+if [ "$ONLY_EXEC" = "gemma4_suite" ]; then
     SKIP_STANDARD_DOWNLOADS=true
 fi
 
@@ -128,7 +128,7 @@ if [ "$SKIP_STANDARD_DOWNLOADS" = false ]; then
         exit 1
     fi
 else
-    echo "Step 1: Skipping standard downloads for --only tinyllama_suite"
+    echo "Step 1: Skipping standard downloads for --only gemma4_suite"
 fi
 
 echo ""
@@ -182,7 +182,7 @@ WHISPER_MODEL_DIR=$(echo "$WHISPER_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' 
 VAD_MODEL_DIR=$(echo "$VAD_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 
 export CACTUS_TEST_MODEL="$PROJECT_ROOT/weights/$MODEL_DIR"
-export CACTUS_TEST_TINYLLAMA_MODEL="${CACTUS_TEST_TINYLLAMA_MODEL:-$PROJECT_ROOT/weights/tinyllama_int4}"
+export CACTUS_TEST_GEMMA4_MODEL="${CACTUS_TEST_GEMMA4_MODEL:-$PROJECT_ROOT/weights/gemma4_int4}"
 export CACTUS_TEST_TRANSCRIBE_MODEL="$PROJECT_ROOT/weights/$TRANSCRIBE_MODEL_DIR"
 export CACTUS_TEST_WHISPER_MODEL="$PROJECT_ROOT/weights/$WHISPER_MODEL_DIR"
 export CACTUS_TEST_VAD_MODEL="$PROJECT_ROOT/weights/$VAD_MODEL_DIR"

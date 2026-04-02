@@ -8,7 +8,7 @@ using TestUtils::load_bin;
 using TestUtils::cosine_sim;
 
 int main() {
-    const char* model_path = std::getenv("CACTUS_TEST_TINYLLAMA_MODEL");
+    const char* model_path = std::getenv("CACTUS_TEST_GEMMA4_MODEL");
     std::string assets = std::getenv("CACTUS_TEST_ASSETS") ? std::getenv("CACTUS_TEST_ASSETS") : "../assets";
 
     auto mel = load_bin(assets + "/test_wav_mel.bin");

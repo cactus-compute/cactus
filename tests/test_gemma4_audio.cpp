@@ -14,10 +14,10 @@ static std::string get_assets_dir() {
 }
 
 bool test_real_audio_transcription() {
-    const char* model_path = std::getenv("CACTUS_TEST_TINYLLAMA_MODEL");
+    const char* model_path = std::getenv("CACTUS_TEST_GEMMA4_MODEL");
     std::string assets = get_assets_dir();
     if (!model_path) {
-        std::cerr << "  SKIP: CACTUS_TEST_TINYLLAMA_MODEL not set\n";
+        std::cerr << "  SKIP: CACTUS_TEST_GEMMA4_MODEL not set\n";
         return true;
     }
 

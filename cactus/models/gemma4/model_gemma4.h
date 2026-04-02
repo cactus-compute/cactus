@@ -2,18 +2,18 @@
 
 #include "../model.h"
 
-bool test_tinyllama_vision(bool expect_npu);
-bool test_tinyllama_audio(bool expect_npu);
+bool test_gemma4_vision(bool expect_npu);
+bool test_gemma4_audio(bool expect_npu);
 
 namespace cactus {
 namespace engine {
 
-class TinyLlamaModel : public Model {
-    friend class TinyLlamaMmModel;
+class Gemma4Model : public Model {
+    friend class Gemma4MmModel;
 public:
-    TinyLlamaModel();
-    explicit TinyLlamaModel(const Config& config);
-    ~TinyLlamaModel() override = default;
+    Gemma4Model();
+    explicit Gemma4Model(const Config& config);
+    ~Gemma4Model() override = default;
 
 protected:
     size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
@@ -117,8 +117,8 @@ private:
     size_t v_norm_ones_global_node_ = 0;
 };
 
-class TinyLlamaVisionModel : public Model {
-    friend class TinyLlamaMmModel;
+class Gemma4VisionModel : public Model {
+    friend class Gemma4MmModel;
 public:
     struct PreprocessedImage {
         std::vector<float> pixel_values;
@@ -129,9 +129,9 @@ public:
         size_t num_patches;
     };
 
-    TinyLlamaVisionModel();
-    explicit TinyLlamaVisionModel(const Config& config);
-    ~TinyLlamaVisionModel() override = default;
+    Gemma4VisionModel();
+    explicit Gemma4VisionModel(const Config& config);
+    ~Gemma4VisionModel() override = default;
 
     PreprocessedImage preprocess_image(const std::string& image_path);
     size_t forward_vision(CactusGraph* gb, const PreprocessedImage& img, ComputeBackend backend);
@@ -139,16 +139,16 @@ public:
 
 protected:
     size_t forward(const std::vector<uint32_t>&, bool) override {
-        throw std::runtime_error("TinyLlamaVisionModel: use forward_vision() instead");
+        throw std::runtime_error("Gemma4VisionModel: use forward_vision() instead");
     }
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
-        throw std::runtime_error("TinyLlamaVisionModel: build_attention unused");
+        throw std::runtime_error("Gemma4VisionModel: build_attention unused");
     }
     size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
-        throw std::runtime_error("TinyLlamaVisionModel: build_mlp unused");
+        throw std::runtime_error("Gemma4VisionModel: build_mlp unused");
     }
     size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
-        throw std::runtime_error("TinyLlamaVisionModel: build_transformer_block unused");
+        throw std::runtime_error("Gemma4VisionModel: build_transformer_block unused");
     }
     void load_weights_to_graph(CactusGraph* gb) override;
 
@@ -198,15 +198,15 @@ private:
     bool use_npu_encoder_ = false;
     bool disable_npu_ = false;
 
-    friend bool ::test_tinyllama_vision(bool);
+    friend bool ::test_gemma4_vision(bool);
 };
 
-class TinyLlamaAudioModel : public Model {
-    friend class TinyLlamaMmModel;
+class Gemma4AudioModel : public Model {
+    friend class Gemma4MmModel;
 public:
-    TinyLlamaAudioModel();
-    explicit TinyLlamaAudioModel(const Config& config);
-    ~TinyLlamaAudioModel() override = default;
+    Gemma4AudioModel();
+    explicit Gemma4AudioModel(const Config& config);
+    ~Gemma4AudioModel() override = default;
 
     struct ConformerContext {
         size_t timing_fp16 = 0;
@@ -283,29 +283,29 @@ public:
     std::vector<__fp16> npu_audio_output_scratch_;
     std::vector<__fp16> npu_audio_reorder_scratch_;
 
-    friend bool ::test_tinyllama_audio(bool);
+    friend bool ::test_gemma4_audio(bool);
 
 protected:
     size_t forward(const std::vector<uint32_t>&, bool) override {
-        throw std::runtime_error("TinyLlamaAudioModel: use forward_audio() instead");
+        throw std::runtime_error("Gemma4AudioModel: use forward_audio() instead");
     }
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
-        throw std::runtime_error("TinyLlamaAudioModel: build_attention unused");
+        throw std::runtime_error("Gemma4AudioModel: build_attention unused");
     }
     size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
-        throw std::runtime_error("TinyLlamaAudioModel: build_mlp unused");
+        throw std::runtime_error("Gemma4AudioModel: build_mlp unused");
     }
     size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
-        throw std::runtime_error("TinyLlamaAudioModel: build_transformer_block unused");
+        throw std::runtime_error("Gemma4AudioModel: build_transformer_block unused");
     }
     void load_weights_to_graph(CactusGraph* gb) override;
 };
 
-class TinyLlamaMmModel : public Model {
+class Gemma4MmModel : public Model {
 public:
-    TinyLlamaMmModel();
-    explicit TinyLlamaMmModel(const Config& config);
-    ~TinyLlamaMmModel() override = default;
+    Gemma4MmModel();
+    explicit Gemma4MmModel(const Config& config);
+    ~Gemma4MmModel() override = default;
 
     bool init(const std::string& model_folder, size_t context_size,
               const std::string& system_prompt = "", bool do_warmup = true) override;
@@ -374,12 +374,12 @@ public:
         size_t seq_len = 0;
     };
 
-    const TinyLlamaVisionModel& vision_encoder() const { return vision_encoder_; }
-    TinyLlamaVisionModel& vision_encoder() { return vision_encoder_; }
-    const TinyLlamaAudioModel& audio_encoder() const { return audio_encoder_; }
-    TinyLlamaAudioModel& audio_encoder() { return audio_encoder_; }
-    const TinyLlamaModel& language_model() const { return language_model_; }
-    TinyLlamaModel& language_model() { return language_model_; }
+    const Gemma4VisionModel& vision_encoder() const { return vision_encoder_; }
+    Gemma4VisionModel& vision_encoder() { return vision_encoder_; }
+    const Gemma4AudioModel& audio_encoder() const { return audio_encoder_; }
+    Gemma4AudioModel& audio_encoder() { return audio_encoder_; }
+    const Gemma4Model& language_model() const { return language_model_; }
+    Gemma4Model& language_model() { return language_model_; }
     MultimodalInputs build_multimodal_inputs(
         CactusGraph* gb, const std::vector<uint32_t>& tokens,
         const std::vector<std::string>& image_paths,
@@ -388,9 +388,9 @@ public:
         ComputeBackend backend);
 
 private:
-    TinyLlamaVisionModel vision_encoder_;
-    TinyLlamaAudioModel audio_encoder_;
-    TinyLlamaModel language_model_;
+    Gemma4VisionModel vision_encoder_;
+    Gemma4AudioModel audio_encoder_;
+    Gemma4Model language_model_;
 
     bool prefill_completed_ = false;
     size_t last_token_count_ = 0;

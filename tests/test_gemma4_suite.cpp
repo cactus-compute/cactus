@@ -1,5 +1,5 @@
 #include "test_utils.h"
-#include "../cactus/models/tinyllama/model_tinyllama.h"
+#include "../cactus/models/gemma4/model_gemma4.h"
 #include "../cactus/ffi/cactus_utils.h"
 #include "../libs/audio/wav.h"
 #include <algorithm>
@@ -15,7 +15,7 @@ using namespace cactus::audio;
 using namespace EngineTestUtils;
 
 static const char* get_model_path() {
-    const char* path = std::getenv("CACTUS_TEST_TINYLLAMA_MODEL");
+    const char* path = std::getenv("CACTUS_TEST_GEMMA4_MODEL");
     if (path) return path;
     return std::getenv("CACTUS_TEST_MODEL");
 }
@@ -140,7 +140,7 @@ bool test_text_generation() {
     ])";
 
     return EngineTestUtils::run_test("TEXT GENERATION", model_path, messages, g_options,
-        [](int result, const StreamingData& data, const std::string& response, const Metrics& m) {
+        [](int result, const StreamingData& data, const std::string& /*response*/, const Metrics& m) {
             std::string text;
             for (const auto& t : data.tokens) text += t;
             std::string lower_text;
@@ -229,11 +229,11 @@ bool test_1k_context() {
 }
 
 
-bool test_tinyllama_vision(bool expect_npu) {
+bool test_gemma4_vision(bool expect_npu) {
     const char* model_path = get_model_path();
     const char* image_path = get_image_path();
     if (!model_path || !image_path) {
-        std::cerr << "  SKIP: CACTUS_TEST_TINYLLAMA_MODEL or CACTUS_TEST_IMAGE not set\n";
+        std::cerr << "  SKIP: CACTUS_TEST_GEMMA4_MODEL or CACTUS_TEST_IMAGE not set\n";
         return true;
     }
 
@@ -250,7 +250,7 @@ bool test_tinyllama_vision(bool expect_npu) {
         return false;
     }
 
-    auto* mm = dynamic_cast<TinyLlamaMmModel*>(model.get());
+    auto* mm = dynamic_cast<Gemma4MmModel*>(model.get());
     if (mm && !expect_npu) {
         mm->vision_encoder().disable_npu_ = true;
     }
@@ -267,7 +267,7 @@ bool test_tinyllama_vision(bool expect_npu) {
     }
 
     std::vector<ChatMessage> messages;
-    messages.push_back({"user", "Describe this image briefly.", "", {image_path}});
+    messages.push_back({"user", "Describe this image briefly.", "", {image_path}, {}});
     std::string prompt = tokenizer->format_chat_prompt(messages, true, "", false);
     auto tokens = tokenizer->encode(prompt);
 
@@ -360,7 +360,7 @@ bool test_tinyllama_vision(bool expect_npu) {
 }
 
 
-bool test_tinyllama_audio(bool expect_npu) {
+bool test_gemma4_audio(bool expect_npu) {
     const char* model_path = get_model_path();
     std::string assets = get_assets_dir();
     if (!model_path) {
@@ -388,7 +388,7 @@ bool test_tinyllama_audio(bool expect_npu) {
         return false;
     }
 
-    auto* mm = dynamic_cast<TinyLlamaMmModel*>(model.get());
+    auto* mm = dynamic_cast<Gemma4MmModel*>(model.get());
     if (mm) {
         if (!expect_npu)
             mm->audio_encoder().disable_npu_ = true;
@@ -513,15 +513,15 @@ bool test_tinyllama_audio(bool expect_npu) {
 
 
 int main() {
-    TestUtils::TestRunner runner("TinyLlama Suite");
+    TestUtils::TestRunner runner("Gemma4 Suite");
 
     runner.run_test("text_generation", test_text_generation());
     runner.run_test("tool_call", test_tool_call());
     runner.run_test("1k_context", test_1k_context());
-    runner.run_test("vision", test_tinyllama_vision(false));
-    runner.run_test("vision_npu", test_tinyllama_vision(true));
-    runner.run_test("audio", test_tinyllama_audio(false));
-    runner.run_test("audio_npu", test_tinyllama_audio(true));
+    runner.run_test("vision", test_gemma4_vision(false));
+    runner.run_test("vision_npu", test_gemma4_vision(true));
+    runner.run_test("audio", test_gemma4_audio(false));
+    runner.run_test("audio_npu", test_gemma4_audio(true));
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

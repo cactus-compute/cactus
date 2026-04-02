@@ -1,4 +1,4 @@
-#include "model_tinyllama.h"
+#include "model_gemma4.h"
 #include "../../graph/graph.h"
 #include <cmath>
 #include <cstdlib>
@@ -8,17 +8,17 @@
 namespace cactus {
 namespace engine {
 
-TinyLlamaModel::TinyLlamaModel() : Model() {}
+Gemma4Model::Gemma4Model() : Model() {}
 
-TinyLlamaModel::TinyLlamaModel(const Config& config) : Model(config) {
+Gemma4Model::Gemma4Model(const Config& config) : Model(config) {
     weight_nodes_.layers.resize(config.num_layers);
 }
 
-bool TinyLlamaModel::is_global_layer(uint32_t idx) const {
+bool Gemma4Model::is_global_layer(uint32_t idx) const {
     return config_.layer_types[idx] == "global";
 }
 
-std::vector<size_t> TinyLlamaModel::get_kv_layer_dims() const {
+std::vector<size_t> Gemma4Model::get_kv_layer_dims() const {
     uint32_t n = config_.num_layers;
 
     std::vector<size_t> dims(n);
@@ -34,7 +34,7 @@ std::vector<size_t> TinyLlamaModel::get_kv_layer_dims() const {
     return dims;
 }
 
-std::vector<size_t> TinyLlamaModel::get_kv_layer_heads() const {
+std::vector<size_t> Gemma4Model::get_kv_layer_heads() const {
     uint32_t n = config_.num_layers;
 
     std::vector<size_t> heads(n);
@@ -50,7 +50,7 @@ std::vector<size_t> TinyLlamaModel::get_kv_layer_heads() const {
     return heads;
 }
 
-void TinyLlamaModel::compact_kv_cache() {
+void Gemma4Model::compact_kv_cache() {
     uint32_t n = config_.num_layers;
 
     std::vector<size_t> target_windows(n, 0);
@@ -62,7 +62,7 @@ void TinyLlamaModel::compact_kv_cache() {
     kv_cache_.compact_to_windows(target_windows);
 }
 
-void TinyLlamaModel::post_init() {
+void Gemma4Model::post_init() {
     uint32_t n = config_.num_layers;
 
     kv_cache_.set_window_size(0, 0);
@@ -82,7 +82,7 @@ void TinyLlamaModel::post_init() {
     }
 }
 
-void TinyLlamaModel::load_weights_to_graph(CactusGraph* gb) {
+void Gemma4Model::load_weights_to_graph(CactusGraph* gb) {
     uint32_t n = config_.num_layers;
     uint32_t num_shared = config_.num_kv_shared_layers;
     first_shared_layer_ = (n > num_shared) ? n - num_shared : n;
@@ -200,17 +200,17 @@ void TinyLlamaModel::load_weights_to_graph(CactusGraph* gb) {
         std::string npu_prefill_path = model_folder_path_ + "/model.mlpackage";
         if (std::filesystem::exists(npu_prefill_path)) {
             if (!load_npu_prefill(npu_prefill_path) || !has_npu_prefill()) {
-                CACTUS_LOG_WARN("npu", "[tinyllama] found model.mlpackage but failed to enable NPU prefill; using CPU prefill");
+                CACTUS_LOG_WARN("npu", "[gemma4] found model.mlpackage but failed to enable NPU prefill; using CPU prefill");
             }
         } else {
-            CACTUS_LOG_WARN("npu", "[tinyllama] model.mlpackage not found; using CPU prefill");
+            CACTUS_LOG_WARN("npu", "[gemma4] model.mlpackage not found; using CPU prefill");
         }
     } else {
-        CACTUS_LOG_WARN("npu", "[tinyllama] NPU backend unavailable on this device; using CPU prefill");
+        CACTUS_LOG_WARN("npu", "[gemma4] NPU backend unavailable on this device; using CPU prefill");
     }
 }
 
-size_t TinyLlamaModel::build_per_layer_input(CactusGraph* gb, size_t hidden, size_t pli_combined, uint32_t layer_idx,
+size_t Gemma4Model::build_per_layer_input(CactusGraph* gb, size_t hidden, size_t pli_combined, uint32_t layer_idx,
                                               ComputeBackend backend) const {
     const auto& layer = weight_nodes_.layers[layer_idx];
     uint32_t pli_dim = config_.hidden_size_per_layer_input;
@@ -224,7 +224,7 @@ size_t TinyLlamaModel::build_per_layer_input(CactusGraph* gb, size_t hidden, siz
     return gb->add(hidden, pli_normed);
 }
 
-size_t TinyLlamaModel::apply_partial_rope(CactusGraph* gb, size_t tensor, size_t head_dim, size_t rot_dim,
+size_t Gemma4Model::apply_partial_rope(CactusGraph* gb, size_t tensor, size_t head_dim, size_t rot_dim,
                                            float rope_freq, size_t position_offset) {
     if (rot_dim < head_dim) {
         float adjusted_theta = std::pow(rope_freq, static_cast<float>(rot_dim) / static_cast<float>(head_dim));
@@ -235,7 +235,7 @@ size_t TinyLlamaModel::apply_partial_rope(CactusGraph* gb, size_t tensor, size_t
     return gb->rope(tensor, rope_freq, position_offset);
 }
 
-size_t TinyLlamaModel::build_attention(CactusGraph* gb, size_t input, uint32_t layer_idx,
+size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                        ComputeBackend backend, bool use_cache, size_t position_offset) {
     const auto& layer = weight_nodes_.layers[layer_idx];
     size_t seq_len = gb->get_output_buffer(input).shape[0];
@@ -297,7 +297,7 @@ size_t TinyLlamaModel::build_attention(CactusGraph* gb, size_t input, uint32_t l
     return gb->matmul(gb->reshape(attn, {seq_len, num_heads * head_dim}), layer.attn_output_weight, true, backend);
 }
 
-size_t TinyLlamaModel::build_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx,
+size_t Gemma4Model::build_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                   ComputeBackend backend) const {
     const auto& layer = weight_nodes_.layers[layer_idx];
     auto gate = gb->gelu(gb->matmul(input, layer.ffn_gate_weight, true, backend));
@@ -305,7 +305,7 @@ size_t TinyLlamaModel::build_mlp(CactusGraph* gb, size_t input, uint32_t layer_i
     return gb->matmul(gb->multiply(gate, up), layer.ffn_down_weight, true, backend);
 }
 
-size_t TinyLlamaModel::build_moe(CactusGraph* gb, size_t input, uint32_t layer_idx,
+size_t Gemma4Model::build_moe(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                   ComputeBackend backend) const {
     const auto& layer = weight_nodes_.layers[layer_idx];
 
@@ -321,7 +321,7 @@ size_t TinyLlamaModel::build_moe(CactusGraph* gb, size_t input, uint32_t layer_i
                          layer.moe_per_expert_scale);
 }
 
-size_t TinyLlamaModel::build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+size_t Gemma4Model::build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
                                                 ComputeBackend backend, bool use_cache, size_t position_offset) {
     const auto& layer = weight_nodes_.layers[layer_idx];
 
@@ -351,7 +351,7 @@ size_t TinyLlamaModel::build_transformer_block(CactusGraph* gb, size_t hidden, u
     return gb->add(residual, mlp);
 }
 
-size_t TinyLlamaModel::apply_transformer_layer(CactusGraph* gb, size_t hidden, size_t pli, uint32_t layer_idx,
+size_t Gemma4Model::apply_transformer_layer(CactusGraph* gb, size_t hidden, size_t pli, uint32_t layer_idx,
                                                 ComputeBackend backend, bool use_cache, size_t pos_offset) {
     hidden = build_transformer_block(gb, hidden, layer_idx, backend, use_cache, pos_offset);
     if (config_.hidden_size_per_layer_input > 0)
@@ -361,7 +361,7 @@ size_t TinyLlamaModel::apply_transformer_layer(CactusGraph* gb, size_t hidden, s
     return hidden;
 }
 
-size_t TinyLlamaModel::build_pli_combined(CactusGraph* gb, size_t hidden, size_t pli_embed,
+size_t Gemma4Model::build_pli_combined(CactusGraph* gb, size_t hidden, size_t pli_embed,
                                            size_t seq_len, ComputeBackend backend) {
     uint32_t num_layers = config_.num_layers;
     uint32_t pli_dim = config_.hidden_size_per_layer_input;
@@ -374,7 +374,7 @@ size_t TinyLlamaModel::build_pli_combined(CactusGraph* gb, size_t hidden, size_t
     return gb->scalar_multiply(gb->add(pli_proj, pli_embed), 1.0f / std::sqrt(2.0f));
 }
 
-std::pair<size_t, size_t> TinyLlamaModel::build_preamble_and_embed(CactusGraph* gb, size_t seq_len, ComputeBackend backend,
+std::pair<size_t, size_t> Gemma4Model::build_preamble_and_embed(CactusGraph* gb, size_t seq_len, ComputeBackend backend,
                                                                     size_t& token_input, size_t& pli_input) {
     uint32_t pli_dim = config_.hidden_size_per_layer_input;
 
@@ -390,7 +390,7 @@ std::pair<size_t, size_t> TinyLlamaModel::build_preamble_and_embed(CactusGraph* 
     return {hidden, pli_combined};
 }
 
-void TinyLlamaModel::set_token_inputs(CactusGraph* gb, size_t token_input, size_t pli_input,
+void Gemma4Model::set_token_inputs(CactusGraph* gb, size_t token_input, size_t pli_input,
                                        const std::vector<uint32_t>& tokens) {
     std::vector<float> input_data(tokens.size());
     for (size_t i = 0; i < tokens.size(); i++)
@@ -399,12 +399,12 @@ void TinyLlamaModel::set_token_inputs(CactusGraph* gb, size_t token_input, size_
     gb->set_input(pli_input, input_data.data(), Precision::FP32);
 }
 
-size_t TinyLlamaModel::forward_from_embeddings(CactusGraph* gb, size_t hidden, const std::vector<uint32_t>& pli_tokens,
+size_t Gemma4Model::forward_from_embeddings(CactusGraph* gb, size_t hidden, const std::vector<uint32_t>& pli_tokens,
                                                 size_t seq_len, ComputeBackend backend, bool use_cache) {
     return forward_from_embeddings(gb, hidden, hidden, pli_tokens, seq_len, backend, use_cache);
 }
 
-size_t TinyLlamaModel::build_pli_combined_from_tokens(CactusGraph* gb, size_t hidden,
+size_t Gemma4Model::build_pli_combined_from_tokens(CactusGraph* gb, size_t hidden,
                                                        const std::vector<uint32_t>& pli_tokens,
                                                        size_t seq_len, ComputeBackend backend) {
     if (config_.hidden_size_per_layer_input == 0)
@@ -425,7 +425,7 @@ size_t TinyLlamaModel::build_pli_combined_from_tokens(CactusGraph* gb, size_t hi
     return pli_combined;
 }
 
-size_t TinyLlamaModel::forward_from_embeddings(CactusGraph* gb, size_t hidden, size_t pli_hidden_source,
+size_t Gemma4Model::forward_from_embeddings(CactusGraph* gb, size_t hidden, size_t pli_hidden_source,
                                                 const std::vector<uint32_t>& pli_tokens, size_t seq_len,
                                                 ComputeBackend backend, bool use_cache) {
     size_t pos_offset = use_cache ? kv_cache_.get_total_seq_len() : 0;
@@ -447,7 +447,7 @@ size_t TinyLlamaModel::forward_from_embeddings(CactusGraph* gb, size_t hidden, s
     return gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
 }
 
-size_t TinyLlamaModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) {
+size_t Gemma4Model::forward(const std::vector<uint32_t>& tokens, bool use_cache) {
     if (!initialized_ || !graph_handle_)
         throw std::runtime_error("Model not initialized - call init() first");
     if (tokens.empty())
@@ -488,7 +488,7 @@ size_t TinyLlamaModel::forward(const std::vector<uint32_t>& tokens, bool use_cac
     return gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
 }
 
-size_t TinyLlamaModel::forward_split(const std::vector<uint32_t>& tokens, bool use_cache) {
+size_t Gemma4Model::forward_split(const std::vector<uint32_t>& tokens, bool use_cache) {
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
 
@@ -542,7 +542,7 @@ size_t TinyLlamaModel::forward_split(const std::vector<uint32_t>& tokens, bool u
 }
 
 
-void TinyLlamaModel::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, const std::string& profile_file) {
+void Gemma4Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, const std::string& profile_file) {
     if (tokens.empty())
         return;
 

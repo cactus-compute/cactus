@@ -1,4 +1,4 @@
-#include "model_tinyllama.h"
+#include "model_gemma4.h"
 #include "../../graph/graph.h"
 #include <cmath>
 #include <stdexcept>
@@ -7,21 +7,21 @@
 namespace cactus {
 namespace engine {
 
-TinyLlamaMmModel::TinyLlamaMmModel() : Model() {
-    config_.model_type = Config::ModelType::TINYLLAMA;
+Gemma4MmModel::Gemma4MmModel() : Model() {
+    config_.model_type = Config::ModelType::GEMMA4;
 }
 
-TinyLlamaMmModel::TinyLlamaMmModel(const Config& config)
+Gemma4MmModel::Gemma4MmModel(const Config& config)
     : Model(config), vision_encoder_(config), audio_encoder_(config), language_model_(config) {}
 
-bool TinyLlamaMmModel::init(const std::string& model_folder, size_t context_size,
+bool Gemma4MmModel::init(const std::string& model_folder, size_t context_size,
                              const std::string& system_prompt, bool do_warmup) {
     if (!Model::init(model_folder, context_size, system_prompt, false))
         return false;
 
     auto* shared_graph = static_cast<CactusGraph*>(graph_handle_);
     if (!shared_graph)
-        throw std::runtime_error("Shared graph was not initialized for TinyLlamaMmModel");
+        throw std::runtime_error("Shared graph was not initialized for Gemma4MmModel");
 
     bool has_vision = config_.vision_num_layers > 0 || config_.vision_embed_dim > 0;
     bool has_audio = config_.audio_num_layers > 0 || config_.audio_hidden_dim > 0;
@@ -52,26 +52,26 @@ bool TinyLlamaMmModel::init(const std::string& model_folder, size_t context_size
     return true;
 }
 
-void TinyLlamaMmModel::reset_cache() {
+void Gemma4MmModel::reset_cache() {
     Model::reset_cache();
     language_model_.reset_cache();
     prefill_completed_ = false;
     last_token_count_ = 0;
 }
 
-void TinyLlamaMmModel::compact_kv_cache() {
+void Gemma4MmModel::compact_kv_cache() {
     language_model_.compact_kv_cache();
 }
 
-void TinyLlamaMmModel::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) {
+void Gemma4MmModel::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) {
     language_model_.remove_thinking_tokens(ranges);
 }
 
-void TinyLlamaMmModel::load_weights_to_graph(CactusGraph*) {
+void Gemma4MmModel::load_weights_to_graph(CactusGraph*) {
     output_weight_node_id_ = 0;
 }
 
-TinyLlamaMmModel::ForwardResult TinyLlamaMmModel::forward_multimodal(
+Gemma4MmModel::ForwardResult Gemma4MmModel::forward_multimodal(
     CactusGraph* gb, const std::vector<uint32_t>& tokens,
     const std::vector<std::string>& image_paths,
     const std::vector<float>* audio_features,
@@ -93,7 +93,7 @@ TinyLlamaMmModel::ForwardResult TinyLlamaMmModel::forward_multimodal(
     return ForwardResult{final_hidden, inputs.seq_len};
 }
 
-TinyLlamaMmModel::MultimodalInputs TinyLlamaMmModel::build_multimodal_inputs(
+Gemma4MmModel::MultimodalInputs Gemma4MmModel::build_multimodal_inputs(
     CactusGraph* gb, const std::vector<uint32_t>& tokens,
     const std::vector<std::string>& image_paths,
     const std::vector<float>* audio_features,
@@ -237,7 +237,7 @@ TinyLlamaMmModel::MultimodalInputs TinyLlamaMmModel::build_multimodal_inputs(
     };
 }
 
-uint32_t TinyLlamaMmModel::decode_multimodal(
+uint32_t Gemma4MmModel::decode_multimodal(
     const std::vector<uint32_t>& tokens,
     const std::vector<std::string>& image_paths,
     const std::vector<float>* audio_features,
@@ -319,11 +319,11 @@ uint32_t TinyLlamaMmModel::decode_multimodal(
     return *static_cast<uint32_t*>(output_ptr);
 }
 
-size_t TinyLlamaMmModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) {
+size_t Gemma4MmModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) {
     return language_model_.forward(tokens, use_cache);
 }
 
-uint32_t TinyLlamaMmModel::decode(const std::vector<uint32_t>& tokens,
+uint32_t Gemma4MmModel::decode(const std::vector<uint32_t>& tokens,
                                    float temperature, float top_p, size_t top_k,
                                    const std::string& profile_file, float* out_entropy) {
     if (!initialized_ || !graph_handle_)
@@ -333,7 +333,7 @@ uint32_t TinyLlamaMmModel::decode(const std::vector<uint32_t>& tokens,
     return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy);
 }
 
-void TinyLlamaMmModel::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size,
+void Gemma4MmModel::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size,
                                 const std::string& profile_file) {
     if (!initialized_ || !graph_handle_)
         throw std::runtime_error("Model not initialized - call init() first");
@@ -342,7 +342,7 @@ void TinyLlamaMmModel::prefill(const std::vector<uint32_t>& tokens, size_t chunk
     language_model_.prefill(tokens, chunk_size, profile_file);
 }
 
-void TinyLlamaMmModel::prefill_with_images(const std::vector<uint32_t>& tokens,
+void Gemma4MmModel::prefill_with_images(const std::vector<uint32_t>& tokens,
                                             const std::vector<std::string>& image_paths,
                                             const std::string& profile_file) {
     if (!initialized_ || !graph_handle_)
@@ -371,7 +371,7 @@ void TinyLlamaMmModel::prefill_with_images(const std::vector<uint32_t>& tokens,
     last_token_count_ = tokens.size();
 }
 
-uint32_t TinyLlamaMmModel::decode_with_images(
+uint32_t Gemma4MmModel::decode_with_images(
     const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
     float temperature, float top_p, size_t top_k,
     const std::string& profile_file, float* out_entropy) {
@@ -379,7 +379,7 @@ uint32_t TinyLlamaMmModel::decode_with_images(
                               temperature, top_p, top_k, profile_file, out_entropy);
 }
 
-uint32_t TinyLlamaMmModel::decode_with_audio(
+uint32_t Gemma4MmModel::decode_with_audio(
     const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
     float temperature, float top_p, size_t top_k,
     const std::string& profile_file, float* out_entropy,
@@ -390,7 +390,7 @@ uint32_t TinyLlamaMmModel::decode_with_audio(
                               temperature, top_p, top_k, profile_file, out_entropy);
 }
 
-std::vector<float> TinyLlamaMmModel::get_image_embeddings(const std::string& image_path) {
+std::vector<float> Gemma4MmModel::get_image_embeddings(const std::string& image_path) {
     if (!initialized_ || !graph_handle_)
         throw std::runtime_error("Model not initialized - call init() first");
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
@@ -412,7 +412,7 @@ std::vector<float> TinyLlamaMmModel::get_image_embeddings(const std::string& ima
     return embedding;
 }
 
-std::vector<float> TinyLlamaMmModel::get_audio_embeddings(const std::vector<float>& audio_features) {
+std::vector<float> Gemma4MmModel::get_audio_embeddings(const std::vector<float>& audio_features) {
     if (!initialized_ || !graph_handle_)
         throw std::runtime_error("Model not initialized - call init() first");
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
@@ -434,16 +434,16 @@ std::vector<float> TinyLlamaMmModel::get_audio_embeddings(const std::vector<floa
     return embedding;
 }
 
-size_t TinyLlamaMmModel::build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) {
-    throw std::runtime_error("build_attention should not be called directly on TinyLlamaMmModel");
+size_t Gemma4MmModel::build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) {
+    throw std::runtime_error("build_attention should not be called directly on Gemma4MmModel");
 }
 
-size_t TinyLlamaMmModel::build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const {
-    throw std::runtime_error("build_mlp should not be called directly on TinyLlamaMmModel");
+size_t Gemma4MmModel::build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const {
+    throw std::runtime_error("build_mlp should not be called directly on Gemma4MmModel");
 }
 
-size_t TinyLlamaMmModel::build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) {
-    throw std::runtime_error("build_transformer_block should not be called directly on TinyLlamaMmModel");
+size_t Gemma4MmModel::build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) {
+    throw std::runtime_error("build_transformer_block should not be called directly on Gemma4MmModel");
 }
 
 }

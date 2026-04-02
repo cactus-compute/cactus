@@ -8,8 +8,8 @@
 using namespace cactus::ffi;
 using namespace cactus::engine;
 
-static const char* get_tinyllama_model_path() {
-    const char* path = std::getenv("CACTUS_TEST_TINYLLAMA_MODEL");
+static const char* get_gemma4_model_path() {
+    const char* path = std::getenv("CACTUS_TEST_GEMMA4_MODEL");
     if (path) return path;
     return std::getenv("CACTUS_TEST_MODEL");
 }
@@ -101,16 +101,16 @@ bool test_find_channel_token_ranges() {
     return true;
 }
 
-bool test_prompt_tinyllama_thinking_injection() {
-    const char* model_path = get_tinyllama_model_path();
-    if (!model_path) { std::cout << "  [SKIP] CACTUS_TEST_TINYLLAMA_MODEL not set\n"; return true; }
+bool test_prompt_gemma4_thinking_injection() {
+    const char* model_path = get_gemma4_model_path();
+    if (!model_path) { std::cout << "  [SKIP] CACTUS_TEST_GEMMA4_MODEL not set\n"; return true; }
 
     cactus_model_t model = cactus_init(model_path, nullptr, false);
     if (!model) { std::cout << "  [SKIP] Could not load model\n"; return true; }
 
     auto* handle = static_cast<CactusModelHandle*>(model);
     auto* tok = handle->model->get_tokenizer();
-    std::vector<ChatMessage> msgs = {{"user", "hello", "", {}}};
+    std::vector<ChatMessage> msgs = {{"user", "hello", "", {}, {}}};
 
     std::string enabled = tok->format_chat_prompt(msgs, true, "", true);
     std::string disabled = tok->format_chat_prompt(msgs, true, "", false);
@@ -128,9 +128,9 @@ bool test_prompt_tinyllama_thinking_injection() {
     return ok;
 }
 
-bool test_prompt_tinyllama_assistant_stripping() {
-    const char* model_path = get_tinyllama_model_path();
-    if (!model_path) { std::cout << "  [SKIP] CACTUS_TEST_TINYLLAMA_MODEL not set\n"; return true; }
+bool test_prompt_gemma4_assistant_stripping() {
+    const char* model_path = get_gemma4_model_path();
+    if (!model_path) { std::cout << "  [SKIP] CACTUS_TEST_GEMMA4_MODEL not set\n"; return true; }
 
     cactus_model_t model = cactus_init(model_path, nullptr, false);
     if (!model) { std::cout << "  [SKIP] Could not load model\n"; return true; }
@@ -139,9 +139,9 @@ bool test_prompt_tinyllama_assistant_stripping() {
     auto* tok = handle->model->get_tokenizer();
 
     std::vector<ChatMessage> msgs = {
-        {"user", "hello", "", {}},
-        {"assistant", "<|channel>internal reasoning<channel|>visible response", "", {}},
-        {"user", "followup", "", {}}
+        {"user", "hello", "", {}, {}},
+        {"assistant", "<|channel>internal reasoning<channel|>visible response", "", {}, {}},
+        {"user", "followup", "", {}, {}}
     };
 
     std::string prompt = tok->format_chat_prompt(msgs, true, "", true);
@@ -159,17 +159,17 @@ bool test_prompt_tinyllama_assistant_stripping() {
     return has_visible && no_reasoning && no_channel_tags;
 }
 
-bool test_complete_tinyllama_thinking_toggle() {
-    const char* model_path = get_tinyllama_model_path();
-    if (!model_path) { std::cout << "  [SKIP] CACTUS_TEST_TINYLLAMA_MODEL not set\n"; return true; }
+bool test_complete_gemma4_thinking_toggle() {
+    const char* model_path = get_gemma4_model_path();
+    if (!model_path) { std::cout << "  [SKIP] CACTUS_TEST_GEMMA4_MODEL not set\n"; return true; }
 
     cactus_model_t model = cactus_init(model_path, nullptr, false);
     if (!model) return false;
 
     auto* handle = static_cast<CactusModelHandle*>(model);
     auto mtype = handle->model->get_config().model_type;
-    if (mtype != Config::ModelType::TINYLLAMA) {
-        std::cout << "  [SKIP] Not a TinyLlama model\n";
+    if (mtype != Config::ModelType::GEMMA4) {
+        std::cout << "  [SKIP] Not a Gemma4 model\n";
         cactus_destroy(model);
         return true;
     }
@@ -201,17 +201,17 @@ bool test_complete_tinyllama_thinking_toggle() {
     return ok1 && ok2;
 }
 
-bool test_complete_tinyllama_tool_call() {
-    const char* model_path = get_tinyllama_model_path();
-    if (!model_path) { std::cout << "  [SKIP] CACTUS_TEST_TINYLLAMA_MODEL not set\n"; return true; }
+bool test_complete_gemma4_tool_call() {
+    const char* model_path = get_gemma4_model_path();
+    if (!model_path) { std::cout << "  [SKIP] CACTUS_TEST_GEMMA4_MODEL not set\n"; return true; }
 
     cactus_model_t model = cactus_init(model_path, nullptr, false);
     if (!model) return false;
 
     auto* handle = static_cast<CactusModelHandle*>(model);
     auto mtype = handle->model->get_config().model_type;
-    if (mtype != Config::ModelType::TINYLLAMA) {
-        std::cout << "  [SKIP] Not a TinyLlama model\n";
+    if (mtype != Config::ModelType::GEMMA4) {
+        std::cout << "  [SKIP] Not a Gemma4 model\n";
         cactus_destroy(model);
         return true;
     }
@@ -237,15 +237,15 @@ bool test_complete_tinyllama_tool_call() {
 }
 
 bool test_multiturn_cache_reuse() {
-    const char* model_path = get_tinyllama_model_path();
-    if (!model_path) { std::cout << "  [SKIP] CACTUS_TEST_TINYLLAMA_MODEL not set\n"; return true; }
+    const char* model_path = get_gemma4_model_path();
+    if (!model_path) { std::cout << "  [SKIP] CACTUS_TEST_GEMMA4_MODEL not set\n"; return true; }
 
     cactus_model_t model = cactus_init(model_path, nullptr, false);
     if (!model) { std::cerr << "  Failed to load model\n"; return false; }
 
     auto* handle = static_cast<CactusModelHandle*>(model);
-    if (handle->model->get_config().model_type != Config::ModelType::TINYLLAMA) {
-        std::cout << "  [SKIP] Not a TinyLlama model\n";
+    if (handle->model->get_config().model_type != Config::ModelType::GEMMA4) {
+        std::cout << "  [SKIP] Not a Gemma4 model\n";
         cactus_destroy(model);
         return true;
     }
@@ -260,15 +260,15 @@ bool test_multiturn_cache_reuse() {
 
     std::vector<uint32_t> processed_after_t1 = handle->processed_tokens;
 
-    std::vector<ChatMessage> t1_chat = {{"user", "My name is Alice. Please remember this.", "", {}}};
+    std::vector<ChatMessage> t1_chat = {{"user", "My name is Alice. Please remember this.", "", {}, {}}};
     std::vector<uint32_t> t1_prompt_tokens = tokenizer->encode(tokenizer->format_chat_prompt(t1_chat, true, "", true));
     std::vector<uint32_t> gen_tokens(processed_after_t1.begin() + t1_prompt_tokens.size(), processed_after_t1.end());
     std::string assistant_text = tokenizer->decode(gen_tokens);
 
     std::vector<ChatMessage> t2_chat = {
-        {"user", "My name is Alice. Please remember this.", "", {}},
-        {"assistant", assistant_text, "", {}},
-        {"user", "What is my name?", "", {}}
+        {"user", "My name is Alice. Please remember this.", "", {}, {}},
+        {"assistant", assistant_text, "", {}, {}},
+        {"user", "What is my name?", "", {}, {}}
     };
     std::vector<uint32_t> t2_prompt_tokens = tokenizer->encode(tokenizer->format_chat_prompt(t2_chat, true, "", true));
 
@@ -298,13 +298,13 @@ bool test_multiturn_cache_reuse() {
 }
 
 int main() {
-    TestUtils::TestRunner runner("TinyLlama Thinking Tests");
+    TestUtils::TestRunner runner("Gemma4 Thinking Tests");
     runner.run_test("strip_thinking_channel", test_strip_thinking_channel());
     runner.run_test("find_channel_token_ranges", test_find_channel_token_ranges());
-    runner.run_test("prompt_thinking_injection", test_prompt_tinyllama_thinking_injection());
-    runner.run_test("prompt_assistant_stripping", test_prompt_tinyllama_assistant_stripping());
-    runner.run_test("complete_thinking_toggle", test_complete_tinyllama_thinking_toggle());
-    runner.run_test("complete_tool_call", test_complete_tinyllama_tool_call());
+    runner.run_test("prompt_thinking_injection", test_prompt_gemma4_thinking_injection());
+    runner.run_test("prompt_assistant_stripping", test_prompt_gemma4_assistant_stripping());
+    runner.run_test("complete_thinking_toggle", test_complete_gemma4_thinking_toggle());
+    runner.run_test("complete_tool_call", test_complete_gemma4_tool_call());
     runner.run_test("multiturn_cache_reuse", test_multiturn_cache_reuse());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

@@ -124,7 +124,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
 
     load_weights_to_graph(gb);
 
-    if (config_.model_type == Config::ModelType::GEMMA3N || config_.model_type == Config::ModelType::TINYLLAMA) {
+    if (config_.model_type == Config::ModelType::GEMMA3N || config_.model_type == Config::ModelType::GEMMA4) {
         attention_scale_ = 1.0f;
     } else if (config_.model_type == Config::ModelType::GEMMA) {
         attention_scale_ = 1.0f / std::sqrt(256.0f);
@@ -165,7 +165,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         config_.model_type != Config::ModelType::PARAKEET_TDT) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
-        if (config_.model_type == Config::ModelType::TINYLLAMA) {
+        if (config_.model_type == Config::ModelType::GEMMA4) {
             warmup_tokens = {2};
         }
         forward(warmup_tokens);
@@ -529,7 +529,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (model_type_value.rfind("qwen3_5", 0) == 0) model_type = ModelType::QWEN3P5;
             else if (value == "parakeet_tdt" || value == "PARAKEET_TDT") model_type = ModelType::PARAKEET_TDT;
             else if (value == "gemma3n" || value == "GEMMA3N") model_type = ModelType::GEMMA3N;
-            else if (value == "tinyllama" || value == "TINYLLAMA") model_type = ModelType::TINYLLAMA;
+            else if (value == "gemma4" || value == "GEMMA4" || value == "tinyllama" || value == "TINYLLAMA") model_type = ModelType::GEMMA4;
             else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
             else model_type = ModelType::QWEN;
         }
@@ -747,8 +747,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
         config.audio_num_layers > 0 ||
         config.audio_hidden_dim > 0;
 
-    if (config.model_type == Config::ModelType::TINYLLAMA && (has_vision_support || has_audio_support)) {
-        return std::make_unique<TinyLlamaMmModel>(config);
+    if (config.model_type == Config::ModelType::GEMMA4 && (has_vision_support || has_audio_support)) {
+        return std::make_unique<Gemma4MmModel>(config);
     }
 
     switch (config.model_type) {
@@ -777,8 +777,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<ParakeetModel>(config);
         case Config::ModelType::PARAKEET_TDT:
             return std::make_unique<ParakeetTDTModel>(config);
-        case Config::ModelType::TINYLLAMA:
-            return std::make_unique<TinyLlamaModel>(config);
+        case Config::ModelType::GEMMA4:
+            return std::make_unique<Gemma4Model>(config);
         case Config::ModelType::YOUTU:
             return std::make_unique<YoutuModel>(config);
         default:

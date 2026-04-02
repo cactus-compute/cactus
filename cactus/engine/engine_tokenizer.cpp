@@ -146,8 +146,8 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
             } else if (line.find("qwen") != std::string::npos) {
                 model_type_ = ModelType::QWEN;
                 break;
-            } else if (line.find("tinyllama") != std::string::npos) {
-                model_type_ = ModelType::TINYLLAMA;
+            } else if (line.find("gemma4") != std::string::npos || line.find("tinyllama") != std::string::npos) {
+                model_type_ = ModelType::GEMMA4;
                 break;
             } else if (line.find("gemma") != std::string::npos) {
                 model_type_ = ModelType::GEMMA;
@@ -216,7 +216,7 @@ std::string Tokenizer::get_default_stop_sequence() const {
     switch (model_type_) {
         case ModelType::GEMMA:
             return "<end_of_turn>";
-        case ModelType::TINYLLAMA:
+        case ModelType::GEMMA4:
             return "<turn|>";
         case ModelType::QWEN:
         case ModelType::QWEN3P5:
@@ -251,8 +251,8 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
             return format_qwen_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
         case ModelType::GEMMA:
             return format_gemma_style(messages, add_generation_prompt, tools_json);
-        case ModelType::TINYLLAMA:
-            return format_tinyllama_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
+        case ModelType::GEMMA4:
+            return format_gemma4_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
         case ModelType::LFM2:
             return format_lfm2_style(messages, add_generation_prompt, tools_json);
         case ModelType::YOUTU:
@@ -382,7 +382,7 @@ std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& message
     return result;
 }
 
-std::string Tokenizer::format_tinyllama_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
+std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
                                                const std::string& tools_json, bool enable_thinking_if_supported) const {
     std::string result = "<bos>";
 

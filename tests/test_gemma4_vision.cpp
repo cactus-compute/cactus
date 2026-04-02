@@ -6,8 +6,8 @@
 
 using namespace cactus::engine;
 
-static const char* get_tinyllama_model_path() {
-    const char* path = std::getenv("CACTUS_TEST_TINYLLAMA_MODEL");
+static const char* get_gemma4_model_path() {
+    const char* path = std::getenv("CACTUS_TEST_GEMMA4_MODEL");
     if (path) return path;
     return std::getenv("CACTUS_TEST_MODEL");
 }
@@ -17,9 +17,9 @@ static const char* get_test_image_path() {
 }
 
 bool test_vlm_model_creation() {
-    const char* model_path = get_tinyllama_model_path();
+    const char* model_path = get_gemma4_model_path();
     if (!model_path) {
-        std::cerr << "  SKIP: CACTUS_TEST_TINYLLAMA_MODEL not set\n";
+        std::cerr << "  SKIP: CACTUS_TEST_GEMMA4_MODEL not set\n";
         return true;
     }
 
@@ -33,9 +33,9 @@ bool test_vlm_model_creation() {
 }
 
 bool test_vlm_init() {
-    const char* model_path = get_tinyllama_model_path();
+    const char* model_path = get_gemma4_model_path();
     if (!model_path) {
-        std::cerr << "  SKIP: CACTUS_TEST_TINYLLAMA_MODEL not set\n";
+        std::cerr << "  SKIP: CACTUS_TEST_GEMMA4_MODEL not set\n";
         return true;
     }
 
@@ -55,10 +55,10 @@ bool test_vlm_init() {
 }
 
 bool test_vlm_decode_with_image() {
-    const char* model_path = get_tinyllama_model_path();
+    const char* model_path = get_gemma4_model_path();
     const char* image_path = get_test_image_path();
     if (!model_path || !image_path) {
-        std::cerr << "  SKIP: CACTUS_TEST_TINYLLAMA_MODEL or CACTUS_TEST_IMAGE not set\n";
+        std::cerr << "  SKIP: CACTUS_TEST_GEMMA4_MODEL or CACTUS_TEST_IMAGE not set\n";
         return true;
     }
 
@@ -80,7 +80,7 @@ bool test_vlm_decode_with_image() {
     }
 
     std::vector<ChatMessage> messages;
-    messages.push_back({"user", "Describe this image briefly.", "", {image_path}});
+    messages.push_back({"user", "Describe this image briefly.", "", {image_path}, {}});
     std::string prompt = tokenizer->format_chat_prompt(messages, true, "", false);
     auto tokens = tokenizer->encode(prompt);
 
@@ -128,7 +128,7 @@ int main() {
     };
 
     auto test_image_embeddings = []() -> bool {
-        const char* mp = std::getenv("CACTUS_TEST_TINYLLAMA_MODEL");
+        const char* mp = std::getenv("CACTUS_TEST_GEMMA4_MODEL");
         const char* ip = std::getenv("CACTUS_TEST_IMAGE");
         if (!mp || !ip) return true;
         auto m = create_model(mp);

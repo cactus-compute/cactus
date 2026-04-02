@@ -88,8 +88,8 @@ def detect_model_type(cfg, config, output_dir=None):
     if decoding_model_type == 'tdt' or loss_name == 'tdt':
         return 'parakeet_tdt'
 
-    if 'tinyllama' in model_type_str or 'gemma4' in model_type_str:
-        return 'tinyllama'
+    if 'gemma4' in model_type_str or 'tinyllama' in model_type_str:
+        return 'gemma4'
     elif 'gemma3n' in model_type_str:
         return 'gemma3n'
     elif 'gemma' in model_type_str:
@@ -304,7 +304,7 @@ def extract_moonshine_config(cfg):
 
 
 def extract_complex_gemma_config(cfg, root_config):
-    """Extract configuration parameters for Gemma3n and TinyLlama models."""
+    """Extract configuration parameters for Gemma3n and Gemma4 models."""
     altup_num_inputs = int(cfg_get(cfg, 'altup_num_inputs', cfg_get(root_config, 'altup_num_inputs', 4)))
     laurel_rank = int(cfg_get(cfg, 'laurel_rank', cfg_get(root_config, 'laurel_rank', 64)))
     hidden_size_per_layer_input_raw = cfg_get(cfg, 'hidden_size_per_layer_input',

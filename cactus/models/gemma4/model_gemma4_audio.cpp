@@ -1,4 +1,4 @@
-#include "model_tinyllama.h"
+#include "model_gemma4.h"
 #include "../../graph/graph.h"
 #include <algorithm>
 #include <cmath>
@@ -49,7 +49,7 @@ static size_t infer_npu_audio_max_frames(const std::vector<int>& shape, size_t m
     return 0;
 }
 
-static bool pack_tinyllama_audio_for_npu(const std::vector<float>& mel_features,
+static bool pack_gemma4_audio_for_npu(const std::vector<float>& mel_features,
                                          size_t frames,
                                          size_t mel_bins,
                                          const std::vector<int>& input_shape,
@@ -288,8 +288,8 @@ static float read_scalar_weight(CactusGraph* gb, const std::string& path) {
     return 0.0f;
 }
 
-static TinyLlamaAudioModel::AudioWeightNodes::ClipBounds load_clip_bounds(CactusGraph* gb, const std::string& prefix) {
-    TinyLlamaAudioModel::AudioWeightNodes::ClipBounds cb{0, 0, 0, 0};
+static Gemma4AudioModel::AudioWeightNodes::ClipBounds load_clip_bounds(CactusGraph* gb, const std::string& prefix) {
+    Gemma4AudioModel::AudioWeightNodes::ClipBounds cb{0, 0, 0, 0};
     std::string in_min_path = prefix + "_input_min.weights";
     if (!std::filesystem::exists(in_min_path))
         return cb;
@@ -306,10 +306,10 @@ static void get_conv2d_output_hw(const CactusGraph* gb, size_t node, size_t& h, 
     w = buf.shape[3];
 }
 
-TinyLlamaAudioModel::TinyLlamaAudioModel() : Model() {}
-TinyLlamaAudioModel::TinyLlamaAudioModel(const Config& config) : Model(config) {}
+Gemma4AudioModel::Gemma4AudioModel() : Model() {}
+Gemma4AudioModel::Gemma4AudioModel(const Config& config) : Model(config) {}
 
-void TinyLlamaAudioModel::load_weights_to_graph(CactusGraph* gb) {
+void Gemma4AudioModel::load_weights_to_graph(CactusGraph* gb) {
     auto resolve = [&](const std::string& name) -> std::string {
         return model_folder_path_ + "/" + name;
     };
@@ -333,14 +333,14 @@ void TinyLlamaAudioModel::load_weights_to_graph(CactusGraph* gb) {
     };
     auto load_clip_from_weight = [&](const std::string& preferred,
                                      const std::string& legacy = std::string())
-                                     -> TinyLlamaAudioModel::AudioWeightNodes::ClipBounds {
+                                     -> Gemma4AudioModel::AudioWeightNodes::ClipBounds {
         std::string weight_path = resolve_existing(preferred, legacy);
         static const std::string suffix = ".weights";
         if (weight_path.size() > suffix.size() &&
             weight_path.compare(weight_path.size() - suffix.size(), suffix.size(), suffix) == 0) {
             return load_clip_bounds(gb, weight_path.substr(0, weight_path.size() - suffix.size()));
         }
-        return TinyLlamaAudioModel::AudioWeightNodes::ClipBounds{0, 0, 0, 0};
+        return Gemma4AudioModel::AudioWeightNodes::ClipBounds{0, 0, 0, 0};
     };
 
     if (!disable_npu_ && npu::is_npu_available()) {
@@ -354,13 +354,13 @@ void TinyLlamaAudioModel::load_weights_to_graph(CactusGraph* gb) {
             } else {
                 use_npu_encoder_ = false;
                 npu_encoder_.reset();
-                CACTUS_LOG_WARN("npu", "[tinyllama-audio] found audio_encoder.mlpackage but failed to enable NPU audio encoder; using CPU");
+                CACTUS_LOG_WARN("npu", "[gemma4-audio] found audio_encoder.mlpackage but failed to enable NPU audio encoder; using CPU");
             }
         } else {
-            CACTUS_LOG_WARN("npu", "[tinyllama-audio] audio_encoder.mlpackage not found; using CPU audio encoder");
+            CACTUS_LOG_WARN("npu", "[gemma4-audio] audio_encoder.mlpackage not found; using CPU audio encoder");
         }
     } else if (!disable_npu_) {
-        CACTUS_LOG_WARN("npu", "[tinyllama-audio] NPU backend unavailable on this device; using CPU audio encoder");
+        CACTUS_LOG_WARN("npu", "[gemma4-audio] NPU backend unavailable on this device; using CPU audio encoder");
     }
 
     if (!use_npu_encoder_) {
@@ -393,7 +393,7 @@ void TinyLlamaAudioModel::load_weights_to_graph(CactusGraph* gb) {
             };
             auto layer_clip = [&](const std::string& preferred_suffix,
                                   const std::string& legacy_suffix = std::string())
-                                  -> TinyLlamaAudioModel::AudioWeightNodes::ClipBounds {
+                                  -> Gemma4AudioModel::AudioWeightNodes::ClipBounds {
                 std::string legacy = legacy_suffix.empty() ? preferred_suffix : legacy_suffix;
                 return load_clip_from_weight(
                     "audio_conformer_" + std::to_string(i) + "_" + preferred_suffix,
@@ -455,7 +455,7 @@ void TinyLlamaAudioModel::load_weights_to_graph(CactusGraph* gb) {
     output_weight_node_id_ = 0;
 }
 
-size_t TinyLlamaAudioModel::build_sscp(CactusGraph* gb, const std::vector<float>& mel_features,
+size_t Gemma4AudioModel::build_sscp(CactusGraph* gb, const std::vector<float>& mel_features,
                                         size_t num_frames, ComputeBackend backend) {
     size_t mel_bins = config_.audio_input_feat_size;
     size_t conv0_ch = config_.audio_sscp_conv0_channels;
@@ -522,7 +522,7 @@ static size_t create_zero_pad_node(CactusGraph* gb, size_t time_len, size_t num_
     return node;
 }
 
-TinyLlamaAudioModel::ConformerContext TinyLlamaAudioModel::build_conformer_context(
+Gemma4AudioModel::ConformerContext Gemma4AudioModel::build_conformer_context(
     CactusGraph* gb, size_t sscp_output) {
 
     size_t num_heads = config_.audio_num_heads;
@@ -548,7 +548,7 @@ TinyLlamaAudioModel::ConformerContext TinyLlamaAudioModel::build_conformer_conte
     };
 }
 
-size_t TinyLlamaAudioModel::build_conformer_ffw(CactusGraph* gb, size_t input, uint32_t layer_idx,
+size_t Gemma4AudioModel::build_conformer_ffw(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                                  bool is_end, ComputeBackend backend) {
     const auto& layer = audio_weights_.layers[layer_idx];
     float residual_weight = config_.audio_residual_weight;
@@ -576,7 +576,7 @@ size_t TinyLlamaAudioModel::build_conformer_ffw(CactusGraph* gb, size_t input, u
     return gb->add(residual, x);
 }
 
-size_t TinyLlamaAudioModel::build_conformer_attention(CactusGraph* gb, size_t input, uint32_t layer_idx,
+size_t Gemma4AudioModel::build_conformer_attention(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                                        const ConformerContext& ctx, ComputeBackend backend) {
     const auto& layer = audio_weights_.layers[layer_idx];
     float eps = config_.audio_rms_norm_eps;
@@ -642,7 +642,7 @@ size_t TinyLlamaAudioModel::build_conformer_attention(CactusGraph* gb, size_t in
     return gb->add(residual, out);
 }
 
-size_t TinyLlamaAudioModel::build_conformer_lconv1d(CactusGraph* gb, size_t input, uint32_t layer_idx,
+size_t Gemma4AudioModel::build_conformer_lconv1d(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                                       ComputeBackend backend) {
     const auto& layer = audio_weights_.layers[layer_idx];
     float eps = config_.audio_rms_norm_eps;
@@ -673,7 +673,7 @@ size_t TinyLlamaAudioModel::build_conformer_lconv1d(CactusGraph* gb, size_t inpu
     return gb->add(x, residual);
 }
 
-size_t TinyLlamaAudioModel::build_conformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+size_t Gemma4AudioModel::build_conformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
                                                     const ConformerContext& ctx, ComputeBackend backend) {
     hidden = build_conformer_ffw(gb, hidden, layer_idx, false, backend);
     hidden = build_conformer_attention(gb, hidden, layer_idx, ctx, backend);
@@ -682,7 +682,7 @@ size_t TinyLlamaAudioModel::build_conformer_block(CactusGraph* gb, size_t hidden
     return gb->rms_norm(hidden, audio_weights_.layers[layer_idx].block_norm, config_.audio_rms_norm_eps);
 }
 
-size_t TinyLlamaAudioModel::forward_audio(CactusGraph* gb, const std::vector<float>& mel_features,
+size_t Gemma4AudioModel::forward_audio(CactusGraph* gb, const std::vector<float>& mel_features,
                                            size_t num_frames, ComputeBackend backend) {
     if (use_npu_encoder_ && npu_encoder_ && npu_encoder_->is_available()) {
         std::vector<int> npu_input_shape = npu_encoder_->get_input_shape();
@@ -692,10 +692,10 @@ size_t TinyLlamaAudioModel::forward_audio(CactusGraph* gb, const std::vector<flo
         size_t input_values = copy_frames * mel_bins;
 
         if (mel_features.size() < input_values) {
-            CACTUS_LOG_WARN("npu", "[tinyllama-audio] insufficient mel input values; falling back to CPU audio encoder");
-        } else if (!pack_tinyllama_audio_for_npu(mel_features, copy_frames, mel_bins, npu_input_shape,
+            CACTUS_LOG_WARN("npu", "[gemma4-audio] insufficient mel input values; falling back to CPU audio encoder");
+        } else if (!pack_gemma4_audio_for_npu(mel_features, copy_frames, mel_bins, npu_input_shape,
                                                  npu_audio_input_scratch_)) {
-            CACTUS_LOG_WARN("npu", "[tinyllama-audio] unsupported NPU input shape; falling back to CPU audio encoder");
+            CACTUS_LOG_WARN("npu", "[gemma4-audio] unsupported NPU input shape; falling back to CPU audio encoder");
         } else {
             size_t t1 = (copy_frames + 1) / 2;
             size_t t2 = (t1 + 1) / 2;
@@ -732,7 +732,7 @@ size_t TinyLlamaAudioModel::forward_audio(CactusGraph* gb, const std::vector<flo
                     if (out_layout.hidden_axis != (out_layout.dims.size() - 1)) {
                         if (!materialize_npu_audio_time_major(src, out_layout, actual_time,
                                                               npu_audio_reorder_scratch_)) {
-                            CACTUS_LOG_WARN("npu", "[tinyllama-audio] failed to reorder NPU output layout; falling back to CPU audio encoder");
+                            CACTUS_LOG_WARN("npu", "[gemma4-audio] failed to reorder NPU output layout; falling back to CPU audio encoder");
                         } else {
                             final_src = npu_audio_reorder_scratch_.data();
                         }
@@ -747,7 +747,7 @@ size_t TinyLlamaAudioModel::forward_audio(CactusGraph* gb, const std::vector<flo
             }
 
             if (written > 0 && out_layout.hidden_dim != expected_out_dim) {
-                CACTUS_LOG_WARN("npu", "[tinyllama-audio] NPU output dim mismatch; falling back to CPU audio encoder");
+                CACTUS_LOG_WARN("npu", "[gemma4-audio] NPU output dim mismatch; falling back to CPU audio encoder");
             } else {
                 CACTUS_LOG_WARN("npu", "audio encode failed, falling back to CPU");
             }
@@ -767,7 +767,7 @@ size_t TinyLlamaAudioModel::forward_audio(CactusGraph* gb, const std::vector<flo
     return hidden;
 }
 
-size_t TinyLlamaAudioModel::build_audio_projector(CactusGraph* gb, size_t audio_features, ComputeBackend backend) {
+size_t Gemma4AudioModel::build_audio_projector(CactusGraph* gb, size_t audio_features, ComputeBackend backend) {
     size_t normed = gb->rms_norm(audio_features, audio_proj_norm_ones_node_, config_.audio_rms_norm_eps);
     size_t projected = gb->matmul(normed, audio_weights_.embed_audio_proj, true, backend);
     return gb->scalar_multiply(projected, 1.0f / 16.0f);

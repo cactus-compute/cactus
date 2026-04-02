@@ -89,7 +89,7 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
 
         add_tokens_for_string(call_start_tag_, gemma_call_start_tokens_);
         add_tokens_for_string(call_end_tag_, gemma_call_end_tokens_);
-        if (model_type_ == Config::ModelType::TINYLLAMA) {
+        if (model_type_ == Config::ModelType::GEMMA4) {
             add_tokens_for_string("<|tool_response>", gemma_response_start_tokens_);
         } else {
             add_tokens_for_string("<start_function_response>", gemma_response_start_tokens_);
@@ -138,7 +138,7 @@ void ToolCallConstrainer::init(Config::ModelType model_type,
         state_ = State::LFM_START;
     } else if (is_gemma_family()) {
         state_ = State::GEMMA_START;
-        if (model_type_ == Config::ModelType::TINYLLAMA) {
+        if (model_type_ == Config::ModelType::GEMMA4) {
             call_start_tag_ = "<|tool_call>";
             call_end_tag_ = "<tool_call|>";
         } else {

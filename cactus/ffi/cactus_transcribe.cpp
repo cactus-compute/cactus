@@ -21,7 +21,7 @@ using cactus::audio::get_whisper_spectrogram_config;
 using cactus::audio::normalize_parakeet_log_mel;
 using cactus::audio::trim_mel_frames;
 using cactus::audio::get_htk_spectrogram_config;
-using cactus::audio::get_tinyllama_audio_spectrogram_config;
+using cactus::audio::get_gemma4_audio_spectrogram_config;
 using cactus::audio::transpose_mel_to_frame_major;
 
 static constexpr size_t WHISPER_MAX_DECODER_POSITIONS = 448;
@@ -204,7 +204,7 @@ int cactus_transcribe(
         bool is_parakeet =
             handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET ||
             handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
-        bool is_tinyllama = handle->model->get_config().model_type == cactus::engine::Config::ModelType::TINYLLAMA;
+        bool is_gemma4 = handle->model->get_config().model_type == cactus::engine::Config::ModelType::GEMMA4;
 
         std::vector<float> audio_samples;
         if (audio_file_path == nullptr) {
@@ -217,12 +217,12 @@ int cactus_transcribe(
 
         if (opts.find("\"max_tokens\"") == std::string::npos) {
             const float audio_length_sec = static_cast<float>(audio_samples.size()) / static_cast<float>(WHISPER_SAMPLE_RATE);
-            const float tps = is_parakeet ? 30.0f : (is_tinyllama ? 30.0f : 20.0f);
+            const float tps = is_parakeet ? 30.0f : (is_gemma4 ? 30.0f : 20.0f);
             const size_t estimated = static_cast<size_t>(audio_length_sec * tps);
             options.max_tokens = std::max<size_t>(estimated, 100);
         }
 
-        if (is_tinyllama) {
+        if (is_gemma4) {
             if (audio_samples.empty()) {
                 handle_error_response("No audio input provided", response_buffer, buffer_size);
                 cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, 0.0, "No audio input");

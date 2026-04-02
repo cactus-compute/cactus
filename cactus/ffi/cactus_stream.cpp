@@ -375,11 +375,11 @@ int cactus_stream_transcribe_process(
         bool is_parakeet =
             model_type == cactus::engine::Config::ModelType::PARAKEET ||
             model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
-        bool is_tinyllama = model_type == cactus::engine::Config::ModelType::TINYLLAMA;
+        bool is_gemma4 = model_type == cactus::engine::Config::ModelType::GEMMA4;
 
         std::string whisper_prompt = "<|startoftranscript|><|" + handle->options.language + "|><|transcribe|><|notimestamps|>";
         const char* transcribe_prompt =
-            is_tinyllama ? "Transcribe the audio." :
+            is_gemma4 ? "Transcribe the audio." :
             (is_moonshine || is_parakeet) ? "" :
             whisper_prompt.c_str();
 

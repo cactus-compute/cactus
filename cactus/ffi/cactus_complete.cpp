@@ -103,7 +103,7 @@ std::vector<std::vector<uint32_t>> build_stop_sequences(
         stop_token_sequences.push_back(tokenizer->encode("<start_function_response>"));
     }
 
-    if (model_type == Config::ModelType::TINYLLAMA) {
+    if (model_type == Config::ModelType::GEMMA4) {
         stop_token_sequences.push_back(tokenizer->encode("<turn|>"));
         if (has_tools) {
             stop_token_sequences.push_back(tokenizer->encode("<tool_call|>"));
@@ -234,18 +234,6 @@ std::vector<std::vector<CactusModelHandle::ProcessedImage>> images_from_message(
     return message_signatures;
 }
 
-std::vector<std::string> image_paths_from_messages(
-    const std::vector<ChatMessage>& messages,
-    size_t start_message_index
-) {
-    std::vector<std::string> image_paths;
-    for (size_t i = start_message_index; i < messages.size(); ++i) {
-        for (const auto& image_path : messages[i].images) {
-            image_paths.push_back(image_path);
-        }
-    }
-    return image_paths;
-}
 
 bool image_context_prefix_matches(
     const std::vector<std::vector<CactusModelHandle::ProcessedImage>>& prefix,
@@ -319,7 +307,7 @@ PreparedPrompt prepare_prompt(
 
     prompt.model_type = handle->model->get_config().model_type;
 
-    if (prompt.model_type == Config::ModelType::TINYLLAMA) {
+    if (prompt.model_type == Config::ModelType::GEMMA4) {
         std::vector<float> audio_samples;
         if (pcm_buffer != nullptr && pcm_buffer_size > 1) {
             auto waveform_fp32 = cactus::audio::pcm_buffer_to_float_samples(pcm_buffer, pcm_buffer_size);
@@ -349,7 +337,7 @@ PreparedPrompt prepare_prompt(
 
     std::string formatted_tools;
     if (Config::is_gemma_family(prompt.model_type)) {
-        formatted_tools = gemma::format_tools(prompt.tools, prompt.model_type == Config::ModelType::TINYLLAMA);
+        formatted_tools = gemma::format_tools(prompt.tools, prompt.model_type == Config::ModelType::GEMMA4);
     } else {
         formatted_tools = serialize_tools_json(prompt.tools);
     }
@@ -622,11 +610,11 @@ int cactus_complete(
             handle->model->clear_tool_constraints();
         }
 
-        if (prompt.model_type == Config::ModelType::TINYLLAMA && prompt.options.enable_thinking_if_supported && !generated_tokens.empty()) {
+        if (prompt.model_type == Config::ModelType::GEMMA4 && prompt.options.enable_thinking_if_supported && !generated_tokens.empty()) {
             strip_thinking_from_cache(handle, generated_tokens, prompt.tokens.size());
         }
 
-        if (prompt.model_type == Config::ModelType::TINYLLAMA) {
+        if (prompt.model_type == Config::ModelType::GEMMA4) {
             handle->model->compact_kv_cache();
         }
 
@@ -645,7 +633,7 @@ int cactus_complete(
         parse_function_calls_from_response(response_text, regular_response, function_calls);
 
         std::string thinking_text;
-        if (prompt.model_type == Config::ModelType::TINYLLAMA || prompt.options.enable_thinking_if_supported) {
+        if (prompt.model_type == Config::ModelType::GEMMA4 || prompt.options.enable_thinking_if_supported) {
             std::string stripped_content;
             strip_thinking_block(regular_response, thinking_text, stripped_content);
             regular_response = stripped_content;

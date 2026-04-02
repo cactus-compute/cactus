@@ -1,4 +1,4 @@
-#include "model_tinyllama.h"
+#include "model_gemma4.h"
 #include "../../graph/graph.h"
 #include <cmath>
 #include <cstring>
@@ -14,7 +14,7 @@ namespace cactus {
 namespace engine {
 
 static std::pair<std::vector<float>, std::vector<float>> compute_2d_rope_tables(
-    const TinyLlamaVisionModel::PreprocessedImage& img, size_t max_patches, size_t head_dim, float theta) {
+    const Gemma4VisionModel::PreprocessedImage& img, size_t max_patches, size_t head_dim, float theta) {
 
     size_t half_dim = head_dim / 2;
     size_t freq_per_dim = half_dim / 2;
@@ -48,7 +48,7 @@ static std::pair<std::vector<float>, std::vector<float>> compute_2d_rope_tables(
 }
 
 static std::pair<std::vector<__fp16>, std::vector<__fp16>> compute_npu_rope_tables(
-    const TinyLlamaVisionModel::PreprocessedImage& img, size_t max_patches, size_t head_dim, float theta) {
+    const Gemma4VisionModel::PreprocessedImage& img, size_t max_patches, size_t head_dim, float theta) {
 
     auto [cos_f32, sin_f32] = compute_2d_rope_tables(img, max_patches, head_dim, theta);
 
@@ -66,10 +66,10 @@ static std::pair<std::vector<__fp16>, std::vector<__fp16>> compute_npu_rope_tabl
     return {cos_full, sin_signed};
 }
 
-TinyLlamaVisionModel::TinyLlamaVisionModel() : Model() {}
-TinyLlamaVisionModel::TinyLlamaVisionModel(const Config& config) : Model(config) {}
+Gemma4VisionModel::Gemma4VisionModel() : Model() {}
+Gemma4VisionModel::Gemma4VisionModel(const Config& config) : Model(config) {}
 
-void TinyLlamaVisionModel::load_weights_to_graph(CactusGraph* gb) {
+void Gemma4VisionModel::load_weights_to_graph(CactusGraph* gb) {
     auto resolve = [&](const std::string& name) -> std::string {
         return model_folder_path_ + "/" + name;
     };
@@ -90,13 +90,13 @@ void TinyLlamaVisionModel::load_weights_to_graph(CactusGraph* gb) {
             } else {
                 use_npu_encoder_ = false;
                 npu_encoder_.reset();
-                CACTUS_LOG_WARN("npu", "[tinyllama-vision] found vision_encoder.mlpackage but failed to enable NPU vision encoder; using CPU");
+                CACTUS_LOG_WARN("npu", "[gemma4-vision] found vision_encoder.mlpackage but failed to enable NPU vision encoder; using CPU");
             }
         } else {
-            CACTUS_LOG_WARN("npu", "[tinyllama-vision] vision_encoder.mlpackage not found; using CPU vision encoder");
+            CACTUS_LOG_WARN("npu", "[gemma4-vision] vision_encoder.mlpackage not found; using CPU vision encoder");
         }
     } else if (!disable_npu_) {
-        CACTUS_LOG_WARN("npu", "[tinyllama-vision] NPU backend unavailable on this device; using CPU vision encoder");
+        CACTUS_LOG_WARN("npu", "[gemma4-vision] NPU backend unavailable on this device; using CPU vision encoder");
     }
 
     vision_weights_.patch_input_proj = gb->mmap_weights(resolve("vision_patch_embedder_input_proj.weights"));
@@ -137,7 +137,7 @@ void TinyLlamaVisionModel::load_weights_to_graph(CactusGraph* gb) {
     output_weight_node_id_ = 0;
 }
 
-TinyLlamaVisionModel::PreprocessedImage TinyLlamaVisionModel::preprocess_image(const std::string& image_path) {
+Gemma4VisionModel::PreprocessedImage Gemma4VisionModel::preprocess_image(const std::string& image_path) {
     int w, h, channels;
     unsigned char* data = stbi_load(image_path.c_str(), &w, &h, &channels, 3);
     if (!data)
@@ -192,7 +192,7 @@ TinyLlamaVisionModel::PreprocessedImage TinyLlamaVisionModel::preprocess_image(c
     };
 }
 
-size_t TinyLlamaVisionModel::build_vision_patch_embedding(CactusGraph* gb, const PreprocessedImage& img,
+size_t Gemma4VisionModel::build_vision_patch_embedding(CactusGraph* gb, const PreprocessedImage& img,
                                                            ComputeBackend backend) {
     uint32_t patch_size = config_.vision_patch_size;
     size_t patch_dim = 3 * patch_size * patch_size;
@@ -245,7 +245,7 @@ size_t TinyLlamaVisionModel::build_vision_patch_embedding(CactusGraph* gb, const
     return gb->add(projected, pos_embed_fp16);
 }
 
-std::pair<size_t, size_t> TinyLlamaVisionModel::build_2d_rope_nodes(
+std::pair<size_t, size_t> Gemma4VisionModel::build_2d_rope_nodes(
     CactusGraph* gb, const PreprocessedImage& img, size_t max_patches) {
 
     size_t head_dim = config_.vision_head_dim;
@@ -265,7 +265,7 @@ std::pair<size_t, size_t> TinyLlamaVisionModel::build_2d_rope_nodes(
     return {cos_node, sin_node};
 }
 
-size_t TinyLlamaVisionModel::build_padding_mask(CactusGraph* gb, size_t num_real, size_t max_patches) {
+size_t Gemma4VisionModel::build_padding_mask(CactusGraph* gb, size_t num_real, size_t max_patches) {
     if (num_real >= max_patches)
         return 0;
 
@@ -279,7 +279,7 @@ size_t TinyLlamaVisionModel::build_padding_mask(CactusGraph* gb, size_t num_real
     return gb->reshape(mask_node, {1, max_patches, max_patches});
 }
 
-size_t TinyLlamaVisionModel::build_vision_attention(CactusGraph* gb, size_t input, uint32_t layer_idx,
+size_t Gemma4VisionModel::build_vision_attention(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                                      size_t cos_node, size_t sin_node,
                                                      size_t attn_mask_node, ComputeBackend backend) {
     const auto& layer = vision_weights_.layers[layer_idx];
@@ -349,7 +349,7 @@ size_t TinyLlamaVisionModel::build_vision_attention(CactusGraph* gb, size_t inpu
                       layer.attn_output_weight, true, backend);
 }
 
-size_t TinyLlamaVisionModel::build_vision_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx,
+size_t Gemma4VisionModel::build_vision_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                                ComputeBackend backend) {
     const auto& layer = vision_weights_.layers[layer_idx];
     auto gate = gb->gelu(gb->matmul(input, layer.mlp_gate_proj, true, backend));
@@ -357,7 +357,7 @@ size_t TinyLlamaVisionModel::build_vision_mlp(CactusGraph* gb, size_t input, uin
     return gb->matmul(gb->multiply(gate, up), layer.mlp_down_proj, true, backend);
 }
 
-size_t TinyLlamaVisionModel::build_vision_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+size_t Gemma4VisionModel::build_vision_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
                                                              size_t cos_node, size_t sin_node,
                                                              size_t attn_mask_node, ComputeBackend backend) {
     const auto& layer = vision_weights_.layers[layer_idx];
@@ -379,7 +379,7 @@ size_t TinyLlamaVisionModel::build_vision_transformer_block(CactusGraph* gb, siz
     return out;
 }
 
-size_t TinyLlamaVisionModel::build_vision_pooler(CactusGraph* gb, size_t hidden, const PreprocessedImage& img,
+size_t Gemma4VisionModel::build_vision_pooler(CactusGraph* gb, size_t hidden, const PreprocessedImage& img,
                                                   ComputeBackend backend) {
     size_t k = config_.vision_pooling_kernel_size;
     size_t output_length = config_.vision_default_output_length;
@@ -434,7 +434,7 @@ size_t TinyLlamaVisionModel::build_vision_pooler(CactusGraph* gb, size_t hidden,
     return stripped;
 }
 
-size_t TinyLlamaVisionModel::forward_vision(CactusGraph* gb, const PreprocessedImage& img, ComputeBackend backend) {
+size_t Gemma4VisionModel::forward_vision(CactusGraph* gb, const PreprocessedImage& img, ComputeBackend backend) {
     size_t hidden = build_vision_patch_embedding(gb, img, backend);
 
     size_t num_real = img.num_patches;
@@ -458,7 +458,7 @@ size_t TinyLlamaVisionModel::forward_vision(CactusGraph* gb, const PreprocessedI
     }
     if (num_real > max_patches) {
         if (can_use_npu_path) {
-            CACTUS_LOG_WARN("npu", "[tinyllama-vision] image has more patches than NPU encoder supports; falling back to CPU vision encoder");
+            CACTUS_LOG_WARN("npu", "[gemma4-vision] image has more patches than NPU encoder supports; falling back to CPU vision encoder");
             can_use_npu_path = false;
             max_patches = config_.vision_default_output_length * pooling_k * pooling_k;
         }
@@ -480,7 +480,7 @@ size_t TinyLlamaVisionModel::forward_vision(CactusGraph* gb, const PreprocessedI
 
         const auto& h_buf = gb->get_output_buffer(hidden);
         if (h_buf.precision != Precision::FP16)
-            throw std::runtime_error("[tinyllama-vision] expected FP16 hidden output for NPU path");
+            throw std::runtime_error("[gemma4-vision] expected FP16 hidden output for NPU path");
         std::vector<__fp16> hidden_fp16(max_patches * hidden_size);
         memcpy(hidden_fp16.data(), h_buf.data_as<__fp16>(), max_patches * hidden_size * sizeof(__fp16));
 
@@ -516,7 +516,7 @@ size_t TinyLlamaVisionModel::forward_vision(CactusGraph* gb, const PreprocessedI
             hidden = gb->input({max_patches, hidden_size}, Precision::FP16);
             gb->set_input(hidden, npu_output.data(), Precision::FP16);
         } else {
-            CACTUS_LOG_WARN("npu", "[tinyllama-vision] encode_multimodal_input returned insufficient output, falling back to CPU");
+            CACTUS_LOG_WARN("npu", "[gemma4-vision] encode_multimodal_input returned insufficient output, falling back to CPU");
             for (uint32_t i = 0; i < config_.vision_num_layers; i++)
                 hidden = build_vision_transformer_block(gb, hidden, i, cos_node, sin_node, attn_mask_node, backend);
         }
@@ -531,7 +531,7 @@ size_t TinyLlamaVisionModel::forward_vision(CactusGraph* gb, const PreprocessedI
     return build_vision_pooler(gb, hidden, img, backend);
 }
 
-size_t TinyLlamaVisionModel::build_vision_projector(CactusGraph* gb, size_t vision_features, ComputeBackend backend) {
+size_t Gemma4VisionModel::build_vision_projector(CactusGraph* gb, size_t vision_features, ComputeBackend backend) {
     size_t projected = gb->matmul(vision_features, vision_weights_.embed_vision_proj, true, backend);
     return gb->rms_norm(projected, vision_weights_.post_proj_norm, config_.layer_norm_eps);
 }
