@@ -15,8 +15,8 @@ from pathlib import Path
 
 MODEL_REPO = "Cactus-Compute/checkpoints"
 TOKENIZER_REPO = "Cactus-Compute/needle-tokenizer"
-DEFAULT_CHECKPOINT_FILE = "needle_12_512_best.pkl"
-DEFAULT_TOKENIZER_REVISION = "662ab737ec41afed5acd215271d6d0e26690dd8b"
+DEFAULT_CHECKPOINT_FILE = "needle_16_640_best.pkl"
+DEFAULT_TOKENIZER_REVISION = "5a50f268260b546cbcff02a2b5d4e1a51ac03ef1"
 CHECKPOINT_REVISIONS = {
     "needle_12_512_best.pkl": "c3abe44ccce513833aa1a671a508433a6c4224eb",
     "needle_8_512_best.pkl": "bb785f03ebaa395bc7eb4cd4b18c713f3a05a58d",
@@ -142,8 +142,6 @@ def resolve_checkpoint_revision(
 
 def checkpoint_file_to_weights_dir_name(checkpoint_file: str) -> str:
     stem = Path(checkpoint_file).stem.lower()
-    if stem == "needle_12_512_best":
-        return "needle"
     match = re.fullmatch(r"needle_(\d+)_(\d+)_best", stem)
     if match:
         return f"needle-{match.group(1)}-{match.group(2)}"
@@ -157,7 +155,10 @@ def resolve_needle_output_dir(
 ) -> Path:
     if output_dir is not None:
         return Path(output_dir).expanduser().resolve()
+    normalized = normalize_needle_model_id(model_id)
     effective_checkpoint_file = resolve_needle_checkpoint_file(model_id, checkpoint_file)
+    if normalized == "needle" or (not normalized and effective_checkpoint_file == DEFAULT_CHECKPOINT_FILE):
+        return (PROJECT_ROOT / "weights" / "needle").resolve()
     return (PROJECT_ROOT / "weights" / checkpoint_file_to_weights_dir_name(effective_checkpoint_file)).resolve()
 
 
