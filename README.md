@@ -176,9 +176,9 @@ graph.hard_reset();
 | google/gemma-3-270m-it | completion |
 | google/functiongemma-270m-it | tools |
 | google/gemma-3-1b-it | completion, gated |
-| google/gemma-4-e2b-it | completion, tools, embed, vision, speech|
+| google/gemma-4-E2B-it | completion, tools, embed, vision, speech|
 | google/gemma-3n-E2B-it | completion, tools |
-| google/gemma-4-e4b-it | completion, tools, embed, vision, speech|
+| google/gemma-4-E4B-it | completion, tools, embed, vision, speech|
 | google/gemma-3n-E4B-it | completion, tools |
 | Qwen/Qwen3-0.6B | completion, tools, embed | 
 | Qwen/Qwen3-Embedding-0.6B | embed | 

@@ -44,7 +44,7 @@ def _resolve_project_root() -> Path:
 
 
 PROJECT_ROOT = _resolve_project_root()
-DEFAULT_MODEL_ID = "LiquidAI/LFM2.5-1.2B-Instruct"
+DEFAULT_MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_TEST_WHISPER_MODEL_ID = "openai/whisper-small"
 
