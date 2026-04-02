@@ -338,6 +338,11 @@ static NSURL* resolve_or_compile_model_url(NSString* path, NSError** error) {
 
         _predictionOptions = [[MLPredictionOptions alloc] init];
         _hasOutputBackings = NO;
+        if (_predictionOptions && _cachedOutputArray && _cachedOutputName) {
+            _predictionOptions.outputBackings =
+                @{ _cachedOutputName: _cachedOutputArray };
+            _hasOutputBackings = YES;
+        }
     }
 
     return YES;
