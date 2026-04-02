@@ -1,0 +1,2018 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Benchmarking Liquid's LFM-2.5-350m across seven devices with Cactus. INT8 quantization, single-core CPU decode, zero-copy loading, and why this configuration makes on-device inference practical.">
+      
+      
+        <meta name="author" content="Henry Ndubuaku">
+      
+      
+        <link rel="canonical" href="https://docs.cactuscompute.com/v1.12/blog/lfm2.5_350m/">
+      
+      
+        <link rel="prev" href="../parakeet/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/logo_white.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.5">
+    
+    
+      
+        <title>LFM-2.5-350m on Cactus: 140 tok/sec, Single Core, 355 MB - Cactus Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/custom.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="white">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#lfm-25-350m-on-cactus-140-toksec-single-core-355-mb" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+          <aside class="md-banner md-banner--warning">
+            <div class="md-banner__inner md-grid md-typeset">
+              
+  You're not viewing the latest version.
+  <a href="../../..">
+    <strong>Click here to go to latest.</strong>
+  </a>
+
+            </div>
+            <script>var el=document.querySelector("[data-md-component=outdated]"),base=new URL("../.."),outdated=__md_get("__outdated",sessionStorage,base);!0===outdated&&el&&(el.hidden=!1)</script>
+          </aside>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Cactus Docs" class="md-header__button md-logo" aria-label="Cactus Docs" data-md-component="logo">
+      
+  <img src="../../assets/logo_white.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Cactus Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              LFM-2.5-350m on Cactus: 140 tok/sec, Single Core, 355 MB
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="white"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="black"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/cactus-compute/cactus" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cactus-compute/cactus
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../docs/quickstart/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Quickstart
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../docs/choose-sdk/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Choose Your SDK
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../react-native/" class="md-tabs__link">
+          
+  
+  
+  SDKs
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../docs/cactus_engine/" class="md-tabs__link">
+          
+  
+  
+  Core APIs (C++)
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../docs/finetuning/" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../CONTRIBUTING/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+  Blog
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Cactus Docs" class="md-nav__button md-logo" aria-label="Cactus Docs" data-md-component="logo">
+      
+  <img src="../../assets/logo_white.png" alt="logo">
+
+    </a>
+    Cactus Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/cactus-compute/cactus" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cactus-compute/cactus
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/choose-sdk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Choose Your SDK
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SDKs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    SDKs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../react-native/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    React Native
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../python/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../apple/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Swift
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../android/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kotlin / Android
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../flutter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Flutter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../rust/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core APIs (C++)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core APIs (C++)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/cactus_engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engine API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/cactus_graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Graph API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/cactus_index/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Index API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/finetuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Fine-tuning & Deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/compatibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime Compatibility
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Blog
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Blog
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    All Posts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hybrid_transcription/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid Transcription
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lfm2_24b_a2b/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LFM2-24B on Mac
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../parakeet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parakeet CTC 1.1B
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LFM-2.5-350m
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LFM-2.5-350m
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#device-benchmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Device Benchmarks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Device Benchmarks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#apple" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Apple
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#android" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Android
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#other" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Other
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-cpu-not-gpu-or-npu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why CPU, Not GPU or NPU
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-single-core-for-decode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why Single Core for Decode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-int8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why INT8
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-cactus-format-and-zero-copy-loading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Cactus Format and Zero-Copy Loading
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#model-quality" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Model Quality
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-this-adds-up-to" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What This Adds Up To
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-is-cactus-headed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where is Cactus headed?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See Also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#device-benchmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Device Benchmarks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Device Benchmarks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#apple" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Apple
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#android" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Android
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#other" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Other
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-cpu-not-gpu-or-npu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why CPU, Not GPU or NPU
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-single-core-for-decode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why Single Core for Decode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-int8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why INT8
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-cactus-format-and-zero-copy-loading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Cactus Format and Zero-Copy Loading
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#model-quality" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Model Quality
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-this-adds-up-to" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What This Adds Up To
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-is-cactus-headed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where is Cactus headed?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See Also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="lfm-25-350m-on-cactus-140-toksec-single-core-355-mb">LFM-2.5-350m on Cactus: 140 tok/sec, Single Core, 355 MB<a class="headerlink" href="#lfm-25-350m-on-cactus-140-toksec-single-core-355-mb" title="Permanent link">&para;</a></h1>
+<p><em>By Henry Ndubuaku</em></p>
+<p>We ran Liquid's LFM-2.5-350m through the Cactus inference engine across seven devices, from a Vision Pro to a Raspberry Pi 5. 
+The configuration: 1024-token prefill, 100-token decode, INT8 quantization, CPU-only, single-core decode. 
+The model file is 355 MB on Cactus Compressed format. </p>
+<h2 id="device-benchmarks">Device Benchmarks<a class="headerlink" href="#device-benchmarks" title="Permanent link">&para;</a></h2>
+<h3 id="apple">Apple<a class="headerlink" href="#apple" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Device</th>
+<th>Prefill (tok/s)</th>
+<th>Decode (tok/s)</th>
+<th>RAM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Vision Pro</td>
+<td>2,067</td>
+<td>140</td>
+<td>85 MB</td>
+</tr>
+<tr>
+<td>iPhone 17 Pro</td>
+<td>797</td>
+<td>140</td>
+<td>75 MB</td>
+</tr>
+<tr>
+<td>iPhone 13 Mini</td>
+<td>496</td>
+<td>88</td>
+<td>56 MB</td>
+</tr>
+</tbody>
+</table>
+<h3 id="android">Android<a class="headerlink" href="#android" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Device</th>
+<th>Prefill (tok/s)</th>
+<th>Decode (tok/s)</th>
+<th>RAM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Galaxy S25 Ultra</td>
+<td>660</td>
+<td>100</td>
+<td>322 MB</td>
+</tr>
+<tr>
+<td>Google Pixel 6a</td>
+<td>208</td>
+<td>42</td>
+<td>328 MB</td>
+</tr>
+<tr>
+<td>Galaxy A56</td>
+<td>110</td>
+<td>24</td>
+<td>330 MB</td>
+</tr>
+</tbody>
+</table>
+<h3 id="other">Other<a class="headerlink" href="#other" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Device</th>
+<th>Prefill (tok/s)</th>
+<th>Decode (tok/s)</th>
+<th>RAM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Raspberry Pi 5</td>
+<td>200</td>
+<td>30</td>
+<td>300 MB</td>
+</tr>
+</tbody>
+</table>
+<p>Two things stand out in this data. First, the decode speeds: 140 tok/sec on a single core is fast, 
+most people read at roughly 4-5 words per second, so even the Raspberry Pi's 30 tok/sec is well ahead of human consumption. 
+Second, the RAM gap between Apple and Android: 56-85 MB versus 300-330 MB for the same 355 MB model.
+That gap is not a bug. It's a direct consequence of how the two platforms handle memory-mapped files, which we'll get into in the Cactus format section below.</p>
+<h2 id="why-cpu-not-gpu-or-npu">Why CPU, Not GPU or NPU<a class="headerlink" href="#why-cpu-not-gpu-or-npu" title="Permanent link">&para;</a></h2>
+<p>It is tempting to reach for the GPU. On paper, mobile GPUs have 10-50x the FLOPS of a single CPU core. 
+But inference on a 350M-parameter model is not a FLOPS problem, it's a memory bandwidth problem. 
+During decode, you generate one token at a time, which means you read the entire weight matrix for each token but only perform a single matrix-vector multiply. 
+The arithmetic intensity (FLOPS per byte loaded) is extremely low. Without batched decode, GPU compute units spend most of their time stalled on memory fetches. 
+GPU excels when arithmetic intensity is high, large batch sizes, long matrix-matrix multiplies. 
+For single-token decode, the GPU's compute units sit mostly idle while waiting for memory.</p>
+<p>There's also the practical problem: mobile GPU inference requires Metal on iOS and Vulkan or OpenCL on Android. 
+That's two separate shader codepaths to maintain, with different memory models, different synchronization primitives, and different performance characteristics per vendor. 
+And GPU inference holds a persistent GPU context, which competes with the UI rendering pipeline and drains battery even when the inference workload is light.
+GPUs are also energy-inefficient. On Macs and PCs this barely matters since they're plugged into a power source most of the time, and GPU inference works well there. But mobile devices run on battery, and every watt spent on GPU inference cuts directly into the user's runtime. The GPU path that works fine on a MacBook becomes a battery killer on a phone.</p>
+<p>NPU is a more interesting target. Apple's Neural Engine and Qualcomm's Hexagon DSP both offer high-throughput inference at good power efficiency. 
+The problem is access. Apple's Neural Engine requires CoreML model conversion, which imposes its own quantization and graph constraints.
+You don't control the execution schedule, the memory layout, or the precision semantics. 
+The quantisation techniques available through CoreML severely lag the state-of-the-art methods used by GGML and Cactus.
+Qualcomm's QNN SDK has similar restrictions (limited quantisation scheme support) and not all Android devices ship Qualcomm chips. 
+Both lock you into a vendor-specific format that may not support your model architecture at all, and neither works on budget devices that lack the NPU entirely.</p>
+<p>CPU is the universal target. Every ARM device, flagship, budget, wearable, Raspberry Pi, and most recent ones support DOTPROD or I8MM extensions. 
+A single well-optimized CPU codepath works everywhere, the main challenge is energy-inefficiency compared to NPU.</p>
+<p>ARM is also closing this gap. The progression from NEON to DOTPROD to I8MM to SME2 reflects a deliberate push to bring matrix-processing efficiency onto the CPU itself. Each generation narrows the energy and throughput gap with dedicated NPUs. SME2, available on Apple's M4 and upcoming ARMv9.2 cores, adds streaming matrix operations that approach NPU-class efficiency for INT8 workloads while remaining fully programmable. Cactus already compiles SME2 codepaths where available. The bet is that general-purpose CPU silicon will continue absorbing the capabilities that once justified a separate accelerator.</p>
+<h2 id="why-single-core-for-decode">Why Single Core for Decode<a class="headerlink" href="#why-single-core-for-decode" title="Permanent link">&para;</a></h2>
+<p>Decode is memory-bandwidth-bound. For a 350M INT8 model, each decode step reads roughly 355 MB of weights to produce a single token.
+On an iPhone 17 Pro with ~60 GB/s memory bandwidth, the theoretical maximum decode speed is around 169 tok/sec,
+our measured 140 tok/sec is 83% of that ceiling, the haircut comes from our choice to stream weights from storage for memory efficiency, reducing OS chances of throttling background inference. 
+Adding more cores doesn't give you more memory bandwidth; it just adds synchronization overhead.</p>
+<p>Prefill is different. With 1024 tokens in the input, each weight load amortizes across 1024 multiply-accumulate operations. 
+The arithmetic intensity is 1024x higher than decode, making prefill genuinely compute-bound. 
+That's why we use multi-threaded prefill, the Vision Pro's 2,067 tok/sec prefill speed reflects all available cores working in parallel.</p>
+<p>But there's a deeper reason single-core decode matters for mobile: background execution. 
+On both iOS and Android, the OS aggressively throttles multi-core workloads that run in the background. 
+iOS will suspend or terminate background tasks that consume excessive CPU across multiple cores. 
+Android's thermal management will cap frequency on the performance cores. 
+We found that single-core decode workload, by contrast, looks like a lightweight background task to the OS scheduler. 
+It doesn't trigger thermal throttling, doesn't compete with foreground apps, and doesn't get killed. 
+This is the difference between inference as a demo and inference as a product feature, the model needs to run while the user is doing something else.</p>
+<h2 id="why-int8">Why INT8<a class="headerlink" href="#why-int8" title="Permanent link">&para;</a></h2>
+<p>At 350M parameters, quantization precision matters more than at larger scales. 
+Quantization works by approximating continuous weight values with discrete integers, and the approximation error is relative to the dynamic range of each weight group. 
+Smaller models have fewer parameters absorbing this error, so each parameter carries more of the model's capacity. 
+INT4 quantization at 350M parameters produces measurable accuracy degradation, our internal testing shows 2-4 point drops on MMLU compared to INT8, which is near-lossless at this scale.</p>
+<p>Cactus uses grouped affine quantization: weights are divided into groups of 32 elements, and each group gets its own scale factor. 
+For each group, the scale is computed as <code>max(|w|) / 127</code>, and each weight is rounded to the nearest integer in [-128, 127]. 
+During inference, the INT8 values are multiplied by their group's scale to reconstruct the approximate FP32 value. 
+Per-group scaling is critical, a single outlier weight in a per-tensor scheme would compress the effective precision of every other weight in that tensor.</p>
+<p>The performance benefit is concrete. On ARM CPUs with I8MM support (ARMv8.2-a and later), the <code>SMMLA</code> instruction computes a 2x8 by 8x2 INT8 matrix multiply in a single instruction, accumulating into INT32. 
+This is a native hardware operation, not a software emulation of low-precision arithmetic. 
+On devices without I8MM (like the Pixel 6a's Tensor G1), Cactus falls back to DOTPROD instructions, which compute 4-element INT8 dot products. 
+Both paths are substantially faster than FP16 arithmetic because they process more elements per instruction and use less memory bandwidth per parameter.</p>
+<h2 id="the-cactus-format-and-zero-copy-loading">The Cactus Format and Zero-Copy Loading<a class="headerlink" href="#the-cactus-format-and-zero-copy-loading" title="Permanent link">&para;</a></h2>
+<p>The RAM numbers in our benchmarks tell a story about memory architecture. 
+The LFM-2.5-350m model file is 355 MB. On Apple devices, runtime RAM usage is 56-85 MB. On Android, it's 300-330 MB. 
+The model is the same. The quantization is the same. The difference is in how the operating system handles memory-mapped files. </p>
+<p>The Cactus format (identified by the magic number <code>0x54434143</code>, "CACT") is a binary container designed around <code>mmap()</code>. 
+Rather than loading the entire model into a heap allocation, Cactus maps the file directly into virtual address space with <code>mmap(PROT_READ, MAP_SHARED)</code>. 
+The weights stay on disk. When the inference engine accesses a weight tensor, the OS kernel page-faults it into physical memory on demand. 
+When memory pressure rises, the OS can evict those pages, they're backed by the file, so no writeback is needed.</p>
+<p>On Apple Silicon, this works exceptionally well. 
+The unified memory architecture means there's no distinction between CPU memory and file cache, 
+a memory-mapped page that's been paged in <em>is</em> the physical memory the CPU reads from. 
+The OS can manage a working set that's a fraction of the total model size because not all layers are active simultaneously during a single decode step.</p>
+<p>On Android, the behavior varies by kernel version and vendor. 
+Many Android devices aggressively copy memory-mapped pages into anonymous memory due to SELinux policies and vendor-specific memory management. 
+The result is that <code>mmap()</code> often degrades to something closer to <code>malloc() + read()</code>, explaining the 300+ MB footprint.</p>
+<p>The format itself is designed for SIMD-friendly access. 
+Weight data is aligned to 32-byte boundaries (matching ARM NEON register width), 
+and an optional block-interleaved layout groups 4 columns of weights together so that a single vector load fetches data for 4 output neurons simultaneously. 
+This layout eliminates the need for runtime transposition and ensures every memory access is a sequential, aligned read, optimal for both cache prefetching and NEON/I8MM instruction operands.</p>
+<h2 id="model-quality">Model Quality<a class="headerlink" href="#model-quality" title="Permanent link">&para;</a></h2>
+<p>A fast small model is only useful if it's accurate enough. Here's how the LFM-2.5 family compares to similarly-sized open models:</p>
+<table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>LFM2-350M</th>
+<th>LFM2-700M</th>
+<th>LFM2-1.2B</th>
+<th>Qwen3-0.6B</th>
+<th>Qwen3-1.7B</th>
+<th>Llama-3.2-1B</th>
+<th>gemma-3-1b-it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MMLU</td>
+<td>43.43</td>
+<td>49.90</td>
+<td><strong>55.23</strong></td>
+<td>44.93</td>
+<td><strong>59.11</strong></td>
+<td>46.60</td>
+<td>40.08</td>
+</tr>
+<tr>
+<td>GPQA</td>
+<td><strong>27.46</strong></td>
+<td><strong>28.48</strong></td>
+<td><strong>31.47</strong></td>
+<td>22.14</td>
+<td>27.72</td>
+<td>28.84</td>
+<td>21.07</td>
+</tr>
+<tr>
+<td>IFEval</td>
+<td><strong>65.12</strong></td>
+<td><strong>72.23</strong></td>
+<td><strong>74.89</strong></td>
+<td>64.24</td>
+<td>73.98</td>
+<td>52.39</td>
+<td>62.90</td>
+</tr>
+<tr>
+<td>IFBench</td>
+<td>16.41</td>
+<td><strong>20.56</strong></td>
+<td><strong>20.70</strong></td>
+<td>19.75</td>
+<td><strong>21.27</strong></td>
+<td>16.86</td>
+<td>17.72</td>
+</tr>
+<tr>
+<td>GSM8K</td>
+<td>30.10</td>
+<td>46.40</td>
+<td>58.30</td>
+<td>36.47</td>
+<td>51.40</td>
+<td>35.71</td>
+<td><strong>59.59</strong></td>
+</tr>
+<tr>
+<td>MGSM</td>
+<td>29.52</td>
+<td>45.36</td>
+<td>55.04</td>
+<td>41.28</td>
+<td><strong>66.56</strong></td>
+<td>29.12</td>
+<td>43.60</td>
+</tr>
+<tr>
+<td>MMMLU</td>
+<td><strong>37.99</strong></td>
+<td><strong>43.28</strong></td>
+<td><strong>46.73</strong></td>
+<td>30.84</td>
+<td>46.51</td>
+<td>38.15</td>
+<td>34.43</td>
+</tr>
+</tbody>
+</table>
+<p>The numbers worth examining closely:</p>
+<p><strong>IFEval (instruction following):</strong> LFM2-350M scores 65.12, versus 52.39 for Llama-3.2-1B (a model 3x its size) and 64.24 for Qwen3-0.6B (nearly 2x its size). For on-device applications,
+where the model is typically following structured instructions from an app rather than engaging in open-ended conversation, 
+instruction following is arguably the most important benchmark. The LFM2-1.2B's 74.89 is within a point of Qwen3-1.7B's 73.98, at 70% of the parameters.</p>
+<p><strong>GPQA (graduate-level reasoning):</strong> LFM2-350M at 27.46 beats both Qwen3-0.6B (22.14) and gemma-3-1b-it (21.07). 
+This is notable because GPQA tests reasoning depth, not just pattern matching, it suggests the LFM architecture is efficient at encoding reasoning capability per parameter.</p>
+<p><strong>MMMLU (multilingual knowledge):</strong> LFM2-350M scores 37.99 versus Qwen3-0.6B's 30.84. 
+A 7-point lead over a model nearly twice the size suggests strong multilingual data efficiency. The full LFM2-1.2B hits 46.73, matching Qwen3-1.7B's 46.51.</p>
+<p><strong>Where LFM2-350M trails:</strong> GSM8K (30.10) and MGSM (29.52) math benchmarks. gemma-3-1b-it leads GSM8K at 59.59, and Qwen3-1.7B leads MGSM at 66.56. 
+Math is where the parameter count ceiling hits hardest, since multi-step arithmetic requires retaining intermediate state that larger models can distribute across more capacity. 
+For pure math tasks at this scale, a larger model is the right answer.</p>
+<h2 id="what-this-adds-up-to">What This Adds Up To<a class="headerlink" href="#what-this-adds-up-to" title="Permanent link">&para;</a></h2>
+<p>The LFM-2.5-350m at INT8 on Cactus is a 355 MB model that decodes at 88 tok/sec on a three-year-old iPhone 13 Mini using 56 MB of RAM on a single CPU core. 
+It follows instructions better than models 3x its size. It runs as a background process without triggering OS throttling.
+These are not theoretical numbers on a development board with a fan. They're measured on production consumer devices, under the constraints that real mobile apps face; 
+memory pressure from other apps, thermal limits, background execution policies, 4G download speeds for model delivery.
+The question for on-device inference has always been whether the quality-speed-size tradeoff lands in a useful region. 
+At 350M parameters, LFM-2.5 on Cactus suggests it does: accurate enough for structured on-device tasks, fast enough to be invisible to the user, and small enough to ship inside an app.</p>
+<h2 id="where-is-cactus-headed">Where is Cactus headed?<a class="headerlink" href="#where-is-cactus-headed" title="Permanent link">&para;</a></h2>
+<p>On-device inference on a Mac or PC is a solved problem. You have gigabytes of RAM, a fast SSD, a multi-core CPU with wide SIMD, and a stable OS that doesn't kill your process for using too much battery. 
+Any reasonably written inference engine will run well on a MacBook and GPUs are a great idea, given these devices are plugged in anyway. </p>
+<p>Mobile devices, wearables, and custom hardware are a different story entirely. The ecosystem is incredibly fragmented. 
+You're dealing with hundreds of ARM chip variants across Apple, Qualcomm, MediaTek, Samsung, and Broadcom, each with different ISA extensions, different memory bandwidth, different thermal envelopes. 
+Android alone ships on devices ranging from 3 GB of RAM to 16 GB, with kernel versions spanning half a decade. 
+Wearables have even tighter constraints. Custom embedded hardware has its own. 
+A model that runs fine on a Galaxy S25 Ultra may crash on a Galaxy A56, not because the code is wrong, but because the memory management behavior differs at the kernel level.</p>
+<p>This fragmentation is what makes on-device AI difficult in production. It's a research and engineering problem that compounds at scale: every new device, every OS update, 
+every vendor-specific memory policy is another edge case that can break inference for some slice of your user base. 
+For enterprises shipping AI features to millions of devices, this is a hard pill. 
+The choice often comes down to small models that fit everywhere but are too weak to be useful, or capable models with large files that fail on half the device population.</p>
+<p>Cactus exists because we took on this specific slice of the problem; I spent the last few years building foundation models and inference for tiny devices. 
+The team's approach is systematic: profile every major ARM variant, write dedicated kernel paths for each ISA extension tier (NEON, DOTPROD, I8MM, SME2), 
+design the model format around the worst-case memory behavior (Android's mmap limitations), and test on real production devices, not emulators. 
+This it not-trivial; battling with chip manufactures with different brand visions, model developers chasing benchmarks over useability and more. </p>
+<p>The result is that businesses shipping with Cactus don't need to worry about inference failing silently on a budget Samsung, or a model that's accurate on benchmarks but too large for half their install base. 
+The kernel, the format, and the quantization strategy are all designed so that the same model file works correctly across the full device spectrum, with predictable RAM, predictable speed, and predictable quality.
+On-device market is quite noisy, with hobbyists driving decisions, but production use is largely unsolved, Cactus is a bit unconventional but rightfully so. </p>
+<p>LFM-2.5-350m is a step in the right direction, hence this dedicated post from me personally. 
+Not just that LFM-2.5-350m is fast on one device, but on Cactus, it brings frontier intelligence to very different devices, 
+from a Vision Pro to a Raspberry Pi 5, with no special casing and no device-specific builds. </p>
+<h2 id="see-also">See Also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../../docs/cactus_engine/">Cactus Engine API Reference</a> - Full C API docs for completion, tool calling, and cloud handoff</li>
+<li><a href="../lfm2_24b_a2b/">LFM2-24B-A2B</a> - Running LFM2 24B MoE locally on Mac for coding use cases</li>
+<li><a href="../hybrid_transcription/">Hybrid Transcription</a> - On-device/cloud hybrid speech transcription with Cactus</li>
+<li><a href="../parakeet/">Ridiculously Fast Transcription</a> - 6M tok/sec decode speed with Parakeet CTC 1.1B</li>
+</ul>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../parakeet/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Parakeet CTC 1.1B">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Parakeet CTC 1.1B
+              </div>
+            </div>
+          </a>
+        
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/cactus-compute/cactus" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://www.reddit.com/r/cactuscompute/" target="_blank" rel="noopener" title="www.reddit.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M0 256C0 114.6 114.6 0 256 0s256 114.6 256 256-114.6 256-256 256H37.1c-13.7 0-20.5-16.5-10.9-26.2L75 437C28.7 390.7 0 326.7 0 256m349.6-102.4c23.6 0 42.7-19.1 42.7-42.7s-19.1-42.7-42.7-42.7c-20.6 0-37.8 14.6-41.8 34-34.5 3.7-61.4 33-61.4 68.4v.2c-37.5 1.6-71.8 12.3-99 29.1-10.1-7.8-22.8-12.5-36.5-12.5-33 0-59.8 26.8-59.8 59.8 0 24 14.1 44.6 34.4 54.1 2 69.4 77.6 125.2 170.6 125.2s168.7-55.9 170.6-125.3c20.2-9.6 34.1-30.2 34.1-54 0-33-26.8-59.8-59.8-59.8-13.7 0-26.3 4.6-36.4 12.4-27.4-17-62.1-27.7-100-29.1v-.2c0-25.4 18.9-46.5 43.4-49.9 4.4 18.8 21.3 32.8 41.5 32.8zm-172.5 93.3c16.7 0 29.5 17.6 28.5 39.3s-13.5 29.6-30.3 29.6-31.4-8.8-30.4-30.5S160.3 247 177 247zm190.1 38.3c1 21.7-13.7 30.5-30.4 30.5s-29.3-7.9-30.3-29.6 11.8-39.3 28.5-39.3 31.2 16.6 32.1 38.3zm-48.1 56.7c-10.3 24.6-34.6 41.9-63 41.9s-52.7-17.3-63-41.9c-1.2-2.9.8-6.2 3.9-6.5 18.4-1.9 38.3-2.9 59.1-2.9s40.7 1 59.1 2.9c3.1.3 5.1 3.6 3.9 6.5"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
