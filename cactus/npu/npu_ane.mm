@@ -5,7 +5,104 @@
 #import <CoreML/CoreML.h>
 #import <Foundation/Foundation.h>
 #include <iostream>
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <string>
 #include "../graph/graph.h"
+
+namespace {
+
+static std::string to_lower_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+static bool parse_compute_units(const char* raw_value, MLComputeUnits& out_units) {
+    if (!raw_value || raw_value[0] == '\0') {
+        return false;
+    }
+
+    std::string value = to_lower_ascii(raw_value);
+    if (value == "all" || value == "default") {
+        out_units = MLComputeUnitsAll;
+        return true;
+    }
+    if (value == "cpu_and_ne" || value == "cpu-ne" || value == "cpu_ne" ||
+        value == "ne" || value == "ane" || value == "cpuandneuralengine") {
+        out_units = MLComputeUnitsCPUAndNeuralEngine;
+        return true;
+    }
+    if (value == "cpu_and_gpu" || value == "cpu_gpu" || value == "cpu-gpu" ||
+        value == "cpuandgpu") {
+        out_units = MLComputeUnitsCPUAndGPU;
+        return true;
+    }
+    if (value == "cpu_only" || value == "cpu-only" || value == "cpu") {
+        out_units = MLComputeUnitsCPUOnly;
+        return true;
+    }
+
+    return false;
+}
+
+static const char* compute_units_to_string(MLComputeUnits units) {
+    switch (units) {
+        case MLComputeUnitsAll:
+            return "ALL";
+        case MLComputeUnitsCPUAndGPU:
+            return "CPU_AND_GPU";
+        case MLComputeUnitsCPUOnly:
+            return "CPU_ONLY";
+        case MLComputeUnitsCPUAndNeuralEngine:
+            return "CPU_AND_NE";
+    }
+    return "UNKNOWN";
+}
+
+static bool model_path_looks_like_audio_encoder(NSString* model_path) {
+    if (!model_path) return false;
+    NSString* lower = [[model_path lastPathComponent] lowercaseString];
+    return [lower containsString:@"audio_encoder"];
+}
+
+static void maybe_apply_compute_units_env(const char* env_name, MLComputeUnits& target) {
+    const char* raw = std::getenv(env_name);
+    if (!raw || raw[0] == '\0') return;
+
+    MLComputeUnits parsed;
+    if (parse_compute_units(raw, parsed)) {
+        target = parsed;
+        return;
+    }
+
+    CACTUS_LOG_WARN("npu", "Ignoring invalid " << env_name << "=" << raw);
+}
+
+static MLComputeUnits resolve_compute_units_for_model(NSString* model_path, bool is_prefill) {
+    MLComputeUnits units = MLComputeUnitsCPUAndNeuralEngine;
+
+    // Audio encoder numerics are more stable with ALL on some devices/OS versions.
+    if (!is_prefill && model_path_looks_like_audio_encoder(model_path)) {
+        units = MLComputeUnitsAll;
+    }
+
+    maybe_apply_compute_units_env("CACTUS_ANE_COMPUTE_UNITS", units);
+    if (is_prefill) {
+        maybe_apply_compute_units_env("CACTUS_ANE_PREFILL_COMPUTE_UNITS", units);
+    } else {
+        maybe_apply_compute_units_env("CACTUS_ANE_ENCODER_COMPUTE_UNITS", units);
+        if (model_path_looks_like_audio_encoder(model_path)) {
+            maybe_apply_compute_units_env("CACTUS_ANE_AUDIO_COMPUTE_UNITS", units);
+        }
+    }
+
+    return units;
+}
+
+} // namespace
 
 @interface CactusANEImpl : NSObject
 
@@ -23,6 +120,8 @@
 @property (nonatomic, strong) MLMultiArray* cachedMultiOutputArray;
 @property (nonatomic, strong) MLPredictionOptions* multiPredictionOptions;
 @property (nonatomic, assign) BOOL multiInputPreallocated;
+@property (nonatomic, assign) BOOL hasOutputBackings;
+@property (nonatomic, assign) BOOL hasMultiOutputBackings;
 
 - (instancetype)initWithModelPath:(NSString*)path;
 - (NSArray<NSNumber*>*)getInputShape;
@@ -53,7 +152,11 @@
         NSURL* modelURL = [NSURL fileURLWithPath:path];
 
         MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
-        config.computeUnits = MLComputeUnitsCPUAndNeuralEngine;
+        config.computeUnits = resolve_compute_units_for_model(path, false);
+        CACTUS_LOG_INFO("npu",
+                        "ANEEncoder compute units: "
+                            << compute_units_to_string(config.computeUnits)
+                            << " for " << [path UTF8String]);
 
         if ([path hasSuffix:@".mlpackage"]) {
             BOOL isDir = NO;
@@ -154,6 +257,13 @@
     _cachedOutputName = outputName ? [outputName copy]
                                    : _modelDescription.outputDescriptionsByName.allKeys.firstObject;
 
+    CACTUS_LOG_DEBUG("npu",
+                     "[CactusANE] prealloc input name="
+                         << [_cachedInputName UTF8String]
+                         << " shape=" << [[_cachedInputArray.shape description] UTF8String]
+                         << " strides=" << [[_cachedInputArray.strides description] UTF8String]
+                         << " dtype=" << (long)_cachedInputArray.dataType);
+
     MLFeatureDescription* outputDesc = _modelDescription.outputDescriptionsByName[_cachedOutputName];
     if (outputDesc && outputDesc.type == MLFeatureTypeMultiArray) {
         NSArray<NSNumber*>* outputShape = outputDesc.multiArrayConstraint.shape;
@@ -175,10 +285,15 @@
             _cachedOutputSize *= [dim unsignedIntegerValue];
         }
 
+        CACTUS_LOG_DEBUG("npu",
+                         "[CactusANE] prealloc output name="
+                             << [_cachedOutputName UTF8String]
+                             << " shape=" << [[_cachedOutputArray.shape description] UTF8String]
+                             << " strides=" << [[_cachedOutputArray.strides description] UTF8String]
+                             << " dtype=" << (long)_cachedOutputArray.dataType);
+
         _predictionOptions = [[MLPredictionOptions alloc] init];
-        if (@available(macOS 14.0, iOS 17.0, *)) {
-            _predictionOptions.outputBackings = @{_cachedOutputName: _cachedOutputArray};
-        }
+        _hasOutputBackings = NO;
     }
 
     return YES;
@@ -262,7 +377,7 @@
 
     id<MLFeatureProvider> outputProvider = nil;
 
-    if (useCached && _predictionOptions) {
+    if (useCached && _hasOutputBackings && _predictionOptions) {
         outputProvider = [_model predictionFromFeatures:inputProvider
                                                 options:_predictionOptions
                                                   error:&error];
@@ -281,11 +396,18 @@
                             : _modelDescription.outputDescriptionsByName.allKeys.firstObject;
     }
 
-    if (useCached && _predictionOptions && _cachedOutputArray) {
-        return _cachedOutputArray;
-    }
-
     MLFeatureValue* outputFeature = [outputProvider featureValueForName:outName];
+    static bool logged_output_feature_layout = false;
+    if (!logged_output_feature_layout && outputFeature && outputFeature.multiArrayValue) {
+        MLMultiArray* outArr = outputFeature.multiArrayValue;
+        CACTUS_LOG_DEBUG("npu",
+                         "[CactusANE] output feature name="
+                             << [outName UTF8String]
+                             << " shape=" << [[outArr.shape description] UTF8String]
+                             << " strides=" << [[outArr.strides description] UTF8String]
+                             << " dtype=" << (long)outArr.dataType);
+        logged_output_feature_layout = true;
+    }
     return outputFeature.multiArrayValue;
 }
 
@@ -340,9 +462,7 @@ static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* ar
         if (!_cachedMultiOutputArray || error) return NO;
 
         _multiPredictionOptions = [[MLPredictionOptions alloc] init];
-        if (@available(macOS 14.0, iOS 17.0, *)) {
-            _multiPredictionOptions.outputBackings = @{outName: _cachedMultiOutputArray};
-        }
+        _hasMultiOutputBackings = NO;
     }
 
     _multiInputPreallocated = YES;
@@ -360,16 +480,12 @@ static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* ar
     if (!provider || error) return 0;
 
     id<MLFeatureProvider> result = nil;
-    if (_multiPredictionOptions) {
+    if (_hasMultiOutputBackings && _multiPredictionOptions) {
         result = [_model predictionFromFeatures:provider options:_multiPredictionOptions error:&error];
     } else {
         result = [_model predictionFromFeatures:provider error:&error];
     }
     if (!result || error) return 0;
-
-    if (_multiPredictionOptions && _cachedMultiOutputArray) {
-        return copyMLArrayToFP16(_cachedMultiOutputArray, output);
-    }
 
     MLFeatureValue* outFeature = [result featureValueForName:outputName];
     if (!outFeature || !outFeature.multiArrayValue) return 0;
@@ -616,6 +732,7 @@ bool is_npu_available() {
 @property (nonatomic, strong) MLMultiArray* cachedOffsetArray;
 @property (nonatomic, strong) NSMutableDictionary<NSString*, MLMultiArray*>* cachedOutputArrays;
 @property (nonatomic, strong) MLPredictionOptions* predictionOptions;
+@property (nonatomic, assign) BOOL hasOutputBackings;
 
 - (instancetype)initWithModelPath:(NSString*)path;
 - (void)preallocateBuffers;
@@ -634,7 +751,11 @@ bool is_npu_available() {
         NSURL* modelURL = [NSURL fileURLWithPath:path];
 
         MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
-        config.computeUnits = MLComputeUnitsCPUAndNeuralEngine;
+        config.computeUnits = resolve_compute_units_for_model(path, true);
+        CACTUS_LOG_INFO("npu",
+                        "ANEPrefill compute units: "
+                            << compute_units_to_string(config.computeUnits)
+                            << " for " << [path UTF8String]);
 
         if ([path hasSuffix:@".mlpackage"]) {
             BOOL isDir = NO;
@@ -751,8 +872,10 @@ bool is_npu_available() {
     }
 
     _predictionOptions = [[MLPredictionOptions alloc] init];
+    _hasOutputBackings = NO;
     if (@available(macOS 14.0, iOS 17.0, *)) {
         _predictionOptions.outputBackings = outputBackings;
+        _hasOutputBackings = YES;
     }
 }
 
@@ -784,7 +907,22 @@ bool is_npu_available() {
     id<MLFeatureProvider> outputProvider = [_model predictionFromFeatures:inputProvider
                                                                   options:_predictionOptions
                                                                     error:&error];
-    return (error == nil && outputProvider != nil);
+    if (error || !outputProvider) return NO;
+
+    if (!_hasOutputBackings) {
+        for (NSString* outputName in _cachedOutputArrays) {
+            MLFeatureValue* outFeature = [outputProvider featureValueForName:outputName];
+            if (!outFeature || !outFeature.multiArrayValue) return NO;
+
+            MLMultiArray* dst = _cachedOutputArrays[outputName];
+            if (!dst) return NO;
+
+            size_t copied = copyMLArrayToFP16(outFeature.multiArrayValue, (__fp16*)dst.dataPointer);
+            if (copied == 0) return NO;
+        }
+    }
+
+    return YES;
 }
 
 - (MLMultiArray*)getOutputArray:(NSString*)name {
