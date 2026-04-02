@@ -157,6 +157,16 @@ if ! cactus download "$EMBED_SPEAKER_MODEL_NAME" $PRECISION_FLAG; then
     exit 1
 fi
 
+if ! cactus download "$DIARIZE_MODEL_NAME" $PRECISION_FLAG; then
+    echo "Failed to download diarize model weights"
+    exit 1
+fi
+
+if ! cactus download "$EMBED_SPEAKER_MODEL_NAME" $PRECISION_FLAG; then
+    echo "Failed to download embed_speaker model weights"
+    exit 1
+fi
+
 echo ""
 if [ "$ANDROID_MODE" = true ]; then
     export CACTUS_TEST_ONLY="$ONLY_EXEC"
