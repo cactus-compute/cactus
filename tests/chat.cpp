@@ -313,7 +313,7 @@ std::string expand_tilde(const std::string& path) {
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
-        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>] [--image <path>] [--no-thinking]\n";
+        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>] [--prompt <text>] [--no-thinking]\n";
         return 1;
     }
 
@@ -321,6 +321,7 @@ int main(int argc, char* argv[]) {
     std::string system_prompt;
     std::string current_image;
     std::string current_audio;
+    std::string initial_prompt;
     bool enable_thinking = true;
 
     for (int i = 2; i < argc; ++i) {
@@ -330,6 +331,8 @@ int main(int argc, char* argv[]) {
             current_image = expand_tilde(argv[++i]);
         } else if (std::string(argv[i]) == "--audio" && i + 1 < argc) {
             current_audio = expand_tilde(argv[++i]);
+        } else if (std::string(argv[i]) == "--prompt" && i + 1 < argc) {
+            initial_prompt = argv[++i];
         } else if (std::string(argv[i]) == "--no-thinking") {
             enable_thinking = false;
         }
@@ -402,21 +405,27 @@ int main(int argc, char* argv[]) {
     TokenPrinter printer;
     g_printer = &printer;
 
-    bool auto_send_audio = !current_audio.empty();
+    bool auto_send = !current_audio.empty() || !initial_prompt.empty();
 
     while (true) {
         bool has_media = !current_image.empty() || !current_audio.empty();
         std::string input;
 
-        if (auto_send_audio) {
-            auto_send_audio = false;
-            input = "";
-            std::cout << colored("You \xf0\x9f\x8e\xa4: ", Color::BLUE + Color::BOLD)
-                      << colored("[audio input]", Color::DIM) << "\n";
+        if (auto_send) {
+            auto_send = false;
+            input = initial_prompt;
+            initial_prompt.clear();
+            if (has_media && input.empty()) {
+                std::cout << colored("You \xf0\x9f\x8e\xa4: ", Color::BLUE + Color::BOLD)
+                          << colored("[audio input]", Color::DIM) << "\n";
+            } else {
+                std::string prompt_label = has_media ? "You \xf0\x9f\x93\x8e: " : "You: ";
+                std::cout << colored(prompt_label, Color::BLUE + Color::BOLD) << input << "\n";
+            }
         } else {
             std::string prompt = has_media ? "You \xf0\x9f\x93\x8e: " : "You: ";
             std::cout << colored(prompt, Color::BLUE + Color::BOLD);
-            std::getline(std::cin, input);
+            if (!std::getline(std::cin, input)) break;
 
             while (!input.empty() && (input.back() == ' ' || input.back() == '\t')) input.pop_back();
             if (input.empty()) continue;

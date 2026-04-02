@@ -967,6 +967,9 @@ def cmd_run(args):
     system_prompt = getattr(args, 'system', None)
     if system_prompt:
         cmd_args.extend(['--system', system_prompt])
+    prompt = getattr(args, 'prompt', None)
+    if prompt:
+        cmd_args.extend(['--prompt', prompt])
     if getattr(args, 'no_thinking', False):
         cmd_args.append('--no-thinking')
 
@@ -1965,6 +1968,8 @@ def create_parser():
                             help='Path to audio file (WAV) for audio chat (attached to first message)')
     run_parser.add_argument('--system',
                             help='System prompt to prepend to all messages')
+    run_parser.add_argument('--prompt',
+                            help='Initial prompt to send immediately')
     run_parser.add_argument('--no-thinking', action='store_true',
                             help='Disable thinking/reasoning for models that support it')
 
