@@ -1,5 +1,6 @@
 #include "model_tinyllama.h"
 #include "../../graph/graph.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -10,6 +11,252 @@ namespace engine {
 
 static const float INV_LN2 = 1.0f / std::log(2.0f);
 static const float GEMMA4_AUDIO_K_SCALE = std::log(1.0f + std::exp(1.0f)) / std::log(2.0f);
+
+static size_t shape_elements(const std::vector<int>& shape) {
+    if (shape.empty()) return 0;
+    size_t total = 1;
+    for (int d : shape) {
+        if (d <= 0) return 0;
+        total *= static_cast<size_t>(d);
+    }
+    return total;
+}
+
+static size_t infer_npu_audio_max_frames(const std::vector<int>& shape, size_t mel_bins) {
+    if (shape.size() == 2) {
+        size_t s0 = static_cast<size_t>(shape[0]);
+        size_t s1 = static_cast<size_t>(shape[1]);
+        if (s1 == mel_bins) return s0;
+        if (s0 == mel_bins) return s1;
+    } else if (shape.size() == 3) {
+        size_t s0 = static_cast<size_t>(shape[0]);
+        size_t s1 = static_cast<size_t>(shape[1]);
+        size_t s2 = static_cast<size_t>(shape[2]);
+        if (s0 == 1 && s2 == mel_bins) return s1; // [1, T, F]
+        if (s0 == 1 && s1 == mel_bins) return s2; // [1, F, T]
+        if (s1 == mel_bins && s2 == 1) return s0; // [T, F, 1]
+        if (s0 == mel_bins && s2 == 1) return s1; // [F, T, 1]
+    } else if (shape.size() == 4) {
+        size_t s0 = static_cast<size_t>(shape[0]);
+        size_t s1 = static_cast<size_t>(shape[1]);
+        size_t s2 = static_cast<size_t>(shape[2]);
+        size_t s3 = static_cast<size_t>(shape[3]);
+        if (s0 == 1 && s1 == 1 && s3 == mel_bins) return s2; // [1, 1, T, F]
+        if (s0 == 1 && s1 == 1 && s2 == mel_bins) return s3; // [1, 1, F, T]
+        if (s0 == 1 && s1 == mel_bins && s3 == 1) return s2; // [1, F, T, 1]
+        if (s0 == 1 && s2 == mel_bins && s3 == 1) return s1; // [1, T, F, 1]
+    }
+    return 0;
+}
+
+static bool pack_tinyllama_audio_for_npu(const std::vector<__fp16>& mel_f16,
+                                         size_t frames,
+                                         size_t mel_bins,
+                                         const std::vector<int>& input_shape,
+                                         std::vector<__fp16>& packed) {
+    if (input_shape.empty()) return false;
+    const size_t total = shape_elements(input_shape);
+    if (total == 0) return false;
+    packed.assign(total, static_cast<__fp16>(0.0f));
+
+    auto tm = [&](size_t t, size_t m) -> __fp16 {
+        return mel_f16[t * mel_bins + m];
+    };
+
+    if (input_shape.size() == 4) {
+        const size_t s0 = static_cast<size_t>(input_shape[0]);
+        const size_t s1 = static_cast<size_t>(input_shape[1]);
+        const size_t s2 = static_cast<size_t>(input_shape[2]);
+        const size_t s3 = static_cast<size_t>(input_shape[3]);
+        if (s0 != 1) return false;
+
+        if (s1 == 1 && s2 >= frames && s3 == mel_bins) {
+            for (size_t t = 0; t < frames; ++t)
+                for (size_t m = 0; m < mel_bins; ++m)
+                    packed[(t * s3) + m] = tm(t, m);
+            return true;
+        }
+        if (s1 == 1 && s2 == mel_bins && s3 >= frames) {
+            for (size_t t = 0; t < frames; ++t)
+                for (size_t m = 0; m < mel_bins; ++m)
+                    packed[(m * s3) + t] = tm(t, m);
+            return true;
+        }
+        if (s1 >= frames && s2 == mel_bins && s3 == 1) {
+            for (size_t t = 0; t < frames; ++t)
+                for (size_t m = 0; m < mel_bins; ++m)
+                    packed[((t * s2 + m) * s3)] = tm(t, m);
+            return true;
+        }
+        if (s1 == mel_bins && s2 >= frames && s3 == 1) {
+            for (size_t t = 0; t < frames; ++t)
+                for (size_t m = 0; m < mel_bins; ++m)
+                    packed[((m * s2 + t) * s3)] = tm(t, m);
+            return true;
+        }
+        return false;
+    }
+
+    if (input_shape.size() == 3) {
+        const size_t s0 = static_cast<size_t>(input_shape[0]);
+        const size_t s1 = static_cast<size_t>(input_shape[1]);
+        const size_t s2 = static_cast<size_t>(input_shape[2]);
+
+        if (s0 == 1 && s1 >= frames && s2 == mel_bins) {
+            for (size_t t = 0; t < frames; ++t)
+                for (size_t m = 0; m < mel_bins; ++m)
+                    packed[t * s2 + m] = tm(t, m);
+            return true;
+        }
+        if (s0 == 1 && s1 == mel_bins && s2 >= frames) {
+            for (size_t t = 0; t < frames; ++t)
+                for (size_t m = 0; m < mel_bins; ++m)
+                    packed[m * s2 + t] = tm(t, m);
+            return true;
+        }
+        if (s0 >= frames && s1 == mel_bins && s2 == 1) {
+            for (size_t t = 0; t < frames; ++t)
+                for (size_t m = 0; m < mel_bins; ++m)
+                    packed[(t * s1 + m) * s2] = tm(t, m);
+            return true;
+        }
+        if (s0 == mel_bins && s1 >= frames && s2 == 1) {
+            for (size_t t = 0; t < frames; ++t)
+                for (size_t m = 0; m < mel_bins; ++m)
+                    packed[(m * s1 + t) * s2] = tm(t, m);
+            return true;
+        }
+        return false;
+    }
+
+    if (input_shape.size() == 2) {
+        const size_t s0 = static_cast<size_t>(input_shape[0]);
+        const size_t s1 = static_cast<size_t>(input_shape[1]);
+
+        if (s0 >= frames && s1 == mel_bins) {
+            for (size_t t = 0; t < frames; ++t)
+                for (size_t m = 0; m < mel_bins; ++m)
+                    packed[t * s1 + m] = tm(t, m);
+            return true;
+        }
+        if (s0 == mel_bins && s1 >= frames) {
+            for (size_t t = 0; t < frames; ++t)
+                for (size_t m = 0; m < mel_bins; ++m)
+                    packed[m * s1 + t] = tm(t, m);
+            return true;
+        }
+        return false;
+    }
+
+    return false;
+}
+
+struct NPUAudioOutputLayout {
+    std::vector<size_t> dims;
+    size_t hidden_axis = SIZE_MAX;
+    size_t hidden_dim = 0;
+    size_t time_steps = 0;
+};
+
+static bool infer_npu_audio_output_layout(const std::vector<int>& output_shape,
+                                          size_t elements_written,
+                                          size_t expected_hidden_dim,
+                                          NPUAudioOutputLayout& layout) {
+    if (elements_written == 0) return false;
+
+    layout = NPUAudioOutputLayout{};
+    for (int d : output_shape) {
+        if (d > 0) layout.dims.push_back(static_cast<size_t>(d));
+    }
+
+    if (layout.dims.empty()) {
+        if (expected_hidden_dim == 0 || (elements_written % expected_hidden_dim) != 0) {
+            return false;
+        }
+        layout.dims = {elements_written / expected_hidden_dim, expected_hidden_dim};
+    }
+
+    const size_t rank = layout.dims.size();
+    size_t hidden_axis = SIZE_MAX;
+    if (expected_hidden_dim > 0) {
+        if (layout.dims[rank - 1] == expected_hidden_dim) {
+            hidden_axis = rank - 1;
+        } else if (rank >= 2 && layout.dims[rank - 2] == expected_hidden_dim) {
+            hidden_axis = rank - 2;
+        } else {
+            for (size_t i = 0; i < rank; ++i) {
+                if (layout.dims[i] == expected_hidden_dim) {
+                    hidden_axis = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (hidden_axis == SIZE_MAX) {
+        hidden_axis = rank - 1;
+    }
+
+    const size_t hidden_dim = layout.dims[hidden_axis];
+    if (hidden_dim == 0 || (elements_written % hidden_dim) != 0) {
+        return false;
+    }
+
+    layout.hidden_axis = hidden_axis;
+    layout.hidden_dim = hidden_dim;
+    layout.time_steps = elements_written / hidden_dim;
+    return layout.time_steps > 0;
+}
+
+static bool materialize_npu_audio_time_major(const __fp16* src,
+                                             const NPUAudioOutputLayout& layout,
+                                             size_t time_steps,
+                                             std::vector<__fp16>& dst) {
+    if (!src || layout.dims.empty() || layout.hidden_dim == 0 || layout.time_steps == 0) {
+        return false;
+    }
+    if (layout.hidden_axis >= layout.dims.size() || time_steps == 0 || time_steps > layout.time_steps) {
+        return false;
+    }
+
+    const size_t rank = layout.dims.size();
+    if (layout.hidden_axis == rank - 1) {
+        // Already [time, hidden] in row-major flattening.
+        return false;
+    }
+
+    std::vector<size_t> strides(rank, 1);
+    for (size_t i = rank; i-- > 1;) {
+        strides[i - 1] = strides[i] * layout.dims[i];
+    }
+
+    std::vector<size_t> non_hidden_axes;
+    non_hidden_axes.reserve(rank - 1);
+    for (size_t i = 0; i < rank; ++i) {
+        if (i != layout.hidden_axis) non_hidden_axes.push_back(i);
+    }
+
+    dst.assign(time_steps * layout.hidden_dim, static_cast<__fp16>(0.0f));
+
+    for (size_t t = 0; t < time_steps; ++t) {
+        size_t rem = t;
+        size_t base_offset = 0;
+        for (size_t i = non_hidden_axes.size(); i-- > 0;) {
+            size_t axis = non_hidden_axes[i];
+            size_t dim = layout.dims[axis];
+            size_t coord = rem % dim;
+            rem /= dim;
+            base_offset += coord * strides[axis];
+        }
+
+        for (size_t h = 0; h < layout.hidden_dim; ++h) {
+            size_t src_index = base_offset + h * strides[layout.hidden_axis];
+            dst[t * layout.hidden_dim + h] = src[src_index];
+        }
+    }
+
+    return true;
+}
 
 static size_t graph_clamp(CactusGraph* gb, size_t x, float lo, float hi) {
     if (lo >= hi || std::isinf(lo) || std::isinf(hi)) return x;
@@ -438,33 +685,71 @@ size_t TinyLlamaAudioModel::forward_audio(CactusGraph* gb, const std::vector<flo
                                            size_t num_frames, ComputeBackend backend) {
     if (use_npu_encoder_ && npu_encoder_ && npu_encoder_->is_available()) {
         std::vector<int> npu_input_shape = npu_encoder_->get_input_shape();
-        size_t npu_frames = static_cast<size_t>(npu_input_shape[0]);
-        size_t mel_bins = static_cast<size_t>(npu_input_shape[1]);
+        size_t mel_bins = static_cast<size_t>(config_.audio_input_feat_size);
+        size_t max_npu_frames = infer_npu_audio_max_frames(npu_input_shape, mel_bins);
+        size_t copy_frames = max_npu_frames > 0 ? std::min(num_frames, max_npu_frames) : num_frames;
 
-        size_t copy_frames = std::min(num_frames, npu_frames);
-        std::vector<__fp16> padded_mel(npu_frames * mel_bins, static_cast<__fp16>(0.0f));
+        std::vector<__fp16> mel_f16(copy_frames * mel_bins, static_cast<__fp16>(0.0f));
         for (size_t i = 0; i < copy_frames * mel_bins; i++)
-            padded_mel[i] = static_cast<__fp16>(mel_features[i]);
+            mel_f16[i] = static_cast<__fp16>(mel_features[i]);
 
-        size_t t1 = (num_frames + 1) / 2;
-        size_t t2 = (t1 + 1) / 2;
+        std::vector<__fp16> npu_input;
+        if (!pack_tinyllama_audio_for_npu(mel_f16, copy_frames, mel_bins, npu_input_shape, npu_input)) {
+            CACTUS_LOG_WARN("npu", "[tinyllama-audio] unsupported NPU input shape; falling back to CPU audio encoder");
+        } else {
+            size_t t1 = (copy_frames + 1) / 2;
+            size_t t2 = (t1 + 1) / 2;
+            size_t expected_out_dim = config_.audio_output_proj_dims > 0
+                ? static_cast<size_t>(config_.audio_output_proj_dims)
+                : static_cast<size_t>(config_.audio_hidden_dim);
 
-        std::vector<int> out_shape = npu_encoder_->get_output_shape();
-        size_t out_elements = 1;
-        for (int d : out_shape) out_elements *= d;
-        size_t out_dim = static_cast<size_t>(out_shape[1]);
-        size_t actual_time = std::min(t2, static_cast<size_t>(out_shape[0]));
+            std::vector<int> out_shape = npu_encoder_->get_output_shape();
+            size_t out_elements = npu_encoder_->get_output_buffer_size();
+            if (out_elements == 0) out_elements = shape_elements(out_shape);
+            if (out_elements == 0) out_elements = std::max<size_t>(1, t2 * expected_out_dim);
 
-        std::vector<__fp16> npu_output(out_elements);
-        size_t written = npu_encoder_->encode(
-            padded_mel.data(), npu_output.data(), npu_input_shape, "mel", "");
+            std::vector<__fp16> npu_output(out_elements);
+            size_t written = npu_encoder_->encode(
+                npu_input.data(), npu_output.data(), npu_input_shape, "mel", "");
 
-        if (written > 0) {
-            size_t hidden = gb->input({actual_time, out_dim}, Precision::FP16);
-            gb->set_input(hidden, npu_output.data(), Precision::FP16);
-            return hidden;
+            NPUAudioOutputLayout out_layout;
+            if (written > 0 &&
+                infer_npu_audio_output_layout(out_shape, written, expected_out_dim, out_layout) &&
+                out_layout.hidden_dim == expected_out_dim) {
+                const __fp16* src = npu_output.data();
+                __fp16* cached_output = npu_encoder_->get_output_buffer();
+                size_t cached_count = npu_encoder_->get_output_buffer_size();
+                size_t required = out_layout.time_steps * out_layout.hidden_dim;
+                if (cached_output != nullptr && cached_count >= required) {
+                    src = cached_output;
+                }
+
+                size_t actual_time = std::min(t2, out_layout.time_steps);
+                if (actual_time > 0) {
+                    std::vector<__fp16> reordered;
+                    const __fp16* final_src = src;
+                    if (out_layout.hidden_axis != (out_layout.dims.size() - 1)) {
+                        if (!materialize_npu_audio_time_major(src, out_layout, actual_time, reordered)) {
+                            CACTUS_LOG_WARN("npu", "[tinyllama-audio] failed to reorder NPU output layout; falling back to CPU audio encoder");
+                        } else {
+                            final_src = reordered.data();
+                        }
+                    }
+
+                    if (final_src != nullptr) {
+                        size_t hidden = gb->input({actual_time, out_layout.hidden_dim}, Precision::FP16);
+                        gb->set_input(hidden, final_src, Precision::FP16);
+                        return hidden;
+                    }
+                }
+            }
+
+            if (written > 0 && out_layout.hidden_dim != expected_out_dim) {
+                CACTUS_LOG_WARN("npu", "[tinyllama-audio] NPU output dim mismatch; falling back to CPU audio encoder");
+            } else {
+                CACTUS_LOG_WARN("npu", "audio encode failed, falling back to CPU");
+            }
         }
-        CACTUS_LOG_WARN("npu", "audio encode failed, falling back to CPU");
     }
 
     size_t hidden = build_sscp(gb, mel_features, num_frames, backend);

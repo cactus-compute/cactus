@@ -7,8 +7,10 @@
 #include <iostream>
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <cstdlib>
 #include <string>
+#include <vector>
 #include "../graph/graph.h"
 
 namespace {
@@ -84,9 +86,9 @@ static void maybe_apply_compute_units_env(const char* env_name, MLComputeUnits& 
 static MLComputeUnits resolve_compute_units_for_model(NSString* model_path, bool is_prefill) {
     MLComputeUnits units = MLComputeUnitsCPUAndNeuralEngine;
 
-    // Audio encoder numerics are more stable with ALL on some devices/OS versions.
+    // Gemma4/TinyLlama audio encoders show significantly better fidelity on CPU+GPU.
     if (!is_prefill && model_path_looks_like_audio_encoder(model_path)) {
-        units = MLComputeUnitsAll;
+        units = MLComputeUnitsCPUAndGPU;
     }
 
     maybe_apply_compute_units_env("CACTUS_ANE_COMPUTE_UNITS", units);
@@ -100,6 +102,76 @@ static MLComputeUnits resolve_compute_units_for_model(NSString* model_path, bool
     }
 
     return units;
+}
+
+static bool should_recompile_mlpackage(NSString* mlpackage_path, NSString* mlmodelc_path) {
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:mlmodelc_path]) return true;
+
+    const char* force = std::getenv("CACTUS_ANE_FORCE_RECOMPILE");
+    if (force && force[0] != '\0' && std::strcmp(force, "0") != 0) {
+        return true;
+    }
+
+    NSError* pkg_err = nil;
+    NSError* cache_err = nil;
+    NSDictionary* pkg_attr = [fm attributesOfItemAtPath:mlpackage_path error:&pkg_err];
+    NSDictionary* cache_attr = [fm attributesOfItemAtPath:mlmodelc_path error:&cache_err];
+    if (!pkg_attr || !cache_attr || pkg_err || cache_err) {
+        return false;
+    }
+
+    NSDate* pkg_mtime = pkg_attr[NSFileModificationDate];
+    NSDate* cache_mtime = cache_attr[NSFileModificationDate];
+    if (!pkg_mtime || !cache_mtime) {
+        return false;
+    }
+    return ([pkg_mtime compare:cache_mtime] == NSOrderedDescending);
+}
+
+static NSURL* resolve_or_compile_model_url(NSString* path, NSError** error) {
+    NSURL* modelURL = [NSURL fileURLWithPath:path];
+    if (![path hasSuffix:@".mlpackage"]) {
+        return modelURL;
+    }
+
+    BOOL isDir = NO;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir] || !isDir) {
+        CACTUS_LOG_ERROR("npu", "ANE mlpackage path is not a valid directory: " << [path UTF8String]);
+        return modelURL;
+    }
+
+    NSString* cachedPath = [[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"mlmodelc"];
+    NSURL* cachedURL = [NSURL fileURLWithPath:cachedPath];
+    NSFileManager* fm = [NSFileManager defaultManager];
+
+    if (!should_recompile_mlpackage(path, cachedPath)) {
+        return cachedURL;
+    }
+
+    if ([fm fileExistsAtPath:cachedPath]) {
+        NSError* rmErr = nil;
+        [fm removeItemAtPath:cachedPath error:&rmErr];
+        if (rmErr) {
+            CACTUS_LOG_WARN("npu", "Failed to remove stale mlmodelc: " << [[rmErr localizedDescription] UTF8String]);
+        } else {
+            CACTUS_LOG_INFO("npu", "Removed stale mlmodelc cache, recompiling: " << [cachedPath UTF8String]);
+        }
+    }
+
+    NSURL* compiledURL = [MLModel compileModelAtURL:modelURL error:error];
+    if (*error || !compiledURL) {
+        CACTUS_LOG_ERROR("npu", "ANE model compilation failed: " << [[*error localizedDescription] UTF8String]);
+        return modelURL;
+    }
+
+    NSError* moveError = nil;
+    [fm moveItemAtURL:compiledURL toURL:cachedURL error:&moveError];
+    if (moveError) {
+        CACTUS_LOG_WARN("npu", "Could not persist compiled mlmodelc cache: " << [[moveError localizedDescription] UTF8String]);
+        return compiledURL;
+    }
+    return cachedURL;
 }
 
 } // namespace
@@ -149,7 +221,7 @@ static MLComputeUnits resolve_compute_units_for_model(NSString* model_path, bool
     self = [super init];
     if (self) {
         NSError* error = nil;
-        NSURL* modelURL = [NSURL fileURLWithPath:path];
+        NSURL* modelURL = resolve_or_compile_model_url(path, &error);
 
         MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
         config.computeUnits = resolve_compute_units_for_model(path, false);
@@ -157,34 +229,6 @@ static MLComputeUnits resolve_compute_units_for_model(NSString* model_path, bool
                         "ANEEncoder compute units: "
                             << compute_units_to_string(config.computeUnits)
                             << " for " << [path UTF8String]);
-
-        if ([path hasSuffix:@".mlpackage"]) {
-            BOOL isDir = NO;
-            if (![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir] || !isDir) {
-                CACTUS_LOG_ERROR("npu", "ANE mlpackage path is not a valid directory: " << [path UTF8String]);
-                return self;
-            }
-            NSString* cachedPath = [[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"mlmodelc"];
-            NSURL* cachedURL = [NSURL fileURLWithPath:cachedPath];
-
-            if ([[NSFileManager defaultManager] fileExistsAtPath:cachedPath]) {
-                modelURL = cachedURL;
-            } else {
-                NSURL* compiledURL = [MLModel compileModelAtURL:modelURL error:&error];
-                if (error) {
-                    CACTUS_LOG_ERROR("npu", "ANE model compilation failed: " << [[error localizedDescription] UTF8String]);
-                    return self;
-                }
-
-                NSError* moveError = nil;
-                [[NSFileManager defaultManager] moveItemAtURL:compiledURL toURL:cachedURL error:&moveError];
-                if (moveError) {
-                    modelURL = compiledURL;
-                } else {
-                    modelURL = cachedURL;
-                }
-            }
-        }
 
         _model = [MLModel modelWithContentsOfURL:modelURL configuration:config error:&error];
         if (_model) {
@@ -413,22 +457,179 @@ static MLComputeUnits resolve_compute_units_for_model(NSString* model_path, bool
 
 static size_t copyMLArrayToFP16(MLMultiArray* array, __fp16* output) {
     size_t count = array.count;
+    if (!array || !output || count == 0) return 0;
+
+    std::vector<size_t> dims;
+    std::vector<size_t> strides;
+    const size_t rank = array.shape.count;
+    bool have_layout = rank == array.strides.count && rank > 0;
+    if (have_layout) {
+        dims.resize(rank);
+        strides.resize(rank);
+        for (size_t i = 0; i < rank; ++i) {
+            NSInteger d = [array.shape[i] integerValue];
+            NSInteger s = [array.strides[i] integerValue];
+            if (d <= 0 || s < 0) {
+                have_layout = false;
+                break;
+            }
+            dims[i] = static_cast<size_t>(d);
+            strides[i] = static_cast<size_t>(s);
+        }
+    }
+
+    if (!have_layout) {
+        if (array.dataType == MLMultiArrayDataTypeFloat16) {
+            if (output != (__fp16*)array.dataPointer) {
+                memcpy(output, array.dataPointer, count * sizeof(__fp16));
+            }
+        } else {
+            const float* src = (const float*)array.dataPointer;
+            for (size_t i = 0; i < count; i++) output[i] = (__fp16)src[i];
+        }
+        return count;
+    }
+
+    auto is_contiguous = [&]() -> bool {
+        if (!have_layout) return false;
+        size_t expected = 1;
+        for (size_t i = rank; i-- > 0;) {
+            if (dims[i] > 1 && strides[i] != expected) return false;
+            expected *= dims[i];
+        }
+        return true;
+    };
+
+    if (is_contiguous()) {
+        if (array.dataType == MLMultiArrayDataTypeFloat16) {
+            if (output != (__fp16*)array.dataPointer) {
+                memcpy(output, array.dataPointer, count * sizeof(__fp16));
+            }
+        } else {
+            const float* src = (const float*)array.dataPointer;
+            for (size_t i = 0; i < count; i++) output[i] = (__fp16)src[i];
+        }
+        return count;
+    }
+
+    std::vector<size_t> idx(rank, 0);
     if (array.dataType == MLMultiArrayDataTypeFloat16) {
-        if (output != (__fp16*)array.dataPointer)
-            memcpy(output, array.dataPointer, count * sizeof(__fp16));
+        const __fp16* src = (const __fp16*)array.dataPointer;
+        for (size_t i = 0; i < count; ++i) {
+            size_t offset = 0;
+            for (size_t d = 0; d < rank; ++d) {
+                offset += idx[d] * strides[d];
+            }
+            output[i] = src[offset];
+
+            for (size_t d = rank; d-- > 0;) {
+                idx[d]++;
+                if (idx[d] < dims[d]) break;
+                idx[d] = 0;
+            }
+        }
     } else {
         const float* src = (const float*)array.dataPointer;
-        for (size_t i = 0; i < count; i++) output[i] = (__fp16)src[i];
+        for (size_t i = 0; i < count; ++i) {
+            size_t offset = 0;
+            for (size_t d = 0; d < rank; ++d) {
+                offset += idx[d] * strides[d];
+            }
+            output[i] = (__fp16)src[offset];
+
+            for (size_t d = rank; d-- > 0;) {
+                idx[d]++;
+                if (idx[d] < dims[d]) break;
+                idx[d] = 0;
+            }
+        }
     }
     return count;
 }
 
 static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* array) {
+    if (!array || !data || count == 0) return;
+
+    std::vector<size_t> dims;
+    std::vector<size_t> strides;
+    const size_t rank = array.shape.count;
+    bool have_layout = rank == array.strides.count && rank > 0;
+    if (have_layout) {
+        dims.resize(rank);
+        strides.resize(rank);
+        for (size_t i = 0; i < rank; ++i) {
+            NSInteger d = [array.shape[i] integerValue];
+            NSInteger s = [array.strides[i] integerValue];
+            if (d <= 0 || s < 0) {
+                have_layout = false;
+                break;
+            }
+            dims[i] = static_cast<size_t>(d);
+            strides[i] = static_cast<size_t>(s);
+        }
+    }
+
+    if (!have_layout) {
+        if (array.dataType == MLMultiArrayDataTypeFloat16) {
+            memcpy(array.dataPointer, data, count * sizeof(__fp16));
+        } else {
+            float* dst = (float*)array.dataPointer;
+            for (size_t i = 0; i < count; i++) dst[i] = (float)data[i];
+        }
+        return;
+    }
+
+    auto is_contiguous = [&]() -> bool {
+        if (!have_layout) return false;
+        size_t expected = 1;
+        for (size_t i = rank; i-- > 0;) {
+            if (dims[i] > 1 && strides[i] != expected) return false;
+            expected *= dims[i];
+        }
+        return true;
+    };
+
+    if (is_contiguous()) {
+        if (array.dataType == MLMultiArrayDataTypeFloat16) {
+            memcpy(array.dataPointer, data, count * sizeof(__fp16));
+        } else {
+            float* dst = (float*)array.dataPointer;
+            for (size_t i = 0; i < count; i++) dst[i] = (float)data[i];
+        }
+        return;
+    }
+
+    std::vector<size_t> idx(rank, 0);
     if (array.dataType == MLMultiArrayDataTypeFloat16) {
-        memcpy(array.dataPointer, data, count * sizeof(__fp16));
+        __fp16* dst = (__fp16*)array.dataPointer;
+        for (size_t i = 0; i < count; ++i) {
+            size_t offset = 0;
+            for (size_t d = 0; d < rank; ++d) {
+                offset += idx[d] * strides[d];
+            }
+            dst[offset] = data[i];
+
+            for (size_t d = rank; d-- > 0;) {
+                idx[d]++;
+                if (idx[d] < dims[d]) break;
+                idx[d] = 0;
+            }
+        }
     } else {
         float* dst = (float*)array.dataPointer;
-        for (size_t i = 0; i < count; i++) dst[i] = (float)data[i];
+        for (size_t i = 0; i < count; ++i) {
+            size_t offset = 0;
+            for (size_t d = 0; d < rank; ++d) {
+                offset += idx[d] * strides[d];
+            }
+            dst[offset] = (float)data[i];
+
+            for (size_t d = rank; d-- > 0;) {
+                idx[d]++;
+                if (idx[d] < dims[d]) break;
+                idx[d] = 0;
+            }
+        }
     }
 }
 
@@ -649,13 +850,14 @@ std::vector<int> ANEEncoder::get_output_shape() const {
 __fp16* ANEEncoder::get_output_buffer() {
     if (!impl_) return nullptr;
     CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
-    if (!impl.cachedOutputArray) return nullptr;
+    if (!impl.hasOutputBackings || !impl.cachedOutputArray) return nullptr;
     return (__fp16*)impl.cachedOutputArray.dataPointer;
 }
 
 size_t ANEEncoder::get_output_buffer_size() const {
     if (!impl_) return 0;
     CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
+    if (!impl.hasOutputBackings || !impl.cachedOutputArray) return 0;
     return impl.cachedOutputSize;
 }
 
@@ -748,7 +950,7 @@ bool is_npu_available() {
     self = [super init];
     if (self) {
         NSError* error = nil;
-        NSURL* modelURL = [NSURL fileURLWithPath:path];
+        NSURL* modelURL = resolve_or_compile_model_url(path, &error);
 
         MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
         config.computeUnits = resolve_compute_units_for_model(path, true);
@@ -756,34 +958,6 @@ bool is_npu_available() {
                         "ANEPrefill compute units: "
                             << compute_units_to_string(config.computeUnits)
                             << " for " << [path UTF8String]);
-
-        if ([path hasSuffix:@".mlpackage"]) {
-            BOOL isDir = NO;
-            if (![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir] || !isDir) {
-                CACTUS_LOG_ERROR("npu", "ANE prefill mlpackage path is not a valid directory: " << [path UTF8String]);
-                return self;
-            }
-            NSString* cachedPath = [[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"mlmodelc"];
-            NSURL* cachedURL = [NSURL fileURLWithPath:cachedPath];
-
-            if ([[NSFileManager defaultManager] fileExistsAtPath:cachedPath]) {
-                modelURL = cachedURL;
-            } else {
-                NSURL* compiledURL = [MLModel compileModelAtURL:modelURL error:&error];
-                if (error) {
-                    CACTUS_LOG_ERROR("npu", "ANE prefill model compilation failed: " << [[error localizedDescription] UTF8String]);
-                    return self;
-                }
-
-                NSError* moveError = nil;
-                [[NSFileManager defaultManager] moveItemAtURL:compiledURL toURL:cachedURL error:&moveError];
-                if (moveError) {
-                    modelURL = compiledURL;
-                } else {
-                    modelURL = cachedURL;
-                }
-            }
-        }
 
         _model = [MLModel modelWithContentsOfURL:modelURL configuration:config error:&error];
         if (_model) {
