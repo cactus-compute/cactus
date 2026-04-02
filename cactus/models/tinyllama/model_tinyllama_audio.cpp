@@ -49,7 +49,7 @@ static size_t infer_npu_audio_max_frames(const std::vector<int>& shape, size_t m
     return 0;
 }
 
-static bool pack_tinyllama_audio_for_npu(const std::vector<__fp16>& mel_f16,
+static bool pack_tinyllama_audio_for_npu(const std::vector<float>& mel_features,
                                          size_t frames,
                                          size_t mel_bins,
                                          const std::vector<int>& input_shape,
@@ -57,10 +57,11 @@ static bool pack_tinyllama_audio_for_npu(const std::vector<__fp16>& mel_f16,
     if (input_shape.empty()) return false;
     const size_t total = shape_elements(input_shape);
     if (total == 0) return false;
-    packed.assign(total, static_cast<__fp16>(0.0f));
+    packed.resize(total);
+    std::fill(packed.begin(), packed.end(), static_cast<__fp16>(0.0f));
 
     auto tm = [&](size_t t, size_t m) -> __fp16 {
-        return mel_f16[t * mel_bins + m];
+        return static_cast<__fp16>(mel_features[t * mel_bins + m]);
     };
 
     if (input_shape.size() == 4) {
@@ -688,13 +689,12 @@ size_t TinyLlamaAudioModel::forward_audio(CactusGraph* gb, const std::vector<flo
         size_t mel_bins = static_cast<size_t>(config_.audio_input_feat_size);
         size_t max_npu_frames = infer_npu_audio_max_frames(npu_input_shape, mel_bins);
         size_t copy_frames = max_npu_frames > 0 ? std::min(num_frames, max_npu_frames) : num_frames;
+        size_t input_values = copy_frames * mel_bins;
 
-        std::vector<__fp16> mel_f16(copy_frames * mel_bins, static_cast<__fp16>(0.0f));
-        for (size_t i = 0; i < copy_frames * mel_bins; i++)
-            mel_f16[i] = static_cast<__fp16>(mel_features[i]);
-
-        std::vector<__fp16> npu_input;
-        if (!pack_tinyllama_audio_for_npu(mel_f16, copy_frames, mel_bins, npu_input_shape, npu_input)) {
+        if (mel_features.size() < input_values) {
+            CACTUS_LOG_WARN("npu", "[tinyllama-audio] insufficient mel input values; falling back to CPU audio encoder");
+        } else if (!pack_tinyllama_audio_for_npu(mel_features, copy_frames, mel_bins, npu_input_shape,
+                                                 npu_audio_input_scratch_)) {
             CACTUS_LOG_WARN("npu", "[tinyllama-audio] unsupported NPU input shape; falling back to CPU audio encoder");
         } else {
             size_t t1 = (copy_frames + 1) / 2;
@@ -708,15 +708,17 @@ size_t TinyLlamaAudioModel::forward_audio(CactusGraph* gb, const std::vector<flo
             if (out_elements == 0) out_elements = shape_elements(out_shape);
             if (out_elements == 0) out_elements = std::max<size_t>(1, t2 * expected_out_dim);
 
-            std::vector<__fp16> npu_output(out_elements);
+            if (npu_audio_output_scratch_.size() < out_elements)
+                npu_audio_output_scratch_.resize(out_elements);
+
             size_t written = npu_encoder_->encode(
-                npu_input.data(), npu_output.data(), npu_input_shape, "mel", "");
+                npu_audio_input_scratch_.data(), npu_audio_output_scratch_.data(), npu_input_shape, "mel", "");
 
             NPUAudioOutputLayout out_layout;
             if (written > 0 &&
                 infer_npu_audio_output_layout(out_shape, written, expected_out_dim, out_layout) &&
                 out_layout.hidden_dim == expected_out_dim) {
-                const __fp16* src = npu_output.data();
+                const __fp16* src = npu_audio_output_scratch_.data();
                 __fp16* cached_output = npu_encoder_->get_output_buffer();
                 size_t cached_count = npu_encoder_->get_output_buffer_size();
                 size_t required = out_layout.time_steps * out_layout.hidden_dim;
@@ -726,13 +728,13 @@ size_t TinyLlamaAudioModel::forward_audio(CactusGraph* gb, const std::vector<flo
 
                 size_t actual_time = std::min(t2, out_layout.time_steps);
                 if (actual_time > 0) {
-                    std::vector<__fp16> reordered;
                     const __fp16* final_src = src;
                     if (out_layout.hidden_axis != (out_layout.dims.size() - 1)) {
-                        if (!materialize_npu_audio_time_major(src, out_layout, actual_time, reordered)) {
+                        if (!materialize_npu_audio_time_major(src, out_layout, actual_time,
+                                                              npu_audio_reorder_scratch_)) {
                             CACTUS_LOG_WARN("npu", "[tinyllama-audio] failed to reorder NPU output layout; falling back to CPU audio encoder");
                         } else {
-                            final_src = reordered.data();
+                            final_src = npu_audio_reorder_scratch_.data();
                         }
                     }
 

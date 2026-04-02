@@ -271,10 +271,18 @@ bool test_tinyllama_vision(bool expect_npu) {
     std::string prompt = tokenizer->format_chat_prompt(messages, true, "", false);
     auto tokens = tokenizer->encode(prompt);
 
+    uint32_t image_token_id = model->get_config().image_token_id;
+    if (image_token_id == 0)
+        image_token_id = 258880;
+
     size_t vision_count = 0;
-    for (auto t : tokens)
-        if (t == 262145) vision_count++;
-    std::cout << "  tokens: " << tokens.size() << ", vision soft tokens: " << vision_count << "\n";
+    for (auto t : tokens) {
+        if (t == image_token_id)
+            vision_count++;
+    }
+    std::cout << "  tokens: " << tokens.size()
+              << ", image_token_id: " << image_token_id
+              << ", vision soft tokens: " << vision_count << "\n";
     const size_t prompt_token_count = tokens.size();
 
     EncoderOnlyMetrics encoder_only_metrics;

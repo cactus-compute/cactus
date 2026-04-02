@@ -70,6 +70,12 @@ static bool model_path_looks_like_audio_encoder(NSString* model_path) {
     return [lower containsString:@"audio_encoder"];
 }
 
+static bool model_path_looks_like_vision_encoder(NSString* model_path) {
+    if (!model_path) return false;
+    NSString* lower = [[model_path lastPathComponent] lowercaseString];
+    return [lower containsString:@"vision_encoder"];
+}
+
 static void maybe_apply_compute_units_env(const char* env_name, MLComputeUnits& target) {
     const char* raw = std::getenv(env_name);
     if (!raw || raw[0] == '\0') return;
@@ -86,8 +92,11 @@ static void maybe_apply_compute_units_env(const char* env_name, MLComputeUnits& 
 static MLComputeUnits resolve_compute_units_for_model(NSString* model_path, bool is_prefill) {
     MLComputeUnits units = MLComputeUnitsCPUAndNeuralEngine;
 
-    // Gemma4/TinyLlama audio encoders show significantly better fidelity on CPU+GPU.
+    // Gemma4/TinyLlama multimodal encoders show better fidelity on CPU+GPU.
     if (!is_prefill && model_path_looks_like_audio_encoder(model_path)) {
+        units = MLComputeUnitsCPUAndGPU;
+    }
+    if (!is_prefill && model_path_looks_like_vision_encoder(model_path)) {
         units = MLComputeUnitsCPUAndGPU;
     }
 
@@ -98,6 +107,9 @@ static MLComputeUnits resolve_compute_units_for_model(NSString* model_path, bool
         maybe_apply_compute_units_env("CACTUS_ANE_ENCODER_COMPUTE_UNITS", units);
         if (model_path_looks_like_audio_encoder(model_path)) {
             maybe_apply_compute_units_env("CACTUS_ANE_AUDIO_COMPUTE_UNITS", units);
+        }
+        if (model_path_looks_like_vision_encoder(model_path)) {
+            maybe_apply_compute_units_env("CACTUS_ANE_VISION_COMPUTE_UNITS", units);
         }
     }
 
@@ -505,7 +517,7 @@ static size_t copyMLArrayToFP16(MLMultiArray* array, __fp16* output) {
         return true;
     };
 
-    if (is_contiguous()) {
+    if (false && is_contiguous()) {
         if (array.dataType == MLMultiArrayDataTypeFloat16) {
             if (output != (__fp16*)array.dataPointer) {
                 memcpy(output, array.dataPointer, count * sizeof(__fp16));
@@ -594,7 +606,7 @@ static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* ar
         return true;
     };
 
-    if (is_contiguous()) {
+    if (false && is_contiguous()) {
         if (array.dataType == MLMultiArrayDataTypeFloat16) {
             memcpy(array.dataPointer, data, count * sizeof(__fp16));
         } else {
@@ -693,8 +705,34 @@ static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* ar
     }
     if (!result || error) return 0;
 
+    static bool logged_multi_layout = false;
+    if (!logged_multi_layout) {
+        for (NSString* key in inputDict) {
+            MLFeatureValue* inFeature = inputDict[key];
+            if (inFeature && inFeature.multiArrayValue) {
+                MLMultiArray* arr = inFeature.multiArrayValue;
+                CACTUS_LOG_WARN("npu",
+                                "[CactusANE] multi input name="
+                                    << [key UTF8String]
+                                    << " shape=" << [[arr.shape description] UTF8String]
+                                    << " strides=" << [[arr.strides description] UTF8String]
+                                    << " dtype=" << (long)arr.dataType);
+            }
+        }
+    }
+
     MLFeatureValue* outFeature = [result featureValueForName:outputName];
     if (!outFeature || !outFeature.multiArrayValue) return 0;
+    if (!logged_multi_layout) {
+        MLMultiArray* outArr = outFeature.multiArrayValue;
+        CACTUS_LOG_WARN("npu",
+                        "[CactusANE] multi output name="
+                            << [outputName UTF8String]
+                            << " shape=" << [[outArr.shape description] UTF8String]
+                            << " strides=" << [[outArr.strides description] UTF8String]
+                            << " dtype=" << (long)outArr.dataType);
+        logged_multi_layout = true;
+    }
     return copyMLArrayToFP16(outFeature.multiArrayValue, output);
 }
 

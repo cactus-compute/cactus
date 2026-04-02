@@ -279,6 +279,9 @@ public:
     std::unique_ptr<npu::NPUEncoder> npu_encoder_;
     bool use_npu_encoder_ = false;
     bool disable_npu_ = false;
+    std::vector<__fp16> npu_audio_input_scratch_;
+    std::vector<__fp16> npu_audio_output_scratch_;
+    std::vector<__fp16> npu_audio_reorder_scratch_;
 
     friend bool ::test_tinyllama_audio(bool);
 

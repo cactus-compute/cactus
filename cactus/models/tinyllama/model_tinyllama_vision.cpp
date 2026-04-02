@@ -80,9 +80,12 @@ void TinyLlamaVisionModel::load_weights_to_graph(CactusGraph* gb) {
             npu_encoder_ = npu::create_encoder();
             if (npu_encoder_ && npu_encoder_->load(npu_path)) {
                 use_npu_encoder_ = true;
-                std::vector<int> input_shape = {static_cast<int>(config_.vision_default_output_length *
-                    config_.vision_pooling_kernel_size * config_.vision_pooling_kernel_size),
-                    static_cast<int>(config_.vision_embed_dim)};
+                std::vector<int> input_shape = npu_encoder_->get_input_shape();
+                if (input_shape.empty()) {
+                    input_shape = {static_cast<int>(config_.vision_default_output_length *
+                        config_.vision_pooling_kernel_size * config_.vision_pooling_kernel_size),
+                        static_cast<int>(config_.vision_embed_dim)};
+                }
                 npu_encoder_->preallocate(input_shape, "hidden_states", "output");
             } else {
                 use_npu_encoder_ = false;
@@ -438,6 +441,28 @@ size_t TinyLlamaVisionModel::forward_vision(CactusGraph* gb, const PreprocessedI
     size_t hidden_size = config_.vision_embed_dim;
     uint32_t pooling_k = config_.vision_pooling_kernel_size;
     size_t max_patches = config_.vision_default_output_length * pooling_k * pooling_k;
+    bool can_use_npu_path = use_npu_encoder_ && npu_encoder_ && npu_encoder_->is_available();
+    if (can_use_npu_path) {
+        std::vector<int> npu_input_shape = npu_encoder_->get_input_shape();
+        if (npu_input_shape.size() >= 2) {
+            size_t a = static_cast<size_t>(npu_input_shape[0]);
+            size_t b = static_cast<size_t>(npu_input_shape[1]);
+            if (b == hidden_size) {
+                max_patches = a;
+            } else if (a == hidden_size) {
+                max_patches = b;
+            } else if (a > 0) {
+                max_patches = a;
+            }
+        }
+    }
+    if (num_real > max_patches) {
+        if (can_use_npu_path) {
+            CACTUS_LOG_WARN("npu", "[tinyllama-vision] image has more patches than NPU encoder supports; falling back to CPU vision encoder");
+            can_use_npu_path = false;
+            max_patches = config_.vision_default_output_length * pooling_k * pooling_k;
+        }
+    }
     size_t num_padding = max_patches - num_real;
 
     if (num_padding > 0) {
@@ -450,7 +475,7 @@ size_t TinyLlamaVisionModel::forward_vision(CactusGraph* gb, const PreprocessedI
     auto [cos_node, sin_node] = build_2d_rope_nodes(gb, img, max_patches);
     size_t attn_mask_node = build_padding_mask(gb, num_real, max_patches);
 
-    if (use_npu_encoder_ && npu_encoder_ && npu_encoder_->is_available()) {
+    if (can_use_npu_path) {
         gb->execute();
 
         const auto& h_buf = gb->get_output_buffer(hidden);
@@ -480,15 +505,18 @@ size_t TinyLlamaVisionModel::forward_vision(CactusGraph* gb, const PreprocessedI
         std::vector<int> out_shape = npu_encoder_->get_output_shape();
         size_t out_elements = 1;
         for (int d : out_shape) out_elements *= d;
+        size_t required = max_patches * hidden_size;
+        if (out_elements < required)
+            out_elements = required;
 
         std::vector<__fp16> npu_output(out_elements);
         size_t written = npu_encoder_->encode_multimodal_input(inputs, npu_output.data(), "output");
 
-        if (written > 0) {
+        if (written >= required) {
             hidden = gb->input({max_patches, hidden_size}, Precision::FP16);
             gb->set_input(hidden, npu_output.data(), Precision::FP16);
         } else {
-            CACTUS_LOG_WARN("npu", "encode_multimodal_input failed, falling back to CPU");
+            CACTUS_LOG_WARN("npu", "[tinyllama-vision] encode_multimodal_input returned insufficient output, falling back to CPU");
             for (uint32_t i = 0; i < config_.vision_num_layers; i++)
                 hidden = build_vision_transformer_block(gb, hidden, i, cos_node, sin_node, attn_mask_node, backend);
         }
