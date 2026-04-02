@@ -419,9 +419,7 @@ size_t NeedleModel::run_decoder_step(const std::vector<uint32_t>& tokens, bool u
     if (last_token_only) {
         logits_input = gb->slice(logits_input, 0, new_tokens - 1, 1);
     }
-
-    auto logits = gb->matmul(logits_input, output_weight_node_id_, true, backend);
-    return logits;
+    return gb->matmul(logits_input, output_weight_node_id_, true, backend);
 }
 
 size_t NeedleModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) {

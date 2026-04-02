@@ -32,10 +32,27 @@ const std::vector<uint32_t>& get_cached_needle_tools_suffix_tokens(
     Tokenizer* tokenizer,
     const std::string& formatted_tools
 ) {
-    std::string suffix = "<tools>" + formatted_tools + "</s>";
-    if (handle->cached_needle_tools_suffix != suffix) {
-        handle->cached_needle_tools_suffix = suffix;
-        handle->cached_needle_tools_suffix_tokens = tokenizer->encode(suffix);
+    if (handle->cached_needle_tools_suffix != formatted_tools) {
+        handle->cached_needle_tools_suffix = formatted_tools;
+        handle->cached_needle_tools_suffix_tokens.clear();
+
+        auto tools_prefix_tokens = tokenizer->encode("<tools>");
+        if (tools_prefix_tokens.empty()) {
+            throw std::runtime_error("Needle tokenizer is missing the <tools> token");
+        }
+
+        auto tool_json_tokens = tokenizer->encode(formatted_tools);
+        handle->cached_needle_tools_suffix_tokens.reserve(
+            tools_prefix_tokens.size() + tool_json_tokens.size() + 1);
+        handle->cached_needle_tools_suffix_tokens.insert(
+            handle->cached_needle_tools_suffix_tokens.end(),
+            tools_prefix_tokens.begin(),
+            tools_prefix_tokens.end());
+        handle->cached_needle_tools_suffix_tokens.insert(
+            handle->cached_needle_tools_suffix_tokens.end(),
+            tool_json_tokens.begin(),
+            tool_json_tokens.end());
+        handle->cached_needle_tools_suffix_tokens.push_back(tokenizer->get_eos_token());
     }
     return handle->cached_needle_tools_suffix_tokens;
 }

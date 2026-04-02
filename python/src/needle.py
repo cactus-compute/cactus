@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import struct
 import json
 import os
 import pickle
@@ -20,7 +21,7 @@ CHECKPOINT_REVISIONS = {
     "needle_12_512_best.pkl": "c3abe44ccce513833aa1a671a508433a6c4224eb",
     "needle_8_512_best.pkl": "bb785f03ebaa395bc7eb4cd4b18c713f3a05a58d",
     "needle_12_768_best.pkl": None,
-    "needle_16_640_best.pkl": "bb785f03ebaa395bc7eb4cd4b18c713f3a05a58d",
+    "needle_16_640_best.pkl": "9447786ba0d421434c35bf7b77239e83540a641f",
     "needle_16_768_best.pkl": "bb785f03ebaa395bc7eb4cd4b18c713f3a05a58d",
 }
 CHECKPOINT_TOKENIZER_REVISIONS = {
@@ -29,7 +30,7 @@ CHECKPOINT_TOKENIZER_REVISIONS = {
     "needle_12_768_best.pkl": "662ab737ec41afed5acd215271d6d0e26690dd8b",
     # Newer multilingual tokenizer family
     "needle_8_512_best.pkl": "f1fd238b770af3175898a5541de69e1e26ef6b20",
-    "needle_16_640_best.pkl": "f1fd238b770af3175898a5541de69e1e26ef6b20",
+    "needle_16_640_best.pkl": "5a50f268260b546cbcff02a2b5d4e1a51ac03ef1",
     "needle_16_768_best.pkl": "f1fd238b770af3175898a5541de69e1e26ef6b20",
 }
 MODEL_ID_TO_CHECKPOINT_FILE = {
@@ -355,6 +356,7 @@ def parse_sentencepiece_pieces(path: str | Path):
 
         inner_pos = 0
         piece = None
+        score = None
         while inner_pos < len(piece_message):
             inner_tag, inner_pos = read_varint(piece_message, inner_pos)
             inner_field = inner_tag >> 3
@@ -366,12 +368,21 @@ def parse_sentencepiece_pieces(path: str | Path):
                     "utf-8", errors="replace"
                 )
                 inner_pos = value_end
+            elif inner_field == 2 and inner_wire == 5:
+                value_end = inner_pos + 4
+                if value_end > len(piece_message):
+                    raise ValueError("Unexpected end of protobuf float field")
+                score = struct.unpack("<f", piece_message[inner_pos:value_end])[0]
+                inner_pos = value_end
             else:
                 inner_pos = skip_protobuf_value(piece_message, inner_pos, inner_wire)
 
         if piece is None:
             raise ValueError("Failed to parse SentencePiece vocabulary entry")
-        pieces.append(piece)
+        pieces.append({
+            "piece": piece,
+            "score": float(score) if score is not None else 0.0,
+        })
 
     if not pieces:
         raise ValueError(f"No SentencePiece pieces found in tokenizer: {path}")
@@ -379,7 +390,8 @@ def parse_sentencepiece_pieces(path: str | Path):
 
 
 def build_tokenizer_metadata(pieces, model_max_length: int):
-    piece_to_id = {piece: idx for idx, piece in enumerate(pieces)}
+    piece_texts = [piece["piece"] for piece in pieces]
+    piece_to_id = {piece: idx for idx, piece in enumerate(piece_texts)}
     pad_id = piece_to_id.get("<pad>", 0)
     eos_id = piece_to_id.get("</s>", 1)
     bos_id = piece_to_id.get("<s>", 2)
@@ -401,7 +413,7 @@ def build_tokenizer_metadata(pieces, model_max_length: int):
         additional_special_tokens.append({"token": token, "id": int(token_id)})
 
     return {
-        "vocab_size": len(pieces),
+        "vocab_size": len(piece_texts),
         "pad_token_id": int(pad_id),
         "eos_token_id": int(eos_id),
         "bos_token_id": int(bos_id),
@@ -475,7 +487,7 @@ def write_tokenizer_files(output_dir: Path, pieces, tokenizer_meta: dict):
     vocab_path = output_dir / "vocab.txt"
     with open(vocab_path, "w", encoding="utf-8") as handle:
         for token_id, piece in enumerate(pieces):
-            handle.write(f"{token_id}\t{piece}\n")
+            handle.write(f"{token_id}\t{piece['piece']}\t{piece['score']}\n")
 
     merges_path = output_dir / "merges.txt"
     with open(merges_path, "w", encoding="utf-8", newline="") as handle:
