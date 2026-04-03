@@ -389,7 +389,20 @@ PrefillResult do_prefill(
         std::vector<uint32_t> prefill_tokens(tokens_to_process.begin(), tokens_to_process.end() - 1);
         result.prefilled_count = prefill_tokens.size();
         if (has_images) {
-            handle->model->prefill_with_images(prefill_tokens, prompt.image_paths);
+            std::vector<std::string> delta_image_paths;
+            if (result.was_prefix) {
+                size_t cached_image_count = 0;
+                for (const auto& msg_imgs : handle->processed_images) {
+                    cached_image_count += msg_imgs.size();
+                }
+                delta_image_paths.assign(
+                    prompt.image_paths.begin() + cached_image_count,
+                    prompt.image_paths.end()
+                );
+            } else {
+                delta_image_paths = prompt.image_paths;
+            }
+            handle->model->prefill_with_images(prefill_tokens, delta_image_paths);
         } else {
             handle->model->prefill(prefill_tokens, handle->model->get_prefill_chunk_size());
         }
