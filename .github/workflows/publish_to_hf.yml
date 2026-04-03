@@ -89,14 +89,18 @@ jobs:
 
           publish_model() {
             local model=$1 int4=$2 int8=$3 fp16=$4 apple=$5 pipeline_tag=$6 tags=$7 description="${8:-}"
-            FLAGS=(--version "$VERSION" --org "$ORG" --model "$model")
+            local FLAGS=(--version "$VERSION" --org "$ORG" --model "$model")
             [ "$int4" == "true" ] && FLAGS+=(--int4)
             [ "$int8" == "true" ] && FLAGS+=(--int8)
             [ "$fp16" == "true" ] && FLAGS+=(--fp16)
             [ "$apple" == "true" ] && FLAGS+=(--apple)
             [ -n "$pipeline_tag" ] && FLAGS+=(--pipeline-tag "$pipeline_tag")
             [ -n "$tags" ] && FLAGS+=(--tags "$tags")
+            set +e
             python -m src.publish_to_hf --task export_model "${FLAGS[@]}" --description "$description"
+            local rc=$?
+            set -e
+            return $rc
           }
 
           if [ -n "${{ github.event.inputs.model }}" ]; then
@@ -110,7 +114,8 @@ jobs:
               "${{ github.event.inputs.tags }}" \
               "${{ github.event.inputs.description }}"
           else
-            cat "$GITHUB_WORKSPACE/models.json" | jq -c '.[]' | while read -r config; do
+            FAILED_MODELS=()
+            while read -r config; do
               model=$(echo "$config" | jq -r '.model')
               int4=$(echo "$config" | jq -r '.int4')
               int8=$(echo "$config" | jq -r '.int8')
@@ -119,8 +124,16 @@ jobs:
               pipeline_tag=$(echo "$config" | jq -r '.pipeline_tag // ""')
               tags=$(echo "$config" | jq -r 'if .tags then .tags | join(",") else "" end')
               description=$(echo "$config" | jq -r '.description // ""')
-              publish_model "$model" "$int4" "$int8" "$fp16" "$apple" "$pipeline_tag" "$tags" "$description"
-            done
+              if ! publish_model "$model" "$int4" "$int8" "$fp16" "$apple" "$pipeline_tag" "$tags" "$description"; then
+                echo "::error::Failed to publish $model"
+                FAILED_MODELS+=("$model")
+              fi
+            done < <(jq -c '.[]' "$GITHUB_WORKSPACE/models.json")
+
+            if [ ${#FAILED_MODELS[@]} -gt 0 ]; then
+              echo "::error::Failed models: ${FAILED_MODELS[*]}"
+              exit 1
+            fi
           fi
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
