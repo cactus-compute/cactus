@@ -533,6 +533,7 @@ def cmd_download(args):
                 or model_type.startswith('qwen3_5')
                 or model_type == 'youtu'
                 or 'gemma4' in model_type
+                or 'gemma3n' in model_type
             ):
                 if model_type == 'lfm2_moe':
                     print("  Note: Loading raw checkpoint tensors for lfm2_moe conversion...")
