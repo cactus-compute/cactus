@@ -626,6 +626,56 @@ int cactus_stream_transcribe_stop(
             final_confirmed += seg.text;
         }
 
+        if (!handle->audio_buffer.empty()) {
+            const auto model_type = handle->model_handle->model->get_config().model_type;
+            bool is_moonshine = model_type == cactus::engine::Config::ModelType::MOONSHINE;
+            bool is_parakeet =
+                model_type == cactus::engine::Config::ModelType::PARAKEET ||
+                model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
+            bool is_tinyllama = model_type == cactus::engine::Config::ModelType::GEMMA4;
+
+            std::string whisper_prompt = "<|startoftranscript|><|" + handle->options.language + "|><|transcribe|><|notimestamps|>";
+            const char* transcribe_prompt =
+                is_tinyllama ? "Transcribe the audio." :
+                (is_moonshine || is_parakeet) ? "" :
+                whisper_prompt.c_str();
+
+            cactus::telemetry::setStreamMode(true);
+            const int flush_result = cactus_transcribe(
+                handle->model_handle,
+                nullptr,
+                transcribe_prompt,
+                handle->transcribe_response_buffer,
+                sizeof(handle->transcribe_response_buffer),
+                handle->transcribe_options_json.empty() ? nullptr : handle->transcribe_options_json.c_str(),
+                nullptr,
+                nullptr,
+                handle->audio_buffer.data(),
+                handle->audio_buffer.size());
+            cactus::telemetry::setStreamMode(false);
+
+            cactus_reset(handle->model_handle);
+
+            if (flush_result >= 0) {
+                std::string flush_json(handle->transcribe_response_buffer);
+                std::string flushed_text = suppress_unwanted_text(json_string(flush_json, "response"));
+                if (flushed_text.empty()) {
+                    auto flush_segments = parse_segments(flush_json);
+                    for (const auto& seg : flush_segments) {
+                        if (!flushed_text.empty()) flushed_text += ' ';
+                        flushed_text += seg.text;
+                    }
+                }
+                if (!flushed_text.empty()) {
+                    final_confirmed = flushed_text;
+                }
+            } else {
+                CACTUS_LOG_WARN(
+                    "stream_transcribe_stop",
+                    "Final flush transcription failed; returning previously confirmed segments.");
+            }
+        }
+
         if (!handle->custom_vocabulary.empty()) {
             apply_vocabulary_spelling_correction(final_confirmed, handle->custom_vocabulary);
         }
