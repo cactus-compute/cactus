@@ -123,8 +123,8 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
     model_type_str = str(cfg_get(config, 'model_type', cfg_get(root_config, 'model_type', '')) or '').lower().strip()
     tie_word_embeddings = cfg_get(config, 'tie_word_embeddings', cfg_get(root_config, 'tie_word_embeddings', None))
     if tie_word_embeddings is None:
-        # HF snapshots for lfm2_moe may omit this field; runtime expects tied embeddings by default.
-        tie_word_embeddings = (model_type_str == 'lfm2_moe')
+        # HF snapshots for lfm2_moe/gemma3n may omit this field; runtime expects tied embeddings by default.
+        tie_word_embeddings = (model_type_str == 'lfm2_moe' or 'gemma3n' in model_type_str)
     else:
         tie_word_embeddings = bool(tie_word_embeddings)
 
