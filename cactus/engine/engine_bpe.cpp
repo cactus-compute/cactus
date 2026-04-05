@@ -222,14 +222,6 @@ bool BPETokenizer::load_vocabulary_with_config(const std::string& vocab_file, co
 
 void BPETokenizer::load_special_tokens(const std::string& config_file) {
     load_special_tokens_map(config_file, special_tokens_);
-
-    for (const auto& [token_str, token_id] : special_tokens_) {
-        if (token_id >= id_to_token_.size()) {
-            id_to_token_.resize(token_id + 1);
-        }
-        id_to_token_[token_id] = token_str;
-        token_to_id_[token_str] = token_id;
-    }
 }
 
 std::vector<std::string> BPETokenizer::split_with_special_tokens(const std::string& text) const {
