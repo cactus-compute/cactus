@@ -5,11 +5,15 @@
 #include "../telemetry/telemetry.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <limits>
+#include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -197,6 +201,60 @@ uint32_t stream_max_duration_skip_frames() {
     }();
     return configured;
 }
+
+std::string escape_trace_text(const std::string& text) {
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (char ch : text) {
+        switch (ch) {
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            case '"': escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            default: escaped += ch; break;
+        }
+    }
+    return escaped;
+}
+
+const char* parakeet_tdt_trace_path() {
+    static std::string path = []() {
+        const char* explicit_path = std::getenv("CACTUS_PARAKEET_TDT_TRACE_PATH");
+        if (explicit_path && explicit_path[0] != '\0') {
+            return std::string(explicit_path);
+        }
+        const char* enabled = std::getenv("CACTUS_PARAKEET_TDT_TRACE");
+        if (enabled && enabled[0] != '\0' && !(enabled[0] == '0' && enabled[1] == '\0')) {
+            return std::string("/tmp/cactus_parakeet_tdt_trace.log");
+        }
+        return std::string();
+    }();
+    return path.empty() ? nullptr : path.c_str();
+}
+
+bool parakeet_tdt_trace_enabled() {
+    return parakeet_tdt_trace_path() != nullptr;
+}
+
+void parakeet_tdt_trace_log_line(const std::string& line) {
+    const char* path = parakeet_tdt_trace_path();
+    if (!path) return;
+
+    static std::mutex trace_mutex;
+    std::lock_guard<std::mutex> lock(trace_mutex);
+    std::ofstream out(path, std::ios::app);
+    if (!out) return;
+    out << line << '\n';
+}
+
+uint64_t next_parakeet_tdt_trace_request_id() {
+    static std::atomic<uint64_t> next_id{1};
+    return next_id.fetch_add(1, std::memory_order_relaxed);
+}
+
+thread_local uint64_t current_parakeet_tdt_trace_request_id = 0;
+thread_local uint64_t current_parakeet_tdt_trace_emit_index = 0;
 
 std::vector<__fp16> copy_buffer_to_fp16(const BufferDesc& buffer) {
     std::vector<__fp16> out(buffer.total_size, static_cast<__fp16>(0.0f));
@@ -794,7 +852,14 @@ size_t ParakeetTDTModel::forward(const std::vector<float>& audio_features,
     return build_encoder(gb, audio_features);
 }
 
-std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::greedy_decode_tdt_tokens(CactusGraph* gb, size_t encoder_hidden_node) const {
+std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::decode_tdt_tokens_with_state(
+    CactusGraph* gb,
+    size_t encoder_hidden_node,
+    size_t replay_start_frame,
+    size_t start_frame,
+    size_t end_frame,
+    StatefulStreamState* stream_state,
+    size_t* out_confirmed_count) const {
     const auto& enc_buf = gb->get_output_buffer(encoder_hidden_node);
     if (enc_buf.shape.size() != 2) {
         throw std::runtime_error("ParakeetTDT encoder output must be rank-2 [T, D]");
@@ -918,30 +983,59 @@ std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::greedy_decode_tdt_toke
         }
     }
 
+    const size_t time_limit = std::min(end_frame, T);
+    const size_t emit_begin = std::min(start_frame, time_limit);
+    const size_t time_begin = std::min(replay_start_frame, emit_begin);
+
     std::vector<std::vector<__fp16>> h_state(predictor_layers);
     std::vector<std::vector<__fp16>> c_state(predictor_layers);
     std::vector<std::vector<__fp16>> bias_hh_zero_state(predictor_layers);
+    const bool can_resume_stream_state =
+        stream_state &&
+        stream_state->initialized &&
+        stream_state->h.size() == predictor_layers &&
+        stream_state->c.size() == predictor_layers;
 
     for (size_t i = 0; i < predictor_layers; ++i) {
-        h_state[i].assign(hidden_sizes[i], static_cast<__fp16>(0.0f));
-        c_state[i].assign(hidden_sizes[i], static_cast<__fp16>(0.0f));
+        const bool can_resume_layer =
+            can_resume_stream_state &&
+            stream_state->h[i].size() == hidden_sizes[i] &&
+            stream_state->c[i].size() == hidden_sizes[i];
+        if (can_resume_layer) {
+            h_state[i] = stream_state->h[i];
+            c_state[i] = stream_state->c[i];
+        } else {
+            h_state[i].assign(hidden_sizes[i], static_cast<__fp16>(0.0f));
+            c_state[i].assign(hidden_sizes[i], static_cast<__fp16>(0.0f));
+        }
         bias_hh_zero_state[i].assign(4 * hidden_sizes[i], static_cast<__fp16>(0.0f));
         gb->set_input(bias_hh_zero_nodes[i], bias_hh_zero_state[i].data(), Precision::FP16);
     }
 
     constexpr float kHopSec = 160.0f / 16000.0f;
     const float frame_sec = kHopSec * static_cast<float>(config_.subsampling_factor);
+    const bool trace_enabled = parakeet_tdt_trace_enabled();
+    const uint64_t trace_request_id = current_parakeet_tdt_trace_request_id;
+    auto* tokenizer = get_tokenizer();
 
     std::vector<TDTToken> output_tokens;
     output_tokens.reserve(T * 2);
 
     uint32_t last_token = blank_id;
-    size_t time_idx = 0;
+    if (can_resume_stream_state &&
+        stream_state->last_token < token_classes) {
+        last_token = stream_state->last_token;
+    }
     constexpr size_t kMaxSymbolsPerStep = 10;
+    size_t time_idx = time_begin;
     const bool is_stream_mode = cactus::telemetry::isStreamMode();
     const uint32_t max_stream_skip = stream_max_duration_skip_frames();
+    std::vector<std::vector<__fp16>> snap_h = h_state;
+    std::vector<std::vector<__fp16>> snap_c = c_state;
+    uint32_t snap_last_token = last_token;
+    size_t confirmed_count = 0;
 
-    while (time_idx < T) {
+    while (time_idx < time_limit) {
         bool advanced = false;
         size_t symbols_added = 0;
 
@@ -963,13 +1057,47 @@ std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::greedy_decode_tdt_toke
             const auto& bias = get_vocab_bias();
             const size_t best_token = argmax_range_with_bias(logits_buf, 0, token_classes, bias);
             const size_t best_duration_idx = argmax_range(logits_buf, token_classes, duration_classes);
-            uint32_t skip = durations[best_duration_idx];
+            const uint32_t predicted_skip = durations[best_duration_idx];
+            uint32_t skip = predicted_skip;
             if (is_stream_mode && skip > max_stream_skip) {
                 skip = max_stream_skip;
             }
 
+            if (trace_enabled) {
+                std::string piece = best_token != blank_id && tokenizer
+                    ? escape_trace_text(tokenizer->decode({static_cast<uint32_t>(best_token)}))
+                    : "";
+                std::ostringstream trace;
+                trace << "phase=decode"
+                      << " request=" << trace_request_id
+                      << " stream_mode=" << (is_stream_mode ? 1 : 0)
+                      << " frame_idx=" << time_idx
+                      << " symbol_idx=" << symbols_added
+                      << " token_id=" << best_token
+                      << " blank=" << (best_token == blank_id ? 1 : 0)
+                      << " piece=\"" << piece << "\""
+                      << " duration_idx=" << best_duration_idx
+                      << " predicted_skip=" << predicted_skip
+                      << " applied_skip=" << skip
+                      << " start_sec=" << (time_idx * frame_sec)
+                      << " end_sec=" << ((time_idx + skip) * frame_sec);
+                parakeet_tdt_trace_log_line(trace.str());
+            }
+
             if (best_token != blank_id) {
-                output_tokens.push_back({static_cast<uint32_t>(best_token), time_idx * frame_sec, (time_idx + skip) * frame_sec});
+                if (stream_state && time_idx >= emit_begin && tokenizer) {
+                    std::string piece = tokenizer->decode({static_cast<uint32_t>(best_token)});
+                    if (!piece.empty() && piece[0] == ' ' && !output_tokens.empty()) {
+                        snap_h = h_state;
+                        snap_c = c_state;
+                        snap_last_token = last_token;
+                        confirmed_count = output_tokens.size();
+                    }
+                }
+                if (time_idx >= emit_begin) {
+                    output_tokens.push_back(
+                        {static_cast<uint32_t>(best_token), time_idx * frame_sec, (time_idx + skip) * frame_sec});
+                }
                 last_token = static_cast<uint32_t>(best_token);
 
                 for (size_t i = 0; i < predictor_layers; ++i) {
@@ -1002,7 +1130,30 @@ std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::greedy_decode_tdt_toke
         }
     }
 
+    if (out_confirmed_count) {
+        *out_confirmed_count = confirmed_count;
+    }
+
+    if (stream_state) {
+        stream_state->initialized = true;
+        stream_state->last_token = snap_last_token;
+        stream_state->h = std::move(snap_h);
+        stream_state->c = std::move(snap_c);
+    }
+
     return output_tokens;
+}
+
+std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::greedy_decode_tdt_tokens(
+    CactusGraph* gb,
+    size_t encoder_hidden_node) const {
+    return decode_tdt_tokens_with_state(
+        gb,
+        encoder_hidden_node,
+        0,
+        0,
+        std::numeric_limits<size_t>::max(),
+        nullptr);
 }
 
 uint32_t ParakeetTDTModel::decode_with_audio(
@@ -1031,6 +1182,17 @@ uint32_t ParakeetTDTModel::decode_with_audio(
 
     const bool new_request = !tdt_tokens_ready_ || tokens.empty() || tokens.size() < last_input_token_count_;
     if (new_request) {
+        current_parakeet_tdt_trace_request_id = next_parakeet_tdt_trace_request_id();
+        current_parakeet_tdt_trace_emit_index = 0;
+        if (parakeet_tdt_trace_enabled()) {
+            std::ostringstream trace;
+            trace << "phase=request_start"
+                  << " request=" << current_parakeet_tdt_trace_request_id
+                  << " input_token_count=" << tokens.size()
+                  << " audio_feature_count=" << audio_features.size()
+                  << " stream_mode=" << (cactus::telemetry::isStreamMode() ? 1 : 0);
+            parakeet_tdt_trace_log_line(trace.str());
+        }
         gb->soft_reset();
         size_t encoder_out = forward(audio_features, tokens, false);
 
@@ -1043,6 +1205,13 @@ uint32_t ParakeetTDTModel::decode_with_audio(
         tdt_tokens_ = greedy_decode_tdt_tokens(gb, encoder_out);
         tdt_emit_index_ = 0;
         tdt_tokens_ready_ = true;
+        if (parakeet_tdt_trace_enabled()) {
+            std::ostringstream trace;
+            trace << "phase=request_ready"
+                  << " request=" << current_parakeet_tdt_trace_request_id
+                  << " decoded_token_count=" << tdt_tokens_.size();
+            parakeet_tdt_trace_log_line(trace.str());
+        }
     }
 
     last_input_token_count_ = tokens.size();
@@ -1052,12 +1221,115 @@ uint32_t ParakeetTDTModel::decode_with_audio(
 
     if (tdt_emit_index_ < tdt_tokens_.size()) {
         const auto& tok = tdt_tokens_[tdt_emit_index_++];
+        if (parakeet_tdt_trace_enabled()) {
+            std::string piece = get_tokenizer()
+                ? escape_trace_text(get_tokenizer()->decode({tok.id}))
+                : "";
+            std::ostringstream trace;
+            trace << "phase=emit"
+                  << " request=" << current_parakeet_tdt_trace_request_id
+                  << " emit_index=" << current_parakeet_tdt_trace_emit_index++
+                  << " token_id=" << tok.id
+                  << " piece=\"" << piece << "\""
+                  << " start_sec=" << tok.time_start
+                  << " end_sec=" << tok.time_end;
+            parakeet_tdt_trace_log_line(trace.str());
+        }
         if (out_token_time_start) *out_token_time_start = tok.time_start;
         if (out_token_time_end)   *out_token_time_end   = tok.time_end;
         return tok.id;
     }
 
     return get_tokenizer()->get_eos_token();
+}
+
+ParakeetTDTModel::StatefulStreamChunkResult ParakeetTDTModel::decode_stateful_stream_chunk(
+    const std::vector<float>& audio_features,
+    size_t replay_start_frame,
+    size_t start_frame,
+    size_t end_frame,
+    StatefulStreamState& state) {
+    if (!initialized_ || !graph_handle_) {
+        throw std::runtime_error("Model not initialized - call init() first");
+    }
+    if (audio_features.empty()) {
+        throw std::runtime_error("Audio features cannot be empty in ParakeetTDT decode_stateful_stream_chunk");
+    }
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    const bool trace_enabled = parakeet_tdt_trace_enabled();
+    current_parakeet_tdt_trace_request_id = next_parakeet_tdt_trace_request_id();
+    current_parakeet_tdt_trace_emit_index = 0;
+    if (trace_enabled) {
+        std::ostringstream trace;
+        trace << "phase=stateful_request_start"
+              << " request=" << current_parakeet_tdt_trace_request_id
+              << " replay_start_frame=" << replay_start_frame
+              << " start_frame=" << start_frame
+              << " end_frame=" << end_frame
+              << " audio_feature_count=" << audio_features.size()
+              << " state_initialized=" << (state.initialized ? 1 : 0)
+              << " last_token=" << state.last_token
+              << " stream_mode=" << (cactus::telemetry::isStreamMode() ? 1 : 0);
+        parakeet_tdt_trace_log_line(trace.str());
+    }
+
+    gb->soft_reset();
+    size_t encoder_out = forward(audio_features, {}, false);
+    gb->execute();
+
+    StatefulStreamChunkResult result;
+    std::vector<TDTToken> tokens = decode_tdt_tokens_with_state(
+        gb, encoder_out, replay_start_frame, start_frame, end_frame, &state, &result.confirmed_token_count);
+
+    result.token_count = tokens.size();
+    constexpr float kHopSec = 160.0f / 16000.0f;
+    const float frame_sec = kHopSec * static_cast<float>(config_.subsampling_factor);
+    result.start_sec = start_frame * frame_sec;
+    result.confirmed_end_sec = start_frame * frame_sec;
+    result.resume_end_sec = replay_start_frame * frame_sec;
+    result.end_sec = start_frame * frame_sec;
+    if (!tokens.empty()) {
+        result.start_sec = tokens.front().time_start;
+        result.end_sec = tokens.back().time_end;
+        if (result.confirmed_token_count > 0 &&
+            result.confirmed_token_count <= tokens.size()) {
+            result.confirmed_end_sec = tokens[result.confirmed_token_count - 1].time_end;
+            result.resume_end_sec = result.confirmed_end_sec;
+        }
+    }
+
+    auto* tokenizer = get_tokenizer();
+    if (!tokenizer) {
+        throw std::runtime_error("Tokenizer unavailable in ParakeetTDT decode_stateful_stream_chunk");
+    }
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        const std::string piece = tokenizer->decode({tokens[i].id});
+        result.text += piece;
+        if (i < result.confirmed_token_count) {
+            result.confirmed_text += piece;
+        } else {
+            result.pending_text += piece;
+        }
+    }
+    if (trace_enabled) {
+        std::ostringstream trace;
+        trace << "phase=stateful_request_ready"
+              << " request=" << current_parakeet_tdt_trace_request_id
+              << " token_count=" << result.token_count
+              << " confirmed_token_count=" << result.confirmed_token_count
+              << " text=\"" << escape_trace_text(result.text) << "\""
+              << " confirmed_text=\"" << escape_trace_text(result.confirmed_text) << "\""
+              << " pending_text=\"" << escape_trace_text(result.pending_text) << "\""
+              << " confirmed_end_sec=" << result.confirmed_end_sec
+              << " resume_end_sec=" << result.resume_end_sec
+              << " result_start_sec=" << result.start_sec
+              << " result_end_sec=" << result.end_sec
+              << " state_initialized=" << (state.initialized ? 1 : 0)
+              << " state_last_token=" << state.last_token;
+        parakeet_tdt_trace_log_line(trace.str());
+    }
+    return result;
 }
 
 std::vector<float> ParakeetTDTModel::get_audio_embeddings(const std::vector<float>& audio_features) {

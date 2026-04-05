@@ -483,7 +483,7 @@ int run_live_transcription(cactus_model_t model, const std::string& model_path, 
     std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
 
     auto last_process_time = std::chrono::steady_clock::now();
-    const auto process_interval = std::chrono::milliseconds(parakeet_mode ? 300 : 1000);
+    const auto process_interval = std::chrono::milliseconds(parakeet_mode ? 250 : 1000);
 
     while (!should_stop) {
         if (gemma4_mode) {

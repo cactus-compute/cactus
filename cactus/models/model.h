@@ -1128,6 +1128,34 @@ public:
     explicit ParakeetTDTModel(const Config& config);
     ~ParakeetTDTModel() override = default;
 
+    struct TDTToken { uint32_t id; float time_start; float time_end; };
+
+    struct StatefulStreamState {
+        bool initialized = false;
+        uint32_t last_token = 0;
+        std::vector<std::vector<__fp16>> h;
+        std::vector<std::vector<__fp16>> c;
+    };
+
+    struct StatefulStreamChunkResult {
+        std::string text;
+        std::string confirmed_text;
+        std::string pending_text;
+        size_t token_count = 0;
+        size_t confirmed_token_count = 0;
+        float start_sec = 0.0f;
+        float confirmed_end_sec = 0.0f;
+        float resume_end_sec = 0.0f;
+        float end_sec = 0.0f;
+    };
+
+    StatefulStreamChunkResult decode_stateful_stream_chunk(
+        const std::vector<float>& audio_features,
+        size_t replay_start_frame,
+        size_t start_frame,
+        size_t end_frame,
+        StatefulStreamState& state);
+
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
         throw std::runtime_error("ParakeetTDT: build_attention unused");
@@ -1162,7 +1190,14 @@ private:
     size_t build_feed_forward(CactusGraph* gb, size_t hidden, uint32_t layer_idx, bool second_ff, ComputeBackend backend);
     size_t build_convolution_module(CactusGraph* gb, size_t hidden, uint32_t layer_idx, ComputeBackend backend);
     size_t build_encoder_block(CactusGraph* gb, size_t hidden, size_t position_embeddings, uint32_t layer_idx, ComputeBackend backend);
-    struct TDTToken { uint32_t id; float time_start; float time_end; };
+    std::vector<TDTToken> decode_tdt_tokens_with_state(
+        CactusGraph* gb,
+        size_t encoder_hidden_node,
+        size_t replay_start_frame,
+        size_t start_frame,
+        size_t end_frame,
+        StatefulStreamState* stream_state,
+        size_t* out_confirmed_count = nullptr) const;
     std::vector<TDTToken> greedy_decode_tdt_tokens(CactusGraph* gb, size_t encoder_hidden_node) const;
 
     struct WeightNodeIDs {
