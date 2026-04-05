@@ -338,6 +338,10 @@ struct CactusStreamTranscribeHandle {
     bool stream_session_first_token_seen;
     double stream_session_first_token_ms;
     int stream_cumulative_tokens;
+    double last_stream_decode_tps = 0.0;
+    double last_stream_decode_tokens = 0.0;
+    double last_stream_total_time_ms = 0.0;
+    double last_stream_raw_decoder_tps = 0.0;
 };
 
 static std::vector<TranscriptSegment> parse_segments(const std::string& transcribe_json);
@@ -423,6 +427,10 @@ static bool run_stream_window_transcribe(
     out.segments = parse_segments(out.raw_json);
     out.decode_tokens = std::max(0.0, json_number(out.raw_json, "decode_tokens"));
     out.cloud_handoff = json_bool(out.raw_json, "cloud_handoff");
+    handle->last_stream_decode_tps = std::max(0.0, json_number(out.raw_json, "decode_tps"));
+    handle->last_stream_decode_tokens = out.decode_tokens;
+    handle->last_stream_total_time_ms = std::max(0.0, json_number(out.raw_json, "total_time_ms"));
+    handle->last_stream_raw_decoder_tps = std::max(0.0, json_number(out.raw_json, "raw_decoder_tps"));
     return true;
 }
 
@@ -498,6 +506,7 @@ static bool run_stateful_tdt_chunk_decode(
         end_frame = start_frame + 1;
     }
 
+    const auto decode_start = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(handle->model_handle->model_mutex);
     cactus::telemetry::setStreamMode(true);
     try {
@@ -513,6 +522,16 @@ static bool run_stateful_tdt_chunk_decode(
         throw;
     }
     cactus::telemetry::setStreamMode(false);
+    const auto decode_end = std::chrono::steady_clock::now();
+    const double decode_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+        decode_end - decode_start).count() / 1000.0;
+    handle->last_stream_total_time_ms = decode_ms;
+    handle->last_stream_decode_tokens = static_cast<double>(out.token_count);
+    handle->last_stream_decode_tps =
+        (out.token_count > 1 && decode_ms > 0.0)
+            ? ((static_cast<double>(out.token_count) - 1.0) * 1000.0) / decode_ms
+            : 0.0;
+    handle->last_stream_raw_decoder_tps = out.raw_decoder_tps;
     if (parakeet_tdt_trace_enabled_stream()) {
         std::ostringstream trace;
         trace << "phase=stateful_stream_alignment"
@@ -891,7 +910,13 @@ static std::string build_stream_response(
     double buffer_duration_ms,
     uint64_t cloud_job_id,
     uint64_t cloud_result_job_id,
-    const CloudResponse& cloud_result
+    const CloudResponse& cloud_result,
+    double override_time_to_first_token_ms = -1.0,
+    double override_total_time_ms = -1.0,
+    double override_decode_tps = -1.0,
+    double override_decode_tokens = -1.0,
+    double override_total_tokens = -1.0,
+    double override_raw_decoder_tps = -1.0
 ) {
     std::string function_calls = json_array(raw_json_str, "function_calls");
     double confidence = json_number(raw_json_str, "confidence");
@@ -903,6 +928,25 @@ static std::string build_stream_response(
     double prefill_tokens = json_number(raw_json_str, "prefill_tokens");
     double decode_tokens = json_number(raw_json_str, "decode_tokens");
     double total_tokens = json_number(raw_json_str, "total_tokens");
+    double raw_decoder_tps = json_number(raw_json_str, "raw_decoder_tps");
+    if (override_time_to_first_token_ms >= 0.0) {
+        time_to_first_token_ms = override_time_to_first_token_ms;
+    }
+    if (override_total_time_ms >= 0.0) {
+        total_time_ms = override_total_time_ms;
+    }
+    if (override_decode_tps >= 0.0) {
+        decode_tps = override_decode_tps;
+    }
+    if (override_decode_tokens >= 0.0) {
+        decode_tokens = override_decode_tokens;
+    }
+    if (override_total_tokens >= 0.0) {
+        total_tokens = override_total_tokens;
+    }
+    if (override_raw_decoder_tps >= 0.0) {
+        raw_decoder_tps = override_raw_decoder_tps;
+    }
     std::string effective_confirmed = confirmed;
     if (cloud_result.used_cloud && !cloud_result.transcript.empty()) {
         effective_confirmed = cloud_result.transcript;
@@ -938,7 +982,8 @@ static std::string build_stream_response(
     json_builder << "\"ram_usage_mb\":" << ram_usage_mb << ",";
     json_builder << "\"prefill_tokens\":" << prefill_tokens << ",";
     json_builder << "\"decode_tokens\":" << decode_tokens << ",";
-    json_builder << "\"total_tokens\":" << total_tokens;
+    json_builder << "\"total_tokens\":" << total_tokens << ",";
+    json_builder << "\"raw_decoder_tps\":" << raw_decoder_tps;
     json_builder << "}";
     return json_builder.str();
 }
@@ -1120,7 +1165,13 @@ int cactus_stream_transcribe_process(
                     0.0,
                     0,
                     0,
-                    CloudResponse{});
+                    CloudResponse{},
+                    handle->stream_first_token_seen ? handle->stream_first_token_ms : 0.0,
+                    handle->last_stream_total_time_ms,
+                    handle->last_stream_decode_tps,
+                    handle->last_stream_decode_tokens,
+                    handle->last_stream_decode_tokens,
+                    handle->last_stream_raw_decoder_tps);
                 if (json_response.length() >= buffer_size) {
                     handle_error_response("Response buffer too small", response_buffer, buffer_size);
                     return -1;
@@ -1167,7 +1218,13 @@ int cactus_stream_transcribe_process(
                     0.0,
                     0,
                     0,
-                    CloudResponse{});
+                    CloudResponse{},
+                    handle->stream_first_token_seen ? handle->stream_first_token_ms : 0.0,
+                    handle->last_stream_total_time_ms,
+                    handle->last_stream_decode_tps,
+                    handle->last_stream_decode_tokens,
+                    handle->last_stream_decode_tokens,
+                    handle->last_stream_raw_decoder_tps);
                 if (json_response.length() >= buffer_size) {
                     handle_error_response("Response buffer too small", response_buffer, buffer_size);
                     return -1;
@@ -1178,6 +1235,7 @@ int cactus_stream_transcribe_process(
 
             cactus::engine::ParakeetTDTModel::StatefulStreamChunkResult chunk_decode;
             {
+                const auto decode_start = std::chrono::steady_clock::now();
                 std::lock_guard<std::mutex> lock(handle->model_handle->model_mutex);
                 cactus::telemetry::setStreamMode(true);
                 try {
@@ -1193,6 +1251,17 @@ int cactus_stream_transcribe_process(
                     throw;
                 }
                 cactus::telemetry::setStreamMode(false);
+                const auto decode_end = std::chrono::steady_clock::now();
+                const double decode_ms =
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        decode_end - decode_start).count() / 1000.0;
+                handle->last_stream_total_time_ms = decode_ms;
+                handle->last_stream_decode_tokens = static_cast<double>(chunk_decode.token_count);
+                handle->last_stream_decode_tps =
+                    (chunk_decode.token_count > 1 && decode_ms > 0.0)
+                        ? ((static_cast<double>(chunk_decode.token_count) - 1.0) * 1000.0) / decode_ms
+                        : 0.0;
+                handle->last_stream_raw_decoder_tps = chunk_decode.raw_decoder_tps;
             }
 
             const float window_offset_sec = ctx.audio_time_offset_sec +
@@ -1270,7 +1339,13 @@ int cactus_stream_transcribe_process(
                 0.0,
                 0,
                 0,
-                CloudResponse{});
+                CloudResponse{},
+                handle->stream_first_token_seen ? handle->stream_first_token_ms : 0.0,
+                handle->last_stream_total_time_ms,
+                handle->last_stream_decode_tps,
+                handle->last_stream_decode_tokens,
+                handle->last_stream_decode_tokens,
+                handle->last_stream_raw_decoder_tps);
             if (json_response.length() >= buffer_size) {
                 handle_error_response("Response buffer too small", response_buffer, buffer_size);
                 return -1;
@@ -1631,7 +1706,13 @@ int cactus_stream_transcribe_process(
                         pcm_bytes_to_seconds(confirmed_audio_bytes) * 1000.0,
                         0,
                         0,
-                        empty_cloud_result);
+                        empty_cloud_result,
+                        handle->stream_first_token_seen ? handle->stream_first_token_ms : 0.0,
+                        raw_json == "{}" ? handle->last_stream_total_time_ms : -1.0,
+                        raw_json == "{}" ? handle->last_stream_decode_tps : -1.0,
+                        raw_json == "{}" ? handle->last_stream_decode_tokens : -1.0,
+                        raw_json == "{}" ? handle->last_stream_decode_tokens : -1.0,
+                        raw_json == "{}" ? handle->last_stream_raw_decoder_tps : -1.0);
                     if (json_response.length() >= buffer_size) {
                         last_error_message = "Response buffer too small";
                         CACTUS_LOG_ERROR("stream_transcribe_process", last_error_message);

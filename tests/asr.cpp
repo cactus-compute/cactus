@@ -530,6 +530,7 @@ int run_live_transcription(cactus_model_t model, const std::string& model_path, 
                     std::string cloud_result_job_id = extract_json_number(json_str, "cloud_result_job_id");
                     std::string ttft = extract_json_number(json_str, "time_to_first_token_ms");
                     std::string decode_tps = extract_json_number(json_str, "decode_tps");
+                    std::string raw_decoder_tps = extract_json_number(json_str, "raw_decoder_tps");
 
                     bool matched_cloud_result_segment = false;
                     if (!cloud_result.empty()) {
@@ -576,7 +577,16 @@ int run_live_transcription(cactus_model_t model, const std::string& model_path, 
                     }
 
                     if (!confirmed.empty() || !pending.empty()) {
-                        last_stats = colored("[Latency:" + std::to_string(int(latency_ms)) + "ms Decode speed:" + decode_tps + " tokens/sec] ", Color::GRAY);
+                        last_stats = colored("[Latency:" + std::to_string(int(latency_ms)) + "ms Decode speed:" + decode_tps + " tokens/sec", Color::GRAY);
+                        if (!raw_decoder_tps.empty()) {
+                            try {
+                                if (std::stod(raw_decoder_tps) > 0.0) {
+                                    last_stats += colored(" Raw decoder:" + raw_decoder_tps + " tokens/sec", Color::GRAY);
+                                }
+                            } catch (...) {
+                            }
+                        }
+                        last_stats += colored("] ", Color::GRAY);
                     }
 
                     int width = get_terminal_width();

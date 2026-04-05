@@ -1143,6 +1143,8 @@ public:
         std::string pending_text;
         size_t token_count = 0;
         size_t confirmed_token_count = 0;
+        double raw_decoder_tps = 0.0;
+        double raw_decoder_time_ms = 0.0;
         float start_sec = 0.0f;
         float confirmed_end_sec = 0.0f;
         float resume_end_sec = 0.0f;
@@ -1197,7 +1199,8 @@ private:
         size_t start_frame,
         size_t end_frame,
         StatefulStreamState* stream_state,
-        size_t* out_confirmed_count = nullptr) const;
+        size_t* out_confirmed_count = nullptr,
+        double* out_raw_decoder_time_ms = nullptr) const;
     std::vector<TDTToken> greedy_decode_tdt_tokens(CactusGraph* gb, size_t encoder_hidden_node) const;
 
     struct WeightNodeIDs {

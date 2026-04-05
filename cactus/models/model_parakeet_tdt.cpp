@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cmath>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -859,7 +860,8 @@ std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::decode_tdt_tokens_with
     size_t start_frame,
     size_t end_frame,
     StatefulStreamState* stream_state,
-    size_t* out_confirmed_count) const {
+    size_t* out_confirmed_count,
+    double* out_raw_decoder_time_ms) const {
     const auto& enc_buf = gb->get_output_buffer(encoder_hidden_node);
     if (enc_buf.shape.size() != 2) {
         throw std::runtime_error("ParakeetTDT encoder output must be rank-2 [T, D]");
@@ -1034,6 +1036,7 @@ std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::decode_tdt_tokens_with
     std::vector<std::vector<__fp16>> snap_c = c_state;
     uint32_t snap_last_token = last_token;
     size_t confirmed_count = 0;
+    double raw_decoder_time_ms = 0.0;
 
     while (time_idx < time_limit) {
         bool advanced = false;
@@ -1051,7 +1054,12 @@ std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::decode_tdt_tokens_with
                 gb->set_input(c_prev_nodes[i], c_state[i].data(), Precision::FP16);
             }
 
+            const auto decoder_step_start = std::chrono::steady_clock::now();
             gb->execute();
+            const auto decoder_step_end = std::chrono::steady_clock::now();
+            raw_decoder_time_ms +=
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    decoder_step_end - decoder_step_start).count() / 1000.0;
 
             const auto& logits_buf = gb->get_output_buffer(logits);
             const auto& bias = get_vocab_bias();
@@ -1132,6 +1140,9 @@ std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::decode_tdt_tokens_with
 
     if (out_confirmed_count) {
         *out_confirmed_count = confirmed_count;
+    }
+    if (out_raw_decoder_time_ms) {
+        *out_raw_decoder_time_ms = raw_decoder_time_ms;
     }
 
     if (stream_state) {
@@ -1279,10 +1290,17 @@ ParakeetTDTModel::StatefulStreamChunkResult ParakeetTDTModel::decode_stateful_st
     gb->execute();
 
     StatefulStreamChunkResult result;
+    double raw_decoder_time_ms = 0.0;
     std::vector<TDTToken> tokens = decode_tdt_tokens_with_state(
-        gb, encoder_out, replay_start_frame, start_frame, end_frame, &state, &result.confirmed_token_count);
+        gb, encoder_out, replay_start_frame, start_frame, end_frame, &state,
+        &result.confirmed_token_count, &raw_decoder_time_ms);
 
     result.token_count = tokens.size();
+    result.raw_decoder_time_ms = raw_decoder_time_ms;
+    result.raw_decoder_tps =
+        (result.token_count > 0 && raw_decoder_time_ms > 0.0)
+            ? (static_cast<double>(result.token_count) * 1000.0) / raw_decoder_time_ms
+            : 0.0;
     constexpr float kHopSec = 160.0f / 16000.0f;
     const float frame_sec = kHopSec * static_cast<float>(config_.subsampling_factor);
     result.start_sec = start_frame * frame_sec;
