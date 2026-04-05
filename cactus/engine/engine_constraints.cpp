@@ -75,6 +75,20 @@ const ToolCallConstrainer::NeedleTrieNode* ToolCallConstrainer::needle_get_trie_
     return node;
 }
 
+bool ToolCallConstrainer::needle_has_unseen_completion(const NeedleTrieNode* node, std::string& partial) const {
+    if (!node) return false;
+    if (node->is_terminal && !needle_seen_arg_keys_.count(partial)) return true;
+    for (const auto& [ch, child] : node->children) {
+        partial.push_back(ch);
+        if (needle_has_unseen_completion(child.get(), partial)) {
+            partial.pop_back();
+            return true;
+        }
+        partial.pop_back();
+    }
+    return false;
+}
+
 bool ToolCallConstrainer::needle_check_token_valid(const std::string& token_text,
                                                    const NeedleTrieNode* trie_node) const {
     const NeedleTrieNode* node = trie_node;
@@ -98,10 +112,12 @@ void ToolCallConstrainer::reset_needle_constraints() {
     needle_buffer_.clear();
     needle_constrained_buf_.clear();
     needle_current_function_.clear();
+    needle_seen_arg_keys_.clear();
     needle_in_arguments_ = false;
     needle_arguments_depth_ = 0;
     needle_nesting_depth_ = 0;
     needle_in_string_value_ = false;
+    needle_between_pairs_ = false;
     needle_prev_char_escape_ = false;
 }
 
@@ -129,6 +145,9 @@ void ToolCallConstrainer::feed_needle_char(char ch) {
         if (ch == '"') {
             if (needle_json_state_ == NeedleJsonState::IN_NAME) {
                 needle_current_function_ = needle_constrained_buf_;
+                needle_seen_arg_keys_.clear();
+            } else {
+                needle_seen_arg_keys_.insert(needle_constrained_buf_);
             }
             needle_constrained_buf_.clear();
             needle_json_state_ = NeedleJsonState::FREE;
@@ -152,6 +171,9 @@ void ToolCallConstrainer::feed_needle_char(char ch) {
         }
         if (ch == '"') {
             needle_in_string_value_ = false;
+            if (needle_in_arguments_ && needle_nesting_depth_ == needle_arguments_depth_) {
+                needle_between_pairs_ = true;
+            }
         }
         return;
     }
@@ -163,6 +185,8 @@ void ToolCallConstrainer::feed_needle_char(char ch) {
         if (ch == '}' && needle_in_arguments_ && needle_nesting_depth_ < needle_arguments_depth_) {
             needle_in_arguments_ = false;
         }
+    } else if (ch == ',' && needle_in_arguments_ && needle_nesting_depth_ == needle_arguments_depth_) {
+        needle_between_pairs_ = true;
     }
 
     if (needle_buffer_.size() >= 8 &&
@@ -182,6 +206,7 @@ void ToolCallConstrainer::feed_needle_char(char ch) {
     if (needle_in_arguments_ && needle_at_arg_key_start()) {
         needle_json_state_ = NeedleJsonState::IN_ARG_KEY;
         needle_constrained_buf_.clear();
+        needle_between_pairs_ = false;
         return;
     }
 
@@ -201,6 +226,7 @@ void ToolCallConstrainer::init_needle_constraints() {
 
     needle_name_trie_ = std::make_unique<NeedleTrieNode>();
     needle_param_tries_.clear();
+    needle_required_params_.clear();
     for (const auto& tool : tool_specs_) {
         if (!tool.name.empty()) {
             needle_insert_word(needle_name_trie_.get(), tool.name);
@@ -213,17 +239,41 @@ void ToolCallConstrainer::init_needle_constraints() {
             }
         }
         needle_param_tries_[tool.name] = std::move(param_root);
+        needle_required_params_[tool.name] = tool.required_parameter_names;
     }
 
     const uint32_t vocab_size = tokenizer_ ? tokenizer_->get_vocab_size() : 0;
     if (needle_token_strings_.size() != vocab_size) {
         needle_token_strings_.assign(vocab_size, "");
         needle_token_index_.clear();
+        needle_arg_close_tokens_.clear();
+
+        auto would_close_args = [](const std::string& tok, bool start_in_str) -> bool {
+            bool in_str = start_in_str;
+            bool esc = false;
+            int depth = 0;
+            for (char ch : tok) {
+                if (in_str) {
+                    if (esc) { esc = false; }
+                    else if (ch == '\\') { esc = true; }
+                    else if (ch == '"') { in_str = false; }
+                    continue;
+                }
+                if (ch == '"') { in_str = true; continue; }
+                if (ch == '{' || ch == '[') { depth++; continue; }
+                if (ch == '}') { if (depth == 0) return true; depth--; }
+                else if (ch == ']' && depth > 0) depth--;
+            }
+            return false;
+        };
+
         for (uint32_t token_id = 0; token_id < vocab_size; ++token_id) {
             std::string decoded = tokenizer_->decode({token_id});
             needle_token_strings_[token_id] = decoded;
-            if (!decoded.empty()) {
-                needle_token_index_[decoded.front()].push_back(token_id);
+            if (decoded.empty()) continue;
+            needle_token_index_[decoded.front()].push_back(token_id);
+            if (would_close_args(decoded, false) || would_close_args(decoded, true)) {
+                needle_arg_close_tokens_.insert(token_id);
             }
         }
     }
@@ -382,8 +432,11 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                 break;
 
             case State::LFM_IN_ARGUMENTS:
-                if (generated_text_.find(")") != std::string::npos) {
+                if (decoded_text.find(")") != std::string::npos) {
                     state_ = State::LFM_EXPECT_BRACKET_CLOSE;
+                    generated_text_.clear();
+                } else {
+                    generated_text_.clear();
                 }
                 break;
 
@@ -439,13 +492,13 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                 break;
 
             case State::GEMMA_IN_ARGUMENTS:
+                generated_text_.clear();
                 for (char c : decoded_text) {
                     if (c == '{') brace_depth_++;
                     else if (c == '}') {
                         brace_depth_--;
                         if (brace_depth_ == 0) {
                             state_ = State::GEMMA_EXPECT_END;
-                            generated_text_.clear();
                             break;
                         }
                     }
@@ -547,6 +600,7 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                 break;
 
             case State::QWEN_IN_ARGUMENTS:
+                generated_text_.clear();
                 for (char c : decoded_text) {
                     if (c == '{') brace_depth_++;
                     else if (c == '}') {
@@ -554,17 +608,9 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                             brace_depth_--;
                         } else {
                             state_ = State::QWEN_EXPECT_END;
-                            generated_text_.clear();
                             break;
                         }
                     }
-                }
-                break;
-
-            case State::QWEN_EXPECT_CLOSE_BRACE:
-                if (generated_text_.find("}") != std::string::npos) {
-                    state_ = State::QWEN_EXPECT_END;
-                    generated_text_.clear();
                 }
                 break;
 
@@ -797,6 +843,30 @@ void ToolCallConstrainer::compute_bias() {
 
             default:
                 if (needle_json_state_ == NeedleJsonState::FREE) {
+                    if (needle_in_arguments_ && needle_nesting_depth_ == needle_arguments_depth_) {
+                        auto param_it = needle_param_tries_.find(needle_current_function_);
+                        if (param_it != needle_param_tries_.end()) {
+                            std::string partial;
+                            bool all_seen = !needle_has_unseen_completion(param_it->second.get(), partial);
+                            if (all_seen && needle_between_pairs_) {
+                                for (uint32_t t : needle_arg_close_tokens_) {
+                                    current_bias_[t] = FORCE_BIAS;
+                                }
+                            } else if (!all_seen && (needle_between_pairs_ || needle_in_string_value_)) {
+                                auto req_it = needle_required_params_.find(needle_current_function_);
+                                if (req_it != needle_required_params_.end()) {
+                                    for (const auto& req : req_it->second) {
+                                        if (!needle_seen_arg_keys_.count(req)) {
+                                            for (uint32_t t : needle_arg_close_tokens_) {
+                                                current_bias_[t] = BLOCK_BIAS;
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     break;
                 }
 
@@ -839,6 +909,25 @@ void ToolCallConstrainer::compute_bias() {
 
                 if (!has_valid) {
                     break;
+                }
+
+                if (needle_json_state_ == NeedleJsonState::IN_ARG_KEY && !needle_seen_arg_keys_.empty()) {
+                    for (size_t token_id = 0; token_id < valid_tokens.size(); ++token_id) {
+                        if (!valid_tokens[token_id]) continue;
+                        const std::string& tok = needle_token_strings_[token_id];
+                        size_t quote_pos = tok.find('"');
+                        if (quote_pos != std::string::npos) {
+                            if (needle_seen_arg_keys_.count(needle_constrained_buf_ + tok.substr(0, quote_pos))) {
+                                valid_tokens[token_id] = false;
+                            }
+                        } else {
+                            std::string partial = needle_constrained_buf_ + tok;
+                            const NeedleTrieNode* new_node = needle_get_trie_node(trie_node, tok);
+                            if (!needle_has_unseen_completion(new_node, partial)) {
+                                valid_tokens[token_id] = false;
+                            }
+                        }
+                    }
                 }
 
                 for (size_t token_id = 0; token_id < valid_tokens.size(); ++token_id) {
@@ -957,12 +1046,6 @@ void ToolCallConstrainer::compute_bias() {
                 }
                 for (uint32_t t : qwen_tool_call_end_tokens_) {
                     current_bias_[t] = BLOCK_BIAS;
-                }
-                break;
-
-            case State::QWEN_EXPECT_CLOSE_BRACE:
-                for (uint32_t t : close_brace_tokens_) {
-                    current_bias_[t] = FORCE_BIAS;
                 }
                 break;
 

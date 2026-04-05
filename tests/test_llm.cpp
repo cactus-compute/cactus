@@ -22,7 +22,8 @@ static const char* g_model_path = std::getenv("CACTUS_TEST_MODEL");
 static const char* g_options = R"({
         "max_tokens": 256,
     "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
-    "telemetry_enabled": false
+    "telemetry_enabled": false,
+    "confidence_threshold": 0.0
     })";
 
 namespace {
@@ -467,7 +468,8 @@ bool test_tool_call() {
     const char* options_with_force_tools = R"({
         "max_tokens": 256,
         "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
-        "force_tools": true
+        "force_tools": true,
+        "confidence_threshold": 0.0
     })";
 
     return EngineTestUtils::run_test("TOOL CALL TEST", g_model_path, messages.c_str(), options_with_force_tools,
@@ -516,18 +518,17 @@ bool test_multiple_tool_call_invocations() {
     const char* options_with_force_tools = R"({
         "max_tokens": 256,
         "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
-        "force_tools": true
+        "force_tools": true,
+        "confidence_threshold": 0.0
     })";
 
     return EngineTestUtils::run_test("MULTIPLE TOOLS TEST", g_model_path, messages.c_str(), options_with_force_tools,
-        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+        [](int result, const StreamingData& data, const std::string& response, const Metrics& m) {
+            std::string raw;
+            for (const auto& t : data.tokens) raw += t;
             bool has_function = response.find("\"function_calls\":[") != std::string::npos;
-            bool has_weather_tool = has_function
-                && (response.find("\"name\":\"get_weather\"") != std::string::npos
-                    || response.find("\"name\": \"get_weather\"") != std::string::npos);
-            bool has_message_tool = has_function
-                && (response.find("\"name\":\"send_message\"") != std::string::npos
-                    || response.find("\"name\": \"send_message\"") != std::string::npos);
+            bool has_weather_tool = raw.find("get_weather") != std::string::npos;
+            bool has_message_tool = raw.find("send_message") != std::string::npos;
             std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
                       << "├─ Correct tool: " << (has_weather_tool && has_message_tool ? "YES" : "NO") << "\n";
             m.print_json();
@@ -584,7 +585,8 @@ bool test_tool_call_with_three_tools() {
     const char* options_with_force_tools = R"({
         "max_tokens": 256,
         "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
-        "force_tools": true
+        "force_tools": true,
+        "confidence_threshold": 0.0
     })";
 
     return EngineTestUtils::run_test("TRIPLE TOOLS TEST", g_model_path, messages.c_str(), options_with_force_tools,
@@ -596,6 +598,480 @@ bool test_tool_call_with_three_tools() {
             m.print_json();
             return result > 0 && has_function && has_tool;
         }, tools, -1, "Send a message to John saying hello.");
+}
+
+bool test_tool_no_params() {
+    std::string messages = make_tool_test_messages("What time is it right now?");
+
+    const char* tools = R"([{
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": "Get the current time",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    }])";
+
+    const char* options = R"({"max_tokens": 128, "force_tools": true, "confidence_threshold": 0.0})";
+
+    return EngineTestUtils::run_test("TOOL NO PARAMS TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("get_current_time") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool;
+        }, tools, -1, "What time is it right now?");
+}
+
+bool test_tool_optional_params_only() {
+    std::string messages = make_tool_test_messages("Search for news.");
+
+    const char* tools = R"([{
+        "type": "function",
+        "function": {
+            "name": "search_news",
+            "description": "Search for news articles",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer", "description": "Max results to return"}
+                }
+            }
+        }
+    }])";
+
+    const char* options = R"({"max_tokens": 128, "force_tools": true, "confidence_threshold": 0.0})";
+
+    return EngineTestUtils::run_test("TOOL OPTIONAL PARAMS TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("search_news") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool;
+        }, tools, -1, "Search for news.");
+}
+
+bool test_tool_integer_and_enum_params() {
+    std::string messages = make_tool_test_messages("Set an alarm for 7:30 AM.");
+
+    const char* tools = R"json([{
+        "type": "function",
+        "function": {
+            "name": "set_alarm",
+            "description": "Set an alarm for a specific time",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hour": {"type": "integer", "description": "Hour 0-23"},
+                    "minute": {"type": "integer", "description": "Minute 0-59"},
+                    "period": {"type": "string", "enum": ["AM", "PM"], "description": "AM or PM"}
+                },
+                "required": ["hour", "minute"]
+            }
+        }
+    }])json";
+
+    const char* options = R"({"max_tokens": 128, "force_tools": true, "confidence_threshold": 0.0})";
+
+    return EngineTestUtils::run_test("TOOL INTEGER+ENUM PARAMS TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("set_alarm") != std::string::npos;
+            bool has_hour = has_tool && response.find("hour") != std::string::npos;
+            bool has_minute = has_tool && response.find("minute") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'hour': " << (has_hour ? "YES" : "NO") << "\n"
+                      << "├─ Required 'minute': " << (has_minute ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool && has_hour && has_minute;
+        }, tools, -1, "Set an alarm for 7:30 AM.");
+}
+
+bool test_tool_many_required_params() {
+    std::string messages = make_tool_test_messages("Book a flight from New York to London for John Smith, departing 2025-06-01.");
+
+    const char* tools = R"([{
+        "type": "function",
+        "function": {
+            "name": "book_flight",
+            "description": "Book a flight ticket",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "origin": {"type": "string", "description": "Departure city or airport code"},
+                    "destination": {"type": "string", "description": "Arrival city or airport code"},
+                    "passenger_name": {"type": "string", "description": "Full name of the passenger"},
+                    "departure_date": {"type": "string", "description": "Date of departure in YYYY-MM-DD format"},
+                    "seat_class": {"type": "string", "description": "Class of seat: economy, business, or first"}
+                },
+                "required": ["origin", "destination", "passenger_name", "departure_date"]
+            }
+        }
+    }])";
+
+    const char* options = R"({"max_tokens": 256, "force_tools": true, "confidence_threshold": 0.0})";
+
+    return EngineTestUtils::run_test("TOOL MANY REQUIRED PARAMS TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("book_flight") != std::string::npos;
+            bool has_origin = has_tool && response.find("origin") != std::string::npos;
+            bool has_dest = has_tool && response.find("destination") != std::string::npos;
+            bool has_name = has_tool && response.find("passenger_name") != std::string::npos;
+            bool has_date = has_tool && response.find("departure_date") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'origin': " << (has_origin ? "YES" : "NO") << "\n"
+                      << "├─ Required 'destination': " << (has_dest ? "YES" : "NO") << "\n"
+                      << "├─ Required 'passenger_name': " << (has_name ? "YES" : "NO") << "\n"
+                      << "├─ Required 'departure_date': " << (has_date ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool && has_origin && has_dest && has_name && has_date;
+        }, tools, -1, "Book a flight from New York to London for John Smith, departing 2025-06-01.");
+}
+
+bool test_tool_nested_object_params() {
+    std::string messages = make_tool_test_messages("Create a calendar event called Team Sync tomorrow at 3pm.");
+
+    const char* tools = R"([{
+        "type": "function",
+        "function": {
+            "name": "create_calendar_event",
+            "description": "Create a new calendar event",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Event title"},
+                    "time": {
+                        "type": "object",
+                        "description": "Event time",
+                        "properties": {
+                            "hour": {"type": "integer"},
+                            "minute": {"type": "integer"}
+                        }
+                    },
+                    "duration_minutes": {"type": "integer", "description": "Duration in minutes"}
+                },
+                "required": ["title"]
+            }
+        }
+    }])";
+
+    const char* options = R"({"max_tokens": 256, "force_tools": true, "confidence_threshold": 0.0})";
+
+    return EngineTestUtils::run_test("TOOL NESTED OBJECT TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("create_calendar_event") != std::string::npos;
+            bool has_title = has_tool && response.find("title") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'title': " << (has_title ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool && has_title;
+        }, tools, -1, "Create a calendar event called Team Sync tomorrow at 3pm.");
+}
+
+bool test_tool_pick_right_tool() {
+    std::string messages = make_tool_test_messages("Translate 'good morning' to French.");
+
+    const char* tools = R"([{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the weather for a location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City name"}
+                },
+                "required": ["location"]
+            }
+        }
+    }, {
+        "type": "function",
+        "function": {
+            "name": "translate_text",
+            "description": "Translate text from one language to another",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The text to translate"},
+                    "target_language": {"type": "string", "description": "Language to translate into"}
+                },
+                "required": ["text", "target_language"]
+            }
+        }
+    }, {
+        "type": "function",
+        "function": {
+            "name": "send_email",
+            "description": "Send an email to a contact",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "Recipient email address"},
+                    "subject": {"type": "string", "description": "Email subject"},
+                    "body": {"type": "string", "description": "Email body"}
+                },
+                "required": ["to", "subject", "body"]
+            }
+        }
+    }])";
+
+    const char* options = R"({"max_tokens": 256, "force_tools": true, "confidence_threshold": 0.0})";
+
+    return EngineTestUtils::run_test("TOOL PICK RIGHT TOOL TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_right_tool = has_function && response.find("translate_text") != std::string::npos;
+            bool has_text = has_right_tool && response.find("\"text\"") != std::string::npos;
+            bool has_lang = has_right_tool && response.find("target_language") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool (translate_text): " << (has_right_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'text': " << (has_text ? "YES" : "NO") << "\n"
+                      << "├─ Required 'target_language': " << (has_lang ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_right_tool && has_text && has_lang;
+        }, tools, -1, "Translate 'good morning' to French.");
+}
+
+// --- broader constraint tests ---
+
+bool test_tool_5_tools_select() {
+    std::string messages = make_tool_test_messages("What's the weather in Berlin?");
+    const char* tools = R"([
+        {"type":"function","function":{"name":"get_weather","description":"Get weather for a location","parameters":{"type":"object","properties":{"location":{"type":"string","description":"City name"}},"required":["location"]}}},
+        {"type":"function","function":{"name":"send_message","description":"Send a message to someone","parameters":{"type":"object","properties":{"recipient":{"type":"string"},"message":{"type":"string"}},"required":["recipient","message"]}}},
+        {"type":"function","function":{"name":"set_alarm","description":"Set an alarm","parameters":{"type":"object","properties":{"hour":{"type":"integer"},"minute":{"type":"integer"}},"required":["hour","minute"]}}},
+        {"type":"function","function":{"name":"translate_text","description":"Translate text to another language","parameters":{"type":"object","properties":{"text":{"type":"string"},"target_language":{"type":"string"}},"required":["text","target_language"]}}},
+        {"type":"function","function":{"name":"lookup_contact","description":"Find a contact by name","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}}
+    ])";
+    const char* options = R"({"max_tokens": 128, "force_tools": true, "confidence_threshold": 0.0})";
+    return EngineTestUtils::run_test("5 TOOLS SELECT TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("get_weather") != std::string::npos;
+            bool has_location = has_tool && response.find("location") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool (get_weather): " << (has_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'location': " << (has_location ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool && has_location;
+        }, tools, -1, "What's the weather in Berlin?");
+}
+
+bool test_tool_10_tools_haystack() {
+    std::string messages = make_tool_test_messages("What is the current stock price for AAPL?");
+    const char* tools = R"([
+        {"type":"function","function":{"name":"get_weather","description":"Get weather for a location","parameters":{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}}},
+        {"type":"function","function":{"name":"send_message","description":"Send a message","parameters":{"type":"object","properties":{"recipient":{"type":"string"},"message":{"type":"string"}},"required":["recipient","message"]}}},
+        {"type":"function","function":{"name":"set_alarm","description":"Set an alarm","parameters":{"type":"object","properties":{"hour":{"type":"integer"},"minute":{"type":"integer"}},"required":["hour","minute"]}}},
+        {"type":"function","function":{"name":"translate_text","description":"Translate text","parameters":{"type":"object","properties":{"text":{"type":"string"},"target_language":{"type":"string"}},"required":["text","target_language"]}}},
+        {"type":"function","function":{"name":"get_stock_price","description":"Get the current stock price for a ticker symbol","parameters":{"type":"object","properties":{"ticker":{"type":"string","description":"Stock ticker symbol"}},"required":["ticker"]}}},
+        {"type":"function","function":{"name":"create_reminder","description":"Create a reminder","parameters":{"type":"object","properties":{"title":{"type":"string"},"time":{"type":"string"}},"required":["title"]}}},
+        {"type":"function","function":{"name":"search_news","description":"Search news articles","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}},
+        {"type":"function","function":{"name":"send_email","description":"Send an email","parameters":{"type":"object","properties":{"to":{"type":"string"},"subject":{"type":"string"},"body":{"type":"string"}},"required":["to","subject","body"]}}},
+        {"type":"function","function":{"name":"play_music","description":"Play music","parameters":{"type":"object","properties":{"artist":{"type":"string"},"song":{"type":"string"}},"required":[]}}},
+        {"type":"function","function":{"name":"lookup_contact","description":"Find a contact","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}}
+    ])";
+    const char* options = R"({"max_tokens": 128, "force_tools": true, "confidence_threshold": 0.0})";
+    return EngineTestUtils::run_test("10 TOOLS HAYSTACK TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("get_stock_price") != std::string::npos;
+            bool has_ticker = has_tool && response.find("ticker") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool (get_stock_price): " << (has_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'ticker': " << (has_ticker ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool && has_ticker;
+        }, tools, -1, "What is the current stock price for AAPL?");
+}
+
+bool test_tool_buried_key_info() {
+    std::string messages = make_tool_test_messages(
+        "My name is Sarah and I love traveling. I visited many cities last year. "
+        "Right now I am planning my next trip and I will be going to Amsterdam. "
+        "I enjoy cycling and Dutch food. I want to pack the right clothes. "
+        "What is the weather like where I am going?"
+    );
+    const char* tools = R"([
+        {"type":"function","function":{"name":"get_weather","description":"Get weather for a location","parameters":{"type":"object","properties":{"location":{"type":"string","description":"City name"}},"required":["location"]}}},
+        {"type":"function","function":{"name":"send_message","description":"Send a message","parameters":{"type":"object","properties":{"recipient":{"type":"string"},"message":{"type":"string"}},"required":["recipient","message"]}}}
+    ])";
+    const char* options = R"({"max_tokens": 128, "force_tools": true, "confidence_threshold": 0.0})";
+    return EngineTestUtils::run_test("BURIED KEY INFO TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("get_weather") != std::string::npos;
+            bool has_location = has_tool && response.find("location") != std::string::npos;
+            bool has_amsterdam = has_location && response.find("Amsterdam") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool (get_weather): " << (has_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'location': " << (has_location ? "YES" : "NO") << "\n"
+                      << "├─ Extracted Amsterdam: " << (has_amsterdam ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool && has_location;
+        }, tools, -1, "...(buried Amsterdam)...");
+}
+
+bool test_tool_long_irrelevant_preamble() {
+    std::string messages = make_tool_test_messages(
+        "I am a software engineer working on a distributed systems project. "
+        "We use microservices and deploy to Kubernetes. Our team is spread across "
+        "three time zones. We have daily standups and use Jira for project tracking. "
+        "The backend is written in Go and the frontend uses React with TypeScript. "
+        "We recently migrated from a monolith and have been dealing with service mesh issues. "
+        "Anyway, none of that is relevant right now. Get the weather in Sydney."
+    );
+    const char* tools = R"([
+        {"type":"function","function":{"name":"get_weather","description":"Get weather for a location","parameters":{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}}},
+        {"type":"function","function":{"name":"search_news","description":"Search news articles","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}}
+    ])";
+    const char* options = R"({"max_tokens": 128, "force_tools": true, "confidence_threshold": 0.0})";
+    return EngineTestUtils::run_test("LONG IRRELEVANT PREAMBLE TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("get_weather") != std::string::npos;
+            bool has_location = has_tool && response.find("location") != std::string::npos;
+            bool has_sydney = has_location && response.find("Sydney") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool (get_weather): " << (has_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'location': " << (has_location ? "YES" : "NO") << "\n"
+                      << "├─ Extracted Sydney: " << (has_sydney ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool && has_location;
+        }, tools, -1, "...(long preamble, get weather Sydney at end)...");
+}
+
+bool test_tool_boolean_param() {
+    std::string messages = make_tool_test_messages("Send an urgent alert to the on-call engineer.");
+    const char* tools = R"([
+        {"type":"function","function":{"name":"send_alert","description":"Send an alert notification","parameters":{"type":"object","properties":{"recipient":{"type":"string","description":"Who to alert"},"urgent":{"type":"boolean","description":"Whether the alert is urgent"},"message":{"type":"string","description":"Alert message"}},"required":["recipient","urgent"]}}}
+    ])";
+    const char* options = R"({"max_tokens": 128, "force_tools": true, "confidence_threshold": 0.0})";
+    return EngineTestUtils::run_test("BOOLEAN PARAM TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("send_alert") != std::string::npos;
+            bool has_recipient = has_tool && response.find("recipient") != std::string::npos;
+            bool has_urgent = has_tool && response.find("urgent") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool (send_alert): " << (has_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'recipient': " << (has_recipient ? "YES" : "NO") << "\n"
+                      << "├─ Required 'urgent': " << (has_urgent ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool && has_recipient && has_urgent;
+        }, tools, -1, "Send an urgent alert to the on-call engineer.");
+}
+
+bool test_tool_similar_names_disambiguation() {
+    std::string messages = make_tool_test_messages("What is the weather like right now in Oslo?");
+    const char* tools = R"([
+        {"type":"function","function":{"name":"get_weather","description":"Get the current weather conditions for a location","parameters":{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}}},
+        {"type":"function","function":{"name":"get_weather_forecast","description":"Get a multi-day weather forecast for a location","parameters":{"type":"object","properties":{"location":{"type":"string"},"days":{"type":"integer"}},"required":["location"]}}},
+        {"type":"function","function":{"name":"get_weather_history","description":"Get historical weather data for a location and date","parameters":{"type":"object","properties":{"location":{"type":"string"},"date":{"type":"string"}},"required":["location","date"]}}}
+    ])";
+    const char* options = R"({"max_tokens": 128, "force_tools": true, "confidence_threshold": 0.0})";
+    return EngineTestUtils::run_test("SIMILAR NAMES DISAMBIGUATION TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("\"get_weather\"") != std::string::npos;
+            bool wrong_tool = response.find("get_weather_forecast") != std::string::npos
+                           || response.find("get_weather_history") != std::string::npos;
+            bool has_location = has_tool && response.find("location") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool (get_weather, not forecast/history): " << (has_tool && !wrong_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'location': " << (has_location ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool && !wrong_tool && has_location;
+        }, tools, -1, "What is the weather like right now in Oslo?");
+}
+
+bool test_tool_three_required_numeric() {
+    std::string messages = make_tool_test_messages("Convert 500 dollars to Japanese yen.");
+    const char* tools = R"([
+        {"type":"function","function":{"name":"convert_currency","description":"Convert an amount from one currency to another","parameters":{"type":"object","properties":{"amount":{"type":"number","description":"The amount to convert"},"from_currency":{"type":"string","description":"Source currency code"},"to_currency":{"type":"string","description":"Target currency code"}},"required":["amount","from_currency","to_currency"]}}}
+    ])";
+    const char* options = R"({"max_tokens": 128, "force_tools": true, "confidence_threshold": 0.0})";
+    return EngineTestUtils::run_test("THREE REQUIRED NUMERIC TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("convert_currency") != std::string::npos;
+            bool has_amount = has_tool && response.find("amount") != std::string::npos;
+            bool has_from = has_tool && response.find("from_currency") != std::string::npos;
+            bool has_to = has_tool && response.find("to_currency") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool (convert_currency): " << (has_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'amount': " << (has_amount ? "YES" : "NO") << "\n"
+                      << "├─ Required 'from_currency': " << (has_from ? "YES" : "NO") << "\n"
+                      << "├─ Required 'to_currency': " << (has_to ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool && has_amount && has_from && has_to;
+        }, tools, -1, "Convert 500 dollars to Japanese yen.");
+}
+
+bool test_tool_non_obvious_param_names() {
+    std::string messages = make_tool_test_messages("Log that user alice just logged in to the system.");
+    const char* tools = R"([
+        {"type":"function","function":{"name":"log_activity","description":"Record a user activity event in the audit log","parameters":{"type":"object","properties":{"user_identifier":{"type":"string","description":"The username or ID of the user"},"activity_code":{"type":"string","description":"Short code for the activity type, e.g. LOGIN, LOGOUT"}},"required":["user_identifier","activity_code"]}}}
+    ])";
+    const char* options = R"({"max_tokens": 128, "force_tools": true, "confidence_threshold": 0.0})";
+    return EngineTestUtils::run_test("NON-OBVIOUS PARAM NAMES TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("log_activity") != std::string::npos;
+            bool has_uid = has_tool && response.find("user_identifier") != std::string::npos;
+            bool has_code = has_tool && response.find("activity_code") != std::string::npos;
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool (log_activity): " << (has_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'user_identifier': " << (has_uid ? "YES" : "NO") << "\n"
+                      << "├─ Required 'activity_code': " << (has_code ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool && has_uid && has_code;
+        }, tools, -1, "Log that user alice just logged in to the system.");
+}
+
+bool test_tool_1k_context_with_tool() {
+    std::string long_context =
+        "I am a software engineer. I work on backend systems. "
+        "We use Go, Postgres, and Redis. Our team has 8 engineers. "
+        "We deploy to AWS using ECS and Terraform. We have CI/CD with GitHub Actions. "
+        "Our services handle about 10 million requests per day. We use Datadog for monitoring. "
+        "We recently added a new feature for real-time notifications. We also improved our "
+        "database indexing strategy which cut p99 latency by 40%. I enjoy the work. "
+        "My manager is supportive and the team culture is good. We do code reviews for all PRs. "
+        "Anyway, I need to check on something completely different. Get the weather in Cape Town.";
+    std::string messages = make_tool_test_messages(long_context);
+    const char* tools = R"([
+        {"type":"function","function":{"name":"get_weather","description":"Get weather for a location","parameters":{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}}},
+        {"type":"function","function":{"name":"get_stock_price","description":"Get stock price","parameters":{"type":"object","properties":{"ticker":{"type":"string"}},"required":["ticker"]}}}
+    ])";
+    const char* options = R"({"max_tokens": 128, "force_tools": true, "confidence_threshold": 0.0})";
+    return EngineTestUtils::run_test("1K CONTEXT WITH TOOL TEST", g_model_path, messages.c_str(), options,
+        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
+            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_tool = has_function && response.find("get_weather") != std::string::npos;
+            bool has_location = has_tool && response.find("location") != std::string::npos;
+            bool has_cape_town = has_location && (response.find("Cape Town") != std::string::npos
+                                               || response.find("Cape") != std::string::npos);
+            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
+                      << "├─ Correct tool (get_weather): " << (has_tool ? "YES" : "NO") << "\n"
+                      << "├─ Required 'location': " << (has_location ? "YES" : "NO") << "\n"
+                      << "├─ Extracted Cape Town: " << (has_cape_town ? "YES" : "NO") << "\n";
+            m.print_json();
+            return result > 0 && has_function && has_tool && has_location;
+        }, tools, -1, "...(long context, get weather Cape Town at end)...");
 }
 
 bool test_1k_context() {
@@ -636,6 +1112,21 @@ int main() {
     runner.run_test("tool_calls", test_tool_call());
     runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
     runner.run_test("tool_calls_with_three_tools", test_tool_call_with_three_tools());
+    runner.run_test("tool_no_params", test_tool_no_params());
+    runner.run_test("tool_optional_params_only", test_tool_optional_params_only());
+    runner.run_test("tool_integer_and_enum_params", test_tool_integer_and_enum_params());
+    runner.run_test("tool_many_required_params", test_tool_many_required_params());
+    runner.run_test("tool_nested_object_params", test_tool_nested_object_params());
+    runner.run_test("tool_pick_right_tool", test_tool_pick_right_tool());
+    runner.run_test("tool_5_tools_select", test_tool_5_tools_select());
+    runner.run_test("tool_10_tools_haystack", test_tool_10_tools_haystack());
+    runner.run_test("tool_buried_key_info", test_tool_buried_key_info());
+    runner.run_test("tool_long_irrelevant_preamble", test_tool_long_irrelevant_preamble());
+    runner.run_test("tool_boolean_param", test_tool_boolean_param());
+    runner.run_test("tool_similar_names_disambiguation", test_tool_similar_names_disambiguation());
+    runner.run_test("tool_three_required_numeric", test_tool_three_required_numeric());
+    runner.run_test("tool_non_obvious_param_names", test_tool_non_obvious_param_names());
+    runner.run_test("tool_1k_context_with_tool", test_tool_1k_context_with_tool());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
