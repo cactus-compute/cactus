@@ -838,6 +838,8 @@ private:
     std::unique_ptr<npu::NPUEncoder> npu_encoder_;
     bool use_npu_encoder_ = false;
 
+    uint32_t enc_layers_ = 0;
+    uint32_t dec_layers_ = 0;
 };
 
 

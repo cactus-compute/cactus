@@ -15,16 +15,28 @@ using cactus::audio::get_whisper_spectrogram_config;
 using cactus::audio::normalize_parakeet_log_mel;
 using cactus::audio::trim_mel_frames;
 
-static std::vector<float> compute_mel_from_wav(const std::string& wav_path, bool is_parakeet, size_t parakeet_mel_bins) {
+static std::vector<float> compute_mel_from_wav(const std::string& wav_path, bool is_parakeet, size_t mel_bins) {
     AudioFP32 audio = load_wav(wav_path);
     std::vector<float> waveform_16k = resample_to_16k_fp32(audio.samples, audio.sample_rate);
 
     auto cfg = is_parakeet ? get_parakeet_spectrogram_config() : get_whisper_spectrogram_config();
-    const size_t num_mel_filters = is_parakeet ? std::max<size_t>(1, parakeet_mel_bins) : 80;
-    const size_t num_frequency_bins = cfg.n_fft / 2 + 1;
+    const size_t num_mel_filters = std::max<size_t>(1, mel_bins);
+    const bool is_v3 = !is_parakeet && mel_bins > 80;
+    if (is_v3) {
+        cfg.fft_override = 512;
+        cfg.remove_dc_offset = false;
+    }
+    const size_t fft_len = cfg.fft_override > 0 ? cfg.fft_override : cfg.n_fft;
+    const size_t num_frequency_bins = fft_len / 2 + 1;
 
     AudioProcessor ap;
-    ap.init_mel_filters(num_frequency_bins, num_mel_filters, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
+    if (is_parakeet) {
+        ap.init_mel_filters(num_frequency_bins, num_mel_filters, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
+    } else if (is_v3) {
+        ap.init_mel_filters(num_frequency_bins, num_mel_filters, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE, "slaney", "slaney");
+    } else {
+        ap.init_mel_filters(cfg.n_fft / 2 + 1, num_mel_filters, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
+    }
     const size_t waveform_samples = waveform_16k.size();
     if (is_parakeet) {
         apply_preemphasis(waveform_16k, 0.97f);
@@ -53,7 +65,8 @@ static std::vector<float> compute_mel_from_wav(const std::string& wav_path, bool
     }
 
     if (n_frames != WHISPER_TARGET_FRAMES) {
-        std::vector<float> fixed(n_mels * WHISPER_TARGET_FRAMES, 0.0f);
+        float pad_val = is_v3 ? (min_allowed + 4.0f) / 4.0f : 0.0f;
+        std::vector<float> fixed(n_mels * WHISPER_TARGET_FRAMES, pad_val);
         size_t copy_frames = std::min(n_frames, WHISPER_TARGET_FRAMES);
         for (size_t m = 0; m < n_mels; ++m) {
             const float* src = &mel[m * n_frames];
