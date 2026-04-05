@@ -7,6 +7,7 @@ weights/
 stage/
 .cache/
 
+apple/
 android/build/
 android/libs/
 android/arm64-v8a/
@@ -32,3 +33,10 @@ ruy
 notes.txt
 site/
 site_docs/
+
+*.npy
+tests/plan.md
+tests/assets/test_wav_info.txt
+vision_activations.json
+gemma-4-eap-extras/
+.githooks/

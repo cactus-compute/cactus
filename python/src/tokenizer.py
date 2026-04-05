@@ -10,11 +10,48 @@ SENTENCEPIECE_MODEL_TYPES = {
     'gemma', 'gemma3n', 'llama', 'smol', 'bert', 't5',
 }
 
+SENTENCEPIECE_MODEL_TYPES = {
+    'gemma', 'gemma3n', 'llama', 'gemma4', 'smol', 'bert', 't5',
+}
+
 BPE_MODEL_TYPES = {
     'qwen', 'qwen3_5', 'lfm2',
     'whisper', 'moonshine',
     'parakeet', 'parakeet_tdt',
 }
+
+
+def _is_metaspace_normalizer(normalizer):
+    return (
+        isinstance(normalizer, dict)
+        and normalizer.get("type") == "Replace"
+        and normalizer.get("pattern", {}).get("String") == " "
+        and normalizer.get("content") == "▁"
+    )
+
+
+def _decoder_has_type(decoder, decoder_type):
+    if not isinstance(decoder, dict):
+        return False
+    if decoder.get("type") == decoder_type:
+        return True
+    if decoder.get("type") == "Sequence":
+        return any(_decoder_has_type(item, decoder_type) for item in decoder.get("decoders", []))
+    return False
+
+
+def _is_replace_metaspace_decoder(decoder):
+    if not isinstance(decoder, dict):
+        return False
+    if decoder.get("type") == "Replace":
+        return (
+            decoder.get("pattern", {}).get("String") == "▁"
+            and decoder.get("content") == " "
+        )
+    if decoder.get("type") == "Sequence":
+        return any(_is_replace_metaspace_decoder(item) for item in decoder.get("decoders", []))
+    return False
+
 
 def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, labels=None, model_type=None):
     """Convert a HuggingFace tokenizer to Cactus format."""
@@ -83,8 +120,6 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
             f.write("has_chat_template=false\n")
         return
 
-    is_sentencepiece = model_type in SENTENCEPIECE_MODEL_TYPES
-
     tokenizer_json_data = {}
     tokenizer_json_path = output_dir / "tokenizer.json"
     try:
@@ -94,10 +129,10 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
                 tokenizer_json_data = json.load(f)
 
         unused_files = [
-            "tokenizer_config.json", 
-            "special_tokens_map.json", 
+            "tokenizer_config.json",
+            "special_tokens_map.json",
             "added_tokens.json",
-            "chat_template.jinja",  
+            "chat_template.jinja",
         ]
         for filename in unused_files:
             filepath = output_dir / filename
@@ -106,26 +141,30 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
     except Exception as e:
         print(f"  Warning: Could not save tokenizer JSON: {e}")
 
-    vocab = tokenizer.get_vocab()
+    tokenizer_model = tokenizer_json_data.get("model", {}) if tokenizer_json_data else {}
+    tokenizer_model_type = str(tokenizer_model.get("type", "")).upper()
+    is_sentencepiece = tokenizer_model_type != "BPE" and model_type in SENTENCEPIECE_MODEL_TYPES
 
-    id_to_token = [""] * len(vocab)
-    for token_str, token_id in vocab.items():
-        if token_id < len(id_to_token):
-            id_to_token[token_id] = token_str
+    if tokenizer_model_type == "BPE" and tokenizer_model.get("vocab"):
+        vocab = tokenizer_model["vocab"]
+        vocab_size = max(vocab.values()) + 1
+        id_to_token = [""] * vocab_size
+        for token_str, token_id in vocab.items():
+            if token_id < vocab_size:
+                id_to_token[token_id] = token_str
+    else:
+        vocab = tokenizer.get_vocab()
+        id_to_token = [""] * len(vocab)
+        for token_str, token_id in vocab.items():
+            if token_id < len(id_to_token):
+                id_to_token[token_id] = token_str
 
     vocab_output = output_dir / "vocab.txt"
-
-    if is_sentencepiece:
-        with open(vocab_output, 'w', encoding='utf-8') as f:
-            for token_id, token_str in enumerate(id_to_token):
-                if token_str:
-                    f.write(f"{token_id}\t{token_str}\n")
-        print(f"  Saved SentencePiece vocabulary (ID\\ttoken format)")
-    else:
-        with open(vocab_output, 'w', encoding='utf-8') as f:
-            for token_str in id_to_token:
-                f.write(token_str + '\n')
-        print(f"  Saved BPE vocabulary (line-by-line format)")
+    with open(vocab_output, 'w', encoding='utf-8') as f:
+        for token_id, token_str in enumerate(id_to_token):
+            if token_str:
+                f.write(f"{token_id}\t{token_str}\n")
+    print(f"  Saved tokenizer vocabulary (ID\\ttoken format)")
 
 
     merges_output = output_dir / "merges.txt"
@@ -187,6 +226,19 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
         special_token_ids['unk_token_id'] = tokenizer.unk_token_id
         special_tokens[tokenizer.unk_token_id] = tokenizer.unk_token or "<|unknown|>"
 
+    core_token_fallbacks = {
+        'pad_token_id': '<pad>',
+        'eos_token_id': '<eos>',
+        'bos_token_id': '<bos>',
+        'unk_token_id': '<unk>',
+    }
+    vocab_lookup = {token: token_id for token_id, token in enumerate(id_to_token) if token}
+    for key, token_str in core_token_fallbacks.items():
+        if key not in special_token_ids and token_str in vocab_lookup:
+            token_id = vocab_lookup[token_str]
+            special_token_ids[key] = token_id
+            special_tokens[token_id] = token_str
+
     if 'eos_token_id' not in special_token_ids and 'parakeet' in model_name_l:
         pad_id = special_token_ids.get('pad_token_id')
         if pad_id is not None:
@@ -199,6 +251,17 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
             if token_id != tokenizer.unk_token_id:
                 special_tokens[token_id] = token_str
                 additional_special_tokens.append({"token": token_str, "id": token_id})
+
+    for token_info in tokenizer_json_data.get("added_tokens", []) or []:
+        if not token_info.get("special"):
+            continue
+        token_str = token_info.get("content")
+        token_id = token_info.get("id")
+        if token_str is None or token_id is None:
+            continue
+        special_tokens[int(token_id)] = token_str
+        if not any(item["token"] == token_str and item["id"] == int(token_id) for item in additional_special_tokens):
+            additional_special_tokens.append({"token": token_str, "id": int(token_id)})
 
     model_type = model_name_l or getattr(tokenizer, 'name_or_path', '').lower()
     if 'gemma' in model_type:
@@ -253,6 +316,8 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
         with open(chat_template_output, 'w', encoding='utf-8') as f:
             f.write(tokenizer.chat_template)
         chat_template_data["chat_template"] = tokenizer.chat_template
+    elif (output_dir / "chat_template.jinja2").exists():
+        chat_template_data["chat_template"] = (output_dir / "chat_template.jinja2").read_text(encoding='utf-8')
 
     tokenizer_full_config = {}
     added_tokens_decoder = {}
@@ -317,6 +382,26 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
             **chat_template_data
         }, f, indent=2, ensure_ascii=False)
 
+    normalizer = "none"
+    decoder = "none"
+    byte_fallback = False
+    vocab_format = "id_tab_token"
+    tokenizer_type = "sentencepiece" if is_sentencepiece else "bpe"
+
+    if tokenizer_model_type == "BPE":
+        tokenizer_type = "bpe"
+        byte_fallback = bool(tokenizer_model.get("byte_fallback", False))
+        if _is_metaspace_normalizer(tokenizer_json_data.get("normalizer")):
+            normalizer = "metaspace"
+        elif _decoder_has_type(tokenizer_json_data.get("decoder"), "ByteFallback"):
+            normalizer = "byte_level"
+
+        if _is_replace_metaspace_decoder(tokenizer_json_data.get("decoder")):
+            decoder = "replace_metaspace"
+        elif _decoder_has_type(tokenizer_json_data.get("decoder"), "ByteFallback"):
+            decoder = "byte_level"
+    elif is_sentencepiece:
+        tokenizer_type = "sentencepiece"
 
     tokenizer_config_output = output_dir / "tokenizer_config.txt"
     with open(tokenizer_config_output, 'w') as f:
@@ -324,11 +409,11 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
         for key, value in special_token_ids.items():
             f.write(f"{key}={value}\n")
         f.write(f"model_max_length={getattr(tokenizer, 'model_max_length', 131072)}\n")
-
-        if is_sentencepiece:
-            f.write("tokenizer_type=sentencepiece\n")
-        else:
-            f.write("tokenizer_type=bpe\n")
+        f.write(f"tokenizer_type={tokenizer_type}\n")
+        f.write(f"vocab_format={vocab_format}\n")
+        f.write(f"normalizer={normalizer}\n")
+        f.write(f"decoder={decoder}\n")
+        f.write(f"byte_fallback={'true' if byte_fallback else 'false'}\n")
 
         if chat_template_data:
             f.write("has_chat_template=true\n")

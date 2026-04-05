@@ -41,7 +41,9 @@ CACTUS_FFI_EXPORT int cactus_complete(
     const char* options_json,               // optional
     const char* tools_json,                 // optional
     cactus_token_callback callback,         // optional
-    void* user_data                         // optional
+    void* user_data,                        // optional
+    const uint8_t* pcm_buffer,             // optional: NULL when not used
+    size_t pcm_buffer_size                 // optional: 0 when not used
 );
 
 CACTUS_FFI_EXPORT int cactus_prefill(
@@ -50,7 +52,9 @@ CACTUS_FFI_EXPORT int cactus_prefill(
     char* response_buffer,
     size_t buffer_size,
     const char* options_json,               // optional
-    const char* tools_json                  // optional
+    const char* tools_json,                 // optional
+    const uint8_t* pcm_buffer,             // optional: NULL when not used
+    size_t pcm_buffer_size                 // optional: 0 when not used
 );
 
 CACTUS_FFI_EXPORT int cactus_tokenize(
@@ -149,6 +153,26 @@ CACTUS_FFI_EXPORT int cactus_vad(
     size_t pcm_buffer_size
 );
 
+CACTUS_FFI_EXPORT int cactus_diarize(
+    cactus_model_t model,
+    const char* audio_file_path,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+);
+
+CACTUS_FFI_EXPORT int cactus_embed_speaker(
+    cactus_model_t model,
+    const char* audio_file_path,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+);
+
 CACTUS_FFI_EXPORT int cactus_rag_query(
     cactus_model_t model,
     const char* query,
@@ -156,7 +180,6 @@ CACTUS_FFI_EXPORT int cactus_rag_query(
     size_t buffer_size,
     size_t top_k
 );
-
 
 CACTUS_FFI_EXPORT cactus_index_t cactus_index_init(
     const char* index_dir,
@@ -219,7 +242,7 @@ CACTUS_FFI_EXPORT void cactus_set_app_id(const char* app_id);
 CACTUS_FFI_EXPORT void cactus_telemetry_flush(void);
 CACTUS_FFI_EXPORT void cactus_telemetry_shutdown(void);
 
-// cactus graph export 
+// cactus graph export
 typedef void* cactus_graph_t;
 typedef uint64_t cactus_node_t;
 

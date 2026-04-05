@@ -32,7 +32,7 @@ set(I8MM_SOURCE "${SOURCE_DIR}/kernel/kernel_i8mm.cpp")
 list(REMOVE_ITEM KERNEL_SOURCES "${SME2_SOURCE}")
 list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
-file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
+file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp" "${SOURCE_DIR}/models/gemma4/*.cpp")
 file(GLOB TELEMETRY_SOURCES "${SOURCE_DIR}/telemetry/*.cpp")
 
 enable_language(OBJCXX)

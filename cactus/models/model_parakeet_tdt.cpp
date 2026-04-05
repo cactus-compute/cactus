@@ -12,174 +12,21 @@
 #include <string>
 #include <vector>
 
-namespace {
-
-size_t shape_elements(const std::vector<int>& shape) {
-    if (shape.empty()) return 0;
-    size_t total = 1;
-    for (int d : shape) {
-        if (d <= 0) return 0;
-        total *= static_cast<size_t>(d);
-    }
-    return total;
-}
-
+size_t shape_elements(const std::vector<int>& shape);
 bool pack_parakeet_features_for_npu(
     const std::vector<__fp16>& time_major_f16,
     size_t frames,
     size_t num_mels,
     const std::vector<int>& input_shape,
-    std::vector<__fp16>& packed)
-{
-    if (input_shape.empty()) return false;
-    const size_t total = shape_elements(input_shape);
-    if (total == 0) return false;
-    packed.assign(total, static_cast<__fp16>(0.0f));
-
-    auto tm = [&](size_t t, size_t m) -> __fp16 {
-        return time_major_f16[t * num_mels + m];
-    };
-
-    if (input_shape.size() == 4) {
-        const size_t s0 = static_cast<size_t>(input_shape[0]);
-        const size_t s1 = static_cast<size_t>(input_shape[1]);
-        const size_t s2 = static_cast<size_t>(input_shape[2]);
-        const size_t s3 = static_cast<size_t>(input_shape[3]);
-        if (s0 != 1) return false;
-
-        if (s1 == 1 && s2 >= frames && s3 == num_mels) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[(t * s3) + m] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s1 >= frames && s2 == num_mels && s3 == 1) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[((t * s2 + m) * s3)] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s1 == num_mels && s2 >= frames && s3 == 1) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[((m * s2 + t) * s3)] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s1 == 1 && s2 == num_mels && s3 >= frames) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[(m * s3) + t] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        return false;
-    }
-
-    if (input_shape.size() == 3) {
-        const size_t s0 = static_cast<size_t>(input_shape[0]);
-        const size_t s1 = static_cast<size_t>(input_shape[1]);
-        const size_t s2 = static_cast<size_t>(input_shape[2]);
-
-        if (s0 == 1 && s1 >= frames && s2 == num_mels) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[t * s2 + m] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s0 == 1 && s1 == num_mels && s2 >= frames) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[m * s2 + t] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s0 >= frames && s1 == num_mels && s2 == 1) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[(t * s1 + m) * s2] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s0 == num_mels && s1 >= frames && s2 == 1) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[(m * s1 + t) * s2] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        return false;
-    }
-
-    if (input_shape.size() == 2) {
-        const size_t s0 = static_cast<size_t>(input_shape[0]);
-        const size_t s1 = static_cast<size_t>(input_shape[1]);
-
-        if (s0 >= frames && s1 == num_mels) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[t * s1 + m] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s0 == num_mels && s1 >= frames) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[m * s1 + t] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        return false;
-    }
-
-    return false;
-}
-
+    std::vector<__fp16>& packed);
 bool infer_npu_encoder_output_shape(
     const std::vector<int>& output_shape,
     size_t elements_written,
     size_t fallback_hidden_dim,
     size_t& time_steps,
-    size_t& hidden_dim)
-{
-    if (elements_written == 0) return false;
+    size_t& hidden_dim);
 
-    std::vector<size_t> dims;
-    dims.reserve(output_shape.size());
-    for (int d : output_shape) {
-        if (d > 0) dims.push_back(static_cast<size_t>(d));
-    }
-
-    if (dims.size() >= 2) {
-        time_steps = dims[dims.size() - 2];
-        hidden_dim = dims[dims.size() - 1];
-    } else if (dims.size() == 1) {
-        hidden_dim = dims[0];
-        if (hidden_dim == 0 || (elements_written % hidden_dim) != 0) return false;
-        time_steps = elements_written / hidden_dim;
-    } else {
-        hidden_dim = fallback_hidden_dim;
-        if (hidden_dim == 0 || (elements_written % hidden_dim) != 0) return false;
-        time_steps = elements_written / hidden_dim;
-    }
-
-    if (time_steps == 0 || hidden_dim == 0) return false;
-    if (time_steps * hidden_dim > elements_written) return false;
-    return true;
-}
+namespace {
 
 std::vector<__fp16> copy_buffer_to_fp16(const BufferDesc& buffer) {
     std::vector<__fp16> out(buffer.total_size, static_cast<__fp16>(0.0f));
@@ -329,6 +176,19 @@ ParakeetTDTModel::ParakeetTDTModel(const Config& config) : Model(config) {
 }
 
 void ParakeetTDTModel::load_weights_to_graph(CactusGraph* gb) {
+    weight_nodes_.subsampling_conv0_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_conv0_weight.weights");
+    weight_nodes_.subsampling_conv0_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_conv0_bias.bias");
+    weight_nodes_.subsampling_depthwise1_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise1_weight.weights");
+    weight_nodes_.subsampling_depthwise1_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise1_bias.bias");
+    weight_nodes_.subsampling_pointwise1_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise1_weight.weights");
+    weight_nodes_.subsampling_pointwise1_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise1_bias.bias");
+    weight_nodes_.subsampling_depthwise2_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise2_weight.weights");
+    weight_nodes_.subsampling_depthwise2_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise2_bias.bias");
+    weight_nodes_.subsampling_pointwise2_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise2_weight.weights");
+    weight_nodes_.subsampling_pointwise2_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise2_bias.bias");
+    weight_nodes_.subsampling_linear_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_weight.weights");
+    weight_nodes_.subsampling_linear_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_bias.bias");
+
     weight_nodes_.predictor_embed = gb->mmap_weights(model_folder_path_ + "/tdt_predictor_embed.weights");
 
     size_t predictor_layers = static_cast<size_t>(config_.predictor_num_layers);
@@ -396,55 +256,55 @@ void ParakeetTDTModel::load_weights_to_graph(CactusGraph* gb) {
         weight_nodes_.subsampling_pointwise2_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise2_bias.bias");
         weight_nodes_.subsampling_linear_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_weight.weights");
         weight_nodes_.subsampling_linear_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_bias.bias");
+    }
 
-        for (uint32_t i = 0; i < config_.num_layers; ++i) {
-            auto& layer = weight_nodes_.layers[i];
-            std::string layer_prefix = model_folder_path_ + "/layer_" + std::to_string(i) + "_";
+    for (uint32_t i = 0; i < config_.num_layers; ++i) {
+        auto& layer = weight_nodes_.layers[i];
+        std::string layer_prefix = model_folder_path_ + "/layer_" + std::to_string(i) + "_";
 
-            layer.ff1_linear1_weight = gb->mmap_weights(layer_prefix + "ff1_linear1.weights");
-            layer.ff1_linear1_bias = gb->mmap_weights(layer_prefix + "ff1_linear1.bias");
-            layer.ff1_linear2_weight = gb->mmap_weights(layer_prefix + "ff1_linear2.weights");
-            layer.ff1_linear2_bias = gb->mmap_weights(layer_prefix + "ff1_linear2.bias");
+        layer.ff1_linear1_weight = gb->mmap_weights(layer_prefix + "ff1_linear1.weights");
+        layer.ff1_linear1_bias = gb->mmap_weights(layer_prefix + "ff1_linear1.bias");
+        layer.ff1_linear2_weight = gb->mmap_weights(layer_prefix + "ff1_linear2.weights");
+        layer.ff1_linear2_bias = gb->mmap_weights(layer_prefix + "ff1_linear2.bias");
 
-            layer.ff2_linear1_weight = gb->mmap_weights(layer_prefix + "ff2_linear1.weights");
-            layer.ff2_linear1_bias = gb->mmap_weights(layer_prefix + "ff2_linear1.bias");
-            layer.ff2_linear2_weight = gb->mmap_weights(layer_prefix + "ff2_linear2.weights");
-            layer.ff2_linear2_bias = gb->mmap_weights(layer_prefix + "ff2_linear2.bias");
+        layer.ff2_linear1_weight = gb->mmap_weights(layer_prefix + "ff2_linear1.weights");
+        layer.ff2_linear1_bias = gb->mmap_weights(layer_prefix + "ff2_linear1.bias");
+        layer.ff2_linear2_weight = gb->mmap_weights(layer_prefix + "ff2_linear2.weights");
+        layer.ff2_linear2_bias = gb->mmap_weights(layer_prefix + "ff2_linear2.bias");
 
-            layer.self_attn_q_weight = gb->mmap_weights(layer_prefix + "self_attn_q.weights");
-            layer.self_attn_q_bias = gb->mmap_weights(layer_prefix + "self_attn_q.bias");
-            layer.self_attn_k_weight = gb->mmap_weights(layer_prefix + "self_attn_k.weights");
-            layer.self_attn_k_bias = gb->mmap_weights(layer_prefix + "self_attn_k.bias");
-            layer.self_attn_v_weight = gb->mmap_weights(layer_prefix + "self_attn_v.weights");
-            layer.self_attn_v_bias = gb->mmap_weights(layer_prefix + "self_attn_v.bias");
-            layer.self_attn_output_weight = gb->mmap_weights(layer_prefix + "self_attn_output.weights");
-            layer.self_attn_output_bias = gb->mmap_weights(layer_prefix + "self_attn_output.bias");
-            layer.self_attn_relative_k_weight = gb->mmap_weights(layer_prefix + "self_attn_relative_k.weights");
-            layer.self_attn_bias_u = gb->mmap_weights(layer_prefix + "self_attn_bias_u.weights");
-            layer.self_attn_bias_v = gb->mmap_weights(layer_prefix + "self_attn_bias_v.weights");
+        layer.self_attn_q_weight = gb->mmap_weights(layer_prefix + "self_attn_q.weights");
+        layer.self_attn_q_bias = gb->mmap_weights(layer_prefix + "self_attn_q.bias");
+        layer.self_attn_k_weight = gb->mmap_weights(layer_prefix + "self_attn_k.weights");
+        layer.self_attn_k_bias = gb->mmap_weights(layer_prefix + "self_attn_k.bias");
+        layer.self_attn_v_weight = gb->mmap_weights(layer_prefix + "self_attn_v.weights");
+        layer.self_attn_v_bias = gb->mmap_weights(layer_prefix + "self_attn_v.bias");
+        layer.self_attn_output_weight = gb->mmap_weights(layer_prefix + "self_attn_output.weights");
+        layer.self_attn_output_bias = gb->mmap_weights(layer_prefix + "self_attn_output.bias");
+        layer.self_attn_relative_k_weight = gb->mmap_weights(layer_prefix + "self_attn_relative_k.weights");
+        layer.self_attn_bias_u = gb->mmap_weights(layer_prefix + "self_attn_bias_u.weights");
+        layer.self_attn_bias_v = gb->mmap_weights(layer_prefix + "self_attn_bias_v.weights");
 
-            layer.norm_ff1_weight = gb->mmap_weights(layer_prefix + "norm_ff1.weights");
-            layer.norm_ff1_bias = gb->mmap_weights(layer_prefix + "norm_ff1.bias");
-            layer.norm_self_attn_weight = gb->mmap_weights(layer_prefix + "norm_self_attn.weights");
-            layer.norm_self_attn_bias = gb->mmap_weights(layer_prefix + "norm_self_attn.bias");
-            layer.norm_conv_weight = gb->mmap_weights(layer_prefix + "norm_conv.weights");
-            layer.norm_conv_bias = gb->mmap_weights(layer_prefix + "norm_conv.bias");
-            layer.norm_ff2_weight = gb->mmap_weights(layer_prefix + "norm_ff2.weights");
-            layer.norm_ff2_bias = gb->mmap_weights(layer_prefix + "norm_ff2.bias");
-            layer.norm_out_weight = gb->mmap_weights(layer_prefix + "norm_out.weights");
-            layer.norm_out_bias = gb->mmap_weights(layer_prefix + "norm_out.bias");
+        layer.norm_ff1_weight = gb->mmap_weights(layer_prefix + "norm_ff1.weights");
+        layer.norm_ff1_bias = gb->mmap_weights(layer_prefix + "norm_ff1.bias");
+        layer.norm_self_attn_weight = gb->mmap_weights(layer_prefix + "norm_self_attn.weights");
+        layer.norm_self_attn_bias = gb->mmap_weights(layer_prefix + "norm_self_attn.bias");
+        layer.norm_conv_weight = gb->mmap_weights(layer_prefix + "norm_conv.weights");
+        layer.norm_conv_bias = gb->mmap_weights(layer_prefix + "norm_conv.bias");
+        layer.norm_ff2_weight = gb->mmap_weights(layer_prefix + "norm_ff2.weights");
+        layer.norm_ff2_bias = gb->mmap_weights(layer_prefix + "norm_ff2.bias");
+        layer.norm_out_weight = gb->mmap_weights(layer_prefix + "norm_out.weights");
+        layer.norm_out_bias = gb->mmap_weights(layer_prefix + "norm_out.bias");
 
-            layer.conv_pointwise1_weight = gb->mmap_weights(layer_prefix + "conv_pointwise1.weights");
-            layer.conv_pointwise1_bias = gb->mmap_weights(layer_prefix + "conv_pointwise1.bias");
-            layer.conv_depthwise_weight = gb->mmap_weights(layer_prefix + "conv_depthwise.weights");
-            layer.conv_depthwise_bias = gb->mmap_weights(layer_prefix + "conv_depthwise.bias");
-            layer.conv_pointwise2_weight = gb->mmap_weights(layer_prefix + "conv_pointwise2.weights");
-            layer.conv_pointwise2_bias = gb->mmap_weights(layer_prefix + "conv_pointwise2.bias");
-            layer.conv_batchnorm_weight = gb->mmap_weights(layer_prefix + "conv_batchnorm_weight.weights");
-            layer.conv_batchnorm_bias = gb->mmap_weights(layer_prefix + "conv_batchnorm_bias.bias");
-            layer.conv_batchnorm_running_mean = gb->mmap_weights(layer_prefix + "conv_batchnorm_running_mean.weights");
-            layer.conv_batchnorm_running_var = gb->mmap_weights(layer_prefix + "conv_batchnorm_running_var.weights");
-        }
+        layer.conv_pointwise1_weight = gb->mmap_weights(layer_prefix + "conv_pointwise1.weights");
+        layer.conv_pointwise1_bias = gb->mmap_weights(layer_prefix + "conv_pointwise1.bias");
+        layer.conv_depthwise_weight = gb->mmap_weights(layer_prefix + "conv_depthwise.weights");
+        layer.conv_depthwise_bias = gb->mmap_weights(layer_prefix + "conv_depthwise.bias");
+        layer.conv_pointwise2_weight = gb->mmap_weights(layer_prefix + "conv_pointwise2.weights");
+        layer.conv_pointwise2_bias = gb->mmap_weights(layer_prefix + "conv_pointwise2.bias");
+        layer.conv_batchnorm_weight = gb->mmap_weights(layer_prefix + "conv_batchnorm_weight.weights");
+        layer.conv_batchnorm_bias = gb->mmap_weights(layer_prefix + "conv_batchnorm_bias.bias");
+        layer.conv_batchnorm_running_mean = gb->mmap_weights(layer_prefix + "conv_batchnorm_running_mean.weights");
+        layer.conv_batchnorm_running_var = gb->mmap_weights(layer_prefix + "conv_batchnorm_running_var.weights");
     }
 }
 

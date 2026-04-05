@@ -3,7 +3,7 @@
 #include "../npu/npu.h"
 #include <cmath>
 #include <stdexcept>
-#include <set>
+
 
 namespace cactus {
 namespace engine {
@@ -173,11 +173,7 @@ size_t GemmaModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) 
     float embed_scale = std::sqrt(static_cast<float>(config_.hidden_dim));
     hidden = gb->scalar_multiply(hidden, embed_scale);
 
-    static std::set<uint32_t> skip_layers = {};
     for (uint32_t layer_idx = 0; layer_idx < config_.num_layers; layer_idx++) {
-        if (skip_layers.count(layer_idx)) {
-            continue;
-        }
         hidden = build_transformer_block(gb, hidden, layer_idx, backend, use_cache, position_offset);
     }
 

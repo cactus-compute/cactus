@@ -6,7 +6,7 @@
 #include <stdexcept>
 
 void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& logits_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& logits_buffer = get_input(node, 0, nodes, node_index_map);
 
     float temperature = node.params.temperature;
     float top_p = node.params.top_p;
@@ -39,7 +39,7 @@ void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 }
 
 void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     if (input_buffer.shape.size() != 2) {
         throw std::runtime_error("TopK currently only supports 2D tensors [batch, features]");
     }
@@ -87,8 +87,8 @@ void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphN
 }
 
 void compute_scatter_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& indices_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& values_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& indices_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& values_buffer = get_input(node, 1, nodes, node_index_map);
 
     if (indices_buffer.shape != values_buffer.shape) {
         throw std::runtime_error("ScatterTopK requires indices and values with identical shapes");

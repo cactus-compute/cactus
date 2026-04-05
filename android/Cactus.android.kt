@@ -17,8 +17,8 @@ private object CactusJNI {
     @JvmStatic external fun nativeDestroy(handle: Long)
     @JvmStatic external fun nativeReset(handle: Long)
     @JvmStatic external fun nativeStop(handle: Long)
-    @JvmStatic external fun nativeComplete(handle: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, callback: CactusTokenCallback?): String
-    @JvmStatic external fun nativePrefill(handle: Long, messagesJson: String, optionsJson: String?, toolsJson: String?): String
+    @JvmStatic external fun nativeComplete(handle: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): String
+    @JvmStatic external fun nativePrefill(handle: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, pcmData: ByteArray?): String
     @JvmStatic external fun nativeTranscribe(handle: Long, audioPath: String?, prompt: String?, optionsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): String
     @JvmStatic external fun nativeEmbed(handle: Long, text: String, normalize: Boolean): FloatArray
     @JvmStatic external fun nativeRagQuery(handle: Long, query: String, topK: Int): String
@@ -27,6 +27,8 @@ private object CactusJNI {
     @JvmStatic external fun nativeImageEmbed(handle: Long, imagePath: String): FloatArray
     @JvmStatic external fun nativeAudioEmbed(handle: Long, audioPath: String): FloatArray
     @JvmStatic external fun nativeVad(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
+    @JvmStatic external fun nativeDiarize(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
+    @JvmStatic external fun nativeEmbedSpeaker(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
     @JvmStatic external fun nativeStreamTranscribeInit(handle: Long, optionsJson: String?): Long
     @JvmStatic external fun nativeStreamTranscribeProcess(handle: Long, pcmData: ByteArray): String
     @JvmStatic external fun nativeStreamTranscribeStop(handle: Long): String
@@ -52,10 +54,10 @@ actual fun cactusSetTelemetryEnvironment(cacheDir: String) = CactusJNI.nativeSet
 actual fun cactusSetAppId(appId: String) = CactusJNI.nativeSetAppId(appId)
 actual fun cactusTelemetryFlush() = CactusJNI.nativeTelemetryFlush()
 actual fun cactusTelemetryShutdown() = CactusJNI.nativeTelemetryShutdown()
-actual fun cactusComplete(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, callback: CactusTokenCallback?): String =
-    CactusJNI.nativeComplete(model, messagesJson, optionsJson, toolsJson, callback)
-actual fun cactusPrefill(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?): String =
-    CactusJNI.nativePrefill(model, messagesJson, optionsJson, toolsJson)
+actual fun cactusComplete(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): String =
+    CactusJNI.nativeComplete(model, messagesJson, optionsJson, toolsJson, callback, pcmData)
+actual fun cactusPrefill(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, pcmData: ByteArray?): String =
+    CactusJNI.nativePrefill(model, messagesJson, optionsJson, toolsJson, pcmData)
 actual fun cactusTranscribe(model: Long, audioPath: String?, prompt: String?, optionsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): String =
     CactusJNI.nativeTranscribe(model, audioPath, prompt, optionsJson, callback, pcmData)
 actual fun cactusEmbed(model: Long, text: String, normalize: Boolean): FloatArray =
@@ -66,6 +68,10 @@ actual fun cactusAudioEmbed(model: Long, audioPath: String): FloatArray =
     CactusJNI.nativeAudioEmbed(model, audioPath)
 actual fun cactusVad(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String =
     CactusJNI.nativeVad(model, audioPath, optionsJson, pcmData)
+actual fun cactusDiarize(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String =
+    CactusJNI.nativeDiarize(model, audioPath, optionsJson, pcmData)
+actual fun cactusEmbedSpeaker(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String =
+    CactusJNI.nativeEmbedSpeaker(model, audioPath, optionsJson, pcmData)
 actual fun cactusRagQuery(model: Long, query: String, topK: Int): String =
     CactusJNI.nativeRagQuery(model, query, topK)
 actual fun cactusTokenize(model: Long, text: String): IntArray =

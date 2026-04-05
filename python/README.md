@@ -269,6 +269,39 @@ result_json = cactus_vad(
 
 Returns a JSON string: `{"success":true,"error":null,"segments":[{"start":<sample_index>,"end":<sample_index>},...],"total_time_ms":...,"ram_usage_mb":...}`. VAD segments contain only `start` and `end` as integer sample indices — no `text` field.
 
+### Diarize
+
+```python
+result_json = cactus_diarize(
+    model: int,
+    audio_path: str | None,
+    options_json: str | None,
+    pcm_data: bytes | None
+) -> str
+```
+
+Options (all optional):
+- `step_ms` (int, default 1000) — sliding window stride in milliseconds
+- `threshold` (float) — zero out per-speaker scores below this value (`segmentation.threshold` in Python pipeline)
+- `num_speakers` (int) — keep only the N most active speakers
+- `min_speakers` (int) — minimum number of speakers to retain
+- `max_speakers` (int) — maximum number of speakers to retain
+
+Returns `{"success":true,"error":null,"num_speakers":3,"scores":[...],"total_time_ms":...,"ram_usage_mb":...}`. The `scores` field is a flat array of T×3 float32 values (index `f*3+s`), one per output frame per speaker, each in [0,1].
+
+### Embed Speaker
+
+```python
+result_json = cactus_embed_speaker(
+    model: int,
+    audio_path: str | None,
+    options_json: str | None,
+    pcm_data: bytes | None
+) -> str
+```
+
+Returns a JSON string: `{"success":true,"error":null,"embedding":[<float>, ...],"total_time_ms":...,"ram_usage_mb":...}`. The embedding is a 256-dimensional speaker vector from the WeSpeaker ResNet34-LM model.
+
 ### RAG
 
 ```python

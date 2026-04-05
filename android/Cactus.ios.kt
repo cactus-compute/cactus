@@ -34,10 +34,11 @@ actual fun cactusTelemetryFlush() { cactus_telemetry_flush() }
 actual fun cactusTelemetryShutdown() { cactus_telemetry_shutdown() }
 
 @OptIn(ExperimentalForeignApi::class)
-actual fun cactusComplete(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, callback: CactusTokenCallback?): String {
+actual fun cactusComplete(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): String {
     memScoped {
         val buffer = allocArray<ByteVar>(65536)
         val callbackRef = callback?.let { StableRef.create(it) }
+        val pcmPtr = pcmData?.refTo(0)?.getPointer(this)
         try {
             val result = cactus_complete(
                 model.toCPointer(),
@@ -53,7 +54,9 @@ actual fun cactusComplete(model: Long, messagesJson: String, optionsJson: String
                         }
                     }
                 },
-                callbackRef?.asCPointer()
+                callbackRef?.asCPointer(),
+                pcmPtr?.reinterpret(),
+                pcmData?.size?.toULong() ?: 0u
             )
             if (result < 0) {
                 val error = cactus_get_last_error()?.toKString() ?: "Unknown error"
@@ -67,16 +70,19 @@ actual fun cactusComplete(model: Long, messagesJson: String, optionsJson: String
 }
 
 @OptIn(ExperimentalForeignApi::class)
-actual fun cactusPrefill(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?): String {
+actual fun cactusPrefill(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, pcmData: ByteArray?): String {
     memScoped {
         val buffer = allocArray<ByteVar>(65536)
+        val pcmPtr = pcmData?.refTo(0)?.getPointer(this)
         val result = cactus_prefill(
             model.toCPointer(),
             messagesJson,
             buffer,
             65536u,
             optionsJson,
-            toolsJson
+            toolsJson,
+            pcmPtr?.reinterpret(),
+            pcmData?.size?.toULong() ?: 0u
         )
         if (result < 0) {
             val error = cactus_get_last_error()?.toKString() ?: "Unknown error"

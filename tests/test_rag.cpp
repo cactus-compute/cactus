@@ -163,7 +163,7 @@ bool test_rag() {
     std::cout << "Response: ";
 
     int result = cactus_complete(model, messages, response, sizeof(response),
-                                 g_options, nullptr, stream_callback, &data);
+                                 g_options, nullptr, stream_callback, &data, nullptr, 0);
 
     std::cout << "\n";
 

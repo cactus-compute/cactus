@@ -144,7 +144,7 @@ void shrink_thread_local_buffers() {
 }
 
 void compute_quantize_activations_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& shape = input_buffer.shape;
 
     if (input_buffer.precision != Precision::FP16) {
@@ -195,8 +195,8 @@ void compute_quantize_activations_node(GraphNode& node, const std::vector<std::u
 }
 
 void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& lhs_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& rhs_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& lhs_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& rhs_buffer = get_input(node, 1, nodes, node_index_map);
     const auto& lhs_shape = lhs_buffer.shape;
     const auto& rhs_shape = rhs_buffer.shape;
 
@@ -237,9 +237,8 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             lhs_int8 = lhs_buffer.data_as<int8_t>();
             lhs_scales = lhs_buffer.activation_scales_as_float();
         } else if (lhs_buffer.precision == Precision::FP16) {
-            const __fp16* lhs = lhs_buffer.data_as<__fp16>();
             ensure_quant_buffers(M, K);
-            quantize_activations_fp16_to_int8(lhs, quant_activation_buffer.data(),
+            quantize_activations_fp16_to_int8(lhs_buffer.data_as<__fp16>(), quant_activation_buffer.data(),
                                               quant_scales_buffer.data(), M, K);
             lhs_int8 = quant_activation_buffer.data();
             lhs_scales = quant_scales_buffer.data();
@@ -345,14 +344,15 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     const float routed_scaling_factor = node.params.scalar;
     const bool gated = node.params.moe_gated;
     const Activation activation = node.params.activation;
-    const size_t expected_inputs = gated ? (3 + 3 * num_experts) : (3 + 2 * num_experts);
-    if (node.input_ids.size() != expected_inputs) {
-        throw std::runtime_error("moe_layer expects " + std::to_string(expected_inputs) + " inputs, got " + std::to_string(node.input_ids.size()));
+    const size_t base_inputs = gated ? (3 + 3 * num_experts) : (3 + 2 * num_experts);
+    bool has_per_expert_scale = node.input_ids.size() == base_inputs + 1;
+    if (node.input_ids.size() != base_inputs && node.input_ids.size() != base_inputs + 1) {
+        throw std::runtime_error("moe_layer expects " + std::to_string(base_inputs) + " or " + std::to_string(base_inputs + 1) + " inputs, got " + std::to_string(node.input_ids.size()));
     }
 
-    const auto& hidden_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& routing_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
-    const auto& topk_idx_buffer = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    const auto& hidden_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& routing_buffer = get_input(node, 1, nodes, node_index_map);
+    const auto& topk_idx_buffer = get_input(node, 2, nodes, node_index_map);
 
     if (hidden_buffer.precision != Precision::FP16 || node.output_buffer.precision != Precision::FP16) {
         throw std::runtime_error("moe_layer expects FP16 hidden/output");
@@ -361,11 +361,20 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
         throw std::runtime_error("moe_layer expects FP32 topk indices");
     }
 
+    const __fp16* expert_scales_fp16 = nullptr;
+    if (has_per_expert_scale) {
+        const auto& scale_buffer = get_input(node, base_inputs, nodes, node_index_map);
+        if (scale_buffer.precision != Precision::FP16) {
+            throw std::runtime_error("moe_layer expects FP16 per_expert_scale");
+        }
+        expert_scales_fp16 = scale_buffer.data_as<__fp16>();
+    }
+
     const size_t token_count = hidden_buffer.shape[0];
     const size_t hidden_dim = hidden_buffer.shape[1];
     const size_t total_num_experts = routing_buffer.shape[1];
 
-    const auto& w1_0_buffer = nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
+    const auto& w1_0_buffer = get_input(node, 3, nodes, node_index_map);
     const size_t expert_intermediate_dim = w1_0_buffer.shape[0];
 
     const auto* hidden = hidden_buffer.data_as<__fp16>();
@@ -385,7 +394,7 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     size_t* expert_offsets = moe_expert_offsets_buf.data(); 
     size_t* expert_tokens_flat = moe_expert_tokens_buf.data();  
 
-   std::memset(expert_offsets, 0, (num_experts + 1) * sizeof(size_t));
+    std::memset(expert_offsets, 0, (num_experts + 1) * sizeof(size_t));
     for (size_t tok = 0; tok < token_count; ++tok) {
         for (size_t k = 0; k < top_k; ++k) {
             float raw_idx = topk_idx[tok * top_k + k];
@@ -437,10 +446,10 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
         const size_t selected_count = end - start;
         const size_t* selected_tokens = expert_tokens_flat + start;
 
-        const auto& w1_buffer = nodes[node_index_map.at(node.input_ids[3 + expert_idx])]->output_buffer;
+        const auto& w1_buffer = get_input(node, 3 + expert_idx, nodes, node_index_map);
         const auto& w2_buffer = gated
-            ? nodes[node_index_map.at(node.input_ids[3 + 2 * num_experts + expert_idx])]->output_buffer
-            : nodes[node_index_map.at(node.input_ids[3 + num_experts + expert_idx])]->output_buffer;
+            ? get_input(node, 3 + 2 * num_experts + expert_idx, nodes, node_index_map)
+            : get_input(node, 3 + num_experts + expert_idx, nodes, node_index_map);
 
         __fp16* compact_hidden = moe_compact_hidden_buf.data();
         for (size_t i = 0; i < selected_count; ++i) {
@@ -473,7 +482,7 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
         }
 
         if (gated) {
-            const auto& w3_buffer = nodes[node_index_map.at(node.input_ids[3 + num_experts + expert_idx])]->output_buffer;
+            const auto& w3_buffer = get_input(node, 3 + num_experts + expert_idx, nodes, node_index_map);
             moe_matmul(compact_hidden, selected_count, hidden_dim, w3_buffer, up, expert_intermediate_dim, w1_was_int8);
             cactus_multiply_f16(gate, up, gate, selected_count * expert_intermediate_dim);
         }
@@ -490,6 +499,9 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
                 route_weight = expert_prob / routing_denom[tok];
             }
             route_weight *= routed_scaling_factor;
+            if (expert_scales_fp16) {
+                route_weight *= static_cast<float>(expert_scales_fp16[expert_idx]);
+            }
 
             auto* out_row = output + tok * hidden_dim;
             const auto* expert_row = expert_out + i * hidden_dim;
@@ -499,8 +511,8 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
 }
 
 void compute_rms_norm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& weight_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& weight_buffer = get_input(node, 1, nodes, node_index_map);
 
     if (input_buffer.shape.size() != 2) {
         throw std::runtime_error("RMS normalization requires 2D input tensor [batch_size, dims], got " +
@@ -523,7 +535,7 @@ void compute_rope_node(GraphNode& node, const std::vector<std::unique_ptr<GraphN
         throw std::runtime_error("NPU RoPE operation not yet implemented");
     }
 
-    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& shape = input_buffer.shape;
 
     if (shape.size() < 4) {
@@ -545,7 +557,7 @@ void compute_rope_node(GraphNode& node, const std::vector<std::unique_ptr<GraphN
 }
 
 void compute_softmax_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& shape = input_buffer.shape;
 
     if (shape.size() < 2) {
@@ -573,8 +585,8 @@ void compute_rel_pos_bias_node(GraphNode& node, const std::vector<std::unique_pt
         throw std::runtime_error("REL_POS_BIAS requires 2 inputs (query, relative_key)");
     }
 
-    const auto& q_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& r_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& q_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& r_buffer = get_input(node, 1, nodes, node_index_map);
     auto& y_buffer = node.output_buffer;
 
     if (q_buffer.shape.size() != 4) {
@@ -655,12 +667,12 @@ void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<G
                                 std::to_string(node.input_ids.size()) + " inputs");
     }
 
-    const auto& query_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& key_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
-    const auto& value_buffer = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    const auto& query_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& key_buffer = get_input(node, 1, nodes, node_index_map);
+    const auto& value_buffer = get_input(node, 2, nodes, node_index_map);
     const BufferDesc* mask_buffer = nullptr;
     if (node.input_ids.size() == 4) {
-        mask_buffer = &nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
+        mask_buffer = &get_input(node, 3, nodes, node_index_map);
     }
     const auto& q_shape = query_buffer.shape;
     const auto& k_shape = key_buffer.shape;
@@ -715,13 +727,13 @@ void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<G
                          value_buffer.data_as<__fp16>(), node.output_buffer.data_as<__fp16>(),
                          batch_size, seq_len, kv_seq_len, num_q_heads, num_kv_heads, head_dim, node.params.scale, mask_ptr,
                          node.params.position_offset, node.params.window_size, node.params.is_causal,
-                         node.params.attention_mask_is_additive, mask_per_head, v_head_dim);
+                         node.params.attention_mask_is_additive, mask_per_head, v_head_dim, node.params.logit_cap);
 }
 
 void compute_attention_int8_hybrid_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& query_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& key_new_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
-    const auto& value_new_buffer = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    const auto& query_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& key_new_buffer = get_input(node, 1, nodes, node_index_map);
+    const auto& value_new_buffer = get_input(node, 2, nodes, node_index_map);
     const auto& q_shape = query_buffer.shape;
 
     if (q_shape.size() < 4) {
@@ -754,8 +766,8 @@ void compute_attention_int8_hybrid_node(GraphNode& node, const std::vector<std::
 }
 
 void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& weight_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& weight_buffer = get_input(node, 1, nodes, node_index_map);
     bool has_bias = node.input_ids.size() > 2;
     float epsilon = node.params.epsilon;
 
@@ -773,7 +785,7 @@ void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
     using BufferDesc = std::remove_reference_t<decltype(weight_buffer)>;
     const BufferDesc* bias_buffer_ptr = nullptr;
     if (has_bias) {
-        const auto& bias_buffer = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+        const auto& bias_buffer = get_input(node, 2, nodes, node_index_map);
         if (bias_buffer.total_size != feature_size) {
             throw std::runtime_error("LayerNorm bias size mismatch with input feature dimension");
         }
@@ -876,8 +888,8 @@ void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_p
         throw std::runtime_error("NPU causal convolution operation not yet implemented");
     }
 
-    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
     auto& Y = node.output_buffer;
 
     if (X.shape.size() != 3) {
@@ -892,22 +904,36 @@ void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_p
     const size_t C_in  = X.shape[2];
     const size_t W0    = W.shape[0];
     const size_t W1    = W.shape[1];
-    const size_t K     = W.shape[2];
+    const size_t W2    = W.shape[2];
     const size_t dil   = node.params.dilation;
     if (dil < 1) throw std::runtime_error("dilation must be >= 1");
 
     size_t M = 1;
     size_t C_out = 0;
-
-    assert((W1 == 1) && (W0 % C_in == 0) && "Only depthwise causal convolution is supported currently");
+    const bool standard_layout = (W1 == 1);
+    const bool transposed_layout = (W2 == 1);
+    if ((!standard_layout && !transposed_layout) || (W0 % C_in != 0)) {
+        throw std::runtime_error("Only depthwise causal convolution is supported currently");
+    }
+    const size_t K = standard_layout ? W2 : W1;
     M = W0 / C_in;
     C_out = C_in * M;
 
     Y.shape = { N, L, C_out };
     Y.precision = X.precision;
 
+    auto transpose_depthwise_weights_fp16 = [&](const __fp16* src) {
+        std::vector<__fp16> transposed(W0 * K);
+        for (size_t oc = 0; oc < W0; ++oc) {
+            for (size_t k = 0; k < K; ++k) {
+                transposed[oc * K + k] = src[(oc * W1 + k) * W2];
+            }
+        }
+        return transposed;
+    };
+
     if (W.precision == Precision::INT8) {
-        const size_t W_size = W0 * W1 * K;
+        const size_t W_size = W0 * W1 * W2;
         const int8_t* W_int8 = W.data_as<int8_t>();
 
         std::vector<__fp16> W_fp16(W_size);
@@ -932,13 +958,27 @@ void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_p
             }
         }
 
-        cactus_conv1d_causal_depthwise_f16(
-            X.data_as<__fp16>(), W_fp16.data(), Y.data_as<__fp16>(),
-            N, L, C_in, K, dil);
+        if (transposed_layout && !standard_layout) {
+            auto fixed = transpose_depthwise_weights_fp16(W_fp16.data());
+            cactus_conv1d_causal_depthwise_f16(
+                X.data_as<__fp16>(), fixed.data(), Y.data_as<__fp16>(),
+                N, L, C_in, K, dil);
+        } else {
+            cactus_conv1d_causal_depthwise_f16(
+                X.data_as<__fp16>(), W_fp16.data(), Y.data_as<__fp16>(),
+                N, L, C_in, K, dil);
+        }
     } else if (W.precision == Precision::FP16) {
-        cactus_conv1d_causal_depthwise_f16(
-            X.data_as<__fp16>(), W.data_as<__fp16>(), Y.data_as<__fp16>(),
-            N, L, C_in, K, dil);
+        if (transposed_layout && !standard_layout) {
+            auto fixed = transpose_depthwise_weights_fp16(W.data_as<__fp16>());
+            cactus_conv1d_causal_depthwise_f16(
+                X.data_as<__fp16>(), fixed.data(), Y.data_as<__fp16>(),
+                N, L, C_in, K, dil);
+        } else {
+            cactus_conv1d_causal_depthwise_f16(
+                X.data_as<__fp16>(), W.data_as<__fp16>(), Y.data_as<__fp16>(),
+                N, L, C_in, K, dil);
+        }
     } else {
         throw std::runtime_error("Depthwise causal conv supports INT8/FP16 weights");
     }
@@ -949,8 +989,8 @@ void compute_conv1d_k3_node(GraphNode& node, const std::vector<std::unique_ptr<G
         throw std::runtime_error("NPU causal convolution operation not yet implemented");
     }
 
-    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
     auto& Y = node.output_buffer;
 
     if (X.shape.size() != 3)
@@ -1024,11 +1064,11 @@ void compute_conv1d_k3_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
 void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                          const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
     const BufferDesc* B = nullptr;
     if (node.input_ids.size() >= 3) {
-        B = &nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+        B = &get_input(node, 2, nodes, node_index_map);
     }
 
     auto& Y = node.output_buffer;
@@ -1082,11 +1122,11 @@ void compute_conv1d_same_depthwise_k9_node(GraphNode& node, const std::vector<st
         throw std::runtime_error("NPU conv1d_same_depthwise_k9 operation not yet implemented");
     }
 
-    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
     const BufferDesc* B = nullptr;
     if (node.input_ids.size() >= 3) {
-        B = &nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+        B = &get_input(node, 2, nodes, node_index_map);
     }
     auto& Y = node.output_buffer;
 
@@ -1192,11 +1232,11 @@ void compute_conv2d_k3s2p1_node(GraphNode& node, const std::vector<std::unique_p
         throw std::runtime_error("NPU conv2d_k3s2p1 operation not yet implemented");
     }
 
-    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
     const BufferDesc* B = nullptr;
     if (node.input_ids.size() >= 3) {
-        B = &nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+        B = &get_input(node, 2, nodes, node_index_map);
     }
     auto& Y = node.output_buffer;
 
@@ -1303,11 +1343,11 @@ void compute_conv2d_depthwise_k3s2p1_node(GraphNode& node, const std::vector<std
         throw std::runtime_error("NPU conv2d_depthwise_k3s2p1 operation not yet implemented");
     }
 
-    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
     const BufferDesc* B = nullptr;
     if (node.input_ids.size() >= 3) {
-        B = &nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+        B = &get_input(node, 2, nodes, node_index_map);
     }
     auto& Y = node.output_buffer;
 
@@ -1418,11 +1458,11 @@ void compute_conv2d_pointwise_1x1_node(GraphNode& node, const std::vector<std::u
         throw std::runtime_error("NPU conv2d_pointwise_1x1 operation not yet implemented");
     }
 
-    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
     const BufferDesc* B = nullptr;
     if (node.input_ids.size() >= 3) {
-        B = &nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+        B = &get_input(node, 2, nodes, node_index_map);
     }
     auto& Y = node.output_buffer;
 
@@ -1534,11 +1574,11 @@ void compute_conv1d_pointwise_node(GraphNode& node, const std::vector<std::uniqu
         throw std::runtime_error("NPU conv1d_pointwise operation not yet implemented");
     }
 
-    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
     const BufferDesc* B = nullptr;
     if (node.input_ids.size() >= 3) {
-        B = &nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+        B = &get_input(node, 2, nodes, node_index_map);
     }
     auto& Y = node.output_buffer;
 
@@ -1642,7 +1682,7 @@ void compute_conv1d_pointwise_node(GraphNode& node, const std::vector<std::uniqu
 
 void compute_glu_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                       const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& X = get_input(node, 0, nodes, node_index_map);
     auto& Y = node.output_buffer;
 
     if (X.shape.empty()) {
@@ -1694,11 +1734,11 @@ void compute_batchnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
         throw std::runtime_error("BatchNorm expects 5 inputs: input, weight, bias, running_mean, running_var");
     }
 
-    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
-    const auto& B = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
-    const auto& RM = nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
-    const auto& RV = nodes[node_index_map.at(node.input_ids[4])]->output_buffer;
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
+    const auto& B = get_input(node, 2, nodes, node_index_map);
+    const auto& RM = get_input(node, 3, nodes, node_index_map);
+    const auto& RV = get_input(node, 4, nodes, node_index_map);
     auto& Y = node.output_buffer;
 
     if (X.shape.empty()) {
@@ -1786,8 +1826,8 @@ void compute_batchnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
 void compute_stft_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                                  const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
     auto& Y = node.output_buffer;
 
     const size_t N = X.shape[0];
@@ -1808,11 +1848,11 @@ void compute_stft_node(GraphNode& node, const std::vector<std::unique_ptr<GraphN
 
 void compute_conv1d_k7s3_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                          const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& X = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& W = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
     const BufferDesc* B = nullptr;
     if (node.input_ids.size() >= 3) {
-        B = &nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+        B = &get_input(node, 2, nodes, node_index_map);
     }
 
     auto& Y = node.output_buffer;
@@ -1870,12 +1910,12 @@ void compute_gated_deltanet_decode_node(GraphNode& node, const std::vector<std::
         throw std::runtime_error("GATED_DELTANET_DECODE expects 6 inputs");
     }
 
-    const auto& q = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& k = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
-    const auto& v = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
-    const auto& g = nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
-    const auto& b = nodes[node_index_map.at(node.input_ids[4])]->output_buffer;
-    const auto& s = nodes[node_index_map.at(node.input_ids[5])]->output_buffer;
+    const auto& q = get_input(node, 0, nodes, node_index_map);
+    const auto& k = get_input(node, 1, nodes, node_index_map);
+    const auto& v = get_input(node, 2, nodes, node_index_map);
+    const auto& g = get_input(node, 3, nodes, node_index_map);
+    const auto& b = get_input(node, 4, nodes, node_index_map);
+    const auto& s = get_input(node, 5, nodes, node_index_map);
 
     validate_gated_deltanet_inputs(q, k, v, g, b, s);
     if (q.shape[1] != 1) {
@@ -1917,12 +1957,12 @@ void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vector<std:
         throw std::runtime_error("GATED_DELTANET_PREFILL expects 6 inputs");
     }
 
-    const auto& q = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& k = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
-    const auto& v = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
-    const auto& g = nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
-    const auto& b = nodes[node_index_map.at(node.input_ids[4])]->output_buffer;
-    const auto& s = nodes[node_index_map.at(node.input_ids[5])]->output_buffer;
+    const auto& q = get_input(node, 0, nodes, node_index_map);
+    const auto& k = get_input(node, 1, nodes, node_index_map);
+    const auto& v = get_input(node, 2, nodes, node_index_map);
+    const auto& g = get_input(node, 3, nodes, node_index_map);
+    const auto& b = get_input(node, 4, nodes, node_index_map);
+    const auto& s = get_input(node, 5, nodes, node_index_map);
 
     validate_gated_deltanet_inputs(q, k, v, g, b, s);
 
@@ -1958,7 +1998,7 @@ void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vector<std:
 
 void compute_rope_gptj_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                             const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& shape = input_buffer.shape;
 
     size_t batch_size = shape[0];
@@ -1974,9 +2014,9 @@ void compute_rope_gptj_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
 void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                             const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& weight = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
-    const auto& bias = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
+    const auto& input = get_input(node, 0, nodes, node_index_map);
+    const auto& weight = get_input(node, 1, nodes, node_index_map);
+    const auto& bias = get_input(node, 2, nodes, node_index_map);
     float epsilon = node.params.epsilon;
 
     size_t batch_size = input.shape[0];
@@ -2034,13 +2074,13 @@ void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
 }
 
 void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& h_prev_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
-    const auto& c_prev_buffer = nodes[node_index_map.at(node.input_ids[2])]->output_buffer;
-    const auto& weight_ih_buffer = nodes[node_index_map.at(node.input_ids[3])]->output_buffer;
-    const auto& weight_hh_buffer = nodes[node_index_map.at(node.input_ids[4])]->output_buffer;
-    const auto& bias_ih_buffer = nodes[node_index_map.at(node.input_ids[5])]->output_buffer;
-    const auto& bias_hh_buffer = nodes[node_index_map.at(node.input_ids[6])]->output_buffer;
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& h_prev_buffer = get_input(node, 1, nodes, node_index_map);
+    const auto& c_prev_buffer = get_input(node, 2, nodes, node_index_map);
+    const auto& weight_ih_buffer = get_input(node, 3, nodes, node_index_map);
+    const auto& weight_hh_buffer = get_input(node, 4, nodes, node_index_map);
+    const auto& bias_ih_buffer = get_input(node, 5, nodes, node_index_map);
+    const auto& bias_hh_buffer = get_input(node, 6, nodes, node_index_map);
 
     if (input_buffer.precision != Precision::FP16 || h_prev_buffer.precision != Precision::FP16 ||
         c_prev_buffer.precision != Precision::FP16 || weight_ih_buffer.precision != Precision::FP16 ||
@@ -2093,14 +2133,14 @@ void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
 void compute_altup_predict_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     size_t n = node.params.num_altup_inputs;
-    const auto& coefs_buf = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& coefs_buf = get_input(node, 0, nodes, node_index_map);
 
     std::vector<const __fp16*> stream_ptrs(n);
     for (size_t i = 0; i < n; i++) {
-        stream_ptrs[i] = nodes[node_index_map.at(node.input_ids[1 + i])]->output_buffer.data_as<__fp16>();
+        stream_ptrs[i] = get_input(node, 1 + i, nodes, node_index_map).data_as<__fp16>();
     }
 
-    const auto& stream0_buf = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& stream0_buf = get_input(node, 1, nodes, node_index_map);
     size_t seq_len = stream0_buf.shape[0];
     size_t hidden_dim = stream0_buf.shape[1];
 
@@ -2112,7 +2152,7 @@ void compute_altup_predict_node(GraphNode& node, const std::vector<std::unique_p
 }
 
 void compute_gaussian_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input_buf = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& input_buf = get_input(node, 0, nodes, node_index_map);
     const __fp16* input = input_buf.data_as<__fp16>();
     __fp16* output = node.output_buffer.data_as<__fp16>();
 
@@ -2125,12 +2165,12 @@ void compute_gaussian_topk_node(GraphNode& node, const std::vector<std::unique_p
 
 void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     size_t n = node.params.num_altup_inputs;
-    const auto& coefs_buf = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& innov_buf = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& coefs_buf = get_input(node, 0, nodes, node_index_map);
+    const auto& innov_buf = get_input(node, 1, nodes, node_index_map);
 
     std::vector<const __fp16*> pred_ptrs(n);
     for (size_t i = 0; i < n; i++) {
-        pred_ptrs[i] = nodes[node_index_map.at(node.input_ids[2 + i])]->output_buffer.data_as<__fp16>();
+        pred_ptrs[i] = get_input(node, 2 + i, nodes, node_index_map).data_as<__fp16>();
     }
 
     size_t seq_len = innov_buf.shape[0];
@@ -2142,4 +2182,94 @@ void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_p
         pred_ptrs.data(),
         node.output_buffer.data_as<__fp16>(),
         n, seq_len, hidden_dim);
+}
+
+void compute_bilstm_sequence_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                   const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = get_input(node, 0, nodes, node_index_map);
+    const auto& w_ih_fwd = get_input(node, 1, nodes, node_index_map);
+    const auto& w_hh_fwd = get_input(node, 2, nodes, node_index_map);
+    const auto& b_ih_fwd = get_input(node, 3, nodes, node_index_map);
+    const auto& b_hh_fwd = get_input(node, 4, nodes, node_index_map);
+    const auto& w_ih_bwd = get_input(node, 5, nodes, node_index_map);
+    const auto& w_hh_bwd = get_input(node, 6, nodes, node_index_map);
+    const auto& b_ih_bwd = get_input(node, 7, nodes, node_index_map);
+    const auto& b_hh_bwd = get_input(node, 8, nodes, node_index_map);
+
+    size_t batch_size = input.shape[0];
+    size_t seq_len = input.shape[1];
+    size_t input_size = input.shape[2];
+    size_t hidden_size = w_ih_fwd.shape[0] / 4;
+
+    cactus_bilstm_sequence_f16(
+        input.data_as<__fp16>(),
+        w_ih_fwd.data_as<__fp16>(), w_hh_fwd.data_as<__fp16>(),
+        b_ih_fwd.data_as<__fp16>(), b_hh_fwd.data_as<__fp16>(),
+        w_ih_bwd.data_as<__fp16>(), w_hh_bwd.data_as<__fp16>(),
+        b_ih_bwd.data_as<__fp16>(), b_hh_bwd.data_as<__fp16>(),
+        node.output_buffer.data_as<__fp16>(),
+        batch_size, seq_len, input_size, hidden_size);
+}
+
+void compute_maxpool1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                            const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = get_input(node, 0, nodes, node_index_map);
+
+    size_t batch_size = input.shape[0];
+    size_t channels = input.shape[1];
+    size_t input_length = input.shape[2];
+    size_t kernel_size = node.params.kernel_size;
+    size_t stride = node.params.stride;
+
+    cactus_maxpool1d_f16(
+        input.data_as<__fp16>(),
+        node.output_buffer.data_as<__fp16>(),
+        batch_size, channels, input_length,
+        kernel_size, stride);
+}
+
+void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                 const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
+    const __fp16* bias_ptr = nullptr;
+    if (node.input_ids.size() >= 3) {
+        bias_ptr = get_input(node, 2, nodes, node_index_map).data_as<__fp16>();
+    }
+
+    cactus_conv2d_f16_k3s1p1_nchw(
+        X.data_as<__fp16>(), W.data_as<__fp16>(), bias_ptr,
+        node.output_buffer.data_as<__fp16>(),
+        X.shape[0], X.shape[1], X.shape[2], X.shape[3], W.shape[0]);
+}
+
+void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                              const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = get_input(node, 0, nodes, node_index_map);
+    const __fp16* src = input.data_as<__fp16>();
+    __fp16* dst = node.output_buffer.data_as<__fp16>();
+
+    size_t batch = input.shape[0];
+    size_t total_per_batch = input.total_size / batch;
+    size_t T = input.shape.back();
+    size_t features = total_per_batch / T;
+
+    for (size_t b = 0; b < batch; ++b) {
+        const __fp16* batch_src = src + b * total_per_batch;
+        __fp16* batch_dst = dst + b * features * 2;
+
+        for (size_t f = 0; f < features; ++f) {
+            float sum = 0.0f, sum_sq = 0.0f;
+            for (size_t t = 0; t < T; ++t) {
+                float v = static_cast<float>(batch_src[f * T + t]);
+                sum += v;
+                sum_sq += v * v;
+            }
+            float mean = sum / static_cast<float>(T);
+            float var = T > 1 ? (sum_sq - static_cast<float>(T) * mean * mean) / static_cast<float>(T - 1) : 0.0f;
+            float std_val = sqrtf(fmaxf(var, 0.0f));
+            batch_dst[f] = static_cast<__fp16>(mean);
+            batch_dst[features + f] = static_cast<__fp16>(std_val);
+        }
+    }
 }

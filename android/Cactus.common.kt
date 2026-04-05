@@ -13,8 +13,8 @@ expect fun cactusSetTelemetryEnvironment(cacheDir: String)
 expect fun cactusSetAppId(appId: String)
 expect fun cactusTelemetryFlush()
 expect fun cactusTelemetryShutdown()
-expect fun cactusComplete(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, callback: CactusTokenCallback?): String
-expect fun cactusPrefill(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?): String
+expect fun cactusComplete(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray? = null): String
+expect fun cactusPrefill(model: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, pcmData: ByteArray? = null): String
 expect fun cactusTranscribe(model: Long, audioPath: String?, prompt: String?, optionsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): String
 expect fun cactusEmbed(model: Long, text: String, normalize: Boolean): FloatArray
 expect fun cactusImageEmbed(model: Long, imagePath: String): FloatArray

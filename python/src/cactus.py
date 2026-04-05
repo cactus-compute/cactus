@@ -270,13 +270,15 @@ _lib.cactus_graph_get_output_info.restype = ctypes.c_int
 
 _lib.cactus_complete.argtypes = [
     ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
-    ctypes.c_char_p, ctypes.c_char_p, TokenCallback, ctypes.c_void_p
+    ctypes.c_char_p, ctypes.c_char_p, TokenCallback, ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
 ]
 _lib.cactus_complete.restype = ctypes.c_int
 
 _lib.cactus_prefill.argtypes = [
     ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
-    ctypes.c_char_p, ctypes.c_char_p
+    ctypes.c_char_p, ctypes.c_char_p,
+    ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
 ]
 _lib.cactus_prefill.restype = ctypes.c_int
 
@@ -316,6 +318,18 @@ _lib.cactus_vad.argtypes = [
     ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
 ]
 _lib.cactus_vad.restype = ctypes.c_int
+
+_lib.cactus_diarize.argtypes = [
+    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
+    ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
+]
+_lib.cactus_diarize.restype = ctypes.c_int
+
+_lib.cactus_embed_speaker.argtypes = [
+    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
+    ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
+]
+_lib.cactus_embed_speaker.restype = ctypes.c_int
 
 _lib.cactus_reset.argtypes = [ctypes.c_void_p]
 _lib.cactus_reset.restype = None
@@ -500,7 +514,7 @@ def cactus_stop(model):
     _lib.cactus_stop(model)
 
 
-def cactus_complete(model, messages_json, options_json, tools_json, callback):
+def cactus_complete(model, messages_json, options_json, tools_json, callback, pcm_data=None):
     """Runs chat completion. Returns response string."""
     buf = ctypes.create_string_buffer(65536)
     if callback:
@@ -509,21 +523,35 @@ def cactus_complete(model, messages_json, options_json, tools_json, callback):
         cb = TokenCallback(_bridge)
     else:
         cb = TokenCallback()
+    if pcm_data is not None:
+        pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_size = len(pcm_data)
+    else:
+        pcm_ptr = None
+        pcm_size = 0
     rc = _lib.cactus_complete(
         model, _enc(messages_json), buf, len(buf),
-        _enc(options_json), _enc(tools_json), cb, None
+        _enc(options_json), _enc(tools_json), cb, None, pcm_ptr, pcm_size
     )
     if rc < 0:
         raise RuntimeError(_err("Completion failed"))
     return buf.value.decode("utf-8", errors="ignore")
 
 
-def cactus_prefill(model, messages_json, options_json, tools_json):
+def cactus_prefill(model, messages_json, options_json, tools_json, pcm_data=None):
     """Prefills the KV cache with messages."""
     buf = ctypes.create_string_buffer(65536)
+    if pcm_data is not None:
+        pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_size = len(pcm_data)
+    else:
+        pcm_ptr = None
+        pcm_size = 0
     rc = _lib.cactus_prefill(
         model, _enc(messages_json), buf, len(buf),
-        _enc(options_json), _enc(tools_json)
+        _enc(options_json), _enc(tools_json), pcm_ptr, pcm_size
     )
     if rc < 0:
         raise RuntimeError(_err("Prefill failed"))
@@ -615,6 +643,42 @@ def cactus_vad(model, audio_path, options_json, pcm_data):
     )
     if rc < 0:
         raise RuntimeError(_err("VAD failed"))
+    return buf.value.decode("utf-8", errors="ignore")
+
+
+def cactus_diarize(model, audio_path, options_json, pcm_data):
+    """Runs speaker diarization. Returns JSON string."""
+    buf = ctypes.create_string_buffer(1 << 20)
+    if pcm_data is not None:
+        pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_size = len(pcm_data)
+    else:
+        pcm_ptr = None
+        pcm_size = 0
+    rc = _lib.cactus_diarize(
+        model, _enc(audio_path), buf, len(buf), _enc(options_json), pcm_ptr, pcm_size
+    )
+    if rc < 0:
+        raise RuntimeError(_err("Diarize failed"))
+    return buf.value.decode("utf-8", errors="ignore")
+
+
+def cactus_embed_speaker(model, audio_path, options_json, pcm_data):
+    """Extracts a speaker embedding vector. Returns JSON string."""
+    buf = ctypes.create_string_buffer(65536)
+    if pcm_data is not None:
+        pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_size = len(pcm_data)
+    else:
+        pcm_ptr = None
+        pcm_size = 0
+    rc = _lib.cactus_embed_speaker(
+        model, _enc(audio_path), buf, len(buf), _enc(options_json), pcm_ptr, pcm_size
+    )
+    if rc < 0:
+        raise RuntimeError(_err("EmbedSpeaker failed"))
     return buf.value.decode("utf-8", errors="ignore")
 
 

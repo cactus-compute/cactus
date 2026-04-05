@@ -9,6 +9,8 @@ MODEL_NAME="$1"
 TRANSCRIBE_MODEL_NAME="$2"
 WHISPER_MODEL_NAME="$3"
 VAD_MODEL_NAME="$4"
+DIARIZE_MODEL_NAME="$5"
+EMBED_SPEAKER_MODEL_NAME="$6"
 RUN_ASR="${CACTUS_RUN_ASR:-0}"
 ASR_AUDIO_SOURCE="${CACTUS_ASR_AUDIO_SOURCE:-}"
 ASR_AUDIO_FILE="${CACTUS_ASR_AUDIO_FILE:-}"
@@ -273,10 +275,14 @@ model_dir=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 transcribe_model_dir=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 whisper_model_dir=$(echo "$WHISPER_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 vad_model_dir=$(echo "$VAD_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+diarize_model_dir=$(echo "$DIARIZE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+embed_speaker_model_dir=$(echo "$EMBED_SPEAKER_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 model_src="$PROJECT_ROOT/weights/$model_dir"
 transcribe_model_src="$PROJECT_ROOT/weights/$transcribe_model_dir"
 whisper_model_src="$PROJECT_ROOT/weights/$whisper_model_dir"
 vad_model_src="$PROJECT_ROOT/weights/$vad_model_dir"
+diarize_model_src="$PROJECT_ROOT/weights/$diarize_model_dir"
+embed_speaker_model_src="$PROJECT_ROOT/weights/$embed_speaker_model_dir"
 assets_src="$PROJECT_ROOT/tests/assets"
 
 if [ ! -d "$model_src" ] || [ ! -f "$model_src/config.txt" ]; then
@@ -293,6 +299,14 @@ if [ ! -d "$whisper_model_src" ] || [ ! -f "$whisper_model_src/config.txt" ]; th
 fi
 if [ ! -d "$vad_model_src" ] || [ ! -f "$vad_model_src/config.txt" ]; then
     echo "Error: VAD model weights missing or invalid at $vad_model_src"
+    exit 1
+fi
+if [ ! -d "$diarize_model_src" ] || [ ! -f "$diarize_model_src/config.txt" ]; then
+    echo "Error: diarize model weights missing or invalid at $diarize_model_src"
+    exit 1
+fi
+if [ ! -d "$embed_speaker_model_src" ] || [ ! -f "$embed_speaker_model_src/config.txt" ]; then
+    echo "Error: embed_speaker model weights missing or invalid at $embed_speaker_model_src"
     exit 1
 fi
 
@@ -312,6 +326,16 @@ if ! cp -R "$whisper_model_src" "$app_path/"; then
 fi
 if ! cp -R "$vad_model_src" "$app_path/"; then
     echo "Error: Could not copy VAD model weights from $vad_model_src"
+    exit 1
+fi
+rm -rf "$app_path/$diarize_model_dir"
+if ! cp -R "$diarize_model_src" "$app_path/"; then
+    echo "Error: Could not copy diarize model weights from $diarize_model_src"
+    exit 1
+fi
+rm -rf "$app_path/$embed_speaker_model_dir"
+if ! cp -R "$embed_speaker_model_src" "$app_path/"; then
+    echo "Error: Could not copy embed_speaker model weights from $embed_speaker_model_src"
     exit 1
 fi
 
@@ -375,6 +399,9 @@ if [ "$device_type" = "simulator" ]; then
     echo "Using model path: $model_dir"
     echo "Using transcribe model path: $transcribe_model_dir"
     echo "Using whisper model path: $whisper_model_dir"
+    echo "Using VAD model path: $vad_model_dir"
+    echo "Using diarize model path: $diarize_model_dir"
+    echo "Using embed_speaker model path: $embed_speaker_model_dir"
     echo "Using assets path: assets"
     echo "Using index path: assets"
 
@@ -383,6 +410,8 @@ if [ "$device_type" = "simulator" ]; then
         "SIMCTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL=$transcribe_model_dir"
         "SIMCTL_CHILD_CACTUS_TEST_WHISPER_MODEL=$whisper_model_dir"
         "SIMCTL_CHILD_CACTUS_TEST_VAD_MODEL=$vad_model_dir"
+        "SIMCTL_CHILD_CACTUS_TEST_DIARIZE_MODEL=$diarize_model_dir"
+        "SIMCTL_CHILD_CACTUS_TEST_EMBED_SPEAKER_MODEL=$embed_speaker_model_dir"
         "SIMCTL_CHILD_CACTUS_TEST_ASSETS=assets"
         "SIMCTL_CHILD_CACTUS_INDEX_PATH=assets"
         "SIMCTL_CHILD_CACTUS_NO_CLOUD_TELE=$CACTUS_NO_CLOUD_TELE"
@@ -424,6 +453,9 @@ else
     echo "Using model path: $model_dir"
     echo "Using transcribe model path: $transcribe_model_dir"
     echo "Using whisper model path: $whisper_model_dir"
+    echo "Using VAD model path: $vad_model_dir"
+    echo "Using diarize model path: $diarize_model_dir"
+    echo "Using embed_speaker model path: $embed_speaker_model_dir"
     echo "Using assets path: assets"
     echo "Using index path: assets"
 
@@ -432,6 +464,8 @@ else
         "DEVICECTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL=$transcribe_model_dir"
         "DEVICECTL_CHILD_CACTUS_TEST_WHISPER_MODEL=$whisper_model_dir"
         "DEVICECTL_CHILD_CACTUS_TEST_VAD_MODEL=$vad_model_dir"
+        "DEVICECTL_CHILD_CACTUS_TEST_DIARIZE_MODEL=$diarize_model_dir"
+        "DEVICECTL_CHILD_CACTUS_TEST_EMBED_SPEAKER_MODEL=$embed_speaker_model_dir"
         "DEVICECTL_CHILD_CACTUS_TEST_ASSETS=assets"
         "DEVICECTL_CHILD_CACTUS_INDEX_PATH=assets"
         "DEVICECTL_CHILD_CACTUS_NO_CLOUD_TELE=$CACTUS_NO_CLOUD_TELE"

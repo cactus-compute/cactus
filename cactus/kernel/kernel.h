@@ -121,6 +121,8 @@ void cactus_softmax_f16(const __fp16* input, __fp16* output, size_t batch_size,
 
 void cactus_relu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 
+void cactus_leaky_relu_f16(const __fp16* input, __fp16* output, size_t num_elements, float negative_slope);
+
 void cactus_silu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 
 void cactus_gelu_f16(const __fp16* input, __fp16* output, size_t num_elements);
@@ -176,7 +178,8 @@ void cactus_batchnorm_f32(
 void cactus_attention_f16(const __fp16* queries, const __fp16* keys, const __fp16* values, __fp16* output,
                           size_t batch_size, size_t seq_len, size_t kv_seq_len, size_t num_q_heads, size_t num_kv_heads,
                           size_t head_dim, float scale, const __fp16* mask, size_t position_offset = 0, size_t window_size = 0,
-                          bool is_causal = true, bool mask_is_additive = false, bool mask_per_head = false, size_t v_head_dim = 0);
+                          bool is_causal = true, bool mask_is_additive = false, bool mask_per_head = false,
+                          size_t v_head_dim = 0, float logit_cap = 0.0f);
 
 void cactus_attention_hybrid_int8_fp16(
     const __fp16* queries,
@@ -287,6 +290,18 @@ void cactus_conv1d_same_depthwise_f16_k9(
     size_t N,
     size_t L,
     size_t C
+);
+
+void cactus_conv2d_f16_k3s1p1_nchw(
+    const __fp16* input,
+    const __fp16* weight,
+    const __fp16* bias,
+    __fp16* output,
+    size_t N,
+    size_t C_in,
+    size_t H,
+    size_t W,
+    size_t C_out
 );
 
 void cactus_conv2d_f16_k3s2p1_nchw(
@@ -412,6 +427,33 @@ void cactus_lstm_cell_f16(
     size_t batch_size,
     size_t input_size,
     size_t hidden_size
+);
+
+void cactus_bilstm_sequence_f16(
+    const __fp16* input,
+    const __fp16* weight_ih_fwd,
+    const __fp16* weight_hh_fwd,
+    const __fp16* bias_ih_fwd,
+    const __fp16* bias_hh_fwd,
+    const __fp16* weight_ih_bwd,
+    const __fp16* weight_hh_bwd,
+    const __fp16* bias_ih_bwd,
+    const __fp16* bias_hh_bwd,
+    __fp16* output,
+    size_t batch_size,
+    size_t seq_len,
+    size_t input_size,
+    size_t hidden_size
+);
+
+void cactus_maxpool1d_f16(
+    const __fp16* input,
+    __fp16* output,
+    size_t batch_size,
+    size_t channels,
+    size_t input_length,
+    size_t kernel_size,
+    size_t stride
 );
 
 #endif
