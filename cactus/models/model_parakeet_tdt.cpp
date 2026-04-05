@@ -2,10 +2,12 @@
 #include "../graph/graph.h"
 #include "../npu/npu.h"
 #include "../kernel/kernel.h"
+#include "../telemetry/telemetry.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
@@ -179,6 +181,21 @@ bool infer_npu_encoder_output_shape(
     if (time_steps == 0 || hidden_dim == 0) return false;
     if (time_steps * hidden_dim > elements_written) return false;
     return true;
+}
+
+uint32_t stream_max_duration_skip_frames() {
+    static const uint32_t kDefaultMaxSkip = 2;
+    static const uint32_t configured = []() {
+        const char* raw = std::getenv("CACTUS_PARAKEET_STREAM_MAX_SKIP");
+        if (!raw || raw[0] == '\0') return kDefaultMaxSkip;
+        char* end = nullptr;
+        const long parsed = std::strtol(raw, &end, 10);
+        if (end == raw || *end != '\0') return kDefaultMaxSkip;
+        if (parsed < 1) return static_cast<uint32_t>(1);
+        if (parsed > 20) return static_cast<uint32_t>(20);
+        return static_cast<uint32_t>(parsed);
+    }();
+    return configured;
 }
 
 std::vector<__fp16> copy_buffer_to_fp16(const BufferDesc& buffer) {
@@ -921,6 +938,8 @@ std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::greedy_decode_tdt_toke
     uint32_t last_token = blank_id;
     size_t time_idx = 0;
     constexpr size_t kMaxSymbolsPerStep = 10;
+    const bool is_stream_mode = cactus::telemetry::isStreamMode();
+    const uint32_t max_stream_skip = stream_max_duration_skip_frames();
 
     while (time_idx < T) {
         bool advanced = false;
@@ -944,7 +963,10 @@ std::vector<ParakeetTDTModel::TDTToken> ParakeetTDTModel::greedy_decode_tdt_toke
             const auto& bias = get_vocab_bias();
             const size_t best_token = argmax_range_with_bias(logits_buf, 0, token_classes, bias);
             const size_t best_duration_idx = argmax_range(logits_buf, token_classes, duration_classes);
-            const uint32_t skip = durations[best_duration_idx];
+            uint32_t skip = durations[best_duration_idx];
+            if (is_stream_mode && skip > max_stream_skip) {
+                skip = max_stream_skip;
+            }
 
             if (best_token != blank_id) {
                 output_tokens.push_back({static_cast<uint32_t>(best_token), time_idx * frame_sec, (time_idx + skip) * frame_sec});
