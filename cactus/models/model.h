@@ -1128,6 +1128,23 @@ public:
     explicit ParakeetTDTModel(const Config& config);
     ~ParakeetTDTModel() override = default;
 
+    struct TDTToken { uint32_t id; float time_start; float time_end; };
+
+    struct TDTStreamState {
+        std::vector<std::vector<__fp16>> h_state;
+        std::vector<std::vector<__fp16>> c_state;
+        uint32_t last_token = 0;
+        bool initialized = false;
+    };
+
+    // state across calls via `state`. State is saved at the last word
+    std::vector<TDTToken> decode_tdt_chunk(
+        const std::vector<float>& audio_features,
+        size_t decode_start_frame,
+        size_t decode_end_frame,
+        TDTStreamState& state,
+        size_t* out_confirmed_count = nullptr);
+
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
         throw std::runtime_error("ParakeetTDT: build_attention unused");
@@ -1162,8 +1179,15 @@ private:
     size_t build_feed_forward(CactusGraph* gb, size_t hidden, uint32_t layer_idx, bool second_ff, ComputeBackend backend);
     size_t build_convolution_module(CactusGraph* gb, size_t hidden, uint32_t layer_idx, ComputeBackend backend);
     size_t build_encoder_block(CactusGraph* gb, size_t hidden, size_t position_embeddings, uint32_t layer_idx, ComputeBackend backend);
-    struct TDTToken { uint32_t id; float time_start; float time_end; };
     std::vector<TDTToken> greedy_decode_tdt_tokens(CactusGraph* gb, size_t encoder_hidden_node) const;
+
+    std::vector<TDTToken> run_tdt_decoder(
+        CactusGraph* gb,
+        const std::vector<__fp16>& encoder_fp16,
+        size_t T, size_t D,
+        size_t start_frame, size_t end_frame,
+        TDTStreamState* state,
+        size_t* out_confirmed_count);
 
     struct WeightNodeIDs {
         size_t subsampling_conv0_weight = 0;
