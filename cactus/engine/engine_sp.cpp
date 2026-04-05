@@ -30,31 +30,6 @@ bool parse_config_bool(const std::string& value) {
     return lowered == "1" || lowered == "true" || lowered == "yes";
 }
 
-std::vector<std::string> split_utf8_codepoints(const std::string& text) {
-    std::vector<std::string> result;
-    size_t pos = 0;
-
-    while (pos < text.size()) {
-        unsigned char byte = static_cast<unsigned char>(text[pos]);
-        size_t len = 1;
-        if ((byte & 0xE0) == 0xC0) {
-            len = 2;
-        } else if ((byte & 0xF0) == 0xE0) {
-            len = 3;
-        } else if ((byte & 0xF8) == 0xF0) {
-            len = 4;
-        }
-
-        if (pos + len > text.size()) {
-            len = 1;
-        }
-        result.push_back(text.substr(pos, len));
-        pos += len;
-    }
-
-    return result;
-}
-
 bool decode_utf8_codepoint(const std::string& text, size_t& pos, char32_t& codepoint) {
     if (pos >= text.size()) {
         return false;
@@ -110,24 +85,9 @@ void append_utf8_codepoint(std::string& out, char32_t cp) {
 }
 
 bool parse_byte_piece(const std::string& piece, uint8_t& value) {
-    if (piece.size() != 6 || piece[0] != '<' || piece[1] != '0' || piece[2] != 'x' || piece[5] != '>') {
-        return false;
-    }
-
-    auto hex_value = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-        return -1;
-    };
-
-    int hi = hex_value(piece[3]);
-    int lo = hex_value(piece[4]);
-    if (hi < 0 || lo < 0) {
-        return false;
-    }
-
-    value = static_cast<uint8_t>((hi << 4) | lo);
+    unsigned int v;
+    if (piece.size() != 6 || sscanf(piece.c_str(), "<0x%02X>", &v) != 1) return false;
+    value = static_cast<uint8_t>(v);
     return true;
 }
 
@@ -296,51 +256,27 @@ std::string SPTokenizer::preprocess_text(const std::string& text) const {
 
     std::string normalized;
     normalized.reserve(text.size());
-
-    bool previous_space = false;
+    bool prev_space = sp_remove_extra_whitespaces_;
     for (char c : text) {
-        if (c == ' ') {
-            if (!sp_remove_extra_whitespaces_ || !previous_space) {
-                normalized.push_back(' ');
-            }
-            previous_space = true;
-        } else {
-            normalized.push_back(c);
-            previous_space = false;
+        if (c != ' ') {
+            normalized += c;
+            prev_space = false;
+        } else if (!prev_space) {
+            normalized += c;
+            if (sp_remove_extra_whitespaces_) prev_space = true;
         }
     }
-
     if (sp_remove_extra_whitespaces_) {
-        size_t start = 0;
-        while (start < normalized.size() && normalized[start] == ' ') {
-            start++;
-        }
-
-        size_t end = normalized.size();
-        while (end > start && normalized[end - 1] == ' ') {
-            end--;
-        }
-
-        normalized = normalized.substr(start, end - start);
+        while (!normalized.empty() && normalized.back() == ' ') normalized.pop_back();
     }
+    if (normalized.empty()) return "";
 
-    if (normalized.empty()) {
-        return "";
-    }
-
-    std::string processed = "";
-    if (sp_add_dummy_prefix_) {
-        processed += kSentencePieceSpace;
-    }
-
+    std::string processed;
+    if (sp_add_dummy_prefix_) processed += kSentencePieceSpace;
     for (char c : normalized) {
-        if (sp_escape_whitespaces_ && c == ' ') {
-            processed += kSentencePieceSpace;
-        } else {
-            processed += c;
-        }
+        if (c == ' ' && sp_escape_whitespaces_) processed += kSentencePieceSpace;
+        else processed += c;
     }
-
     return processed;
 }
 
@@ -422,12 +358,15 @@ std::vector<std::pair<std::string, uint32_t>> SPTokenizer::tokenize_with_trie(co
 }
 
 std::vector<uint32_t> SPTokenizer::tokenize_with_bpe(const std::string& text) const {
-    std::vector<std::string> symbols = split_utf8_codepoints(text);
-    std::vector<uint32_t> result;
-
-    if (symbols.empty()) {
-        return result;
+    std::vector<std::string> symbols;
+    for (size_t pos = 0, start = 0; pos < text.size(); ) {
+        start = pos;
+        char32_t cp;
+        decode_utf8_codepoint(text, pos, cp);
+        symbols.push_back(text.substr(start, pos - start));
     }
+    std::vector<uint32_t> result;
+    if (symbols.empty()) return result;
 
     while (symbols.size() > 1) {
         bool found_merge = false;
@@ -572,9 +511,7 @@ void SPTokenizer::load_tokenizer_config(const std::string& config_file) {
         } else if (key == "bos_token_id") {
             bos_token_id_ = static_cast<uint32_t>(std::stoul(value));
         } else if (key == "sp_model_type") {
-            std::string lowered = value;
-            std::transform(lowered.begin(), lowered.end(), lowered.begin(), ::tolower);
-            sp_model_type_ = lowered == "bpe"
+            sp_model_type_ = (value == "bpe" || value == "BPE")
                 ? SentencePieceModelType::BPE
                 : SentencePieceModelType::LEGACY;
         } else if (key == "sp_add_dummy_prefix") {
@@ -603,8 +540,6 @@ void SPTokenizer::load_chat_template(const std::string& template_file) {
     chat_template_ = std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     has_chat_template_ = !chat_template_.empty();
 }
-
-
 
 } // namespace engine
 } // namespace cactus
