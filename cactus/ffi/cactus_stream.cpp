@@ -2,14 +2,21 @@
 #include "cactus_cloud.h"
 #include "cactus_utils.h"
 #include "telemetry/telemetry.h"
+#include "../../libs/audio/wav.h"
 #include <cstring>
 #include <regex>
 #include <cmath>
 #include <cstdlib>
 #include <future>
 #include <chrono>
+#include <sstream>
 
 using namespace cactus::ffi;
+using cactus::audio::apply_preemphasis;
+using cactus::audio::get_parakeet_spectrogram_config;
+using cactus::audio::normalize_parakeet_log_mel;
+using cactus::audio::trim_mel_frames;
+using cactus::audio::WHISPER_SAMPLE_RATE;
 
 double json_number(const std::string& json, const std::string& key) {
     std::string pattern = "\"" + key + "\":";
@@ -129,6 +136,26 @@ struct CactusStreamTranscribeHandle {
     std::vector<std::pair<uint64_t, CloudResponse>> completed_cloud_results;
 
     char transcribe_response_buffer[8192];
+
+    struct TDTStreamCtx {
+        std::vector<float> audio_samples;       // accumulated float samples at 16kHz
+        size_t samples_decoded_up_to = 0;       // how many samples we've decoded so far
+        cactus::engine::ParakeetTDTModel::TDTStreamState decoder_state;
+
+        cactus::engine::AudioProcessor audio_processor;
+        size_t mel_bins = 0;
+        bool ap_initialized = false;
+
+        std::string full_transcript;
+        std::vector<TranscriptSegment> all_segments;
+        float time_offset_sec = 0.0f;          // absolute time of samples_decoded_up_to
+
+        static constexpr size_t LEFT_CONTEXT_SAMPLES = 8 * 16000;   // 8s
+        static constexpr size_t RIGHT_CONTEXT_SAMPLES = 0;          // 0s — decode eagerly
+        static constexpr size_t CHUNK_SAMPLES = 16000;              // 1s min chunk
+        static constexpr size_t COLD_START_SAMPLES = 3 * 16000;    // 3s initial accumulation
+    } tdt_ctx;
+    bool use_tdt_streaming = false;
 
     std::chrono::steady_clock::time_point stream_start;
     bool stream_first_token_seen;
@@ -301,6 +328,16 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, 
             }
         }
 
+        const auto mt = model_handle->model->get_config().model_type;
+        if (mt == cactus::engine::Config::ModelType::PARAKEET_TDT) {
+            stream_handle->use_tdt_streaming = true;
+            auto& ctx = stream_handle->tdt_ctx;
+            ctx.mel_bins = std::max<size_t>(1, static_cast<size_t>(model_handle->model->get_config().num_mel_bins));
+            auto cfg = get_parakeet_spectrogram_config();
+            ctx.audio_processor.init_mel_filters(cfg.n_fft / 2 + 1, ctx.mel_bins, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
+            ctx.ap_initialized = true;
+        }
+
         CACTUS_LOG_INFO("stream_transcribe_start",
             "Stream transcription initialized for model: " << model_handle->model_name);
 
@@ -347,13 +384,158 @@ int cactus_stream_transcribe_process(
     try {
         auto* handle = static_cast<CactusStreamTranscribeHandle*>(stream);
 
+        if (handle->use_tdt_streaming) {
+            auto& ctx = handle->tdt_ctx;
+
+            auto new_samples = cactus::audio::pcm_buffer_to_float_samples(pcm_buffer, pcm_buffer_size);
+            auto resampled = resample_to_16k_fp32(new_samples, WHISPER_SAMPLE_RATE);
+            ctx.audio_samples.insert(ctx.audio_samples.end(), resampled.begin(), resampled.end());
+
+            const size_t total_samples = ctx.audio_samples.size();
+            const size_t decodable_up_to = (total_samples > ctx.RIGHT_CONTEXT_SAMPLES)
+                ? total_samples - ctx.RIGHT_CONTEXT_SAMPLES : 0;
+
+            const size_t min_chunk = (ctx.samples_decoded_up_to == 0)
+                ? ctx.COLD_START_SAMPLES : ctx.CHUNK_SAMPLES;
+
+            if (decodable_up_to <= ctx.samples_decoded_up_to ||
+                decodable_up_to - ctx.samples_decoded_up_to < min_chunk) {
+                std::string json_response = "{\"success\":true,\"confirmed\":\"\",\"pending\":\"\",\"segments\":[]}";
+                std::strcpy(response_buffer, json_response.c_str());
+                return static_cast<int>(json_response.length());
+            }
+
+            const size_t window_start_sample = (ctx.samples_decoded_up_to > ctx.LEFT_CONTEXT_SAMPLES)
+                ? ctx.samples_decoded_up_to - ctx.LEFT_CONTEXT_SAMPLES : 0;
+            const size_t window_end_sample = std::min(total_samples, decodable_up_to + ctx.RIGHT_CONTEXT_SAMPLES);
+
+            std::vector<float> window_audio(
+                ctx.audio_samples.begin() + window_start_sample,
+                ctx.audio_samples.begin() + window_end_sample);
+
+            auto cfg = get_parakeet_spectrogram_config();
+            size_t waveform_samples = window_audio.size();
+            apply_preemphasis(window_audio, 0.97f);
+            window_audio = ctx.audio_processor.compute_spectrogram(window_audio, cfg);
+            normalize_parakeet_log_mel(window_audio, ctx.mel_bins);
+            size_t valid_frames = waveform_samples / cfg.hop_length;
+            if (valid_frames == 0) valid_frames = 1;
+            trim_mel_frames(window_audio, ctx.mel_bins, valid_frames);
+
+            const uint32_t sub = handle->model_handle->model->get_config().subsampling_factor;
+            const size_t samples_per_enc_frame = cfg.hop_length * sub;
+
+            const size_t context_samples = ctx.samples_decoded_up_to - window_start_sample;
+            const size_t decode_start_frame = context_samples / samples_per_enc_frame;
+            const size_t new_samples_count = decodable_up_to - ctx.samples_decoded_up_to;
+            const size_t decode_end_frame = decode_start_frame + (new_samples_count / samples_per_enc_frame);
+
+            auto* tdt_model = dynamic_cast<cactus::engine::ParakeetTDTModel*>(
+                handle->model_handle->model.get());
+
+            if (!tdt_model) {
+                last_error_message = "Failed to cast to ParakeetTDTModel";
+                handle_error_response(last_error_message, response_buffer, buffer_size);
+                return -1;
+            }
+
+            size_t confirmed_count = 0;
+            auto tokens = tdt_model->decode_tdt_chunk(
+                window_audio, decode_start_frame, decode_end_frame,
+                ctx.decoder_state, &confirmed_count);
+
+            cactus_reset(handle->model_handle);
+
+            auto* tokenizer = handle->model_handle->model->get_tokenizer();
+            const float window_start_sec = static_cast<float>(window_start_sample) / static_cast<float>(WHISPER_SAMPLE_RATE);
+
+            auto build_text_segments = [&](size_t from, size_t to) {
+                std::string text;
+                std::vector<TranscriptSegment> segs;
+                std::string word_buf;
+                float ws = 0.0f, we = 0.0f;
+                for (size_t i = from; i < to; ++i) {
+                    std::string piece = tokenizer->decode({tokens[i].id});
+                    bool nw = !piece.empty() && piece[0] == ' ';
+                    if (nw && !word_buf.empty()) {
+                        std::string t = word_buf;
+                        if (!t.empty() && t[0] == ' ') t.erase(0, 1);
+                        if (!t.empty()) segs.emplace_back(window_start_sec + ws, window_start_sec + we, t);
+                        word_buf.clear();
+                    }
+                    if (word_buf.empty()) ws = tokens[i].time_start;
+                    word_buf += piece;
+                    we = tokens[i].time_end;
+                }
+                if (!word_buf.empty()) {
+                    std::string t = word_buf;
+                    if (!t.empty() && t[0] == ' ') t.erase(0, 1);
+                    if (!t.empty()) segs.emplace_back(window_start_sec + ws, window_start_sec + we, t);
+                }
+                for (const auto& s : segs) {
+                    if (!text.empty()) text += ' ';
+                    text += s.text;
+                }
+                return std::make_pair(text, segs);
+            };
+
+            auto [confirmed, confirmed_segs] = build_text_segments(0, confirmed_count);
+            auto [pending, pending_segs] = build_text_segments(confirmed_count, tokens.size());
+
+            if (!handle->custom_vocabulary.empty() && !confirmed.empty()) {
+                apply_vocabulary_spelling_correction(confirmed, handle->custom_vocabulary);
+            }
+
+            if (!confirmed.empty()) {
+                if (!ctx.full_transcript.empty()) ctx.full_transcript += ' ';
+                ctx.full_transcript += confirmed;
+            }
+            ctx.all_segments.insert(ctx.all_segments.end(), confirmed_segs.begin(), confirmed_segs.end());
+
+            if (confirmed_count > 0) {
+                float last_confirmed_end = tokens[confirmed_count - 1].time_end;
+                size_t decoded_in_window = static_cast<size_t>(last_confirmed_end * WHISPER_SAMPLE_RATE);
+                ctx.samples_decoded_up_to = window_start_sample + decoded_in_window;
+            } else if (tokens.empty()) {
+                ctx.samples_decoded_up_to = decodable_up_to;
+            } else {
+                float pending_start = tokens.front().time_start;
+                size_t pending_in_window = static_cast<size_t>(pending_start * WHISPER_SAMPLE_RATE);
+                ctx.samples_decoded_up_to = window_start_sample + pending_in_window;
+            }
+
+            if (ctx.samples_decoded_up_to > ctx.LEFT_CONTEXT_SAMPLES * 2) {
+                size_t trim = ctx.samples_decoded_up_to - ctx.LEFT_CONTEXT_SAMPLES;
+                ctx.audio_samples.erase(ctx.audio_samples.begin(),
+                                        ctx.audio_samples.begin() + trim);
+                ctx.samples_decoded_up_to -= trim;
+            }
+
+            std::string segments_json = serialize_segments_with_offset(confirmed_segs, 0.0f);
+            std::ostringstream json_builder;
+            json_builder << "{\"success\":true,"
+                         << "\"confirmed\":\"" << escape_json(confirmed) << "\","
+                         << "\"pending\":\"" << escape_json(pending) << "\","
+                         << "\"segments\":" << segments_json << ","
+                         << "\"cloud_handoff\":false,"
+                         << "\"buffer_duration_ms\":0"
+                         << "}";
+            std::string json_response = json_builder.str();
+
+            if (json_response.length() >= buffer_size) {
+                handle_error_response("Response buffer too small", response_buffer, buffer_size);
+                return -1;
+            }
+
+            std::strcpy(response_buffer, json_response.c_str());
+            return static_cast<int>(json_response.length());
+        }
+
         handle->audio_buffer.insert(
             handle->audio_buffer.end(),
             pcm_buffer,
             pcm_buffer + pcm_buffer_size
         );
-        CACTUS_LOG_DEBUG("stream_transcribe_process",
-            "Inserted " << pcm_buffer_size << " bytes, buffer size: " << handle->audio_buffer.size());
 
         if (handle->audio_buffer.size() < handle->options.min_chunk_size * sizeof(int16_t)) {
             std::string json_response = "{\"success\":true,\"confirmed\":\"\",\"pending\":\"\"}";
@@ -621,9 +803,56 @@ int cactus_stream_transcribe_stop(
 
     try {
         std::string final_confirmed;
-        for (const auto& seg : handle->previous_segments) {
-            if (!final_confirmed.empty()) final_confirmed += ' ';
-            final_confirmed += seg.text;
+
+        if (handle->use_tdt_streaming) {
+            auto& ctx = handle->tdt_ctx;
+            const size_t total = ctx.audio_samples.size();
+            if (total > ctx.samples_decoded_up_to) {
+                const size_t window_start_sample = (ctx.samples_decoded_up_to > ctx.LEFT_CONTEXT_SAMPLES)
+                    ? ctx.samples_decoded_up_to - ctx.LEFT_CONTEXT_SAMPLES : 0;
+
+                std::vector<float> window_audio(
+                    ctx.audio_samples.begin() + window_start_sample,
+                    ctx.audio_samples.end());
+
+                auto cfg = get_parakeet_spectrogram_config();
+                size_t waveform_samples = window_audio.size();
+                apply_preemphasis(window_audio, 0.97f);
+                window_audio = ctx.audio_processor.compute_spectrogram(window_audio, cfg);
+                normalize_parakeet_log_mel(window_audio, ctx.mel_bins);
+                size_t valid_frames = waveform_samples / cfg.hop_length;
+                if (valid_frames == 0) valid_frames = 1;
+                trim_mel_frames(window_audio, ctx.mel_bins, valid_frames);
+
+                const uint32_t sub = handle->model_handle->model->get_config().subsampling_factor;
+                const size_t samples_per_enc_frame = cfg.hop_length * sub;
+                const size_t context_samples = ctx.samples_decoded_up_to - window_start_sample;
+                const size_t decode_start = context_samples / samples_per_enc_frame;
+                const size_t total_window_samples = total - window_start_sample;
+                const size_t decode_end = total_window_samples / samples_per_enc_frame;
+
+                if (decode_end > decode_start) {
+                    auto* tdt_model = dynamic_cast<cactus::engine::ParakeetTDTModel*>(
+                        handle->model_handle->model.get());
+                    if (tdt_model) {
+                        auto tokens = tdt_model->decode_tdt_chunk(
+                            window_audio, decode_start, decode_end, ctx.decoder_state);
+                        cactus_reset(handle->model_handle);
+
+                        auto* tokenizer = handle->model_handle->model->get_tokenizer();
+                        for (const auto& tok : tokens) {
+                            final_confirmed += tokenizer->decode({tok.id});
+                        }
+                    }
+                }
+            }
+            if (!final_confirmed.empty() && final_confirmed[0] == ' ')
+                final_confirmed.erase(0, 1);
+        } else {
+            for (const auto& seg : handle->previous_segments) {
+                if (!final_confirmed.empty()) final_confirmed += ' ';
+                final_confirmed += seg.text;
+            }
         }
 
         if (!handle->custom_vocabulary.empty()) {
