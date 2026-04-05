@@ -450,6 +450,10 @@ int cactus_transcribe(
         auto sop = tokenizer->encode("<|startofprev|>");
         auto sot = tokenizer->encode("<|startoftranscript|>");
         auto zero = tokenizer->encode("<|0.00|>");
+        auto notimestamps = tokenizer->encode("<|notimestamps|>");
+        const bool has_notimestamps = !notimestamps.empty() &&
+            std::search(initial_tokens.begin(), initial_tokens.end(),
+                        notimestamps.begin(), notimestamps.end()) != initial_tokens.end();
         auto sot_it = std::search(initial_tokens.begin(), initial_tokens.end(), sot.begin(), sot.end());
         const auto sot_begin = sot_it != initial_tokens.end() ? sot_it : initial_tokens.begin();
 
@@ -475,7 +479,7 @@ int cactus_transcribe(
                 tokens.insert(tokens.end(), sot_begin, initial_tokens.end());
             }
 
-            if (is_whisper && !zero.empty() && (tokens.empty() || tokens.back() != zero.back())) {
+            if (is_whisper && !has_notimestamps && !zero.empty() && (tokens.empty() || tokens.back() != zero.back())) {
                 tokens.insert(tokens.end(), zero.begin(), zero.end());
             }
 

@@ -253,8 +253,6 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
                 additional_special_tokens.append({"token": token_str, "id": token_id})
 
     for token_info in tokenizer_json_data.get("added_tokens", []) or []:
-        if not token_info.get("special"):
-            continue
         token_str = token_info.get("content")
         token_id = token_info.get("id")
         if token_str is None or token_id is None:
