@@ -227,6 +227,11 @@ struct MergeRule {
 };
 
 
+struct ToolCallInfo {
+    std::string name;
+    std::string arguments;
+};
+
 struct ChatMessage {
     std::string role;
     std::string content;
@@ -234,6 +239,7 @@ struct ChatMessage {
     std::vector<std::string> images;
     std::vector<std::string> audio;
     size_t audio_soft_token_count = 0;
+    std::vector<ToolCallInfo> tool_calls;
 };
 
 struct TokenizerRuntimeConfig {

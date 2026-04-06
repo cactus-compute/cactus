@@ -53,6 +53,7 @@ inline std::string format_argument(const std::string& json, size_t& pos, bool es
     char c = json[pos];
 
     if (c == '"') {
+        pos++;
         std::string value = extract_json_string(json, pos);
         return escape(value);
     } else if (c == '{') {
@@ -240,7 +241,7 @@ inline std::string format_parameters(const std::string& properties_json, const s
                 result += ",properties:{" + format_parameters(prop_obj["properties"], nested_required) + "}";
             }
             if (prop_obj.count("required")) {
-                result += ",required:[";
+                std::string req_items;
                 size_t req_pos = 0;
                 skip_whitespace(prop_obj["required"], req_pos);
                 if (req_pos < prop_obj["required"].length() && prop_obj["required"][req_pos] == '[') {
@@ -253,13 +254,15 @@ inline std::string format_parameters(const std::string& properties_json, const s
                         if (prop_obj["required"][req_pos] == '"') {
                             req_pos++;
                             std::string req_item = extract_json_string(prop_obj["required"], req_pos);
-                            if (!req_first) result += ",";
+                            if (!req_first) req_items += ",";
                             req_first = false;
-                            result += escape(req_item);
+                            req_items += escape(req_item);
                         }
                     }
                 }
-                result += "]";
+                if (!req_items.empty()) {
+                    result += ",required:[" + req_items + "]";
+                }
             }
         } else if (to_upper(type_val) == "ARRAY") {
             if (prop_obj.count("items")) {
@@ -342,7 +345,7 @@ inline std::string format_function_declaration(const std::string& name,
         }
 
         if (params.count("required")) {
-            result += ",required:[";
+            std::string req_items;
             size_t req_pos = 0;
             skip_whitespace(params["required"], req_pos);
             if (req_pos < params["required"].length() && params["required"][req_pos] == '[') {
@@ -355,13 +358,15 @@ inline std::string format_function_declaration(const std::string& name,
                     if (params["required"][req_pos] == '"') {
                         req_pos++;
                         std::string item = extract_json_string(params["required"], req_pos);
-                        if (!first) result += ",";
+                        if (!first) req_items += ",";
                         first = false;
-                        result += escape(item);
+                        req_items += escape(item);
                     }
                 }
             }
-            result += "]";
+            if (!req_items.empty()) {
+                result += ",required:[" + req_items + "]";
+            }
         }
 
         if (params.count("type")) {

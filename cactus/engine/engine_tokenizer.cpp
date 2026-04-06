@@ -3,6 +3,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+#include <map>
 
 extern "C" {
     #include "../../libs/stb/stb_image.h"
@@ -307,24 +308,18 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
 
 std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported) const {
     std::string result;
+    size_t start_idx = 0;
 
     if (!tools_json.empty()) {
         result += "<|im_start|>system\n";
-
-        bool has_system_msg = false;
-        for (const auto& msg : messages) {
-            if (msg.role == "system") {
-                result += msg.content;
-                result += "\n\n";
-                has_system_msg = true;
-                break;
-            }
+        if (!messages.empty() && messages[0].role == "system") {
+            result += messages[0].content + "\n\n";
+            start_idx = 1;
         }
-
         result += "# Tools\n\n";
         result += "You may call one or more functions to assist with the user query.\n\n";
         result += "You are provided with function signatures within <tools></tools> XML tags:\n";
-        result += "<tools>\n";
+        result += "<tools>";
         result += tools_json;
         result += "\n</tools>\n\n";
         result += "For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n";
@@ -332,24 +327,62 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
         result += "{\"name\": <function-name>, \"arguments\": <args-json-object>}\n";
         result += "</tool_call>";
         result += "<|im_end|>\n";
+    } else {
+        if (!messages.empty() && messages[0].role == "system") {
+            result += "<|im_start|>system\n" + messages[0].content + "<|im_end|>\n";
+            start_idx = 1;
+        }
+    }
 
-        for (const auto& msg : messages) {
-            if (msg.role == "system" && has_system_msg) {
-                continue;
-            } else if (msg.role == "user") {
-                result += "<|im_start|>user\n" + msg.content + "<|im_end|>\n";
-            } else if (msg.role == "assistant") {
-                result += "<|im_start|>assistant\n" + msg.content + "<|im_end|>\n";
+    size_t last_query_index = messages.empty() ? 0 : messages.size() - 1;
+    for (size_t idx = messages.size(); idx > 0; idx--) {
+        const auto& m = messages[idx - 1];
+        if (m.role == "user") {
+            bool is_tool_response = m.content.size() >= 31 &&
+                m.content.substr(0, 15) == "<tool_response>" &&
+                m.content.substr(m.content.size() - 16) == "</tool_response>";
+            if (!is_tool_response) {
+                last_query_index = idx - 1;
+                break;
             }
         }
-    } else {
-        for (const auto& msg : messages) {
-            if (msg.role == "system") {
-                result += "<|im_start|>system\n" + msg.content + "<|im_end|>\n";
-            } else if (msg.role == "user") {
-                result += "<|im_start|>user\n" + msg.content + "<|im_end|>\n";
-            } else if (msg.role == "assistant") {
-                result += "<|im_start|>assistant\n" + msg.content + "<|im_end|>\n";
+    }
+
+    for (size_t i = start_idx; i < messages.size(); i++) {
+        const auto& msg = messages[i];
+        if (msg.role == "user" || (msg.role == "system" && i > 0)) {
+            result += "<|im_start|>" + msg.role + "\n" + msg.content + "<|im_end|>\n";
+        } else if (msg.role == "assistant") {
+            if (i > last_query_index && i == messages.size() - 1) {
+                result += "<|im_start|>assistant\n<think>\n\n</think>\n\n";
+                std::string content = msg.content;
+                size_t lstrip = content.find_first_not_of('\n');
+                if (lstrip != std::string::npos) {
+                    result += content.substr(lstrip);
+                }
+            } else {
+                result += "<|im_start|>assistant\n" + msg.content;
+            }
+            if (!msg.tool_calls.empty()) {
+                for (size_t j = 0; j < msg.tool_calls.size(); j++) {
+                    if ((j == 0 && !msg.content.empty()) || j > 0) {
+                        result += "\n";
+                    }
+                    result += "<tool_call>\n{\"name\": \"" + msg.tool_calls[j].name
+                        + "\", \"arguments\": " + msg.tool_calls[j].arguments
+                        + "}\n</tool_call>";
+                }
+            }
+            result += "<|im_end|>\n";
+        } else if (msg.role == "tool") {
+            bool first_tool = (i == 0 || messages[i - 1].role != "tool");
+            bool last_tool = (i == messages.size() - 1 || messages[i + 1].role != "tool");
+            if (first_tool) {
+                result += "<|im_start|>user";
+            }
+            result += "\n<tool_response>\n" + msg.content + "\n</tool_response>";
+            if (last_tool) {
+                result += "<|im_end|>\n";
             }
         }
     }
@@ -414,6 +447,12 @@ std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& message
             result += "<|tool_response_end|>";
         } else {
             result += msg.content;
+            if (msg.role == "assistant" && !msg.tool_calls.empty()) {
+                for (const auto& tc : msg.tool_calls) {
+                    result += "<|tool_call_start|>[{\"name\": \"" + tc.name
+                        + "\", \"arguments\": " + tc.arguments + "}]<|tool_call_end|>";
+                }
+            }
         }
         result += "<|im_end|>\n";
     }
@@ -423,6 +462,72 @@ std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& message
     }
 
     return result;
+}
+
+static std::string format_tool_call_for_prompt(const std::string& name, const std::string& args_json, bool use_pipe_tags) {
+    const char* tag_start = use_pipe_tags ? "<|tool_call>" : "<start_function_call>";
+    const char* tag_end   = use_pipe_tags ? "<tool_call|>" : "<end_function_call>";
+
+    std::string formatted_args = "{";
+    if (!args_json.empty()) {
+        std::map<std::string, std::string> args;
+        size_t pos = 0;
+        while (pos < args_json.length() && args_json[pos] != '{') pos++;
+        if (pos < args_json.length()) pos++;
+
+        while (pos < args_json.length()) {
+            while (pos < args_json.length() && std::isspace(static_cast<unsigned char>(args_json[pos]))) pos++;
+            if (pos >= args_json.length() || args_json[pos] == '}') break;
+            if (args_json[pos] == ',') { pos++; continue; }
+            if (args_json[pos] != '"') break;
+            pos++;
+
+            std::string key;
+            while (pos < args_json.length() && args_json[pos] != '"') {
+                if (args_json[pos] == '\\' && pos + 1 < args_json.length()) { pos++; }
+                key += args_json[pos++];
+            }
+            if (pos < args_json.length()) pos++;
+
+            while (pos < args_json.length() && (std::isspace(static_cast<unsigned char>(args_json[pos])) || args_json[pos] == ':')) pos++;
+
+            std::string value;
+            if (pos < args_json.length() && args_json[pos] == '"') {
+                pos++;
+                std::string str_val;
+                while (pos < args_json.length() && args_json[pos] != '"') {
+                    if (args_json[pos] == '\\' && pos + 1 < args_json.length()) {
+                        pos++;
+                        if (args_json[pos] == 'n') str_val += '\n';
+                        else if (args_json[pos] == 't') str_val += '\t';
+                        else str_val += args_json[pos];
+                    } else {
+                        str_val += args_json[pos];
+                    }
+                    pos++;
+                }
+                if (pos < args_json.length()) pos++;
+                value = "<escape>" + str_val + "<escape>";
+            } else {
+                size_t val_start = pos;
+                while (pos < args_json.length() && args_json[pos] != ',' && args_json[pos] != '}') pos++;
+                value = args_json.substr(val_start, pos - val_start);
+                while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) value.pop_back();
+            }
+
+            if (!key.empty()) args[key] = value;
+        }
+
+        bool first = true;
+        for (const auto& [k, v] : args) {
+            if (!first) formatted_args += ",";
+            first = false;
+            formatted_args += k + ":" + v;
+        }
+    }
+    formatted_args += "}";
+
+    return std::string(tag_start) + "call:" + name + formatted_args + tag_end;
 }
 
 std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
@@ -492,6 +597,11 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
         result += "<|turn>" + role + "\n";
         if (role == "model") {
             result += strip_channel(msg.content);
+            if (!msg.tool_calls.empty()) {
+                for (const auto& tc : msg.tool_calls) {
+                    result += format_tool_call_for_prompt(tc.name, tc.arguments, true);
+                }
+            }
         } else {
             for (const auto& image_path : msg.images) {
                 size_t n = compute_soft_tokens(image_path);
@@ -600,6 +710,14 @@ std::string Tokenizer::format_lfm2_vl_style(
 
 
 std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const {
+    auto trim = [](const std::string& s) -> std::string {
+        size_t start = 0;
+        while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) ++start;
+        size_t end = s.size();
+        while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) --end;
+        return s.substr(start, end - start);
+    };
+
     std::string result = "<bos>";
 
     std::string system_content;
@@ -613,13 +731,9 @@ std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messag
     if (!tools_json.empty() || !system_content.empty()) {
         result += "<start_of_turn>developer\n";
         if (!system_content.empty()) {
-            result += system_content;
-            if (!tools_json.empty()) {
-                result += "\n"; 
-            }
+            result += trim(system_content);
         }
         if (!tools_json.empty()) {
-            result += "You are a model that can do function calling with the following functions";
             result += tools_json;
         }
         result += "<end_of_turn>\n";
@@ -631,39 +745,42 @@ std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messag
         const auto& msg = messages[i];
 
         if (msg.role == "tool") {
-            if (prev_message_type != "tool_response") {
-                result += "<start_of_turn>developer\n";
-            }
             std::string func_name = msg.name.empty() ? "tool" : msg.name;
             result += "<start_function_response>response:" + func_name + "{" + msg.content + "}<end_function_response>";
             prev_message_type = "tool_response";
             
         } else if (msg.role == "user") {
-            if (prev_message_type == "tool_response") {
-                result += "<end_of_turn>\n";
+            if (prev_message_type != "tool_response") {
+                result += "<start_of_turn>user\n";
             }
-            result += "<start_of_turn>user\n";
-            result += msg.content;
+            result += trim(msg.content);
             result += "<end_of_turn>\n";
             prev_message_type = "content";
             
         } else if (msg.role == "assistant" || msg.role == "model") {
-            if (prev_message_type == "tool_response") {
-                result += "<end_of_turn>\n";
+            if (prev_message_type != "tool_response") {
+                result += "<start_of_turn>model\n";
             }
-            result += "<start_of_turn>model\n";
-            result += msg.content;
-            result += "<end_of_turn>\n";
-            prev_message_type = "content";
+            if (!msg.content.empty()) {
+                result += trim(msg.content);
+            }
+            if (!msg.tool_calls.empty()) {
+                for (const auto& tc : msg.tool_calls) {
+                    result += format_tool_call_for_prompt(tc.name, tc.arguments, false);
+                }
+                if (i == messages.size() - 1) {
+                    result += "<start_function_response>";
+                }
+                prev_message_type = "tool_call";
+            } else {
+                result += "<end_of_turn>\n";
+                prev_message_type = "content";
+            }
         }
     }
 
-    if (prev_message_type == "tool_response") {
-        result += "<end_of_turn>\n";
-    }
-
     if (add_generation_prompt) {
-        if (prev_message_type != "tool_response") {
+        if (prev_message_type != "tool_response" && prev_message_type != "tool_call") {
             result += "<start_of_turn>model\n";
         }
     }
@@ -713,7 +830,14 @@ std::string Tokenizer::format_youtu_style(const std::vector<ChatMessage>& messag
             }
         } else if (msg.role == "assistant" || msg.role == "model") {
             is_last_user = false; is_tool = false; is_output_first = true;
-            result += "<|Assistant|>" + msg.content + "<|end_of_text|>";
+            result += "<|Assistant|>" + msg.content;
+            if (!msg.tool_calls.empty()) {
+                for (const auto& tc : msg.tool_calls) {
+                    result += "<tool_call>{\"name\": \"" + tc.name
+                        + "\", \"arguments\": " + tc.arguments + "}</tool_call>";
+                }
+            }
+            result += "<|end_of_text|>";
         }
     }
 

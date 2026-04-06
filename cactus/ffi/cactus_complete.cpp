@@ -338,6 +338,8 @@ PreparedPrompt prepare_prompt(
     std::string formatted_tools;
     if (Config::is_gemma_family(prompt.model_type)) {
         formatted_tools = gemma::format_tools(prompt.tools, prompt.model_type == Config::ModelType::GEMMA4);
+    } else if (prompt.model_type == Config::ModelType::QWEN || prompt.model_type == Config::ModelType::QWEN3P5) {
+        formatted_tools = serialize_tools_for_template(prompt.tools);
     } else {
         formatted_tools = serialize_tools_json(prompt.tools);
     }

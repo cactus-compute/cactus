@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <stdexcept>
 #include <sstream>
 #include <iomanip>
@@ -515,6 +516,119 @@ inline std::string serialize_tools_json(const std::vector<ToolFunction>& tools) 
     return oss.str();
 }
 
+namespace json_sorted {
+
+inline void skip_ws(const std::string& s, size_t& p) {
+    while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) p++;
+}
+
+inline std::string parse_string(const std::string& s, size_t& p) {
+    std::string r = "\"";
+    p++;
+    while (p < s.size()) {
+        if (s[p] == '\\') {
+            r += s[p++];
+            if (p < s.size()) r += s[p++];
+        } else if (s[p] == '"') {
+            r += '"';
+            p++;
+            return r;
+        } else {
+            r += s[p++];
+        }
+    }
+    return r;
+}
+
+inline std::string parse_value(const std::string& s, size_t& p);
+
+inline std::string parse_object(const std::string& s, size_t& p) {
+    p++;
+    std::map<std::string, std::string> entries;
+    skip_ws(s, p);
+    while (p < s.size() && s[p] != '}') {
+        if (s[p] == ',') { p++; skip_ws(s, p); continue; }
+        std::string key = parse_string(s, p);
+        skip_ws(s, p);
+        if (p < s.size() && s[p] == ':') p++;
+        skip_ws(s, p);
+        std::string val = parse_value(s, p);
+        entries[key] = val;
+        skip_ws(s, p);
+    }
+    if (p < s.size()) p++;
+    std::string r = "{";
+    bool first = true;
+    for (const auto& kv : entries) {
+        if (!first) r += ", ";
+        r += kv.first + ": " + kv.second;
+        first = false;
+    }
+    r += "}";
+    return r;
+}
+
+inline std::string parse_array(const std::string& s, size_t& p) {
+    p++;
+    std::vector<std::string> items;
+    skip_ws(s, p);
+    while (p < s.size() && s[p] != ']') {
+        if (s[p] == ',') { p++; skip_ws(s, p); continue; }
+        items.push_back(parse_value(s, p));
+        skip_ws(s, p);
+    }
+    if (p < s.size()) p++;
+    std::string r = "[";
+    for (size_t i = 0; i < items.size(); i++) {
+        if (i > 0) r += ", ";
+        r += items[i];
+    }
+    r += "]";
+    return r;
+}
+
+inline std::string parse_value(const std::string& s, size_t& p) {
+    skip_ws(s, p);
+    if (p >= s.size()) return "";
+    if (s[p] == '"') return parse_string(s, p);
+    if (s[p] == '{') return parse_object(s, p);
+    if (s[p] == '[') return parse_array(s, p);
+    size_t start = p;
+    while (p < s.size() && s[p] != ',' && s[p] != '}' && s[p] != ']' && !std::isspace(static_cast<unsigned char>(s[p]))) p++;
+    return s.substr(start, p - start);
+}
+
+inline std::string reformat(const std::string& json) {
+    size_t p = 0;
+    return parse_value(json, p);
+}
+
+} // namespace json_sorted
+
+inline std::string serialize_tools_for_template(const std::vector<ToolFunction>& tools) {
+    if (tools.empty()) return "";
+    std::string result;
+    for (const auto& tool : tools) {
+        std::map<std::string, std::string> func_fields;
+        func_fields["\"description\""] = "\"" + escape_json_string(tool.description) + "\"";
+        func_fields["\"name\""] = "\"" + escape_json_string(tool.name) + "\"";
+        auto it = tool.parameters.find("schema");
+        if (it != tool.parameters.end()) {
+            func_fields["\"parameters\""] = json_sorted::reformat(it->second);
+        }
+        std::string func_json = "{";
+        bool first = true;
+        for (const auto& kv : func_fields) {
+            if (!first) func_json += ", ";
+            func_json += kv.first + ": " + kv.second;
+            first = false;
+        }
+        func_json += "}";
+        result += "\n{\"function\": " + func_json + ", \"type\": \"function\"}";
+    }
+    return result;
+}
+
 inline void handle_error_response(const std::string& error_message, char* response_buffer, size_t buffer_size) {
     std::ostringstream json;
     json << "{";
@@ -622,6 +736,119 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
 
         parse_path_array("\"images\"", msg.images, &out_image_paths);
         parse_path_array("\"audio\"", msg.audio, out_audio_paths);
+
+        if (msg.role == "tool") {
+            size_t name_pos = json.find("\"name\"", obj_start);
+            if (name_pos != std::string::npos && name_pos < obj_end) {
+                size_t name_quote = json.find('"', name_pos + 6);
+                if (name_quote != std::string::npos && name_quote < obj_end) {
+                    size_t name_start = name_quote + 1;
+                    size_t name_end = json.find('"', name_start);
+                    if (name_end != std::string::npos && name_end < obj_end) {
+                        msg.name = json.substr(name_start, name_end - name_start);
+                    }
+                }
+            }
+        }
+
+        size_t tool_calls_pos = json.find("\"tool_calls\"", obj_start);
+        if (tool_calls_pos != std::string::npos && tool_calls_pos < obj_end) {
+            size_t tool_calls_arr_start = json.find('[', tool_calls_pos);
+            if (tool_calls_arr_start != std::string::npos && tool_calls_arr_start < obj_end) {
+                size_t tool_calls_arr_end = tool_calls_arr_start + 1;
+                int bracket_depth = 1;
+                while (tool_calls_arr_end < json.length() && bracket_depth > 0) {
+                    if (json[tool_calls_arr_end] == '[') bracket_depth++;
+                    else if (json[tool_calls_arr_end] == ']') bracket_depth--;
+                    else if (json[tool_calls_arr_end] == '"') {
+                        tool_calls_arr_end++;
+                        while (tool_calls_arr_end < json.length() && json[tool_calls_arr_end] != '"') {
+                            if (json[tool_calls_arr_end] == '\\') tool_calls_arr_end++;
+                            tool_calls_arr_end++;
+                        }
+                    }
+                    tool_calls_arr_end++;
+                }
+
+                size_t search_pos = tool_calls_arr_start;
+                while (true) {
+                    size_t func_pos = json.find("\"function\"", search_pos);
+                    if (func_pos == std::string::npos || func_pos >= tool_calls_arr_end) break;
+
+                    size_t func_obj_start = json.find('{', func_pos + 10);
+                    if (func_obj_start == std::string::npos || func_obj_start >= tool_calls_arr_end) break;
+
+                    size_t func_obj_end = func_obj_start + 1;
+                    int func_depth = 1;
+                    while (func_obj_end < json.length() && func_depth > 0) {
+                        if (json[func_obj_end] == '{') func_depth++;
+                        else if (json[func_obj_end] == '}') func_depth--;
+                        else if (json[func_obj_end] == '"') {
+                            func_obj_end++;
+                            while (func_obj_end < json.length() && json[func_obj_end] != '"') {
+                                if (json[func_obj_end] == '\\') func_obj_end++;
+                                func_obj_end++;
+                            }
+                        }
+                        func_obj_end++;
+                    }
+
+                    cactus::engine::ToolCallInfo tool_call;
+
+                    size_t fn_name_pos = json.find("\"name\"", func_obj_start);
+                    if (fn_name_pos != std::string::npos && fn_name_pos < func_obj_end) {
+                        size_t fn_name_quote = json.find('"', fn_name_pos + 6);
+                        if (fn_name_quote != std::string::npos && fn_name_quote < func_obj_end) {
+                            size_t fn_name_start = fn_name_quote + 1;
+                            size_t fn_name_end = json.find('"', fn_name_start);
+                            if (fn_name_end != std::string::npos && fn_name_end < func_obj_end) {
+                                tool_call.name = json.substr(fn_name_start, fn_name_end - fn_name_start);
+                            }
+                        }
+                    }
+
+                    size_t args_pos = json.find("\"arguments\"", func_obj_start);
+                    if (args_pos != std::string::npos && args_pos < func_obj_end) {
+                        size_t colon_pos = json.find(':', args_pos + 11);
+                        if (colon_pos != std::string::npos && colon_pos < func_obj_end) {
+                            size_t args_start = colon_pos + 1;
+                            while (args_start < json.length() && std::isspace(static_cast<unsigned char>(json[args_start]))) args_start++;
+
+                            if (args_start < func_obj_end && json[args_start] == '{') {
+                                int args_depth = 1;
+                                size_t args_end = args_start + 1;
+                                while (args_end < json.length() && args_depth > 0) {
+                                    if (json[args_end] == '{') args_depth++;
+                                    else if (json[args_end] == '}') args_depth--;
+                                    else if (json[args_end] == '"') {
+                                        args_end++;
+                                        while (args_end < json.length() && json[args_end] != '"') {
+                                            if (json[args_end] == '\\') args_end++;
+                                            args_end++;
+                                        }
+                                    }
+                                    args_end++;
+                                }
+                                tool_call.arguments = json.substr(args_start, args_end - args_start);
+                            } else if (args_start < func_obj_end && json[args_start] == '"') {
+                                size_t str_start = args_start + 1;
+                                size_t str_end = str_start;
+                                while (str_end < json.length() && json[str_end] != '"') {
+                                    if (json[str_end] == '\\') str_end++;
+                                    str_end++;
+                                }
+                                tool_call.arguments = json.substr(str_start, str_end - str_start);
+                            }
+                        }
+                    }
+
+                    if (!tool_call.name.empty()) {
+                        msg.tool_calls.push_back(tool_call);
+                    }
+                    search_pos = func_obj_end;
+                }
+            }
+        }
 
         messages.push_back(msg);
 
@@ -1200,7 +1427,6 @@ inline void parse_function_calls_from_response(const std::string& response_text,
 
     gemma::parse_function_calls(regular_response, function_calls);
 
-    // Parse Qwen-style function calls: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
     const std::string QWEN_TOOL_START = "<tool_call>";
     const std::string QWEN_TOOL_END = "</tool_call>";
     size_t qwen_start_pos = 0;
@@ -1209,27 +1435,62 @@ inline void parse_function_calls_from_response(const std::string& response_text,
         size_t content_start = qwen_start_pos + QWEN_TOOL_START.length();
         size_t qwen_end_pos = regular_response.find(QWEN_TOOL_END, content_start);
 
+        size_t erase_end;
+        std::string json_content;
+
         if (qwen_end_pos != std::string::npos) {
-            std::string json_content = regular_response.substr(content_start, qwen_end_pos - content_start);
-
-            size_t first = json_content.find_first_not_of(" \t\n\r");
-            size_t last = json_content.find_last_not_of(" \t\n\r");
-            if (first != std::string::npos && last != std::string::npos) {
-                json_content = json_content.substr(first, last - first + 1);
-            }
-
-            if (json_content.size() > 2 && json_content[0] == '{' &&
-                json_content.find("\"name\"") != std::string::npos) {
-                function_calls.push_back(json_content);
-            }
-
-            regular_response.erase(qwen_start_pos, qwen_end_pos + QWEN_TOOL_END.length() - qwen_start_pos);
+            json_content = regular_response.substr(content_start, qwen_end_pos - content_start);
+            erase_end = qwen_end_pos + QWEN_TOOL_END.length();
         } else {
-            break;
+            json_content = regular_response.substr(content_start);
+            erase_end = regular_response.length();
         }
+
+        size_t first = json_content.find_first_not_of(" \t\n\r");
+        size_t last = json_content.find_last_not_of(" \t\n\r");
+        if (first != std::string::npos && last != std::string::npos) {
+            json_content = json_content.substr(first, last - first + 1);
+        }
+
+        if (json_content.size() > 2 && json_content[0] == '{' &&
+            json_content.find("\"name\"") != std::string::npos) {
+            size_t depth = 0;
+            bool in_string = false;
+            bool escaped = false;
+            size_t end_pos = 0;
+            for (size_t c = 0; c < json_content.size(); c++) {
+                char ch = json_content[c];
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (ch == '\\' && in_string) {
+                    escaped = true;
+                    continue;
+                }
+                if (ch == '"') {
+                    in_string = !in_string;
+                    continue;
+                }
+                if (!in_string) {
+                    if (ch == '{') depth++;
+                    else if (ch == '}') {
+                        depth--;
+                        if (depth == 0) {
+                            end_pos = c + 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (end_pos > 0) {
+                function_calls.push_back(json_content.substr(0, end_pos));
+            }
+        }
+
+        regular_response.erase(qwen_start_pos, erase_end - qwen_start_pos);
     }
-    
-    // Parse LFM2-style function calls: <|tool_call_start|>[name(args)]<|tool_call_end|>
+
     const std::string TOOL_CALL_START = "<|tool_call_start|>";
     const std::string TOOL_CALL_END = "<|tool_call_end|>";
     size_t tool_start_pos = 0;
