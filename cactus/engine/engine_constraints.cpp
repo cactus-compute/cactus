@@ -267,7 +267,17 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                 break;
 
             case State::GEMMA_EXPECT_END:
-                if (generated_text_.find(call_end_tag_) != std::string::npos) {
+                if (generated_text_.find("<end_function_call>") != std::string::npos) {
+                    state_ = State::GEMMA_BETWEEN_CALLS; 
+                    generated_text_.clear();
+                }
+                break;
+
+            case State::GEMMA_BETWEEN_CALLS:
+                if (generated_text_.find("<start_function_call>") != std::string::npos) {
+                    state_ = State::GEMMA_EXPECT_CALL;
+                    generated_text_.clear();
+                } else if (generated_text_.find("<start_function_response>") != std::string::npos) {
                     state_ = State::DONE;
                     generated_text_.clear();
                 }
@@ -577,6 +587,19 @@ void ToolCallConstrainer::compute_bias() {
                     current_bias_[t] = BLOCK_BIAS;
                 }
                 for (uint32_t t : gemma_call_start_tokens_) {
+                    current_bias_[t] = BLOCK_BIAS;
+                }
+                break;
+
+            case State::GEMMA_BETWEEN_CALLS:
+                // Bias both the start of a new call and the start of a response (end of all calls)
+                for (uint32_t t : gemma_response_start_tokens_) {
+                    current_bias_[t] = FORCE_BIAS; 
+                }
+                for (uint32_t t : gemma_call_start_tokens_) {
+                    current_bias_[t] = FORCE_BIAS;
+                }
+                for (uint32_t t : open_brace_tokens_) {
                     current_bias_[t] = BLOCK_BIAS;
                 }
                 break;

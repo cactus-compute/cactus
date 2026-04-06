@@ -534,7 +534,8 @@ public:
         GEMMA_IN_FUNC_NAME, 
         GEMMA_EXPECT_BRACE, 
         GEMMA_IN_ARGUMENTS, 
-        GEMMA_EXPECT_END 
+        GEMMA_EXPECT_END,
+        GEMMA_BETWEEN_CALLS
     };
 
     void init(Config::ModelType model_type,

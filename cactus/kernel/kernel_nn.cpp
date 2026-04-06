@@ -537,7 +537,7 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
         }
     }
 
-    if (temperature == 0.0f && top_p <= 0.0f && top_k == 0) {
+    if (temperature == 0.0f || top_k == 1) {
         auto it = std::max_element(filtered_logits.begin(), filtered_logits.end());
         output[0] = static_cast<uint32_t>(std::distance(filtered_logits.begin(), it));
         return;
@@ -709,6 +709,12 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
 
     const bool has_bias = bias_values && bias_indices && bias_count > 0;
 
+    if ((temperature == 0.0f || top_k == 1) && !has_bias) {
+        auto it = std::max_element(logits, logits + vocab_size);
+        output[0] = static_cast<uint32_t>(std::distance(logits, it));
+        return;
+    }
+
     std::vector<__fp16> filtered_logits(vocab_size);
     std::memcpy(filtered_logits.data(), logits, vocab_size * sizeof(__fp16));
 
@@ -721,7 +727,7 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
         }
     }
 
-    if (temperature == 0.0f && top_p <= 0.0f && top_k == 0) {
+    if (temperature == 0.0f || top_k == 1) {
         auto it = std::max_element(filtered_logits.begin(), filtered_logits.end());
         output[0] = static_cast<uint32_t>(std::distance(filtered_logits.begin(), it));
         return;
@@ -894,4 +900,188 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
     if (token_history.size() > MAX_HISTORY) {
         token_history.erase(token_history.begin());
     }
+}
+
+void cactus_sample_f16_f32_acc(const __fp16* logits, uint32_t* output, size_t vocab_size,
+                       float temperature, float top_p, size_t top_k, size_t random_seed,
+                       const float* bias_values, const uint32_t* bias_indices,
+                       size_t bias_count) {
+    if (vocab_size == 0) {
+        output[0] = 0;
+        return;
+    }
+
+    const bool has_bias = bias_values && bias_indices && bias_count > 0;
+
+    if ((temperature == 0.0f || top_k == 1) && !has_bias) {
+        auto it = std::max_element(logits, logits + vocab_size);
+        output[0] = static_cast<uint32_t>(std::distance(logits, it));
+        return;
+    }
+
+    struct TokenCandidate { float logit; uint32_t index; };
+    static thread_local std::vector<float> logit_buf;
+    static thread_local std::vector<TokenCandidate> active;
+    static thread_local std::mt19937 gen(std::random_device{}());
+    if (random_seed != 0) {
+        gen.seed(random_seed);
+    }
+    logit_buf.resize(vocab_size);
+    float* fl = logit_buf.data();
+
+    // Fused F16 to F32 convert + temperature scale + max accumulation
+    float32x4_t max_vec = vdupq_n_f32(-std::numeric_limits<float>::infinity());
+    if (temperature > 0.0f) {
+        float inv_temp = 1.0f / temperature;
+        float32x4_t inv_temp_vec = vdupq_n_f32(inv_temp);
+        size_t i = 0;
+        for (; i + 8 <= vocab_size; i += 8) {
+            float16x8_t h = vld1q_f16(logits + i);
+            float32x4_t lo = vmulq_f32(vcvt_f32_f16(vget_low_f16(h)), inv_temp_vec);
+            float32x4_t hi = vmulq_f32(vcvt_f32_f16(vget_high_f16(h)), inv_temp_vec);
+            vst1q_f32(fl + i,     lo);
+            vst1q_f32(fl + i + 4, hi);
+            max_vec = vmaxq_f32(max_vec, vmaxq_f32(lo, hi));
+        }
+        for (; i < vocab_size; ++i) {
+            fl[i] = static_cast<float>(logits[i]) * inv_temp;
+        }
+    } else {
+        size_t i = 0;
+        for (; i + 8 <= vocab_size; i += 8) {
+            float16x8_t h = vld1q_f16(logits + i);
+            float32x4_t lo = vcvt_f32_f16(vget_low_f16(h));
+            float32x4_t hi = vcvt_f32_f16(vget_high_f16(h));
+            vst1q_f32(fl + i,     lo);
+            vst1q_f32(fl + i + 4, hi);
+            max_vec = vmaxq_f32(max_vec, vmaxq_f32(lo, hi));
+        }
+        for (; i < vocab_size; ++i) {
+            fl[i] = static_cast<float>(logits[i]);
+        }
+    }
+
+    if (bias_values && bias_indices && bias_count > 0) {
+        for (size_t i = 0; i < bias_count; ++i) {
+            uint32_t idx = bias_indices[i];
+            if (idx < vocab_size) {
+                fl[idx] += bias_values[i];
+            }
+        }
+    }
+
+    float max_logit = vmaxvq_f32(max_vec);
+    for (size_t i = (vocab_size / 8) * 8; i < vocab_size; ++i) {
+        if (fl[i] > max_logit) max_logit = fl[i];
+    }
+
+    if (bias_values && bias_indices && bias_count > 0) {
+        for (size_t i = 0; i < bias_count; ++i) {
+            uint32_t idx = bias_indices[i];
+            if (idx < vocab_size && fl[idx] > max_logit) {
+                max_logit = fl[idx];
+            }
+        }
+    }
+
+    if (std::isinf(max_logit) || max_logit != max_logit) {
+        output[0] = 0;
+        return;
+    }
+
+    if (temperature == 0.0f || top_k == 1) {
+        auto it = std::max_element(fl, fl + vocab_size);
+        output[0] = static_cast<uint32_t>(std::distance(fl, it));
+        return;
+    }
+
+    constexpr float min_p = 0.15f;
+    float min_p_threshold = max_logit + std::log(min_p);
+    active.clear();
+    for (size_t i = 0; i < vocab_size; ++i) {
+        if (fl[i] >= min_p_threshold) {
+            active.push_back({fl[i], static_cast<uint32_t>(i)});
+        }
+    }
+
+    if (active.empty()) {
+        output[0] = 0;
+        return;
+    }
+
+    if (top_k > 0 && top_k < active.size()) {
+        std::nth_element(active.begin(), active.begin() + (top_k - 1), active.end(),
+            [](const TokenCandidate& a, const TokenCandidate& b) { return a.logit > b.logit; });
+        active.resize(top_k);
+    }
+
+    if (top_p > 0.0f && top_p < 1.0f) {
+        std::sort(active.begin(), active.end(),
+            [](const TokenCandidate& a, const TokenCandidate& b) { return a.logit > b.logit; });
+
+        float local_max = active[0].logit;
+        float total = 0.0f;
+        for (auto& t : active) {
+            t.logit = std::exp(t.logit - local_max);
+            total += t.logit;
+        }
+        float inv_total = 1.0f / total;
+        float cum_sum = 0.0f;
+        size_t cutoff = active.size();
+        for (size_t i = 0; i < active.size(); ++i) {
+            cum_sum += active[i].logit * inv_total;
+            if (cum_sum > top_p && i > 0) {
+                cutoff = i + 1;
+                break;
+            }
+        }
+        active.resize(cutoff);
+
+        total = 0.0f;
+        for (const auto& t : active) total += t.logit;
+
+        std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+        float target = dist(gen) * total;
+
+        float cumulative = 0.0f;
+        for (const auto& t : active) {
+            cumulative += t.logit;
+            if (cumulative >= target) {
+                output[0] = t.index;
+                return;
+            }
+        }
+        output[0] = active.back().index;
+        return;
+    }
+
+    float local_max = active[0].logit;
+    for (size_t i = 1; i < active.size(); ++i) {
+        if (active[i].logit > local_max) local_max = active[i].logit;
+    }
+
+    float total = 0.0f;
+    for (auto& t : active) {
+        t.logit = std::exp(t.logit - local_max);
+        total += t.logit;
+    }
+
+    if (total == 0.0f) {
+        output[0] = 0;
+        return;
+    }
+
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    float target = dist(gen) * total;
+
+    float cumulative = 0.0f;
+    for (const auto& t : active) {
+        cumulative += t.logit;
+        if (cumulative >= target) {
+            output[0] = t.index;
+            return;
+        }
+    }
+
+    output[0] = active.back().index;
 }

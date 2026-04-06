@@ -146,6 +146,9 @@ protected:
                                   ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
 
     size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f,
+                    float top_p = -1.0f, size_t top_k = 0,
+                    const std::string& profile_file = "", float* out_entropy = nullptr) override;
     void load_weights_to_graph(CactusGraph* gb) override;
     void post_init() override;
 

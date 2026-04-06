@@ -27,9 +27,15 @@ void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 
     if (logits_buffer.precision == Precision::FP16) {
         const __fp16* logits_fp16 = logits_buffer.data_as<__fp16>();
-        cactus_sample_f16(logits_fp16 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
-                         vocab_size, temperature, top_p, top_k, random_seed,
-                         bias_values, bias_indices, bias_count);
+        if (node.params.fp32_accumulate) {
+            cactus_sample_f16_f32_acc(logits_fp16 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
+                             vocab_size, temperature, top_p, top_k, random_seed,
+                             bias_values, bias_indices, bias_count);
+        } else {
+            cactus_sample_f16(logits_fp16 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
+                             vocab_size, temperature, top_p, top_k, random_seed,
+                             bias_values, bias_indices, bias_count);
+        }
     } else {
         const float* logits_fp32 = logits_buffer.data_as<float>();
         cactus_sample_f32(logits_fp32 + last_token_offset, node.output_buffer.data_as<uint32_t>(),

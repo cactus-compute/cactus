@@ -188,5 +188,81 @@ size_t GemmaModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) 
     return final_hidden;
 }
 
+uint32_t GemmaModel::decode(const std::vector<uint32_t>& tokens, float temperature, float top_p,
+                             size_t top_k, const std::string& profile_file, float* out_entropy) {
+    if (temperature < 0) {
+        temperature = config_.default_temperature;
+    }
+    if (top_p < 0) {
+        top_p = config_.default_top_p;
+    }
+    if (top_k == 0) {
+        top_k = config_.default_top_k;
+    }
+    auto final_hidden = forward(tokens, true);
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    auto backend = config_.default_backend == Config::Backend::CPU
+        ? ComputeBackend::CPU
+        : ComputeBackend::NPU;
+
+    auto last_hidden = gb->index(final_hidden, tokens.size() - 1, 0);
+    const auto& last_hidden_buf = gb->get_output_buffer(last_hidden);
+    size_t hidden_dim = last_hidden_buf.shape[0];
+    last_hidden = gb->reshape(last_hidden, {1, hidden_dim});
+
+    auto logits_node_id = gb->matmul(last_hidden, output_weight_node_id_, true, backend);
+    auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k, tool_constrainer_.get_bias(), true);
+
+    gb->execute(profile_file);
+
+    if (out_entropy) {
+        const auto& logits_buf = gb->get_output_buffer(logits_node_id);
+        void* logits_ptr = gb->get_output(logits_node_id);
+        size_t vocab_size = logits_buf.shape.back();
+        size_t seq_len = 1;
+        if (logits_buf.shape.size() >= 2) {
+            seq_len = logits_buf.shape[logits_buf.shape.size() - 2];
+        }
+        size_t row_offset = (seq_len > 0 ? (seq_len - 1) * vocab_size : 0);
+
+        std::vector<float> logits(vocab_size);
+        if (logits_buf.precision == Precision::FP16) {
+            const __fp16* src = static_cast<const __fp16*>(logits_ptr) + row_offset;
+            for (size_t i = 0; i < vocab_size; ++i) {
+                logits[i] = static_cast<float>(src[i]);
+            }
+        } else {
+            float* src = static_cast<float*>(logits_ptr) + row_offset;
+            std::copy(src, src + vocab_size, logits.begin());
+        }
+
+        float max_logit = *std::max_element(logits.begin(), logits.end());
+        double sum_exp = 0.0;
+        for (size_t i = 0; i < vocab_size; ++i) {
+            sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
+        }
+        double log_sum_exp = static_cast<double>(max_logit) + std::log(sum_exp);
+
+        double entropy = 0.0;
+        for (size_t i = 0; i < vocab_size; ++i) {
+            double log_prob = static_cast<double>(logits[i]) - log_sum_exp;
+            double prob = std::exp(log_prob);
+            if (prob > 1e-10) {
+                entropy -= prob * log_prob;
+            }
+        }
+
+        double max_entropy = std::log(static_cast<double>(vocab_size));
+        *out_entropy = static_cast<float>(entropy / max_entropy);
+    }
+
+    post_execute_updates(gb, tokens.size());
+    update_kv_cache(gb, tokens.size());
+
+    auto* output_ptr = gb->get_output(sampled_token_id);
+    return *static_cast<uint32_t*>(output_ptr);
+}
+
 }
 }
