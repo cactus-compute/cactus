@@ -114,46 +114,6 @@ void print_vector_inline(const std::vector<T>& values) {
     std::cout << "]";
 }
 
-void dump_serialized_graph(const GraphFile::SerializedGraph& sg) {
-    std::cout << "=== Serialized Graph Dump ===" << std::endl;
-    std::cout << "magic: 0x" << std::hex << sg.header.magic << std::dec << std::endl;
-    std::cout << "version: " << sg.header.version << std::endl;
-    std::cout << "node_count: " << sg.header.node_count << std::endl;
-    std::cout << "flags: " << sg.header.flags << std::endl;
-    std::cout << "graph_inputs: ";
-    print_vector_inline(sg.graph_inputs);
-    std::cout << std::endl;
-    std::cout << "graph_outputs: ";
-    print_vector_inline(sg.graph_outputs);
-    std::cout << std::endl;
-
-    for (const auto& node : sg.nodes) {
-        std::cout << "node " << node.index << ":" << std::endl;
-        std::cout << "  op_type: " << op_type_to_string(node.op_type) << std::endl;
-        std::cout << "  inputs: ";
-        print_vector_inline(node.inputs);
-        std::cout << std::endl;
-        std::cout << "  output_shape: ";
-        print_vector_inline(node.output_shape);
-        std::cout << std::endl;
-        std::cout << "  precision: " << precision_to_string(node.precision) << std::endl;
-        std::cout << "  params: "
-                  << "scalar=" << node.params.scalar
-                  << " axis=" << node.params.axis
-                  << " epsilon=" << node.params.epsilon
-                  << " pretransposed_rhs=" << node.params.pretransposed_rhs
-                  << " slice_start=" << node.params.slice_start
-                  << " slice_length=" << node.params.slice_length
-                  << std::endl;
-        if (!node.params.new_shape.empty()) {
-            std::cout << "  params.new_shape: ";
-            print_vector_inline(node.params.new_shape);
-            std::cout << std::endl;
-        }
-    }
-    std::cout << "=== End Serialized Graph Dump ===" << std::endl;
-}
-
 } // namespace
 
 bool test_abs() {
@@ -736,53 +696,53 @@ bool test_precision_conversion() {
     return true;
 }
 
-// bool test_graph_save_load() {
-//     try {
-//         CactusGraph graph;
-//
-//         size_t input_a = graph.input({2, 3}, Precision::FP16);
-//         size_t input_b = graph.input({2, 3}, Precision::FP16);
-//         size_t result_id = graph.add(input_a, input_b);
-//
-//         std::vector<__fp16> data_a = {1, 2, 3, 4, 5, 6};
-//         std::vector<__fp16> data_b = {10, 20, 30, 40, 50, 60};
-//
-//         graph.set_input(input_a, const_cast<void*>(static_cast<const void*>(data_a.data())), Precision::FP16);
-//         graph.set_input(input_b, const_cast<void*>(static_cast<const void*>(data_b.data())), Precision::FP16);
-//         graph.execute();
-//
-//         std::string filename = "test_graph_save_load.bin";
-//         GraphFile::save_node(graph, result_id, filename);
-//
-//         CactusGraph new_graph;
-//         size_t loaded_id = new_graph.mmap_weights(filename);
-//         new_graph.execute();
-//
-//         __fp16* original_data = static_cast<__fp16*>(graph.get_output(result_id));
-//         __fp16* loaded_data = static_cast<__fp16*>(new_graph.get_output(loaded_id));
-//
-//         for (size_t i = 0; i < 6; ++i) {
-//             if (std::abs(static_cast<float>(original_data[i]) - static_cast<float>(loaded_data[i])) > 1e-3f) {
-//                 graph.hard_reset();
-//                 new_graph.hard_reset();
-//                 std::remove(filename.c_str());
-//                 return false;
-//             }
-//         }
-//
-//         const auto& buf = new_graph.get_output_buffer(loaded_id);
-//         bool result = (buf.shape == std::vector<size_t>{2, 3}) &&
-//                      (buf.precision == Precision::FP16) &&
-//                      (buf.byte_size == 12);
-//
-//         graph.hard_reset();
-//         new_graph.hard_reset();
-//         std::remove(filename.c_str());
-//         return result;
-//     } catch (const std::exception& e) {
-//         return false;
-//     }
-// }
+bool test_node_save_load() {
+    try {
+        CactusGraph graph;
+
+        size_t input_a = graph.input({2, 3}, Precision::FP16);
+        size_t input_b = graph.input({2, 3}, Precision::FP16);
+        size_t result_id = graph.add(input_a, input_b);
+
+        std::vector<__fp16> data_a = {1, 2, 3, 4, 5, 6};
+        std::vector<__fp16> data_b = {10, 20, 30, 40, 50, 60};
+
+        graph.set_input(input_a, const_cast<void*>(static_cast<const void*>(data_a.data())), Precision::FP16);
+        graph.set_input(input_b, const_cast<void*>(static_cast<const void*>(data_b.data())), Precision::FP16);
+        graph.execute();
+
+        std::string filename = "test_graph_save_load.bin";
+        GraphFile::save_node(graph, result_id, filename);
+
+        CactusGraph new_graph;
+        size_t loaded_id = new_graph.mmap_weights(filename);
+        new_graph.execute();
+
+        __fp16* original_data = static_cast<__fp16*>(graph.get_output(result_id));
+        __fp16* loaded_data = static_cast<__fp16*>(new_graph.get_output(loaded_id));
+
+        for (size_t i = 0; i < 6; ++i) {
+            if (std::abs(static_cast<float>(original_data[i]) - static_cast<float>(loaded_data[i])) > 1e-3f) {
+                graph.hard_reset();
+                new_graph.hard_reset();
+                std::remove(filename.c_str());
+                return false;
+            }
+        }
+
+        const auto& buf = new_graph.get_output_buffer(loaded_id);
+        bool result = (buf.shape == std::vector<size_t>{2, 3}) &&
+                     (buf.precision == Precision::FP16) &&
+                     (buf.byte_size == 12);
+
+        graph.hard_reset();
+        new_graph.hard_reset();
+        std::remove(filename.c_str());
+        return result;
+    } catch (const std::exception& e) {
+        return false;
+    }
+}
 
 
 bool test_graph_save_load() {
@@ -795,20 +755,9 @@ bool test_graph_save_load() {
         size_t sum_id = graph.add(input_a, input_b);
         size_t pow_id = graph.pow(sum_id, 2.0f);
 
-        std::cout << "[graph_save_load] original graph ids:"
-                  << " input_a=" << input_a
-                  << " input_b=" << input_b
-                  << " sum_id=" << sum_id
-                  << " pow_id=" << pow_id << std::endl;
-
         graph.save(filename);
-        std::cout << "[graph_save_load] saved graph to " << filename << std::endl;
 
         GraphFile::SerializedGraph sg = GraphFile::load_graph(filename);
-        std::cout << "[graph_save_load] loaded serialized graph:"
-                  << " node_count=" << sg.header.node_count
-                  << " graph_inputs=" << sg.graph_inputs.size()
-                  << " graph_outputs=" << sg.graph_outputs.size() << std::endl;
 
         if (sg.header.node_count != 4) {
             std::cout << "[graph_save_load] unexpected node_count: "
@@ -839,15 +788,10 @@ bool test_graph_save_load() {
         }
 
         CactusGraph loaded = CactusGraph::load(filename);
-        std::cout << "[graph_save_load] reconstructed graph node_count="
-                  << loaded.get_node_count() << std::endl;
 
         std::vector<__fp16> data_a = {1, 2, 3, 4, 5, 6};
         std::vector<__fp16> data_b = {10, 20, 30, 40, 50, 60};
 
-        // from_serialized rebuilds from an empty graph in serialized order,
-        // so runtime node ids should currently match serialized indices.
-        std::cout << "[graph_save_load] binding inputs to node ids 0 and 1" << std::endl;
         loaded.set_input(0, data_a.data(), Precision::FP16);
         loaded.set_input(1, data_b.data(), Precision::FP16);
         loaded.execute();
@@ -870,7 +814,6 @@ bool test_graph_save_load() {
             }
         }
 
-        std::cout << "[graph_save_load] output matched expected values" << std::endl;
         std::remove(filename.c_str());
         return true;
     } catch (const std::exception& e) {
@@ -921,7 +864,6 @@ bool test_graph_save_load_roundtrip_execution() {
             }
         }
 
-        // print file content for debugging
         std::remove(filename.c_str());
         return true;
     } catch (const std::exception& e) {
@@ -946,7 +888,6 @@ bool test_graph_save_for_inspection() {
         (void)pow_id;
 
         graph.save(filename);
-        std::cout << "[graph_save_for_inspection] wrote " << filename << std::endl;
         return true;
     } catch (const std::exception& e) {
         std::cout << "[graph_save_for_inspection] exception: " << e.what() << std::endl;
@@ -954,14 +895,127 @@ bool test_graph_save_for_inspection() {
     }
 }
 
-bool test_graph_dump_for_inspection() {
+bool test_graph_save_load_supported_ops_roundtrip() {
     try {
-        const std::string filename = "test_graph_inspect.cg";
-        GraphFile::SerializedGraph sg = GraphFile::load_graph(filename);
-        dump_serialized_graph(sg);
+        const std::string filename = "test_graph_supported_roundtrip.cg";
+
+        CactusGraph original;
+
+        size_t a = original.input({2, 3}, Precision::FP16);
+        size_t b = original.input({2, 3}, Precision::FP16);
+        size_t m1 = original.input({2, 3}, Precision::FP16);
+        size_t m2 = original.input({3, 2}, Precision::FP16);
+
+        size_t add_id = original.add(a, b);
+        size_t add_clipped_id = original.add_clipped(a, b);
+        size_t sub_id = original.subtract(a, b);
+        size_t mul_id = original.multiply(a, b);
+        size_t div_id = original.divide(a, b);
+
+        size_t abs_id = original.abs(sub_id);
+        size_t relu_id = original.relu(sub_id);
+        size_t silu_id = original.silu(add_id);
+        size_t gelu_id = original.gelu(add_id);
+        size_t gelu_erf_id = original.gelu_erf(add_id);
+        size_t sigmoid_id = original.sigmoid(sub_id);
+        size_t tanh_id = original.tanh(sub_id);
+
+        size_t pow_id = original.pow(abs_id, 2.0f);
+        size_t scalar_add_id = original.scalar_add(add_id, 1.5f);
+        size_t scalar_sub_id = original.scalar_subtract(add_id, 0.5f);
+        size_t scalar_mul_id = original.scalar_multiply(add_id, 2.0f);
+        size_t scalar_div_id = original.scalar_divide(add_id, 2.0f);
+
+        size_t view_id = original.view(add_id, {3, 2});
+        size_t reshape_id = original.reshape(add_id, {3, 2});
+        size_t flatten_id = original.flatten(add_id);
+
+        size_t slice_id = original.slice(add_id, 1, 1, 2);
+        size_t index_id = original.index(add_id, 1, 0);
+
+        size_t sum_id = original.sum(add_id, -1);
+        size_t mean_id = original.mean(add_id, 1);
+        size_t variance_id = original.variance(add_id, 1);
+        size_t min_id = original.min(add_id, 1);
+        size_t max_id = original.max(add_id, 1);
+        size_t softmax_id = original.softmax(add_id, 1);
+
+        size_t matmul_id = original.matmul(m1, m2, false);
+        size_t persistent_id = original.persistent(add_id);
+
+        std::vector<__fp16> data_a = {1, 2, 3, 4, 5, 6};
+        std::vector<__fp16> data_b = {6, 5, 4, 3, 2, 1};
+        std::vector<__fp16> data_m1 = {1, 2, 3, 4, 5, 6};
+        std::vector<__fp16> data_m2 = {1, 2, 3, 4, 5, 6};
+
+        original.set_input(a, data_a.data(), Precision::FP16);
+        original.set_input(b, data_b.data(), Precision::FP16);
+        original.set_input(m1, data_m1.data(), Precision::FP16);
+        original.set_input(m2, data_m2.data(), Precision::FP16);
+        original.execute();
+
+        std::vector<size_t> check_nodes = {
+            add_id, add_clipped_id, sub_id, mul_id, div_id,
+            abs_id, relu_id, silu_id, gelu_id, gelu_erf_id, sigmoid_id, tanh_id,
+            pow_id, scalar_add_id, scalar_sub_id, scalar_mul_id, scalar_div_id,
+            view_id, reshape_id, flatten_id,
+            slice_id, index_id,
+            sum_id, mean_id, variance_id, min_id, max_id, softmax_id,
+            matmul_id, persistent_id
+        };
+
+        std::vector<std::vector<float>> expected_outputs;
+        expected_outputs.reserve(check_nodes.size());
+        for (size_t node_id : check_nodes) {
+            const auto& buf = original.get_output_buffer(node_id);
+            __fp16* out = static_cast<__fp16*>(original.get_output(node_id));
+            std::vector<float> values(buf.total_size);
+            for (size_t i = 0; i < buf.total_size; ++i) {
+                values[i] = static_cast<float>(out[i]);
+            }
+            expected_outputs.push_back(std::move(values));
+        }
+
+        original.save(filename);
+
+        CactusGraph loaded = CactusGraph::load(filename);
+        loaded.set_input(0, data_a.data(), Precision::FP16);
+        loaded.set_input(1, data_b.data(), Precision::FP16);
+        loaded.set_input(2, data_m1.data(), Precision::FP16);
+        loaded.set_input(3, data_m2.data(), Precision::FP16);
+        loaded.execute();
+
+        for (size_t node_idx = 0; node_idx < check_nodes.size(); ++node_idx) {
+            size_t node_id = check_nodes[node_idx];
+            const auto& loaded_buf = loaded.get_output_buffer(node_id);
+            __fp16* loaded_out = static_cast<__fp16*>(loaded.get_output(node_id));
+
+            if (loaded_buf.total_size != expected_outputs[node_idx].size()) {
+                std::cout << "[supported_roundtrip] size mismatch for node " << node_id
+                          << ": got=" << loaded_buf.total_size
+                          << " expected=" << expected_outputs[node_idx].size() << std::endl;
+                std::remove(filename.c_str());
+                return false;
+            }
+
+            for (size_t i = 0; i < loaded_buf.total_size; ++i) {
+                float got = static_cast<float>(loaded_out[i]);
+                float expected = expected_outputs[node_idx][i];
+                if (std::abs(got - expected) > 1e-3f) {
+                    std::cout << "[supported_roundtrip] mismatch for node " << node_id
+                              << " at index " << i
+                              << ": got=" << got
+                              << " expected=" << expected << std::endl;
+                    std::remove(filename.c_str());
+                    return false;
+                }
+            }
+        }
+
+        std::remove(filename.c_str());
         return true;
     } catch (const std::exception& e) {
-        std::cout << "[graph_dump_for_inspection] exception: " << e.what() << std::endl;
+        std::cout << "[supported_roundtrip] exception: " << e.what() << std::endl;
         return false;
     }
 }
@@ -1515,10 +1569,11 @@ int main() {
     runner.run_test("Precision Traits", test_precision_traits());
     runner.run_test("Graph Precision Construction", test_graph_precision_construction());
     runner.run_test("Precision Conversion", test_precision_conversion());
+    runner.run_test("Node Save/Load", test_node_save_load());
     runner.run_test("Graph Save/Load", test_graph_save_load());
     runner.run_test("Graph Save/Load Roundtrip Execution", test_graph_save_load_roundtrip_execution());
+    runner.run_test("Graph Save/Load Supported Ops Roundtrip", test_graph_save_load_supported_ops_roundtrip());
     runner.run_test("Graph Save For Inspection", test_graph_save_for_inspection());
-    runner.run_test("Graph Dump For Inspection", test_graph_dump_for_inspection());
     runner.run_test("Complex Graph Structure", test_complex_graph_structure());
     runner.run_test("Multiple Outputs", test_multiple_outputs());
     runner.run_test("Graph Reset", test_graph_reset());
