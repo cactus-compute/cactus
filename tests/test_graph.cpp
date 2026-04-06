@@ -929,6 +929,8 @@ bool test_graph_save_load_supported_ops_roundtrip() {
         size_t view_id = original.view(add_id, {3, 2});
         size_t reshape_id = original.reshape(add_id, {3, 2});
         size_t flatten_id = original.flatten(add_id);
+        size_t concat_id = original.concat(a, b, 1);
+        size_t cat_id = original.cat({a, b}, 1);
 
         size_t slice_id = original.slice(add_id, 1, 1, 2);
         size_t index_id = original.index(add_id, 1, 0);
@@ -958,14 +960,16 @@ bool test_graph_save_load_supported_ops_roundtrip() {
             add_id, add_clipped_id, sub_id, mul_id, div_id,
             abs_id, relu_id, silu_id, gelu_id, gelu_erf_id, sigmoid_id, tanh_id,
             pow_id, scalar_add_id, scalar_sub_id, scalar_mul_id, scalar_div_id,
-            view_id, reshape_id, flatten_id,
+            view_id, reshape_id, flatten_id, concat_id, cat_id,
             slice_id, index_id,
             sum_id, mean_id, variance_id, min_id, max_id, softmax_id,
             matmul_id, persistent_id
         };
 
         std::vector<std::vector<float>> expected_outputs;
+        std::vector<std::vector<size_t>> expected_shapes;
         expected_outputs.reserve(check_nodes.size());
+        expected_shapes.reserve(check_nodes.size());
         for (size_t node_id : check_nodes) {
             const auto& buf = original.get_output_buffer(node_id);
             __fp16* out = static_cast<__fp16*>(original.get_output(node_id));
@@ -974,6 +978,7 @@ bool test_graph_save_load_supported_ops_roundtrip() {
                 values[i] = static_cast<float>(out[i]);
             }
             expected_outputs.push_back(std::move(values));
+            expected_shapes.push_back(buf.shape);
         }
 
         original.save(filename);
@@ -989,6 +994,17 @@ bool test_graph_save_load_supported_ops_roundtrip() {
             size_t node_id = check_nodes[node_idx];
             const auto& loaded_buf = loaded.get_output_buffer(node_id);
             __fp16* loaded_out = static_cast<__fp16*>(loaded.get_output(node_id));
+
+            if (loaded_buf.shape != expected_shapes[node_idx]) {
+                std::cout << "[supported_roundtrip] shape mismatch for node " << node_id
+                          << ": got=";
+                print_vector_inline(loaded_buf.shape);
+                std::cout << " expected=";
+                print_vector_inline(expected_shapes[node_idx]);
+                std::cout << std::endl;
+                std::remove(filename.c_str());
+                return false;
+            }
 
             if (loaded_buf.total_size != expected_outputs[node_idx].size()) {
                 std::cout << "[supported_roundtrip] size mismatch for node " << node_id

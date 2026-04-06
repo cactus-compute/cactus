@@ -61,6 +61,8 @@ namespace {
       constexpr uint32_t PARAM_PRETRANSPOSED_RHS = 1u << 3;
       constexpr uint32_t PARAM_BACKEND           = 1u << 4;
       constexpr uint32_t PARAM_SLICE             = 1u << 5;
+      constexpr uint32_t PARAM_EPSILON           = 1u << 6;
+      constexpr uint32_t PARAM_NUM_GROUPS        = 1u << 7;
 
       switch (node.op_type) {
         case OpType::POW:
@@ -82,6 +84,8 @@ namespace {
         case OpType::MIN:
         case OpType::MAX:
         case OpType::INDEX:
+        case OpType::CONCAT:
+        case OpType::CAT:
           param_flags |= PARAM_AXIS;
           break;
         default:
@@ -108,6 +112,21 @@ namespace {
         param_flags |= PARAM_SLICE;
       }
 
+      switch (node.op_type) {
+        case OpType::RMS_NORM:
+        case OpType::LAYERNORM:
+        case OpType::GROUPNORM:
+        case OpType::BATCHNORM:
+          param_flags |= PARAM_EPSILON;
+          break;
+        default:
+          break;
+      }
+
+      if (node.op_type == OpType::GROUPNORM) {
+        param_flags |= PARAM_NUM_GROUPS;
+      }
+
       write_u32(out, param_flags);
 
       if (param_flags & PARAM_SCALAR) {
@@ -128,6 +147,12 @@ namespace {
       if (param_flags & PARAM_SLICE) {
         write_u64(out, static_cast<uint64_t>(node.params.slice_start));
         write_u64(out, static_cast<uint64_t>(node.params.slice_length));
+      }
+      if (param_flags & PARAM_EPSILON) {
+        write_f32(out, node.params.epsilon);
+      }
+      if (param_flags & PARAM_NUM_GROUPS) {
+        write_u64(out, static_cast<uint64_t>(node.params.num_groups));
       }
     }
 
@@ -244,6 +269,8 @@ namespace {
         constexpr uint32_t PARAM_PRETRANSPOSED_RHS = 1u << 3;
         constexpr uint32_t PARAM_BACKEND           = 1u << 4;
         constexpr uint32_t PARAM_SLICE             = 1u << 5;
+        constexpr uint32_t PARAM_EPSILON           = 1u << 6;
+        constexpr uint32_t PARAM_NUM_GROUPS        = 1u << 7;
 
         if (param_flags & PARAM_SCALAR) {
             node.params.scalar = read_f32(in);
@@ -263,6 +290,12 @@ namespace {
         if (param_flags & PARAM_SLICE) {
             node.params.slice_start = static_cast<size_t>(read_u64(in));
             node.params.slice_length = static_cast<size_t>(read_u64(in));
+        }
+        if (param_flags & PARAM_EPSILON) {
+            node.params.epsilon = read_f32(in);
+        }
+        if (param_flags & PARAM_NUM_GROUPS) {
+            node.params.num_groups = static_cast<size_t>(read_u64(in));
         }
     }
 
