@@ -7,103 +7,8 @@
 #include <iostream>
 #include <cstdio>
 
+// helper function to print vectors for debugging
 namespace {
-
-const char* precision_to_string(Precision p) {
-    switch (p) {
-        case Precision::INT8: return "INT8";
-        case Precision::FP16: return "FP16";
-        case Precision::FP32: return "FP32";
-        case Precision::INT4: return "INT4";
-        default: return "UNKNOWN";
-    }
-}
-
-const char* op_type_to_string(OpType op) {
-    switch (op) {
-        case OpType::INPUT: return "INPUT";
-        case OpType::PRECISION_CAST: return "PRECISION_CAST";
-        case OpType::ADD: return "ADD";
-        case OpType::ADD_CLIPPED: return "ADD_CLIPPED";
-        case OpType::SUBTRACT: return "SUBTRACT";
-        case OpType::MULTIPLY: return "MULTIPLY";
-        case OpType::DIVIDE: return "DIVIDE";
-        case OpType::ABS: return "ABS";
-        case OpType::POW: return "POW";
-        case OpType::FLATTEN: return "FLATTEN";
-        case OpType::VIEW: return "VIEW";
-        case OpType::MATMUL: return "MATMUL";
-        case OpType::TRANSPOSE: return "TRANSPOSE";
-        case OpType::RESHAPE: return "RESHAPE";
-        case OpType::SLICE: return "SLICE";
-        case OpType::GATHER: return "GATHER";
-        case OpType::EMBEDDING: return "EMBEDDING";
-        case OpType::BILINEAR_INTERPOLATION: return "BILINEAR_INTERPOLATION";
-        case OpType::SUM: return "SUM";
-        case OpType::MEAN: return "MEAN";
-        case OpType::VARIANCE: return "VARIANCE";
-        case OpType::MIN: return "MIN";
-        case OpType::MAX: return "MAX";
-        case OpType::RMS_NORM: return "RMS_NORM";
-        case OpType::ROPE: return "ROPE";
-        case OpType::ROPE_GPTJ: return "ROPE_GPTJ";
-        case OpType::SOFTMAX: return "SOFTMAX";
-        case OpType::ATTENTION: return "ATTENTION";
-        case OpType::ATTENTION_INT8_HYBRID: return "ATTENTION_INT8_HYBRID";
-        case OpType::REL_POS_BIAS: return "REL_POS_BIAS";
-        case OpType::CONV1D_CAUSAL: return "CONV1D_CAUSAL";
-        case OpType::CONV1D_K3: return "CONV1D_K3";
-        case OpType::CONV1D_K7S3: return "CONV1D_K7S3";
-        case OpType::CONV1D: return "CONV1D";
-        case OpType::CONV1D_SAME_DEPTHWISE_K9: return "CONV1D_SAME_DEPTHWISE_K9";
-        case OpType::CONV1D_POINTWISE: return "CONV1D_POINTWISE";
-        case OpType::CONV2D_K3S2P1: return "CONV2D_K3S2P1";
-        case OpType::CONV2D_DEPTHWISE_K3S2P1: return "CONV2D_DEPTHWISE_K3S2P1";
-        case OpType::CONV2D_POINTWISE_1X1: return "CONV2D_POINTWISE_1X1";
-        case OpType::GLU: return "GLU";
-        case OpType::BATCHNORM: return "BATCHNORM";
-        case OpType::SCALAR_ADD: return "SCALAR_ADD";
-        case OpType::SCALAR_SUBTRACT: return "SCALAR_SUBTRACT";
-        case OpType::SCALAR_MULTIPLY: return "SCALAR_MULTIPLY";
-        case OpType::SCALAR_DIVIDE: return "SCALAR_DIVIDE";
-        case OpType::SCALAR_EXP: return "SCALAR_EXP";
-        case OpType::SCALAR_SQRT: return "SCALAR_SQRT";
-        case OpType::SCALAR_COS: return "SCALAR_COS";
-        case OpType::SCALAR_SIN: return "SCALAR_SIN";
-        case OpType::SCALAR_LOG: return "SCALAR_LOG";
-        case OpType::RELU: return "RELU";
-        case OpType::SILU: return "SILU";
-        case OpType::GELU: return "GELU";
-        case OpType::GELU_ERF: return "GELU_ERF";
-        case OpType::SIGMOID: return "SIGMOID";
-        case OpType::TANH: return "TANH";
-        case OpType::SAMPLE: return "SAMPLE";
-        case OpType::CONCAT: return "CONCAT";
-        case OpType::CAT: return "CAT";
-        case OpType::SCATTER_TOPK: return "SCATTER_TOPK";
-        case OpType::TOPK: return "TOPK";
-        case OpType::LAYERNORM: return "LAYERNORM";
-        case OpType::GROUPNORM: return "GROUPNORM";
-        case OpType::MOE_LAYER: return "MOE_LAYER";
-        case OpType::INDEX: return "INDEX";
-        case OpType::PERSISTENT: return "PERSISTENT";
-        case OpType::QUANTIZE_ACTIVATIONS: return "QUANTIZE_ACTIVATIONS";
-        case OpType::LSTM_CELL: return "LSTM_CELL";
-        case OpType::GATED_DELTANET_DECODE: return "GATED_DELTANET_DECODE";
-        case OpType::GATED_DELTANET_PREFILL: return "GATED_DELTANET_PREFILL";
-        case OpType::STFT: return "STFT";
-        case OpType::ALTUP_PREDICT: return "ALTUP_PREDICT";
-        case OpType::ALTUP_CORRECT: return "ALTUP_CORRECT";
-        case OpType::GAUSSIAN_TOPK: return "GAUSSIAN_TOPK";
-        case OpType::MAXPOOL1D: return "MAXPOOL1D";
-        case OpType::BILSTM_SEQUENCE: return "BILSTM_SEQUENCE";
-        case OpType::LEAKY_RELU: return "LEAKY_RELU";
-        case OpType::CONV2D_K3S1P1: return "CONV2D_K3S1P1";
-        case OpType::STATS_POOL: return "STATS_POOL";
-        default: return "UNKNOWN";
-    }
-}
-
 template <typename T>
 void print_vector_inline(const std::vector<T>& values) {
     std::cout << "[";
@@ -113,7 +18,6 @@ void print_vector_inline(const std::vector<T>& values) {
     }
     std::cout << "]";
 }
-
 } // namespace
 
 bool test_abs() {
