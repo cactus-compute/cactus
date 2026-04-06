@@ -401,6 +401,24 @@ inline std::string trim_string(const std::string& s) {
     return s.substr(start, end - start);
 }
 
+inline size_t find_matching_delimiter(const std::string& s, size_t pos, char open, char close) {
+    int depth = 1;
+    pos++;
+    while (pos < s.length() && depth > 0) {
+        if (s[pos] == open) depth++;
+        else if (s[pos] == close) depth--;
+        else if (s[pos] == '"') {
+            pos++;
+            while (pos < s.length() && s[pos] != '"') {
+                if (s[pos] == '\\') pos++;
+                pos++;
+            }
+        }
+        pos++;
+    }
+    return pos;
+}
+
 inline std::string env_or_default(const char* key, const char* fallback) {
     const char* v = std::getenv(key);
     if (v && v[0] != '\0') return std::string(v);
@@ -755,20 +773,7 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
         if (tool_calls_pos != std::string::npos && tool_calls_pos < obj_end) {
             size_t tool_calls_arr_start = json.find('[', tool_calls_pos);
             if (tool_calls_arr_start != std::string::npos && tool_calls_arr_start < obj_end) {
-                size_t tool_calls_arr_end = tool_calls_arr_start + 1;
-                int bracket_depth = 1;
-                while (tool_calls_arr_end < json.length() && bracket_depth > 0) {
-                    if (json[tool_calls_arr_end] == '[') bracket_depth++;
-                    else if (json[tool_calls_arr_end] == ']') bracket_depth--;
-                    else if (json[tool_calls_arr_end] == '"') {
-                        tool_calls_arr_end++;
-                        while (tool_calls_arr_end < json.length() && json[tool_calls_arr_end] != '"') {
-                            if (json[tool_calls_arr_end] == '\\') tool_calls_arr_end++;
-                            tool_calls_arr_end++;
-                        }
-                    }
-                    tool_calls_arr_end++;
-                }
+                size_t tool_calls_arr_end = find_matching_delimiter(json, tool_calls_arr_start, '[', ']');
 
                 size_t search_pos = tool_calls_arr_start;
                 while (true) {
@@ -778,20 +783,7 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
                     size_t func_obj_start = json.find('{', func_pos + 10);
                     if (func_obj_start == std::string::npos || func_obj_start >= tool_calls_arr_end) break;
 
-                    size_t func_obj_end = func_obj_start + 1;
-                    int func_depth = 1;
-                    while (func_obj_end < json.length() && func_depth > 0) {
-                        if (json[func_obj_end] == '{') func_depth++;
-                        else if (json[func_obj_end] == '}') func_depth--;
-                        else if (json[func_obj_end] == '"') {
-                            func_obj_end++;
-                            while (func_obj_end < json.length() && json[func_obj_end] != '"') {
-                                if (json[func_obj_end] == '\\') func_obj_end++;
-                                func_obj_end++;
-                            }
-                        }
-                        func_obj_end++;
-                    }
+                    size_t func_obj_end = find_matching_delimiter(json, func_obj_start, '{', '}');
 
                     cactus::engine::ToolCallInfo tool_call;
 
@@ -815,20 +807,7 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
                             while (args_start < json.length() && std::isspace(static_cast<unsigned char>(json[args_start]))) args_start++;
 
                             if (args_start < func_obj_end && json[args_start] == '{') {
-                                int args_depth = 1;
-                                size_t args_end = args_start + 1;
-                                while (args_end < json.length() && args_depth > 0) {
-                                    if (json[args_end] == '{') args_depth++;
-                                    else if (json[args_end] == '}') args_depth--;
-                                    else if (json[args_end] == '"') {
-                                        args_end++;
-                                        while (args_end < json.length() && json[args_end] != '"') {
-                                            if (json[args_end] == '\\') args_end++;
-                                            args_end++;
-                                        }
-                                    }
-                                    args_end++;
-                                }
+                                size_t args_end = find_matching_delimiter(json, args_start, '{', '}');
                                 tool_call.arguments = json.substr(args_start, args_end - args_start);
                             } else if (args_start < func_obj_end && json[args_start] == '"') {
                                 size_t str_start = args_start + 1;
