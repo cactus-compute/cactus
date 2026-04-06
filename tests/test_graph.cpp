@@ -657,7 +657,7 @@ bool test_graph_save_load() {
         size_t input_a = graph.input({2, 3}, Precision::FP16);
         size_t input_b = graph.input({2, 3}, Precision::FP16);
         size_t sum_id = graph.add(input_a, input_b);
-        size_t pow_id = graph.pow(sum_id, 2.0f);
+        graph.pow(sum_id, 2.0f);
 
         graph.save(filename);
 
