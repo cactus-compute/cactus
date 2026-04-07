@@ -582,7 +582,8 @@ uint32_t Lfm2VlModel::decode_with_images(
     }
 
     auto logits_node_id = gb->matmul(final_hidden_node, language_model_.output_weight_node_id_, true, backend);
-    auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k);
+    size_t sampled_token_id =
+        language_model_.sample_token(gb, logits_node_id, temperature, top_p, top_k, min_p, repetition_penalty, nullptr);
     if (!profile_file.empty()) {
         gb->execute(profile_file);
 
@@ -597,7 +598,9 @@ uint32_t Lfm2VlModel::decode_with_images(
     language_model_.update_kv_cache(gb, seq_len_for_updates);
 
     auto* output_ptr = gb->get_output(sampled_token_id);
-    return *static_cast<uint32_t*>(output_ptr);
+    uint32_t result = *static_cast<uint32_t*>(output_ptr);
+    language_model_.record_sampled_token(result);
+    return result;
 }
 
 }
