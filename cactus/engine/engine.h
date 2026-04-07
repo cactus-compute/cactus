@@ -647,6 +647,12 @@ public:
     virtual std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features);
 
     virtual void reset_cache() { kv_cache_.reset(); token_history_.clear(); }
+    void record_sampled_token(uint32_t token) {
+        if (token_history_.size() >= MAX_TOKEN_HISTORY) {
+            token_history_.erase(token_history_.begin(), token_history_.begin() + (MAX_TOKEN_HISTORY / 2));
+        }
+        token_history_.push_back(token);
+    }
 
     double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored);
 

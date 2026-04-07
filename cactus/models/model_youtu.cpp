@@ -31,7 +31,7 @@ void YoutuModel::post_execute_updates(CactusGraph* gb, size_t seq_len) {
 }
 
 void YoutuModel::reset_cache() {
-    kv_cache_.reset();
+    Model::reset_cache();
     v_cache_.reset();
 }
 

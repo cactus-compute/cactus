@@ -761,6 +761,7 @@ uint32_t WhisperModel::decode_with_audio(
 
     auto* out_ptr = gb->get_output(sampled_token_id);
     uint32_t sampled = *reinterpret_cast<uint32_t*>(out_ptr);
+    record_sampled_token(sampled);
 
     return sampled;
 }

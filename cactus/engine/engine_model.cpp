@@ -276,10 +276,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
 
     auto* output_ptr = gb->get_output(sampled_token_id);
     uint32_t result_token = *static_cast<uint32_t*>(output_ptr);
-    if (token_history_.size() >= MAX_TOKEN_HISTORY) {
-        token_history_.erase(token_history_.begin(), token_history_.begin() + (MAX_TOKEN_HISTORY / 2));
-    }
-    token_history_.push_back(result_token);
+    record_sampled_token(result_token);
     return result_token;
 }
 

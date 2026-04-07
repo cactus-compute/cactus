@@ -589,6 +589,7 @@ uint32_t MoonshineModel::decode_with_audio(
     update_kv_cache(gb, last_new_tokens_);
     auto* out_ptr = gb->get_output(sampled_token_id);
     uint32_t sampled = *reinterpret_cast<uint32_t*>(out_ptr);
+    record_sampled_token(sampled);
     return sampled;
 }
 }

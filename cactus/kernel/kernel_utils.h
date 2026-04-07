@@ -53,7 +53,11 @@ inline bool cpu_has_i8mm() {
 
     std::call_once(once, []() {
 #if defined(__APPLE__)
-    has = true;
+    int ret = 0;
+    size_t size = sizeof(ret);
+    if (sysctlbyname("hw.optional.arm.FEAT_I8MM", &ret, &size, nullptr, 0) == 0) {
+        has = ret == 1;
+    }
 #elif defined(__ANDROID__)
     unsigned long hwcap2 = getauxval(AT_HWCAP2);
     #ifndef HWCAP2_I8MM

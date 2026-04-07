@@ -318,11 +318,7 @@ uint32_t Gemma4MmModel::decode_multimodal(
 
     auto* output_ptr = gb->get_output(sampled_token);
     uint32_t result_token = *static_cast<uint32_t*>(output_ptr);
-    if (language_model_.token_history_.size() >= Model::MAX_TOKEN_HISTORY) {
-        language_model_.token_history_.erase(language_model_.token_history_.begin(),
-                                             language_model_.token_history_.begin() + (Model::MAX_TOKEN_HISTORY / 2));
-    }
-    language_model_.token_history_.push_back(result_token);
+    language_model_.record_sampled_token(result_token);
     return result_token;
 }
 
