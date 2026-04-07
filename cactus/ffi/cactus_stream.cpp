@@ -11,7 +11,6 @@
 #include <future>
 #include <chrono>
 #include <deque>
-#include <fstream>
 #include <mutex>
 #include <sstream>
 
@@ -165,65 +164,6 @@ static void parse_stream_transcribe_init_options(const std::string& json,
     if (language.empty()) language = "en";
 }
 
-static bool parakeet_tdt_stateful_stream_enabled() {
-    static const bool enabled = []() {
-        const char* raw = std::getenv("CACTUS_PARAKEET_TDT_STATEFUL_STREAM");
-        if (!raw || raw[0] == '\0') return true;
-        if ((raw[0] == '0' && raw[1] == '\0') ||
-            std::strcmp(raw, "false") == 0 ||
-            std::strcmp(raw, "FALSE") == 0) {
-            return false;
-        }
-        return true;
-    }();
-    return enabled;
-}
-
-static const char* parakeet_tdt_trace_path_stream() {
-    static std::string path = []() {
-        const char* explicit_path = std::getenv("CACTUS_PARAKEET_TDT_TRACE_PATH");
-        if (explicit_path && explicit_path[0] != '\0') {
-            return std::string(explicit_path);
-        }
-        const char* enabled = std::getenv("CACTUS_PARAKEET_TDT_TRACE");
-        if (enabled && enabled[0] != '\0' && !(enabled[0] == '0' && enabled[1] == '\0')) {
-            return std::string("/tmp/cactus_parakeet_tdt_trace.log");
-        }
-        return std::string();
-    }();
-    return path.empty() ? nullptr : path.c_str();
-}
-
-static bool parakeet_tdt_trace_enabled_stream() {
-    return parakeet_tdt_trace_path_stream() != nullptr;
-}
-
-static std::string escape_parakeet_tdt_trace_text_stream(const std::string& text) {
-    std::string escaped;
-    escaped.reserve(text.size());
-    for (char ch : text) {
-        switch (ch) {
-            case '\n': escaped += "\\n"; break;
-            case '\r': escaped += "\\r"; break;
-            case '\t': escaped += "\\t"; break;
-            case '"': escaped += "\\\""; break;
-            case '\\': escaped += "\\\\"; break;
-            default: escaped += ch; break;
-        }
-    }
-    return escaped;
-}
-
-static void parakeet_tdt_trace_log_stream(const std::string& line) {
-    const char* path = parakeet_tdt_trace_path_stream();
-    if (!path) return;
-    static std::mutex trace_mutex;
-    std::lock_guard<std::mutex> lock(trace_mutex);
-    std::ofstream out(path, std::ios::app);
-    if (!out) return;
-    out << line << '\n';
-}
-
 static bool build_parakeet_features_from_pcm(
     const uint8_t* pcm_buffer,
     size_t pcm_buffer_size,
@@ -295,25 +235,24 @@ struct CactusStreamTranscribeHandle {
     float parakeet_committed_until_sec = 0.0f;
     bool parakeet_onset_active = false;
     size_t parakeet_onset_start_bytes = 0;
-    bool parakeet_tdt_stateful_stream = false;
-    struct ParakeetTdtChunkStreamCtx {
+    bool parakeet_tdt_chunked_stream = false;
+    struct ParakeetTdtDecodeContext {
         std::vector<float> audio_samples;
         size_t samples_decoded_up_to = 0;
         float audio_time_offset_sec = 0.0f;
-        cactus::engine::ParakeetTDTModel::StatefulStreamState decoder_state;
+        cactus::engine::ParakeetTDTModel::ChunkStreamState decoder_state;
         cactus::engine::AudioProcessor audio_processor;
         size_t mel_bins = 0;
         bool initialized = false;
-    } parakeet_tdt_chunk_ctx;
-    bool parakeet_tdt_stateful_blocked_until_pause = false;
-    cactus::engine::ParakeetTDTModel::StatefulStreamState parakeet_tdt_stream_state;
-    std::string parakeet_tdt_stateful_pending_raw;
-    struct ParakeetTdtStateCheckpoint {
+    } parakeet_tdt_decode_context;
+    bool parakeet_tdt_chunked_blocked_until_pause = false;
+    cactus::engine::ParakeetTDTModel::ChunkStreamState parakeet_tdt_decoder_state;
+    std::string parakeet_tdt_pending_raw;
+    struct ParakeetTdtResumeCheckpoint {
         size_t end_bytes = 0;
-        cactus::engine::ParakeetTDTModel::StatefulStreamState state;
+        cactus::engine::ParakeetTDTModel::ChunkStreamState state;
     };
-    std::deque<ParakeetTdtStateCheckpoint> parakeet_tdt_stateful_checkpoints;
-    uint64_t parakeet_tdt_stateful_chunk_seq = 0;
+    std::deque<ParakeetTdtResumeCheckpoint> parakeet_tdt_resume_checkpoints;
 
     std::vector<TranscriptSegment> previous_segments;
     bool previous_cloud_handoff = false;
@@ -434,14 +373,14 @@ static bool run_stream_window_transcribe(
     return true;
 }
 
-static bool run_stateful_tdt_chunk_decode(
+static bool run_parakeet_tdt_chunk_decode(
     CactusStreamTranscribeHandle* handle,
     size_t window_start_bytes,
     size_t window_end_bytes,
     size_t chunk_start_bytes,
     size_t chunk_end_bytes,
-    cactus::engine::ParakeetTDTModel::StatefulStreamChunkResult& out,
-    cactus::engine::ParakeetTDTModel::StatefulStreamState& out_state) {
+    cactus::engine::ParakeetTDTModel::ChunkStreamResult& out,
+    cactus::engine::ParakeetTDTModel::ChunkStreamState& out_state) {
     if (!handle || !handle->model_handle || !handle->model_handle->model) {
         return false;
     }
@@ -456,23 +395,21 @@ static bool run_stateful_tdt_chunk_decode(
     auto* model = static_cast<cactus::engine::ParakeetTDTModel*>(
         handle->model_handle->model.get());
     size_t replay_start_bytes = window_start_bytes;
-    cactus::engine::ParakeetTDTModel::StatefulStreamState base_state;
+    cactus::engine::ParakeetTDTModel::ChunkStreamState base_state;
     bool found_checkpoint = false;
-    bool found_window_checkpoint = false;
-    for (auto it = handle->parakeet_tdt_stateful_checkpoints.rbegin();
-         it != handle->parakeet_tdt_stateful_checkpoints.rend();
+    for (auto it = handle->parakeet_tdt_resume_checkpoints.rbegin();
+         it != handle->parakeet_tdt_resume_checkpoints.rend();
          ++it) {
         if (it->end_bytes <= window_start_bytes) {
             replay_start_bytes = std::max(window_start_bytes, it->end_bytes);
             base_state = it->state;
             found_checkpoint = true;
-            found_window_checkpoint = true;
             break;
         }
     }
     if (!found_checkpoint) {
-        for (auto it = handle->parakeet_tdt_stateful_checkpoints.rbegin();
-             it != handle->parakeet_tdt_stateful_checkpoints.rend();
+        for (auto it = handle->parakeet_tdt_resume_checkpoints.rbegin();
+             it != handle->parakeet_tdt_resume_checkpoints.rend();
              ++it) {
             if (it->end_bytes <= chunk_start_bytes) {
                 replay_start_bytes = std::max(window_start_bytes, it->end_bytes);
@@ -511,7 +448,7 @@ static bool run_stateful_tdt_chunk_decode(
     cactus::telemetry::setStreamMode(true);
     try {
         out_state = base_state;
-        out = model->decode_stateful_stream_chunk(
+        out = model->decode_chunk_stream(
             audio_features,
             replay_start_frame,
             start_frame,
@@ -532,28 +469,14 @@ static bool run_stateful_tdt_chunk_decode(
             ? ((static_cast<double>(out.token_count) - 1.0) * 1000.0) / decode_ms
             : 0.0;
     handle->last_stream_raw_decoder_tps = out.raw_decoder_tps;
-    if (parakeet_tdt_trace_enabled_stream()) {
-        std::ostringstream trace;
-        trace << "phase=stateful_stream_alignment"
-              << " window_start_bytes=" << window_start_bytes
-              << " replay_start_bytes=" << replay_start_bytes
-              << " chunk_start_bytes=" << chunk_start_bytes
-              << " chunk_end_bytes=" << chunk_end_bytes
-              << " replay_start_frame=" << replay_start_frame
-              << " start_frame=" << start_frame
-              << " end_frame=" << end_frame
-              << " found_checkpoint=" << (found_checkpoint ? 1 : 0)
-              << " found_window_checkpoint=" << (found_window_checkpoint ? 1 : 0);
-        parakeet_tdt_trace_log_stream(trace.str());
-    }
     return true;
 }
 
-static void reset_stateful_tdt_stream_state(CactusStreamTranscribeHandle* handle) {
+static void reset_parakeet_tdt_chunk_stream(CactusStreamTranscribeHandle* handle) {
     if (!handle) return;
-    handle->parakeet_tdt_stream_state = {};
-    handle->parakeet_tdt_stateful_pending_raw.clear();
-    handle->parakeet_tdt_stateful_checkpoints.clear();
+    handle->parakeet_tdt_decoder_state = {};
+    handle->parakeet_tdt_pending_raw.clear();
+    handle->parakeet_tdt_resume_checkpoints.clear();
 }
 
 static std::vector<std::pair<size_t, size_t>> collect_parakeet_word_spans(const std::string& text);
@@ -1034,19 +957,9 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, 
 
         stream_handle->options = { confirmation_threshold, min_chunk_size, language };
         stream_handle->transcribe_options_json = options_json ? options_json : "";
-        stream_handle->parakeet_tdt_stateful_stream =
-            parakeet_tdt_stateful_stream_enabled() &&
+        stream_handle->parakeet_tdt_chunked_stream =
             model_handle->model->get_config().model_type ==
                 cactus::engine::Config::ModelType::PARAKEET_TDT;
-        if (stream_handle->parakeet_tdt_stateful_stream &&
-            parakeet_tdt_trace_enabled_stream()) {
-            std::ostringstream trace;
-            trace << "phase=stateful_stream_start"
-                  << " min_chunk_size=" << stream_handle->options.min_chunk_size
-                  << " language=\"" << escape_parakeet_tdt_trace_text_stream(
-                         stream_handle->options.language) << "\"";
-            parakeet_tdt_trace_log_stream(trace.str());
-        }
         {
             float vocabulary_boost = 5.0f;
             parse_custom_vocabulary_options(stream_handle->transcribe_options_json,
@@ -1062,8 +975,8 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, 
             }
         }
 
-        if (stream_handle->parakeet_tdt_stateful_stream) {
-            auto& ctx = stream_handle->parakeet_tdt_chunk_ctx;
+        if (stream_handle->parakeet_tdt_chunked_stream) {
+            auto& ctx = stream_handle->parakeet_tdt_decode_context;
             ctx.mel_bins = std::max<size_t>(
                 1, static_cast<size_t>(model_handle->model->get_config().num_mel_bins));
             auto cfg = get_parakeet_spectrogram_config();
@@ -1131,9 +1044,9 @@ int cactus_stream_transcribe_process(
         bool is_gemma4 = model_type == cactus::engine::Config::ModelType::GEMMA4;
 
         if (is_parakeet_tdt &&
-            handle->parakeet_tdt_stateful_stream &&
-            handle->parakeet_tdt_chunk_ctx.initialized) {
-            auto& ctx = handle->parakeet_tdt_chunk_ctx;
+            handle->parakeet_tdt_chunked_stream &&
+            handle->parakeet_tdt_decode_context.initialized) {
+            auto& ctx = handle->parakeet_tdt_decode_context;
             auto* tdt_model = static_cast<cactus::engine::ParakeetTDTModel*>(
                 handle->model_handle->model.get());
             auto new_samples = cactus::audio::pcm_buffer_to_float_samples(
@@ -1233,13 +1146,13 @@ int cactus_stream_transcribe_process(
                 return static_cast<int>(json_response.length());
             }
 
-            cactus::engine::ParakeetTDTModel::StatefulStreamChunkResult chunk_decode;
+            cactus::engine::ParakeetTDTModel::ChunkStreamResult chunk_decode;
             {
                 const auto decode_start = std::chrono::steady_clock::now();
                 std::lock_guard<std::mutex> lock(handle->model_handle->model_mutex);
                 cactus::telemetry::setStreamMode(true);
                 try {
-                    chunk_decode = tdt_model->decode_stateful_stream_chunk(
+                    chunk_decode = tdt_model->decode_chunk_stream(
                         window_audio,
                         decode_start_frame,
                         decode_start_frame,
@@ -1404,8 +1317,8 @@ int cactus_stream_transcribe_process(
             const std::string tdt_no_vad_options_json = ensure_json_bool_option(
                 handle->transcribe_options_json, "use_vad", false);
 
-            if (handle->parakeet_tdt_stateful_stream &&
-                !handle->parakeet_tdt_stateful_blocked_until_pause &&
+            if (handle->parakeet_tdt_chunked_stream &&
+                !handle->parakeet_tdt_chunked_blocked_until_pause &&
                 !handle->parakeet_committed_text.empty()) {
                 const size_t encoder_frame_bytes =
                     get_parakeet_spectrogram_config().hop_length *
@@ -1414,38 +1327,37 @@ int cactus_stream_transcribe_process(
                 std::string confirmed;
                 size_t confirmed_audio_bytes = 0;
                 size_t processed_chunks = 0;
-                bool stateful_stalled_on_speech = false;
+                bool chunked_stalled_on_speech = false;
 
                 while (processed_chunks < kParakeetTdtMaxChunksPerProcess) {
-                    const bool stateful_warmup =
+                    const bool chunked_warmup =
                         handle->parakeet_committed_text.empty() &&
-                        handle->parakeet_tdt_stateful_pending_raw.empty();
-                    const size_t available_stateful_bytes =
+                        handle->parakeet_tdt_pending_raw.empty();
+                    const size_t available_chunk_bytes =
                         handle->audio_buffer.size() > handle->parakeet_chunk_cursor_bytes + right_context_bytes
                         ? handle->audio_buffer.size() - handle->parakeet_chunk_cursor_bytes - right_context_bytes
                         : 0;
-                    const size_t stateful_chunk_bytes = std::max(
+                    const size_t chunk_decode_bytes = std::max(
                         encoder_frame_bytes,
-                        ((stateful_warmup
-                              ? available_stateful_bytes
+                        ((chunked_warmup
+                              ? available_chunk_bytes
                               : seconds_to_pcm_bytes(0.96)) /
                          encoder_frame_bytes) * encoder_frame_bytes);
-                    if (handle->parakeet_chunk_cursor_bytes + stateful_chunk_bytes + right_context_bytes >
+                    if (handle->parakeet_chunk_cursor_bytes + chunk_decode_bytes + right_context_bytes >
                         handle->audio_buffer.size()) {
                         break;
                     }
 
                     const size_t chunk_start_bytes = handle->parakeet_chunk_cursor_bytes;
-                    const size_t chunk_end_bytes = chunk_start_bytes + stateful_chunk_bytes;
+                    const size_t chunk_end_bytes = chunk_start_bytes + chunk_decode_bytes;
                     const size_t window_start_bytes = chunk_start_bytes > left_context_bytes
                         ? chunk_start_bytes - left_context_bytes
                         : 0;
                     const size_t window_end_bytes = chunk_end_bytes + right_context_bytes;
-                    const uint64_t chunk_seq = ++handle->parakeet_tdt_stateful_chunk_seq;
 
-                    cactus::engine::ParakeetTDTModel::StatefulStreamChunkResult chunk_decode;
-                    cactus::engine::ParakeetTDTModel::StatefulStreamState chunk_state;
-                    if (!run_stateful_tdt_chunk_decode(
+                    cactus::engine::ParakeetTDTModel::ChunkStreamResult chunk_decode;
+                    cactus::engine::ParakeetTDTModel::ChunkStreamState chunk_state;
+                    if (!run_parakeet_tdt_chunk_decode(
                             handle,
                             window_start_bytes,
                             window_end_bytes,
@@ -1453,7 +1365,7 @@ int cactus_stream_transcribe_process(
                             chunk_end_bytes,
                             chunk_decode,
                             chunk_state)) {
-                        last_error_message = "Stateful TDT chunk decode failed.";
+                        last_error_message = "Chunked TDT decode failed.";
                         CACTUS_LOG_ERROR("stream_transcribe_process", last_error_message);
                         handle_error_response(last_error_message, response_buffer, buffer_size);
                         cactus::telemetry::recordStreamTranscription(
@@ -1473,37 +1385,9 @@ int cactus_stream_transcribe_process(
                         strip_unwanted_text_preserving_edges(chunk_decode.confirmed_text);
                     const std::string raw_pending_text =
                         strip_unwanted_text_preserving_edges(chunk_decode.pending_text);
-                    if (parakeet_tdt_trace_enabled_stream()) {
-                        std::ostringstream trace;
-                        trace << "phase=stateful_stream_chunk"
-                              << " chunk_seq=" << chunk_seq
-                              << " warmup=" << (stateful_warmup ? 1 : 0)
-                              << " window_start_bytes=" << window_start_bytes
-                              << " window_end_bytes=" << window_end_bytes
-                              << " chunk_start_bytes=" << chunk_start_bytes
-                              << " chunk_end_bytes=" << chunk_end_bytes
-                              << " chunk_silent=" << (chunk_silent ? 1 : 0)
-                              << " token_count=" << chunk_decode.token_count
-                              << " confirmed_token_count=" << chunk_decode.confirmed_token_count
-                              << " raw_text=\"" << escape_parakeet_tdt_trace_text_stream(raw_chunk_text) << "\""
-                              << " raw_confirmed=\"" << escape_parakeet_tdt_trace_text_stream(raw_confirmed_text) << "\""
-                              << " raw_pending=\"" << escape_parakeet_tdt_trace_text_stream(raw_pending_text) << "\""
-                              << " committed_before=\"" << escape_parakeet_tdt_trace_text_stream(
-                                     handle->parakeet_committed_text) << "\""
-                              << " pending_before=\"" << escape_parakeet_tdt_trace_text_stream(
-                                     handle->parakeet_tdt_stateful_pending_raw) << "\"";
-                        parakeet_tdt_trace_log_stream(trace.str());
-                    }
 
                     if (raw_chunk_text.empty() && !chunk_silent) {
-                        stateful_stalled_on_speech = true;
-                        if (parakeet_tdt_trace_enabled_stream()) {
-                            std::ostringstream trace;
-                            trace << "phase=stateful_stream_break"
-                                  << " chunk_seq=" << chunk_seq
-                                  << " reason=empty_nonsilent";
-                            parakeet_tdt_trace_log_stream(trace.str());
-                        }
+                        chunked_stalled_on_speech = true;
                         break;
                     }
 
@@ -1513,7 +1397,7 @@ int cactus_stream_transcribe_process(
                         if (!confirmed_delta.empty() && !handle->custom_vocabulary.empty()) {
                             apply_vocabulary_spelling_correction(confirmed_delta, handle->custom_vocabulary);
                         }
-                        handle->parakeet_tdt_stateful_pending_raw = pending_raw;
+                        handle->parakeet_tdt_pending_raw = pending_raw;
                         if (!confirmed_delta.empty()) {
                             if (chunk_decode.token_count > 0) {
                                 handle->stream_total_tokens += static_cast<int>(chunk_decode.token_count);
@@ -1548,41 +1432,25 @@ int cactus_stream_transcribe_process(
                                 confirmed_audio_bytes += confirmed_boundary_bytes - chunk_start_bytes;
                             }
                         }
-                        if (parakeet_tdt_trace_enabled_stream()) {
-                            std::ostringstream trace;
-                            trace << "phase=stateful_stream_decision"
-                                  << " chunk_seq=" << chunk_seq
-                                  << " confirmed_delta=\""
-                                  << escape_parakeet_tdt_trace_text_stream(confirmed_delta) << "\""
-                                  << " pending_after=\""
-                                  << escape_parakeet_tdt_trace_text_stream(
-                                         handle->parakeet_tdt_stateful_pending_raw) << "\""
-                                  << " confirmed_end_sec=" << chunk_decode.confirmed_end_sec
-                                  << " resume_end_sec=" << chunk_decode.resume_end_sec
-                                  << " committed_after=\""
-                                  << escape_parakeet_tdt_trace_text_stream(
-                                         handle->parakeet_committed_text) << "\"";
-                            parakeet_tdt_trace_log_stream(trace.str());
-                        }
                     }
 
                     handle->parakeet_chunk_cursor_bytes = chunk_end_bytes;
-                    handle->parakeet_tdt_stream_state = chunk_state;
+                    handle->parakeet_tdt_decoder_state = chunk_state;
                     const size_t checkpoint_end_bytes = std::min(
                         chunk_end_bytes,
                         std::max(
                             window_start_bytes,
                             window_start_bytes + seconds_to_pcm_bytes(chunk_decode.resume_end_sec)));
-                    while (!handle->parakeet_tdt_stateful_checkpoints.empty() &&
-                           handle->parakeet_tdt_stateful_checkpoints.back().end_bytes >= checkpoint_end_bytes) {
-                        handle->parakeet_tdt_stateful_checkpoints.pop_back();
+                    while (!handle->parakeet_tdt_resume_checkpoints.empty() &&
+                           handle->parakeet_tdt_resume_checkpoints.back().end_bytes >= checkpoint_end_bytes) {
+                        handle->parakeet_tdt_resume_checkpoints.pop_back();
                     }
-                    if (handle->parakeet_tdt_stateful_checkpoints.empty() ||
-                        handle->parakeet_tdt_stateful_checkpoints.back().end_bytes < checkpoint_end_bytes) {
-                        handle->parakeet_tdt_stateful_checkpoints.push_back({checkpoint_end_bytes, chunk_state});
+                    if (handle->parakeet_tdt_resume_checkpoints.empty() ||
+                        handle->parakeet_tdt_resume_checkpoints.back().end_bytes < checkpoint_end_bytes) {
+                        handle->parakeet_tdt_resume_checkpoints.push_back({checkpoint_end_bytes, chunk_state});
                     }
-                    while (handle->parakeet_tdt_stateful_checkpoints.size() > 16) {
-                        handle->parakeet_tdt_stateful_checkpoints.pop_front();
+                    while (handle->parakeet_tdt_resume_checkpoints.size() > 16) {
+                        handle->parakeet_tdt_resume_checkpoints.pop_front();
                     }
                     handle->parakeet_committed_until_sec = std::max(
                         handle->parakeet_committed_until_sec,
@@ -1592,62 +1460,45 @@ int cactus_stream_transcribe_process(
                     ++processed_chunks;
                 }
 
-                const bool fallback_to_stateless_tdt =
-                    stateful_stalled_on_speech &&
+                const bool fallback_to_legacy_tdt =
+                    chunked_stalled_on_speech &&
                     confirmed.empty() &&
-                    handle->parakeet_tdt_stateful_pending_raw.empty();
-                if (fallback_to_stateless_tdt) {
+                    handle->parakeet_tdt_pending_raw.empty();
+                if (fallback_to_legacy_tdt) {
                     const bool bootstrap_reset =
                         handle->parakeet_committed_text.empty() &&
                         handle->previous_parakeet_pending.empty();
-                    if (parakeet_tdt_trace_enabled_stream()) {
-                        std::ostringstream trace;
-                        trace << "phase=stateful_stream_fallback"
-                              << " reason=empty_nonsilent_no_progress"
-                              << " bootstrap_reset=" << (bootstrap_reset ? 1 : 0)
-                              << " cursor_bytes=" << handle->parakeet_chunk_cursor_bytes
-                              << " audio_buffer_bytes=" << handle->audio_buffer.size();
-                        parakeet_tdt_trace_log_stream(trace.str());
-                    }
-                    reset_stateful_tdt_stream_state(handle);
-                    handle->parakeet_tdt_stateful_blocked_until_pause = true;
+                    reset_parakeet_tdt_chunk_stream(handle);
+                    handle->parakeet_tdt_chunked_blocked_until_pause = true;
                     if (bootstrap_reset) {
                         handle->parakeet_chunk_cursor_bytes = 0;
                     }
                 }
 
-                if (!fallback_to_stateless_tdt &&
+                if (!fallback_to_legacy_tdt &&
                     handle->parakeet_chunk_cursor_bytes > left_context_bytes) {
                     const size_t trim_bytes =
                         handle->parakeet_chunk_cursor_bytes - left_context_bytes;
-                    if (parakeet_tdt_trace_enabled_stream()) {
-                        std::ostringstream trace;
-                        trace << "phase=stateful_stream_trim"
-                              << " trim_bytes=" << trim_bytes
-                              << " cursor_before=" << handle->parakeet_chunk_cursor_bytes
-                              << " audio_buffer_before=" << handle->audio_buffer.size();
-                        parakeet_tdt_trace_log_stream(trace.str());
-                    }
                     handle->stream_audio_offset_sec += static_cast<float>(
                         pcm_bytes_to_seconds(trim_bytes));
                     handle->audio_buffer.erase(
                         handle->audio_buffer.begin(),
                         handle->audio_buffer.begin() + trim_bytes);
                     handle->parakeet_chunk_cursor_bytes -= trim_bytes;
-                    while (!handle->parakeet_tdt_stateful_checkpoints.empty() &&
-                           handle->parakeet_tdt_stateful_checkpoints.front().end_bytes <= trim_bytes) {
-                        handle->parakeet_tdt_stateful_checkpoints.pop_front();
+                    while (!handle->parakeet_tdt_resume_checkpoints.empty() &&
+                           handle->parakeet_tdt_resume_checkpoints.front().end_bytes <= trim_bytes) {
+                        handle->parakeet_tdt_resume_checkpoints.pop_front();
                     }
-                    for (auto& checkpoint : handle->parakeet_tdt_stateful_checkpoints) {
+                    for (auto& checkpoint : handle->parakeet_tdt_resume_checkpoints) {
                         checkpoint.end_bytes -= trim_bytes;
                     }
                 }
 
-                if (!fallback_to_stateless_tdt) {
+                if (!fallback_to_legacy_tdt) {
                     std::string pending_output;
                     std::string raw_json = "{}";
-                    if (!handle->parakeet_tdt_stateful_pending_raw.empty()) {
-                        pending_output = suppress_unwanted_text(handle->parakeet_tdt_stateful_pending_raw);
+                    if (!handle->parakeet_tdt_pending_raw.empty()) {
+                        pending_output = suppress_unwanted_text(handle->parakeet_tdt_pending_raw);
                         if (!pending_output.empty() && !handle->custom_vocabulary.empty()) {
                             apply_vocabulary_spelling_correction(
                                 pending_output, handle->custom_vocabulary);
@@ -1676,15 +1527,6 @@ int cactus_stream_transcribe_process(
                                 }
                             }
                         }
-                    }
-                    if (parakeet_tdt_trace_enabled_stream()) {
-                        std::ostringstream trace;
-                        trace << "phase=stateful_stream_result"
-                              << " confirmed=\"" << escape_parakeet_tdt_trace_text_stream(confirmed) << "\""
-                              << " pending=\"" << escape_parakeet_tdt_trace_text_stream(pending_output) << "\""
-                              << " cursor_bytes=" << handle->parakeet_chunk_cursor_bytes
-                              << " audio_buffer_bytes=" << handle->audio_buffer.size();
-                        parakeet_tdt_trace_log_stream(trace.str());
                     }
 
                     handle->previous_parakeet_pending = pending_output;
@@ -1780,7 +1622,7 @@ int cactus_stream_transcribe_process(
                 if (handle->parakeet_silence_run_bytes >= kParakeetSilenceFlushBytes) {
                     handle->parakeet_resume_guard_active = true;
                     handle->parakeet_onset_active = false;
-                    reset_stateful_tdt_stream_state(handle);
+                    reset_parakeet_tdt_chunk_stream(handle);
                     const size_t retained_silence_bytes = std::min(
                         handle->parakeet_silence_run_bytes, kParakeetOnsetLeadSilenceBytes);
                     handle->parakeet_onset_start_bytes =
@@ -2515,7 +2357,7 @@ int cactus_stream_transcribe_stop(
         std::string final_confirmed;
         if (is_parakeet_tdt) {
             final_confirmed = handle->parakeet_committed_text;
-            if (!(handle->parakeet_tdt_stateful_stream && handle->parakeet_tdt_chunk_ctx.initialized) &&
+            if (!(handle->parakeet_tdt_chunked_stream && handle->parakeet_tdt_decode_context.initialized) &&
                 !handle->previous_parakeet_pending.empty()) {
                 const std::string normalized_pending = parakeet_strip_recent_committed_prefix(
                     final_confirmed, handle->previous_parakeet_pending);
@@ -2546,9 +2388,9 @@ int cactus_stream_transcribe_stop(
         }
 
         if (is_parakeet_tdt &&
-            handle->parakeet_tdt_stateful_stream &&
-            handle->parakeet_tdt_chunk_ctx.initialized) {
-            auto& ctx = handle->parakeet_tdt_chunk_ctx;
+            handle->parakeet_tdt_chunked_stream &&
+            handle->parakeet_tdt_decode_context.initialized) {
+            auto& ctx = handle->parakeet_tdt_decode_context;
             auto* tdt_model = static_cast<cactus::engine::ParakeetTDTModel*>(
                 handle->model_handle->model.get());
             const size_t total_samples = ctx.audio_samples.size();
@@ -2579,12 +2421,12 @@ int cactus_stream_transcribe_stop(
                 const size_t decode_end_frame = total_window_samples / samples_per_enc_frame;
 
                 if (decode_end_frame > decode_start_frame) {
-                    cactus::engine::ParakeetTDTModel::StatefulStreamChunkResult chunk_decode;
+                    cactus::engine::ParakeetTDTModel::ChunkStreamResult chunk_decode;
                     {
                         std::lock_guard<std::mutex> lock(handle->model_handle->model_mutex);
                         cactus::telemetry::setStreamMode(true);
                         try {
-                            chunk_decode = tdt_model->decode_stateful_stream_chunk(
+                            chunk_decode = tdt_model->decode_chunk_stream(
                                 window_audio,
                                 decode_start_frame,
                                 decode_start_frame,
@@ -2627,13 +2469,13 @@ int cactus_stream_transcribe_stop(
             }
 
             if (is_parakeet_tdt) {
-                const bool use_stateful_stop =
-                    handle->parakeet_tdt_stateful_stream &&
-                    !handle->parakeet_tdt_stateful_blocked_until_pause &&
-                    (handle->parakeet_tdt_stream_state.initialized ||
-                     !handle->parakeet_tdt_stateful_checkpoints.empty() ||
-                     !handle->parakeet_tdt_stateful_pending_raw.empty());
-                if (use_stateful_stop) {
+                const bool use_chunked_stop =
+                    handle->parakeet_tdt_chunked_stream &&
+                    !handle->parakeet_tdt_chunked_blocked_until_pause &&
+                    (handle->parakeet_tdt_decoder_state.initialized ||
+                     !handle->parakeet_tdt_resume_checkpoints.empty() ||
+                     !handle->parakeet_tdt_pending_raw.empty());
+                if (use_chunked_stop) {
                     final_confirmed = handle->parakeet_committed_text;
                     constexpr double kParakeetTdtLeftContextSec = 2.0;
                     const size_t left_context_bytes = seconds_to_pcm_bytes(kParakeetTdtLeftContextSec);
@@ -2643,9 +2485,9 @@ int cactus_stream_transcribe_stop(
                         const size_t window_start_bytes = chunk_start_bytes > left_context_bytes
                             ? chunk_start_bytes - left_context_bytes
                             : 0;
-                        cactus::engine::ParakeetTDTModel::StatefulStreamChunkResult chunk_decode;
-                        cactus::engine::ParakeetTDTModel::StatefulStreamState chunk_state;
-                        if (run_stateful_tdt_chunk_decode(
+                        cactus::engine::ParakeetTDTModel::ChunkStreamResult chunk_decode;
+                        cactus::engine::ParakeetTDTModel::ChunkStreamState chunk_state;
+                        if (run_parakeet_tdt_chunk_decode(
                                 handle,
                                 window_start_bytes,
                                 chunk_end_bytes,
@@ -2662,10 +2504,10 @@ int cactus_stream_transcribe_stop(
                                 apply_vocabulary_spelling_correction(pending_chunk, handle->custom_vocabulary);
                             }
                             parakeet_append_monotonic_text(final_confirmed, confirmed_chunk);
-                            handle->parakeet_tdt_stateful_pending_raw =
+                            handle->parakeet_tdt_pending_raw =
                                 strip_unwanted_text_preserving_edges(chunk_decode.pending_text);
                             handle->parakeet_chunk_cursor_bytes = chunk_end_bytes;
-                            handle->parakeet_tdt_stream_state = chunk_state;
+                            handle->parakeet_tdt_decoder_state = chunk_state;
                             handle->parakeet_committed_until_sec = std::max(
                                 handle->parakeet_committed_until_sec,
                                 static_cast<float>(
@@ -2677,17 +2519,6 @@ int cactus_stream_transcribe_stop(
                                                 window_start_bytes,
                                                 window_start_bytes + seconds_to_pcm_bytes(
                                                     chunk_decode.resume_end_sec))))));
-                            if (parakeet_tdt_trace_enabled_stream()) {
-                                std::ostringstream trace;
-                                trace << "phase=stateful_stream_stop_chunk"
-                                      << " token_count=" << chunk_decode.token_count
-                                      << " confirmed_text=\"" << escape_parakeet_tdt_trace_text_stream(confirmed_chunk) << "\""
-                                      << " pending_text=\"" << escape_parakeet_tdt_trace_text_stream(pending_chunk) << "\""
-                                      << " pending_raw=\""
-                                      << escape_parakeet_tdt_trace_text_stream(
-                                             handle->parakeet_tdt_stateful_pending_raw) << "\"";
-                                parakeet_tdt_trace_log_stream(trace.str());
-                            }
                         }
                     } else if (!handle->previous_parakeet_pending.empty()) {
                         const std::string normalized_pending = parakeet_strip_recent_committed_prefix(
@@ -2699,22 +2530,15 @@ int cactus_stream_transcribe_stop(
                             final_confirmed += pending_delta;
                         }
                     }
-                    if (!handle->parakeet_tdt_stateful_pending_raw.empty()) {
+                    if (!handle->parakeet_tdt_pending_raw.empty()) {
                         std::string pending_flush = suppress_unwanted_text(
-                            handle->parakeet_tdt_stateful_pending_raw);
+                            handle->parakeet_tdt_pending_raw);
                         if (!pending_flush.empty() && !handle->custom_vocabulary.empty()) {
                             apply_vocabulary_spelling_correction(
                                 pending_flush, handle->custom_vocabulary);
                         }
                         parakeet_append_monotonic_text(final_confirmed, pending_flush);
-                        handle->parakeet_tdt_stateful_pending_raw.clear();
-                    }
-                    if (parakeet_tdt_trace_enabled_stream()) {
-                        std::ostringstream trace;
-                        trace << "phase=stateful_stream_stop_result"
-                              << " final_confirmed=\""
-                              << escape_parakeet_tdt_trace_text_stream(final_confirmed) << "\"";
-                        parakeet_tdt_trace_log_stream(trace.str());
+                        handle->parakeet_tdt_pending_raw.clear();
                     }
                     handle->parakeet_committed_text = final_confirmed;
                 } else {
