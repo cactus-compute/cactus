@@ -13,62 +13,146 @@
 #include <sstream>
 #include <system_error>
 
-extern void compute_binary_op_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_unary_op_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_activation_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_reduce_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_reshape_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_precision_cast_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+using ComputeFn = void(*)(GraphNode&, const nodes_vector&, const node_index_map_t&);
 
-extern void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_rms_norm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_rope_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_softmax_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_attention_int8_hybrid_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_rel_pos_bias_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_conv1d_k3_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_conv1d_k7s3_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_conv1d_same_depthwise_k9_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_conv1d_pointwise_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_conv2d_k3s2p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_conv2d_depthwise_k3s2p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_conv2d_pointwise_1x1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_glu_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_batchnorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_rope_gptj_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+#define DECLARE_COMPUTE(name) \
+    extern void name(GraphNode&, const nodes_vector&, const node_index_map_t&)
+
+DECLARE_COMPUTE(compute_binary_op_node);
+DECLARE_COMPUTE(compute_unary_op_node);
+DECLARE_COMPUTE(compute_activation_node);
+DECLARE_COMPUTE(compute_reduce_node);
+DECLARE_COMPUTE(compute_reshape_node);
+DECLARE_COMPUTE(compute_precision_cast_node);
+DECLARE_COMPUTE(compute_matmul_node);
+DECLARE_COMPUTE(compute_rms_norm_node);
+DECLARE_COMPUTE(compute_rope_node);
+DECLARE_COMPUTE(compute_softmax_node);
+DECLARE_COMPUTE(compute_attention_node);
+DECLARE_COMPUTE(compute_attention_int8_hybrid_node);
+DECLARE_COMPUTE(compute_rel_pos_bias_node);
+DECLARE_COMPUTE(compute_layernorm_node);
+DECLARE_COMPUTE(compute_conv1d_causal_node);
+DECLARE_COMPUTE(compute_conv1d_k3_node);
+DECLARE_COMPUTE(compute_conv1d_k7s3_node);
+DECLARE_COMPUTE(compute_conv1d_node);
+DECLARE_COMPUTE(compute_conv1d_same_depthwise_k9_node);
+DECLARE_COMPUTE(compute_conv1d_pointwise_node);
+DECLARE_COMPUTE(compute_conv2d_k3s2p1_node);
+DECLARE_COMPUTE(compute_conv2d_depthwise_k3s2p1_node);
+DECLARE_COMPUTE(compute_conv2d_pointwise_1x1_node);
+DECLARE_COMPUTE(compute_glu_node);
+DECLARE_COMPUTE(compute_batchnorm_node);
+DECLARE_COMPUTE(compute_groupnorm_node);
+DECLARE_COMPUTE(compute_rope_gptj_node);
+DECLARE_COMPUTE(compute_lstm_cell_node);
+DECLARE_COMPUTE(compute_gated_deltanet_decode_node);
+DECLARE_COMPUTE(compute_gated_deltanet_prefill_node);
+DECLARE_COMPUTE(compute_stft_node);
+DECLARE_COMPUTE(compute_altup_predict_node);
+DECLARE_COMPUTE(compute_altup_correct_node);
+DECLARE_COMPUTE(compute_gaussian_topk_node);
+DECLARE_COMPUTE(compute_maxpool1d_node);
+DECLARE_COMPUTE(compute_bilstm_sequence_node);
+DECLARE_COMPUTE(compute_conv2d_k3s1p1_node);
+DECLARE_COMPUTE(compute_stats_pool_node);
+DECLARE_COMPUTE(compute_transpose_node);
+DECLARE_COMPUTE(compute_gather_node);
+DECLARE_COMPUTE(compute_slice_node);
+DECLARE_COMPUTE(compute_embedding_node);
+DECLARE_COMPUTE(compute_concat_node);
+DECLARE_COMPUTE(compute_cat_node);
+DECLARE_COMPUTE(compute_index_node);
+DECLARE_COMPUTE(compute_bilinear_interpolation_node);
+DECLARE_COMPUTE(compute_sample_node);
+DECLARE_COMPUTE(compute_topk_node);
+DECLARE_COMPUTE(compute_scatter_topk_node);
+DECLARE_COMPUTE(compute_moe_layer_node);
+DECLARE_COMPUTE(compute_persistent_node);
+DECLARE_COMPUTE(compute_quantize_activations_node);
 extern void shrink_thread_local_buffers();
-extern void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_gated_deltanet_decode_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_stft_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_altup_predict_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_gaussian_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_maxpool1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_bilstm_sequence_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+#undef DECLARE_COMPUTE
 
-extern void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_concat_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_cat_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_bilinear_interpolation_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-
-extern void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_scatter_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_persistent_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
-extern void compute_quantize_activations_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+static const std::unordered_map<OpType, ComputeFn> dispatch_table = {
+    {OpType::ADD, compute_binary_op_node},
+    {OpType::ADD_CLIPPED, compute_binary_op_node},
+    {OpType::SUBTRACT, compute_binary_op_node},
+    {OpType::MULTIPLY, compute_binary_op_node},
+    {OpType::DIVIDE, compute_binary_op_node},
+    {OpType::SCALAR_ADD, compute_unary_op_node},
+    {OpType::SCALAR_SUBTRACT, compute_unary_op_node},
+    {OpType::SCALAR_MULTIPLY, compute_unary_op_node},
+    {OpType::SCALAR_DIVIDE, compute_unary_op_node},
+    {OpType::SCALAR_EXP, compute_unary_op_node},
+    {OpType::SCALAR_SQRT, compute_unary_op_node},
+    {OpType::SCALAR_COS, compute_unary_op_node},
+    {OpType::SCALAR_SIN, compute_unary_op_node},
+    {OpType::SCALAR_LOG, compute_unary_op_node},
+    {OpType::ABS, compute_unary_op_node},
+    {OpType::POW, compute_unary_op_node},
+    {OpType::RELU, compute_activation_node},
+    {OpType::SILU, compute_activation_node},
+    {OpType::GELU, compute_activation_node},
+    {OpType::GELU_ERF, compute_activation_node},
+    {OpType::SIGMOID, compute_activation_node},
+    {OpType::TANH, compute_activation_node},
+    {OpType::LEAKY_RELU, compute_activation_node},
+    {OpType::SUM, compute_reduce_node},
+    {OpType::MEAN, compute_reduce_node},
+    {OpType::VARIANCE, compute_reduce_node},
+    {OpType::MIN, compute_reduce_node},
+    {OpType::MAX, compute_reduce_node},
+    {OpType::FLATTEN, compute_reshape_node},
+    {OpType::VIEW, compute_reshape_node},
+    {OpType::RESHAPE, compute_reshape_node},
+    {OpType::PRECISION_CAST, compute_precision_cast_node},
+    {OpType::MATMUL, compute_matmul_node},
+    {OpType::RMS_NORM, compute_rms_norm_node},
+    {OpType::LAYERNORM, compute_layernorm_node},
+    {OpType::GROUPNORM, compute_groupnorm_node},
+    {OpType::BATCHNORM, compute_batchnorm_node},
+    {OpType::ROPE, compute_rope_node},
+    {OpType::ROPE_GPTJ, compute_rope_gptj_node},
+    {OpType::SOFTMAX, compute_softmax_node},
+    {OpType::ATTENTION, compute_attention_node},
+    {OpType::ATTENTION_INT8_HYBRID, compute_attention_int8_hybrid_node},
+    {OpType::REL_POS_BIAS, compute_rel_pos_bias_node},
+    {OpType::CONV1D_CAUSAL, compute_conv1d_causal_node},
+    {OpType::CONV1D_K3, compute_conv1d_k3_node},
+    {OpType::CONV1D_K7S3, compute_conv1d_k7s3_node},
+    {OpType::CONV1D, compute_conv1d_node},
+    {OpType::CONV1D_SAME_DEPTHWISE_K9, compute_conv1d_same_depthwise_k9_node},
+    {OpType::CONV1D_POINTWISE, compute_conv1d_pointwise_node},
+    {OpType::CONV2D_K3S2P1, compute_conv2d_k3s2p1_node},
+    {OpType::CONV2D_DEPTHWISE_K3S2P1, compute_conv2d_depthwise_k3s2p1_node},
+    {OpType::CONV2D_POINTWISE_1X1, compute_conv2d_pointwise_1x1_node},
+    {OpType::CONV2D_K3S1P1, compute_conv2d_k3s1p1_node},
+    {OpType::GLU, compute_glu_node},
+    {OpType::TRANSPOSE, compute_transpose_node},
+    {OpType::GATHER, compute_gather_node},
+    {OpType::SLICE, compute_slice_node},
+    {OpType::EMBEDDING, compute_embedding_node},
+    {OpType::CONCAT, compute_concat_node},
+    {OpType::CAT, compute_cat_node},
+    {OpType::INDEX, compute_index_node},
+    {OpType::BILINEAR_INTERPOLATION, compute_bilinear_interpolation_node},
+    {OpType::SAMPLE, compute_sample_node},
+    {OpType::TOPK, compute_topk_node},
+    {OpType::SCATTER_TOPK, compute_scatter_topk_node},
+    {OpType::MOE_LAYER, compute_moe_layer_node},
+    {OpType::PERSISTENT, compute_persistent_node},
+    {OpType::QUANTIZE_ACTIVATIONS, compute_quantize_activations_node},
+    {OpType::LSTM_CELL, compute_lstm_cell_node},
+    {OpType::GATED_DELTANET_DECODE, compute_gated_deltanet_decode_node},
+    {OpType::GATED_DELTANET_PREFILL, compute_gated_deltanet_prefill_node},
+    {OpType::STFT, compute_stft_node},
+    {OpType::ALTUP_PREDICT, compute_altup_predict_node},
+    {OpType::ALTUP_CORRECT, compute_altup_correct_node},
+    {OpType::GAUSSIAN_TOPK, compute_gaussian_topk_node},
+    {OpType::MAXPOOL1D, compute_maxpool1d_node},
+    {OpType::BILSTM_SEQUENCE, compute_bilstm_sequence_node},
+    {OpType::STATS_POOL, compute_stats_pool_node},
+};
 
 static const char* op_type_names[] = {
     "INPUT", "PRECISION_CAST",
@@ -106,247 +190,14 @@ static const char* get_op_name(OpType op) {
     return op_type_names[static_cast<int>(op)];
 }
 
-void compute_node_optimized(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    switch (node.op_type) {
-        case OpType::INPUT:
-            break;
+void compute_node_optimized(GraphNode& node, const nodes_vector& nodes, const node_index_map_t& node_index_map) {
+    if (node.op_type == OpType::INPUT) return;
 
-        case OpType::ADD:
-        case OpType::ADD_CLIPPED:
-        case OpType::SUBTRACT:
-        case OpType::MULTIPLY:
-        case OpType::DIVIDE:
-            compute_binary_op_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::SCALAR_ADD:
-        case OpType::SCALAR_SUBTRACT:
-        case OpType::SCALAR_MULTIPLY:
-        case OpType::SCALAR_DIVIDE:
-        case OpType::SCALAR_EXP:
-        case OpType::SCALAR_SQRT:
-        case OpType::SCALAR_COS:
-        case OpType::SCALAR_SIN:
-        case OpType::SCALAR_LOG:
-        case OpType::ABS:
-        case OpType::POW:
-            compute_unary_op_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::RELU:
-        case OpType::SILU:
-        case OpType::GELU:
-        case OpType::GELU_ERF:
-        case OpType::SIGMOID:
-        case OpType::TANH:
-        case OpType::LEAKY_RELU:
-            compute_activation_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::SUM:
-        case OpType::MEAN:
-        case OpType::VARIANCE:
-        case OpType::MIN:
-        case OpType::MAX:
-            compute_reduce_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::FLATTEN:
-        case OpType::VIEW:
-        case OpType::RESHAPE:
-            compute_reshape_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::PRECISION_CAST:
-            compute_precision_cast_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::MATMUL:
-            compute_matmul_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::RMS_NORM:
-            compute_rms_norm_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::ROPE:
-            compute_rope_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::ROPE_GPTJ:
-            compute_rope_gptj_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::SOFTMAX:
-            compute_softmax_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::ATTENTION:
-            compute_attention_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::ATTENTION_INT8_HYBRID:
-            compute_attention_int8_hybrid_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::REL_POS_BIAS:
-            compute_rel_pos_bias_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::LAYERNORM:
-            compute_layernorm_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::GROUPNORM:
-            compute_groupnorm_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::PERSISTENT:
-            compute_persistent_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::CONV1D_CAUSAL:
-            compute_conv1d_causal_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::CONV1D_K3:
-            compute_conv1d_k3_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::CONV1D_K7S3:
-            compute_conv1d_k7s3_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::CONV1D:
-            compute_conv1d_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::CONV1D_SAME_DEPTHWISE_K9:
-            compute_conv1d_same_depthwise_k9_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::CONV1D_POINTWISE:
-            compute_conv1d_pointwise_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::CONV2D_K3S2P1:
-            compute_conv2d_k3s2p1_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::CONV2D_DEPTHWISE_K3S2P1:
-            compute_conv2d_depthwise_k3s2p1_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::CONV2D_POINTWISE_1X1:
-            compute_conv2d_pointwise_1x1_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::GLU:
-            compute_glu_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::BATCHNORM:
-            compute_batchnorm_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::TRANSPOSE:
-            compute_transpose_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::GATHER:
-            compute_gather_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::SLICE:
-            compute_slice_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::EMBEDDING:
-            compute_embedding_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::CONCAT:
-            compute_concat_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::CAT:
-            compute_cat_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::INDEX:
-            compute_index_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::BILINEAR_INTERPOLATION:
-            compute_bilinear_interpolation_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::SAMPLE:
-            compute_sample_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::TOPK:
-            compute_topk_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::SCATTER_TOPK:
-            compute_scatter_topk_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::MOE_LAYER:
-            compute_moe_layer_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::QUANTIZE_ACTIVATIONS:
-            compute_quantize_activations_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::LSTM_CELL:
-            compute_lstm_cell_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::GATED_DELTANET_DECODE:
-            compute_gated_deltanet_decode_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::GATED_DELTANET_PREFILL:
-            compute_gated_deltanet_prefill_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::STFT:
-            compute_stft_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::ALTUP_PREDICT:
-            compute_altup_predict_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::ALTUP_CORRECT:
-            compute_altup_correct_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::GAUSSIAN_TOPK:
-            compute_gaussian_topk_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::MAXPOOL1D:
-            compute_maxpool1d_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::BILSTM_SEQUENCE:
-            compute_bilstm_sequence_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::CONV2D_K3S1P1:
-            compute_conv2d_k3s1p1_node(node, nodes, node_index_map);
-            break;
-
-        case OpType::STATS_POOL:
-            compute_stats_pool_node(node, nodes, node_index_map);
-            break;
-
-        default:
-            throw std::runtime_error("Unknown operation type: " + std::to_string(static_cast<int>(node.op_type)));
+    auto it = dispatch_table.find(node.op_type);
+    if (it != dispatch_table.end()) {
+        it->second(node, nodes, node_index_map);
+    } else {
+        throw std::runtime_error("Unknown operation type: " + std::to_string(static_cast<int>(node.op_type)));
     }
 }
 

@@ -1,7 +1,7 @@
 #include "model.h"
 #include "../graph/graph.h"
 #include <cstddef>
-#include <set>
+
 
 namespace cactus {
 namespace engine {
@@ -190,11 +190,7 @@ size_t NomicModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) 
     
     hidden = gb->layernorm(hidden, weight_nodes_.embedding_layernorm_weight, weight_nodes_.embedding_layernorm_bias, config_.layer_norm_eps);
 
-    static std::set<uint32_t> skip_layers = {};
     for (uint32_t layer_idx = 0; layer_idx < config_.num_layers; layer_idx++) {
-        if (skip_layers.count(layer_idx)) {
-            continue;
-        }
         hidden = build_transformer_block(gb, hidden, layer_idx, backend);
     }
 

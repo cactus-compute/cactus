@@ -21,36 +21,8 @@ int cactus_embed_speaker(
     size_t pcm_buffer_size
 ) {
     (void)options_json;
-    if (!model) {
-        std::string error_msg = last_error_message.empty() ? "Model not initialized." : last_error_message;
-        CACTUS_LOG_ERROR("embed_speaker", error_msg);
-        handle_error_response(error_msg, response_buffer, buffer_size);
+    if (validate_audio_params("embed_speaker", model, response_buffer, buffer_size, audio_file_path, pcm_buffer, pcm_buffer_size) != 0)
         return -1;
-    }
-
-    if (!response_buffer || buffer_size == 0) {
-        CACTUS_LOG_ERROR("embed_speaker", "Invalid parameters: response_buffer or buffer_size");
-        handle_error_response("Invalid parameters", response_buffer, buffer_size);
-        return -1;
-    }
-
-    if (!audio_file_path && (!pcm_buffer || pcm_buffer_size == 0)) {
-        CACTUS_LOG_ERROR("embed_speaker", "No audio input provided");
-        handle_error_response("Either audio_file_path or pcm_buffer must be provided", response_buffer, buffer_size);
-        return -1;
-    }
-
-    if (audio_file_path && pcm_buffer && pcm_buffer_size > 0) {
-        CACTUS_LOG_ERROR("embed_speaker", "Both audio_file_path and pcm_buffer provided");
-        handle_error_response("Cannot provide both audio_file_path and pcm_buffer", response_buffer, buffer_size);
-        return -1;
-    }
-
-    if (pcm_buffer && pcm_buffer_size > 0 && (pcm_buffer_size < 2 || pcm_buffer_size % 2 != 0)) {
-        CACTUS_LOG_ERROR("embed_speaker", "Invalid pcm_buffer_size: " << pcm_buffer_size);
-        handle_error_response("pcm_buffer_size must be even and at least 2 bytes", response_buffer, buffer_size);
-        return -1;
-    }
 
     try {
         auto start_time = std::chrono::high_resolution_clock::now();
@@ -63,13 +35,8 @@ int cactus_embed_speaker(
         }
 
         std::vector<float> audio;
-
         if (audio_file_path == nullptr) {
-            const int16_t* pcm_samples = reinterpret_cast<const int16_t*>(pcm_buffer);
-            const size_t num_samples = pcm_buffer_size / 2;
-            audio.resize(num_samples);
-            for (size_t i = 0; i < num_samples; ++i)
-                audio[i] = static_cast<float>(pcm_samples[i]) / 32768.0f;
+            audio = pcm_to_float(pcm_buffer, pcm_buffer_size);
         } else {
             AudioFP32 wav_audio = load_wav(audio_file_path);
             audio = resample_to_16k_fp32(wav_audio.samples, wav_audio.sample_rate);

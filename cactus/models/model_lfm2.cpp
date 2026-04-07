@@ -336,15 +336,6 @@ size_t LFM2Model::forward(CactusGraph* gb, const std::vector<uint32_t>& tokens,
     }
     auto seq_len = static_cast<size_t>(tokens.size());
     auto input_node_id = gb->input({seq_len}, Precision::FP32);
-    const auto& embedding_buffer = gb->get_output_buffer(embedding_node_id_);
-    
-    for (size_t i = 0; i < embedding_buffer.shape.size(); ++i) {
-        
-        if (i + 1 < embedding_buffer.shape.size()) {
-            
-        }
-    }
-    
     auto hidden = gb->embedding(embedding_node_id_, input_node_id);
     auto final_hidden = forward(gb, hidden, seq_len, backend, use_cache);
     

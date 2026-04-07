@@ -19,140 +19,64 @@
 #include <string>
 #include <vector>
 
-namespace {
-
-size_t shape_elements(const std::vector<int>& shape) {
-    if (shape.empty()) return 0;
-    size_t total = 1;
-    for (int d : shape) {
-        if (d <= 0) return 0;
-        total *= static_cast<size_t>(d);
-    }
-    return total;
-}
-
+size_t shape_elements(const std::vector<int>& shape);
 bool pack_parakeet_features_for_npu(
     const std::vector<__fp16>& time_major_f16,
     size_t frames,
     size_t num_mels,
     const std::vector<int>& input_shape,
-    std::vector<__fp16>& packed)
-{
-    if (input_shape.empty()) return false;
-    const size_t total = shape_elements(input_shape);
-    if (total == 0) return false;
-    packed.assign(total, static_cast<__fp16>(0.0f));
+    std::vector<__fp16>& packed);
 
-    auto tm = [&](size_t t, size_t m) -> __fp16 {
-        return time_major_f16[t * num_mels + m];
-    };
+namespace {
 
-    if (input_shape.size() == 4) {
-        const size_t s0 = static_cast<size_t>(input_shape[0]);
-        const size_t s1 = static_cast<size_t>(input_shape[1]);
-        const size_t s2 = static_cast<size_t>(input_shape[2]);
-        const size_t s3 = static_cast<size_t>(input_shape[3]);
-        if (s0 != 1) return false;
+uint32_t stream_max_duration_skip_frames() {
+    static const uint32_t kDefaultMaxSkip = 2;
+    static const uint32_t configured = []() {
+        const char* raw = std::getenv("CACTUS_PARAKEET_STREAM_MAX_SKIP");
+        if (!raw || raw[0] == '\0') return kDefaultMaxSkip;
+        char* end = nullptr;
+        const long parsed = std::strtol(raw, &end, 10);
+        if (end == raw || *end != '\0') return kDefaultMaxSkip;
+        if (parsed < 1) return static_cast<uint32_t>(1);
+        if (parsed > 20) return static_cast<uint32_t>(20);
+        return static_cast<uint32_t>(parsed);
+    }();
+    return configured;
+}
 
-        if (s1 == 1 && s2 >= frames && s3 == num_mels) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[(t * s3) + m] = tm(t, m);
-                }
-            }
-            return true;
+std::string escape_trace_text(const std::string& text) {
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (char ch : text) {
+        switch (ch) {
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            case '"': escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            default: escaped += ch; break;
         }
-        if (s1 >= frames && s2 == num_mels && s3 == 1) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[((t * s2 + m) * s3)] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s1 == num_mels && s2 >= frames && s3 == 1) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[((m * s2 + t) * s3)] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s1 == 1 && s2 == num_mels && s3 >= frames) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[(m * s3) + t] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        return false;
     }
+    return escaped;
+}
 
-    if (input_shape.size() == 3) {
-        const size_t s0 = static_cast<size_t>(input_shape[0]);
-        const size_t s1 = static_cast<size_t>(input_shape[1]);
-        const size_t s2 = static_cast<size_t>(input_shape[2]);
+const char* parakeet_tdt_trace_path() {
+    static std::string path = []() {
+        const char* explicit_path = std::getenv("CACTUS_PARAKEET_TDT_TRACE_PATH");
+        if (explicit_path && explicit_path[0] != '\0') {
+            return std::string(explicit_path);
+        }
+        const char* enabled = std::getenv("CACTUS_PARAKEET_TDT_TRACE");
+        if (enabled && enabled[0] != '\0' && !(enabled[0] == '0' && enabled[1] == '\0')) {
+            return std::string("/tmp/cactus_parakeet_tdt_trace.log");
+        }
+        return std::string();
+    }();
+    return path.empty() ? nullptr : path.c_str();
+}
 
-        if (s0 == 1 && s1 >= frames && s2 == num_mels) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[t * s2 + m] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s0 == 1 && s1 == num_mels && s2 >= frames) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[m * s2 + t] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s0 >= frames && s1 == num_mels && s2 == 1) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[(t * s1 + m) * s2] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s0 == num_mels && s1 >= frames && s2 == 1) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[(m * s1 + t) * s2] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        return false;
-    }
-
-    if (input_shape.size() == 2) {
-        const size_t s0 = static_cast<size_t>(input_shape[0]);
-        const size_t s1 = static_cast<size_t>(input_shape[1]);
-
-        if (s0 >= frames && s1 == num_mels) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[t * s1 + m] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        if (s0 == num_mels && s1 >= frames) {
-            for (size_t t = 0; t < frames; ++t) {
-                for (size_t m = 0; m < num_mels; ++m) {
-                    packed[m * s1 + t] = tm(t, m);
-                }
-            }
-            return true;
-        }
-        return false;
-    }
-
-    return false;
+bool parakeet_tdt_trace_enabled() {
+    return parakeet_tdt_trace_path() != nullptr;
 }
 
 bool infer_npu_encoder_output_shape(

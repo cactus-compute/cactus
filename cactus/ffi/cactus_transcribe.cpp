@@ -103,40 +103,8 @@ int cactus_transcribe(
     const uint8_t* pcm_buffer,
     size_t pcm_buffer_size
 ) {
-    if (!model) {
-        std::string error_msg = last_error_message.empty() ? "Model not initialized." : last_error_message;
-        CACTUS_LOG_ERROR("transcribe", error_msg);
-        handle_error_response(error_msg, response_buffer, buffer_size);
-        cactus::telemetry::recordTranscription(nullptr, false, 0.0, 0.0, 0.0, 0, 0.0, error_msg.c_str());
+    if (validate_audio_params("transcribe", model, response_buffer, buffer_size, audio_file_path, pcm_buffer, pcm_buffer_size) != 0)
         return -1;
-    }
-    if (!response_buffer || buffer_size == 0) {
-        CACTUS_LOG_ERROR("transcribe", "Invalid parameters: response_buffer or buffer_size");
-        handle_error_response("Invalid parameters", response_buffer, buffer_size);
-        cactus::telemetry::recordTranscription(nullptr, false, 0.0, 0.0, 0.0, 0, 0.0, "Invalid parameters");
-        return -1;
-    }
-
-    if (!audio_file_path && (!pcm_buffer || pcm_buffer_size == 0)) {
-        CACTUS_LOG_ERROR("transcribe", "No audio input provided");
-        handle_error_response("Either audio_file_path or pcm_buffer must be provided", response_buffer, buffer_size);
-        cactus::telemetry::recordTranscription(model ? static_cast<CactusModelHandle*>(model)->model_name.c_str() : nullptr, false, 0.0, 0.0, 0.0, 0, 0.0, "No audio input provided");
-        return -1;
-    }
-
-    if (audio_file_path && pcm_buffer && pcm_buffer_size > 0) {
-        CACTUS_LOG_ERROR("transcribe", "Both audio_file_path and pcm_buffer provided");
-        handle_error_response("Cannot provide both audio_file_path and pcm_buffer", response_buffer, buffer_size);
-        cactus::telemetry::recordTranscription(nullptr, false, 0.0, 0.0, 0.0, 0, 0.0, "Cannot provide both audio_file_path and pcm_buffer");
-        return -1;
-    }
-
-    if (pcm_buffer && pcm_buffer_size > 0 && (pcm_buffer_size < 2 || pcm_buffer_size % 2 != 0)) {
-        CACTUS_LOG_ERROR("transcribe", "Invalid pcm_buffer_size: " << pcm_buffer_size);
-        handle_error_response("pcm_buffer_size must be even and at least 2 bytes", response_buffer, buffer_size);
-        cactus::telemetry::recordTranscription(nullptr, false, 0.0, 0.0, 0.0, 0, 0.0, "pcm_buffer_size must be even and at least 2 bytes");
-        return -1;
-    }
 
     try {
         auto start_time = std::chrono::high_resolution_clock::now();

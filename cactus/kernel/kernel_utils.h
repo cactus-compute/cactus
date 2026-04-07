@@ -155,6 +155,33 @@ inline float32x4_t fast_tanh_f32x4(float32x4_t x) {
     return result;
 }
 
+constexpr size_t SIMD_F16_WIDTH = 8;
+
+inline size_t simd_align(size_t count, size_t width = SIMD_F16_WIDTH) {
+    return (count / width) * width;
+}
+
+inline void f16x8_split_f32(float16x8_t v, float32x4_t& lo, float32x4_t& hi) {
+    lo = vcvt_f32_f16(vget_low_f16(v));
+    hi = vcvt_f32_f16(vget_high_f16(v));
+}
+
+inline float16x8_t f32_merge_f16(float32x4_t lo, float32x4_t hi) {
+    return vcombine_f16(vcvt_f16_f32(lo), vcvt_f16_f32(hi));
+}
+
+inline float32x4_t fast_sigmoid_f32x4(float32x4_t x) {
+    const float32x4_t one = vdupq_n_f32(1.0f);
+    return vdivq_f32(one, vaddq_f32(one, fast_exp_f32x4(vnegq_f32(x))));
+}
+
+template<typename F32x4Op>
+inline float16x8_t apply_f32_op_on_f16x8(float16x8_t v, F32x4Op op) {
+    float32x4_t lo, hi;
+    f16x8_split_f32(v, lo, hi);
+    return f32_merge_f16(op(lo), op(hi));
+}
+
 inline void unpack_int4_as_int8x16x2(const uint8_t* ptr, int8x16_t& high_decoded, int8x16_t& low_decoded) {
     int8x16_t packed = vreinterpretq_s8_u8(vld1q_u8(ptr));
     high_decoded = vshrq_n_s8(packed, 4);
@@ -613,5 +640,52 @@ namespace CactusThreading {
 
 }
 
+template<typename SimdOp, typename ScalarOp>
+void elementwise_op_f16(const __fp16* input, __fp16* output, size_t num_elements,
+                        bool use_streaming, CactusThreading::ParallelConfig config,
+                        SimdOp simd_op, ScalarOp scalar_op, size_t unroll = 4) {
+    CactusThreading::parallel_for(num_elements, config,
+        [&](size_t start, size_t end) {
+            const size_t n = end - start;
+            const size_t vec_end = start + simd_align(n);
 
-#endif // KERNEL_UTILS_H 
+            if (use_streaming && unroll >= 4) {
+                const size_t unrolled_end = start + simd_align(n, SIMD_F16_WIDTH * 4);
+                for (size_t i = start; i < unrolled_end; i += SIMD_F16_WIDTH * 4) {
+                    __builtin_prefetch(&input[i + 256], 0, 0);
+                    float16x8_t v0 = simd_op(vld1q_f16(&input[i]));
+                    float16x8_t v1 = simd_op(vld1q_f16(&input[i + 8]));
+                    float16x8_t v2 = simd_op(vld1q_f16(&input[i + 16]));
+                    float16x8_t v3 = simd_op(vld1q_f16(&input[i + 24]));
+                    stream_store_f16x8(&output[i], v0);
+                    stream_store_f16x8(&output[i + 8], v1);
+                    stream_store_f16x8(&output[i + 16], v2);
+                    stream_store_f16x8(&output[i + 24], v3);
+                }
+                for (size_t i = unrolled_end; i < vec_end; i += SIMD_F16_WIDTH) {
+                    stream_store_f16x8(&output[i], simd_op(vld1q_f16(&input[i])));
+                }
+            } else if (use_streaming && unroll >= 2) {
+                const size_t unrolled_end = start + simd_align(n, SIMD_F16_WIDTH * 2);
+                for (size_t i = start; i < unrolled_end; i += SIMD_F16_WIDTH * 2) {
+                    __builtin_prefetch(&input[i + 128], 0, 0);
+                    float16x8_t v0 = simd_op(vld1q_f16(&input[i]));
+                    float16x8_t v1 = simd_op(vld1q_f16(&input[i + 8]));
+                    stream_store_f16x8(&output[i], v0);
+                    stream_store_f16x8(&output[i + 8], v1);
+                }
+                for (size_t i = unrolled_end; i < vec_end; i += SIMD_F16_WIDTH) {
+                    stream_store_f16x8(&output[i], simd_op(vld1q_f16(&input[i])));
+                }
+            } else {
+                for (size_t i = start; i < vec_end; i += SIMD_F16_WIDTH) {
+                    vst1q_f16(&output[i], simd_op(vld1q_f16(&input[i])));
+                }
+            }
+            for (size_t i = vec_end; i < end; ++i) {
+                output[i] = scalar_op(input[i]);
+            }
+        });
+}
+
+#endif // KERNEL_UTILS_H

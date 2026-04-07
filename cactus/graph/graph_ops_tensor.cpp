@@ -10,7 +10,7 @@ void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<G
         throw std::runtime_error("NPU transpose operation not yet implemented");
     }
 
-    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
 
     if (input_buffer.precision != Precision::FP16) {
         throw std::runtime_error("Transpose only supports FP16 precision");
@@ -24,8 +24,8 @@ void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<G
 }
 
 void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& tensor_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& indices_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& tensor_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& indices_buffer = get_input(node, 1, nodes, node_index_map);
 
     size_t first_dim = tensor_buffer.shape[0];
     size_t element_size = 1;
@@ -139,17 +139,14 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
     }
 
     if (axis_index == 0) {
-        size_t inner_elements = 1;
-        for (size_t i = 1; i < input_buffer.shape.size(); ++i) {
-            inner_elements *= input_buffer.shape[i];
-        }
+        auto dims0 = AxisDims::from_shape(input_buffer.shape, 0);
 
         auto* base_ptr = static_cast<char*>(input_buffer.get_data());
         if (!base_ptr) {
             throw std::runtime_error("Slice input buffer is not available");
         }
 
-        const size_t byte_offset = PrecisionTraits::byte_offset_of(input_buffer.precision, slice_start * inner_elements);
+        const size_t byte_offset = PrecisionTraits::byte_offset_of(input_buffer.precision, slice_start * dims0.inner);
 
         node.output_buffer.set_external(base_ptr + byte_offset);
         node.output_buffer.precision = input_buffer.precision;
@@ -179,15 +176,7 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
         throw std::runtime_error("Slice input buffer is not available");
     }
 
-    size_t inner_elements = 1;
-    for (size_t i = axis_index + 1; i < input_buffer.shape.size(); ++i) {
-        inner_elements *= input_buffer.shape[i];
-    }
-
-    size_t outer_elements = 1;
-    for (size_t i = 0; i < axis_index; ++i) {
-        outer_elements *= input_buffer.shape[i];
-    }
+    auto dims = AxisDims::from_shape(input_buffer.shape, axis_index);
 
     node.output_buffer.external_data = nullptr;
     node.output_buffer.allocate();
@@ -198,21 +187,21 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
         throw std::runtime_error("Slice output buffer could not be allocated");
     }
 
-    const size_t copy_block_elements = slice_length * inner_elements;
-    const size_t axis_stride_elements = axis_size * inner_elements;
+    const size_t copy_block_elements = slice_length * dims.inner;
+    const size_t axis_stride_elements = axis_size * dims.inner;
     const size_t copy_block_bytes = PrecisionTraits::byte_offset_of(input_buffer.precision, copy_block_elements);
     const size_t axis_stride_bytes = PrecisionTraits::byte_offset_of(input_buffer.precision, axis_stride_elements);
 
-    for (size_t outer = 0; outer < outer_elements; ++outer) {
-        const char* src = input_ptr + outer * axis_stride_bytes + PrecisionTraits::byte_offset_of(input_buffer.precision, slice_start * inner_elements);
+    for (size_t outer = 0; outer < dims.outer; ++outer) {
+        const char* src = input_ptr + outer * axis_stride_bytes + PrecisionTraits::byte_offset_of(input_buffer.precision, slice_start * dims.inner);
         char* dst = output_ptr + outer * copy_block_bytes;
         std::memcpy(dst, src, copy_block_bytes);
     }
 }
 
 void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& embeddings_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& indices_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& embeddings_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& indices_buffer = get_input(node, 1, nodes, node_index_map);
 
     size_t hidden_dim = embeddings_buffer.shape[1];
     size_t num_indices = indices_buffer.total_size;
@@ -325,8 +314,8 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
 }
 
 void compute_concat_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input1_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& input2_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& input1_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& input2_buffer = get_input(node, 1, nodes, node_index_map);
 
     std::vector<size_t> shape1 = input1_buffer.shape;
     std::vector<size_t> shape2 = input2_buffer.shape;
@@ -353,8 +342,7 @@ void compute_cat_node(
         throw std::runtime_error("Cat operation requires at least 2 input tensors");
     }
 
-    const auto& first_buffer =
-        nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& first_buffer = get_input(node, 0, nodes, node_index_map);
 
     if (first_buffer.precision != Precision::FP16) {
         throw std::runtime_error("Cat operation only supports FP16 precision");
@@ -364,7 +352,7 @@ void compute_cat_node(
     std::vector<const size_t*> input_shape_ptrs(node.input_ids.size());
 
     for (size_t i = 0; i < node.input_ids.size(); i++) {
-        const auto& buffer = nodes[node_index_map.at(node.input_ids[i])]->output_buffer;
+        const auto& buffer = get_input(node, i, nodes, node_index_map);
 
         if (buffer.precision != Precision::FP16) {
             throw std::runtime_error("Cat operation only supports FP16 precision");
@@ -384,7 +372,7 @@ void compute_cat_node(
 }
 
 void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& input_shape = input_buffer.shape;
 
     int dim = node.params.axis;
@@ -425,7 +413,7 @@ void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
 }
 
 void compute_bilinear_interpolation_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& pos_embeds_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& pos_embeds_buffer = get_input(node, 0, nodes, node_index_map);
 
     size_t total_pos_embeds = pos_embeds_buffer.shape[0];
     size_t embed_dim = pos_embeds_buffer.shape[1];

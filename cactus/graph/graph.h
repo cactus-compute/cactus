@@ -378,6 +378,28 @@ struct GraphNode {
     GraphNode(size_t node_id, OpType type);
 };
 
+using nodes_vector = std::vector<std::unique_ptr<GraphNode>>;
+using node_index_map_t = std::unordered_map<size_t, size_t>;
+
+inline const BufferDesc& get_input(const GraphNode& node, size_t idx,
+                                   const nodes_vector& nodes,
+                                   const node_index_map_t& node_index_map) {
+    return nodes[node_index_map.at(node.input_ids[idx])]->output_buffer;
+}
+
+struct AxisDims {
+    size_t outer, axis_size, inner;
+    static AxisDims from_shape(const std::vector<size_t>& shape, size_t axis) {
+        AxisDims d;
+        d.outer = 1;
+        for (size_t i = 0; i < axis; i++) d.outer *= shape[i];
+        d.axis_size = shape[axis];
+        d.inner = 1;
+        for (size_t i = axis + 1; i < shape.size(); i++) d.inner *= shape[i];
+        return d;
+    }
+};
+
 template<typename T>
 void dispatch_binary_op(OpType op, const T* lhs, const T* rhs, T* output, size_t count);
 

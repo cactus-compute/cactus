@@ -360,39 +360,7 @@ std::vector<std::pair<std::string, uint32_t>> SPTokenizer::tokenize_with_trie(co
 }
 
 std::vector<std::string> SPTokenizer::split_with_special_tokens(const std::string& text) const {
-    std::vector<std::string> result;
-    
-    size_t start = 0;
-    while (start < text.size()) {
-        size_t best_match_pos = text.size();
-        size_t best_match_len = 0;
-        std::string best_special_token;
-        
-        for (const auto& [special_token, token_id] : special_tokens_) {
-            size_t pos = text.find(special_token, start);
-            if (pos != std::string::npos && pos < best_match_pos) {
-                best_match_pos = pos;
-                best_match_len = special_token.length();
-                best_special_token = special_token;
-            }
-        }
-        
-        if (best_match_pos < text.size()) {
-            if (best_match_pos > start) {
-                std::string before = text.substr(start, best_match_pos - start);
-                result.push_back(before);
-            }
-            result.push_back(best_special_token);
-            start = best_match_pos + best_match_len;
-        } else {
-            if (start < text.size()) {
-                result.push_back(text.substr(start));
-            }
-            break;
-        }
-    }
-    
-    return result;
+    return cactus::engine::split_with_special_tokens(text, special_tokens_);
 }
 
 std::vector<uint32_t> SPTokenizer::encode(const std::string& text) const {
@@ -473,18 +441,6 @@ std::string SPTokenizer::decode(const std::vector<uint32_t>& tokens) const {
 void SPTokenizer::load_special_tokens(const std::string& config_file) {
     load_special_tokens_map(config_file, special_tokens_);
 }
-
-void SPTokenizer::load_chat_template(const std::string& template_file) {
-    std::ifstream file(template_file);
-    if (!file.is_open()) {
-        has_chat_template_ = false;
-        return;
-    }
-    
-    chat_template_ = std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    has_chat_template_ = !chat_template_.empty();
-}
-
 
 } // namespace engine
 } // namespace cactus

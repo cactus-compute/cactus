@@ -10,8 +10,6 @@
 #include <string>
 #include <vector>
 
-namespace {
-
 size_t shape_elements(const std::vector<int>& shape) {
     if (shape.empty()) return 0;
     size_t total = 1;
@@ -178,8 +176,6 @@ bool infer_npu_encoder_output_shape(
     if (time_steps * hidden_dim > elements_written) return false;
     return true;
 }
-
-} // namespace
 
 namespace cactus {
 namespace engine {
