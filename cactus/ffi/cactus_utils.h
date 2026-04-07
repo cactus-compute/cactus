@@ -1030,12 +1030,14 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
 
     float parsed_min_p = options.min_p;
     if (try_parse_json_float(json, "min_p", parsed_min_p)) {
-        options.min_p = std::max(0.0f, parsed_min_p);
+        options.min_p = std::clamp(parsed_min_p, 0.0f, 1.0f);
     }
 
     float parsed_rep_penalty = options.repetition_penalty;
     if (try_parse_json_float(json, "repetition_penalty", parsed_rep_penalty)) {
-        options.repetition_penalty = std::max(0.0f, parsed_rep_penalty);
+        if (std::isfinite(parsed_rep_penalty) && parsed_rep_penalty > 0.0f) {
+            options.repetition_penalty = parsed_rep_penalty;
+        }
     }
 
     pos = json.find("\"top_k\"");

@@ -304,7 +304,7 @@ uint32_t Gemma4MmModel::decode_multimodal(
         logits_node = gb->scalar_multiply(logits_node, config_.final_logit_softcapping);
     }
 
-    auto sampled_token = gb->sample_with_options(logits_node, temperature, top_p, min_p, repetition_penalty, top_k);
+    auto sampled_token = gb->sample_with_options(logits_node, temperature, top_p, min_p, 1.0f, top_k);
 
     if (!profile_file.empty())
         gb->execute(profile_file);

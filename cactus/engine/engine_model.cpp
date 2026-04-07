@@ -295,7 +295,7 @@ size_t Model::sample_token(CactusGraph* gb, size_t logits_node_id, float tempera
             combined_bias[token_id] += boost;
         }
     }
-    if (repetition_penalty != 1.0f && !token_history_.empty()) {
+    if (!token_history_.empty() && repetition_penalty > 1.0f && std::isfinite(repetition_penalty)) {
         float log_penalty = std::log(repetition_penalty);
         for (uint32_t tok : token_history_) {
             combined_bias[tok] -= log_penalty;
