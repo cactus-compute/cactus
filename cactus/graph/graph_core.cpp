@@ -234,7 +234,7 @@ namespace ValidationUtils {
     }
 }
 
-CactusGraph::CactusGraph() : next_node_id_(0) {}
+CactusGraph::CactusGraph() : next_node_id_(1) {}
 
 size_t CactusGraph::get_node_count() const {
     return nodes_.size();
