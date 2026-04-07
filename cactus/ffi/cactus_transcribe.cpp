@@ -18,7 +18,9 @@ using cactus::audio::WHISPER_SAMPLE_RATE;
 using cactus::audio::apply_preemphasis;
 using cactus::audio::get_parakeet_spectrogram_config;
 using cactus::audio::get_whisper_spectrogram_config;
+using cactus::audio::init_whisper_mel_filters;
 using cactus::audio::normalize_parakeet_log_mel;
+using cactus::audio::normalize_whisper_mel;
 using cactus::audio::trim_mel_frames;
 using cactus::audio::get_htk_spectrogram_config;
 using cactus::audio::get_gemma4_audio_spectrogram_config;
@@ -27,33 +29,6 @@ using cactus::audio::transpose_mel_to_frame_major;
 static constexpr size_t WHISPER_MAX_DECODER_POSITIONS = 448;
 static constexpr size_t MAX_CHUNK_SAMPLES = WHISPER_SAMPLE_RATE * 30;
 static constexpr size_t MAX_CONTEXT_WORDS = 64;
-
-static std::vector<float> normalize_mel(std::vector<float>& mel, size_t n_mels, bool use_mel_floor_padding = false) {
-    size_t n_frames = mel.size() / n_mels;
-
-    float max_val = -std::numeric_limits<float>::infinity();
-    for (float v : mel)
-        if (v > max_val) max_val = v;
-
-    float min_allowed = max_val - 8.0f;
-    for (float& v : mel) {
-        if (v < min_allowed) v = min_allowed;
-        v = (v + 4.0f) * 0.25f;
-    }
-
-    if (n_frames != WHISPER_TARGET_FRAMES) {
-        float pad_val = use_mel_floor_padding ? (min_allowed + 4.0f) * 0.25f : 0.0f;
-        std::vector<float> fixed(n_mels * WHISPER_TARGET_FRAMES, pad_val);
-        size_t copy_frames = std::min(n_frames, WHISPER_TARGET_FRAMES);
-        for (size_t m = 0; m < n_mels; ++m) {
-            const float* src = &mel[m * n_frames];
-            float* dst = &fixed[m * WHISPER_TARGET_FRAMES];
-            std::copy(src, src + copy_frames, dst);
-        }
-        return fixed;
-    }
-    return std::move(mel);
-}
 
 static std::string extract_whisper_language_code(std::string token_text) {
     const size_t open = token_text.find("<|");
@@ -382,25 +357,13 @@ int cactus_transcribe(
         }
 
         auto cfg = is_parakeet ? get_parakeet_spectrogram_config() : get_whisper_spectrogram_config();
-        size_t mel_bins = 0;
-        const bool is_whisper_v3 = is_whisper && handle->model->get_config().num_mel_bins > 80;
-        if (is_whisper_v3) {
-            cfg.fft_override = 512;
-            cfg.remove_dc_offset = false;
-        }
+        size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
+        const bool is_whisper_v3 = is_whisper && mel_bins > 80;
         AudioProcessor ap;
-        if (!is_moonshine) {
-            {
-                mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
-                const size_t fft_len = cfg.fft_override > 0 ? cfg.fft_override : cfg.n_fft;
-                if (is_parakeet) {
-                    ap.init_mel_filters(fft_len / 2 + 1, mel_bins, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
-                } else if (is_whisper_v3) {
-                    ap.init_mel_filters(fft_len / 2 + 1, mel_bins, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE, "slaney", "slaney");
-                } else {
-                    ap.init_mel_filters(cfg.n_fft / 2 + 1, mel_bins, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
-                }
-            }
+        if (is_parakeet) {
+            ap.init_mel_filters(cfg.n_fft / 2 + 1, mel_bins, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
+        } else if (!is_moonshine) {
+            init_whisper_mel_filters(ap, cfg, mel_bins);
         }
 
         auto* tokenizer = handle->model->get_tokenizer();
@@ -494,7 +457,7 @@ int cactus_transcribe(
                     trim_mel_frames(chunk_audio, mel_bins, valid_frames);
                 } else {
                     std::vector<float> mel = ap.compute_spectrogram(chunk_audio, cfg);
-                    chunk_audio = normalize_mel(mel, mel_bins, is_whisper_v3);
+                    chunk_audio = normalize_whisper_mel(mel, mel_bins, is_whisper_v3);
                 }
             }
 
@@ -762,19 +725,9 @@ int cactus_detect_language(
         AudioProcessor ap;
         auto cfg = get_whisper_spectrogram_config();
         const size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
-        const bool lang_detect_v3 = mel_bins > 80;
-        if (lang_detect_v3) {
-            cfg.fft_override = 512;
-            cfg.remove_dc_offset = false;
-        }
-        const size_t fft_len = cfg.fft_override > 0 ? cfg.fft_override : cfg.n_fft;
-        if (lang_detect_v3) {
-            ap.init_mel_filters(fft_len / 2 + 1, mel_bins, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE, "slaney", "slaney");
-        } else {
-            ap.init_mel_filters(cfg.n_fft / 2 + 1, mel_bins, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
-        }
+        init_whisper_mel_filters(ap, cfg, mel_bins);
         std::vector<float> mel = ap.compute_spectrogram(audio_buffer, cfg);
-        std::vector<float> features = normalize_mel(mel, mel_bins, lang_detect_v3);
+        std::vector<float> features = normalize_whisper_mel(mel, mel_bins, mel_bins > 80);
         if (features.empty()) {
             handle_error_response("Computed audio features are empty", response_buffer, buffer_size);
             return -1;

@@ -317,12 +317,13 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         model_config['num_encoder_layers'] = config.encoder_num_hidden_layers
         model_config['num_decoder_layers'] = config.decoder_num_hidden_layers
 
-    # For encoder-decoder models with separate layer counts, ensure num_layers covers both
-    enc_l = int(model_config.get('num_encoder_layers', 0))
-    dec_l = int(model_config.get('num_decoder_layers', 0))
-    if enc_l > 0 or dec_l > 0:
-        num_layers = max(enc_l, dec_l, num_layers)
-        model_config['num_layers'] = num_layers
+    # Whisper: ensure num_layers = max(enc, dec) so the weight loader covers both.
+    if model_type_str == 'whisper':
+        enc_l = int(model_config.get('num_encoder_layers', 0))
+        dec_l = int(model_config.get('num_decoder_layers', 0))
+        if enc_l > 0 or dec_l > 0:
+            num_layers = max(enc_l, dec_l, num_layers)
+            model_config['num_layers'] = num_layers
 
     if embedding_found:
         embedding_norm_names = {'emb_ln.weight': 'embedding_layernorm.weight', 'emb_ln.bias': 'embedding_layernorm.bias'}

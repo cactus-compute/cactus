@@ -184,6 +184,56 @@ inline cactus::engine::AudioProcessor::SpectrogramConfig get_wespeaker_spectrogr
     return cfg;
 }
 
+// Whisper v1/v2: 80 mel bins, HTK. Whisper v3: 128 mel bins, Slaney, 512-FFT, no DC removal.
+inline void init_whisper_mel_filters(cactus::engine::AudioProcessor& ap,
+                                     cactus::engine::AudioProcessor::SpectrogramConfig& cfg,
+                                     size_t mel_bins) {
+    const size_t num_mel_filters = std::max<size_t>(1, mel_bins);
+    const bool is_v3 = mel_bins > 80;
+    if (is_v3) {
+        cfg.fft_override = 512;
+        cfg.remove_dc_offset = false;
+    }
+    const size_t fft_len = cfg.fft_override > 0 ? cfg.fft_override : cfg.n_fft;
+    const size_t num_frequency_bins = fft_len / 2 + 1;
+    if (is_v3) {
+        ap.init_mel_filters(num_frequency_bins, num_mel_filters, 0.0f, 8000.0f,
+                            WHISPER_SAMPLE_RATE, "slaney", "slaney");
+    } else {
+        ap.init_mel_filters(num_frequency_bins, num_mel_filters, 0.0f, 8000.0f,
+                            WHISPER_SAMPLE_RATE);
+    }
+}
+
+// use_mel_floor_padding=true pads short audio with the normalized mel floor (required for v3).
+inline std::vector<float> normalize_whisper_mel(std::vector<float>& mel, size_t n_mels,
+                                                bool use_mel_floor_padding = false) {
+    if (mel.empty() || n_mels == 0) return mel;
+    size_t n_frames = mel.size() / n_mels;
+
+    float max_val = -std::numeric_limits<float>::infinity();
+    for (float v : mel) if (v > max_val) max_val = v;
+
+    float min_allowed = max_val - 8.0f;
+    for (float& v : mel) {
+        if (v < min_allowed) v = min_allowed;
+        v = (v + 4.0f) * 0.25f;
+    }
+
+    if (n_frames != WHISPER_TARGET_FRAMES) {
+        float pad_val = use_mel_floor_padding ? (min_allowed + 4.0f) * 0.25f : 0.0f;
+        std::vector<float> fixed(n_mels * WHISPER_TARGET_FRAMES, pad_val);
+        size_t copy_frames = std::min(n_frames, WHISPER_TARGET_FRAMES);
+        for (size_t m = 0; m < n_mels; ++m) {
+            const float* src = &mel[m * n_frames];
+            float* dst = &fixed[m * WHISPER_TARGET_FRAMES];
+            std::copy(src, src + copy_frames, dst);
+        }
+        return fixed;
+    }
+    return std::move(mel);
+}
+
 inline std::vector<float> transpose_mel_to_frame_major(const std::vector<float>& mel,
                                                         size_t num_mels, size_t num_frames) {
     std::vector<float> transposed(num_frames * num_mels);
