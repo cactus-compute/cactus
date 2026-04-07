@@ -161,6 +161,7 @@ graph.hard_reset();
 | openai/whisper-base | 74M | 329.37 | 178.65 | 358 | yes | 0.0164 | 0.1628 |
 | openai/whisper-small | 244M | 856.79 | 332.63 | 108 | yes | 0.0428 | 0.0930 |
 | openai/whisper-medium | 769M | 2085.87 | 923.33 | 49 | yes | 0.1041 | 0.0930 |
+| openai/whisper-large-v3 | 1.55B | 5994 | 2050 | 15.72 | no | 0.2992 | - |
 | nvidia/parakeet-ctc-0.6b | 600M | 201.77 | 201.44 | 5214285 | yes | 0.0101 | 0.0930 |
 | nvidia/parakeet-tdt-0.6b-v3 | 600M | 718.91 | 718.82 | 3583333 | yes | 0.0359 | 0.0465 |
 | nvidia/parakeet-ctc-1.1b | 1.1B | 279.03 | 278.92 | 4562500 | yes | 0.0139 | 0.1628 |
