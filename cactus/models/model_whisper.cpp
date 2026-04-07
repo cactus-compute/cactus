@@ -704,6 +704,8 @@ uint32_t WhisperModel::decode_with_audio(
     size_t top_k,
     const std::string& profile_file,
     float* out_entropy,
+    float min_p,
+    float repetition_penalty,
     float* /*out_token_time_start*/,
     float* /*out_token_time_end*/)
 {
@@ -747,7 +749,7 @@ uint32_t WhisperModel::decode_with_audio(
 
     const auto& suppress_bias = first_decode_step_ ? suppress_bias_first_step_ : suppress_bias_;
     if (first_decode_step_) first_decode_step_ = false;
-    size_t sampled_token_id = sample_token(gb, logits_node, temperature, top_p, top_k, &suppress_bias);
+    size_t sampled_token_id = sample_token(gb, logits_node, temperature, top_p, top_k, min_p, repetition_penalty, &suppress_bias);
     if (!profile_file.empty()) gb->execute(profile_file);
     else gb->execute();
 

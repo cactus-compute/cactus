@@ -349,6 +349,8 @@ struct ToolFunction {
 struct InferenceOptions {
     float temperature = 0.0f;
     float top_p = 0.0f;
+    float min_p = 0.15f;
+    float repetition_penalty = 1.1f;
     float confidence_threshold = 0.7f;
     size_t top_k = 0;
     size_t max_tokens = 100;
@@ -1024,6 +1026,16 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
         options.top_p = std::stof(json.substr(pos));
+    }
+
+    float parsed_min_p = options.min_p;
+    if (try_parse_json_float(json, "min_p", parsed_min_p)) {
+        options.min_p = std::max(0.0f, parsed_min_p);
+    }
+
+    float parsed_rep_penalty = options.repetition_penalty;
+    if (try_parse_json_float(json, "repetition_penalty", parsed_rep_penalty)) {
+        options.repetition_penalty = std::max(0.0f, parsed_rep_penalty);
     }
 
     pos = json.find("\"top_k\"");

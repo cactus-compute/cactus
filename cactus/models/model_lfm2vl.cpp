@@ -396,7 +396,9 @@ uint32_t Lfm2VlModel::decode(const std::vector<uint32_t>& tokens,
                                float top_p,
                                size_t top_k,
                                const std::string& profile_file,
-                               float* out_entropy) {
+                               float* out_entropy,
+                               float min_p,
+                               float repetition_penalty) {
     if (!initialized_ || !graph_handle_) {
         throw std::runtime_error("Model not initialized - call init() first");
     }
@@ -414,7 +416,7 @@ uint32_t Lfm2VlModel::decode(const std::vector<uint32_t>& tokens,
     image_prefill_completed_ = false;
     last_token_count_ = tokens.size();
 
-    return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy);
+    return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
 }
 
 void Lfm2VlModel::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, const std::string& profile_file) {
@@ -510,7 +512,9 @@ uint32_t Lfm2VlModel::decode_with_images(
     float top_p,
     size_t top_k,
     const std::string& profile_file,
-    float* out_entropy) {
+    float* out_entropy,
+    float min_p,
+    float repetition_penalty) {
 
     if (!initialized_ || !graph_handle_) {
         throw std::runtime_error("Model not initialized - call init() first");
@@ -520,7 +524,7 @@ uint32_t Lfm2VlModel::decode_with_images(
 
         image_prefill_completed_ = false;
         last_token_count_ = tokens.size();
-        return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy);
+        return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
     }
 
     if (temperature < 0) {
