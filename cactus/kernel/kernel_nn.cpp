@@ -766,6 +766,28 @@ void cactus_sample_f16_ex(const __fp16* logits, uint32_t* output, size_t vocab_s
 
     (void)repetition_penalty;
 
+    if (top_k > 0) {
+        std::vector<std::pair<__fp16, size_t>> logit_pairs;
+        logit_pairs.reserve(vocab_size);
+        for (size_t i = 0; i < vocab_size; ++i) {
+            logit_pairs.emplace_back(filtered_logits[i], i);
+        }
+        std::partial_sort(logit_pairs.begin(),
+                         logit_pairs.begin() + std::min(top_k, vocab_size),
+                         logit_pairs.end(),
+                         [](const auto& a, const auto& b) { return a.first > b.first; });
+
+        if (top_k < vocab_size) {
+            __fp16 kth_value = logit_pairs[top_k - 1].first;
+            __fp16 neg_inf = static_cast<__fp16>(-std::numeric_limits<float>::infinity());
+            for (size_t i = 0; i < vocab_size; ++i) {
+                if (filtered_logits[i] < kth_value) {
+                    filtered_logits[i] = neg_inf;
+                }
+            }
+        }
+    }
+
     if (min_p > 0.0f) {
         float max_logit = -std::numeric_limits<float>::infinity();
         for (size_t i = 0; i < vocab_size; ++i) {
@@ -792,28 +814,6 @@ void cactus_sample_f16_ex(const __fp16* logits, uint32_t* output, size_t vocab_s
                     if (temp_probs[i] < threshold) {
                         filtered_logits[i] = neg_inf;
                     }
-                }
-            }
-        }
-    }
-
-    if (top_k > 0) {
-        std::vector<std::pair<__fp16, size_t>> logit_pairs;
-        logit_pairs.reserve(vocab_size);
-        for (size_t i = 0; i < vocab_size; ++i) {
-            logit_pairs.emplace_back(filtered_logits[i], i);
-        }
-        std::partial_sort(logit_pairs.begin(),
-                         logit_pairs.begin() + std::min(top_k, vocab_size),
-                         logit_pairs.end(),
-                         [](const auto& a, const auto& b) { return a.first > b.first; });
-
-        if (top_k < vocab_size) {
-            __fp16 kth_value = logit_pairs[top_k - 1].first;
-            __fp16 neg_inf = static_cast<__fp16>(-std::numeric_limits<float>::infinity());
-            for (size_t i = 0; i < vocab_size; ++i) {
-                if (filtered_logits[i] < kth_value) {
-                    filtered_logits[i] = neg_inf;
                 }
             }
         }
