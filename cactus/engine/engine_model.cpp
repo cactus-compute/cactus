@@ -102,8 +102,10 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         merges_check.close();
     }
 
-    if (tokenizer_runtime_config.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::BPE ||
-        (tokenizer_runtime_config.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::UNKNOWN && has_merges)) {
+    bool force_sp = (config_.model_type == Config::ModelType::PARAKEET ||
+                     config_.model_type == Config::ModelType::PARAKEET_TDT);
+    if (!force_sp && (tokenizer_runtime_config.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::BPE ||
+        (tokenizer_runtime_config.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::UNKNOWN && has_merges))) {
         tokenizer_ = std::make_unique<BPETokenizer>();
     } else {
         tokenizer_ = std::make_unique<SPTokenizer>();
@@ -187,10 +189,19 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, cons
     }
 
     if (has_npu_prefill()) {
-        size_t npu_chunk_size = static_cast<size_t>(npu_prefill_->get_chunk_size());
-        if (tokens.size() > npu_chunk_size) {
-            prefill_npu(tokens);
-            return;
+        const char* no_npu_env = getenv("CACTUS_NO_NPU");
+#ifdef _WIN32
+        char _no_npu_buf[32] = {};
+        if (!no_npu_env && GetEnvironmentVariableA("CACTUS_NO_NPU", _no_npu_buf, sizeof(_no_npu_buf)) > 0)
+            no_npu_env = _no_npu_buf;
+#endif
+        bool skip_npu = (no_npu_env && no_npu_env[0] == '1');
+        if (!skip_npu) {
+            size_t npu_chunk_size = static_cast<size_t>(npu_prefill_->get_chunk_size());
+            if (tokens.size() <= npu_chunk_size) {
+                prefill_npu(tokens);
+                return;
+            }
         }
     }
 

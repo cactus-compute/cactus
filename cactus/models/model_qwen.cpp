@@ -3,7 +3,7 @@
 #include "../npu/npu.h"
 #include <cmath>
 #include <stdexcept>
-
+#include <sys/stat.h>
 
 namespace cactus {
 namespace engine {
@@ -34,8 +34,18 @@ void QwenModel::load_weights_to_graph(CactusGraph* gb) {
         layer.attn_v_weight = gb->mmap_weights(layer_prefix + "attn_v.weights");
         layer.attn_output_weight = gb->mmap_weights(layer_prefix + "attn_output.weights");
         layer.input_layernorm_weight = gb->mmap_weights(layer_prefix + "input_norm.weights");
-        layer.attn_q_norm_weight = gb->mmap_weights(layer_prefix + "attn_q_norm.weights");
-        layer.attn_k_norm_weight = gb->mmap_weights(layer_prefix + "attn_k_norm.weights");
+        {
+            struct stat st;
+            auto try_load = [&](const std::string& path) -> size_t {
+                return (stat(path.c_str(), &st) == 0) ? gb->mmap_weights(path) : SIZE_MAX;
+            };
+            layer.attn_q_norm_weight  = try_load(layer_prefix + "attn_q_norm.weights");
+            layer.attn_k_norm_weight  = try_load(layer_prefix + "attn_k_norm.weights");
+            layer.attn_q_bias         = try_load(layer_prefix + "attn_q_bias.weights");
+            layer.attn_k_bias         = try_load(layer_prefix + "attn_k_bias.weights");
+            layer.attn_v_bias         = try_load(layer_prefix + "attn_v_bias.weights");
+            layer.attn_output_bias    = try_load(layer_prefix + "attn_output_bias.weights");
+        }
         layer.ffn_gate_weight = gb->mmap_weights(layer_prefix + "ffn_gate.weights");
         layer.ffn_up_weight = gb->mmap_weights(layer_prefix + "ffn_up.weights");
         layer.ffn_down_weight = gb->mmap_weights(layer_prefix + "ffn_down.weights");
@@ -43,8 +53,7 @@ void QwenModel::load_weights_to_graph(CactusGraph* gb) {
     }
 
     if (npu::is_npu_available()) {
-        std::string npu_prefill_path = model_folder_path_ + "/model.mlpackage";
-        load_npu_prefill(npu_prefill_path);
+        load_npu_prefill(model_folder_path_);
     }
 }
 
@@ -53,20 +62,25 @@ size_t QwenModel::build_attention(CactusGraph* gb, size_t normalized_input, uint
     const auto& layer = weight_nodes_.layers[layer_idx];
 
     auto q_proj = gb->matmul(normalized_input, layer.attn_q_weight, true, backend);
+    if (layer.attn_q_bias != SIZE_MAX) q_proj = gb->add(q_proj, layer.attn_q_bias);
     auto k_proj = gb->matmul(normalized_input, layer.attn_k_weight, true, backend);
+    if (layer.attn_k_bias != SIZE_MAX) k_proj = gb->add(k_proj, layer.attn_k_bias);
     auto v_proj = gb->matmul(normalized_input, layer.attn_v_weight, true, backend);
+    if (layer.attn_v_bias != SIZE_MAX) v_proj = gb->add(v_proj, layer.attn_v_bias);
 
     const auto& q_shape = gb->get_output_buffer(q_proj).shape;
     size_t batch_seq = q_shape[0];
     size_t num_heads = config_.attention_heads;
     size_t head_dim = config_.attention_head_dim;
     q_proj = gb->reshape(q_proj, {batch_seq * num_heads, head_dim});
-    q_proj = gb->rms_norm(q_proj, layer.attn_q_norm_weight, config_.layer_norm_eps);
+    if (layer.attn_q_norm_weight != SIZE_MAX)
+        q_proj = gb->rms_norm(q_proj, layer.attn_q_norm_weight, config_.layer_norm_eps);
     q_proj = gb->reshape(q_proj, {batch_seq, num_heads * head_dim});
 
     size_t num_kv_heads = config_.attention_kv_heads;
     k_proj = gb->reshape(k_proj, {batch_seq * num_kv_heads, head_dim});
-    k_proj = gb->rms_norm(k_proj, layer.attn_k_norm_weight, config_.layer_norm_eps);
+    if (layer.attn_k_norm_weight != SIZE_MAX)
+        k_proj = gb->rms_norm(k_proj, layer.attn_k_norm_weight, config_.layer_norm_eps);
     k_proj = gb->reshape(k_proj, {batch_seq, num_kv_heads * head_dim});
 
     size_t seq_len = batch_seq;
@@ -102,7 +116,9 @@ size_t QwenModel::build_attention(CactusGraph* gb, size_t normalized_input, uint
     }
 
     auto attn_output = gb->reshape(attn_output_4d, {seq_len, config_.attention_head_dim * config_.attention_heads});
-    return gb->matmul(attn_output, layer.attn_output_weight, true, backend);
+    auto o_proj = gb->matmul(attn_output, layer.attn_output_weight, true, backend);
+    if (layer.attn_output_bias != SIZE_MAX) o_proj = gb->add(o_proj, layer.attn_output_bias);
+    return o_proj;
 }
 
 

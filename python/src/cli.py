@@ -613,6 +613,9 @@ def check_libcurl():
     if platform.system() == 'Darwin':
         return True
 
+    if platform.system() == 'Windows':
+        return True
+
     if check_command('pkg-config'):
         result = subprocess.run(['pkg-config', '--exists', 'libcurl'], capture_output=True)
         if result.returncode == 0:
@@ -631,6 +634,52 @@ def check_libcurl():
     return False
 
 
+def _cmd_build_windows(args):
+    """Build cactus library, chat.exe, and asr.exe on Windows via cmake."""
+    msys2_bin = r'C:\msys64\clangarm64\bin'
+    winget_bin = str(Path(os.environ.get('LOCALAPPDATA', '')) / r'Microsoft\WinGet\Links')
+    env = os.environ.copy()
+    env['PATH'] = msys2_bin + os.pathsep + winget_bin + os.pathsep + env.get('PATH', '')
+
+    cactus_dir = PROJECT_ROOT / "cactus"
+    tests_dir = PROJECT_ROOT / "tests"
+    cmake_flags = ['-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_CXX_COMPILER=clang++']
+
+    for stale_dir in [cactus_dir / "build", tests_dir / "build"]:
+        cache = stale_dir / "CMakeCache.txt"
+        if cache.exists():
+            content = cache.read_text(errors='replace')
+            if '/c/Users' in content or '/c/msys64' in content:
+                shutil.rmtree(stale_dir)
+                print_color(YELLOW, f"Removed stale build dir: {stale_dir}")
+
+    print_color(YELLOW, "Building Cactus library...")
+    r = subprocess.run(['cmake', '-B', 'build', '-S', '.'] + cmake_flags, cwd=cactus_dir, env=env)
+    if r.returncode != 0:
+        print_color(RED, "Failed to configure cactus library")
+        return 1
+    r = subprocess.run(['cmake', '--build', 'build', '--parallel'], cwd=cactus_dir, env=env)
+    if r.returncode != 0:
+        print_color(RED, "Failed to build cactus library")
+        return 1
+
+    print_color(YELLOW, "Building chat and asr...")
+    r = subprocess.run(['cmake', '-B', 'build', '-S', '.'] + cmake_flags, cwd=tests_dir, env=env)
+    if r.returncode != 0:
+        print_color(RED, "Failed to configure tests")
+        return 1
+    r = subprocess.run(
+        ['cmake', '--build', 'build', '--target', 'chat', '--target', 'asr', '--parallel'],
+        cwd=tests_dir, env=env
+    )
+    if r.returncode != 0:
+        print_color(RED, "Failed to build chat/asr")
+        return 1
+
+    print_color(GREEN, f"Build complete: {tests_dir / 'build'}")
+    return 0
+
+
 def cmd_build(args):
     """Build the Cactus library and chat binary."""
     if getattr(args, 'apple', False):
@@ -641,6 +690,9 @@ def cmd_build(args):
         return cmd_build_flutter(args)
     if getattr(args, 'python', False):
         return cmd_build_python(args)
+
+    if platform.system() == 'Windows':
+        return _cmd_build_windows(args)
 
     print_color(BLUE, "Building Cactus chat...")
     print("=" * 23)
@@ -760,7 +812,10 @@ def cmd_build(args):
             print_color(GREEN, "SDL2 found - building with live transcription support")
         else:
             print_color(YELLOW, "SDL2 not found - live transcription will be disabled")
-            print_color(YELLOW, "Install SDL2 for live mic support: brew install sdl2 (macOS)")
+            if platform.system() == 'Darwin':
+                print_color(YELLOW, "Install SDL2 for live mic support: brew install sdl2")
+            else:
+                print_color(YELLOW, "Install SDL2 for live mic support: sudo apt-get install libsdl2-dev")
             print_color(YELLOW, "Then run `cactus build`")
 
         if is_darwin:
@@ -952,7 +1007,8 @@ def cmd_run(args):
         os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
 
     lib_path = PROJECT_ROOT / "cactus" / "build" / "libcactus.a"
-    if not lib_path.exists():
+    lib_path_win = PROJECT_ROOT / "cactus" / "build" / "libcactus.dll"
+    if not lib_path.exists() and not lib_path_win.exists():
         print_color(RED, "Error: Cactus library not built. Run 'cactus build' first.")
         return 1
 
@@ -978,6 +1034,8 @@ def cmd_run(args):
             return 1
 
     chat_binary = PROJECT_ROOT / "tests" / "build" / "chat"
+    if platform.system() == 'Windows' and not chat_binary.exists():
+        chat_binary = chat_binary.with_suffix('.exe')
 
     if not chat_binary.exists():
         print_color(RED, f"Error: Chat binary not found at {chat_binary}")
@@ -1008,7 +1066,13 @@ def cmd_run(args):
     if getattr(args, 'no_thinking', False):
         cmd_args.append('--no-thinking')
 
-    os.execv(str(chat_binary), cmd_args)
+    if platform.system() == 'Windows':
+        msys2_bin = r'C:\msys64\clangarm64\bin'
+        env = os.environ.copy()
+        env['PATH'] = msys2_bin + os.pathsep + env.get('PATH', '')
+        sys.exit(subprocess.run(cmd_args, env=env).returncode)
+    else:
+        os.execv(str(chat_binary), cmd_args)
 
 
 DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-ctc-1.1b"
@@ -1226,6 +1290,8 @@ def cmd_transcribe(args):
         return _cmd_transcribe_ios(weights_dir, audio_file, args)
 
     asr_binary = PROJECT_ROOT / "tests" / "build" / "asr"
+    if platform.system() == 'Windows' and not asr_binary.exists():
+        asr_binary = asr_binary.with_suffix('.exe')
     if not asr_binary.exists():
         print_color(RED, "Error: ASR binary not built. Run 'cactus build' first.")
         return 1
@@ -1240,7 +1306,16 @@ def cmd_transcribe(args):
     if hasattr(args, 'language') and args.language:
         cmd_args.extend(['--language', args.language])
 
-    os.execv(str(asr_binary), cmd_args)
+    if platform.system() == 'Windows':
+        msys2_bin = r'C:\msys64\clangarm64\bin'
+        env = os.environ.copy()
+        env['PATH'] = msys2_bin + os.pathsep + env.get('PATH', '')
+        is_parakeet_model = 'parakeet' in model_id.lower()
+        if is_parakeet_model and not audio_file and 'CACTUS_PARAKEET_T' not in env:
+            env['CACTUS_PARAKEET_T'] = '400'
+        sys.exit(subprocess.run(cmd_args, env=env).returncode)
+    else:
+        os.execv(str(asr_binary), cmd_args)
 
 
 def cmd_auth(args):
