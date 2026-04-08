@@ -152,6 +152,7 @@ static const std::unordered_map<OpType, ComputeFn> dispatch_table = {
     {OpType::MAXPOOL1D, compute_maxpool1d_node},
     {OpType::BILSTM_SEQUENCE, compute_bilstm_sequence_node},
     {OpType::STATS_POOL, compute_stats_pool_node},
+    {OpType::WEIGHTED_STATS_POOL, compute_weighted_stats_pool_node},
 };
 
 static const char* op_type_names[] = {
@@ -183,7 +184,8 @@ static const char* op_type_names[] = {
     "BILSTM_SEQUENCE",
     "LEAKY_RELU",
     "CONV2D_K3S1P1",
-    "STATS_POOL"
+    "STATS_POOL",
+    "WEIGHTED_STATS_POOL"
 };
 
 static const char* get_op_name(OpType op) {

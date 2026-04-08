@@ -231,6 +231,13 @@ final String diarizeJson = cactusDiarize(model, '/path/to/audio.wav', null, null
 print(diarizeJson);
 ```
 
+Options (all optional):
+- `step_ms` (int, default 1000) — sliding window stride in milliseconds
+- `threshold` (float) — zero out per-speaker scores below this value
+- `num_speakers` (int) — keep only the N most active speakers
+- `min_speakers` / `max_speakers` (int) — speaker count bounds
+- `raw_powerset` (bool, default false) — return raw 7-class powerset scores instead of 3-speaker probabilities
+
 ### Embed Speaker
 
 ```dart
@@ -238,7 +245,12 @@ import 'cactus.dart';
 
 final String embedJson = cactusEmbedSpeaker(model, '/path/to/audio.wav', null, null);
 print(embedJson);
+
+// With diarization mask for speaker-specific embedding
+final String embedJson = cactusEmbedSpeaker(model, '/path/to/audio.wav', null, null, maskWeights);
 ```
+
+Returns a 256-dimensional speaker embedding. When `maskWeights` (a per-frame weight array from diarization) is provided, the embedding is extracted using weighted stats pooling for speaker-specific embeddings.
 
 ### RAG
 
@@ -356,10 +368,27 @@ String cactusScoreWindow(CactusModelT model, List<int> tokens, int start, int en
 String cactusDetectLanguage(CactusModelT model, String? audioPath, String? optionsJson, Uint8List? pcmData)
 ```
 
-### VAD / RAG
+### VAD
 
 ```dart
 String cactusVad(CactusModelT model, String? audioPath, String? optionsJson, Uint8List? pcmData)
+```
+
+### Diarize
+
+```dart
+String cactusDiarize(CactusModelT model, String? audioPath, String? optionsJson, Uint8List? pcmData)
+```
+
+### Embed Speaker
+
+```dart
+String cactusEmbedSpeaker(CactusModelT model, String? audioPath, String? optionsJson, Uint8List? pcmData, [Float32List? maskWeights])
+```
+
+### RAG
+
+```dart
 String cactusRagQuery(CactusModelT model, String query, int topK)
 ```
 

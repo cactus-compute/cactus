@@ -79,19 +79,40 @@ void WeSpeakerModel::load_weights_to_graph(CactusGraph* gb) {
     weight_nodes_.seg1_b = gb->mmap_weights(p + "/resnet_seg_1_bias.weights");
 }
 
+size_t WeSpeakerModel::build_resnet_body(CactusGraph* gb, size_t x) {
+    x = gb->conv2d_k3s1p1(x, weight_nodes_.conv1_w);
+    x = gb->batchnorm(x, weight_nodes_.bn1_w, weight_nodes_.bn1_b, weight_nodes_.bn1_mean, weight_nodes_.bn1_var);
+    x = gb->relu(x);
+
+    for (auto& rb : weight_nodes_.layer1) x = build_resblock(gb, x, rb, false);
+    for (size_t i = 0; i < weight_nodes_.layer2.size(); ++i) x = build_resblock(gb, x, weight_nodes_.layer2[i], i == 0);
+    for (size_t i = 0; i < weight_nodes_.layer3.size(); ++i) x = build_resblock(gb, x, weight_nodes_.layer3[i], i == 0);
+    for (size_t i = 0; i < weight_nodes_.layer4.size(); ++i) x = build_resblock(gb, x, weight_nodes_.layer4[i], i == 0);
+    return x;
+}
+
 void WeSpeakerModel::build_graph(size_t num_frames) {
     audio_input_ = graph_.input({1, 1, 80, num_frames}, Precision::FP16);
 
-    size_t x = graph_.conv2d_k3s1p1(audio_input_, weight_nodes_.conv1_w);
-    x = graph_.batchnorm(x, weight_nodes_.bn1_w, weight_nodes_.bn1_b, weight_nodes_.bn1_mean, weight_nodes_.bn1_var);
-    x = graph_.relu(x);
-
-    for (auto& rb : weight_nodes_.layer1) x = build_resblock(&graph_, x, rb, false);
-    for (size_t i = 0; i < weight_nodes_.layer2.size(); ++i) x = build_resblock(&graph_, x, weight_nodes_.layer2[i], i == 0);
-    for (size_t i = 0; i < weight_nodes_.layer3.size(); ++i) x = build_resblock(&graph_, x, weight_nodes_.layer3[i], i == 0);
-    for (size_t i = 0; i < weight_nodes_.layer4.size(); ++i) x = build_resblock(&graph_, x, weight_nodes_.layer4[i], i == 0);
+    size_t x = build_resnet_body(&graph_, audio_input_);
 
     x = graph_.stats_pool(x);
+    x = graph_.add(graph_.matmul(x, weight_nodes_.seg1_w, true), weight_nodes_.seg1_b);
+
+    output_node_ = x;
+}
+
+void WeSpeakerModel::build_graph_masked(size_t num_frames) {
+    audio_input_ = graph_.input({1, 1, 80, num_frames}, Precision::FP16);
+
+    size_t x = build_resnet_body(&graph_, audio_input_);
+
+    const auto& post_resnet = graph_.get_output_buffer(x);
+    size_t T_post = post_resnet.shape.back();
+
+    mask_input_ = graph_.input({1, T_post}, Precision::FP32);
+
+    x = graph_.weighted_stats_pool(x, mask_input_);
     x = graph_.add(graph_.matmul(x, weight_nodes_.seg1_w, true), weight_nodes_.seg1_b);
 
     output_node_ = x;
@@ -126,11 +147,12 @@ std::vector<float> WeSpeakerModel::embed(const float* fbank_features, size_t num
     const size_t num_frames = num_features / NUM_MEL;
     if (num_frames == 0) throw std::runtime_error("WeSpeaker: empty fbank input");
 
-    if (num_frames != current_num_frames_) {
+    if (num_frames != current_num_frames_ || current_masked_) {
         graph_.hard_reset();
         load_weights_to_graph(&graph_);
         build_graph(num_frames);
         current_num_frames_ = num_frames;
+        current_masked_ = false;
     }
 
     input_buf_.resize(num_features);
@@ -138,6 +160,50 @@ std::vector<float> WeSpeakerModel::embed(const float* fbank_features, size_t num
         input_buf_[i] = static_cast<__fp16>(fbank_features[i]);
 
     graph_.set_input(audio_input_, input_buf_.data(), Precision::FP16);
+    graph_.execute();
+
+    const auto& out_buf = graph_.get_output_buffer(output_node_);
+    const __fp16* out_data = out_buf.data_as<__fp16>();
+    size_t total = out_buf.total_size;
+
+    std::vector<float> result(total);
+    for (size_t i = 0; i < total; ++i)
+        result[i] = static_cast<float>(out_data[i]);
+    return result;
+}
+
+std::vector<float> WeSpeakerModel::embed(const float* fbank_features, size_t num_features,
+                                          const float* mask_weights, size_t mask_num_frames) {
+    if (!initialized_) throw std::runtime_error("WeSpeaker model not initialized");
+
+    static constexpr size_t NUM_MEL = 80;
+    const size_t num_frames = num_features / NUM_MEL;
+    if (num_frames == 0) throw std::runtime_error("WeSpeaker: empty fbank input");
+
+    if (num_frames != current_num_frames_ || !current_masked_) {
+        graph_.hard_reset();
+        load_weights_to_graph(&graph_);
+        build_graph_masked(num_frames);
+        current_num_frames_ = num_frames;
+        current_masked_ = true;
+    }
+
+    input_buf_.resize(num_features);
+    for (size_t i = 0; i < num_features; ++i)
+        input_buf_[i] = static_cast<__fp16>(fbank_features[i]);
+    graph_.set_input(audio_input_, input_buf_.data(), Precision::FP16);
+
+    const auto& mask_shape = graph_.get_output_buffer(mask_input_);
+    size_t T_post = mask_shape.shape.back();
+
+    mask_buf_.resize(T_post);
+    for (size_t t = 0; t < T_post; ++t) {
+        size_t src_t = (t * mask_num_frames) / T_post;
+        if (src_t >= mask_num_frames) src_t = mask_num_frames - 1;
+        mask_buf_[t] = mask_weights[src_t];
+    }
+    graph_.set_input(mask_input_, mask_buf_.data(), Precision::FP32);
+
     graph_.execute();
 
     const auto& out_buf = graph_.get_output_buffer(output_node_);

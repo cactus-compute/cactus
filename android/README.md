@@ -260,11 +260,23 @@ val result = cactusVad(model, "/path/to/audio.wav", null, null)
 val result = cactusDiarize(model, "/path/to/audio.wav", null, null)
 ```
 
+Options (all optional):
+- `step_ms` (int, default 1000) — sliding window stride in milliseconds
+- `threshold` (float) — zero out per-speaker scores below this value
+- `num_speakers` (int) — keep only the N most active speakers
+- `min_speakers` / `max_speakers` (int) — speaker count bounds
+- `raw_powerset` (bool, default false) — return raw 7-class powerset scores instead of 3-speaker probabilities
+
 ### Embed Speaker
 
 ```kotlin
 val result = cactusEmbedSpeaker(model, "/path/to/audio.wav", null, null)
+
+// With diarization mask for speaker-specific embedding
+val result = cactusEmbedSpeaker(model, "/path/to/audio.wav", null, null, maskWeights)
 ```
+
+Returns a 256-dimensional speaker embedding. When `maskWeights` (a per-frame weight array from diarization) is provided, the embedding is extracted using weighted stats pooling for speaker-specific embeddings.
 
 ### RAG
 
@@ -366,10 +378,27 @@ fun cactusScoreWindow(model: Long, tokens: IntArray, start: Int, end: Int, conte
 fun cactusDetectLanguage(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
 ```
 
-### VAD / RAG
+### VAD
 
 ```kotlin
 fun cactusVad(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
+```
+
+### Diarize
+
+```kotlin
+fun cactusDiarize(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
+```
+
+### Embed Speaker
+
+```kotlin
+fun cactusEmbedSpeaker(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?, maskWeights: FloatArray? = null): String
+```
+
+### RAG
+
+```kotlin
 fun cactusRagQuery(model: Long, query: String, topK: Int): String
 ```
 

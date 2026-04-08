@@ -238,6 +238,7 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             lhs_scales = lhs_buffer.activation_scales_as_float();
         } else if (lhs_buffer.precision == Precision::FP16) {
             ensure_quant_buffers(M, K);
+            cached_quant_src = nullptr;
             quantize_activations_fp16_to_int8(lhs_buffer.data_as<__fp16>(), quant_activation_buffer.data(),
                                               quant_scales_buffer.data(), M, K);
             lhs_int8 = quant_activation_buffer.data();
@@ -2273,3 +2274,53 @@ void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<
         }
     }
 }
+
+void compute_weighted_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                       const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = get_input(node, 0, nodes, node_index_map);
+    const auto& weight_buf = get_input(node, 1, nodes, node_index_map);
+    const __fp16* src = input.data_as<__fp16>();
+    const float* weights = weight_buf.data_as<float>();
+    __fp16* dst = node.output_buffer.data_as<__fp16>();
+
+    size_t batch = input.shape[0];
+    size_t total_per_batch = input.total_size / batch;
+    size_t T = input.shape.back();
+    size_t features = total_per_batch / T;
+
+    constexpr float eps = 1e-8f;
+
+    for (size_t b = 0; b < batch; ++b) {
+        const __fp16* batch_src = src + b * total_per_batch;
+        const float* batch_w = weights + b * T;
+        __fp16* batch_dst = dst + b * features * 2;
+
+        float v1 = 0.0f, v2 = 0.0f;
+        for (size_t t = 0; t < T; ++t) {
+            float w = batch_w[t];
+            v1 += w;
+            v2 += w * w;
+        }
+        float v1_safe = v1 + eps;
+        float var_denom = v1_safe - v2 / v1_safe + eps;
+
+        for (size_t f = 0; f < features; ++f) {
+            float wsum = 0.0f;
+            for (size_t t = 0; t < T; ++t) {
+                wsum += static_cast<float>(batch_src[f * T + t]) * batch_w[t];
+            }
+            float mean = wsum / v1_safe;
+
+            float wvar = 0.0f;
+            for (size_t t = 0; t < T; ++t) {
+                float dx = static_cast<float>(batch_src[f * T + t]) - mean;
+                wvar += batch_w[t] * dx * dx;
+            }
+            float std_val = sqrtf(fmaxf(wvar / var_denom, 0.0f));
+
+            batch_dst[f] = static_cast<__fp16>(mean);
+            batch_dst[features + f] = static_cast<__fp16>(std_val);
+        }
+    }
+}
+

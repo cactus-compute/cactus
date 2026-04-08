@@ -1678,3 +1678,11 @@ size_t CactusGraph::stats_pool(size_t input) {
     for (size_t i = 1; i < xin.shape.size() - 1; ++i) features *= xin.shape[i];
     return add_node(OpType::STATS_POOL, {input}, {batch, features * 2});
 }
+
+size_t CactusGraph::weighted_stats_pool(size_t input, size_t weights) {
+    const auto& xin = get_output_buffer(input);
+    size_t batch = xin.shape[0];
+    size_t features = 1;
+    for (size_t i = 1; i < xin.shape.size() - 1; ++i) features *= xin.shape[i];
+    return add_node(OpType::WEIGHTED_STATS_POOL, {input, weights}, {batch, features * 2});
+}

@@ -170,7 +170,9 @@ CACTUS_FFI_EXPORT int cactus_embed_speaker(
     size_t buffer_size,
     const char* options_json,
     const uint8_t* pcm_buffer,
-    size_t pcm_buffer_size
+    size_t pcm_buffer_size,
+    const float* mask_weights,
+    size_t mask_num_frames
 );
 
 CACTUS_FFI_EXPORT int cactus_rag_query(

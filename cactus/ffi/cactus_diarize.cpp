@@ -17,6 +17,7 @@ struct DiarizeOptions {
     int    num_speakers  = -1;
     int    min_speakers  = -1;
     int    max_speakers  = -1;
+    bool   raw_powerset  = false;
 };
 
 static DiarizeOptions parse_diarize_options(const std::string& json) {
@@ -59,6 +60,13 @@ static DiarizeOptions parse_diarize_options(const std::string& json) {
         pos = json.find(':', pos) + 1;
         while (pos < json.length() && std::isspace(json[pos])) pos++;
         opts.max_speakers = std::stoi(json.substr(pos));
+    }
+
+    pos = json.find("\"raw_powerset\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(json[pos])) pos++;
+        opts.raw_powerset = (json.substr(pos, 4) == "true");
     }
 
     return opts;
@@ -132,16 +140,19 @@ int cactus_diarize(
         }
 
         const DiarizeOptions opts = parse_diarize_options(options_json ? options_json : "");
-        auto scores = pyannote->diarize(audio.data(), audio.size(), opts.step_samples);
+        auto scores = pyannote->diarize(audio.data(), audio.size(), opts.step_samples, opts.raw_powerset);
         audio = {};
 
-        const size_t total_frames = scores.size() / DIARIZE_MAX_SPEAKERS;
+        const int num_channels = opts.raw_powerset ? 7 : DIARIZE_MAX_SPEAKERS;
+        const size_t total_frames = scores.size() / num_channels;
 
-        if (opts.num_speakers > 0 || opts.min_speakers > 0 || opts.max_speakers > 0)
-            apply_speaker_filter(scores, total_frames, opts);
+        if (!opts.raw_powerset) {
+            if (opts.num_speakers > 0 || opts.min_speakers > 0 || opts.max_speakers > 0)
+                apply_speaker_filter(scores, total_frames, opts);
 
-        if (opts.threshold >= 0.0f)
-            apply_threshold(scores, opts.threshold);
+            if (opts.threshold >= 0.0f)
+                apply_threshold(scores, opts.threshold);
+        }
 
         auto end_time = std::chrono::high_resolution_clock::now();
         double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
@@ -150,7 +161,7 @@ int cactus_diarize(
         json << "{";
         json << "\"success\":true,";
         json << "\"error\":null,";
-        json << "\"num_speakers\":" << DIARIZE_MAX_SPEAKERS << ",";
+        json << "\"num_speakers\":" << num_channels << ",";
         json << "\"scores\":[";
         json << std::fixed << std::setprecision(6);
         for (size_t i = 0; i < scores.size(); ++i) {

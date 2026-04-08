@@ -327,7 +327,8 @@ _lib.cactus_diarize.restype = ctypes.c_int
 
 _lib.cactus_embed_speaker.argtypes = [
     ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
-    ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
+    ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
+    ctypes.POINTER(ctypes.c_float), ctypes.c_size_t
 ]
 _lib.cactus_embed_speaker.restype = ctypes.c_int
 
@@ -664,7 +665,7 @@ def cactus_diarize(model, audio_path, options_json, pcm_data):
     return buf.value.decode("utf-8", errors="ignore")
 
 
-def cactus_embed_speaker(model, audio_path, options_json, pcm_data):
+def cactus_embed_speaker(model, audio_path, options_json, pcm_data, mask_weights=None):
     """Extracts a speaker embedding vector. Returns JSON string."""
     buf = ctypes.create_string_buffer(65536)
     if pcm_data is not None:
@@ -674,8 +675,16 @@ def cactus_embed_speaker(model, audio_path, options_json, pcm_data):
     else:
         pcm_ptr = None
         pcm_size = 0
+    if mask_weights is not None:
+        mask_arr = (ctypes.c_float * len(mask_weights))(*mask_weights)
+        mask_ptr = ctypes.cast(mask_arr, ctypes.POINTER(ctypes.c_float))
+        mask_size = len(mask_weights)
+    else:
+        mask_ptr = None
+        mask_size = 0
     rc = _lib.cactus_embed_speaker(
-        model, _enc(audio_path), buf, len(buf), _enc(options_json), pcm_ptr, pcm_size
+        model, _enc(audio_path), buf, len(buf), _enc(options_json),
+        pcm_ptr, pcm_size, mask_ptr, mask_size
     )
     if rc < 0:
         raise RuntimeError(_err("EmbedSpeaker failed"))

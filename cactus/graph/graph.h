@@ -147,7 +147,8 @@ enum class OpType {
     BILSTM_SEQUENCE,
     LEAKY_RELU,
     CONV2D_K3S1P1,
-    STATS_POOL
+    STATS_POOL,
+    WEIGHTED_STATS_POOL
 };
 
 struct PrecisionTraits {
@@ -432,6 +433,7 @@ void compute_maxpool1d_node(GraphNode& node, const std::vector<std::unique_ptr<G
 void compute_bilstm_sequence_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_weighted_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 void shrink_thread_local_buffers();
 class BufferPool {
@@ -481,7 +483,7 @@ public:
     size_t quantize_activations(size_t input);  
     
     size_t add(size_t input1, size_t input2);
-    size_t add_clipped(size_t input1, size_t input2);  
+    size_t add_clipped(size_t input1, size_t input2);
     size_t subtract(size_t input1, size_t input2);
     size_t multiply(size_t input1, size_t input2);
     size_t divide(size_t input1, size_t input2);
@@ -618,6 +620,7 @@ public:
     size_t conv2d_k3s1p1(size_t input, size_t weight);
     size_t conv2d_k3s1p1(size_t input, size_t weight, size_t bias);
     size_t stats_pool(size_t input);
+    size_t weighted_stats_pool(size_t input, size_t weights);
 
     size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20,
                   const std::unordered_map<uint32_t, float>& logit_bias = {});
