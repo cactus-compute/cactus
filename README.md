@@ -120,7 +120,7 @@ graph.hard_reset();
 |-----------|----------|-------------|
 | [Engine API](docs/cactus_engine.md) | C | Chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, VAD, vector index, cloud handoff |
 | [Graph API](docs/cactus_graph.md) | C++ | Tensor operations, matrix multiplication, attention, normalization, activation functions |
-| [Python SDK](/python/) | Python | Mac, Linux |
+| [Python SDK](/python/) | Python | Mac, Linux, Windows |
 | [Swift SDK](/apple/) | Swift | iOS, macOS, tvOS, watchOS, Android |
 | [Kotlin SDK](/android/) | Kotlin | Android, iOS (via KMP) |
 | [Flutter SDK](/flutter/) | Dart | iOS, macOS, Android |
@@ -167,6 +167,9 @@ graph.hard_reset();
 | nvidia/parakeet-ctc-0.6b | 600M | 201.77 | 201.44 | 5214285 | yes | 0.0101 | 0.0930 |
 | nvidia/parakeet-tdt-0.6b-v3 | 600M | 718.91 | 718.82 | 3583333 | yes | 0.0359 | 0.0465 |
 | nvidia/parakeet-ctc-1.1b | 1.1B | 279.03 | 278.92 | 4562500 | yes | 0.0139 | 0.1628 |
+| snakers4/silero-vad | - | - | - | - | - | - | - |
+| pyannote/segmentation-3.0 | - | - | - | - | - | - | - |
+| pyannote/wespeaker-voxceleb-resnet34-LM | - | - | - | - | - | - | - |
 
 **Qualcomm NPU (Snapdragon X Elite)**
 
@@ -175,9 +178,6 @@ graph.hard_reset();
 | nvidia/parakeet-ctc-0.6b | 600M | 1913.52 | 1913.52 | 387640 | yes | 0.0957 | - |
 | nvidia/parakeet-tdt-0.6b-v3 | 600M | 2365.30 | 2365.30 | 480874 | yes | 0.1183 | - |
 | nvidia/parakeet-ctc-1.1b | 1.1B | 2540.51 | 2540.51 | 140900 | yes | 0.1270 | - |
-| snakers4/silero-vad | - | - | - | - | - | - | - |
-| pyannote/segmentation-3.0 | - | - | - | - | - | - | - |
-| pyannote/wespeaker-voxceleb-resnet34-LM | - | - | - | - | - | - | - |
 
 ## Supported LLMs
 
