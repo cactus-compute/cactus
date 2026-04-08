@@ -699,7 +699,6 @@ bool test_graph_save_load() {
         loaded.set_input(0, data_a.data(), Precision::FP16);
         loaded.set_input(1, data_b.data(), Precision::FP16);
         loaded.execute();
-        std::cout << "[graph_save_load] executed loaded graph, reading output node 3" << std::endl;
 
         __fp16* output = static_cast<__fp16*>(loaded.get_output(3));
         std::vector<float> expected = {
