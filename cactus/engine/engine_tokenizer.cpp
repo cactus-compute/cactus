@@ -643,7 +643,6 @@ std::string Tokenizer::format_lfm2_vl_style(
     
     for (const auto& msg : messages) {
         result += "<|im_start|>" + msg.role + "\n";
-        result += msg.content;
         for (const auto& image_path : msg.images) {
             int width = 0, height = 0, channels = 0;
             unsigned char* img_data = stbi_load(image_path.c_str(), &width, &height, &channels, 0);
@@ -697,7 +696,8 @@ std::string Tokenizer::format_lfm2_vl_style(
                 result += "<image>";
             }
         }
-        
+        result += msg.content;
+
         result += "<|im_end|>\n";
     }
 
