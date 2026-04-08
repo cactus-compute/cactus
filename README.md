@@ -143,6 +143,7 @@ graph.hard_reset();
 | iPad/Mac M3 | 350/60 | 0.3s/69 | 0.3s/800k+ | 70MB |
 | iPhone 17 Pro | 327/48 | 0.3s/48 | 0.3s/300k+ | 108MB |
 | iPhone 13 Mini | 148/34 | 0.3s/35 | 0.7s/90k+ | 1GB |
+| Snapdragon X Elite | -/- | -/- | 2.5s/141k+ | - |
 | Galaxy S25 Ultra | 255/37 | -/34 | -/250k+ | 1.5GB |
 | Pixel 6a | 70/15 | -/15 | -/17k+ | 1GB |
 | Galaxy A17 5G | 32/10 | -/11 | -/40k+ | 727MB |
@@ -151,8 +152,10 @@ graph.hard_reset();
 
 ## Supported Transcription Model
 
-- STT: 20s audio input on Macbook Air M3 chip
+- STT: 20s audio input on Macbook Air M3 chip (Apple), Snapdragon X Elite (Qualcomm)
 - Benchmark dataset: internal evals with production users
+
+**Apple NPU (M3)**
 
 | Model | Params | End2End ms | Latency ms | Decode toks/sec | NPU | RTF | WER |
 |-------|--------|------------|------------|------------|-----|-----|-----|
@@ -164,6 +167,14 @@ graph.hard_reset();
 | nvidia/parakeet-ctc-0.6b | 600M | 201.77 | 201.44 | 5214285 | yes | 0.0101 | 0.0930 |
 | nvidia/parakeet-tdt-0.6b-v3 | 600M | 718.91 | 718.82 | 3583333 | yes | 0.0359 | 0.0465 |
 | nvidia/parakeet-ctc-1.1b | 1.1B | 279.03 | 278.92 | 4562500 | yes | 0.0139 | 0.1628 |
+
+**Qualcomm NPU (Snapdragon X Elite)**
+
+| Model | Params | End2End ms | Latency ms | Decode toks/sec | NPU | RTF | WER |
+|-------|--------|------------|------------|------------|-----|-----|-----|
+| nvidia/parakeet-ctc-0.6b | 600M | 1913.52 | 1913.52 | 387640 | yes | 0.0957 | - |
+| nvidia/parakeet-tdt-0.6b-v3 | 600M | 2365.30 | 2365.30 | 480874 | yes | 0.1183 | - |
+| nvidia/parakeet-ctc-1.1b | 1.1B | 2540.51 | 2540.51 | 140900 | yes | 0.1270 | - |
 | snakers4/silero-vad | - | - | - | - | - | - | - |
 | pyannote/segmentation-3.0 | - | - | - | - | - | - | - |
 | pyannote/wespeaker-voxceleb-resnet34-LM | - | - | - | - | - | - | - |
