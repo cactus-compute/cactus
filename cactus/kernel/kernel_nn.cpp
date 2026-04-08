@@ -84,8 +84,8 @@ void cactus_gelu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
                 inner_low = vmulq_f32(sqrt_2_pi_vec, inner_low);
                 inner_high = vmulq_f32(sqrt_2_pi_vec, inner_high);
 
-                float32x4_t tanh_low = fast_tanh_f32x4(inner_low);
-                float32x4_t tanh_high = fast_tanh_f32x4(inner_high);
+                float32x4_t tanh_low, tanh_high;
+                fast_tanh_f32x4_x2(inner_low, inner_high, &tanh_low, &tanh_high);
 
                 float32x4_t gelu_low = vmulq_f32(vmulq_f32(half, x_low), vaddq_f32(one, tanh_low));
                 float32x4_t gelu_high = vmulq_f32(vmulq_f32(half, x_high), vaddq_f32(one, tanh_high));
