@@ -25,12 +25,6 @@ enum class LogLevel {
     NONE = 4
 };
 
-struct GraphSaveOptions {
-    bool include_weights = true;
-    bool include_intermediate_outputs = false;
-    bool include_scales = true;
-};
-
 class Logger {
 public:
     static Logger& instance() {
@@ -488,7 +482,7 @@ public:
         size_t node_id;
     };
 
-    void save(const std::string& path, const cactus::GraphSaveOptions& opts = {});
+    void save(const std::string& path);
     static CactusGraph load(const std::string& path);
     
     size_t input(const std::vector<size_t>& shape, Precision precision = Precision::INT8);
@@ -715,7 +709,7 @@ namespace GraphFile {
     };
 
     SerializedGraph load_graph(const std::string& filename);
-    void save_graph(const CactusGraph& graph, const std::string& filename, const cactus::GraphSaveOptions& opts = {});
+    void save_graph(const CactusGraph& graph, const std::string& filename);
     
     void save_node(CactusGraph& graph, size_t node_id, const std::string& filename);
     

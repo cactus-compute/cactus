@@ -8,8 +8,15 @@
 #include <cstring>
 
 namespace {
+    constexpr uint32_t fourcc(char a, char b, char c, char d) {
+        return static_cast<uint32_t>(static_cast<uint8_t>(a)) |
+               (static_cast<uint32_t>(static_cast<uint8_t>(b)) << 8) |
+               (static_cast<uint32_t>(static_cast<uint8_t>(c)) << 16) |
+               (static_cast<uint32_t>(static_cast<uint8_t>(d)) << 24);
+    }
+
     constexpr uint32_t CACTUS_MAGIC = 0x54434143;
-    constexpr uint32_t CACTUS_GRAPH_MAGIC = 0x46475243;
+    constexpr uint32_t CACTUS_GRAPH_MAGIC = fourcc('C', 'G', 'R', 'F');
     constexpr uint32_t FLAG_HAS_SCALES = 1 << 0;
     constexpr uint32_t FLAG_INTERLEAVED = 1 << 3;
     constexpr size_t HEADER_SIZE = 84;
@@ -63,6 +70,7 @@ namespace {
       constexpr uint32_t PARAM_SLICE             = 1u << 5;
       constexpr uint32_t PARAM_EPSILON           = 1u << 6;
       constexpr uint32_t PARAM_NUM_GROUPS        = 1u << 7;
+      constexpr uint32_t PARAM_INDEX_VALUE       = 1u << 8;
 
       switch (node.op_type) {
         case OpType::POW:
@@ -90,6 +98,10 @@ namespace {
           break;
         default:
           break;
+      }
+
+      if (node.op_type == OpType::INDEX) {
+        param_flags |= PARAM_INDEX_VALUE;
       }
 
       switch (node.op_type) {
@@ -153,6 +165,9 @@ namespace {
       }
       if (param_flags & PARAM_NUM_GROUPS) {
         write_u64(out, static_cast<uint64_t>(node.params.num_groups));
+      }
+      if (param_flags & PARAM_INDEX_VALUE) {
+        write_u64(out, static_cast<uint64_t>(node.params.index_value));
       }
     }
 
@@ -271,6 +286,21 @@ namespace {
         constexpr uint32_t PARAM_SLICE             = 1u << 5;
         constexpr uint32_t PARAM_EPSILON           = 1u << 6;
         constexpr uint32_t PARAM_NUM_GROUPS        = 1u << 7;
+        constexpr uint32_t PARAM_INDEX_VALUE       = 1u << 8;
+        constexpr uint32_t PARAM_KNOWN_MASK =
+            PARAM_SCALAR |
+            PARAM_AXIS |
+            PARAM_NEW_SHAPE |
+            PARAM_PRETRANSPOSED_RHS |
+            PARAM_BACKEND |
+            PARAM_SLICE |
+            PARAM_EPSILON |
+            PARAM_NUM_GROUPS |
+            PARAM_INDEX_VALUE;
+
+        if ((param_flags & ~PARAM_KNOWN_MASK) != 0) {
+            throw std::runtime_error("Graph file corrupted: unknown param flags");
+        }
 
         if (param_flags & PARAM_SCALAR) {
             node.params.scalar = read_f32(in);
@@ -285,7 +315,11 @@ namespace {
             node.params.pretransposed_rhs = (read_u32(in) != 0);
         }
         if (param_flags & PARAM_BACKEND) {
-            node.params.backend = static_cast<ComputeBackend>(read_u32(in));
+            uint32_t backend_val = read_u32(in);
+            if (backend_val > static_cast<uint32_t>(ComputeBackend::NPU)) {
+                throw std::runtime_error("Graph file corrupted: invalid backend");
+            }
+            node.params.backend = static_cast<ComputeBackend>(backend_val);
         }
         if (param_flags & PARAM_SLICE) {
             node.params.slice_start = static_cast<size_t>(read_u64(in));
@@ -296,6 +330,36 @@ namespace {
         }
         if (param_flags & PARAM_NUM_GROUPS) {
             node.params.num_groups = static_cast<size_t>(read_u64(in));
+        }
+        if (param_flags & PARAM_INDEX_VALUE) {
+            node.params.index_value = static_cast<size_t>(read_u64(in));
+        }
+    }
+
+    bool is_binary_broadcast_op(OpType op_type) {
+        switch (op_type) {
+            case OpType::ADD:
+            case OpType::ADD_CLIPPED:
+            case OpType::SUBTRACT:
+            case OpType::MULTIPLY:
+            case OpType::DIVIDE:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    void populate_derived_params(CactusGraph& graph,
+                                 const GraphFile::NodeEntry& node_entry,
+                                 const std::vector<size_t>& runtime_inputs,
+                                 OpParams& params) {
+        if (is_binary_broadcast_op(node_entry.op_type)) {
+            if (runtime_inputs.size() != 2) {
+                throw std::runtime_error("Graph file corrupted: binary op missing inputs");
+            }
+            const auto& lhs = graph.get_output_buffer(runtime_inputs[0]);
+            const auto& rhs = graph.get_output_buffer(runtime_inputs[1]);
+            params.broadcast_info = BroadcastInfo::compute(lhs.shape, rhs.shape);
         }
     }
 
@@ -339,8 +403,8 @@ namespace {
 
 } // namespace
 
-void CactusGraph::save(const std::string& path, const cactus::GraphSaveOptions& opts) {
-    GraphFile::save_graph(*this, path, opts);
+void CactusGraph::save(const std::string& path) {
+    GraphFile::save_graph(*this, path);
 }
 
 CactusGraph CactusGraph::from_serialized(const GraphFile::SerializedGraph& sg) {
@@ -378,6 +442,7 @@ CactusGraph CactusGraph::from_serialized(const GraphFile::SerializedGraph& sg) {
         else {
             OpParams params = node_entry.params;
             params.output_precision = node_entry.precision;
+            populate_derived_params(graph, node_entry, runtime_inputs, params);
             new_node_id = graph.add_node(node_entry.op_type, runtime_inputs, node_entry.output_shape, params);
 
             if (node_entry.op_type == OpType::PERSISTENT) {
@@ -526,10 +591,7 @@ size_t CactusGraph::embedding(const std::string& filename, size_t indices) {
 namespace GraphFile {
 
 void save_graph(const CactusGraph& graph,
-                const std::string& filename,
-                const cactus::GraphSaveOptions& opts) {
-
-  (void)opts;
+                const std::string& filename) {
 
   std::ofstream out(filename, std::ios::binary);
   if (!out) {
@@ -570,13 +632,7 @@ void save_graph(const CactusGraph& graph,
       entry.inputs.push_back(it->second);
     }
 
-    bool is_placeholder_input =
-        node->op_type == OpType::INPUT &&
-        node->output_buffer.external_data == nullptr &&
-        node->output_buffer.data == nullptr &&
-        node->output_buffer.pooled_data == nullptr;
-
-    if (is_placeholder_input) {
+    if (node->op_type == OpType::INPUT) {
       sg.graph_inputs.push_back(entry.index);
     }
 
