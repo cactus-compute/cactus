@@ -703,7 +703,7 @@ void CactusGraph::hard_reset() {
     node_index_map_.clear();
     mapped_files_.clear();
     weight_cache_.clear();
-    next_node_id_ = 1;  // Reserve 0 as a sentinel for "no node"
+    next_node_id_ = 1;
     debug_nodes_.clear();
     buffer_pool_.clear();
 }

@@ -652,6 +652,7 @@ public:
     std::unordered_map<size_t, size_t> node_index_map_;
 
 private:
+    // Starts at 1 so that 0 can be used as a "no node" sentinel by callers.
     size_t next_node_id_;
     std::vector<std::unique_ptr<GraphFile::MappedFile>> mapped_files_;
     std::unordered_map<std::string, size_t> weight_cache_;
