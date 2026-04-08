@@ -102,7 +102,7 @@ void Lfm2VlModel::load_weights_to_graph(CactusGraph* gb) {
         return primary_path.string();
     };
 
-    try { 
+    try {
         projector_weights_.layer_norm_weight = gb->mmap_weights(resolve_weight("projector_layer_norm.weights"));
         projector_weights_.layer_norm_bias = gb->mmap_weights(resolve_weight("projector_layer_norm.bias.weights"));
     } catch (const std::exception&) {
