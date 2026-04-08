@@ -1,10 +1,11 @@
 import unittest
 import numpy as np
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.graph import Graph
+from src.graph import Graph, Tensor
 
 
 class TestGraphElementwise(unittest.TestCase):
@@ -235,6 +236,85 @@ class TestGraphSoftmax(unittest.TestCase):
         e = np.exp(f - f.max(axis=-1, keepdims=True))
         expected = (e / e.sum(axis=-1, keepdims=True)).astype(np.float16)
         np.testing.assert_allclose(out, expected, atol=5e-2)
+
+
+class TestGraphSaveLoad(unittest.TestCase):
+
+    def _rebind_tensor(self, graph, tensor):
+        return Tensor(graph, tensor.id, tensor.shape, tensor.dtype)
+
+    def test_save_load_roundtrip_composed_graph(self):
+        g = Graph()
+
+        a = g.input((2, 2))
+        b = g.input((2, 2))
+        diff = a - b
+        summ = a + b
+        mixed = (diff * summ) / b
+        feat = mixed.abs().pow(2.0).view((4,))
+        out_node = g.cat([feat, feat], axis=0)
+
+        a_data = np.array([[2.0, 4.0], [6.0, 8.0]], dtype=np.float16)
+        b_data = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float16)
+
+        g.set_input(a, a_data)
+        g.set_input(b, b_data)
+        g.execute()
+        expected = out_node.numpy()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "roundtrip_graph.cg"
+            g.save(path)
+
+            loaded = Graph.load(path)
+            loaded_a = self._rebind_tensor(loaded, a)
+            loaded_b = self._rebind_tensor(loaded, b)
+            loaded_out = self._rebind_tensor(loaded, out_node)
+
+            loaded.set_input(loaded_a, a_data)
+            loaded.set_input(loaded_b, b_data)
+            loaded.execute()
+
+            out = loaded_out.numpy()
+            self.assertEqual(out.shape, expected.shape)
+            np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_save_load_roundtrip_softmax_cat(self):
+        g = Graph()
+
+        a = g.input((2, 3))
+        b = g.input((2, 3))
+        joined = g.cat([a, b], axis=1)
+        out_node = joined.softmax(axis=1)
+
+        a_data = np.array([[1.0, 2.0, 3.0], [0.5, 1.5, 2.5]], dtype=np.float16)
+        b_data = np.array([[4.0, 5.0, 6.0], [3.5, 4.5, 5.5]], dtype=np.float16)
+
+        g.set_input(a, a_data)
+        g.set_input(b, b_data)
+        g.execute()
+        expected = out_node.numpy()
+        expected_info = g.output_info(out_node)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "softmax_cat_graph.cg"
+            g.save(path)
+
+            loaded = Graph.load(path)
+            loaded_a = self._rebind_tensor(loaded, a)
+            loaded_b = self._rebind_tensor(loaded, b)
+            loaded_out = self._rebind_tensor(loaded, out_node)
+
+            loaded.set_input(loaded_a, a_data)
+            loaded.set_input(loaded_b, b_data)
+            loaded.execute()
+
+            out = loaded_out.numpy()
+            info = loaded.output_info(loaded_out)
+
+            self.assertEqual(info["shape"], expected_info["shape"])
+            self.assertEqual(info["precision"], expected_info["precision"])
+            np.testing.assert_allclose(out, expected, atol=5e-2)
 
 
 if __name__ == "__main__":
