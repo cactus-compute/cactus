@@ -480,16 +480,12 @@ bool test_fast_tanh_f32x4_correctness() {
     constexpr float TOL = 1e-5f;
     for (int i = -10000; i <= 10000; ++i) {
         float x = 0.001f * static_cast<float>(i);
-        float32x4_t v = vdupq_n_f32(x);
-        float32x4_t r0, r1;
-        fast_tanh_f32x4_x2(v, v, &r0, &r1);
-        float lanes0[4], lanes1[4];
-        vst1q_f32(lanes0, r0);
-        vst1q_f32(lanes1, r1);
+        float32x4_t r = fast_tanh_f32x4(vdupq_n_f32(x));
+        float lanes[4];
+        vst1q_f32(lanes, r);
         float want = std::tanh(x);
         for (int k = 0; k < 4; ++k) {
-            if (std::fabs(lanes0[k] - want) > TOL) return false;
-            if (lanes0[k] != lanes1[k]) return false;
+            if (std::fabs(lanes[k] - want) > TOL) return false;
         }
     }
     return true;

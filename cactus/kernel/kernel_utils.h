@@ -170,49 +170,6 @@ inline float32x4_t fast_tanh_f32x4(float32x4_t x) {
     return vdivq_f32(p, q);
 }
 
-// Processes 8 elements with interleaved dependency chains so the OoO scheduler
-// can hide the divide latency. ~2.4x the throughput of two back-to-back calls.
-inline void fast_tanh_f32x4_x2(float32x4_t xa_in, float32x4_t xb_in,
-                                float32x4_t* out_a, float32x4_t* out_b) {
-    const float32x4_t lo = vld1q_f32(kFastTanhClampLo);
-    const float32x4_t hi = vld1q_f32(kFastTanhClampHi);
-    float32x4_t xa = vmaxq_f32(lo, vminq_f32(hi, xa_in));
-    float32x4_t xb = vmaxq_f32(lo, vminq_f32(hi, xb_in));
-
-    float32x4_t xa2 = vmulq_f32(xa, xa);
-    float32x4_t xb2 = vmulq_f32(xb, xb);
-
-    const float32x4_t a13 = vld1q_f32(kFastTanhAlpha[6]);
-    const float32x4_t a11 = vld1q_f32(kFastTanhAlpha[5]);
-    const float32x4_t a9  = vld1q_f32(kFastTanhAlpha[4]);
-    const float32x4_t a7  = vld1q_f32(kFastTanhAlpha[3]);
-    const float32x4_t a5  = vld1q_f32(kFastTanhAlpha[2]);
-    const float32x4_t a3  = vld1q_f32(kFastTanhAlpha[1]);
-    const float32x4_t a1  = vld1q_f32(kFastTanhAlpha[0]);
-
-    float32x4_t pa = vfmaq_f32(a11, a13, xa2);
-    float32x4_t pb = vfmaq_f32(a11, a13, xb2);
-    pa = vfmaq_f32(a9, pa, xa2);  pb = vfmaq_f32(a9, pb, xb2);
-    pa = vfmaq_f32(a7, pa, xa2);  pb = vfmaq_f32(a7, pb, xb2);
-    pa = vfmaq_f32(a5, pa, xa2);  pb = vfmaq_f32(a5, pb, xb2);
-    pa = vfmaq_f32(a3, pa, xa2);  pb = vfmaq_f32(a3, pb, xb2);
-    pa = vfmaq_f32(a1, pa, xa2);  pb = vfmaq_f32(a1, pb, xb2);
-    pa = vmulq_f32(pa, xa);       pb = vmulq_f32(pb, xb);
-
-    const float32x4_t b6 = vld1q_f32(kFastTanhBeta[3]);
-    const float32x4_t b4 = vld1q_f32(kFastTanhBeta[2]);
-    const float32x4_t b2 = vld1q_f32(kFastTanhBeta[1]);
-    const float32x4_t b0 = vld1q_f32(kFastTanhBeta[0]);
-
-    float32x4_t qa = vfmaq_f32(b4, b6, xa2);
-    float32x4_t qb = vfmaq_f32(b4, b6, xb2);
-    qa = vfmaq_f32(b2, qa, xa2);  qb = vfmaq_f32(b2, qb, xb2);
-    qa = vfmaq_f32(b0, qa, xa2);  qb = vfmaq_f32(b0, qb, xb2);
-
-    *out_a = vdivq_f32(pa, qa);
-    *out_b = vdivq_f32(pb, qb);
-}
-
 constexpr size_t SIMD_F16_WIDTH = 8;
 
 inline size_t simd_align(size_t count, size_t width = SIMD_F16_WIDTH) {
