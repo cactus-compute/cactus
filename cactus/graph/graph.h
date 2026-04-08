@@ -345,6 +345,7 @@ struct OpParams {
     size_t num_groups = 0;
     size_t dst_height = 0;
     size_t dst_width = 0;
+    bool align_corners = true;
     bool normalize_routing = false;
     size_t num_experts = 0;
     size_t num_experts_per_tok = 0;
@@ -530,7 +531,7 @@ public:
     void release_all_weight_pages();
     size_t embedding(const std::string& filename, size_t indices);
     size_t embedding(size_t embedding_tensor, size_t indices);
-    size_t bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width);
+    size_t bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width, bool align_corners = true);
 
     size_t layernorm(size_t input, size_t weight, size_t bias, float epsilon = 1e-5f);
     size_t layernorm(size_t input, size_t weight, float epsilon = 1e-5f);  // No bias version

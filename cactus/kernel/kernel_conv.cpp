@@ -697,19 +697,41 @@ void cactus_conv1d_f16_k7s3_oc8(
 
 
 void cactus_bilinear_interpolation_f16(const __fp16* input, __fp16* output, size_t src_height, size_t src_width, size_t embed_dim,
-                                       size_t dst_height, size_t dst_width)
+                                       size_t dst_height, size_t dst_width, bool align_corners)
 {
-    float scale_h = (src_height > 1 && dst_height > 1)
-                    ? static_cast<float>(src_height - 1) / static_cast<float>(dst_height - 1)
-                    : 0.0f;
-    float scale_w = (src_width > 1 && dst_width > 1)
-                    ? static_cast<float>(src_width - 1) / static_cast<float>(dst_width - 1)
-                    : 0.0f;
+    float scale_h, scale_w;
+    if (align_corners) {
+        scale_h = (src_height > 1 && dst_height > 1)
+                      ? static_cast<float>(src_height - 1) / static_cast<float>(dst_height - 1)
+                      : 0.0f;
+        scale_w = (src_width > 1 && dst_width > 1)
+                      ? static_cast<float>(src_width - 1) / static_cast<float>(dst_width - 1)
+                      : 0.0f;
+    } else {
+        scale_h = (dst_height > 0)
+                      ? static_cast<float>(src_height) / static_cast<float>(dst_height)
+                      : 0.0f;
+        scale_w = (dst_width > 0)
+                      ? static_cast<float>(src_width) / static_cast<float>(dst_width)
+                      : 0.0f;
+    }
 
     for (size_t dst_y = 0; dst_y < dst_height; ++dst_y) {
         for (size_t dst_x = 0; dst_x < dst_width; ++dst_x) {
-            float src_y_float = dst_y * scale_h;
-            float src_x_float = dst_x * scale_w;
+            float src_y_float, src_x_float;
+            if (align_corners) {
+                src_y_float = static_cast<float>(dst_y) * scale_h;
+                src_x_float = static_cast<float>(dst_x) * scale_w;
+            } else {
+                src_y_float = (static_cast<float>(dst_y) + 0.5f) * scale_h - 0.5f;
+                src_x_float = (static_cast<float>(dst_x) + 0.5f) * scale_w - 0.5f;
+                if (src_y_float < 0.0f) src_y_float = 0.0f;
+                if (src_x_float < 0.0f) src_x_float = 0.0f;
+                const float max_y = static_cast<float>(src_height) - 1.0f;
+                const float max_x = static_cast<float>(src_width) - 1.0f;
+                if (src_y_float > max_y) src_y_float = max_y;
+                if (src_x_float > max_x) src_x_float = max_x;
+            }
 
             int y0 = static_cast<int>(std::floor(src_y_float));
             int x0 = static_cast<int>(std::floor(src_x_float));

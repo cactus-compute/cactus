@@ -351,7 +351,7 @@ void cactus_conv1d_pointwise_f16_gemm(
 );
 
 void cactus_bilinear_interpolation_f16(const __fp16* input, __fp16* output, size_t src_height, size_t src_width, size_t embed_dim,
-                                       size_t dst_height, size_t dst_width);
+                                       size_t dst_height, size_t dst_width, bool align_corners = true);
 
 void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
                        float temperature, float top_p, size_t top_k, size_t random_seed,
