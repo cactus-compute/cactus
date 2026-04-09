@@ -133,6 +133,8 @@ int cactus_complete(
     "max_tokens": 256,
     "temperature": 0.7,
     "top_p": 0.95,
+    "min_p": 0.15,
+    "repetition_penalty": 1.1,
     "top_k": 40,
     "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
     "include_stop_sequences": false,
@@ -152,6 +154,8 @@ int cactus_complete(
 | `temperature` | float | 0.0 | Sampling temperature |
 | `top_p` | float | 0.0 | Top-p (nucleus) sampling |
 | `top_k` | int | 0 | Top-k sampling |
+| `min_p` | float | 0.15 | Minimum probability threshold relative to max probability |
+| `repetition_penalty` | float | 1.1 | Penalize previously generated tokens (1.0 disables) |
 | `stop_sequences` | array | [] | Stop generation on these strings |
 | `include_stop_sequences` | bool | false | Include stop sequence tokens in the response |
 | `force_tools` | bool | false | Constrain output to tool call format |

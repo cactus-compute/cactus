@@ -133,26 +133,41 @@ inline float32x4_t fast_exp_f32x4(float32x4_t x) {
     return vmulq_f32(p, scale);
 }
 
+// Cephes-style 13/6 rational tanh approximation (same coefficients as Eigen).
+// Constants are stored as static splatted arrays so the compiler emits a single
+// pc-relative `ldr q` per load.
+alignas(16) inline constexpr float kFastTanhAlpha[7][4] = {
+    { 4.89352455891786e-03f, 4.89352455891786e-03f, 4.89352455891786e-03f, 4.89352455891786e-03f },
+    { 6.37261928875436e-04f, 6.37261928875436e-04f, 6.37261928875436e-04f, 6.37261928875436e-04f },
+    { 1.48572235717979e-05f, 1.48572235717979e-05f, 1.48572235717979e-05f, 1.48572235717979e-05f },
+    { 5.12229709037114e-08f, 5.12229709037114e-08f, 5.12229709037114e-08f, 5.12229709037114e-08f },
+    {-8.60467152213735e-11f,-8.60467152213735e-11f,-8.60467152213735e-11f,-8.60467152213735e-11f },
+    { 2.00018790482477e-13f, 2.00018790482477e-13f, 2.00018790482477e-13f, 2.00018790482477e-13f },
+    {-2.76076847742355e-16f,-2.76076847742355e-16f,-2.76076847742355e-16f,-2.76076847742355e-16f },
+};
+alignas(16) inline constexpr float kFastTanhBeta[4][4] = {
+    { 4.89352518554385e-03f, 4.89352518554385e-03f, 4.89352518554385e-03f, 4.89352518554385e-03f },
+    { 2.26843463243900e-03f, 2.26843463243900e-03f, 2.26843463243900e-03f, 2.26843463243900e-03f },
+    { 1.18534705686654e-04f, 1.18534705686654e-04f, 1.18534705686654e-04f, 1.18534705686654e-04f },
+    { 1.19825839466702e-06f, 1.19825839466702e-06f, 1.19825839466702e-06f, 1.19825839466702e-06f },
+};
+alignas(16) inline constexpr float kFastTanhClampHi[4] = { 9.0f, 9.0f, 9.0f, 9.0f };
+alignas(16) inline constexpr float kFastTanhClampLo[4] = {-9.0f,-9.0f,-9.0f,-9.0f };
+
 inline float32x4_t fast_tanh_f32x4(float32x4_t x) {
-    const float32x4_t one = vdupq_n_f32(1.0f);
-    const float32x4_t neg_one = vdupq_n_f32(-1.0f);
-
-    uint32x4_t pos_sat = vcgtq_f32(x, vdupq_n_f32(4.5f));
-    uint32x4_t neg_sat = vcltq_f32(x, vdupq_n_f32(-4.5f));
-
-    const float32x4_t c27 = vdupq_n_f32(27.0f);
-    const float32x4_t c9 = vdupq_n_f32(9.0f);
-
+    x = vmaxq_f32(vld1q_f32(kFastTanhClampLo), vminq_f32(vld1q_f32(kFastTanhClampHi), x));
     float32x4_t x2 = vmulq_f32(x, x);
-    float32x4_t num = vaddq_f32(c27, x2);   
-    float32x4_t den = vfmaq_f32(c27, c9, x2);  
-
-    float32x4_t result = vmulq_f32(x, vdivq_f32(num, den));
-
-    result = vbslq_f32(pos_sat, one, result);
-    result = vbslq_f32(neg_sat, neg_one, result);
-
-    return result;
+    float32x4_t p = vfmaq_f32(vld1q_f32(kFastTanhAlpha[5]), vld1q_f32(kFastTanhAlpha[6]), x2);
+    p = vfmaq_f32(vld1q_f32(kFastTanhAlpha[4]), p, x2);
+    p = vfmaq_f32(vld1q_f32(kFastTanhAlpha[3]), p, x2);
+    p = vfmaq_f32(vld1q_f32(kFastTanhAlpha[2]), p, x2);
+    p = vfmaq_f32(vld1q_f32(kFastTanhAlpha[1]), p, x2);
+    p = vfmaq_f32(vld1q_f32(kFastTanhAlpha[0]), p, x2);
+    p = vmulq_f32(p, x);
+    float32x4_t q = vfmaq_f32(vld1q_f32(kFastTanhBeta[2]), vld1q_f32(kFastTanhBeta[3]), x2);
+    q = vfmaq_f32(vld1q_f32(kFastTanhBeta[1]), q, x2);
+    q = vfmaq_f32(vld1q_f32(kFastTanhBeta[0]), q, x2);
+    return vdivq_f32(p, q);
 }
 
 constexpr size_t SIMD_F16_WIDTH = 8;

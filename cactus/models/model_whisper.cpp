@@ -25,7 +25,10 @@ namespace engine {
 WhisperModel::WhisperModel() : Model() {}
 
 WhisperModel::WhisperModel(const Config& config) : Model(config) {
-    weight_nodes_.layers.resize(config.num_layers);
+    enc_layers_ = config.num_encoder_layers > 0 ? config.num_encoder_layers : config.num_layers;
+    dec_layers_ = config.num_decoder_layers > 0 ? config.num_decoder_layers : config.num_layers;
+
+    weight_nodes_.layers.resize(std::max(enc_layers_, dec_layers_));
 
     float hd = static_cast<float>(config.attention_head_dim);
     if (hd <= 0.0f) {
@@ -34,9 +37,9 @@ WhisperModel::WhisperModel(const Config& config) : Model(config) {
 
     attention_scale_ = 1.0f / std::sqrt(hd);
 
-    encoder_block_out_nodes_.resize(config.num_layers, 0);
-    encoder_k_persistent_.assign(config.num_layers, 0);
-    encoder_v_persistent_.assign(config.num_layers, 0);
+    encoder_block_out_nodes_.resize(enc_layers_, 0);
+    encoder_k_persistent_.assign(enc_layers_, 0);
+    encoder_v_persistent_.assign(enc_layers_, 0);
 
     const float neg_inf = -std::numeric_limits<float>::infinity();
     for (size_t tok : suppress_tokens_) {
@@ -70,7 +73,7 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
         if (npu_encoder_ && npu_encoder_->load(npu_encoder_path)) {
             use_npu_encoder_ = true;
 
-            std::vector<int> typical_input_shape = {1, 80, 3000};
+            std::vector<int> typical_input_shape = {1, static_cast<int>(config_.num_mel_bins), 3000};
             npu_encoder_->preallocate(typical_input_shape, "x", "");
         } else {
             use_npu_encoder_ = false;
@@ -89,10 +92,12 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
         weight_nodes_.encoder_norm_bias = gb->mmap_weights(model_folder_path_ + "/encoder_norm_bias.bias");
     }
 
-    for (uint32_t i = 0; i < config_.num_layers; i++) {
+    const uint32_t max_layers = std::max(enc_layers_, dec_layers_);
+    for (uint32_t i = 0; i < max_layers; i++) {
         auto& layer = weight_nodes_.layers[i];
 
-        // Decoder Layers (always needed)
+        if (i < dec_layers_) {
+        // Decoder Layers
         std::string layer_prefix = model_folder_path_ + "/decoder.layer_" + std::to_string(i) + "_";
 
         layer.decoder_encoder_attn_k_weight = gb->mmap_weights(layer_prefix + "encoder_attn_k.weights");
@@ -124,9 +129,10 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
 
         layer.decoder_post_attn_layernorm_weight = gb->mmap_weights(layer_prefix + "self_attn_norm.weights");
         layer.decoder_post_attn_layernorm_bias = gb->mmap_weights(layer_prefix + "self_attn_norm.bias");
+        }
 
-        if (has_cpu_encoder_weights) {
-            layer_prefix = model_folder_path_ + "/encoder.layer_" + std::to_string(i) + "_";
+        if (has_cpu_encoder_weights && i < enc_layers_) {
+            std::string layer_prefix = model_folder_path_ + "/encoder.layer_" + std::to_string(i) + "_";
 
             layer.encoder_ffn1_weight = gb->mmap_weights(layer_prefix + "mlp_fc1.weights");
             layer.encoder_ffn1_bias = gb->mmap_weights(layer_prefix + "mlp_fc1.bias");
@@ -148,7 +154,7 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
             layer.encoder_post_attn_layernorm_bias = gb->mmap_weights(layer_prefix + "self_attn_norm.bias");
         }
     }
-}   
+}
 
 size_t WhisperModel::build_encoder_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx, ComputeBackend backend) {
     const auto& layer = weight_nodes_.layers[layer_idx];
@@ -241,8 +247,8 @@ size_t WhisperModel::build_encoder_attention(CactusGraph* gb, size_t input, uint
 }
 
 void WhisperModel::reset_graph_side_cache_nodes() {
-    cache_k_output_nodes_.assign(config_.num_layers, 0);
-    cache_v_output_nodes_.assign(config_.num_layers, 0);
+    cache_k_output_nodes_.assign(dec_layers_, 0);
+    cache_v_output_nodes_.assign(dec_layers_, 0);
 }
 
 void WhisperModel::reset_cache() {
@@ -478,10 +484,11 @@ size_t WhisperModel::build_decoder_transformer_block(CactusGraph* gb, size_t hid
 
 void WhisperModel::run_encoder(const std::vector<float>& audio_features)
 {
-    if (audio_features.size() % 80 != 0)
-        throw std::runtime_error("Mel bins length must be divisible by 80.");
+    const size_t mel_bins = config_.num_mel_bins;
+    if (audio_features.size() % mel_bins != 0)
+        throw std::runtime_error("Mel bins length must be divisible by " + std::to_string(mel_bins) + ".");
 
-    size_t T_mel = audio_features.size() / 80;
+    size_t T_mel = audio_features.size() / mel_bins;
     if (T_mel == 0)
         throw std::runtime_error("Mel bins has zero frames.");
 
@@ -505,7 +512,7 @@ void WhisperModel::run_encoder(const std::vector<float>& audio_features)
         std::vector<__fp16> audio_features_f16(audio_features.size());
         cactus_fp32_to_fp16(audio_features.data(), audio_features_f16.data(), audio_features.size());
 
-        std::vector<int> input_shape = {1, 80, static_cast<int>(T_mel)};
+        std::vector<int> input_shape = {1, static_cast<int>(mel_bins), static_cast<int>(T_mel)};
         size_t total_elements = T_enc * D_enc;
         std::vector<__fp16> npu_output(total_elements);
         size_t elements_written = npu_encoder_->encode(
@@ -541,7 +548,7 @@ void WhisperModel::run_encoder(const std::vector<float>& audio_features)
     std::vector<__fp16> audio_features_f16(audio_features.size());
     cactus_fp32_to_fp16(audio_features.data(), audio_features_f16.data(), audio_features.size());
 
-    mel_input = gb->input({1, 80, T_mel}, Precision::FP16);
+    mel_input = gb->input({1, mel_bins, T_mel}, Precision::FP16);
     gb->set_input(mel_input, audio_features_f16.data(), Precision::FP16);
 
     size_t conv2_transposed = build_conv1d(gb, mel_input);
@@ -568,7 +575,7 @@ void WhisperModel::run_encoder(const std::vector<float>& audio_features)
     last_enc_plus_pos_node_ = h_pos;
 
     size_t h = h_pos;
-    for (uint32_t i = 0; i < config_.num_layers; ++i){
+    for (uint32_t i = 0; i < enc_layers_; ++i){
         h = build_encoder_transformer_block(gb, h, i, backend, false, 0);
         if (i == 0) {
             encoder_transformer_block_0 = h;
@@ -627,7 +634,7 @@ size_t WhisperModel::run_decoder_step(const std::vector<uint32_t>& tokens, bool 
         dec_hidden = gb->add(dec_hidden, pos_node_for_add);
     }
 
-    for (uint32_t layer_idx = 0; layer_idx < config_.num_layers; ++layer_idx) {
+    for (uint32_t layer_idx = 0; layer_idx < dec_layers_; ++layer_idx) {
         dec_hidden = build_decoder_transformer_block(
             gb,
             dec_hidden,
@@ -704,6 +711,8 @@ uint32_t WhisperModel::decode_with_audio(
     size_t top_k,
     const std::string& profile_file,
     float* out_entropy,
+    float min_p,
+    float repetition_penalty,
     float* /*out_token_time_start*/,
     float* /*out_token_time_end*/)
 {
@@ -747,7 +756,7 @@ uint32_t WhisperModel::decode_with_audio(
 
     const auto& suppress_bias = first_decode_step_ ? suppress_bias_first_step_ : suppress_bias_;
     if (first_decode_step_) first_decode_step_ = false;
-    size_t sampled_token_id = sample_token(gb, logits_node, temperature, top_p, top_k, &suppress_bias);
+    size_t sampled_token_id = sample_token(gb, logits_node, temperature, top_p, top_k, min_p, repetition_penalty, &suppress_bias);
     if (!profile_file.empty()) gb->execute(profile_file);
     else gb->execute();
 
@@ -759,6 +768,7 @@ uint32_t WhisperModel::decode_with_audio(
 
     auto* out_ptr = gb->get_output(sampled_token_id);
     uint32_t sampled = *reinterpret_cast<uint32_t*>(out_ptr);
+    record_sampled_token(sampled);
 
     return sampled;
 }

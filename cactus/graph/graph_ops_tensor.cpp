@@ -423,20 +423,21 @@ void compute_bilinear_interpolation_node(GraphNode& node, const std::vector<std:
 
     size_t dst_height = node.params.dst_height;
     size_t dst_width = node.params.dst_width;
+    bool align_corners = node.params.align_corners;
 
     __fp16* output = node.output_buffer.data_as<__fp16>();
 
     if (pos_embeds_buffer.precision == Precision::FP16) {
         const __fp16* input = pos_embeds_buffer.data_as<__fp16>();
         cactus_bilinear_interpolation_f16(input, output, src_height, src_width, embed_dim,
-                                          dst_height, dst_width);
+                                          dst_height, dst_width, align_corners);
     }
     else if (pos_embeds_buffer.precision == Precision::INT8) {
         std::vector<__fp16> input_fp16(total_pos_embeds * embed_dim);
         cactus_int8_to_fp16(pos_embeds_buffer.data_as<int8_t>(), input_fp16.data(),
                             total_pos_embeds * embed_dim);
         cactus_bilinear_interpolation_f16(input_fp16.data(), output, src_height, src_width, embed_dim,
-                                          dst_height, dst_width);
+                                          dst_height, dst_width, align_corners);
     }
     else {
         throw std::runtime_error("BILINEAR_INTERPOLATION only supports INT8 and FP16 input precision");

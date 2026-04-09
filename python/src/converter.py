@@ -298,6 +298,9 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 save_tensor_with_header(state_dict[name], output_dir / save_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                 saved_tensor_full_names.add(name)
         embedding_found = True
+        model_config['num_mel_bins'] = int(cfg_get(config, 'num_mel_bins', 80))
+        model_config['num_encoder_layers'] = int(cfg_get(config, 'encoder_layers', model_config['num_layers']))
+        model_config['num_decoder_layers'] = int(cfg_get(config, 'decoder_layers', model_config['num_layers']))
 
     elif model_type_str == 'moonshine':
         for name, save_name in MOONSHINE_GLOBAL_WEIGHTS:
@@ -313,6 +316,14 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         model_config['enc_hidden_act'] = config.encoder_hidden_act
         model_config['num_encoder_layers'] = config.encoder_num_hidden_layers
         model_config['num_decoder_layers'] = config.decoder_num_hidden_layers
+
+    # Whisper: ensure num_layers = max(enc, dec) so the weight loader covers both.
+    if model_type_str == 'whisper':
+        enc_l = int(model_config.get('num_encoder_layers', 0))
+        dec_l = int(model_config.get('num_decoder_layers', 0))
+        if enc_l > 0 or dec_l > 0:
+            num_layers = max(enc_l, dec_l, num_layers)
+            model_config['num_layers'] = num_layers
 
     if embedding_found:
         embedding_norm_names = {'emb_ln.weight': 'embedding_layernorm.weight', 'emb_ln.bias': 'embedding_layernorm.bias'}

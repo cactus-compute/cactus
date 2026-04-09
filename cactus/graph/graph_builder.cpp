@@ -1254,6 +1254,12 @@ size_t CactusGraph::scatter_topk(size_t indices, size_t values, size_t num_class
 
 size_t CactusGraph::sample(size_t logits, float temperature, float top_p, size_t top_k,
                            const std::unordered_map<uint32_t, float>& logit_bias) {
+    return this->sample_with_options(logits, temperature, top_p, 0.15f, 1.1f, top_k, logit_bias);
+}
+
+size_t CactusGraph::sample_with_options(size_t logits, float temperature, float top_p,
+                                        float min_p, float repetition_penalty, size_t top_k,
+                                        const std::unordered_map<uint32_t, float>& logit_bias) {
     const auto& logits_buffer = get_output_buffer(logits);
 
     if (logits_buffer.shape.empty()) {
@@ -1263,6 +1269,8 @@ size_t CactusGraph::sample(size_t logits, float temperature, float top_p, size_t
     OpParams params;
     params.temperature = temperature;
     params.top_p = top_p;
+    params.min_p = min_p;
+    params.repetition_penalty = repetition_penalty;
     params.top_k = top_k;
     params.random_seed = std::chrono::high_resolution_clock::now().time_since_epoch().count();
     params.output_precision = Precision::FP32;
@@ -1452,7 +1460,7 @@ size_t CactusGraph::embedding(size_t embedding_tensor, size_t indices) {
     return add_node(OpType::EMBEDDING, {embedding_tensor, indices}, output_shape, params);
 }
 
-size_t CactusGraph::bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width) {
+size_t CactusGraph::bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width, bool align_corners) {
     const auto& pos_embeds_buffer = get_output_buffer(pos_embeds);
     size_t embed_dim = pos_embeds_buffer.shape[1];
     std::vector<size_t> output_shape = {dst_height * dst_width, embed_dim};
@@ -1460,6 +1468,7 @@ size_t CactusGraph::bilinear_interpolation(size_t pos_embeds, size_t dst_height,
     OpParams params;
     params.dst_height = dst_height;
     params.dst_width = dst_width;
+    params.align_corners = align_corners;
     params.output_precision = Precision::FP16;
 
     return add_node(OpType::BILINEAR_INTERPOLATION, {pos_embeds}, output_shape, params);

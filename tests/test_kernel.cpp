@@ -476,6 +476,21 @@ bool test_stft_kernel_correctness() {
     return true;
 }
 
+bool test_fast_tanh_f32x4_correctness() {
+    constexpr float TOL = 1e-5f;
+    for (int i = -10000; i <= 10000; ++i) {
+        float x = 0.001f * static_cast<float>(i);
+        float32x4_t r = fast_tanh_f32x4(vdupq_n_f32(x));
+        float lanes[4];
+        vst1q_f32(lanes, r);
+        float want = std::tanh(x);
+        for (int k = 0; k < 4; ++k) {
+            if (std::fabs(lanes[k] - want) > TOL) return false;
+        }
+    }
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("Kernel Backend Tests");
 
@@ -491,6 +506,7 @@ int main() {
     runner.run_test("Kernel Grouped INT8 MatMul Correctness", test_matmul_int8_grouped_correctness());
     runner.run_test("Kernel INT4 MatMul Correctness", test_int4_matmul_correctness());
     runner.run_test("Kernel STFT Complex Correctness", test_stft_kernel_correctness());
+    runner.run_test("Kernel Fast Tanh Correctness", test_fast_tanh_f32x4_correctness());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
