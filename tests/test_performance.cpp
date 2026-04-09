@@ -10,6 +10,10 @@
 #include <filesystem>
 #include <fstream>
 
+#ifdef CACTUS_USE_MPS
+#include "../cactus/kernel/kernel_metal.h"
+#endif
+
 struct BenchmarkConfig {
     std::vector<size_t> dimensions = {1024};
     std::vector<Precision> precisions = {Precision::FP16};
@@ -57,7 +61,12 @@ std::string precision_to_string(Precision prec) {
 }
 
 std::string backend_to_string(ComputeBackend backend) {
-    return (backend == ComputeBackend::CPU) ? "CPU" : "NPU";
+    switch (backend) {
+        case ComputeBackend::CPU: return "CPU";
+        case ComputeBackend::NPU: return "NPU";
+        case ComputeBackend::MPS: return "MPS";
+    }
+    return "UNKNOWN";
 }
 
 double calculate_gflops(size_t ops, double time_ms) {
@@ -943,6 +952,7 @@ void benchmark_gemm_f16_direct(TestUtils::TestRunner& runner, const BenchmarkCon
     std::vector<std::tuple<size_t, size_t, size_t>> shapes = {
         {1, 1024, 1024},
         {1024, 1024, 1024},
+		{1024, 4096, 4096},
     };
 
     for (const auto& [M, K, N] : shapes) {
@@ -965,6 +975,71 @@ void benchmark_gemm_f16_direct(TestUtils::TestRunner& runner, const BenchmarkCon
         runner.log_performance("MatMul F16 " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N),
                              details.str());
     }
+}
+
+void benchmark_gemm_f16_mps(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
+#ifdef CACTUS_USE_MPS
+    if (!cactus_metal_available()) {
+        runner.log_performance("MatMul F16 MPS", "SKIP: Metal device not available");
+        return;
+    }
+
+    std::vector<std::tuple<size_t, size_t, size_t>> shapes = {
+        {1, 1024, 1024},
+        {128, 4096, 4096},
+        {1024, 1024, 1024},
+    };
+
+    for (const auto& [M, K, N] : shapes) {
+        std::vector<__fp16> A(M * K), B_T(N * K), C_mps(M * N), C_cpu(M * N);
+        for (size_t i = 0; i < M * K; ++i) {
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
+        }
+        for (size_t i = 0; i < N * K; ++i) {
+            B_T[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
+        }
+
+        // Benchmark MPS path
+        double mps_ms = time_operation<__fp16>([&]() {
+            cactus_matmul_f16_mps(A.data(), B_T.data(), C_mps.data(), M, K, N);
+        }, config.iterations);
+
+        double mps_gflops = calculate_gflops(2ULL * M * K * N, mps_ms);
+
+        std::ostringstream mps_details;
+        mps_details << std::fixed << std::setprecision(3) << mps_ms << "ms, "
+                    << std::setprecision(2) << mps_gflops << " GFLOPS";
+        runner.log_performance("MatMul F16 MPS " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N),
+                             mps_details.str());
+
+        // Benchmark CPU path for comparison
+        double cpu_ms = time_operation<__fp16>([&]() {
+            cactus_matmul_f16_cpu(A.data(), B_T.data(), C_cpu.data(), M, K, N);
+        }, config.iterations);
+
+        double cpu_gflops = calculate_gflops(2ULL * M * K * N, cpu_ms);
+        double speedup = cpu_ms / mps_ms;
+
+        std::ostringstream cpu_details;
+        cpu_details << std::fixed << std::setprecision(3) << cpu_ms << "ms, "
+                    << std::setprecision(2) << cpu_gflops << " GFLOPS";
+        runner.log_performance("MatMul F16 CPU " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N),
+                             cpu_details.str());
+
+        std::ostringstream speedup_details;
+        speedup_details << std::fixed << std::setprecision(2) << speedup << "x";
+        runner.log_performance("MPS vs CPU speedup " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N),
+                             speedup_details.str());
+    }
+#else
+    runner.log_performance("MatMul F16 MPS", "SKIP: CACTUS_USE_MPS not defined");
+#endif
+}
+
+bool test_gemm_f16_mps_performance(TestUtils::TestRunner& runner) {
+    BenchmarkConfig config;
+    benchmark_gemm_f16_mps(runner, config);
+    return true;
 }
 
 bool test_gemm_f16_direct_performance(TestUtils::TestRunner& runner) {
@@ -1192,6 +1267,7 @@ int main() {
     runner.run_test("Scalar Operations", test_scalar_operations_performance(runner));
     runner.run_test("Matrix Multiplication", test_matrix_multiplication_performance(runner));
     runner.run_test("F16 MatMul", test_gemm_f16_direct_performance(runner));
+    runner.run_test("F16 MatMul MPS vs CPU", test_gemm_f16_mps_performance(runner));
     runner.run_test("Grouped INT8 MatMul", test_grouped_int8_matmul_performance(runner));
     runner.run_test("Unary Operations", test_unary_operations_performance(runner));
     runner.run_test("Reduction Operations", test_reduction_operations_performance(runner));

@@ -83,6 +83,8 @@ void cactus_matmul_integer(Precision precision,
 
 void cactus_matmul_f16(const __fp16* a, const __fp16* b_transposed, __fp16* c,
                        size_t M, size_t K, size_t N);
+void cactus_matmul_f16_cpu(const __fp16* a, const __fp16* b_transposed, __fp16* c,
+                           size_t M, size_t K, size_t N);
 
 void cactus_transpose_2d_f16(const __fp16* source, __fp16* destination,
                              size_t num_rows, size_t num_cols, size_t start_row, size_t end_row);

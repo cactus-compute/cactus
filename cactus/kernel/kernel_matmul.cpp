@@ -11,6 +11,16 @@
 #include <Accelerate/Accelerate.h>
 constexpr size_t ACCELERATE_M_THRESHOLD = 4;
 constexpr size_t ACCELERATE_K_THRESHOLD = 256;
+#ifdef CACTUS_USE_MPS
+#include "kernel_metal.h"
+
+static inline bool cactus_should_use_mps_matmul(size_t M, size_t K, size_t N) {
+    return (M >= 768 && K >= 2048 && N >= 1280) ||
+           (M >= 256 && K >= 4096 && N >= 2048) ||
+           (M >= 4 && K >= 8192 && N >= 1024) ||
+           (M >= 1 && K >= 4096 && N >= 3072);
+}
+#endif
 #endif
 
 // Do NOT Remove: Uncomment for testing on various paths
@@ -72,6 +82,19 @@ static inline __fp16 hsum_f16x8(float16x8_t v) {
     float16x4_t sum1 = vadd_f16(sum2, vext_f16(sum2, sum2, 1));
     return vget_lane_f16(sum1, 0);
 }
+
+#if defined(CACTUS_COMPILE_SME2)
+constexpr size_t SME2_M_THRESHOLD = 4;
+
+void cactus_matmul_f16_sme2_caller(
+    const __fp16* a,
+    const __fp16* b_transposed,
+    __fp16* c,
+    size_t M,
+    size_t K,
+    size_t N
+);
+#endif
 
 static void cactus_matmul_f16_worker(
     const __fp16* a,
@@ -158,20 +181,7 @@ static void cactus_matmul_f16_worker(
     }
 }
 
-#if defined(CACTUS_COMPILE_SME2)
-constexpr size_t SME2_M_THRESHOLD = 4;
-
-void cactus_matmul_f16_sme2_caller(
-	const __fp16* a,
-	const __fp16* b_transposed,
-	__fp16* c,
-	size_t M,
-	size_t K,
-	size_t N
-);
-#endif
-
-void cactus_matmul_f16(
+void cactus_matmul_f16_cpu(
     const __fp16* a,
     const __fp16* b_transposed,
     __fp16* c,
@@ -179,15 +189,14 @@ void cactus_matmul_f16(
     size_t K,
     size_t N
 ) {
-
 #if defined(CACTUS_COMPILE_SME2)
-	if (cpu_has_sme2() && M >= SME2_M_THRESHOLD) {
-		cactus_matmul_f16_sme2_caller(
-			a, b_transposed, c,
-			M, K, N
-		);
-		return;
-	}
+    if (cpu_has_sme2() && M >= SME2_M_THRESHOLD) {
+        cactus_matmul_f16_sme2_caller(
+            a, b_transposed, c,
+            M, K, N
+        );
+        return;
+    }
 #endif
 
 #ifdef __APPLE__
@@ -233,9 +242,26 @@ void cactus_matmul_f16(
                     M, K, N,
                     start_row, end_row
                 );
-
             }
         });
+}
+
+void cactus_matmul_f16(
+    const __fp16* a,
+    const __fp16* b_transposed,
+    __fp16* c,
+    size_t M,
+    size_t K,
+    size_t N
+) {
+
+#ifdef CACTUS_USE_MPS
+    if (cactus_metal_available() && cactus_should_use_mps_matmul(M, K, N)) {
+        cactus_matmul_f16_mps(a, b_transposed, c, M, K, N);
+        return;
+    }
+#endif
+    cactus_matmul_f16_cpu(a, b_transposed, c, M, K, N);
 }
 
 

@@ -51,6 +51,8 @@ else()
     find_library(SECURITY_FRAMEWORK Security REQUIRED)
     find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
     find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
+    find_library(METAL_FRAMEWORK Metal REQUIRED)
+    find_library(MPS_FRAMEWORK MetalPerformanceShaders REQUIRED)
 endif()
 
 find_package(SDL2)
@@ -99,7 +101,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
             ${SECURITY_FRAMEWORK}
             ${SYSTEMCONFIGURATION_FRAMEWORK}
             ${CFNETWORK_FRAMEWORK}
+            ${METAL_FRAMEWORK}
+            ${MPS_FRAMEWORK}
         )
+        target_compile_definitions(${TEST_NAME} PRIVATE CACTUS_USE_MPS=1)
     endif()
 
     target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_ROOT})
@@ -133,6 +138,8 @@ foreach(APP_NAME chat asr)
                 ${SECURITY_FRAMEWORK}
                 ${SYSTEMCONFIGURATION_FRAMEWORK}
                 ${CFNETWORK_FRAMEWORK}
+                ${METAL_FRAMEWORK}
+                ${MPS_FRAMEWORK}
             )
         endif()
 

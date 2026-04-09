@@ -58,6 +58,8 @@ if(APPLE)
     find_library(SECURITY_FRAMEWORK Security REQUIRED)
     find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
     find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
+    find_library(METAL_FRAMEWORK Metal REQUIRED)
+    find_library(MPS_FRAMEWORK MetalPerformanceShaders REQUIRED)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-field-initializers")
     add_compile_definitions(
@@ -82,10 +84,14 @@ list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
 
 if(APPLE)
     set(NPU_SOURCES "npu/npu_ane.mm")
+    set(MPS_SOURCES "kernel/kernel_metal.mm")
     set_source_files_properties(npu/npu_ane.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    set_source_files_properties(kernel/kernel_metal.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     message(STATUS "Apple platform detected - NPU/ANE acceleration enabled")
+    message(STATUS "Apple platform detected - MPS GPU acceleration enabled")
 else()
     set(NPU_SOURCES "npu/npu.cpp")
+    set(MPS_SOURCES "")
 endif()
 
 set(COMMON_SOURCES
@@ -95,6 +101,7 @@ set(COMMON_SOURCES
     ${FFI_SOURCES}
     ${MODEL_SOURCES}
     ${NPU_SOURCES}
+    ${MPS_SOURCES}
     ${TELEMETRY_SOURCES}
 )
 
@@ -130,10 +137,12 @@ function(configure_cactus_target target_name)
             ${SECURITY_FRAMEWORK}
             ${SYSTEMCONFIGURATION_FRAMEWORK}
             ${CFNETWORK_FRAMEWORK}
+            ${METAL_FRAMEWORK}
+            ${MPS_FRAMEWORK}
             ${CACTUS_CURL_LIBRARY_MACOS}
         )
         target_include_directories(${target_name} PUBLIC ${CACTUS_CURL_INCLUDE_DIR})
-        target_compile_definitions(${target_name} PRIVATE CACTUS_USE_CURL=1)
+        target_compile_definitions(${target_name} PRIVATE CACTUS_USE_CURL=1 CACTUS_USE_MPS=1)
     elseif(CURL_FOUND)
         target_include_directories(${target_name} PRIVATE ${CURL_INCLUDE_DIRS})
         target_link_libraries(${target_name} PUBLIC ${CURL_LIBRARIES})

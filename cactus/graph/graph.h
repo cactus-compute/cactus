@@ -107,7 +107,8 @@ enum class Precision {
 
 enum class ComputeBackend {
     CPU,
-    NPU
+    NPU,
+    MPS
 };
 
 enum class Activation {

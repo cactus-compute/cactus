@@ -7,6 +7,10 @@
 #include <iostream>
 #include <cstdio>
 
+#ifdef CACTUS_USE_MPS
+#include "../cactus/kernel/kernel_metal.h"
+#endif
+
 bool test_abs() {
     TestUtils::FP16TestFixture fixture("absval");
     size_t input = fixture.create_input({2, 3});
@@ -1146,6 +1150,119 @@ bool test_layernorm() {
     return true;
 }
 
+bool test_matmul_mps_correctness() {
+#ifdef CACTUS_USE_MPS
+    if (!cactus_metal_available()) {
+        std::cerr << "[SKIP] Metal device not available" << std::endl;
+        return true;
+    }
+
+    // Test small matmul: 2x3 * 3x2 (pretransposed B is [2,3])
+    {
+        std::vector<__fp16> A = {1, 2, 3, 4, 5, 6};       // [2,3]
+        std::vector<__fp16> B_T = {1, 3, 5, 2, 4, 6};     // [2,3] (transposed)
+        std::vector<__fp16> C_mps(4), C_cpu(4);
+
+        cactus_matmul_f16_mps(A.data(), B_T.data(), C_mps.data(), 2, 3, 2);
+        cactus_matmul_f16(A.data(), B_T.data(), C_cpu.data(), 2, 3, 2);
+
+        for (size_t i = 0; i < 4; ++i) {
+            float diff = std::abs(static_cast<float>(C_mps[i]) - static_cast<float>(C_cpu[i]));
+            if (diff > 0.5f) {
+                std::cerr << "MPS small matmul mismatch at " << i
+                          << ": MPS=" << static_cast<float>(C_mps[i])
+                          << " CPU=" << static_cast<float>(C_cpu[i]) << std::endl;
+                return false;
+            }
+        }
+    }
+
+    // Test larger matmul: 64x256 * 256x128
+    {
+        const size_t M = 64, K = 256, N = 128;
+        std::vector<__fp16> A(M * K), B_T(N * K), C_mps(M * N), C_cpu(M * N);
+
+        srand(42);
+        for (size_t i = 0; i < M * K; ++i)
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
+        for (size_t i = 0; i < N * K; ++i)
+            B_T[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
+
+        cactus_matmul_f16_mps(A.data(), B_T.data(), C_mps.data(), M, K, N);
+        cactus_matmul_f16(A.data(), B_T.data(), C_cpu.data(), M, K, N);
+
+        float max_diff = 0.0f;
+        for (size_t i = 0; i < M * N; ++i) {
+            float diff = std::abs(static_cast<float>(C_mps[i]) - static_cast<float>(C_cpu[i]));
+            max_diff = std::max(max_diff, diff);
+        }
+
+        if (max_diff > 1.0f) {
+            std::cerr << "MPS 64x256x128 matmul max error: " << max_diff << std::endl;
+            return false;
+        }
+        std::cerr << "[INFO] MPS 64x256x128 max abs diff vs CPU: " << max_diff << std::endl;
+    }
+
+    // Test graph-level MPS dispatch via cactus_matmul_f16 (above threshold)
+    {
+        const size_t M = 64, K = 4096, N = 4096;
+        std::vector<__fp16> A(M * K), B_T(N * K), C(M * N);
+
+        srand(123);
+        for (size_t i = 0; i < M * K; ++i)
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 0.5f);
+        for (size_t i = 0; i < N * K; ++i)
+            B_T[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 0.5f);
+
+        // This should auto-dispatch to MPS since M*K*N >> threshold
+        cactus_matmul_f16(A.data(), B_T.data(), C.data(), M, K, N);
+
+        // Spot-check a few values are non-zero (basic sanity)
+        bool all_zero = true;
+        for (size_t i = 0; i < std::min(M * N, (size_t)100); ++i) {
+            if (static_cast<float>(C[i]) != 0.0f) {
+                all_zero = false;
+                break;
+            }
+        }
+        if (all_zero) {
+            std::cerr << "MPS auto-dispatch produced all zeros" << std::endl;
+            return false;
+        }
+    }
+
+    return true;
+#else
+    return true;  // Skip on non-MPS builds
+#endif
+}
+
+bool test_matmul_mps_graph_backend() {
+#ifdef CACTUS_USE_MPS
+    if (!cactus_metal_available()) return true;
+
+    // Test that ComputeBackend::MPS works through the graph layer
+    TestUtils::FP16TestFixture fixture("MPS MatMul Graph");
+
+    size_t input_a = fixture.create_input({2, 3});
+    size_t input_b = fixture.create_input({3, 2});
+    size_t matmul_result = fixture.graph().matmul(input_a, input_b, false, ComputeBackend::MPS);
+
+    std::vector<__fp16> data_a = {1, 2, 3, 4, 5, 6};
+    std::vector<__fp16> data_b = {1, 2, 3, 4, 5, 6};
+    fixture.set_input_data(input_a, data_a);
+    fixture.set_input_data(input_b, data_b);
+    fixture.execute();
+
+    // Expected: same as CPU matmul: [[22, 28], [49, 64]]
+    std::vector<__fp16> expected = {22, 28, 49, 64};
+    return fixture.verify_output(matmul_result, expected, 1.0f);
+#else
+    return true;
+#endif
+}
+
 int main() {
     TestUtils::TestRunner runner("Graph Operations Tests");
 
@@ -1197,6 +1314,8 @@ int main() {
     runner.run_test("Embedding from File", test_embedding_from_file());
     runner.run_test("STFT Complex", test_stft());
     runner.run_test("LayerNorm", test_layernorm());
+    runner.run_test("MPS MatMul Correctness", test_matmul_mps_correctness());
+    runner.run_test("MPS MatMul Graph Backend", test_matmul_mps_graph_backend());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
