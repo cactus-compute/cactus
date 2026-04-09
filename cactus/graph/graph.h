@@ -703,8 +703,8 @@ namespace GraphFile {
         std::vector<uint32_t> inputs;
         std::vector<size_t> output_shape;
         Precision precision;
-        OpParams para
-
+        OpParams params;
+    };
 
     struct SerializedGraph {
         GraphHeader header;
