@@ -2,10 +2,21 @@
 
 #ifdef CACTUS_HAS_QNN_DIRECT
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#ifdef interface
-#undef interface
+#ifdef _WIN32
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
+  #ifdef interface
+  #undef interface
+  #endif
+#else
+  #include <dlfcn.h>
+  #include <sys/mman.h>
+  #include <sys/stat.h>
+  #include <fcntl.h>
+  #include <unistd.h>
+  #include <dirent.h>
+  #include <limits.h>
+  #include <libgen.h>
 #endif
 
 #include <QNN/QnnInterface.h>
@@ -46,15 +57,17 @@ static void qnn_log_cb(const char* fmt, QnnLog_Level_t level,
 }
 
 static bool file_exists(const std::string& p) {
+#ifdef _WIN32
     DWORD a = GetFileAttributesA(p.c_str());
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat st;
+    return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+#endif
 }
 
-// Returns path to QnnHtp.dll, preferring directories that also contain QnnHtpPrepare.dll.
-// Without QnnHtpPrepare.dll, graphFinalize cannot compile the graph to a loadable binary.
-static std::string find_qnn_htp_dll() {
-    // Check if a dir has QnnHtp.dll; prefer dirs that also have QnnHtpPrepare.dll (same dir)
-    // or QnnHtpPrepareDrv.dll (HTP/ subdir, DriverStore layout).
+static std::string find_qnn_htp_lib() {
+#ifdef _WIN32
     auto probe = [](const std::string& dir, bool require_prepare) -> std::string {
         std::string htp  = dir + "\\QnnHtp.dll";
         if (!file_exists(htp)) return "";
@@ -64,19 +77,14 @@ static std::string find_qnn_htp_dll() {
         return "";
     };
 
-    // Search Python ORT installations under %LOCALAPPDATA% and %APPDATA%.
-    // These bundle QnnHtpPrepare.dll and are needed for graph compilation.
-    // Use GetEnvironmentVariableA (not getenv) so it works when run from MSYS2 bash
-    // where getenv("LOCALAPPDATA") returns null even though the Windows env has it.
     auto search_python_ort = [&]() -> std::string {
         char lad_buf[MAX_PATH] = {}, appd_buf[MAX_PATH] = {};
         GetEnvironmentVariableA("LOCALAPPDATA", lad_buf, MAX_PATH);
         GetEnvironmentVariableA("APPDATA",      appd_buf, MAX_PATH);
-const char* roots[] = { *lad_buf ? lad_buf : nullptr,
+        const char* roots[] = { *lad_buf ? lad_buf : nullptr,
                                  *appd_buf ? appd_buf : nullptr, nullptr };
         WIN32_FIND_DATAA fd;
         for (int ri = 0; roots[ri]; ri++) {
-            // %LOCAL%\Python\pythoncore-*\Lib\site-packages\onnxruntime\capi
             std::string pat1 = std::string(roots[ri]) + "\\Python\\*";
             HANDLE h = FindFirstFileA(pat1.c_str(), &fd);
             if (h != INVALID_HANDLE_VALUE) {
@@ -97,7 +105,6 @@ const char* roots[] = { *lad_buf ? lad_buf : nullptr,
         return "";
     };
 
-    // DriverStore fallback (QnnHtpPrepare.dll usually absent — compilation may fail)
     auto search_driver_store = [&]() -> std::string {
         const char* ds = "C:\\Windows\\System32\\DriverStore\\FileRepository";
         WIN32_FIND_DATAA fd;
@@ -115,12 +122,11 @@ const char* roots[] = { *lad_buf ? lad_buf : nullptr,
         return result;
     };
 
-    // Convert a POSIX/MSYS2-style path to a Windows path, e.g. /c/Users/... → C:\Users\...
     auto posix_to_win = [](const std::string& s) -> std::string {
         if (s.size() >= 3 && s[0] == '/' && s[2] == '/' &&
             ((s[1] >= 'a' && s[1] <= 'z') || (s[1] >= 'A' && s[1] <= 'Z'))) {
             std::string w;
-            w += (char)(s[1] & ~0x20); // uppercase drive letter
+            w += (char)(s[1] & ~0x20);
             w += ':';
             w += '\\';
             for (size_t i = 3; i < s.size(); i++)
@@ -132,12 +138,9 @@ const char* roots[] = { *lad_buf ? lad_buf : nullptr,
         return w;
     };
 
-    // Search PATH directories for QnnHtp.dll + QnnHtpPrepare.dll (works when PATH is set to ORT capi dir)
-    // Handles both Windows (';'-separated) and MSYS2 (':'-separated) PATH formats.
     auto search_path_env = [&]() -> std::string {
         const char* path_env = getenv("PATH");
         if (!path_env) return "";
-        // Detect separator: use ';' if present (Windows PATH), else ':' (MSYS2/Unix PATH)
         char sep = strchr(path_env, ';') ? ';' : ':';
         const char* p = path_env;
         while (*p) {
@@ -154,11 +157,6 @@ const char* roots[] = { *lad_buf ? lad_buf : nullptr,
         return "";
     };
 
-    // Prefer ORT-bundled QnnHtp.dll: has QnnHtpPrepare.dll which enables JIT HTP graph compilation.
-    // DriverStore DLL has QnnHtpPrepareDrv.dll (HTP/ subdir) but JIT compilation fails there on
-    // Windows ARM64 userPD path ("Cannot find initial batch size tensor setting" × 49k nodes).
-
-    // Check the known ORT Python package path directly (LOCALAPPDATA unavailable via getenv in MSYS2)
     static const char* known_ort_paths[] = {
         "C:\\Users\\justi\\AppData\\Local\\Python\\pythoncore-3.10-64\\Lib\\site-packages\\onnxruntime\\capi\\QnnHtp.dll",
         nullptr
@@ -185,7 +183,6 @@ const char* roots[] = { *lad_buf ? lad_buf : nullptr,
         fprintf(stderr, "[QNN Direct] using DriverStore QnnHtp.dll (fallback): %s\n", r.c_str());
         return r;
     }
-    // Search relative to the executable: walk up parent dirs looking for libs/ort/bin
     auto search_exe_relative = [&]() -> std::string {
         char exe_path[MAX_PATH] = {};
         if (!GetModuleFileNameA(NULL, exe_path, MAX_PATH)) return "";
@@ -212,6 +209,119 @@ const char* roots[] = { *lad_buf ? lad_buf : nullptr,
     fprintf(stderr, "[QNN Direct] search_python_ort missed — LOCALAPPDATA=%s\n",
             getenv("LOCALAPPDATA") ? getenv("LOCALAPPDATA") : "(null)");
     return "QnnHtp.dll";
+
+#else // Linux
+
+    auto probe = [](const std::string& dir, bool require_prepare) -> std::string {
+        std::string htp = dir + "/libQnnHtp.so";
+        if (!file_exists(htp)) return "";
+        if (!require_prepare) return htp;
+        if (file_exists(dir + "/libQnnHtpPrepare.so")) return htp;
+        return "";
+    };
+
+    auto search_ld_library_path = [&]() -> std::string {
+        const char* ldpath = getenv("LD_LIBRARY_PATH");
+        if (!ldpath) return "";
+        const char* p = ldpath;
+        while (*p) {
+            const char* delim = strchr(p, ':');
+            std::string dir(p, delim ? (size_t)(delim - p) : strlen(p));
+            if (!dir.empty()) {
+                std::string r = probe(dir, true);
+                if (!r.empty()) return r;
+            }
+            if (!delim) break;
+            p = delim + 1;
+        }
+        for (p = ldpath; *p; ) {
+            const char* delim = strchr(p, ':');
+            std::string dir(p, delim ? (size_t)(delim - p) : strlen(p));
+            if (!dir.empty()) {
+                std::string r = probe(dir, false);
+                if (!r.empty()) return r;
+            }
+            if (!delim) break;
+            p = delim + 1;
+        }
+        return "";
+    };
+
+    auto search_qairt_sdk = [&]() -> std::string {
+        const char* sdk_dirs[] = {
+            "/opt/qcom/aistack/qairt",
+            "/usr/local/lib",
+            "/usr/lib",
+            "/usr/lib/aarch64-linux-gnu",
+            nullptr
+        };
+        for (int i = 0; sdk_dirs[i]; i++) {
+            std::string r = probe(sdk_dirs[i], true);
+            if (!r.empty()) return r;
+            r = probe(sdk_dirs[i], false);
+            if (!r.empty()) return r;
+        }
+        const char* qairt_root = "/opt/qcom/aistack/qairt";
+        DIR* d = opendir(qairt_root);
+        if (d) {
+            struct dirent* ent;
+            while ((ent = readdir(d)) != nullptr) {
+                if (ent->d_name[0] == '.') continue;
+                static const char* lib_subdirs[] = {
+                    "lib/aarch64-oe-linux-gcc11.2",
+                    "lib/aarch64-ubuntu-gcc9.4",
+                    "lib/aarch64-oe-linux-gcc9.3",
+                    nullptr
+                };
+                for (int j = 0; lib_subdirs[j]; j++) {
+                    std::string candidate = std::string(qairt_root) + "/" + ent->d_name + "/" + lib_subdirs[j];
+                    std::string r = probe(candidate, true);
+                    if (!r.empty()) { closedir(d); return r; }
+                }
+            }
+            closedir(d);
+        }
+        return "";
+    };
+
+    auto search_exe_relative = [&]() -> std::string {
+        char exe_path[PATH_MAX] = {};
+        ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+        if (len <= 0) return "";
+        exe_path[len] = '\0';
+        std::string cur = exe_path;
+        auto slash = cur.find_last_of('/');
+        if (slash != std::string::npos) cur = cur.substr(0, slash);
+        for (int depth = 0; depth < 6; depth++) {
+            std::string r = probe(cur + "/lib", true);
+            if (!r.empty()) return r;
+            r = probe(cur + "/libs/qnn", true);
+            if (!r.empty()) return r;
+            auto up = cur.find_last_of('/');
+            if (up == std::string::npos || up == 0) break;
+            cur = cur.substr(0, up);
+        }
+        return "";
+    };
+
+    std::string r = search_ld_library_path();
+    if (!r.empty()) {
+        fprintf(stderr, "[QNN Direct] using libQnnHtp.so from LD_LIBRARY_PATH: %s\n", r.c_str());
+        return r;
+    }
+    r = search_qairt_sdk();
+    if (!r.empty()) {
+        fprintf(stderr, "[QNN Direct] using libQnnHtp.so from QAIRT SDK: %s\n", r.c_str());
+        return r;
+    }
+    r = search_exe_relative();
+    if (!r.empty()) {
+        fprintf(stderr, "[QNN Direct] using exe-relative libQnnHtp.so: %s\n", r.c_str());
+        return r;
+    }
+    fprintf(stderr, "[QNN Direct] libQnnHtp.so not found — set LD_LIBRARY_PATH to the QAIRT lib directory\n");
+    return "libQnnHtp.so";
+#endif
 }
 
 // ---- CACT weight file reader ----
@@ -220,13 +330,15 @@ static constexpr uint32_t CACT_MAGIC = 0x54434143;
 static constexpr size_t   CACT_HEADER_SIZE = 84;
 
 struct CactFile {
-    // Mmap state
+#ifdef _WIN32
     HANDLE hf = INVALID_HANDLE_VALUE;
     HANDLE hm = nullptr;
+#else
+    int fd = -1;
+#endif
     void*  base = nullptr;
     size_t file_size = 0;
 
-    // Parsed header
     uint32_t flags       = 0;
     bool     is_interleaved = false;
     uint32_t precision   = 0;   // 0=INT8 1=FP16 2=FP32 3=INT4
@@ -240,9 +352,14 @@ struct CactFile {
     size_t   scales_offset = 0;
 
     ~CactFile() {
+#ifdef _WIN32
         if (base)  UnmapViewOfFile(base);
         if (hm)    CloseHandle(hm);
         if (hf != INVALID_HANDLE_VALUE) CloseHandle(hf);
+#else
+        if (base && base != MAP_FAILED) munmap(base, file_size);
+        if (fd >= 0) close(fd);
+#endif
     }
 
     const void* data_ptr() const {
@@ -259,6 +376,7 @@ static inline size_t align_up(size_t v, size_t a) {
 }
 
 static bool open_cact(const std::string& path, CactFile& f) {
+#ifdef _WIN32
     f.hf = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
                        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f.hf == INVALID_HANDLE_VALUE) {
@@ -272,6 +390,18 @@ static bool open_cact(const std::string& path, CactFile& f) {
     if (!f.hm) return false;
     f.base = MapViewOfFile(f.hm, FILE_MAP_READ, 0, 0, 0);
     if (!f.base) return false;
+#else
+    f.fd = open(path.c_str(), O_RDONLY);
+    if (f.fd < 0) {
+        fprintf(stderr, "[QNN Direct] cannot open: %s\n", path.c_str());
+        return false;
+    }
+    struct stat st;
+    if (fstat(f.fd, &st) != 0) return false;
+    f.file_size = (size_t)st.st_size;
+    f.base = mmap(nullptr, f.file_size, PROT_READ, MAP_PRIVATE, f.fd, 0);
+    if (f.base == MAP_FAILED) { f.base = nullptr; return false; }
+#endif
 
     if (f.file_size < CACT_HEADER_SIZE) return false;
     const char* p = static_cast<const char*>(f.base);
@@ -596,14 +726,13 @@ struct QNNDirectPrefill::Impl {
 // ---- DLL loading (unchanged) ----
 
 bool QNNDirectPrefill::Impl::load_dll(const std::string& path) {
-    size_t sep = path.rfind('\\');
-    if (sep == std::string::npos) sep = path.rfind('/');
+    size_t sep = path.rfind('/');
+#ifdef _WIN32
+    { size_t bs = path.rfind('\\'); if (bs != std::string::npos && (sep == std::string::npos || bs > sep)) sep = bs; }
+#endif
     std::string dir = (sep != std::string::npos) ? path.substr(0, sep) : ".";
 
-    // Pre-load companion DLLs before QnnHtp.dll so QnnHtp.dll finds them via LoadLibrary.
-    // The DriverStore layout puts QnnHtp.dll in the root and QnnHtpPrepareDrv.dll + stubs in HTP/.
-    // Pre-loading QnnHtpPrepareDrv.dll from HTP/ makes it visible to QnnHtp.dll.
-    // Also pre-load QnnSystem.dll (needed for serialization APIs).
+#ifdef _WIN32
     static const char* companions_root[] = { "QnnSystem.dll", "QnnHtpV73Stub.dll", nullptr };
     static const char* companions_htp[]  = { "QnnHtpPrepareDrv.dll", nullptr };
     auto preload = [&](const std::string& full_path) {
@@ -624,14 +753,40 @@ bool QNNDirectPrefill::Impl::load_dll(const std::string& path) {
                 path.c_str(), GetLastError());
         return false;
     }
-    fprintf(stderr, "[QNN Direct] loaded QnnHtp.dll: %s\n", path.c_str());
+#else
+    static const char* companions[] = {
+        "libQnnSystem.so",
+        "libQnnHtpV75Stub.so", "libQnnHtpV73Stub.so", "libQnnHtpV79Stub.so",
+        "libQnnHtpPrepare.so",
+        nullptr
+    };
+    for (int i = 0; companions[i]; i++) {
+        std::string full = dir + "/" + companions[i];
+        if (!file_exists(full)) continue;
+        void* h = dlopen(full.c_str(), RTLD_NOW | RTLD_GLOBAL);
+        const char* name = companions[i];
+        if (h && strstr(name, "QnnSystem")) sys_dll_handle = h;
+        fprintf(stderr, "[QNN Direct] pre-load %s: %s\n", name, h ? "ok" : dlerror());
+    }
+    dll_handle = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    if (!dll_handle) {
+        fprintf(stderr, "[QNN Direct] failed to load %s: %s\n", path.c_str(), dlerror());
+        return false;
+    }
+#endif
+    fprintf(stderr, "[QNN Direct] loaded %s\n", path.c_str());
     return true;
 }
 
 bool QNNDirectPrefill::Impl::init_interface() {
+#ifdef _WIN32
     auto fn = reinterpret_cast<QnnInterfaceGetProvidersFn_t>(
         reinterpret_cast<void*>(GetProcAddress(
             (HMODULE)dll_handle, "QnnInterface_getProviders")));
+#else
+    auto fn = reinterpret_cast<QnnInterfaceGetProvidersFn_t>(
+        dlsym(dll_handle, "QnnInterface_getProviders"));
+#endif
     if (!fn) { fprintf(stderr, "[QNN Direct] QnnInterface_getProviders not found\n"); return false; }
     const QnnInterface_t** providers = nullptr;
     uint32_t num = 0;
@@ -654,7 +809,7 @@ bool QNNDirectPrefill::Impl::init_backend() {
     fprintf(stderr, "[QNN Direct] backend created\n");
 
     if (qnn.deviceCreate) {
-        // SC8380XP = 60, HTP arch V75
+#ifdef _WIN32
         QnnHtpDevice_CustomConfig_t htp_soc_cfg;
         htp_soc_cfg.option   = QNN_HTP_DEVICE_CONFIG_OPTION_SOC;
         htp_soc_cfg.socModel = 60;  // QNN_SOC_MODEL_SC8380XP
@@ -663,10 +818,17 @@ bool QNNDirectPrefill::Impl::init_backend() {
         dev_cfg.customConfig = (QnnDevice_CustomConfig_t)&htp_soc_cfg;
         const QnnDevice_Config_t* dev_cfgs[] = {&dev_cfg, nullptr};
         Qnn_ErrorHandle_t de = qnn.deviceCreate(log_handle, dev_cfgs, &device_handle);
+        if (de != QNN_SUCCESS) {
+            fprintf(stderr, "[QNN Direct] deviceCreate with SOC config failed (%lld), retrying auto-detect\n", (long long)de);
+            de = qnn.deviceCreate(log_handle, nullptr, &device_handle);
+        }
+#else
+        Qnn_ErrorHandle_t de = qnn.deviceCreate(log_handle, nullptr, &device_handle);
         if (de != QNN_SUCCESS)
-            fprintf(stderr, "[QNN Direct] deviceCreate with SOC config failed (%lld), retrying without\n", (long long)de);
-        if (de != QNN_SUCCESS)
-            qnn.deviceCreate(log_handle, nullptr, &device_handle);
+            fprintf(stderr, "[QNN Direct] deviceCreate auto-detect failed (%lld)\n", (long long)de);
+        else
+            fprintf(stderr, "[QNN Direct] device created (auto-detected SoC)\n");
+#endif
     }
 
     if (!qnn.contextCreate) return false;
@@ -682,8 +844,13 @@ void QNNDirectPrefill::Impl::teardown() {
     if (device_handle && qnn.deviceFree) qnn.deviceFree(device_handle);
     if (backend_handle && qnn.backendFree) qnn.backendFree(backend_handle);
     if (log_handle && qnn.logFree) qnn.logFree(log_handle);
+#ifdef _WIN32
     if (dll_handle) FreeLibrary((HMODULE)dll_handle);
     if (sys_dll_handle) FreeLibrary((HMODULE)sys_dll_handle);
+#else
+    if (dll_handle) dlclose(dll_handle);
+    if (sys_dll_handle) dlclose(sys_dll_handle);
+#endif
     loaded = false;
 }
 
@@ -1642,7 +1809,7 @@ QNNDirectPrefill::~QNNDirectPrefill() { impl_->teardown(); }
 
 bool QNNDirectPrefill::load(const std::string& model_folder) {
     auto& I = *impl_;
-    std::string dll_path = find_qnn_htp_dll();
+    std::string dll_path = find_qnn_htp_lib();
     if (!I.load_dll(dll_path)) return false;
     if (!I.init_interface()) return false;
 
@@ -3584,8 +3751,13 @@ struct QNNDirectEncoder::Impl {
         if (device_handle  && qnn.deviceFree)  qnn.deviceFree(device_handle);
         if (backend_handle && qnn.backendFree)  qnn.backendFree(backend_handle);
         if (log_handle     && qnn.logFree)      qnn.logFree(log_handle);
+#ifdef _WIN32
         if (dll_handle) FreeLibrary((HMODULE)dll_handle);
         if (sys_dll_handle) FreeLibrary((HMODULE)sys_dll_handle);
+#else
+        if (dll_handle) dlclose(dll_handle);
+        if (sys_dll_handle) dlclose(sys_dll_handle);
+#endif
         loaded = false;
     }
 };
@@ -3636,13 +3808,16 @@ bool QNNDirectEncoder::load(const std::string& model_path) {
     }
 
     // Load DLL and init backend
-    std::string dll_path = find_qnn_htp_dll();
+    std::string dll_path = find_qnn_htp_lib();
 
-    // Reuse same DLL loading logic as Prefill::Impl
     {
-        size_t sep = dll_path.rfind('\\');
-        if (sep == std::string::npos) sep = dll_path.rfind('/');
+        size_t sep = dll_path.rfind('/');
+#ifdef _WIN32
+        { size_t bs = dll_path.rfind('\\'); if (bs != std::string::npos && (sep == std::string::npos || bs > sep)) sep = bs; }
+#endif
         std::string dir = (sep != std::string::npos) ? dll_path.substr(0, sep) : ".";
+
+#ifdef _WIN32
         auto preload = [&](const std::string& full_path) {
             if (!file_exists(full_path)) return;
             HMODULE h = LoadLibraryA(full_path.c_str());
@@ -3656,14 +3831,33 @@ bool QNNDirectEncoder::load(const std::string& model_path) {
         for (int i = 0; companions_htp[i]; i++)
             preload(dir + "\\HTP\\" + companions_htp[i]);
         I.dll_handle = (void*)LoadLibraryA(dll_path.c_str());
+#else
+        static const char* companions[] = {
+            "libQnnSystem.so",
+            "libQnnHtpV75Stub.so", "libQnnHtpV73Stub.so", "libQnnHtpV79Stub.so",
+            "libQnnHtpPrepare.so",
+            nullptr
+        };
+        for (int i = 0; companions[i]; i++) {
+            std::string full = dir + "/" + companions[i];
+            if (!file_exists(full)) continue;
+            void* h = dlopen(full.c_str(), RTLD_NOW | RTLD_GLOBAL);
+            if (h && strstr(companions[i], "QnnSystem")) I.sys_dll_handle = h;
+        }
+        I.dll_handle = dlopen(dll_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+#endif
         if (!I.dll_handle) {
-            fprintf(stderr, "[QNN Enc] failed to load QnnHtp.dll\n"); return false;
+            fprintf(stderr, "[QNN Enc] failed to load %s\n", dll_path.c_str()); return false;
         }
     }
 
-    // Init interface
+#ifdef _WIN32
     auto get_providers = reinterpret_cast<QnnInterfaceGetProvidersFn_t>(
         reinterpret_cast<void*>(GetProcAddress((HMODULE)I.dll_handle, "QnnInterface_getProviders")));
+#else
+    auto get_providers = reinterpret_cast<QnnInterfaceGetProvidersFn_t>(
+        dlsym(I.dll_handle, "QnnInterface_getProviders"));
+#endif
     if (!get_providers) { fprintf(stderr, "[QNN Enc] getProviders not found\n"); return false; }
     const QnnInterface_t** providers = nullptr; uint32_t np = 0;
     if (get_providers(&providers, &np) != QNN_SUCCESS || np == 0) return false;
@@ -3673,6 +3867,7 @@ bool QNNDirectEncoder::load(const std::string& model_path) {
     if (!I.qnn.backendCreate) return false;
     if (I.qnn.backendCreate(I.log_handle, nullptr, &I.backend_handle) != QNN_SUCCESS) return false;
     if (I.qnn.deviceCreate) {
+#ifdef _WIN32
         QnnHtpDevice_CustomConfig_t soc_cfg;
         soc_cfg.option = QNN_HTP_DEVICE_CONFIG_OPTION_SOC; soc_cfg.socModel = 60;
         QnnDevice_Config_t dev_cfg = QNN_DEVICE_CONFIG_INIT;
@@ -3680,6 +3875,9 @@ bool QNNDirectEncoder::load(const std::string& model_path) {
         const QnnDevice_Config_t* dcfgs[] = {&dev_cfg, nullptr};
         if (I.qnn.deviceCreate(I.log_handle, dcfgs, &I.device_handle) != QNN_SUCCESS)
             I.qnn.deviceCreate(I.log_handle, nullptr, &I.device_handle);
+#else
+        I.qnn.deviceCreate(I.log_handle, nullptr, &I.device_handle);
+#endif
     }
     if (!I.qnn.contextCreate) return false;
 
