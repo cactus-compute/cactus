@@ -1392,8 +1392,237 @@ def cmd_eval(args):
     return r.returncode
 
 
+def _parse_op_profile(profile_path):
+    """Parse a CACTUS_PROFILE_FILE and return (ops, matmul_dims, total_ms)."""
+    import re
+    from collections import defaultdict
+
+    try:
+        with open(profile_path) as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return None, None, 0.0
+
+    ops = defaultdict(lambda: {"count": 0, "total_ms": 0.0})
+    matmul_dims = defaultdict(lambda: {"count": 0, "total_ms": 0.0})
+    total_ms = 0.0
+    matmul_re = re.compile(r'matmul=(\d+x\d+x\d+)')
+
+    for line in lines:
+        line = line.strip()
+        if line.startswith("Total execution time:"):
+            try:
+                total_ms += float(line.split(":")[1].strip().split()[0])
+            except (ValueError, IndexError):
+                pass
+            continue
+        if not line or line.startswith("=") or line.startswith("-") or line.startswith("Operation"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        op_name = parts[0]
+        try:
+            ms = float(parts[1])
+        except ValueError:
+            continue
+        if op_name == "MATMUL":
+            m = matmul_re.search(line)
+            if m:
+                dims = m.group(1)
+                matmul_dims[dims]["count"] += 1
+                matmul_dims[dims]["total_ms"] += ms
+                M = int(dims.split("x")[0])
+                gemx = "MATMUL_GEMV" if M == 1 else "MATMUL_GEMM"
+                ops[gemx]["count"] += 1
+                ops[gemx]["total_ms"] += ms
+            else:
+                ops["MATMUL"]["count"] += 1
+                ops["MATMUL"]["total_ms"] += ms
+        else:
+            ops[op_name]["count"] += 1
+            ops[op_name]["total_ms"] += ms
+
+    if not ops:
+        return None, None, 0.0
+    return dict(ops), dict(matmul_dims), total_ms
+
+
+def _print_op_table(title, ops, total_ms, matmul_dims=None):
+    """Print an op profile table with optional matmul breakdown."""
+    sorted_ops = sorted(ops.items(), key=lambda x: x[1]["total_ms"], reverse=True)
+
+    print()
+    print_color(BLUE, title)
+    print("=" * 74)
+    print(f"{'Operation':<28} {'Count':>8} {'Total (ms)':>12} {'Avg (ms)':>12} {'%':>8}")
+    print("-" * 74)
+    for op_name, data in sorted_ops:
+        count = data["count"]
+        op_total = data["total_ms"]
+        avg = op_total / count if count else 0
+        pct = (op_total / total_ms * 100) if total_ms > 0 else 0
+        print(f"{op_name:<28} {count:>8} {op_total:>12.3f} {avg:>12.3f} {pct:>7.1f}%")
+    print("-" * 74)
+    print(f"{'TOTAL':<28} {'':>8} {total_ms:>12.3f}")
+
+    if matmul_dims:
+        matmul_total = ops.get("MATMUL_GEMV", {}).get("total_ms", 0.0) + ops.get("MATMUL_GEMM", {}).get("total_ms", 0.0) + ops.get("MATMUL", {}).get("total_ms", 0.0)
+        sorted_dims = sorted(matmul_dims.items(), key=lambda x: x[1]["total_ms"], reverse=True)
+        print()
+        print_color(BLUE, f"{title} - MATMUL Breakdown (MxKxN)")
+        print("=" * 74)
+        print(f"{'Dimensions':<28} {'Count':>8} {'Total (ms)':>12} {'Avg (ms)':>12} {'%':>8}")
+        print("-" * 74)
+        for dims, data in sorted_dims:
+            count = data["count"]
+            dim_total = data["total_ms"]
+            avg = dim_total / count if count else 0
+            pct = (dim_total / matmul_total * 100) if matmul_total > 0 else 0
+            print(f"{dims:<28} {count:>8} {dim_total:>12.3f} {avg:>12.3f} {pct:>7.1f}%")
+        print("-" * 74)
+        print(f"{'MATMUL TOTAL':<28} {'':>8} {matmul_total:>12.3f}")
+    print()
+
+
+def _print_op_profile(profile_path):
+    """Parse and print a single model's op profile."""
+    ops, matmul_dims, total_ms = _parse_op_profile(profile_path)
+    if ops is None:
+        print_color(YELLOW, "Warning: no profiling data found")
+        return
+    _print_op_table("Op Profile Summary", ops, total_ms, matmul_dims)
+
+
+PROFILE_ALL_MODELS = [
+    # (family, model_id, precision, test_type, env_var)
+    ("qwen",      "Qwen/Qwen3-0.6B",                    "INT8", "llm",   "CACTUS_TEST_MODEL"),
+    ("lfm2",      "LiquidAI/LFM2.5-350M",               "INT8", "llm",   "CACTUS_TEST_MODEL"),
+    ("lfm2moe",   "LiquidAI/LFM2-8B-A1B",               "INT8", "llm",   "CACTUS_TEST_MODEL"),
+    ("gemma",     "google/gemma-3-270m-it",              "INT8", "llm",   "CACTUS_TEST_MODEL"),
+    ("gemma4",    "google/gemma-4-E2B-it",               "INT4", "llm",   "CACTUS_TEST_MODEL"),
+    ("nomic",     "nomic-ai/nomic-embed-text-v2-moe",    "INT8", "embed", "CACTUS_TEST_MODEL"),
+    ("whisper",   "openai/whisper-small",                 "INT8", "stt",   "CACTUS_TEST_TRANSCRIBE_MODEL"),
+    ("moonshine", "UsefulSensors/moonshine-base",         "INT8", "stt",   "CACTUS_TEST_TRANSCRIBE_MODEL"),
+    ("parakeet",  "nvidia/parakeet-ctc-0.6b",             "INT8", "stt",   "CACTUS_TEST_TRANSCRIBE_MODEL"),
+    ("lfm2vl",    "LiquidAI/LFM2-VL-450M",               "INT8", "vlm",   "CACTUS_TEST_MODEL"),
+]
+
+
+def _run_profile_all(args):
+    """Run op profiling across all major model families and print aggregate stats."""
+    from collections import defaultdict
+
+    test_script = PROJECT_ROOT / "tests" / "run.sh"
+    if not test_script.exists():
+        print_color(RED, f"Error: Test script not found at {test_script}")
+        return 1
+
+    # Build once up front
+    if not getattr(args, 'no_rebuild', False):
+        print_color(BLUE, "Building cactus library and tests...")
+        build_ret = subprocess.run(["cactus", "build"], cwd=PROJECT_ROOT).returncode
+        if build_ret != 0:
+            print_color(RED, "Build failed")
+            return 1
+
+    all_results = []
+
+    for family, model_id, precision, test_type, env_var in PROFILE_ALL_MODELS:
+        print()
+        print_color(BLUE, f"=== Profiling {family} ({model_id}, {precision}) ===")
+
+        # Download model
+        class DownloadArgs:
+            pass
+        dl_args = DownloadArgs()
+        dl_args.model_id = model_id
+        dl_args.reconvert = False
+        dl_args.cache_dir = None
+        dl_args.precision = precision
+        dl_args.token = getattr(args, 'token', None)
+        if cmd_download(dl_args) != 0:
+            print_color(YELLOW, f"  SKIP: failed to download {model_id}")
+            continue
+
+        model_dir = model_id.split("/")[-1].lower()
+        model_path = str(PROJECT_ROOT / "weights" / model_dir)
+
+        profile_path = f"/tmp/cactus_profile_all_{family}_{os.getpid()}.txt"
+
+        cmd = [str(test_script), "--only", test_type, "--op_profile", "--no-rebuild"]
+        env = os.environ.copy()
+        env["CACTUS_NO_CLOUD_TELE"] = "1"
+        env["CACTUS_PROFILE_FILE"] = profile_path
+        env["CACTUS_OP_PROFILE"] = "1"
+        env[env_var] = model_path
+        if test_type == "stt":
+            vad_dir = str(PROJECT_ROOT / "weights" / "silero-vad")
+            env["CACTUS_TEST_VAD_MODEL"] = vad_dir
+        env["CACTUS_TEST_ASSETS"] = str(PROJECT_ROOT / "tests" / "assets")
+
+        subprocess.run(cmd, cwd=PROJECT_ROOT / "tests", env=env)
+
+        ops, matmul_dims, total_ms = _parse_op_profile(profile_path)
+        try:
+            os.remove(profile_path)
+        except OSError:
+            pass
+
+        if ops is None:
+            print_color(YELLOW, f"  SKIP: no profiling data for {family}")
+            continue
+
+        _print_op_table(f"{family} ({precision})", ops, total_ms, matmul_dims)
+        all_results.append({"family": family, "ops": ops, "total_ms": total_ms})
+
+    if not all_results:
+        print_color(RED, "No profiling data collected from any model")
+        return 1
+
+    # Aggregate: uniform weighting (each model's ops contribute as % of its own total)
+    # Use sum of op times as the denominator so percentages sum to 100%
+    all_op_names = set()
+    per_model_pcts = []
+    for result in all_results:
+        op_total = sum(d["total_ms"] for d in result["ops"].values())
+        if op_total <= 0:
+            continue
+        model_pcts = {}
+        for op_name, data in result["ops"].items():
+            model_pcts[op_name] = data["total_ms"] / op_total * 100
+            all_op_names.add(op_name)
+        per_model_pcts.append(model_pcts)
+
+    n_models = len(per_model_pcts)
+    agg = {}
+    agg_pcts = {}
+    for op_name in all_op_names:
+        pcts = [m.get(op_name, 0.0) for m in per_model_pcts]
+        agg[op_name] = sum(pcts) / n_models
+        agg_pcts[op_name] = sum(1 for p in pcts if p > 0)
+
+    sorted_agg = sorted(agg.items(), key=lambda x: x[1], reverse=True)
+
+    print()
+    print_color(BLUE, f"Aggregate Op Profile ({n_models} models, uniform weight)")
+    print("=" * 50)
+    print(f"{'Operation':<28} {'Avg %':>8} {'Models':>8}")
+    print("-" * 50)
+    for op_name, avg_pct in sorted_agg:
+        n_present = agg_pcts[op_name]
+        print(f"{op_name:<28} {avg_pct:>7.1f}% {n_present:>5}/{n_models}")
+    print("-" * 50)
+    print()
+
+    return 0
+
+
 def cmd_test(args):
     """Run the Cactus test suite."""
+    if getattr(args, 'profile_all', False):
+        return _run_profile_all(args)
+
     print_color(BLUE, "Running test suite...")
     print("=" * 20)
 
@@ -1473,13 +1702,32 @@ def cmd_test(args):
             break
     if test_filter:
         cmd.extend(["--only", test_filter])
+    profile_path = None
+    if getattr(args, 'profile', False):
+        profile_tests = {'llm', 'vlm', 'stt', 'embed'}
+        if not test_filter or test_filter not in profile_tests:
+            print_color(RED, f"Error: --profile requires one of: --llm, --vlm, --stt, --embed")
+            return 1
+        cmd.extend(["--op_profile"])
+        profile_path = f"/tmp/cactus_op_profile_{os.getpid()}.txt"
+
     env = os.environ.copy()
     if getattr(args, 'enable_telemetry', False):
         env.pop("CACTUS_NO_CLOUD_TELE", None)
     else:
         env["CACTUS_NO_CLOUD_TELE"] = "1"
+    if profile_path:
+        env["CACTUS_PROFILE_FILE"] = profile_path
 
     result = subprocess.run(cmd, cwd=PROJECT_ROOT / "tests", env=env)
+
+    if profile_path:
+        _print_op_profile(profile_path)
+        try:
+            os.remove(profile_path)
+        except OSError:
+            pass
+
     return result.returncode
 
 
@@ -2091,6 +2339,10 @@ def create_parser():
                              help='Enable cloud telemetry (disabled by default in tests)')
     test_parser.add_argument('--reconvert', action='store_true',
                              help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
+    test_parser.add_argument('--profile', action='store_true',
+                             help='Run op profiling breakdown (use with --llm, --vlm, --stt, or --embed)')
+    test_parser.add_argument('--profile-all', action='store_true',
+                             help='Run op profiling across all major model families and print aggregate stats')
 
     auth_parser = subparsers.add_parser('auth', help='Manage Cactus Cloud API key')
     auth_parser.add_argument('--clear', action='store_true',

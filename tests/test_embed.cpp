@@ -1,6 +1,7 @@
 #include "test_utils.h"
 #include <cstdlib>
 #include <iostream>
+#include <unistd.h>
 
 using namespace EngineTestUtils;
 
@@ -120,6 +121,17 @@ static bool test_audio_embeddings() {
 }
 
 int main() {
+    const char* op_profile_env = std::getenv("CACTUS_OP_PROFILE");
+    bool op_profile = op_profile_env && std::string(op_profile_env) == "1";
+
+    if (op_profile) {
+        TestUtils::OpProfile::setup_profiling();
+        TestUtils::TestRunner runner("Embedding Op Profile");
+        runner.run_test("embeddings", test_embeddings());
+        runner.print_summary();
+        return runner.all_passed() ? 0 : 1;
+    }
+
     TestUtils::TestRunner runner("Embedding Tests");
     runner.run_test("embeddings", test_embeddings());
     runner.run_test("image_embeddings", test_image_embeddings());

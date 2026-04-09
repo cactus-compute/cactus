@@ -24,9 +24,14 @@ IOS_MODE=false
 NO_REBUILD=false
 EXHAUSTIVE_MODE=false
 ONLY_EXEC=""
+OP_PROFILE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --op_profile)
+            OP_PROFILE=true
+            shift
+            ;;
         --model)
             MODEL_NAME="$2"
             shift 2
@@ -90,7 +95,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --ios                     Run tests on iOS device or simulator"
             echo "  --no-rebuild              Skip building cactus library and tests"
             echo "  --exhaustive              Run exhaustive golden tests for all model families and precisions"
-            echo "  --only <test_name>        Only run the specified test (llm, vlm, stt, embed, rag, graph, index, kernel, kv_cache, performance)"
+            echo "  --op_profile              Run op profiling on the selected test (use with --only llm|vlm|stt|embed)"
+    echo "  --only <test_name>        Only run the specified test (llm, vlm, stt, embed, rag, graph, index, kernel, kv_cache, performance)"
             echo "  --help, -h                Show this help message"
             exit 0
             ;;
@@ -118,7 +124,7 @@ fi
 
 echo ""
 SKIP_STANDARD_DOWNLOADS=false
-if [ "$ONLY_EXEC" = "gemma4_suite" ]; then
+if [ "$ONLY_EXEC" = "gemma4_suite" ] || [ "$OP_PROFILE" = true ]; then
     SKIP_STANDARD_DOWNLOADS=true
 fi
 
@@ -144,27 +150,29 @@ if [ "$SKIP_STANDARD_DOWNLOADS" = false ]; then
         exit 1
     fi
 else
-    echo "Step 1: Skipping standard downloads for --only gemma4_suite"
+    echo "Step 1: Skipping standard downloads"
 fi
 
-if ! cactus download "$DIARIZE_MODEL_NAME" $PRECISION_FLAG; then
-    echo "Failed to download diarize model weights"
-    exit 1
-fi
+if [ "$SKIP_STANDARD_DOWNLOADS" = false ]; then
+    if ! cactus download "$DIARIZE_MODEL_NAME" $PRECISION_FLAG; then
+        echo "Failed to download diarize model weights"
+        exit 1
+    fi
 
-if ! cactus download "$EMBED_SPEAKER_MODEL_NAME" $PRECISION_FLAG; then
-    echo "Failed to download embed_speaker model weights"
-    exit 1
-fi
+    if ! cactus download "$EMBED_SPEAKER_MODEL_NAME" $PRECISION_FLAG; then
+        echo "Failed to download embed_speaker model weights"
+        exit 1
+    fi
 
-if ! cactus download "$DIARIZE_MODEL_NAME" $PRECISION_FLAG; then
-    echo "Failed to download diarize model weights"
-    exit 1
-fi
+    if ! cactus download "$DIARIZE_MODEL_NAME" $PRECISION_FLAG; then
+        echo "Failed to download diarize model weights"
+        exit 1
+    fi
 
-if ! cactus download "$EMBED_SPEAKER_MODEL_NAME" $PRECISION_FLAG; then
-    echo "Failed to download embed_speaker model weights"
-    exit 1
+    if ! cactus download "$EMBED_SPEAKER_MODEL_NAME" $PRECISION_FLAG; then
+        echo "Failed to download embed_speaker model weights"
+        exit 1
+    fi
 fi
 
 echo ""
@@ -219,12 +227,12 @@ VAD_MODEL_DIR=$(echo "$VAD_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower
 DIARIZE_MODEL_DIR=$(echo "$DIARIZE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 EMBED_SPEAKER_MODEL_DIR=$(echo "$EMBED_SPEAKER_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 
-export CACTUS_TEST_MODEL="$PROJECT_ROOT/weights/$MODEL_DIR"
+export CACTUS_TEST_MODEL="${CACTUS_TEST_MODEL:-$PROJECT_ROOT/weights/$MODEL_DIR}"
 export CACTUS_TEST_GEMMA4_MODEL="${CACTUS_TEST_GEMMA4_MODEL:-$PROJECT_ROOT/weights/gemma4_int4}"
-export CACTUS_TEST_TRANSCRIBE_MODEL="$PROJECT_ROOT/weights/$TRANSCRIBE_MODEL_DIR"
-export CACTUS_TEST_WHISPER_MODEL="$PROJECT_ROOT/weights/$WHISPER_MODEL_DIR"
-export CACTUS_TEST_VAD_MODEL="$PROJECT_ROOT/weights/$VAD_MODEL_DIR"
-export CACTUS_TEST_DIARIZE_MODEL="$PROJECT_ROOT/weights/$DIARIZE_MODEL_DIR"
+export CACTUS_TEST_TRANSCRIBE_MODEL="${CACTUS_TEST_TRANSCRIBE_MODEL:-$PROJECT_ROOT/weights/$TRANSCRIBE_MODEL_DIR}"
+export CACTUS_TEST_WHISPER_MODEL="${CACTUS_TEST_WHISPER_MODEL:-$PROJECT_ROOT/weights/$WHISPER_MODEL_DIR}"
+export CACTUS_TEST_VAD_MODEL="${CACTUS_TEST_VAD_MODEL:-$PROJECT_ROOT/weights/$VAD_MODEL_DIR}"
+export CACTUS_TEST_DIARIZE_MODEL="${CACTUS_TEST_DIARIZE_MODEL:-$PROJECT_ROOT/weights/$DIARIZE_MODEL_DIR}"
 export CACTUS_TEST_EMBED_SPEAKER_MODEL="$PROJECT_ROOT/weights/$EMBED_SPEAKER_MODEL_DIR"
 export CACTUS_TEST_ASSETS="$PROJECT_ROOT/tests/assets"
 export CACTUS_INDEX_PATH="$PROJECT_ROOT/tests/assets"
@@ -237,6 +245,11 @@ echo "Using diarize model path: $CACTUS_TEST_DIARIZE_MODEL"
 echo "Using embed_speaker model path: $CACTUS_TEST_EMBED_SPEAKER_MODEL"
 echo "Using assets path: $CACTUS_TEST_ASSETS"
 echo "Using index path: $CACTUS_INDEX_PATH"
+
+if [ "$OP_PROFILE" = true ]; then
+    export CACTUS_OP_PROFILE=1
+    echo "Op profiling enabled"
+fi
 
 echo "Discovering test executables..."
 test_executables=($(find . -maxdepth 1 -name "test_*" ! -name "test_exhaustive" -type f | sort))

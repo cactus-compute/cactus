@@ -13,6 +13,7 @@
 #include <cmath>
 #include <atomic>
 #include <mutex>
+#include <map>
 
 
 namespace TestUtils {
@@ -141,6 +142,21 @@ inline float cosine_sim(const std::vector<float>& a, const std::vector<float>& b
     }
     return (na > 0 && nb > 0) ? (float)(dot / (std::sqrt(na) * std::sqrt(nb))) : 0;
 }
+
+struct OpProfileEntry {
+    std::string op_name;
+    int count = 0;
+    double total_ms = 0.0;
+};
+
+struct OpProfile {
+    std::vector<OpProfileEntry> entries;
+    double total_ms = 0.0;
+
+    static std::string setup_profiling();
+    void parse(const std::string& profile_path);
+    void print() const;
+};
 
 }
 

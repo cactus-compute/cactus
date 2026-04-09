@@ -157,33 +157,29 @@ static const std::unordered_map<OpType, ComputeFn> dispatch_table = {
 static const char* op_type_names[] = {
     "INPUT", "PRECISION_CAST",
     "ADD", "ADD_CLIPPED", "SUBTRACT", "MULTIPLY", "DIVIDE",
-    "MATMUL", "TRANSPOSE", "RESHAPE", "SLICE", "GATHER", "EMBEDDING", "VIEW", "FLATTEN",
+    "ABS", "POW", "FLATTEN", "VIEW",
+    "MATMUL", "TRANSPOSE", "RESHAPE", "SLICE", "GATHER", "EMBEDDING",
     "BILINEAR_INTERPOLATION",
     "SUM", "MEAN", "VARIANCE", "MIN", "MAX",
-    "RMS_NORM", "ROPE", "ROPE_GPTJ", "SOFTMAX", "ATTENTION", "ATTENTION_INT8_HYBRID", "REL_POS_BIAS", "CONV1D_CAUSAL", "CONV1D_K3", "CONV1D_K7S3", "CONV1D", "CONV1D_SAME_DEPTHWISE_K9", "CONV1D_POINTWISE", "CONV2D_K3S2P1", "CONV2D_DEPTHWISE_K3S2P1", "CONV2D_POINTWISE_1X1", "GLU", "BATCHNORM",
+    "RMS_NORM",
+    "ROPE", "ROPE_GPTJ",
+    "SOFTMAX", "ATTENTION", "ATTENTION_INT8_HYBRID", "REL_POS_BIAS",
+    "CONV1D_CAUSAL", "CONV1D_K3", "CONV1D_K7S3", "CONV1D", "CONV1D_SAME_DEPTHWISE_K9", "CONV1D_POINTWISE",
+    "CONV2D_K3S2P1", "CONV2D_DEPTHWISE_K3S2P1", "CONV2D_POINTWISE_1X1",
+    "GLU", "BATCHNORM",
     "SCALAR_ADD", "SCALAR_SUBTRACT", "SCALAR_MULTIPLY", "SCALAR_DIVIDE",
     "SCALAR_EXP", "SCALAR_SQRT", "SCALAR_COS", "SCALAR_SIN", "SCALAR_LOG",
-    "ABS", "POW", 
     "RELU", "SILU", "GELU", "GELU_ERF", "SIGMOID", "TANH",
-    "SAMPLE", "CONCAT",
-    "SCATTER_TOPK",
-    "TOPK", "LAYERNORM", "GROUPNORM",
+    "SAMPLE", "CONCAT", "CAT",
+    "SCATTER_TOPK", "TOPK",
+    "LAYERNORM", "GROUPNORM",
     "MOE_LAYER",
-    "INDEX",
-    "PERSISTENT",
-    "QUANTIZE_ACTIVATIONS",
-    "LSTM_CELL",
-    "GATED_DELTANET_DECODE",
-    "GATED_DELTANET_PREFILL",
+    "INDEX", "PERSISTENT", "QUANTIZE_ACTIVATIONS",
+    "LSTM_CELL", "GATED_DELTANET_DECODE", "GATED_DELTANET_PREFILL",
     "STFT",
-    "ALTUP_PREDICT",
-    "ALTUP_CORRECT",
-    "GAUSSIAN_TOPK",
-    "MAXPOOL1D",
-    "BILSTM_SEQUENCE",
-    "LEAKY_RELU",
-    "CONV2D_K3S1P1",
-    "STATS_POOL"
+    "ALTUP_PREDICT", "ALTUP_CORRECT", "GAUSSIAN_TOPK",
+    "MAXPOOL1D", "BILSTM_SEQUENCE",
+    "LEAKY_RELU", "CONV2D_K3S1P1", "STATS_POOL",
 };
 
 static const char* get_op_name(OpType op) {
@@ -416,10 +412,26 @@ void CactusGraph::execute(const std::string& profile_file) {
                 }
             }
 
+            std::string matmul_dims_str = "";
+            if (node->op_type == OpType::MATMUL && node->input_ids.size() >= 2) {
+                const auto& lhs = nodes_[node_index_map_.at(node->input_ids[0])]->output_buffer;
+                const auto& rhs = nodes_[node_index_map_.at(node->input_ids[1])]->output_buffer;
+                size_t M = lhs.shape.size() >= 2 ? lhs.shape[lhs.shape.size() - 2] : 1;
+                size_t K = lhs.shape[lhs.shape.size() - 1];
+                size_t N;
+                if (rhs.is_interleaved && rhs.original_N > 0) {
+                    N = rhs.original_N;
+                } else {
+                    N = node->params.pretransposed_rhs ?
+                        rhs.shape[rhs.shape.size() - 2] : rhs.shape[rhs.shape.size() - 1];
+                }
+                matmul_dims_str = " matmul=" + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N);
+            }
+
             *out << std::left << std::setw(24) << get_op_name(node->op_type)
                  << std::setw(12) << std::fixed << std::setprecision(3) << ms
                  << std::setw(20) << shape_str
-                 << values_str << weights_str << std::endl;
+                 << matmul_dims_str << values_str << weights_str << std::endl;
         } else {
             compute_node_optimized(*node, nodes_, node_index_map_);
             

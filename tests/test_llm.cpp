@@ -5,6 +5,7 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <unistd.h>
 
 #if __has_include(<curl/curl.h>)
 #include <curl/curl.h>
@@ -560,6 +561,17 @@ bool test_1k_context() {
 }
 
 int main() {
+    const char* op_profile_env = std::getenv("CACTUS_OP_PROFILE");
+    bool op_profile = op_profile_env && std::string(op_profile_env) == "1";
+
+    if (op_profile) {
+        TestUtils::OpProfile::setup_profiling();
+        TestUtils::TestRunner runner("LLM Op Profile");
+        runner.run_test("1k_context", test_1k_context());
+        runner.print_summary();
+        return runner.all_passed() ? 0 : 1;
+    }
+
     TestUtils::TestRunner runner("LLM Tests");
     runner.run_test("1k_context", test_1k_context());
     runner.run_test("streaming", test_streaming());

@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <vector>
 #include <cmath>
+#include <unistd.h>
 
 using namespace EngineTestUtils;
 
@@ -982,6 +983,17 @@ static bool test_vocab_bias_base_class() {
 }
 
 int main() {
+    const char* op_profile_env = std::getenv("CACTUS_OP_PROFILE");
+    bool op_profile = op_profile_env && std::string(op_profile_env) == "1";
+
+    if (op_profile) {
+        TestUtils::OpProfile::setup_profiling();
+        TestUtils::TestRunner runner("STT Op Profile");
+        runner.run_test("transcription", test_transcription());
+        runner.print_summary();
+        return runner.all_passed() ? 0 : 1;
+    }
+
     TestUtils::TestRunner runner("STT Tests");
     runner.run_test("audio_processor", test_audio_processor());
     runner.run_test("irfft_correctness", test_irfft_correctness());

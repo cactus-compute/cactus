@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <random>
 #include <sstream>
+#include <unistd.h>
 
 namespace TestUtils {
 
@@ -179,6 +180,90 @@ bool test_scalar_operation(const std::string& op_name,
     }
     graph.hard_reset();
     return true;
+}
+
+std::string OpProfile::setup_profiling() {
+    const char* existing = std::getenv("CACTUS_PROFILE_FILE");
+    if (existing && existing[0] != '\0') {
+        std::remove(existing);
+        return std::string(existing);
+    }
+    std::string path = "/tmp/cactus_op_profile_" + std::to_string(getpid()) + ".txt";
+    std::remove(path.c_str());
+    setenv("CACTUS_PROFILE_FILE", path.c_str(), 1);
+    return path;
+}
+
+void OpProfile::parse(const std::string& profile_path) {
+    std::ifstream f(profile_path);
+    if (!f.is_open()) return;
+
+    std::map<std::string, OpProfileEntry> agg;
+    total_ms = 0.0;
+    std::string line;
+
+    while (std::getline(f, line)) {
+        if (line.find("Total execution time:") != std::string::npos) {
+            size_t pos = line.find(':');
+            if (pos != std::string::npos) {
+                total_ms += std::strtod(line.c_str() + pos + 1, nullptr);
+            }
+            continue;
+        }
+
+        if (line.empty() || line[0] == '=' || line[0] == '-' || line.find("Operation") == 0)
+            continue;
+
+        std::istringstream iss(line);
+        std::string op_name;
+        double ms;
+        if (!(iss >> op_name >> ms)) continue;
+
+        auto& e = agg[op_name];
+        e.op_name = op_name;
+        e.count++;
+        e.total_ms += ms;
+    }
+
+    entries.clear();
+    entries.reserve(agg.size());
+    for (auto& [_, e] : agg) entries.push_back(std::move(e));
+    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+        return a.total_ms > b.total_ms;
+    });
+}
+
+void OpProfile::print() const {
+    if (entries.empty()) {
+        std::cout << "[op_profile] No profiling data collected.\n";
+        return;
+    }
+
+    std::cout << "\n╔══════════════════════════════════════════════════════════════════════╗\n"
+              << "║                        OP PROFILE BREAKDOWN                        ║\n"
+              << "╚══════════════════════════════════════════════════════════════════════╝\n";
+    std::cout << std::left << std::setw(28) << "Operation"
+              << std::right << std::setw(8) << "Count"
+              << std::setw(14) << "Total (ms)"
+              << std::setw(14) << "Avg (ms)"
+              << std::setw(10) << "%" << "\n";
+    std::cout << std::string(74, '-') << "\n";
+
+    for (const auto& e : entries) {
+        double pct = (total_ms > 0) ? (e.total_ms / total_ms * 100.0) : 0.0;
+        std::cout << std::left << std::setw(28) << e.op_name
+                  << std::right << std::setw(8) << e.count
+                  << std::setw(14) << std::fixed << std::setprecision(3) << e.total_ms
+                  << std::setw(14) << std::fixed << std::setprecision(3) << (e.total_ms / e.count)
+                  << std::setw(9) << std::fixed << std::setprecision(1) << pct << "%"
+                  << "\n";
+    }
+
+    std::cout << std::string(74, '-') << "\n";
+    std::cout << std::left << std::setw(28) << "TOTAL"
+              << std::right << std::setw(8) << ""
+              << std::setw(14) << std::fixed << std::setprecision(3) << total_ms
+              << "\n\n";
 }
 
 }
