@@ -244,7 +244,7 @@ graph.hard_reset();
 │    --token <token>                   HF token (gated models)                 │
 │    --reconvert                       force reconversion from source          │
 │                                                                              │
-│  cactus transcribe [model]           live mic transcription (parakeet-1.1b)  │
+│  cactus transcribe [model]           live mic transcription (parakeet-tdt-0.6b-v3) │
 │    --file <audio.wav>                transcribe file instead of mic          │
 │    --precision INT4|INT8|FP16        quantization (default: INT4)            │
 │    --token <token>                   HF token (gated models)                 │
