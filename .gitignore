@@ -10,7 +10,6 @@ stage/
 apple/
 android/build/
 android/libs/
-libs/qnn/
 android/arm64-v8a/
 *.so
 
