@@ -18,6 +18,12 @@ void print_vector_inline(const std::vector<T>& values) {
     }
     std::cout << "]";
 }
+
+size_t runtime_id_from_serialized_index(uint32_t serialized_index) {
+    // Graph deserialization rebuilds nodes in serialized order, and runtime node
+    // ids are allocated sequentially starting from 1.
+    return static_cast<size_t>(serialized_index) + 1;
+}
 } // namespace
 
 bool test_abs() {
@@ -696,11 +702,15 @@ bool test_graph_save_load() {
         std::vector<__fp16> data_a = {1, 2, 3, 4, 5, 6};
         std::vector<__fp16> data_b = {10, 20, 30, 40, 50, 60};
 
-        loaded.set_input(0, data_a.data(), Precision::FP16);
-        loaded.set_input(1, data_b.data(), Precision::FP16);
+        const size_t loaded_input_a = runtime_id_from_serialized_index(sg.graph_inputs[0]);
+        const size_t loaded_input_b = runtime_id_from_serialized_index(sg.graph_inputs[1]);
+        const size_t loaded_output_id = runtime_id_from_serialized_index(sg.graph_outputs[0]);
+
+        loaded.set_input(loaded_input_a, data_a.data(), Precision::FP16);
+        loaded.set_input(loaded_input_b, data_b.data(), Precision::FP16);
         loaded.execute();
 
-        __fp16* output = static_cast<__fp16*>(loaded.get_output(3));
+        __fp16* output = static_cast<__fp16*>(loaded.get_output(loaded_output_id));
         std::vector<float> expected = {
             121.0f, 484.0f, 1089.0f,
             1936.0f, 3025.0f, 4356.0f
@@ -751,11 +761,16 @@ bool test_graph_save_load_roundtrip_execution() {
         original.save(filename);
 
         CactusGraph loaded = CactusGraph::load(filename);
-        loaded.set_input(0, data_a.data(), Precision::FP16);
-        loaded.set_input(1, data_b.data(), Precision::FP16);
+        GraphFile::SerializedGraph loaded_graph = GraphFile::load_graph(filename);
+        const size_t loaded_input_a = runtime_id_from_serialized_index(loaded_graph.graph_inputs[0]);
+        const size_t loaded_input_b = runtime_id_from_serialized_index(loaded_graph.graph_inputs[1]);
+        const size_t loaded_output_id = runtime_id_from_serialized_index(loaded_graph.graph_outputs[0]);
+
+        loaded.set_input(loaded_input_a, data_a.data(), Precision::FP16);
+        loaded.set_input(loaded_input_b, data_b.data(), Precision::FP16);
         loaded.execute();
 
-        __fp16* loaded_output = static_cast<__fp16*>(loaded.get_output(3));
+        __fp16* loaded_output = static_cast<__fp16*>(loaded.get_output(loaded_output_id));
         for (size_t i = 0; i < expected.size(); ++i) {
             float got = static_cast<float>(loaded_output[i]);
             if (std::abs(got - expected[i]) > 1e-3f) {
@@ -887,10 +902,16 @@ bool test_graph_save_load_supported_ops_roundtrip() {
         original.save(filename);
 
         CactusGraph loaded = CactusGraph::load(filename);
-        loaded.set_input(0, data_a.data(), Precision::FP16);
-        loaded.set_input(1, data_b.data(), Precision::FP16);
-        loaded.set_input(2, data_m1.data(), Precision::FP16);
-        loaded.set_input(3, data_m2.data(), Precision::FP16);
+        GraphFile::SerializedGraph loaded_graph = GraphFile::load_graph(filename);
+        if (loaded_graph.graph_inputs.size() != 4 || loaded_graph.graph_outputs.empty()) {
+            std::remove(filename.c_str());
+            return false;
+        }
+
+        loaded.set_input(runtime_id_from_serialized_index(loaded_graph.graph_inputs[0]), data_a.data(), Precision::FP16);
+        loaded.set_input(runtime_id_from_serialized_index(loaded_graph.graph_inputs[1]), data_b.data(), Precision::FP16);
+        loaded.set_input(runtime_id_from_serialized_index(loaded_graph.graph_inputs[2]), data_m1.data(), Precision::FP16);
+        loaded.set_input(runtime_id_from_serialized_index(loaded_graph.graph_inputs[3]), data_m2.data(), Precision::FP16);
         loaded.execute();
 
         for (size_t node_idx = 0; node_idx < check_nodes.size(); ++node_idx) {

@@ -202,7 +202,12 @@ void compute_node_optimized(GraphNode& node, const nodes_vector& nodes, const no
 }
 
 void CactusGraph::set_input(size_t node_id, const void* data, Precision) {
-    auto& node = *nodes_[node_index_map_[node_id]];
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end()) {
+        throw std::out_of_range("Unknown input node id: " + std::to_string(node_id));
+    }
+
+    auto& node = *nodes_[it->second];
     if (node.op_type != OpType::INPUT) {
         throw std::invalid_argument("Can only set data on input nodes");
     }
@@ -215,7 +220,12 @@ void CactusGraph::set_input(size_t node_id, const void* data, Precision) {
 }
 
 void CactusGraph::set_external_input(size_t node_id, void* data, Precision) {
-    auto& node = *nodes_[node_index_map_[node_id]];
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end()) {
+        throw std::out_of_range("Unknown input node id: " + std::to_string(node_id));
+    }
+
+    auto& node = *nodes_[it->second];
     if (node.op_type != OpType::INPUT) {
         throw std::invalid_argument("Can only set data on input nodes");
     }
@@ -224,7 +234,12 @@ void CactusGraph::set_external_input(size_t node_id, void* data, Precision) {
 }
 
 void* CactusGraph::get_output(size_t node_id) {
-    auto& buffer = nodes_[node_index_map_[node_id]]->output_buffer;
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end()) {
+        throw std::out_of_range("Unknown output node id: " + std::to_string(node_id));
+    }
+
+    auto& buffer = nodes_[it->second]->output_buffer;
     if (!buffer.get_data()) {
         buffer.allocate();
     }
