@@ -5,6 +5,7 @@
 #include "../cactus/ffi/cactus_ffi.h"
 #include <vector>
 #include <string>
+#include <fstream>
 #include <chrono>
 #include <iostream>
 #include <iomanip>
@@ -121,6 +122,26 @@ bool test_scalar_operation(const std::string& op_name,
                            const std::vector<__fp16>& expected,
                            const std::vector<size_t>& shape = {4});
 
+inline std::vector<float> load_bin(const std::string& path) {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f.is_open()) return {};
+    size_t bytes = f.tellg();
+    f.seekg(0);
+    std::vector<float> data(bytes / sizeof(float));
+    f.read(reinterpret_cast<char*>(data.data()), bytes);
+    return data;
+}
+
+inline float cosine_sim(const std::vector<float>& a, const std::vector<float>& b) {
+    size_t n = std::min(a.size(), b.size());
+    if (n == 0 || a.size() != b.size()) return -1;
+    double dot = 0, na = 0, nb = 0;
+    for (size_t i = 0; i < n; i++) {
+        dot += (double)a[i]*b[i]; na += (double)a[i]*a[i]; nb += (double)b[i]*b[i];
+    }
+    return (na > 0 && nb > 0) ? (float)(dot / (std::sqrt(na) * std::sqrt(nb))) : 0;
+}
+
 }
 
 namespace EngineTestUtils {
@@ -207,7 +228,7 @@ bool run_test(const char* title, const char* model_path, const char* messages,
     std::cout << "Response: ";
 
     int result = cactus_complete(model, messages, response, sizeof(response),
-                                 options, tools, stream_callback, &data);
+                                 options, tools, stream_callback, &data, nullptr, 0);
 
     std::cout << "\n\n[Results]\n";
 

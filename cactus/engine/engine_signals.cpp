@@ -704,12 +704,16 @@ std::vector<float> AudioProcessor::compute_spectrogram(
         const float denom = config.hann_periodic
             ? static_cast<float>(window_length)
             : static_cast<float>(window_length - 1);
+        const float a0 = config.window_a0;
         const size_t left_pad = (analysis_frame_length - window_length) / 2;
         for (size_t i = 0; i < window_length; ++i) {
-            const float w = 0.5f * (1.0f - std::cos(2.0f * static_cast<float>(M_PI) * static_cast<float>(i) / denom));
+            const float w = a0 - (1.0f - a0) * std::cos(2.0f * static_cast<float>(M_PI) * static_cast<float>(i) / denom);
             window[left_pad + i] = w;
         }
     }
+
+    float effective_floor = config.mel_floor_additive ? 0.0f : config.mel_floor;
+    const char* effective_log = config.mel_floor_additive ? nullptr : config.log_mel;
 
     compute_spectrogram_f32(
         waveform.data(),
@@ -728,13 +732,25 @@ std::vector<float> AudioProcessor::compute_spectrogram(
         config.preemphasis != 0.0f ? &config.preemphasis : nullptr,
         mel_filters_.data(),
         mel_filters_.size(),
-        config.mel_floor,
-        config.log_mel,
+        effective_floor,
+        effective_log,
         config.reference,
         config.min_value,
         nullptr,
         config.remove_dc_offset
     );
+
+    if (config.mel_floor_additive) {
+        for (size_t i = 0; i < output.size(); i++) {
+#ifdef __APPLE__
+            // vDSP FFT returns 2x standard DFT magnitudes, so raw mel
+            // values are 2x too large. Halve before adding floor and log.
+            output[i] = std::log(output[i] * 0.5f + config.mel_floor);
+#else
+            output[i] = std::log(output[i] + config.mel_floor);
+#endif
+        }
+    }
 
     return output;
 }

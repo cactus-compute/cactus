@@ -139,17 +139,51 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
     if model_type == 'gemma' and 'norm' in str(output_path):
         data = data + 1.0
 
+    if model_type == 'gemma4':
+        GEMMA4_WEIGHT_SCALE = 16.0
+        filename = output_path.name
+        is_audio_weight = filename.startswith('audio_')
+        if any(x in filename for x in ['input_norm', 'post_attn_norm', 'pre_ffn_norm', 'post_ffn_norm',
+                                       'post_per_layer_norm', 'post_proj_norm']):
+            data = data / GEMMA4_WEIGHT_SCALE
+        elif any(x in filename for x in ['ffn_gate', 'ffn_up', 'per_layer_gate', 'moe_gate_proj', 'moe_up_proj']):
+            data = data * GEMMA4_WEIGHT_SCALE
+        elif 'router_scale' in filename:
+            data = data / GEMMA4_WEIGHT_SCALE
+        elif filename in ('token_embeddings.weights', 'output_weight.weights',
+                          'embed_vision_proj.weights', 'embed_vision_embedding.weights'):
+            data = data / GEMMA4_WEIGHT_SCALE
+        elif filename == 'output_norm.weights':
+            data = data * GEMMA4_WEIGHT_SCALE
+
     if precision in ('INT8', 'INT4'):
         filename = output_path.name
         if any(x in filename for x in ['norm', 'bias', 'vision', 'position_embeddings', 'embed_positions']):
             precision = 'FP16'
-        elif precision == 'INT4' and any(x in filename for x in list(EMBED_NAMES) + ['token_embeddings', 'embed_tokens_per_layer']):
+        elif model_type == 'gemma4' and (
+            filename.startswith('audio_') or
+            filename in ('embed_audio_proj.weights', 'embed_audio_embedding.weights')
+        ):
+            precision = 'FP16'
+        elif precision == 'INT4' and (
+            any(x in filename for x in EMBED_NAMES)
+            or filename in ('token_embeddings.weights', 'embed_tokens_per_layer.weights')
+        ):
             precision = 'INT8'
 
     shape = list(data.shape)
     if transpose and len(shape) == 2:
         data = data.T
         shape = [shape[1], shape[0]]
+
+    if (
+        model_type == 'gemma4'
+        and len(shape) == 3
+        and 'vision' not in output_path.name
+        and not output_path.name.startswith('audio_')
+    ):
+        data = data.transpose(0, 2, 1)
+        shape = [shape[0], shape[2], shape[1]]
 
     if precision == 'INT8' and len(shape) == 2:
         N, K = shape
@@ -196,6 +230,8 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
             stats_tracker['total_tensors'] += 1
             stats_tracker['total_parameters'] += original_N * K
 
+        del data
+
         with open(output_path, 'wb') as f:
             ndim = 2
             data_bytes = quantized_interleaved.size
@@ -230,8 +266,6 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
             f.write(compute_padding(scales_end, CACTUS_ALIGNMENT))
 
             f.write(quantized_interleaved.tobytes())
-
-        del data
 
         return
 
@@ -282,9 +316,11 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
             stats_tracker['total_tensors'] += 1
             stats_tracker['total_parameters'] += original_N * K
 
+        del data
+
         with open(output_path, 'wb') as f:
             ndim = 2
-            data_bytes = packed_data.size  
+            data_bytes = packed_data.size
             scales_bytes = scales_fp16.size * 2
             flags = FLAG_HAS_SCALES | FLAG_INTERLEAVED
             if transpose:
@@ -315,8 +351,6 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
             f.write(compute_padding(scales_end, CACTUS_ALIGNMENT))
 
             f.write(packed_data.tobytes())
-
-        del data
 
         return
 

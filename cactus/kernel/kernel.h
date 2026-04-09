@@ -56,6 +56,14 @@ void cactus_matmul_int8(const int8_t* A, const float* A_scales,
                         const int8_t* B, const __fp16* B_scales,
                         __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
 
+void cactus_gemv_int8_i8mm(const int8_t* A, float A_scale,
+                            const int8_t* B, const __fp16* B_scales,
+                            __fp16* C, size_t K, size_t N, size_t group_size);
+
+void cactus_gemm_int8_i8mm(const int8_t* A, const float* A_scales,
+                            const int8_t* B, const __fp16* B_scales,
+                            __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
+
 void cactus_gemv_int4(const int8_t* A, float A_scale,
                       const int8_t* B_packed, const __fp16* B_scales,
                       __fp16* C, size_t K, size_t N, size_t group_size);
@@ -99,6 +107,9 @@ void cactus_max_axis_f16(const __fp16* input, __fp16* output, size_t outer_size,
 void cactus_rms_norm_f16(const __fp16* input, const __fp16* weight, __fp16* output,
                           size_t batch_size, size_t dims, float eps);
 
+void cactus_layer_norm_f16(const __fp16* input, const __fp16* weight, const __fp16* bias,
+                            __fp16* output, size_t batch_size, size_t dims, float eps);
+
 void cactus_rope_f16(const __fp16* input, __fp16* output, size_t batch_size, size_t seq_len,
                       size_t num_heads, size_t head_dim, size_t start_pos, float theta);
 
@@ -109,6 +120,8 @@ void cactus_softmax_f16(const __fp16* input, __fp16* output, size_t batch_size,
                          size_t seq_len, size_t vocab_size);
 
 void cactus_relu_f16(const __fp16* input, __fp16* output, size_t num_elements);
+
+void cactus_leaky_relu_f16(const __fp16* input, __fp16* output, size_t num_elements, float negative_slope);
 
 void cactus_silu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 
@@ -165,21 +178,43 @@ void cactus_batchnorm_f32(
 void cactus_attention_f16(const __fp16* queries, const __fp16* keys, const __fp16* values, __fp16* output,
                           size_t batch_size, size_t seq_len, size_t kv_seq_len, size_t num_q_heads, size_t num_kv_heads,
                           size_t head_dim, float scale, const __fp16* mask, size_t position_offset = 0, size_t window_size = 0,
-                          bool is_causal = true, bool mask_is_additive = false, bool mask_per_head = false);
+                          bool is_causal = true, bool mask_is_additive = false, bool mask_per_head = false,
+                          size_t v_head_dim = 0, float logit_cap = 0.0f);
 
 void cactus_attention_hybrid_int8_fp16(
-    const __fp16* queries,        
-    const int8_t* keys_cached, 
-    const int8_t* values_cached, 
+    const __fp16* queries,
+    const int8_t* keys_cached,
+    const int8_t* values_cached,
     const float* k_scales,
-    const float* v_scales, 
-    const __fp16* keys_new, 
-    const __fp16* values_new, 
+    const float* v_scales,
+    const __fp16* keys_new,
+    const __fp16* values_new,
     __fp16* output,
     size_t batch_size, size_t seq_len, size_t cache_len, size_t new_len,
     size_t num_q_heads, size_t num_kv_heads, size_t head_dim,
     float scale, size_t position_offset = 0, bool is_causal = true, size_t window_size = 0,
-    size_t group_size = KV_QUANT_GROUP_SIZE);
+    size_t group_size = KV_QUANT_GROUP_SIZE, size_t v_head_dim = 0);
+
+void cactus_attention_hybrid_int8_fp16_interleaved(
+    const __fp16* queries, const int8_t* keys_cached, const int8_t* values_cached,
+    const float* k_scales, const float* v_scales, const __fp16* keys_new,
+    const __fp16* values_new, __fp16* output, size_t batch_size, size_t seq_len,
+    size_t cache_len, size_t new_len, size_t num_q_heads, size_t num_kv_heads,
+    size_t head_dim, float scale, size_t position_offset, bool is_causal,
+    size_t window_size, size_t quant_group_size);
+
+void cactus_attention_hybrid_int8_fp16_deferscale(
+    const __fp16* queries, const int8_t* keys_cached, const int8_t* values_cached,
+    const float* k_scales, const float* v_scales, const __fp16* keys_new,
+    const __fp16* values_new, __fp16* output, size_t batch_size, size_t seq_len,
+    size_t cache_len, size_t new_len, size_t num_q_heads, size_t num_kv_heads,
+    size_t head_dim, float scale, size_t position_offset, bool is_causal,
+    size_t window_size, size_t quant_group_size);
+
+void cactus_set_decode_attention_variant(int v);
+int cactus_get_decode_attention_variant();
+void cactus_reset_attn_counters();
+void cactus_get_attn_counters(uint64_t* total_ns, uint64_t* call_count);
 
 void cactus_gated_deltanet_decode_f16(
     const __fp16* q_data,
@@ -278,6 +313,18 @@ void cactus_conv1d_same_depthwise_f16_k9(
     size_t C
 );
 
+void cactus_conv2d_f16_k3s1p1_nchw(
+    const __fp16* input,
+    const __fp16* weight,
+    const __fp16* bias,
+    __fp16* output,
+    size_t N,
+    size_t C_in,
+    size_t H,
+    size_t W,
+    size_t C_out
+);
+
 void cactus_conv2d_f16_k3s2p1_nchw(
     const __fp16* input,
     const __fp16* weight,
@@ -325,7 +372,7 @@ void cactus_conv1d_pointwise_f16_gemm(
 );
 
 void cactus_bilinear_interpolation_f16(const __fp16* input, __fp16* output, size_t src_height, size_t src_width, size_t embed_dim,
-                                       size_t dst_height, size_t dst_width);
+                                       size_t dst_height, size_t dst_width, bool align_corners = true);
 
 void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
                        float temperature, float top_p, size_t top_k, size_t random_seed,
@@ -336,11 +383,22 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
                        const float* bias_values = nullptr, const uint32_t* bias_indices = nullptr,
                        size_t bias_count = 0);
 
+void cactus_sample_f32_ex(const float* logits, uint32_t* output, size_t vocab_size,
+                          float temperature, float top_p, float min_p, float repetition_penalty,
+                          size_t top_k, size_t random_seed,
+                          const float* bias_values = nullptr, const uint32_t* bias_indices = nullptr,
+                          size_t bias_count = 0);
+void cactus_sample_f16_ex(const __fp16* logits, uint32_t* output, size_t vocab_size,
+                          float temperature, float top_p, float min_p, float repetition_penalty,
+                          size_t top_k, size_t random_seed,
+                          const float* bias_values = nullptr, const uint32_t* bias_indices = nullptr,
+                          size_t bias_count = 0);
+
 void cactus_concat_f16(const __fp16* input1, const __fp16* input2, __fp16* output,
                        const size_t* shape1, const size_t* shape2, const size_t* output_shape,
                        size_t ndims, int axis);
 void cactus_cat_f16(const __fp16** inputs, __fp16* output, const size_t** input_shapes,
-                      const size_t* output_shape, size_t num_inputs, int axis);
+                      const size_t* output_shape, size_t num_inputs, size_t rank, int axis);
 
 void cactus_int8_to_fp32(const int8_t* src, float* dst, size_t count, float scale = 1.0f);
 void cactus_fp32_to_int8(const float* src, int8_t* dst, size_t count, float scale = 1.0f);
@@ -401,6 +459,33 @@ void cactus_lstm_cell_f16(
     size_t batch_size,
     size_t input_size,
     size_t hidden_size
+);
+
+void cactus_bilstm_sequence_f16(
+    const __fp16* input,
+    const __fp16* weight_ih_fwd,
+    const __fp16* weight_hh_fwd,
+    const __fp16* bias_ih_fwd,
+    const __fp16* bias_hh_fwd,
+    const __fp16* weight_ih_bwd,
+    const __fp16* weight_hh_bwd,
+    const __fp16* bias_ih_bwd,
+    const __fp16* bias_hh_bwd,
+    __fp16* output,
+    size_t batch_size,
+    size_t seq_len,
+    size_t input_size,
+    size_t hidden_size
+);
+
+void cactus_maxpool1d_f16(
+    const __fp16* input,
+    __fp16* output,
+    size_t batch_size,
+    size_t channels,
+    size_t input_length,
+    size_t kernel_size,
+    size_t stride
 );
 
 #endif

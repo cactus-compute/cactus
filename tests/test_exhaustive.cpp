@@ -144,7 +144,7 @@ static bool test_completion_golden(const std::string& golden) {
     char resp[8192] = {};
     std::cout << "Response: ";
     int rc = cactus_complete(model, messages.c_str(), resp, sizeof(resp),
-                              options.c_str(), nullptr, stream_callback, &data);
+                              options.c_str(), nullptr, stream_callback, &data, nullptr, 0);
     std::cout << "\n";
     cactus_destroy(model);
     if (rc <= 0) return false;

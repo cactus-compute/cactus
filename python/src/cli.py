@@ -44,9 +44,12 @@ def _resolve_project_root() -> Path:
 
 
 PROJECT_ROOT = _resolve_project_root()
-DEFAULT_MODEL_ID = "LiquidAI/LFM2.5-1.2B-Instruct"
+DEFAULT_MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_TEST_WHISPER_MODEL_ID = "openai/whisper-small"
+DEFAULT_TEST_DIARIZE_MODEL_ID = "pyannote/segmentation-3.0"
+DEFAULT_TEST_EMBED_SPEAKER_MODEL_ID = "pyannote/wespeaker-voxceleb-resnet34-LM"
+WEIGHTS_VARIANT_CHOICES = ["auto", "apple", "standard"]
 
 with open(PROJECT_ROOT / "models.json") as _f:
     MODELS_REGISTRY = json.load(_f)
@@ -63,19 +66,7 @@ def print_color(color, message):
     print(f"{color}{message}{NC}")
 
 
-def get_model_dir_name(model_id):
-    """Convert HuggingFace model ID to local directory name."""
-    model_name = model_id.split('/')[-1]
-    model_name = model_name.lower()
-    return model_name
-
-
-def get_weights_dir(model_id):
-    """Get the weights directory path for a model."""
-    if 'silero-vad' in model_id.lower():
-        return PROJECT_ROOT / "weights" / "silero-vad"
-    model_dir = get_model_dir_name(model_id)
-    return PROJECT_ROOT / "weights" / model_dir
+from .downloads import get_model_dir_name, get_weights_dir, download_from_hf as _download_from_hf_impl
 
 
 def check_command(cmd):
@@ -139,69 +130,7 @@ def ensure_vad_weights(model_id, weights_dir, precision='INT8'):
 
 def download_from_hf(model_id, weights_dir, precision):
     """Download pre-converted model from Cactus-Compute HuggingFace."""
-    try:
-        from huggingface_hub import hf_hub_download, list_repo_files
-        import zipfile
-    except ImportError:
-        print_color(RED, "Error: huggingface_hub package not found.")
-        print("Please run: pip install huggingface_hub")
-        return False
-
-    model_name = get_model_dir_name(model_id)
-    org = "Cactus-Compute"
-    repo_id = f"{org}/{model_id.split('/')[-1]}"
-
-    try:
-        precision_lower = precision.lower()
-        apple_zip = f"{model_name}-{precision_lower}-apple.zip"
-        standard_zip = f"{model_name}-{precision_lower}.zip"
-
-        repo_files = list_repo_files(repo_id, repo_type="model")
-
-        zip_file = None
-        if f"weights/{apple_zip}" in repo_files:
-            zip_file = apple_zip
-        elif f"weights/{standard_zip}" in repo_files:
-            zip_file = standard_zip
-        else:
-            print_color(YELLOW, f"Pre-converted model not found in {repo_id}")
-            return False
-
-        print_color(BLUE, f"Downloading from {repo_id}...")
-
-        zip_path = hf_hub_download(
-            repo_id=repo_id,
-            filename=f"weights/{zip_file}",
-            repo_type="model"
-        )
-
-        weights_dir.mkdir(parents=True, exist_ok=True)
-
-        print_color(YELLOW, "Extracting model weights...")
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(weights_dir)
-
-        if not (weights_dir / "config.txt").exists():
-            print_color(RED, f"Error: Downloaded model is missing config.txt")
-            if weights_dir.exists():
-                shutil.rmtree(weights_dir)
-            return False
-
-        # Ensure quantization field exists in config.txt (older zips may lack it)
-        config_path = weights_dir / "config.txt"
-        config_text = config_path.read_text()
-        if 'quantization=' not in config_text:
-            with open(config_path, 'a') as f:
-                f.write(f"quantization={precision}\n")
-
-        print_color(GREEN, f"Successfully downloaded pre-converted model to {weights_dir}")
-        return True
-
-    except Exception:
-        print_color(YELLOW, f"Could not download from {repo_id}")
-        if weights_dir.exists():
-            shutil.rmtree(weights_dir)
-        return False
+    return _download_from_hf_impl(model_id, weights_dir, precision)
 
 
 def cmd_download(args):
@@ -308,7 +237,7 @@ def cmd_download(args):
             except Exception:
                 self.eos_token_id = self.pad_token_id
 
-    def _load_raw_hf_state_dict(repo_id):
+    def _load_raw_hf_state_dict(repo_id, cast_to_bf16=True):
         from safetensors.torch import load_file as load_safetensors_file
 
         if Path(repo_id).is_dir():
@@ -345,9 +274,11 @@ def cmd_download(args):
         if not shard_files:
             raise RuntimeError("No checkpoint shard files found in HuggingFace snapshot.")
 
+        print(f"  Found {len(shard_files)} checkpoint shard file(s)")
         merged_state_dict = {}
-        for shard_name in shard_files:
+        for idx, shard_name in enumerate(shard_files, 1):
             shard_path = snapshot_path / shard_name
+            print(f"  Loading shard {idx}/{len(shard_files)}: {shard_name}")
             if shard_name.endswith(".safetensors"):
                 shard_state = load_safetensors_file(str(shard_path), device="cpu")
             elif shard_name.endswith(".bin"):
@@ -356,9 +287,21 @@ def cmd_download(args):
                 continue
             merged_state_dict.update(shard_state)
 
-        for k, v in merged_state_dict.items():
-            if v.is_floating_point() and v.dtype != torch.bfloat16:
-                merged_state_dict[k] = v.to(torch.bfloat16)
+        if cast_to_bf16:
+            fp_keys = [
+                k for k, v in merged_state_dict.items()
+                if hasattr(v, "is_floating_point") and v.is_floating_point() and v.dtype != torch.bfloat16
+            ]
+            total_fp = len(fp_keys)
+            if total_fp > 0:
+                print(f"  Normalizing {total_fp} floating tensors to bfloat16...")
+            for i, k in enumerate(fp_keys, 1):
+                merged_state_dict[k] = merged_state_dict[k].to(torch.bfloat16)
+                if i % 200 == 0 or i == total_fp:
+                    print(f"    dtype normalize progress: {i}/{total_fp}")
+        else:
+            print("  Keeping checkpoint dtypes as-is (Gemma4 fast path)")
+
 
         return merged_state_dict
 
@@ -371,6 +314,8 @@ def cmd_download(args):
     is_whisper = 'whisper' in model_name.lower()
     is_parakeet = 'parakeet' in model_name.lower()
     is_vad = 'silero-vad' in model_name.lower()
+    is_pyannote = 'segmentation-3.0' in model_name.lower()
+    is_wespeaker = 'wespeaker' in model_name.lower()
 
     try:
         if is_vlm:
@@ -540,6 +485,35 @@ def cmd_download(args):
             print_color(GREEN, f"Successfully downloaded and converted weights to {weights_dir}")
             return 0
 
+        elif is_pyannote or is_wespeaker:
+            try:
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    from pyannote.audio import Model as PyannoteModel
+            except ImportError:
+                print_color(RED, "Error: pyannote.audio is required. Install with: pip install pyannote.audio")
+                return 1
+            from .converter import convert_pyannote_weights, convert_wespeaker_weights
+
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                pyannote_model = PyannoteModel.from_pretrained(model_id, token=token)
+            pyannote_model.eval()
+
+            if is_pyannote:
+                convert_pyannote_weights(pyannote_model, weights_dir, precision, args)
+            else:
+                convert_wespeaker_weights(pyannote_model, weights_dir, precision, args)
+
+            del pyannote_model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            print_color(GREEN, f"Successfully downloaded and converted weights to {weights_dir}")
+            return 0
+
         else:
             config_json = _download_config_json(model_id)
             model_type = str(config_json.get('model_type', '')).lower()
@@ -554,12 +528,21 @@ def cmd_download(args):
                 else:
                     raise
 
-            if model_type == 'lfm2_moe' or model_type.startswith('qwen3_5'):
+            if (
+                model_type == 'lfm2_moe'
+                or model_type.startswith('qwen3_5')
+                or model_type == 'youtu'
+                or 'gemma4' in model_type
+                or 'gemma3n' in model_type
+            ):
                 if model_type == 'lfm2_moe':
                     print("  Note: Loading raw checkpoint tensors for lfm2_moe conversion...")
+                elif 'gemma4' in model_type:
+                    print(f"  Note: Loading raw checkpoint tensors for {model_type} conversion...")
                 else:
                     print(f"  Note: Loading raw checkpoint tensors for {model_type} conversion...")
-                raw_state_dict = _load_raw_hf_state_dict(model_id)
+                cast_to_bf16 = ('gemma4' not in model_type)
+                raw_state_dict = _load_raw_hf_state_dict(model_id, cast_to_bf16=cast_to_bf16)
 
                 class _RawModelWrapper:
                     def __init__(self, state_dict, config):
@@ -1004,19 +987,31 @@ def cmd_run(args):
     print_color(GREEN, f"Starting Cactus Chat with model: {model_id}")
     print()
 
+    audio_path = getattr(args, 'audio', None)
+    if audio_path:
+        audio_path = str(Path(audio_path).resolve())
+        if not Path(audio_path).exists():
+            print_color(RED, f"Error: Audio file not found: {audio_path}")
+            return 1
+
     cmd_args = [str(chat_binary), str(weights_dir)]
     if image_path:
         cmd_args.extend(['--image', image_path])
+    if audio_path:
+        cmd_args.extend(['--audio', audio_path])
     system_prompt = getattr(args, 'system', None)
     if system_prompt:
         cmd_args.extend(['--system', system_prompt])
+    prompt = getattr(args, 'prompt', None)
+    if prompt:
+        cmd_args.extend(['--prompt', prompt])
     if getattr(args, 'no_thinking', False):
         cmd_args.append('--no-thinking')
 
     os.execv(str(chat_binary), cmd_args)
 
 
-DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-ctc-1.1b"
+DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 
 def _pick_android_device_id(preferred_device=None):
     if preferred_device:
@@ -1415,12 +1410,15 @@ def cmd_test(args):
         print_color(BLUE, f"Using large models: {args.model}, {args.transcribe_model}, {args.vad_model}")
 
     if getattr(args, 'reconvert', False):
-        for model_id in [
+        reconvert_models = [
             getattr(args, 'model', 'LiquidAI/LFM2-VL-450M'),
             getattr(args, 'transcribe_model', DEFAULT_TEST_TRANSCRIBE_MODEL_ID),
             getattr(args, 'whisper_model', DEFAULT_TEST_WHISPER_MODEL_ID),
-            getattr(args, 'vad_model', 'snakers4/silero-vad')
-        ]:
+            getattr(args, 'vad_model', 'snakers4/silero-vad'),
+            getattr(args, 'diarize_model', DEFAULT_TEST_DIARIZE_MODEL_ID),
+            getattr(args, 'embed_speaker_model', DEFAULT_TEST_EMBED_SPEAKER_MODEL_ID),
+        ]
+        for model_id in reconvert_models:
             class DownloadArgs:
                 pass
             dl_args = DownloadArgs()
@@ -1431,7 +1429,8 @@ def cmd_test(args):
                 dl_args.precision = args.precision
             else:
                 is_asr = 'whisper' in model_id.lower() or 'moonshine' in model_id.lower() or 'silero-vad' in model_id.lower()
-                dl_args.precision = 'INT8' if is_asr else 'INT4'
+                is_fp16_only = 'segmentation-3.0' in model_id.lower() or 'wespeaker' in model_id.lower()
+                dl_args.precision = 'FP16' if is_fp16_only else ('INT8' if is_asr else 'INT4')
             if args.token:
                 dl_args.token = args.token
             if cmd_download(dl_args) != 0:
@@ -1451,8 +1450,12 @@ def cmd_test(args):
         cmd.extend(["--transcribe_model", args.transcribe_model])
     if getattr(args, 'whisper_model', None):
         cmd.extend(["--whisper_model", args.whisper_model])
-    if args.vad_model:
+    if getattr(args, 'vad_model', None):
         cmd.extend(["--vad_model", args.vad_model])
+    if getattr(args, 'diarize_model', None):
+        cmd.extend(["--diarize_model", args.diarize_model])
+    if getattr(args, 'embed_speaker_model', None):
+        cmd.extend(["--embed_speaker_model", args.embed_speaker_model])
     if args.precision:
         cmd.extend(["--precision", args.precision])
     if getattr(args, 'no_rebuild', False):
@@ -1861,7 +1864,7 @@ def create_parser():
   -----------------------------------------------------------------
 
   cactus transcribe [model]            live microphone transcription
-                                       default model: parakeet-ctc-1.1b
+                                       default model: parakeet-tdt-0.6b-v3
 
     Optional flags:
     --file <audio.wav>                 transcribe audio file instead of mic
@@ -1872,8 +1875,8 @@ def create_parser():
     Examples:
     cactus transcribe                  live microphone transcription
     cactus transcribe --file audio.wav transcribe single file
-    cactus transcribe nvidia/parakeet-ctc-1.1b   use different model
-    cactus transcribe nvidia/parakeet-ctc-1.1b --file audio.wav
+    cactus transcribe nvidia/parakeet-ctc-1.1b     use different model
+    cactus transcribe nvidia/parakeet-tdt-0.6b-v3 --file audio.wav
 
    -----------------------------------------------------------------
 
@@ -2004,8 +2007,12 @@ def create_parser():
                             help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
     run_parser.add_argument('--image',
                             help='Path to image file for VLM inference (attached to first message)')
+    run_parser.add_argument('--audio',
+                            help='Path to audio file (WAV) for audio chat (attached to first message)')
     run_parser.add_argument('--system',
                             help='System prompt to prepend to all messages')
+    run_parser.add_argument('--prompt',
+                            help='Initial prompt to send immediately')
     run_parser.add_argument('--no-thinking', action='store_true',
                             help='Disable thinking/reasoning for models that support it')
 
@@ -2059,6 +2066,10 @@ def create_parser():
                              help='Whisper model to use for language detection tests')
     test_parser.add_argument('--vad_model', default='snakers4/silero-vad',
                              help='VAD model to use')
+    test_parser.add_argument('--diarize_model', default=DEFAULT_TEST_DIARIZE_MODEL_ID,
+                             help='Diarization model to use')
+    test_parser.add_argument('--embed_speaker_model', default=DEFAULT_TEST_EMBED_SPEAKER_MODEL_ID,
+                             help='Speaker embedding model to use')
     test_parser.add_argument('--benchmark', action='store_true',
                              help='Use larger models (LFM2.5-VL-1.6B + nvidia/parakeet-ctc-1.1b)')
     test_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'],

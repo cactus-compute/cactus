@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <stdexcept>
 #include <sstream>
 #include <iomanip>
@@ -154,6 +155,85 @@ inline cactus::engine::AudioProcessor::SpectrogramConfig get_htk_spectrogram_con
     return cfg;
 }
 
+inline cactus::engine::AudioProcessor::SpectrogramConfig get_gemma4_audio_spectrogram_config(
+    const cactus::engine::Config& model_config) {
+    auto cfg = get_htk_spectrogram_config();
+    cfg.fft_override = model_config.audio_fft_length;
+    cfg.mel_floor_additive = true;
+    return cfg;
+}
+
+inline cactus::engine::AudioProcessor::SpectrogramConfig get_wespeaker_spectrogram_config() {
+    cactus::engine::AudioProcessor::SpectrogramConfig cfg{};
+    cfg.n_fft            = 512;
+    cfg.frame_length     = 400;
+    cfg.hop_length       = 160;
+    cfg.power            = 2.0f;
+    cfg.center           = false;
+    cfg.pad_mode         = "constant";
+    cfg.onesided         = true;
+    cfg.dither           = 0.0f;
+    cfg.mel_floor        = 1.1754944e-38f;
+    cfg.log_mel          = "log";
+    cfg.reference        = 1.0f;
+    cfg.min_value        = 1.1754944e-38f;
+    cfg.remove_dc_offset = true;
+    cfg.preemphasis      = 0.97f;
+    cfg.hann_periodic    = false;
+    cfg.window_a0        = 0.54f;
+    return cfg;
+}
+
+// Whisper v1/v2: 80 mel bins, HTK. Whisper v3: 128 mel bins, Slaney, 512-FFT, no DC removal.
+inline void init_whisper_mel_filters(cactus::engine::AudioProcessor& ap,
+                                     cactus::engine::AudioProcessor::SpectrogramConfig& cfg,
+                                     size_t mel_bins) {
+    const size_t num_mel_filters = std::max<size_t>(1, mel_bins);
+    const bool is_v3 = mel_bins > 80;
+    if (is_v3) {
+        cfg.fft_override = 512;
+        cfg.remove_dc_offset = false;
+    }
+    const size_t fft_len = cfg.fft_override > 0 ? cfg.fft_override : cfg.n_fft;
+    const size_t num_frequency_bins = fft_len / 2 + 1;
+    if (is_v3) {
+        ap.init_mel_filters(num_frequency_bins, num_mel_filters, 0.0f, 8000.0f,
+                            WHISPER_SAMPLE_RATE, "slaney", "slaney");
+    } else {
+        ap.init_mel_filters(num_frequency_bins, num_mel_filters, 0.0f, 8000.0f,
+                            WHISPER_SAMPLE_RATE);
+    }
+}
+
+// use_mel_floor_padding=true pads short audio with the normalized mel floor (required for v3).
+inline std::vector<float> normalize_whisper_mel(std::vector<float>& mel, size_t n_mels,
+                                                bool use_mel_floor_padding = false) {
+    if (mel.empty() || n_mels == 0) return mel;
+    size_t n_frames = mel.size() / n_mels;
+
+    float max_val = -std::numeric_limits<float>::infinity();
+    for (float v : mel) if (v > max_val) max_val = v;
+
+    float min_allowed = max_val - 8.0f;
+    for (float& v : mel) {
+        if (v < min_allowed) v = min_allowed;
+        v = (v + 4.0f) * 0.25f;
+    }
+
+    if (n_frames != WHISPER_TARGET_FRAMES) {
+        float pad_val = use_mel_floor_padding ? (min_allowed + 4.0f) * 0.25f : 0.0f;
+        std::vector<float> fixed(n_mels * WHISPER_TARGET_FRAMES, pad_val);
+        size_t copy_frames = std::min(n_frames, WHISPER_TARGET_FRAMES);
+        for (size_t m = 0; m < n_mels; ++m) {
+            const float* src = &mel[m * n_frames];
+            float* dst = &fixed[m * WHISPER_TARGET_FRAMES];
+            std::copy(src, src + copy_frames, dst);
+        }
+        return fixed;
+    }
+    return std::move(mel);
+}
+
 inline std::vector<float> transpose_mel_to_frame_major(const std::vector<float>& mel,
                                                         size_t num_mels, size_t num_frames) {
     std::vector<float> transposed(num_frames * num_mels);
@@ -221,6 +301,56 @@ inline void trim_mel_frames(std::vector<float>& mel, size_t num_mels, size_t val
     mel.swap(trimmed);
 }
 
+struct AudioPreprocessResult {
+    std::vector<float> features;
+    size_t num_frames = 0;
+    size_t num_soft_tokens = 0;
+};
+
+inline AudioPreprocessResult preprocess_audio_for_gemma4(
+    std::vector<float> audio_samples,
+    const cactus::engine::Config& model_config
+) {
+    AudioPreprocessResult result;
+    if (audio_samples.empty()) return result;
+
+    size_t pad_amt = 320 - (audio_samples.size() % 320);
+    if (pad_amt < 320)
+        audio_samples.resize(audio_samples.size() + pad_amt, 0.0f);
+
+    size_t mel_bins = model_config.audio_input_feat_size;
+    auto cfg = get_gemma4_audio_spectrogram_config(model_config);
+
+    size_t semicausal_pad = cfg.frame_length / 2;
+    audio_samples.insert(audio_samples.begin(), semicausal_pad, 0.0f);
+
+    cactus::engine::AudioProcessor ap;
+    size_t fft_for_mel = cfg.fft_override > 0 ? cfg.fft_override : cfg.n_fft;
+    ap.init_mel_filters(fft_for_mel / 2 + 1, mel_bins, 0.0f, 8000.0f, 16000,
+                        nullptr, "htk");
+    std::vector<float> mel = ap.compute_spectrogram(audio_samples, cfg);
+
+    result.num_frames = mel.size() / mel_bins;
+    result.features = transpose_mel_to_frame_major(mel, mel_bins, result.num_frames);
+
+    size_t after_stage1 = (result.num_frames + 1) / 2;
+    result.num_soft_tokens = (after_stage1 + 1) / 2;
+
+    return result;
+}
+
+inline std::vector<float> pcm_buffer_to_float_samples(
+    const uint8_t* pcm_buffer, size_t pcm_buffer_size
+) {
+    const int16_t* pcm_samples = reinterpret_cast<const int16_t*>(pcm_buffer);
+    size_t num_samples = pcm_buffer_size / 2;
+    std::vector<float> waveform_fp32(num_samples);
+    constexpr float inv_32768 = 1.0f / 32768.0f;
+    for (size_t i = 0; i < num_samples; i++)
+        waveform_fp32[i] = static_cast<float>(pcm_samples[i]) * inv_32768;
+    return waveform_fp32;
+}
+
 } // namespace audio
 } // namespace cactus
 
@@ -270,6 +400,8 @@ struct ToolFunction {
 struct InferenceOptions {
     float temperature = 0.0f;
     float top_p = 0.0f;
+    float min_p = 0.15f;
+    float repetition_penalty = 1.1f;
     float confidence_threshold = 0.7f;
     size_t top_k = 0;
     size_t max_tokens = 100;
@@ -319,6 +451,24 @@ inline std::string trim_string(const std::string& s) {
     size_t end = s.size();
     while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) --end;
     return s.substr(start, end - start);
+}
+
+inline size_t find_matching_delimiter(const std::string& s, size_t pos, char open, char close) {
+    int depth = 1;
+    pos++;
+    while (pos < s.length() && depth > 0) {
+        if (s[pos] == open) depth++;
+        else if (s[pos] == close) depth--;
+        else if (s[pos] == '"') {
+            pos++;
+            while (pos < s.length() && s[pos] != '"') {
+                if (s[pos] == '\\') pos++;
+                pos++;
+            }
+        }
+        pos++;
+    }
+    return pos;
 }
 
 inline std::string env_or_default(const char* key, const char* fallback) {
@@ -436,6 +586,119 @@ inline std::string serialize_tools_json(const std::vector<ToolFunction>& tools) 
     return oss.str();
 }
 
+namespace json_sorted {
+
+inline void skip_ws(const std::string& s, size_t& p) {
+    while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) p++;
+}
+
+inline std::string parse_string(const std::string& s, size_t& p) {
+    std::string r = "\"";
+    p++;
+    while (p < s.size()) {
+        if (s[p] == '\\') {
+            r += s[p++];
+            if (p < s.size()) r += s[p++];
+        } else if (s[p] == '"') {
+            r += '"';
+            p++;
+            return r;
+        } else {
+            r += s[p++];
+        }
+    }
+    return r;
+}
+
+inline std::string parse_value(const std::string& s, size_t& p);
+
+inline std::string parse_object(const std::string& s, size_t& p) {
+    p++;
+    std::map<std::string, std::string> entries;
+    skip_ws(s, p);
+    while (p < s.size() && s[p] != '}') {
+        if (s[p] == ',') { p++; skip_ws(s, p); continue; }
+        std::string key = parse_string(s, p);
+        skip_ws(s, p);
+        if (p < s.size() && s[p] == ':') p++;
+        skip_ws(s, p);
+        std::string val = parse_value(s, p);
+        entries[key] = val;
+        skip_ws(s, p);
+    }
+    if (p < s.size()) p++;
+    std::string r = "{";
+    bool first = true;
+    for (const auto& kv : entries) {
+        if (!first) r += ", ";
+        r += kv.first + ": " + kv.second;
+        first = false;
+    }
+    r += "}";
+    return r;
+}
+
+inline std::string parse_array(const std::string& s, size_t& p) {
+    p++;
+    std::vector<std::string> items;
+    skip_ws(s, p);
+    while (p < s.size() && s[p] != ']') {
+        if (s[p] == ',') { p++; skip_ws(s, p); continue; }
+        items.push_back(parse_value(s, p));
+        skip_ws(s, p);
+    }
+    if (p < s.size()) p++;
+    std::string r = "[";
+    for (size_t i = 0; i < items.size(); i++) {
+        if (i > 0) r += ", ";
+        r += items[i];
+    }
+    r += "]";
+    return r;
+}
+
+inline std::string parse_value(const std::string& s, size_t& p) {
+    skip_ws(s, p);
+    if (p >= s.size()) return "";
+    if (s[p] == '"') return parse_string(s, p);
+    if (s[p] == '{') return parse_object(s, p);
+    if (s[p] == '[') return parse_array(s, p);
+    size_t start = p;
+    while (p < s.size() && s[p] != ',' && s[p] != '}' && s[p] != ']' && !std::isspace(static_cast<unsigned char>(s[p]))) p++;
+    return s.substr(start, p - start);
+}
+
+inline std::string reformat(const std::string& json) {
+    size_t p = 0;
+    return parse_value(json, p);
+}
+
+} // namespace json_sorted
+
+inline std::string serialize_tools_for_template(const std::vector<ToolFunction>& tools) {
+    if (tools.empty()) return "";
+    std::string result;
+    for (const auto& tool : tools) {
+        std::map<std::string, std::string> func_fields;
+        func_fields["\"description\""] = "\"" + escape_json_string(tool.description) + "\"";
+        func_fields["\"name\""] = "\"" + escape_json_string(tool.name) + "\"";
+        auto it = tool.parameters.find("schema");
+        if (it != tool.parameters.end()) {
+            func_fields["\"parameters\""] = json_sorted::reformat(it->second);
+        }
+        std::string func_json = "{";
+        bool first = true;
+        for (const auto& kv : func_fields) {
+            if (!first) func_json += ", ";
+            func_json += kv.first + ": " + kv.second;
+            first = false;
+        }
+        func_json += "}";
+        result += "\n{\"function\": " + func_json + ", \"type\": \"function\"}";
+    }
+    return result;
+}
+
 inline void handle_error_response(const std::string& error_message, char* response_buffer, size_t buffer_size) {
     std::ostringstream json;
     json << "{";
@@ -460,10 +723,12 @@ inline void handle_error_response(const std::string& error_message, char* respon
     }
 }
 
-inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::string& json, 
-                                                                   std::vector<std::string>& out_image_paths) {
+inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::string& json,
+                                                                   std::vector<std::string>& out_image_paths,
+                                                                   std::vector<std::string>* out_audio_paths = nullptr) {
     std::vector<cactus::engine::ChatMessage> messages;
     out_image_paths.clear();
+    if (out_audio_paths) out_audio_paths->clear();
     
     size_t pos = json.find('[');
     if (pos == std::string::npos) {
@@ -516,39 +781,111 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
             }
         }
         
-        size_t images_pos = json.find("\"images\"", pos);
-        if (images_pos != std::string::npos && images_pos < obj_end) {
-            size_t array_start = json.find('[', images_pos);
-            if (array_start != std::string::npos && array_start < obj_end) {
-                size_t array_end = json.find(']', array_start);
-                if (array_end != std::string::npos && array_end < obj_end) {
-                    size_t img_pos = array_start;
-                    while (true) {
-                        img_pos = json.find('"', img_pos + 1);
-                        if (img_pos == std::string::npos || img_pos >= array_end) break;
-                        
-                        size_t img_start = img_pos + 1;
-                        size_t img_end = json.find('"', img_start);
-                        if (img_end == std::string::npos || img_end > array_end) break;
-                        
-                        std::string img_path = json.substr(img_start, img_end - img_start);
-                        
-                        std::filesystem::path p(img_path);
-                        img_path = std::filesystem::absolute(p).string();
-                        
-                        msg.images.push_back(img_path);
-                        out_image_paths.push_back(img_path);
-                        img_pos = img_end;
+        auto parse_path_array = [&](const char* key, std::vector<std::string>& dest,
+                                    std::vector<std::string>* out_paths) {
+            size_t key_pos = json.find(key, pos);
+            if (key_pos == std::string::npos || key_pos >= obj_end) return;
+            size_t array_start = json.find('[', key_pos);
+            if (array_start == std::string::npos || array_start >= obj_end) return;
+            size_t array_end = json.find(']', array_start);
+            if (array_end == std::string::npos || array_end >= obj_end) return;
+            size_t cur = array_start;
+            while (true) {
+                cur = json.find('"', cur + 1);
+                if (cur == std::string::npos || cur >= array_end) break;
+                size_t str_start = cur + 1;
+                size_t str_end = json.find('"', str_start);
+                if (str_end == std::string::npos || str_end > array_end) break;
+                std::string path = std::filesystem::absolute(
+                    std::filesystem::path(json.substr(str_start, str_end - str_start))).string();
+                dest.push_back(path);
+                if (out_paths) out_paths->push_back(path);
+                cur = str_end;
+            }
+        };
+
+        parse_path_array("\"images\"", msg.images, &out_image_paths);
+        parse_path_array("\"audio\"", msg.audio, out_audio_paths);
+
+        if (msg.role == "tool") {
+            size_t name_pos = json.find("\"name\"", obj_start);
+            if (name_pos != std::string::npos && name_pos < obj_end) {
+                size_t name_quote = json.find('"', name_pos + 6);
+                if (name_quote != std::string::npos && name_quote < obj_end) {
+                    size_t name_start = name_quote + 1;
+                    size_t name_end = json.find('"', name_start);
+                    if (name_end != std::string::npos && name_end < obj_end) {
+                        msg.name = json.substr(name_start, name_end - name_start);
                     }
                 }
             }
         }
-        
+
+        size_t tool_calls_pos = json.find("\"tool_calls\"", obj_start);
+        if (tool_calls_pos != std::string::npos && tool_calls_pos < obj_end) {
+            size_t tool_calls_arr_start = json.find('[', tool_calls_pos);
+            if (tool_calls_arr_start != std::string::npos && tool_calls_arr_start < obj_end) {
+                size_t tool_calls_arr_end = find_matching_delimiter(json, tool_calls_arr_start, '[', ']');
+
+                size_t search_pos = tool_calls_arr_start;
+                while (true) {
+                    size_t func_pos = json.find("\"function\"", search_pos);
+                    if (func_pos == std::string::npos || func_pos >= tool_calls_arr_end) break;
+
+                    size_t func_obj_start = json.find('{', func_pos + 10);
+                    if (func_obj_start == std::string::npos || func_obj_start >= tool_calls_arr_end) break;
+
+                    size_t func_obj_end = find_matching_delimiter(json, func_obj_start, '{', '}');
+
+                    cactus::engine::ToolCallInfo tool_call;
+
+                    size_t fn_name_pos = json.find("\"name\"", func_obj_start);
+                    if (fn_name_pos != std::string::npos && fn_name_pos < func_obj_end) {
+                        size_t fn_name_quote = json.find('"', fn_name_pos + 6);
+                        if (fn_name_quote != std::string::npos && fn_name_quote < func_obj_end) {
+                            size_t fn_name_start = fn_name_quote + 1;
+                            size_t fn_name_end = json.find('"', fn_name_start);
+                            if (fn_name_end != std::string::npos && fn_name_end < func_obj_end) {
+                                tool_call.name = json.substr(fn_name_start, fn_name_end - fn_name_start);
+                            }
+                        }
+                    }
+
+                    size_t args_pos = json.find("\"arguments\"", func_obj_start);
+                    if (args_pos != std::string::npos && args_pos < func_obj_end) {
+                        size_t colon_pos = json.find(':', args_pos + 11);
+                        if (colon_pos != std::string::npos && colon_pos < func_obj_end) {
+                            size_t args_start = colon_pos + 1;
+                            while (args_start < json.length() && std::isspace(static_cast<unsigned char>(json[args_start]))) args_start++;
+
+                            if (args_start < func_obj_end && json[args_start] == '{') {
+                                size_t args_end = find_matching_delimiter(json, args_start, '{', '}');
+                                tool_call.arguments = json.substr(args_start, args_end - args_start);
+                            } else if (args_start < func_obj_end && json[args_start] == '"') {
+                                size_t str_start = args_start + 1;
+                                size_t str_end = str_start;
+                                while (str_end < json.length() && json[str_end] != '"') {
+                                    if (json[str_end] == '\\') str_end++;
+                                    str_end++;
+                                }
+                                tool_call.arguments = json.substr(str_start, str_end - str_start);
+                            }
+                        }
+                    }
+
+                    if (!tool_call.name.empty()) {
+                        msg.tool_calls.push_back(tool_call);
+                    }
+                    search_pos = func_obj_end;
+                }
+            }
+        }
+
         messages.push_back(msg);
-        
+
         pos = json.find('{', obj_end);
     }
-    
+
     return messages;
 }
 
@@ -754,6 +1091,182 @@ inline void apply_custom_vocabulary_options(cactus::engine::Model* model, const 
     model->set_vocab_bias(build_custom_vocabulary_bias(model->get_tokenizer(), custom_vocabulary, vocabulary_boost));
 }
 
+inline size_t levenshtein_ci(const std::string& a, const std::string& b) {
+    const size_t m = a.size(), n = b.size();
+    std::vector<size_t> prev(n + 1), curr(n + 1);
+    for (size_t j = 0; j <= n; ++j) prev[j] = j;
+    for (size_t i = 1; i <= m; ++i) {
+        curr[0] = i;
+        for (size_t j = 1; j <= n; ++j) {
+            const bool match = std::tolower(static_cast<unsigned char>(a[i - 1])) ==
+                               std::tolower(static_cast<unsigned char>(b[j - 1]));
+            curr[j] = std::min({prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + (match ? 0 : 1)});
+        }
+        std::swap(prev, curr);
+    }
+    return prev[n];
+}
+
+inline std::string collapse_spaces(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c != ' ') out += c;
+    }
+    return out;
+}
+
+inline void apply_vocabulary_spelling_correction(
+    std::string& text,
+    const std::vector<std::string>& custom_vocabulary)
+{
+    if (custom_vocabulary.empty() || text.empty()) return;
+
+    struct VocabEntry {
+        const std::string* original;
+        std::string collapsed;
+    };
+    std::vector<VocabEntry> vocab_entries;
+    vocab_entries.reserve(custom_vocabulary.size());
+    for (const auto& v : custom_vocabulary) {
+        vocab_entries.push_back({&v, collapse_spaces(v)});
+    }
+
+    struct Token { std::string text; bool is_word; };
+    std::vector<Token> tokens;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        if (std::isalnum(static_cast<unsigned char>(text[pos])) ||
+            text[pos] == '\'' || text[pos] == '-') {
+            size_t start = pos;
+            while (pos < text.size() && (std::isalnum(static_cast<unsigned char>(text[pos])) ||
+                                          text[pos] == '\'' || text[pos] == '-')) {
+                ++pos;
+            }
+            tokens.push_back({text.substr(start, pos - start), true});
+        } else {
+            size_t start = pos;
+            while (pos < text.size() && !std::isalnum(static_cast<unsigned char>(text[pos])) &&
+                   text[pos] != '\'' && text[pos] != '-') {
+                ++pos;
+            }
+            tokens.push_back({text.substr(start, pos - start), false});
+        }
+    }
+
+    std::vector<size_t> word_indices;
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (tokens[i].is_word) word_indices.push_back(i);
+    }
+
+    std::vector<bool> consumed(tokens.size(), false);
+
+    auto strip_suffix = [](const std::string& word) -> std::pair<std::string, std::string> {
+        if (word.size() >= 3 && word.substr(word.size() - 2) == "'s") {
+            return {word.substr(0, word.size() - 2), "'s"};
+        }
+        if (word.size() >= 3 && word.substr(word.size() - 2) == "'t") {
+            return {word.substr(0, word.size() - 2), "'t"};
+        }
+        if (word.size() >= 4 && word.back() == 's' &&
+            word[word.size() - 2] != 's' && // avoid stripping from "boss", "class"
+            std::isalpha(static_cast<unsigned char>(word[word.size() - 2]))) {
+            return {word.substr(0, word.size() - 1), "s"};
+        }
+        return {word, ""};
+    };
+
+    size_t wi = 0;
+    while (wi < word_indices.size()) {
+        size_t best_dist = std::numeric_limits<size_t>::max();
+        const std::string* best_match = nullptr;
+        size_t best_window = 0;
+        size_t best_first_token = 0;
+        size_t best_last_token = 0;
+        std::string best_suffix;
+
+        for (size_t window = std::min<size_t>(3, word_indices.size() - wi); window >= 1; --window) {
+            std::string window_collapsed;
+            const size_t first_tok = word_indices[wi];
+            const size_t last_tok = word_indices[wi + window - 1];
+            for (size_t w = 0; w < window; ++w) {
+                window_collapsed += tokens[word_indices[wi + w]].text;
+            }
+
+            if (window == 1 && window_collapsed.size() < 3) break;
+
+            auto [stem, suffix] = strip_suffix(window_collapsed);
+            const std::string* candidates[] = {&window_collapsed, &stem};
+            const std::string suffixes[] = {"", suffix};
+            const size_t num_candidates = suffix.empty() ? 1 : 2;
+
+            for (size_t ci = 0; ci < num_candidates; ++ci) {
+                const std::string& candidate = *candidates[ci];
+                if (candidate.empty()) continue;
+
+                for (const auto& entry : vocab_entries) {
+                    const size_t wlen = candidate.size();
+                    const size_t vlen = entry.collapsed.size();
+
+                    const size_t len_diff = wlen > vlen ? wlen - vlen : vlen - wlen;
+                    const size_t max_dist = std::max<size_t>(1, std::min(wlen, vlen) / 3);
+                    if (len_diff > max_dist) continue;
+
+                    const size_t dist = levenshtein_ci(candidate, entry.collapsed);
+
+                    // For single-edit corrections, require first char match to prevent
+                    // false positives like "vortex" → "Cortex".
+                    if (dist == 1 && window == 1) {
+                        const bool first_char_match =
+                            std::tolower(static_cast<unsigned char>(candidate[0])) ==
+                            std::tolower(static_cast<unsigned char>(entry.collapsed[0]));
+                        if (!first_char_match) continue;
+                    }
+
+                    if (dist <= max_dist && dist < best_dist) {
+                        best_dist = dist;
+                        best_match = entry.original;
+                        best_window = window;
+                        best_first_token = first_tok;
+                        best_last_token = last_tok;
+                        best_suffix = suffixes[ci];
+                    }
+                }
+            }
+
+            if (best_dist == 0) break;
+        }
+
+        // Allow dist==0 for multi-word merges where word boundaries changed.
+        const bool should_replace = best_match &&
+            best_dist != std::numeric_limits<size_t>::max() &&
+            (best_dist > 0 || best_window > 1);
+
+        if (should_replace) {
+            tokens[best_first_token].text = *best_match + best_suffix;
+            for (size_t t = best_first_token + 1; t <= best_last_token; ++t) {
+                consumed[t] = true;
+            }
+            for (size_t t = best_first_token + 1; t <= best_last_token; ++t) {
+                if (t > 0) consumed[t - 1] = consumed[t - 1] || !tokens[t - 1].is_word;
+            }
+            wi += best_window;
+        } else {
+            ++wi;
+        }
+    }
+
+    std::string result;
+    result.reserve(text.size());
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (!consumed[i]) {
+            result += tokens[i].text;
+        }
+    }
+
+    text = std::move(result);
+}
+
 inline InferenceOptions parse_inference_options_json(const std::string& json) {
     InferenceOptions options;
 
@@ -769,6 +1282,18 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
         options.top_p = std::stof(json.substr(pos));
+    }
+
+    float parsed_min_p = options.min_p;
+    if (try_parse_json_float(json, "min_p", parsed_min_p)) {
+        options.min_p = std::clamp(parsed_min_p, 0.0f, 1.0f);
+    }
+
+    float parsed_rep_penalty = options.repetition_penalty;
+    if (try_parse_json_float(json, "repetition_penalty", parsed_rep_penalty)) {
+        if (std::isfinite(parsed_rep_penalty) && parsed_rep_penalty > 0.0f) {
+            options.repetition_penalty = parsed_rep_penalty;
+        }
     }
 
     pos = json.find("\"top_k\"");
@@ -945,7 +1470,6 @@ inline void parse_function_calls_from_response(const std::string& response_text,
 
     gemma::parse_function_calls(regular_response, function_calls);
 
-    // Parse Qwen-style function calls: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
     const std::string QWEN_TOOL_START = "<tool_call>";
     const std::string QWEN_TOOL_END = "</tool_call>";
     size_t qwen_start_pos = 0;
@@ -954,27 +1478,62 @@ inline void parse_function_calls_from_response(const std::string& response_text,
         size_t content_start = qwen_start_pos + QWEN_TOOL_START.length();
         size_t qwen_end_pos = regular_response.find(QWEN_TOOL_END, content_start);
 
+        size_t erase_end;
+        std::string json_content;
+
         if (qwen_end_pos != std::string::npos) {
-            std::string json_content = regular_response.substr(content_start, qwen_end_pos - content_start);
-
-            size_t first = json_content.find_first_not_of(" \t\n\r");
-            size_t last = json_content.find_last_not_of(" \t\n\r");
-            if (first != std::string::npos && last != std::string::npos) {
-                json_content = json_content.substr(first, last - first + 1);
-            }
-
-            if (json_content.size() > 2 && json_content[0] == '{' &&
-                json_content.find("\"name\"") != std::string::npos) {
-                function_calls.push_back(json_content);
-            }
-
-            regular_response.erase(qwen_start_pos, qwen_end_pos + QWEN_TOOL_END.length() - qwen_start_pos);
+            json_content = regular_response.substr(content_start, qwen_end_pos - content_start);
+            erase_end = qwen_end_pos + QWEN_TOOL_END.length();
         } else {
-            break;
+            json_content = regular_response.substr(content_start);
+            erase_end = regular_response.length();
         }
+
+        size_t first = json_content.find_first_not_of(" \t\n\r");
+        size_t last = json_content.find_last_not_of(" \t\n\r");
+        if (first != std::string::npos && last != std::string::npos) {
+            json_content = json_content.substr(first, last - first + 1);
+        }
+
+        if (json_content.size() > 2 && json_content[0] == '{' &&
+            json_content.find("\"name\"") != std::string::npos) {
+            size_t depth = 0;
+            bool in_string = false;
+            bool escaped = false;
+            size_t end_pos = 0;
+            for (size_t c = 0; c < json_content.size(); c++) {
+                char ch = json_content[c];
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (ch == '\\' && in_string) {
+                    escaped = true;
+                    continue;
+                }
+                if (ch == '"') {
+                    in_string = !in_string;
+                    continue;
+                }
+                if (!in_string) {
+                    if (ch == '{') depth++;
+                    else if (ch == '}') {
+                        depth--;
+                        if (depth == 0) {
+                            end_pos = c + 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (end_pos > 0) {
+                function_calls.push_back(json_content.substr(0, end_pos));
+            }
+        }
+
+        regular_response.erase(qwen_start_pos, erase_end - qwen_start_pos);
     }
-    
-    // Parse LFM2-style function calls: <|tool_call_start|>[name(args)]<|tool_call_end|>
+
     const std::string TOOL_CALL_START = "<|tool_call_start|>";
     const std::string TOOL_CALL_END = "<|tool_call_end|>";
     size_t tool_start_pos = 0;
@@ -1088,6 +1647,30 @@ inline void parse_function_calls_from_response(const std::string& response_text,
     }
 }
 
+inline std::vector<std::pair<size_t, size_t>> find_channel_token_ranges(
+    const std::vector<uint32_t>& tokens, size_t offset,
+    uint32_t channel_open_id, uint32_t channel_close_id) {
+    std::vector<std::pair<size_t, size_t>> ranges;
+    size_t pos = 0;
+    while (pos < tokens.size()) {
+        if (tokens[pos] != channel_open_id) {
+            pos++;
+            continue;
+        }
+
+        size_t block_start = pos;
+        pos++;
+        while (pos < tokens.size() && tokens[pos] != channel_close_id) {
+            pos++;
+        }
+        if (pos < tokens.size()) {
+            pos++;
+        }
+        ranges.push_back({offset + block_start, pos - block_start});
+    }
+    return ranges;
+}
+
 inline void strip_tag_blocks(std::string& text, std::string& extracted,
                              const std::string& open_tag, const std::string& close_tag) {
     std::string result;
@@ -1120,30 +1703,6 @@ inline void strip_tag_blocks(std::string& text, std::string& extracted,
         pos = close_pos + close_tag.size();
     }
     text = result;
-}
-
-inline std::vector<std::pair<size_t, size_t>> find_channel_token_ranges(
-    const std::vector<uint32_t>& tokens, size_t offset,
-    uint32_t channel_open_id, uint32_t channel_close_id) {
-    std::vector<std::pair<size_t, size_t>> ranges;
-    size_t pos = 0;
-    while (pos < tokens.size()) {
-        if (tokens[pos] != channel_open_id) {
-            pos++;
-            continue;
-        }
-
-        size_t block_start = pos;
-        pos++;
-        while (pos < tokens.size() && tokens[pos] != channel_close_id) {
-            pos++;
-        }
-        if (pos < tokens.size()) {
-            pos++;
-        }
-        ranges.push_back({offset + block_start, pos - block_start});
-    }
-    return ranges;
 }
 
 inline void strip_thinking_block(const std::string& input, std::string& thinking, std::string& content) {
@@ -1235,6 +1794,50 @@ inline std::string serialize_function_calls(const std::vector<std::string>& call
     }
     oss << "]";
     return oss.str();
+}
+
+inline int validate_audio_params(
+    const char* component,
+    void* model,
+    char* response_buffer, size_t buffer_size,
+    const char* audio_file_path,
+    const uint8_t* pcm_buffer, size_t pcm_buffer_size) {
+    if (!model) {
+        std::string err = last_error_message.empty() ? "Model not initialized." : last_error_message;
+        CACTUS_LOG_ERROR(component, err);
+        handle_error_response(err, response_buffer, buffer_size);
+        return -1;
+    }
+    if (!response_buffer || buffer_size == 0) {
+        CACTUS_LOG_ERROR(component, "Invalid parameters: response_buffer or buffer_size");
+        handle_error_response("Invalid parameters", response_buffer, buffer_size);
+        return -1;
+    }
+    if (!audio_file_path && (!pcm_buffer || pcm_buffer_size == 0)) {
+        CACTUS_LOG_ERROR(component, "No audio input provided");
+        handle_error_response("Either audio_file_path or pcm_buffer must be provided", response_buffer, buffer_size);
+        return -1;
+    }
+    if (audio_file_path && pcm_buffer && pcm_buffer_size > 0) {
+        CACTUS_LOG_ERROR(component, "Both audio_file_path and pcm_buffer provided");
+        handle_error_response("Cannot provide both audio_file_path and pcm_buffer", response_buffer, buffer_size);
+        return -1;
+    }
+    if (pcm_buffer && pcm_buffer_size > 0 && (pcm_buffer_size < 2 || pcm_buffer_size % 2 != 0)) {
+        CACTUS_LOG_ERROR(component, "Invalid pcm_buffer_size");
+        handle_error_response("pcm_buffer_size must be even and at least 2 bytes", response_buffer, buffer_size);
+        return -1;
+    }
+    return 0;
+}
+
+inline std::vector<float> pcm_to_float(const uint8_t* pcm_buffer, size_t pcm_buffer_size) {
+    const int16_t* samples = reinterpret_cast<const int16_t*>(pcm_buffer);
+    size_t n = pcm_buffer_size / 2;
+    std::vector<float> out(n);
+    for (size_t i = 0; i < n; ++i)
+        out[i] = static_cast<float>(samples[i]) / 32768.0f;
+    return out;
 }
 
 } // namespace ffi

@@ -17,11 +17,13 @@ mkdir -p site_docs/docs site_docs/python site_docs/apple site_docs/android \
 
 cp -r assets/* site_docs/assets/
 
+echo "docs.cactuscompute.com" > site_docs/CNAME
+
 mkdir -p site_docs/stylesheets
 cp .github/docs-overrides/stylesheets/custom.css site_docs/stylesheets/custom.css
 
-cp CONTRIBUTING.md site_docs/CONTRIBUTING.md
-cp DCO.md site_docs/DCO.md
+[ -f CONTRIBUTING.md ] && cp CONTRIBUTING.md site_docs/CONTRIBUTING.md
+[ -f DCO.md ] && cp DCO.md site_docs/DCO.md
 
 cp docs/*.md site_docs/docs/
 
@@ -47,7 +49,7 @@ if curl -sfL "https://raw.githubusercontent.com/cactus-compute/cactus-react-nati
 else
   echo "# React Native SDK" > site_docs/react-native/README.md
   echo "" >> site_docs/react-native/README.md
-  echo "See [cactus-react on GitHub](https://github.com/cactus-compute/cactus-react) for full documentation." >> site_docs/react-native/README.md
+  echo "See [cactus-react-native on GitHub](https://github.com/cactus-compute/cactus-react-native) for full documentation." >> site_docs/react-native/README.md
   echo "Warning: Could not fetch React Native README, using fallback"
 fi
 
@@ -84,6 +86,7 @@ sedi 's|(/rust/)|(rust/README.md)|g' site_docs/index.md
 sedi 's|(/blog/hybrid_transcription\.md)|(blog/hybrid_transcription.md)|g' site_docs/index.md
 sedi 's|(/blog/lfm2_24b_a2b\.md)|(blog/lfm2_24b_a2b.md)|g' site_docs/index.md
 sedi 's|(/blog/parakeet\.md)|(blog/parakeet.md)|g' site_docs/index.md
+sedi 's|(/blog/lfm2\.5_350m\.md)|(blog/lfm2.5_350m.md)|g' site_docs/index.md
 sedi 's|(quickstart\.md)|(docs/quickstart.md)|g' site_docs/index.md
 sedi 's|(choose-sdk\.md)|(docs/choose-sdk.md)|g' site_docs/index.md
 
@@ -154,13 +157,16 @@ if ls site_docs/blog/*.md >/dev/null 2>&1; then
     sedi 's|(/blog/hybrid_transcription\.md)|(hybrid_transcription.md)|g' "$f"
     sedi 's|(/blog/lfm2_24b_a2b\.md)|(lfm2_24b_a2b.md)|g' "$f"
     sedi 's|(/blog/parakeet\.md)|(parakeet.md)|g' "$f"
+    sedi 's|(/blog/lfm2\.5_350m\.md)|(lfm2.5_350m.md)|g' "$f"
   done
 fi
 
-sedi 's|(/docs/cactus_engine\.md)|(docs/cactus_engine.md)|g' site_docs/CONTRIBUTING.md
-sedi 's|(/docs/cactus_graph\.md)|(docs/cactus_graph.md)|g' site_docs/CONTRIBUTING.md
-sedi 's|(/docs/cactus_index\.md)|(docs/cactus_index.md)|g' site_docs/CONTRIBUTING.md
-sedi 's|(/docs/index\.md)|(index.md)|g' site_docs/CONTRIBUTING.md
+if [ -f site_docs/CONTRIBUTING.md ]; then
+  sedi 's|(/docs/cactus_engine\.md)|(docs/cactus_engine.md)|g' site_docs/CONTRIBUTING.md
+  sedi 's|(/docs/cactus_graph\.md)|(docs/cactus_graph.md)|g' site_docs/CONTRIBUTING.md
+  sedi 's|(/docs/cactus_index\.md)|(docs/cactus_index.md)|g' site_docs/CONTRIBUTING.md
+  sedi 's|(/docs/index\.md)|(index.md)|g' site_docs/CONTRIBUTING.md
+fi
 
 if [ -n "$DOCS_VERSION" ]; then
   {
@@ -169,4 +175,23 @@ if [ -n "$DOCS_VERSION" ]; then
     echo ""
     cat site_docs/docs/quickstart.md
   } > site_docs/docs/quickstart.tmp && mv site_docs/docs/quickstart.tmp site_docs/docs/quickstart.md
+fi
+
+for nav_path in \
+  "rust/README.md" \
+  "react-native/README.md" \
+  "blog/README.md" \
+  "blog/hybrid_transcription.md" \
+  "blog/lfm2_24b_a2b.md" \
+  "blog/parakeet.md" \
+  "blog/lfm2.5_350m.md" \
+  "CONTRIBUTING.md" \
+  "docs/compatibility.md"; do
+  if [ ! -f "site_docs/$nav_path" ]; then
+    grep -v "$nav_path" mkdocs.yml > mkdocs.yml.tmp && mv mkdocs.yml.tmp mkdocs.yml
+  fi
+done
+
+if ! ls site_docs/blog/*.md >/dev/null 2>&1; then
+  grep -v "^  - Blog:" mkdocs.yml > mkdocs.yml.tmp && mv mkdocs.yml.tmp mkdocs.yml
 fi

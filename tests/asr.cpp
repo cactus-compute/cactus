@@ -178,6 +178,20 @@ void print_token(const char* token, uint32_t /*token_id*/, void* /*user_data*/) 
     std::cout << token << std::flush;
 }
 
+bool is_gemma4_model(const std::string& model_path) {
+    std::string p = model_path;
+    std::transform(p.begin(), p.end(), p.begin(), [](unsigned char c) { return std::tolower(c); });
+    return p.find("gemma4") != std::string::npos ||
+           p.find("gemma-3n") != std::string::npos ||
+           p.find("gemma3n") != std::string::npos;
+}
+
+bool is_parakeet_model(const std::string& model_path) {
+    std::string p = model_path;
+    std::transform(p.begin(), p.end(), p.begin(), [](unsigned char c) { return std::tolower(c); });
+    return p.find("parakeet") != std::string::npos;
+}
+
 std::string get_transcribe_prompt(const std::string& model_path, const std::string& language = "en") {
     std::string path_lower = model_path;
     std::transform(path_lower.begin(), path_lower.end(), path_lower.begin(),
@@ -185,6 +199,9 @@ std::string get_transcribe_prompt(const std::string& model_path, const std::stri
 
     if (path_lower.find("whisper") != std::string::npos) {
         return "<|startoftranscript|><|" + language + "|><|transcribe|>";
+    }
+    if (is_gemma4_model(model_path)) {
+        return "Transcribe the audio.";
     }
     return "";
 }
@@ -370,7 +387,9 @@ void audio_callback(void* /*userdata*/, Uint8* stream, int len) {
     g_audio_state.buffer.insert(g_audio_state.buffer.end(), stream, stream + len);
 }
 
-int run_live_transcription(cactus_model_t model, const std::string& language = "en") {
+int run_live_transcription(cactus_model_t model, const std::string& model_path, const std::string& language = "en") {
+    bool gemma4_mode = is_gemma4_model(model_path);
+    bool parakeet_mode = is_parakeet_model(model_path);
     if (SDL_Init(SDL_INIT_AUDIO) < 0) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD)
                   << "Failed to initialize SDL: " << SDL_GetError() << "\n";
@@ -414,15 +433,23 @@ int run_live_transcription(cactus_model_t model, const std::string& language = "
                   << "Hz, will resample to " << TARGET_SAMPLE_RATE << "Hz\n";
     }
 
-    std::string options = R"({"confirmation_threshold": 0.99, "min_chunk_size": 16000, "telemetry_enabled": true, "language": ")" + language + R"("})";
-    cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(model, options.c_str());
+    const size_t min_chunk_size = parakeet_mode ? 4000 : 16000; // 0.25s vs 1.0s at 16kHz
+    const double confirmation_threshold = parakeet_mode ? 0.95 : 0.99;
+    std::string options =
+        std::string("{\"confirmation_threshold\":") + std::to_string(confirmation_threshold) +
+        ",\"min_chunk_size\":" + std::to_string(min_chunk_size) +
+        ",\"telemetry_enabled\":true,\"language\":\"" + language + "\"}";
+    cactus_stream_transcribe_t stream = nullptr;
 
-    if (!stream) {
-        std::cerr << colored("Error: ", Color::RED + Color::BOLD)
-                  << "Failed to initialize streaming transcription\n";
-        SDL_CloseAudioDevice(device);
-        SDL_Quit();
-        return 1;
+    if (!gemma4_mode) {
+        stream = cactus_stream_transcribe_start(model, options.c_str());
+        if (!stream) {
+            std::cerr << colored("Error: ", Color::RED + Color::BOLD)
+                      << "Failed to initialize streaming transcription\n";
+            SDL_CloseAudioDevice(device);
+            SDL_Quit();
+            return 1;
+        }
     }
 
     std::string api_key = get_cloud_api_key();
@@ -456,9 +483,14 @@ int run_live_transcription(cactus_model_t model, const std::string& language = "
     std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
 
     auto last_process_time = std::chrono::steady_clock::now();
-    const auto process_interval = std::chrono::milliseconds(1000);
+    const auto process_interval = std::chrono::milliseconds(parakeet_mode ? 250 : 1000);
 
     while (!should_stop) {
+        if (gemma4_mode) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+
         auto now = std::chrono::steady_clock::now();
 
         if (now - last_process_time >= process_interval) {
@@ -498,6 +530,7 @@ int run_live_transcription(cactus_model_t model, const std::string& language = "
                     std::string cloud_result_job_id = extract_json_number(json_str, "cloud_result_job_id");
                     std::string ttft = extract_json_number(json_str, "time_to_first_token_ms");
                     std::string decode_tps = extract_json_number(json_str, "decode_tps");
+                    std::string raw_decoder_tps = extract_json_number(json_str, "raw_decoder_tps");
 
                     bool matched_cloud_result_segment = false;
                     if (!cloud_result.empty()) {
@@ -544,7 +577,16 @@ int run_live_transcription(cactus_model_t model, const std::string& language = "
                     }
 
                     if (!confirmed.empty() || !pending.empty()) {
-                        last_stats = colored("[Latency:" + std::to_string(int(latency_ms)) + "ms Decode speed:" + decode_tps + " tokens/sec] ", Color::GRAY);
+                        last_stats = colored("[Latency:" + std::to_string(int(latency_ms)) + "ms Decode speed:" + decode_tps + " tokens/sec", Color::GRAY);
+                        if (!raw_decoder_tps.empty()) {
+                            try {
+                                if (std::stod(raw_decoder_tps) > 0.0) {
+                                    last_stats += colored(" Raw decoder:" + raw_decoder_tps + " tokens/sec", Color::GRAY);
+                                }
+                            } catch (...) {
+                            }
+                        }
+                        last_stats += colored("] ", Color::GRAY);
                     }
 
                     int width = get_terminal_width();
@@ -621,30 +663,137 @@ int run_live_transcription(cactus_model_t model, const std::string& language = "
     g_audio_state.recording = false;
     SDL_PauseAudioDevice(device, 1);
 
-    int stopping_result = cactus_stream_transcribe_stop(
-        stream,
-        response_buffer.data(),
-        response_buffer.size()
-    );
-
-    std::cout << "\n\n";
-    print_separator();
-
-    if (stopping_result >= 0) {
-        for (const auto& seg : segments) {
-            confirmed_text += seg.text + " ";
+    if (!gemma4_mode) {
+        std::vector<uint8_t> tail_audio_chunk;
+        {
+            std::lock_guard<std::mutex> lock(g_audio_state.mutex);
+            if (!g_audio_state.buffer.empty()) {
+                tail_audio_chunk = std::move(g_audio_state.buffer);
+                g_audio_state.buffer.clear();
+            }
         }
-    
-        std::string json_str(response_buffer.data());
-        std::string final_text = extract_json_value(json_str, "confirmed");
-        std::string full_transcript = confirmed_text + final_text;
 
-        std::cout << colored("Final transcript:", Color::GREEN + Color::BOLD) << "\n";
-        std::cout << full_transcript << "\n";
+        if (!tail_audio_chunk.empty()) {
+            std::vector<uint8_t> resampled_tail = resample_audio(
+                tail_audio_chunk, g_audio_state.actual_sample_rate, TARGET_SAMPLE_RATE
+            );
+
+            int tail_process_result = cactus_stream_transcribe_process(
+                stream,
+                resampled_tail.data(),
+                resampled_tail.size(),
+                response_buffer.data(),
+                response_buffer.size()
+            );
+
+            if (tail_process_result >= 0) {
+                std::string json_str(response_buffer.data());
+                std::string confirmed = extract_json_value(json_str, "confirmed");
+                std::string cloud_result = extract_json_value(json_str, "cloud_result");
+                bool cloud_handoff = json_str.find("\"cloud_handoff\":true") != std::string::npos;
+                std::string cloud_job_id = extract_json_number(json_str, "cloud_job_id");
+                int64_t parsed_cloud_job_id = cloud_job_id.empty() ? 0 : std::stoll(cloud_job_id);
+
+                if (!confirmed.empty()) {
+                    Segment seg;
+                    seg.text = confirmed;
+                    if (cloud_handoff && parsed_cloud_job_id > 0) {
+                        seg.pending_cloud = true;
+                        seg.cloud_start_time = std::chrono::steady_clock::now();
+                        seg.cloud_job_id = parsed_cloud_job_id;
+                    }
+                    segments.push_back(seg);
+                }
+
+                if (!cloud_result.empty()) {
+                    std::string cloud_result_job_id = extract_json_number(json_str, "cloud_result_job_id");
+                    int64_t result_job_id = cloud_result_job_id.empty() ? 0 : std::stoll(cloud_result_job_id);
+                    if (result_job_id > 0) {
+                        for (auto& seg : segments) {
+                            if (seg.pending_cloud && seg.cloud_job_id == result_job_id) {
+                                seg.text = cloud_result;
+                                seg.pending_cloud = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (gemma4_mode) {
+        std::vector<uint8_t> gemma4_all_audio;
+        {
+            std::lock_guard<std::mutex> lock(g_audio_state.mutex);
+            gemma4_all_audio = resample_audio(g_audio_state.buffer, g_audio_state.actual_sample_rate, TARGET_SAMPLE_RATE);
+        }
+
+        double duration_sec = (gemma4_all_audio.size() / 2) / static_cast<double>(TARGET_SAMPLE_RATE);
+        std::cout << "\n" << colored("Recorded ", Color::GREEN)
+                  << std::fixed << std::setprecision(1) << duration_sec << "s"
+                  << colored(" — transcribing...", Color::YELLOW) << "\n\n";
+
+        std::fill(response_buffer.begin(), response_buffer.end(), 0);
+        std::string prompt = get_transcribe_prompt(model_path, language);
+        std::string tl_options = R"({"max_tokens":500,"telemetry_enabled":true,"use_vad":false})";
+
+        int rc = cactus_transcribe(
+            model, nullptr, prompt.c_str(),
+            response_buffer.data(), response_buffer.size(),
+            tl_options.c_str(), print_token, nullptr,
+            gemma4_all_audio.data(), gemma4_all_audio.size()
+        );
+
+        std::cout << "\n\n";
+        print_separator();
+
+        if (rc >= 0) {
+            std::string json_str(response_buffer.data());
+            std::string total = extract_json_number(json_str, "total_time_ms");
+            std::string tps = extract_json_number(json_str, "decode_tps");
+            if (!total.empty() || !tps.empty()) {
+                std::cout << colored("[", Color::GRAY);
+                if (!total.empty()) std::cout << colored("time: ", Color::GRAY) << std::stod(total) / 1000.0 << "s";
+                if (!tps.empty()) std::cout << colored(" | speed: ", Color::GRAY) << tps << " tok/s";
+                std::cout << colored("]", Color::GRAY) << "\n";
+            }
+        } else {
+            std::cerr << colored("Transcription failed.", Color::RED) << "\n";
+        }
+
+        cactus_reset(model);
     } else {
-        if (!confirmed_text.empty()) {
-            std::cout << colored("Partial transcript:", Color::YELLOW + Color::BOLD) << "\n";
-            std::cout << confirmed_text << "\n";
+        int stopping_result = cactus_stream_transcribe_stop(
+            stream,
+            response_buffer.data(),
+            response_buffer.size()
+        );
+
+        std::cout << "\n\n";
+        print_separator();
+
+        if (stopping_result >= 0) {
+            for (const auto& seg : segments) {
+                confirmed_text += seg.text + " ";
+            }
+
+            std::string json_str(response_buffer.data());
+            std::string final_text = extract_json_value(json_str, "confirmed");
+            std::string full_transcript;
+            if (parakeet_mode) {
+                full_transcript = final_text.empty() ? confirmed_text : final_text;
+            } else {
+                full_transcript = confirmed_text + final_text;
+            }
+
+            std::cout << colored("Final transcript:", Color::GREEN + Color::BOLD) << "\n";
+            std::cout << full_transcript << "\n";
+        } else {
+            if (!confirmed_text.empty()) {
+                std::cout << colored("Partial transcript:", Color::YELLOW + Color::BOLD) << "\n";
+                std::cout << confirmed_text << "\n";
+            }
         }
     }
 
@@ -704,7 +853,7 @@ int main(int argc, char* argv[]) {
         result = transcribe_file(model, audio_file, model_path, language);
     } else {
 #ifdef HAVE_SDL2
-        result = run_live_transcription(model, language);
+        result = run_live_transcription(model, model_path, language);
 #else
         std::cerr << colored("Error: ", Color::RED + Color::BOLD)
                   << "Live transcription requires SDL2.\n";

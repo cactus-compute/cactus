@@ -76,7 +76,7 @@ e2e::E2EResult generate(void* handle, const char* prompt, int max_tokens) {
     char response[8192] = {};
     auto wall_start = std::chrono::steady_clock::now();
     int ret = cactus_complete(h->model, messages.c_str(), response, sizeof(response),
-                              options.c_str(), nullptr, nullptr, nullptr);
+                              options.c_str(), nullptr, nullptr, nullptr, nullptr, 0);
     auto wall_end = std::chrono::steady_clock::now();
 
     if (ret <= 0) {

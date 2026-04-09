@@ -19,6 +19,18 @@ if not _LIB_PATH.exists():
 
 _lib = ctypes.CDLL(str(_LIB_PATH))
 
+cactus_graph_t = ctypes.c_void_p
+cactus_node_t = ctypes.c_uint64
+
+class cactus_tensor_info_t(ctypes.Structure):
+    _fields_ = [
+        ("precision", ctypes.c_int32),
+        ("rank", ctypes.c_size_t),
+        ("shape", ctypes.c_size_t * 8),
+        ("num_elements", ctypes.c_size_t),
+        ("byte_size", ctypes.c_size_t),
+    ]
+
 _lib.cactus_set_telemetry_environment.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
 _lib.cactus_set_telemetry_environment.restype = None
 _lib.cactus_set_telemetry_environment(b"python", None, None)
@@ -26,15 +38,247 @@ _lib.cactus_set_telemetry_environment(b"python", None, None)
 _lib.cactus_init.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_bool]
 _lib.cactus_init.restype = ctypes.c_void_p
 
+# cactus graph API
+_lib.cactus_graph_create.restype = cactus_graph_t
+_lib.cactus_graph_destroy.argtypes = [cactus_graph_t]
+_lib.cactus_graph_hard_reset.argtypes = [cactus_graph_t]
+_lib.cactus_graph_hard_reset.restype = ctypes.c_int
+
+_lib.cactus_graph_input.argtypes = [
+    cactus_graph_t,
+    ctypes.POINTER(ctypes.c_size_t), ctypes.c_size_t,
+    ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_input.restype = ctypes.c_int
+
+_lib.cactus_graph_set_input.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_void_p, ctypes.c_int32
+]
+_lib.cactus_graph_set_input.restype = ctypes.c_int
+_lib.cactus_graph_set_external_input.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_void_p, ctypes.c_int32
+]
+_lib.cactus_graph_set_external_input.restype = ctypes.c_int
+
+_lib.cactus_graph_add.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_add.restype = ctypes.c_int
+_lib.cactus_graph_add_clipped.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_add_clipped.restype = ctypes.c_int
+
+_lib.cactus_graph_subtract.argtypes = [cactus_graph_t, cactus_node_t,
+  cactus_node_t, ctypes.POINTER(cactus_node_t)]
+_lib.cactus_graph_subtract.restype = ctypes.c_int
+
+_lib.cactus_graph_multiply.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_multiply.restype = ctypes.c_int
+
+_lib.cactus_graph_divide.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_divide.restype = ctypes.c_int
+
+_lib.cactus_graph_precision_cast.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_precision_cast.restype = ctypes.c_int
+_lib.cactus_graph_quantize_activations.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_quantize_activations.restype = ctypes.c_int
+
+_lib.cactus_graph_scalar_add.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_scalar_add.restype = ctypes.c_int
+_lib.cactus_graph_scalar_subtract.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_scalar_subtract.restype = ctypes.c_int
+_lib.cactus_graph_scalar_multiply.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_scalar_multiply.restype = ctypes.c_int
+_lib.cactus_graph_scalar_divide.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_scalar_divide.restype = ctypes.c_int
+_lib.cactus_graph_scalar_exp.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_scalar_exp.restype = ctypes.c_int
+_lib.cactus_graph_scalar_sqrt.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_scalar_sqrt.restype = ctypes.c_int
+_lib.cactus_graph_scalar_cos.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_scalar_cos.restype = ctypes.c_int
+_lib.cactus_graph_scalar_sin.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_scalar_sin.restype = ctypes.c_int
+_lib.cactus_graph_scalar_log.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_scalar_log.restype = ctypes.c_int
+
+_lib.cactus_graph_abs.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_abs.restype = ctypes.c_int
+
+_lib.cactus_graph_pow.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_pow.restype = ctypes.c_int
+
+_lib.cactus_graph_view.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(ctypes.c_size_t), ctypes.c_size_t,
+    ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_view.restype = ctypes.c_int
+
+_lib.cactus_graph_flatten.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_flatten.restype = ctypes.c_int
+_lib.cactus_graph_reshape.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(ctypes.c_size_t), ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_reshape.restype = ctypes.c_int
+_lib.cactus_graph_transpose.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_transpose.restype = ctypes.c_int
+_lib.cactus_graph_transpose_n.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(ctypes.c_size_t), ctypes.c_size_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_transpose_n.restype = ctypes.c_int
+_lib.cactus_graph_slice.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_slice.restype = ctypes.c_int
+_lib.cactus_graph_index.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_size_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_index.restype = ctypes.c_int
+
+_lib.cactus_graph_concat.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_concat.restype = ctypes.c_int
+
+_lib.cactus_graph_cat.argtypes = [
+    cactus_graph_t, ctypes.POINTER(cactus_node_t), ctypes.c_size_t, ctypes.c_int32,
+    ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_cat.restype = ctypes.c_int
+_lib.cactus_graph_matmul.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_bool, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_matmul.restype = ctypes.c_int
+
+_lib.cactus_graph_sum.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_sum.restype = ctypes.c_int
+_lib.cactus_graph_mean.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_mean.restype = ctypes.c_int
+_lib.cactus_graph_variance.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_variance.restype = ctypes.c_int
+_lib.cactus_graph_min.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_min.restype = ctypes.c_int
+_lib.cactus_graph_max.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_max.restype = ctypes.c_int
+
+_lib.cactus_graph_relu.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_relu.restype = ctypes.c_int
+_lib.cactus_graph_silu.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_silu.restype = ctypes.c_int
+_lib.cactus_graph_gelu.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_gelu.restype = ctypes.c_int
+_lib.cactus_graph_gelu_erf.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_gelu_erf.restype = ctypes.c_int
+_lib.cactus_graph_sigmoid.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_sigmoid.restype = ctypes.c_int
+_lib.cactus_graph_tanh.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_tanh.restype = ctypes.c_int
+_lib.cactus_graph_glu.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_glu.restype = ctypes.c_int
+
+_lib.cactus_graph_layernorm.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, ctypes.c_float, ctypes.c_bool, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_layernorm.restype = ctypes.c_int
+_lib.cactus_graph_groupnorm.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, ctypes.c_size_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_groupnorm.restype = ctypes.c_int
+_lib.cactus_graph_batchnorm.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, cactus_node_t, cactus_node_t, ctypes.c_int32, ctypes.c_float, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_batchnorm.restype = ctypes.c_int
+_lib.cactus_graph_rms_norm.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_rms_norm.restype = ctypes.c_int
+_lib.cactus_graph_softmax.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_softmax.restype = ctypes.c_int
+
+_lib.cactus_graph_execute.argtypes = [cactus_graph_t]
+_lib.cactus_graph_execute.restype = ctypes.c_int
+
+_lib.cactus_graph_get_output_ptr.argtypes = [cactus_graph_t, cactus_node_t,
+  ctypes.POINTER(ctypes.c_void_p)]
+_lib.cactus_graph_get_output_ptr.restype = ctypes.c_int
+
+_lib.cactus_graph_get_output_info.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_tensor_info_t)
+]
+_lib.cactus_graph_get_output_info.restype = ctypes.c_int
+
 _lib.cactus_complete.argtypes = [
     ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
-    ctypes.c_char_p, ctypes.c_char_p, TokenCallback, ctypes.c_void_p
+    ctypes.c_char_p, ctypes.c_char_p, TokenCallback, ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
 ]
 _lib.cactus_complete.restype = ctypes.c_int
 
 _lib.cactus_prefill.argtypes = [
     ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
-    ctypes.c_char_p, ctypes.c_char_p
+    ctypes.c_char_p, ctypes.c_char_p,
+    ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
 ]
 _lib.cactus_prefill.restype = ctypes.c_int
 
@@ -74,6 +318,18 @@ _lib.cactus_vad.argtypes = [
     ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
 ]
 _lib.cactus_vad.restype = ctypes.c_int
+
+_lib.cactus_diarize.argtypes = [
+    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
+    ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
+]
+_lib.cactus_diarize.restype = ctypes.c_int
+
+_lib.cactus_embed_speaker.argtypes = [
+    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
+    ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t
+]
+_lib.cactus_embed_speaker.restype = ctypes.c_int
 
 _lib.cactus_reset.argtypes = [ctypes.c_void_p]
 _lib.cactus_reset.restype = None
@@ -258,7 +514,7 @@ def cactus_stop(model):
     _lib.cactus_stop(model)
 
 
-def cactus_complete(model, messages_json, options_json, tools_json, callback):
+def cactus_complete(model, messages_json, options_json, tools_json, callback, pcm_data=None):
     """Runs chat completion. Returns response string."""
     buf = ctypes.create_string_buffer(65536)
     if callback:
@@ -267,21 +523,35 @@ def cactus_complete(model, messages_json, options_json, tools_json, callback):
         cb = TokenCallback(_bridge)
     else:
         cb = TokenCallback()
+    if pcm_data is not None:
+        pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_size = len(pcm_data)
+    else:
+        pcm_ptr = None
+        pcm_size = 0
     rc = _lib.cactus_complete(
         model, _enc(messages_json), buf, len(buf),
-        _enc(options_json), _enc(tools_json), cb, None
+        _enc(options_json), _enc(tools_json), cb, None, pcm_ptr, pcm_size
     )
     if rc < 0:
         raise RuntimeError(_err("Completion failed"))
     return buf.value.decode("utf-8", errors="ignore")
 
 
-def cactus_prefill(model, messages_json, options_json, tools_json):
+def cactus_prefill(model, messages_json, options_json, tools_json, pcm_data=None):
     """Prefills the KV cache with messages."""
     buf = ctypes.create_string_buffer(65536)
+    if pcm_data is not None:
+        pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_size = len(pcm_data)
+    else:
+        pcm_ptr = None
+        pcm_size = 0
     rc = _lib.cactus_prefill(
         model, _enc(messages_json), buf, len(buf),
-        _enc(options_json), _enc(tools_json)
+        _enc(options_json), _enc(tools_json), pcm_ptr, pcm_size
     )
     if rc < 0:
         raise RuntimeError(_err("Prefill failed"))
@@ -373,6 +643,42 @@ def cactus_vad(model, audio_path, options_json, pcm_data):
     )
     if rc < 0:
         raise RuntimeError(_err("VAD failed"))
+    return buf.value.decode("utf-8", errors="ignore")
+
+
+def cactus_diarize(model, audio_path, options_json, pcm_data):
+    """Runs speaker diarization. Returns JSON string."""
+    buf = ctypes.create_string_buffer(1 << 20)
+    if pcm_data is not None:
+        pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_size = len(pcm_data)
+    else:
+        pcm_ptr = None
+        pcm_size = 0
+    rc = _lib.cactus_diarize(
+        model, _enc(audio_path), buf, len(buf), _enc(options_json), pcm_ptr, pcm_size
+    )
+    if rc < 0:
+        raise RuntimeError(_err("Diarize failed"))
+    return buf.value.decode("utf-8", errors="ignore")
+
+
+def cactus_embed_speaker(model, audio_path, options_json, pcm_data):
+    """Extracts a speaker embedding vector. Returns JSON string."""
+    buf = ctypes.create_string_buffer(65536)
+    if pcm_data is not None:
+        pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_size = len(pcm_data)
+    else:
+        pcm_ptr = None
+        pcm_size = 0
+    rc = _lib.cactus_embed_speaker(
+        model, _enc(audio_path), buf, len(buf), _enc(options_json), pcm_ptr, pcm_size
+    )
+    if rc < 0:
+        raise RuntimeError(_err("EmbedSpeaker failed"))
     return buf.value.decode("utf-8", errors="ignore")
 
 

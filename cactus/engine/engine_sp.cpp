@@ -35,6 +35,7 @@ void SPTokenizer::cleanup_mmap() {
 }
 
 bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, const std::string& /*merges_file*/, const std::string& config_file) {
+    runtime_config_ = load_tokenizer_runtime_config(config_file);
     std::string config_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/config.txt";
     detect_model_type(config_path);
     
@@ -359,39 +360,7 @@ std::vector<std::pair<std::string, uint32_t>> SPTokenizer::tokenize_with_trie(co
 }
 
 std::vector<std::string> SPTokenizer::split_with_special_tokens(const std::string& text) const {
-    std::vector<std::string> result;
-    
-    size_t start = 0;
-    while (start < text.size()) {
-        size_t best_match_pos = text.size();
-        size_t best_match_len = 0;
-        std::string best_special_token;
-        
-        for (const auto& [special_token, token_id] : special_tokens_) {
-            size_t pos = text.find(special_token, start);
-            if (pos != std::string::npos && pos < best_match_pos) {
-                best_match_pos = pos;
-                best_match_len = special_token.length();
-                best_special_token = special_token;
-            }
-        }
-        
-        if (best_match_pos < text.size()) {
-            if (best_match_pos > start) {
-                std::string before = text.substr(start, best_match_pos - start);
-                result.push_back(before);
-            }
-            result.push_back(best_special_token);
-            start = best_match_pos + best_match_len;
-        } else {
-            if (start < text.size()) {
-                result.push_back(text.substr(start));
-            }
-            break;
-        }
-    }
-    
-    return result;
+    return cactus::engine::split_with_special_tokens(text, special_tokens_);
 }
 
 std::vector<uint32_t> SPTokenizer::encode(const std::string& text) const {
@@ -470,62 +439,8 @@ std::string SPTokenizer::decode(const std::vector<uint32_t>& tokens) const {
 }
 
 void SPTokenizer::load_special_tokens(const std::string& config_file) {
-    std::ifstream file(config_file);
-    if (!file.is_open()) {
-        return;
-    }
-    
-    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    
-    size_t pos = content.find("\"special_tokens\"");
-    if (pos == std::string::npos) return;
-    
-    pos = content.find("{", pos);
-    if (pos == std::string::npos) return;
-    
-    size_t end_pos = content.find("}", pos);
-    if (end_pos == std::string::npos) return;
-    
-    std::string special_tokens_section = content.substr(pos + 1, end_pos - pos - 1);
-    
-    std::istringstream iss(special_tokens_section);
-    std::string line;
-    
-    while (std::getline(iss, line)) {
-        size_t colon_pos = line.find(":");
-        if (colon_pos == std::string::npos) continue;
-        
-        std::string id_part = line.substr(0, colon_pos);
-        std::string token_part = line.substr(colon_pos + 1);
-        
-        size_t id_start = id_part.find("\"");
-        size_t id_end = id_part.find("\"", id_start + 1);
-        if (id_start == std::string::npos || id_end == std::string::npos) continue;
-        
-        std::string id_str = id_part.substr(id_start + 1, id_end - id_start - 1);
-        uint32_t token_id = std::stoul(id_str);
-        
-        size_t token_start = token_part.find("\"");
-        size_t token_end = token_part.rfind("\"");
-        if (token_start == std::string::npos || token_end == std::string::npos || token_start >= token_end) continue;
-        
-        std::string token_content = token_part.substr(token_start + 1, token_end - token_start - 1);
-        
-        special_tokens_[token_content] = token_id;
-    }
+    load_special_tokens_map(config_file, special_tokens_);
 }
-
-void SPTokenizer::load_chat_template(const std::string& template_file) {
-    std::ifstream file(template_file);
-    if (!file.is_open()) {
-        has_chat_template_ = false;
-        return;
-    }
-    
-    chat_template_ = std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    has_chat_template_ = !chat_template_.empty();
-}
-
 
 } // namespace engine
 } // namespace cactus

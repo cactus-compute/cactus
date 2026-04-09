@@ -5,10 +5,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <filesystem>
 #include <stdexcept>
+#include <string>
 #include <vector>
-
-namespace {
 
 size_t shape_elements(const std::vector<int>& shape) {
     if (shape.empty()) return 0;
@@ -177,8 +177,6 @@ bool infer_npu_encoder_output_shape(
     return true;
 }
 
-} // namespace
-
 namespace cactus {
 namespace engine {
 
@@ -231,6 +229,26 @@ void ParakeetModel::load_weights_to_graph(CactusGraph* gb) {
             use_npu_encoder_ = false;
             npu_encoder_.reset();
         }
+    }
+
+    const std::filesystem::path model_path(model_folder_path_);
+    has_cpu_encoder_weights_ =
+        std::filesystem::exists(model_path / "subsampling_conv0_weight.weights") &&
+        std::filesystem::exists(model_path / "subsampling_linear_weight.weights");
+
+    if (has_cpu_encoder_weights_) {
+        weight_nodes_.subsampling_conv0_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_conv0_weight.weights");
+        weight_nodes_.subsampling_conv0_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_conv0_bias.bias");
+        weight_nodes_.subsampling_depthwise1_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise1_weight.weights");
+        weight_nodes_.subsampling_depthwise1_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise1_bias.bias");
+        weight_nodes_.subsampling_pointwise1_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise1_weight.weights");
+        weight_nodes_.subsampling_pointwise1_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise1_bias.bias");
+        weight_nodes_.subsampling_depthwise2_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise2_weight.weights");
+        weight_nodes_.subsampling_depthwise2_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_depthwise2_bias.bias");
+        weight_nodes_.subsampling_pointwise2_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise2_weight.weights");
+        weight_nodes_.subsampling_pointwise2_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_pointwise2_bias.bias");
+        weight_nodes_.subsampling_linear_weight = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_weight.weights");
+        weight_nodes_.subsampling_linear_bias = gb->mmap_weights(model_folder_path_ + "/subsampling_linear_bias.bias");
     }
 
     for (uint32_t i = 0; i < config_.num_layers; ++i) {
@@ -572,6 +590,12 @@ size_t ParakeetModel::build_encoder(CactusGraph* gb, const std::vector<float>& a
             }
         }
     }
+
+    if (!has_cpu_encoder_weights_) {
+        throw std::runtime_error(
+            "Parakeet requires either CPU encoder weights or model.mlpackage encoder output.");
+    }
+
     ComputeBackend backend = ComputeBackend::CPU;
     size_t hidden = build_subsampling(gb, audio_features);
     const auto& hidden_shape = gb->get_output_buffer(hidden).shape;
@@ -722,12 +746,16 @@ uint32_t ParakeetModel::decode_with_audio(
     size_t top_k,
     const std::string& profile_file,
     float* out_entropy,
+    float min_p,
+    float repetition_penalty,
     float* /*out_token_time_start*/,
     float* /*out_token_time_end*/)
 {
     (void)temperature;
     (void)top_p;
     (void)top_k;
+    (void)min_p;
+    (void)repetition_penalty;
 
     if (!initialized_ || !graph_handle_) {
         throw std::runtime_error("Model not initialized - call init() first");
@@ -786,6 +814,11 @@ std::vector<float> ParakeetModel::get_audio_embeddings(const std::vector<float>&
         hidden_shape[1] == ctc_vocab_size &&
         ctc_vocab_size != ctc_hidden_dim &&
         use_npu_encoder_) {
+        if (!has_cpu_encoder_weights_) {
+            throw std::runtime_error(
+                "Parakeet audio embeddings require hidden-state encoder output; "
+                "CPU encoder fallback weights are not available.");
+        }
         const bool prev_use_npu = use_npu_encoder_;
         use_npu_encoder_ = false;
         gb->soft_reset();

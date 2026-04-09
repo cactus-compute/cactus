@@ -161,10 +161,13 @@ graph.hard_reset();
 | openai/whisper-base | 74M | 329.37 | 178.65 | 358 | yes | 0.0164 | 0.1628 |
 | openai/whisper-small | 244M | 856.79 | 332.63 | 108 | yes | 0.0428 | 0.0930 |
 | openai/whisper-medium | 769M | 2085.87 | 923.33 | 49 | yes | 0.1041 | 0.0930 |
+| openai/whisper-large-v3 | 1.55B | 5994 | 2050 | 15.72 | no | 0.2992 | - |
 | nvidia/parakeet-ctc-0.6b | 600M | 201.77 | 201.44 | 5214285 | yes | 0.0101 | 0.0930 |
 | nvidia/parakeet-tdt-0.6b-v3 | 600M | 718.91 | 718.82 | 3583333 | yes | 0.0359 | 0.0465 |
 | nvidia/parakeet-ctc-1.1b | 1.1B | 279.03 | 278.92 | 4562500 | yes | 0.0139 | 0.1628 |
 | snakers4/silero-vad | - | - | - | - | - | - | - |
+| pyannote/segmentation-3.0 | - | - | - | - | - | - | - |
+| pyannote/wespeaker-voxceleb-resnet34-LM | - | - | - | - | - | - | - |
 
 ## Supported LLMs
 
@@ -176,21 +179,27 @@ graph.hard_reset();
 | google/gemma-3-270m-it | completion |
 | google/functiongemma-270m-it | tools |
 | google/gemma-3-1b-it | completion, gated |
+| google/gemma-4-E2B-it | completion, tools, embed, vision, speech|
 | google/gemma-3n-E2B-it | completion, tools |
+| google/gemma-4-E4B-it | completion, tools, embed, vision, speech|
 | google/gemma-3n-E4B-it | completion, tools |
+| google/gemma-4-E2B-it | vision, audio, completion, tools, Apple NPU |
+| google/gemma-4-E4B-it | vision, audio, completion, tools, Apple NPU |
 | Qwen/Qwen3-0.6B | completion, tools, embed | 
 | Qwen/Qwen3-Embedding-0.6B | embed | 
 | Qwen/Qwen3.5-0.8B | vision, completion, tools, embed |
 | Qwen/Qwen3-1.7B | completion, tools, embed | 
 | Qwen/Qwen3.5-2B | vision, completion, tools, embed | 
-| LiquidAI/LFM2-350M | completion, tools, embed |
+| LiquidAI/LFM2.5-350M | completion, tools, embed |
 | LiquidAI/LFM2-700M | completion, tools, embed |
 | LiquidAI/LFM2-8B-A1B | completion, tools, embed |
 | LiquidAI/LFM2.5-1.2B-Thinking | completion, tools, embed |
 | LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |
 | LiquidAI/LFM2-2.6B | completion, tools, embed |
 | LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |
+| LiquidAI/LFM2.5-VL-450M | vision, txt & img embed, Apple NPU |
 | LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |
+| tencent/Youtu-LLM-2B | completion, tools, embed |
 | nomic-ai/nomic-embed-text-v2-moe | embed |
 
 ## Roadmap
@@ -236,7 +245,7 @@ graph.hard_reset();
 │    --token <token>                   HF token (gated models)                 │
 │    --reconvert                       force reconversion from source          │
 │                                                                              │
-│  cactus transcribe [model]           live mic transcription (parakeet-1.1b)  │
+│  cactus transcribe [model]           live mic transcription (parakeet-tdt-0.6b-v3) │
 │    --file <audio.wav>                transcribe file instead of mic          │
 │    --precision INT4|INT8|FP16        quantization (default: INT4)            │
 │    --token <token>                   HF token (gated models)                 │
@@ -319,4 +328,4 @@ If you use Cactus in your research, please cite it as follows:
 [reddit-url]: https://www.reddit.com/r/cactuscompute/
 
 [blog-shield]: https://img.shields.io/badge/Blog-555?style=for-the-badge&logo=hashnode&logoColor=white
-[blog-url]: https://cactus-compute.github.io/cactus/blog/
+[blog-url]: https://cactuscompute.com/blog

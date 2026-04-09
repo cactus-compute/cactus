@@ -6,10 +6,12 @@
 #include <stdexcept>
 
 void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& logits_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& logits_buffer = get_input(node, 0, nodes, node_index_map);
 
     float temperature = node.params.temperature;
     float top_p = node.params.top_p;
+    float min_p = node.params.min_p;
+    float repetition_penalty = node.params.repetition_penalty;
     size_t top_k = node.params.top_k;
     size_t random_seed = node.params.random_seed;
 
@@ -27,19 +29,19 @@ void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 
     if (logits_buffer.precision == Precision::FP16) {
         const __fp16* logits_fp16 = logits_buffer.data_as<__fp16>();
-        cactus_sample_f16(logits_fp16 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
-                         vocab_size, temperature, top_p, top_k, random_seed,
-                         bias_values, bias_indices, bias_count);
+        cactus_sample_f16_ex(logits_fp16 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
+                             vocab_size, temperature, top_p, min_p, repetition_penalty, top_k, random_seed,
+                             bias_values, bias_indices, bias_count);
     } else {
         const float* logits_fp32 = logits_buffer.data_as<float>();
-        cactus_sample_f32(logits_fp32 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
-                         vocab_size, temperature, top_p, top_k, random_seed,
-                         bias_values, bias_indices, bias_count);
+        cactus_sample_f32_ex(logits_fp32 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
+                             vocab_size, temperature, top_p, min_p, repetition_penalty, top_k, random_seed,
+                             bias_values, bias_indices, bias_count);
     }
 }
 
 void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     if (input_buffer.shape.size() != 2) {
         throw std::runtime_error("TopK currently only supports 2D tensors [batch, features]");
     }
@@ -87,8 +89,8 @@ void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphN
 }
 
 void compute_scatter_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& indices_buffer = nodes[node_index_map.at(node.input_ids[0])]->output_buffer;
-    const auto& values_buffer = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    const auto& indices_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& values_buffer = get_input(node, 1, nodes, node_index_map);
 
     if (indices_buffer.shape != values_buffer.shape) {
         throw std::runtime_error("ScatterTopK requires indices and values with identical shapes");

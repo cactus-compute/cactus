@@ -540,7 +540,7 @@ void benchmark_attention(TestUtils::TestRunner& runner, const BenchmarkConfig& c
     {
         // Qwen3 0.6B config — simulates prefill
         size_t batch_size = 1;
-        size_t seq_len = 1024;
+        size_t seq_len = 256;
         size_t num_heads = 16;
         size_t head_dim = 128;
         size_t total_elements = batch_size * seq_len * num_heads * head_dim;

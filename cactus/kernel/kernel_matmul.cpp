@@ -209,7 +209,12 @@ void cactus_matmul_f16(
                     BT_f32.data(), (int)K,
                     0.0f, C_f32.data(), (int)N);
 
-        for (size_t i = 0; i < c_len; i++) c[i] = (__fp16)C_f32[i];
+        for (size_t i = 0; i < c_len; i++) {
+            float v = C_f32[i];
+            if (v > 65504.f) v = 65504.f;
+            else if (v < -65504.f) v = -65504.f;
+            c[i] = (__fp16)v;
+        }
         return;
     }
 #endif
@@ -509,6 +514,17 @@ void cactus_matmul_int8(
     size_t group_size
 ) {
     if (M == 0 || K == 0 || N == 0) return;
+
+#if defined(CACTUS_COMPILE_I8MM)
+    if (cpu_has_i8mm()) {
+        if (M == 1) {
+            cactus_gemv_int8_i8mm(A, A_scales[0], B, B_scales, C, K, N, group_size);
+        } else {
+            cactus_gemm_int8_i8mm(A, A_scales, B, B_scales, C, M, K, N, group_size);
+        }
+        return;
+    }
+#endif
 
     if (M == 1) {
         cactus_gemv_int8(A, A_scales[0], B, B_scales, C, K, N, group_size);

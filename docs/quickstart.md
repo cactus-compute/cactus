@@ -156,7 +156,7 @@ Install Cactus and run your first on-device AI completion.
 === "CLI"
 
     ```bash
-    cactus run LiquidAI/LFM2-350M
+    cactus run LiquidAI/LFM2.5-350M
     ```
 
 === "C++"

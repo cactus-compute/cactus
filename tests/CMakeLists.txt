@@ -388,6 +388,7 @@ message(STATUS "Added benchmark: e2e_bench")
 
 file(GLOB TEST_SOURCES "test_*.cpp")
 list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_utils.cpp")
+list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_perplexity.cpp")
 
 foreach(TEST_FILE ${TEST_SOURCES})
 
@@ -461,11 +462,11 @@ foreach(APP_NAME chat asr attn_e2e_bench)
             )
         endif()
 
-        if(SDL2_FOUND AND APP_NAME STREQUAL "asr")
+        if(SDL2_FOUND AND (APP_NAME STREQUAL "asr" OR APP_NAME STREQUAL "chat"))
             target_link_libraries(${APP_NAME} PRIVATE ${SDL2_LIBRARIES})
             target_include_directories(${APP_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
             target_compile_definitions(${APP_NAME} PRIVATE HAVE_SDL2)
-            message(STATUS "asr will link with SDL2 for live transcription")
+            message(STATUS "${APP_NAME} will link with SDL2 for live audio")
         endif()
 
         target_include_directories(${APP_NAME} PRIVATE ${CACTUS_ROOT})

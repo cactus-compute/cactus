@@ -56,7 +56,9 @@ void run_pass(cactus_model_t model, const Variant& v, int num_reps,
             options.c_str(),
             nullptr,
             bench_callback,
-            &state
+            &state,
+            nullptr,
+            0
         );
 
         if (result < 0) {

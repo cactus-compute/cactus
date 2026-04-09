@@ -6,7 +6,8 @@ EMBED_NAMES = [
     'embeddings.weight',
     'transformer.wte.weight',
     'model.decoder.embed_tokens.weight',
-    'decoder.embed_tokens.weight'
+    'decoder.embed_tokens.weight',
+    'token_embeddings'
 ]
 
 MOONSHINE_GLOBAL_WEIGHTS = [
@@ -111,6 +112,19 @@ GEMMA3N_GLOBAL_WEIGHTS = [
 GEMMA3N_VISION_TOWER_PREFIX = 'model.vision_tower.timm_model.'
 GEMMA3N_AUDIO_TOWER_PREFIX = 'model.audio_tower.'
 
+GEMMA4_GLOBAL_WEIGHTS = [
+    ('model.language_model.embed_tokens_per_layer.weight', 'embed_tokens_per_layer.weights'),
+    ('model.language_model.per_layer_model_projection.weight', 'per_layer_model_proj.weights'),
+    ('model.language_model.per_layer_projection_norm.weight', 'per_layer_proj_norm.weights'),
+    ('model.embed_vision.embedding.weight', 'embed_vision_embedding.weights'),
+    ('model.embed_vision.embedding_projection.weight', 'embed_vision_proj.weights'),
+    ('model.embed_audio.embedding.weight', 'embed_audio_embedding.weights'),
+    ('model.embed_audio.embedding_projection.weight', 'embed_audio_proj.weights'),
+]
+
+GEMMA4_VISION_TOWER_PREFIX = 'model.vision_tower.'
+GEMMA4_AUDIO_TOWER_PREFIX = 'model.audio_tower.'
+
 WHISPER_GLOBAL_WEIGHTS = [
     ('decoder.embed_tokens.weight', 'decoder_token_embeddings.weights'),
     ('decoder.embed_positions.weight', 'decoder_position_embeddings.weights'),
@@ -130,11 +144,19 @@ WHISPER_GLOBAL_WEIGHTS = [
 def get_layer_weight_patterns(i, precision, model_type=None, skip_kv=False):
     is_whisper = model_type == 'whisper'
     is_qwen_family = isinstance(model_type, str) and ('qwen' in model_type)
+    is_youtu = model_type == 'youtu'
 
     patterns = [
-        (['self_attn.q_proj.weight', 'attn.q_proj.weight', 'attn.c_attn.weight'], precision, f'layer_{i}_attn_q.weights', False) if not is_whisper else None,
-        (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False) if not is_whisper and not skip_kv else None,
-        (['self_attn.v_proj.weight', 'attn.v_proj.weight'], precision, f'layer_{i}_attn_v.weights', False) if not is_whisper and not skip_kv else None,
+        # Youtu MLA attention weights
+        (['self_attn.q_a_proj.weight'], precision, f'layer_{i}_attn_q_a.weights', False) if is_youtu else None,
+        (['self_attn.q_a_layernorm.weight'], precision, f'layer_{i}_attn_q_a_norm.weights', False) if is_youtu else None,
+        (['self_attn.q_b_proj.weight'], precision, f'layer_{i}_attn_q_b.weights', False) if is_youtu else None,
+        (['self_attn.kv_a_proj_with_mqa.weight'], precision, f'layer_{i}_attn_kv_a.weights', False) if is_youtu else None,
+        (['self_attn.kv_a_layernorm.weight'], precision, f'layer_{i}_attn_kv_a_norm.weights', False) if is_youtu else None,
+        (['self_attn.kv_b_proj.weight'], precision, f'layer_{i}_attn_kv_b.weights', False) if is_youtu else None,
+        (['self_attn.q_proj.weight', 'attn.q_proj.weight', 'attn.c_attn.weight'], precision, f'layer_{i}_attn_q.weights', False) if not is_whisper and not is_youtu else None,
+        (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False) if not is_whisper and not skip_kv and not is_youtu else None,
+        (['self_attn.v_proj.weight', 'attn.v_proj.weight'], precision, f'layer_{i}_attn_v.weights', False) if not is_whisper and not skip_kv and not is_youtu else None,
         (['self_attn.o_proj.weight', 'attn.o_proj.weight', 'attn.c_proj.weight', 'self_attn.out_proj.weight'], precision, f'layer_{i}_attn_output.weights', False) if not is_whisper else None,
         # Qwen3.5 linear-attention path
         (['linear_attn.in_proj_qkv.weight'], precision, f'layer_{i}_linear_attn_qkv.weights', False) if is_qwen_family else None,
@@ -175,9 +197,18 @@ def get_layer_weight_patterns(i, precision, model_type=None, skip_kv=False):
         (['feed_forward.experts.{channel}.w1.weight'], precision, f'layer_{i}_moe_expert_{{channel}}_w1.weights', False),
         (['feed_forward.experts.{channel}.w3.weight'], precision, f'layer_{i}_moe_expert_{{channel}}_w3.weights', False),
         (['feed_forward.experts.{channel}.w2.weight'], precision, f'layer_{i}_moe_expert_{{channel}}_w2.weights', False),
+        (['moe.gate_proj'], precision, f'layer_{i}_moe_gate_proj.weights', False),
+        (['moe.up_proj'], precision, f'layer_{i}_moe_up_proj.weights', False),
+        (['moe.down_proj'], precision, f'layer_{i}_moe_down_proj.weights', False),
+        (['moe.per_expert_scale'], 'FP16', f'layer_{i}_moe_per_expert_scale.weights', False),
+        (['router.proj.weight'], precision, f'layer_{i}_router_proj.weights', False),
+        (['router.scale'], 'FP16', f'layer_{i}_router_scale.weights', False),
         (['post_attention_layernorm.weight', 'ln_2.weight', 'ffn_norm.weight', 'norm2.weight'], precision, f'layer_{i}_post_attn_norm.weights', False),
         (['pre_feedforward_layernorm.weight'], precision, f'layer_{i}_pre_ffn_norm.weights', False),
         (['post_feedforward_layernorm.weight'], precision, f'layer_{i}_post_ffn_norm.weights', False),
+        (['post_feedforward_layernorm_1.weight'], precision, f'layer_{i}_post_ffn_norm_1.weights', False),
+        (['post_feedforward_layernorm_2.weight'], precision, f'layer_{i}_post_ffn_norm_2.weights', False),
+        (['pre_feedforward_layernorm_2.weight'], precision, f'layer_{i}_pre_ffn_norm_2.weights', False),
         (['conv.in_proj.weight'], precision, f'layer_{i}_conv_in_proj.weights', False),
         (['conv.out_proj.weight'], precision, f'layer_{i}_conv_out_proj.weights', False),
         (['conv.conv.weight'], precision, f'layer_{i}_conv_depthwise.weights', False),

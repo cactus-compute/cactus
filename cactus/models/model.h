@@ -285,10 +285,7 @@ public:
     virtual size_t forward_vision(CactusGraph* gb, 
                          const Siglip2Preprocessor::PreprocessedImage& preprocessed_image,
                          ComputeBackend backend);
-    std::vector<float> get_image_features(const std::string& image_path);
-    std::vector<float> get_image_features(const Siglip2Preprocessor::PreprocessedImage& preprocessed_image);
     std::vector<float> get_image_embedding(const std::string& image_path);
-    size_t get_image_features_node(const Siglip2Preprocessor::PreprocessedImage& preprocessed_image);
     Siglip2Preprocessor& get_preprocessor() { return preprocessor_; }
     const Siglip2Preprocessor& get_preprocessor() const { return preprocessor_; }
 
@@ -630,6 +627,7 @@ protected:
 
     uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
                                     float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                                    float min_p = 0.15f, float repetition_penalty = 1.1f,
                                     float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
 
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
@@ -658,7 +656,6 @@ private:
         size_t encoder_output;
 
         struct LayerWeights {
-            //Decoder layers
             size_t decoder_output_norm_bias;
             size_t decoder_output_norm_weight;
             size_t decoder_position_embeddings_weight;
@@ -839,6 +836,8 @@ private:
     std::unique_ptr<npu::NPUEncoder> npu_encoder_;
     bool use_npu_encoder_ = false;
 
+    uint32_t enc_layers_ = 0;
+    uint32_t dec_layers_ = 0;
 };
 
 
@@ -901,6 +900,7 @@ protected:
 
     uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
                                     float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                                    float min_p = 0.15f, float repetition_penalty = 1.1f,
                                     float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
 
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
@@ -1032,6 +1032,7 @@ protected:
     uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
                                float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0,
                                const std::string& profile_file = "", float* out_entropy = nullptr,
+                               float min_p = 0.15f, float repetition_penalty = 1.1f,
                                float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
     void reset_cache() override;
@@ -1120,6 +1121,7 @@ private:
 
     std::unique_ptr<npu::NPUEncoder> npu_encoder_;
     bool use_npu_encoder_ = false;
+    bool has_cpu_encoder_weights_ = false;
 };
 
 class ParakeetTDTModel : public Model {
@@ -1127,6 +1129,36 @@ public:
     ParakeetTDTModel();
     explicit ParakeetTDTModel(const Config& config);
     ~ParakeetTDTModel() override = default;
+
+    struct TDTToken { uint32_t id; float time_start; float time_end; };
+
+    struct ChunkStreamState {
+        bool initialized = false;
+        uint32_t last_token = 0;
+        std::vector<std::vector<__fp16>> h;
+        std::vector<std::vector<__fp16>> c;
+    };
+
+    struct ChunkStreamResult {
+        std::string text;
+        std::string confirmed_text;
+        std::string pending_text;
+        size_t token_count = 0;
+        size_t confirmed_token_count = 0;
+        double raw_decoder_tps = 0.0;
+        double raw_decoder_time_ms = 0.0;
+        float start_sec = 0.0f;
+        float confirmed_end_sec = 0.0f;
+        float resume_end_sec = 0.0f;
+        float end_sec = 0.0f;
+    };
+
+    ChunkStreamResult decode_chunk_stream(
+        const std::vector<float>& audio_features,
+        size_t replay_start_frame,
+        size_t start_frame,
+        size_t end_frame,
+        ChunkStreamState& state);
 
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
@@ -1150,6 +1182,7 @@ protected:
     uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
                                float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0,
                                const std::string& profile_file = "", float* out_entropy = nullptr,
+                               float min_p = 0.15f, float repetition_penalty = 1.1f,
                                float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
     void reset_cache() override;
@@ -1162,7 +1195,15 @@ private:
     size_t build_feed_forward(CactusGraph* gb, size_t hidden, uint32_t layer_idx, bool second_ff, ComputeBackend backend);
     size_t build_convolution_module(CactusGraph* gb, size_t hidden, uint32_t layer_idx, ComputeBackend backend);
     size_t build_encoder_block(CactusGraph* gb, size_t hidden, size_t position_embeddings, uint32_t layer_idx, ComputeBackend backend);
-    struct TDTToken { uint32_t id; float time_start; float time_end; };
+    std::vector<TDTToken> decode_tdt_tokens_with_state(
+        CactusGraph* gb,
+        size_t encoder_hidden_node,
+        size_t replay_start_frame,
+        size_t start_frame,
+        size_t end_frame,
+        ChunkStreamState* stream_state,
+        size_t* out_confirmed_count = nullptr,
+        double* out_raw_decoder_time_ms = nullptr) const;
     std::vector<TDTToken> greedy_decode_tdt_tokens(CactusGraph* gb, size_t encoder_hidden_node) const;
 
     struct WeightNodeIDs {
@@ -1250,6 +1291,7 @@ private:
 
     std::unique_ptr<npu::NPUEncoder> npu_encoder_;
     bool use_npu_encoder_ = false;
+    bool has_cpu_encoder_weights_ = false;
 };
 
 
@@ -1267,7 +1309,9 @@ public:
                       float top_p = -1.0f,
                       size_t top_k = 0,
                       const std::string& profile_file = "",
-                      float* out_entropy = nullptr) override;
+                      float* out_entropy = nullptr,
+                      float min_p = 0.15f,
+                      float repetition_penalty = 1.1f) override;
 
     void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "") override;
 
@@ -1281,7 +1325,9 @@ public:
         float top_p = -1.0f,
         size_t top_k = 0,
         const std::string& profile_file = "",
-        float* out_entropy = nullptr) override;
+        float* out_entropy = nullptr,
+        float min_p = 0.15f,
+        float repetition_penalty = 1.1f) override;
 
     void reset_cache() override;
     std::vector<float> get_image_embeddings(const std::string& image_path) override;
@@ -1454,5 +1500,180 @@ private:
     std::string weights_path_;
 };
 
+class YoutuModel : public Model {
+public:
+    YoutuModel();
+    explicit YoutuModel(const Config& config);
+    ~YoutuModel() override = default;
+
+    void reset_cache() override;
+
+protected:
+    size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                    ComputeBackend backend) const override;
+
+    size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+    void load_weights_to_graph(CactusGraph* gb) override;
+    std::vector<size_t> get_kv_layer_dims() const override;
+    void post_init() override;
+    void post_execute_updates(CactusGraph* gb, size_t seq_len) override;
+
+private:
+    KVCache v_cache_;
+    std::vector<size_t> cache_v_nodes_;
+
+    struct WeightNodeIDs {
+        size_t output_weight = 0;
+        size_t output_norm_weight = 0;
+
+        struct LayerWeights {
+            size_t attn_q_weight = 0;
+            size_t attn_q_a_weight = 0;
+            size_t attn_q_a_norm_weight = 0;
+            size_t attn_q_b_weight = 0;
+            size_t attn_kv_a_weight = 0;
+            size_t attn_kv_a_norm_weight = 0;
+            size_t attn_kv_b_weight = 0;
+            size_t attn_output_weight = 0;
+            size_t input_layernorm_weight = 0;
+            size_t post_attention_layernorm_weight = 0;
+            size_t ffn_gate_weight = 0;
+            size_t ffn_up_weight = 0;
+            size_t ffn_down_weight = 0;
+            size_t attn_q_a_bias = 0;
+            size_t attn_kv_a_bias = 0;
+            size_t attn_output_bias = 0;
+        };
+
+        std::vector<LayerWeights> layers;
+    } weight_nodes_;
+};
+
+class PyAnnoteModel : public Model {
+public:
+    PyAnnoteModel();
+    explicit PyAnnoteModel(const Config& config);
+    ~PyAnnoteModel() override = default;
+
+    bool init(const std::string& model_folder, size_t context_size = 0,
+              const std::string& system_prompt = "", bool do_warmup = false) override;
+
+    std::vector<float> diarize(const float* pcm_f32, size_t num_samples, size_t step_samples = 16000);
+
+protected:
+    size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("PyAnnote: build_attention unused");
+    }
+
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("PyAnnote: build_mlp unused");
+    }
+
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("PyAnnote: build_transformer_block unused");
+    }
+
+    size_t forward(const std::vector<uint32_t>&, bool = false) override {
+        throw std::runtime_error("PyAnnote: use diarize() instead");
+    }
+
+    void load_weights_to_graph(CactusGraph* gb) override;
+
+private:
+    void build_graph();
+
+    struct LSTMLayerWeights {
+        size_t w_ih_fwd, w_hh_fwd, b_ih_fwd, b_hh_fwd;
+        size_t w_ih_bwd, w_hh_bwd, b_ih_bwd, b_hh_bwd;
+    };
+
+    struct WeightNodeIDs {
+        size_t sinc_filters;
+        size_t wav_norm_weight, wav_norm_bias;
+        size_t norm0_weight, norm0_bias;
+        size_t conv1_weight, conv1_bias;
+        size_t norm1_weight, norm1_bias;
+        size_t conv2_weight, conv2_bias;
+        size_t norm2_weight, norm2_bias;
+        LSTMLayerWeights lstm_layers[4];
+        size_t linear0_weight, linear0_bias;
+        size_t linear1_weight, linear1_bias;
+        size_t classifier_weight, classifier_bias;
+    } weight_nodes_;
+
+    CactusGraph graph_;
+    size_t audio_input_ = 0;
+    size_t output_node_ = 0;
+    std::vector<float> hamming_;
+    std::vector<__fp16> chunk_buf_;
+};
+
+class WeSpeakerModel : public Model {
+public:
+    WeSpeakerModel();
+    explicit WeSpeakerModel(const Config& config);
+    ~WeSpeakerModel() override = default;
+
+    bool init(const std::string& model_folder, size_t context_size = 0,
+              const std::string& system_prompt = "", bool do_warmup = false) override;
+
+    std::vector<float> embed(const float* fbank_features, size_t num_features);
+
+protected:
+    size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("WeSpeaker: build_attention unused");
+    }
+
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("WeSpeaker: build_mlp unused");
+    }
+
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
+        throw std::runtime_error("WeSpeaker: build_transformer_block unused");
+    }
+
+    size_t forward(const std::vector<uint32_t>&, bool = false) override {
+        throw std::runtime_error("WeSpeaker: use embed() instead");
+    }
+
+    void load_weights_to_graph(CactusGraph* gb) override;
+
+private:
+    void build_graph(size_t num_frames);
+
+    struct ResBlockWeights {
+        size_t conv1_w, conv2_w;
+        size_t bn1_w, bn1_b, bn1_mean, bn1_var;
+        size_t bn2_w, bn2_b, bn2_mean, bn2_var;
+        size_t shortcut_conv_w;
+        size_t shortcut_bn_w, shortcut_bn_b, shortcut_bn_mean, shortcut_bn_var;
+        bool has_shortcut = false;
+    };
+
+    static ResBlockWeights load_resblock(CactusGraph* gb, const std::string& prefix, bool has_shortcut);
+    static size_t build_resblock(CactusGraph* gb, size_t x, const ResBlockWeights& rb, bool stride2);
+
+    struct WeightNodeIDs {
+        size_t conv1_w;
+        size_t bn1_w, bn1_b, bn1_mean, bn1_var;
+        std::vector<ResBlockWeights> layer1, layer2, layer3, layer4;
+        size_t seg1_w, seg1_b;
+    } weight_nodes_;
+
+    CactusGraph graph_;
+    size_t audio_input_ = 0;
+    size_t output_node_ = 0;
+    size_t current_num_frames_ = 0;
+    std::vector<__fp16> input_buf_;
+};
+
 }
 }
+
+#include "gemma4/model_gemma4.h"

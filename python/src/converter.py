@@ -2,19 +2,50 @@ import os
 import re
 from pathlib import Path
 
+import numpy as np
 try:
     import torch
 except ImportError:
     torch = None
 
 from .tensor_io import save_tensor_with_header, create_quantization_stats, print_quantization_summary
-from .config_utils import cfg_get, detect_model_type, extract_base_config, extract_vision_config, extract_lfm2_config, extract_moonshine_config, extract_complex_gemma_config
+from .config_utils import cfg_get, detect_model_type, extract_base_config, extract_vision_config, extract_lfm2_config, is_vlm_model, extract_moonshine_config, extract_complex_gemma_config, extract_audio_config, extract_youtu_config
 from .weight_patterns import (
     EMBED_NAMES, OUTPUT_NAMES, OUTPUT_NORM_NAMES, LAYER_PREFIXES,
     VISION_ITEMS, PROJECTOR_WEIGHTS, WHISPER_GLOBAL_WEIGHTS, MOONSHINE_GLOBAL_WEIGHTS,
     GEMMA3N_GLOBAL_WEIGHTS, GEMMA3N_VISION_TOWER_PREFIX, GEMMA3N_AUDIO_TOWER_PREFIX,
+    GEMMA4_GLOBAL_WEIGHTS, GEMMA4_VISION_TOWER_PREFIX, GEMMA4_AUDIO_TOWER_PREFIX,
     get_layer_weight_patterns, get_vision_layer_weights
 )
+
+
+def _remap_gemma4_audio_keys(state_dict):
+    """Remap Gemma-4 audio tower keys from checkpoint naming to HF model naming.
+
+    The gg-hf-gg/gemma-4-e2b-it checkpoint uses an older naming convention
+    for audio encoder weights that doesn't match the HF Gemma4 model class.
+    When HF loads the model, these weights end up as randomly initialized.
+    This function remaps them so the converter gets the real trained weights.
+    """
+    remapped = {}
+    for key, value in state_dict.items():
+        if 'audio_tower' not in key:
+            remapped[key] = value
+            continue
+        new_key = key
+        new_key = re.sub(r'subsample_conv_projection\.layer(\d+)\.', r'subsample_conv_projection.conv_\1.', new_key)
+        new_key = re.sub(r'audio_tower\.layers\.', 'audio_tower.conformer.', new_key)
+        new_key = new_key.replace('.feed_forward1.', '.ffw_layer_start.')
+        new_key = new_key.replace('.feed_forward2.', '.ffw_layer_end.')
+        new_key = re.sub(r'\.self_attn\.(q_proj|k_proj|v_proj)\.', r'.attention.attn.\1.', new_key)
+        new_key = new_key.replace('.self_attn.per_dim_scale', '.attention.attn.per_dim_scale')
+        new_key = new_key.replace('.self_attn.relative_k_proj.', '.attention.attn.relative_position_embedding.pos_proj.')
+        new_key = new_key.replace('.self_attn.post.', '.attention.post.')
+        new_key = new_key.replace('.norm_pre_attn.', '.attention.pre_attn_norm.')
+        new_key = new_key.replace('.norm_post_attn.', '.attention.post_norm.')
+        new_key = re.sub(r'\.norm_out\.', '.norm.', new_key)
+        remapped[new_key] = value
+    return remapped
 
 
 def _find_first_key(state_dict, candidates):
@@ -34,6 +65,10 @@ def _gemma_tower_output_name(hf_key, strip_prefix, add_prefix):
         ext = '.bias'
     else:
         ext = '.weights'
+    if name.endswith('.linear'):
+        name = name[:-len('.linear')]
+    elif name.endswith('_linear'):
+        name = name[:-len('_linear')]
     name = name.replace('.', '_')
     return add_prefix + name + ext
 
@@ -45,8 +80,38 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
 
     state_dict = model.state_dict()
     root_config = model.config
+    model_name = getattr(model, 'name_or_path', '') or ''
     del model
     gc.collect()
+
+    # Fix Gemma-4 audio tower weights: the checkpoint may use old key names
+    # that HF can't map, leaving audio weights randomly initialized.
+    # Detect this by checking if clip bounds are inf (default init value).
+    audio_needs_fix = False
+    for k, v in state_dict.items():
+        if 'audio_tower' in k and 'input_max' in k:
+            if torch.isinf(v).any():
+                audio_needs_fix = True
+                break
+    if audio_needs_fix and model_name:
+        try:
+            from huggingface_hub import hf_hub_download
+            from safetensors.torch import load_file
+            sf_path = hf_hub_download(repo_id=model_name, filename='model.safetensors')
+            raw_sd = load_file(sf_path)
+            remapped = _remap_gemma4_audio_keys(raw_sd)
+            # Replace audio tower keys in state_dict with correctly loaded ones
+            audio_prefix = 'model.audio_tower.'
+            for k in list(state_dict.keys()):
+                if k.startswith(audio_prefix):
+                    del state_dict[k]
+            for k, v in remapped.items():
+                if k.startswith(audio_prefix):
+                    state_dict[k] = v
+            print("  Fixed audio tower weights from checkpoint (key remapping applied)")
+        except Exception as e:
+            print(f"  Warning: Could not fix audio tower weights: {e}")
+
     saved_tensor_full_names = set()
 
     text_config = cfg_get(root_config, 'text_config', None)
@@ -58,12 +123,19 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
     model_type_str = str(cfg_get(config, 'model_type', cfg_get(root_config, 'model_type', '')) or '').lower().strip()
     tie_word_embeddings = cfg_get(config, 'tie_word_embeddings', cfg_get(root_config, 'tie_word_embeddings', None))
     if tie_word_embeddings is None:
-        # HF snapshots for lfm2_moe may omit this field; runtime expects tied embeddings by default.
-        tie_word_embeddings = (model_type_str == 'lfm2_moe')
+        # HF snapshots for lfm2_moe/gemma3n may omit this field; runtime expects tied embeddings by default.
+        tie_word_embeddings = (model_type_str == 'lfm2_moe' or 'gemma3n' in model_type_str)
     else:
         tie_word_embeddings = bool(tie_word_embeddings)
 
     detected_model_type = detect_model_type(config, root_config, output_dir)
+    if detected_model_type == 'gemma4':
+        # Normalize Gemma-4 audio tower naming variants (legacy -> runtime expected)
+        # before exporting filenames so generated weights match the C++ loader.
+        remapped_state_dict = _remap_gemma4_audio_keys(state_dict)
+        if set(remapped_state_dict.keys()) != set(state_dict.keys()):
+            print("  Normalized gemma4 audio tower key naming for conversion")
+        state_dict = remapped_state_dict
 
     model_config = extract_base_config(config, root_config)
     model_config['tie_word_embeddings'] = tie_word_embeddings
@@ -74,8 +146,22 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
 
     if detected_model_type == 'gemma3n':
         model_config.update(extract_complex_gemma_config(config, root_config))
+    elif detected_model_type == 'gemma4':
+        model_config.update(extract_complex_gemma_config(config, root_config))
+        audio_cfg = cfg_get(root_config, 'audio_config', cfg_get(config, 'audio_config', None))
+        if audio_cfg is not None:
+            model_config.update(extract_audio_config(root_config, audio_cfg))
+        # New models don't use weight pre-scaling; HF inference uses raw weights.
+        if audio_cfg is not None and not bool(cfg_get(audio_cfg, 'fft_overdrive', False)):
+            if args is None:
+                class _Args:
+                    pass
+                args = _Args()
+            args.weight_scale = 1.0
     elif detected_model_type == 'lfm2':
         model_config.update(extract_lfm2_config(config))
+    elif detected_model_type == 'youtu':
+        model_config.update(extract_youtu_config(config))
     elif detected_model_type == 'moonshine':
         model_config.update(extract_moonshine_config(config))
     elif detected_model_type == 'parakeet':
@@ -212,6 +298,9 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 save_tensor_with_header(state_dict[name], output_dir / save_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                 saved_tensor_full_names.add(name)
         embedding_found = True
+        model_config['num_mel_bins'] = int(cfg_get(config, 'num_mel_bins', 80))
+        model_config['num_encoder_layers'] = int(cfg_get(config, 'encoder_layers', model_config['num_layers']))
+        model_config['num_decoder_layers'] = int(cfg_get(config, 'decoder_layers', model_config['num_layers']))
 
     elif model_type_str == 'moonshine':
         for name, save_name in MOONSHINE_GLOBAL_WEIGHTS:
@@ -227,6 +316,14 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         model_config['enc_hidden_act'] = config.encoder_hidden_act
         model_config['num_encoder_layers'] = config.encoder_num_hidden_layers
         model_config['num_decoder_layers'] = config.decoder_num_hidden_layers
+
+    # Whisper: ensure num_layers = max(enc, dec) so the weight loader covers both.
+    if model_type_str == 'whisper':
+        enc_l = int(model_config.get('num_encoder_layers', 0))
+        dec_l = int(model_config.get('num_decoder_layers', 0))
+        if enc_l > 0 or dec_l > 0:
+            num_layers = max(enc_l, dec_l, num_layers)
+            model_config['num_layers'] = num_layers
 
     if embedding_found:
         embedding_norm_names = {'emb_ln.weight': 'embedding_layernorm.weight', 'emb_ln.bias': 'embedding_layernorm.bias'}
@@ -362,6 +459,42 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 out_name = _gemma_tower_output_name(hf_key, GEMMA3N_AUDIO_TOWER_PREFIX, 'audio_')
                 save_tensor_with_header(state_dict[hf_key], output_dir / out_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                 saved_tensor_full_names.add(hf_key)
+
+    if detected_model_type == 'gemma4':
+        pli_key = 'model.language_model.embed_tokens_per_layer.weight'
+        if pli_key in state_dict:
+            pli_tensor = state_dict[pli_key]
+            main_vocab = int(model_config.get('vocab_size', pli_tensor.shape[0]))
+            if pli_tensor.shape[0] < main_vocab:
+                pad_rows = main_vocab - pli_tensor.shape[0]
+                state_dict[pli_key] = torch.cat([pli_tensor, pli_tensor[0:1].expand(pad_rows, -1)], dim=0)
+
+        for name, save_name in GEMMA4_GLOBAL_WEIGHTS:
+            if name in state_dict:
+                save_tensor_with_header(state_dict[name], output_dir / save_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                saved_tensor_full_names.add(name)
+
+        text_hidden = int(model_config.get('hidden_dim', 0))
+        assert text_hidden > 0, "Hidden dim must be specified in config for gemma4 model"
+        proj_norm = np.ones(text_hidden, dtype=np.float32)
+        save_tensor_with_header(proj_norm, output_dir / 'embed_vision_post_proj_norm.weights', 'FP16',
+                                stats_tracker=quantization_stats, model_type=detected_model_type)
+
+        for hf_key in sorted(state_dict.keys()):
+            if hf_key.startswith(GEMMA4_VISION_TOWER_PREFIX) and hf_key not in saved_tensor_full_names:
+                out_name = _gemma_tower_output_name(hf_key, GEMMA4_VISION_TOWER_PREFIX, 'vision_')
+                save_tensor_with_header(state_dict[hf_key], output_dir / out_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                saved_tensor_full_names.add(hf_key)
+                del state_dict[hf_key]
+
+        for hf_key in sorted(state_dict.keys()):
+            if hf_key.startswith(GEMMA4_AUDIO_TOWER_PREFIX) and hf_key not in saved_tensor_full_names:
+                out_name = _gemma_tower_output_name(hf_key, GEMMA4_AUDIO_TOWER_PREFIX, 'audio_')
+                save_tensor_with_header(state_dict[hf_key], output_dir / out_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                saved_tensor_full_names.add(hf_key)
+                del state_dict[hf_key]
+
+        gc.collect()
 
     missing_tensors = []
     if detected_model_type == 'parakeet':
@@ -987,6 +1120,82 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 print(f"Warning: Failed to bundle VAD weights: {e}")
 
     return model_config
+
+
+def convert_pyannote_weights(model, output_dir, precision="FP16", args=None):
+    precision = 'FP16'
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sd = model.state_dict()
+
+    def save(filename, key):
+        save_tensor_with_header(sd[key], output_dir / filename, precision=precision)
+
+    save("sincnet_wav_norm_weight.weights", "sincnet.wav_norm1d.weight")
+    save("sincnet_wav_norm_bias.weights", "sincnet.wav_norm1d.bias")
+
+    with torch.no_grad():
+        sinc_filters = model.sincnet.conv1d[0].filterbank.filters()
+    save_tensor_with_header(sinc_filters, output_dir / "sincnet_sinc_filters.weights", precision=precision)
+
+    save("sincnet_norm0_weight.weights", "sincnet.norm1d.0.weight")
+    save("sincnet_norm0_bias.weights", "sincnet.norm1d.0.bias")
+    save("sincnet_conv1_weight.weights", "sincnet.conv1d.1.weight")
+    save("sincnet_conv1_bias.weights", "sincnet.conv1d.1.bias")
+    save("sincnet_norm1_weight.weights", "sincnet.norm1d.1.weight")
+    save("sincnet_norm1_bias.weights", "sincnet.norm1d.1.bias")
+    save("sincnet_conv2_weight.weights", "sincnet.conv1d.2.weight")
+    save("sincnet_conv2_bias.weights", "sincnet.conv1d.2.bias")
+    save("sincnet_norm2_weight.weights", "sincnet.norm1d.2.weight")
+    save("sincnet_norm2_bias.weights", "sincnet.norm1d.2.bias")
+
+    for i in range(4):
+        for direction, suffix in [("fwd", ""), ("bwd", "_reverse")]:
+            for w in ["weight_ih", "weight_hh", "bias_ih", "bias_hh"]:
+                save(f"lstm_{direction}_{i}_{w}.weights", f"lstm.{w}_l{i}{suffix}")
+
+    save("linear_0_weight.weights", "linear.0.weight")
+    save("linear_0_bias.weights", "linear.0.bias")
+    save("linear_1_weight.weights", "linear.1.weight")
+    save("linear_1_bias.weights", "linear.1.bias")
+    save("classifier_weight.weights", "classifier.weight")
+    save("classifier_bias.weights", "classifier.bias")
+
+    config = {"model_type": "pyannote", "precision": precision}
+    config_path = output_dir / "config.txt"
+    with open(config_path, "w") as f:
+        for key, value in config.items():
+            f.write(f"{key}={value}\n")
+    return config
+
+
+def convert_wespeaker_weights(model, output_dir, precision="FP16", args=None):
+    precision = 'FP16'
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sd = model.state_dict()
+
+    for name, tensor in sorted(sd.items()):
+        if "num_batches_tracked" in name:
+            continue
+
+        # Shortcut 1x1 conv - pad to 3x3 to reuse conv2d_k3s2p1 kernel
+        if "shortcut.0.weight" in name:
+            C_out, C_in = tensor.shape[0], tensor.shape[1]
+            padded = torch.zeros(C_out, C_in, 3, 3, dtype=tensor.dtype)
+            padded[:, :, 1, 1] = tensor[:, :, 0, 0]
+            tensor = padded
+
+        save_tensor_with_header(tensor, output_dir / f"{name.replace('.', '_')}.weights", precision=precision)
+
+    config = {"model_type": "wespeaker", "precision": precision}
+    config_path = output_dir / "config.txt"
+    with open(config_path, "w") as f:
+        for key, value in config.items():
+            f.write(f"{key}={value}\n")
+    return config
 
 
 def convert_silero_vad_weights(model, output_dir, precision="FP16", args=None):

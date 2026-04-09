@@ -118,7 +118,7 @@ jobs:
           }
           convert_if_missing "Qwen/Qwen3-0.6B" "qwen3-0.6b" "INT8"
           convert_if_missing "nomic-ai/nomic-embed-text-v2-moe" "nomic-embed-text-v2-moe" "INT8"
-          convert_if_missing "LiquidAI/LFM2-350M" "lfm2-350m" "INT8"
+          convert_if_missing "LiquidAI/LFM2.5-350M" "lfm2-350m" "INT8"
           convert_if_missing "LiquidAI/LFM2-8B-A1B" "lfm2-8b-a1b" "INT8"
           convert_if_missing "google/gemma-3-270m-it" "gemma-3-270m-it" "INT8"
           convert_if_missing "openai/whisper-small" "whisper-small" "INT8"
