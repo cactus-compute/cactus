@@ -258,6 +258,7 @@ struct TokenizerRuntimeConfig {
 
 TokenizerRuntimeConfig load_tokenizer_runtime_config(const std::string& config_file);
 void load_special_tokens_map(const std::string& config_file, std::unordered_map<std::string, uint32_t>& special_tokens);
+void load_added_tokens_from_tokenizer_json(const std::string& tokenizer_json_file, std::unordered_map<std::string, uint32_t>& special_tokens);
 std::vector<std::string> split_with_special_tokens(const std::string& text, const std::unordered_map<std::string, uint32_t>& special_tokens);
 
 class Tokenizer {

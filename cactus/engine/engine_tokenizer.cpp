@@ -128,6 +128,54 @@ void load_special_tokens_map(const std::string& config_file, std::unordered_map<
     }
 }
 
+void load_added_tokens_from_tokenizer_json(const std::string& tokenizer_json_file,
+                                           std::unordered_map<std::string, uint32_t>& special_tokens) {
+    std::ifstream file(tokenizer_json_file);
+    if (!file.is_open()) {
+        return;
+    }
+
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    size_t search_pos = 0;
+    while (true) {
+        size_t content_key = content.find("\"content\"", search_pos);
+        if (content_key == std::string::npos) {
+            break;
+        }
+
+        size_t object_start = content.rfind('{', content_key);
+        size_t object_end = content.find('}', content_key);
+        if (object_start == std::string::npos || object_end == std::string::npos) {
+            break;
+        }
+
+        size_t content_colon = content.find(':', content_key);
+        size_t content_quote_start = content.find('"', content_colon + 1);
+        size_t content_quote_end = content.find('"', content_quote_start + 1);
+        if (content_colon == std::string::npos || content_quote_start == std::string::npos || content_quote_end == std::string::npos || content_quote_end > object_end) {
+            search_pos = object_end + 1;
+            continue;
+        }
+
+        size_t id_key = content.find("\"id\"", object_start);
+        size_t id_colon = (id_key == std::string::npos) ? std::string::npos : content.find(':', id_key);
+        size_t id_start = (id_colon == std::string::npos) ? std::string::npos : content.find_first_of("0123456789", id_colon + 1);
+        size_t id_end = (id_start == std::string::npos) ? std::string::npos : content.find_first_not_of("0123456789", id_start);
+        size_t special_key = content.find("\"special\"", content_quote_end);
+        size_t special_true = (special_key == std::string::npos) ? std::string::npos : content.find("true", special_key);
+
+        if (id_key == std::string::npos || id_key > object_end || id_colon == std::string::npos || id_start == std::string::npos || special_key == std::string::npos || special_key > object_end || special_true == std::string::npos || special_true > object_end) {
+            search_pos = object_end + 1;
+            continue;
+        }
+
+        const uint32_t token_id = static_cast<uint32_t>(std::stoul(content.substr(id_start, id_end - id_start)));
+        const std::string token_text = content.substr(content_quote_start + 1, content_quote_end - content_quote_start - 1);
+        special_tokens[token_text] = token_id;
+        search_pos = object_end + 1;
+    }
+}
+
 std::vector<std::string> split_with_special_tokens(const std::string& text,
                                                     const std::unordered_map<std::string, uint32_t>& special_tokens) {
     std::vector<std::string> result;

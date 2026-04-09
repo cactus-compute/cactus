@@ -32,6 +32,21 @@ public:
                           const std::string& input_name = "x",
                           const std::string& output_name = "") = 0;
 
+    virtual bool supports_image_input() const { return false; }
+
+    virtual size_t encode_image_uint8(const uint8_t* input,
+                                      __fp16* output,
+                                      const std::vector<int>& shape,
+                                      const std::string& input_name = "x",
+                                      const std::string& output_name = "") {
+        (void)input;
+        (void)output;
+        (void)shape;
+        (void)input_name;
+        (void)output_name;
+        return 0;
+    }
+
     virtual bool is_available() const = 0;
 
     virtual std::vector<int> get_input_shape() const = 0;

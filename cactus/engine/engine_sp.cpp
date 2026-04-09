@@ -440,6 +440,8 @@ std::string SPTokenizer::decode(const std::vector<uint32_t>& tokens) const {
 
 void SPTokenizer::load_special_tokens(const std::string& config_file) {
     load_special_tokens_map(config_file, special_tokens_);
+    std::string dir = config_file.substr(0, config_file.find_last_of("/\\"));
+    load_added_tokens_from_tokenizer_json(dir + "/tokenizer.json", special_tokens_);
 }
 
 } // namespace engine

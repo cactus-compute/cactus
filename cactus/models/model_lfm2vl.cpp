@@ -8,6 +8,42 @@
 
 namespace cactus {
 namespace engine {
+namespace {
+
+constexpr int kHailoSiglipImageSize = 256;
+
+std::vector<uint8_t> load_hailo_siglip_image(const std::string& image_path) {
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    unsigned char* image = stbi_load(image_path.c_str(), &width, &height, &channels, 3);
+    if (!image) {
+        throw std::runtime_error("Failed to load image for Hailo SigLIP2 path: " + image_path);
+    }
+
+    std::vector<uint8_t> resized(static_cast<size_t>(kHailoSiglipImageSize) *
+                                 static_cast<size_t>(kHailoSiglipImageSize) * 3);
+    unsigned char* result = stbir_resize_uint8_linear(
+        image,
+        width,
+        height,
+        0,
+        resized.data(),
+        kHailoSiglipImageSize,
+        kHailoSiglipImageSize,
+        0,
+        STBIR_RGB);
+    stbi_image_free(image);
+
+    if (!result) {
+        throw std::runtime_error("Failed to resize image for Hailo SigLIP2 path: " + image_path);
+    }
+
+    return resized;
+}
+
+} // namespace
+
 
 Lfm2VlModel::Lfm2VlModel() : Model() {
     config_.model_type = Config::ModelType::LFM2;
@@ -473,10 +509,52 @@ Lfm2VlModel::ForwardImageResult Lfm2VlModel::forward_images(
     std::vector<std::vector<ProjectedTileFeature>> all_image_embeddings;
     all_image_embeddings.reserve(image_paths.size());
     for (const auto& image_path : image_paths) {
+        if (vision_tower_.use_npu_encoder_ && vision_tower_.npu_encoder_ &&
+            vision_tower_.npu_encoder_->is_available() &&
+            vision_tower_.npu_encoder_->supports_image_input()) {
+            static bool logged_hailo_siglip_path = false;
+            if (!logged_hailo_siglip_path) {
+                std::cerr << "[cactus][lfm2vl] Routing image encoder through Hailo SigLIP2 HEF" << std::endl;
+                logged_hailo_siglip_path = true;
+            }
+            auto image_u8 = load_hailo_siglip_image(image_path);
+            std::vector<int> input_shape = vision_tower_.npu_encoder_->get_input_shape();
+            if (input_shape.empty()) {
+                input_shape = {1, kHailoSiglipImageSize, kHailoSiglipImageSize, 3};
+            }
+
+            const size_t total_tokens = static_cast<size_t>(config_.max_image_tokens);
+            std::vector<__fp16> encoded(total_tokens * static_cast<size_t>(config_.vision_embed_dim));
+            const size_t elements_written = vision_tower_.npu_encoder_->encode_image_uint8(
+                image_u8.data(), encoded.data(), input_shape, "x", "");
+            if (elements_written != encoded.size()) {
+                throw std::runtime_error(
+                    "Hailo SigLIP2 encoder returned unexpected element count: expected " +
+                    std::to_string(encoded.size()) + ", got " + std::to_string(elements_written));
+            }
+
+            const size_t tile_side = static_cast<size_t>(std::llround(std::sqrt(static_cast<double>(total_tokens))));
+            if (tile_side * tile_side != total_tokens) {
+                throw std::runtime_error("Hailo SigLIP2 token count must form a square grid");
+            }
+            if (config_.downsample_factor == 0 || tile_side % config_.downsample_factor != 0) {
+                throw std::runtime_error("Invalid downsample factor for Hailo SigLIP2 projector path");
+            }
+
+            size_t vision_output = gb->input({total_tokens, static_cast<size_t>(config_.vision_embed_dim)}, Precision::FP16);
+            gb->set_input(vision_output, encoded.data(), Precision::FP16);
+
+            size_t reshaped = gb->reshape(vision_output, {1, tile_side, tile_side, static_cast<size_t>(config_.vision_embed_dim)});
+            size_t projected = build_multimodal_projector(gb, reshaped, tile_side, tile_side, backend);
+            const size_t projected_tokens = (tile_side / config_.downsample_factor) *
+                                            (tile_side / config_.downsample_factor);
+
+            all_image_embeddings.push_back({ProjectedTileFeature{projected, projected_tokens}});
+            continue;
+        }
+
         auto preprocessed = preprocessor_.preprocess_from_file(image_path);
-        
         auto image_features = get_image_features(gb, preprocessed, backend);
-        
         all_image_embeddings.push_back(std::move(image_features));
     }
 

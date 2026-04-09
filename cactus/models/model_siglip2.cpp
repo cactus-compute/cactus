@@ -2,12 +2,36 @@
 #include "../graph/graph.h"
 #include "../kernel/kernel.h"
 #include <cmath>
+#include <filesystem>
 #include <stdexcept>
 #include <utility>
 #include <iostream>
 
 namespace cactus {
 namespace engine {
+namespace {
+
+constexpr int kHailoSiglipImageSize = 256;
+
+std::vector<std::string> siglip_npu_model_candidates(const std::string& model_folder_path) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> candidates;
+
+#if defined(__APPLE__)
+    candidates.push_back((fs::path(model_folder_path) / "model.mlpackage").string());
+#else
+    candidates.push_back((fs::path(model_folder_path) / "vision_encoder.hef").string());
+    candidates.push_back((fs::path(model_folder_path) / "siglip2.hef").string());
+    candidates.push_back((fs::path(model_folder_path) / "model.hef").string());
+    candidates.push_back("/home/karen/hailo53/humanedit_eval/lfm2_siglip2_image256_manual_ln_ref_compile4.hef");
+    candidates.push_back("/home/karen/hailo53/lfm2_siglip2_image256_manual_ln_ref.hef");
+#endif
+
+    return candidates;
+}
+
+} // namespace
+
 
 Siglip2VisionModel::Siglip2VisionModel() : Model() {
     config_.model_type = Config::ModelType::SIGLIP2;
@@ -45,16 +69,29 @@ void Siglip2VisionModel::load_weights_to_graph(CactusGraph* gb) {
     std::string base = model_folder_path_ + "/";
 
     if (npu::is_npu_available()) {
-        std::string npu_encoder_path = model_folder_path_ + "/model.mlpackage";
         npu_encoder_ = npu::create_encoder();
-        if (npu_encoder_ && npu_encoder_->load(npu_encoder_path)) {
-            use_npu_encoder_ = true;
+        bool loaded_npu_encoder = false;
+        if (npu_encoder_) {
+            for (const auto& candidate : siglip_npu_model_candidates(model_folder_path_)) {
+                if (npu_encoder_->load(candidate)) {
+                    loaded_npu_encoder = true;
+                    std::cerr << "[cactus][siglip2] Using NPU encoder from " << candidate << std::endl;
+                    break;
+                }
+            }
+        }
 
-            std::vector<int> typical_input_shape = {
-                static_cast<int>(config_.max_num_patches),
-                static_cast<int>(config_.vision_embed_dim)
-            };
-            npu_encoder_->preallocate(typical_input_shape, "x", "");
+        if (loaded_npu_encoder) {
+            use_npu_encoder_ = true;
+            if (npu_encoder_->supports_image_input()) {
+                npu_encoder_->preallocate({1, kHailoSiglipImageSize, kHailoSiglipImageSize, 3}, "x", "");
+            } else {
+                std::vector<int> typical_input_shape = {
+                    static_cast<int>(config_.max_num_patches),
+                    static_cast<int>(config_.vision_embed_dim)
+                };
+                npu_encoder_->preallocate(typical_input_shape, "x", "");
+            }
         } else {
             use_npu_encoder_ = false;
             npu_encoder_.reset();
