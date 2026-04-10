@@ -1318,6 +1318,9 @@ def cmd_transcribe(args):
             env['CACTUS_PARAKEET_T'] = '400'
         sys.exit(subprocess.run(cmd_args, env=env).returncode)
     else:
+        is_parakeet_model = 'parakeet' in model_id.lower()
+        if is_parakeet_model and not audio_file and 'CACTUS_PARAKEET_T' not in os.environ:
+            os.environ['CACTUS_PARAKEET_T'] = '400'
         os.execv(str(asr_binary), cmd_args)
 
 

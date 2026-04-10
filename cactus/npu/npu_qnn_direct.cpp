@@ -809,26 +809,22 @@ bool QNNDirectPrefill::Impl::init_backend() {
     fprintf(stderr, "[QNN Direct] backend created\n");
 
     if (qnn.deviceCreate) {
-#ifdef _WIN32
         QnnHtpDevice_CustomConfig_t htp_soc_cfg;
         htp_soc_cfg.option   = QNN_HTP_DEVICE_CONFIG_OPTION_SOC;
+#ifdef _WIN32
         htp_soc_cfg.socModel = 60;  // QNN_SOC_MODEL_SC8380XP
+#else
+        htp_soc_cfg.socModel = 0;   // QNN_SOC_MODEL_UNKNOWN — auto-detect
+#endif
         QnnDevice_Config_t dev_cfg = QNN_DEVICE_CONFIG_INIT;
         dev_cfg.option       = QNN_DEVICE_CONFIG_OPTION_CUSTOM;
         dev_cfg.customConfig = (QnnDevice_CustomConfig_t)&htp_soc_cfg;
         const QnnDevice_Config_t* dev_cfgs[] = {&dev_cfg, nullptr};
         Qnn_ErrorHandle_t de = qnn.deviceCreate(log_handle, dev_cfgs, &device_handle);
         if (de != QNN_SUCCESS) {
-            fprintf(stderr, "[QNN Direct] deviceCreate with SOC config failed (%lld), retrying auto-detect\n", (long long)de);
+            fprintf(stderr, "[QNN Direct] deviceCreate with SoC config failed (%lld), retrying auto\n", (long long)de);
             de = qnn.deviceCreate(log_handle, nullptr, &device_handle);
         }
-#else
-        Qnn_ErrorHandle_t de = qnn.deviceCreate(log_handle, nullptr, &device_handle);
-        if (de != QNN_SUCCESS)
-            fprintf(stderr, "[QNN Direct] deviceCreate auto-detect failed (%lld)\n", (long long)de);
-        else
-            fprintf(stderr, "[QNN Direct] device created (auto-detected SoC)\n");
-#endif
     }
 
     if (!qnn.contextCreate) return false;
@@ -3867,17 +3863,19 @@ bool QNNDirectEncoder::load(const std::string& model_path) {
     if (!I.qnn.backendCreate) return false;
     if (I.qnn.backendCreate(I.log_handle, nullptr, &I.backend_handle) != QNN_SUCCESS) return false;
     if (I.qnn.deviceCreate) {
-#ifdef _WIN32
         QnnHtpDevice_CustomConfig_t soc_cfg;
-        soc_cfg.option = QNN_HTP_DEVICE_CONFIG_OPTION_SOC; soc_cfg.socModel = 60;
+        soc_cfg.option = QNN_HTP_DEVICE_CONFIG_OPTION_SOC;
+#ifdef _WIN32
+        soc_cfg.socModel = 60;  // QNN_SOC_MODEL_SC8380XP
+#else
+        soc_cfg.socModel = 0;   // QNN_SOC_MODEL_UNKNOWN — auto-detect
+#endif
         QnnDevice_Config_t dev_cfg = QNN_DEVICE_CONFIG_INIT;
-        dev_cfg.option = QNN_DEVICE_CONFIG_OPTION_CUSTOM; dev_cfg.customConfig = (QnnDevice_CustomConfig_t)&soc_cfg;
+        dev_cfg.option = QNN_DEVICE_CONFIG_OPTION_CUSTOM;
+        dev_cfg.customConfig = (QnnDevice_CustomConfig_t)&soc_cfg;
         const QnnDevice_Config_t* dcfgs[] = {&dev_cfg, nullptr};
         if (I.qnn.deviceCreate(I.log_handle, dcfgs, &I.device_handle) != QNN_SUCCESS)
             I.qnn.deviceCreate(I.log_handle, nullptr, &I.device_handle);
-#else
-        I.qnn.deviceCreate(I.log_handle, nullptr, &I.device_handle);
-#endif
     }
     if (!I.qnn.contextCreate) return false;
 
