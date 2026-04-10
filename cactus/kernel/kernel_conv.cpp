@@ -973,6 +973,77 @@ void cactus_conv2d_f16_k3s2p1_nchw(
     const size_t H_out = (H - 1) / 2 + 1;
     const size_t W_out = (W - 1) / 2 + 1;
 
+#ifdef __APPLE__
+    {
+        const size_t spatial = H_out * W_out;
+        const size_t col_K = C_in * 9;
+        std::vector<float> W_f32(C_out * col_K);
+        for (size_t oc = 0; oc < C_out; ++oc)
+            for (size_t ic = 0; ic < C_in; ++ic)
+                for (size_t kh = 0; kh < 3; ++kh)
+                    for (size_t kw = 0; kw < 3; ++kw)
+                        W_f32[oc * col_K + ic * 9 + kh * 3 + kw] =
+                            static_cast<float>(weight[((oc * C_in + ic) * 3 + kh) * 3 + kw]);
+
+        std::vector<float> bias_f32(C_out, 0.0f);
+        if (bias)
+            for (size_t i = 0; i < C_out; ++i)
+                bias_f32[i] = static_cast<float>(bias[i]);
+
+        std::vector<float> col(col_K * spatial);
+        std::vector<float> Y_f32(C_out * spatial);
+
+        for (size_t n = 0; n < N; ++n) {
+            const __fp16* Xn = input + n * C_in * H * W;
+            __fp16* Yn = output + n * C_out * spatial;
+
+            for (size_t ic = 0; ic < C_in; ++ic) {
+                for (size_t kh = 0; kh < 3; ++kh) {
+                    for (size_t kw = 0; kw < 3; ++kw) {
+                        float* dst = col.data() + (ic * 9 + kh * 3 + kw) * spatial;
+                        for (size_t oh = 0; oh < H_out; ++oh) {
+                            ptrdiff_t ih = static_cast<ptrdiff_t>(oh) * 2 + static_cast<ptrdiff_t>(kh) - 1;
+                            float* dst_row = dst + oh * W_out;
+                            if (ih < 0 || ih >= static_cast<ptrdiff_t>(H)) {
+                                memset(dst_row, 0, W_out * sizeof(float));
+                                continue;
+                            }
+                            const __fp16* src_row = Xn + ic * H * W + static_cast<size_t>(ih) * W;
+                            const ptrdiff_t iw_offset = static_cast<ptrdiff_t>(kw) - 1;
+                            for (size_t ow = 0; ow < W_out; ++ow) {
+                                ptrdiff_t iw = static_cast<ptrdiff_t>(ow) * 2 + iw_offset;
+                                dst_row[ow] = (iw < 0 || iw >= static_cast<ptrdiff_t>(W))
+                                    ? 0.0f : static_cast<float>(src_row[iw]);
+                            }
+                        }
+                    }
+                }
+            }
+
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                        static_cast<int>(C_out), static_cast<int>(spatial), static_cast<int>(col_K),
+                        1.0f, W_f32.data(), static_cast<int>(col_K),
+                        col.data(), static_cast<int>(spatial),
+                        0.0f, Y_f32.data(), static_cast<int>(spatial));
+
+            for (size_t oc = 0; oc < C_out; ++oc) {
+                const float b = bias_f32[oc];
+                const float* src = Y_f32.data() + oc * spatial;
+                __fp16* dst = Yn + oc * spatial;
+                size_t i = 0;
+                for (; i + 8 <= spatial; i += 8) {
+                    float32x4_t v0 = vaddq_f32(vld1q_f32(src + i),     vdupq_n_f32(b));
+                    float32x4_t v1 = vaddq_f32(vld1q_f32(src + i + 4), vdupq_n_f32(b));
+                    vst1q_f16(dst + i, vcombine_f16(vcvt_f16_f32(v0), vcvt_f16_f32(v1)));
+                }
+                for (; i < spatial; ++i)
+                    dst[i] = static_cast<__fp16>(src[i] + b);
+            }
+        }
+        return;
+    }
+#endif
+
     auto in_idx = [&](size_t n, size_t ic, size_t ih, size_t iw) -> size_t {
         return ((n * C_in + ic) * H + ih) * W + iw;
     };
@@ -1408,11 +1479,17 @@ void cactus_conv2d_f16_k3s1p1_nchw(
                         }
                         const __fp16* src_row = Xn + ic * H * W + static_cast<size_t>(ih) * W;
                         const ptrdiff_t iw_offset = static_cast<ptrdiff_t>(kw) - 1;
-                        for (size_t ow = 0; ow < W_out; ++ow) {
-                            ptrdiff_t iw = static_cast<ptrdiff_t>(ow) + iw_offset;
-                            dst_row[ow] = (iw < 0 || iw >= static_cast<ptrdiff_t>(W))
-                                ? 0.0f : static_cast<float>(src_row[iw]);
+                        size_t ow_start = 0, ow_end = W_out;
+                        if (iw_offset < 0) { dst_row[0] = 0.0f; ow_start = 1; }
+                        if (iw_offset > 0) { dst_row[W_out - 1] = 0.0f; ow_end = W_out - 1; }
+                        size_t ow = ow_start;
+                        for (; ow + 8 <= ow_end; ow += 8) {
+                            float16x8_t v = vld1q_f16(src_row + ow + iw_offset);
+                            vst1q_f32(dst_row + ow,     vcvt_f32_f16(vget_low_f16(v)));
+                            vst1q_f32(dst_row + ow + 4, vcvt_f32_f16(vget_high_f16(v)));
                         }
+                        for (; ow < ow_end; ++ow)
+                            dst_row[ow] = static_cast<float>(src_row[ow + iw_offset]);
                     }
                 }
             }

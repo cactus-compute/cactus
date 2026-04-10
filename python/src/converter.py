@@ -8,7 +8,7 @@ try:
 except ImportError:
     torch = None
 
-from .tensor_io import save_tensor_with_header, create_quantization_stats, print_quantization_summary
+from .tensor_io import save_tensor_with_header, create_quantization_stats, print_quantization_summary, fold_bn_into_conv
 from .config_utils import cfg_get, detect_model_type, extract_base_config, extract_vision_config, extract_lfm2_config, is_vlm_model, extract_moonshine_config, extract_complex_gemma_config, extract_audio_config, extract_youtu_config
 from .weight_patterns import (
     EMBED_NAMES, OUTPUT_NAMES, OUTPUT_NORM_NAMES, LAYER_PREFIXES,
@@ -1177,18 +1177,44 @@ def convert_wespeaker_weights(model, output_dir, precision="FP16", args=None):
 
     sd = model.state_dict()
 
-    for name, tensor in sorted(sd.items()):
-        if "num_batches_tracked" in name:
-            continue
+    def save(filename, tensor):
+        save_tensor_with_header(tensor, output_dir / filename, precision=precision)
 
-        # Shortcut 1x1 conv - pad to 3x3 to reuse conv2d_k3s2p1 kernel
-        if "shortcut.0.weight" in name:
-            C_out, C_in = tensor.shape[0], tensor.shape[1]
-            padded = torch.zeros(C_out, C_in, 3, 3, dtype=tensor.dtype)
-            padded[:, :, 1, 1] = tensor[:, :, 0, 0]
-            tensor = padded
+    def fold_and_save(conv_name, bn_name, out_prefix):
+        w, b = fold_bn_into_conv(
+            sd[conv_name + '.weight'],
+            sd[bn_name + '.weight'], sd[bn_name + '.bias'],
+            sd[bn_name + '.running_mean'], sd[bn_name + '.running_var'],
+        )
+        save(f'{out_prefix}_weight.weights', w)
+        save(f'{out_prefix}_bias.weights', b)
 
-        save_tensor_with_header(tensor, output_dir / f"{name.replace('.', '_')}.weights", precision=precision)
+    fold_and_save('resnet.conv1', 'resnet.bn1', 'resnet_conv1')
+
+    layer_blocks = {'layer1': 3, 'layer2': 4, 'layer3': 6, 'layer4': 3}
+    shortcut_layers = {'layer2', 'layer3', 'layer4'}
+
+    for layer_name, num_blocks in layer_blocks.items():
+        for block_idx in range(num_blocks):
+            prefix = f'resnet.{layer_name}.{block_idx}'
+            out = f'resnet_{layer_name}_{block_idx}'
+
+            fold_and_save(f'{prefix}.conv1', f'{prefix}.bn1', f'{out}_conv1')
+            fold_and_save(f'{prefix}.conv2', f'{prefix}.bn2', f'{out}_conv2')
+
+            if block_idx == 0 and layer_name in shortcut_layers:
+                w, b = fold_bn_into_conv(
+                    sd[f'{prefix}.shortcut.0.weight'],
+                    sd[f'{prefix}.shortcut.1.weight'], sd[f'{prefix}.shortcut.1.bias'],
+                    sd[f'{prefix}.shortcut.1.running_mean'], sd[f'{prefix}.shortcut.1.running_var'],
+                )
+                padded = np.zeros((w.shape[0], w.shape[1], 3, 3), dtype=w.dtype)
+                padded[:, :, 1, 1] = w[:, :, 0, 0]
+                save(f'{out}_shortcut_0_weight.weights', padded)
+                save(f'{out}_shortcut_0_bias.weights', b)
+
+    save('resnet_seg_1_weight.weights', sd['resnet.seg_1.weight'].float().numpy())
+    save('resnet_seg_1_bias.weights', sd['resnet.seg_1.bias'].float().numpy())
 
     config = {"model_type": "wespeaker", "precision": precision}
     config_path = output_dir / "config.txt"

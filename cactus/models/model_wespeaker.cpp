@@ -13,38 +13,26 @@ WeSpeakerModel::ResBlockWeights WeSpeakerModel::load_resblock(CactusGraph* gb, c
     ResBlockWeights rb;
     rb.has_shortcut = has_shortcut;
     rb.conv1_w = gb->mmap_weights(prefix + "_conv1_weight.weights");
+    rb.conv1_b = gb->mmap_weights(prefix + "_conv1_bias.weights");
     rb.conv2_w = gb->mmap_weights(prefix + "_conv2_weight.weights");
-    rb.bn1_w = gb->mmap_weights(prefix + "_bn1_weight.weights");
-    rb.bn1_b = gb->mmap_weights(prefix + "_bn1_bias.weights");
-    rb.bn1_mean = gb->mmap_weights(prefix + "_bn1_running_mean.weights");
-    rb.bn1_var = gb->mmap_weights(prefix + "_bn1_running_var.weights");
-    rb.bn2_w = gb->mmap_weights(prefix + "_bn2_weight.weights");
-    rb.bn2_b = gb->mmap_weights(prefix + "_bn2_bias.weights");
-    rb.bn2_mean = gb->mmap_weights(prefix + "_bn2_running_mean.weights");
-    rb.bn2_var = gb->mmap_weights(prefix + "_bn2_running_var.weights");
+    rb.conv2_b = gb->mmap_weights(prefix + "_conv2_bias.weights");
     if (has_shortcut) {
         rb.shortcut_conv_w = gb->mmap_weights(prefix + "_shortcut_0_weight.weights");
-        rb.shortcut_bn_w = gb->mmap_weights(prefix + "_shortcut_1_weight.weights");
-        rb.shortcut_bn_b = gb->mmap_weights(prefix + "_shortcut_1_bias.weights");
-        rb.shortcut_bn_mean = gb->mmap_weights(prefix + "_shortcut_1_running_mean.weights");
-        rb.shortcut_bn_var = gb->mmap_weights(prefix + "_shortcut_1_running_var.weights");
+        rb.shortcut_conv_b = gb->mmap_weights(prefix + "_shortcut_0_bias.weights");
     }
     return rb;
 }
 
 size_t WeSpeakerModel::build_resblock(CactusGraph* gb, size_t x, const ResBlockWeights& rb, bool stride2) {
     size_t identity = x;
-    size_t out = stride2 ? gb->conv2d_k3s2p1(x, rb.conv1_w) : gb->conv2d_k3s1p1(x, rb.conv1_w);
-    out = gb->batchnorm(out, rb.bn1_w, rb.bn1_b, rb.bn1_mean, rb.bn1_var);
-    out = gb->relu(out);
 
-    out = gb->conv2d_k3s1p1(out, rb.conv2_w);
-    out = gb->batchnorm(out, rb.bn2_w, rb.bn2_b, rb.bn2_mean, rb.bn2_var);
+    size_t out = stride2 ? gb->conv2d_k3s2p1(x, rb.conv1_w, rb.conv1_b)
+                         : gb->conv2d_k3s1p1(x, rb.conv1_w, rb.conv1_b);
+    out = gb->relu(out);
+    out = gb->conv2d_k3s1p1(out, rb.conv2_w, rb.conv2_b);
 
     if (rb.has_shortcut) {
-        identity = gb->conv2d_k3s2p1(x, rb.shortcut_conv_w);
-        identity = gb->batchnorm(identity, rb.shortcut_bn_w, rb.shortcut_bn_b,
-                                  rb.shortcut_bn_mean, rb.shortcut_bn_var);
+        identity = gb->conv2d_k3s2p1(x, rb.shortcut_conv_w, rb.shortcut_conv_b);
     }
 
     out = gb->add(out, identity);
@@ -56,10 +44,7 @@ void WeSpeakerModel::load_weights_to_graph(CactusGraph* gb) {
     const std::string& p = model_folder_path_;
 
     weight_nodes_.conv1_w = gb->mmap_weights(p + "/resnet_conv1_weight.weights");
-    weight_nodes_.bn1_w = gb->mmap_weights(p + "/resnet_bn1_weight.weights");
-    weight_nodes_.bn1_b = gb->mmap_weights(p + "/resnet_bn1_bias.weights");
-    weight_nodes_.bn1_mean = gb->mmap_weights(p + "/resnet_bn1_running_mean.weights");
-    weight_nodes_.bn1_var = gb->mmap_weights(p + "/resnet_bn1_running_var.weights");
+    weight_nodes_.conv1_b = gb->mmap_weights(p + "/resnet_conv1_bias.weights");
 
     auto load_layer = [&](const std::string& layer_name, int num_blocks, bool first_has_shortcut) {
         std::vector<ResBlockWeights> blocks;
@@ -80,8 +65,7 @@ void WeSpeakerModel::load_weights_to_graph(CactusGraph* gb) {
 }
 
 size_t WeSpeakerModel::build_resnet_body(CactusGraph* gb, size_t x) {
-    x = gb->conv2d_k3s1p1(x, weight_nodes_.conv1_w);
-    x = gb->batchnorm(x, weight_nodes_.bn1_w, weight_nodes_.bn1_b, weight_nodes_.bn1_mean, weight_nodes_.bn1_var);
+    x = gb->conv2d_k3s1p1(x, weight_nodes_.conv1_w, weight_nodes_.conv1_b);
     x = gb->relu(x);
 
     for (auto& rb : weight_nodes_.layer1) x = build_resblock(gb, x, rb, false);
