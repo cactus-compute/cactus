@@ -106,7 +106,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-rebuild              Skip building cactus library and tests"
             echo "  --exhaustive              Run exhaustive golden tests for all model families and precisions"
             echo "  --only <test_name>        Only run the specified test (llm, vlm, stt, embed, rag, graph, index, kernel, kv_cache, performance)"
-            echo "  --sve                     Run the focused matmul NEON vs SVE benchmark"
+            echo "  --sve                     Run the focused matmul NEON vs scalable backend benchmark (SVE or SME2)"
             echo "  --sve-sizes <MxKxN,...>   Custom matmul shapes for --sve (example: 1x1024x1024,4x2048x2048)"
             echo "  --sve-iterations <count>  Iterations per shape for --sve"
             echo "  --help, -h                Show this help message"
@@ -136,12 +136,12 @@ fi
 
 if [ "$SVE_MODE" = true ]; then
     ONLY_EXEC="performance"
-    echo "SVE benchmark mode: enabled"
+    echo "Scalable matmul benchmark mode: enabled"
     if [ -n "$SVE_SIZES" ]; then
-        echo "SVE matmul sizes: $SVE_SIZES"
+        echo "Scalable matmul sizes: $SVE_SIZES"
     fi
     if [ -n "$SVE_ITERATIONS" ]; then
-        echo "SVE matmul iterations: $SVE_ITERATIONS"
+        echo "Scalable matmul iterations: $SVE_ITERATIONS"
     fi
 fi
 
@@ -177,7 +177,7 @@ if [ "$SKIP_STANDARD_DOWNLOADS" = false ]; then
     fi
 else
     if [ "$SVE_MODE" = true ]; then
-        echo "Step 1: Skipping model downloads for --sve benchmark mode"
+        echo "Step 1: Skipping model downloads for --sve scalable benchmark mode"
     else
         echo "Step 1: Skipping standard downloads for --only gemma4_suite"
     fi
@@ -238,7 +238,7 @@ if [ "$NO_REBUILD" = false ]; then
 
     if [ "$SVE_MODE" = true ]; then
         if ! make -j$(nproc 2>/dev/null || echo 4) test_performance; then
-            echo "Failed to build SVE benchmark target"
+            echo "Failed to build scalable benchmark target"
             exit 1
         fi
     else
@@ -292,7 +292,7 @@ echo "Using embed_speaker model path: $CACTUS_TEST_EMBED_SPEAKER_MODEL"
 echo "Using assets path: $CACTUS_TEST_ASSETS"
 echo "Using index path: $CACTUS_INDEX_PATH"
 if [ "$SVE_MODE" = true ]; then
-    echo "Using SVE-only performance mode"
+    echo "Using scalable matmul performance mode (SVE/SME2)"
 fi
 
 echo "Discovering test executables..."

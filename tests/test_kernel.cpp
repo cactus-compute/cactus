@@ -263,7 +263,7 @@ bool test_matmul_f16_correctness() {
     return true;
 }
 
-bool test_matmul_f16_sve_matches_neon() {
+bool test_matmul_f16_scalable_matches_neon() {
     const std::vector<std::tuple<size_t, size_t, size_t>> shapes = {
         {1, 31, 13},
         {3, 65, 9},
@@ -277,7 +277,7 @@ bool test_matmul_f16_sve_matches_neon() {
         std::vector<__fp16> A(M * K);
         std::vector<__fp16> B_T(N * K);
         std::vector<__fp16> C_neon(M * N, static_cast<__fp16>(0));
-        std::vector<__fp16> C_sve(M * N, static_cast<__fp16>(0));
+        std::vector<__fp16> C_scalable(M * N, static_cast<__fp16>(0));
 
         for (size_t i = 0; i < M * K; ++i) {
             A[i] = static_cast<__fp16>(dis(gen));
@@ -293,13 +293,13 @@ bool test_matmul_f16_sve_matches_neon() {
 
         {
             TestUtils::ScopedMatmulKernelMode mode(TestUtils::MatmulKernelMode::SVE);
-            cactus_matmul_f16(A.data(), B_T.data(), C_sve.data(), M, K, N);
+            cactus_matmul_f16(A.data(), B_T.data(), C_scalable.data(), M, K, N);
         }
 
         float max_abs_error = 0.0f;
         for (size_t i = 0; i < M * N; ++i) {
             max_abs_error = std::max(max_abs_error,
-                                     std::abs(static_cast<float>(C_neon[i]) - static_cast<float>(C_sve[i])));
+                                     std::abs(static_cast<float>(C_neon[i]) - static_cast<float>(C_scalable[i])));
         }
 
         if (max_abs_error > 0.05f) {
@@ -587,10 +587,12 @@ int main() {
     runner.run_test("Kernel RoPE Correctness", test_neon_rope_correctness());
     runner.run_test("Kernel Attention FP16 Correctness", test_neon_attention_fp16_correctness());
     runner.run_test("Kernel FP16 MatMul Correctness", test_matmul_f16_correctness());
-    if (cpu_has_sve()) {
-        runner.run_test("Kernel FP16 MatMul SVE vs NEON", test_matmul_f16_sve_matches_neon());
+    if (cpu_has_sve() || cpu_has_sme2()) {
+        const char* scalable_backend = cpu_has_sve() ? "SVE" : "SME2";
+        runner.run_test(std::string("Kernel FP16 MatMul ") + scalable_backend + " vs NEON",
+                        test_matmul_f16_scalable_matches_neon());
     } else {
-        runner.log_skip("Kernel FP16 MatMul SVE vs NEON", "SVE unavailable on this runtime");
+        runner.log_skip("Kernel FP16 MatMul Scalable vs NEON", "No SVE or SME2 backend available on this runtime");
     }
     runner.run_test("Kernel Grouped INT8 MatMul Correctness", test_matmul_int8_grouped_correctness());
     runner.run_test("Kernel INT4 MatMul Correctness", test_int4_matmul_correctness());

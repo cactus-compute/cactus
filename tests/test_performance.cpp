@@ -34,6 +34,16 @@ const char* matmul_kernel_mode_name(TestUtils::MatmulKernelMode mode) {
     return "UNKNOWN";
 }
 
+bool scalable_matmul_available() {
+    return cpu_has_sve() || cpu_has_sme2();
+}
+
+const char* scalable_matmul_backend_name() {
+    if (cpu_has_sve()) return "SVE";
+    if (cpu_has_sme2()) return "SME2";
+    return "SCALABLE";
+}
+
 bool performance_env_var_is_truthy(const char* name) {
     const char* value = std::getenv(name);
     if (!value) return false;
@@ -1056,9 +1066,10 @@ void benchmark_gemm_f16_kernel_compare(TestUtils::TestRunner& runner, const Benc
     const std::vector<std::tuple<size_t, size_t, size_t>> shapes = parse_matmul_shapes_env();
     const int iterations = parse_matmul_iterations_env(config.iterations);
 
-    const bool sve_available = cpu_has_sve();
-    if (!sve_available) {
-        runner.log_skip("MatMul F16 SVE compare", "SVE unavailable on this runtime");
+    const bool scalable_available = scalable_matmul_available();
+    const std::string scalable_backend = scalable_matmul_backend_name();
+    if (!scalable_available) {
+        runner.log_skip("MatMul F16 Scalable compare", "No SVE or SME2 backend available on this runtime");
     }
 
     for (const auto& [M, K, N] : shapes) {
@@ -1088,26 +1099,26 @@ void benchmark_gemm_f16_kernel_compare(TestUtils::TestRunner& runner, const Benc
                                    details.str());
         }
 
-        if (!sve_available) {
+        if (!scalable_available) {
             continue;
         }
 
-        const double sve_time_ms = run_mode(TestUtils::MatmulKernelMode::SVE);
+        const double scalable_time_ms = run_mode(TestUtils::MatmulKernelMode::SVE);
         {
             std::ostringstream details;
-            details << std::fixed << std::setprecision(3) << sve_time_ms << "ms, "
-                    << std::setprecision(2) << calculate_gflops(2ULL * M * K * N, sve_time_ms) << " GFLOPS";
+            details << std::fixed << std::setprecision(3) << scalable_time_ms << "ms, "
+                    << std::setprecision(2) << calculate_gflops(2ULL * M * K * N, scalable_time_ms) << " GFLOPS";
             runner.log_performance("MatMul F16 Kernel " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N) +
-                                   " " + matmul_kernel_mode_name(TestUtils::MatmulKernelMode::SVE),
+                                   " " + scalable_backend,
                                    details.str());
         }
 
         {
             std::ostringstream details;
             details << std::fixed << std::setprecision(3)
-                    << "NEON/SVE time ratio " << (neon_time_ms / sve_time_ms) << "x, "
+                    << "NEON/" << scalable_backend << " time ratio " << (neon_time_ms / scalable_time_ms) << "x, "
                     << std::setprecision(2)
-                    << (ops / (sve_time_ms * 1e6)) - (ops / (neon_time_ms * 1e6)) << " GFLOPS delta";
+                    << (ops / (scalable_time_ms * 1e6)) - (ops / (neon_time_ms * 1e6)) << " GFLOPS delta";
             runner.log_performance("MatMul F16 Kernel " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N) +
                                    " Speedup",
                                    details.str());
@@ -1338,7 +1349,7 @@ bool test_layernorm_performance(TestUtils::TestRunner& runner) {
 
 int main() {
     const bool sve_only = performance_env_var_is_truthy("CACTUS_TEST_SVE_ONLY");
-    TestUtils::TestRunner runner(sve_only ? "MatMul SVE vs NEON" : "Performance Benchmarks");
+    TestUtils::TestRunner runner(sve_only ? "MatMul Scalable vs NEON" : "Performance Benchmarks");
 
     if (sve_only) {
         runner.run_test("F16 MatMul Kernel Compare", test_gemm_f16_kernel_compare_performance(runner));

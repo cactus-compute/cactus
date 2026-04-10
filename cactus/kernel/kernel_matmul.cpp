@@ -199,6 +199,12 @@ void cactus_matmul_f16(
     const bool force_sve = false;
 #endif
 
+#if defined(CACTUS_COMPILE_SME2)
+    const bool has_sme2 = cpu_has_sme2();
+#else
+    const bool has_sme2 = false;
+#endif
+
 #if defined(CACTUS_COMPILE_SVE2)
     if (force_sve && cpu_has_sve()) {
         cactus_matmul_f16_sve2_caller(
@@ -210,11 +216,21 @@ void cactus_matmul_f16(
 #endif
 
 #if defined(CACTUS_COMPILE_SME2)
-	if (!force_neon && !force_sve && cpu_has_sme2() && M >= SME2_M_THRESHOLD) {
-		cactus_matmul_f16_sme2_caller(
-			a, b_transposed, c,
-			M, K, N
-		);
+    if (force_sve && has_sme2) {
+        cactus_matmul_f16_sme2_caller(
+            a, b_transposed, c,
+            M, K, N
+        );
+        return;
+    }
+#endif
+
+#if defined(CACTUS_COMPILE_SME2)
+	if (!force_neon && !force_sve && has_sme2 && M >= SME2_M_THRESHOLD) {
+			cactus_matmul_f16_sme2_caller(
+				a, b_transposed, c,
+				M, K, N
+			);
 		return;
 	}
 #endif
