@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <unordered_map>
 #include <chrono>
+#include <cstdlib>
 #include <string>
 #include <cstdio>
 
@@ -95,6 +96,92 @@ inline bool cpu_has_sme2() {
 	return has;
 #else
 	return false;
+#endif
+}
+
+inline bool cpu_has_sve() {
+#if defined(__aarch64__)
+    static std::once_flag once;
+    static bool has = false;
+
+    std::call_once(once, []() {
+#if defined(__APPLE__)
+    int ret = 0;
+    size_t size = sizeof(ret);
+    if (sysctlbyname("hw.optional.arm.FEAT_SVE", &ret, &size, nullptr, 0) == 0) {
+        has = ret == 1;
+    }
+#elif defined(__ANDROID__)
+    unsigned long hwcap = getauxval(AT_HWCAP);
+#ifdef HWCAP_SVE
+    has = (hwcap & HWCAP_SVE) != 0;
+#endif
+#endif
+    });
+
+    return has;
+#else
+    return false;
+#endif
+}
+
+inline bool cpu_has_sve2() {
+#if defined(__aarch64__)
+    static std::once_flag once;
+    static bool has = false;
+
+    std::call_once(once, []() {
+#if defined(__APPLE__)
+    int ret = 0;
+    size_t size = sizeof(ret);
+    if (sysctlbyname("hw.optional.arm.FEAT_SVE2", &ret, &size, nullptr, 0) == 0) {
+        has = ret == 1;
+    }
+#elif defined(__ANDROID__)
+    unsigned long hwcap2 = getauxval(AT_HWCAP2);
+#ifdef HWCAP2_SVE2
+    has = cpu_has_sve() && ((hwcap2 & HWCAP2_SVE2) != 0);
+#endif
+#endif
+    });
+
+    return has;
+#else
+    return false;
+#endif
+}
+
+inline bool env_var_is_truthy(const char* name) {
+    const char* env = std::getenv(name);
+    if (!env) return false;
+
+    const std::string value(env);
+    return value == "1" || value == "true" || value == "TRUE" ||
+           value == "yes" || value == "YES";
+}
+
+inline bool cpu_forces_neon_matmul() {
+#if defined(__aarch64__)
+    return env_var_is_truthy("CACTUS_FORCE_NEON_MATMUL");
+#else
+    return false;
+#endif
+}
+
+inline bool cpu_forces_sve_matmul() {
+#if defined(__aarch64__)
+    return env_var_is_truthy("CACTUS_FORCE_SVE_MATMUL") ||
+           env_var_is_truthy("CACTUS_FORCE_SVE2_MATMUL");
+#else
+    return false;
+#endif
+}
+
+inline bool cpu_forces_sve2_matmul() {
+#if defined(__aarch64__)
+    return cpu_forces_sve_matmul();
+#else
+    return false;
 #endif
 }
 

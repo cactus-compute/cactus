@@ -1,4 +1,5 @@
 #include "test_utils.h"
+#include "../cactus/kernel/kernel_utils.h"
 #include <chrono>
 #include <vector>
 #include <string>
@@ -9,6 +10,8 @@
 #include <random>
 #include <filesystem>
 #include <fstream>
+#include <cstdlib>
+#include <tuple>
 
 struct BenchmarkConfig {
     std::vector<size_t> dimensions = {1024};
@@ -19,6 +22,88 @@ struct BenchmarkConfig {
     BenchmarkConfig() {
     }
 };
+
+namespace {
+
+const char* matmul_kernel_mode_name(TestUtils::MatmulKernelMode mode) {
+    switch (mode) {
+        case TestUtils::MatmulKernelMode::AUTO: return "AUTO";
+        case TestUtils::MatmulKernelMode::NEON: return "NEON";
+        case TestUtils::MatmulKernelMode::SVE: return "SVE";
+    }
+    return "UNKNOWN";
+}
+
+bool performance_env_var_is_truthy(const char* name) {
+    const char* value = std::getenv(name);
+    if (!value) return false;
+
+    const std::string str(value);
+    return str == "1" || str == "true" || str == "TRUE" ||
+           str == "yes" || str == "YES";
+}
+
+std::vector<std::tuple<size_t, size_t, size_t>> parse_matmul_shapes_env() {
+    const char* env = std::getenv("CACTUS_TEST_SVE_SIZES");
+    if (!env || *env == '\0') {
+        return {
+            {1, 1024, 1024},
+            {4, 1024, 1024},
+            {16, 1024, 1024},
+        };
+    }
+
+    std::vector<std::tuple<size_t, size_t, size_t>> shapes;
+    std::stringstream ss(env);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        if (token.empty()) continue;
+
+        std::stringstream item(token);
+        std::string part;
+        std::vector<size_t> dims;
+        while (std::getline(item, part, 'x')) {
+            if (part.empty()) {
+                dims.clear();
+                break;
+            }
+            try {
+                dims.push_back(static_cast<size_t>(std::stoull(part)));
+            } catch (...) {
+                dims.clear();
+                break;
+            }
+        }
+
+        if (dims.size() == 3) {
+            shapes.emplace_back(dims[0], dims[1], dims[2]);
+        }
+    }
+
+    if (shapes.empty()) {
+        return {
+            {1, 1024, 1024},
+            {4, 1024, 1024},
+            {16, 1024, 1024},
+        };
+    }
+
+    return shapes;
+}
+
+int parse_matmul_iterations_env(int fallback) {
+    const char* env = std::getenv("CACTUS_TEST_SVE_ITERATIONS");
+    if (!env || *env == '\0') return fallback;
+
+    try {
+        int value = std::stoi(env);
+        return value > 0 ? value : fallback;
+    } catch (...) {
+        return fallback;
+    }
+}
+
+}
 
 template<typename T>
 double time_operation(std::function<void()> operation, int iterations) {
@@ -967,9 +1052,78 @@ void benchmark_gemm_f16_direct(TestUtils::TestRunner& runner, const BenchmarkCon
     }
 }
 
+void benchmark_gemm_f16_kernel_compare(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
+    const std::vector<std::tuple<size_t, size_t, size_t>> shapes = parse_matmul_shapes_env();
+    const int iterations = parse_matmul_iterations_env(config.iterations);
+
+    const bool sve_available = cpu_has_sve();
+    if (!sve_available) {
+        runner.log_skip("MatMul F16 SVE compare", "SVE unavailable on this runtime");
+    }
+
+    for (const auto& [M, K, N] : shapes) {
+        std::vector<__fp16> A(M * K), B_T(N * K), C(M * N);
+        for (size_t i = 0; i < M * K; ++i) {
+            A[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
+        }
+        for (size_t i = 0; i < N * K; ++i) {
+            B_T[i] = static_cast<__fp16>((static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5f) * 2.0f);
+        }
+
+        const auto run_mode = [&](TestUtils::MatmulKernelMode mode) {
+            TestUtils::ScopedMatmulKernelMode kernel_mode(mode);
+            return time_operation<__fp16>([&]() {
+                cactus_matmul_f16(A.data(), B_T.data(), C.data(), M, K, N);
+            }, iterations);
+        };
+
+        const double neon_time_ms = run_mode(TestUtils::MatmulKernelMode::NEON);
+        const double ops = static_cast<double>(2ULL * M * K * N);
+        {
+            std::ostringstream details;
+            details << std::fixed << std::setprecision(3) << neon_time_ms << "ms, "
+                    << std::setprecision(2) << calculate_gflops(2ULL * M * K * N, neon_time_ms) << " GFLOPS";
+            runner.log_performance("MatMul F16 Kernel " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N) +
+                                   " " + matmul_kernel_mode_name(TestUtils::MatmulKernelMode::NEON),
+                                   details.str());
+        }
+
+        if (!sve_available) {
+            continue;
+        }
+
+        const double sve_time_ms = run_mode(TestUtils::MatmulKernelMode::SVE);
+        {
+            std::ostringstream details;
+            details << std::fixed << std::setprecision(3) << sve_time_ms << "ms, "
+                    << std::setprecision(2) << calculate_gflops(2ULL * M * K * N, sve_time_ms) << " GFLOPS";
+            runner.log_performance("MatMul F16 Kernel " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N) +
+                                   " " + matmul_kernel_mode_name(TestUtils::MatmulKernelMode::SVE),
+                                   details.str());
+        }
+
+        {
+            std::ostringstream details;
+            details << std::fixed << std::setprecision(3)
+                    << "NEON/SVE time ratio " << (neon_time_ms / sve_time_ms) << "x, "
+                    << std::setprecision(2)
+                    << (ops / (sve_time_ms * 1e6)) - (ops / (neon_time_ms * 1e6)) << " GFLOPS delta";
+            runner.log_performance("MatMul F16 Kernel " + std::to_string(M) + "x" + std::to_string(K) + "x" + std::to_string(N) +
+                                   " Speedup",
+                                   details.str());
+        }
+    }
+}
+
 bool test_gemm_f16_direct_performance(TestUtils::TestRunner& runner) {
     BenchmarkConfig config;
     benchmark_gemm_f16_direct(runner, config);
+    return true;
+}
+
+bool test_gemm_f16_kernel_compare_performance(TestUtils::TestRunner& runner) {
+    BenchmarkConfig config;
+    benchmark_gemm_f16_kernel_compare(runner, config);
     return true;
 }
 
@@ -1183,7 +1337,14 @@ bool test_layernorm_performance(TestUtils::TestRunner& runner) {
 
 
 int main() {
-    TestUtils::TestRunner runner("Performance Benchmarks");
+    const bool sve_only = performance_env_var_is_truthy("CACTUS_TEST_SVE_ONLY");
+    TestUtils::TestRunner runner(sve_only ? "MatMul SVE vs NEON" : "Performance Benchmarks");
+
+    if (sve_only) {
+        runner.run_test("F16 MatMul Kernel Compare", test_gemm_f16_kernel_compare_performance(runner));
+        runner.print_summary();
+        return runner.all_passed() ? 0 : 1;
+    }
 
     runner.run_test("Streaming Stores", test_streaming_stores_performance(runner));
     runner.run_test("Conv1D Operations", test_conv1d_operations_performance(runner));
@@ -1192,6 +1353,7 @@ int main() {
     runner.run_test("Scalar Operations", test_scalar_operations_performance(runner));
     runner.run_test("Matrix Multiplication", test_matrix_multiplication_performance(runner));
     runner.run_test("F16 MatMul", test_gemm_f16_direct_performance(runner));
+    runner.run_test("F16 MatMul Kernel Compare", test_gemm_f16_kernel_compare_performance(runner));
     runner.run_test("Grouped INT8 MatMul", test_grouped_int8_matmul_performance(runner));
     runner.run_test("Unary Operations", test_unary_operations_performance(runner));
     runner.run_test("Reduction Operations", test_reduction_operations_performance(runner));

@@ -1409,6 +1409,10 @@ def cmd_test(args):
         args.transcribe_model = 'nvidia/parakeet-ctc-1.1b'
         print_color(BLUE, f"Using large models: {args.model}, {args.transcribe_model}, {args.vad_model}")
 
+    if getattr(args, 'sve', False) and (getattr(args, 'android', False) or getattr(args, 'ios', False)):
+        print_color(RED, "Error: --sve is currently supported only for local host test runs")
+        return 1
+
     if getattr(args, 'reconvert', False):
         reconvert_models = [
             getattr(args, 'model', 'LiquidAI/LFM2-VL-450M'),
@@ -1464,6 +1468,12 @@ def cmd_test(args):
         cmd.append("--android")
     if args.ios:
         cmd.append("--ios")
+    if getattr(args, 'sve', False):
+        cmd.append("--sve")
+    if getattr(args, 'sve_sizes', None):
+        cmd.extend(["--sve-sizes", args.sve_sizes])
+    if getattr(args, 'sve_iterations', None):
+        cmd.extend(["--sve-iterations", str(args.sve_iterations)])
     if getattr(args, 'exhaustive', False):
         cmd.append("--exhaustive")
     test_filter = args.only
@@ -1932,6 +1942,9 @@ def create_parser():
     --kernel                           run only kernel tests
     --kv_cache                         run only KV cache tests
     --performance                      run only performance benchmarks
+    --sve                              run focused NEON vs SVE matmul benchmark
+    --sve-sizes <MxKxN,...>            custom shapes for --sve
+    --sve-iterations <count>           iterations per shape for --sve
     --ios                              run on connected iPhone
     --android                          run on connected Android
 
@@ -2087,6 +2100,12 @@ def create_parser():
     for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance']:
         test_parser.add_argument(f'--{_test_name}', action='store_true',
                                  help=f'Only run the {_test_name} tests')
+    test_parser.add_argument('--sve', action='store_true',
+                             help='Run the focused NEON vs SVE matmul benchmark on the local host')
+    test_parser.add_argument('--sve-sizes',
+                             help='Comma-separated matmul shapes for --sve, e.g. 1x1024x1024,4x2048x2048')
+    test_parser.add_argument('--sve-iterations', type=int,
+                             help='Iterations per shape for --sve')
     test_parser.add_argument('--enable-telemetry', action='store_true',
                              help='Enable cloud telemetry (disabled by default in tests)')
     test_parser.add_argument('--reconvert', action='store_true',

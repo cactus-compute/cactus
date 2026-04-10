@@ -4,6 +4,8 @@ project(Cactus LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+include(CheckCXXSourceCompiles)
+
 set(_CACTUS_VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../CACTUS_VERSION")
 if(EXISTS "${_CACTUS_VERSION_FILE}")
     file(READ "${_CACTUS_VERSION_FILE}" _CACTUS_VERSION_CONTENT)
@@ -76,8 +78,10 @@ file(GLOB MODEL_SOURCES "models/*.cpp" "models/gemma4/*.cpp")
 file(GLOB TELEMETRY_SOURCES "telemetry/*.cpp")
 
 set(SME2_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_sme2.cpp")
+set(SVE2_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_sve2.cpp")
 set(I8MM_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_i8mm.cpp")
 list(REMOVE_ITEM KERNEL_SOURCES "${SME2_SOURCE}")
+list(REMOVE_ITEM KERNEL_SOURCES "${SVE2_SOURCE}")
 list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
 
 if(APPLE)
@@ -143,12 +147,15 @@ endfunction()
 
 set(ENABLE_SME2 "AUTO" CACHE STRING "SME2 build mode: AUTO or OFF")
 set_property(CACHE ENABLE_SME2 PROPERTY STRINGS AUTO OFF)
+set(ENABLE_SVE2 "AUTO" CACHE STRING "SVE2 build mode: AUTO or OFF")
+set_property(CACHE ENABLE_SVE2 PROPERTY STRINGS AUTO OFF)
 
 set(BUILD_SME2 0)
 set(SME2_MARCH_FLAG "-march=armv9.2-a+nosve+nosve2+sme2")
+set(BUILD_SVE2 0)
+set(SVE2_MARCH_FLAG "-march=armv9-a+sve2")
 if(ENABLE_SME2 STREQUAL "AUTO")
 	if(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
-		include(CheckCXXSourceCompiles)
 		set(CMAKE_REQUIRED_FLAGS "-arch arm64 ${SME2_MARCH_FLAG}")
 		check_cxx_source_compiles("
 			#include <arm_sme.h>
@@ -169,12 +176,44 @@ if(ENABLE_SME2 STREQUAL "AUTO")
 
 endif()
 
+if(ENABLE_SVE2 STREQUAL "AUTO")
+	if((APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64") OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+		if(APPLE)
+			set(CMAKE_REQUIRED_FLAGS "-arch arm64 ${SVE2_MARCH_FLAG}")
+		else()
+			set(CMAKE_REQUIRED_FLAGS "${SVE2_MARCH_FLAG}")
+		endif()
+		check_cxx_source_compiles("
+			#include <arm_sve.h>
+			int main() { return (int)svcntb(); }
+		" COMPILER_SUPPORTS_SVE2)
+		unset(CMAKE_REQUIRED_FLAGS)
+
+		if(COMPILER_SUPPORTS_SVE2)
+			set(BUILD_SVE2 1)
+			message(STATUS "Toolchain supports SVE2 - building SVE2 kernels")
+		else()
+			message(STATUS "Compiler does not support SVE2 - building without SVE2")
+		endif()
+	else()
+		message(STATUS "Non-arm64 target - building without SVE2")
+	endif()
+endif()
+
 if(BUILD_SME2)
 	add_library(cactus_sme2_obj OBJECT ${SME2_SOURCE})
 	target_include_directories(cactus_sme2_obj PRIVATE ${COMMON_INCLUDES})
 	target_compile_options(cactus_sme2_obj PRIVATE ${SME2_MARCH_FLAG})
 	set_target_properties(cactus_sme2_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 	target_compile_definitions(cactus_sme2_obj PRIVATE CACTUS_COMPILE_SME2)
+endif()
+
+if(BUILD_SVE2)
+	add_library(cactus_sve2_obj OBJECT ${SVE2_SOURCE})
+	target_include_directories(cactus_sve2_obj PRIVATE ${COMMON_INCLUDES})
+	target_compile_options(cactus_sve2_obj PRIVATE ${SVE2_MARCH_FLAG})
+	set_target_properties(cactus_sve2_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+	target_compile_definitions(cactus_sve2_obj PRIVATE CACTUS_COMPILE_SVE2)
 endif()
 
 # I8MM support: compile kernel_i8mm.cpp with +i8mm
@@ -186,6 +225,9 @@ set_target_properties(cactus_i8mm_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(cactus_i8mm_obj PRIVATE CACTUS_COMPILE_I8MM __ARM_FEATURE_MATMUL_INT8=1)
 
 set(EXTRA_OBJECTS $<TARGET_OBJECTS:cactus_i8mm_obj>)
+if(BUILD_SVE2)
+	set(EXTRA_OBJECTS ${EXTRA_OBJECTS} $<TARGET_OBJECTS:cactus_sve2_obj>)
+endif()
 if(BUILD_SME2)
 	set(EXTRA_OBJECTS ${EXTRA_OBJECTS} $<TARGET_OBJECTS:cactus_sme2_obj>)
 endif()
@@ -193,6 +235,10 @@ endif()
 add_library(cactus STATIC ${COMMON_SOURCES} ${EXTRA_OBJECTS})
 configure_cactus_target(cactus)
 target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_I8MM)
+
+if(BUILD_SVE2)
+	target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_SVE2)
+endif()
 
 if(BUILD_SME2)
 	target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_SME2)
@@ -205,6 +251,10 @@ set_target_properties(cactus_ffi PROPERTIES
     OUTPUT_NAME "cactus"
 )
 target_compile_definitions(cactus_ffi PRIVATE CACTUS_COMPILE_I8MM)
+
+if(BUILD_SVE2)
+	target_compile_definitions(cactus_ffi PRIVATE CACTUS_COMPILE_SVE2)
+endif()
 
 if(BUILD_SME2)
 	target_compile_definitions(cactus_ffi PRIVATE CACTUS_COMPILE_SME2)

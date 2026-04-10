@@ -1,9 +1,11 @@
 #include "test_utils.h"
+#include "../cactus/kernel/kernel_utils.h"
 #include <vector>
 #include <cmath>
 #include <iostream>
 #include <random>
 #include <algorithm>
+#include <tuple>
 
 bool test_neon_add_fp16_correctness() {
     const size_t size = 16;
@@ -210,6 +212,102 @@ bool test_neon_attention_fp16_correctness() {
     }
 
     return has_non_zero;
+}
+
+bool test_matmul_f16_correctness() {
+    const std::vector<std::tuple<size_t, size_t, size_t>> shapes = {
+        {1, 7, 5},
+        {3, 17, 9},
+        {5, 33, 7},
+    };
+
+    std::mt19937 gen(123);
+    std::uniform_real_distribution<float> dis(-0.25f, 0.25f);
+
+    for (const auto& [M, K, N] : shapes) {
+        std::vector<__fp16> A(M * K);
+        std::vector<__fp16> B_T(N * K);
+        std::vector<__fp16> C(M * N, static_cast<__fp16>(0));
+        std::vector<float> C_ref(M * N, 0.0f);
+
+        for (size_t i = 0; i < M * K; ++i) {
+            A[i] = static_cast<__fp16>(dis(gen));
+        }
+        for (size_t i = 0; i < N * K; ++i) {
+            B_T[i] = static_cast<__fp16>(dis(gen));
+        }
+
+        cactus_matmul_f16(A.data(), B_T.data(), C.data(), M, K, N);
+
+        for (size_t m = 0; m < M; ++m) {
+            for (size_t n = 0; n < N; ++n) {
+                float sum = 0.0f;
+                for (size_t k = 0; k < K; ++k) {
+                    sum += static_cast<float>(A[m * K + k]) *
+                           static_cast<float>(B_T[n * K + k]);
+                }
+                C_ref[m * N + n] = sum;
+            }
+        }
+
+        float max_abs_error = 0.0f;
+        for (size_t i = 0; i < M * N; ++i) {
+            max_abs_error = std::max(max_abs_error, std::abs(static_cast<float>(C[i]) - C_ref[i]));
+        }
+
+        if (max_abs_error > 0.05f) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool test_matmul_f16_sve_matches_neon() {
+    const std::vector<std::tuple<size_t, size_t, size_t>> shapes = {
+        {1, 31, 13},
+        {3, 65, 9},
+        {5, 127, 7},
+    };
+
+    std::mt19937 gen(456);
+    std::uniform_real_distribution<float> dis(-0.25f, 0.25f);
+
+    for (const auto& [M, K, N] : shapes) {
+        std::vector<__fp16> A(M * K);
+        std::vector<__fp16> B_T(N * K);
+        std::vector<__fp16> C_neon(M * N, static_cast<__fp16>(0));
+        std::vector<__fp16> C_sve(M * N, static_cast<__fp16>(0));
+
+        for (size_t i = 0; i < M * K; ++i) {
+            A[i] = static_cast<__fp16>(dis(gen));
+        }
+        for (size_t i = 0; i < N * K; ++i) {
+            B_T[i] = static_cast<__fp16>(dis(gen));
+        }
+
+        {
+            TestUtils::ScopedMatmulKernelMode mode(TestUtils::MatmulKernelMode::NEON);
+            cactus_matmul_f16(A.data(), B_T.data(), C_neon.data(), M, K, N);
+        }
+
+        {
+            TestUtils::ScopedMatmulKernelMode mode(TestUtils::MatmulKernelMode::SVE);
+            cactus_matmul_f16(A.data(), B_T.data(), C_sve.data(), M, K, N);
+        }
+
+        float max_abs_error = 0.0f;
+        for (size_t i = 0; i < M * N; ++i) {
+            max_abs_error = std::max(max_abs_error,
+                                     std::abs(static_cast<float>(C_neon[i]) - static_cast<float>(C_sve[i])));
+        }
+
+        if (max_abs_error > 0.05f) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 bool test_matmul_int8_grouped_correctness() {
@@ -488,6 +586,12 @@ int main() {
     runner.run_test("Kernel Softmax Correctness", test_neon_softmax_correctness());
     runner.run_test("Kernel RoPE Correctness", test_neon_rope_correctness());
     runner.run_test("Kernel Attention FP16 Correctness", test_neon_attention_fp16_correctness());
+    runner.run_test("Kernel FP16 MatMul Correctness", test_matmul_f16_correctness());
+    if (cpu_has_sve()) {
+        runner.run_test("Kernel FP16 MatMul SVE vs NEON", test_matmul_f16_sve_matches_neon());
+    } else {
+        runner.log_skip("Kernel FP16 MatMul SVE vs NEON", "SVE unavailable on this runtime");
+    }
     runner.run_test("Kernel Grouped INT8 MatMul Correctness", test_matmul_int8_grouped_correctness());
     runner.run_test("Kernel INT4 MatMul Correctness", test_int4_matmul_correctness());
     runner.run_test("Kernel STFT Complex Correctness", test_stft_kernel_correctness());

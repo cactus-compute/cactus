@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <functional>
 #include <cmath>
+#include <cstdlib>
 #include <atomic>
 #include <mutex>
 
@@ -44,6 +45,56 @@ private:
     std::string suite_name_;
     int passed_count_;
     int total_count_;
+};
+
+class ScopedEnvVar {
+public:
+    ScopedEnvVar(const char* name, const char* value)
+        : name_(name) {
+        const char* existing = std::getenv(name);
+        if (existing) {
+            had_original_ = true;
+            original_ = existing;
+        }
+
+        if (value) {
+            ::setenv(name_.c_str(), value, 1);
+        } else {
+            ::unsetenv(name_.c_str());
+        }
+    }
+
+    ~ScopedEnvVar() {
+        if (had_original_) {
+            ::setenv(name_.c_str(), original_.c_str(), 1);
+        } else {
+            ::unsetenv(name_.c_str());
+        }
+    }
+
+private:
+    std::string name_;
+    std::string original_;
+    bool had_original_ = false;
+};
+
+enum class MatmulKernelMode {
+    AUTO,
+    NEON,
+    SVE
+};
+
+class ScopedMatmulKernelMode {
+public:
+    explicit ScopedMatmulKernelMode(MatmulKernelMode mode)
+        : neon_override_("CACTUS_FORCE_NEON_MATMUL", mode == MatmulKernelMode::NEON ? "1" : "0"),
+          sve_override_("CACTUS_FORCE_SVE_MATMUL", mode == MatmulKernelMode::SVE ? "1" : "0"),
+          sve2_alias_("CACTUS_FORCE_SVE2_MATMUL", mode == MatmulKernelMode::SVE ? "1" : "0") {}
+
+private:
+    ScopedEnvVar neon_override_;
+    ScopedEnvVar sve_override_;
+    ScopedEnvVar sve2_alias_;
 };
 
 template<typename T>

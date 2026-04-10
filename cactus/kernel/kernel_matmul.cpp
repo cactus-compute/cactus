@@ -171,6 +171,17 @@ void cactus_matmul_f16_sme2_caller(
 );
 #endif
 
+#if defined(CACTUS_COMPILE_SVE2)
+void cactus_matmul_f16_sve2_caller(
+    const __fp16* a,
+    const __fp16* b_transposed,
+    __fp16* c,
+    size_t M,
+    size_t K,
+    size_t N
+);
+#endif
+
 void cactus_matmul_f16(
     const __fp16* a,
     const __fp16* b_transposed,
@@ -180,8 +191,26 @@ void cactus_matmul_f16(
     size_t N
 ) {
 
+    const bool force_neon = cpu_forces_neon_matmul();
+
+#if defined(CACTUS_COMPILE_SVE2)
+    const bool force_sve = cpu_forces_sve_matmul();
+#else
+    const bool force_sve = false;
+#endif
+
+#if defined(CACTUS_COMPILE_SVE2)
+    if (force_sve && cpu_has_sve()) {
+        cactus_matmul_f16_sve2_caller(
+            a, b_transposed, c,
+            M, K, N
+        );
+        return;
+    }
+#endif
+
 #if defined(CACTUS_COMPILE_SME2)
-	if (cpu_has_sme2() && M >= SME2_M_THRESHOLD) {
+	if (!force_neon && !force_sve && cpu_has_sme2() && M >= SME2_M_THRESHOLD) {
 		cactus_matmul_f16_sme2_caller(
 			a, b_transposed, c,
 			M, K, N
@@ -191,7 +220,7 @@ void cactus_matmul_f16(
 #endif
 
 #ifdef __APPLE__
-    if (K >= ACCELERATE_K_THRESHOLD && M >= ACCELERATE_M_THRESHOLD) {
+    if (!force_neon && !force_sve && K >= ACCELERATE_K_THRESHOLD && M >= ACCELERATE_M_THRESHOLD) {
         const size_t a_len = M * K;
         const size_t b_len = N * K;
         const size_t c_len = M * N;
@@ -215,6 +244,16 @@ void cactus_matmul_f16(
             else if (v < -65504.f) v = -65504.f;
             c[i] = (__fp16)v;
         }
+        return;
+    }
+#endif
+
+#if defined(CACTUS_COMPILE_SVE2)
+    if (!force_neon && cpu_has_sve()) {
+        cactus_matmul_f16_sve2_caller(
+            a, b_transposed, c,
+            M, K, N
+        );
         return;
     }
 #endif

@@ -274,6 +274,8 @@ graph.hard_reset();
 │    --reconvert                       force reconversion from source          │
 │    --no-rebuild                      skip building library                   │
 │    --llm / --stt / --performance     run specific test suite                 │
+│    --sve                             compare matmul NEON vs SVE              │
+│    --sve-sizes <MxKxN,...>           custom shapes for --sve                 │
 │    --ios                             run on connected iPhone                 │
 │    --android                         run on connected Android                │
 │                                                                              │

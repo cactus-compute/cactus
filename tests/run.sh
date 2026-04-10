@@ -24,6 +24,9 @@ IOS_MODE=false
 NO_REBUILD=false
 EXHAUSTIVE_MODE=false
 ONLY_EXEC=""
+SVE_MODE=false
+SVE_SIZES=""
+SVE_ITERATIONS=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -67,6 +70,18 @@ while [[ $# -gt 0 ]]; do
             ONLY_EXEC="$2"
             shift 2
             ;;
+        --sve)
+            SVE_MODE=true
+            shift
+            ;;
+        --sve-sizes)
+            SVE_SIZES="$2"
+            shift 2
+            ;;
+        --sve-iterations)
+            SVE_ITERATIONS="$2"
+            shift 2
+            ;;
         --exhaustive)
             EXHAUSTIVE_MODE=true
             shift
@@ -91,6 +106,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-rebuild              Skip building cactus library and tests"
             echo "  --exhaustive              Run exhaustive golden tests for all model families and precisions"
             echo "  --only <test_name>        Only run the specified test (llm, vlm, stt, embed, rag, graph, index, kernel, kv_cache, performance)"
+            echo "  --sve                     Run the focused matmul NEON vs SVE benchmark"
+            echo "  --sve-sizes <MxKxN,...>   Custom matmul shapes for --sve (example: 1x1024x1024,4x2048x2048)"
+            echo "  --sve-iterations <count>  Iterations per shape for --sve"
             echo "  --help, -h                Show this help message"
             exit 0
             ;;
@@ -116,9 +134,23 @@ else
     PRECISION_FLAG=""
 fi
 
+if [ "$SVE_MODE" = true ]; then
+    ONLY_EXEC="performance"
+    echo "SVE benchmark mode: enabled"
+    if [ -n "$SVE_SIZES" ]; then
+        echo "SVE matmul sizes: $SVE_SIZES"
+    fi
+    if [ -n "$SVE_ITERATIONS" ]; then
+        echo "SVE matmul iterations: $SVE_ITERATIONS"
+    fi
+fi
+
 echo ""
 SKIP_STANDARD_DOWNLOADS=false
 if [ "$ONLY_EXEC" = "gemma4_suite" ]; then
+    SKIP_STANDARD_DOWNLOADS=true
+fi
+if [ "$SVE_MODE" = true ]; then
     SKIP_STANDARD_DOWNLOADS=true
 fi
 
@@ -144,27 +176,33 @@ if [ "$SKIP_STANDARD_DOWNLOADS" = false ]; then
         exit 1
     fi
 else
-    echo "Step 1: Skipping standard downloads for --only gemma4_suite"
+    if [ "$SVE_MODE" = true ]; then
+        echo "Step 1: Skipping model downloads for --sve benchmark mode"
+    else
+        echo "Step 1: Skipping standard downloads for --only gemma4_suite"
+    fi
 fi
 
-if ! cactus download "$DIARIZE_MODEL_NAME" $PRECISION_FLAG; then
-    echo "Failed to download diarize model weights"
-    exit 1
-fi
+if [ "$SVE_MODE" = false ]; then
+    if ! cactus download "$DIARIZE_MODEL_NAME" $PRECISION_FLAG; then
+        echo "Failed to download diarize model weights"
+        exit 1
+    fi
 
-if ! cactus download "$EMBED_SPEAKER_MODEL_NAME" $PRECISION_FLAG; then
-    echo "Failed to download embed_speaker model weights"
-    exit 1
-fi
+    if ! cactus download "$EMBED_SPEAKER_MODEL_NAME" $PRECISION_FLAG; then
+        echo "Failed to download embed_speaker model weights"
+        exit 1
+    fi
 
-if ! cactus download "$DIARIZE_MODEL_NAME" $PRECISION_FLAG; then
-    echo "Failed to download diarize model weights"
-    exit 1
-fi
+    if ! cactus download "$DIARIZE_MODEL_NAME" $PRECISION_FLAG; then
+        echo "Failed to download diarize model weights"
+        exit 1
+    fi
 
-if ! cactus download "$EMBED_SPEAKER_MODEL_NAME" $PRECISION_FLAG; then
-    echo "Failed to download embed_speaker model weights"
-    exit 1
+    if ! cactus download "$EMBED_SPEAKER_MODEL_NAME" $PRECISION_FLAG; then
+        echo "Failed to download embed_speaker model weights"
+        exit 1
+    fi
 fi
 
 echo ""
@@ -198,9 +236,16 @@ if [ "$NO_REBUILD" = false ]; then
         exit 1
     fi
 
-    if ! make -j$(nproc 2>/dev/null || echo 4); then
-        echo "Failed to build tests"
-        exit 1
+    if [ "$SVE_MODE" = true ]; then
+        if ! make -j$(nproc 2>/dev/null || echo 4) test_performance; then
+            echo "Failed to build SVE benchmark target"
+            exit 1
+        fi
+    else
+        if ! make -j$(nproc 2>/dev/null || echo 4); then
+            echo "Failed to build tests"
+            exit 1
+        fi
     fi
 else
     echo "Skipping build (--no-rebuild)"
@@ -228,6 +273,15 @@ export CACTUS_TEST_DIARIZE_MODEL="$PROJECT_ROOT/weights/$DIARIZE_MODEL_DIR"
 export CACTUS_TEST_EMBED_SPEAKER_MODEL="$PROJECT_ROOT/weights/$EMBED_SPEAKER_MODEL_DIR"
 export CACTUS_TEST_ASSETS="$PROJECT_ROOT/tests/assets"
 export CACTUS_INDEX_PATH="$PROJECT_ROOT/tests/assets"
+if [ "$SVE_MODE" = true ]; then
+    export CACTUS_TEST_SVE_ONLY=1
+    if [ -n "$SVE_SIZES" ]; then
+        export CACTUS_TEST_SVE_SIZES="$SVE_SIZES"
+    fi
+    if [ -n "$SVE_ITERATIONS" ]; then
+        export CACTUS_TEST_SVE_ITERATIONS="$SVE_ITERATIONS"
+    fi
+fi
 
 echo "Using model path: $CACTUS_TEST_MODEL"
 echo "Using transcribe model path: $CACTUS_TEST_TRANSCRIBE_MODEL"
@@ -237,6 +291,9 @@ echo "Using diarize model path: $CACTUS_TEST_DIARIZE_MODEL"
 echo "Using embed_speaker model path: $CACTUS_TEST_EMBED_SPEAKER_MODEL"
 echo "Using assets path: $CACTUS_TEST_ASSETS"
 echo "Using index path: $CACTUS_INDEX_PATH"
+if [ "$SVE_MODE" = true ]; then
+    echo "Using SVE-only performance mode"
+fi
 
 echo "Discovering test executables..."
 test_executables=($(find . -maxdepth 1 -name "test_*" ! -name "test_exhaustive" -type f | sort))

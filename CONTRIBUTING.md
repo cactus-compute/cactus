@@ -43,6 +43,9 @@ cactus test --android
 # Run performance tests
 cactus test --performance
 
+# Run focused matmul NEON vs SVE comparison
+cactus test --sve --sve-sizes 1x1024x1024,4x1024x1024,16x1024x1024
+
 # Test a specific model
 cactus test --model LiquidAI/LFM2.5-1.2B-Instruct
 ```
