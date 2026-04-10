@@ -9,13 +9,150 @@
 #include <arm_sme.h>
 #include <algorithm>
 #include <atomic>
+#include <cstring>
+#include <mutex>
 #include <memory>
+#include <unordered_map>
 
 #if defined(__clang__)
 #define CACTUS_UNROLL4 _Pragma("clang loop unroll_count(4)")
 #else
 #define CACTUS_UNROLL4
 #endif
+
+namespace {
+
+struct Sme2PackedBKey {
+    const __fp16* ptr;
+    size_t K;
+    size_t N;
+    size_t tile_rows;
+    size_t tile_pairs;
+
+    bool operator==(const Sme2PackedBKey& other) const {
+        return ptr == other.ptr &&
+               K == other.K &&
+               N == other.N &&
+               tile_rows == other.tile_rows &&
+               tile_pairs == other.tile_pairs;
+    }
+};
+
+struct Sme2PackedBKeyHash {
+    size_t operator()(const Sme2PackedBKey& key) const {
+        size_t h = std::hash<const void*>{}(key.ptr);
+        h ^= std::hash<size_t>{}(key.K) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<size_t>{}(key.N) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<size_t>{}(key.tile_rows) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<size_t>{}(key.tile_pairs) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+uint64_t cactus_fp16_sample_fingerprint(const __fp16* data, size_t count) {
+    if (!data || count == 0) return 0;
+
+    constexpr size_t SAMPLE_COUNT = 16;
+    const size_t step = std::max<size_t>(1, count / SAMPLE_COUNT);
+    uint64_t hash = 1469598103934665603ull ^ static_cast<uint64_t>(count);
+
+    auto mix_index = [&](size_t idx) {
+        uint16_t bits = 0;
+        std::memcpy(&bits, data + idx, sizeof(bits));
+        hash ^= static_cast<uint64_t>(bits) + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+    };
+
+    size_t idx = 0;
+    for (size_t sample = 0; sample < SAMPLE_COUNT && idx < count; ++sample, idx += step) {
+        mix_index(idx);
+    }
+    mix_index(count - 1);
+    return hash;
+}
+
+class Sme2PackedBCache {
+public:
+    static Sme2PackedBCache& instance() {
+        static Sme2PackedBCache cache;
+        return cache;
+    }
+
+    template <typename Builder>
+    std::shared_ptr<std::vector<__fp16>> get_or_create(
+        const Sme2PackedBKey& key,
+        size_t elements,
+        uint64_t fingerprint,
+        Builder&& builder
+    ) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto it = entries_.find(key);
+            if (it != entries_.end() && it->second.fingerprint == fingerprint) {
+                it->second.last_use = ++clock_;
+                return it->second.data;
+            }
+        }
+
+        auto packed = std::make_shared<std::vector<__fp16>>(elements);
+        builder(packed->data());
+        const size_t bytes = packed->size() * sizeof(__fp16);
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = entries_.find(key);
+        if (it != entries_.end() && it->second.fingerprint == fingerprint) {
+            it->second.last_use = ++clock_;
+            return it->second.data;
+        }
+
+        Entry& entry = entries_[key];
+        if (entry.data && current_bytes_ >= entry.bytes) {
+            current_bytes_ -= entry.bytes;
+        }
+
+        entry.data = packed;
+        entry.bytes = bytes;
+        entry.fingerprint = fingerprint;
+        entry.last_use = ++clock_;
+        current_bytes_ += bytes;
+        evict_locked();
+        return entry.data;
+    }
+
+private:
+    struct Entry {
+        std::shared_ptr<std::vector<__fp16>> data;
+        size_t bytes = 0;
+        uint64_t fingerprint = 0;
+        uint64_t last_use = 0;
+    };
+
+    void evict_locked() {
+        constexpr size_t MAX_CACHE_BYTES = 256ull * 1024ull * 1024ull;
+        while (current_bytes_ > MAX_CACHE_BYTES && entries_.size() > 1) {
+            auto oldest = entries_.end();
+            for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+                if (oldest == entries_.end() || it->second.last_use < oldest->second.last_use) {
+                    oldest = it;
+                }
+            }
+
+            if (oldest == entries_.end()) break;
+            if (current_bytes_ >= oldest->second.bytes) {
+                current_bytes_ -= oldest->second.bytes;
+            } else {
+                current_bytes_ = 0;
+            }
+            entries_.erase(oldest);
+        }
+    }
+
+    std::mutex mutex_;
+    std::unordered_map<Sme2PackedBKey, Entry, Sme2PackedBKeyHash> entries_;
+    size_t current_bytes_ = 0;
+    uint64_t clock_ = 0;
+};
+
+}  // namespace
 
 static inline void cactus_pack_a_f16_row_block(
     const __fp16* __restrict a,
@@ -562,13 +699,20 @@ void cactus_matmul_f16_sme2_caller(
     const size_t row_blocks = (M + tile_rows - 1) / tile_rows;
     const size_t k_pairs = (K + 1) / 2;
     const size_t col_blocks = (N + tile_rows - 1) / tile_rows;
+    const size_t packed_b_elements = k_pairs * col_blocks * tile_pairs;
 
     std::unique_ptr<__fp16[]> a_packed(new __fp16[row_blocks * k_pairs * tile_pairs]);
-    std::unique_ptr<__fp16[]> b_packed(new __fp16[k_pairs * col_blocks * tile_pairs]);
     __fp16* a_packed_ptr = a_packed.get();
-    const __fp16* b_packed_ptr = b_packed.get();
-
-    cactus_pack_b_f16_from_bt(b_transposed, b_packed.get(), K, N, tile_rows, tile_pairs);
+    const Sme2PackedBKey cache_key{b_transposed, K, N, tile_rows, tile_pairs};
+    const uint64_t rhs_fingerprint = cactus_fp16_sample_fingerprint(b_transposed, K * N);
+    auto b_packed = Sme2PackedBCache::instance().get_or_create(
+        cache_key,
+        packed_b_elements,
+        rhs_fingerprint,
+        [&]( __fp16* packed_dst) {
+            cactus_pack_b_f16_from_bt(b_transposed, packed_dst, K, N, tile_rows, tile_pairs);
+        });
+    const __fp16* b_packed_ptr = b_packed->data();
 
     const size_t row_block_size = SME2_TILES_PER_THREAD * tile_rows;
     const size_t num_row_blocks = (M + row_block_size - 1) / row_block_size;
