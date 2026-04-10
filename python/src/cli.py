@@ -704,10 +704,13 @@ def cmd_build(args):
         return 1
 
     if not check_libcurl():
-        print_color(RED, "Error: libcurl development libraries not found")
-        print("  macOS: brew install curl")
-        print("  Ubuntu: sudo apt-get install libcurl4-openssl-dev")
-        return 1
+        if platform.system() == 'Darwin':
+            print_color(RED, "Error: libcurl development libraries not found")
+            print("  macOS: brew install curl")
+            print("  Ubuntu: sudo apt-get install libcurl4-openssl-dev")
+            return 1
+        else:
+            print_color(YELLOW, "Warning: libcurl not found, building without telemetry support")
 
     cactus_dir = PROJECT_ROOT / "cactus"
     lib_path = cactus_dir / "build" / "libcactus.a"
@@ -1586,7 +1589,8 @@ def cmd_clean(args):
     remove_if_exists(PROJECT_ROOT / "weights")
 
     # Clean telemetry cache
-    telemetry_cache = Path.home() / "Library" / "Caches" / "cactus" / "telemetry"
+    from .config_utils import CactusConfig as _CC
+    telemetry_cache = _CC().telemetry_cache_dir
     if telemetry_cache.exists():
         print(f"Removing telemetry cache: {telemetry_cache}")
         shutil.rmtree(telemetry_cache)

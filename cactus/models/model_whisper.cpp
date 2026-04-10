@@ -66,9 +66,15 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
 
     bool skip_npu_enc = false;
     {
+#ifdef _WIN32
         char buf[32] = {};
         if (GetEnvironmentVariableA("CACTUS_NO_NPU_ENC", buf, sizeof(buf)) > 0 && buf[0] == '1')
             skip_npu_enc = true;
+#else
+        const char* env = getenv("CACTUS_NO_NPU_ENC");
+        if (env && env[0] == '1')
+            skip_npu_enc = true;
+#endif
     }
     if (!skip_npu_enc && npu::is_npu_available()) {
         std::string npu_encoder_path = model_folder_path_;
@@ -765,8 +771,14 @@ uint32_t WhisperModel::decode_with_audio(
     else gb->execute();
 
     if (cold_start && encoder_output_persistent_) {
+#ifdef _WIN32
         char dbg_buf[8] = {};
-        if (GetEnvironmentVariableA("CACTUS_DEBUG_ENC", dbg_buf, sizeof(dbg_buf)) > 0 && dbg_buf[0] == '1') {
+        bool do_debug_enc = (GetEnvironmentVariableA("CACTUS_DEBUG_ENC", dbg_buf, sizeof(dbg_buf)) > 0 && dbg_buf[0] == '1');
+#else
+        const char* dbg_env = getenv("CACTUS_DEBUG_ENC");
+        bool do_debug_enc = (dbg_env && dbg_env[0] == '1');
+#endif
+        if (do_debug_enc) {
             void* enc_ptr = gb->get_output(encoder_output_persistent_);
             if (enc_ptr) {
                 const uint16_t* ep = (const uint16_t*)enc_ptr;

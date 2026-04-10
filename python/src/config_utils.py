@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import platform
 from pathlib import Path
 from typing import Optional, Any, Dict
 
@@ -10,7 +11,12 @@ class CactusConfig:
         self.config_dir = Path.home() / ".cactus"
         self.config_file = self.config_dir / "config.json"
         self.config_dir.mkdir(exist_ok=True)
-        self.telemetry_cache_dir = Path.home() / "Library" / "Caches" / "cactus" / "telemetry"
+        if platform.system() == "Darwin":
+            self.telemetry_cache_dir = Path.home() / "Library" / "Caches" / "cactus" / "telemetry"
+        else:
+            xdg = os.environ.get("XDG_CACHE_HOME", "")
+            cache_root = Path(xdg) if xdg else Path.home() / ".cache"
+            self.telemetry_cache_dir = cache_root / "cactus" / "telemetry"
         self.cloud_api_key_cache_file = self.telemetry_cache_dir / "cloud_api_key"
 
     def load_config(self):
