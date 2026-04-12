@@ -1601,7 +1601,11 @@ void cactus_matmul_int4_sme2_caller(
             );
         };
 
-        size_t num_threads = CactusThreading::GemmThreading::get_gemv_threads(col_blocks, pool.num_workers());
+        // Reuse the same thread sizing intuition as the NEON INT4 GEMV path,
+        // which reasons about 4-output blocks rather than SME2 tile-sized blocks.
+        // This avoids under-threading decode when tile_rows > 4.
+        const size_t reference_n_blocks = (N + 3) / 4;
+        size_t num_threads = CactusThreading::GemmThreading::get_gemv_threads(reference_n_blocks, pool.num_workers());
         num_threads = std::min(num_threads, col_blocks);
 
         if (num_threads <= 1) {
