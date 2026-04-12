@@ -1412,6 +1412,9 @@ def cmd_test(args):
     if getattr(args, 'sve', False) and (getattr(args, 'android', False) or getattr(args, 'ios', False)):
         print_color(RED, "Error: --sve is currently supported only for local host test runs")
         return 1
+    if getattr(args, 'matmul_backend', 'auto') != 'auto' and (getattr(args, 'android', False) or getattr(args, 'ios', False)):
+        print_color(RED, "Error: --matmul-backend is currently supported only for local host test runs")
+        return 1
 
     if getattr(args, 'reconvert', False):
         reconvert_models = [
@@ -1470,6 +1473,8 @@ def cmd_test(args):
         cmd.append("--ios")
     if getattr(args, 'sve', False):
         cmd.append("--sve")
+    if getattr(args, 'matmul_backend', 'auto') != 'auto':
+        cmd.extend(["--matmul-backend", args.matmul_backend])
     if getattr(args, 'sve_sizes', None):
         cmd.extend(["--sve-sizes", args.sve_sizes])
     if getattr(args, 'sve_iterations', None):
@@ -1943,6 +1948,7 @@ def create_parser():
     --kv_cache                         run only KV cache tests
     --performance                      run only performance benchmarks
     --sve                              run focused scalable matmul benchmark, or compare NEON vs scalable matmul for the selected test suite
+    --matmul-backend <mode>            force one backend for a single test run: auto, neon, scalable
     --sve-sizes <MxKxN,...>            custom shapes for --sve
     --sve-iterations <count>           iterations per shape for --sve
     --ios                              run on connected iPhone
@@ -2102,6 +2108,8 @@ def create_parser():
                                  help=f'Only run the {_test_name} tests')
     test_parser.add_argument('--sve', action='store_true',
                              help='Run the focused scalable matmul benchmark, or compare NEON vs scalable matmul for the selected local test suite')
+    test_parser.add_argument('--matmul-backend', choices=['auto', 'neon', 'scalable'], default='auto',
+                             help='Force one matmul backend for a single local test run (default: auto)')
     test_parser.add_argument('--sve-sizes',
                              help='Comma-separated matmul shapes for --sve, e.g. 1x1024x1024,4x2048x2048')
     test_parser.add_argument('--sve-iterations', type=int,

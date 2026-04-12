@@ -28,6 +28,7 @@ SVE_MODE=false
 SVE_BENCHMARK_ONLY=false
 SVE_SIZES=""
 SVE_ITERATIONS=""
+MATMUL_BACKEND="auto"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -83,6 +84,10 @@ while [[ $# -gt 0 ]]; do
             SVE_ITERATIONS="$2"
             shift 2
             ;;
+        --matmul-backend)
+            MATMUL_BACKEND="$2"
+            shift 2
+            ;;
         --exhaustive)
             EXHAUSTIVE_MODE=true
             shift
@@ -110,6 +115,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --sve                     Run the focused matmul benchmark, or compare NEON vs scalable matmul for the selected test suite"
             echo "  --sve-sizes <MxKxN,...>   Custom matmul shapes for --sve (example: 1x1024x1024,4x2048x2048)"
             echo "  --sve-iterations <count>  Iterations per shape for --sve"
+            echo "  --matmul-backend <mode>   Force one backend for a single test run: auto, neon, scalable"
             echo "  --help, -h                Show this help message"
             exit 0
             ;;
@@ -133,6 +139,9 @@ if [ -n "$PRECISION" ]; then
     PRECISION_FLAG="--precision $PRECISION"
 else
     PRECISION_FLAG=""
+fi
+if [ "$MATMUL_BACKEND" != "auto" ]; then
+    echo "Forced matmul backend: $MATMUL_BACKEND"
 fi
 
 if [ "$SVE_MODE" = true ]; then
@@ -320,6 +329,9 @@ if [ "$SVE_MODE" = true ]; then
         echo "Scalable matmul compare requested for test execution (SVE/SME2 when available)"
     fi
 fi
+if [ "$MATMUL_BACKEND" != "auto" ]; then
+    echo "Using single-backend matmul test mode"
+fi
 
 echo "Discovering test executables..."
 test_executables=($(find . -maxdepth 1 -name "test_*" ! -name "test_exhaustive" -type f | sort))
@@ -395,6 +407,10 @@ scalable_backend_available() {
     local backend
     backend=$(detect_scalable_backend)
     [ "$backend" != "SCALABLE" ]
+}
+
+single_backend_override_active() {
+    [ "$MATMUL_BACKEND" != "auto" ]
 }
 
 run_timed_test_executable() {
@@ -535,7 +551,7 @@ PY
 }
 
 SVE_COMPARE_SUITE=false
-if [ "$SVE_MODE" = true ] && [ "$SVE_BENCHMARK_ONLY" = false ]; then
+if [ "$SVE_MODE" = true ] && [ "$SVE_BENCHMARK_ONLY" = false ] && ! single_backend_override_active; then
     if scalable_backend_available; then
         SVE_COMPARE_SUITE=true
     else
@@ -545,6 +561,43 @@ if [ "$SVE_MODE" = true ] && [ "$SVE_BENCHMARK_ONLY" = false ]; then
 fi
 
 unset CACTUS_TEST_LLM_COMPARE
+unset CACTUS_FORCE_INT4_ONLY_MATMUL
+unset CACTUS_TEST_LLM_COMPARE_MODE
+
+if single_backend_override_active; then
+    unset CACTUS_FORCE_NEON_MATMUL
+    unset CACTUS_FORCE_SVE_MATMUL
+    unset CACTUS_FORCE_SVE2_MATMUL
+
+    case "$MATMUL_BACKEND" in
+        neon)
+            SINGLE_BACKEND_NAME="NEON"
+            export CACTUS_FORCE_NEON_MATMUL=1
+            ;;
+        scalable)
+            if scalable_backend_available; then
+                SINGLE_BACKEND_NAME=$(detect_scalable_backend)
+                export CACTUS_FORCE_SVE_MATMUL=1
+                export CACTUS_FORCE_SVE2_MATMUL=1
+            else
+                echo "No SVE or SME2 backend available on this runtime."
+                exit 1
+            fi
+            ;;
+        auto)
+            ;;
+        *)
+            echo "Unknown matmul backend: $MATMUL_BACKEND"
+            echo "Expected one of: auto, neon, scalable"
+            exit 1
+            ;;
+    esac
+
+    if [ "$PRECISION" = "INT4" ]; then
+        export CACTUS_FORCE_INT4_ONLY_MATMUL=1
+        echo "Backend forcing scope: INT4 matmul only"
+    fi
+fi
 
 if [ "$SVE_COMPARE_SUITE" = true ]; then
     SCALABLE_BACKEND_NAME=$(detect_scalable_backend)
@@ -600,7 +653,12 @@ for executable in "${test_executables[@]}"; do
         echo "  Speedup (NEON/${SCALABLE_BACKEND_NAME}): ${speedup}x"
         echo "  Delta: ${delta_ms}ms"
     else
-        ./"$exec_name"
+        if single_backend_override_active && [ "$exec_name" = "test_llm" ]; then
+            echo "Using dedicated LLM single-backend case inside test_llm"
+            CACTUS_TEST_LLM_COMPARE_MODE="${SINGLE_BACKEND_NAME:-$MATMUL_BACKEND}" ./"$exec_name"
+        else
+            ./"$exec_name"
+        fi
     fi
 done
 

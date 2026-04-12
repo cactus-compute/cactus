@@ -274,7 +274,8 @@ graph.hard_reset();
 │    --reconvert                       force reconversion from source          │
 │    --no-rebuild                      skip building library                   │
 │    --llm / --stt / --performance     run specific test suite                 │
-│    --sve                             benchmark or force scalable matmul       │
+│    --sve                             benchmark or compare scalable matmul      │
+│    --matmul-backend auto|neon|scalable single-backend local test run          │
 │    --sve-sizes <MxKxN,...>           custom shapes for --sve                 │
 │    --ios                             run on connected iPhone                 │
 │    --android                         run on connected Android                │
@@ -290,9 +291,12 @@ Examples:
 - `cactus test --llm --sve`
 - `cactus test --vlm --sve`
 - `cactus test --llm --sve --precision FP16`
+- `cactus test --llm --precision INT4 --matmul-backend neon`
+- `cactus test --llm --precision INT4 --matmul-backend scalable`
 
 Note:
 - `--sve` runs a focused matmul benchmark by itself, or runs the selected test suite twice and reports `NEON` vs scalable wall-time.
+- `--matmul-backend neon` or `--matmul-backend scalable` runs the selected local test suite once with that backend forced, so you can compare runs manually.
 - On SME2-capable devices, that suite comparison now includes the grouped `INT4` matmul path used by many default LLM/VLM weights.
 - Use `--precision INT4` if you want to guarantee regenerated `INT4` weights for the comparison.
 
