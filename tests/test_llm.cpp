@@ -76,11 +76,25 @@ bool run_llm_backend_compare_case(BackendCompareResult& out) {
     }
     std::cerr << "[compare] model initialized\n";
 
+    // Warm once so the measured run reflects steady-state backend behavior
+    // rather than one-time weight packing/cache population.
+    char warmup_response[4096] = {0};
+    std::cerr << "[compare] beginning warmup completion\n";
+    int warmup_result = cactus_complete(model, compare_messages, warmup_response, sizeof(warmup_response),
+                                        compare_options, nullptr, nullptr, nullptr, nullptr, 0);
+    std::cerr << "[compare] warmup completion returned result=" << warmup_result << "\n";
+    if (warmup_result <= 0) {
+        cactus_destroy(model);
+        return false;
+    }
+
+    cactus_reset(model);
+
     char response[4096] = {0};
-    std::cerr << "[compare] beginning completion\n";
+    std::cerr << "[compare] beginning measured completion\n";
     int result = cactus_complete(model, compare_messages, response, sizeof(response),
                                  compare_options, nullptr, nullptr, nullptr, nullptr, 0);
-    std::cerr << "[compare] completion returned result=" << result << "\n";
+    std::cerr << "[compare] measured completion returned result=" << result << "\n";
 
     out.metrics.parse(response);
     out.response = out.metrics.response;
