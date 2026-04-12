@@ -403,20 +403,25 @@ run_timed_test_executable() {
     local neon_override="$3"
     local scalable_override="$4"
     local timing_file
+    local warmup_log
 
     timing_file=$(mktemp)
+    warmup_log=$(mktemp)
 
     env \
         CACTUS_FORCE_NEON_MATMUL="$neon_override" \
         CACTUS_FORCE_SVE_MATMUL="$scalable_override" \
         CACTUS_FORCE_SVE2_MATMUL="$scalable_override" \
-        "$executable" >/dev/null 2>&1
+        "$executable" >"$warmup_log" 2>&1
     local warmup_status=$?
     if [ $warmup_status -ne 0 ]; then
         echo "Warmup run failed for $(basename "$executable") [$mode_label]"
+        cat "$warmup_log"
+        rm -f "$warmup_log"
         rm -f "$timing_file"
         return $warmup_status
     fi
+    rm -f "$warmup_log"
 
     echo ""
     echo "Running $(basename "$executable") [$mode_label]..."
@@ -425,6 +430,72 @@ run_timed_test_executable() {
         CACTUS_FORCE_NEON_MATMUL="$neon_override" \
         CACTUS_FORCE_SVE_MATMUL="$scalable_override" \
         CACTUS_FORCE_SVE2_MATMUL="$scalable_override" \
+        python3 - "$executable" "$timing_file" <<'PY'
+import os
+import subprocess
+import sys
+import time
+
+executable = sys.argv[1]
+timing_path = sys.argv[2]
+
+start = time.perf_counter()
+result = subprocess.run([executable], env=os.environ.copy())
+elapsed_ms = (time.perf_counter() - start) * 1000.0
+
+with open(timing_path, "w", encoding="utf-8") as f:
+    f.write(f"{elapsed_ms:.6f}\n")
+    f.write(f"{result.returncode}\n")
+
+sys.exit(result.returncode)
+PY
+    local status=$?
+
+    if [ -f "$timing_file" ]; then
+        LAST_TIMED_RUN_MS=$(sed -n '1p' "$timing_file")
+        rm -f "$timing_file"
+    else
+        LAST_TIMED_RUN_MS=""
+    fi
+
+    return $status
+}
+
+run_timed_llm_compare_executable() {
+    local executable="$1"
+    local mode_label="$2"
+    local neon_override="$3"
+    local scalable_override="$4"
+    local timing_file
+    local warmup_log
+
+    timing_file=$(mktemp)
+    warmup_log=$(mktemp)
+
+    env \
+        CACTUS_FORCE_NEON_MATMUL="$neon_override" \
+        CACTUS_FORCE_SVE_MATMUL="$scalable_override" \
+        CACTUS_FORCE_SVE2_MATMUL="$scalable_override" \
+        CACTUS_TEST_LLM_COMPARE_MODE="$mode_label" \
+        "$executable" >"$warmup_log" 2>&1
+    local warmup_status=$?
+    if [ $warmup_status -ne 0 ]; then
+        echo "Warmup run failed for $(basename "$executable") [$mode_label]"
+        cat "$warmup_log"
+        rm -f "$warmup_log"
+        rm -f "$timing_file"
+        return $warmup_status
+    fi
+    rm -f "$warmup_log"
+
+    echo ""
+    echo "Running $(basename "$executable") [$mode_label] compare case..."
+
+    env \
+        CACTUS_FORCE_NEON_MATMUL="$neon_override" \
+        CACTUS_FORCE_SVE_MATMUL="$scalable_override" \
+        CACTUS_FORCE_SVE2_MATMUL="$scalable_override" \
+        CACTUS_TEST_LLM_COMPARE_MODE="$mode_label" \
         python3 - "$executable" "$timing_file" <<'PY'
 import os
 import subprocess
@@ -485,7 +556,13 @@ fi
 for executable in "${test_executables[@]}"; do
     exec_name=$(basename "$executable")
     if [ "$SVE_COMPARE_SUITE" = true ]; then
-        run_timed_test_executable "$executable" "NEON" "1" "0"
+        timed_runner="run_timed_test_executable"
+        if [ "$exec_name" = "test_llm" ]; then
+            timed_runner="run_timed_llm_compare_executable"
+            echo "Using dedicated LLM compare case inside test_llm"
+        fi
+
+        $timed_runner "$executable" "NEON" "1" "0"
         status=$?
         if [ $status -ne 0 ]; then
             exit $status
@@ -493,7 +570,7 @@ for executable in "${test_executables[@]}"; do
         neon_time_ms="$LAST_TIMED_RUN_MS"
         TOTAL_NEON_MS=$(awk -v total="$TOTAL_NEON_MS" -v add="$neon_time_ms" 'BEGIN { printf "%.6f", total + add }')
 
-        run_timed_test_executable "$executable" "$SCALABLE_BACKEND_NAME" "0" "1"
+        $timed_runner "$executable" "$SCALABLE_BACKEND_NAME" "0" "1"
         status=$?
         if [ $status -ne 0 ]; then
             exit $status
