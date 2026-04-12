@@ -1464,65 +1464,6 @@ static inline void append_lfm2_call(const std::string& entry,
     function_calls.push_back(json_call);
 }
 
-static inline size_t find_json_container_end(const std::string& text, size_t start) {
-    if (start >= text.size()) return std::string::npos;
-    if (text[start] != '{' && text[start] != '[') return std::string::npos;
-
-    int depth = 1;
-    bool in_string = false;
-    bool escaped = false;
-    size_t pos = start + 1;
-
-    while (pos < text.size() && depth > 0) {
-        char c = text[pos];
-        if (in_string) {
-            if (escaped) {
-                escaped = false;
-            } else if (c == '\\') {
-                escaped = true;
-            } else if (c == '"') {
-                in_string = false;
-            }
-        } else {
-            if (c == '"') {
-                in_string = true;
-            } else if (c == '{' || c == '[') {
-                depth++;
-            } else if (c == '}' || c == ']') {
-                depth--;
-            }
-        }
-        ++pos;
-    }
-
-    return depth == 0 ? pos : std::string::npos;
-}
-
-static inline void append_json_tool_calls_from_array(const std::string& array_json,
-                                                     std::vector<std::string>& function_calls) {
-    if (array_json.size() < 2 || array_json.front() != '[' || array_json.back() != ']') return;
-
-    size_t pos = 1;
-    while (pos + 1 < array_json.size()) {
-        while (pos + 1 < array_json.size() &&
-               (std::isspace(static_cast<unsigned char>(array_json[pos])) || array_json[pos] == ',')) {
-            ++pos;
-        }
-
-        if (pos + 1 >= array_json.size() || array_json[pos] == ']') break;
-        if (array_json[pos] != '{') break;
-
-        size_t obj_end = find_json_container_end(array_json, pos);
-        if (obj_end == std::string::npos) break;
-
-        std::string json_obj = trim_string(array_json.substr(pos, obj_end - pos));
-        if (json_obj.find("\"name\"") != std::string::npos) {
-            function_calls.push_back(json_obj);
-        }
-        pos = obj_end;
-    }
-}
-
 inline void parse_function_calls_from_response(const std::string& response_text,
                                                std::string& regular_response,
                                                std::vector<std::string>& function_calls) {
@@ -1556,39 +1497,33 @@ inline void parse_function_calls_from_response(const std::string& response_text,
             json_content = json_content.substr(first, last - first + 1);
         }
 
-        if (json_content.size() > 2 && json_content[0] == '{' &&
-            json_content.find("\"name\"") != std::string::npos) {
-            size_t depth = 0;
-            bool in_string = false;
-            bool escaped = false;
-            size_t end_pos = 0;
-            for (size_t c = 0; c < json_content.size(); c++) {
-                char ch = json_content[c];
-                if (escaped) {
-                    escaped = false;
-                    continue;
-                }
-                if (ch == '\\' && in_string) {
-                    escaped = true;
-                    continue;
-                }
-                if (ch == '"') {
-                    in_string = !in_string;
-                    continue;
-                }
-                if (!in_string) {
-                    if (ch == '{') depth++;
-                    else if (ch == '}') {
-                        depth--;
-                        if (depth == 0) {
-                            end_pos = c + 1;
-                            break;
-                        }
-                    }
+        if (json_content.size() > 2 && json_content.find("\"name\"") != std::string::npos) {
+            // Unwrap array wrapper if present: [{"name":...}] -> {"name":...}
+            if (json_content[0] == '[') {
+                size_t obj_start = json_content.find('{');
+                size_t obj_end = json_content.rfind('}');
+                if (obj_start != std::string::npos && obj_end != std::string::npos && obj_end > obj_start) {
+                    json_content = json_content.substr(obj_start, obj_end - obj_start + 1);
                 }
             }
-            if (end_pos > 0) {
-                function_calls.push_back(json_content.substr(0, end_pos));
+            if (json_content[0] == '{') {
+                size_t depth = 0;
+                bool in_string = false;
+                bool escaped = false;
+                size_t end_pos = 0;
+                for (size_t c = 0; c < json_content.size(); c++) {
+                    char ch = json_content[c];
+                    if (escaped) { escaped = false; continue; }
+                    if (ch == '\\' && in_string) { escaped = true; continue; }
+                    if (ch == '"') { in_string = !in_string; continue; }
+                    if (!in_string) {
+                        if (ch == '{') depth++;
+                        else if (ch == '}' && --depth == 0) { end_pos = c + 1; break; }
+                    }
+                }
+                if (end_pos > 0) {
+                    function_calls.push_back(json_content.substr(0, end_pos));
+                }
             }
         }
 

@@ -1,8 +1,6 @@
 #include "model.h"
 #include "../graph/graph.h"
 #include <cmath>
-#include <filesystem>
-#include <initializer_list>
 #include <stdexcept>
 
 namespace cactus {
@@ -10,36 +8,28 @@ namespace engine {
 
 namespace {
 
-size_t mmap_required_weight(CactusGraph* gb,
-                            std::initializer_list<std::string> candidates,
-                            const std::string& description) {
-    for (const auto& path : candidates) {
-        if (std::filesystem::exists(path)) {
-            return gb->mmap_weights(path);
-        }
-    }
-    throw std::runtime_error("Needle missing required weight: " + description);
-}
-
 size_t delta_rms_norm(CactusGraph* gb, size_t input, size_t weight, float epsilon) {
     return gb->rms_norm(input, gb->scalar_add(weight, 1.0f), epsilon);
 }
 
-size_t normalize_qk_proj(CactusGraph* gb,
-                         size_t proj,
-                         size_t norm_weight,
-                         size_t seq_len,
-                         size_t num_heads,
-                         size_t head_dim,
-                         float epsilon) {
+size_t normalize_qk_proj(CactusGraph* gb, size_t proj, size_t norm_weight,
+                         size_t seq_len, size_t num_heads, size_t head_dim, float epsilon) {
     proj = gb->reshape(proj, {seq_len * num_heads, head_dim});
     proj = delta_rms_norm(gb, proj, norm_weight, epsilon);
     return gb->reshape(proj, {seq_len, num_heads * head_dim});
 }
 
 size_t apply_residual_gate(CactusGraph* gb, size_t residual, size_t update, size_t gate_weight) {
-    update = gb->multiply(update, gb->sigmoid(gate_weight));
-    return gb->add_clipped(residual, update);
+    return gb->add_clipped(residual, gb->multiply(update, gb->sigmoid(gate_weight)));
+}
+
+size_t embed_tokens(CactusGraph* gb, size_t embedding_id, const std::vector<uint32_t>& tokens, size_t hidden_dim) {
+    size_t n = tokens.size();
+    size_t input_node = gb->input({n}, Precision::FP32);
+    std::vector<float> data(n);
+    for (size_t i = 0; i < n; ++i) data[i] = static_cast<float>(tokens[i]);
+    gb->set_input(input_node, data.data(), Precision::FP32);
+    return gb->scalar_multiply(gb->embedding(embedding_id, input_node), std::sqrt(static_cast<float>(hidden_dim)));
 }
 
 } // namespace
@@ -50,24 +40,15 @@ NeedleModel::NeedleModel(const Config& config) : Model(config) {
     weight_nodes_.encoder_layers.resize(config.num_encoder_layers);
     weight_nodes_.decoder_layers.resize(config.num_decoder_layers);
     float hd = static_cast<float>(config.attention_head_dim);
-    if (hd <= 0.0f) {
-        hd = 64.0f;
-    }
-    attention_scale_ = 1.0f / std::sqrt(hd);
+    attention_scale_ = 1.0f / std::sqrt(hd > 0.0f ? hd : 64.0f);
     encoder_k_persistent_.assign(config.num_decoder_layers, 0);
     encoder_v_persistent_.assign(config.num_decoder_layers, 0);
 }
 
 void NeedleModel::load_weights_to_graph(CactusGraph* gb) {
     embedding_node_id_ = gb->mmap_embeddings(embedding_file_path_);
-    weight_nodes_.encoder_norm_weight = mmap_required_weight(
-        gb,
-        {model_folder_path_ + "/encoder_layer_norm_weight.weights"},
-        "encoder final norm");
-    weight_nodes_.decoder_norm_weight = mmap_required_weight(
-        gb,
-        {model_folder_path_ + "/output_norm.weights"},
-        "decoder final norm");
+    weight_nodes_.encoder_norm_weight = gb->mmap_weights(model_folder_path_ + "/encoder_layer_norm_weight.weights");
+    weight_nodes_.decoder_norm_weight = gb->mmap_weights(model_folder_path_ + "/output_norm.weights");
 
     if (config_.tie_word_embeddings) {
         weight_nodes_.output_weight = embedding_node_id_;
@@ -78,41 +59,37 @@ void NeedleModel::load_weights_to_graph(CactusGraph* gb) {
     }
 
     for (uint32_t i = 0; i < config_.num_encoder_layers; ++i) {
-        auto& layer = weight_nodes_.encoder_layers[i];
-        std::string prefix = model_folder_path_ + "/encoder_layer_" + std::to_string(i) + "_";
-        layer.attn_gate_weight = mmap_required_weight(gb, {prefix + "attn_gate.weights"}, prefix + "attn_gate");
-        layer.input_norm_weight = mmap_required_weight(gb, {prefix + "input_norm.weights"}, prefix + "input_norm");
-        layer.attn_q_weight = mmap_required_weight(gb, {prefix + "attn_q.weights"}, prefix + "attn_q");
-        layer.attn_k_weight = mmap_required_weight(gb, {prefix + "attn_k.weights"}, prefix + "attn_k");
-        layer.attn_v_weight = mmap_required_weight(gb, {prefix + "attn_v.weights"}, prefix + "attn_v");
-        layer.attn_output_weight = mmap_required_weight(gb, {prefix + "attn_output.weights"}, prefix + "attn_output");
-        layer.attn_q_norm_weight = mmap_required_weight(gb, {prefix + "attn_q_norm.weights"}, prefix + "attn_q_norm");
-        layer.attn_k_norm_weight = mmap_required_weight(gb, {prefix + "attn_k_norm.weights"}, prefix + "attn_k_norm");
+        auto& l = weight_nodes_.encoder_layers[i];
+        std::string p = model_folder_path_ + "/encoder_layer_" + std::to_string(i) + "_";
+        l.attn_gate_weight   = gb->mmap_weights(p + "attn_gate.weights");
+        l.input_norm_weight  = gb->mmap_weights(p + "input_norm.weights");
+        l.attn_q_weight      = gb->mmap_weights(p + "attn_q.weights");
+        l.attn_k_weight      = gb->mmap_weights(p + "attn_k.weights");
+        l.attn_v_weight      = gb->mmap_weights(p + "attn_v.weights");
+        l.attn_output_weight = gb->mmap_weights(p + "attn_output.weights");
+        l.attn_q_norm_weight = gb->mmap_weights(p + "attn_q_norm.weights");
+        l.attn_k_norm_weight = gb->mmap_weights(p + "attn_k_norm.weights");
     }
 
     for (uint32_t i = 0; i < config_.num_decoder_layers; ++i) {
-        auto& layer = weight_nodes_.decoder_layers[i];
-        std::string prefix = model_folder_path_ + "/layer_" + std::to_string(i) + "_";
-        layer.self_attn_gate_weight = mmap_required_weight(
-            gb, {prefix + "self_attn_gate.weights"}, prefix + "self_attn_gate");
-        layer.cross_attn_gate_weight = mmap_required_weight(
-            gb, {prefix + "cross_attn_gate.weights"}, prefix + "cross_attn_gate");
-        layer.input_norm_weight = mmap_required_weight(gb, {prefix + "input_norm.weights"}, prefix + "input_norm");
-        layer.post_attn_norm_weight = mmap_required_weight(gb, {prefix + "post_attn_norm.weights"}, prefix + "post_attn_norm");
-
-        layer.self_attn_q_weight = mmap_required_weight(gb, {prefix + "attn_q.weights"}, prefix + "attn_q");
-        layer.self_attn_k_weight = mmap_required_weight(gb, {prefix + "attn_k.weights"}, prefix + "attn_k");
-        layer.self_attn_v_weight = mmap_required_weight(gb, {prefix + "attn_v.weights"}, prefix + "attn_v");
-        layer.self_attn_output_weight = mmap_required_weight(gb, {prefix + "attn_output.weights"}, prefix + "attn_output");
-        layer.self_attn_q_norm_weight = mmap_required_weight(gb, {prefix + "attn_q_norm.weights"}, prefix + "attn_q_norm");
-        layer.self_attn_k_norm_weight = mmap_required_weight(gb, {prefix + "attn_k_norm.weights"}, prefix + "attn_k_norm");
-
-        layer.encoder_attn_q_weight = mmap_required_weight(gb, {prefix + "encoder_attn_q.weights"}, prefix + "encoder_attn_q");
-        layer.encoder_attn_k_weight = mmap_required_weight(gb, {prefix + "encoder_attn_k.weights"}, prefix + "encoder_attn_k");
-        layer.encoder_attn_v_weight = mmap_required_weight(gb, {prefix + "encoder_attn_v.weights"}, prefix + "encoder_attn_v");
-        layer.encoder_attn_output_weight = mmap_required_weight(gb, {prefix + "encoder_attn_output.weights"}, prefix + "encoder_attn_output");
-        layer.encoder_attn_q_norm_weight = mmap_required_weight(gb, {prefix + "encoder_attn_q_norm.weights"}, prefix + "encoder_attn_q_norm");
-        layer.encoder_attn_k_norm_weight = mmap_required_weight(gb, {prefix + "encoder_attn_k_norm.weights"}, prefix + "encoder_attn_k_norm");
+        auto& l = weight_nodes_.decoder_layers[i];
+        std::string p = model_folder_path_ + "/layer_" + std::to_string(i) + "_";
+        l.self_attn_gate_weight  = gb->mmap_weights(p + "self_attn_gate.weights");
+        l.cross_attn_gate_weight = gb->mmap_weights(p + "cross_attn_gate.weights");
+        l.input_norm_weight      = gb->mmap_weights(p + "input_norm.weights");
+        l.post_attn_norm_weight  = gb->mmap_weights(p + "post_attn_norm.weights");
+        l.self_attn_q_weight      = gb->mmap_weights(p + "attn_q.weights");
+        l.self_attn_k_weight      = gb->mmap_weights(p + "attn_k.weights");
+        l.self_attn_v_weight      = gb->mmap_weights(p + "attn_v.weights");
+        l.self_attn_output_weight = gb->mmap_weights(p + "attn_output.weights");
+        l.self_attn_q_norm_weight = gb->mmap_weights(p + "attn_q_norm.weights");
+        l.self_attn_k_norm_weight = gb->mmap_weights(p + "attn_k_norm.weights");
+        l.encoder_attn_q_weight      = gb->mmap_weights(p + "encoder_attn_q.weights");
+        l.encoder_attn_k_weight      = gb->mmap_weights(p + "encoder_attn_k.weights");
+        l.encoder_attn_v_weight      = gb->mmap_weights(p + "encoder_attn_v.weights");
+        l.encoder_attn_output_weight = gb->mmap_weights(p + "encoder_attn_output.weights");
+        l.encoder_attn_q_norm_weight = gb->mmap_weights(p + "encoder_attn_q_norm.weights");
+        l.encoder_attn_k_norm_weight = gb->mmap_weights(p + "encoder_attn_k_norm.weights");
     }
 }
 
@@ -124,432 +101,236 @@ void NeedleModel::reset_graph_side_cache_nodes() {
 void NeedleModel::reset_cache() {
     Model::reset_cache();
     encoder_ready_ = false;
-
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    if (gb) {
-        if (last_encoder_post_norm_node_ != 0) {
-            gb->invalidate_persistent(last_encoder_post_norm_node_);
-            last_encoder_post_norm_node_ = 0;
-        }
-        for (size_t i = 0; i < encoder_k_persistent_.size(); ++i) {
-            if (encoder_k_persistent_[i] != 0) {
-                gb->invalidate_persistent(encoder_k_persistent_[i]);
-                encoder_k_persistent_[i] = 0;
-            }
-            if (encoder_v_persistent_[i] != 0) {
-                gb->invalidate_persistent(encoder_v_persistent_[i]);
-                encoder_v_persistent_[i] = 0;
-            }
-        }
-    }
+    if (!gb) { reset_graph_side_cache_nodes(); return; }
 
+    if (last_encoder_post_norm_node_ != 0) {
+        gb->invalidate_persistent(last_encoder_post_norm_node_);
+        last_encoder_post_norm_node_ = 0;
+    }
+    for (size_t i = 0; i < encoder_k_persistent_.size(); ++i) {
+        if (encoder_k_persistent_[i] != 0) { gb->invalidate_persistent(encoder_k_persistent_[i]); encoder_k_persistent_[i] = 0; }
+        if (encoder_v_persistent_[i] != 0) { gb->invalidate_persistent(encoder_v_persistent_[i]); encoder_v_persistent_[i] = 0; }
+    }
     reset_graph_side_cache_nodes();
 }
 
-size_t NeedleModel::build_encoder_self_attention(CactusGraph* gb,
-                                                 size_t input,
-                                                 uint32_t layer_idx,
-                                                 ComputeBackend backend,
-                                                 bool use_cache,
-                                                 size_t /*position_offset*/) {
-    if (use_cache) {
-        throw std::runtime_error("Needle encoder attention does not support KV caching");
-    }
+size_t NeedleModel::build_encoder_self_attention(CactusGraph* gb, size_t input,
+                                                 uint32_t layer_idx, ComputeBackend backend,
+                                                 bool /*use_cache*/, size_t /*position_offset*/) {
+    const auto& l = weight_nodes_.encoder_layers[layer_idx];
+    auto q = gb->matmul(input, l.attn_q_weight, true, backend);
+    auto k = gb->matmul(input, l.attn_k_weight, true, backend);
+    auto v = gb->matmul(input, l.attn_v_weight, true, backend);
 
-    const auto& layer = weight_nodes_.encoder_layers[layer_idx];
-    auto q_proj = gb->matmul(input, layer.attn_q_weight, true, backend);
-    auto k_proj = gb->matmul(input, layer.attn_k_weight, true, backend);
-    auto v_proj = gb->matmul(input, layer.attn_v_weight, true, backend);
+    size_t seq = gb->get_output_buffer(q).shape[0];
+    size_t nh = config_.attention_heads, nkv = config_.attention_kv_heads, hd = config_.attention_head_dim;
 
-    const auto& q_shape = gb->get_output_buffer(q_proj).shape;
-    if (q_shape.size() != 2) {
-        throw std::runtime_error("Needle encoder self-attn expects [T, D] input");
-    }
+    q = normalize_qk_proj(gb, q, l.attn_q_norm_weight, seq, nh, hd, config_.layer_norm_eps);
+    k = normalize_qk_proj(gb, k, l.attn_k_norm_weight, seq, nkv, hd, config_.layer_norm_eps);
 
-    size_t seq_len = q_shape[0];
-    size_t num_heads = config_.attention_heads;
-    size_t num_kv_heads = config_.attention_kv_heads;
-    size_t head_dim = config_.attention_head_dim;
+    auto q4 = gb->reshape(q, {1, seq, nh, hd});
+    auto k4 = gb->reshape(k, {1, seq, nkv, hd});
+    auto v4 = gb->reshape(v, {1, seq, nkv, hd});
+    if (config_.rope_theta > 0) { q4 = gb->rope(q4, config_.rope_theta, 0); k4 = gb->rope(k4, config_.rope_theta, 0); }
 
-    q_proj = normalize_qk_proj(
-        gb, q_proj, layer.attn_q_norm_weight, seq_len, num_heads, head_dim, config_.layer_norm_eps);
-    k_proj = normalize_qk_proj(
-        gb, k_proj, layer.attn_k_norm_weight, seq_len, num_kv_heads, head_dim, config_.layer_norm_eps);
-
-    auto q_4d = gb->reshape(q_proj, {1, seq_len, num_heads, head_dim});
-    auto k_4d = gb->reshape(k_proj, {1, seq_len, num_kv_heads, head_dim});
-    auto v_4d = gb->reshape(v_proj, {1, seq_len, num_kv_heads, head_dim});
-
-    if (config_.rope_theta > 0) {
-        q_4d = gb->rope(q_4d, config_.rope_theta, 0);
-        k_4d = gb->rope(k_4d, config_.rope_theta, 0);
-    }
-
-    auto attn = gb->attention(q_4d, k_4d, v_4d, attention_scale_, false);
-    attn = gb->reshape(attn, {seq_len, num_heads * head_dim});
-    return gb->matmul(attn, layer.attn_output_weight, true, backend);
+    auto attn = gb->attention(q4, k4, v4, attention_scale_, false);
+    return gb->matmul(gb->reshape(attn, {seq, nh * hd}), l.attn_output_weight, true, backend);
 }
 
-size_t NeedleModel::build_decoder_self_attention(CactusGraph* gb,
-                                                 size_t input,
-                                                 uint32_t layer_idx,
-                                                 ComputeBackend backend,
-                                                 bool use_cache,
-                                                 size_t position_offset) {
-    const auto& layer = weight_nodes_.decoder_layers[layer_idx];
-    auto q_proj = gb->matmul(input, layer.self_attn_q_weight, true, backend);
-    auto k_proj = gb->matmul(input, layer.self_attn_k_weight, true, backend);
-    auto v_proj = gb->matmul(input, layer.self_attn_v_weight, true, backend);
+size_t NeedleModel::build_decoder_self_attention(CactusGraph* gb, size_t input,
+                                                 uint32_t layer_idx, ComputeBackend backend,
+                                                 bool use_cache, size_t position_offset) {
+    const auto& l = weight_nodes_.decoder_layers[layer_idx];
+    auto q = gb->matmul(input, l.self_attn_q_weight, true, backend);
+    auto k = gb->matmul(input, l.self_attn_k_weight, true, backend);
+    auto v = gb->matmul(input, l.self_attn_v_weight, true, backend);
 
-    const auto& q_shape = gb->get_output_buffer(q_proj).shape;
-    if (q_shape.size() != 2) {
-        throw std::runtime_error("Needle decoder self-attn expects [T, D] input");
-    }
+    size_t seq = gb->get_output_buffer(q).shape[0];
+    size_t nh = config_.attention_heads, nkv = config_.attention_kv_heads, hd = config_.attention_head_dim;
 
-    size_t seq_new = q_shape[0];
-    size_t num_heads = config_.attention_heads;
-    size_t num_kv_heads = config_.attention_kv_heads;
-    size_t head_dim = config_.attention_head_dim;
+    q = normalize_qk_proj(gb, q, l.self_attn_q_norm_weight, seq, nh, hd, config_.layer_norm_eps);
+    k = normalize_qk_proj(gb, k, l.self_attn_k_norm_weight, seq, nkv, hd, config_.layer_norm_eps);
 
-    q_proj = normalize_qk_proj(
-        gb, q_proj, layer.self_attn_q_norm_weight, seq_new, num_heads, head_dim, config_.layer_norm_eps);
-    k_proj = normalize_qk_proj(
-        gb, k_proj, layer.self_attn_k_norm_weight, seq_new, num_kv_heads, head_dim, config_.layer_norm_eps);
+    auto q4 = gb->reshape(q, {1, seq, nh, hd});
+    auto k4 = gb->reshape(k, {1, seq, nkv, hd});
+    auto v4 = gb->reshape(v, {1, seq, nkv, hd});
+    if (config_.rope_theta > 0) { q4 = gb->rope(q4, config_.rope_theta, position_offset); k4 = gb->rope(k4, config_.rope_theta, position_offset); }
 
-    auto q_4d = gb->reshape(q_proj, {1, seq_new, num_heads, head_dim});
-    auto k_4d = gb->reshape(k_proj, {1, seq_new, num_kv_heads, head_dim});
-    auto v_4d = gb->reshape(v_proj, {1, seq_new, num_kv_heads, head_dim});
-
-    if (config_.rope_theta > 0) {
-        q_4d = gb->rope(q_4d, config_.rope_theta, position_offset);
-        k_4d = gb->rope(k_4d, config_.rope_theta, position_offset);
-    }
-
-    size_t final_k = k_4d;
-    size_t final_v = v_4d;
-
+    size_t final_k = k4, final_v = v4;
     if (use_cache && !kv_cache_.is_empty()) {
-        auto k_view = kv_cache_.get_key_view(layer_idx);
-        auto v_view = kv_cache_.get_value_view(layer_idx);
-
-        if (!k_view.ptr1 || !v_view.ptr1) {
-            throw std::runtime_error("Needle KV cache view missing");
-        }
-
         size_t cache_len = kv_cache_.current_seq_len;
-        size_t cache_k_node = gb->input({1, cache_len, num_kv_heads, head_dim}, kv_cache_.precision);
-        size_t cache_v_node = gb->input({1, cache_len, num_kv_heads, head_dim}, kv_cache_.precision);
-
-        if (k_view.ptr2 == nullptr && v_view.ptr2 == nullptr) {
-            gb->set_external_input(cache_k_node, const_cast<void*>(k_view.ptr1), kv_cache_.precision);
-            gb->set_external_input(cache_v_node, const_cast<void*>(v_view.ptr1), kv_cache_.precision);
+        size_t ck = gb->input({1, cache_len, nkv, hd}, kv_cache_.precision);
+        size_t cv = gb->input({1, cache_len, nkv, hd}, kv_cache_.precision);
+        auto kv = kv_cache_.get_key_view(layer_idx);
+        auto vv = kv_cache_.get_value_view(layer_idx);
+        if (!kv.ptr2 && !vv.ptr2) {
+            gb->set_external_input(ck, const_cast<void*>(kv.ptr1), kv_cache_.precision);
+            gb->set_external_input(cv, const_cast<void*>(vv.ptr1), kv_cache_.precision);
         } else {
-            gb->set_external_input(cache_k_node, kv_cache_.get_key_ptr(layer_idx), kv_cache_.precision);
-            gb->set_external_input(cache_v_node, kv_cache_.get_value_ptr(layer_idx), kv_cache_.precision);
+            gb->set_external_input(ck, kv_cache_.get_key_ptr(layer_idx), kv_cache_.precision);
+            gb->set_external_input(cv, kv_cache_.get_value_ptr(layer_idx), kv_cache_.precision);
         }
-
-        final_k = gb->concat(cache_k_node, k_4d, 1);
-        final_v = gb->concat(cache_v_node, v_4d, 1);
+        final_k = gb->concat(ck, k4, 1);
+        final_v = gb->concat(cv, v4, 1);
     }
 
-    if (use_cache) {
-        cache_k_output_nodes_[layer_idx] = final_k;
-        cache_v_output_nodes_[layer_idx] = final_v;
-    } else {
-        cache_k_output_nodes_[layer_idx] = k_4d;
-        cache_v_output_nodes_[layer_idx] = v_4d;
-    }
+    cache_k_output_nodes_[layer_idx] = use_cache ? final_k : k4;
+    cache_v_output_nodes_[layer_idx] = use_cache ? final_v : v4;
 
-    auto attn = gb->attention(q_4d, final_k, final_v, attention_scale_, position_offset);
-    attn = gb->reshape(attn, {seq_new, num_heads * head_dim});
-    return gb->matmul(attn, layer.self_attn_output_weight, true, backend);
+    auto attn = gb->attention(q4, final_k, final_v, attention_scale_, position_offset);
+    return gb->matmul(gb->reshape(attn, {seq, nh * hd}), l.self_attn_output_weight, true, backend);
 }
 
-size_t NeedleModel::build_decoder_cross_attention(CactusGraph* gb,
-                                                  size_t input,
-                                                  uint32_t layer_idx,
-                                                  ComputeBackend backend,
-                                                  bool /*use_cache*/,
-                                                  size_t /*position_offset*/) {
-    if (last_encoder_post_norm_node_ == 0) {
-        throw std::runtime_error("Needle encoder outputs are not available for cross-attention");
-    }
+size_t NeedleModel::build_decoder_cross_attention(CactusGraph* gb, size_t input,
+                                                  uint32_t layer_idx, ComputeBackend backend,
+                                                  bool /*use_cache*/, size_t /*position_offset*/) {
+    const auto& l = weight_nodes_.decoder_layers[layer_idx];
+    size_t nh = config_.attention_heads, nkv = config_.attention_kv_heads, hd = config_.attention_head_dim;
 
-    const auto& layer = weight_nodes_.decoder_layers[layer_idx];
-    auto q_proj = gb->matmul(input, layer.encoder_attn_q_weight, true, backend);
+    auto q = gb->matmul(input, l.encoder_attn_q_weight, true, backend);
+    size_t seq_dec = gb->get_output_buffer(q).shape[0];
+    q = normalize_qk_proj(gb, q, l.encoder_attn_q_norm_weight, seq_dec, nh, hd, config_.layer_norm_eps);
+    auto q4 = gb->reshape(q, {1, seq_dec, nh, hd});
 
-    const auto& q_shape = gb->get_output_buffer(q_proj).shape;
-    if (q_shape.size() != 2) {
-        throw std::runtime_error("Needle decoder cross-attn expects [T_dec, D] query input");
-    }
-
-    size_t seq_dec = q_shape[0];
-    size_t num_heads = config_.attention_heads;
-    size_t num_kv_heads = config_.attention_kv_heads;
-    size_t head_dim = config_.attention_head_dim;
-
-    q_proj = normalize_qk_proj(
-        gb, q_proj, layer.encoder_attn_q_norm_weight, seq_dec, num_heads, head_dim, config_.layer_norm_eps);
-    auto q_4d = gb->reshape(q_proj, {1, seq_dec, num_heads, head_dim});
-
-    size_t k_4d = 0;
-    size_t v_4d = 0;
-    bool has_persistent = encoder_k_persistent_[layer_idx] != 0 &&
-                          gb->is_populated(encoder_k_persistent_[layer_idx]);
-
-    if (has_persistent) {
-        k_4d = encoder_k_persistent_[layer_idx];
-        v_4d = encoder_v_persistent_[layer_idx];
+    size_t k4 = 0, v4 = 0;
+    bool cached = encoder_k_persistent_[layer_idx] != 0 && gb->is_populated(encoder_k_persistent_[layer_idx]);
+    if (cached) {
+        k4 = encoder_k_persistent_[layer_idx];
+        v4 = encoder_v_persistent_[layer_idx];
     } else {
-        auto k_proj = gb->matmul(last_encoder_post_norm_node_, layer.encoder_attn_k_weight, true, backend);
-        auto v_proj = gb->matmul(last_encoder_post_norm_node_, layer.encoder_attn_v_weight, true, backend);
-
-        const auto& k_shape = gb->get_output_buffer(k_proj).shape;
-        if (k_shape.size() != 2) {
-            throw std::runtime_error("Needle decoder cross-attn expects [T_enc, D] encoder input");
-        }
-
-        size_t seq_enc = k_shape[0];
-        k_proj = normalize_qk_proj(
-            gb, k_proj, layer.encoder_attn_k_norm_weight, seq_enc, num_kv_heads, head_dim, config_.layer_norm_eps);
-
-        k_4d = gb->reshape(k_proj, {1, seq_enc, num_kv_heads, head_dim});
-        v_4d = gb->reshape(v_proj, {1, seq_enc, num_kv_heads, head_dim});
-
+        auto kp = gb->matmul(last_encoder_post_norm_node_, l.encoder_attn_k_weight, true, backend);
+        auto vp = gb->matmul(last_encoder_post_norm_node_, l.encoder_attn_v_weight, true, backend);
+        size_t seq_enc = gb->get_output_buffer(kp).shape[0];
+        kp = normalize_qk_proj(gb, kp, l.encoder_attn_k_norm_weight, seq_enc, nkv, hd, config_.layer_norm_eps);
+        k4 = gb->reshape(kp, {1, seq_enc, nkv, hd});
+        v4 = gb->reshape(vp, {1, seq_enc, nkv, hd});
         if (encoder_k_persistent_[layer_idx] == 0) {
-            encoder_k_persistent_[layer_idx] = gb->persistent(k_4d);
-            encoder_v_persistent_[layer_idx] = gb->persistent(v_4d);
+            encoder_k_persistent_[layer_idx] = gb->persistent(k4);
+            encoder_v_persistent_[layer_idx] = gb->persistent(v4);
         }
-
-        k_4d = encoder_k_persistent_[layer_idx];
-        v_4d = encoder_v_persistent_[layer_idx];
+        k4 = encoder_k_persistent_[layer_idx];
+        v4 = encoder_v_persistent_[layer_idx];
     }
 
-    // Cross-attention must be full attention over the encoder sequence.
-    auto attn = gb->attention(q_4d, k_4d, v_4d, attention_scale_, false);
-    attn = gb->reshape(attn, {seq_dec, num_heads * head_dim});
-    return gb->matmul(attn, layer.encoder_attn_output_weight, true, backend);
+    auto attn = gb->attention(q4, k4, v4, attention_scale_, false);
+    return gb->matmul(gb->reshape(attn, {seq_dec, nh * hd}), l.encoder_attn_output_weight, true, backend);
 }
 
-size_t NeedleModel::build_encoder_transformer_block(CactusGraph* gb,
-                                                    size_t hidden,
-                                                    uint32_t layer_idx,
-                                                    ComputeBackend backend,
-                                                    bool use_cache,
-                                                    size_t position_offset) {
-    const auto& layer = weight_nodes_.encoder_layers[layer_idx];
-    auto input_norm = delta_rms_norm(gb, hidden, layer.input_norm_weight, config_.layer_norm_eps);
-    auto attn = build_encoder_self_attention(gb, input_norm, layer_idx, backend, use_cache, position_offset);
-    return apply_residual_gate(gb, hidden, attn, layer.attn_gate_weight);
+size_t NeedleModel::build_encoder_transformer_block(CactusGraph* gb, size_t hidden,
+                                                    uint32_t layer_idx, ComputeBackend backend,
+                                                    bool use_cache, size_t position_offset) {
+    const auto& l = weight_nodes_.encoder_layers[layer_idx];
+    auto normed = delta_rms_norm(gb, hidden, l.input_norm_weight, config_.layer_norm_eps);
+    auto attn = build_encoder_self_attention(gb, normed, layer_idx, backend, use_cache, position_offset);
+    return apply_residual_gate(gb, hidden, attn, l.attn_gate_weight);
 }
 
-size_t NeedleModel::build_decoder_transformer_block(CactusGraph* gb,
-                                                    size_t hidden,
-                                                    uint32_t layer_idx,
-                                                    ComputeBackend backend,
-                                                    bool use_cache,
-                                                    size_t position_offset) {
-    const auto& layer = weight_nodes_.decoder_layers[layer_idx];
-    auto input_norm = delta_rms_norm(gb, hidden, layer.input_norm_weight, config_.layer_norm_eps);
-    auto self_attn = build_decoder_self_attention(gb, input_norm, layer_idx, backend, use_cache, position_offset);
-    auto after_self_attn = apply_residual_gate(gb, hidden, self_attn, layer.self_attn_gate_weight);
-    auto cross_input = delta_rms_norm(gb, after_self_attn, layer.post_attn_norm_weight, config_.layer_norm_eps);
-    auto cross_attn = build_decoder_cross_attention(gb, cross_input, layer_idx, backend, use_cache, position_offset);
-    return apply_residual_gate(gb, after_self_attn, cross_attn, layer.cross_attn_gate_weight);
+size_t NeedleModel::build_decoder_transformer_block(CactusGraph* gb, size_t hidden,
+                                                    uint32_t layer_idx, ComputeBackend backend,
+                                                    bool use_cache, size_t position_offset) {
+    const auto& l = weight_nodes_.decoder_layers[layer_idx];
+    auto normed = delta_rms_norm(gb, hidden, l.input_norm_weight, config_.layer_norm_eps);
+    auto self_out = build_decoder_self_attention(gb, normed, layer_idx, backend, use_cache, position_offset);
+    auto after_self = apply_residual_gate(gb, hidden, self_out, l.self_attn_gate_weight);
+    auto cross_in = delta_rms_norm(gb, after_self, l.post_attn_norm_weight, config_.layer_norm_eps);
+    auto cross_out = build_decoder_cross_attention(gb, cross_in, layer_idx, backend, use_cache, position_offset);
+    return apply_residual_gate(gb, after_self, cross_out, l.cross_attn_gate_weight);
 }
 
 void NeedleModel::run_encoder(const std::vector<uint32_t>& encoder_tokens) {
-    if (encoder_tokens.empty()) {
-        throw std::runtime_error("Needle encoder token sequence cannot be empty");
-    }
-
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    auto backend = config_.default_backend == Config::Backend::CPU
-        ? ComputeBackend::CPU
-        : ComputeBackend::NPU;
+    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+    auto hidden = embed_tokens(gb, embedding_node_id_, encoder_tokens, config_.hidden_dim);
 
-    size_t seq_len = encoder_tokens.size();
-    size_t input_node = gb->input({seq_len}, Precision::FP32);
-    auto hidden = gb->embedding(embedding_node_id_, input_node);
-    hidden = gb->scalar_multiply(hidden, std::sqrt(static_cast<float>(config_.hidden_dim)));
+    for (uint32_t i = 0; i < config_.num_encoder_layers; ++i)
+        hidden = build_encoder_transformer_block(gb, hidden, i, backend, false, 0);
 
-    std::vector<float> input_data(seq_len);
-    for (size_t i = 0; i < seq_len; ++i) {
-        input_data[i] = static_cast<float>(encoder_tokens[i]);
-    }
-    gb->set_input(input_node, input_data.data(), Precision::FP32);
-
-    for (uint32_t layer_idx = 0; layer_idx < config_.num_encoder_layers; ++layer_idx) {
-        hidden = build_encoder_transformer_block(gb, hidden, layer_idx, backend, false, 0);
-    }
-
-    auto encoder_norm = delta_rms_norm(gb, hidden, weight_nodes_.encoder_norm_weight, config_.layer_norm_eps);
-    last_encoder_post_norm_node_ = gb->persistent(encoder_norm);
+    last_encoder_post_norm_node_ = gb->persistent(
+        delta_rms_norm(gb, hidden, weight_nodes_.encoder_norm_weight, config_.layer_norm_eps));
 }
 
 size_t NeedleModel::run_decoder_step(const std::vector<uint32_t>& tokens, bool use_cache, bool last_token_only) {
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    if (tokens.empty()) {
-        throw std::runtime_error("Needle decoder token sequence cannot be empty");
-    }
+    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+    size_t pos_offset = use_cache ? kv_cache_.current_seq_len : 0;
 
-    auto backend = config_.default_backend == Config::Backend::CPU
-        ? ComputeBackend::CPU
-        : ComputeBackend::NPU;
+    auto hidden = embed_tokens(gb, embedding_node_id_, tokens, config_.hidden_dim);
+    for (uint32_t i = 0; i < config_.num_decoder_layers; ++i)
+        hidden = build_decoder_transformer_block(gb, hidden, i, backend, use_cache, pos_offset);
 
-    size_t new_tokens = tokens.size();
-    size_t position_offset = use_cache ? kv_cache_.current_seq_len : 0;
-
-    size_t tok_input = gb->input({new_tokens}, Precision::FP32);
-    std::vector<float> tok_f(new_tokens);
-    for (size_t i = 0; i < new_tokens; ++i) {
-        tok_f[i] = static_cast<float>(tokens[i]);
-    }
-    gb->set_input(tok_input, tok_f.data(), Precision::FP32);
-
-    auto hidden = gb->embedding(embedding_node_id_, tok_input);
-    hidden = gb->scalar_multiply(hidden, std::sqrt(static_cast<float>(config_.hidden_dim)));
-
-    for (uint32_t layer_idx = 0; layer_idx < config_.num_decoder_layers; ++layer_idx) {
-        hidden = build_decoder_transformer_block(gb, hidden, layer_idx, backend, use_cache, position_offset);
-    }
-
-    auto decoder_norm = delta_rms_norm(gb, hidden, weight_nodes_.decoder_norm_weight, config_.layer_norm_eps);
-    size_t logits_input = decoder_norm;
-    if (last_token_only) {
-        logits_input = gb->slice(logits_input, 0, new_tokens - 1, 1);
-    }
-    return gb->matmul(logits_input, output_weight_node_id_, true, backend);
+    auto norm = delta_rms_norm(gb, hidden, weight_nodes_.decoder_norm_weight, config_.layer_norm_eps);
+    if (last_token_only) norm = gb->slice(norm, 0, tokens.size() - 1, 1);
+    return gb->matmul(norm, output_weight_node_id_, true, backend);
 }
 
 size_t NeedleModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) {
-    if (!initialized_ || !graph_handle_) {
-        throw std::runtime_error("Needle model not initialized");
-    }
-    if (tokens.empty()) {
-        throw std::runtime_error("Needle token sequence cannot be empty");
-    }
-
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
     reset_graph_side_cache_nodes();
 
     if (!encoder_ready_ || !use_cache) {
-        if (tokens.size() < 2) {
-            throw std::runtime_error("Needle forward requires encoder tokens plus decoder seed");
-        }
-        std::vector<uint32_t> encoder_tokens(tokens.begin(), tokens.end() - 1);
-        std::vector<uint32_t> decoder_seed(tokens.end() - 1, tokens.end());
-
-        if (!use_cache) {
-            reset_cache();
-            gb->soft_reset();
-        }
-
-        run_encoder(encoder_tokens);
+        std::vector<uint32_t> enc(tokens.begin(), tokens.end() - 1);
+        std::vector<uint32_t> seed(tokens.end() - 1, tokens.end());
+        if (!use_cache) { reset_cache(); gb->soft_reset(); }
+        run_encoder(enc);
         encoder_ready_ = true;
-        return run_decoder_step(decoder_seed, false, false);
+        return run_decoder_step(seed, false, false);
     }
-
     return run_decoder_step(tokens, true, tokens.size() == 1);
 }
 
 void NeedleModel::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, const std::string& profile_file) {
-    if (tokens.empty()) {
-        return;
-    }
-    if (!initialized_ || !graph_handle_) {
-        throw std::runtime_error("Needle model not initialized");
-    }
-
+    if (tokens.empty()) return;
     reset_cache();
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
-
     run_encoder(tokens);
-
-    if (!profile_file.empty()) {
-        gb->execute(profile_file);
-    } else {
-        gb->execute();
-    }
-
+    if (!profile_file.empty()) gb->execute(profile_file); else gb->execute();
     encoder_ready_ = true;
 }
 
 uint32_t NeedleModel::decode(const std::vector<uint32_t>& tokens,
-                             float temperature,
-                             float top_p,
-                             size_t top_k,
-                             const std::string& profile_file,
-                             float* out_entropy,
-                             float /*min_p*/,
-                             float /*repetition_penalty*/) {
-    if (!initialized_ || !graph_handle_) {
-        throw std::runtime_error("Needle model not initialized");
-    }
-    if (tokens.empty()) {
-        throw std::runtime_error("Needle decode requires at least one decoder token");
-    }
-
-    if (temperature < 0) {
-        temperature = config_.default_temperature;
-    }
-    if (top_p < 0) {
-        top_p = config_.default_top_p;
-    }
-    if (top_k == 0) {
-        top_k = config_.default_top_k;
-    }
+                             float temperature, float top_p, size_t top_k,
+                             const std::string& profile_file, float* out_entropy,
+                             float /*min_p*/, float /*repetition_penalty*/) {
+    if (temperature < 0) temperature = config_.default_temperature;
+    if (top_p < 0) top_p = config_.default_top_p;
+    if (top_k == 0) top_k = config_.default_top_k;
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
     reset_graph_side_cache_nodes();
 
     bool cold_start = kv_cache_.is_empty();
-    std::vector<uint32_t> cold_start_tokens;
-    const std::vector<uint32_t>* decode_tokens = &tokens;
+    std::vector<uint32_t> cold_tokens;
+    const std::vector<uint32_t>* dec_tokens = &tokens;
     if (!encoder_ready_) {
-        if (tokens.size() < 2) {
-            throw std::runtime_error("Needle decode requires prefill or combined encoder+decoder tokens");
-        }
-
-        reset_cache();
-        gb->soft_reset();
-
-        std::vector<uint32_t> encoder_tokens(tokens.begin(), tokens.end() - 1);
-        cold_start_tokens.assign(tokens.end() - 1, tokens.end());
-        run_encoder(encoder_tokens);
+        reset_cache(); gb->soft_reset();
+        std::vector<uint32_t> enc(tokens.begin(), tokens.end() - 1);
+        cold_tokens.assign(tokens.end() - 1, tokens.end());
+        run_encoder(enc);
         encoder_ready_ = true;
-        decode_tokens = &cold_start_tokens;
+        dec_tokens = &cold_tokens;
         cold_start = true;
     }
 
-    size_t logits_node = cold_start
-        ? run_decoder_step(*decode_tokens, false, false)
+    size_t logits = cold_start
+        ? run_decoder_step(*dec_tokens, false, false)
         : run_decoder_step(tokens, true, tokens.size() == 1);
 
     if (config_.final_logit_softcapping > 0.0f) {
-        float inv_cap = 1.0f / config_.final_logit_softcapping;
-        logits_node = gb->scalar_multiply(logits_node, inv_cap);
-        logits_node = gb->tanh(logits_node);
-        logits_node = gb->scalar_multiply(logits_node, config_.final_logit_softcapping);
+        float inv = 1.0f / config_.final_logit_softcapping;
+        logits = gb->scalar_multiply(gb->tanh(gb->scalar_multiply(logits, inv)), config_.final_logit_softcapping);
     }
 
-    auto sampled_token_id = sample_token(gb, logits_node, temperature, top_p, top_k, 0.0f, 1.0f);
+    auto sampled = sample_token(gb, logits, temperature, top_p, top_k, 0.0f, 1.0f);
+    if (!profile_file.empty()) gb->execute(profile_file); else gb->execute();
 
-    if (!profile_file.empty()) {
-        gb->execute(profile_file);
-    } else {
-        gb->execute();
-    }
-
-    compute_entropy(gb, logits_node, out_entropy);
+    compute_entropy(gb, logits, out_entropy);
     post_execute_updates(gb, tokens.size());
-    update_kv_cache(gb, decode_tokens->size());
-
-    auto* output_ptr = gb->get_output(sampled_token_id);
-    return *static_cast<uint32_t*>(output_ptr);
+    update_kv_cache(gb, dec_tokens->size());
+    return *static_cast<uint32_t*>(gb->get_output(sampled));
 }
 
 } // namespace engine

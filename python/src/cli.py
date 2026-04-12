@@ -69,29 +69,62 @@ def print_color(color, message):
 from .downloads import get_model_dir_name, get_weights_dir, download_from_hf as _download_from_hf_impl
 
 
+NEEDLE_CHECKPOINT_REPO = "Cactus-Compute/checkpoints"
+NEEDLE_TOKENIZER_REPO = "Cactus-Compute/needle-tokenizer"
+NEEDLE_DEFAULT_CHECKPOINT = "needle_16_640_best.pkl"
+NEEDLE_DEFAULT_TOKENIZER_REV = "5a50f268260b546cbcff02a2b5d4e1a51ac03ef1"
+NEEDLE_CHECKPOINT_REVISIONS = {
+    "needle_12_512_best.pkl": "c3abe44ccce513833aa1a671a508433a6c4224eb",
+    "needle_8_512_best.pkl": "bb785f03ebaa395bc7eb4cd4b18c713f3a05a58d",
+    "needle_16_640_best.pkl": "9447786ba0d421434c35bf7b77239e83540a641f",
+    "needle_16_768_best.pkl": "bb785f03ebaa395bc7eb4cd4b18c713f3a05a58d",
+}
+NEEDLE_TOKENIZER_REVISIONS = {
+    "needle_12_512_best.pkl": "662ab737ec41afed5acd215271d6d0e26690dd8b",
+    "needle_12_768_best.pkl": "662ab737ec41afed5acd215271d6d0e26690dd8b",
+    "needle_8_512_best.pkl": "f1fd238b770af3175898a5541de69e1e26ef6b20",
+    "needle_16_640_best.pkl": "5a50f268260b546cbcff02a2b5d4e1a51ac03ef1",
+    "needle_16_768_best.pkl": "f1fd238b770af3175898a5541de69e1e26ef6b20",
+}
+NEEDLE_MODEL_ID_MAP = {
+    "needle": NEEDLE_DEFAULT_CHECKPOINT,
+    "needle-12-512": "needle_12_512_best.pkl",
+    "needle-8-512": "needle_8_512_best.pkl",
+    "needle-12-768": "needle_12_768_best.pkl",
+    "needle-16-640": "needle_16_640_best.pkl",
+    "needle-16-768": "needle_16_768_best.pkl",
+}
+
+
 def is_needle_model_id(model_id):
-    """Return True for the built-in Needle aliases handled by the custom exporter."""
     normalized = (model_id or "").strip().lower()
     if "/" in normalized:
         normalized = normalized.split("/")[-1]
     return normalized == "needle" or normalized.startswith("needle-") or normalized.startswith("needle_")
 
 
+def _resolve_needle_checkpoint_file(model_id, checkpoint_file=None):
+    if checkpoint_file:
+        return checkpoint_file
+    normalized = (model_id or "").strip().lower().split("/")[-1] if model_id else ""
+    return NEEDLE_MODEL_ID_MAP.get(normalized, NEEDLE_DEFAULT_CHECKPOINT)
+
+
 def get_effective_weights_dir(model_id, args=None):
     if not is_needle_model_id(model_id):
         return get_weights_dir(model_id)
-
-    from .needle import resolve_needle_checkpoint_file, resolve_needle_output_dir
-
-    checkpoint_file = resolve_needle_checkpoint_file(
-        model_id,
-        getattr(args, 'checkpoint_file', None) if args is not None else None,
-    )
-    return resolve_needle_output_dir(
-        model_id=model_id,
-        checkpoint_file=checkpoint_file,
-        output_dir=getattr(args, 'output_dir', None) if args is not None else None,
-    )
+    cf = _resolve_needle_checkpoint_file(model_id, getattr(args, 'checkpoint_file', None) if args else None)
+    output_dir = getattr(args, 'output_dir', None) if args else None
+    if output_dir:
+        return Path(output_dir).expanduser().resolve()
+    stem = Path(cf).stem.lower()
+    import re
+    m = re.fullmatch(r"needle_(\d+)_(\d+)_best", stem)
+    name = f"needle-{m.group(1)}-{m.group(2)}" if m else stem.replace("_", "-")
+    normalized = (model_id or "").strip().lower().split("/")[-1] if model_id else ""
+    if normalized == "needle" or (not normalized and cf == NEEDLE_DEFAULT_CHECKPOINT):
+        name = "needle"
+    return (PROJECT_ROOT / "weights" / name).resolve()
 
 
 def add_needle_export_args(parser):
@@ -202,19 +235,25 @@ def cmd_download(args):
 
     if not is_local and is_needle_model_id(model_id):
         try:
-            from .needle import export_needle_metadata
+            from huggingface_hub import hf_hub_download, snapshot_download
+            from .converter import convert_needle_checkpoint
 
             print_color(YELLOW, "Using Needle exporter...")
-            export_needle_metadata(
-                output_dir=weights_dir,
-                model_id=model_id,
-                checkpoint_file=getattr(args, 'checkpoint_file', None),
-                checkpoint_revision=getattr(args, 'checkpoint_revision', None),
-                tokenizer_revision=getattr(args, 'tokenizer_revision', None),
-                hf_token=getattr(args, 'token', None),
-                cache_dir=getattr(args, 'cache_dir', None),
-                requested_precision=precision,
-            )
+            cf = _resolve_needle_checkpoint_file(model_id, getattr(args, 'checkpoint_file', None))
+            ck_rev = getattr(args, 'checkpoint_revision', None) or NEEDLE_CHECKPOINT_REVISIONS.get(cf)
+            tk_rev = getattr(args, 'tokenizer_revision', None) or NEEDLE_TOKENIZER_REVISIONS.get(cf, NEEDLE_DEFAULT_TOKENIZER_REV)
+            token = getattr(args, 'token', None)
+            cache_dir = getattr(args, 'cache_dir', None)
+
+            ck_path = hf_hub_download(repo_id=NEEDLE_CHECKPOINT_REPO, filename=cf,
+                                      repo_type="model", revision=ck_rev, token=token, cache_dir=cache_dir)
+            tk_snap = Path(snapshot_download(repo_id=NEEDLE_TOKENIZER_REPO, repo_type="dataset",
+                                            allow_patterns=["*.model"], revision=tk_rev, token=token, cache_dir=cache_dir))
+            tk_path = next(tk_snap.rglob("*.model"), None)
+            if not tk_path:
+                raise FileNotFoundError(f"No .model file in tokenizer snapshot: {tk_snap}")
+
+            convert_needle_checkpoint(ck_path, tk_path, weights_dir, precision)
             print_color(GREEN, f"Successfully exported Needle weights to {weights_dir}")
             return 0
         except Exception as e:

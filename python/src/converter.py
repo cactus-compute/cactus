@@ -15,6 +15,7 @@ from .weight_patterns import (
     VISION_ITEMS, PROJECTOR_WEIGHTS, WHISPER_GLOBAL_WEIGHTS, MOONSHINE_GLOBAL_WEIGHTS,
     GEMMA3N_GLOBAL_WEIGHTS, GEMMA3N_VISION_TOWER_PREFIX, GEMMA3N_AUDIO_TOWER_PREFIX,
     GEMMA4_GLOBAL_WEIGHTS, GEMMA4_VISION_TOWER_PREFIX, GEMMA4_AUDIO_TOWER_PREFIX,
+    NEEDLE_GLOBAL_WEIGHTS, NEEDLE_ENCODER_LAYER_WEIGHTS, NEEDLE_DECODER_LAYER_WEIGHTS,
     get_layer_weight_patterns, get_vision_layer_weights
 )
 
@@ -1299,3 +1300,130 @@ def convert_silero_vad_weights(model, output_dir, precision="FP16", args=None):
             f.write(f"{key}={value}\n")
 
     return config
+
+
+def _resolve_nested(tree, dotted_path):
+    node = tree
+    for key in dotted_path.split("."):
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    return node
+
+
+def _take_layer(tree, index):
+    if isinstance(tree, dict):
+        return {k: _take_layer(v, index) for k, v in tree.items()}
+    return tree[index]
+
+
+def _count_params(tree):
+    if isinstance(tree, dict):
+        return sum(_count_params(v) for v in tree.values())
+    shape = getattr(tree, "shape", None)
+    if shape is None:
+        return 0
+    n = 1
+    for d in shape:
+        n *= int(d)
+    return n
+
+
+def _load_needle_checkpoint(checkpoint_path):
+    import pickle
+    with open(checkpoint_path, "rb") as f:
+        payload = pickle.load(f)
+    return payload["params"], dict(payload["config"])
+
+
+def _build_needle_config(model_cfg, params, precision):
+    hidden_dim = int(model_cfg["d_model"])
+    heads = int(model_cfg["num_heads"])
+    decoder_layers = int(model_cfg["num_decoder_layers"])
+    compute_precision = "FP16" if precision in ("INT4", "INT8") else precision
+    return {
+        "model_type": "needle",
+        "precision": compute_precision,
+        "quantization": precision,
+        "vocab_size": int(model_cfg["vocab_size"]),
+        "hidden_dim": hidden_dim,
+        "num_layers": decoder_layers,
+        "num_encoder_layers": int(model_cfg["num_encoder_layers"]),
+        "num_decoder_layers": decoder_layers,
+        "attention_heads": heads,
+        "attention_kv_heads": int(model_cfg["num_kv_heads"]),
+        "attention_head_dim": hidden_dim // max(1, heads),
+        "ffn_intermediate_dim": int(model_cfg["d_ff"]),
+        "context_length": int(model_cfg["max_seq_len"]),
+        "rope_theta": float(model_cfg.get("rope_theta", 10000.0)),
+        "layer_norm_eps": 1e-6,
+        "pad_token_id": int(model_cfg.get("pad_token_id", 0)),
+        "tie_word_embeddings": True,
+        "no_feedforward": bool(model_cfg.get("no_feedforward", False)),
+    }
+
+
+def _write_needle_config(output_dir, config):
+    config_path = output_dir / "config.txt"
+    with open(config_path, "w") as f:
+        for k, v in config.items():
+            if isinstance(v, bool):
+                f.write(f"{k}={'true' if v else 'false'}\n")
+            else:
+                f.write(f"{k}={v}\n")
+    return config_path
+
+
+def _export_needle_weights(output_dir, params, model_cfg, precision):
+    import warnings
+
+    stats = create_quantization_stats()
+    saved = []
+
+    def save(filename, tensor, transpose=False, tensor_precision=None):
+        save_tensor_with_header(tensor, output_dir / filename, precision=tensor_precision or precision,
+                                transpose=transpose, stats_tracker=stats, model_type="needle")
+        saved.append(filename)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+
+        for src, dst, tr in NEEDLE_GLOBAL_WEIGHTS:
+            tensor = _resolve_nested(params, src)
+            if tensor is not None:
+                save(dst, tensor, transpose=tr, tensor_precision="FP16" if src == "log_temp" else None)
+
+        enc_stack = params["encoder"]["layers"]["EncoderBlock_0"]
+        for i in range(int(model_cfg["num_encoder_layers"])):
+            block = _take_layer(enc_stack, i)
+            for src, dst, tr in NEEDLE_ENCODER_LAYER_WEIGHTS:
+                tensor = _resolve_nested(block, src)
+                if tensor is not None:
+                    save(f"encoder_layer_{i}_{dst}", tensor, transpose=tr)
+
+        dec_stack = params["decoder"]["layers"]["DecoderBlock_0"]
+        for i in range(int(model_cfg["num_decoder_layers"])):
+            block = _take_layer(dec_stack, i)
+            for src, dst, tr in NEEDLE_DECODER_LAYER_WEIGHTS:
+                tensor = _resolve_nested(block, src)
+                if tensor is not None:
+                    save(f"layer_{i}_{dst}", tensor, transpose=tr)
+
+    print_quantization_summary(stats)
+    return saved
+
+
+def convert_needle_checkpoint(checkpoint_path, tokenizer_path, output_dir, requested_precision='FP16'):
+    from .tokenizer import convert_sentencepiece_tokenizer
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    precision = (requested_precision or "FP16").upper()
+
+    params, model_cfg = _load_needle_checkpoint(checkpoint_path)
+    config = _build_needle_config(model_cfg, params, precision)
+    config_path = _write_needle_config(output_dir, config)
+    convert_sentencepiece_tokenizer(tokenizer_path, output_dir, int(model_cfg.get("max_seq_len", 131072)))
+    saved = _export_needle_weights(output_dir, params, model_cfg, precision)
+
+    return {"output_dir": output_dir, "config_path": config_path, "weight_count": len(saved)}

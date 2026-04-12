@@ -16,10 +16,12 @@ void ToolCallConstrainer::add_tokens_for_string(const std::string& str, std::uno
 
 void ToolCallConstrainer::tokenize_function_names(bool quote_names) {
     all_func_name_tokens_.clear();
+    func_name_sequences_.clear();
 
     for (const auto& name : function_names_) {
         std::string name_to_encode = quote_names ? ("\"" + name + "\"") : name;
         auto tokens = tokenizer_->encode(name_to_encode);
+        func_name_sequences_[name] = tokens;
         for (uint32_t t : tokens) {
             all_func_name_tokens_.insert(t);
         }
@@ -616,10 +618,18 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                         if (brace_depth_ > 0) {
                             brace_depth_--;
                         } else {
-                            state_ = State::QWEN_EXPECT_END;
+                            state_ = State::QWEN_EXPECT_CLOSE_BRACE;
+                            generated_text_.clear();
                             break;
                         }
                     }
+                }
+                break;
+
+            case State::QWEN_EXPECT_CLOSE_BRACE:
+                if (generated_text_.find("}") != std::string::npos) {
+                    state_ = State::QWEN_EXPECT_END;
+                    generated_text_.clear();
                 }
                 break;
 
@@ -1058,6 +1068,12 @@ void ToolCallConstrainer::compute_bias() {
                 }
                 for (uint32_t t : qwen_tool_call_end_tokens_) {
                     current_bias_[t] = BLOCK_BIAS;
+                }
+                break;
+
+            case State::QWEN_EXPECT_CLOSE_BRACE:
+                for (uint32_t t : close_brace_tokens_) {
+                    current_bias_[t] = FORCE_BIAS;
                 }
                 break;
 

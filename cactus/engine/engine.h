@@ -415,51 +415,42 @@ public:
     uint32_t get_eos_token() const override { return eos_token_id_; }
 
 private:
-    enum class SentencePieceModelType {
-        LEGACY = 0,
-        BPE = 1,
-    };
-
     struct TrieNode {
         std::unordered_map<char32_t, std::unique_ptr<TrieNode>> children;
         int32_t token_id = -1;
         float score = 0.0f;
     };
-    
+
     std::unique_ptr<TrieNode> trie_root_;
     std::unordered_map<std::string, uint32_t> token_to_id_;
     std::vector<std::string> id_to_token_;
     std::vector<float> token_scores_;
-    
+
     uint32_t vocab_size_;
     uint32_t unk_token_id_;
     uint32_t bos_token_id_;
     uint32_t eos_token_id_;
     uint32_t pad_token_id_;
-    SentencePieceModelType sp_model_type_ = SentencePieceModelType::LEGACY;
+
+    bool sp_bpe_mode_ = false;
     bool sp_add_dummy_prefix_ = false;
-    bool sp_remove_extra_whitespaces_ = false;
-    bool sp_escape_whitespaces_ = true;
     bool sp_byte_fallback_ = false;
-    
+
     void* vocab_mmap_ptr_;
     size_t vocab_mmap_size_;
-    
+
     void build_trie();
     std::vector<std::pair<std::string, uint32_t>> tokenize_with_trie(const std::string& text) const;
     std::vector<uint32_t> tokenize_with_bpe(const std::string& text) const;
     std::string preprocess_text(const std::string& text) const;
-    std::string postprocess_text(const std::string& text, bool strip_leading_space = true) const;
-    bool use_sentencepiece_bpe() const;
-    
+    std::string postprocess_text(const std::string& text) const;
+    std::vector<std::string> split_by_unicode_spaces(const std::string& text) const;
+
     void cleanup_mmap();
 
     std::unordered_map<std::string, uint32_t> special_tokens_;
     std::vector<std::string> split_with_special_tokens(const std::string& text) const;
     void load_special_tokens(const std::string& config_file);
-    void load_tokenizer_config(const std::string& config_file);
-
-    void load_chat_template(const std::string& template_file);
 };
 
 class ConvCache {
@@ -572,6 +563,7 @@ public:
         QWEN_EXPECT_ARGS_KEY, 
         QWEN_EXPECT_ARGS_COLON, 
         QWEN_IN_ARGUMENTS,
+        QWEN_EXPECT_CLOSE_BRACE,
         QWEN_EXPECT_END,
 
         NEEDLE_START,
@@ -643,6 +635,7 @@ private:
     std::unordered_set<uint32_t> quote_tokens_;            
     std::unordered_set<uint32_t> backtick_tokens_;   
     std::unordered_set<uint32_t> all_func_name_tokens_;
+    std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;
     NeedleJsonState needle_json_state_ = NeedleJsonState::FREE;
     std::string needle_buffer_;
     std::string needle_constrained_buf_;
