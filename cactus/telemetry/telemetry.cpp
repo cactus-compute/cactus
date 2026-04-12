@@ -1492,6 +1492,11 @@ void setStreamMode(bool in_stream) {
     in_stream_mode = in_stream;
 }
 
+bool isStreamMode() {
+    std::lock_guard<std::mutex> guard(telemetry_mutex);
+    return in_stream_mode;
+}
+
 void markInference(bool active) {
     std::lock_guard<std::mutex> guard(telemetry_mutex);
     if (active) {

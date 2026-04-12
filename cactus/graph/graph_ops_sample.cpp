@@ -10,6 +10,8 @@ void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 
     float temperature = node.params.temperature;
     float top_p = node.params.top_p;
+    float min_p = node.params.min_p;
+    float repetition_penalty = node.params.repetition_penalty;
     size_t top_k = node.params.top_k;
     size_t random_seed = node.params.random_seed;
 
@@ -27,14 +29,14 @@ void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 
     if (logits_buffer.precision == Precision::FP16) {
         const __fp16* logits_fp16 = logits_buffer.data_as<__fp16>();
-        cactus_sample_f16(logits_fp16 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
-                         vocab_size, temperature, top_p, top_k, random_seed,
-                         bias_values, bias_indices, bias_count);
+        cactus_sample_f16_ex(logits_fp16 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
+                             vocab_size, temperature, top_p, min_p, repetition_penalty, top_k, random_seed,
+                             bias_values, bias_indices, bias_count);
     } else {
         const float* logits_fp32 = logits_buffer.data_as<float>();
-        cactus_sample_f32(logits_fp32 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
-                         vocab_size, temperature, top_p, top_k, random_seed,
-                         bias_values, bias_indices, bias_count);
+        cactus_sample_f32_ex(logits_fp32 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
+                             vocab_size, temperature, top_p, min_p, repetition_penalty, top_k, random_seed,
+                             bias_values, bias_indices, bias_count);
     }
 }
 

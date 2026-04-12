@@ -285,10 +285,7 @@ public:
     virtual size_t forward_vision(CactusGraph* gb, 
                          const Siglip2Preprocessor::PreprocessedImage& preprocessed_image,
                          ComputeBackend backend);
-    std::vector<float> get_image_features(const std::string& image_path);
-    std::vector<float> get_image_features(const Siglip2Preprocessor::PreprocessedImage& preprocessed_image);
     std::vector<float> get_image_embedding(const std::string& image_path);
-    size_t get_image_features_node(const Siglip2Preprocessor::PreprocessedImage& preprocessed_image);
     Siglip2Preprocessor& get_preprocessor() { return preprocessor_; }
     const Siglip2Preprocessor& get_preprocessor() const { return preprocessor_; }
 
@@ -630,6 +627,7 @@ protected:
 
     uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
                                     float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                                    float min_p = 0.15f, float repetition_penalty = 1.1f,
                                     float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
 
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
@@ -838,6 +836,8 @@ private:
     std::unique_ptr<npu::NPUEncoder> npu_encoder_;
     bool use_npu_encoder_ = false;
 
+    uint32_t enc_layers_ = 0;
+    uint32_t dec_layers_ = 0;
 };
 
 
@@ -900,6 +900,7 @@ protected:
 
     uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
                                     float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                                    float min_p = 0.15f, float repetition_penalty = 1.1f,
                                     float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
 
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
@@ -1025,7 +1026,8 @@ protected:
     size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
     void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "") override;
     uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
-                    size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr) override;
+                    size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                    float min_p = 0.15f, float repetition_penalty = 1.1f) override;
     void load_weights_to_graph(CactusGraph* gb) override;
     void reset_cache() override;
 
@@ -1120,6 +1122,7 @@ protected:
     uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
                                float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0,
                                const std::string& profile_file = "", float* out_entropy = nullptr,
+                               float min_p = 0.15f, float repetition_penalty = 1.1f,
                                float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
     void reset_cache() override;
@@ -1217,6 +1220,36 @@ public:
     explicit ParakeetTDTModel(const Config& config);
     ~ParakeetTDTModel() override = default;
 
+    struct TDTToken { uint32_t id; float time_start; float time_end; };
+
+    struct ChunkStreamState {
+        bool initialized = false;
+        uint32_t last_token = 0;
+        std::vector<std::vector<__fp16>> h;
+        std::vector<std::vector<__fp16>> c;
+    };
+
+    struct ChunkStreamResult {
+        std::string text;
+        std::string confirmed_text;
+        std::string pending_text;
+        size_t token_count = 0;
+        size_t confirmed_token_count = 0;
+        double raw_decoder_tps = 0.0;
+        double raw_decoder_time_ms = 0.0;
+        float start_sec = 0.0f;
+        float confirmed_end_sec = 0.0f;
+        float resume_end_sec = 0.0f;
+        float end_sec = 0.0f;
+    };
+
+    ChunkStreamResult decode_chunk_stream(
+        const std::vector<float>& audio_features,
+        size_t replay_start_frame,
+        size_t start_frame,
+        size_t end_frame,
+        ChunkStreamState& state);
+
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
         throw std::runtime_error("ParakeetTDT: build_attention unused");
@@ -1239,6 +1272,7 @@ protected:
     uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
                                float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0,
                                const std::string& profile_file = "", float* out_entropy = nullptr,
+                               float min_p = 0.15f, float repetition_penalty = 1.1f,
                                float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
     void reset_cache() override;
@@ -1251,7 +1285,15 @@ private:
     size_t build_feed_forward(CactusGraph* gb, size_t hidden, uint32_t layer_idx, bool second_ff, ComputeBackend backend);
     size_t build_convolution_module(CactusGraph* gb, size_t hidden, uint32_t layer_idx, ComputeBackend backend);
     size_t build_encoder_block(CactusGraph* gb, size_t hidden, size_t position_embeddings, uint32_t layer_idx, ComputeBackend backend);
-    struct TDTToken { uint32_t id; float time_start; float time_end; };
+    std::vector<TDTToken> decode_tdt_tokens_with_state(
+        CactusGraph* gb,
+        size_t encoder_hidden_node,
+        size_t replay_start_frame,
+        size_t start_frame,
+        size_t end_frame,
+        ChunkStreamState* stream_state,
+        size_t* out_confirmed_count = nullptr,
+        double* out_raw_decoder_time_ms = nullptr) const;
     std::vector<TDTToken> greedy_decode_tdt_tokens(CactusGraph* gb, size_t encoder_hidden_node) const;
 
     struct WeightNodeIDs {
@@ -1357,7 +1399,9 @@ public:
                       float top_p = -1.0f,
                       size_t top_k = 0,
                       const std::string& profile_file = "",
-                      float* out_entropy = nullptr) override;
+                      float* out_entropy = nullptr,
+                      float min_p = 0.15f,
+                      float repetition_penalty = 1.1f) override;
 
     void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "") override;
 
@@ -1371,7 +1415,9 @@ public:
         float top_p = -1.0f,
         size_t top_k = 0,
         const std::string& profile_file = "",
-        float* out_entropy = nullptr) override;
+        float* out_entropy = nullptr,
+        float min_p = 0.15f,
+        float repetition_penalty = 1.1f) override;
 
     void reset_cache() override;
     std::vector<float> get_image_embeddings(const std::string& image_path) override;
@@ -1608,7 +1654,7 @@ public:
     bool init(const std::string& model_folder, size_t context_size = 0,
               const std::string& system_prompt = "", bool do_warmup = false) override;
 
-    std::vector<float> diarize(const float* pcm_f32, size_t num_samples, size_t step_samples = 16000);
+    std::vector<float> diarize(const float* pcm_f32, size_t num_samples, size_t step_samples = 16000, bool raw_powerset = false);
 
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
@@ -1668,6 +1714,8 @@ public:
               const std::string& system_prompt = "", bool do_warmup = false) override;
 
     std::vector<float> embed(const float* fbank_features, size_t num_features);
+    std::vector<float> embed(const float* fbank_features, size_t num_features,
+                              const float* mask_weights, size_t mask_num_frames);
 
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override {
@@ -1690,31 +1738,33 @@ protected:
 
 private:
     void build_graph(size_t num_frames);
+    void build_graph_masked(size_t num_frames);
 
     struct ResBlockWeights {
-        size_t conv1_w, conv2_w;
-        size_t bn1_w, bn1_b, bn1_mean, bn1_var;
-        size_t bn2_w, bn2_b, bn2_mean, bn2_var;
-        size_t shortcut_conv_w;
-        size_t shortcut_bn_w, shortcut_bn_b, shortcut_bn_mean, shortcut_bn_var;
+        size_t conv1_w, conv1_b;
+        size_t conv2_w, conv2_b;
+        size_t shortcut_conv_w, shortcut_conv_b;
         bool has_shortcut = false;
     };
 
-    static ResBlockWeights load_resblock(CactusGraph* gb, const std::string& prefix, bool has_shortcut);
-    static size_t build_resblock(CactusGraph* gb, size_t x, const ResBlockWeights& rb, bool stride2);
+    ResBlockWeights load_resblock(CactusGraph* gb, const std::string& prefix, bool has_shortcut);
+    size_t build_resblock(CactusGraph* gb, size_t x, const ResBlockWeights& rb, bool stride2);
+    size_t build_resnet_body(CactusGraph* gb, size_t x);
 
     struct WeightNodeIDs {
-        size_t conv1_w;
-        size_t bn1_w, bn1_b, bn1_mean, bn1_var;
+        size_t conv1_w, conv1_b;
         std::vector<ResBlockWeights> layer1, layer2, layer3, layer4;
         size_t seg1_w, seg1_b;
     } weight_nodes_;
 
     CactusGraph graph_;
     size_t audio_input_ = 0;
+    size_t mask_input_ = 0;
     size_t output_node_ = 0;
     size_t current_num_frames_ = 0;
+    bool current_masked_ = false;
     std::vector<__fp16> input_buf_;
+    std::vector<float> mask_buf_;
 };
 
 }

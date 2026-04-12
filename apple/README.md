@@ -267,12 +267,24 @@ let diarizeJson = try cactusDiarize(model, "/path/to/audio.wav", nil, nil as Dat
 print(diarizeJson)
 ```
 
+Options (all optional):
+- `step_ms` (int, default 1000) — sliding window stride in milliseconds
+- `threshold` (float) — zero out per-speaker scores below this value
+- `num_speakers` (int) — keep only the N most active speakers
+- `min_speakers` / `max_speakers` (int) — speaker count bounds
+- `raw_powerset` (bool, default false) — return raw 7-class powerset scores instead of 3-speaker probabilities
+
 ### Embed Speaker
 
 ```swift
 let embedJson = try cactusEmbedSpeaker(model, "/path/to/audio.wav", nil, nil as Data?)
 print(embedJson)
+
+// With diarization mask for speaker-specific embedding
+let embedJson = try cactusEmbedSpeaker(model, "/path/to/audio.wav", nil, nil as Data?, maskWeights)
 ```
+
+Returns a 256-dimensional speaker embedding. When `maskWeights` (a per-frame weight array from diarization) is provided, the embedding is extracted using weighted stats pooling for speaker-specific embeddings.
 
 ### RAG
 
@@ -381,10 +393,27 @@ func cactusScoreWindow(_ model: CactusModelT, _ tokens: [UInt32], _ start: Int, 
 func cactusDetectLanguage(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?) throws -> String
 ```
 
-### VAD / RAG
+### VAD
 
 ```swift
 func cactusVad(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?) throws -> String
+```
+
+### Diarize
+
+```swift
+func cactusDiarize(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?) throws -> String
+```
+
+### Embed Speaker
+
+```swift
+func cactusEmbedSpeaker(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?, _ maskWeights: [Float]? = nil) throws -> String
+```
+
+### RAG
+
+```swift
 func cactusRagQuery(_ model: CactusModelT, _ query: String, _ topK: Int) throws -> String
 ```
 

@@ -566,6 +566,8 @@ PreparedPrompt prepare_prompt(
         formatted_tools = gemma::format_tools(prompt.tools, prompt.model_type == Config::ModelType::GEMMA4);
     } else if (prompt.model_type == Config::ModelType::NEEDLE) {
         formatted_tools = serialize_needle_tools_json(prompt.tools, tools_json);
+    } else if (prompt.model_type == Config::ModelType::QWEN || prompt.model_type == Config::ModelType::QWEN3P5) {
+        formatted_tools = serialize_tools_for_template(prompt.tools);
     } else {
         formatted_tools = serialize_tools_json(prompt.tools);
     }
@@ -654,7 +656,8 @@ uint32_t decode(
     const InferenceOptions& options,
     float* out_entropy
 ) {
-    return model->decode(tokens, options.temperature, options.top_p, options.top_k, "", out_entropy);
+    return model->decode(tokens, options.temperature, options.top_p, options.top_k,
+                         "", out_entropy, options.min_p, options.repetition_penalty);
 }
 
 uint32_t generate_first_token(
@@ -752,7 +755,8 @@ int cactus_complete(
             next_token = handle->model->decode_with_audio(
                 prompt.tokens, prompt.audio_features,
                 prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
-                "", &first_token_entropy);
+                "", &first_token_entropy,
+                prompt.options.min_p, prompt.options.repetition_penalty);
         } else {
             auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
             prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
@@ -819,7 +823,8 @@ int cactus_complete(
                     next_token = handle->model->decode_with_audio(
                         handle->processed_tokens, prompt.audio_features,
                         prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
-                        "", &token_entropy);
+                        "", &token_entropy,
+                        prompt.options.min_p, prompt.options.repetition_penalty);
                 } else {
                     next_token = decode(handle->model, {next_token}, prompt.options, &token_entropy);
                 }

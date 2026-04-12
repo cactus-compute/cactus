@@ -159,12 +159,7 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
             if token_id < len(id_to_token):
                 id_to_token[token_id] = token_str
 
-    vocab_output = output_dir / "vocab.txt"
-    with open(vocab_output, 'w', encoding='utf-8') as f:
-        for token_id, token_str in enumerate(id_to_token):
-            if token_str:
-                f.write(f"{token_id}\t{token_str}\n")
-    print(f"  Saved tokenizer vocabulary (ID\\ttoken format)")
+    # vocab.txt is written later, after special tokens are collected
 
 
     merges_output = output_dir / "merges.txt"
@@ -253,8 +248,6 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
                 additional_special_tokens.append({"token": token_str, "id": token_id})
 
     for token_info in tokenizer_json_data.get("added_tokens", []) or []:
-        if not token_info.get("special"):
-            continue
         token_str = token_info.get("content")
         token_id = token_info.get("id")
         if token_str is None or token_id is None:
@@ -371,11 +364,26 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
         pass
 
 
+    # Extend id_to_token to include special/added tokens so vocab.txt is self-contained
+    if special_tokens:
+        max_special_id = max(special_tokens.keys())
+        if max_special_id >= len(id_to_token):
+            id_to_token.extend([""] * (max_special_id - len(id_to_token) + 1))
+        for token_id, token_str in special_tokens.items():
+            id_to_token[token_id] = token_str
+
+    vocab_output = output_dir / "vocab.txt"
+    with open(vocab_output, 'w', encoding='utf-8') as f:
+        for token_id, token_str in enumerate(id_to_token):
+            if token_str:
+                f.write(f"{token_id}\t{token_str}\n")
+    print(f"  Saved tokenizer vocabulary (ID\\ttoken format)")
+
     special_tokens_output = output_dir / "special_tokens.json"
     with open(special_tokens_output, 'w', encoding='utf-8') as f:
         json.dump({
             **special_token_ids,
-            "vocab_size": len(vocab),
+            "vocab_size": len(id_to_token),
             "model_max_length": getattr(tokenizer, 'model_max_length', 131072),
             "special_tokens": special_tokens,
             "additional_special_tokens": additional_special_tokens,
@@ -405,7 +413,7 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
 
     tokenizer_config_output = output_dir / "tokenizer_config.txt"
     with open(tokenizer_config_output, 'w') as f:
-        f.write(f"vocab_size={len(vocab)}\n")
+        f.write(f"vocab_size={len(id_to_token)}\n")
         for key, value in special_token_ids.items():
             f.write(f"{key}={value}\n")
         f.write(f"model_max_length={getattr(tokenizer, 'model_max_length', 131072)}\n")

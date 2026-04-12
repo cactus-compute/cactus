@@ -227,6 +227,11 @@ struct MergeRule {
 };
 
 
+struct ToolCallInfo {
+    std::string name;
+    std::string arguments;
+};
+
 struct ChatMessage {
     std::string role;
     std::string content;
@@ -234,6 +239,7 @@ struct ChatMessage {
     std::vector<std::string> images;
     std::vector<std::string> audio;
     size_t audio_soft_token_count = 0;
+    std::vector<ToolCallInfo> tool_calls;
 };
 
 inline std::string format_needle_query_text(const std::vector<ChatMessage>& messages) {
@@ -710,7 +716,8 @@ public:
               const std::string& system_prompt = "", bool do_warmup = true);
 
     virtual uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
-                      size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr);
+                      size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                      float min_p = 0.15f, float repetition_penalty = 1.1f);
 
     virtual void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "");
 
@@ -719,10 +726,12 @@ public:
 
     virtual uint32_t decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                                           float temperature = -1.0f, float top_p = -1.0f,
-                                          size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr);
+                                          size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                                          float min_p = 0.15f, float repetition_penalty = 1.1f);
 
     virtual uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features, float temperature = 0.0f, float top_p = 0.0f,
                       size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                      float min_p = 0.15f, float repetition_penalty = 1.1f,
                       float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, bool normalize = false, const std::string& profile_file = "");
@@ -731,7 +740,13 @@ public:
     
     virtual std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features);
 
-    virtual void reset_cache() { kv_cache_.reset(); }
+    virtual void reset_cache() { kv_cache_.reset(); token_history_.clear(); }
+    void record_sampled_token(uint32_t token) {
+        if (token_history_.size() >= MAX_TOKEN_HISTORY) {
+            token_history_.erase(token_history_.begin(), token_history_.begin() + (MAX_TOKEN_HISTORY / 2));
+        }
+        token_history_.push_back(token);
+    }
 
     double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored);
 
@@ -770,6 +785,7 @@ public:
 
 protected:
     size_t sample_token(CactusGraph* gb, size_t logits_node_id, float temperature, float top_p, size_t top_k,
+                        float min_p, float repetition_penalty,
                         const std::unordered_map<uint32_t, float>* extra_bias = nullptr) const;
 
     static void compute_entropy(CactusGraph* gb, size_t logits_node_id, float* out_entropy);
@@ -825,7 +841,9 @@ protected:
     void prefill_npu(const std::vector<uint32_t>& tokens);
     virtual std::vector<__fp16> get_token_embeddings(const std::vector<uint32_t>& tokens);
 
+    static constexpr size_t MAX_TOKEN_HISTORY = 128;
     ToolCallConstrainer tool_constrainer_;
+    std::vector<uint32_t> token_history_;
 
 private:
     std::unordered_map<uint32_t, float> vocab_bias_;

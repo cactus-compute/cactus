@@ -130,7 +130,7 @@ bool PyAnnoteModel::init(const std::string& model_folder, size_t context_size,
     }
 }
 
-std::vector<float> PyAnnoteModel::diarize(const float* pcm_f32, size_t num_samples, size_t step_samples) {
+std::vector<float> PyAnnoteModel::diarize(const float* pcm_f32, size_t num_samples, size_t step_samples, bool raw_powerset) {
     if (!initialized_) throw std::runtime_error("PyAnnote model not initialized");
 
     const size_t total_frames = std::max(
@@ -172,14 +172,22 @@ std::vector<float> PyAnnoteModel::diarize(const float* pcm_f32, size_t num_sampl
     if (!last_processed)
         process_chunk(last_start);
 
-    std::vector<float> speaker_probs(total_frames * NUM_SPEAKERS, 0.0f);
     for (size_t f = 0; f < total_frames; ++f) {
-        float* agg = aggregated.data() + f * NUM_CLASSES;
         if (weight_sum[f] > 0.0f) {
             const float inv_w = 1.0f / weight_sum[f];
+            float* agg = aggregated.data() + f * NUM_CLASSES;
             for (int c = 0; c < NUM_CLASSES; ++c)
                 agg[c] *= inv_w;
         }
+    }
+
+    if (raw_powerset) {
+        return aggregated;
+    }
+
+    std::vector<float> speaker_probs(total_frames * NUM_SPEAKERS, 0.0f);
+    for (size_t f = 0; f < total_frames; ++f) {
+        const float* agg = aggregated.data() + f * NUM_CLASSES;
         float* dst = speaker_probs.data() + f * NUM_SPEAKERS;
         dst[0] = agg[1] + agg[4] + agg[5];
         dst[1] = agg[2] + agg[4] + agg[6];

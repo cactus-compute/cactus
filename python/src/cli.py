@@ -1077,7 +1077,7 @@ def cmd_run(args):
     os.execv(str(chat_binary), cmd_args)
 
 
-DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-ctc-1.1b"
+DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 
 def _pick_android_device_id(preferred_device=None):
     if preferred_device:
@@ -1931,7 +1931,7 @@ def create_parser():
   -----------------------------------------------------------------
 
   cactus transcribe [model]            live microphone transcription
-                                       default model: parakeet-ctc-1.1b
+                                       default model: parakeet-tdt-0.6b-v3
 
     Optional flags:
     --file <audio.wav>                 transcribe audio file instead of mic
@@ -1942,8 +1942,8 @@ def create_parser():
     Examples:
     cactus transcribe                  live microphone transcription
     cactus transcribe --file audio.wav transcribe single file
-    cactus transcribe nvidia/parakeet-ctc-1.1b   use different model
-    cactus transcribe nvidia/parakeet-ctc-1.1b --file audio.wav
+    cactus transcribe nvidia/parakeet-ctc-1.1b     use different model
+    cactus transcribe nvidia/parakeet-tdt-0.6b-v3 --file audio.wav
 
    -----------------------------------------------------------------
 

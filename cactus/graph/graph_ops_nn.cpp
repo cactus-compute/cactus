@@ -238,6 +238,7 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             lhs_scales = lhs_buffer.activation_scales_as_float();
         } else if (lhs_buffer.precision == Precision::FP16) {
             ensure_quant_buffers(M, K);
+            cached_quant_src = nullptr;
             quantize_activations_fp16_to_int8(lhs_buffer.data_as<__fp16>(), quant_activation_buffer.data(),
                                               quant_scales_buffer.data(), M, K);
             lhs_int8 = quant_activation_buffer.data();
@@ -1243,9 +1244,6 @@ void compute_conv2d_k3s2p1_node(GraphNode& node, const std::vector<std::unique_p
     if (X.shape.size() != 4) {
         throw std::runtime_error("conv2d_k3s2p1 expects input [N, C_in, H, W]");
     }
-    if (W.shape.size() != 4) {
-        throw std::runtime_error("conv2d_k3s2p1 weight must be [C_out, C_in, 3, 3]");
-    }
     if (X.precision != Precision::FP16) {
         throw std::runtime_error("conv2d_k3s2p1 only supports FP16 activations");
     }
@@ -1254,26 +1252,15 @@ void compute_conv2d_k3s2p1_node(GraphNode& node, const std::vector<std::unique_p
     const size_t C_in = X.shape[1];
     const size_t H = X.shape[2];
     const size_t W_in = X.shape[3];
-    const size_t C_out = W.shape[0];
+    const size_t C_out = Y.shape[1];
 
-    if (W.shape[1] != C_in || W.shape[2] != 3 || W.shape[3] != 3) {
-        throw std::runtime_error("conv2d_k3s2p1 weight must match [C_out, C_in, 3, 3]");
-    }
     if (H == 0 || W_in == 0) {
         throw std::runtime_error("conv2d_k3s2p1 input spatial dimensions must be > 0");
     }
 
-    const size_t H_out = (H - 1) / 2 + 1;
-    const size_t W_out = (W_in - 1) / 2 + 1;
-    Y.shape = {N, C_out, H_out, W_out};
-    Y.precision = Precision::FP16;
-
     const __fp16* bias_ptr = nullptr;
     std::vector<__fp16> bias_fp16;
     if (B) {
-        if (B->total_size != C_out) {
-            throw std::runtime_error("conv2d_k3s2p1 bias size mismatch");
-        }
         if (B->precision == Precision::FP16) {
             bias_ptr = B->data_as<__fp16>();
         } else if (B->precision == Precision::FP32) {
@@ -1286,6 +1273,9 @@ void compute_conv2d_k3s2p1_node(GraphNode& node, const std::vector<std::unique_p
     }
 
     if (W.precision == Precision::FP16) {
+        if (W.shape.size() != 4) {
+            throw std::runtime_error("conv2d_k3s2p1 FP16 weight must be [C_out, C_in, 3, 3]");
+        }
         cactus_conv2d_f16_k3s2p1_nchw(
             X.data_as<__fp16>(),
             W.data_as<__fp16>(),
@@ -2232,15 +2222,55 @@ void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_p
                                  const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& X = get_input(node, 0, nodes, node_index_map);
     const auto& W = get_input(node, 1, nodes, node_index_map);
-    const __fp16* bias_ptr = nullptr;
+    const BufferDesc* B = nullptr;
     if (node.input_ids.size() >= 3) {
-        bias_ptr = get_input(node, 2, nodes, node_index_map).data_as<__fp16>();
+        B = &get_input(node, 2, nodes, node_index_map);
+    }
+    auto& Y = node.output_buffer;
+
+    if (X.shape.size() != 4) {
+        throw std::runtime_error("conv2d_k3s1p1 expects input [N, C_in, H, W]");
+    }
+    if (X.precision != Precision::FP16) {
+        throw std::runtime_error("conv2d_k3s1p1 only supports FP16 activations");
     }
 
-    cactus_conv2d_f16_k3s1p1_nchw(
-        X.data_as<__fp16>(), W.data_as<__fp16>(), bias_ptr,
-        node.output_buffer.data_as<__fp16>(),
-        X.shape[0], X.shape[1], X.shape[2], X.shape[3], W.shape[0]);
+    const size_t N = X.shape[0];
+    const size_t C_in = X.shape[1];
+    const size_t H = X.shape[2];
+    const size_t W_in = X.shape[3];
+    const size_t C_out = Y.shape[1];
+
+    if (H == 0 || W_in == 0) {
+        throw std::runtime_error("conv2d_k3s1p1 input spatial dimensions must be > 0");
+    }
+
+    const __fp16* bias_ptr = nullptr;
+    std::vector<__fp16> bias_fp16;
+    if (B) {
+        if (B->precision == Precision::FP16) {
+            bias_ptr = B->data_as<__fp16>();
+        } else if (B->precision == Precision::FP32) {
+            bias_fp16.resize(C_out);
+            cactus_fp32_to_fp16(B->data_as<float>(), bias_fp16.data(), C_out);
+            bias_ptr = bias_fp16.data();
+        } else {
+            throw std::runtime_error("conv2d_k3s1p1 bias only supports FP16/FP32");
+        }
+    }
+
+    if (W.precision == Precision::FP16) {
+        if (W.shape.size() != 4) {
+            throw std::runtime_error("conv2d_k3s1p1 FP16 weight must be [C_out, C_in, 3, 3]");
+        }
+        cactus_conv2d_f16_k3s1p1_nchw(
+            X.data_as<__fp16>(), W.data_as<__fp16>(), bias_ptr,
+            Y.data_as<__fp16>(),
+            N, C_in, H, W_in, C_out);
+        return;
+    }
+
+    throw std::runtime_error("conv2d_k3s1p1 only supports FP16 weights");
 }
 
 void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
@@ -2273,3 +2303,53 @@ void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<
         }
     }
 }
+
+void compute_weighted_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                       const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = get_input(node, 0, nodes, node_index_map);
+    const auto& weight_buf = get_input(node, 1, nodes, node_index_map);
+    const __fp16* src = input.data_as<__fp16>();
+    const float* weights = weight_buf.data_as<float>();
+    __fp16* dst = node.output_buffer.data_as<__fp16>();
+
+    size_t batch = input.shape[0];
+    size_t total_per_batch = input.total_size / batch;
+    size_t T = input.shape.back();
+    size_t features = total_per_batch / T;
+
+    constexpr float eps = 1e-8f;
+
+    for (size_t b = 0; b < batch; ++b) {
+        const __fp16* batch_src = src + b * total_per_batch;
+        const float* batch_w = weights + b * T;
+        __fp16* batch_dst = dst + b * features * 2;
+
+        float v1 = 0.0f, v2 = 0.0f;
+        for (size_t t = 0; t < T; ++t) {
+            float w = batch_w[t];
+            v1 += w;
+            v2 += w * w;
+        }
+        float v1_safe = v1 + eps;
+        float var_denom = v1_safe - v2 / v1_safe + eps;
+
+        for (size_t f = 0; f < features; ++f) {
+            float wsum = 0.0f;
+            for (size_t t = 0; t < T; ++t) {
+                wsum += static_cast<float>(batch_src[f * T + t]) * batch_w[t];
+            }
+            float mean = wsum / v1_safe;
+
+            float wvar = 0.0f;
+            for (size_t t = 0; t < T; ++t) {
+                float dx = static_cast<float>(batch_src[f * T + t]) - mean;
+                wvar += batch_w[t] * dx * dx;
+            }
+            float std_val = sqrtf(fmaxf(wvar / var_denom, 0.0f));
+
+            batch_dst[f] = static_cast<__fp16>(mean);
+            batch_dst[features + f] = static_cast<__fp16>(std_val);
+        }
+    }
+}
+

@@ -40,27 +40,27 @@ typedef CactusPrefillNative = Int32 Function(
     Pointer<Uint8> pcmBuffer,
     IntPtr pcmBufferSize);
 
-typedef CactusCompleteDart = Int32 Function(
+typedef CactusCompleteDart = int Function(
     CactusModelT model,
     Pointer<Utf8> messagesJson,
     Pointer<Utf8> responseBuffer,
-    IntPtr bufferSize,
+    int bufferSize,
     Pointer<Utf8> optionsJson,
     Pointer<Utf8> toolsJson,
     Pointer<NativeFunction<TokenCallbackNative>> callback,
     Pointer<Void> userData,
     Pointer<Uint8> pcmBuffer,
-    IntPtr pcmBufferSize);
+    int pcmBufferSize);
 
-typedef CactusPrefillDart = Int32 Function(
+typedef CactusPrefillDart = int Function(
     CactusModelT model,
     Pointer<Utf8> messagesJson,
     Pointer<Utf8> responseBuffer,
-    IntPtr bufferSize,
+    int bufferSize,
     Pointer<Utf8> optionsJson,
     Pointer<Utf8> toolsJson,
     Pointer<Uint8> pcmBuffer,
-    IntPtr pcmBufferSize);
+    int pcmBufferSize);
 
 typedef CactusTokenizeNative = Int32 Function(
     CactusModelT model,
@@ -158,7 +158,9 @@ typedef CactusEmbedSpeakerNative = Int32 Function(
     IntPtr bufferSize,
     Pointer<Utf8> optionsJson,
     Pointer<Uint8> pcmBuffer,
-    IntPtr pcmBufferSize);
+    IntPtr pcmBufferSize,
+    Pointer<Float> maskWeights,
+    IntPtr maskNumFrames);
 
 typedef CactusRagQueryNative = Int32 Function(
     CactusModelT model,
@@ -202,18 +204,6 @@ typedef CactusInitDart = CactusModelT Function(
 typedef CactusDestroyDart = void Function(CactusModelT model);
 typedef CactusResetDart = void Function(CactusModelT model);
 typedef CactusStopDart = void Function(CactusModelT model);
-
-typedef CactusCompleteDart = int Function(
-    CactusModelT model,
-    Pointer<Utf8> messagesJson,
-    Pointer<Utf8> responseBuffer,
-    int bufferSize,
-    Pointer<Utf8> optionsJson,
-    Pointer<Utf8> toolsJson,
-    Pointer<NativeFunction<TokenCallbackNative>> callback,
-    Pointer<Void> userData,
-    Pointer<Uint8> pcmBuffer,
-    int pcmBufferSize);
 
 typedef CactusTokenizeDart = int Function(
     CactusModelT model,
@@ -311,7 +301,9 @@ typedef CactusEmbedSpeakerDart = int Function(
     int bufferSize,
     Pointer<Utf8> optionsJson,
     Pointer<Uint8> pcmBuffer,
-    int pcmBufferSize);
+    int pcmBufferSize,
+    Pointer<Float> maskWeights,
+    int maskNumFrames);
 
 typedef CactusRagQueryDart = int Function(
     CactusModelT model,
@@ -878,8 +870,9 @@ String cactusEmbedSpeaker(
   CactusModelT model,
   String? audioPath,
   String? optionsJson,
-  Uint8List? pcmData,
-) {
+  Uint8List? pcmData, [
+  Float32List? maskWeights,
+]) {
   const bufferSize = 65536;
   final responseBuffer = calloc<Uint8>(bufferSize);
   final audioPathPtr = audioPath?.toNativeUtf8() ?? nullptr;
@@ -893,9 +886,17 @@ String cactusEmbedSpeaker(
     pcmSize = pcmData.length;
   }
 
+  Pointer<Float> maskPtr = nullptr;
+  int maskSize = 0;
+  if (maskWeights != null) {
+    maskPtr = calloc<Float>(maskWeights.length);
+    maskPtr.asTypedList(maskWeights.length).setAll(0, maskWeights);
+    maskSize = maskWeights.length;
+  }
+
   try {
     final result = _cactusEmbedSpeaker(
-      model, audioPathPtr, responseBuffer.cast(), bufferSize, optionsPtr, pcmBuffer, pcmSize,
+      model, audioPathPtr, responseBuffer.cast(), bufferSize, optionsPtr, pcmBuffer, pcmSize, maskPtr, maskSize,
     );
     if (result < 0) {
       throw Exception('EmbedSpeaker failed: ${cactusGetLastError()}');
@@ -906,6 +907,7 @@ String cactusEmbedSpeaker(
     if (audioPathPtr != nullptr) calloc.free(audioPathPtr);
     if (optionsPtr != nullptr) calloc.free(optionsPtr);
     if (pcmBuffer != nullptr) calloc.free(pcmBuffer);
+    if (maskPtr != nullptr) calloc.free(maskPtr);
   }
 }
 

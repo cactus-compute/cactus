@@ -848,6 +848,9 @@ void ToolCallConstrainer::compute_bias() {
                 for (uint32_t t : qwen_tool_call_start_tokens_) {
                     current_bias_[t] = FORCE_BIAS;
                 }
+                if (tokenizer_) {
+                    current_bias_[tokenizer_->get_eos_token()] = FORCE_BIAS;
+                }
                 break;
 
             default:

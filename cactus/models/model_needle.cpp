@@ -482,7 +482,9 @@ uint32_t NeedleModel::decode(const std::vector<uint32_t>& tokens,
                              float top_p,
                              size_t top_k,
                              const std::string& profile_file,
-                             float* out_entropy) {
+                             float* out_entropy,
+                             float /*min_p*/,
+                             float /*repetition_penalty*/) {
     if (!initialized_ || !graph_handle_) {
         throw std::runtime_error("Needle model not initialized");
     }
@@ -534,7 +536,7 @@ uint32_t NeedleModel::decode(const std::vector<uint32_t>& tokens,
         logits_node = gb->scalar_multiply(logits_node, config_.final_logit_softcapping);
     }
 
-    auto sampled_token_id = sample_token(gb, logits_node, temperature, top_p, top_k);
+    auto sampled_token_id = sample_token(gb, logits_node, temperature, top_p, top_k, 0.0f, 1.0f);
 
     if (!profile_file.empty()) {
         gb->execute(profile_file);

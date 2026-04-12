@@ -586,7 +586,7 @@ Java_com_cactus_CactusJNI_nativeDiarize(JNIEnv* env, jobject, jlong handle,
 
 JNIEXPORT jstring JNICALL
 Java_com_cactus_CactusJNI_nativeEmbedSpeaker(JNIEnv* env, jobject, jlong handle,
-                                               jstring audioPath, jstring optionsJson, jbyteArray pcmData) {
+                                               jstring audioPath, jstring optionsJson, jbyteArray pcmData, jfloatArray maskWeights) {
     if (handle == 0) { throwCactusException(env, "Model not initialized"); return nullptr; }
 
     const char* path = jstring_to_cstr(env, audioPath);
@@ -604,6 +604,16 @@ Java_com_cactus_CactusJNI_nativeEmbedSpeaker(JNIEnv* env, jobject, jlong handle,
         pcmBuffer = reinterpret_cast<const uint8_t*>(pcmBytes);
     }
 
+    const float* maskPtr = nullptr;
+    size_t maskSize = 0;
+    jfloat* maskFloats = nullptr;
+
+    if (maskWeights != nullptr) {
+        maskSize = env->GetArrayLength(maskWeights);
+        maskFloats = env->GetFloatArrayElements(maskWeights, nullptr);
+        maskPtr = maskFloats;
+    }
+
     int result = cactus_embed_speaker(
         reinterpret_cast<cactus_model_t>(handle),
         path,
@@ -611,9 +621,14 @@ Java_com_cactus_CactusJNI_nativeEmbedSpeaker(JNIEnv* env, jobject, jlong handle,
         buffer.size(),
         opts,
         pcmBuffer,
-        pcmSize
+        pcmSize,
+        maskPtr,
+        maskSize
     );
 
+    if (maskFloats != nullptr) {
+        env->ReleaseFloatArrayElements(maskWeights, maskFloats, JNI_ABORT);
+    }
     if (pcmBytes != nullptr) {
         env->ReleaseByteArrayElements(pcmData, pcmBytes, JNI_ABORT);
     }
