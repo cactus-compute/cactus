@@ -484,4 +484,17 @@ void cactus_stop(cactus_model_t model) {
     handle->should_stop = true;
 }
 
+bool cactus_has_npu_prefill(cactus_model_t model) {
+    if (!model) return false;
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    return handle->model && handle->model->has_npu_prefill();
+}
+
+size_t cactus_get_prefill_chunk_size(cactus_model_t model) {
+    if (!model) return 0;
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    if (!handle->model) return 0;
+    return handle->model->get_prefill_chunk_size();
+}
+
 }

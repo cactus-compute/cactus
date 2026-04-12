@@ -59,6 +59,8 @@ struct BackendCompareResult {
     bool success = false;
     Metrics metrics;
     std::string response;
+    bool npu_prefill_available = false;
+    size_t npu_prefill_chunk_size = 0;
 };
 
 bool run_llm_backend_compare_case(BackendCompareResult& out) {
@@ -79,6 +81,8 @@ bool run_llm_backend_compare_case(BackendCompareResult& out) {
         std::cerr << "[✗] Failed to initialize model for backend compare\n";
         return false;
     }
+    out.npu_prefill_available = cactus_has_npu_prefill(model);
+    out.npu_prefill_chunk_size = cactus_get_prefill_chunk_size(model);
     std::cerr << "[compare] model initialized\n";
 
     // Warm once so the measured run reflects steady-state backend behavior
@@ -133,10 +137,18 @@ bool test_llm_backend_single_run() {
     std::cerr << "[compare] complete status=" << (ok ? "ok" : "fail") << "\n";
 
     std::cout << "\n[Backend Metrics]\n";
+    const bool npu_prefill_eligible =
+        result.npu_prefill_available &&
+        result.npu_prefill_chunk_size > 0 &&
+        static_cast<size_t>(result.metrics.prefill_tokens) > result.npu_prefill_chunk_size;
     std::cout << "├─ backend: " << backend_name << "\n"
+              << "├─ npu_prefill_available: " << (result.npu_prefill_available ? "YES" : "NO") << "\n"
+              << "├─ npu_prefill_chunk_size: " << result.npu_prefill_chunk_size << "\n"
+              << "├─ npu_prefill_eligible_for_this_prompt: " << (npu_prefill_eligible ? "YES" : "NO") << "\n"
               << "├─ total_ms: " << result.metrics.total_ms << "\n"
               << "├─ ttft_ms: " << result.metrics.ttft << "\n"
               << "├─ prefill_tps: " << result.metrics.prefill_tps << "\n"
+              << "├─ prefill_tokens: " << result.metrics.prefill_tokens << "\n"
               << "├─ decode_tps: " << result.metrics.decode_tps << "\n"
               << "├─ response chars: " << result.response.size() << "\n"
               << "├─ Generated text: " << (result.response.empty() ? "<empty>" : result.response) << "\n"

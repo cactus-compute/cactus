@@ -32,6 +32,8 @@ CACTUS_FFI_EXPORT cactus_model_t cactus_init(
 CACTUS_FFI_EXPORT void cactus_destroy(cactus_model_t model);
 CACTUS_FFI_EXPORT void cactus_reset(cactus_model_t model);
 CACTUS_FFI_EXPORT void cactus_stop(cactus_model_t model);
+CACTUS_FFI_EXPORT bool cactus_has_npu_prefill(cactus_model_t model);
+CACTUS_FFI_EXPORT size_t cactus_get_prefill_chunk_size(cactus_model_t model);
 
 CACTUS_FFI_EXPORT int cactus_complete(
     cactus_model_t model,
