@@ -1046,9 +1046,10 @@ static void cactus_matmul_int4_sme2_worker(
             const svbool_t pN32 = (active_c == tile_rows)
                 ? svptrue_b32()
                 : svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c));
-            const svbool_t pOut16 = (active_c == tile_rows)
-                ? svptrue_b16()
-                : svwhilelt_b16(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c));
+            // Each FP32 accumulator lane becomes exactly one FP16 output value after
+            // compaction. The store predicate must track the logical output columns,
+            // not the full FP16 vector width, or full-tile stores will overrun rows.
+            const svbool_t pOut16 = svwhilelt_b16(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c));
 
             std::fill(tile_accum, tile_accum + tile_rows * tile_rows, 0.0f);
 

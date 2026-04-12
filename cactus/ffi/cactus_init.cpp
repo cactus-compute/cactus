@@ -370,6 +370,9 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
 
     apply_no_cloud_telemetry_env();
     cactus::telemetry::init(nullptr, model_path_str.c_str(), nullptr);
+    const bool disable_warmup =
+        cactus::ffi::env_flag_enabled("CACTUS_DISABLE_INIT_WARMUP") ||
+        cactus::ffi::env_flag_enabled("CACTUS_TEST_LLM_COMPARE_MODE");
 
     auto __cactus_init_start = std::chrono::steady_clock::now();
 
@@ -389,7 +392,7 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
             return nullptr;
         }
 
-        if (!handle->model->init(model_path, DEFAULT_CONTEXT_SIZE)) {
+        if (!handle->model->init(model_path, DEFAULT_CONTEXT_SIZE, "", !disable_warmup)) {
             last_error_message = "Failed to initialize model - check weight files at: " + model_path_str;
             CACTUS_LOG_ERROR("init", last_error_message);
             {

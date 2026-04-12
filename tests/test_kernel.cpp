@@ -527,12 +527,17 @@ bool test_int4_matmul_correctness() {
     return true;
 }
 
-bool test_int4_matmul_scalable_matches_neon() {
-    const size_t K = 128, N = 12, group_size = 32;
+static bool int4_matmul_scalable_matches_neon_case(
+    size_t K,
+    size_t N,
+    size_t group_size,
+    std::initializer_list<size_t> batch_sizes,
+    uint32_t seed
+) {
     const size_t num_groups = K / group_size;
     const size_t BS = 4;
 
-    std::mt19937 gen(99);
+    std::mt19937 gen(seed);
     std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
 
     std::vector<float> B_fp32(N * K);
@@ -579,7 +584,7 @@ bool test_int4_matmul_scalable_matches_neon() {
                 B_scales_interleaved[(n_blk * num_groups + g) * BS + ni] =
                     static_cast<__fp16>(B_scales[(n_blk * BS + ni) * num_groups + g]);
 
-    for (size_t M : {1, 6}) {
+    for (size_t M : batch_sizes) {
         std::vector<__fp16> A_fp16(M * K);
         for (size_t i = 0; i < M * K; ++i) A_fp16[i] = static_cast<__fp16>(dis(gen));
 
@@ -619,6 +624,16 @@ bool test_int4_matmul_scalable_matches_neon() {
     }
 
     return true;
+}
+
+bool test_int4_matmul_scalable_matches_neon() {
+    return int4_matmul_scalable_matches_neon_case(128, 12, 32, {1, 6}, 99);
+}
+
+bool test_int4_matmul_scalable_matches_neon_lfm2_shapes() {
+    // These mirror the grouped INT4 shapes used by the default LFM2 test model.
+    return int4_matmul_scalable_matches_neon_case(1024, 1024, 32, {1, 4}, 123) &&
+           int4_matmul_scalable_matches_neon_case(1024, 4608, 32, {1, 4}, 456);
 }
 
 bool test_stft_kernel_correctness() {
@@ -694,8 +709,11 @@ int main() {
         const char* scalable_backend = cpu_has_sve() ? "SVE" : "SME2";
         runner.run_test(std::string("Kernel INT4 MatMul ") + scalable_backend + " vs NEON",
                         test_int4_matmul_scalable_matches_neon());
+        runner.run_test(std::string("Kernel INT4 LFM2-Shape MatMul ") + scalable_backend + " vs NEON",
+                        test_int4_matmul_scalable_matches_neon_lfm2_shapes());
     } else {
         runner.log_skip("Kernel INT4 MatMul Scalable vs NEON", "No SVE or SME2 backend available on this runtime");
+        runner.log_skip("Kernel INT4 LFM2-Shape MatMul Scalable vs NEON", "No SVE or SME2 backend available on this runtime");
     }
     runner.run_test("Kernel STFT Complex Correctness", test_stft_kernel_correctness());
 
