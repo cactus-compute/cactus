@@ -1,5 +1,6 @@
 #include "model.h"
 #include "../graph/graph.h"
+#include "../npu/npu.h"
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -117,6 +118,11 @@ void LFM2Model::load_weights_to_graph(CactusGraph* gb) {
         layer.ffn_up_weight = gb->mmap_weights(layer_prefix + "ffn_up.weights");
         layer.ffn_down_weight = gb->mmap_weights(layer_prefix + "ffn_down.weights");
         
+    }
+
+    if (npu::is_npu_available()) {
+        std::string npu_prefill_path = model_folder_path_ + "/model.mlpackage";
+        load_npu_prefill(npu_prefill_path);
     }
     
 }

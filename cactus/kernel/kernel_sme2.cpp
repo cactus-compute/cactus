@@ -209,6 +209,38 @@ struct Sme2PackedInt4Panels {
     std::vector<float> scales;
 };
 
+struct Sme2PackedInt4GemvKey {
+    const int8_t* weights_ptr;
+    const __fp16* scales_ptr;
+    size_t K;
+    size_t N;
+    size_t group_size;
+
+    bool operator==(const Sme2PackedInt4GemvKey& other) const {
+        return weights_ptr == other.weights_ptr &&
+               scales_ptr == other.scales_ptr &&
+               K == other.K &&
+               N == other.N &&
+               group_size == other.group_size;
+    }
+};
+
+struct Sme2PackedInt4GemvKeyHash {
+    size_t operator()(const Sme2PackedInt4GemvKey& key) const {
+        size_t h = std::hash<const void*>{}(key.weights_ptr);
+        h ^= std::hash<const void*>{}(key.scales_ptr) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<size_t>{}(key.K) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<size_t>{}(key.N) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<size_t>{}(key.group_size) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+struct Sme2PackedInt4GemvPanels {
+    std::vector<int8_t> weights;
+    std::vector<float> scales;
+};
+
 class Sme2PackedInt4Cache {
 public:
     static Sme2PackedInt4Cache& instance() {
@@ -291,6 +323,92 @@ private:
 
     std::mutex mutex_;
     std::unordered_map<Sme2PackedInt4Key, Entry, Sme2PackedInt4KeyHash> entries_;
+    size_t current_bytes_ = 0;
+    uint64_t clock_ = 0;
+};
+
+class Sme2PackedInt4GemvCache {
+public:
+    static Sme2PackedInt4GemvCache& instance() {
+        static Sme2PackedInt4GemvCache cache;
+        return cache;
+    }
+
+    template <typename Builder>
+    std::shared_ptr<Sme2PackedInt4GemvPanels> get_or_create(
+        const Sme2PackedInt4GemvKey& key,
+        size_t weight_elements,
+        size_t scale_elements,
+        uint64_t fingerprint,
+        Builder&& builder
+    ) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto it = entries_.find(key);
+            if (it != entries_.end() && it->second.fingerprint == fingerprint) {
+                it->second.last_use = ++clock_;
+                return it->second.data;
+            }
+        }
+
+        auto packed = std::make_shared<Sme2PackedInt4GemvPanels>();
+        packed->weights.resize(weight_elements);
+        packed->scales.resize(scale_elements);
+        builder(*packed);
+        const size_t bytes = packed->weights.size() * sizeof(int8_t) +
+                             packed->scales.size() * sizeof(float);
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = entries_.find(key);
+        if (it != entries_.end() && it->second.fingerprint == fingerprint) {
+            it->second.last_use = ++clock_;
+            return it->second.data;
+        }
+
+        Entry& entry = entries_[key];
+        if (entry.data && current_bytes_ >= entry.bytes) {
+            current_bytes_ -= entry.bytes;
+        }
+
+        entry.data = packed;
+        entry.bytes = bytes;
+        entry.fingerprint = fingerprint;
+        entry.last_use = ++clock_;
+        current_bytes_ += bytes;
+        evict_locked();
+        return entry.data;
+    }
+
+private:
+    struct Entry {
+        std::shared_ptr<Sme2PackedInt4GemvPanels> data;
+        size_t bytes = 0;
+        uint64_t fingerprint = 0;
+        uint64_t last_use = 0;
+    };
+
+    void evict_locked() {
+        constexpr size_t MAX_CACHE_BYTES = 256ull * 1024ull * 1024ull;
+        while (current_bytes_ > MAX_CACHE_BYTES && entries_.size() > 1) {
+            auto oldest = entries_.end();
+            for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+                if (oldest == entries_.end() || it->second.last_use < oldest->second.last_use) {
+                    oldest = it;
+                }
+            }
+
+            if (oldest == entries_.end()) break;
+            if (current_bytes_ >= oldest->second.bytes) {
+                current_bytes_ -= oldest->second.bytes;
+            } else {
+                current_bytes_ = 0;
+            }
+            entries_.erase(oldest);
+        }
+    }
+
+    std::mutex mutex_;
+    std::unordered_map<Sme2PackedInt4GemvKey, Entry, Sme2PackedInt4GemvKeyHash> entries_;
     size_t current_bytes_ = 0;
     uint64_t clock_ = 0;
 };
@@ -440,6 +558,66 @@ static void cactus_pack_b_int4_for_sme2(
                         quad_dst[4 * c + 1] = 0;
                         quad_dst[4 * c + 2] = 0;
                         quad_dst[4 * c + 3] = 0;
+                    }
+                }
+            }
+        });
+}
+
+static void cactus_pack_b_int4_for_sme2_gemv(
+    const int8_t* __restrict b_packed_raw,
+    const __fp16* __restrict b_scales,
+    Sme2PackedInt4GemvPanels& packed,
+    size_t K,
+    size_t N,
+    size_t group_size
+) {
+    constexpr size_t CACTUS_INT4_GEMV_OUTPUTS = 4;
+    constexpr size_t CACTUS_INT4_GEMV_CHUNK_BYTES = 16;
+
+    const size_t num_groups = K / group_size;
+    const size_t group_chunks = group_size / CACTUS_INT4_GEMV_CHUNK_BYTES;
+    const size_t n_blocks = (N + CACTUS_INT4_GEMV_OUTPUTS - 1) / CACTUS_INT4_GEMV_OUTPUTS;
+    const size_t n_storage = n_blocks * CACTUS_INT4_GEMV_OUTPUTS;
+
+    std::vector<int8_t> b_interleaved(n_storage * K);
+    cactus_unpack_int4_to_int8(reinterpret_cast<const uint8_t*>(b_packed_raw), b_interleaved.data(), b_interleaved.size());
+
+    CactusThreading::parallel_for(n_blocks * num_groups, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+        [&](size_t start, size_t end) {
+            for (size_t idx = start; idx < end; ++idx) {
+                const size_t n_block = idx / num_groups;
+                const size_t g = idx % num_groups;
+                const size_t col0 = n_block * CACTUS_INT4_GEMV_OUTPUTS;
+                const size_t active_c = std::min(CACTUS_INT4_GEMV_OUTPUTS, N - col0);
+                const size_t k_base = g * group_size;
+
+                float* scale_dst = packed.scales.data() + (n_block * num_groups + g) * CACTUS_INT4_GEMV_OUTPUTS;
+                for (size_t c = 0; c < active_c; ++c) {
+                    const size_t col = col0 + c;
+                    scale_dst[c] = static_cast<float>(b_scales[(n_block * num_groups + g) * CACTUS_INT4_GEMV_OUTPUTS + c]);
+                    if (col >= N) scale_dst[c] = 0.0f;
+                }
+                for (size_t c = active_c; c < CACTUS_INT4_GEMV_OUTPUTS; ++c) {
+                    scale_dst[c] = 0.0f;
+                }
+
+                int8_t* weight_dst = packed.weights.data() +
+                    (n_block * num_groups + g) * group_chunks * CACTUS_INT4_GEMV_OUTPUTS * CACTUS_INT4_GEMV_CHUNK_BYTES;
+
+                for (size_t chunk = 0; chunk < group_chunks; ++chunk) {
+                    int8_t* chunk_dst = weight_dst + chunk * CACTUS_INT4_GEMV_OUTPUTS * CACTUS_INT4_GEMV_CHUNK_BYTES;
+                    const size_t chunk_k_base = k_base + chunk * CACTUS_INT4_GEMV_CHUNK_BYTES;
+
+                    for (size_t k = 0; k < CACTUS_INT4_GEMV_CHUNK_BYTES; ++k) {
+                        for (size_t c = 0; c < active_c; ++c) {
+                            const size_t col = col0 + c;
+                            chunk_dst[k * CACTUS_INT4_GEMV_OUTPUTS + c] =
+                                cactus_load_interleaved_int8_weight(b_interleaved.data(), K, col, chunk_k_base + k);
+                        }
+                        for (size_t c = active_c; c < CACTUS_INT4_GEMV_OUTPUTS; ++c) {
+                            chunk_dst[k * CACTUS_INT4_GEMV_OUTPUTS + c] = 0;
+                        }
                     }
                 }
             }
@@ -1436,6 +1614,79 @@ static void cactus_gemv_int4_sme2_worker(
     }
 }
 
+static void cactus_gemv_int4_sme2_dot_worker(
+    const int8_t* a,
+    float a_scale,
+    const int8_t* b_packed,
+    const float* b_scales_packed,
+    __fp16* c,
+    size_t K,
+    size_t N,
+    size_t group_size,
+    size_t start_col_block,
+    size_t end_col_block
+) __arm_streaming __arm_inout("za") {
+    if (start_col_block >= end_col_block) return;
+
+    constexpr size_t CACTUS_INT4_GEMV_OUTPUTS = 4;
+    constexpr size_t CACTUS_INT4_GEMV_CHUNK_BYTES = 16;
+
+    const size_t num_groups = K / group_size;
+    const size_t group_chunks = group_size / CACTUS_INT4_GEMV_CHUNK_BYTES;
+    const svbool_t pA = svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(CACTUS_INT4_GEMV_CHUNK_BYTES));
+    const svbool_t pReduce = svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(CACTUS_INT4_GEMV_CHUNK_BYTES / 4));
+
+    for (size_t cb = start_col_block; cb < end_col_block; ++cb) {
+        const size_t col0 = cb * CACTUS_INT4_GEMV_OUTPUTS;
+        const size_t active_c = std::min(CACTUS_INT4_GEMV_OUTPUTS, N - col0);
+
+        float running_sum[CACTUS_INT4_GEMV_OUTPUTS] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+        for (size_t g = 0; g < num_groups; ++g) {
+            const int8_t* a_group = a + g * group_size;
+            const int8_t* b_group = b_packed +
+                (cb * num_groups + g) * group_chunks * CACTUS_INT4_GEMV_OUTPUTS * CACTUS_INT4_GEMV_CHUNK_BYTES;
+            const float* scale_ptr = b_scales_packed + (cb * num_groups + g) * CACTUS_INT4_GEMV_OUTPUTS;
+
+            svzero_za();
+
+            for (size_t chunk = 0; chunk < group_chunks; ++chunk) {
+                const svint8_t zA = svld1_s8(pA, a_group + chunk * CACTUS_INT4_GEMV_CHUNK_BYTES);
+                const svint8x4_t zB = svld4_s8(
+                    pA,
+                    b_group + chunk * CACTUS_INT4_GEMV_OUTPUTS * CACTUS_INT4_GEMV_CHUNK_BYTES
+                );
+
+                svdot_lane_za32_s8_vg1x4(0, zB, zA, 0);
+                svdot_lane_za32_s8_vg1x4(0, zB, zA, 1);
+                svdot_lane_za32_s8_vg1x4(0, zB, zA, 2);
+                svdot_lane_za32_s8_vg1x4(0, zB, zA, 3);
+            }
+
+            const svint32x4_t dot_vectors = svread_za32_s32_vg1x4(0);
+            const int32_t group_sum0 = svaddv_s32(pReduce, svget4_s32(dot_vectors, 0));
+            running_sum[0] += static_cast<float>(group_sum0) * scale_ptr[0];
+
+            if (active_c > 1) {
+                const int32_t group_sum1 = svaddv_s32(pReduce, svget4_s32(dot_vectors, 1));
+                running_sum[1] += static_cast<float>(group_sum1) * scale_ptr[1];
+            }
+            if (active_c > 2) {
+                const int32_t group_sum2 = svaddv_s32(pReduce, svget4_s32(dot_vectors, 2));
+                running_sum[2] += static_cast<float>(group_sum2) * scale_ptr[2];
+            }
+            if (active_c > 3) {
+                const int32_t group_sum3 = svaddv_s32(pReduce, svget4_s32(dot_vectors, 3));
+                running_sum[3] += static_cast<float>(group_sum3) * scale_ptr[3];
+            }
+        }
+
+        for (size_t c_idx = 0; c_idx < active_c; ++c_idx) {
+            c[col0 + c_idx] = static_cast<__fp16>(running_sum[c_idx] * a_scale);
+        }
+    }
+}
+
 __arm_new("za") __arm_locally_streaming
 static void cactus_gemv_int4_sme2_thread_entry(
     const int8_t* a,
@@ -1464,6 +1715,33 @@ static void cactus_gemv_int4_sme2_thread_entry(
         end_col_block,
         tile_rows,
         tile_bytes
+    );
+}
+
+__arm_new("za") __arm_locally_streaming
+static void cactus_gemv_int4_sme2_dot_thread_entry(
+    const int8_t* a,
+    float a_scale,
+    const int8_t* b_packed,
+    const float* b_scales_packed,
+    __fp16* c,
+    size_t K,
+    size_t N,
+    size_t group_size,
+    size_t start_col_block,
+    size_t end_col_block
+) {
+    cactus_gemv_int4_sme2_dot_worker(
+        a,
+        a_scale,
+        b_packed,
+        b_scales_packed,
+        c,
+        K,
+        N,
+        group_size,
+        start_col_block,
+        end_col_block
     );
 }
 
@@ -1541,13 +1819,75 @@ void cactus_matmul_int4_sme2_caller(
     if (M == 0 || K == 0 || N == 0) return;
     if ((group_size % 4) != 0 || group_size == 0 || (K % group_size) != 0 || (K % 4) != 0) return;
 
+    const size_t num_groups = K / group_size;
+    const size_t stored_n = ((N + 3) / 4) * 4;
+    const size_t packed_bytes = stored_n * K / 2;
+    uint64_t fingerprint = cactus_u8_sample_fingerprint(reinterpret_cast<const uint8_t*>(b_packed), packed_bytes);
+    fingerprint = cactus_mix_fingerprint(fingerprint, cactus_fp16_sample_fingerprint(b_scales, stored_n * num_groups));
+
+    auto& pool = CactusThreading::get_thread_pool();
+
+    if (M == 1 && (group_size % 16) == 0) {
+        constexpr size_t CACTUS_INT4_GEMV_OUTPUTS = 4;
+        constexpr size_t CACTUS_INT4_GEMV_CHUNK_BYTES = 16;
+
+        const size_t n_blocks = (N + CACTUS_INT4_GEMV_OUTPUTS - 1) / CACTUS_INT4_GEMV_OUTPUTS;
+        const size_t group_chunks = group_size / CACTUS_INT4_GEMV_CHUNK_BYTES;
+        const size_t packed_weight_elements =
+            n_blocks * num_groups * group_chunks * CACTUS_INT4_GEMV_OUTPUTS * CACTUS_INT4_GEMV_CHUNK_BYTES;
+        const size_t packed_scale_elements = n_blocks * num_groups * CACTUS_INT4_GEMV_OUTPUTS;
+
+        const Sme2PackedInt4GemvKey cache_key{b_packed, b_scales, K, N, group_size};
+        auto packed = Sme2PackedInt4GemvCache::instance().get_or_create(
+            cache_key,
+            packed_weight_elements,
+            packed_scale_elements,
+            fingerprint,
+            [&](Sme2PackedInt4GemvPanels& packed_panels) {
+                cactus_pack_b_int4_for_sme2_gemv(
+                    b_packed,
+                    b_scales,
+                    packed_panels,
+                    K,
+                    N,
+                    group_size
+                );
+            });
+
+        auto process_blocks = [&](size_t block_start, size_t block_end) {
+            cactus_gemv_int4_sme2_dot_thread_entry(
+                a,
+                a_scales[0],
+                packed->weights.data(),
+                packed->scales.data(),
+                c,
+                K,
+                N,
+                group_size,
+                block_start,
+                block_end
+            );
+        };
+
+        const size_t reference_n_blocks = (N + 3) / 4;
+        size_t num_threads = CactusThreading::GemmThreading::get_gemv_threads(reference_n_blocks, pool.num_workers());
+        num_threads = std::min(num_threads, n_blocks);
+
+        if (num_threads <= 1) {
+            process_blocks(0, n_blocks);
+        } else {
+            pool.enqueue_n_threads(n_blocks, num_threads, process_blocks);
+            pool.wait_all();
+        }
+        return;
+    }
+
     const size_t tile_rows = svcntsw();
     const size_t tile_bytes = svcntsb();
     constexpr size_t SME2_TILES_PER_THREAD = 3;
 
     const size_t row_blocks = (M + tile_rows - 1) / tile_rows;
     const size_t col_blocks = (N + tile_rows - 1) / tile_rows;
-    const size_t num_groups = K / group_size;
     const size_t group_quads = group_size / 4;
     const size_t k_quads = K / 4;
 
@@ -1556,13 +1896,7 @@ void cactus_matmul_int4_sme2_caller(
 
     const size_t packed_weight_elements = col_blocks * num_groups * group_quads * tile_bytes;
     const size_t packed_scale_elements = col_blocks * num_groups * tile_rows;
-    const size_t stored_n = ((N + 3) / 4) * 4;
-    const size_t packed_bytes = stored_n * K / 2;
-
     const Sme2PackedInt4Key cache_key{b_packed, b_scales, K, N, group_size, tile_rows, tile_bytes};
-    uint64_t fingerprint = cactus_u8_sample_fingerprint(reinterpret_cast<const uint8_t*>(b_packed), packed_bytes);
-    fingerprint = cactus_mix_fingerprint(fingerprint, cactus_fp16_sample_fingerprint(b_scales, stored_n * num_groups));
-
     auto packed = Sme2PackedInt4Cache::instance().get_or_create(
         cache_key,
         packed_weight_elements,
@@ -1580,42 +1914,6 @@ void cactus_matmul_int4_sme2_caller(
                 tile_bytes
             );
         });
-
-    auto& pool = CactusThreading::get_thread_pool();
-
-    if (M == 1) {
-        auto process_blocks = [&](size_t block_start, size_t block_end) {
-            cactus_gemv_int4_sme2_thread_entry(
-                a,
-                a_scales[0],
-                packed->weights.data(),
-                packed->scales.data(),
-                c,
-                K,
-                N,
-                group_size,
-                block_start,
-                block_end,
-                tile_rows,
-                tile_bytes
-            );
-        };
-
-        // Reuse the same thread sizing intuition as the NEON INT4 GEMV path,
-        // which reasons about 4-output blocks rather than SME2 tile-sized blocks.
-        // This avoids under-threading decode when tile_rows > 4.
-        const size_t reference_n_blocks = (N + 3) / 4;
-        size_t num_threads = CactusThreading::GemmThreading::get_gemv_threads(reference_n_blocks, pool.num_workers());
-        num_threads = std::min(num_threads, col_blocks);
-
-        if (num_threads <= 1) {
-            process_blocks(0, col_blocks);
-        } else {
-            pool.enqueue_n_threads(col_blocks, num_threads, process_blocks);
-            pool.wait_all();
-        }
-        return;
-    }
 
     const size_t row_block_size = SME2_TILES_PER_THREAD * tile_rows;
     const size_t num_row_blocks = (M + row_block_size - 1) / row_block_size;
