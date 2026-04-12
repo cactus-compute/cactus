@@ -1,10 +1,12 @@
 #include "test_utils.h"
+#include "../cactus/kernel/kernel_utils.h"
 #include <fstream>
 #include <cstdlib>
 #include <cstdio>
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <cmath>
 
 #if __has_include(<curl/curl.h>)
 #include <curl/curl.h>
@@ -22,6 +24,109 @@ static const char* g_options = R"({
     "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
     "telemetry_enabled": false
     })";
+
+namespace {
+
+bool llm_backend_compare_requested() {
+    const char* env = std::getenv("CACTUS_TEST_LLM_COMPARE");
+    if (!env) return false;
+    std::string value(env);
+    return value == "1" || value == "true" || value == "TRUE" ||
+           value == "yes" || value == "YES";
+}
+
+const char* llm_scalable_backend_name() {
+    if (cpu_has_sve()) return "SVE";
+    if (cpu_has_sme2()) return "SME2";
+    return "SCALABLE";
+}
+
+struct BackendCompareResult {
+    bool success = false;
+    Metrics metrics;
+    std::string response;
+};
+
+bool run_llm_backend_compare_case(TestUtils::MatmulKernelMode mode, BackendCompareResult& out) {
+    static const char* compare_messages = R"([
+        {"role": "system", "content": "/no_think You are a helpful assistant. Keep answers brief and factual."},
+        {"role": "user", "content": "Write two short sentences about why compilers matter for fast inference."}
+    ])";
+
+    static const char* compare_options = R"({
+        "max_tokens": 80,
+        "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
+        "temperature": 0.0,
+        "telemetry_enabled": false
+    })";
+
+    TestUtils::ScopedMatmulKernelMode kernel_mode(mode);
+
+    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize model for backend compare\n";
+        return false;
+    }
+
+    char response[4096] = {0};
+    int result = cactus_complete(model, compare_messages, response, sizeof(response),
+                                 compare_options, nullptr, nullptr, nullptr, nullptr, 0);
+
+    out.metrics.parse(response);
+    out.response = out.metrics.response;
+    out.success = result > 0 && out.metrics.success;
+
+    cactus_destroy(model);
+    return out.success;
+}
+
+double safe_ratio(double numerator, double denominator) {
+    if (std::abs(denominator) < 1e-9) return 0.0;
+    return numerator / denominator;
+}
+
+bool test_llm_backend_compare() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║" << std::setw(42) << std::left << "      LLM BACKEND COMPARE TEST" << "║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    BackendCompareResult neon;
+    BackendCompareResult scalable;
+
+    const bool neon_ok = run_llm_backend_compare_case(TestUtils::MatmulKernelMode::NEON, neon);
+    const bool scalable_ok = run_llm_backend_compare_case(TestUtils::MatmulKernelMode::SVE, scalable);
+    const char* scalable_backend = llm_scalable_backend_name();
+
+    std::cout << "\n[Backend Metrics]\n";
+    std::cout << "├─ NEON total_ms: " << neon.metrics.total_ms << "\n"
+              << "├─ NEON ttft_ms: " << neon.metrics.ttft << "\n"
+              << "├─ NEON prefill_tps: " << neon.metrics.prefill_tps << "\n"
+              << "├─ NEON decode_tps: " << neon.metrics.decode_tps << "\n"
+              << "├─ " << scalable_backend << " total_ms: " << scalable.metrics.total_ms << "\n"
+              << "├─ " << scalable_backend << " ttft_ms: " << scalable.metrics.ttft << "\n"
+              << "├─ " << scalable_backend << " prefill_tps: " << scalable.metrics.prefill_tps << "\n"
+              << "├─ " << scalable_backend << " decode_tps: " << scalable.metrics.decode_tps << "\n";
+
+    if (neon_ok && scalable_ok) {
+        std::cout << "├─ Speedup total_ms (NEON/" << scalable_backend << "): "
+                  << safe_ratio(neon.metrics.total_ms, scalable.metrics.total_ms) << "x\n"
+                  << "├─ Speedup ttft_ms (NEON/" << scalable_backend << "): "
+                  << safe_ratio(neon.metrics.ttft, scalable.metrics.ttft) << "x\n"
+                  << "├─ Prefill TPS ratio (" << scalable_backend << "/NEON): "
+                  << safe_ratio(scalable.metrics.prefill_tps, neon.metrics.prefill_tps) << "x\n"
+                  << "├─ Decode TPS ratio (" << scalable_backend << "/NEON): "
+                  << safe_ratio(scalable.metrics.decode_tps, neon.metrics.decode_tps) << "x\n";
+    }
+
+    const bool both_nonempty = !neon.response.empty() && !scalable.response.empty();
+    std::cout << "├─ NEON response chars: " << neon.response.size() << "\n"
+              << "├─ " << scalable_backend << " response chars: " << scalable.response.size() << "\n"
+              << "└─ Both runs successful: " << ((neon_ok && scalable_ok && both_nonempty) ? "YES" : "NO") << std::endl;
+
+    return neon_ok && scalable_ok && both_nonempty;
+}
+
+}  // namespace
 
 template<typename TestFunc>
 bool run_test(const char* title, const char* messages, TestFunc test_logic,
@@ -561,6 +666,14 @@ bool test_1k_context() {
 
 int main() {
     TestUtils::TestRunner runner("LLM Tests");
+    if (llm_backend_compare_requested()) {
+        if (cpu_has_sve() || cpu_has_sme2()) {
+            runner.run_test(std::string("backend_compare_") + llm_scalable_backend_name(),
+                            test_llm_backend_compare());
+        } else {
+            runner.log_skip("backend_compare", "No SVE or SME2 backend available on this runtime");
+        }
+    }
     runner.run_test("1k_context", test_1k_context());
     runner.run_test("streaming", test_streaming());
     runner.run_test("prefill", test_prefill());
