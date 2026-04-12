@@ -107,7 +107,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-rebuild              Skip building cactus library and tests"
             echo "  --exhaustive              Run exhaustive golden tests for all model families and precisions"
             echo "  --only <test_name>        Only run the specified test (llm, vlm, stt, embed, rag, graph, index, kernel, kv_cache, performance)"
-            echo "  --sve                     Run the focused matmul benchmark, or force scalable matmul for the selected test suite"
+            echo "  --sve                     Run the focused matmul benchmark, or compare NEON vs scalable matmul for the selected test suite"
             echo "  --sve-sizes <MxKxN,...>   Custom matmul shapes for --sve (example: 1x1024x1024,4x2048x2048)"
             echo "  --sve-iterations <count>  Iterations per shape for --sve"
             echo "  --help, -h                Show this help message"
@@ -147,12 +147,12 @@ if [ "$SVE_MODE" = true ]; then
             echo "Scalable matmul iterations: $SVE_ITERATIONS"
         fi
     else
-        echo "Scalable matmul override: enabled for test suite '$ONLY_EXEC'"
+        echo "Scalable matmul compare requested for test suite '$ONLY_EXEC'"
     fi
     if [ -z "$PRECISION" ]; then
         echo "Note: default model test weights are often INT4."
-        echo "      On SME2-capable devices, --sve now forces the scalable INT4 matmul path for those weights."
-        echo "      On non-SME2 devices, use --precision FP16 if you want --sve to affect most model GEMMs."
+        echo "      On SME2-capable devices, --sve now compares NEON vs scalable INT4 matmul on those weights."
+        echo "      Use --precision INT4 to guarantee regenerated INT4 weights before the comparison."
     fi
 fi
 
@@ -285,9 +285,9 @@ export CACTUS_TEST_EMBED_SPEAKER_MODEL="$PROJECT_ROOT/weights/$EMBED_SPEAKER_MOD
 export CACTUS_TEST_ASSETS="$PROJECT_ROOT/tests/assets"
 export CACTUS_INDEX_PATH="$PROJECT_ROOT/tests/assets"
 if [ "$SVE_MODE" = true ]; then
-    export CACTUS_FORCE_SVE_MATMUL=1
-    export CACTUS_FORCE_SVE2_MATMUL=1
     if [ "$SVE_BENCHMARK_ONLY" = true ]; then
+        export CACTUS_FORCE_SVE_MATMUL=1
+        export CACTUS_FORCE_SVE2_MATMUL=1
         export CACTUS_TEST_SVE_ONLY=1
         if [ -n "$SVE_SIZES" ]; then
             export CACTUS_TEST_SVE_SIZES="$SVE_SIZES"
@@ -296,6 +296,9 @@ if [ "$SVE_MODE" = true ]; then
             export CACTUS_TEST_SVE_ITERATIONS="$SVE_ITERATIONS"
         fi
     else
+        unset CACTUS_FORCE_NEON_MATMUL
+        unset CACTUS_FORCE_SVE_MATMUL
+        unset CACTUS_FORCE_SVE2_MATMUL
         unset CACTUS_TEST_SVE_ONLY
         unset CACTUS_TEST_SVE_SIZES
         unset CACTUS_TEST_SVE_ITERATIONS
@@ -314,7 +317,7 @@ if [ "$SVE_MODE" = true ]; then
     if [ "$SVE_BENCHMARK_ONLY" = true ]; then
         echo "Using scalable matmul performance mode (SVE/SME2)"
     else
-        echo "Forcing scalable matmul backend for test execution (SVE/SME2 when available)"
+        echo "Scalable matmul compare requested for test execution (SVE/SME2 when available)"
     fi
 fi
 
@@ -367,10 +370,170 @@ fi
 
 echo "Found ${#test_executables[@]} test executable(s)"
 
+detect_scalable_backend() {
+    if command -v sysctl >/dev/null 2>&1; then
+        local sme2
+        local sve
+
+        sme2=$(sysctl -n hw.optional.arm.FEAT_SME2 2>/dev/null || echo 0)
+        if [ "$sme2" = "1" ]; then
+            echo "SME2"
+            return
+        fi
+
+        sve=$(sysctl -n hw.optional.arm.FEAT_SVE 2>/dev/null || echo 0)
+        if [ "$sve" = "1" ]; then
+            echo "SVE"
+            return
+        fi
+    fi
+
+    echo "SCALABLE"
+}
+
+scalable_backend_available() {
+    local backend
+    backend=$(detect_scalable_backend)
+    [ "$backend" != "SCALABLE" ]
+}
+
+run_timed_test_executable() {
+    local executable="$1"
+    local mode_label="$2"
+    local neon_override="$3"
+    local scalable_override="$4"
+    local timing_file
+
+    timing_file=$(mktemp)
+
+    env \
+        CACTUS_FORCE_NEON_MATMUL="$neon_override" \
+        CACTUS_FORCE_SVE_MATMUL="$scalable_override" \
+        CACTUS_FORCE_SVE2_MATMUL="$scalable_override" \
+        "$executable" >/dev/null 2>&1
+    local warmup_status=$?
+    if [ $warmup_status -ne 0 ]; then
+        echo "Warmup run failed for $(basename "$executable") [$mode_label]"
+        rm -f "$timing_file"
+        return $warmup_status
+    fi
+
+    echo ""
+    echo "Running $(basename "$executable") [$mode_label]..."
+
+    env \
+        CACTUS_FORCE_NEON_MATMUL="$neon_override" \
+        CACTUS_FORCE_SVE_MATMUL="$scalable_override" \
+        CACTUS_FORCE_SVE2_MATMUL="$scalable_override" \
+        python3 - "$executable" "$timing_file" <<'PY'
+import os
+import subprocess
+import sys
+import time
+
+executable = sys.argv[1]
+timing_path = sys.argv[2]
+
+start = time.perf_counter()
+result = subprocess.run([executable], env=os.environ.copy())
+elapsed_ms = (time.perf_counter() - start) * 1000.0
+
+with open(timing_path, "w", encoding="utf-8") as f:
+    f.write(f"{elapsed_ms:.6f}\n")
+    f.write(f"{result.returncode}\n")
+
+sys.exit(result.returncode)
+PY
+    local status=$?
+
+    if [ -f "$timing_file" ]; then
+        LAST_TIMED_RUN_MS=$(sed -n '1p' "$timing_file")
+        rm -f "$timing_file"
+    else
+        LAST_TIMED_RUN_MS=""
+    fi
+
+    return $status
+}
+
+SVE_COMPARE_SUITE=false
+if [ "$SVE_MODE" = true ] && [ "$SVE_BENCHMARK_ONLY" = false ]; then
+    if scalable_backend_available; then
+        SVE_COMPARE_SUITE=true
+    else
+        echo "No SVE or SME2 backend available on this runtime."
+        echo "Running the selected test suite once without NEON vs scalable comparison."
+    fi
+fi
+
+if [ "$SVE_COMPARE_SUITE" = true ]; then
+    SCALABLE_BACKEND_NAME=$(detect_scalable_backend)
+    TOTAL_NEON_MS="0"
+    TOTAL_SCALABLE_MS="0"
+
+    echo "Scalable backend hint: $SCALABLE_BACKEND_NAME"
+    if [ -n "$PRECISION" ]; then
+        echo "Precision under comparison: $PRECISION"
+    else
+        echo "Precision under comparison: existing/default test weights (typically INT4 for LLM/VLM)"
+    fi
+    echo "Timing method: one warmup run per backend, then one timed run per backend"
+fi
+
 for executable in "${test_executables[@]}"; do
     exec_name=$(basename "$executable")
-    ./"$exec_name"
+    if [ "$SVE_COMPARE_SUITE" = true ]; then
+        run_timed_test_executable "$executable" "NEON" "1" "0"
+        status=$?
+        if [ $status -ne 0 ]; then
+            exit $status
+        fi
+        neon_time_ms="$LAST_TIMED_RUN_MS"
+        TOTAL_NEON_MS=$(awk -v total="$TOTAL_NEON_MS" -v add="$neon_time_ms" 'BEGIN { printf "%.6f", total + add }')
+
+        run_timed_test_executable "$executable" "$SCALABLE_BACKEND_NAME" "0" "1"
+        status=$?
+        if [ $status -ne 0 ]; then
+            exit $status
+        fi
+        scalable_time_ms="$LAST_TIMED_RUN_MS"
+        TOTAL_SCALABLE_MS=$(awk -v total="$TOTAL_SCALABLE_MS" -v add="$scalable_time_ms" 'BEGIN { printf "%.6f", total + add }')
+
+        speedup=$(awk -v neon="$neon_time_ms" -v scalable="$scalable_time_ms" 'BEGIN {
+            if (scalable <= 0) print "inf";
+            else printf "%.3f", neon / scalable;
+        }')
+        delta_ms=$(awk -v neon="$neon_time_ms" -v scalable="$scalable_time_ms" 'BEGIN {
+            printf "%.3f", neon - scalable;
+        }')
+
+        echo ""
+        echo "Wall-time comparison for $exec_name:"
+        echo "  NEON: ${neon_time_ms}ms"
+        echo "  ${SCALABLE_BACKEND_NAME}: ${scalable_time_ms}ms"
+        echo "  Speedup (NEON/${SCALABLE_BACKEND_NAME}): ${speedup}x"
+        echo "  Delta: ${delta_ms}ms"
+    else
+        ./"$exec_name"
+    fi
 done
+
+if [ "$SVE_COMPARE_SUITE" = true ]; then
+    total_speedup=$(awk -v neon="$TOTAL_NEON_MS" -v scalable="$TOTAL_SCALABLE_MS" 'BEGIN {
+        if (scalable <= 0) print "inf";
+        else printf "%.3f", neon / scalable;
+    }')
+    total_delta_ms=$(awk -v neon="$TOTAL_NEON_MS" -v scalable="$TOTAL_SCALABLE_MS" 'BEGIN {
+        printf "%.3f", neon - scalable;
+    }')
+
+    echo ""
+    echo "Overall suite wall-time comparison:"
+    echo "  NEON total: ${TOTAL_NEON_MS}ms"
+    echo "  ${SCALABLE_BACKEND_NAME} total: ${TOTAL_SCALABLE_MS}ms"
+    echo "  Speedup (NEON/${SCALABLE_BACKEND_NAME}): ${total_speedup}x"
+    echo "  Delta: ${total_delta_ms}ms"
+fi
 
 if [ "$EXHAUSTIVE_MODE" = true ]; then
     echo ""

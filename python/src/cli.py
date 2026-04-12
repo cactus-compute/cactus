@@ -1942,7 +1942,7 @@ def create_parser():
     --kernel                           run only kernel tests
     --kv_cache                         run only KV cache tests
     --performance                      run only performance benchmarks
-    --sve                              run focused scalable matmul benchmark, or force scalable matmul for the selected test suite
+    --sve                              run focused scalable matmul benchmark, or compare NEON vs scalable matmul for the selected test suite
     --sve-sizes <MxKxN,...>            custom shapes for --sve
     --sve-iterations <count>           iterations per shape for --sve
     --ios                              run on connected iPhone
@@ -2101,7 +2101,7 @@ def create_parser():
         test_parser.add_argument(f'--{_test_name}', action='store_true',
                                  help=f'Only run the {_test_name} tests')
     test_parser.add_argument('--sve', action='store_true',
-                             help='Run the focused scalable matmul benchmark, or force scalable matmul for the selected local test suite')
+                             help='Run the focused scalable matmul benchmark, or compare NEON vs scalable matmul for the selected local test suite')
     test_parser.add_argument('--sve-sizes',
                              help='Comma-separated matmul shapes for --sve, e.g. 1x1024x1024,4x2048x2048')
     test_parser.add_argument('--sve-iterations', type=int,

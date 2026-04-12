@@ -292,9 +292,9 @@ Examples:
 - `cactus test --llm --sve --precision FP16`
 
 Note:
-- `--sve` forces the scalable matmul backend for the selected suite.
-- On SME2-capable devices, that now includes the grouped `INT4` matmul path used by many default LLM/VLM weights.
-- On devices without SME2, `--sve` mainly affects the scalable `FP16` path, so `--precision FP16` is still the easiest way to cover most model GEMMs.
+- `--sve` runs a focused matmul benchmark by itself, or runs the selected test suite twice and reports `NEON` vs scalable wall-time.
+- On SME2-capable devices, that suite comparison now includes the grouped `INT4` matmul path used by many default LLM/VLM weights.
+- Use `--precision INT4` if you want to guarantee regenerated `INT4` weights for the comparison.
 
 ## Maintaining Organisations
 
