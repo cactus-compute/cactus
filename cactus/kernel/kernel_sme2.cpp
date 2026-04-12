@@ -1023,10 +1023,12 @@ static void cactus_matmul_int4_sme2_worker(
 ) __arm_streaming __arm_inout("za") {
     if (start_row >= end_row) return;
 
+    constexpr size_t CACTUS_INT4_SME2_TILE_PANELS = 4;
     const size_t num_groups = K / group_size;
     const size_t group_quads = group_size / 4;
     const size_t col_blocks = (N + tile_rows - 1) / tile_rows;
     const size_t a_row_block_stride = (K / 4) * tile_bytes;
+    const size_t tile_panel_stride = tile_rows * tile_rows;
 
     const svint32_t z0_s32 = svdup_n_s32(0);
 
@@ -1037,55 +1039,199 @@ static void cactus_matmul_int4_sme2_worker(
             ? svptrue_b8()
             : svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(active_r * 4));
 
-        for (size_t cb = 0; cb < col_blocks; ++cb) {
-            const size_t col = cb * tile_rows;
-            const size_t active_c = std::min(tile_rows, N - col);
-            const svbool_t pNh = (active_c == tile_rows)
-                ? svptrue_b8()
-                : svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c * 4));
-            const svbool_t pN32 = (active_c == tile_rows)
-                ? svptrue_b32()
-                : svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c));
-            // Each FP32 accumulator lane becomes exactly one FP16 output value after
-            // compaction. The store predicate must track the logical output columns,
-            // not the full FP16 vector width, or full-tile stores will overrun rows.
-            const svbool_t pOut16 = svwhilelt_b16(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c));
+        for (size_t cb = 0; cb < col_blocks; cb += CACTUS_INT4_SME2_TILE_PANELS) {
+            const size_t panel_count = std::min(CACTUS_INT4_SME2_TILE_PANELS, col_blocks - cb);
 
-            std::fill(tile_accum, tile_accum + tile_rows * tile_rows, 0.0f);
+            const size_t col0 = (cb + 0) * tile_rows;
+            const size_t active_c0 = std::min(tile_rows, N - col0);
+            const svbool_t pNh0 = (active_c0 == tile_rows)
+                ? svptrue_b8()
+                : svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c0 * 4));
+            const svbool_t pN320 = (active_c0 == tile_rows)
+                ? svptrue_b32()
+                : svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c0));
+            const svbool_t pOut160 = svwhilelt_b16(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c0));
+
+            const size_t col1 = (cb + 1) * tile_rows;
+            const size_t active_c1 = (panel_count > 1) ? std::min(tile_rows, N - col1) : 0;
+            const svbool_t pNh1 = (panel_count > 1)
+                ? ((active_c1 == tile_rows)
+                    ? svptrue_b8()
+                    : svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c1 * 4)))
+                : svpfalse_b();
+            const svbool_t pN321 = (panel_count > 1)
+                ? ((active_c1 == tile_rows)
+                    ? svptrue_b32()
+                    : svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c1)))
+                : svpfalse_b();
+            const svbool_t pOut161 = (panel_count > 1)
+                ? svwhilelt_b16(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c1))
+                : svpfalse_b();
+
+            const size_t col2 = (cb + 2) * tile_rows;
+            const size_t active_c2 = (panel_count > 2) ? std::min(tile_rows, N - col2) : 0;
+            const svbool_t pNh2 = (panel_count > 2)
+                ? ((active_c2 == tile_rows)
+                    ? svptrue_b8()
+                    : svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c2 * 4)))
+                : svpfalse_b();
+            const svbool_t pN322 = (panel_count > 2)
+                ? ((active_c2 == tile_rows)
+                    ? svptrue_b32()
+                    : svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c2)))
+                : svpfalse_b();
+            const svbool_t pOut162 = (panel_count > 2)
+                ? svwhilelt_b16(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c2))
+                : svpfalse_b();
+
+            const size_t col3 = (cb + 3) * tile_rows;
+            const size_t active_c3 = (panel_count > 3) ? std::min(tile_rows, N - col3) : 0;
+            const svbool_t pNh3 = (panel_count > 3)
+                ? ((active_c3 == tile_rows)
+                    ? svptrue_b8()
+                    : svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c3 * 4)))
+                : svpfalse_b();
+            const svbool_t pN323 = (panel_count > 3)
+                ? ((active_c3 == tile_rows)
+                    ? svptrue_b32()
+                    : svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c3)))
+                : svpfalse_b();
+            const svbool_t pOut163 = (panel_count > 3)
+                ? svwhilelt_b16(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c3))
+                : svpfalse_b();
+
+            std::fill(tile_accum, tile_accum + panel_count * tile_panel_stride, 0.0f);
 
             for (size_t g = 0; g < num_groups; ++g) {
-                const int8_t* b_group = b_packed + (cb * num_groups + g) * group_quads * tile_bytes;
-                const float* scale_ptr = b_scales_packed + (cb * num_groups + g) * tile_rows;
-                const svfloat32_t b_scale = svld1(pN32, scale_ptr);
+                const int8_t* b_group0 = b_packed + ((cb + 0) * num_groups + g) * group_quads * tile_bytes;
+                const float* scale_ptr0 = b_scales_packed + ((cb + 0) * num_groups + g) * tile_rows;
+                const svfloat32_t b_scale0 = svld1(pN320, scale_ptr0);
+
+                const int8_t* b_group1 = (panel_count > 1)
+                    ? b_packed + ((cb + 1) * num_groups + g) * group_quads * tile_bytes
+                    : nullptr;
+                const svfloat32_t b_scale1 = (panel_count > 1)
+                    ? svld1(pN321, b_scales_packed + ((cb + 1) * num_groups + g) * tile_rows)
+                    : svdup_n_f32(0.0f);
+
+                const int8_t* b_group2 = (panel_count > 2)
+                    ? b_packed + ((cb + 2) * num_groups + g) * group_quads * tile_bytes
+                    : nullptr;
+                const svfloat32_t b_scale2 = (panel_count > 2)
+                    ? svld1(pN322, b_scales_packed + ((cb + 2) * num_groups + g) * tile_rows)
+                    : svdup_n_f32(0.0f);
+
+                const int8_t* b_group3 = (panel_count > 3)
+                    ? b_packed + ((cb + 3) * num_groups + g) * group_quads * tile_bytes
+                    : nullptr;
+                const svfloat32_t b_scale3 = (panel_count > 3)
+                    ? svld1(pN323, b_scales_packed + ((cb + 3) * num_groups + g) * tile_rows)
+                    : svdup_n_f32(0.0f);
 
                 svzero_za();
 
                 for (size_t kq = 0; kq < group_quads; ++kq) {
                     const int8_t* a_ptr = a_packed + rb * a_row_block_stride + (g * group_quads + kq) * tile_bytes;
-                    const int8_t* b_ptr = b_group + kq * tile_bytes;
                     const svint8_t zA = svld1_s8(pMh, a_ptr);
-                    const svint8_t zB = svld1_s8(pNh, b_ptr);
-                    svmopa_za32_s8_m(0, pMh, pNh, zA, zB);
+
+                    const svint8_t zB0 = svld1_s8(pNh0, b_group0 + kq * tile_bytes);
+                    svmopa_za32_s8_m(0, pMh, pNh0, zA, zB0);
+
+                    if (panel_count > 1) {
+                        const svint8_t zB1 = svld1_s8(pNh1, b_group1 + kq * tile_bytes);
+                        svmopa_za32_s8_m(1, pMh, pNh1, zA, zB1);
+                    }
+                    if (panel_count > 2) {
+                        const svint8_t zB2 = svld1_s8(pNh2, b_group2 + kq * tile_bytes);
+                        svmopa_za32_s8_m(2, pMh, pNh2, zA, zB2);
+                    }
+                    if (panel_count > 3) {
+                        const svint8_t zB3 = svld1_s8(pNh3, b_group3 + kq * tile_bytes);
+                        svmopa_za32_s8_m(3, pMh, pNh3, zA, zB3);
+                    }
                 }
 
                 for (size_t r = 0; r < active_r; ++r) {
-                    float* acc_ptr = tile_accum + r * tile_rows;
-                    svfloat32_t acc = svld1(pN32, acc_ptr);
-                    const svint32_t group_sum = svread_hor_za32_s32_m(z0_s32, pN32, 0, static_cast<uint32_t>(r));
-                    svfloat32_t scaled = svcvt_f32_s32_x(pN32, group_sum);
-                    scaled = svmul_f32_x(pN32, scaled, b_scale);
-                    scaled = svmul_n_f32_x(pN32, scaled, a_scales[row + r]);
-                    acc = svadd_f32_x(pN32, acc, scaled);
-                    svst1(pN32, acc_ptr, acc);
+                    const float a_scale = a_scales[row + r];
+
+                    float* acc_ptr0 = tile_accum + 0 * tile_panel_stride + r * tile_rows;
+                    svfloat32_t acc0 = svld1(pN320, acc_ptr0);
+                    svfloat32_t scaled0 = svcvt_f32_s32_x(
+                        pN320,
+                        svread_hor_za32_s32_m(z0_s32, pN320, 0, static_cast<uint32_t>(r))
+                    );
+                    scaled0 = svmul_f32_x(pN320, scaled0, b_scale0);
+                    scaled0 = svmul_n_f32_x(pN320, scaled0, a_scale);
+                    acc0 = svadd_f32_x(pN320, acc0, scaled0);
+                    svst1(pN320, acc_ptr0, acc0);
+
+                    if (panel_count > 1) {
+                        float* acc_ptr1 = tile_accum + 1 * tile_panel_stride + r * tile_rows;
+                        svfloat32_t acc1 = svld1(pN321, acc_ptr1);
+                        svfloat32_t scaled1 = svcvt_f32_s32_x(
+                            pN321,
+                            svread_hor_za32_s32_m(z0_s32, pN321, 1, static_cast<uint32_t>(r))
+                        );
+                        scaled1 = svmul_f32_x(pN321, scaled1, b_scale1);
+                        scaled1 = svmul_n_f32_x(pN321, scaled1, a_scale);
+                        acc1 = svadd_f32_x(pN321, acc1, scaled1);
+                        svst1(pN321, acc_ptr1, acc1);
+                    }
+
+                    if (panel_count > 2) {
+                        float* acc_ptr2 = tile_accum + 2 * tile_panel_stride + r * tile_rows;
+                        svfloat32_t acc2 = svld1(pN322, acc_ptr2);
+                        svfloat32_t scaled2 = svcvt_f32_s32_x(
+                            pN322,
+                            svread_hor_za32_s32_m(z0_s32, pN322, 2, static_cast<uint32_t>(r))
+                        );
+                        scaled2 = svmul_f32_x(pN322, scaled2, b_scale2);
+                        scaled2 = svmul_n_f32_x(pN322, scaled2, a_scale);
+                        acc2 = svadd_f32_x(pN322, acc2, scaled2);
+                        svst1(pN322, acc_ptr2, acc2);
+                    }
+
+                    if (panel_count > 3) {
+                        float* acc_ptr3 = tile_accum + 3 * tile_panel_stride + r * tile_rows;
+                        svfloat32_t acc3 = svld1(pN323, acc_ptr3);
+                        svfloat32_t scaled3 = svcvt_f32_s32_x(
+                            pN323,
+                            svread_hor_za32_s32_m(z0_s32, pN323, 3, static_cast<uint32_t>(r))
+                        );
+                        scaled3 = svmul_f32_x(pN323, scaled3, b_scale3);
+                        scaled3 = svmul_n_f32_x(pN323, scaled3, a_scale);
+                        acc3 = svadd_f32_x(pN323, acc3, scaled3);
+                        svst1(pN323, acc_ptr3, acc3);
+                    }
                 }
             }
 
             for (size_t r = 0; r < active_r; ++r) {
-                const float* acc_ptr = tile_accum + r * tile_rows;
-                svfloat32_t acc = svld1(pN32, acc_ptr);
-                svfloat16_t out16 = svcvt_f16_f32_z(pN32, acc);
-                out16 = svuzp1_f16(out16, out16);
-                svst1(pOut16, &c[(row + r) * N + col], out16);
+                const float* acc_ptr0 = tile_accum + 0 * tile_panel_stride + r * tile_rows;
+                svfloat16_t out160 = svcvt_f16_f32_z(pN320, svld1(pN320, acc_ptr0));
+                out160 = svuzp1_f16(out160, out160);
+                svst1(pOut160, &c[(row + r) * N + col0], out160);
+
+                if (panel_count > 1) {
+                    const float* acc_ptr1 = tile_accum + 1 * tile_panel_stride + r * tile_rows;
+                    svfloat16_t out161 = svcvt_f16_f32_z(pN321, svld1(pN321, acc_ptr1));
+                    out161 = svuzp1_f16(out161, out161);
+                    svst1(pOut161, &c[(row + r) * N + col1], out161);
+                }
+
+                if (panel_count > 2) {
+                    const float* acc_ptr2 = tile_accum + 2 * tile_panel_stride + r * tile_rows;
+                    svfloat16_t out162 = svcvt_f16_f32_z(pN322, svld1(pN322, acc_ptr2));
+                    out162 = svuzp1_f16(out162, out162);
+                    svst1(pOut162, &c[(row + r) * N + col2], out162);
+                }
+
+                if (panel_count > 3) {
+                    const float* acc_ptr3 = tile_accum + 3 * tile_panel_stride + r * tile_rows;
+                    svfloat16_t out163 = svcvt_f16_f32_z(pN323, svld1(pN323, acc_ptr3));
+                    out163 = svuzp1_f16(out163, out163);
+                    svst1(pOut163, &c[(row + r) * N + col3], out163);
+                }
             }
         }
     }
@@ -1110,7 +1256,7 @@ static void cactus_matmul_int4_sme2_thread_entry(
     const size_t tile_rows = svcntsw();
     const size_t tile_bytes = svcntsb();
     const size_t k_quads = K / 4;
-    std::unique_ptr<float[]> tile_accum(new float[tile_rows * tile_rows]);
+    std::unique_ptr<float[]> tile_accum(new float[tile_rows * tile_rows * 4]);
 
     for (size_t block_idx = start_block; block_idx < end_block; ++block_idx) {
         const size_t start_row = block_idx * row_block_size;

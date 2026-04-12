@@ -27,6 +27,11 @@ static const char* g_options = R"({
 
 namespace {
 
+constexpr const char* k_compare_system_prompt =
+    "/no_think You are a helpful assistant. Keep answers brief and factual.";
+constexpr const char* k_compare_user_prompt =
+    "Write two short sentences about why compilers matter for fast inference.";
+
 bool llm_compare_only_requested() {
     const char* env = std::getenv("CACTUS_TEST_LLM_COMPARE_MODE");
     return env && env[0] != '\0';
@@ -116,6 +121,9 @@ bool test_llm_backend_single_run() {
     if (int4_only_forcing) {
         std::cout << "Backend forcing scope: INT4 matmul only\n";
     }
+    std::cout << "\n[Prompt]\n";
+    std::cout << "├─ System: " << k_compare_system_prompt << "\n";
+    std::cout << "└─ User: " << k_compare_user_prompt << "\n";
     std::cerr << "[compare] backend=" << backend_name
               << " int4_only=" << (int4_only_forcing ? "1" : "0") << "\n";
     std::cerr << "[compare] initializing model\n";
@@ -131,6 +139,7 @@ bool test_llm_backend_single_run() {
               << "├─ prefill_tps: " << result.metrics.prefill_tps << "\n"
               << "├─ decode_tps: " << result.metrics.decode_tps << "\n"
               << "├─ response chars: " << result.response.size() << "\n"
+              << "├─ Generated text: " << (result.response.empty() ? "<empty>" : result.response) << "\n"
               << "└─ Run successful: " << ((ok && !result.response.empty()) ? "YES" : "NO") << std::endl;
 
     return ok && !result.response.empty();
