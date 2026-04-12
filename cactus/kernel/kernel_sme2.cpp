@@ -1237,6 +1237,236 @@ static void cactus_matmul_int4_sme2_worker(
     }
 }
 
+static void cactus_gemv_int4_sme2_worker(
+    const int8_t* a,
+    float a_scale,
+    const int8_t* b_packed,
+    const float* b_scales_packed,
+    __fp16* c,
+    size_t K,
+    size_t N,
+    size_t group_size,
+    size_t start_col_block,
+    size_t end_col_block,
+    size_t tile_rows,
+    size_t tile_bytes
+) __arm_streaming __arm_inout("za") {
+    if (start_col_block >= end_col_block) return;
+
+    constexpr size_t CACTUS_INT4_SME2_TILE_PANELS = 4;
+    const size_t num_groups = K / group_size;
+    const size_t group_quads = group_size / 4;
+    const svbool_t pMh = svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(4));
+    const svint32_t z0_s32 = svdup_n_s32(0);
+
+    for (size_t cb = start_col_block; cb < end_col_block; cb += CACTUS_INT4_SME2_TILE_PANELS) {
+        const size_t panel_count = std::min(CACTUS_INT4_SME2_TILE_PANELS, end_col_block - cb);
+
+        const size_t col0 = (cb + 0) * tile_rows;
+        const size_t active_c0 = std::min(tile_rows, N - col0);
+        const svbool_t pNh0 = (active_c0 == tile_rows)
+            ? svptrue_b8()
+            : svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c0 * 4));
+        const svbool_t pN320 = (active_c0 == tile_rows)
+            ? svptrue_b32()
+            : svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c0));
+        const svbool_t pOut160 = svwhilelt_b16(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c0));
+
+        const size_t col1 = (cb + 1) * tile_rows;
+        const size_t active_c1 = (panel_count > 1) ? std::min(tile_rows, N - col1) : 0;
+        const svbool_t pNh1 = (panel_count > 1)
+            ? ((active_c1 == tile_rows)
+                ? svptrue_b8()
+                : svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c1 * 4)))
+            : svpfalse_b();
+        const svbool_t pN321 = (panel_count > 1)
+            ? ((active_c1 == tile_rows)
+                ? svptrue_b32()
+                : svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c1)))
+            : svpfalse_b();
+        const svbool_t pOut161 = (panel_count > 1)
+            ? svwhilelt_b16(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c1))
+            : svpfalse_b();
+
+        const size_t col2 = (cb + 2) * tile_rows;
+        const size_t active_c2 = (panel_count > 2) ? std::min(tile_rows, N - col2) : 0;
+        const svbool_t pNh2 = (panel_count > 2)
+            ? ((active_c2 == tile_rows)
+                ? svptrue_b8()
+                : svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c2 * 4)))
+            : svpfalse_b();
+        const svbool_t pN322 = (panel_count > 2)
+            ? ((active_c2 == tile_rows)
+                ? svptrue_b32()
+                : svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c2)))
+            : svpfalse_b();
+        const svbool_t pOut162 = (panel_count > 2)
+            ? svwhilelt_b16(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c2))
+            : svpfalse_b();
+
+        const size_t col3 = (cb + 3) * tile_rows;
+        const size_t active_c3 = (panel_count > 3) ? std::min(tile_rows, N - col3) : 0;
+        const svbool_t pNh3 = (panel_count > 3)
+            ? ((active_c3 == tile_rows)
+                ? svptrue_b8()
+                : svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c3 * 4)))
+            : svpfalse_b();
+        const svbool_t pN323 = (panel_count > 3)
+            ? ((active_c3 == tile_rows)
+                ? svptrue_b32()
+                : svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c3)))
+            : svpfalse_b();
+        const svbool_t pOut163 = (panel_count > 3)
+            ? svwhilelt_b16(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c3))
+            : svpfalse_b();
+
+        svfloat32_t accum0 = svdup_n_f32(0.0f);
+        svfloat32_t accum1 = svdup_n_f32(0.0f);
+        svfloat32_t accum2 = svdup_n_f32(0.0f);
+        svfloat32_t accum3 = svdup_n_f32(0.0f);
+
+        for (size_t g = 0; g < num_groups; ++g) {
+            const int8_t* a_group = a + g * group_size;
+            const int8_t* b_group0 = b_packed + ((cb + 0) * num_groups + g) * group_quads * tile_bytes;
+            const svfloat32_t b_scale0 = svld1(pN320, b_scales_packed + ((cb + 0) * num_groups + g) * tile_rows);
+
+            const int8_t* b_group1 = (panel_count > 1)
+                ? b_packed + ((cb + 1) * num_groups + g) * group_quads * tile_bytes
+                : nullptr;
+            const svfloat32_t b_scale1 = (panel_count > 1)
+                ? svld1(pN321, b_scales_packed + ((cb + 1) * num_groups + g) * tile_rows)
+                : svdup_n_f32(0.0f);
+
+            const int8_t* b_group2 = (panel_count > 2)
+                ? b_packed + ((cb + 2) * num_groups + g) * group_quads * tile_bytes
+                : nullptr;
+            const svfloat32_t b_scale2 = (panel_count > 2)
+                ? svld1(pN322, b_scales_packed + ((cb + 2) * num_groups + g) * tile_rows)
+                : svdup_n_f32(0.0f);
+
+            const int8_t* b_group3 = (panel_count > 3)
+                ? b_packed + ((cb + 3) * num_groups + g) * group_quads * tile_bytes
+                : nullptr;
+            const svfloat32_t b_scale3 = (panel_count > 3)
+                ? svld1(pN323, b_scales_packed + ((cb + 3) * num_groups + g) * tile_rows)
+                : svdup_n_f32(0.0f);
+
+            svzero_za();
+
+            for (size_t kq = 0; kq < group_quads; ++kq) {
+                const svint8_t zA = svld1_s8(pMh, a_group + kq * 4);
+
+                const svint8_t zB0 = svld1_s8(pNh0, b_group0 + kq * tile_bytes);
+                svmopa_za32_s8_m(0, pMh, pNh0, zA, zB0);
+
+                if (panel_count > 1) {
+                    const svint8_t zB1 = svld1_s8(pNh1, b_group1 + kq * tile_bytes);
+                    svmopa_za32_s8_m(1, pMh, pNh1, zA, zB1);
+                }
+                if (panel_count > 2) {
+                    const svint8_t zB2 = svld1_s8(pNh2, b_group2 + kq * tile_bytes);
+                    svmopa_za32_s8_m(2, pMh, pNh2, zA, zB2);
+                }
+                if (panel_count > 3) {
+                    const svint8_t zB3 = svld1_s8(pNh3, b_group3 + kq * tile_bytes);
+                    svmopa_za32_s8_m(3, pMh, pNh3, zA, zB3);
+                }
+            }
+
+            svfloat32_t scaled0 = svcvt_f32_s32_x(
+                pN320,
+                svread_hor_za32_s32_m(z0_s32, pN320, 0, 0)
+            );
+            scaled0 = svmul_f32_x(pN320, scaled0, b_scale0);
+            scaled0 = svmul_n_f32_x(pN320, scaled0, a_scale);
+            accum0 = svadd_f32_x(pN320, accum0, scaled0);
+
+            if (panel_count > 1) {
+                svfloat32_t scaled1 = svcvt_f32_s32_x(
+                    pN321,
+                    svread_hor_za32_s32_m(z0_s32, pN321, 1, 0)
+                );
+                scaled1 = svmul_f32_x(pN321, scaled1, b_scale1);
+                scaled1 = svmul_n_f32_x(pN321, scaled1, a_scale);
+                accum1 = svadd_f32_x(pN321, accum1, scaled1);
+            }
+
+            if (panel_count > 2) {
+                svfloat32_t scaled2 = svcvt_f32_s32_x(
+                    pN322,
+                    svread_hor_za32_s32_m(z0_s32, pN322, 2, 0)
+                );
+                scaled2 = svmul_f32_x(pN322, scaled2, b_scale2);
+                scaled2 = svmul_n_f32_x(pN322, scaled2, a_scale);
+                accum2 = svadd_f32_x(pN322, accum2, scaled2);
+            }
+
+            if (panel_count > 3) {
+                svfloat32_t scaled3 = svcvt_f32_s32_x(
+                    pN323,
+                    svread_hor_za32_s32_m(z0_s32, pN323, 3, 0)
+                );
+                scaled3 = svmul_f32_x(pN323, scaled3, b_scale3);
+                scaled3 = svmul_n_f32_x(pN323, scaled3, a_scale);
+                accum3 = svadd_f32_x(pN323, accum3, scaled3);
+            }
+        }
+
+        svfloat16_t out160 = svcvt_f16_f32_z(pN320, accum0);
+        out160 = svuzp1_f16(out160, out160);
+        svst1(pOut160, &c[col0], out160);
+
+        if (panel_count > 1) {
+            svfloat16_t out161 = svcvt_f16_f32_z(pN321, accum1);
+            out161 = svuzp1_f16(out161, out161);
+            svst1(pOut161, &c[col1], out161);
+        }
+
+        if (panel_count > 2) {
+            svfloat16_t out162 = svcvt_f16_f32_z(pN322, accum2);
+            out162 = svuzp1_f16(out162, out162);
+            svst1(pOut162, &c[col2], out162);
+        }
+
+        if (panel_count > 3) {
+            svfloat16_t out163 = svcvt_f16_f32_z(pN323, accum3);
+            out163 = svuzp1_f16(out163, out163);
+            svst1(pOut163, &c[col3], out163);
+        }
+    }
+}
+
+__arm_new("za") __arm_locally_streaming
+static void cactus_gemv_int4_sme2_thread_entry(
+    const int8_t* a,
+    float a_scale,
+    const int8_t* b_packed,
+    const float* b_scales_packed,
+    __fp16* c,
+    size_t K,
+    size_t N,
+    size_t group_size,
+    size_t start_col_block,
+    size_t end_col_block,
+    size_t tile_rows,
+    size_t tile_bytes
+) {
+    cactus_gemv_int4_sme2_worker(
+        a,
+        a_scale,
+        b_packed,
+        b_scales_packed,
+        c,
+        K,
+        N,
+        group_size,
+        start_col_block,
+        end_col_block,
+        tile_rows,
+        tile_bytes
+    );
+}
+
 __arm_new("za") __arm_locally_streaming
 static void cactus_matmul_int4_sme2_thread_entry(
     const int8_t* a,
@@ -1351,10 +1581,40 @@ void cactus_matmul_int4_sme2_caller(
             );
         });
 
+    auto& pool = CactusThreading::get_thread_pool();
+
+    if (M == 1) {
+        auto process_blocks = [&](size_t block_start, size_t block_end) {
+            cactus_gemv_int4_sme2_thread_entry(
+                a,
+                a_scales[0],
+                packed->weights.data(),
+                packed->scales.data(),
+                c,
+                K,
+                N,
+                group_size,
+                block_start,
+                block_end,
+                tile_rows,
+                tile_bytes
+            );
+        };
+
+        size_t num_threads = CactusThreading::GemmThreading::get_gemv_threads(col_blocks, pool.num_workers());
+        num_threads = std::min(num_threads, col_blocks);
+
+        if (num_threads <= 1) {
+            process_blocks(0, col_blocks);
+        } else {
+            pool.enqueue_n_threads(col_blocks, num_threads, process_blocks);
+            pool.wait_all();
+        }
+        return;
+    }
+
     const size_t row_block_size = SME2_TILES_PER_THREAD * tile_rows;
     const size_t num_row_blocks = (M + row_block_size - 1) / row_block_size;
-
-    auto& pool = CactusThreading::get_thread_pool();
     const size_t num_workers = std::min(pool.num_workers(), num_row_blocks);
     if (num_workers <= 1) {
         cactus_matmul_int4_sme2_thread_entry(
