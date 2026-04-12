@@ -169,6 +169,18 @@ void cactus_matmul_f16_sme2_caller(
 	size_t K,
 	size_t N
 );
+
+void cactus_matmul_int4_sme2_caller(
+    const int8_t* a,
+    const float* a_scales,
+    const int8_t* b_packed,
+    const __fp16* b_scales,
+    __fp16* c,
+    size_t M,
+    size_t K,
+    size_t N,
+    size_t group_size
+);
 #endif
 
 #if defined(CACTUS_COMPILE_SVE2)
@@ -822,6 +834,22 @@ void cactus_matmul_int4(const int8_t* A, const float* A_scales,
                         const int8_t* B_packed, const __fp16* B_scales,
                         __fp16* C, size_t M, size_t K, size_t N, size_t group_size) {
     if (M == 0 || K == 0 || N == 0) return;
+
+#if defined(CACTUS_COMPILE_SME2)
+    const bool force_sve = cpu_forces_sve_matmul();
+    const bool force_neon = cpu_forces_neon_matmul();
+    const bool has_sme2 = cpu_has_sme2();
+    const bool sme2_supported_shape = (group_size >= 4) && ((group_size % 4) == 0) &&
+                                      ((K % group_size) == 0) && ((K % 4) == 0);
+
+    if (has_sme2 && sme2_supported_shape && (force_sve || !force_neon)) {
+        cactus_matmul_int4_sme2_caller(
+            A, A_scales, B_packed, B_scales, C,
+            M, K, N, group_size
+        );
+        return;
+    }
+#endif
 
     if (M == 1) {
         cactus_gemv_int4(A, A_scales[0], B_packed, B_scales, C, K, N, group_size);

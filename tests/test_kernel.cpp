@@ -527,6 +527,100 @@ bool test_int4_matmul_correctness() {
     return true;
 }
 
+bool test_int4_matmul_scalable_matches_neon() {
+    const size_t K = 128, N = 12, group_size = 32;
+    const size_t num_groups = K / group_size;
+    const size_t BS = 4;
+
+    std::mt19937 gen(99);
+    std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
+
+    std::vector<float> B_fp32(N * K);
+    for (size_t i = 0; i < N * K; ++i) B_fp32[i] = dis(gen);
+
+    std::vector<int8_t> B_raw(N * K);
+    std::vector<float> B_scales(N * num_groups);
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t g = 0; g < num_groups; ++g) {
+            float max_abs = 0.0f;
+            for (size_t k = 0; k < group_size; ++k) {
+                max_abs = std::max(max_abs, std::abs(B_fp32[n * K + g * group_size + k]));
+            }
+            const float scale = std::max(max_abs / 7.0f, 1e-10f);
+            B_scales[n * num_groups + g] = scale;
+            for (size_t k = 0; k < group_size; ++k) {
+                const int32_t q = static_cast<int32_t>(std::round(B_fp32[n * K + g * group_size + k] / scale));
+                B_raw[n * K + g * group_size + k] = static_cast<int8_t>(std::clamp(q, -8, 7));
+            }
+        }
+    }
+
+    std::vector<int8_t> B_interleaved(N * K);
+    for (size_t n_blk = 0; n_blk < N / BS; ++n_blk)
+        for (size_t k_blk = 0; k_blk < K / BS; ++k_blk)
+            for (size_t ni = 0; ni < BS; ++ni)
+                for (size_t ki = 0; ki < BS; ++ki)
+                    B_interleaved[(n_blk * (K / BS) + k_blk) * BS * BS + ni * BS + ki] =
+                        B_raw[(n_blk * BS + ni) * K + k_blk * BS + ki];
+
+    std::vector<uint8_t> B_packed(N * K / 2);
+    for (size_t i = 0; i < N * K; i += 32) {
+        for (size_t j = 0; j < 16; ++j) {
+            const uint8_t lo = static_cast<uint8_t>(B_interleaved[i + j] & 0x0F);
+            const uint8_t hi = static_cast<uint8_t>((B_interleaved[i + 16 + j] & 0x0F) << 4);
+            B_packed[i / 2 + j] = lo | hi;
+        }
+    }
+
+    std::vector<__fp16> B_scales_interleaved(N * num_groups);
+    for (size_t n_blk = 0; n_blk < N / BS; ++n_blk)
+        for (size_t g = 0; g < num_groups; ++g)
+            for (size_t ni = 0; ni < BS; ++ni)
+                B_scales_interleaved[(n_blk * num_groups + g) * BS + ni] =
+                    static_cast<__fp16>(B_scales[(n_blk * BS + ni) * num_groups + g]);
+
+    for (size_t M : {1, 6}) {
+        std::vector<__fp16> A_fp16(M * K);
+        for (size_t i = 0; i < M * K; ++i) A_fp16[i] = static_cast<__fp16>(dis(gen));
+
+        std::vector<int8_t> A_quant(M * K);
+        std::vector<float> A_scales(M);
+        for (size_t m = 0; m < M; ++m) {
+            A_scales[m] = std::max(cactus_fp16_max_abs(A_fp16.data() + m * K, K) / 127.0f, 1e-10f);
+            cactus_fp16_to_int8(A_fp16.data() + m * K, A_quant.data() + m * K, K, A_scales[m]);
+        }
+
+        std::vector<__fp16> C_neon(M * N, static_cast<__fp16>(0));
+        std::vector<__fp16> C_scalable(M * N, static_cast<__fp16>(0));
+
+        {
+            TestUtils::ScopedMatmulKernelMode mode(TestUtils::MatmulKernelMode::NEON);
+            cactus_matmul_int4(A_quant.data(), A_scales.data(),
+                               reinterpret_cast<const int8_t*>(B_packed.data()),
+                               B_scales_interleaved.data(), C_neon.data(), M, K, N, group_size);
+        }
+
+        {
+            TestUtils::ScopedMatmulKernelMode mode(TestUtils::MatmulKernelMode::SVE);
+            cactus_matmul_int4(A_quant.data(), A_scales.data(),
+                               reinterpret_cast<const int8_t*>(B_packed.data()),
+                               B_scales_interleaved.data(), C_scalable.data(), M, K, N, group_size);
+        }
+
+        float max_abs_error = 0.0f;
+        for (size_t i = 0; i < M * N; ++i) {
+            max_abs_error = std::max(max_abs_error,
+                                     std::abs(static_cast<float>(C_neon[i]) - static_cast<float>(C_scalable[i])));
+        }
+
+        if (max_abs_error > 0.1f) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool test_stft_kernel_correctness() {
     const size_t N = 2, C_in = 1, L = 8, K = 4, stride = 2, num_fft_bins = 2;
     const size_t C_out = 2 * num_fft_bins;
@@ -596,6 +690,13 @@ int main() {
     }
     runner.run_test("Kernel Grouped INT8 MatMul Correctness", test_matmul_int8_grouped_correctness());
     runner.run_test("Kernel INT4 MatMul Correctness", test_int4_matmul_correctness());
+    if (cpu_has_sve() || cpu_has_sme2()) {
+        const char* scalable_backend = cpu_has_sve() ? "SVE" : "SME2";
+        runner.run_test(std::string("Kernel INT4 MatMul ") + scalable_backend + " vs NEON",
+                        test_int4_matmul_scalable_matches_neon());
+    } else {
+        runner.log_skip("Kernel INT4 MatMul Scalable vs NEON", "No SVE or SME2 backend available on this runtime");
+    }
     runner.run_test("Kernel STFT Complex Correctness", test_stft_kernel_correctness());
 
     runner.print_summary();

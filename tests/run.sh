@@ -25,6 +25,7 @@ NO_REBUILD=false
 EXHAUSTIVE_MODE=false
 ONLY_EXEC=""
 SVE_MODE=false
+SVE_BENCHMARK_ONLY=false
 SVE_SIZES=""
 SVE_ITERATIONS=""
 
@@ -106,7 +107,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-rebuild              Skip building cactus library and tests"
             echo "  --exhaustive              Run exhaustive golden tests for all model families and precisions"
             echo "  --only <test_name>        Only run the specified test (llm, vlm, stt, embed, rag, graph, index, kernel, kv_cache, performance)"
-            echo "  --sve                     Run the focused matmul NEON vs scalable backend benchmark (SVE or SME2)"
+            echo "  --sve                     Run the focused matmul benchmark, or force scalable matmul for the selected test suite"
             echo "  --sve-sizes <MxKxN,...>   Custom matmul shapes for --sve (example: 1x1024x1024,4x2048x2048)"
             echo "  --sve-iterations <count>  Iterations per shape for --sve"
             echo "  --help, -h                Show this help message"
@@ -135,13 +136,23 @@ else
 fi
 
 if [ "$SVE_MODE" = true ]; then
-    ONLY_EXEC="performance"
-    echo "Scalable matmul benchmark mode: enabled"
-    if [ -n "$SVE_SIZES" ]; then
-        echo "Scalable matmul sizes: $SVE_SIZES"
+    if [ -z "$ONLY_EXEC" ]; then
+        ONLY_EXEC="performance"
+        SVE_BENCHMARK_ONLY=true
+        echo "Scalable matmul benchmark mode: enabled"
+        if [ -n "$SVE_SIZES" ]; then
+            echo "Scalable matmul sizes: $SVE_SIZES"
+        fi
+        if [ -n "$SVE_ITERATIONS" ]; then
+            echo "Scalable matmul iterations: $SVE_ITERATIONS"
+        fi
+    else
+        echo "Scalable matmul override: enabled for test suite '$ONLY_EXEC'"
     fi
-    if [ -n "$SVE_ITERATIONS" ]; then
-        echo "Scalable matmul iterations: $SVE_ITERATIONS"
+    if [ -z "$PRECISION" ]; then
+        echo "Note: default model test weights are often INT4."
+        echo "      On SME2-capable devices, --sve now forces the scalable INT4 matmul path for those weights."
+        echo "      On non-SME2 devices, use --precision FP16 if you want --sve to affect most model GEMMs."
     fi
 fi
 
@@ -150,7 +161,7 @@ SKIP_STANDARD_DOWNLOADS=false
 if [ "$ONLY_EXEC" = "gemma4_suite" ]; then
     SKIP_STANDARD_DOWNLOADS=true
 fi
-if [ "$SVE_MODE" = true ]; then
+if [ "$SVE_BENCHMARK_ONLY" = true ]; then
     SKIP_STANDARD_DOWNLOADS=true
 fi
 
@@ -176,14 +187,14 @@ if [ "$SKIP_STANDARD_DOWNLOADS" = false ]; then
         exit 1
     fi
 else
-    if [ "$SVE_MODE" = true ]; then
+    if [ "$SVE_BENCHMARK_ONLY" = true ]; then
         echo "Step 1: Skipping model downloads for --sve scalable benchmark mode"
     else
         echo "Step 1: Skipping standard downloads for --only gemma4_suite"
     fi
 fi
 
-if [ "$SVE_MODE" = false ]; then
+if [ "$SVE_BENCHMARK_ONLY" = false ]; then
     if ! cactus download "$DIARIZE_MODEL_NAME" $PRECISION_FLAG; then
         echo "Failed to download diarize model weights"
         exit 1
@@ -236,7 +247,7 @@ if [ "$NO_REBUILD" = false ]; then
         exit 1
     fi
 
-    if [ "$SVE_MODE" = true ]; then
+    if [ "$SVE_BENCHMARK_ONLY" = true ]; then
         if ! make -j$(nproc 2>/dev/null || echo 4) test_performance; then
             echo "Failed to build scalable benchmark target"
             exit 1
@@ -274,12 +285,20 @@ export CACTUS_TEST_EMBED_SPEAKER_MODEL="$PROJECT_ROOT/weights/$EMBED_SPEAKER_MOD
 export CACTUS_TEST_ASSETS="$PROJECT_ROOT/tests/assets"
 export CACTUS_INDEX_PATH="$PROJECT_ROOT/tests/assets"
 if [ "$SVE_MODE" = true ]; then
-    export CACTUS_TEST_SVE_ONLY=1
-    if [ -n "$SVE_SIZES" ]; then
-        export CACTUS_TEST_SVE_SIZES="$SVE_SIZES"
-    fi
-    if [ -n "$SVE_ITERATIONS" ]; then
-        export CACTUS_TEST_SVE_ITERATIONS="$SVE_ITERATIONS"
+    export CACTUS_FORCE_SVE_MATMUL=1
+    export CACTUS_FORCE_SVE2_MATMUL=1
+    if [ "$SVE_BENCHMARK_ONLY" = true ]; then
+        export CACTUS_TEST_SVE_ONLY=1
+        if [ -n "$SVE_SIZES" ]; then
+            export CACTUS_TEST_SVE_SIZES="$SVE_SIZES"
+        fi
+        if [ -n "$SVE_ITERATIONS" ]; then
+            export CACTUS_TEST_SVE_ITERATIONS="$SVE_ITERATIONS"
+        fi
+    else
+        unset CACTUS_TEST_SVE_ONLY
+        unset CACTUS_TEST_SVE_SIZES
+        unset CACTUS_TEST_SVE_ITERATIONS
     fi
 fi
 
@@ -292,7 +311,11 @@ echo "Using embed_speaker model path: $CACTUS_TEST_EMBED_SPEAKER_MODEL"
 echo "Using assets path: $CACTUS_TEST_ASSETS"
 echo "Using index path: $CACTUS_INDEX_PATH"
 if [ "$SVE_MODE" = true ]; then
-    echo "Using scalable matmul performance mode (SVE/SME2)"
+    if [ "$SVE_BENCHMARK_ONLY" = true ]; then
+        echo "Using scalable matmul performance mode (SVE/SME2)"
+    else
+        echo "Forcing scalable matmul backend for test execution (SVE/SME2 when available)"
+    fi
 fi
 
 echo "Discovering test executables..."

@@ -70,6 +70,25 @@ uint64_t cactus_fp16_sample_fingerprint(const __fp16* data, size_t count) {
     return hash;
 }
 
+uint64_t cactus_u8_sample_fingerprint(const uint8_t* data, size_t count) {
+    if (!data || count == 0) return 0;
+
+    constexpr size_t SAMPLE_COUNT = 32;
+    const size_t step = std::max<size_t>(1, count / SAMPLE_COUNT);
+    uint64_t hash = 1469598103934665603ull ^ static_cast<uint64_t>(count);
+
+    for (size_t idx = 0, sample = 0; sample < SAMPLE_COUNT && idx < count; ++sample, idx += step) {
+        hash ^= static_cast<uint64_t>(data[idx]) + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+    }
+    hash ^= static_cast<uint64_t>(data[count - 1]) + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+    return hash;
+}
+
+uint64_t cactus_mix_fingerprint(uint64_t seed, uint64_t value) {
+    seed ^= value + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
+    return seed;
+}
+
 class Sme2PackedBCache {
 public:
     static Sme2PackedBCache& instance() {
@@ -152,6 +171,130 @@ private:
     uint64_t clock_ = 0;
 };
 
+struct Sme2PackedInt4Key {
+    const int8_t* weights_ptr;
+    const __fp16* scales_ptr;
+    size_t K;
+    size_t N;
+    size_t group_size;
+    size_t tile_rows;
+    size_t tile_bytes;
+
+    bool operator==(const Sme2PackedInt4Key& other) const {
+        return weights_ptr == other.weights_ptr &&
+               scales_ptr == other.scales_ptr &&
+               K == other.K &&
+               N == other.N &&
+               group_size == other.group_size &&
+               tile_rows == other.tile_rows &&
+               tile_bytes == other.tile_bytes;
+    }
+};
+
+struct Sme2PackedInt4KeyHash {
+    size_t operator()(const Sme2PackedInt4Key& key) const {
+        size_t h = std::hash<const void*>{}(key.weights_ptr);
+        h ^= std::hash<const void*>{}(key.scales_ptr) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<size_t>{}(key.K) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<size_t>{}(key.N) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<size_t>{}(key.group_size) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<size_t>{}(key.tile_rows) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        h ^= std::hash<size_t>{}(key.tile_bytes) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+struct Sme2PackedInt4Panels {
+    std::vector<int8_t> weights;
+    std::vector<float> scales;
+};
+
+class Sme2PackedInt4Cache {
+public:
+    static Sme2PackedInt4Cache& instance() {
+        static Sme2PackedInt4Cache cache;
+        return cache;
+    }
+
+    template <typename Builder>
+    std::shared_ptr<Sme2PackedInt4Panels> get_or_create(
+        const Sme2PackedInt4Key& key,
+        size_t weight_elements,
+        size_t scale_elements,
+        uint64_t fingerprint,
+        Builder&& builder
+    ) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto it = entries_.find(key);
+            if (it != entries_.end() && it->second.fingerprint == fingerprint) {
+                it->second.last_use = ++clock_;
+                return it->second.data;
+            }
+        }
+
+        auto packed = std::make_shared<Sme2PackedInt4Panels>();
+        packed->weights.resize(weight_elements);
+        packed->scales.resize(scale_elements);
+        builder(*packed);
+        const size_t bytes = packed->weights.size() * sizeof(int8_t) +
+                             packed->scales.size() * sizeof(float);
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = entries_.find(key);
+        if (it != entries_.end() && it->second.fingerprint == fingerprint) {
+            it->second.last_use = ++clock_;
+            return it->second.data;
+        }
+
+        Entry& entry = entries_[key];
+        if (entry.data && current_bytes_ >= entry.bytes) {
+            current_bytes_ -= entry.bytes;
+        }
+
+        entry.data = packed;
+        entry.bytes = bytes;
+        entry.fingerprint = fingerprint;
+        entry.last_use = ++clock_;
+        current_bytes_ += bytes;
+        evict_locked();
+        return entry.data;
+    }
+
+private:
+    struct Entry {
+        std::shared_ptr<Sme2PackedInt4Panels> data;
+        size_t bytes = 0;
+        uint64_t fingerprint = 0;
+        uint64_t last_use = 0;
+    };
+
+    void evict_locked() {
+        constexpr size_t MAX_CACHE_BYTES = 256ull * 1024ull * 1024ull;
+        while (current_bytes_ > MAX_CACHE_BYTES && entries_.size() > 1) {
+            auto oldest = entries_.end();
+            for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+                if (oldest == entries_.end() || it->second.last_use < oldest->second.last_use) {
+                    oldest = it;
+                }
+            }
+
+            if (oldest == entries_.end()) break;
+            if (current_bytes_ >= oldest->second.bytes) {
+                current_bytes_ -= oldest->second.bytes;
+            } else {
+                current_bytes_ = 0;
+            }
+            entries_.erase(oldest);
+        }
+    }
+
+    std::mutex mutex_;
+    std::unordered_map<Sme2PackedInt4Key, Entry, Sme2PackedInt4KeyHash> entries_;
+    size_t current_bytes_ = 0;
+    uint64_t clock_ = 0;
+};
+
 }  // namespace
 
 static inline void cactus_pack_a_f16_row_block(
@@ -195,6 +338,112 @@ static inline void cactus_pack_a_f16_row_block(
             dst[2 * r + 1] = static_cast<__fp16>(0);
         }
     }
+}
+
+static inline void cactus_pack_a_int8_row_block(
+    const int8_t* __restrict a,
+    int8_t* __restrict a_packed,
+    size_t K,
+    size_t rb,
+    size_t row0,
+    size_t active_r,
+    size_t tile_rows,
+    size_t tile_bytes,
+    size_t k_quads
+) {
+    const size_t block_stride = k_quads * tile_bytes;
+    for (size_t kq = 0; kq < k_quads; ++kq) {
+        const size_t k0 = kq * 4;
+        int8_t* dst = a_packed + rb * block_stride + kq * tile_bytes;
+
+        for (size_t r = 0; r < active_r; ++r) {
+            const int8_t* src = a + (row0 + r) * K + k0;
+            dst[4 * r + 0] = (k0 + 0 < K) ? src[0] : 0;
+            dst[4 * r + 1] = (k0 + 1 < K) ? src[1] : 0;
+            dst[4 * r + 2] = (k0 + 2 < K) ? src[2] : 0;
+            dst[4 * r + 3] = (k0 + 3 < K) ? src[3] : 0;
+        }
+
+        for (size_t r = active_r; r < tile_rows; ++r) {
+            dst[4 * r + 0] = 0;
+            dst[4 * r + 1] = 0;
+            dst[4 * r + 2] = 0;
+            dst[4 * r + 3] = 0;
+        }
+    }
+}
+
+static inline int8_t cactus_load_interleaved_int8_weight(
+    const int8_t* __restrict b_interleaved,
+    size_t K,
+    size_t n,
+    size_t k
+) {
+    const size_t n_block = n / 4;
+    const size_t ni = n % 4;
+    const size_t k_block = k / 4;
+    const size_t ki = k % 4;
+    return b_interleaved[(n_block * (K / 4) + k_block) * 16 + ni * 4 + ki];
+}
+
+static void cactus_pack_b_int4_for_sme2(
+    const int8_t* __restrict b_packed_raw,
+    const __fp16* __restrict b_scales,
+    Sme2PackedInt4Panels& packed,
+    size_t K,
+    size_t N,
+    size_t group_size,
+    size_t tile_rows,
+    size_t tile_bytes
+) {
+    const size_t num_groups = K / group_size;
+    const size_t group_quads = group_size / 4;
+    const size_t col_blocks = (N + tile_rows - 1) / tile_rows;
+    const size_t n_storage = ((N + 3) / 4) * 4;
+
+    std::vector<int8_t> b_interleaved(n_storage * K);
+    cactus_unpack_int4_to_int8(reinterpret_cast<const uint8_t*>(b_packed_raw), b_interleaved.data(), b_interleaved.size());
+
+    CactusThreading::parallel_for(col_blocks * num_groups, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+        [&](size_t start, size_t end) {
+            for (size_t idx = start; idx < end; ++idx) {
+                const size_t cb = idx / num_groups;
+                const size_t g = idx % num_groups;
+                const size_t col0 = cb * tile_rows;
+                const size_t active_c = std::min(tile_rows, N - col0);
+                const size_t k_base = g * group_size;
+
+                float* scale_dst = packed.scales.data() + (cb * num_groups + g) * tile_rows;
+                for (size_t c = 0; c < active_c; ++c) {
+                    const size_t col = col0 + c;
+                    scale_dst[c] = static_cast<float>(b_scales[((col / 4) * num_groups + g) * 4 + (col % 4)]);
+                }
+                for (size_t c = active_c; c < tile_rows; ++c) {
+                    scale_dst[c] = 0.0f;
+                }
+
+                int8_t* weight_dst = packed.weights.data() + (cb * num_groups + g) * group_quads * tile_bytes;
+                for (size_t kq = 0; kq < group_quads; ++kq) {
+                    int8_t* quad_dst = weight_dst + kq * tile_bytes;
+                    const size_t k0 = k_base + kq * 4;
+
+                    for (size_t c = 0; c < active_c; ++c) {
+                        const size_t col = col0 + c;
+                        quad_dst[4 * c + 0] = cactus_load_interleaved_int8_weight(b_interleaved.data(), K, col, k0 + 0);
+                        quad_dst[4 * c + 1] = cactus_load_interleaved_int8_weight(b_interleaved.data(), K, col, k0 + 1);
+                        quad_dst[4 * c + 2] = cactus_load_interleaved_int8_weight(b_interleaved.data(), K, col, k0 + 2);
+                        quad_dst[4 * c + 3] = cactus_load_interleaved_int8_weight(b_interleaved.data(), K, col, k0 + 3);
+                    }
+
+                    for (size_t c = active_c; c < tile_rows; ++c) {
+                        quad_dst[4 * c + 0] = 0;
+                        quad_dst[4 * c + 1] = 0;
+                        quad_dst[4 * c + 2] = 0;
+                        quad_dst[4 * c + 3] = 0;
+                    }
+                }
+            }
+        });
 }
 
 static void cactus_pack_b_f16_from_bt(
@@ -748,6 +997,253 @@ void cactus_matmul_f16_sme2_caller(
                 M,
                 K,
                 N,
+                row_block_size,
+                block_idx,
+                block_idx + 1
+            );
+        }
+    });
+    pool.wait_all();
+}
+
+static void cactus_matmul_int4_sme2_worker(
+    const int8_t* a_packed,
+    const int8_t* b_packed,
+    const float* b_scales_packed,
+    const float* a_scales,
+    float* tile_accum,
+    __fp16* c,
+    size_t K,
+    size_t N,
+    size_t group_size,
+    size_t start_row,
+    size_t end_row,
+    size_t tile_rows,
+    size_t tile_bytes
+) __arm_streaming __arm_inout("za") {
+    if (start_row >= end_row) return;
+
+    const size_t num_groups = K / group_size;
+    const size_t group_quads = group_size / 4;
+    const size_t col_blocks = (N + tile_rows - 1) / tile_rows;
+    const size_t a_row_block_stride = (K / 4) * tile_bytes;
+
+    const svint32_t z0_s32 = svdup_n_s32(0);
+
+    for (size_t row = start_row; row < end_row; row += tile_rows) {
+        const size_t rb = row / tile_rows;
+        const size_t active_r = std::min(tile_rows, end_row - row);
+        const svbool_t pMh = (active_r == tile_rows)
+            ? svptrue_b8()
+            : svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(active_r * 4));
+
+        for (size_t cb = 0; cb < col_blocks; ++cb) {
+            const size_t col = cb * tile_rows;
+            const size_t active_c = std::min(tile_rows, N - col);
+            const svbool_t pNh = (active_c == tile_rows)
+                ? svptrue_b8()
+                : svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c * 4));
+            const svbool_t pN32 = (active_c == tile_rows)
+                ? svptrue_b32()
+                : svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c));
+            const svbool_t pOut16 = (active_c == tile_rows)
+                ? svptrue_b16()
+                : svwhilelt_b16(static_cast<uint64_t>(0), static_cast<uint64_t>(active_c));
+
+            std::fill(tile_accum, tile_accum + tile_rows * tile_rows, 0.0f);
+
+            for (size_t g = 0; g < num_groups; ++g) {
+                const int8_t* b_group = b_packed + (cb * num_groups + g) * group_quads * tile_bytes;
+                const float* scale_ptr = b_scales_packed + (cb * num_groups + g) * tile_rows;
+                const svfloat32_t b_scale = svld1(pN32, scale_ptr);
+
+                svzero_za();
+
+                for (size_t kq = 0; kq < group_quads; ++kq) {
+                    const int8_t* a_ptr = a_packed + rb * a_row_block_stride + (g * group_quads + kq) * tile_bytes;
+                    const int8_t* b_ptr = b_group + kq * tile_bytes;
+                    const svint8_t zA = svld1_s8(pMh, a_ptr);
+                    const svint8_t zB = svld1_s8(pNh, b_ptr);
+                    svmopa_za32_s8_m(0, pMh, pNh, zA, zB);
+                }
+
+                for (size_t r = 0; r < active_r; ++r) {
+                    float* acc_ptr = tile_accum + r * tile_rows;
+                    svfloat32_t acc = svld1(pN32, acc_ptr);
+                    const svint32_t group_sum = svread_hor_za32_s32_m(z0_s32, pN32, 0, static_cast<uint32_t>(r));
+                    svfloat32_t scaled = svcvt_f32_s32_x(pN32, group_sum);
+                    scaled = svmul_f32_x(pN32, scaled, b_scale);
+                    scaled = svmul_n_f32_x(pN32, scaled, a_scales[row + r]);
+                    acc = svadd_f32_x(pN32, acc, scaled);
+                    svst1(pN32, acc_ptr, acc);
+                }
+            }
+
+            for (size_t r = 0; r < active_r; ++r) {
+                const float* acc_ptr = tile_accum + r * tile_rows;
+                svfloat32_t acc = svld1(pN32, acc_ptr);
+                svfloat16_t out16 = svcvt_f16_f32_z(pN32, acc);
+                out16 = svuzp1_f16(out16, out16);
+                svst1(pOut16, &c[(row + r) * N + col], out16);
+            }
+        }
+    }
+}
+
+__arm_new("za") __arm_locally_streaming
+static void cactus_matmul_int4_sme2_thread_entry(
+    const int8_t* a,
+    const float* a_scales,
+    int8_t* a_packed,
+    const int8_t* b_packed,
+    const float* b_scales_packed,
+    __fp16* c,
+    size_t M,
+    size_t K,
+    size_t N,
+    size_t group_size,
+    size_t row_block_size,
+    size_t start_block,
+    size_t end_block
+) {
+    const size_t tile_rows = svcntsw();
+    const size_t tile_bytes = svcntsb();
+    const size_t k_quads = K / 4;
+    std::unique_ptr<float[]> tile_accum(new float[tile_rows * tile_rows]);
+
+    for (size_t block_idx = start_block; block_idx < end_block; ++block_idx) {
+        const size_t start_row = block_idx * row_block_size;
+        const size_t end_row = std::min(start_row + row_block_size, M);
+
+        for (size_t row = start_row; row < end_row; row += tile_rows) {
+            const size_t rb = row / tile_rows;
+            const size_t active_r = std::min(tile_rows, end_row - row);
+            cactus_pack_a_int8_row_block(
+                a,
+                a_packed,
+                K,
+                rb,
+                row,
+                active_r,
+                tile_rows,
+                tile_bytes,
+                k_quads
+            );
+        }
+
+        cactus_matmul_int4_sme2_worker(
+            a_packed,
+            b_packed,
+            b_scales_packed,
+            a_scales,
+            tile_accum.get(),
+            c,
+            K,
+            N,
+            group_size,
+            start_row,
+            end_row,
+            tile_rows,
+            tile_bytes
+        );
+    }
+}
+
+__arm_new("za") __arm_locally_streaming
+void cactus_matmul_int4_sme2_caller(
+    const int8_t* a,
+    const float* a_scales,
+    const int8_t* b_packed,
+    const __fp16* b_scales,
+    __fp16* c,
+    size_t M,
+    size_t K,
+    size_t N,
+    size_t group_size
+) {
+    if (M == 0 || K == 0 || N == 0) return;
+    if ((group_size % 4) != 0 || group_size == 0 || (K % group_size) != 0 || (K % 4) != 0) return;
+
+    const size_t tile_rows = svcntsw();
+    const size_t tile_bytes = svcntsb();
+    constexpr size_t SME2_TILES_PER_THREAD = 3;
+
+    const size_t row_blocks = (M + tile_rows - 1) / tile_rows;
+    const size_t col_blocks = (N + tile_rows - 1) / tile_rows;
+    const size_t num_groups = K / group_size;
+    const size_t group_quads = group_size / 4;
+    const size_t k_quads = K / 4;
+
+    std::unique_ptr<int8_t[]> a_packed(new int8_t[row_blocks * k_quads * tile_bytes]);
+    int8_t* a_packed_ptr = a_packed.get();
+
+    const size_t packed_weight_elements = col_blocks * num_groups * group_quads * tile_bytes;
+    const size_t packed_scale_elements = col_blocks * num_groups * tile_rows;
+    const size_t stored_n = ((N + 3) / 4) * 4;
+    const size_t packed_bytes = stored_n * K / 2;
+
+    const Sme2PackedInt4Key cache_key{b_packed, b_scales, K, N, group_size, tile_rows, tile_bytes};
+    uint64_t fingerprint = cactus_u8_sample_fingerprint(reinterpret_cast<const uint8_t*>(b_packed), packed_bytes);
+    fingerprint = cactus_mix_fingerprint(fingerprint, cactus_fp16_sample_fingerprint(b_scales, stored_n * num_groups));
+
+    auto packed = Sme2PackedInt4Cache::instance().get_or_create(
+        cache_key,
+        packed_weight_elements,
+        packed_scale_elements,
+        fingerprint,
+        [&](Sme2PackedInt4Panels& packed_panels) {
+            cactus_pack_b_int4_for_sme2(
+                b_packed,
+                b_scales,
+                packed_panels,
+                K,
+                N,
+                group_size,
+                tile_rows,
+                tile_bytes
+            );
+        });
+
+    const size_t row_block_size = SME2_TILES_PER_THREAD * tile_rows;
+    const size_t num_row_blocks = (M + row_block_size - 1) / row_block_size;
+
+    auto& pool = CactusThreading::get_thread_pool();
+    const size_t num_workers = std::min(pool.num_workers(), num_row_blocks);
+    if (num_workers <= 1) {
+        cactus_matmul_int4_sme2_thread_entry(
+            a,
+            a_scales,
+            a_packed_ptr,
+            packed->weights.data(),
+            packed->scales.data(),
+            c,
+            M,
+            K,
+            N,
+            group_size,
+            row_block_size,
+            0,
+            num_row_blocks
+        );
+        return;
+    }
+
+    std::atomic<size_t> next_block{0};
+    pool.enqueue_n_threads(num_workers, num_workers, [&](size_t, size_t) {
+        while (true) {
+            const size_t block_idx = next_block.fetch_add(1, std::memory_order_relaxed);
+            if (block_idx >= num_row_blocks) break;
+            cactus_matmul_int4_sme2_thread_entry(
+                a,
+                a_scales,
+                a_packed_ptr,
+                packed->weights.data(),
+                packed->scales.data(),
+                c,
+                M,
+                K,
+                N,
+                group_size,
                 row_block_size,
                 block_idx,
                 block_idx + 1

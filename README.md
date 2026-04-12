@@ -274,7 +274,7 @@ graph.hard_reset();
 │    --reconvert                       force reconversion from source          │
 │    --no-rebuild                      skip building library                   │
 │    --llm / --stt / --performance     run specific test suite                 │
-│    --sve                             compare matmul NEON vs SVE/SME2         │
+│    --sve                             benchmark or force scalable matmul       │
 │    --sve-sizes <MxKxN,...>           custom shapes for --sve                 │
 │    --ios                             run on connected iPhone                 │
 │    --android                         run on connected Android                │
@@ -284,6 +284,17 @@ graph.hard_reset();
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Examples:
+- `cactus test --sve`
+- `cactus test --llm --sve`
+- `cactus test --vlm --sve`
+- `cactus test --llm --sve --precision FP16`
+
+Note:
+- `--sve` forces the scalable matmul backend for the selected suite.
+- On SME2-capable devices, that now includes the grouped `INT4` matmul path used by many default LLM/VLM weights.
+- On devices without SME2, `--sve` mainly affects the scalable `FP16` path, so `--precision FP16` is still the easiest way to cover most model GEMMs.
 
 ## Maintaining Organisations
 
