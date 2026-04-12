@@ -466,15 +466,7 @@ if [ "$SVE_MODE" = true ] && [ "$SVE_BENCHMARK_ONLY" = false ]; then
     fi
 fi
 
-LLM_INTERNAL_COMPARE=false
-if [ "$SVE_MODE" = true ] && [ "$SVE_BENCHMARK_ONLY" = false ] && [ "$ONLY_EXEC" = "llm" ] && scalable_backend_available; then
-    LLM_INTERNAL_COMPARE=true
-    SVE_COMPARE_SUITE=false
-    export CACTUS_TEST_LLM_COMPARE=1
-    echo "Using in-process LLM backend comparison inside test_llm"
-else
-    unset CACTUS_TEST_LLM_COMPARE
-fi
+unset CACTUS_TEST_LLM_COMPARE
 
 if [ "$SVE_COMPARE_SUITE" = true ]; then
     SCALABLE_BACKEND_NAME=$(detect_scalable_backend)
