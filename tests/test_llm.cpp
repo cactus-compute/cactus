@@ -74,10 +74,13 @@ bool run_llm_backend_compare_case(BackendCompareResult& out) {
         std::cerr << "[✗] Failed to initialize model for backend compare\n";
         return false;
     }
+    std::cerr << "[compare] model initialized\n";
 
     char response[4096] = {0};
+    std::cerr << "[compare] beginning completion\n";
     int result = cactus_complete(model, compare_messages, response, sizeof(response),
                                  compare_options, nullptr, nullptr, nullptr, nullptr, 0);
+    std::cerr << "[compare] completion returned result=" << result << "\n";
 
     out.metrics.parse(response);
     out.response = out.metrics.response;
