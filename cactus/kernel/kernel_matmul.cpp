@@ -202,11 +202,11 @@ void cactus_matmul_f16(
     size_t K,
     size_t N
 ) {
-
-    const bool force_neon = cpu_forces_neon_matmul();
+    const bool int4_only_forcing = cpu_forces_int4_only_matmul();
+    const bool force_neon = int4_only_forcing ? false : cpu_forces_neon_matmul();
 
 #if defined(CACTUS_COMPILE_SVE2)
-    const bool force_sve = cpu_forces_sve_matmul();
+    const bool force_sve = int4_only_forcing ? false : cpu_forces_sve_matmul();
 #else
     const bool force_sve = false;
 #endif

@@ -185,6 +185,14 @@ inline bool cpu_forces_sve2_matmul() {
 #endif
 }
 
+inline bool cpu_forces_int4_only_matmul() {
+#if defined(__aarch64__)
+    return env_var_is_truthy("CACTUS_FORCE_INT4_ONLY_MATMUL");
+#else
+    return false;
+#endif
+}
+
 inline float32x4_t fast_exp_f32x4(float32x4_t x) {
     const float32x4_t log2e = vdupq_n_f32(1.4426950408889634f);
     const float32x4_t ln2 = vdupq_n_f32(0.6931471805599453f);

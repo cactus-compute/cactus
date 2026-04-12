@@ -89,14 +89,23 @@ bool run_llm_backend_compare_case(BackendCompareResult& out) {
 
 bool test_llm_backend_single_run() {
     const std::string backend_name = llm_compare_mode_name();
+    const char* int4_only_env = std::getenv("CACTUS_FORCE_INT4_ONLY_MATMUL");
+    const bool int4_only_forcing = int4_only_env && std::string(int4_only_env) == "1";
 
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║" << std::setw(42) << std::left << "      LLM BACKEND COMPARE TEST" << "║\n"
               << "╚══════════════════════════════════════════╝\n";
     std::cout << "Running compare case with forced backend: " << backend_name << "\n";
+    if (int4_only_forcing) {
+        std::cout << "Backend forcing scope: INT4 matmul only\n";
+    }
+    std::cerr << "[compare] backend=" << backend_name
+              << " int4_only=" << (int4_only_forcing ? "1" : "0") << "\n";
+    std::cerr << "[compare] initializing model\n";
 
     BackendCompareResult result;
     const bool ok = run_llm_backend_compare_case(result);
+    std::cerr << "[compare] complete status=" << (ok ? "ok" : "fail") << "\n";
 
     std::cout << "\n[Backend Metrics]\n";
     std::cout << "├─ backend: " << backend_name << "\n"

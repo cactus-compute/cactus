@@ -468,6 +468,11 @@ run_timed_llm_compare_executable() {
     local scalable_override="$4"
     local timing_file
     local warmup_log
+    local int4_only_force="0"
+
+    if [ "$PRECISION" = "INT4" ]; then
+        int4_only_force="1"
+    fi
 
     timing_file=$(mktemp)
     warmup_log=$(mktemp)
@@ -476,6 +481,7 @@ run_timed_llm_compare_executable() {
         CACTUS_FORCE_NEON_MATMUL="$neon_override" \
         CACTUS_FORCE_SVE_MATMUL="$scalable_override" \
         CACTUS_FORCE_SVE2_MATMUL="$scalable_override" \
+        CACTUS_FORCE_INT4_ONLY_MATMUL="$int4_only_force" \
         CACTUS_TEST_LLM_COMPARE_MODE="$mode_label" \
         "$executable" >"$warmup_log" 2>&1
     local warmup_status=$?
@@ -495,6 +501,7 @@ run_timed_llm_compare_executable() {
         CACTUS_FORCE_NEON_MATMUL="$neon_override" \
         CACTUS_FORCE_SVE_MATMUL="$scalable_override" \
         CACTUS_FORCE_SVE2_MATMUL="$scalable_override" \
+        CACTUS_FORCE_INT4_ONLY_MATMUL="$int4_only_force" \
         CACTUS_TEST_LLM_COMPARE_MODE="$mode_label" \
         python3 - "$executable" "$timing_file" <<'PY'
 import os
