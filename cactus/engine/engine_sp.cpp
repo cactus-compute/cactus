@@ -463,6 +463,28 @@ std::vector<uint32_t> SPTokenizer::encode(const std::string& text) const {
 }
 
 std::string SPTokenizer::decode(const std::vector<uint32_t>& tokens) const {
+    if (tokens.size() == 1) {
+        if (tokens[0] >= id_to_token_.size()) return {};
+        const std::string& piece = id_to_token_[tokens[0]];
+        unsigned int byte_val;
+        if (piece.size() == 6 && std::sscanf(piece.c_str(), "<0x%02X>", &byte_val) == 1) {
+            return std::string(1, static_cast<char>(byte_val));
+        }
+        std::string result;
+        for (size_t i = 0; i < piece.length(); ) {
+            if (i + 2 < piece.length() &&
+                static_cast<unsigned char>(piece[i])   == 0xE2 &&
+                static_cast<unsigned char>(piece[i+1]) == 0x96 &&
+                static_cast<unsigned char>(piece[i+2]) == 0x81) {
+                result += ' ';
+                i += 3;
+            } else {
+                result += piece[i++];
+            }
+        }
+        return result;
+    }
+
     std::string raw;
     for (uint32_t token_id : tokens) {
         if (token_id >= id_to_token_.size()) continue;
