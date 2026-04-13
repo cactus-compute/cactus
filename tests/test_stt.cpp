@@ -582,6 +582,129 @@ static bool test_transcription() {
         [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
 }
 
+static bool test_stream_transcription() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║        STREAM TRANSCRIPTION TEST         ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    if (!g_transcribe_model_path) {
+        std::cout << "⊘ SKIP │ CACTUS_TEST_TRANSCRIBE_MODEL not set\n";
+        return true;
+    }
+
+    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize Whisper model\n";
+        return false;
+    }
+
+    cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(
+        model,  R"({"telemetry_enabled": false})"
+    );
+    if (!stream) {
+        std::cerr << "[✗] Failed to initialize stream transcribe\n";
+        cactus_destroy(model);
+        return false;
+    }
+
+    std::string audio_path = std::string(g_assets_path) + "/test_long.wav";
+    FILE* wav_file = fopen(audio_path.c_str(), "rb");
+    if (!wav_file) {
+        std::cerr << "[✗] Failed to open audio file\n";
+        cactus_stream_transcribe_stop(stream, nullptr, 0);
+        cactus_destroy(model);
+        return false;
+    }
+
+    fseek(wav_file, 44, SEEK_SET);
+    std::vector<int16_t> pcm_samples;
+    int16_t sample;
+    while (fread(&sample, sizeof(int16_t), 1, wav_file) == 1) {
+        pcm_samples.push_back(sample);
+    }
+    fclose(wav_file);
+
+    const size_t chunk_size = 96000;
+    Timer timer;
+    std::string full_transcription;
+
+    for (size_t offset = 0; offset < pcm_samples.size(); offset += chunk_size) {
+        size_t size = std::min(chunk_size, pcm_samples.size() - offset);
+
+        char response[1 << 15] = {0};
+        int result = cactus_stream_transcribe_process(
+            stream,
+            reinterpret_cast<const uint8_t*>(pcm_samples.data() + offset),
+            size * sizeof(int16_t),
+            response,
+            sizeof(response)
+        );
+
+        if (result < 0) {
+            std::cerr << "\n[✗] Processing failed\n";
+            cactus_stream_transcribe_stop(stream, nullptr, 0);
+            cactus_destroy(model);
+            return false;
+        }
+
+        std::string response_str(response);
+        std::string confirmed = json_string(response_str, "confirmed");
+        std::string pending = json_string(response_str, "pending");
+
+        std::cout << "├─ transcription: " << full_transcription + pending << std::endl;
+
+        if (!confirmed.empty()) {
+            full_transcription += confirmed + " ";
+        }
+    }
+
+    char final_response[1 << 15] = {0};
+    int stop_result = cactus_stream_transcribe_stop(
+        stream,
+        final_response,
+        sizeof(final_response)
+    );
+
+    if (stop_result < 0) {
+        std::cerr << "[✗] Stop failed\n";
+        cactus_destroy(model);
+        return false;
+    }
+
+    std::string final_str(final_response);
+    std::string final_confirmed = json_string(final_str, "confirmed");
+
+    if (!final_confirmed.empty()) {
+        full_transcription += final_confirmed;
+        std::cout << "└─ confirmed: " << final_confirmed << "\n";
+    }
+
+    double elapsed = timer.elapsed_ms();
+
+    size_t word_count = 0;
+    bool in_word = false;
+    for (char c : full_transcription) {
+        if (std::isspace(c)) {
+            in_word = false;
+        } else if (!in_word) {
+            in_word = true;
+            word_count++;
+        }
+    }
+
+    std::cout << "\n[Results]\n"
+              << "  \"success\": true,\n"
+              << "  \"total_time_ms\": " << std::fixed << std::setprecision(2) << elapsed << ",\n"
+              << "  \"audio_chunks\": " << ((pcm_samples.size() + chunk_size - 1) / chunk_size) << ",\n"
+              << "  \"pcm_samples\": " << pcm_samples.size() << ",\n"
+              << "  \"duration_sec\": " << std::setprecision(2) << (pcm_samples.size() / 16000.0) << ",\n"
+              << "  \"words_transcribed\": " << word_count << "\n"
+              << "├─ Full transcription: \"" << full_transcription << "\"" << std::endl;
+
+    cactus_destroy(model);
+    return true;
+}
+
 static bool test_transcription_long() {
     return run_transcription_test("TRANSCRIPTION LONG", "test_long.wav", R"({"max_tokens": 1000, "telemetry_enabled": false})",
         [](int rc, const Metrics& m) { return rc > 0 && m.completion_tokens >= 8; });
@@ -991,6 +1114,7 @@ int main() {
     runner.run_test("transcription", test_transcription());
     runner.run_test("transcription_long", test_transcription_long());
     runner.run_test("language_detection", test_language_detection());
+    runner.run_test("stream_transcription", test_stream_transcription());
     runner.run_test("vocab_bias_base_class", test_vocab_bias_base_class());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

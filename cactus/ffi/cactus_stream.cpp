@@ -1038,9 +1038,10 @@ int cactus_stream_transcribe_process(
         bool is_moonshine = model_type == cactus::engine::Config::ModelType::MOONSHINE;
         bool is_parakeet_tdt =
             model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
+        bool is_parakeet_ctc =
+            model_type == cactus::engine::Config::ModelType::PARAKEET;
         bool is_parakeet =
-            model_type == cactus::engine::Config::ModelType::PARAKEET ||
-            is_parakeet_tdt;
+            is_parakeet_ctc || is_parakeet_tdt;
         bool is_gemma4 = model_type == cactus::engine::Config::ModelType::GEMMA4;
 
         if (is_parakeet_tdt &&
@@ -1929,7 +1930,7 @@ int cactus_stream_transcribe_process(
 
         const uint8_t* decode_pcm = handle->audio_buffer.data();
         size_t decode_pcm_size = handle->audio_buffer.size();
-        if (is_parakeet) {
+        if (is_parakeet_tdt) {
             constexpr size_t kParakeetDecodeWindowBytes = 160000; // ~5.0s
             if (decode_pcm_size > kParakeetDecodeWindowBytes) {
                 decode_pcm += (decode_pcm_size - kParakeetDecodeWindowBytes);
@@ -1977,7 +1978,7 @@ int cactus_stream_transcribe_process(
             chunk_decode_tokens = 0.0;
         }
 
-        if (is_parakeet) {
+        if (is_parakeet_tdt) {
             constexpr size_t kParakeetHoldbackWords = 1;
             constexpr size_t kParakeetTailBytes = 64000;         // ~2.0s left context
             constexpr size_t kParakeetSilenceFlushBytes = 16000; // ~0.5s silence
@@ -2276,7 +2277,7 @@ int cactus_stream_transcribe_process(
         }
 
         std::string pending_output = response;
-        if (is_parakeet && !handle->previous_parakeet_pending.empty()) {
+        if (is_parakeet_tdt && !handle->previous_parakeet_pending.empty()) {
             pending_output = handle->previous_parakeet_pending;
         }
 
@@ -2349,9 +2350,10 @@ int cactus_stream_transcribe_stop(
         bool is_moonshine = model_type == cactus::engine::Config::ModelType::MOONSHINE;
         bool is_parakeet_tdt =
             model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
+        bool is_parakeet_ctc =
+            model_type == cactus::engine::Config::ModelType::PARAKEET;
         bool is_parakeet =
-            model_type == cactus::engine::Config::ModelType::PARAKEET ||
-            is_parakeet_tdt;
+            is_parakeet_ctc || is_parakeet_tdt;
         bool is_tinyllama = model_type == cactus::engine::Config::ModelType::GEMMA4;
 
         std::string final_confirmed;
@@ -2359,18 +2361,6 @@ int cactus_stream_transcribe_stop(
             final_confirmed = handle->parakeet_committed_text;
             if (!(handle->parakeet_tdt_chunked_stream && handle->parakeet_tdt_decode_context.initialized) &&
                 !handle->previous_parakeet_pending.empty()) {
-                const std::string normalized_pending = parakeet_strip_recent_committed_prefix(
-                    final_confirmed, handle->previous_parakeet_pending);
-                const std::string pending_delta = parakeet_emit_delta(
-                    final_confirmed, normalized_pending);
-                if (!pending_delta.empty()) {
-                    if (!final_confirmed.empty()) final_confirmed += " ";
-                    final_confirmed += pending_delta;
-                }
-            }
-        } else if (is_parakeet) {
-            final_confirmed = handle->parakeet_committed_text;
-            if (!handle->previous_parakeet_pending.empty()) {
                 const std::string normalized_pending = parakeet_strip_recent_committed_prefix(
                     final_confirmed, handle->previous_parakeet_pending);
                 const std::string pending_delta = parakeet_emit_delta(
@@ -2629,7 +2619,7 @@ int cactus_stream_transcribe_stop(
                         }
                     }
                     if (!flushed_text.empty()) {
-                        if (is_parakeet) {
+                        if (is_parakeet_tdt) {
                             const std::string normalized_flush = parakeet_strip_recent_committed_prefix(
                                 final_confirmed, flushed_text);
                             const std::string effective_flush_delta =
