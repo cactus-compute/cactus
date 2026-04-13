@@ -503,6 +503,10 @@ PreparedPrompt prepare_prompt(
         }
     }
 
+    if (prompt.model_type == Config::ModelType::NEEDLE && !prompt.tools.empty()) {
+        prompt.options.force_tools = true;
+    }
+
     if (apply_tool_constraints) {
         setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools, prompt.options.temperature);
     }
