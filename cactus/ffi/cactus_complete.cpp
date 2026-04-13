@@ -29,34 +29,15 @@ std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
     return {};
 }
 
-const std::vector<uint32_t>& get_cached_needle_tools_suffix_tokens(
-    CactusModelHandle* handle,
-    Tokenizer* tokenizer,
-    const std::string& formatted_tools
-) {
-    if (handle->cached_needle_tools_suffix != formatted_tools) {
-        handle->cached_needle_tools_suffix = formatted_tools;
-        handle->cached_needle_tools_suffix_tokens.clear();
-
-        auto tools_prefix_tokens = tokenizer->encode("<tools>");
-        if (tools_prefix_tokens.empty()) {
-            throw std::runtime_error("Needle tokenizer is missing the <tools> token");
-        }
-
-        auto tool_json_tokens = tokenizer->encode(formatted_tools);
-        handle->cached_needle_tools_suffix_tokens.reserve(
-            tools_prefix_tokens.size() + tool_json_tokens.size() + 1);
-        handle->cached_needle_tools_suffix_tokens.insert(
-            handle->cached_needle_tools_suffix_tokens.end(),
-            tools_prefix_tokens.begin(),
-            tools_prefix_tokens.end());
-        handle->cached_needle_tools_suffix_tokens.insert(
-            handle->cached_needle_tools_suffix_tokens.end(),
-            tool_json_tokens.begin(),
-            tool_json_tokens.end());
-        handle->cached_needle_tools_suffix_tokens.push_back(tokenizer->get_eos_token());
-    }
-    return handle->cached_needle_tools_suffix_tokens;
+std::vector<uint32_t> encode_needle_tools_suffix(Tokenizer* tokenizer, const std::string& formatted_tools) {
+    auto prefix = tokenizer->encode("<tools>");
+    auto body = tokenizer->encode(formatted_tools);
+    std::vector<uint32_t> tokens;
+    tokens.reserve(prefix.size() + body.size() + 1);
+    tokens.insert(tokens.end(), prefix.begin(), prefix.end());
+    tokens.insert(tokens.end(), body.begin(), body.end());
+    tokens.push_back(tokenizer->get_eos_token());
+    return tokens;
 }
 
 void inject_rag_context(CactusModelHandle* handle, std::vector<ChatMessage>& messages) {
@@ -575,7 +556,7 @@ PreparedPrompt prepare_prompt(
     if (prompt.model_type == Config::ModelType::NEEDLE) {
         std::string query_text = cactus::engine::format_needle_query_text(prompt.messages);
         prompt.tokens = tokenizer->encode(query_text);
-        const auto& suffix_tokens = get_cached_needle_tools_suffix_tokens(handle, tokenizer, formatted_tools);
+        auto suffix_tokens = encode_needle_tools_suffix(tokenizer, formatted_tools);
         prompt.tokens.insert(prompt.tokens.end(), suffix_tokens.begin(), suffix_tokens.end());
     } else {
         std::string full_prompt = tokenizer->format_chat_prompt(

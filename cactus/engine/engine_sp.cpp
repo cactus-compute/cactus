@@ -385,7 +385,6 @@ std::vector<std::pair<std::string, uint32_t>> SPTokenizer::tokenize_with_trie(co
 }
 
 std::vector<uint32_t> SPTokenizer::tokenize_with_bpe(const std::string& text) const {
-    // Split text into individual UTF-8 characters
     std::vector<std::string> symbols;
     for (size_t i = 0; i < text.size(); ) {
         size_t char_len = 1;
@@ -397,7 +396,6 @@ std::vector<uint32_t> SPTokenizer::tokenize_with_bpe(const std::string& text) co
         i += char_len;
     }
 
-    // Iteratively merge the highest-scored adjacent pair
     while (symbols.size() > 1) {
         int best_index = -1;
         float best_score = -std::numeric_limits<float>::infinity();
@@ -414,7 +412,6 @@ std::vector<uint32_t> SPTokenizer::tokenize_with_bpe(const std::string& text) co
         symbols.erase(symbols.begin() + best_index + 1);
     }
 
-    // Map symbols to token IDs with byte fallback
     std::vector<uint32_t> result;
     for (const auto& symbol : symbols) {
         auto it = token_to_id_.find(symbol);
