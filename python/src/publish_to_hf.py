@@ -63,8 +63,12 @@ def export_pro_weights(model_id, bits):
 
     if "gemma-4" in model_id.lower():
         build_dir = pro_repo / "apple" / "build"
+        output_names = {
+            "gemma4-vision": "vision_encoder",
+            "gemma4-audio": "audio_encoder"
+        }
         mlpackages = []
-        for enc_type in ("gemma4-vision", "gemma4-audio"):
+        for enc_type, out_name in output_names.items():
             result = subprocess.run(
                 ["bash", str(build_script), "--model", model_id, "--bits", bits, "--type", enc_type],
                 cwd=pro_repo,
@@ -72,7 +76,7 @@ def export_pro_weights(model_id, bits):
             )
             mlpackage = build_dir / "model.mlpackage"
             if result.returncode == 0 and mlpackage.exists():
-                dest = build_dir.parent / f"{enc_type}.mlpackage"
+                dest = build_dir.parent / f"{out_name}.mlpackage"
                 if dest.exists():
                     shutil.rmtree(dest)
                 shutil.move(str(mlpackage), str(dest))
