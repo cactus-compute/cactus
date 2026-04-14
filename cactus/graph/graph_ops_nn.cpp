@@ -68,55 +68,6 @@ namespace {
         cached_quant_K = K;
     }
 
-    // Dequantize grouped interleaved integer weights to FP16 [N, K] layout.
-    // Interleaved layout: data[N_pad/4, K/4, 4, 4], scales[N_pad/4, num_groups, 4]
-    // For INT4: data is packed (2 values per byte), unpacked to INT8 first.
-    void dequantize_grouped_weights_to_fp16(
-        const BufferDesc& rhs_buffer, __fp16* dst, size_t N, size_t K, size_t group_size) {
-
-        const int8_t* raw_data = rhs_buffer.data_as<int8_t>();
-        const __fp16* raw_scales = rhs_buffer.scales_as_fp16();
-        size_t num_groups = (K + group_size - 1) / group_size;
-        size_t N_pad = ((N + 3) / 4) * 4;
-
-        // Get INT8 data (unpack INT4 if needed)
-        const int8_t* int8_data;
-        thread_local std::vector<int8_t> unpack_buffer;
-        if (rhs_buffer.precision == Precision::INT4) {
-            if (unpack_buffer.size() < N_pad * K) unpack_buffer.resize(N_pad * K);
-            cactus_unpack_int4_to_int8(reinterpret_cast<const uint8_t*>(raw_data),
-                                        unpack_buffer.data(), N_pad * K);
-            int8_data = unpack_buffer.data();
-        } else {
-            int8_data = raw_data;
-        }
-
-        // Deinterleave and dequantize.
-        // Interleaved data: [N_pad/4, K/4, 4(rows), 4(cols)] flattened
-        // Interleaved scales: [N_pad/4, num_groups, 4(rows)] flattened
-        CactusThreading::parallel_for(N, CactusThreading::Thresholds::ELEMENT_WISE,
-            [&](size_t n_start, size_t n_end) {
-                for (size_t n = n_start; n < n_end; n++) {
-                    size_t tile = n / 4;
-                    size_t lane = n % 4;
-                    for (size_t g = 0; g < num_groups; g++) {
-                        // Scale index in interleaved layout: [tile, g, lane]
-                        float scale = static_cast<float>(
-                            raw_scales[tile * num_groups * 4 + g * 4 + lane]);
-                        size_t k_start = g * group_size;
-                        size_t k_end = std::min(k_start + group_size, K);
-                        for (size_t k = k_start; k < k_end; k++) {
-                            // Data index in interleaved layout: [tile, k/4, lane, k%4]
-                            size_t k_tile = k / 4;
-                            size_t k_lane = k % 4;
-                            int8_t val = int8_data[tile * (K / 4) * 16 + k_tile * 16 + lane * 4 + k_lane];
-                            dst[n * K + k] = static_cast<__fp16>(static_cast<float>(val) * scale);
-                        }
-                    }
-                }
-            });
-    }
-
     const __fp16* as_fp16_ptr(const BufferDesc& buffer, std::vector<__fp16>& scratch) {
         if (buffer.precision == Precision::FP16) {
             return buffer.data_as<__fp16>();
