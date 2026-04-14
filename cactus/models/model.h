@@ -37,9 +37,13 @@ private:
             size_t attn_k_weight;
             size_t attn_v_weight;
             size_t attn_output_weight;
+            size_t attn_q_bias        = SIZE_MAX;
+            size_t attn_k_bias        = SIZE_MAX;
+            size_t attn_v_bias        = SIZE_MAX;
+            size_t attn_output_bias   = SIZE_MAX;
             size_t input_layernorm_weight;
-            size_t attn_q_norm_weight;
-            size_t attn_k_norm_weight;
+            size_t attn_q_norm_weight = SIZE_MAX;
+            size_t attn_k_norm_weight = SIZE_MAX;
             size_t pre_feedforward_layernorm_weight;
             size_t post_feedforward_layernorm_weight;
             size_t ffn_gate_weight;

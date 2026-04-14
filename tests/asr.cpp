@@ -252,6 +252,12 @@ int transcribe_file(cactus_model_t model, const std::string& audio_path, const s
     bool cloud_handoff = json_str.find("\"cloud_handoff\":true") != std::string::npos;
     bool cloud_key_detected = !get_cloud_api_key().empty();
 
+    std::string ttft_str       = extract_json_number(json_str, "time_to_first_token_ms");
+    std::string decode_tps_str = extract_json_number(json_str, "decode_tps");
+    std::string prefill_tps_str= extract_json_number(json_str, "prefill_tps");
+    std::string decode_tok_str = extract_json_number(json_str, "decode_tokens");
+    std::string prefill_tok_str= extract_json_number(json_str, "prefill_tokens");
+
     bool cloud_result_used_cloud = false;
     bool cloud_result_attempted = false;
     std::string cloud_result_error;
@@ -295,13 +301,39 @@ int transcribe_file(cactus_model_t model, const std::string& audio_path, const s
 
     std::ostringstream stats;
     stats << std::fixed << std::setprecision(2);
-    stats << "\n\n" << colored("[", Color::GRAY);
-    stats << colored("processed in: ", Color::GRAY) << total_seconds << "s";
-    if (!time_str.empty()) {
-        double model_time = std::stod(time_str) / 1000.0;
-        stats << colored(" | model time: ", Color::GRAY) << model_time << "s";
+    stats << "\n";
+    print_separator('-', 50);
+
+    if (!ttft_str.empty() && !decode_tps_str.empty()) {
+        double ttft_ms   = std::stod(ttft_str);
+        double dec_tps   = std::stod(decode_tps_str);
+        double pre_tps   = prefill_tps_str.empty() ? 0.0 : std::stod(prefill_tps_str);
+        int    dec_tok   = decode_tok_str.empty()  ? 0   : std::stoi(decode_tok_str);
+        int    pre_tok   = prefill_tok_str.empty() ? 0   : std::stoi(prefill_tok_str);
+
+        stats << colored("  TTFT:        ", Color::CYAN) << ttft_ms      << " ms\n";
+        stats << colored("  Decode:      ", Color::CYAN) << dec_tps      << " tok/s";
+        if (dec_tok > 0) stats << colored("  (" + std::to_string(dec_tok) + " tokens)", Color::GRAY);
+        stats << "\n";
+        if (pre_tps > 0.0) {
+            stats << colored("  Prefill:     ", Color::CYAN) << pre_tps  << " tok/s";
+            if (pre_tok > 0) stats << colored("  (" + std::to_string(pre_tok) + " tokens)", Color::GRAY);
+            stats << "\n";
+        }
+        if (!time_str.empty()) {
+            double model_ms = std::stod(time_str);
+            stats << colored("  Model time:  ", Color::CYAN) << model_ms / 1000.0 << " s\n";
+        }
+        stats << colored("  Wall time:   ", Color::CYAN) << total_seconds << " s\n";
+    } else {
+        stats << colored("  Wall time:   ", Color::CYAN) << total_seconds << " s\n";
+        if (!time_str.empty()) {
+            double model_ms = std::stod(time_str);
+            stats << colored("  Model time:  ", Color::CYAN) << model_ms / 1000.0 << " s\n";
+        }
     }
-    stats << colored("]", Color::GRAY);
+
+    print_separator('-', 50);
     stats << "\n" << colored("[cloud_handoff: ", Color::GRAY)
           << (cloud_handoff ? colored("true", Color::YELLOW) : colored("false", Color::GREEN))
           << colored("]", Color::GRAY);
@@ -858,8 +890,13 @@ int main(int argc, char* argv[]) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD)
                   << "Live transcription requires SDL2.\n";
         std::cerr << "Please install SDL2 and rebuild:\n";
+#ifdef _WIN32
+        std::cerr << "  Windows (MSYS2): pacman -S mingw-w64-clang-aarch64-SDL2\n";
+        std::cerr << "  Then rebuild:    cd tests && cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ && cmake --build build --target asr\n";
+#else
         std::cerr << "  macOS:  brew install sdl2\n";
         std::cerr << "  Linux:  sudo apt-get install libsdl2-dev\n";
+#endif
         result = 1;
 #endif
     }

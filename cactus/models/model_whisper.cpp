@@ -67,8 +67,20 @@ void WhisperModel::load_weights_to_graph(CactusGraph* gb) {
         output_weight_node_id_ = weight_nodes_.output_weight;
     }
 
-    if (npu::is_npu_available()) {
-        std::string npu_encoder_path = model_folder_path_ + "/model.mlpackage";
+    bool skip_npu_enc = false;
+    {
+#ifdef _WIN32
+        char buf[32] = {};
+        if (GetEnvironmentVariableA("CACTUS_NO_NPU_ENC", buf, sizeof(buf)) > 0 && buf[0] == '1')
+            skip_npu_enc = true;
+#else
+        const char* env = getenv("CACTUS_NO_NPU_ENC");
+        if (env && env[0] == '1')
+            skip_npu_enc = true;
+#endif
+    }
+    if (!skip_npu_enc && npu::is_npu_available()) {
+        std::string npu_encoder_path = model_folder_path_;
         npu_encoder_ = npu::create_encoder();
         if (npu_encoder_ && npu_encoder_->load(npu_encoder_path)) {
             use_npu_encoder_ = true;
@@ -524,6 +536,13 @@ void WhisperModel::run_encoder(const std::vector<float>& audio_features)
         );
 
         if (elements_written > 0) {
+            {
+                const uint16_t* op = reinterpret_cast<const uint16_t*>(npu_output.data());
+                fprintf(stderr, "[Whisper] NPU enc_out[0..15]: %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x\n",
+                        op[0],op[1],op[2],op[3],op[4],op[5],op[6],op[7],
+                        op[8],op[9],op[10],op[11],op[12],op[13],op[14],op[15]);
+                fflush(stderr);
+            }
             size_t enc_output_node = gb->input({T_enc, D_enc}, Precision::FP16);
             gb->set_input(enc_output_node, npu_output.data(), Precision::FP16);
 
@@ -760,6 +779,27 @@ uint32_t WhisperModel::decode_with_audio(
     if (!profile_file.empty()) gb->execute(profile_file);
     else gb->execute();
 
+    if (cold_start && encoder_output_persistent_) {
+#ifdef _WIN32
+        char dbg_buf[8] = {};
+        bool do_debug_enc = (GetEnvironmentVariableA("CACTUS_DEBUG_ENC", dbg_buf, sizeof(dbg_buf)) > 0 && dbg_buf[0] == '1');
+#else
+        const char* dbg_env = getenv("CACTUS_DEBUG_ENC");
+        bool do_debug_enc = (dbg_env && dbg_env[0] == '1');
+#endif
+        if (do_debug_enc) {
+            void* enc_ptr = gb->get_output(encoder_output_persistent_);
+            if (enc_ptr) {
+                const uint16_t* ep = (const uint16_t*)enc_ptr;
+                fprintf(stderr, "[Enc debug] first16 (fp16 hex): "
+                        "%04x %04x %04x %04x %04x %04x %04x %04x "
+                        "%04x %04x %04x %04x %04x %04x %04x %04x\n",
+                        ep[0],ep[1],ep[2],ep[3],ep[4],ep[5],ep[6],ep[7],
+                        ep[8],ep[9],ep[10],ep[11],ep[12],ep[13],ep[14],ep[15]);
+                fflush(stderr);
+            }
+        }
+    }
 
     compute_entropy(gb, logits_node, out_entropy);
 

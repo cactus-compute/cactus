@@ -3,6 +3,7 @@
 #include "../kernel/kernel.h"
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
 #include <stdexcept>
 
 namespace cactus {
