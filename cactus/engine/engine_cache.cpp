@@ -170,23 +170,6 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
                             reinterpret_cast<int8_t*>(cache.values.data()),
                             cache.value_scales.data(),
                             new_total_len, kv_heads, dim);
-
-                        {
-                            const __fp16* k0 = static_cast<const __fp16*>(k_output);
-                            const __fp16* v0 = static_cast<const __fp16*>(v_output);
-                            int kv_stride = (int)(kv_heads * dim);
-                            fprintf(stderr, "[CPU] K[0][%zu]:", layer_idx);
-                            for (int i = 0; i < 8; i++) { uint16_t u; memcpy(&u, &k0[i], 2); fprintf(stderr, " %04x", u); }
-                            fprintf(stderr, "\n");
-                            if ((int)new_total_len > 1) {
-                                fprintf(stderr, "[CPU] K[1][%zu]:", layer_idx);
-                                for (int i = 0; i < 8 && kv_stride + i < (int)(new_total_len * kv_heads * dim); i++) { uint16_t u; memcpy(&u, &k0[kv_stride + i], 2); fprintf(stderr, " %04x", u); }
-                                fprintf(stderr, "\n");
-                            }
-                            fprintf(stderr, "[CPU] V[0][%zu]:", layer_idx);
-                            for (int i = 0; i < 8; i++) { uint16_t u; memcpy(&u, &v0[i], 2); fprintf(stderr, " %04x", u); }
-                            fprintf(stderr, "\n");
-                        }
                     } else {
                         std::memcpy(cache.keys.data(), k_output, total_bytes);
                         std::memcpy(cache.values.data(), v_output, total_bytes);

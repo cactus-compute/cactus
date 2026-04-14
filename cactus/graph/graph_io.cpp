@@ -6,6 +6,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
+#ifdef _WIN32
+#include <io.h>
+#endif
 
 namespace {
     constexpr uint32_t fourcc(char a, char b, char c, char d) {
@@ -784,13 +787,18 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
 
 MappedFile::MappedFile(const std::string& filename)
     : fd_(-1), mapped_data_(nullptr), file_size_(0), data_offset_(0) {
-    fd_ = open(filename.c_str(), O_RDONLY);
+    fd_ = open(filename.c_str(), O_RDONLY | O_BINARY);
     if (fd_ == -1) {
         throw std::runtime_error("Cannot open file for mapping: " + filename);
     }
 
+#ifdef _WIN32
+    struct _stat64 st;
+    if (_fstat64(fd_, &st) == -1) {
+#else
     struct stat st;
     if (fstat(fd_, &st) == -1) {
+#endif
         close(fd_);
         throw std::runtime_error("Cannot get file size: " + filename);
     }
