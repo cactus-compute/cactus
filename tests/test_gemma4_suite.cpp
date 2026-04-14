@@ -24,6 +24,12 @@ static const char* get_image_path() {
     return std::getenv("CACTUS_TEST_IMAGE");
 }
 
+static std::string get_audio_path() {
+    const char* dir = std::getenv("CACTUS_TEST_ASSETS");
+    if (dir) return std::string(dir) + "/test.wav";
+    return "../assets/test.wav";
+}
+
 static std::string get_assets_dir() {
     const char* dir = std::getenv("CACTUS_TEST_ASSETS");
     if (dir) return dir;
@@ -511,6 +517,68 @@ bool test_gemma4_audio(bool expect_npu) {
     return true;
 }
 
+bool test_gemma4_vision_audio() {
+    const char* model_path = get_model_path();
+    const char* image_path = get_image_path();
+    if (!model_path || !image_path) {
+        std::cerr << "  SKIP: CACTUS_TEST_GEMMA4_MODEL or CACTUS_TEST_IMAGE not set\n";
+        return true;
+    }
+
+    std::string audio_path = get_audio_path();
+    struct stat st;
+    if (stat(audio_path.c_str(), &st) != 0) {
+        std::cerr << "  SKIP: test.wav not found in assets\n";
+        return true;
+    }
+
+    print_modality_box("VISION + AUDIO", "Describe the image and summarize the audio briefly.");
+
+    cactus_model_t model = cactus_init(model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "  FAIL: cactus_init returned null\n";
+        return false;
+    }
+
+    std::string messages = "[{\"role\":\"user\",\"content\":\"Describe the image and summarize the audio briefly.\","
+                           "\"images\":[\"" + escape_json(image_path) + "\"],"
+                           "\"audio\":[\"" + escape_json(audio_path) + "\"]}]";
+    std::vector<char> response_buffer(16384, 0);
+
+    int result = cactus_complete(model, messages.c_str(), response_buffer.data(), response_buffer.size(),
+                                 g_options, nullptr, nullptr, nullptr, nullptr, 0);
+    cactus_destroy(model);
+
+    std::string response_json(response_buffer.data());
+    Metrics metrics;
+    metrics.parse(response_json);
+    metrics.print_json();
+
+    if (result <= 0 || !metrics.success) {
+        std::cerr << "  FAIL: completion failed: " << response_json << "\n";
+        return false;
+    }
+    if (metrics.response.empty()) {
+        std::cerr << "  FAIL: empty response\n";
+        return false;
+    }
+
+    bool has_content = false;
+    for (char c : metrics.response) {
+        if (std::isalpha(static_cast<unsigned char>(c))) {
+            has_content = true;
+            break;
+        }
+    }
+    if (!has_content) {
+        std::cerr << "  FAIL: response has no alphabetic content\n";
+        return false;
+    }
+
+    std::cout << "  Output: " << preview_text(metrics.response) << "\n";
+    return true;
+}
+
 
 int main() {
     TestUtils::TestRunner runner("Gemma4 Suite");
@@ -522,6 +590,7 @@ int main() {
     runner.run_test("vision_npu", test_gemma4_vision(true));
     runner.run_test("audio", test_gemma4_audio(false));
     runner.run_test("audio_npu", test_gemma4_audio(true));
+    runner.run_test("vision_audio", test_gemma4_vision_audio());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

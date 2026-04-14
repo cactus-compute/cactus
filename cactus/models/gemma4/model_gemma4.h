@@ -338,6 +338,14 @@ public:
         float min_p = 0.15f, float repetition_penalty = 1.1f,
         float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
 
+    uint32_t decode_with_media(
+        const std::vector<uint32_t>& tokens,
+        const std::vector<std::string>& image_paths,
+        const std::vector<float>& audio_features,
+        float temperature = -1.0f, float top_p = -1.0f, size_t top_k = 0,
+        const std::string& profile_file = "", float* out_entropy = nullptr,
+        float min_p = 0.15f, float repetition_penalty = 1.1f);
+
     void reset_cache() override;
     std::vector<float> get_image_embeddings(const std::string& image_path) override;
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;

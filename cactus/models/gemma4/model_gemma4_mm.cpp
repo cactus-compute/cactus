@@ -399,6 +399,19 @@ uint32_t Gemma4MmModel::decode_with_audio(
                               min_p, repetition_penalty);
 }
 
+uint32_t Gemma4MmModel::decode_with_media(
+    const std::vector<uint32_t>& tokens,
+    const std::vector<std::string>& image_paths,
+    const std::vector<float>& audio_features,
+    float temperature, float top_p, size_t top_k,
+    const std::string& profile_file, float* out_entropy,
+    float min_p, float repetition_penalty) {
+    size_t num_frames = audio_features.size() / config_.audio_input_feat_size;
+    return decode_multimodal(tokens, image_paths, &audio_features, num_frames,
+                              temperature, top_p, top_k, profile_file, out_entropy,
+                              min_p, repetition_penalty);
+}
+
 std::vector<float> Gemma4MmModel::get_image_embeddings(const std::string& image_path) {
     if (!initialized_ || !graph_handle_)
         throw std::runtime_error("Model not initialized - call init() first");
