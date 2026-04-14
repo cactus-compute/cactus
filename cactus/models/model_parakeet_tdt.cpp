@@ -954,12 +954,16 @@ uint32_t ParakeetTDTModel::decode_with_audio(
     size_t top_k,
     const std::string& profile_file,
     float* out_entropy,
+    float min_p,
+    float repetition_penalty,
     float* out_token_time_start,
     float* out_token_time_end)
 {
     (void)temperature;
     (void)top_p;
     (void)top_k;
+    (void)min_p;
+    (void)repetition_penalty;
 
     if (!initialized_ || !graph_handle_) {
         throw std::runtime_error("Model not initialized - call init() first");

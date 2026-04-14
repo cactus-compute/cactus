@@ -137,7 +137,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER ||
                                  config_.model_type == Config::ModelType::MOONSHINE ||
                                  config_.model_type == Config::ModelType::PARAKEET ||
-                                 config_.model_type == Config::ModelType::PARAKEET_TDT)
+                                 config_.model_type == Config::ModelType::PARAKEET_TDT ||
+                                 config_.model_type == Config::ModelType::NEEDLE)
                                ? Precision::FP16
                                : Precision::INT8;
     kv_cache_.init(config_.num_layers, context_size, get_kv_layer_dims(), get_kv_layer_heads(), cache_precision);
@@ -164,7 +165,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         config_.model_type != Config::ModelType::WHISPER &&
         config_.model_type != Config::ModelType::MOONSHINE &&
         config_.model_type != Config::ModelType::PARAKEET &&
-        config_.model_type != Config::ModelType::PARAKEET_TDT) {
+        config_.model_type != Config::ModelType::PARAKEET_TDT &&
+        config_.model_type != Config::ModelType::NEEDLE) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
         if (config_.model_type == Config::ModelType::GEMMA4) {
@@ -244,7 +246,8 @@ void Model::prefill_with_images(const std::vector<uint32_t>& tokens, const std::
 }
 
 uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, float top_p,
-                        size_t top_k, const std::string& profile_file, float* out_entropy) {
+                        size_t top_k, const std::string& profile_file, float* out_entropy,
+                        float min_p, float repetition_penalty) {
 
     if (temperature < 0) {
         temperature = config_.default_temperature;
@@ -275,7 +278,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
         logits_node_id = gb->tanh(logits_node_id);
         logits_node_id = gb->scalar_multiply(logits_node_id, config_.final_logit_softcapping);
     }
-    auto sampled_token_id = sample_token(gb, logits_node_id, temperature, top_p, top_k);
+    auto sampled_token_id = sample_token(gb, logits_node_id, temperature, top_p, top_k, min_p, repetition_penalty);
 
     gb->execute(profile_file);
 
@@ -285,10 +288,13 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     update_kv_cache(gb, tokens.size());
 
     auto* output_ptr = gb->get_output(sampled_token_id);
-    return *static_cast<uint32_t*>(output_ptr);
+    uint32_t result_token = *static_cast<uint32_t*>(output_ptr);
+    record_sampled_token(result_token);
+    return result_token;
 }
 
 size_t Model::sample_token(CactusGraph* gb, size_t logits_node_id, float temperature, float top_p, size_t top_k,
+                           float min_p, float repetition_penalty,
                            const std::unordered_map<uint32_t, float>* extra_bias) const {
     auto combined_bias = tool_constrainer_.get_bias();
     for (const auto& [token_id, boost] : vocab_bias_) {
@@ -299,7 +305,13 @@ size_t Model::sample_token(CactusGraph* gb, size_t logits_node_id, float tempera
             combined_bias[token_id] += boost;
         }
     }
-    return gb->sample(logits_node_id, temperature, top_p, top_k, combined_bias);
+    if (!token_history_.empty() && repetition_penalty > 1.0f && std::isfinite(repetition_penalty)) {
+        float log_penalty = std::log(repetition_penalty);
+        for (uint32_t tok : token_history_) {
+            combined_bias[tok] -= log_penalty;
+        }
+    }
+    return gb->sample_with_options(logits_node_id, temperature, top_p, min_p, 1.0f, top_k, combined_bias);
 }
 
 void Model::compute_entropy(CactusGraph* gb, size_t logits_node_id, float* out_entropy) {
@@ -343,14 +355,17 @@ void Model::compute_entropy(CactusGraph* gb, size_t logits_node_id, float* out_e
     *out_entropy = static_cast<float>(entropy / max_entropy);
 }
 
-uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& /*mel_bins*/, float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy, float* /*out_token_time_start*/, float* /*out_token_time_end*/){
-    return decode(tokens, temperature, top_p, top_k, profile_file, out_entropy);
+uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& /*mel_bins*/, float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy,
+                                 float min_p, float repetition_penalty,
+                                 float* /*out_token_time_start*/, float* /*out_token_time_end*/){
+    return decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
 }
 
 uint32_t Model::decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
-                                     float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy) {
+                                     float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy,
+                                     float min_p, float repetition_penalty) {
     (void)image_paths;
-    return decode(tokens, temperature, top_p, top_k, profile_file, out_entropy);
+    return decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
 }
 
 std::vector<float> Model::get_image_embeddings(const std::string& /*image_path*/) {
@@ -540,6 +555,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (model_type_value.rfind("qwen3_5", 0) == 0) model_type = ModelType::QWEN3P5;
             else if (value == "parakeet_tdt" || value == "PARAKEET_TDT") model_type = ModelType::PARAKEET_TDT;
             else if (value == "gemma3n" || value == "GEMMA3N") model_type = ModelType::GEMMA3N;
+            else if (value == "needle" || value == "NEEDLE") model_type = ModelType::NEEDLE;
             else if (value == "gemma4" || value == "GEMMA4" || value == "tinyllama" || value == "TINYLLAMA") model_type = ModelType::GEMMA4;
             else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
             else if (value == "pyannote" || value == "PYANNOTE") model_type = ModelType::PYANNOTE;
@@ -722,6 +738,10 @@ bool Config::from_json(const std::string& config_path) {
         default_top_k = 0;
         default_max_tps = 8.0f;
         default_cloud_handoff_threshold = 0.35f;
+    } else if (model_type == ModelType::NEEDLE) {
+        default_temperature = 0.0f;
+        default_top_p = 0.0f;
+        default_top_k = 0;
     } else if (model_type == ModelType::YOUTU) {
         default_temperature = 1.0f;
         default_top_p = 0.95f;
@@ -790,6 +810,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<ParakeetModel>(config);
         case Config::ModelType::PARAKEET_TDT:
             return std::make_unique<ParakeetTDTModel>(config);
+        case Config::ModelType::NEEDLE:
+            return std::make_unique<NeedleModel>(config);
         case Config::ModelType::GEMMA4:
             return std::make_unique<Gemma4Model>(config);
         case Config::ModelType::YOUTU:

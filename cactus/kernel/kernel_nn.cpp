@@ -518,6 +518,17 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
                        float temperature, float top_p, size_t top_k, size_t random_seed,
                        const float* bias_values, const uint32_t* bias_indices,
                        size_t bias_count) {
+    cactus_sample_f32_ex(logits, output, vocab_size,
+                         temperature, top_p, 0.15f, 1.1f,
+                         top_k, random_seed,
+                         bias_values, bias_indices, bias_count);
+}
+
+void cactus_sample_f32_ex(const float* logits, uint32_t* output, size_t vocab_size,
+                          float temperature, float top_p, float min_p, float repetition_penalty,
+                          size_t top_k, size_t random_seed,
+                          const float* bias_values, const uint32_t* bias_indices,
+                          size_t bias_count) {
     if (vocab_size == 0) {
         output[0] = 0;
         return;
@@ -548,6 +559,8 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
             filtered_logits[i] /= temperature;
         }
     }
+
+    (void)repetition_penalty;
     
     if (top_k > 0) {
         std::vector<std::pair<float, size_t>> logit_pairs;
@@ -568,7 +581,6 @@ void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
         }
     }
     
-    constexpr float min_p = 0.15f;
     if (min_p > 0.0f) {
         float max_logit = *std::max_element(filtered_logits.begin(), filtered_logits.end());
         if (!std::isinf(max_logit)) {
@@ -702,6 +714,17 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
                        float temperature, float top_p, size_t top_k, size_t random_seed,
                        const float* bias_values, const uint32_t* bias_indices,
                        size_t bias_count) {
+    cactus_sample_f16_ex(logits, output, vocab_size,
+                         temperature, top_p, 0.15f, 1.1f,
+                         top_k, random_seed,
+                         bias_values, bias_indices, bias_count);
+}
+
+void cactus_sample_f16_ex(const __fp16* logits, uint32_t* output, size_t vocab_size,
+                          float temperature, float top_p, float min_p, float repetition_penalty,
+                          size_t top_k, size_t random_seed,
+                          const float* bias_values, const uint32_t* bias_indices,
+                          size_t bias_count) {
     if (vocab_size == 0) {
         output[0] = 0;
         return;
@@ -741,22 +764,7 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
         }
     }
 
-    static std::vector<uint32_t> token_history;
-    static const size_t MAX_HISTORY = 128; 
-    static const float REPETITION_PENALTY = 1.1f;
-
-    if (!token_history.empty() && REPETITION_PENALTY != 1.0f) {
-        const __fp16 penalty_inv = static_cast<__fp16>(1.0f / REPETITION_PENALTY);
-        const __fp16 penalty = static_cast<__fp16>(REPETITION_PENALTY);
-
-        for (uint32_t prev_token : token_history) {
-            if (prev_token < vocab_size) {
-                filtered_logits[prev_token] = (filtered_logits[prev_token] > static_cast<__fp16>(0))
-                    ? static_cast<__fp16>(filtered_logits[prev_token] * penalty_inv)
-                    : static_cast<__fp16>(filtered_logits[prev_token] * penalty);
-            }
-        }
-    }
+    (void)repetition_penalty;
 
     if (top_k > 0) {
         std::vector<std::pair<__fp16, size_t>> logit_pairs;
@@ -775,6 +783,37 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
             for (size_t i = 0; i < vocab_size; ++i) {
                 if (filtered_logits[i] < kth_value) {
                     filtered_logits[i] = neg_inf;
+                }
+            }
+        }
+    }
+
+    if (min_p > 0.0f) {
+        float max_logit = -std::numeric_limits<float>::infinity();
+        for (size_t i = 0; i < vocab_size; ++i) {
+            max_logit = std::max(max_logit, static_cast<float>(filtered_logits[i]));
+        }
+        if (!std::isinf(max_logit)) {
+            std::vector<float> temp_probs(vocab_size);
+            float sum = 0.0f;
+            for (size_t i = 0; i < vocab_size; ++i) {
+                float v = static_cast<float>(filtered_logits[i]);
+                if (!std::isinf(v)) {
+                    temp_probs[i] = std::exp(v - max_logit);
+                    sum += temp_probs[i];
+                } else {
+                    temp_probs[i] = 0.0f;
+                }
+            }
+            if (sum > 0.0f) {
+                for (float& p : temp_probs) p /= sum;
+                float max_prob = *std::max_element(temp_probs.begin(), temp_probs.end());
+                float threshold = max_prob * min_p;
+                __fp16 neg_inf = static_cast<__fp16>(-std::numeric_limits<float>::infinity());
+                for (size_t i = 0; i < vocab_size; ++i) {
+                    if (temp_probs[i] < threshold) {
+                        filtered_logits[i] = neg_inf;
+                    }
                 }
             }
         }
@@ -870,10 +909,6 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
         cumulative += probs[i];
         if (cumulative >= sample) {
             output[0] = static_cast<uint32_t>(i);
-            token_history.push_back(output[0]);
-            if (token_history.size() > MAX_HISTORY) {
-                token_history.erase(token_history.begin());
-            }
             return;
         }
     }
@@ -881,17 +916,9 @@ void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size
     for (size_t i = vocab_size; i > 0; --i) {
         if (probs[i-1] > 0.0f) {
             output[0] = static_cast<uint32_t>(i-1);
-            token_history.push_back(output[0]);
-            if (token_history.size() > MAX_HISTORY) {
-                token_history.erase(token_history.begin());
-            }
             return;
         }
     }
 
     output[0] = 0;
-    token_history.push_back(output[0]);
-    if (token_history.size() > MAX_HISTORY) {
-        token_history.erase(token_history.begin());
-    }
 }

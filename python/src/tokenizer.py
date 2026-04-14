@@ -159,12 +159,7 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
             if token_id < len(id_to_token):
                 id_to_token[token_id] = token_str
 
-    vocab_output = output_dir / "vocab.txt"
-    with open(vocab_output, 'w', encoding='utf-8') as f:
-        for token_id, token_str in enumerate(id_to_token):
-            if token_str:
-                f.write(f"{token_id}\t{token_str}\n")
-    print(f"  Saved tokenizer vocabulary (ID\\ttoken format)")
+    # vocab.txt is written later, after special tokens are collected
 
 
     merges_output = output_dir / "merges.txt"
@@ -253,8 +248,6 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
                 additional_special_tokens.append({"token": token_str, "id": token_id})
 
     for token_info in tokenizer_json_data.get("added_tokens", []) or []:
-        if not token_info.get("special"):
-            continue
         token_str = token_info.get("content")
         token_id = token_info.get("id")
         if token_str is None or token_id is None:
@@ -371,11 +364,26 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
         pass
 
 
+    # Extend id_to_token to include special/added tokens so vocab.txt is self-contained
+    if special_tokens:
+        max_special_id = max(special_tokens.keys())
+        if max_special_id >= len(id_to_token):
+            id_to_token.extend([""] * (max_special_id - len(id_to_token) + 1))
+        for token_id, token_str in special_tokens.items():
+            id_to_token[token_id] = token_str
+
+    vocab_output = output_dir / "vocab.txt"
+    with open(vocab_output, 'w', encoding='utf-8') as f:
+        for token_id, token_str in enumerate(id_to_token):
+            if token_str:
+                f.write(f"{token_id}\t{token_str}\n")
+    print(f"  Saved tokenizer vocabulary (ID\\ttoken format)")
+
     special_tokens_output = output_dir / "special_tokens.json"
     with open(special_tokens_output, 'w', encoding='utf-8') as f:
         json.dump({
             **special_token_ids,
-            "vocab_size": len(vocab),
+            "vocab_size": len(id_to_token),
             "model_max_length": getattr(tokenizer, 'model_max_length', 131072),
             "special_tokens": special_tokens,
             "additional_special_tokens": additional_special_tokens,
@@ -405,7 +413,7 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
 
     tokenizer_config_output = output_dir / "tokenizer_config.txt"
     with open(tokenizer_config_output, 'w') as f:
-        f.write(f"vocab_size={len(vocab)}\n")
+        f.write(f"vocab_size={len(id_to_token)}\n")
         for key, value in special_token_ids.items():
             f.write(f"{key}={value}\n")
         f.write(f"model_max_length={getattr(tokenizer, 'model_max_length', 131072)}\n")
@@ -422,3 +430,105 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
         if len(tool_tokens) > 0:
             f.write(f"has_tool_support=true\n")
             f.write(f"tool_token_count={len(tool_tokens)}\n")
+
+
+def _read_varint(data, pos):
+    shift, value = 0, 0
+    while True:
+        byte = data[pos]; pos += 1
+        value |= (byte & 0x7F) << shift
+        if not (byte & 0x80): return value, pos
+        shift += 7
+
+
+def _skip_proto(data, pos, wire_type):
+    if wire_type == 0: _, pos = _read_varint(data, pos); return pos
+    if wire_type == 1: return pos + 8
+    if wire_type == 2: length, pos = _read_varint(data, pos); return pos + length
+    if wire_type == 5: return pos + 4
+    raise ValueError(f"Unsupported wire type: {wire_type}")
+
+
+def parse_sentencepiece_pieces(path):
+    import struct
+    data = Path(path).read_bytes()
+    pos, pieces = 0, []
+    while pos < len(data):
+        tag, pos = _read_varint(data, pos)
+        if (tag >> 3) != 1 or (tag & 7) != 2:
+            pos = _skip_proto(data, pos, tag & 7); continue
+        msg_len, pos = _read_varint(data, pos)
+        end = pos + msg_len; msg = data[pos:end]; pos = end
+        inner_pos, piece, score = 0, None, 0.0
+        while inner_pos < len(msg):
+            itag, inner_pos = _read_varint(msg, inner_pos)
+            ifield, iwire = itag >> 3, itag & 7
+            if ifield == 1 and iwire == 2:
+                vlen, inner_pos = _read_varint(msg, inner_pos)
+                piece = msg[inner_pos:inner_pos + vlen].decode("utf-8", errors="replace")
+                inner_pos += vlen
+            elif ifield == 2 and iwire == 5:
+                score = struct.unpack("<f", msg[inner_pos:inner_pos + 4])[0]
+                inner_pos += 4
+            else:
+                inner_pos = _skip_proto(msg, inner_pos, iwire)
+        if piece is not None:
+            pieces.append({"piece": piece, "score": float(score)})
+    return pieces
+
+
+def _build_sentencepiece_metadata(pieces, model_max_length):
+    piece_to_id = {p["piece"]: i for i, p in enumerate(pieces)}
+    pad_id = piece_to_id.get("<pad>", 0)
+    eos_id = piece_to_id.get("</s>", 1)
+    bos_id = piece_to_id.get("<s>", 2)
+    unk_id = piece_to_id.get("<unk>", 3)
+
+    special = {pad_id: "<pad>", eos_id: "</s>", bos_id: "<s>", unk_id: "<unk>"}
+    tool_tokens = []
+    for tok in ("<tool_call>", "<tools>"):
+        tid = piece_to_id.get(tok)
+        if tid is not None:
+            special[tid] = tok
+            tool_tokens.append({"token": tok, "id": tid})
+
+    return {
+        "vocab_size": len(pieces), "pad_token_id": pad_id, "eos_token_id": eos_id,
+        "bos_token_id": bos_id, "unk_token_id": unk_id, "model_max_length": model_max_length,
+        "sp_model_type": "bpe", "sp_add_dummy_prefix": True,
+        "sp_remove_extra_whitespaces": True, "sp_escape_whitespaces": True,
+        "sp_byte_fallback": True, "special_tokens": {str(k): v for k, v in special.items()},
+        "additional_special_tokens": tool_tokens,
+    }
+
+
+def _write_sentencepiece_files(output_dir, pieces, meta):
+    with open(output_dir / "vocab.txt", "w", encoding="utf-8") as f:
+        for i, p in enumerate(pieces):
+            f.write(f"{i}\t{p['piece']}\t{p['score']}\n")
+
+    with open(output_dir / "merges.txt", "w", encoding="utf-8") as f:
+        f.write("#version: 0.2\n")
+
+    with open(output_dir / "special_tokens.json", "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
+
+    tool_tokens = meta.get("additional_special_tokens", [])
+    with open(output_dir / "tokenizer_config.txt", "w", encoding="utf-8") as f:
+        f.write(f"vocab_size={meta['vocab_size']}\n")
+        f.write(f"eos_token_id={meta['eos_token_id']}\npad_token_id={meta['pad_token_id']}\n")
+        f.write(f"bos_token_id={meta['bos_token_id']}\nunk_token_id={meta['unk_token_id']}\n")
+        f.write(f"model_max_length={meta['model_max_length']}\n")
+        f.write("tokenizer_type=sentencepiece\nsp_model_type=bpe\n")
+        f.write("sp_add_dummy_prefix=true\nsp_remove_extra_whitespaces=true\n")
+        f.write("sp_escape_whitespaces=true\nsp_byte_fallback=true\n")
+        f.write("has_chat_template=false\n")
+        if tool_tokens:
+            f.write(f"has_tool_support=true\ntool_token_count={len(tool_tokens)}\n")
+
+
+def convert_sentencepiece_tokenizer(tokenizer_path, output_dir, model_max_length=131072):
+    output_dir = Path(output_dir)
+    pieces = parse_sentencepiece_pieces(tokenizer_path)
+    meta = _build_sentencepiece_metadata(pieces, model_max_length)
+    _write_sentencepiece_files(output_dir, pieces, meta)

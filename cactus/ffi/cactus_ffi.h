@@ -170,7 +170,9 @@ CACTUS_FFI_EXPORT int cactus_embed_speaker(
     size_t buffer_size,
     const char* options_json,
     const uint8_t* pcm_buffer,
-    size_t pcm_buffer_size
+    size_t pcm_buffer_size,
+    const float* mask_weights,
+    size_t mask_num_frames
 );
 
 CACTUS_FFI_EXPORT int cactus_rag_query(
@@ -257,6 +259,9 @@ typedef struct {
 CACTUS_FFI_EXPORT cactus_graph_t cactus_graph_create(void);
 CACTUS_FFI_EXPORT void cactus_graph_destroy(cactus_graph_t graph);
 CACTUS_FFI_EXPORT int cactus_graph_hard_reset(cactus_graph_t graph);
+
+CACTUS_FFI_EXPORT int cactus_graph_save(cactus_graph_t graph, const char* filename);
+CACTUS_FFI_EXPORT cactus_graph_t cactus_graph_load(const char* filename);
 
 CACTUS_FFI_EXPORT int cactus_graph_input(
     cactus_graph_t graph, const size_t* shape, size_t rank, int32_t precision,

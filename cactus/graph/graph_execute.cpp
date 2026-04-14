@@ -152,6 +152,7 @@ static const std::unordered_map<OpType, ComputeFn> dispatch_table = {
     {OpType::MAXPOOL1D, compute_maxpool1d_node},
     {OpType::BILSTM_SEQUENCE, compute_bilstm_sequence_node},
     {OpType::STATS_POOL, compute_stats_pool_node},
+    {OpType::WEIGHTED_STATS_POOL, compute_weighted_stats_pool_node},
 };
 
 static const char* op_type_names[] = {
@@ -183,7 +184,8 @@ static const char* op_type_names[] = {
     "BILSTM_SEQUENCE",
     "LEAKY_RELU",
     "CONV2D_K3S1P1",
-    "STATS_POOL"
+    "STATS_POOL",
+    "WEIGHTED_STATS_POOL"
 };
 
 static const char* get_op_name(OpType op) {
@@ -202,7 +204,12 @@ void compute_node_optimized(GraphNode& node, const nodes_vector& nodes, const no
 }
 
 void CactusGraph::set_input(size_t node_id, const void* data, Precision) {
-    auto& node = *nodes_[node_index_map_[node_id]];
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end()) {
+        throw std::out_of_range("Unknown input node id: " + std::to_string(node_id));
+    }
+
+    auto& node = *nodes_[it->second];
     if (node.op_type != OpType::INPUT) {
         throw std::invalid_argument("Can only set data on input nodes");
     }
@@ -215,7 +222,12 @@ void CactusGraph::set_input(size_t node_id, const void* data, Precision) {
 }
 
 void CactusGraph::set_external_input(size_t node_id, void* data, Precision) {
-    auto& node = *nodes_[node_index_map_[node_id]];
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end()) {
+        throw std::out_of_range("Unknown input node id: " + std::to_string(node_id));
+    }
+
+    auto& node = *nodes_[it->second];
     if (node.op_type != OpType::INPUT) {
         throw std::invalid_argument("Can only set data on input nodes");
     }
@@ -224,7 +236,12 @@ void CactusGraph::set_external_input(size_t node_id, void* data, Precision) {
 }
 
 void* CactusGraph::get_output(size_t node_id) {
-    auto& buffer = nodes_[node_index_map_[node_id]]->output_buffer;
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end()) {
+        throw std::out_of_range("Unknown output node id: " + std::to_string(node_id));
+    }
+
+    auto& buffer = nodes_[it->second]->output_buffer;
     if (!buffer.get_data()) {
         buffer.allocate();
     }
@@ -703,7 +720,7 @@ void CactusGraph::hard_reset() {
     node_index_map_.clear();
     mapped_files_.clear();
     weight_cache_.clear();
-    next_node_id_ = 0;
+    next_node_id_ = 1;
     debug_nodes_.clear();
     buffer_pool_.clear();
 }

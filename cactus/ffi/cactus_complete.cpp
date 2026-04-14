@@ -17,6 +17,9 @@ static constexpr size_t ROLLING_ENTROPY_WINDOW = 10;
 
 namespace {
 
+std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema);
+std::vector<std::string> extract_schema_required(const std::string& schema);
+
 std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
     for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
         if (it->role == "user") {
@@ -24,6 +27,17 @@ std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
         }
     }
     return {};
+}
+
+std::vector<uint32_t> encode_needle_tools_suffix(Tokenizer* tokenizer, const std::string& formatted_tools) {
+    auto prefix = tokenizer->encode("<tools>");
+    auto body = tokenizer->encode(formatted_tools);
+    std::vector<uint32_t> tokens;
+    tokens.reserve(prefix.size() + body.size() + 1);
+    tokens.insert(tokens.end(), prefix.begin(), prefix.end());
+    tokens.insert(tokens.end(), body.begin(), body.end());
+    tokens.push_back(tokenizer->get_eos_token());
+    return tokens;
 }
 
 void inject_rag_context(CactusModelHandle* handle, std::vector<ChatMessage>& messages) {
@@ -43,6 +57,30 @@ void inject_rag_context(CactusModelHandle* handle, std::vector<ChatMessage>& mes
         system_msg.content = rag_context + "Answer the user's question using ONLY the context above. Do not use any prior knowledge. If the answer cannot be found in the context, respond with \"I don't have enough information to answer that.\"";
         messages.insert(messages.begin(), system_msg);
     }
+}
+
+std::vector<ToolConstraintSpec> build_tool_constraint_specs(const std::vector<ToolFunction>& tools) {
+    std::vector<ToolConstraintSpec> specs;
+    specs.reserve(tools.size());
+
+    for (const auto& tool : tools) {
+        ToolConstraintSpec spec;
+        spec.name = tool.name;
+
+        auto schema_it = tool.parameters.find("schema");
+        if (schema_it != tool.parameters.end()) {
+            auto properties = extract_schema_property_types(schema_it->second);
+            spec.parameter_names.reserve(properties.size());
+            for (const auto& [name, _] : properties) {
+                spec.parameter_names.push_back(name);
+            }
+            spec.required_parameter_names = extract_schema_required(schema_it->second);
+        }
+
+        specs.push_back(std::move(spec));
+    }
+
+    return specs;
 }
 
 void strip_thinking_from_cache(CactusModelHandle* handle,
@@ -66,16 +104,181 @@ void setup_tool_constraints(CactusModelHandle* handle, const std::vector<ToolFun
                            bool force_tools, float& temperature) {
     if (!force_tools || tools.empty()) return;
 
-    std::vector<std::string> function_names;
-    function_names.reserve(tools.size());
-    for (const auto& tool : tools) {
-        function_names.push_back(tool.name);
-    }
-    handle->model->set_tool_constraints(function_names);
+    handle->model->set_tool_constraints(build_tool_constraint_specs(tools));
 
     if (temperature == 0.0f) {
         temperature = 0.01f;
     }
+}
+
+size_t find_json_block_end(const std::string& json, size_t start) {
+    if (start >= json.size() || json[start] != '{') {
+        return std::string::npos;
+    }
+
+    int depth = 1;
+    bool in_string = false;
+    bool escaped = false;
+    size_t pos = start + 1;
+    while (pos < json.size() && depth > 0) {
+        char c = json[pos];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+        } else {
+            if (c == '"') {
+                in_string = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+            }
+        }
+        ++pos;
+    }
+
+    return depth == 0 ? pos : std::string::npos;
+}
+
+std::string extract_json_object_field(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\":";
+    size_t key_pos = json.find(pattern);
+    if (key_pos == std::string::npos) {
+        return {};
+    }
+
+    size_t object_start = json.find('{', key_pos + pattern.size());
+    if (object_start == std::string::npos) {
+        return {};
+    }
+
+    size_t object_end = find_json_block_end(json, object_start);
+    if (object_end == std::string::npos) {
+        return {};
+    }
+
+    return json.substr(object_start, object_end - object_start);
+}
+
+std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema) {
+    std::vector<std::pair<std::string, std::string>> properties;
+    std::string properties_object = extract_json_object_field(schema, "properties");
+    if (properties_object.empty() || properties_object.size() < 2) {
+        return properties;
+    }
+
+    size_t pos = 1;
+    while (pos + 1 < properties_object.size()) {
+        size_t key_start = properties_object.find('"', pos);
+        if (key_start == std::string::npos || key_start + 1 >= properties_object.size()) {
+            break;
+        }
+        size_t key_end = properties_object.find('"', key_start + 1);
+        if (key_end == std::string::npos) {
+            break;
+        }
+
+        std::string name = properties_object.substr(key_start + 1, key_end - key_start - 1);
+        size_t value_start = properties_object.find('{', key_end);
+        if (value_start == std::string::npos) {
+            break;
+        }
+        size_t value_end = find_json_block_end(properties_object, value_start);
+        if (value_end == std::string::npos) {
+            break;
+        }
+
+        std::string value = properties_object.substr(value_start, value_end - value_start);
+        std::string type = "string";
+        std::string type_pattern = "\"type\":\"";
+        size_t type_pos = value.find(type_pattern);
+        if (type_pos != std::string::npos) {
+            size_t type_start = type_pos + type_pattern.size();
+            size_t type_end = value.find('"', type_start);
+            if (type_end != std::string::npos) {
+                type = value.substr(type_start, type_end - type_start);
+            }
+        } else if (value.find("\"enum\"") != std::string::npos) {
+            type = "string";
+        } else if (value.find("\"properties\"") != std::string::npos) {
+            type = "object";
+        }
+
+        properties.emplace_back(std::move(name), std::move(type));
+        pos = value_end;
+    }
+
+    return properties;
+}
+
+std::vector<std::string> extract_schema_required(const std::string& schema) {
+    std::vector<std::string> required;
+    std::string key = "\"required\"";
+    size_t key_pos = schema.find(key);
+    if (key_pos == std::string::npos) return required;
+    size_t arr_start = schema.find('[', key_pos + key.size());
+    if (arr_start == std::string::npos) return required;
+    size_t arr_end = schema.find(']', arr_start);
+    if (arr_end == std::string::npos) return required;
+    size_t pos = arr_start + 1;
+    while (pos < arr_end) {
+        size_t qs = schema.find('"', pos);
+        if (qs == std::string::npos || qs >= arr_end) break;
+        size_t qe = schema.find('"', qs + 1);
+        if (qe == std::string::npos || qe > arr_end) break;
+        required.push_back(schema.substr(qs + 1, qe - qs - 1));
+        pos = qe + 1;
+    }
+    return required;
+}
+
+std::string serialize_needle_tools_json(const std::vector<ToolFunction>& tools, const char* raw_tools_json) {
+    if (tools.empty()) {
+        return (raw_tools_json && std::strlen(raw_tools_json) > 0) ? raw_tools_json : "[]";
+    }
+
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < tools.size(); ++i) {
+        if (i > 0) {
+            oss << ",";
+        }
+
+        oss << "{\"name\":\"" << escape_json_string(tools[i].name) << "\"";
+        if (!tools[i].description.empty()) {
+            oss << ",\"description\":\"" << escape_json_string(tools[i].description) << "\"";
+        }
+
+        oss << ",\"parameters\":";
+        auto schema_it = tools[i].parameters.find("schema");
+        if (schema_it == tools[i].parameters.end()) {
+            oss << "{}";
+        } else {
+            auto properties = extract_schema_property_types(schema_it->second);
+            if (properties.empty()) {
+                oss << schema_it->second;
+            } else {
+                oss << "{";
+                for (size_t p = 0; p < properties.size(); ++p) {
+                    if (p > 0) {
+                        oss << ",";
+                    }
+                    oss << "\"" << escape_json_string(properties[p].first) << "\":"
+                        << "\"" << escape_json_string(properties[p].second) << "\"";
+                }
+                oss << "}";
+            }
+        }
+
+        oss << "}";
+    }
+    oss << "]";
+    return oss.str();
 }
 
 std::vector<std::vector<uint32_t>> build_stop_sequences(
@@ -234,7 +437,6 @@ std::vector<std::vector<CactusModelHandle::ProcessedImage>> images_from_message(
     return message_signatures;
 }
 
-
 bool image_context_prefix_matches(
     const std::vector<std::vector<CactusModelHandle::ProcessedImage>>& prefix,
     const std::vector<std::vector<CactusModelHandle::ProcessedImage>>& full
@@ -248,6 +450,11 @@ bool prompt_context_matches(
     const PreparedPrompt& prompt
 ) {
     if (handle->processed_tokens.empty()) {
+        return false;
+    }
+    if (handle->model &&
+        handle->model->get_config().model_type == Config::ModelType::NEEDLE &&
+        prompt.tokens.size() != handle->processed_tokens.size() + 1) {
         return false;
     }
     if (prompt.context_token_count < handle->processed_tokens.size()) {
@@ -296,6 +503,10 @@ PreparedPrompt prepare_prompt(
         }
     }
 
+    if (prompt.model_type == Config::ModelType::NEEDLE && !prompt.tools.empty()) {
+        prompt.options.force_tools = true;
+    }
+
     if (apply_tool_constraints) {
         setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools, prompt.options.temperature);
     }
@@ -338,23 +549,31 @@ PreparedPrompt prepare_prompt(
     std::string formatted_tools;
     if (Config::is_gemma_family(prompt.model_type)) {
         formatted_tools = gemma::format_tools(prompt.tools, prompt.model_type == Config::ModelType::GEMMA4);
+    } else if (prompt.model_type == Config::ModelType::NEEDLE) {
+        formatted_tools = serialize_needle_tools_json(prompt.tools, tools_json);
     } else if (prompt.model_type == Config::ModelType::QWEN || prompt.model_type == Config::ModelType::QWEN3P5) {
         formatted_tools = serialize_tools_for_template(prompt.tools);
     } else {
         formatted_tools = serialize_tools_json(prompt.tools);
     }
 
-    std::string full_prompt = tokenizer->format_chat_prompt(
-        prompt.messages,
-        add_generation_prompt,
-        formatted_tools,
-        prompt.options.enable_thinking_if_supported
-    );
-    if (full_prompt.find("ERROR:") == 0) {
-        throw std::runtime_error(full_prompt.substr(6));
+    if (prompt.model_type == Config::ModelType::NEEDLE) {
+        std::string query_text = cactus::engine::format_needle_query_text(prompt.messages);
+        prompt.tokens = tokenizer->encode(query_text);
+        auto suffix_tokens = encode_needle_tools_suffix(tokenizer, formatted_tools);
+        prompt.tokens.insert(prompt.tokens.end(), suffix_tokens.begin(), suffix_tokens.end());
+    } else {
+        std::string full_prompt = tokenizer->format_chat_prompt(
+            prompt.messages,
+            add_generation_prompt,
+            formatted_tools,
+            prompt.options.enable_thinking_if_supported
+        );
+        if (full_prompt.find("ERROR:") == 0) {
+            throw std::runtime_error(full_prompt.substr(6));
+        }
+        prompt.tokens = tokenizer->encode(full_prompt);
     }
-
-    prompt.tokens = tokenizer->encode(full_prompt);
     prompt.context_token_count = prompt.tokens.size();
     prompt.images = images_from_message(prompt.messages);
     return prompt;
@@ -422,7 +641,8 @@ uint32_t decode(
     const InferenceOptions& options,
     float* out_entropy
 ) {
-    return model->decode(tokens, options.temperature, options.top_p, options.top_k, "", out_entropy);
+    return model->decode(tokens, options.temperature, options.top_p, options.top_k,
+                         "", out_entropy, options.min_p, options.repetition_penalty);
 }
 
 uint32_t generate_first_token(
@@ -520,7 +740,8 @@ int cactus_complete(
             next_token = handle->model->decode_with_audio(
                 prompt.tokens, prompt.audio_features,
                 prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
-                "", &first_token_entropy);
+                "", &first_token_entropy,
+                prompt.options.min_p, prompt.options.repetition_penalty);
         } else {
             auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
             prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
@@ -587,7 +808,8 @@ int cactus_complete(
                     next_token = handle->model->decode_with_audio(
                         handle->processed_tokens, prompt.audio_features,
                         prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
-                        "", &token_entropy);
+                        "", &token_entropy,
+                        prompt.options.min_p, prompt.options.repetition_penalty);
                 } else {
                     next_token = decode(handle->model, {next_token}, prompt.options, &token_entropy);
                 }

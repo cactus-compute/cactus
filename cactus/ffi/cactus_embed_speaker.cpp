@@ -18,7 +18,9 @@ int cactus_embed_speaker(
     size_t buffer_size,
     const char* options_json,
     const uint8_t* pcm_buffer,
-    size_t pcm_buffer_size
+    size_t pcm_buffer_size,
+    const float* mask_weights,
+    size_t mask_num_frames
 ) {
     (void)options_json;
     if (validate_audio_params("embed_speaker", model, response_buffer, buffer_size, audio_file_path, pcm_buffer, pcm_buffer_size) != 0)
@@ -71,7 +73,12 @@ int cactus_embed_speaker(
             for (size_t t = 0; t < num_frames; ++t) row[t] -= mean;
         }
 
-        auto embedding = wespeaker->embed(mel.data(), mel.size());
+        std::vector<float> embedding;
+        if (mask_weights && mask_num_frames > 0) {
+            embedding = wespeaker->embed(mel.data(), mel.size(), mask_weights, mask_num_frames);
+        } else {
+            embedding = wespeaker->embed(mel.data(), mel.size());
+        }
 
         auto end_time = std::chrono::high_resolution_clock::now();
         double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;

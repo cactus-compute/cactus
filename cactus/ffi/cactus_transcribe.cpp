@@ -18,7 +18,9 @@ using cactus::audio::WHISPER_SAMPLE_RATE;
 using cactus::audio::apply_preemphasis;
 using cactus::audio::get_parakeet_spectrogram_config;
 using cactus::audio::get_whisper_spectrogram_config;
+using cactus::audio::init_whisper_mel_filters;
 using cactus::audio::normalize_parakeet_log_mel;
+using cactus::audio::normalize_whisper_mel;
 using cactus::audio::trim_mel_frames;
 using cactus::audio::get_htk_spectrogram_config;
 using cactus::audio::get_gemma4_audio_spectrogram_config;
@@ -27,32 +29,6 @@ using cactus::audio::transpose_mel_to_frame_major;
 static constexpr size_t WHISPER_MAX_DECODER_POSITIONS = 448;
 static constexpr size_t MAX_CHUNK_SAMPLES = WHISPER_SAMPLE_RATE * 30;
 static constexpr size_t MAX_CONTEXT_WORDS = 64;
-
-static std::vector<float> normalize_mel(std::vector<float>& mel, size_t n_mels) {
-    size_t n_frames = mel.size() / n_mels;
-
-    float max_val = -std::numeric_limits<float>::infinity();
-    for (float v : mel)
-        if (v > max_val) max_val = v;
-
-    float min_allowed = max_val - 8.0f;
-    for (float& v : mel) {
-        if (v < min_allowed) v = min_allowed;
-        v = (v + 4.0f) * 0.25f;
-    }
-
-    if (n_frames != WHISPER_TARGET_FRAMES) {
-        std::vector<float> fixed(n_mels * WHISPER_TARGET_FRAMES, 0.0f);
-        size_t copy_frames = std::min(n_frames, WHISPER_TARGET_FRAMES);
-        for (size_t m = 0; m < n_mels; ++m) {
-            const float* src = &mel[m * n_frames];
-            float* dst = &fixed[m * WHISPER_TARGET_FRAMES];
-            std::copy(src, src + copy_frames, dst);
-        }
-        return fixed;
-    }
-    return std::move(mel);
-}
 
 static std::string extract_whisper_language_code(std::string token_text) {
     const size_t open = token_text.find("<|");
@@ -250,7 +226,12 @@ int cactus_transcribe(
                 if (handle->should_stop) break;
 
                 float token_entropy = 0.0f;
-                uint32_t next_token = handle->model->decode_with_audio(tokens, audio_features, options.temperature, options.top_p, options.top_k, "", &token_entropy);
+                uint32_t next_token = handle->model->decode_with_audio(
+                    tokens, audio_features,
+                    options.temperature, options.top_p, options.top_k,
+                    "", &token_entropy,
+                    options.min_p, options.repetition_penalty
+                );
 
                 if (completion_tokens == 0) [[unlikely]] {
                     auto t_first = std::chrono::high_resolution_clock::now();
@@ -381,15 +362,13 @@ int cactus_transcribe(
         }
 
         auto cfg = is_parakeet ? get_parakeet_spectrogram_config() : get_whisper_spectrogram_config();
-        size_t mel_bins = 0;
+        size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
+        const bool is_whisper_v3 = is_whisper && mel_bins > 80;
         AudioProcessor ap;
-        if (!is_moonshine) {
-            if (is_parakeet) {
-                mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
-                ap.init_mel_filters(cfg.n_fft / 2 + 1, mel_bins, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
-            } else {
-                ap.init_mel_filters(cfg.n_fft / 2 + 1, 80, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
-            }
+        if (is_parakeet) {
+            ap.init_mel_filters(cfg.n_fft / 2 + 1, mel_bins, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
+        } else if (!is_moonshine) {
+            init_whisper_mel_filters(ap, cfg, mel_bins);
         }
 
         auto* tokenizer = handle->model->get_tokenizer();
@@ -439,6 +418,10 @@ int cactus_transcribe(
         auto sop = tokenizer->encode("<|startofprev|>");
         auto sot = tokenizer->encode("<|startoftranscript|>");
         auto zero = tokenizer->encode("<|0.00|>");
+        auto notimestamps = tokenizer->encode("<|notimestamps|>");
+        const bool has_notimestamps = !notimestamps.empty() &&
+            std::search(initial_tokens.begin(), initial_tokens.end(),
+                        notimestamps.begin(), notimestamps.end()) != initial_tokens.end();
         auto sot_it = std::search(initial_tokens.begin(), initial_tokens.end(), sot.begin(), sot.end());
         const auto sot_begin = sot_it != initial_tokens.end() ? sot_it : initial_tokens.begin();
 
@@ -464,7 +447,7 @@ int cactus_transcribe(
                 tokens.insert(tokens.end(), sot_begin, initial_tokens.end());
             }
 
-            if (is_whisper && !zero.empty() && (tokens.empty() || tokens.back() != zero.back())) {
+            if (is_whisper && !has_notimestamps && !zero.empty() && (tokens.empty() || tokens.back() != zero.back())) {
                 tokens.insert(tokens.end(), zero.begin(), zero.end());
             }
 
@@ -479,7 +462,7 @@ int cactus_transcribe(
                     trim_mel_frames(chunk_audio, mel_bins, valid_frames);
                 } else {
                     std::vector<float> mel = ap.compute_spectrogram(chunk_audio, cfg);
-                    chunk_audio = normalize_mel(mel, 80);
+                    chunk_audio = normalize_whisper_mel(mel, mel_bins, is_whisper_v3);
                 }
             }
 
@@ -523,6 +506,8 @@ int cactus_transcribe(
                     options.top_k,
                     "",
                     &token_entropy,
+                    options.min_p,
+                    options.repetition_penalty,
                     is_parakeet_tdt ? &tok_time_start : nullptr,
                     is_parakeet_tdt ? &tok_time_end : nullptr
                 );
@@ -746,9 +731,10 @@ int cactus_detect_language(
 
         AudioProcessor ap;
         auto cfg = get_whisper_spectrogram_config();
-        ap.init_mel_filters(cfg.n_fft / 2 + 1, 80, 0.0f, 8000.0f, WHISPER_SAMPLE_RATE);
+        const size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
+        init_whisper_mel_filters(ap, cfg, mel_bins);
         std::vector<float> mel = ap.compute_spectrogram(audio_buffer, cfg);
-        std::vector<float> features = normalize_mel(mel, 80);
+        std::vector<float> features = normalize_whisper_mel(mel, mel_bins, mel_bins > 80);
         if (features.empty()) {
             handle_error_response("Computed audio features are empty", response_buffer, buffer_size);
             return -1;
@@ -778,7 +764,8 @@ int cactus_detect_language(
         for (size_t step = 0; step < kMaxLanguageProbeSteps; ++step) {
             float step_entropy = 1.0f;
             const uint32_t step_token_id = handle->model->decode_with_audio(
-                decode_tokens, features, 0.0f, 0.0f, 0, "", &step_entropy
+                decode_tokens, features, 0.0f, 0.0f, 0, "", &step_entropy,
+                0.0f, 1.0f
             );
             const std::string step_token_text = tokenizer->decode({step_token_id});
             const std::string step_language = extract_whisper_language_code(step_token_text);

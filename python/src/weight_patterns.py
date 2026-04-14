@@ -141,6 +141,54 @@ WHISPER_GLOBAL_WEIGHTS = [
 ]
 
 
+NEEDLE_GLOBAL_WEIGHTS = [
+    ('embedding.embedding',              'token_embeddings.weights',          False),
+    ('embedding.embedding',              'output_weight.weights',             False),
+    ('encoder.final_norm.scale',         'encoder_layer_norm_weight.weights', False),
+    ('decoder.ZCRMSNorm_0.scale',        'output_norm.weights',               False),
+    ('contrastive_proj.kernel',          'contrastive_proj.weights',          True),
+    ('log_temp',                         'log_temp.weights',                  False),
+]
+
+NEEDLE_ENCODER_LAYER_WEIGHTS = [
+    ('ZCRMSNorm_0.scale',     'input_norm.weights',      False),
+    ('attn_gate',              'attn_gate.weights',       False),
+    ('ZCRMSNorm_1.scale',     'post_attn_norm.weights',  False),
+    ('self_attn.q_proj.kernel',   'attn_q.weights',      True),
+    ('self_attn.k_proj.kernel',   'attn_k.weights',      True),
+    ('self_attn.v_proj.kernel',   'attn_v.weights',      True),
+    ('self_attn.out_proj.kernel', 'attn_output.weights',  True),
+    ('self_attn.q_norm.scale',    'attn_q_norm.weights',  False),
+    ('self_attn.k_norm.scale',    'attn_k_norm.weights',  False),
+    ('FeedForward_0.gate_proj.kernel', 'ffn_gate.weights', True),
+    ('FeedForward_0.up_proj.kernel',   'ffn_up.weights',   True),
+    ('FeedForward_0.down_proj.kernel', 'mlp_fc2.weights',  True),
+]
+
+NEEDLE_DECODER_LAYER_WEIGHTS = [
+    ('ZCRMSNorm_0.scale',       'input_norm.weights',           False),
+    ('ZCRMSNorm_1.scale',       'post_attn_norm.weights',       False),
+    ('self_attn_gate',           'self_attn_gate.weights',       False),
+    ('cross_attn_gate',          'cross_attn_gate.weights',      False),
+    ('ZCRMSNorm_2.scale',       'final_norm.weights',            False),
+    ('self_attn.q_proj.kernel',     'attn_q.weights',            True),
+    ('self_attn.k_proj.kernel',     'attn_k.weights',            True),
+    ('self_attn.v_proj.kernel',     'attn_v.weights',            True),
+    ('self_attn.out_proj.kernel',   'attn_output.weights',        True),
+    ('self_attn.q_norm.scale',      'attn_q_norm.weights',        False),
+    ('self_attn.k_norm.scale',      'attn_k_norm.weights',        False),
+    ('cross_attn.q_proj.kernel',    'encoder_attn_q.weights',     True),
+    ('cross_attn.k_proj.kernel',    'encoder_attn_k.weights',     True),
+    ('cross_attn.v_proj.kernel',    'encoder_attn_v.weights',     True),
+    ('cross_attn.out_proj.kernel',  'encoder_attn_output.weights', True),
+    ('cross_attn.q_norm.scale',     'encoder_attn_q_norm.weights', False),
+    ('cross_attn.k_norm.scale',     'encoder_attn_k_norm.weights', False),
+    ('FeedForward_0.gate_proj.kernel', 'ffn_gate.weights',         True),
+    ('FeedForward_0.up_proj.kernel',   'ffn_up.weights',           True),
+    ('FeedForward_0.down_proj.kernel', 'mlp_fc2.weights',          True),
+]
+
+
 def get_layer_weight_patterns(i, precision, model_type=None, skip_kv=False):
     is_whisper = model_type == 'whisper'
     is_qwen_family = isinstance(model_type, str) and ('qwen' in model_type)

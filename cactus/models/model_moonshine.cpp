@@ -544,6 +544,8 @@ uint32_t MoonshineModel::decode_with_audio(
     size_t top_k,
     const std::string& profile_file,
     float* out_entropy,
+    float min_p,
+    float repetition_penalty,
     float* /*out_token_time_start*/,
     float* /*out_token_time_end*/)
 {
@@ -579,7 +581,7 @@ uint32_t MoonshineModel::decode_with_audio(
         std::vector<uint32_t> last_token_vec = { tokens.back() };
         logits_node = build_decoder(last_token_vec, true, true);
     }
-    size_t sampled_token_id = sample_token(gb, logits_node, temperature, top_p, top_k);
+    size_t sampled_token_id = sample_token(gb, logits_node, temperature, top_p, top_k, min_p, repetition_penalty);
     if (!profile_file.empty()) gb->execute(profile_file);
    	else gb->execute();
     compute_entropy(gb, logits_node, out_entropy);
@@ -587,6 +589,7 @@ uint32_t MoonshineModel::decode_with_audio(
     update_kv_cache(gb, last_new_tokens_);
     auto* out_ptr = gb->get_output(sampled_token_id);
     uint32_t sampled = *reinterpret_cast<uint32_t*>(out_ptr);
+    record_sampled_token(sampled);
     return sampled;
 }
 }

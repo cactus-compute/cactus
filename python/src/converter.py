@@ -8,13 +8,14 @@ try:
 except ImportError:
     torch = None
 
-from .tensor_io import save_tensor_with_header, create_quantization_stats, print_quantization_summary
+from .tensor_io import save_tensor_with_header, create_quantization_stats, print_quantization_summary, fold_bn_into_conv
 from .config_utils import cfg_get, detect_model_type, extract_base_config, extract_vision_config, extract_lfm2_config, is_vlm_model, extract_moonshine_config, extract_complex_gemma_config, extract_audio_config, extract_youtu_config
 from .weight_patterns import (
     EMBED_NAMES, OUTPUT_NAMES, OUTPUT_NORM_NAMES, LAYER_PREFIXES,
     VISION_ITEMS, PROJECTOR_WEIGHTS, WHISPER_GLOBAL_WEIGHTS, MOONSHINE_GLOBAL_WEIGHTS,
     GEMMA3N_GLOBAL_WEIGHTS, GEMMA3N_VISION_TOWER_PREFIX, GEMMA3N_AUDIO_TOWER_PREFIX,
     GEMMA4_GLOBAL_WEIGHTS, GEMMA4_VISION_TOWER_PREFIX, GEMMA4_AUDIO_TOWER_PREFIX,
+    NEEDLE_GLOBAL_WEIGHTS, NEEDLE_ENCODER_LAYER_WEIGHTS, NEEDLE_DECODER_LAYER_WEIGHTS,
     get_layer_weight_patterns, get_vision_layer_weights
 )
 
@@ -298,6 +299,9 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 save_tensor_with_header(state_dict[name], output_dir / save_name, precision, transpose=False, stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
                 saved_tensor_full_names.add(name)
         embedding_found = True
+        model_config['num_mel_bins'] = int(cfg_get(config, 'num_mel_bins', 80))
+        model_config['num_encoder_layers'] = int(cfg_get(config, 'encoder_layers', model_config['num_layers']))
+        model_config['num_decoder_layers'] = int(cfg_get(config, 'decoder_layers', model_config['num_layers']))
 
     elif model_type_str == 'moonshine':
         for name, save_name in MOONSHINE_GLOBAL_WEIGHTS:
@@ -313,6 +317,14 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         model_config['enc_hidden_act'] = config.encoder_hidden_act
         model_config['num_encoder_layers'] = config.encoder_num_hidden_layers
         model_config['num_decoder_layers'] = config.decoder_num_hidden_layers
+
+    # Whisper: ensure num_layers = max(enc, dec) so the weight loader covers both.
+    if model_type_str == 'whisper':
+        enc_l = int(model_config.get('num_encoder_layers', 0))
+        dec_l = int(model_config.get('num_decoder_layers', 0))
+        if enc_l > 0 or dec_l > 0:
+            num_layers = max(enc_l, dec_l, num_layers)
+            model_config['num_layers'] = num_layers
 
     if embedding_found:
         embedding_norm_names = {'emb_ln.weight': 'embedding_layernorm.weight', 'emb_ln.bias': 'embedding_layernorm.bias'}
@@ -1166,18 +1178,44 @@ def convert_wespeaker_weights(model, output_dir, precision="FP16", args=None):
 
     sd = model.state_dict()
 
-    for name, tensor in sorted(sd.items()):
-        if "num_batches_tracked" in name:
-            continue
+    def save(filename, tensor):
+        save_tensor_with_header(tensor, output_dir / filename, precision=precision)
 
-        # Shortcut 1x1 conv - pad to 3x3 to reuse conv2d_k3s2p1 kernel
-        if "shortcut.0.weight" in name:
-            C_out, C_in = tensor.shape[0], tensor.shape[1]
-            padded = torch.zeros(C_out, C_in, 3, 3, dtype=tensor.dtype)
-            padded[:, :, 1, 1] = tensor[:, :, 0, 0]
-            tensor = padded
+    def fold_and_save(conv_name, bn_name, out_prefix):
+        w, b = fold_bn_into_conv(
+            sd[conv_name + '.weight'],
+            sd[bn_name + '.weight'], sd[bn_name + '.bias'],
+            sd[bn_name + '.running_mean'], sd[bn_name + '.running_var'],
+        )
+        save(f'{out_prefix}_weight.weights', w)
+        save(f'{out_prefix}_bias.weights', b)
 
-        save_tensor_with_header(tensor, output_dir / f"{name.replace('.', '_')}.weights", precision=precision)
+    fold_and_save('resnet.conv1', 'resnet.bn1', 'resnet_conv1')
+
+    layer_blocks = {'layer1': 3, 'layer2': 4, 'layer3': 6, 'layer4': 3}
+    shortcut_layers = {'layer2', 'layer3', 'layer4'}
+
+    for layer_name, num_blocks in layer_blocks.items():
+        for block_idx in range(num_blocks):
+            prefix = f'resnet.{layer_name}.{block_idx}'
+            out = f'resnet_{layer_name}_{block_idx}'
+
+            fold_and_save(f'{prefix}.conv1', f'{prefix}.bn1', f'{out}_conv1')
+            fold_and_save(f'{prefix}.conv2', f'{prefix}.bn2', f'{out}_conv2')
+
+            if block_idx == 0 and layer_name in shortcut_layers:
+                w, b = fold_bn_into_conv(
+                    sd[f'{prefix}.shortcut.0.weight'],
+                    sd[f'{prefix}.shortcut.1.weight'], sd[f'{prefix}.shortcut.1.bias'],
+                    sd[f'{prefix}.shortcut.1.running_mean'], sd[f'{prefix}.shortcut.1.running_var'],
+                )
+                padded = np.zeros((w.shape[0], w.shape[1], 3, 3), dtype=w.dtype)
+                padded[:, :, 1, 1] = w[:, :, 0, 0]
+                save(f'{out}_shortcut_0_weight.weights', padded)
+                save(f'{out}_shortcut_0_bias.weights', b)
+
+    save('resnet_seg_1_weight.weights', sd['resnet.seg_1.weight'].float().numpy())
+    save('resnet_seg_1_bias.weights', sd['resnet.seg_1.bias'].float().numpy())
 
     config = {"model_type": "wespeaker", "precision": precision}
     config_path = output_dir / "config.txt"
@@ -1262,3 +1300,130 @@ def convert_silero_vad_weights(model, output_dir, precision="FP16", args=None):
             f.write(f"{key}={value}\n")
 
     return config
+
+
+def _resolve_nested(tree, dotted_path):
+    node = tree
+    for key in dotted_path.split("."):
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    return node
+
+
+def _take_layer(tree, index):
+    if isinstance(tree, dict):
+        return {k: _take_layer(v, index) for k, v in tree.items()}
+    return tree[index]
+
+
+def _count_params(tree):
+    if isinstance(tree, dict):
+        return sum(_count_params(v) for v in tree.values())
+    shape = getattr(tree, "shape", None)
+    if shape is None:
+        return 0
+    n = 1
+    for d in shape:
+        n *= int(d)
+    return n
+
+
+def _load_needle_checkpoint(checkpoint_path):
+    import pickle
+    with open(checkpoint_path, "rb") as f:
+        payload = pickle.load(f)
+    return payload["params"], dict(payload["config"])
+
+
+def _build_needle_config(model_cfg, params, precision):
+    hidden_dim = int(model_cfg["d_model"])
+    heads = int(model_cfg["num_heads"])
+    decoder_layers = int(model_cfg["num_decoder_layers"])
+    compute_precision = "FP16" if precision in ("INT4", "INT8") else precision
+    return {
+        "model_type": "needle",
+        "precision": compute_precision,
+        "quantization": precision,
+        "vocab_size": int(model_cfg["vocab_size"]),
+        "hidden_dim": hidden_dim,
+        "num_layers": decoder_layers,
+        "num_encoder_layers": int(model_cfg["num_encoder_layers"]),
+        "num_decoder_layers": decoder_layers,
+        "attention_heads": heads,
+        "attention_kv_heads": int(model_cfg["num_kv_heads"]),
+        "attention_head_dim": hidden_dim // max(1, heads),
+        "ffn_intermediate_dim": int(model_cfg["d_ff"]),
+        "context_length": int(model_cfg["max_seq_len"]),
+        "rope_theta": float(model_cfg.get("rope_theta", 10000.0)),
+        "layer_norm_eps": 1e-6,
+        "pad_token_id": int(model_cfg.get("pad_token_id", 0)),
+        "tie_word_embeddings": True,
+        "no_feedforward": bool(model_cfg.get("no_feedforward", False)),
+    }
+
+
+def _write_needle_config(output_dir, config):
+    config_path = output_dir / "config.txt"
+    with open(config_path, "w") as f:
+        for k, v in config.items():
+            if isinstance(v, bool):
+                f.write(f"{k}={'true' if v else 'false'}\n")
+            else:
+                f.write(f"{k}={v}\n")
+    return config_path
+
+
+def _export_needle_weights(output_dir, params, model_cfg, precision):
+    import warnings
+
+    stats = create_quantization_stats()
+    saved = []
+
+    def save(filename, tensor, transpose=False, tensor_precision=None):
+        save_tensor_with_header(tensor, output_dir / filename, precision=tensor_precision or precision,
+                                transpose=transpose, stats_tracker=stats, model_type="needle")
+        saved.append(filename)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+
+        for src, dst, tr in NEEDLE_GLOBAL_WEIGHTS:
+            tensor = _resolve_nested(params, src)
+            if tensor is not None:
+                save(dst, tensor, transpose=tr, tensor_precision="FP16" if src == "log_temp" else None)
+
+        enc_stack = params["encoder"]["layers"]["EncoderBlock_0"]
+        for i in range(int(model_cfg["num_encoder_layers"])):
+            block = _take_layer(enc_stack, i)
+            for src, dst, tr in NEEDLE_ENCODER_LAYER_WEIGHTS:
+                tensor = _resolve_nested(block, src)
+                if tensor is not None:
+                    save(f"encoder_layer_{i}_{dst}", tensor, transpose=tr)
+
+        dec_stack = params["decoder"]["layers"]["DecoderBlock_0"]
+        for i in range(int(model_cfg["num_decoder_layers"])):
+            block = _take_layer(dec_stack, i)
+            for src, dst, tr in NEEDLE_DECODER_LAYER_WEIGHTS:
+                tensor = _resolve_nested(block, src)
+                if tensor is not None:
+                    save(f"layer_{i}_{dst}", tensor, transpose=tr)
+
+    print_quantization_summary(stats)
+    return saved
+
+
+def convert_needle_checkpoint(checkpoint_path, tokenizer_path, output_dir, requested_precision='FP16'):
+    from .tokenizer import convert_sentencepiece_tokenizer
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    precision = (requested_precision or "FP16").upper()
+
+    params, model_cfg = _load_needle_checkpoint(checkpoint_path)
+    config = _build_needle_config(model_cfg, params, precision)
+    config_path = _write_needle_config(output_dir, config)
+    convert_sentencepiece_tokenizer(tokenizer_path, output_dir, int(model_cfg.get("max_seq_len", 131072)))
+    saved = _export_needle_weights(output_dir, params, model_cfg, precision)
+
+    return {"output_dir": output_dir, "config_path": config_path, "weight_count": len(saved)}
