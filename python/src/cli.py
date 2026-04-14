@@ -352,12 +352,12 @@ def cmd_download(args):
     except ImportError:
         Lfm2VlForConditionalGeneration = None
 
-    is_vlm = 'vl' in model_name.lower() or 'vlm' in model_name.lower()
-    is_whisper = 'whisper' in model_name.lower()
-    is_parakeet = 'parakeet' in model_name.lower()
-    is_vad = 'silero-vad' in model_name.lower()
-    is_pyannote = 'segmentation-3.0' in model_name.lower()
-    is_wespeaker = 'wespeaker' in model_name.lower()
+    is_vlm = 'vl' in model_id.lower() or 'vlm' in model_id.lower()
+    is_whisper = 'whisper' in model_id.lower()
+    is_parakeet = 'parakeet' in model_id.lower()
+    is_vad = 'silero-vad' in model_id.lower()
+    is_pyannote = 'segmentation-3.0' in model_id.lower()
+    is_wespeaker = 'wespeaker' in model_id.lower()
 
     try:
         if is_vlm:
@@ -604,12 +604,12 @@ def cmd_download(args):
         config = convert_hf_model_weights(model, weights_dir, precision, args)
         del model
 
-        model_name_lower = model_name.lower()
-        if 'extract' in model_name_lower:
+        model_id_lower = model_id.lower()
+        if 'extract' in model_id_lower:
             config['model_variant'] = 'extract'
-        elif 'vlm' in model_name_lower:
+        elif 'vlm' in model_id_lower:
             config['model_variant'] = 'vlm'
-        elif 'rag' in model_name_lower:
+        elif 'rag' in model_id_lower:
             config['model_variant'] = 'rag'
         else:
             config.setdefault('model_variant', 'default')
@@ -630,7 +630,7 @@ def cmd_download(args):
             tokenizer,
             weights_dir,
             token=token,
-            model_id=model_name,
+            model_id=model_id,
             labels=tokenizer_labels,
             model_type=config.get('model_type'),
         )
