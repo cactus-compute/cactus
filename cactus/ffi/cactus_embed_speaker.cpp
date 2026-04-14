@@ -29,7 +29,7 @@ int cactus_embed_speaker(
     try {
         auto start_time = std::chrono::high_resolution_clock::now();
         auto* handle = static_cast<CactusModelHandle*>(model);
-        auto* wespeaker = dynamic_cast<WeSpeakerModel*>(handle->model.get());
+        auto* wespeaker = dynamic_cast<WeSpeakerModel*>(handle->default_context.model.get());
         if (!wespeaker) {
             CACTUS_LOG_ERROR("embed_speaker", "Model is not a WeSpeaker embedding model");
             handle_error_response("Model is not a WeSpeaker embedding model", response_buffer, buffer_size);

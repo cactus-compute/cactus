@@ -117,7 +117,7 @@ int cactus_diarize(
     try {
         auto start_time = std::chrono::high_resolution_clock::now();
         auto* handle = static_cast<CactusModelHandle*>(model);
-        auto* pyannote = dynamic_cast<PyAnnoteModel*>(handle->model.get());
+        auto* pyannote = dynamic_cast<PyAnnoteModel*>(handle->default_context.model.get());
         if (!pyannote) {
             CACTUS_LOG_ERROR("diarize", "Model is not a PyAnnote diarization model");
             handle_error_response("Model is not a PyAnnote diarization model", response_buffer, buffer_size);

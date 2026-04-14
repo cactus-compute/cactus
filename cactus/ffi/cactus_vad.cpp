@@ -106,7 +106,7 @@ int cactus_vad(
     try {
         auto start_time = std::chrono::high_resolution_clock::now();
         auto* handle = static_cast<CactusModelHandle*>(model);
-        auto* vad_model = static_cast<SileroVADModel*>(handle->model.get());
+        auto* vad_model = static_cast<SileroVADModel*>(handle->default_context.model.get());
 
         SileroVADModel::SpeechTimestampsOptions options = parse_speech_timestamps_options(options_json ? options_json : "");
 

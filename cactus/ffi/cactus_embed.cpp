@@ -65,7 +65,7 @@ int cactus_embed(
 
     try {
         auto* handle = static_cast<CactusModelHandle*>(model);
-        auto* tokenizer = handle->model->get_tokenizer();
+        auto* tokenizer = handle->default_context.model->get_tokenizer();
 
         std::vector<uint32_t> tokens = tokenizer->encode(text);
         if (tokens.empty()) {
@@ -73,7 +73,7 @@ int cactus_embed(
             return -1;
         }
 
-        std::vector<float> embeddings = handle->model->get_embeddings(tokens, true, normalize);
+        std::vector<float> embeddings = handle->default_context.model->get_embeddings(tokens, true, normalize);
         if (embeddings.size() * sizeof(float) > buffer_size) {
             CACTUS_LOG_ERROR("embed", "Buffer too small: need " << embeddings.size() * sizeof(float) << " bytes, got " << buffer_size);
             return -2;
@@ -111,7 +111,7 @@ int cactus_image_embed(
         auto* handle = static_cast<CactusModelHandle*>(model);
 
         CACTUS_LOG_DEBUG("image_embed", "Processing image: " << image_path);
-        std::vector<float> embeddings = handle->model->get_image_embeddings(image_path);
+        std::vector<float> embeddings = handle->default_context.model->get_image_embeddings(image_path);
         if (embeddings.empty()) {
             CACTUS_LOG_ERROR("image_embed", "Image embedding returned empty result");
             return -1;
@@ -154,16 +154,16 @@ int cactus_audio_embed(
 
         CACTUS_LOG_DEBUG("audio_embed", "Processing audio: " << audio_path);
         const bool is_parakeet =
-            handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET ||
-            handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
-        auto mel_bins = compute_mel_from_wav(audio_path, is_parakeet, handle->model->get_config().num_mel_bins);
+            handle->default_context.model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET ||
+            handle->default_context.model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
+        auto mel_bins = compute_mel_from_wav(audio_path, is_parakeet, handle->default_context.model->get_config().num_mel_bins);
         if (mel_bins.empty()) {
             last_error_message = "Failed to compute mel spectrogram";
             CACTUS_LOG_ERROR("audio_embed", last_error_message << " for: " << audio_path);
             return -1;
         }
 
-        std::vector<float> embeddings = handle->model->get_audio_embeddings(mel_bins);
+        std::vector<float> embeddings = handle->default_context.model->get_audio_embeddings(mel_bins);
         if (embeddings.empty()) {
             CACTUS_LOG_ERROR("audio_embed", "Audio embedding returned empty result");
             return -1;

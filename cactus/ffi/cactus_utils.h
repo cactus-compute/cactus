@@ -1,6 +1,7 @@
 #ifndef CACTUS_UTILS_H
 #define CACTUS_UTILS_H
 
+#include "cactus_ffi.h"
 #include "../engine/engine.h"
 #include "../models/model.h"
 #include <string>
@@ -59,30 +60,45 @@ inline double get_ram_usage_mb() {
     return get_memory_footprint_bytes() / (1024.0 * 1024.0);
 }
 
-struct CactusModelHandle {
+struct ProcessedImage {
+    std::string path;
+    long long last_modified_timestamp = 0;
+
+    bool operator==(const ProcessedImage& other) const {
+        return path == other.path && last_modified_timestamp == other.last_modified_timestamp;
+    }
+};
+
+struct CactusModelHandle;
+
+struct CactusContextHandle {
+    CactusModelHandle* parent_model = nullptr;  // non-owning back-reference to shared state
     std::unique_ptr<cactus::engine::Model> model;
-    std::unique_ptr<cactus::engine::Model> vad_model;
-    std::atomic<bool> should_stop;
+    std::atomic<bool> should_stop{false};
     std::vector<uint32_t> processed_tokens;
-    struct ProcessedImage {
-        std::string path;
-        long long last_modified_timestamp = 0;
-
-        bool operator==(const ProcessedImage& other) const {
-            return path == other.path && last_modified_timestamp == other.last_modified_timestamp;
-        }
-    };
-
     std::vector<std::vector<ProcessedImage>> processed_images;
+    std::mutex context_mutex;
+    std::vector<std::vector<float>> tool_embeddings;
+    std::vector<std::string> tool_texts;
+};
+
+struct CactusModelHandle {
+    // Default context — holds session state for the backwards-compatible model-based API.
+    // New callers should use cactus_context_create() for explicit session management.
+    CactusContextHandle default_context;
+
+    // Shared/immutable after init
+    std::unique_ptr<cactus::engine::Model> vad_model;
     std::mutex model_mutex;
+    std::string model_path;     // stored for context creation
     std::string model_name;
     std::unique_ptr<cactus::engine::index::Index> corpus_index;
     std::string corpus_dir;
     size_t corpus_embedding_dim = 0;
-    std::vector<std::vector<float>> tool_embeddings;
-    std::vector<std::string> tool_texts;
 
-    CactusModelHandle() : should_stop(false) {}
+    CactusModelHandle() {
+        default_context.parent_model = this;
+    }
 };
 
 extern std::string last_error_message;
@@ -90,7 +106,50 @@ extern std::string last_error_message;
 bool matches_stop_sequence(const std::vector<uint32_t>& generated_tokens,
                            const std::vector<std::vector<uint32_t>>& stop_sequences);
 
-std::string retrieve_rag_context(CactusModelHandle* handle, const std::string& query);
+std::string retrieve_rag_context(CactusContextHandle* ctx, const std::string& query);
+
+// Internal _impl functions shared by the model API (default_context) and context API.
+// These take a CactusContextHandle* so both paths share one implementation.
+int cactus_complete_impl(
+    CactusContextHandle* ctx,
+    const char* model_name,
+    const char* messages_json,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,
+    const char* tools_json,
+    cactus_token_callback callback,
+    void* user_data,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+);
+
+int cactus_prefill_impl(
+    CactusContextHandle* ctx,
+    const char* model_name,
+    const char* messages_json,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,
+    const char* tools_json,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+);
+
+int cactus_transcribe_impl(
+    CactusContextHandle* ctx,
+    CactusModelHandle* parent,
+    const char* model_name,
+    const char* audio_file_path,
+    const char* prompt,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,
+    cactus_token_callback callback,
+    void* user_data,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+);
 
 namespace cactus {
 namespace audio {
@@ -421,7 +480,7 @@ struct InferenceOptions {
 } // namespace cactus
 
 std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
-    CactusModelHandle* handle,
+    CactusContextHandle* ctx,
     const std::string& query,
     const std::vector<cactus::ffi::ToolFunction>& all_tools,
     size_t top_k);

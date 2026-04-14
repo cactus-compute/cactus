@@ -213,6 +213,12 @@ static size_t parakeet_tdt_pcm_bytes_to_encoder_frames(
 
 struct CactusStreamTranscribeHandle {
     CactusModelHandle* model_handle;
+    CactusContextHandle* context_override = nullptr;  // if set, use this context instead of default_context
+
+    // Returns the active context — either the explicit context or the model's default.
+    CactusContextHandle* active_context() const {
+        return context_override ? context_override : &model_handle->default_context;
+    }
 
     struct CactusStreamTranscribeOptions {
         double confirmation_threshold;
@@ -340,7 +346,7 @@ static bool run_stream_window_transcribe(
         return false;
     }
 
-    const auto model_type = handle->model_handle->model->get_config().model_type;
+    const auto model_type = handle->active_context()->model->get_config().model_type;
     const bool use_model_stream_mode =
         model_type != cactus::engine::Config::ModelType::PARAKEET_TDT;
     cactus::telemetry::setStreamMode(use_model_stream_mode);
@@ -381,7 +387,7 @@ static bool run_parakeet_tdt_chunk_decode(
     size_t chunk_end_bytes,
     cactus::engine::ParakeetTDTModel::ChunkStreamResult& out,
     cactus::engine::ParakeetTDTModel::ChunkStreamState& out_state) {
-    if (!handle || !handle->model_handle || !handle->model_handle->model) {
+    if (!handle || !handle->model_handle || !handle->active_context()->model) {
         return false;
     }
     if (chunk_end_bytes <= chunk_start_bytes ||
@@ -393,7 +399,7 @@ static bool run_parakeet_tdt_chunk_decode(
     }
 
     auto* model = static_cast<cactus::engine::ParakeetTDTModel*>(
-        handle->model_handle->model.get());
+        handle->active_context()->model.get());
     size_t replay_start_bytes = window_start_bytes;
     cactus::engine::ParakeetTDTModel::ChunkStreamState base_state;
     bool found_checkpoint = false;
@@ -922,7 +928,7 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, 
 
     try {
         auto* model_handle = static_cast<CactusModelHandle*>(model);
-        if (!model_handle->model) {
+        if (!model_handle->default_context.model) {
             last_error_message = "Invalid model handle.";
             CACTUS_LOG_ERROR("stream_transcribe_start", last_error_message);
             return nullptr;
@@ -958,27 +964,27 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, 
         stream_handle->options = { confirmation_threshold, min_chunk_size, language };
         stream_handle->transcribe_options_json = options_json ? options_json : "";
         stream_handle->parakeet_tdt_chunked_stream =
-            model_handle->model->get_config().model_type ==
+            model_handle->default_context.model->get_config().model_type ==
                 cactus::engine::Config::ModelType::PARAKEET_TDT;
         {
             float vocabulary_boost = 5.0f;
             parse_custom_vocabulary_options(stream_handle->transcribe_options_json,
                                            stream_handle->custom_vocabulary, vocabulary_boost);
             auto vocab_bias = build_custom_vocabulary_bias(
-                model_handle->model->get_tokenizer(),
+                model_handle->default_context.model->get_tokenizer(),
                 stream_handle->custom_vocabulary,
                 vocabulary_boost
             );
             stream_handle->has_custom_vocabulary_bias = !vocab_bias.empty();
             if (stream_handle->has_custom_vocabulary_bias) {
-                model_handle->model->set_vocab_bias(vocab_bias);
+                model_handle->default_context.model->set_vocab_bias(vocab_bias);
             }
         }
 
         if (stream_handle->parakeet_tdt_chunked_stream) {
             auto& ctx = stream_handle->parakeet_tdt_decode_context;
             ctx.mel_bins = std::max<size_t>(
-                1, static_cast<size_t>(model_handle->model->get_config().num_mel_bins));
+                1, static_cast<size_t>(model_handle->default_context.model->get_config().num_mel_bins));
             auto cfg = get_parakeet_spectrogram_config();
             ctx.audio_processor.init_mel_filters(
                 cfg.n_fft / 2 + 1,
@@ -1002,6 +1008,53 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, 
         CACTUS_LOG_ERROR("stream_transcribe_start", last_error_message);
         return nullptr;
     }
+}
+
+cactus_stream_transcribe_t cactus_context_stream_transcribe_start(cactus_context_t ctx, const char* options_json) {
+    if (!ctx) {
+        last_error_message = "Context not initialized.";
+        CACTUS_LOG_ERROR("context_stream_transcribe_start", last_error_message);
+        return nullptr;
+    }
+
+    auto* context = static_cast<CactusContextHandle*>(ctx);
+    if (!context->parent_model || !context->model) {
+        last_error_message = "Invalid context handle.";
+        CACTUS_LOG_ERROR("context_stream_transcribe_start", last_error_message);
+        return nullptr;
+    }
+
+    // Delegate to the model-based start, then override the context.
+    auto* stream = static_cast<CactusStreamTranscribeHandle*>(
+        cactus_stream_transcribe_start(context->parent_model, options_json));
+    if (!stream) return nullptr;
+
+    stream->context_override = context;
+
+    // Re-apply vocab bias to the context's model (the model-based start applied it to default_context)
+    if (stream->has_custom_vocabulary_bias) {
+        context->parent_model->default_context.model->clear_vocab_bias();
+        float vocabulary_boost = 5.0f;
+        std::vector<std::string> custom_vocabulary;
+        parse_custom_vocabulary_options(stream->transcribe_options_json, custom_vocabulary, vocabulary_boost);
+        auto vocab_bias = build_custom_vocabulary_bias(
+            context->model->get_tokenizer(), custom_vocabulary, vocabulary_boost);
+        if (!vocab_bias.empty()) {
+            context->model->set_vocab_bias(vocab_bias);
+        }
+    }
+
+    // Re-initialize parakeet TDT context with the overridden model's config
+    if (stream->parakeet_tdt_chunked_stream) {
+        auto& tdt_ctx = stream->parakeet_tdt_decode_context;
+        tdt_ctx.mel_bins = std::max<size_t>(
+            1, static_cast<size_t>(context->model->get_config().num_mel_bins));
+    }
+
+    CACTUS_LOG_INFO("context_stream_transcribe_start",
+        "Stream transcription initialized for context on model: " << context->parent_model->model_name);
+
+    return stream;
 }
 
 int cactus_stream_transcribe_process(
@@ -1034,7 +1087,7 @@ int cactus_stream_transcribe_process(
 
     try {
         auto* handle = static_cast<CactusStreamTranscribeHandle*>(stream);
-        const auto model_type = handle->model_handle->model->get_config().model_type;
+        const auto model_type = handle->active_context()->model->get_config().model_type;
         bool is_moonshine = model_type == cactus::engine::Config::ModelType::MOONSHINE;
         bool is_parakeet_tdt =
             model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
@@ -1049,7 +1102,7 @@ int cactus_stream_transcribe_process(
             handle->parakeet_tdt_decode_context.initialized) {
             auto& ctx = handle->parakeet_tdt_decode_context;
             auto* tdt_model = static_cast<cactus::engine::ParakeetTDTModel*>(
-                handle->model_handle->model.get());
+                handle->active_context()->model.get());
             auto new_samples = cactus::audio::pcm_buffer_to_float_samples(
                 pcm_buffer, pcm_buffer_size);
             ctx.audio_samples.insert(ctx.audio_samples.end(), new_samples.begin(), new_samples.end());
@@ -1113,7 +1166,7 @@ int cactus_stream_transcribe_process(
             trim_mel_frames(window_audio, ctx.mel_bins, valid_frames);
 
             const uint32_t subsampling =
-                std::max<uint32_t>(1, handle->model_handle->model->get_config().subsampling_factor);
+                std::max<uint32_t>(1, handle->active_context()->model->get_config().subsampling_factor);
             const size_t samples_per_enc_frame = cfg.hop_length * subsampling;
             const size_t context_samples = ctx.samples_decoded_up_to - window_start_sample;
             const size_t decode_start_frame = context_samples / samples_per_enc_frame;
@@ -1323,7 +1376,7 @@ int cactus_stream_transcribe_process(
                 !handle->parakeet_committed_text.empty()) {
                 const size_t encoder_frame_bytes =
                     get_parakeet_spectrogram_config().hop_length *
-                    std::max<uint32_t>(1, handle->model_handle->model->get_config().subsampling_factor) *
+                    std::max<uint32_t>(1, handle->active_context()->model->get_config().subsampling_factor) *
                     sizeof(int16_t);
                 std::string confirmed;
                 size_t confirmed_audio_bytes = 0;
@@ -2334,8 +2387,8 @@ int cactus_stream_transcribe_stop(
     auto clear_stream_vocab_bias = [&]() {
         if (handle->has_custom_vocabulary_bias &&
             handle->model_handle &&
-            handle->model_handle->model) {
-            handle->model_handle->model->clear_vocab_bias();
+            handle->active_context()->model) {
+            handle->active_context()->model->clear_vocab_bias();
         }
     };
 
@@ -2346,7 +2399,7 @@ int cactus_stream_transcribe_stop(
     }
 
     try {
-        const auto model_type = handle->model_handle->model->get_config().model_type;
+        const auto model_type = handle->active_context()->model->get_config().model_type;
         bool is_moonshine = model_type == cactus::engine::Config::ModelType::MOONSHINE;
         bool is_parakeet_tdt =
             model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
@@ -2382,7 +2435,7 @@ int cactus_stream_transcribe_stop(
             handle->parakeet_tdt_decode_context.initialized) {
             auto& ctx = handle->parakeet_tdt_decode_context;
             auto* tdt_model = static_cast<cactus::engine::ParakeetTDTModel*>(
-                handle->model_handle->model.get());
+                handle->active_context()->model.get());
             const size_t total_samples = ctx.audio_samples.size();
             if (total_samples > ctx.samples_decoded_up_to) {
                 constexpr size_t kTdtLeftContextSamples = 8 * 16000;
@@ -2403,7 +2456,7 @@ int cactus_stream_transcribe_stop(
                 trim_mel_frames(window_audio, ctx.mel_bins, valid_frames);
 
                 const uint32_t subsampling =
-                    std::max<uint32_t>(1, handle->model_handle->model->get_config().subsampling_factor);
+                    std::max<uint32_t>(1, handle->active_context()->model->get_config().subsampling_factor);
                 const size_t samples_per_enc_frame = cfg.hop_length * subsampling;
                 const size_t context_samples = ctx.samples_decoded_up_to - window_start_sample;
                 const size_t decode_start_frame = context_samples / samples_per_enc_frame;

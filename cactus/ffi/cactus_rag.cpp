@@ -113,18 +113,19 @@ static float compute_bm25_score(
     return score;
 }
 
-std::string retrieve_rag_context(CactusModelHandle* handle, const std::string& query) {
+std::string retrieve_rag_context(CactusContextHandle* ctx, const std::string& query) {
+    auto* handle = ctx->parent_model;
     if (!handle->corpus_index || handle->corpus_embedding_dim == 0) {
         return "";
     }
 
-    auto* tokenizer = handle->model->get_tokenizer();
+    auto* tokenizer = ctx->model->get_tokenizer();
     if (!tokenizer) return "";
 
     std::vector<uint32_t> query_tokens = tokenizer->encode(query);
     if (query_tokens.empty()) return "";
 
-    std::vector<float> query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+    std::vector<float> query_embedding = ctx->model->get_embeddings(query_tokens, true, true);
     if (query_embedding.size() != handle->corpus_embedding_dim) {
         CACTUS_LOG_WARN("rag", "Query embedding dimension mismatch");
         return "";
@@ -221,28 +222,28 @@ static float cosine_similarity(const std::vector<float>& a, const std::vector<fl
 }
 
 std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
-    CactusModelHandle* handle,
+    CactusContextHandle* ctx,
     const std::string& query,
     const std::vector<cactus::ffi::ToolFunction>& all_tools,
     size_t top_k
 ) {
     using cactus::ffi::ToolFunction;
-    if (!handle || all_tools.empty() || top_k == 0) return all_tools;
+    if (!ctx || all_tools.empty() || top_k == 0) return all_tools;
 
     // If we have fewer tools than top_k, just return all
     if (all_tools.size() <= top_k) return all_tools;
 
-    auto* tokenizer = handle->model->get_tokenizer();
+    auto* tokenizer = ctx->model->get_tokenizer();
     if (!tokenizer) {
         CACTUS_LOG_WARN("tool_rag", "No tokenizer available, returning all tools");
         return all_tools;
     }
 
     // Build tool texts and embeddings if not cached or tool set changed
-    bool need_recompute = (handle->tool_texts.size() != all_tools.size());
+    bool need_recompute = (ctx->tool_texts.size() != all_tools.size());
     if (!need_recompute) {
         for (size_t i = 0; i < all_tools.size(); ++i) {
-            if (tool_to_text(all_tools[i]) != handle->tool_texts[i]) {
+            if (tool_to_text(all_tools[i]) != ctx->tool_texts[i]) {
                 need_recompute = true;
                 break;
             }
@@ -251,21 +252,21 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
 
     if (need_recompute) {
         CACTUS_LOG_DEBUG("tool_rag", "Computing embeddings for " << all_tools.size() << " tools");
-        handle->tool_texts.clear();
-        handle->tool_embeddings.clear();
-        handle->tool_texts.reserve(all_tools.size());
-        handle->tool_embeddings.reserve(all_tools.size());
+        ctx->tool_texts.clear();
+        ctx->tool_embeddings.clear();
+        ctx->tool_texts.reserve(all_tools.size());
+        ctx->tool_embeddings.reserve(all_tools.size());
 
         for (const auto& tool : all_tools) {
             std::string text = tool_to_text(tool);
-            handle->tool_texts.push_back(text);
+            ctx->tool_texts.push_back(text);
 
             std::vector<uint32_t> tokens = tokenizer->encode(text);
             if (!tokens.empty()) {
-                std::vector<float> emb = handle->model->get_embeddings(tokens, true, true);
-                handle->tool_embeddings.push_back(std::move(emb));
+                std::vector<float> emb = ctx->model->get_embeddings(tokens, true, true);
+                ctx->tool_embeddings.push_back(std::move(emb));
             } else {
-                handle->tool_embeddings.push_back({});
+                ctx->tool_embeddings.push_back({});
             }
         }
     }
@@ -277,7 +278,7 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
         return all_tools;
     }
 
-    std::vector<float> query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+    std::vector<float> query_embedding = ctx->model->get_embeddings(query_tokens, true, true);
     if (query_embedding.empty()) {
         CACTUS_LOG_WARN("tool_rag", "Failed to get query embedding, returning all tools");
         return all_tools;
@@ -287,7 +288,7 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
 
     float total_len = 0.0f;
     std::unordered_map<std::string, int> doc_freqs;
-    for (const auto& text : handle->tool_texts) {
+    for (const auto& text : ctx->tool_texts) {
         auto words = tokenize_words(text);
         total_len += words.size();
         std::unordered_set<std::string> unique_words(words.begin(), words.end());
@@ -295,18 +296,18 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
             doc_freqs[w]++;
         }
     }
-    float avg_doc_len = total_len / handle->tool_texts.size();
+    float avg_doc_len = total_len / ctx->tool_texts.size();
 
     std::vector<std::pair<float, size_t>> emb_ranked;
-    for (size_t i = 0; i < handle->tool_embeddings.size(); ++i) {
-        float sim = cosine_similarity(query_embedding, handle->tool_embeddings[i]);
+    for (size_t i = 0; i < ctx->tool_embeddings.size(); ++i) {
+        float sim = cosine_similarity(query_embedding, ctx->tool_embeddings[i]);
         emb_ranked.emplace_back(sim, i);
     }
 
     std::vector<std::pair<float, size_t>> bm25_ranked;
-    for (size_t i = 0; i < handle->tool_texts.size(); ++i) {
+    for (size_t i = 0; i < ctx->tool_texts.size(); ++i) {
         float bm25 = compute_bm25_score(
-            query_words, handle->tool_texts[i], avg_doc_len, doc_freqs, handle->tool_texts.size()
+            query_words, ctx->tool_texts[i], avg_doc_len, doc_freqs, ctx->tool_texts.size()
         );
         bm25_ranked.emplace_back(bm25, i);
     }
@@ -347,7 +348,7 @@ int cactus_rag_query(
     }
 
     try {
-        auto* tokenizer = handle->model->get_tokenizer();
+        auto* tokenizer = handle->default_context.model->get_tokenizer();
         if (!tokenizer) {
             std::strcpy(response_buffer, "{\"chunks\":[],\"error\":\"No tokenizer\"}");
             return 0;
@@ -359,7 +360,7 @@ int cactus_rag_query(
             return 0;
         }
 
-        std::vector<float> query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+        std::vector<float> query_embedding = handle->default_context.model->get_embeddings(query_tokens, true, true);
         if (query_embedding.size() != handle->corpus_embedding_dim) {
             std::strcpy(response_buffer, "{\"chunks\":[],\"error\":\"Embedding dimension mismatch\"}");
             return 0;

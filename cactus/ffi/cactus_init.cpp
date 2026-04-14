@@ -214,7 +214,7 @@ static std::vector<std::pair<std::string, std::string>> chunk_corpus(
 static bool build_corpus_index(CactusModelHandle* handle, const std::string& corpus_dir) {
     CACTUS_LOG_INFO("init", "Building corpus index from: " << corpus_dir);
 
-    auto* tokenizer = handle->model->get_tokenizer();
+    auto* tokenizer = handle->default_context.model->get_tokenizer();
     if (!tokenizer) {
         CACTUS_LOG_ERROR("init", "No tokenizer available for corpus indexing");
         return false;
@@ -237,7 +237,7 @@ static bool build_corpus_index(CactusModelHandle* handle, const std::string& cor
     CACTUS_LOG_INFO("init", "Generated " << chunks.size() << " chunks from corpus");
 
     std::vector<uint32_t> test_tokens = tokenizer->encode("test");
-    std::vector<float> test_embedding = handle->model->get_embeddings(test_tokens, true, true);
+    std::vector<float> test_embedding = handle->default_context.model->get_embeddings(test_tokens, true, true);
     if (test_embedding.empty()) {
         CACTUS_LOG_ERROR("init", "Failed to get embedding dimension");
         return false;
@@ -267,7 +267,7 @@ static bool build_corpus_index(CactusModelHandle* handle, const std::string& cor
         const auto& [chunk_text, source_file] = chunks[i];
 
         std::vector<uint32_t> tokens = tokenizer->encode(chunk_text);
-        std::vector<float> embedding = handle->model->get_embeddings(tokens, true, true);
+        std::vector<float> embedding = handle->default_context.model->get_embeddings(tokens, true, true);
 
         if (embedding.size() != embedding_dim) {
             CACTUS_LOG_WARN("init", "Skipping chunk " << i << " - embedding dimension mismatch");
@@ -315,9 +315,9 @@ static bool load_corpus_index(CactusModelHandle* handle, const std::string& corp
         return false;
     }
 
-    auto* tokenizer = handle->model->get_tokenizer();
+    auto* tokenizer = handle->default_context.model->get_tokenizer();
     std::vector<uint32_t> test_tokens = tokenizer->encode("test");
-    std::vector<float> test_embedding = handle->model->get_embeddings(test_tokens, true, true);
+    std::vector<float> test_embedding = handle->default_context.model->get_embeddings(test_tokens, true, true);
     if (test_embedding.empty()) {
         CACTUS_LOG_ERROR("init", "Failed to get embedding dimension for index loading");
         return false;
@@ -375,10 +375,11 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
 
     try {
         auto* handle = new CactusModelHandle();
-        handle->model = create_model(model_path);
+        handle->model_path = model_path_str;
+        handle->default_context.model = create_model(model_path);
         handle->model_name = model_name;
 
-        if (!handle->model) {
+        if (!handle->default_context.model) {
             last_error_message = "Failed to create model - check config.txt exists at: " + model_path_str;
             CACTUS_LOG_ERROR("init", last_error_message);
             {
@@ -389,7 +390,7 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
             return nullptr;
         }
 
-        if (!handle->model->init(model_path, DEFAULT_CONTEXT_SIZE)) {
+        if (!handle->default_context.model->init(model_path, DEFAULT_CONTEXT_SIZE)) {
             last_error_message = "Failed to initialize model - check weight files at: " + model_path_str;
             CACTUS_LOG_ERROR("init", last_error_message);
             {
@@ -400,7 +401,7 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
             return nullptr;
         }
 
-        auto model_type = handle->model->get_config().model_type;
+        auto model_type = handle->default_context.model->get_config().model_type;
         if (model_type == Config::ModelType::WHISPER ||
             model_type == Config::ModelType::MOONSHINE ||
             model_type == Config::ModelType::PARAKEET ||
@@ -470,15 +471,15 @@ void cactus_destroy(cactus_model_t model) {
 void cactus_reset(cactus_model_t model) {
     if (!model) return;
     auto* handle = static_cast<CactusModelHandle*>(model);
-    handle->model->reset_cache();
-    handle->processed_tokens.clear();
-    handle->processed_images.clear();
+    handle->default_context.model->reset_cache();
+    handle->default_context.processed_tokens.clear();
+    handle->default_context.processed_images.clear();
 }
 
 void cactus_stop(cactus_model_t model) {
     if (!model) return;
     auto* handle = static_cast<CactusModelHandle*>(model);
-    handle->should_stop = true;
+    handle->default_context.should_stop = true;
 }
 
 }

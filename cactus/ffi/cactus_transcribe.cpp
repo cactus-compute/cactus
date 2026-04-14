@@ -65,10 +65,18 @@ static bool is_terminal_transcription_piece(const std::string& piece) {
            piece == "<pad>";
 }
 
-extern "C" {
+// --- transcribe_impl: shared by model API and context API ---
 
-int cactus_transcribe(
-    cactus_model_t model,
+static void reset_context(CactusContextHandle* ctx) {
+    ctx->model->reset_cache();
+    ctx->processed_tokens.clear();
+    ctx->processed_images.clear();
+}
+
+int cactus_transcribe_impl(
+    CactusContextHandle* ctx,
+    CactusModelHandle* parent,
+    const char* model_name,
     const char* audio_file_path,
     const char* prompt,
     char* response_buffer,
@@ -79,16 +87,31 @@ int cactus_transcribe(
     const uint8_t* pcm_buffer,
     size_t pcm_buffer_size
 ) {
-    if (validate_audio_params("transcribe", model, response_buffer, buffer_size, audio_file_path, pcm_buffer, pcm_buffer_size) != 0)
+    if (!ctx || !ctx->model) {
+        std::string err = last_error_message.empty() ? "Model not initialized." : last_error_message;
+        CACTUS_LOG_ERROR("transcribe", err);
+        handle_error_response(err, response_buffer, buffer_size);
         return -1;
+    }
+    if (!response_buffer || buffer_size == 0) {
+        CACTUS_LOG_ERROR("transcribe", "Invalid parameters: response_buffer or buffer_size");
+        handle_error_response("Invalid parameters", response_buffer, buffer_size);
+        return -1;
+    }
+    if (!audio_file_path && (!pcm_buffer || pcm_buffer_size == 0)) {
+        CACTUS_LOG_ERROR("transcribe", "No audio input provided");
+        handle_error_response("Either audio_file_path or pcm_buffer must be provided", response_buffer, buffer_size);
+        return -1;
+    }
+
+    const char* telemetry_name = model_name ? model_name : "unknown";
 
     try {
         auto start_time = std::chrono::high_resolution_clock::now();
-        auto* handle = static_cast<CactusModelHandle*>(model);
-        std::lock_guard<std::mutex> lock(handle->model_mutex);
-        handle->should_stop = false;
+        std::lock_guard<std::mutex> lock(ctx->context_mutex);
+        ctx->should_stop = false;
 
-        float cloud_handoff_threshold = handle->model->get_config().default_cloud_handoff_threshold;
+        float cloud_handoff_threshold = ctx->model->get_config().default_cloud_handoff_threshold;
         const std::string opts = options_json ? options_json : "";
         InferenceOptions options = parse_inference_options_json(opts);
         {
@@ -114,7 +137,7 @@ int cactus_transcribe(
             opts.find("\"custom_vocabulary\"") != std::string::npos ||
             opts.find("\"vocabulary_boost\"") != std::string::npos;
         const bool apply_request_scoped_vocabulary_bias =
-            request_has_custom_vocabulary_options && !handle->model->has_vocab_bias();
+            request_has_custom_vocabulary_options && !ctx->model->has_vocab_bias();
 
         struct ScopedVocabularyBiasReset {
             Model* model;
@@ -125,7 +148,7 @@ int cactus_transcribe(
                 }
             }
         } scoped_vocabulary_bias_reset{
-            handle->model.get(),
+            ctx->model.get(),
             apply_request_scoped_vocabulary_bias
         };
         std::vector<std::string> custom_vocabulary;
@@ -133,7 +156,7 @@ int cactus_transcribe(
         parse_custom_vocabulary_options(opts, custom_vocabulary, vocabulary_boost_unused);
 
         if (apply_request_scoped_vocabulary_bias) {
-            apply_custom_vocabulary_options(handle->model.get(), opts);
+            apply_custom_vocabulary_options(ctx->model.get(), opts);
         }
 
         if (request_has_custom_vocabulary_options &&
@@ -142,13 +165,13 @@ int cactus_transcribe(
             options.top_k = 1;
         }
 
-        bool is_whisper = handle->model->get_config().model_type == cactus::engine::Config::ModelType::WHISPER;
-        bool is_moonshine = handle->model->get_config().model_type == cactus::engine::Config::ModelType::MOONSHINE;
-        bool is_parakeet_tdt = handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
+        bool is_whisper = ctx->model->get_config().model_type == cactus::engine::Config::ModelType::WHISPER;
+        bool is_moonshine = ctx->model->get_config().model_type == cactus::engine::Config::ModelType::MOONSHINE;
+        bool is_parakeet_tdt = ctx->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
         bool is_parakeet =
-            handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET ||
-            handle->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
-        bool is_gemma4 = handle->model->get_config().model_type == cactus::engine::Config::ModelType::GEMMA4;
+            ctx->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET ||
+            ctx->model->get_config().model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
+        bool is_gemma4 = ctx->model->get_config().model_type == cactus::engine::Config::ModelType::GEMMA4;
 
         std::vector<float> audio_samples;
         if (audio_file_path == nullptr) {
@@ -169,11 +192,11 @@ int cactus_transcribe(
         if (is_gemma4) {
             if (audio_samples.empty()) {
                 handle_error_response("No audio input provided", response_buffer, buffer_size);
-                cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, 0.0, "No audio input");
+                cactus::telemetry::recordTranscription(telemetry_name, false, 0.0, 0.0, 0.0, 0, 0.0, "No audio input");
                 return -1;
             }
 
-            const auto& model_config = handle->model->get_config();
+            const auto& model_config = ctx->model->get_config();
             uint32_t audio_token_id = model_config.audio_token_id;
             if (audio_token_id == 0) {
                 CACTUS_LOG_WARN("transcribe", "audio_token_id not set in config, using default 258881");
@@ -184,11 +207,11 @@ int cactus_transcribe(
             std::vector<float>& audio_features = audio_prep.features;
             size_t num_soft_tokens = audio_prep.num_soft_tokens;
 
-            auto* tokenizer = handle->model->get_tokenizer();
+            auto* tokenizer = ctx->model->get_tokenizer();
             if (!tokenizer) {
                 CACTUS_LOG_ERROR("transcribe", "Tokenizer unavailable");
                 handle_error_response("Tokenizer unavailable", response_buffer, buffer_size);
-                cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, 0.0, "Tokenizer unavailable");
+                cactus::telemetry::recordTranscription(telemetry_name, false, 0.0, 0.0, 0.0, 0, 0.0, "Tokenizer unavailable");
                 return -1;
             }
 
@@ -223,10 +246,10 @@ int cactus_transcribe(
             generated_tokens.reserve(options.max_tokens);
 
             for (size_t i = 0; i < options.max_tokens; ++i) {
-                if (handle->should_stop) break;
+                if (ctx->should_stop) break;
 
                 float token_entropy = 0.0f;
-                uint32_t next_token = handle->model->decode_with_audio(
+                uint32_t next_token = ctx->model->decode_with_audio(
                     tokens, audio_features,
                     options.temperature, options.top_p, options.top_k,
                     "", &token_entropy,
@@ -252,7 +275,7 @@ int cactus_transcribe(
                 if (callback) callback(piece.c_str(), next_token, user_data);
             }
 
-            cactus_reset(model);
+            reset_context(ctx);
 
             float mean_entropy = completion_tokens > 0 ? total_entropy_sum / static_cast<float>(completion_tokens) : 0.0f;
             float confidence = 1.0f - mean_entropy;
@@ -285,11 +308,11 @@ int cactus_transcribe(
 
             if (json.size() >= buffer_size) {
                 handle_error_response("Response buffer too small", response_buffer, buffer_size);
-                cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, 0.0, "Response buffer too small");
+                cactus::telemetry::recordTranscription(telemetry_name, false, 0.0, 0.0, 0.0, 0, 0.0, "Response buffer too small");
                 return -1;
             }
 
-            cactus::telemetry::recordTranscription(handle->model_name.c_str(), true, time_to_first_token, decode_tps, total_time_ms, static_cast<int>(completion_tokens), get_ram_usage_mb(), "");
+            cactus::telemetry::recordTranscription(telemetry_name, true, time_to_first_token, decode_tps, total_time_ms, static_cast<int>(completion_tokens), get_ram_usage_mb(), "");
             std::strcpy(response_buffer, json.c_str());
             return static_cast<int>(json.size());
         }
@@ -307,7 +330,7 @@ int cactus_transcribe(
         std::vector<AudioChunk> audio_chunks;
 
         if (options.use_vad) {
-            auto* vad = static_cast<SileroVADModel*>(handle->vad_model.get());
+            auto* vad = static_cast<SileroVADModel*>(parent->vad_model.get());
             auto vad_segments = vad->get_speech_timestamps(audio_samples, {});
             audio_chunks.reserve(vad_segments.size());
 
@@ -346,10 +369,10 @@ int cactus_transcribe(
                 std::string json = construct_response_json("", {}, 0.0, vad_total_time_ms, 0.0, 0.0, 0, 0, 1.0f);
                 if (json.size() >= buffer_size) {
                     handle_error_response("Response buffer too small", response_buffer, buffer_size);
-                    cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, 0.0, "Response buffer too small");
+                    cactus::telemetry::recordTranscription(telemetry_name, false, 0.0, 0.0, 0.0, 0, 0.0, "Response buffer too small");
                     return -1;
                 }
-                cactus::telemetry::recordTranscription(handle->model_name.c_str(), true, 0.0, 0.0, vad_total_time_ms, 0, get_ram_usage_mb(), "");
+                cactus::telemetry::recordTranscription(telemetry_name, true, 0.0, 0.0, vad_total_time_ms, 0, get_ram_usage_mb(), "");
                 std::strcpy(response_buffer, json.c_str());
                 return static_cast<int>(json.size());
             }
@@ -362,7 +385,7 @@ int cactus_transcribe(
         }
 
         auto cfg = is_parakeet ? get_parakeet_spectrogram_config() : get_whisper_spectrogram_config();
-        size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
+        size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(ctx->model->get_config().num_mel_bins));
         const bool is_whisper_v3 = is_whisper && mel_bins > 80;
         AudioProcessor ap;
         if (is_parakeet) {
@@ -371,11 +394,11 @@ int cactus_transcribe(
             init_whisper_mel_filters(ap, cfg, mel_bins);
         }
 
-        auto* tokenizer = handle->model->get_tokenizer();
+        auto* tokenizer = ctx->model->get_tokenizer();
         if (!tokenizer) {
             CACTUS_LOG_ERROR("transcribe", "Tokenizer unavailable");
             handle_error_response("Tokenizer unavailable", response_buffer, buffer_size);
-            cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, 0.0, "Tokenizer unavailable");
+            cactus::telemetry::recordTranscription(telemetry_name, false, 0.0, 0.0, 0.0, 0, 0.0, "Tokenizer unavailable");
             return -1;
         }
 
@@ -387,11 +410,11 @@ int cactus_transcribe(
         if (initial_tokens.empty() && !is_moonshine && !is_parakeet) {
             CACTUS_LOG_ERROR("transcribe", "Decoder input tokens empty after encoding prompt");
             handle_error_response("Decoder input tokens empty", response_buffer, buffer_size);
-            cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, 0.0, "Decoder input tokens empty");
+            cactus::telemetry::recordTranscription(telemetry_name, false, 0.0, 0.0, 0.0, 0, 0.0, "Decoder input tokens empty");
             return -1;
         }
 
-        float max_tps = handle->model->get_config().default_max_tps;
+        float max_tps = ctx->model->get_config().default_max_tps;
         if (max_tps < 0) max_tps = 100;
 
         std::vector<std::vector<uint32_t>> stop_token_sequences = {{ tokenizer->get_eos_token() }};
@@ -426,7 +449,7 @@ int cactus_transcribe(
         const auto sot_begin = sot_it != initial_tokens.end() ? sot_it : initial_tokens.begin();
 
         for (auto& audio_chunk : audio_chunks) {
-            if (handle->should_stop || completion_tokens >= options.max_tokens) break;
+            if (ctx->should_stop || completion_tokens >= options.max_tokens) break;
 
             std::vector<float> chunk_audio = std::move(audio_chunk.audio);
             const float audio_chunk_length_sec = static_cast<float>(chunk_audio.size()) / static_cast<float>(WHISPER_SAMPLE_RATE);
@@ -493,12 +516,12 @@ int cactus_transcribe(
             std::string segment_text;
 
             for (size_t i = 0; i < chunk_max_tokens; ++i) {
-                if (handle->should_stop) break;
+                if (ctx->should_stop) break;
 
                 float token_entropy = 0.0f;
                 float tok_time_start = 0.0f;
                 float tok_time_end = 0.0f;
-                uint32_t next_token = handle->model->decode_with_audio(
+                uint32_t next_token = ctx->model->decode_with_audio(
                     tokens,
                     chunk_audio,
                     options.temperature,
@@ -592,7 +615,7 @@ int cactus_transcribe(
                 );
             }
 
-            cactus_reset(model);
+            reset_context(ctx);
         }
 
         float mean_entropy = completion_tokens > 0 ? total_entropy_sum / static_cast<float>(completion_tokens) : 0.0f;
@@ -621,11 +644,11 @@ int cactus_transcribe(
 
         if (json.size() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);
-            cactus::telemetry::recordTranscription(handle->model_name.c_str(), false, 0.0, 0.0, 0.0, 0, 0.0, "Response buffer too small");
+            cactus::telemetry::recordTranscription(telemetry_name, false, 0.0, 0.0, 0.0, 0, 0.0, "Response buffer too small");
             return -1;
         }
 
-        cactus::telemetry::recordTranscription(handle->model_name.c_str(), true, time_to_first_token, decode_tps, total_time_ms, static_cast<int>(completion_tokens), get_ram_usage_mb(), "");
+        cactus::telemetry::recordTranscription(telemetry_name, true, time_to_first_token, decode_tps, total_time_ms, static_cast<int>(completion_tokens), get_ram_usage_mb(), "");
 
         std::strcpy(response_buffer, json.c_str());
 
@@ -634,15 +657,43 @@ int cactus_transcribe(
     catch (const std::exception& e) {
         CACTUS_LOG_ERROR("transcribe", "Exception: " << e.what());
         handle_error_response(e.what(), response_buffer, buffer_size);
-        cactus::telemetry::recordTranscription(model ? static_cast<CactusModelHandle*>(model)->model_name.c_str() : nullptr, false, 0.0, 0.0, 0.0, 0, 0.0, e.what());
+        cactus::telemetry::recordTranscription(telemetry_name, false, 0.0, 0.0, 0.0, 0, 0.0, e.what());
         return -1;
     }
     catch (...) {
         CACTUS_LOG_ERROR("transcribe", "Unknown exception during transcription");
         handle_error_response("Unknown error in transcribe", response_buffer, buffer_size);
-        cactus::telemetry::recordTranscription(model ? static_cast<CactusModelHandle*>(model)->model_name.c_str() : nullptr, false, 0.0, 0.0, 0.0, 0, 0.0, "Unknown error in transcribe");
+        cactus::telemetry::recordTranscription(telemetry_name, false, 0.0, 0.0, 0.0, 0, 0.0, "Unknown error in transcribe");
         return -1;
     }
+}
+
+// --- C API wrappers ---
+
+extern "C" {
+
+int cactus_transcribe(
+    cactus_model_t model,
+    const char* audio_file_path,
+    const char* prompt,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,
+    cactus_token_callback callback,
+    void* user_data,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+) {
+    if (!model) {
+        std::string err = last_error_message.empty() ? "Model not initialized." : last_error_message;
+        CACTUS_LOG_ERROR("transcribe", err);
+        handle_error_response(err, response_buffer, buffer_size);
+        return -1;
+    }
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    return cactus_transcribe_impl(&handle->default_context, handle, handle->model_name.c_str(),
+        audio_file_path, prompt, response_buffer, buffer_size, options_json,
+        callback, user_data, pcm_buffer, pcm_buffer_size);
 }
 
 int cactus_detect_language(
@@ -684,10 +735,11 @@ int cactus_detect_language(
     try {
         auto start_time = std::chrono::high_resolution_clock::now();
         auto* handle = static_cast<CactusModelHandle*>(model);
+        auto* ctx = &handle->default_context;
         std::lock_guard<std::mutex> lock(handle->model_mutex);
-        handle->should_stop = false;
+        ctx->should_stop = false;
 
-        if (handle->model->get_config().model_type != cactus::engine::Config::ModelType::WHISPER) {
+        if (ctx->model->get_config().model_type != cactus::engine::Config::ModelType::WHISPER) {
             handle_error_response("Language detection currently requires a Whisper model", response_buffer, buffer_size);
             return -1;
         }
@@ -731,7 +783,7 @@ int cactus_detect_language(
 
         AudioProcessor ap;
         auto cfg = get_whisper_spectrogram_config();
-        const size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
+        const size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(ctx->model->get_config().num_mel_bins));
         init_whisper_mel_filters(ap, cfg, mel_bins);
         std::vector<float> mel = ap.compute_spectrogram(audio_buffer, cfg);
         std::vector<float> features = normalize_whisper_mel(mel, mel_bins, mel_bins > 80);
@@ -740,7 +792,7 @@ int cactus_detect_language(
             return -1;
         }
 
-        auto* tokenizer = handle->model->get_tokenizer();
+        auto* tokenizer = ctx->model->get_tokenizer();
         if (!tokenizer) {
             handle_error_response("Tokenizer unavailable", response_buffer, buffer_size);
             return -1;
@@ -752,7 +804,7 @@ int cactus_detect_language(
             return -1;
         }
 
-        handle->model->reset_cache();
+        ctx->model->reset_cache();
         float entropy = 1.0f;
         uint32_t token_id = 0;
         std::string token_text;
@@ -763,7 +815,7 @@ int cactus_detect_language(
         constexpr size_t kMaxLanguageProbeSteps = 4;
         for (size_t step = 0; step < kMaxLanguageProbeSteps; ++step) {
             float step_entropy = 1.0f;
-            const uint32_t step_token_id = handle->model->decode_with_audio(
+            const uint32_t step_token_id = ctx->model->decode_with_audio(
                 decode_tokens, features, 0.0f, 0.0f, 0, "", &step_entropy,
                 0.0f, 1.0f
             );
@@ -781,7 +833,7 @@ int cactus_detect_language(
 
             decode_tokens.push_back(step_token_id);
         }
-        handle->model->reset_cache();
+        ctx->model->reset_cache();
 
         if (language.empty()) {
             language = "unknown";

@@ -109,7 +109,7 @@ bool test_prompt_gemma4_thinking_injection() {
     if (!model) { std::cout << "  [SKIP] Could not load model\n"; return true; }
 
     auto* handle = static_cast<CactusModelHandle*>(model);
-    auto* tok = handle->model->get_tokenizer();
+    auto* tok = handle->default_context.model->get_tokenizer();
     std::vector<ChatMessage> msgs = {{"user", "hello", "", {}, {}}};
 
     std::string enabled = tok->format_chat_prompt(msgs, true, "", true);
@@ -136,7 +136,7 @@ bool test_prompt_gemma4_assistant_stripping() {
     if (!model) { std::cout << "  [SKIP] Could not load model\n"; return true; }
 
     auto* handle = static_cast<CactusModelHandle*>(model);
-    auto* tok = handle->model->get_tokenizer();
+    auto* tok = handle->default_context.model->get_tokenizer();
 
     std::vector<ChatMessage> msgs = {
         {"user", "hello", "", {}, {}},
@@ -167,7 +167,7 @@ bool test_complete_gemma4_thinking_toggle() {
     if (!model) return false;
 
     auto* handle = static_cast<CactusModelHandle*>(model);
-    auto mtype = handle->model->get_config().model_type;
+    auto mtype = handle->default_context.model->get_config().model_type;
     if (mtype != Config::ModelType::GEMMA4) {
         std::cout << "  [SKIP] Not a Gemma4 model\n";
         cactus_destroy(model);
@@ -183,8 +183,8 @@ bool test_complete_gemma4_thinking_toggle() {
     std::string resp1(buf);
     bool ok1 = r1 > 0 && resp1.find("\"success\":true") != std::string::npos;
 
-    handle->model->reset_cache();
-    handle->processed_tokens.clear();
+    handle->default_context.model->reset_cache();
+    handle->default_context.processed_tokens.clear();
 
     int r2 = cactus_complete(model, msgs, buf, sizeof(buf),
         R"({"max_tokens":128,"enable_thinking_if_supported":false,"telemetry_enabled":false})",
@@ -209,7 +209,7 @@ bool test_complete_gemma4_tool_call() {
     if (!model) return false;
 
     auto* handle = static_cast<CactusModelHandle*>(model);
-    auto mtype = handle->model->get_config().model_type;
+    auto mtype = handle->default_context.model->get_config().model_type;
     if (mtype != Config::ModelType::GEMMA4) {
         std::cout << "  [SKIP] Not a Gemma4 model\n";
         cactus_destroy(model);
@@ -244,13 +244,13 @@ bool test_multiturn_cache_reuse() {
     if (!model) { std::cerr << "  Failed to load model\n"; return false; }
 
     auto* handle = static_cast<CactusModelHandle*>(model);
-    if (handle->model->get_config().model_type != Config::ModelType::GEMMA4) {
+    if (handle->default_context.model->get_config().model_type != Config::ModelType::GEMMA4) {
         std::cout << "  [SKIP] Not a Gemma4 model\n";
         cactus_destroy(model);
         return true;
     }
 
-    auto* tokenizer = handle->model->get_tokenizer();
+    auto* tokenizer = handle->default_context.model->get_tokenizer();
     const char* options = R"({"max_tokens":128,"temperature":0,"top_k":1,"enable_thinking_if_supported":true,"telemetry_enabled":false,"auto_handoff":false})";
     const char* turn1_msgs = R"([{"role": "user", "content": "My name is Alice. Please remember this."}])";
     char buf[16384];
@@ -258,7 +258,7 @@ bool test_multiturn_cache_reuse() {
     int r1 = cactus_complete(model, turn1_msgs, buf, sizeof(buf), options, nullptr, nullptr, nullptr, nullptr, 0);
     if (r1 <= 0) { std::cerr << "  Turn 1 failed\n"; cactus_destroy(model); return false; }
 
-    std::vector<uint32_t> processed_after_t1 = handle->processed_tokens;
+    std::vector<uint32_t> processed_after_t1 = handle->default_context.processed_tokens;
 
     std::vector<ChatMessage> t1_chat = {{"user", "My name is Alice. Please remember this.", "", {}, {}}};
     std::vector<uint32_t> t1_prompt_tokens = tokenizer->encode(tokenizer->format_chat_prompt(t1_chat, true, "", true));

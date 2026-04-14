@@ -18,10 +18,63 @@ extern "C" {
 #endif
 
 typedef void* cactus_model_t;
+typedef void* cactus_context_t;
 typedef void* cactus_index_t;
 typedef void* cactus_stream_transcribe_t;
 
 typedef void (*cactus_token_callback)(const char* token, uint32_t token_id, void* user_data);
+
+// Context API — explicit session lifecycle, preferred for new callers.
+// Each context owns its own KV cache and session state.
+// Destroying a context cleans up all session state by construction.
+CACTUS_FFI_EXPORT cactus_context_t cactus_context_create(cactus_model_t model);
+CACTUS_FFI_EXPORT void cactus_context_destroy(cactus_context_t ctx);
+CACTUS_FFI_EXPORT void cactus_context_reset(cactus_context_t ctx);
+CACTUS_FFI_EXPORT void cactus_context_stop(cactus_context_t ctx);
+
+CACTUS_FFI_EXPORT int cactus_context_complete(
+    cactus_context_t ctx,
+    const char* messages_json,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,
+    const char* tools_json,
+    cactus_token_callback callback,
+    void* user_data,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+);
+
+CACTUS_FFI_EXPORT int cactus_context_prefill(
+    cactus_context_t ctx,
+    const char* messages_json,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,
+    const char* tools_json,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+);
+
+CACTUS_FFI_EXPORT int cactus_context_transcribe(
+    cactus_context_t ctx,
+    const char* audio_file_path,
+    const char* prompt,
+    char* response_buffer,
+    size_t buffer_size,
+    const char* options_json,
+    cactus_token_callback callback,
+    void* user_data,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size
+);
+
+CACTUS_FFI_EXPORT cactus_stream_transcribe_t cactus_context_stream_transcribe_start(
+    cactus_context_t ctx,
+    const char* options_json                // optional
+);
+
+// Model API — backwards-compatible, uses an internal default context.
 
 CACTUS_FFI_EXPORT cactus_model_t cactus_init(
     const char* model_path,
