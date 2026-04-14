@@ -155,21 +155,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         data = data + 1.0
 
     if model_type == 'gemma4':
-        GEMMA4_WEIGHT_SCALE = 16.0
-        filename = output_path.name
-        is_audio_weight = filename.startswith('audio_')
-        if any(x in filename for x in ['input_norm', 'post_attn_norm', 'pre_ffn_norm', 'post_ffn_norm',
-                                       'post_per_layer_norm', 'post_proj_norm']):
-            data = data / GEMMA4_WEIGHT_SCALE
-        elif any(x in filename for x in ['ffn_gate', 'ffn_up', 'per_layer_gate', 'moe_gate_proj', 'moe_up_proj']):
-            data = data * GEMMA4_WEIGHT_SCALE
-        elif 'router_scale' in filename:
-            data = data / GEMMA4_WEIGHT_SCALE
-        elif filename in ('token_embeddings.weights', 'output_weight.weights',
-                          'embed_vision_proj.weights', 'embed_vision_embedding.weights'):
-            data = data / GEMMA4_WEIGHT_SCALE
-        elif filename == 'output_norm.weights':
-            data = data * GEMMA4_WEIGHT_SCALE
+        pass  # No weight scaling — weights are exported at their original HF values
 
     if precision in ('INT8', 'INT4'):
         filename = output_path.name

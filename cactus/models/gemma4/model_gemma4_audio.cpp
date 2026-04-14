@@ -770,7 +770,7 @@ size_t Gemma4AudioModel::forward_audio(CactusGraph* gb, const std::vector<float>
 size_t Gemma4AudioModel::build_audio_projector(CactusGraph* gb, size_t audio_features, ComputeBackend backend) {
     size_t normed = gb->rms_norm(audio_features, audio_proj_norm_ones_node_, config_.audio_rms_norm_eps);
     size_t projected = gb->matmul(normed, audio_weights_.embed_audio_proj, true, backend);
-    return gb->scalar_multiply(projected, 1.0f / 16.0f);
+    return projected;
 }
 
 }
