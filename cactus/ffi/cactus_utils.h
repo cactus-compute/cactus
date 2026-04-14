@@ -414,7 +414,7 @@ struct InferenceOptions {
     bool telemetry_enabled = true;
     bool auto_handoff = true;
     bool handoff_with_images = true;
-    bool enable_thinking_if_supported = true;
+    bool enable_thinking_if_supported = false;
 };
 
 } // namespace ffi

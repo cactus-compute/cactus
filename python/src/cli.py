@@ -1047,8 +1047,8 @@ def cmd_run(args):
     prompt = getattr(args, 'prompt', None)
     if prompt:
         cmd_args.extend(['--prompt', prompt])
-    if getattr(args, 'no_thinking', False):
-        cmd_args.append('--no-thinking')
+    if getattr(args, 'thinking', False):
+        cmd_args.append('--thinking')
 
     os.execv(str(chat_binary), cmd_args)
 
@@ -2060,8 +2060,8 @@ def create_parser():
                             help='System prompt to prepend to all messages')
     run_parser.add_argument('--prompt',
                             help='Initial prompt to send immediately')
-    run_parser.add_argument('--no-thinking', action='store_true',
-                            help='Disable thinking/reasoning for models that support it')
+    run_parser.add_argument('--thinking', action='store_true',
+                            help='Enable thinking/reasoning for models that support it')
 
     transcribe_parser = subparsers.add_parser('transcribe', help='Download ASR model and run transcription')
     transcribe_parser.add_argument('model_id', nargs='?', default=DEFAULT_ASR_MODEL_ID,

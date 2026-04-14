@@ -313,7 +313,7 @@ std::string expand_tilde(const std::string& path) {
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
-        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>] [--prompt <text>] [--no-thinking]\n";
+        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>] [--prompt <text>] [--thinking]\n";
         return 1;
     }
 
@@ -322,7 +322,7 @@ int main(int argc, char* argv[]) {
     std::string current_image;
     std::string current_audio;
     std::string initial_prompt;
-    bool enable_thinking = true;
+    bool enable_thinking = false;
 
     for (int i = 2; i < argc; ++i) {
         if (std::string(argv[i]) == "--system" && i + 1 < argc) {
@@ -333,8 +333,8 @@ int main(int argc, char* argv[]) {
             current_audio = expand_tilde(argv[++i]);
         } else if (std::string(argv[i]) == "--prompt" && i + 1 < argc) {
             initial_prompt = argv[++i];
-        } else if (std::string(argv[i]) == "--no-thinking") {
-            enable_thinking = false;
+        } else if (std::string(argv[i]) == "--thinking") {
+            enable_thinking = true;
         }
     }
 

@@ -144,7 +144,7 @@ int cactus_complete(
     "auto_handoff": true,
     "cloud_timeout_ms": 15000,
     "handoff_with_images": true,
-    "enable_thinking_if_supported": true
+    "enable_thinking_if_supported": false
 }
 ```
 
@@ -164,7 +164,7 @@ int cactus_complete(
 | `auto_handoff` | bool | true | Automatically attempt cloud handoff when confidence is low |
 | `cloud_timeout_ms` | int | 15000 | Timeout in milliseconds for cloud handoff requests |
 | `handoff_with_images` | bool | true | Allow cloud handoff for requests that include images |
-| `enable_thinking_if_supported` | bool | true | Enable chain-of-thought thinking blocks for models that support it |
+| `enable_thinking_if_supported` | bool | false | Enable chain-of-thought thinking blocks for models that support it |
 
 **Response Format:**
 ```json
