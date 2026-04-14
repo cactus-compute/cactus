@@ -87,7 +87,7 @@ bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, con
             
             if (!token.empty() && id != UINT32_MAX) {
                 float score = -static_cast<float>(id);
-                size_t tab_in_token = token.find('\t');
+                size_t tab_in_token = token.rfind('\t');
                 if (tab_in_token != std::string::npos) {
                     std::string score_str = token.substr(tab_in_token + 1);
                     if (!score_str.empty()) score = std::stof(score_str);
