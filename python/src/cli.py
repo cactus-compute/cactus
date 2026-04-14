@@ -1222,6 +1222,42 @@ def _cmd_transcribe_ios(weights_dir, audio_file, args):
     return subprocess.run(cmd, cwd=PROJECT_ROOT / "tests" / "ios", env=env).returncode
 
 
+def cmd_serve(args):
+    """Start the OpenAI-compatible HTTP server."""
+    import platform as plat
+
+    if plat.system() == "Darwin":
+        lib_name = "libcactus.dylib"
+    else:
+        lib_name = "libcactus.so"
+    lib_path = PROJECT_ROOT / "cactus" / "build" / lib_name
+    if not lib_path.exists():
+        print_color(RED, f"Error: {lib_name} not found. Run 'cactus build --python' first.")
+        return 1
+
+    weights_dir = PROJECT_ROOT / "weights"
+    if not weights_dir.exists() or not any(
+        d.is_dir() and (d / "config.txt").exists() for d in weights_dir.iterdir()
+    ):
+        print_color(RED, "Error: No models found in weights/. Run 'cactus download <model>' first.")
+        return 1
+
+    models = [d.name for d in sorted(weights_dir.iterdir()) if d.is_dir() and (d / "config.txt").exists()]
+    print_color(GREEN, f"Available models: {', '.join(models)}")
+    print_color(BLUE, f"Starting server on {args.host}:{args.port}")
+
+    try:
+        import uvicorn
+    except ImportError:
+        print_color(RED, "Error: uvicorn not installed. Run: pip install uvicorn fastapi")
+        return 1
+
+    from .server import create_app
+    application = create_app(context_length=args.context_length)
+    uvicorn.run(application, host=args.host, port=args.port, log_level="info")
+    return 0
+
+
 def cmd_transcribe(args):
     """Download ASR model if needed and start transcription."""
     from .config_utils import CactusConfig
@@ -1922,6 +1958,16 @@ def create_parser():
 
    -----------------------------------------------------------------
 
+  cactus serve                         OpenAI-compatible HTTP server
+                                       auto-discovers models in weights/
+
+    Optional flags:
+    --host <addr>                      bind address (default: 127.0.0.1)
+    --port <port>                      port (default: 8080)
+    --context-length <n>               KV cache window (default: 16384)
+
+  -----------------------------------------------------------------
+
   cactus download <model>              downloads model to ./weights
                                        see supported weights on ReadMe
 
@@ -2063,6 +2109,12 @@ def create_parser():
     run_parser.add_argument('--no-thinking', action='store_true',
                             help='Disable thinking/reasoning for models that support it')
 
+    serve_parser = subparsers.add_parser('serve', help='Start OpenAI-compatible HTTP server')
+    serve_parser.add_argument('--host', default='127.0.0.1', help='Bind address (default: 127.0.0.1)')
+    serve_parser.add_argument('--port', type=int, default=8080, help='Port (default: 8080)')
+    serve_parser.add_argument('--context-length', type=int, default=16384,
+                              help='KV cache context window size (default: 16384)')
+
     transcribe_parser = subparsers.add_parser('transcribe', help='Download ASR model and run transcription')
     transcribe_parser.add_argument('model_id', nargs='?', default=DEFAULT_ASR_MODEL_ID,
                                    help=f'HuggingFace model ID (default: {DEFAULT_ASR_MODEL_ID})')
@@ -2192,6 +2244,8 @@ def main():
         sys.exit(cmd_build(args))
     elif args.command == 'run':
         sys.exit(cmd_run(args))
+    elif args.command == 'serve':
+        sys.exit(cmd_serve(args))
     elif args.command == 'transcribe':
         sys.exit(cmd_transcribe(args))
     elif args.command == 'test':

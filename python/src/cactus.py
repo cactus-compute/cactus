@@ -38,6 +38,9 @@ _lib.cactus_set_telemetry_environment(b"python", None, None)
 _lib.cactus_init.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_bool]
 _lib.cactus_init.restype = ctypes.c_void_p
 
+_lib.cactus_init_with_context.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_bool, ctypes.c_size_t]
+_lib.cactus_init_with_context.restype = ctypes.c_void_p
+
 # cactus graph API
 _lib.cactus_graph_create.restype = cactus_graph_t
 _lib.cactus_graph_destroy.argtypes = [cactus_graph_t]
@@ -498,9 +501,21 @@ def cactus_telemetry_shutdown():
     _lib.cactus_telemetry_shutdown()
 
 
-def cactus_init(model_path, corpus_dir, cache_index):
-    """Initializes a model from the given path. Returns handle."""
-    handle = _lib.cactus_init(_enc(model_path), _enc(corpus_dir), cache_index)
+def cactus_init(model_path, corpus_dir=None, cache_index=False, context_length=0):
+    """Initializes a model from the given path. Returns handle.
+
+    Args:
+        model_path: Path to model weights directory
+        corpus_dir: Optional path to RAG corpus directory
+        cache_index: If True, load cached index if available
+        context_length: KV cache size in tokens (0 = default 512)
+    """
+    path = _enc(model_path)
+    corpus = _enc(corpus_dir)
+    if context_length > 0:
+        handle = _lib.cactus_init_with_context(path, corpus, cache_index, context_length)
+    else:
+        handle = _lib.cactus_init(path, corpus, cache_index)
     if not handle:
         raise RuntimeError(_err("Failed to initialize model"))
     return handle

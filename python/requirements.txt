@@ -9,3 +9,6 @@ einops==0.8.2
 timm==1.0.25
 sentencepiece==0.2.1
 pyannote.audio==4.0.4
+fastapi>=0.100.0
+uvicorn>=0.20.0
+python-multipart>=0.0.5
