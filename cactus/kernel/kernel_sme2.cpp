@@ -415,6 +415,14 @@ private:
 
 }  // namespace
 
+alignas(64) static const int32_t kCactusSme2Int4SignedLut[16] = {
+    0, 1, 2, 3, 4, 5, 6, 7,
+    -8, -7, -6, -5, -4, -3, -2, -1
+};
+constexpr size_t CACTUS_SME2_INT4_GEMV_OUTPUTS = 4;
+constexpr size_t CACTUS_SME2_INT4_GEMV_CHUNK_BYTES = 16;
+constexpr size_t CACTUS_SME2_INT4_GEMV_PACKED_CHUNK_BYTES = 32;
+
 static inline void cactus_pack_a_f16_row_block(
     const __fp16* __restrict a,
     __fp16* __restrict a_packed,
@@ -564,7 +572,7 @@ static void cactus_pack_b_int4_for_sme2(
         });
 }
 
-static void cactus_pack_b_int4_for_sme2_gemv(
+[[maybe_unused]] static void cactus_pack_b_int4_for_sme2_gemv(
     const int8_t* __restrict b_packed_raw,
     const __fp16* __restrict b_scales,
     Sme2PackedInt4GemvPanels& packed,
@@ -1617,44 +1625,47 @@ static void cactus_gemv_int4_sme2_worker(
 static void cactus_gemv_int4_sme2_dot_worker(
     const int8_t* a,
     float a_scale,
-    const int8_t* b_packed,
-    const float* b_scales_packed,
+    const uint8_t* b_packed,
+    const __fp16* b_scales,
     __fp16* c,
     size_t K,
     size_t N,
     size_t group_size,
     size_t start_col_block,
     size_t end_col_block
-) __arm_streaming __arm_inout("za") {
+) __arm_streaming __arm_inout("za") __arm_inout("zt0") {
     if (start_col_block >= end_col_block) return;
 
-    constexpr size_t CACTUS_INT4_GEMV_OUTPUTS = 4;
-    constexpr size_t CACTUS_INT4_GEMV_CHUNK_BYTES = 16;
-
     const size_t num_groups = K / group_size;
-    const size_t group_chunks = group_size / CACTUS_INT4_GEMV_CHUNK_BYTES;
-    const svbool_t pA = svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(CACTUS_INT4_GEMV_CHUNK_BYTES));
-    const svbool_t pReduce = svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(CACTUS_INT4_GEMV_CHUNK_BYTES / 4));
+    const size_t group_chunks = group_size / CACTUS_SME2_INT4_GEMV_CHUNK_BYTES;
+    const svbool_t pA = svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(CACTUS_SME2_INT4_GEMV_CHUNK_BYTES));
+    const svbool_t pPacked = svwhilelt_b8(static_cast<uint64_t>(0), static_cast<uint64_t>(CACTUS_SME2_INT4_GEMV_PACKED_CHUNK_BYTES));
+    const svbool_t pReduce = svwhilelt_b32(static_cast<uint64_t>(0), static_cast<uint64_t>(CACTUS_SME2_INT4_GEMV_CHUNK_BYTES / 4));
+    svldr_zt(0, kCactusSme2Int4SignedLut);
 
     for (size_t cb = start_col_block; cb < end_col_block; ++cb) {
-        const size_t col0 = cb * CACTUS_INT4_GEMV_OUTPUTS;
-        const size_t active_c = std::min(CACTUS_INT4_GEMV_OUTPUTS, N - col0);
+        const size_t col0 = cb * CACTUS_SME2_INT4_GEMV_OUTPUTS;
+        const size_t active_c = std::min(CACTUS_SME2_INT4_GEMV_OUTPUTS, N - col0);
 
-        float running_sum[CACTUS_INT4_GEMV_OUTPUTS] = {0.0f, 0.0f, 0.0f, 0.0f};
+        float running_sum[CACTUS_SME2_INT4_GEMV_OUTPUTS] = {0.0f, 0.0f, 0.0f, 0.0f};
 
         for (size_t g = 0; g < num_groups; ++g) {
             const int8_t* a_group = a + g * group_size;
-            const int8_t* b_group = b_packed +
-                (cb * num_groups + g) * group_chunks * CACTUS_INT4_GEMV_OUTPUTS * CACTUS_INT4_GEMV_CHUNK_BYTES;
-            const float* scale_ptr = b_scales_packed + (cb * num_groups + g) * CACTUS_INT4_GEMV_OUTPUTS;
+            const uint8_t* b_group = b_packed + (cb * K + g * group_size) * 2;
+            const __fp16* scale_ptr = b_scales + (cb * num_groups + g) * CACTUS_SME2_INT4_GEMV_OUTPUTS;
 
             svzero_za();
 
             for (size_t chunk = 0; chunk < group_chunks; ++chunk) {
-                const svint8_t zA = svld1_s8(pA, a_group + chunk * CACTUS_INT4_GEMV_CHUNK_BYTES);
-                const svint8x4_t zB = svld4_s8(
-                    pA,
-                    b_group + chunk * CACTUS_INT4_GEMV_OUTPUTS * CACTUS_INT4_GEMV_CHUNK_BYTES
+                const svint8_t zA = svld1_s8(pA, a_group + chunk * CACTUS_SME2_INT4_GEMV_CHUNK_BYTES);
+                const svuint8_t packed_chunk = svld1_u8(pPacked, b_group + chunk * CACTUS_SME2_INT4_GEMV_PACKED_CHUNK_BYTES);
+                const svint8x2_t unpack01 = svluti4_lane_zt_s8_x2(0, packed_chunk, 0);
+                const svint8x2_t unpack23 = svluti4_lane_zt_s8_x2(0, packed_chunk, 1);
+                const svint8x4_t zB = svcreate4_s8(
+                    svget2_s8(unpack01, 0),
+                    svget2_s8(unpack01, 1),
+                    svget2_s8(unpack23, 0),
+                    svget2_s8(unpack23, 1)
                 );
 
                 svdot_lane_za32_s8_vg1x4(0, zB, zA, 0);
@@ -1665,19 +1676,19 @@ static void cactus_gemv_int4_sme2_dot_worker(
 
             const svint32x4_t dot_vectors = svread_za32_s32_vg1x4(0);
             const int32_t group_sum0 = svaddv_s32(pReduce, svget4_s32(dot_vectors, 0));
-            running_sum[0] += static_cast<float>(group_sum0) * scale_ptr[0];
+            running_sum[0] += static_cast<float>(group_sum0) * static_cast<float>(scale_ptr[0]);
 
             if (active_c > 1) {
                 const int32_t group_sum1 = svaddv_s32(pReduce, svget4_s32(dot_vectors, 1));
-                running_sum[1] += static_cast<float>(group_sum1) * scale_ptr[1];
+                running_sum[1] += static_cast<float>(group_sum1) * static_cast<float>(scale_ptr[1]);
             }
             if (active_c > 2) {
                 const int32_t group_sum2 = svaddv_s32(pReduce, svget4_s32(dot_vectors, 2));
-                running_sum[2] += static_cast<float>(group_sum2) * scale_ptr[2];
+                running_sum[2] += static_cast<float>(group_sum2) * static_cast<float>(scale_ptr[2]);
             }
             if (active_c > 3) {
                 const int32_t group_sum3 = svaddv_s32(pReduce, svget4_s32(dot_vectors, 3));
-                running_sum[3] += static_cast<float>(group_sum3) * scale_ptr[3];
+                running_sum[3] += static_cast<float>(group_sum3) * static_cast<float>(scale_ptr[3]);
             }
         }
 
@@ -1688,6 +1699,7 @@ static void cactus_gemv_int4_sme2_dot_worker(
 }
 
 __arm_new("za") __arm_locally_streaming
+[[maybe_unused]]
 static void cactus_gemv_int4_sme2_thread_entry(
     const int8_t* a,
     float a_scale,
@@ -1719,11 +1731,12 @@ static void cactus_gemv_int4_sme2_thread_entry(
 }
 
 __arm_new("za") __arm_locally_streaming
+__arm_new("zt0")
 static void cactus_gemv_int4_sme2_dot_thread_entry(
     const int8_t* a,
     float a_scale,
-    const int8_t* b_packed,
-    const float* b_scales_packed,
+    const uint8_t* b_packed,
+    const __fp16* b_scales,
     __fp16* c,
     size_t K,
     size_t N,
@@ -1735,7 +1748,7 @@ static void cactus_gemv_int4_sme2_dot_thread_entry(
         a,
         a_scale,
         b_packed,
-        b_scales_packed,
+        b_scales,
         c,
         K,
         N,
@@ -1828,38 +1841,13 @@ void cactus_matmul_int4_sme2_caller(
     auto& pool = CactusThreading::get_thread_pool();
 
     if (M == 1 && (group_size % 16) == 0) {
-        constexpr size_t CACTUS_INT4_GEMV_OUTPUTS = 4;
-        constexpr size_t CACTUS_INT4_GEMV_CHUNK_BYTES = 16;
-
-        const size_t n_blocks = (N + CACTUS_INT4_GEMV_OUTPUTS - 1) / CACTUS_INT4_GEMV_OUTPUTS;
-        const size_t group_chunks = group_size / CACTUS_INT4_GEMV_CHUNK_BYTES;
-        const size_t packed_weight_elements =
-            n_blocks * num_groups * group_chunks * CACTUS_INT4_GEMV_OUTPUTS * CACTUS_INT4_GEMV_CHUNK_BYTES;
-        const size_t packed_scale_elements = n_blocks * num_groups * CACTUS_INT4_GEMV_OUTPUTS;
-
-        const Sme2PackedInt4GemvKey cache_key{b_packed, b_scales, K, N, group_size};
-        auto packed = Sme2PackedInt4GemvCache::instance().get_or_create(
-            cache_key,
-            packed_weight_elements,
-            packed_scale_elements,
-            fingerprint,
-            [&](Sme2PackedInt4GemvPanels& packed_panels) {
-                cactus_pack_b_int4_for_sme2_gemv(
-                    b_packed,
-                    b_scales,
-                    packed_panels,
-                    K,
-                    N,
-                    group_size
-                );
-            });
-
+        const size_t n_blocks = (N + CACTUS_SME2_INT4_GEMV_OUTPUTS - 1) / CACTUS_SME2_INT4_GEMV_OUTPUTS;
         auto process_blocks = [&](size_t block_start, size_t block_end) {
             cactus_gemv_int4_sme2_dot_thread_entry(
                 a,
                 a_scales[0],
-                packed->weights.data(),
-                packed->scales.data(),
+                reinterpret_cast<const uint8_t*>(b_packed),
+                b_scales,
                 c,
                 K,
                 N,
