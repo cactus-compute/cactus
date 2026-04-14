@@ -90,8 +90,20 @@ bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, con
                 size_t tab_in_token = token.rfind('\t');
                 if (tab_in_token != std::string::npos) {
                     std::string score_str = token.substr(tab_in_token + 1);
-                    if (!score_str.empty()) score = std::stof(score_str);
-                    token = token.substr(0, tab_in_token);
+                    bool parsed_valid_score = false;
+                    if (!score_str.empty()) {
+                        try {
+                            size_t consumed = 0;
+                            float parsed_score = std::stof(score_str, &consumed);
+                            if (consumed == score_str.size()) {
+                                score = parsed_score;
+                                parsed_valid_score = true;
+                            }
+                        } catch (...) {}
+                    }
+                    if (parsed_valid_score) {
+                        token = token.substr(0, tab_in_token);
+                    }
                 }
                 token_to_id_[token] = id;
                 if (id >= id_to_token_.size()) {
