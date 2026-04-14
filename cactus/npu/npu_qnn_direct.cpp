@@ -42,6 +42,14 @@
 #include <memory>
 #include <fstream>
 #include <stdexcept>
+#include <chrono>
+#include <thread>
+#include <atomic>
+
+static inline int64_t now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 typedef Qnn_ErrorHandle_t (*QnnInterfaceGetProvidersFn_t)(
     const QnnInterface_t*** providerList, uint32_t* numProviders);
@@ -3701,31 +3709,63 @@ struct QNNDirectEncoder::Impl {
         for (int s = 1; s <= pk_n_segs; s++) pk_setup_exec_tensors(s);
 
         fprintf(stderr, "[QNN Pkrt] loading %d segment contexts persistently...\n", pk_n_segs);
-        for (int s = 1; s <= pk_n_segs; s++) {
-            std::string cp = pk_seg_cache_path(s);
-            std::ifstream bin_f(cp, std::ios::binary | std::ios::ate);
-            if (!bin_f.is_open()) {
-                fprintf(stderr, "[QNN Pkrt] cannot open cache seg%d\n", s); return false;
+        int64_t t_load_start = now_ms();
+
+        // Parallel fread: all segments read from disk concurrently
+        struct SegBuf { std::vector<char> data; bool ok = false; };
+        std::vector<SegBuf> seg_bufs(pk_n_segs + 1);
+        {
+            std::vector<std::thread> readers;
+            for (int s = 1; s <= pk_n_segs; s++) {
+                readers.emplace_back([&, s]() {
+                    std::string cp = pk_seg_cache_path(s);
+                    std::ifstream f(cp, std::ios::binary | std::ios::ate);
+                    if (!f.is_open()) return;
+                    size_t sz = (size_t)f.tellg(); f.seekg(0);
+                    seg_bufs[s].data.resize(sz);
+                    f.read(seg_bufs[s].data.data(), (std::streamsize)sz);
+                    seg_bufs[s].ok = true;
+                    fprintf(stderr, "[QNN Pkrt] seg%d fread: %zu MB\n", s, sz / (1024*1024));
+                });
             }
-            size_t sz = (size_t)bin_f.tellg(); bin_f.seekg(0);
-            std::vector<char> bin(sz); bin_f.read(bin.data(), (std::streamsize)sz);
-            fprintf(stderr, "[QNN Pkrt] cached seg%d: %zu MB\n", s, sz / (1024*1024));
-            Qnn_ContextHandle_t ctx = nullptr;
-            auto err = qnn.contextCreateFromBinary(backend_handle, device_handle, nullptr,
-                                                    bin.data(), (uint64_t)sz, &ctx, nullptr);
-            if (err != QNN_SUCCESS || !ctx) {
-                fprintf(stderr, "[QNN Pkrt] contextCreateFromBinary failed seg%d err=%lld\n",
-                        s, (long long)err);
-                return false;
-            }
-            if (qnn.graphRetrieve(ctx, pk_segs[s].graph_name.c_str(),
-                                   &pk_segs[s].graph_handle) != QNN_SUCCESS) {
-                fprintf(stderr, "[QNN Pkrt] graphRetrieve failed seg%d\n", s);
-                qnn.contextFree(ctx, nullptr); return false;
-            }
-            pk_seg_ctxs[s] = ctx;
-            fprintf(stderr, "[QNN Pkrt] seg%d loaded persistently\n", s);
+            for (auto& t : readers) t.join();
         }
+        fprintf(stderr, "[QNN Pkrt] parallel fread done: %dms\n", (int)(now_ms() - t_load_start));
+
+        std::vector<Qnn_ContextHandle_t> seg_ctxs(pk_n_segs + 1, nullptr);
+        std::vector<Qnn_GraphHandle_t>   seg_graphs(pk_n_segs + 1, nullptr);
+        std::atomic<bool> ctx_ok{true};
+        {
+            std::vector<std::thread> workers;
+            for (int s = 1; s <= pk_n_segs; s++) {
+                workers.emplace_back([&, s]() {
+                    if (!seg_bufs[s].ok) { ctx_ok = false; return; }
+                    auto& buf = seg_bufs[s].data;
+                    Qnn_ContextHandle_t ctx = nullptr;
+                    auto err = qnn.contextCreateFromBinary(backend_handle, device_handle, nullptr,
+                                                           buf.data(), (uint64_t)buf.size(), &ctx, nullptr);
+                    if (err != QNN_SUCCESS || !ctx) {
+                        fprintf(stderr, "[QNN Pkrt] contextCreateFromBinary failed seg%d err=%lld\n",
+                                s, (long long)err);
+                        ctx_ok = false; return;
+                    }
+                    Qnn_GraphHandle_t gh = nullptr;
+                    if (qnn.graphRetrieve(ctx, pk_segs[s].graph_name.c_str(), &gh) != QNN_SUCCESS) {
+                        fprintf(stderr, "[QNN Pkrt] graphRetrieve failed seg%d\n", s);
+                        qnn.contextFree(ctx, nullptr); ctx_ok = false; return;
+                    }
+                    seg_ctxs[s]   = ctx;
+                    seg_graphs[s] = gh;
+                });
+            }
+            for (auto& t : workers) t.join();
+        }
+        if (!ctx_ok) return false;
+        for (int s = 1; s <= pk_n_segs; s++) {
+            pk_seg_ctxs[s]           = seg_ctxs[s];
+            pk_segs[s].graph_handle  = seg_graphs[s];
+        }
+        fprintf(stderr, "[QNN Pkrt] total load: %dms\n", (int)(now_ms()-t_load_start));
 
         is_parakeet  = true;
         loaded       = true;
@@ -3877,6 +3917,7 @@ bool QNNDirectEncoder::load(const std::string& model_path) {
         if (I.qnn.deviceCreate(I.log_handle, dcfgs, &I.device_handle) != QNN_SUCCESS)
             I.qnn.deviceCreate(I.log_handle, nullptr, &I.device_handle);
     }
+
     if (!I.qnn.contextCreate) return false;
 
     if (file_exists(folder + "/layer_0_ff1_linear1.weights")) {
@@ -3938,7 +3979,6 @@ size_t QNNDirectEncoder::encode(const __fp16* input, __fp16* output,
                                  const std::string& /*input_name*/,
                                  const std::string& /*output_name*/) {
     auto& I = *impl_;
-
     if (I.is_parakeet) {
         if (!I.loaded || I.pk_n_segs == 0) return 0;
         size_t inter_sz = (size_t)I.pk_T_out * I.pk_hidden_dim;
@@ -3965,9 +4005,6 @@ size_t QNNDirectEncoder::encode(const __fp16* input, __fp16* output,
         return inter_sz;
     }
 
-    fprintf(stderr, "[QNN Enc] encode called: graph_built=%d graph_handle=%p\n",
-            (int)I.graph_built, (void*)I.graph_handle);
-    fflush(stderr);
     if (!I.graph_built || !I.graph_handle) return 0;
 
     // Input from model_whisper.cpp is [1, 80, T_mel] (NCT). QNN Conv1D also uses NCT. Copy directly.

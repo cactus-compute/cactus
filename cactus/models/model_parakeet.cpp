@@ -581,7 +581,6 @@ size_t ParakeetModel::build_encoder(CactusGraph* gb, const std::vector<float>& a
                     src = cached_output;
                 }
 
-                // Accept encoder hidden output [T, hidden] or direct logits [T, vocab].
                 if (D_enc == expected_hidden_dim || D_enc == expected_vocab_size) {
                     size_t enc_output = gb->input({T_enc, D_enc}, Precision::FP16);
                     gb->set_input(enc_output, src, Precision::FP16);

@@ -155,7 +155,7 @@ endforeach()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
-foreach(APP_NAME chat asr)
+foreach(APP_NAME chat asr bench_npu_enc)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${APP_NAME}.cpp")
         add_executable(${APP_NAME} ${APP_NAME}.cpp)
         target_link_libraries(${APP_NAME} PRIVATE ${CACTUS_LIB})
