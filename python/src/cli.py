@@ -726,6 +726,35 @@ def cmd_build(args):
 
     is_darwin = platform.system() == "Darwin"
 
+    sdl2_available = False
+    sdl2_flags = []
+    sdl2_link = []
+    if is_darwin:
+        sdl2_check = subprocess.run(["brew", "list", "sdl2"], capture_output=True)
+        if sdl2_check.returncode == 0:
+            sdl2_prefix_result = subprocess.run(["brew", "--prefix", "sdl2"], capture_output=True, text=True)
+            if sdl2_prefix_result.returncode == 0:
+                sdl2_prefix = sdl2_prefix_result.stdout.strip()
+                sdl2_flags = ["-DHAVE_SDL2", f"-I{sdl2_prefix}/include", f"-I{sdl2_prefix}/include/SDL2"]
+                sdl2_link = [f"-L{sdl2_prefix}/lib", "-lSDL2"]
+                sdl2_available = True
+    else:
+        sdl2_check = subprocess.run(["pkg-config", "--exists", "sdl2"], capture_output=True)
+        if sdl2_check.returncode == 0:
+            cflags = subprocess.run(["pkg-config", "--cflags", "sdl2"], capture_output=True, text=True)
+            libs = subprocess.run(["pkg-config", "--libs", "sdl2"], capture_output=True, text=True)
+            if cflags.returncode == 0 and libs.returncode == 0:
+                sdl2_flags = ["-DHAVE_SDL2"] + cflags.stdout.strip().split()
+                sdl2_link = libs.stdout.strip().split()
+                sdl2_available = True
+
+    if sdl2_available:
+        print_color(GREEN, "SDL2 found - building with live audio support")
+    else:
+        print_color(YELLOW, "SDL2 not found - live mic recording will be disabled")
+        print_color(YELLOW, "Install SDL2 for live mic support: brew install sdl2 (macOS)")
+        print_color(YELLOW, "Then run `cactus build`")
+
     if is_darwin:
         if not vendored_curl.exists():
             print_color(RED, f"Error: vendored libcurl not found at {vendored_curl}")
@@ -736,6 +765,7 @@ def cmd_build(args):
             compiler, "-std=c++20", "-O3",
             "-DACCELERATE_NEW_LAPACK",
             f"-I{PROJECT_ROOT}",
+            *sdl2_flags,
             str(chat_cpp),
             str(lib_path),
             "-o", "chat",
@@ -746,17 +776,20 @@ def cmd_build(args):
             "-framework", "Security",
             "-framework", "SystemConfiguration",
             "-framework", "CFNetwork",
+            *sdl2_link,
         ]
     else:
         compiler = "g++"
         cmd = [
             compiler, "-std=c++20", "-O3",
             f"-I{PROJECT_ROOT}",
+            *sdl2_flags,
             str(chat_cpp),
             str(lib_path),
             "-o", "chat",
             "-lcurl",
-            "-pthread"
+            "-pthread",
+            *sdl2_link,
         ]
 
     if not check_command(compiler):
@@ -774,46 +807,12 @@ def cmd_build(args):
     if asr_cpp.exists():
         print("Compiling asr.cpp...")
 
-        # Check for SDL2 and get flags
-        sdl2_available = False
-        sdl2_include = ""
-        sdl2_lib = ""
-
-        if is_darwin:
-            sdl2_check = subprocess.run(["brew", "list", "sdl2"], capture_output=True)
-            if sdl2_check.returncode == 0:
-                sdl2_prefix_result = subprocess.run(["brew", "--prefix", "sdl2"], capture_output=True, text=True)
-                if sdl2_prefix_result.returncode == 0:
-                    sdl2_prefix = sdl2_prefix_result.stdout.strip()
-                    sdl2_include = f"-I{sdl2_prefix}/include"
-                    sdl2_lib = f"-L{sdl2_prefix}/lib -lSDL2"
-                    sdl2_available = True
-        else:
-            sdl2_check = subprocess.run(["pkg-config", "--exists", "sdl2"], capture_output=True)
-            if sdl2_check.returncode == 0:
-                cflags = subprocess.run(["pkg-config", "--cflags", "sdl2"], capture_output=True, text=True)
-                libs = subprocess.run(["pkg-config", "--libs", "sdl2"], capture_output=True, text=True)
-                if cflags.returncode == 0 and libs.returncode == 0:
-                    sdl2_include = cflags.stdout.strip()
-                    sdl2_lib = libs.stdout.strip()
-                    sdl2_available = True
-
-        if sdl2_available:
-            print_color(GREEN, "SDL2 found - building with live transcription support")
-        else:
-            print_color(YELLOW, "SDL2 not found - live transcription will be disabled")
-            print_color(YELLOW, "Install SDL2 for live mic support: brew install sdl2 (macOS)")
-            print_color(YELLOW, "Then run `cactus build`")
-
         if is_darwin:
             cmd = [
                 compiler, "-std=c++20", "-O3",
                 "-DACCELERATE_NEW_LAPACK",
                 f"-I{PROJECT_ROOT}",
-            ]
-            if sdl2_available:
-                cmd.extend(["-DHAVE_SDL2", sdl2_include])
-            cmd.extend([
+                *sdl2_flags,
                 str(asr_cpp),
                 str(lib_path),
                 "-o", "asr",
@@ -824,25 +823,20 @@ def cmd_build(args):
                 "-framework", "Security",
                 "-framework", "SystemConfiguration",
                 "-framework", "CFNetwork",
-            ])
-            if sdl2_available:
-                cmd.extend(sdl2_lib.split())
+                *sdl2_link,
+            ]
         else:
             cmd = [
                 compiler, "-std=c++20", "-O3",
                 f"-I{PROJECT_ROOT}",
-            ]
-            if sdl2_available:
-                cmd.extend(["-DHAVE_SDL2", sdl2_include])
-            cmd.extend([
+                *sdl2_flags,
                 str(asr_cpp),
                 str(lib_path),
                 "-o", "asr",
                 "-lcurl",
-                "-pthread"
-            ])
-            if sdl2_available:
-                cmd.extend(sdl2_lib.split())
+                "-pthread",
+                *sdl2_link,
+            ]
 
         result = subprocess.run(cmd, cwd=build_dir)
         if result.returncode != 0:
