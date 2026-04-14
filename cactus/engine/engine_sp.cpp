@@ -21,10 +21,13 @@ bool try_parse_strict_float(const std::string& text, float& parsed) {
         return false;
     }
 
-    const char* begin = text.data();
-    const char* end = begin + text.size();
-    const auto parse_result = std::from_chars(begin, end, parsed, std::chars_format::general);
-    return parse_result.ec == std::errc() && parse_result.ptr == end;
+    char* end_ptr = nullptr;
+    const float value = std::strtof(text.c_str(), &end_ptr);
+    if (end_ptr != text.c_str() + text.size()) {
+        return false;
+    }
+    parsed = value;
+    return true;
 }
 
 bool try_parse_strict_uint32(const std::string& text, uint32_t& parsed) {
