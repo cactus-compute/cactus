@@ -859,17 +859,14 @@ size_t CactusGraph::conv2d_k3s2p1(size_t input, size_t weight, size_t bias) {
     if (xin.shape.size() != 4) {
         throw std::runtime_error("conv2d_k3s2p1 expects input [N, C_in, H, W]");
     }
-    if (w.shape.size() != 4) {
-        throw std::runtime_error("conv2d_k3s2p1 weight must be [C_out, C_in, 3, 3]");
-    }
 
     const size_t C_in = xin.shape[1];
     const size_t H = xin.shape[2];
     const size_t W = xin.shape[3];
     const size_t C_out = w.shape[0];
 
-    if (w.shape[1] != C_in || w.shape[2] != 3 || w.shape[3] != 3) {
-        throw std::runtime_error("conv2d_k3s2p1 weight must match [C_out, C_in, 3, 3]");
+    if (w.shape.size() != 4 || w.shape[1] != C_in || w.shape[2] != 3 || w.shape[3] != 3) {
+        throw std::runtime_error("conv2d_k3s2p1 weight must be [C_out, C_in, 3, 3]");
     }
     if (b.total_size != C_out) {
         throw std::runtime_error("conv2d_k3s2p1 bias size mismatch");
@@ -1254,6 +1251,12 @@ size_t CactusGraph::scatter_topk(size_t indices, size_t values, size_t num_class
 
 size_t CactusGraph::sample(size_t logits, float temperature, float top_p, size_t top_k,
                            const std::unordered_map<uint32_t, float>& logit_bias) {
+    return this->sample_with_options(logits, temperature, top_p, 0.15f, 1.1f, top_k, logit_bias);
+}
+
+size_t CactusGraph::sample_with_options(size_t logits, float temperature, float top_p,
+                                        float min_p, float repetition_penalty, size_t top_k,
+                                        const std::unordered_map<uint32_t, float>& logit_bias) {
     const auto& logits_buffer = get_output_buffer(logits);
 
     if (logits_buffer.shape.empty()) {
@@ -1263,6 +1266,8 @@ size_t CactusGraph::sample(size_t logits, float temperature, float top_p, size_t
     OpParams params;
     params.temperature = temperature;
     params.top_p = top_p;
+    params.min_p = min_p;
+    params.repetition_penalty = repetition_penalty;
     params.top_k = top_k;
     params.random_seed = std::chrono::high_resolution_clock::now().time_since_epoch().count();
     params.output_precision = Precision::FP32;
@@ -1452,7 +1457,7 @@ size_t CactusGraph::embedding(size_t embedding_tensor, size_t indices) {
     return add_node(OpType::EMBEDDING, {embedding_tensor, indices}, output_shape, params);
 }
 
-size_t CactusGraph::bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width) {
+size_t CactusGraph::bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width, bool align_corners) {
     const auto& pos_embeds_buffer = get_output_buffer(pos_embeds);
     size_t embed_dim = pos_embeds_buffer.shape[1];
     std::vector<size_t> output_shape = {dst_height * dst_width, embed_dim};
@@ -1460,6 +1465,7 @@ size_t CactusGraph::bilinear_interpolation(size_t pos_embeds, size_t dst_height,
     OpParams params;
     params.dst_height = dst_height;
     params.dst_width = dst_width;
+    params.align_corners = align_corners;
     params.output_precision = Precision::FP16;
 
     return add_node(OpType::BILINEAR_INTERPOLATION, {pos_embeds}, output_shape, params);
@@ -1637,19 +1643,16 @@ size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight, size_t bias) {
     if (xin.shape.size() != 4) {
         throw std::runtime_error("conv2d_k3s1p1 expects input [N, C_in, H, W]");
     }
-    if (w.shape.size() != 4) {
-        throw std::runtime_error("conv2d_k3s1p1 weight must be [C_out, C_in, 3, 3]");
-    }
 
     const size_t N = xin.shape[0];
     const size_t C_in = xin.shape[1];
     const size_t H = xin.shape[2];
     const size_t W = xin.shape[3];
-    const size_t C_out = w.shape[0];
 
-    if (w.shape[1] != C_in || w.shape[2] != 3 || w.shape[3] != 3) {
-        throw std::runtime_error("conv2d_k3s1p1 weight must match [C_out, C_in, 3, 3]");
+    if (w.shape.size() != 4 || w.shape[1] != C_in || w.shape[2] != 3 || w.shape[3] != 3) {
+        throw std::runtime_error("conv2d_k3s1p1 weight must be [C_out, C_in, 3, 3]");
     }
+    const size_t C_out = w.shape[0];
     if (b.total_size != C_out) {
         throw std::runtime_error("conv2d_k3s1p1 bias size mismatch");
     }
@@ -1668,4 +1671,12 @@ size_t CactusGraph::stats_pool(size_t input) {
     size_t features = 1;
     for (size_t i = 1; i < xin.shape.size() - 1; ++i) features *= xin.shape[i];
     return add_node(OpType::STATS_POOL, {input}, {batch, features * 2});
+}
+
+size_t CactusGraph::weighted_stats_pool(size_t input, size_t weights) {
+    const auto& xin = get_output_buffer(input);
+    size_t batch = xin.shape[0];
+    size_t features = 1;
+    for (size_t i = 1; i < xin.shape.size() - 1; ++i) features *= xin.shape[i];
+    return add_node(OpType::WEIGHTED_STATS_POOL, {input, weights}, {batch, features * 2});
 }

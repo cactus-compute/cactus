@@ -69,6 +69,25 @@ def print_color(color, message):
 from .downloads import get_model_dir_name, get_weights_dir, download_from_hf as _download_from_hf_impl
 
 
+NEEDLE_CHECKPOINT_REPO = "Cactus-Compute/needle"
+NEEDLE_TOKENIZER_REPO = "Cactus-Compute/needle-tokenizer"
+NEEDLE_CHECKPOINT_FILE = "needle.pkl"
+
+
+def is_needle_model_id(model_id):
+    normalized = (model_id or "").strip().lower()
+    if "/" in normalized:
+        normalized = normalized.split("/")[-1]
+    return normalized == "needle" or normalized.startswith("needle-") or normalized.startswith("needle_")
+
+
+def get_effective_weights_dir(model_id, args=None):
+    if not is_needle_model_id(model_id):
+        return get_weights_dir(model_id)
+    return (PROJECT_ROOT / "weights" / "needle").resolve()
+
+
+
 def check_command(cmd):
     """Check if a command is available in PATH."""
     return shutil.which(cmd) is not None
@@ -136,9 +155,8 @@ def download_from_hf(model_id, weights_dir, precision):
 def cmd_download(args):
     """Download model weights. By default downloads pre-converted weights from Cactus-Compute."""
     model_id = args.model_id
-    model_name = getattr(args, 'original_model_id', model_id)
     is_local = Path(model_id).is_dir()
-    weights_dir = get_weights_dir(model_id)
+    weights_dir = get_effective_weights_dir(model_id, args)
     reconvert = getattr(args, 'reconvert', False)
     precision = getattr(args, 'precision', 'INT4')
 
@@ -154,6 +172,30 @@ def cmd_download(args):
     print()
     print_color(YELLOW, f"Model weights not found. Downloading {model_id}...")
     print("=" * 45)
+
+    if not is_local and is_needle_model_id(model_id):
+        try:
+            from huggingface_hub import hf_hub_download, snapshot_download
+            from .converter import convert_needle_checkpoint
+
+            print_color(YELLOW, "Using Needle exporter...")
+            token = getattr(args, 'token', None)
+            cache_dir = getattr(args, 'cache_dir', None)
+
+            ck_path = hf_hub_download(repo_id=NEEDLE_CHECKPOINT_REPO, filename=NEEDLE_CHECKPOINT_FILE,
+                                      repo_type="model", token=token, cache_dir=cache_dir)
+            tk_snap = Path(snapshot_download(repo_id=NEEDLE_TOKENIZER_REPO, repo_type="dataset",
+                                            allow_patterns=["*.model"], token=token, cache_dir=cache_dir))
+            tk_path = next(tk_snap.rglob("*.model"), None)
+            if not tk_path:
+                raise FileNotFoundError(f"No .model file in tokenizer snapshot: {tk_snap}")
+
+            convert_needle_checkpoint(ck_path, tk_path, weights_dir, precision)
+            print_color(GREEN, f"Successfully exported Needle weights to {weights_dir}")
+            return 0
+        except Exception as e:
+            print_color(RED, f"Error: {e}")
+            return 1
 
     if not reconvert and not is_local:
         if download_from_hf(model_id, weights_dir, precision):
@@ -964,7 +1006,7 @@ def cmd_run(args):
         download_result = cmd_download(args)
         if download_result != 0:
             return download_result
-        weights_dir = get_weights_dir(model_id)
+        weights_dir = get_effective_weights_dir(model_id, args)
 
     image_path = getattr(args, 'image', None)
     if image_path:
@@ -1011,7 +1053,7 @@ def cmd_run(args):
     os.execv(str(chat_binary), cmd_args)
 
 
-DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-ctc-1.1b"
+DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 
 def _pick_android_device_id(preferred_device=None):
     if preferred_device:
@@ -1302,7 +1344,7 @@ def cmd_eval(args):
     if download_result != 0:
         return download_result
 
-    weights_dir = get_weights_dir(model_id)
+    weights_dir = get_effective_weights_dir(model_id, args)
     extra = getattr(args, 'extra_args', None) or []
 
     def extra_has_flag(flag: str) -> bool:
@@ -1879,7 +1921,7 @@ def create_parser():
   -----------------------------------------------------------------
 
   cactus transcribe [model]            live microphone transcription
-                                       default model: parakeet-ctc-1.1b
+                                       default model: parakeet-tdt-0.6b-v3
 
     Optional flags:
     --file <audio.wav>                 transcribe audio file instead of mic
@@ -1890,8 +1932,8 @@ def create_parser():
     Examples:
     cactus transcribe                  live microphone transcription
     cactus transcribe --file audio.wav transcribe single file
-    cactus transcribe nvidia/parakeet-ctc-1.1b   use different model
-    cactus transcribe nvidia/parakeet-ctc-1.1b --file audio.wav
+    cactus transcribe nvidia/parakeet-ctc-1.1b     use different model
+    cactus transcribe nvidia/parakeet-tdt-0.6b-v3 --file audio.wav
 
    -----------------------------------------------------------------
 
@@ -2000,6 +2042,9 @@ def create_parser():
                                  help='Quantization precision (default: INT4)')
     download_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     download_parser.add_argument('--token', help='HuggingFace API token')
+
+    download_parser.add_argument('--weights-variant', choices=WEIGHTS_VARIANT_CHOICES, default='auto',
+                                 help='Weights package preference: auto (default), apple, or standard')
     download_parser.add_argument('--reconvert', action='store_true',
                                  help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
 
@@ -2020,6 +2065,8 @@ def create_parser():
                             help='Quantization precision (default: INT4)')
     run_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     run_parser.add_argument('--token', help='HuggingFace API token')
+    run_parser.add_argument('--weights-variant', choices=WEIGHTS_VARIANT_CHOICES, default='auto',
+                            help='Weights package preference for auto-download: auto, apple, or standard')
     run_parser.add_argument('--no-cloud-tele', action='store_true',
                             help='Disable cloud telemetry (write to cache only)')
     run_parser.add_argument('--reconvert', action='store_true',
@@ -2066,6 +2113,8 @@ def create_parser():
                              help='Quantization precision (default: INT4)')
     eval_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     eval_parser.add_argument('--token', help='HuggingFace API token')
+    eval_parser.add_argument('--weights-variant', choices=WEIGHTS_VARIANT_CHOICES, default='auto',
+                             help='Weights package preference for auto-download: auto, apple, or standard')
     eval_parser.add_argument('--tools', action='store_true', help='Run tools evals (default)')
     eval_parser.add_argument('--vlm', action='store_true', help='Run VLM-specific evals')
     eval_parser.add_argument('--stt', action='store_true', help='Run speech-to-text evals')

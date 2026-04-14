@@ -697,19 +697,41 @@ void cactus_conv1d_f16_k7s3_oc8(
 
 
 void cactus_bilinear_interpolation_f16(const __fp16* input, __fp16* output, size_t src_height, size_t src_width, size_t embed_dim,
-                                       size_t dst_height, size_t dst_width)
+                                       size_t dst_height, size_t dst_width, bool align_corners)
 {
-    float scale_h = (src_height > 1 && dst_height > 1)
-                    ? static_cast<float>(src_height - 1) / static_cast<float>(dst_height - 1)
-                    : 0.0f;
-    float scale_w = (src_width > 1 && dst_width > 1)
-                    ? static_cast<float>(src_width - 1) / static_cast<float>(dst_width - 1)
-                    : 0.0f;
+    float scale_h, scale_w;
+    if (align_corners) {
+        scale_h = (src_height > 1 && dst_height > 1)
+                      ? static_cast<float>(src_height - 1) / static_cast<float>(dst_height - 1)
+                      : 0.0f;
+        scale_w = (src_width > 1 && dst_width > 1)
+                      ? static_cast<float>(src_width - 1) / static_cast<float>(dst_width - 1)
+                      : 0.0f;
+    } else {
+        scale_h = (dst_height > 0)
+                      ? static_cast<float>(src_height) / static_cast<float>(dst_height)
+                      : 0.0f;
+        scale_w = (dst_width > 0)
+                      ? static_cast<float>(src_width) / static_cast<float>(dst_width)
+                      : 0.0f;
+    }
 
     for (size_t dst_y = 0; dst_y < dst_height; ++dst_y) {
         for (size_t dst_x = 0; dst_x < dst_width; ++dst_x) {
-            float src_y_float = dst_y * scale_h;
-            float src_x_float = dst_x * scale_w;
+            float src_y_float, src_x_float;
+            if (align_corners) {
+                src_y_float = static_cast<float>(dst_y) * scale_h;
+                src_x_float = static_cast<float>(dst_x) * scale_w;
+            } else {
+                src_y_float = (static_cast<float>(dst_y) + 0.5f) * scale_h - 0.5f;
+                src_x_float = (static_cast<float>(dst_x) + 0.5f) * scale_w - 0.5f;
+                if (src_y_float < 0.0f) src_y_float = 0.0f;
+                if (src_x_float < 0.0f) src_x_float = 0.0f;
+                const float max_y = static_cast<float>(src_height) - 1.0f;
+                const float max_x = static_cast<float>(src_width) - 1.0f;
+                if (src_y_float > max_y) src_y_float = max_y;
+                if (src_x_float > max_x) src_x_float = max_x;
+            }
 
             int y0 = static_cast<int>(std::floor(src_y_float));
             int x0 = static_cast<int>(std::floor(src_x_float));
@@ -950,6 +972,77 @@ void cactus_conv2d_f16_k3s2p1_nchw(
     if (H + 2 < 3 || W + 2 < 3) return;
     const size_t H_out = (H - 1) / 2 + 1;
     const size_t W_out = (W - 1) / 2 + 1;
+
+#ifdef __APPLE__
+    {
+        const size_t spatial = H_out * W_out;
+        const size_t col_K = C_in * 9;
+        std::vector<float> W_f32(C_out * col_K);
+        for (size_t oc = 0; oc < C_out; ++oc)
+            for (size_t ic = 0; ic < C_in; ++ic)
+                for (size_t kh = 0; kh < 3; ++kh)
+                    for (size_t kw = 0; kw < 3; ++kw)
+                        W_f32[oc * col_K + ic * 9 + kh * 3 + kw] =
+                            static_cast<float>(weight[((oc * C_in + ic) * 3 + kh) * 3 + kw]);
+
+        std::vector<float> bias_f32(C_out, 0.0f);
+        if (bias)
+            for (size_t i = 0; i < C_out; ++i)
+                bias_f32[i] = static_cast<float>(bias[i]);
+
+        std::vector<float> col(col_K * spatial);
+        std::vector<float> Y_f32(C_out * spatial);
+
+        for (size_t n = 0; n < N; ++n) {
+            const __fp16* Xn = input + n * C_in * H * W;
+            __fp16* Yn = output + n * C_out * spatial;
+
+            for (size_t ic = 0; ic < C_in; ++ic) {
+                for (size_t kh = 0; kh < 3; ++kh) {
+                    for (size_t kw = 0; kw < 3; ++kw) {
+                        float* dst = col.data() + (ic * 9 + kh * 3 + kw) * spatial;
+                        for (size_t oh = 0; oh < H_out; ++oh) {
+                            ptrdiff_t ih = static_cast<ptrdiff_t>(oh) * 2 + static_cast<ptrdiff_t>(kh) - 1;
+                            float* dst_row = dst + oh * W_out;
+                            if (ih < 0 || ih >= static_cast<ptrdiff_t>(H)) {
+                                memset(dst_row, 0, W_out * sizeof(float));
+                                continue;
+                            }
+                            const __fp16* src_row = Xn + ic * H * W + static_cast<size_t>(ih) * W;
+                            const ptrdiff_t iw_offset = static_cast<ptrdiff_t>(kw) - 1;
+                            for (size_t ow = 0; ow < W_out; ++ow) {
+                                ptrdiff_t iw = static_cast<ptrdiff_t>(ow) * 2 + iw_offset;
+                                dst_row[ow] = (iw < 0 || iw >= static_cast<ptrdiff_t>(W))
+                                    ? 0.0f : static_cast<float>(src_row[iw]);
+                            }
+                        }
+                    }
+                }
+            }
+
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                        static_cast<int>(C_out), static_cast<int>(spatial), static_cast<int>(col_K),
+                        1.0f, W_f32.data(), static_cast<int>(col_K),
+                        col.data(), static_cast<int>(spatial),
+                        0.0f, Y_f32.data(), static_cast<int>(spatial));
+
+            for (size_t oc = 0; oc < C_out; ++oc) {
+                const float b = bias_f32[oc];
+                const float* src = Y_f32.data() + oc * spatial;
+                __fp16* dst = Yn + oc * spatial;
+                size_t i = 0;
+                for (; i + 8 <= spatial; i += 8) {
+                    float32x4_t v0 = vaddq_f32(vld1q_f32(src + i),     vdupq_n_f32(b));
+                    float32x4_t v1 = vaddq_f32(vld1q_f32(src + i + 4), vdupq_n_f32(b));
+                    vst1q_f16(dst + i, vcombine_f16(vcvt_f16_f32(v0), vcvt_f16_f32(v1)));
+                }
+                for (; i < spatial; ++i)
+                    dst[i] = static_cast<__fp16>(src[i] + b);
+            }
+        }
+        return;
+    }
+#endif
 
     auto in_idx = [&](size_t n, size_t ic, size_t ih, size_t iw) -> size_t {
         return ((n * C_in + ic) * H + ih) * W + iw;
@@ -1386,11 +1479,17 @@ void cactus_conv2d_f16_k3s1p1_nchw(
                         }
                         const __fp16* src_row = Xn + ic * H * W + static_cast<size_t>(ih) * W;
                         const ptrdiff_t iw_offset = static_cast<ptrdiff_t>(kw) - 1;
-                        for (size_t ow = 0; ow < W_out; ++ow) {
-                            ptrdiff_t iw = static_cast<ptrdiff_t>(ow) + iw_offset;
-                            dst_row[ow] = (iw < 0 || iw >= static_cast<ptrdiff_t>(W))
-                                ? 0.0f : static_cast<float>(src_row[iw]);
+                        size_t ow_start = 0, ow_end = W_out;
+                        if (iw_offset < 0) { dst_row[0] = 0.0f; ow_start = 1; }
+                        if (iw_offset > 0) { dst_row[W_out - 1] = 0.0f; ow_end = W_out - 1; }
+                        size_t ow = ow_start;
+                        for (; ow + 8 <= ow_end; ow += 8) {
+                            float16x8_t v = vld1q_f16(src_row + ow + iw_offset);
+                            vst1q_f32(dst_row + ow,     vcvt_f32_f16(vget_low_f16(v)));
+                            vst1q_f32(dst_row + ow + 4, vcvt_f32_f16(vget_high_f16(v)));
                         }
+                        for (; ow < ow_end; ++ow)
+                            dst_row[ow] = static_cast<float>(src_row[ow + iw_offset]);
                     }
                 }
             }

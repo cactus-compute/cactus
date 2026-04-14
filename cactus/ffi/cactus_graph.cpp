@@ -75,6 +75,39 @@ int cactus_graph_hard_reset(cactus_graph_t graph) {
     }
 }
 
+int cactus_graph_save(cactus_graph_t graph, const char* filename) {
+    if (!graph || !filename) {
+        last_error_message = "Invalid args to cactus_graph_save";
+        return -1;
+    }
+    try {
+        as_graph(graph)->graph.save(filename);
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+
+cactus_graph_t cactus_graph_load(const char* filename) {
+    if (!filename) {
+        last_error_message = "Invalid args to cactus_graph_load";
+        return nullptr;
+    }
+    try {
+        auto handle = std::make_unique<GraphHandle>();
+        handle->graph = CactusGraph::load(std::string(filename));
+        return reinterpret_cast<cactus_graph_t>(handle.release());
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return nullptr;
+    } catch (...) {
+        last_error_message = "Unknown error loading graph";
+        return nullptr;
+    }
+}
+
 int cactus_graph_input(cactus_graph_t graph, const size_t* shape, size_t rank, int32_t precision, cactus_node_t* out_node) {
     if (!graph || !shape || rank == 0 || !out_node) {
         last_error_message = "Invalid args to cactus_graph_input";

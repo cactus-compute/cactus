@@ -226,7 +226,12 @@ int cactus_transcribe(
                 if (handle->should_stop) break;
 
                 float token_entropy = 0.0f;
-                uint32_t next_token = handle->model->decode_with_audio(tokens, audio_features, options.temperature, options.top_p, options.top_k, "", &token_entropy);
+                uint32_t next_token = handle->model->decode_with_audio(
+                    tokens, audio_features,
+                    options.temperature, options.top_p, options.top_k,
+                    "", &token_entropy,
+                    options.min_p, options.repetition_penalty
+                );
 
                 if (completion_tokens == 0) [[unlikely]] {
                     auto t_first = std::chrono::high_resolution_clock::now();
@@ -501,6 +506,8 @@ int cactus_transcribe(
                     options.top_k,
                     "",
                     &token_entropy,
+                    options.min_p,
+                    options.repetition_penalty,
                     is_parakeet_tdt ? &tok_time_start : nullptr,
                     is_parakeet_tdt ? &tok_time_end : nullptr
                 );
@@ -757,7 +764,8 @@ int cactus_detect_language(
         for (size_t step = 0; step < kMaxLanguageProbeSteps; ++step) {
             float step_entropy = 1.0f;
             const uint32_t step_token_id = handle->model->decode_with_audio(
-                decode_tokens, features, 0.0f, 0.0f, 0, "", &step_entropy
+                decode_tokens, features, 0.0f, 0.0f, 0, "", &step_entropy,
+                0.0f, 1.0f
             );
             const std::string step_token_text = tokenizer->decode({step_token_id});
             const std::string step_language = extract_whisper_language_code(step_token_text);

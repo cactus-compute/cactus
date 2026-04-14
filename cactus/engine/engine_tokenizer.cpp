@@ -207,6 +207,9 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
             } else if (line.find("parakeet") != std::string::npos) {
                 model_type_ = ModelType::PARAKEET;
                 break;
+            } else if (line.find("needle") != std::string::npos) {
+                model_type_ = ModelType::NEEDLE;
+                break;
             } else if (line.find("youtu") != std::string::npos) {
                 model_type_ = ModelType::YOUTU;
                 break;
@@ -266,6 +269,8 @@ std::string Tokenizer::get_default_stop_sequence() const {
         case ModelType::QWEN3P5:
         case ModelType::LFM2:
             return "<|im_end|>";
+        case ModelType::NEEDLE:
+            return "";
         default:
             return "<|im_end|>";
     }
@@ -299,11 +304,20 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
             return format_gemma4_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
         case ModelType::LFM2:
             return format_lfm2_style(messages, add_generation_prompt, tools_json);
+        case ModelType::NEEDLE:
+            return format_needle_style(messages, add_generation_prompt, tools_json);
         case ModelType::YOUTU:
             return format_youtu_style(messages, add_generation_prompt, tools_json);
         default:
             return format_qwen_style(messages, add_generation_prompt, tools_json);
     }
+}
+
+std::string Tokenizer::format_needle_style(const std::vector<ChatMessage>& messages,
+                                           bool /*add_generation_prompt*/,
+                                           const std::string& tools_json) const {
+    std::string serialized_tools = tools_json.empty() ? "[]" : tools_json;
+    return format_needle_query_text(messages) + "<tools>" + serialized_tools + "</s>";
 }
 
 std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported) const {
@@ -643,7 +657,6 @@ std::string Tokenizer::format_lfm2_vl_style(
     
     for (const auto& msg : messages) {
         result += "<|im_start|>" + msg.role + "\n";
-        result += msg.content;
         for (const auto& image_path : msg.images) {
             int width = 0, height = 0, channels = 0;
             unsigned char* img_data = stbi_load(image_path.c_str(), &width, &height, &channels, 0);
@@ -697,7 +710,8 @@ std::string Tokenizer::format_lfm2_vl_style(
                 result += "<image>";
             }
         }
-        
+        result += msg.content;
+
         result += "<|im_end|>\n";
     }
 

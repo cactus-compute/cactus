@@ -15,6 +15,20 @@ class Graph:
         self.h = _lib.cactus_graph_create()
         if not self.h:
             raise RuntimeError("cactus_graph_create failed")
+    
+    def save(self, filename):
+        rc = _lib.cactus_graph_save(self.h, str(filename).encode())
+        if rc != 0:
+            raise RuntimeError("graph_save failed")
+
+    @classmethod
+    def load(cls, filename):
+        h = _lib.cactus_graph_load(str(filename).encode())
+        if not h:
+            raise RuntimeError("cactus_graph_load failed")
+        obj = cls.__new__(cls)
+        obj.h = h
+        return obj
 
     def __del__(self):
         h = getattr(self, "h", None)

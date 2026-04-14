@@ -286,8 +286,9 @@ Options (all optional):
 - `num_speakers` (int) — keep only the N most active speakers
 - `min_speakers` (int) — minimum number of speakers to retain
 - `max_speakers` (int) — maximum number of speakers to retain
+- `raw_powerset` (bool, default false) — return raw 7-class powerset scores instead of 3-speaker probabilities
 
-Returns `{"success":true,"error":null,"num_speakers":3,"scores":[...],"total_time_ms":...,"ram_usage_mb":...}`. The `scores` field is a flat array of T×3 float32 values (index `f*3+s`), one per output frame per speaker, each in [0,1].
+Returns `{"success":true,"error":null,"num_speakers":3,"scores":[...],"total_time_ms":...,"ram_usage_mb":...}`. The `scores` field is a flat array of T×3 float32 values (index `f*3+s`), one per output frame per speaker, each in [0,1]. When `raw_powerset` is true, `num_speakers` is 7 and `scores` contains T×7 raw powerset class scores (speaker filtering and thresholding are skipped).
 
 ### Embed Speaker
 
@@ -296,11 +297,12 @@ result_json = cactus_embed_speaker(
     model: int,
     audio_path: str | None,
     options_json: str | None,
-    pcm_data: bytes | None
+    pcm_data: bytes | None,
+    mask_weights: list[float] | None = None
 ) -> str
 ```
 
-Returns a JSON string: `{"success":true,"error":null,"embedding":[<float>, ...],"total_time_ms":...,"ram_usage_mb":...}`. The embedding is a 256-dimensional speaker vector from the WeSpeaker ResNet34-LM model.
+Returns a JSON string: `{"success":true,"error":null,"embedding":[<float>, ...],"total_time_ms":...,"ram_usage_mb":...}`. The embedding is a 256-dimensional speaker vector from the WeSpeaker ResNet34-LM model. When `mask_weights` is provided (a per-frame weight array from diarization), the embedding is extracted using weighted stats pooling for speaker-specific embeddings.
 
 ### RAG
 

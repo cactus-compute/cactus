@@ -481,10 +481,22 @@ def is_vlm_model(config):
 
 def is_lfm2_vl(model_name, cfg):
     """Check if the model is an LFM2 vision-language model."""
-    if getattr(cfg, "model_type", None) == "lfm2-vl":
+    model_type = str(cfg_get(cfg, 'model_type', '') or '').lower().strip()
+    if model_type.replace('_', '-') == "lfm2-vl":
         return True
+    architectures = cfg_get(cfg, 'architectures', [])
+    if isinstance(architectures, (list, tuple)):
+        for architecture in architectures:
+            normalized_arch = str(architecture or '').lower().replace('_', '').replace('-', '')
+            if normalized_arch == 'lfm2vlforconditionalgeneration':
+                return True
     name = (model_name or "").lower()
-    return "lfm2-vl" in name
+    return (
+        "lfm2-vl" in name
+        or "lfm2_vl" in name
+        or "lfm2.5-vl" in name
+        or "lfm2.5_vl" in name
+    )
 
 
 def pick_dtype():

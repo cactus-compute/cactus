@@ -197,6 +197,7 @@ graph.hard_reset();
 | LiquidAI/LFM2.5-1.2B-Instruct | completion, tools, embed |
 | LiquidAI/LFM2-2.6B | completion, tools, embed |
 | LiquidAI/LFM2-VL-450M | vision, txt & img embed, Apple NPU |
+| LiquidAI/LFM2.5-VL-450M | vision, txt & img embed, Apple NPU |
 | LiquidAI/LFM2.5-VL-1.6B | vision, txt & img embed, Apple NPU |
 | tencent/Youtu-LLM-2B | completion, tools, embed |
 | nomic-ai/nomic-embed-text-v2-moe | embed |
@@ -244,7 +245,7 @@ graph.hard_reset();
 │    --token <token>                   HF token (gated models)                 │
 │    --reconvert                       force reconversion from source          │
 │                                                                              │
-│  cactus transcribe [model]           live mic transcription (parakeet-1.1b)  │
+│  cactus transcribe [model]           live mic transcription (parakeet-tdt-0.6b-v3) │
 │    --file <audio.wav>                transcribe file instead of mic          │
 │    --precision INT4|INT8|FP16        quantization (default: INT4)            │
 │    --token <token>                   HF token (gated models)                 │

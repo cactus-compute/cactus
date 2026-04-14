@@ -127,7 +127,7 @@ struct Config {
     float rope_scaling_factor = 1.0f;
     float rope_mscale_all_dim = 0.0f;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, PYANNOTE = 16, WESPEAKER = 17};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, PYANNOTE = 16, WESPEAKER = 17, NEEDLE = 18};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
@@ -242,6 +242,39 @@ struct ChatMessage {
     std::vector<ToolCallInfo> tool_calls;
 };
 
+inline std::string format_needle_query_text(const std::vector<ChatMessage>& messages) {
+    std::string system_text;
+    std::string user_query;
+
+    for (const auto& msg : messages) {
+        if (msg.role == "system") {
+            if (!system_text.empty()) {
+                system_text += "\n";
+            }
+            system_text += msg.content;
+        } else if (msg.role == "user") {
+            user_query = msg.content;
+        }
+    }
+
+    if (user_query.empty() && !messages.empty()) {
+        user_query = messages.back().content;
+    }
+    if (system_text.empty()) {
+        return user_query;
+    }
+    if (user_query.empty()) {
+        return system_text;
+    }
+    return system_text + "\n\n" + user_query;
+}
+
+struct ToolConstraintSpec {
+    std::string name;
+    std::vector<std::string> parameter_names;
+    std::vector<std::string> required_parameter_names;
+};
+
 struct TokenizerRuntimeConfig {
     enum class TokenizerType { UNKNOWN, BPE, SENTENCEPIECE };
     enum class VocabFormat { UNKNOWN, ID_TAB_TOKEN, LINE_TOKEN };
@@ -284,7 +317,7 @@ public:
     uint32_t get_global_img_token_id() const { return global_img_token_id_; }
 
 protected:
-    enum class ModelType { UNKNOWN, QWEN, QWEN3P5, GEMMA, GEMMA4, LFM2, BERT, WHISPER, PARAKEET, YOUTU};
+    enum class ModelType { UNKNOWN, QWEN, QWEN3P5, GEMMA, GEMMA4, LFM2, BERT, WHISPER, PARAKEET, YOUTU, NEEDLE};
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -309,6 +342,7 @@ protected:
     std::string format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = true) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_lfm2_vl_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_needle_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_youtu_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
 };
 
@@ -386,27 +420,32 @@ private:
         int32_t token_id = -1;
         float score = 0.0f;
     };
-    
+
     std::unique_ptr<TrieNode> trie_root_;
     std::unordered_map<std::string, uint32_t> token_to_id_;
     std::vector<std::string> id_to_token_;
     std::vector<float> token_scores_;
-    
+
     uint32_t vocab_size_;
     uint32_t unk_token_id_;
     uint32_t bos_token_id_;
     uint32_t eos_token_id_;
     uint32_t pad_token_id_;
-    
+
+    bool sp_bpe_mode_ = false;
+    bool sp_add_dummy_prefix_ = false;
+    bool sp_byte_fallback_ = false;
+
     void* vocab_mmap_ptr_;
     size_t vocab_mmap_size_;
-    
+
     void build_trie();
     std::vector<std::pair<std::string, uint32_t>> tokenize_with_trie(const std::string& text) const;
+    std::vector<uint32_t> tokenize_with_bpe(const std::string& text) const;
     std::string preprocess_text(const std::string& text) const;
     std::string postprocess_text(const std::string& text) const;
     std::vector<std::string> split_by_unicode_spaces(const std::string& text) const;
-    
+
     void cleanup_mmap();
 
     std::unordered_map<std::string, uint32_t> special_tokens_;
@@ -523,9 +562,11 @@ public:
         QWEN_EXPECT_COMMA, 
         QWEN_EXPECT_ARGS_KEY, 
         QWEN_EXPECT_ARGS_COLON, 
-        QWEN_IN_ARGUMENTS,  
+        QWEN_IN_ARGUMENTS,
         QWEN_EXPECT_CLOSE_BRACE,
         QWEN_EXPECT_END,
+
+        NEEDLE_START,
 
         LFM_START,              
         LFM_EXPECT_BRACKET, 
@@ -544,7 +585,7 @@ public:
     };
 
     void init(Config::ModelType model_type,
-              const std::vector<std::string>& function_names,
+              const std::vector<ToolConstraintSpec>& tools,
               Tokenizer* tokenizer);
 
     const std::unordered_map<uint32_t, float>& get_bias() const { return current_bias_; }
@@ -562,7 +603,20 @@ private:
     Tokenizer* tokenizer_ = nullptr;
 
     bool is_gemma_family() const { return Config::is_gemma_family(model_type_); }
+    bool is_needle() const { return model_type_ == Config::ModelType::NEEDLE; }
 
+    enum class NeedleJsonState {
+        FREE,
+        IN_NAME,
+        IN_ARG_KEY,
+    };
+
+    struct NeedleTrieNode {
+        std::unordered_map<char, std::unique_ptr<NeedleTrieNode>> children;
+        bool is_terminal = false;
+    };
+
+    std::vector<ToolConstraintSpec> tool_specs_;
     std::vector<std::string> function_names_;
     std::string generated_text_;
     int brace_depth_ = 0;
@@ -582,6 +636,23 @@ private:
     std::unordered_set<uint32_t> backtick_tokens_;   
     std::unordered_set<uint32_t> all_func_name_tokens_;
     std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;
+    NeedleJsonState needle_json_state_ = NeedleJsonState::FREE;
+    std::string needle_buffer_;
+    std::string needle_constrained_buf_;
+    std::string needle_current_function_;
+    bool needle_in_arguments_ = false;
+    int needle_arguments_depth_ = 0;
+    int needle_nesting_depth_ = 0;
+    bool needle_in_string_value_ = false;
+    bool needle_between_pairs_ = false;
+    bool needle_prev_char_escape_ = false;
+    std::unique_ptr<NeedleTrieNode> needle_name_trie_;
+    std::unordered_map<std::string, std::unique_ptr<NeedleTrieNode>> needle_param_tries_;
+    std::unordered_map<std::string, std::vector<std::string>> needle_required_params_;
+    std::unordered_set<std::string> needle_seen_arg_keys_;
+    std::vector<std::string> needle_token_strings_;
+    std::unordered_map<char, std::vector<uint32_t>> needle_token_index_;
+    std::unordered_set<uint32_t> needle_arg_close_tokens_;
 
     std::unordered_set<uint32_t> tool_start_tokens_;
     std::unordered_set<uint32_t> tool_end_tokens_;
@@ -604,6 +675,16 @@ private:
     void add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set);
     void tokenize_function_names(bool quote_names);
     void init_common_tokens();
+    void init_needle_constraints();
+    void reset_needle_constraints();
+    void feed_needle_text(const std::string& text);
+    void feed_needle_char(char ch);
+    bool needle_at_arg_key_start() const;
+    bool needle_is_value_string_start() const;
+    void needle_insert_word(NeedleTrieNode* root, const std::string& word);
+    const NeedleTrieNode* needle_get_trie_node(const NeedleTrieNode* root, const std::string& prefix) const;
+    bool needle_check_token_valid(const std::string& token_text, const NeedleTrieNode* trie_node) const;
+    bool needle_has_unseen_completion(const NeedleTrieNode* node, std::string& partial) const;
 };
 
 class Model {
@@ -628,7 +709,8 @@ public:
               const std::string& system_prompt = "", bool do_warmup = true);
 
     virtual uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
-                      size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr);
+                      size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                      float min_p = 0.15f, float repetition_penalty = 1.1f);
 
     virtual void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "");
 
@@ -637,10 +719,12 @@ public:
 
     virtual uint32_t decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                                           float temperature = -1.0f, float top_p = -1.0f,
-                                          size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr);
+                                          size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                                          float min_p = 0.15f, float repetition_penalty = 1.1f);
 
     virtual uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features, float temperature = 0.0f, float top_p = 0.0f,
                       size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                      float min_p = 0.15f, float repetition_penalty = 1.1f,
                       float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, bool normalize = false, const std::string& profile_file = "");
@@ -649,7 +733,13 @@ public:
     
     virtual std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features);
 
-    virtual void reset_cache() { kv_cache_.reset(); }
+    virtual void reset_cache() { kv_cache_.reset(); token_history_.clear(); }
+    void record_sampled_token(uint32_t token) {
+        if (token_history_.size() >= MAX_TOKEN_HISTORY) {
+            token_history_.erase(token_history_.begin(), token_history_.begin() + (MAX_TOKEN_HISTORY / 2));
+        }
+        token_history_.push_back(token);
+    }
 
     double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored);
 
@@ -664,7 +754,7 @@ public:
     virtual void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     virtual void compact_kv_cache() {}
 
-    void set_tool_constraints(const std::vector<std::string>& function_names);
+    void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
     void clear_tool_constraints();
     void update_tool_constraints(uint32_t token_id);
 
@@ -688,6 +778,7 @@ public:
 
 protected:
     size_t sample_token(CactusGraph* gb, size_t logits_node_id, float temperature, float top_p, size_t top_k,
+                        float min_p, float repetition_penalty,
                         const std::unordered_map<uint32_t, float>* extra_bias = nullptr) const;
 
     static void compute_entropy(CactusGraph* gb, size_t logits_node_id, float* out_entropy);
@@ -743,7 +834,9 @@ protected:
     void prefill_npu(const std::vector<uint32_t>& tokens);
     virtual std::vector<__fp16> get_token_embeddings(const std::vector<uint32_t>& tokens);
 
+    static constexpr size_t MAX_TOKEN_HISTORY = 128;
     ToolCallConstrainer tool_constrainer_;
+    std::vector<uint32_t> token_history_;
 
 private:
     std::unordered_map<uint32_t, float> vocab_bias_;

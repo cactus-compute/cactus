@@ -242,7 +242,7 @@ if(BUILD_SME2)
     target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_SME2)
 endif()
 
-# I8MM support: all Apple Silicon supports I8MM
+# I8MM support: detected at runtime via sysctl, not all Apple Silicon has FEAT_I8MM
 add_library(cactus_i8mm_obj OBJECT ${I8MM_SOURCE})
 target_include_directories(cactus_i8mm_obj PRIVATE
     ${SOURCE_DIR} ${SOURCE_DIR}/engine ${SOURCE_DIR}/graph

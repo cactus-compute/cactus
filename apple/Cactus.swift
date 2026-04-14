@@ -369,23 +369,41 @@ public func cactusDiarize(_ model: CactusModelT, _ audioPath: String?, _ options
     return String(cString: buffer)
 }
 
-public func cactusEmbedSpeaker(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?) throws -> String {
+public func cactusEmbedSpeaker(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?, _ maskWeights: [Float]? = nil) throws -> String {
     var buffer = [CChar](repeating: 0, count: _defaultBufferSize)
 
     let result: Int32
     if let pcmData = pcmData {
         result = pcmData.withUnsafeBytes { pcmPtr in
             buffer.withUnsafeMutableBufferPointer { bufferPtr in
-                cactus_embed_speaker(
-                    model, audioPath,
-                    bufferPtr.baseAddress, bufferPtr.count, optionsJson,
-                    pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), pcmData.count
-                )
+                if let maskWeights = maskWeights {
+                    return maskWeights.withUnsafeBufferPointer { maskPtr in
+                        cactus_embed_speaker(
+                            model, audioPath,
+                            bufferPtr.baseAddress, bufferPtr.count, optionsJson,
+                            pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), pcmData.count,
+                            maskPtr.baseAddress, maskWeights.count
+                        )
+                    }
+                } else {
+                    return cactus_embed_speaker(
+                        model, audioPath,
+                        bufferPtr.baseAddress, bufferPtr.count, optionsJson,
+                        pcmPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), pcmData.count,
+                        nil, 0
+                    )
+                }
             }
         }
     } else {
         result = buffer.withUnsafeMutableBufferPointer { bufferPtr in
-            cactus_embed_speaker(model, audioPath, bufferPtr.baseAddress, bufferPtr.count, optionsJson, nil, 0)
+            if let maskWeights = maskWeights {
+                return maskWeights.withUnsafeBufferPointer { maskPtr in
+                    cactus_embed_speaker(model, audioPath, bufferPtr.baseAddress, bufferPtr.count, optionsJson, nil, 0, maskPtr.baseAddress, maskWeights.count)
+                }
+            } else {
+                return cactus_embed_speaker(model, audioPath, bufferPtr.baseAddress, bufferPtr.count, optionsJson, nil, 0, nil, 0)
+            }
         }
     }
 

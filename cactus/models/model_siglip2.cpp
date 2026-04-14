@@ -153,7 +153,8 @@ Siglip2VisionModel::VisionEmbeddingResult Siglip2VisionModel::build_vision_embed
         size_t tile_pos = gb->bilinear_interpolation(
             vision_weight_nodes_.position_embedding,
             static_cast<size_t>(tile_h),
-            static_cast<size_t>(tile_w));
+            static_cast<size_t>(tile_w),
+            /*align_corners=*/false);
         size_t tile_pos_cast = gb->precision_cast(tile_pos, Precision::FP16);
         size_t tile_embed = gb->add(tile_bias, tile_pos_cast);
         tile_embeddings.push_back(tile_embed);
@@ -345,34 +346,6 @@ size_t Siglip2VisionModel::forward_vision(const Siglip2Preprocessor::Preprocesse
     gb->soft_reset();
     auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
     return forward_vision(gb, preprocessed_image, backend);
-}
-
-std::vector<float> Siglip2VisionModel::get_image_features(const std::string& image_path) {
-    auto preprocessed = preprocessor_.preprocess_from_file(image_path);
-    return get_image_features(preprocessed);
-}
-
-size_t Siglip2VisionModel::get_image_features_node(const Siglip2Preprocessor::PreprocessedImage& preprocessed_image) {
-    return forward_vision(preprocessed_image);
-}
-
-std::vector<float> Siglip2VisionModel::get_image_features(const Siglip2Preprocessor::PreprocessedImage& preprocessed_image) {
-    size_t last_hidden_state = forward_vision(preprocessed_image);
-
-    auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    gb->execute();
-
-    const auto& output_buf = gb->get_output_buffer(last_hidden_state);
-    size_t total_elements = 1;
-    for (auto dim : output_buf.shape) {
-        total_elements *= dim;
-    }
-
-    std::vector<float> features(total_elements);
-    void* output_data = gb->get_output(last_hidden_state);
-    const float* output_ptr = static_cast<const float*>(output_data);
-    std::copy(output_ptr, output_ptr + total_elements, features.begin());
-    return features;
 }
 
 std::vector<float> Siglip2VisionModel::get_image_embedding(const std::string& image_path) {

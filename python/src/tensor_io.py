@@ -111,6 +111,21 @@ def pack_int4_pairs(data: np.ndarray) -> np.ndarray:
     return (low | high).astype(np.uint8).reshape(-1)
 
 
+def fold_bn_into_conv(conv_w, bn_weight, bn_bias, bn_mean, bn_var, eps=1e-5):
+    gamma = bn_weight.float().numpy()
+    beta = bn_bias.float().numpy()
+    mean = bn_mean.float().numpy()
+    var = bn_var.float().numpy()
+    w = conv_w.float().numpy()
+
+    inv_std = gamma / np.sqrt(var + eps)
+    shape = [w.shape[0]] + [1] * (w.ndim - 1)
+    new_w = w * inv_std.reshape(shape)
+    new_b = beta - mean * inv_std
+
+    return new_w, new_b
+
+
 def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=False, stats_tracker=None, args=None, model_type=None):
     """Save a tensor to binary format with header metadata and group-wise quantization.
 

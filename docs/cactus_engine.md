@@ -133,6 +133,8 @@ int cactus_complete(
     "max_tokens": 256,
     "temperature": 0.7,
     "top_p": 0.95,
+    "min_p": 0.15,
+    "repetition_penalty": 1.1,
     "top_k": 40,
     "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
     "include_stop_sequences": false,
@@ -152,6 +154,8 @@ int cactus_complete(
 | `temperature` | float | 0.0 | Sampling temperature |
 | `top_p` | float | 0.0 | Top-p (nucleus) sampling |
 | `top_k` | int | 0 | Top-k sampling |
+| `min_p` | float | 0.15 | Minimum probability threshold relative to max probability |
+| `repetition_penalty` | float | 1.1 | Penalize previously generated tokens (1.0 disables) |
 | `stop_sequences` | array | [] | Stop generation on these strings |
 | `include_stop_sequences` | bool | false | Include stop sequence tokens in the response |
 | `force_tools` | bool | false | Constrain output to tool call format |
@@ -770,10 +774,11 @@ int cactus_diarize(
 | `num_speakers` | int | none | Keep only the N most active speakers (by total activity), zeroing out the rest. |
 | `min_speakers` | int | none | Lower bound on the number of active speakers to retain. |
 | `max_speakers` | int | none | Upper bound on the number of active speakers to retain. |
+| `raw_powerset` | bool | false | Return raw 7-class powerset scores instead of 3-speaker probabilities. When true, speaker filtering and thresholding are skipped. |
 
 **Note:** Exactly one of `audio_file_path` or `pcm_buffer` must be provided; passing both or neither returns -1. The file path must point to a 16-bit PCM WAV file. The `pcm_buffer` must contain 16-bit signed PCM samples at 16 kHz and `pcm_buffer_size` must be even and at least 2.
 
-The model processes 10-second windows (160,000 samples at 16 kHz) with configurable step. Shorter input is zero-padded. Output scores are a flat array of T × 3 float32 values in row-major order (index `f*3+s`), where T is the total number of output frames and 3 is the number of speakers. Each value is the Hamming-weighted mean of hard per-speaker labels across all overlapping windows, in the range [0, 1].
+The model processes 10-second windows (160,000 samples at 16 kHz) with configurable step. Shorter input is zero-padded. Output scores are a flat array of T × num_speakers float32 values in row-major order (index `f*num_speakers+s`), where T is the total number of output frames. When `raw_powerset` is false (default), num_speakers is 3 and each value is the Hamming-weighted mean of per-speaker probabilities in [0, 1]. When `raw_powerset` is true, num_speakers is 7 and values are raw powerset class scores.
 
 **Response Format:**
 ```json
@@ -810,13 +815,15 @@ int cactus_embed_speaker(
     size_t buffer_size,             // Size of response buffer
     const char* options_json,       // Optional JSON options (can be NULL, reserved for future use)
     const uint8_t* pcm_buffer,      // Optional raw int16 PCM buffer (can be NULL if using file)
-    size_t pcm_buffer_size          // Size of PCM buffer in bytes (must be even and >= 2)
+    size_t pcm_buffer_size,         // Size of PCM buffer in bytes (must be even and >= 2)
+    const float* mask_weights,      // Optional per-frame mask weights for weighted embedding (can be NULL)
+    size_t mask_num_frames          // Number of mask weight frames (0 if mask_weights is NULL)
 );
 ```
 
 **Returns:** Number of bytes written to response_buffer on success, negative value on error
 
-**Note:** Exactly one of `audio_file_path` or `pcm_buffer` must be provided; passing both or neither returns -1. The file path must point to a 16-bit PCM WAV file. The `pcm_buffer` must contain 16-bit signed PCM samples at 16 kHz and `pcm_buffer_size` must be even and at least 2. Output is a 256-dimensional speaker embedding.
+**Note:** Exactly one of `audio_file_path` or `pcm_buffer` must be provided; passing both or neither returns -1. The file path must point to a 16-bit PCM WAV file. The `pcm_buffer` must contain 16-bit signed PCM samples at 16 kHz and `pcm_buffer_size` must be even and at least 2. Output is a 256-dimensional speaker embedding. When `mask_weights` is provided, weighted stats pooling is used to extract a speaker-specific embedding — the mask weights are resampled to match the model's internal temporal resolution.
 
 **Response Format:**
 ```json
@@ -834,7 +841,7 @@ int cactus_embed_speaker(
 cactus_model_t wespeaker = cactus_init("../../weights/wespeaker-voxceleb-resnet34-lm", NULL, false);
 
 char response[1 << 16];
-int result = cactus_embed_speaker(wespeaker, "audio.wav", response, sizeof(response), NULL, NULL, 0);
+int result = cactus_embed_speaker(wespeaker, "audio.wav", response, sizeof(response), NULL, NULL, 0, NULL, 0);
 
 if (result >= 0) {
     printf("Response: %s\n", response);

@@ -307,9 +307,6 @@ Siglip2Preprocessor::PreprocessedImage Siglip2Preprocessor::preprocess_from_memo
         auto [grid_target_width, grid_target_height] = get_grid_layout(height, width);
         grid_cols = grid_target_width / config_.tile_size;
         grid_rows = grid_target_height / config_.tile_size;
-        printf("[debug] grid_target_width=%d grid_target_height=%d grid_cols=%d grid_rows=%d\n",
-               grid_target_width, grid_target_height, grid_cols, grid_rows);
-    
 
         std::vector<float> resized_grid = resize_image(
             source_data, width, height, grid_target_width, grid_target_height, expected_channels);

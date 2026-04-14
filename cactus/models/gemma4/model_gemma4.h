@@ -314,7 +314,8 @@ public:
 
     uint32_t decode(const std::vector<uint32_t>& tokens,
                     float temperature = -1.0f, float top_p = -1.0f, size_t top_k = 0,
-                    const std::string& profile_file = "", float* out_entropy = nullptr) override;
+                    const std::string& profile_file = "", float* out_entropy = nullptr,
+                    float min_p = 0.15f, float repetition_penalty = 1.1f) override;
 
     void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256,
                  const std::string& profile_file = "") override;
@@ -326,13 +327,15 @@ public:
         const std::vector<uint32_t>& tokens,
         const std::vector<std::string>& image_paths,
         float temperature = -1.0f, float top_p = -1.0f, size_t top_k = 0,
-        const std::string& profile_file = "", float* out_entropy = nullptr) override;
+        const std::string& profile_file = "", float* out_entropy = nullptr,
+        float min_p = 0.15f, float repetition_penalty = 1.1f) override;
 
     uint32_t decode_with_audio(
         const std::vector<uint32_t>& tokens,
         const std::vector<float>& audio_features,
         float temperature = 0.0f, float top_p = 0.0f, size_t top_k = 0,
         const std::string& profile_file = "", float* out_entropy = nullptr,
+        float min_p = 0.15f, float repetition_penalty = 1.1f,
         float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
 
     void reset_cache() override;
@@ -364,7 +367,8 @@ private:
                                const std::vector<float>* audio_features,
                                size_t audio_num_frames,
                                float temperature, float top_p, size_t top_k,
-                               const std::string& profile_file, float* out_entropy);
+                               const std::string& profile_file, float* out_entropy,
+                               float min_p, float repetition_penalty);
 
 public:
     struct MultimodalInputs {
