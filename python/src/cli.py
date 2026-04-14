@@ -352,6 +352,7 @@ def cmd_download(args):
     except ImportError:
         Lfm2VlForConditionalGeneration = None
 
+    model_name = model_id
     is_vlm = 'vl' in model_name.lower() or 'vlm' in model_name.lower()
     is_whisper = 'whisper' in model_name.lower()
     is_parakeet = 'parakeet' in model_name.lower()
