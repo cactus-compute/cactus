@@ -334,15 +334,12 @@ uint32_t Gemma4MmModel::decode(const std::vector<uint32_t>& tokens,
     if (!initialized_ || !graph_handle_)
         throw std::runtime_error("Model not initialized - call init() first");
 
-    // Incremental decode: if we have cached state and new tokens extend the previous sequence,
-    // only pass the new tokens so KV cache positions stay correct.
     if (prefill_completed_ && last_token_count_ > 0 && tokens.size() > last_token_count_) {
         std::vector<uint32_t> new_tokens(tokens.begin() + last_token_count_, tokens.end());
         last_token_count_ = tokens.size();
         return language_model_.decode(new_tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
     }
 
-    // First call or reset: clear MLX KV cache before full prefill.
     language_model_.reset_mlx_kv_cache();
     prefill_completed_ = true;
     last_token_count_ = tokens.size();

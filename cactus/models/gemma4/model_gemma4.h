@@ -117,21 +117,16 @@ private:
     size_t v_norm_ones_node_ = 0;
     size_t v_norm_ones_global_node_ = 0;
 
-    // MLX full-transformer state (null when not using MLX backend)
     Gemma4MLXState                          mlx_state_;
     std::shared_ptr<Gemma4MLXForwardParams> mlx_params_;
-
-    // Build mlx_params_ from weight_nodes_ — called at end of load_weights_to_graph.
+    
     void build_mlx_params(CactusGraph* gb);
-    // Run a small dummy forward pass to trigger Metal shader compilation.
     void warmup_mlx();
 
 public:
-    // Reset the MLX KV cache (call before starting a new conversation).
     void reset_mlx_kv_cache() { mlx_state_.reset(); }
 
-    // Override backend: if switching to MLX and mlx_params_ not yet built, build them now.
-    void override_backend(Config::Backend b) override {
+        void override_backend(Config::Backend b) override {
         Model::override_backend(b);
 #ifdef CACTUS_HAS_MLX
         if (b == Config::Backend::MLX && !mlx_params_ && graph_handle_) {

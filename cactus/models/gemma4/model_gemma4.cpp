@@ -241,45 +241,44 @@ void Gemma4Model::build_mlx_params(CactusGraph* gb) {
         const auto& wl = weight_nodes_.layers[i];
         auto& ln = params->layers[i];
 
-        ln.q_weight      = wl.attn_q_weight;
-        ln.k_weight      = wl.attn_k_weight;
-        ln.v_weight      = wl.attn_v_weight;
-        ln.o_weight      = wl.attn_output_weight;
-        ln.q_norm        = wl.attn_q_norm_weight;
-        ln.k_norm        = wl.attn_k_norm_weight;
-        ln.input_ln      = wl.input_layernorm_weight;
-        ln.post_attn_ln  = wl.post_attention_layernorm_weight;
-        ln.gate_weight   = wl.ffn_gate_weight;
-        ln.up_weight     = wl.ffn_up_weight;
-        ln.down_weight   = wl.ffn_down_weight;
-        ln.pre_ffn_ln    = wl.pre_feedforward_layernorm_weight;
-        ln.post_ffn_ln   = wl.post_feedforward_layernorm_weight;
-        ln.pli_gate      = wl.per_layer_gate;
-        ln.pli_proj      = wl.per_layer_proj;
-        ln.pli_norm      = wl.post_per_layer_norm;
-        ln.layer_scalar  = wl.layer_scalar;
-        ln.is_global     = is_global_layer(i);
-        ln.share_src     = (i < kv_share_map_.size()) ? kv_share_map_[i] : -1;
+        ln.q_weight = wl.attn_q_weight;
+        ln.k_weight = wl.attn_k_weight;
+        ln.v_weight = wl.attn_v_weight;
+        ln.o_weight = wl.attn_output_weight;
+        ln.q_norm = wl.attn_q_norm_weight;
+        ln.k_norm = wl.attn_k_norm_weight;
+        ln.input_ln = wl.input_layernorm_weight;
+        ln.post_attn_ln = wl.post_attention_layernorm_weight;
+        ln.gate_weight = wl.ffn_gate_weight;
+        ln.up_weight = wl.ffn_up_weight;
+        ln.down_weight = wl.ffn_down_weight;
+        ln.pre_ffn_ln = wl.pre_feedforward_layernorm_weight;
+        ln.post_ffn_ln = wl.post_feedforward_layernorm_weight;
+        ln.pli_gate = wl.per_layer_gate;
+        ln.pli_proj = wl.per_layer_proj;
+        ln.pli_norm = wl.post_per_layer_norm;
+        ln.layer_scalar = wl.layer_scalar;
+        ln.is_global = is_global_layer(i);
+        ln.share_src = (i < kv_share_map_.size()) ? kv_share_map_[i] : -1;
 
         if (ln.is_global) {
             ln.num_heads = config_.attention_heads;
-            ln.kv_heads  = config_.num_global_kv_heads > 0
+            ln.kv_heads = config_.num_global_kv_heads > 0
                            ? config_.num_global_kv_heads
                            : config_.attention_kv_heads;
-            ln.head_dim  = global_head_dim;
+            ln.head_dim = global_head_dim;
             float rot_factor = config_.global_partial_rotary_factor;
-            ln.rot_dim   = static_cast<size_t>(global_head_dim * rot_factor);
-            ln.rot_dim  &= ~1u;  // make even
-            // Adjust theta for partial rotation
+            ln.rot_dim = static_cast<size_t>(global_head_dim * rot_factor);
+            ln.rot_dim &= ~1u;
             ln.rope_freq = std::pow(config_.rope_theta,
                                     static_cast<float>(ln.rot_dim) /
                                     static_cast<float>(global_head_dim));
-            ln.window    = 0;  // global = no sliding window
+            ln.window = 0;
         } else {
             ln.num_heads = config_.attention_heads;
             ln.kv_heads  = config_.attention_kv_heads;
             ln.head_dim  = sliding_head_dim;
-            ln.rot_dim   = sliding_head_dim;  // full rotation for local
+            ln.rot_dim   = sliding_head_dim;
             ln.rope_freq = config_.rope_local_base_freq;
             ln.window    = config_.sliding_window;
         }
@@ -293,19 +292,15 @@ void Gemma4Model::warmup_mlx() {
 #ifdef CACTUS_HAS_MLX
     if (!mlx_params_ || !graph_handle_) return;
 
-    // Run a small forward pass with dummy token IDs to trigger Metal shader compilation.
-    // This happens once at init time so the first real forward pass is fast.
-    std::vector<uint32_t> dummy_tokens = {2, 100, 200, 300};  // BOS + 3 dummy tokens
+    std::vector<uint32_t> dummy_tokens = {2, 100, 200, 300};
     auto saved_cache_len = mlx_state_.cached_seq_len;
     mlx_state_.reset();
 
-    // forward() builds the graph and calls the fused MLX node
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
     forward(dummy_tokens, false);
     gb->execute("");
 
-    // Clean up — reset state so the real forward starts fresh
     mlx_state_.reset();
     gb->soft_reset();
 #endif
@@ -572,7 +567,6 @@ size_t Gemma4Model::forward(const std::vector<uint32_t>& tokens, bool use_cache)
         std::vector<float> ids(T);
         for (size_t i = 0; i < T; i++) ids[i] = static_cast<float>(tokens[i]);
 
-        // Main embedding: [T, hidden_dim]
         auto token_input  = gb->input({T}, Precision::FP32);
         auto main_embed   = gb->scalar_multiply(
             gb->embedding(embedding_node_id_, token_input),
@@ -582,7 +576,6 @@ size_t Gemma4Model::forward(const std::vector<uint32_t>& tokens, bool use_cache)
         size_t pli_input_node = 0;
 
         if (config_.hidden_size_per_layer_input > 0) {
-            // PLI embedding: [T, pli_dim]
             pli_input_node = gb->input({T}, Precision::FP32);
             auto pli_embed = gb->scalar_multiply(
                 gb->embedding(weight_nodes_.embed_tokens_per_layer, pli_input_node),
@@ -590,25 +583,19 @@ size_t Gemma4Model::forward(const std::vector<uint32_t>& tokens, bool use_cache)
             fused_inputs.push_back(pli_embed);
         }
 
-        // ONE fused node for all 46 transformer layers
         auto output_node = gb->fused_mlx_node(
             fused_inputs,
             {T, config_.hidden_dim},
             make_gemma4_full_forward_fn(&mlx_state_, mlx_params_));
 
-        // Set token inputs
         gb->set_input(token_input, ids.data(), Precision::FP32);
         if (pli_input_node)
             gb->set_input(pli_input_node, ids.data(), Precision::FP32);
 
-        // Final output norm (stays in graph)
         return gb->rms_norm(output_node, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
     }
 #endif  // CACTUS_HAS_MLX
 
-    // ── CPU / NPU path ─────────────────────────────────────────────────────────
-    // When MLX backend is selected, the full model handoff above handles it.
-    // If we fall through here, force CPU to avoid per-op MLX dispatch.
     if (backend == ComputeBackend::MLX) backend = ComputeBackend::CPU;
     size_t pos_offset = use_cache ? kv_cache_.get_total_seq_len() : 0;
 
