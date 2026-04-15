@@ -60,6 +60,29 @@ def export_pro_weights(model_id, bits):
     build_script = pro_repo / "apple" / "build.sh"
     if not build_script.exists():
         return None
+
+    if "gemma-4" in model_id.lower():
+        build_dir = pro_repo / "apple" / "build"
+        output_names = {
+            "gemma4-vision": "vision_encoder",
+            "gemma4-audio": "audio_encoder"
+        }
+        mlpackages = []
+        for enc_type, out_name in output_names.items():
+            result = subprocess.run(
+                ["bash", str(build_script), "--model", model_id, "--bits", bits, "--type", enc_type],
+                cwd=pro_repo,
+                capture_output=True,
+            )
+            mlpackage = build_dir / "model.mlpackage"
+            if result.returncode == 0 and mlpackage.exists():
+                dest = build_dir.parent / f"{out_name}.mlpackage"
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.move(str(mlpackage), str(dest))
+                mlpackages.append(dest)
+        return mlpackages or None
+
     result = subprocess.run(
         ["bash", str(build_script), "--model", model_id, "--bits", bits],
         cwd=pro_repo,
@@ -68,7 +91,7 @@ def export_pro_weights(model_id, bits):
     if result.returncode != 0:
         return None
     mlpackage = pro_repo / "apple" / "build" / "model.mlpackage"
-    return mlpackage if mlpackage.exists() else None
+    return [mlpackage] if mlpackage.exists() else None
 
 
 def get_prev_config(api, repo, current):
@@ -163,9 +186,10 @@ def export_and_publish_model(args, api):
 
             if args.apple:
                 try:
-                    mlpackage = export_pro_weights(args.model, bits)
-                    if mlpackage:
-                        shutil.copytree(str(mlpackage), str(exported / mlpackage.name))
+                    mlpackages = export_pro_weights(args.model, bits)
+                    if mlpackages:
+                        for mlp in mlpackages:
+                            shutil.copytree(str(mlp), str(exported / mlp.name))
                         apple_zip = weights_dir / f"{model_name_lower}-{precision}-apple.zip"
                         zip_dir(exported, apple_zip)
                         fingerprint.update(sha256(apple_zip).encode())
