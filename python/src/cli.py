@@ -111,6 +111,52 @@ def run_command(cmd, cwd=None, check=True):
     return result
 
 
+def _is_stale_binary(binary_path, dependency_paths):
+    binary_path = Path(binary_path)
+    if not binary_path.exists():
+        return True
+
+    try:
+        binary_mtime = binary_path.stat().st_mtime
+    except OSError:
+        return True
+
+    for dep in dependency_paths:
+        dep_path = Path(dep)
+        if not dep_path.exists():
+            continue
+        try:
+            if dep_path.stat().st_mtime > binary_mtime:
+                return True
+        except OSError:
+            continue
+
+    return False
+
+
+def _ensure_chat_binary(project_root, lib_path):
+    tests_dir = project_root / "tests"
+    build_dir = tests_dir / "build"
+    chat_binary = build_dir / "chat"
+    chat_cpp = tests_dir / "chat.cpp"
+
+    if not _is_stale_binary(chat_binary, [lib_path, chat_cpp]):
+        return chat_binary
+
+    print_color(YELLOW, "Refreshing chat binary for current Cactus library...")
+    build_args = argparse.Namespace(
+        apple=False,
+        android=False,
+        flutter=False,
+        python=False,
+    )
+    result = cmd_build(build_args)
+    if result != 0 or not chat_binary.exists():
+        raise RuntimeError("Failed to rebuild chat binary")
+
+    return chat_binary
+
+
 def ensure_vad_weights(model_id, weights_dir, precision='INT8'):
     """Bundle Silero VAD weights into <weights_dir>/vad/ for ASR models."""
     is_asr = (
@@ -1013,10 +1059,10 @@ def cmd_run(args):
             print_color(RED, f"Error: Unsupported image format. Supported: {', '.join(valid_exts)}")
             return 1
 
-    chat_binary = PROJECT_ROOT / "tests" / "build" / "chat"
-
-    if not chat_binary.exists():
-        print_color(RED, f"Error: Chat binary not found at {chat_binary}")
+    try:
+        chat_binary = _ensure_chat_binary(PROJECT_ROOT, lib_path)
+    except RuntimeError as exc:
+        print_color(RED, f"Error: {exc}")
         return 1
 
     os.system('clear' if platform.system() != 'Windows' else 'cls')
