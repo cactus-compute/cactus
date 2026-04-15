@@ -110,7 +110,7 @@ bool test_prompt_gemma4_thinking_injection() {
 
     auto* handle = static_cast<CactusModelHandle*>(model);
     auto* tok = handle->model->get_tokenizer();
-    std::vector<ChatMessage> msgs = {{"user", "hello", "", {}, {}}};
+    std::vector<ChatMessage> msgs = {{"user", "hello", "", {}, {}, 0, {}}};
 
     std::string enabled = tok->format_chat_prompt(msgs, true, "", true);
     std::string disabled = tok->format_chat_prompt(msgs, true, "", false);
@@ -139,9 +139,9 @@ bool test_prompt_gemma4_assistant_stripping() {
     auto* tok = handle->model->get_tokenizer();
 
     std::vector<ChatMessage> msgs = {
-        {"user", "hello", "", {}, {}},
-        {"assistant", "<|channel>internal reasoning<channel|>visible response", "", {}, {}},
-        {"user", "followup", "", {}, {}}
+        {"user", "hello", "", {}, {}, 0, {}},
+        {"assistant", "<|channel>internal reasoning<channel|>visible response", "", {}, {}, 0, {}},
+        {"user", "followup", "", {}, {}, 0, {}}
     };
 
     std::string prompt = tok->format_chat_prompt(msgs, true, "", true);
@@ -260,15 +260,15 @@ bool test_multiturn_cache_reuse() {
 
     std::vector<uint32_t> processed_after_t1 = handle->processed_tokens;
 
-    std::vector<ChatMessage> t1_chat = {{"user", "My name is Alice. Please remember this.", "", {}, {}}};
+    std::vector<ChatMessage> t1_chat = {{"user", "My name is Alice. Please remember this.", "", {}, {}, 0, {}}};
     std::vector<uint32_t> t1_prompt_tokens = tokenizer->encode(tokenizer->format_chat_prompt(t1_chat, true, "", true));
     std::vector<uint32_t> gen_tokens(processed_after_t1.begin() + t1_prompt_tokens.size(), processed_after_t1.end());
     std::string assistant_text = tokenizer->decode(gen_tokens);
 
     std::vector<ChatMessage> t2_chat = {
-        {"user", "My name is Alice. Please remember this.", "", {}, {}},
-        {"assistant", assistant_text, "", {}, {}},
-        {"user", "What is my name?", "", {}, {}}
+        {"user", "My name is Alice. Please remember this.", "", {}, {}, 0, {}},
+        {"assistant", assistant_text, "", {}, {}, 0, {}},
+        {"user", "What is my name?", "", {}, {}, 0, {}}
     };
     std::vector<uint32_t> t2_prompt_tokens = tokenizer->encode(tokenizer->format_chat_prompt(t2_chat, true, "", true));
 

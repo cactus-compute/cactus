@@ -271,9 +271,9 @@ bool test_gemma4_vision(bool expect_npu) {
         std::cerr << "  FAIL: no tokenizer\n";
         return false;
     }
-
+    
     std::vector<ChatMessage> messages;
-    messages.push_back({"user", "Describe this image briefly.", "", {image_path}, {}});
+    messages.push_back({"user", "Describe this image briefly.", "", {image_path}, {}, 0, {}});
     std::string prompt = tokenizer->format_chat_prompt(messages, true, "", false);
     auto tokens = tokenizer->encode(prompt);
 
@@ -532,7 +532,9 @@ bool test_gemma4_vision_audio() {
         return true;
     }
 
-    print_modality_box("VISION + AUDIO", "Describe the image and summarize the audio briefly.");
+    std::string image_audio_prompt = "Please give a two line output. First line describes the image in strong detail, second line contains audio transcription.";
+
+    print_modality_box("VISION + AUDIO", image_audio_prompt);
 
     cactus_model_t model = cactus_init(model_path, nullptr, false);
     if (!model) {
@@ -540,7 +542,7 @@ bool test_gemma4_vision_audio() {
         return false;
     }
 
-    std::string messages = "[{\"role\":\"user\",\"content\":\"Describe the image and summarize the audio briefly.\","
+    std::string messages = "[{\"role\":\"user\",\"content\":\"" + image_audio_prompt + "\","
                            "\"images\":[\"" + escape_json(image_path) + "\"],"
                            "\"audio\":[\"" + escape_json(audio_path) + "\"]}]";
     std::vector<char> response_buffer(16384, 0);
