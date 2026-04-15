@@ -108,7 +108,8 @@ enum class Precision {
 
 enum class ComputeBackend {
     CPU,
-    NPU
+    NPU,
+    MLX
 };
 
 enum class Activation {
@@ -149,7 +150,8 @@ enum class OpType {
     LEAKY_RELU,
     CONV2D_K3S1P1,
     STATS_POOL,
-    WEIGHTED_STATS_POOL
+    WEIGHTED_STATS_POOL,
+    FUSED_MLX_OP  
 };
 
 struct PrecisionTraits {
@@ -379,12 +381,15 @@ struct GraphNode {
     std::vector<size_t> input_ids;
     BufferDesc output_buffer;
     OpParams params;
-    
+    std::shared_ptr<void> custom_context;
+
     GraphNode(size_t node_id, OpType type);
 };
 
 using nodes_vector = std::vector<std::unique_ptr<GraphNode>>;
 using node_index_map_t = std::unordered_map<size_t, size_t>;
+
+using MLXFusedFn = std::function<void(const std::vector<const BufferDesc*>&, BufferDesc&)>;
 
 inline const BufferDesc& get_input(const GraphNode& node, size_t idx,
                                    const nodes_vector& nodes,
@@ -633,6 +638,10 @@ public:
     size_t conv2d_k3s1p1(size_t input, size_t weight, size_t bias);
     size_t stats_pool(size_t input);
     size_t weighted_stats_pool(size_t input, size_t weights);
+
+    size_t fused_mlx_node(const std::vector<size_t>& inputs,
+                          const std::vector<size_t>& output_shape,
+                          MLXFusedFn fn);
 
     size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20,
                   const std::unordered_map<uint32_t, float>& logit_bias = {});

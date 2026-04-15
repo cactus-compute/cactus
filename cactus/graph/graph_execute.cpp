@@ -70,7 +70,9 @@ DECLARE_COMPUTE(compute_scatter_topk_node);
 DECLARE_COMPUTE(compute_moe_layer_node);
 DECLARE_COMPUTE(compute_persistent_node);
 DECLARE_COMPUTE(compute_quantize_activations_node);
+DECLARE_COMPUTE(compute_fused_mlx_op_node);
 extern void shrink_thread_local_buffers();
+
 #undef DECLARE_COMPUTE
 
 static const std::unordered_map<OpType, ComputeFn> dispatch_table = {
@@ -153,6 +155,7 @@ static const std::unordered_map<OpType, ComputeFn> dispatch_table = {
     {OpType::BILSTM_SEQUENCE, compute_bilstm_sequence_node},
     {OpType::STATS_POOL, compute_stats_pool_node},
     {OpType::WEIGHTED_STATS_POOL, compute_weighted_stats_pool_node},
+    {OpType::FUSED_MLX_OP, compute_fused_mlx_op_node},
 };
 
 static const char* op_type_names[] = {
@@ -185,7 +188,8 @@ static const char* op_type_names[] = {
     "LEAKY_RELU",
     "CONV2D_K3S1P1",
     "STATS_POOL",
-    "WEIGHTED_STATS_POOL"
+    "WEIGHTED_STATS_POOL",
+    "FUSED_MLX_OP"
 };
 
 static const char* get_op_name(OpType op) {

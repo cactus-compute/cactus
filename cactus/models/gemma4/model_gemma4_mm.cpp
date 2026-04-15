@@ -263,7 +263,7 @@ uint32_t Gemma4MmModel::decode_multimodal(
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
-    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+    auto backend = config_.default_backend == Config::Backend::MLX ? ComputeBackend::MLX : (config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU);
     bool cache_empty = language_model_.kv_cache_.is_empty();
     bool need_prefill = cache_empty || !prefill_completed_;
 
@@ -333,7 +333,18 @@ uint32_t Gemma4MmModel::decode(const std::vector<uint32_t>& tokens,
                                    float min_p, float repetition_penalty) {
     if (!initialized_ || !graph_handle_)
         throw std::runtime_error("Model not initialized - call init() first");
-    prefill_completed_ = false;
+
+    // Incremental decode: if we have cached state and new tokens extend the previous sequence,
+    // only pass the new tokens so KV cache positions stay correct.
+    if (prefill_completed_ && last_token_count_ > 0 && tokens.size() > last_token_count_) {
+        std::vector<uint32_t> new_tokens(tokens.begin() + last_token_count_, tokens.end());
+        last_token_count_ = tokens.size();
+        return language_model_.decode(new_tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
+    }
+
+    // First call or reset: clear MLX KV cache before full prefill.
+    language_model_.reset_mlx_kv_cache();
+    prefill_completed_ = true;
     last_token_count_ = tokens.size();
     return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
 }
@@ -360,7 +371,7 @@ void Gemma4MmModel::prefill_with_images(const std::vector<uint32_t>& tokens,
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
-    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+    auto backend = config_.default_backend == Config::Backend::MLX ? ComputeBackend::MLX : (config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU);
 
     auto result = forward_multimodal(gb, tokens, image_paths, nullptr, 0, backend, true);
 
@@ -404,7 +415,7 @@ std::vector<float> Gemma4MmModel::get_image_embeddings(const std::string& image_
         throw std::runtime_error("Model not initialized - call init() first");
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
-    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+    auto backend = config_.default_backend == Config::Backend::MLX ? ComputeBackend::MLX : (config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU);
 
     auto preprocessed = vision_encoder_.preprocess_image(image_path);
     size_t vision_output = vision_encoder_.forward_vision(gb, preprocessed, backend);
@@ -426,7 +437,7 @@ std::vector<float> Gemma4MmModel::get_audio_embeddings(const std::vector<float>&
         throw std::runtime_error("Model not initialized - call init() first");
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
-    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+    auto backend = config_.default_backend == Config::Backend::MLX ? ComputeBackend::MLX : (config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU);
 
     size_t num_frames = audio_features.size() / config_.audio_input_feat_size;
     size_t audio_output = audio_encoder_.forward_audio(gb, audio_features, num_frames, backend);
