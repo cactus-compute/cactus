@@ -1,5 +1,8 @@
 import asyncio
 import json
+import os
+import shutil
+import subprocess
 import tempfile
 import time
 import uuid
@@ -506,10 +509,26 @@ async def create_transcription(
             detail=f"Model '{model}' is not a speech-to-text model (type={model_type}).",
         )
 
-    suffix = Path(file.filename).suffix if file.filename else ".wav"
+    suffix = Path(file.filename).suffix.lower() if file.filename else ".wav"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
+
+    # Convert non-WAV formats to WAV via ffmpeg
+    if suffix != ".wav":
+        wav_path = tmp_path.rsplit(".", 1)[0] + ".wav"
+        if not shutil.which("ffmpeg"):
+            Path(tmp_path).unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail="ffmpeg is required to decode non-WAV audio formats")
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", tmp_path, "-ac", "1", "-ar", "16000", "-f", "wav", wav_path],
+            capture_output=True,
+        )
+        Path(tmp_path).unlink(missing_ok=True)
+        if result.returncode != 0:
+            Path(wav_path).unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=f"ffmpeg failed to decode audio: {result.stderr.decode(errors='ignore')[:200]}")
+        tmp_path = wav_path
 
     try:
         handle, model_lock = await manager.get(model)
@@ -567,6 +586,8 @@ def on_shutdown():
 
 def create_app(context_length: Optional[int] = None) -> FastAPI:
     manager.context_length = context_length
+    if context_length and context_length > 0:
+        os.environ["CACTUS_KV_WINDOW_SIZE"] = str(context_length)
     default_model = _pick_default_model()
     print(f"Preloading model: {default_model}")
     manager.preload(default_model)
