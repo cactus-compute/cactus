@@ -40,16 +40,16 @@ struct Gemma4MLXLayerNodes {
 };
 
 struct Gemma4MLXForwardParams {
-    CactusGraph*                     gb          = nullptr;
+    CactusGraph*gb = nullptr;
     std::vector<Gemma4MLXLayerNodes> layers;
     size_t per_layer_model_proj_node = 0;
-    size_t per_layer_proj_norm_node  = 0;
-    uint32_t num_layers              = 0;
-    uint32_t hidden_dim              = 0;
-    uint32_t pli_dim                 = 0;
-    bool     has_pli                 = false;
-    float    norm_eps                = 1e-6f;
-    float    attention_scale         = 1.0f;
+    size_t per_layer_proj_norm_node = 0;
+    uint32_t num_layers = 0;
+    uint32_t hidden_dim = 0;
+    uint32_t pli_dim = 0;
+    bool has_pli = false;
+    float norm_eps = 1e-6f;
+    float attention_scale = 1.0f;
 };
 
 MLXFusedFn make_gemma4_full_forward_fn(

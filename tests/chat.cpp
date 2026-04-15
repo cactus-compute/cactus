@@ -173,7 +173,7 @@ void print_header(const std::string& sys_prompt, const std::string& image, bool 
     }
     std::cout << colored("/audio <path>", Color::CYAN) << colored(" | ", Color::DIM)
 #ifdef HAVE_SDL2
-              << colored("/record", Color::CYAN) << colored(" | ", Color::DIM)
+              << colored("/record [prompt]", Color::CYAN) << colored(" | ", Color::DIM)
 #endif
               << colored("/clear", Color::CYAN) << colored(" | ", Color::DIM)
               << colored("reset", Color::CYAN) << colored(" | ", Color::DIM)
@@ -313,7 +313,7 @@ std::string expand_tilde(const std::string& path) {
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
-        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>] [--prompt <text>] [--no-thinking]\n";
+        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>] [--prompt <text>] [--thinking]\n";
         return 1;
     }
 
@@ -322,7 +322,7 @@ int main(int argc, char* argv[]) {
     std::string current_image;
     std::string current_audio;
     std::string initial_prompt;
-    bool enable_thinking = true;
+    bool enable_thinking = false;
 
     for (int i = 2; i < argc; ++i) {
         if (std::string(argv[i]) == "--system" && i + 1 < argc) {
@@ -333,8 +333,8 @@ int main(int argc, char* argv[]) {
             current_audio = expand_tilde(argv[++i]);
         } else if (std::string(argv[i]) == "--prompt" && i + 1 < argc) {
             initial_prompt = argv[++i];
-        } else if (std::string(argv[i]) == "--no-thinking") {
-            enable_thinking = false;
+        } else if (std::string(argv[i]) == "--thinking") {
+            enable_thinking = true;
         }
     }
 
@@ -493,18 +493,25 @@ int main(int argc, char* argv[]) {
             input = msg;
         }
 
-        if (input == "/record") {
+        if (input == "/record" || input.rfind("/record ", 0) == 0) {
 #ifdef HAVE_SDL2
             if (!has_audio_cap) {
                 std::cerr << colored("  This model does not support audio.\n", Color::RED);
                 continue;
+            }
+            std::string record_prompt;
+            if (input.size() > 8) {
+                record_prompt = input.substr(8);
+                while (!record_prompt.empty() && (record_prompt.front() == ' ' || record_prompt.front() == '\t')) {
+                    record_prompt.erase(record_prompt.begin());
+                }
             }
             current_pcm.clear();
             if (!record_audio(current_pcm)) {
                 std::cerr << colored("  Recording failed.\n", Color::RED);
                 continue;
             }
-            input = "";
+            input = record_prompt;
 #else
             std::cerr << colored("  Recording requires SDL2 (not available in this build).\n", Color::RED);
             continue;

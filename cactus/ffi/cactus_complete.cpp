@@ -726,6 +726,21 @@ int cactus_complete(
 
         bool has_images = prompt.has_images();
         bool has_audio = prompt.has_audio();
+        const bool has_gemma4_mixed_media = prompt.model_type == Config::ModelType::GEMMA4 && has_images && has_audio;
+        auto decode_gemma4_mixed_media = [&](const std::vector<uint32_t>& tokens, float* out_entropy) -> uint32_t {
+            auto* gemma4_mm = dynamic_cast<Gemma4MmModel*>(handle->model.get());
+            if (!gemma4_mm) {
+                throw std::runtime_error("Gemma4 mixed-media decode requested on non-Gemma4 multimodal model");
+            }
+            return gemma4_mm->decode_with_media(
+                tokens,
+                prompt.image_paths,
+                prompt.audio_features,
+                prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
+                "", out_entropy,
+                prompt.options.min_p, prompt.options.repetition_penalty
+            );
+        };
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());
 
@@ -735,7 +750,10 @@ int cactus_complete(
         uint32_t next_token;
         size_t prompt_tokens;
 
-        if (has_audio) {
+        if (has_gemma4_mixed_media) {
+            prompt_tokens = prompt.tokens.size();
+            next_token = decode_gemma4_mixed_media(prompt.tokens, &first_token_entropy);
+        } else if (has_audio) {
             prompt_tokens = prompt.tokens.size();
             next_token = handle->model->decode_with_audio(
                 prompt.tokens, prompt.audio_features,
@@ -804,7 +822,9 @@ int cactus_complete(
                 if (handle->should_stop) break;
 
                 float token_entropy = 0.0f;
-                if (has_audio) {
+                if (has_gemma4_mixed_media) {
+                    next_token = decode_gemma4_mixed_media(handle->processed_tokens, &token_entropy);
+                } else if (has_audio) {
                     next_token = handle->model->decode_with_audio(
                         handle->processed_tokens, prompt.audio_features,
                         prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,

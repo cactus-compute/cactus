@@ -363,7 +363,9 @@ void Gemma4AudioModel::load_weights_to_graph(CactusGraph* gb) {
         CACTUS_LOG_WARN("npu", "[gemma4-audio] NPU backend unavailable on this device; using CPU audio encoder");
     }
 
-    if (!use_npu_encoder_) {
+    // Keep CPU audio weights available even when the NPU encoder is enabled.
+    // The runtime may still fall back to the graph path for unsupported inputs.
+    {
         audio_weights_.sscp_conv0_weight = load_weight(
             "audio_subsample_conv_projection_conv_0_conv.weights",
             "audio_subsample_conv_projection_layer0_conv.weights");

@@ -152,13 +152,23 @@ else
         echo "Selected: $device_name (Device)"
     fi
 
-    if ! security find-identity -v -p codesigning | grep -q "Apple Development"; then
+    matching_identity=$(security find-identity -p codesigning 2>/dev/null | grep "Apple Development" | head -1 || true)
+    valid_identity=$(security find-identity -v -p codesigning 2>/dev/null | grep "Apple Development" | head -1 || true)
+
+    if [ -z "$matching_identity" ]; then
         echo "No development certificates found"
         echo "To fix this:"
         echo "  1. Open Xcode > Settings > Accounts"
         echo "  2. Add your Apple ID"
         echo "  3. Download development certificates"
         exit 1
+    fi
+
+    if [ -z "$valid_identity" ]; then
+        echo "Warning: Apple Development identity found, but macOS did not report it as a valid identity."
+        echo "Proceeding and letting xcodebuild attempt automatic signing anyway."
+        echo "If signing fails later, reissue the Apple Development certificate/private key pair in Xcode."
+        echo "Detected identity: $matching_identity"
     fi
 fi
 
@@ -186,7 +196,7 @@ bundle_id="com.cactus.test.${USER}"
 echo "Using Bundle ID: $bundle_id"
 
 if [ "$device_type" = "device" ]; then
-    development_team=$(security find-certificate -a -c "Apple Development" -p | openssl x509 -noout -subject | grep -oE 'OU=[A-Z0-9]{10}' | head -1 | cut -d= -f2)
+    development_team=$(security find-certificate -a -c "Apple Development" -p "$HOME/Library/Keychains/login.keychain-db" | openssl x509 -noout -subject | grep -oE 'OU=[A-Z0-9]{10}' | head -1 | cut -d= -f2)
     if [ -z "$development_team" ]; then
         echo "Could not extract Team ID from certificate"
         exit 1
