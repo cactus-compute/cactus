@@ -88,16 +88,23 @@ static void cactus_matmul_f16_worker(
     const size_t K16 = (K / 16) * 16;
     const size_t K8 = (K / 8) * 8;
 
+    constexpr float FP16_MAX = 65504.0f;
+    const float32x4_t fp16_max_v = vdupq_n_f32(FP16_MAX);
+    const float32x4_t fp16_min_v = vdupq_n_f32(-FP16_MAX);
+
     for (size_t row_block = start_row; row_block < end_row; row_block += TILE_M) {
         const size_t m_end = std::min(row_block + TILE_M, end_row);
 
         for (size_t col_block = 0; col_block < N; col_block += TILE_N) {
             const size_t n_end = std::min(col_block + TILE_N, N);
 
-            float16x8_t acc[TILE_M][TILE_N];
+            float32x4_t acc_lo[TILE_M][TILE_N];
+            float32x4_t acc_hi[TILE_M][TILE_N];
             for (size_t m = 0; m < TILE_M; ++m)
-                for (size_t n = 0; n < TILE_N; ++n)
-                    acc[m][n] = vdupq_n_f16(0);
+                for (size_t n = 0; n < TILE_N; ++n) {
+                    acc_lo[m][n] = vdupq_n_f32(0.0f);
+                    acc_hi[m][n] = vdupq_n_f32(0.0f);
+                }
 
             for (size_t k = 0; k < K16; k += 16) {
                 float16x8_t a0_lo = (row_block < m_end) ? vld1q_f16(a + row_block * K + k) : vdupq_n_f16(0);
@@ -113,14 +120,25 @@ static void cactus_matmul_f16_worker(
                     float16x8_t b_lo = vld1q_f16(b_transposed + (col_block + ni) * K + k);
                     float16x8_t b_hi = vld1q_f16(b_transposed + (col_block + ni) * K + k + 8);
 
-                    acc[0][ni] = vfmaq_f16(acc[0][ni], a0_lo, b_lo);
-                    acc[0][ni] = vfmaq_f16(acc[0][ni], a0_hi, b_hi);
-                    acc[1][ni] = vfmaq_f16(acc[1][ni], a1_lo, b_lo);
-                    acc[1][ni] = vfmaq_f16(acc[1][ni], a1_hi, b_hi);
-                    acc[2][ni] = vfmaq_f16(acc[2][ni], a2_lo, b_lo);
-                    acc[2][ni] = vfmaq_f16(acc[2][ni], a2_hi, b_hi);
-                    acc[3][ni] = vfmaq_f16(acc[3][ni], a3_lo, b_lo);
-                    acc[3][ni] = vfmaq_f16(acc[3][ni], a3_hi, b_hi);
+                    acc_lo[0][ni] = vfmaq_f32(acc_lo[0][ni], vcvt_f32_f16(vget_low_f16(a0_lo)), vcvt_f32_f16(vget_low_f16(b_lo)));
+                    acc_hi[0][ni] = vfmaq_f32(acc_hi[0][ni], vcvt_f32_f16(vget_high_f16(a0_lo)), vcvt_f32_f16(vget_high_f16(b_lo)));
+                    acc_lo[0][ni] = vfmaq_f32(acc_lo[0][ni], vcvt_f32_f16(vget_low_f16(a0_hi)), vcvt_f32_f16(vget_low_f16(b_hi)));
+                    acc_hi[0][ni] = vfmaq_f32(acc_hi[0][ni], vcvt_f32_f16(vget_high_f16(a0_hi)), vcvt_f32_f16(vget_high_f16(b_hi)));
+
+                    acc_lo[1][ni] = vfmaq_f32(acc_lo[1][ni], vcvt_f32_f16(vget_low_f16(a1_lo)), vcvt_f32_f16(vget_low_f16(b_lo)));
+                    acc_hi[1][ni] = vfmaq_f32(acc_hi[1][ni], vcvt_f32_f16(vget_high_f16(a1_lo)), vcvt_f32_f16(vget_high_f16(b_lo)));
+                    acc_lo[1][ni] = vfmaq_f32(acc_lo[1][ni], vcvt_f32_f16(vget_low_f16(a1_hi)), vcvt_f32_f16(vget_low_f16(b_hi)));
+                    acc_hi[1][ni] = vfmaq_f32(acc_hi[1][ni], vcvt_f32_f16(vget_high_f16(a1_hi)), vcvt_f32_f16(vget_high_f16(b_hi)));
+
+                    acc_lo[2][ni] = vfmaq_f32(acc_lo[2][ni], vcvt_f32_f16(vget_low_f16(a2_lo)), vcvt_f32_f16(vget_low_f16(b_lo)));
+                    acc_hi[2][ni] = vfmaq_f32(acc_hi[2][ni], vcvt_f32_f16(vget_high_f16(a2_lo)), vcvt_f32_f16(vget_high_f16(b_lo)));
+                    acc_lo[2][ni] = vfmaq_f32(acc_lo[2][ni], vcvt_f32_f16(vget_low_f16(a2_hi)), vcvt_f32_f16(vget_low_f16(b_hi)));
+                    acc_hi[2][ni] = vfmaq_f32(acc_hi[2][ni], vcvt_f32_f16(vget_high_f16(a2_hi)), vcvt_f32_f16(vget_high_f16(b_hi)));
+
+                    acc_lo[3][ni] = vfmaq_f32(acc_lo[3][ni], vcvt_f32_f16(vget_low_f16(a3_lo)), vcvt_f32_f16(vget_low_f16(b_lo)));
+                    acc_hi[3][ni] = vfmaq_f32(acc_hi[3][ni], vcvt_f32_f16(vget_high_f16(a3_lo)), vcvt_f32_f16(vget_high_f16(b_lo)));
+                    acc_lo[3][ni] = vfmaq_f32(acc_lo[3][ni], vcvt_f32_f16(vget_low_f16(a3_hi)), vcvt_f32_f16(vget_low_f16(b_hi)));
+                    acc_hi[3][ni] = vfmaq_f32(acc_hi[3][ni], vcvt_f32_f16(vget_high_f16(a3_hi)), vcvt_f32_f16(vget_high_f16(b_hi)));
                 }
             }
 
@@ -132,26 +150,33 @@ static void cactus_matmul_f16_worker(
 
                 for (size_t ni = 0; ni < TILE_N && col_block + ni < n_end; ++ni) {
                     float16x8_t b_v = vld1q_f16(b_transposed + (col_block + ni) * K + k);
-                    acc[0][ni] = vfmaq_f16(acc[0][ni], a0_v, b_v);
-                    acc[1][ni] = vfmaq_f16(acc[1][ni], a1_v, b_v);
-                    acc[2][ni] = vfmaq_f16(acc[2][ni], a2_v, b_v);
-                    acc[3][ni] = vfmaq_f16(acc[3][ni], a3_v, b_v);
+                    acc_lo[0][ni] = vfmaq_f32(acc_lo[0][ni], vcvt_f32_f16(vget_low_f16(a0_v)), vcvt_f32_f16(vget_low_f16(b_v)));
+                    acc_hi[0][ni] = vfmaq_f32(acc_hi[0][ni], vcvt_f32_f16(vget_high_f16(a0_v)), vcvt_f32_f16(vget_high_f16(b_v)));
+                    acc_lo[1][ni] = vfmaq_f32(acc_lo[1][ni], vcvt_f32_f16(vget_low_f16(a1_v)), vcvt_f32_f16(vget_low_f16(b_v)));
+                    acc_hi[1][ni] = vfmaq_f32(acc_hi[1][ni], vcvt_f32_f16(vget_high_f16(a1_v)), vcvt_f32_f16(vget_high_f16(b_v)));
+                    acc_lo[2][ni] = vfmaq_f32(acc_lo[2][ni], vcvt_f32_f16(vget_low_f16(a2_v)), vcvt_f32_f16(vget_low_f16(b_v)));
+                    acc_hi[2][ni] = vfmaq_f32(acc_hi[2][ni], vcvt_f32_f16(vget_high_f16(a2_v)), vcvt_f32_f16(vget_high_f16(b_v)));
+                    acc_lo[3][ni] = vfmaq_f32(acc_lo[3][ni], vcvt_f32_f16(vget_low_f16(a3_v)), vcvt_f32_f16(vget_low_f16(b_v)));
+                    acc_hi[3][ni] = vfmaq_f32(acc_hi[3][ni], vcvt_f32_f16(vget_high_f16(a3_v)), vcvt_f32_f16(vget_high_f16(b_v)));
                 }
             }
 
             for (size_t k = K8; k < K; ++k) {
                 for (size_t mi = 0; mi < TILE_M && row_block + mi < m_end; ++mi) {
-                    __fp16 av = a[(row_block + mi) * K + k];
+                    float av = (float)a[(row_block + mi) * K + k];
                     for (size_t ni = 0; ni < TILE_N && col_block + ni < n_end; ++ni) {
-                        __fp16 bv = b_transposed[(col_block + ni) * K + k];
-                        acc[mi][ni] = vsetq_lane_f16(vgetq_lane_f16(acc[mi][ni], 0) + av * bv, acc[mi][ni], 0);
+                        float bv = (float)b_transposed[(col_block + ni) * K + k];
+                        acc_lo[mi][ni] = vsetq_lane_f32(vgetq_lane_f32(acc_lo[mi][ni], 0) + av * bv, acc_lo[mi][ni], 0);
                     }
                 }
             }
 
             for (size_t mi = 0; mi < TILE_M && row_block + mi < m_end; ++mi) {
                 for (size_t ni = 0; ni < TILE_N && col_block + ni < n_end; ++ni) {
-                    c[(row_block + mi) * N + col_block + ni] = hsum_f16x8(acc[mi][ni]);
+                    float32x4_t sum = vaddq_f32(acc_lo[mi][ni], acc_hi[mi][ni]);
+                    sum = vminq_f32(vmaxq_f32(sum, fp16_min_v), fp16_max_v);
+                    float result = vaddvq_f32(sum);
+                    c[(row_block + mi) * N + col_block + ni] = (__fp16)result;
                 }
             }
         }
@@ -606,8 +631,14 @@ void cactus_gemv_int4(
                 sum_b = vmlaq_f32(sum_b, vcvtq_f32_s32(acc_b), sb);
             }
 
-            vst1_f16(C + n_block * 4, vcvt_f16_f32(vmulq_n_f32(sum_a, A_scale)));
-            vst1_f16(C + (n_block + 1) * 4, vcvt_f16_f32(vmulq_n_f32(sum_b, A_scale)));
+            {
+                static const float32x4_t _fp16max = vdupq_n_f32(65504.0f);
+                static const float32x4_t _fp16min = vdupq_n_f32(-65504.0f);
+                float32x4_t ra = vminq_f32(vmaxq_f32(vmulq_n_f32(sum_a, A_scale), _fp16min), _fp16max);
+                float32x4_t rb = vminq_f32(vmaxq_f32(vmulq_n_f32(sum_b, A_scale), _fp16min), _fp16max);
+                vst1_f16(C + n_block * 4, vcvt_f16_f32(ra));
+                vst1_f16(C + (n_block + 1) * 4, vcvt_f16_f32(rb));
+            }
         }
 
         for (; n_block < block_end; ++n_block) {
@@ -642,14 +673,18 @@ void cactus_gemv_int4(
                 running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc), scales);
             }
 
-            float32x4_t result = vmulq_n_f32(running_sum, A_scale);
-            float16x4_t result_f16 = vcvt_f16_f32(result);
-            if (actual_n == 4) {
-                vst1_f16(C + n_start, result_f16);
-            } else {
-                for (size_t ni = 0; ni < actual_n; ni++) {
-                    C[n_start + ni] = vget_lane_f16(result_f16, 0);
-                    result_f16 = vext_f16(result_f16, result_f16, 1);
+            {
+                static const float32x4_t _fp16max = vdupq_n_f32(65504.0f);
+                static const float32x4_t _fp16min = vdupq_n_f32(-65504.0f);
+                float32x4_t result = vminq_f32(vmaxq_f32(vmulq_n_f32(running_sum, A_scale), _fp16min), _fp16max);
+                float16x4_t result_f16 = vcvt_f16_f32(result);
+                if (actual_n == 4) {
+                    vst1_f16(C + n_start, result_f16);
+                } else {
+                    for (size_t ni = 0; ni < actual_n; ni++) {
+                        C[n_start + ni] = vget_lane_f16(result_f16, 0);
+                        result_f16 = vext_f16(result_f16, result_f16, 1);
+                    }
                 }
             }
         }
@@ -745,9 +780,11 @@ void cactus_gemm_int4(
                     }
                 }
 
+                static const float32x4_t _fp16max_g = vdupq_n_f32(65504.0f);
+                static const float32x4_t _fp16min_g = vdupq_n_f32(-65504.0f);
                 for (size_t mi = 0; mi < actual_m; mi++) {
                     const float a_scale = A_scales[m_start + mi];
-                    float32x4_t result = vmulq_n_f32(running_sum[mi], a_scale);
+                    float32x4_t result = vminq_f32(vmaxq_f32(vmulq_n_f32(running_sum[mi], a_scale), _fp16min_g), _fp16max_g);
                     float16x4_t result_f16 = vcvt_f16_f32(result);
 
                     if (actual_n == 4) {

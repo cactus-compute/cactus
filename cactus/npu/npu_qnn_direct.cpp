@@ -2022,6 +2022,34 @@ struct QNNDirectEncoder::Impl {
         bool ok = false;
     } pk_cpu_sub;
 
+    // ---- Gemma4-Audio members ----
+    bool is_g4a = false;
+    int g4a_mel_bins   = 128;
+    int g4a_conv0_ch   = 128;
+    int g4a_conv1_ch   = 32;
+    int g4a_hidden     = 1024;
+    int g4a_out_dim    = 1536;
+    int g4a_num_layers = 12;
+    int g4a_num_heads  = 8;
+    int g4a_head_dim   = 128;
+    int g4a_chunk_mel  = 48;
+    int g4a_chunk_out  = 12;
+    float g4a_rms_eps  = 1e-6f;
+    float g4a_ln_eps   = 0.001f;
+    float g4a_residual = 0.5f;
+    float g4a_logit_cap = 50.0f;
+    float g4a_k_scale  = 0.0f; // computed in g4a_load
+    int g4a_context_left  = 13;
+    int g4a_context_right = 0;
+    std::vector<uint16_t> g4a_input_buf;
+    std::vector<uint16_t> g4a_output_buf;
+    uint32_t g4a_exec_in_id  = 0;
+    uint32_t g4a_exec_out_id = 0;
+    QTensor* g4a_exec_in_qt  = nullptr;
+    QTensor* g4a_exec_out_qt = nullptr;
+    std::vector<Qnn_Tensor_t> g4a_exec_inputs;
+    std::vector<Qnn_Tensor_t> g4a_exec_outputs;
+
     // ---- helpers shared with Prefill::Impl ----
     std::string op_name(const std::string& type) {
         return type + "_e" + std::to_string(op_idx++);
@@ -2447,6 +2475,884 @@ struct QNNDirectEncoder::Impl {
         }();
         auto* out_3d = op_transpose(out_T, {1, 0, 2}, prefix + "_attn_3d");
         return op_reshape(out_3d, {T, nh * hd}, prefix + "_attn_flat");
+    }
+
+    // ================================================================
+    // Gemma4-Audio QNN graph helpers
+    // ================================================================
+
+    QTensor* g4a_op_unary(QTensor* x, uint32_t operation, const std::string& n) {
+        auto* out = make_native(n, x->dims);
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_ELEMENT_WISE_UNARY, op_name("unary"),
+               {x}, {out}, {scalar_u32_param(QNN_OP_ELEMENT_WISE_UNARY_PARAM_OPERATION, operation)});
+        return out;
+    }
+
+    QTensor* g4a_op_relu(QTensor* x, const std::string& n) {
+        auto* out = make_native(n, x->dims);
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_RELU, op_name("relu"), {x}, {out}, {});
+        return out;
+    }
+
+    QTensor* g4a_op_sigmoid(QTensor* x, const std::string& n) {
+        auto* out = make_native(n, x->dims);
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_ELEMENT_WISE_NEURON, op_name("sigmoid"),
+               {x}, {out},
+               {scalar_u32_param(QNN_OP_ELEMENT_WISE_NEURON_PARAM_OPERATION,
+                                 QNN_OP_ELEMENT_WISE_NEURON_OPERATION_SIGMOID)});
+        return out;
+    }
+
+    QTensor* g4a_op_silu(QTensor* x, const std::string& n) {
+        return op_mul(x, g4a_op_sigmoid(x, n + "_sig"), n);
+    }
+
+    // reduce mean over last axis, keep_dims=true
+    QTensor* g4a_op_reduce_mean_last(QTensor* x, const std::string& n) {
+        int nd = (int)x->dims.size();
+        std::vector<uint32_t> out_shape = x->dims; out_shape.back() = 1;
+        auto* out   = make_native(n, out_shape);
+        auto* axes  = make_static_i32("axes_" + n, {1}, {nd - 1});
+        if (axes->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &axes->t);
+        Qnn_Param_t ap = tensor_param(QNN_OP_REDUCE_MEAN_PARAM_AXES, axes);
+        ap.tensorParam = axes->t;
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_REDUCE_MEAN, op_name("rmean"),
+               {x}, {out}, {ap, scalar_bool_param(QNN_OP_REDUCE_MEAN_PARAM_KEEP_DIMS, true)});
+        return out;
+    }
+
+    // tile on last axis only: {1, ..., 1, mult}
+    QTensor* g4a_op_tile_last(QTensor* x, uint32_t mult, const std::string& n) {
+        std::vector<uint32_t> out_shape = x->dims; out_shape.back() *= mult;
+        auto* out = make_native(n, out_shape);
+        std::vector<uint32_t> mults(x->dims.size(), 1u); mults.back() = mult;
+        auto* mt = make_static_u32("mt_" + n, {(uint32_t)mults.size()}, mults);
+        if (mt->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &mt->t);
+        Qnn_Param_t mp = tensor_param(QNN_OP_TILE_PARAM_MULTIPLES, mt);
+        mp.tensorParam = mt->t;
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_TILE, op_name("tile"), {x}, {out}, {mp});
+        return out;
+    }
+
+    // RMSNorm: w is [hidden] or broadcastable
+    QTensor* g4a_op_rms_norm(QTensor* x, QTensor* w, float eps, const std::string& n) {
+        uint32_t hd = x->dims.back();
+        auto* x2      = op_mul(x, x, n + "_sq");
+        auto* mean    = g4a_op_reduce_mean_last(x2, n + "_mean");
+        auto* eps_t   = make_static_fp16(n + "_eps", mean->dims,
+                          std::vector<uint16_t>(mean->dims[0] == 1 ? 1 : mean->dims[0],
+                                                float_to_fp16(eps)));
+        if (eps_t->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &eps_t->t);
+        auto* me      = op_add(mean, eps_t, n + "_me");
+        auto* rsqrt   = g4a_op_unary(me, QNN_OP_ELEMENT_WISE_UNARY_OPERATION_RSQRT, n + "_rsqrt");
+        auto* rsqrt_t = g4a_op_tile_last(rsqrt, hd, n + "_rt");
+        auto* normed  = op_mul(x, rsqrt_t, n + "_normed");
+        if (w->dims.size() < normed->dims.size()) {
+            std::vector<uint32_t> exp_shape(normed->dims.size() - w->dims.size(), 1u);
+            exp_shape.insert(exp_shape.end(), w->dims.begin(), w->dims.end());
+            w = op_reshape(w, exp_shape, n + "_wexp");
+        }
+        return op_mul(normed, w, n);
+    }
+
+    // LayerNorm with scale-only (no bias): applied along last axis
+    QTensor* g4a_op_layer_norm(QTensor* x, QTensor* gamma, float eps, const std::string& n) {
+        uint32_t hd = x->dims.back();
+        auto* out = make_native(n, x->dims);
+        int last_axis = (int)x->dims.size() - 1;
+        auto* axes_t = make_static_i32("axes_ln_" + n, {1}, {last_axis});
+        if (axes_t->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &axes_t->t);
+        Qnn_Param_t axes_p = tensor_param(QNN_OP_LAYER_NORM_PARAM_AXES, axes_t);
+        axes_p.tensorParam = axes_t->t;
+        Qnn_Param_t eps_p = QNN_PARAM_INIT;
+        eps_p.paramType = QNN_PARAMTYPE_SCALAR;
+        eps_p.name = QNN_OP_LAYER_NORM_PARAM_EPSILON;
+        eps_p.scalarParam.dataType = QNN_DATATYPE_FLOAT_32;
+        eps_p.scalarParam.floatValue = eps;
+        auto* beta_t = make_static_fp16(n + "_beta", {hd}, std::vector<uint16_t>(hd, 0));
+        if (gamma->dims.size() != 1 || gamma->dims[0] != hd)
+            gamma = op_reshape(gamma, {hd}, n + "_gamma");
+        if (beta_t->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &beta_t->t);
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_LAYER_NORM, op_name("ln"),
+               {x, gamma, beta_t}, {out}, {eps_p, axes_p});
+        return out;
+    }
+
+    // GLU: split x [T, 2*H] → {a[T,H], b[T,H]}, return a * silu(b)
+    QTensor* g4a_op_glu(QTensor* x, const std::string& n) {
+        uint32_t T = x->dims[0], D2 = x->dims[1], H = D2 / 2;
+        auto* rt = make_static_i32("r_" + n, {2, 3}, {0, (int)T, 1, 0, (int)H, 1});
+        if (rt->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &rt->t);
+        auto* rt2 = make_static_i32("r2_" + n, {2, 3}, {0, (int)T, 1, (int)H, (int)D2, 1});
+        if (rt2->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &rt2->t);
+        Qnn_Param_t rp = tensor_param(QNN_OP_STRIDED_SLICE_PARAM_RANGES, rt);
+        rp.tensorParam = rt->t;
+        auto* a = make_native(n + "_a", {T, H});
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_STRIDED_SLICE, op_name("slice"),
+               {x}, {a}, {rp});
+        Qnn_Param_t rp2 = tensor_param(QNN_OP_STRIDED_SLICE_PARAM_RANGES, rt2);
+        rp2.tensorParam = rt2->t;
+        auto* b = make_native(n + "_b", {T, H});
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_STRIDED_SLICE, op_name("slice"),
+               {x}, {b}, {rp2});
+        auto* sig_b = make_native(n + "_sg", b->dims);
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_ELEMENT_WISE_NEURON, op_name("sigmoid"),
+               {b}, {sig_b},
+               {scalar_u32_param(QNN_OP_ELEMENT_WISE_NEURON_PARAM_OPERATION,
+                                 QNN_OP_ELEMENT_WISE_NEURON_OPERATION_SIGMOID)});
+        return op_mul(a, sig_b, n);
+    }
+
+    // Pad a 2D tensor [H, W] symmetrically on all sides → [H+2*pad, W+2*pad]
+    QTensor* g4a_op_pad2d(QTensor* x, int pad, const std::string& n) {
+        uint32_t H = x->dims[0], W = x->dims[1];
+        uint32_t Hp = H + 2*(uint32_t)pad, Wp = W + 2*(uint32_t)pad;
+        auto* out = make_native(n, {Hp, Wp});
+        auto* amt = make_static_i32("amt_" + n, {2, 2}, {pad, pad, pad, pad});
+        if (amt->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &amt->t);
+        Qnn_Param_t sc = scalar_i32_param(QNN_OP_PAD_PARAM_SCHEME, QNN_OP_PAD_SCHEME_CONSTANT);
+        Qnn_Param_t ap = tensor_param(QNN_OP_PAD_PARAM_PAD_AMOUNT, amt); ap.tensorParam = amt->t;
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_PAD, op_name("pad"), {x}, {out}, {sc, ap});
+        return out;
+    }
+
+    // Strided slice [H_in, W_in] with stride=s in both dims, starting at (rh, rw)
+    // → [H_out, W_out] where H_out = ceil((H_in - rh) / s), W_out = ceil((W_in - rw) / s)
+    QTensor* g4a_op_stride2d(QTensor* x, int rh, int rw, int s, uint32_t H_out, uint32_t W_out, const std::string& n) {
+        auto* out = make_native(n, {H_out, W_out});
+        auto* rt = make_static_i32("rng_" + n, {2, 3},
+                                   {rh, rh + (int)(H_out * s), s,
+                                    rw, rw + (int)(W_out * s), s});
+        if (rt->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &rt->t);
+        Qnn_Param_t rp = tensor_param(QNN_OP_STRIDED_SLICE_PARAM_RANGES, rt); rp.tensorParam = rt->t;
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_STRIDED_SLICE, op_name("ss2d"), {x}, {out}, {rp});
+        return out;
+    }
+
+    // Conv2D implemented via im2col + MatMul (avoids QNN_OP_CONV_2D shape constraints).
+    // Input: [H_in, W_in] (2D, single channel). Weight file: [C_out, C_in=1, kH, kW].
+    // Returns: [H_out, W_out, C_out].
+    QTensor* g4a_op_conv2d_im2col(const std::string& wpath, QTensor* x,
+                                   int stride, int pad, const std::string& n) {
+        auto cf = std::make_unique<CactFile>();
+        if (!open_cact(wpath, *cf)) {
+            fprintf(stderr, "[G4A] conv2d weight missing: %s\n", wpath.c_str()); return x;
+        }
+        std::vector<uint16_t> raw = cact_to_fp16(*cf);
+        uint32_t C_out = (uint32_t)cf->shape[0];
+        uint32_t C_in  = (uint32_t)cf->shape[1];  // should be 1 for first conv
+        uint32_t kH    = (uint32_t)cf->shape[2];
+        uint32_t kW    = (uint32_t)cf->shape[3];
+        weight_files.push_back(std::move(cf));
+
+        uint32_t H_in = x->dims[0], W_in = x->dims[1];
+        uint32_t H_out = (H_in + 2*(uint32_t)pad - kH) / (uint32_t)stride + 1;
+        uint32_t W_out = (W_in + 2*(uint32_t)pad - kW) / (uint32_t)stride + 1;
+        uint32_t patches = H_out * W_out;
+        uint32_t kk = kH * kW * C_in;
+
+        // W_flat [C_out, kk]: W[o, dh*kW*C_in + dw*C_in + ci] = raw[o, ci, dh, dw]
+        std::vector<uint16_t> wflat(C_out * kk);
+        for (uint32_t o = 0; o < C_out; o++)
+            for (uint32_t ci = 0; ci < C_in; ci++)
+                for (uint32_t dh = 0; dh < kH; dh++)
+                    for (uint32_t dw = 0; dw < kW; dw++)
+                        wflat[o * kk + (dh * kW + dw) * C_in + ci] =
+                            raw[((o * C_in + ci) * kH + dh) * kW + dw];
+        auto* W = make_static_fp16(n + "_W", {C_out, kk}, std::move(wflat));
+
+        // For C_in > 1: x is [H_in, W_in, C_in] — but we handle the simple C_in=1 case here.
+        // Pad to [H_in+2*pad, W_in+2*pad]
+        auto* xp = g4a_op_pad2d(x, pad, n + "_pad");
+
+        // Build im2col: for each (dh, dw) offset, extract strided [H_out, W_out] patch
+        // and flatten to [patches]. Concat all kk=kH*kW patches along axis=1 → [patches, kk]
+        std::vector<QTensor*> cols;
+        cols.reserve(kk);
+        for (uint32_t dh = 0; dh < kH; dh++) {
+            for (uint32_t dw = 0; dw < kW; dw++) {
+                auto tag = n + "_c" + std::to_string(dh) + "_" + std::to_string(dw);
+                auto* patch = g4a_op_stride2d(xp, (int)dh, (int)dw, stride, H_out, W_out, tag);
+                auto* flat  = op_reshape(patch, {patches, 1}, tag + "_f");
+                cols.push_back(flat);
+            }
+        }
+        // Concat [patches, 1] × kk → [patches, kk]
+        QTensor* im2col = cols[0];
+        for (uint32_t i = 1; i < (uint32_t)cols.size(); i++)
+            im2col = op_concat(im2col, cols[i], 1, n + "_im" + std::to_string(i));
+
+        // MatMul: [patches, kk] @ [C_out, kk]^T → [patches, C_out]
+        auto* out_flat = op_matmul_T(im2col, W, n + "_mm");
+        // Reshape to [H_out, W_out, C_out]
+        return op_reshape(out_flat, {H_out, W_out, C_out}, n);
+    }
+
+    // Causal depthwise conv1d: x [1, T, C], weight file [C, 1, K]
+    QTensor* g4a_op_dw_conv1d_causal(QTensor* x, const std::string& wpath, int K, const std::string& n) {
+        auto cf = std::make_unique<CactFile>();
+        if (!open_cact(wpath, *cf)) {
+            fprintf(stderr, "[G4A] dw conv weight missing: %s\n", wpath.c_str()); return x;
+        }
+        uint32_t C = x->dims[2], T = x->dims[1];
+        std::vector<uint16_t> raw = cact_to_fp16(*cf);
+        // file: [C, 1, K] → QNN: [K, 1, 1, C] (HWIM)
+        std::vector<uint16_t> hwim((uint32_t)K * C);
+        for (uint32_t k = 0; k < (uint32_t)K; k++)
+            for (uint32_t c = 0; c < C; c++)
+                hwim[k * C + c] = raw[c * (uint32_t)K + k];
+        auto* W_t = make_static_fp16(n + "_W", {(uint32_t)K, 1, 1, C}, std::move(hwim));
+        auto* b_t = make_static_fp16(n + "_b", {C}, std::vector<uint16_t>(C, 0));
+        weight_files.push_back(std::move(cf));
+        // Causal pad: K-1 on left
+        int left_pad = K - 1;
+        uint32_t Tp = T + (uint32_t)left_pad;
+        // Pad [1, T, 1, C] ← first reshape to NHWC for pad op
+        auto* x_nhwc = op_reshape(x, {1, T, 1, C}, n + "_nhwc");
+        auto* pt = make_static_i32(n + "_pad", {4, 2}, {0,0, left_pad,0, 0,0, 0,0});
+        if (pt->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &pt->t);
+        Qnn_Param_t scheme_p = scalar_i32_param(QNN_OP_PAD_PARAM_SCHEME, QNN_OP_PAD_SCHEME_CONSTANT);
+        Qnn_Param_t amt_p    = tensor_param(QNN_OP_PAD_PARAM_PAD_AMOUNT, pt);
+        amt_p.tensorParam    = pt->t;
+        auto* xp = make_native(n + "_xp", {1, Tp, 1, C});
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_PAD, op_name("pad"),
+               {x_nhwc}, {xp}, {scheme_p, amt_p});
+        if (W_t->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &W_t->t);
+        if (b_t->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &b_t->t);
+        auto* st = make_static_i32(n + "_stride", {2}, {1, 1});
+        auto* no_pad = make_static_i32(n + "_nopad", {2, 2}, {0, 0, 0, 0});
+        if (st->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &st->t);
+        if (no_pad->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &no_pad->t);
+        Qnn_Param_t dsp = tensor_param(QNN_OP_DEPTH_WISE_CONV_2D_PARAM_STRIDE, st); dsp.tensorParam = st->t;
+        Qnn_Param_t dpp = tensor_param(QNN_OP_DEPTH_WISE_CONV_2D_PARAM_PAD_AMOUNT, no_pad); dpp.tensorParam = no_pad->t;
+        auto* out_nhwc = make_native(n + "_out", {1, T, 1, C});
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_DEPTH_WISE_CONV_2D, op_name("dwc"),
+               {xp, W_t, b_t}, {out_nhwc}, {dsp, dpp});
+        return op_reshape(out_nhwc, {1, T, C}, n);
+    }
+
+    // FFW sub-block: pre_norm → w1 → silu → w2 → post_norm → * residual_weight → + residual
+    QTensor* g4a_build_ffw(QTensor* h, int li, bool is_end, const std::string& lp) {
+        std::string tag = is_end ? "end" : "start";
+        std::string wp  = model_folder + "/audio_conformer_" + std::to_string(li) + "_ffw_layer_" + tag + "_";
+        auto* pre_w  = load_weight(lp+"pre",  wp + "pre_layer_norm.weights");
+        auto* post_w = load_weight(lp+"post", wp + "post_layer_norm.weights");
+        auto* w1     = load_weight(lp+"w1",   wp + "ffw_layer_1.weights");
+        auto* w2     = load_weight(lp+"w2",   wp + "ffw_layer_2.weights");
+        uint32_t hd  = (uint32_t)g4a_hidden;
+
+        auto* x = g4a_op_rms_norm(h, pre_w, g4a_rms_eps, lp+"prn");
+        x = op_matmul_T(x, w1, lp+"w1o");
+        x = g4a_op_silu(x, lp+"silu");
+        x = op_matmul_T(x, w2, lp+"w2o");
+        x = g4a_op_rms_norm(x, post_w, g4a_rms_eps, lp+"pn");
+        // scale by residual_weight
+        auto* scale_t = make_static_fp16(lp+"rsc", {1, hd},
+            std::vector<uint16_t>(hd, float_to_fp16(g4a_residual)));
+        if (scale_t->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &scale_t->t);
+        x = op_mul(x, scale_t, lp+"rscm");
+        return op_add(h, x, lp+"res");
+    }
+
+    // Build static rel_key [num_pos, nh, hd] for relative position bias.
+    // position_ids = [max_past, max_past-1, ..., 0] (13 entries for context_left=13)
+    // rel_key[p] = relative_k_proj(sinusoidal(position_ids[p]))
+    QTensor* g4a_build_rel_key_static(int li) {
+        uint32_t nh     = (uint32_t)g4a_num_heads;
+        uint32_t hd     = (uint32_t)g4a_head_dim;
+        uint32_t hidden = (uint32_t)g4a_hidden;
+        int max_past    = (g4a_context_left > 0) ? g4a_context_left - 1 : 0;
+        uint32_t num_pos = (uint32_t)(max_past + g4a_context_right + 1);  // = 13
+
+        uint32_t num_ts = hidden / 2;
+        float log_ts_inc = std::log(1.0e4f) / std::max((int)num_ts - 1, 1);
+        std::vector<float> timing(num_pos * hidden);
+        for (uint32_t p = 0; p < num_pos; p++) {
+            float pos = (float)max_past - (float)p;  // position_ids[p]
+            for (uint32_t i = 0; i < num_ts; i++) {
+                float sc = pos * std::expf(-(float)i * log_ts_inc);
+                timing[p * hidden + i]          = std::sinf(sc);
+                timing[p * hidden + num_ts + i] = std::cosf(sc);
+            }
+        }
+
+        std::string wpath = model_folder + "/audio_conformer_" + std::to_string(li) +
+                            "_attention_attn_relative_position_embedding_pos_proj.weights";
+        std::string tname = "g4l" + std::to_string(li) + "_rk";
+        CactFile cf;
+        if (!open_cact(wpath, cf)) {
+            fprintf(stderr, "[G4A] missing rel_pos_proj layer %d\n", li);
+            return make_static_fp16(tname, {num_pos, nh, hd},
+                                    std::vector<uint16_t>(num_pos * nh * hd, 0));
+        }
+        auto w_fp16 = cact_to_fp16(cf);
+
+        // sin_emb[p, j] = timing[p] @ W^T → relative_k_proj output
+        std::vector<float> sin_emb(num_pos * hidden, 0.f);
+        for (uint32_t p = 0; p < num_pos; p++)
+            for (uint32_t j = 0; j < hidden; j++) {
+                float s = 0.f;
+                for (uint32_t k = 0; k < hidden; k++)
+                    s += timing[p * hidden + k] * fp16_to_fp32_val(w_fp16[j * hidden + k]);
+                sin_emb[p * hidden + j] = s;
+            }
+
+        // Pack as [num_pos, nh, hd] (sin_emb reshaped per head)
+        std::vector<uint16_t> rk_fp16(num_pos * nh * hd);
+        for (uint32_t p = 0; p < num_pos; p++)
+            for (uint32_t h = 0; h < nh; h++)
+                for (uint32_t d = 0; d < hd; d++)
+                    rk_fp16[(p * nh + h) * hd + d] =
+                        float_to_fp16(sin_emb[p * hidden + h * hd + d]);
+        return make_static_fp16(tname, {num_pos, nh, hd}, std::move(rk_fp16));
+    }
+
+    // Pad a [T, nh, hd] key/value tensor with max_past_horizon zeros on the left (axis 0).
+    // Returns [Kc, nh, hd] where Kc = max_past_horizon + T = context_size.
+    QTensor* g4a_pad_kv(QTensor* kv3, uint32_t max_past, const std::string& n) {
+        uint32_t T = kv3->dims[0], nh = kv3->dims[1], hd = kv3->dims[2];
+        uint32_t Kc = max_past + T;
+        // Reshape to NHWC [1, T, 1, nh*hd] for PAD op, then back
+        auto* kv_4d = op_reshape(kv3, {1, T, 1, nh * hd}, n + "_4d");
+        auto* pt = make_static_i32(n + "_pa", {4, 2}, {0,0, (int)max_past,0, 0,0, 0,0});
+        if (pt->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &pt->t);
+        Qnn_Param_t sp = scalar_i32_param(QNN_OP_PAD_PARAM_SCHEME, QNN_OP_PAD_SCHEME_CONSTANT);
+        Qnn_Param_t ap = tensor_param(QNN_OP_PAD_PARAM_PAD_AMOUNT, pt);
+        ap.tensorParam = pt->t;
+        auto* kv_pad = make_native(n + "_p4d", {1, Kc, 1, nh * hd});
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_PAD, op_name("kvpad"),
+               {kv_4d}, {kv_pad}, {sp, ap});
+        return op_reshape(kv_pad, {Kc, nh, hd}, n);
+    }
+
+    // Attention: pre_norm → Q/K/V → per-dim-scale → context-padded KV →
+    //            matrix_ac + matrix_bd(rel_shift) → logit_cap → causal_mask → softmax → out_proj → post_norm → + residual
+    // Keys/values are padded with max_past_horizon zero rows (= previous chunk context, all zeros for chunk 0).
+    // Scores shape: [nh, T, Kc] where Kc = max_past_horizon + T = context_size.
+    QTensor* g4a_build_attention(QTensor* h, int li, const std::string& lp) {
+        std::string wp = model_folder + "/audio_conformer_" + std::to_string(li) + "_attention_";
+        auto* pre_w   = load_weight(lp+"atpre",  wp + "pre_attn_norm.weights");
+        auto* post_w  = load_weight(lp+"atpost", wp + "post_norm.weights");
+        auto* wq = load_weight(lp+"wq", wp + "attn_q_proj.weights");
+        auto* wk = load_weight(lp+"wk", wp + "attn_k_proj.weights");
+        auto* wv = load_weight(lp+"wv", wp + "attn_v_proj.weights");
+        auto* wo = load_weight(lp+"wo", wp + "post.weights");
+        auto* pds_w = load_weight(lp+"pds_w", wp + "attn_per_dim_scale.weights");
+
+        uint32_t T      = h->dims[0];
+        uint32_t nh     = (uint32_t)g4a_num_heads;
+        uint32_t hd     = (uint32_t)g4a_head_dim;
+        uint32_t hidden = (uint32_t)g4a_hidden;
+        int max_past    = (g4a_context_left > 0) ? g4a_context_left - 1 : 0;
+        uint32_t Kc     = (uint32_t)max_past + T;  // context_size = 24
+
+        auto* x = g4a_op_rms_norm(h, pre_w, g4a_rms_eps, lp+"prn");
+
+        auto* q = op_matmul_T(x, wq, lp+"q");
+        auto* k = op_matmul_T(x, wk, lp+"k");
+        auto* v = op_matmul_T(x, wv, lp+"v");
+
+        // Per-dim scale on Q: softplus(pds_w) * q_scale
+        float q_scale = (1.0f / sqrtf((float)hd)) / std::log(2.0f);
+        auto* pds_exp = g4a_op_unary(pds_w, QNN_OP_ELEMENT_WISE_UNARY_OPERATION_EXP, lp+"pds_e");
+        auto* one_v   = make_static_fp16(lp+"one", {hd}, std::vector<uint16_t>(hd, float_to_fp16(1.0f)));
+        if (one_v->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &one_v->t);
+        auto* pds_1p  = op_add(pds_exp, one_v, lp+"pds_1p");
+        auto* pds_log = g4a_op_unary(pds_1p, QNN_OP_ELEMENT_WISE_UNARY_OPERATION_LOG, lp+"pds_l");
+        auto* qsc_v   = make_static_fp16(lp+"qsc", {hd}, std::vector<uint16_t>(hd, float_to_fp16(q_scale)));
+        if (qsc_v->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &qsc_v->t);
+        auto* pds_sc  = op_mul(pds_log, qsc_v, lp+"pds_sc");
+        auto* pds_2d  = op_reshape(pds_sc, {1, hd}, lp+"pds_2d");
+        auto* q_flat  = op_reshape(q, {T * nh, hd}, lp+"q_flat");
+        auto* q_pds   = op_mul(q_flat, pds_2d, lp+"q_pds");
+        q = op_reshape(q_pds, {T, hidden}, lp+"q_rs");
+
+        // K scale
+        auto* ksc_v = make_static_fp16(lp+"ksc", {1, hidden},
+            std::vector<uint16_t>(hidden, float_to_fp16(g4a_k_scale)));
+        if (ksc_v->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &ksc_v->t);
+        k = op_mul(k, ksc_v, lp+"k_sc");
+
+        // Reshape Q/K/V to [T, nh, hd]
+        auto* q3 = op_reshape(q, {T, nh, hd}, lp+"q3");
+        auto* k3 = op_reshape(k, {T, nh, hd}, lp+"k3");
+        auto* v3 = op_reshape(v, {T, nh, hd}, lp+"v3");
+
+        // Pad K/V with max_past zeros on left → [Kc, nh, hd]
+        auto* k3p = g4a_pad_kv(k3, (uint32_t)max_past, lp+"kp");
+        auto* v3p = g4a_pad_kv(v3, (uint32_t)max_past, lp+"vp");
+
+        // Transpose Q → [nh, T, hd], K/V → [nh, Kc, hd]
+        auto* q_T  = op_transpose(q3,  {1, 0, 2}, lp+"qT");
+        auto* k_T  = op_transpose(k3p, {1, 0, 2}, lp+"kT");
+        auto* v_T  = op_transpose(v3p, {1, 0, 2}, lp+"vT");
+
+        // matrix_ac = Q @ K^T → [nh, T, Kc]
+        auto* scores = make_native(lp+"sc", {nh, T, Kc});
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_MAT_MUL, op_name("qk"),
+               {q_T, k_T}, {scores},
+               {scalar_bool_param(QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN0, false),
+                scalar_bool_param(QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, true)});
+
+        // Relative position bias (matrix_bd after rel_shift):
+        // rel_key [num_pos=13, nh, hd] static
+        // raw_bd = Q [nh, T, hd] @ rel_key^T [nh, hd, 13] → [nh, T, 13]
+        // After rel_shift: bd[h, i, j] = raw_bd[h, i, clamp(j-i, 0, 12)] → [nh, T, Kc]
+        {
+            uint32_t num_pos = (uint32_t)(max_past + g4a_context_right + 1);  // 13
+            auto* rk_st  = g4a_build_rel_key_static(li);  // static [num_pos, nh, hd]
+            auto* rk_nat = op_reshape(rk_st, {num_pos, nh, hd}, lp+"rk_nat");
+            auto* rk_T   = op_transpose(rk_nat, {1, 2, 0}, lp+"rk_T");  // [nh, hd, num_pos]
+            // raw_bd: [nh, T, num_pos]
+            auto* raw_bd = make_native(lp+"rb_raw", {nh, T, num_pos});
+            add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_MAT_MUL, op_name("rbmm"),
+                   {q_T, rk_T}, {raw_bd},
+                   {scalar_bool_param(QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN0, false),
+                    scalar_bool_param(QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, false)});
+            // Gather with idx[h, i, j] = clamp(j-i, 0, num_pos-1) → [nh, T, Kc]
+            std::vector<int32_t> idx_data((size_t)nh * T * Kc);
+            int np1 = (int)num_pos - 1;
+            for (uint32_t hh = 0; hh < nh; hh++)
+                for (uint32_t i = 0; i < T; i++)
+                    for (uint32_t j = 0; j < Kc; j++) {
+                        int k = std::max(0, std::min(np1, (int)j - (int)i));
+                        idx_data[(hh * T + i) * Kc + j] = k;
+                    }
+            auto* idx_t  = make_static_i32(lp+"rb_idx", {nh, T, Kc}, std::move(idx_data));
+            auto* rb_out = make_native(lp+"rb", {nh, T, Kc});
+            add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_GATHER_ELEMENTS, op_name("rb_ge"),
+                   {raw_bd, idx_t}, {rb_out},
+                   {scalar_i32_param(QNN_OP_GATHER_ELEMENTS_PARAM_AXIS, 2)});
+            scores = op_add(scores, rb_out, lp+"sc_rb");
+        }
+
+        // Logit cap: logit_cap * tanh(scores / logit_cap)
+        float inv_cap = 1.0f / g4a_logit_cap;
+        size_t n_sc = (size_t)nh * T * Kc;
+        auto* inv_cap_t = make_static_fp16(lp+"icp", {nh, T, Kc},
+                              std::vector<uint16_t>(n_sc, float_to_fp16(inv_cap)));
+        auto* cap_t = make_static_fp16(lp+"cap", {nh, T, Kc},
+                          std::vector<uint16_t>(n_sc, float_to_fp16(g4a_logit_cap)));
+        if (inv_cap_t->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &inv_cap_t->t);
+        if (cap_t->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &cap_t->t);
+        auto* sc_s = op_mul(scores, inv_cap_t, lp+"sc_s");
+        auto* sc_th = [&]() -> QTensor* {
+            auto* o = make_native(lp+"sc_th", sc_s->dims);
+            add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_ELEMENT_WISE_NEURON, op_name("tanh"),
+                   {sc_s}, {o},
+                   {scalar_u32_param(QNN_OP_ELEMENT_WISE_NEURON_PARAM_OPERATION,
+                                     QNN_OP_ELEMENT_WISE_NEURON_OPERATION_TANH)});
+            return o;
+        }();
+        auto* sc_cap = op_mul(sc_th, cap_t, lp+"sc_cap");
+
+        // Causal mask [nh, T, Kc]: mask[h,i,j] = -inf if j > max_past + i
+        std::vector<uint16_t> mask_data(n_sc, 0);
+        const uint16_t neg_inf = 0xFC00;
+        for (uint32_t hh = 0; hh < nh; hh++)
+            for (uint32_t i = 0; i < T; i++)
+                for (uint32_t j = 0; j < Kc; j++)
+                    if (j > (uint32_t)max_past + i)
+                        mask_data[(hh * T + i) * Kc + j] = neg_inf;
+        auto* mask_t = make_static_fp16(lp+"mask", {nh, T, Kc}, std::move(mask_data));
+        if (mask_t->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &mask_t->t);
+        auto* sc_masked = op_add(sc_cap, mask_t, lp+"sc_m");
+
+        auto* w = op_softmax(sc_masked, 2, lp+"attn_w");
+
+        // out = w [nh, T, Kc] @ v_T [nh, Kc, hd] → [nh, T, hd]
+        auto* out_T = make_native(lp+"out_T", {nh, T, hd});
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_MAT_MUL, op_name("av"),
+               {w, v_T}, {out_T},
+               {scalar_bool_param(QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN0, false),
+                scalar_bool_param(QNN_OP_MAT_MUL_PARAM_TRANSPOSE_IN1, false)});
+        auto* out_3d   = op_transpose(out_T, {1, 0, 2}, lp+"out3d");
+        auto* out_flat = op_reshape(out_3d, {T, hidden}, lp+"out_flat");
+
+        auto* proj      = op_matmul_T(out_flat, wo, lp+"proj");
+        auto* proj_norm = g4a_op_rms_norm(proj, post_w, g4a_rms_eps, lp+"pn");
+        return op_add(h, proj_norm, lp+"res");
+    }
+
+    // LConv block
+    QTensor* g4a_build_lconv1d(QTensor* h, int li, const std::string& lp) {
+        std::string wp = model_folder + "/audio_conformer_" + std::to_string(li) + "_lconv1d_";
+        auto* pre_w   = load_weight(lp+"lcpre", wp + "pre_layer_norm.weights");
+        auto* cnorm_w = load_weight(lp+"cnn",   wp + "conv_norm.weights");
+        auto* wstart  = load_weight(lp+"ws",    wp + "linear_start.weights");
+        auto* wend    = load_weight(lp+"we",    wp + "linear_end.weights");
+
+        uint32_t T  = h->dims[0];
+        uint32_t hd = (uint32_t)g4a_hidden;
+
+        auto* x = g4a_op_rms_norm(h, pre_w, g4a_rms_eps, lp+"prn");
+        x = op_matmul_T(x, wstart, lp+"ws_o");   // [T, 2*hidden]
+        x = g4a_op_glu(x, lp+"glu");             // [T, hidden]
+        // depthwise causal conv1d
+        auto* x1d = op_reshape(x, {1, T, hd}, lp+"x1d");
+        x1d = g4a_op_dw_conv1d_causal(x1d, wp + "depthwise_conv1d.weights",
+                                       g4a_conf_K, lp + "dwc");
+        x = op_reshape(x1d, {T, hd}, lp+"xrs");
+        x = g4a_op_rms_norm(x, cnorm_w, g4a_rms_eps, lp+"cnorm");
+        x = g4a_op_silu(x, lp+"silu");
+        x = op_matmul_T(x, wend, lp+"we_o");
+        return op_add(x, h, lp+"res");
+    }
+
+    // Full conformer block: ffw_start → attn → lconv → ffw_end → block_norm
+    QTensor* g4a_build_conformer_block(QTensor* h, int li) {
+        std::string lp = "g4l" + std::to_string(li) + "_";
+        std::string bp = model_folder + "/audio_conformer_" + std::to_string(li) + "_";
+        h = g4a_build_ffw(h, li, false, lp + "fs_");
+        h = g4a_build_attention(h, li, lp + "at_");
+        h = g4a_build_lconv1d(h, li, lp + "lc_");
+        h = g4a_build_ffw(h, li, true, lp + "fe_");
+        auto* bnorm_w = load_weight(lp+"bn", bp + "norm.weights");
+        return g4a_op_rms_norm(h, bnorm_w, g4a_rms_eps, lp + "bn_out");
+    }
+
+    int g4a_conf_K = 5;
+
+    bool g4a_build_graph() {
+        QnnHtpGraph_CustomConfig_t htp_cfg = QNN_HTP_GRAPH_CUSTOM_CONFIG_INIT;
+        htp_cfg.option    = QNN_HTP_GRAPH_CONFIG_OPTION_PRECISION;
+        htp_cfg.precision = QNN_PRECISION_FLOAT16;
+        QnnHtpGraph_CustomConfig_t htp_opt = QNN_HTP_GRAPH_CUSTOM_CONFIG_INIT;
+        htp_opt.option = QNN_HTP_GRAPH_CONFIG_OPTION_OPTIMIZATION;
+        htp_opt.optimizationOption.type = QNN_HTP_GRAPH_OPTIMIZATION_TYPE_FINALIZE_OPTIMIZATION_FLAG;
+        htp_opt.optimizationOption.floatValue = 3.0f;
+        QnnGraph_Config_t gc0 = QNN_GRAPH_CONFIG_INIT; gc0.option = QNN_GRAPH_CONFIG_OPTION_CUSTOM; gc0.customConfig = &htp_cfg;
+        QnnGraph_Config_t gc1 = QNN_GRAPH_CONFIG_INIT; gc1.option = QNN_GRAPH_CONFIG_OPTION_CUSTOM; gc1.customConfig = &htp_opt;
+        const QnnGraph_Config_t* gcfgs[] = {&gc0, &gc1, nullptr};
+
+        Qnn_ErrorHandle_t err = qnn.graphCreate(context_handle, "g4a_encoder", gcfgs, &graph_handle);
+        if (err != QNN_SUCCESS) {
+            fprintf(stderr, "[G4A] graphCreate failed: %lld\n", (long long)err); return false;
+        }
+
+        uint32_t T_mel = (uint32_t)g4a_chunk_mel;
+        uint32_t mel   = (uint32_t)g4a_mel_bins;
+        uint32_t T_out = (uint32_t)g4a_chunk_out;
+        uint32_t c0    = (uint32_t)g4a_conv0_ch;
+        (void)g4a_conv1_ch;
+        std::string mf  = model_folder + "/audio_subsample_conv_projection_";
+
+        // Input: [T_mel, mel_bins] FP16
+        auto* mel_in = make_tensor("g4a_mel", QNN_TENSOR_TYPE_APP_WRITE, QNN_DATATYPE_FLOAT_16,
+                                   {T_mel, mel});
+        g4a_exec_in_id = 0;
+
+        // SSCP conv0: [T_mel, mel_bins] → [H1, W1, c0] via im2col+matmul
+        auto* x0 = g4a_op_conv2d_im2col(mf + "conv_0_conv.weights", mel_in, 2, 1, "g4a_c0");
+        uint32_t H1 = x0->dims[0], W1 = x0->dims[1];  // [H1, W1, c0]
+
+        // Norm0: reshape to [H1*W1, c0], LayerNorm, relu
+        auto* norm0_w = load_weight("g4a_n0", mf + "conv_0_norm.weights");
+        auto* x0f = op_reshape(x0, {H1 * W1, c0}, "g4a_n0_flat");
+        x0f = g4a_op_layer_norm(x0f, norm0_w, g4a_ln_eps, "g4a_n0_ln");
+        x0f = g4a_op_relu(x0f, "g4a_n0_relu");
+        auto* x0r = op_reshape(x0f, {H1, W1, c0}, "g4a_n0_rs");  // [H1, W1, c0]
+
+        // For conv1, the input has C_in=c0. We need to handle multi-channel input.
+        // Treat [H1, W1, c0] as [H1, W1*c0] then use a different conv formulation.
+        // Instead: apply conv1 as op_conv1d_c0 treating c0 channels explicitly.
+        // Conv1 weight: [c1=32, c0=128, 3, 3] → need im2col over [H1, W1, c0] with c_in=c0
+        // Flatten spatial to [H1*W1, c0], then apply patch extraction per (dh,dw).
+        QTensor* h = nullptr;
+        {
+            // Load conv1 weight [c1, c0, kH=3, kW=3]
+            auto cf1 = std::make_unique<CactFile>();
+            open_cact(mf + "conv_1_conv.weights", *cf1);
+            std::vector<uint16_t> raw1 = cact_to_fp16(*cf1);
+            uint32_t C1 = (uint32_t)cf1->shape[0]; // c1=32
+            uint32_t C0 = (uint32_t)cf1->shape[1]; // c0=128
+            uint32_t kH1 = (uint32_t)cf1->shape[2]; // 3
+            uint32_t kW1 = (uint32_t)cf1->shape[3]; // 3
+            weight_files.push_back(std::move(cf1));
+            uint32_t H2 = (H1 + 2 - kH1) / 2 + 1;
+            uint32_t W2 = (W1 + 2 - kW1) / 2 + 1;
+            uint32_t kk1 = kH1 * kW1;  // 9, per channel
+            // W_flat [C1, kk1*C0]: W[o, (dh*kW+dw)*C0 + ci] = raw[o, ci, dh, dw]
+            std::vector<uint16_t> wf1(C1 * kk1 * C0);
+            for (uint32_t o = 0; o < C1; o++)
+                for (uint32_t ci = 0; ci < C0; ci++)
+                    for (uint32_t dh = 0; dh < kH1; dh++)
+                        for (uint32_t dw = 0; dw < kW1; dw++)
+                            wf1[o * kk1 * C0 + (dh * kW1 + dw) * C0 + ci] =
+                                raw1[((o * C0 + ci) * kH1 + dh) * kW1 + dw];
+            auto* W1t = make_static_fp16("g4a_c1_W", {C1, kk1 * C0}, std::move(wf1));
+
+            // Pad x0r [H1, W1, c0] → [H1+2, W1+2, c0]
+            auto* x0p = [&]() -> QTensor* {
+                auto* out = make_native("g4a_c1_xp", {H1+2, W1+2, C0});
+                auto* amt = make_static_i32("g4a_c1_amt", {3, 2}, {1,1, 1,1, 0,0});
+                if (amt->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &amt->t);
+                Qnn_Param_t sc = scalar_i32_param(QNN_OP_PAD_PARAM_SCHEME, QNN_OP_PAD_SCHEME_CONSTANT);
+                Qnn_Param_t ap = tensor_param(QNN_OP_PAD_PARAM_PAD_AMOUNT, amt); ap.tensorParam = amt->t;
+                add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_PAD, op_name("pad"),
+                       {x0r}, {out}, {sc, ap});
+                return out;
+            }();
+
+            // For each (dh, dw), extract every-2nd-row/col → [H2, W2, C0], reshape to [H2*W2, C0]
+            // Concat kk1=9 such patches along axis=1 → [H2*W2, 9*C0]
+            std::vector<QTensor*> patches1;
+            patches1.reserve(kk1);
+            for (uint32_t dh = 0; dh < kH1; dh++) {
+                for (uint32_t dw = 0; dw < kW1; dw++) {
+                    auto tag = "g4a_c1p" + std::to_string(dh) + "_" + std::to_string(dw);
+                    // Strided slice [H1+2, W1+2, C0] at offset (dh, dw), stride=2 in H and W
+                    auto* rt = make_static_i32("rng_" + tag, {3, 3},
+                                               {(int)dh, (int)(dh + H2*2), 2,
+                                                (int)dw, (int)(dw + W2*2), 2,
+                                                0, (int)C0, 1});
+                    if (rt->t.v1.id == 0) qnn.tensorCreateGraphTensor(graph_handle, &rt->t);
+                    Qnn_Param_t rp = tensor_param(QNN_OP_STRIDED_SLICE_PARAM_RANGES, rt);
+                    rp.tensorParam = rt->t;
+                    auto* patch = make_native(tag, {H2, W2, C0});
+                    add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_STRIDED_SLICE, op_name("ss3d"),
+                           {x0p}, {patch}, {rp});
+                    auto* pf = op_reshape(patch, {H2 * W2, C0}, tag + "_f");
+                    patches1.push_back(pf);
+                }
+            }
+            QTensor* im2col1 = patches1[0];
+            for (uint32_t i = 1; i < (uint32_t)patches1.size(); i++)
+                im2col1 = op_concat(im2col1, patches1[i], 1, "g4a_im1_" + std::to_string(i));
+
+            auto* out1 = op_matmul_T(im2col1, W1t, "g4a_c1_mm");  // [H2*W2, C1]
+            uint32_t H2_ = H2, W2_ = W2;
+            auto* norm1_w = load_weight("g4a_n1", mf + "conv_1_norm.weights");
+            auto* x1f = g4a_op_layer_norm(out1, norm1_w, g4a_ln_eps, "g4a_n1_ln");
+            x1f = g4a_op_relu(x1f, "g4a_n1_relu");
+            // [H2*W2, c1] where H2=12, W2=32, c1=32 → flatten to [H2, W2*c1] = [12, 1024]
+            auto* x1r = op_reshape(x1f, {H2_, W2_ * C1}, "g4a_n1_flat");
+            auto* iproj_w = load_weight("g4a_ip", mf + "input_proj.weights");
+            h = op_matmul_T(x1r, iproj_w, "g4a_proj");  // [T_out, hidden]
+        }
+
+        // 12 conformer blocks
+        int max_layers = g4a_num_layers;
+        if (const char* ml = getenv("CACTUS_ENC_MAX_LAYERS"))
+            max_layers = std::min(max_layers, std::stoi(ml));
+        fprintf(stderr, "[G4A] building %d conformer layers\n", max_layers);
+        for (int li = 0; li < max_layers; li++)
+            h = g4a_build_conformer_block(h, li);
+
+        // Output projection: [T_out, hidden] → [T_out, out_dim]
+        if (g4a_out_dim > 0 && g4a_out_dim != g4a_hidden) {
+            auto* oproj_w = load_weight("g4a_op", model_folder + "/audio_output_proj.weights");
+            auto* oproj_b = load_weight("g4a_ob", model_folder + "/audio_output_proj.bias");
+            h = op_matmul_T(h, oproj_w, "g4a_oproj");
+            if (oproj_b->dims.size() == 1)
+                oproj_b = op_reshape(oproj_b, {1, (uint32_t)g4a_out_dim}, "g4a_ob_exp");
+            h = op_add(h, oproj_b, "g4a_ob_add");
+        }
+
+        auto* g4a_out = make_output("g4a_out", {T_out, (uint32_t)(g4a_out_dim > 0 ? g4a_out_dim : g4a_hidden)});
+        add_op(QNN_OP_PACKAGE_NAME_QTI_AISW, QNN_OP_RESHAPE, op_name("g4a_out_cp"),
+               {h}, {g4a_out}, {});
+
+        g4a_exec_in_id  = mel_in->t.v1.id;
+        g4a_exec_out_id = g4a_out->t.v1.id;
+
+        fprintf(stderr, "[G4A] finalizing graph (may take ~60s)...\n"); fflush(stderr);
+        err = qnn.graphFinalize(graph_handle, nullptr, nullptr);
+        if (err != QNN_SUCCESS) {
+            fprintf(stderr, "[G4A] graphFinalize failed: %lld\n", (long long)err); return false;
+        }
+        fprintf(stderr, "[G4A] finalized\n");
+
+        if (qnn.graphRetrieve) {
+            Qnn_GraphHandle_t rg = nullptr;
+            if (qnn.graphRetrieve(context_handle, "g4a_encoder", &rg) == QNN_SUCCESS && rg)
+                graph_handle = rg;
+        }
+        weight_files.clear();
+
+        // Save cache
+        std::string cache_path = model_folder + "/qnn_g4a_T" + std::to_string(g4a_chunk_mel) +
+                                 "_L" + std::to_string(max_layers) + ".bin";
+        if (qnn.contextGetBinarySize && qnn.contextGetBinary) {
+            Qnn_ContextBinarySize_t bin_sz = 0, written = 0;
+            if (qnn.contextGetBinarySize(context_handle, &bin_sz) == QNN_SUCCESS && bin_sz > 0) {
+                std::vector<char> bin((size_t)bin_sz);
+                if (qnn.contextGetBinary(context_handle, bin.data(), bin_sz, &written) == QNN_SUCCESS && written > 0) {
+                    std::ofstream cf(cache_path, std::ios::binary);
+                    if (cf.is_open()) { cf.write(bin.data(), (size_t)written); }
+                    std::ofstream sf(cache_path + ".ids", std::ios::binary);
+                    uint32_t magic = 0x41344751u; // "G4QA"
+                    sf.write(reinterpret_cast<char*>(&magic),            4);
+                    sf.write(reinterpret_cast<char*>(&g4a_exec_in_id),  4);
+                    sf.write(reinterpret_cast<char*>(&g4a_exec_out_id), 4);
+                    fprintf(stderr, "[G4A] saved cache: %s\n", cache_path.c_str());
+                }
+            }
+        }
+        return true;
+    }
+
+    bool g4a_load_from_cache(const std::string& cache_path) {
+        std::ifstream sf(cache_path + ".ids", std::ios::binary);
+        if (!sf.is_open()) return false;
+        uint32_t magic = 0;
+        sf.read(reinterpret_cast<char*>(&magic), 4);
+        if (magic != 0x41344751u) return false;
+        sf.read(reinterpret_cast<char*>(&g4a_exec_in_id),  4);
+        sf.read(reinterpret_cast<char*>(&g4a_exec_out_id), 4);
+
+        std::ifstream cf(cache_path, std::ios::binary | std::ios::ate);
+        if (!cf.is_open()) return false;
+        size_t sz = (size_t)cf.tellg(); cf.seekg(0);
+        std::vector<char> buf(sz); cf.read(buf.data(), sz); cf.close();
+
+        Qnn_ErrorHandle_t err = qnn.contextCreateFromBinary(
+            backend_handle, device_handle, nullptr,
+            buf.data(), sz, &context_handle, nullptr);
+        if (err != QNN_SUCCESS) {
+            fprintf(stderr, "[G4A] contextCreateFromBinary failed: %lld\n", (long long)err);
+            return false;
+        }
+        if (qnn.graphRetrieve(context_handle, "g4a_encoder", &graph_handle) != QNN_SUCCESS) {
+            fprintf(stderr, "[G4A] graphRetrieve failed\n"); return false;
+        }
+        fprintf(stderr, "[G4A] loaded from cache: %s\n", cache_path.c_str());
+        return true;
+    }
+
+    void g4a_setup_exec_tensors() {
+        int out_dim = g4a_out_dim > 0 ? g4a_out_dim : g4a_hidden;
+        g4a_input_buf.assign((size_t)g4a_chunk_mel * g4a_mel_bins, 0);
+        g4a_output_buf.assign((size_t)g4a_chunk_out * out_dim, 0);
+
+        auto make_qt = [&](uint32_t id, Qnn_TensorType_t type,
+                            const std::vector<uint32_t>& shape) -> QTensor* {
+            auto qt = std::make_unique<QTensor>();
+            qt->name = "g4a_" + std::to_string(id); qt->dims = shape;
+            qt->t = QNN_TENSOR_INIT; qt->t.version = QNN_TENSOR_VERSION_1;
+            qt->t.v1.id = id; qt->t.v1.type = type;
+            qt->t.v1.dataFormat = QNN_TENSOR_DATA_FORMAT_FLAT_BUFFER;
+            qt->t.v1.dataType   = QNN_DATATYPE_FLOAT_16;
+            qt->t.v1.quantizeParams = { QNN_DEFINITION_UNDEFINED,
+                                        QNN_QUANTIZATION_ENCODING_UNDEFINED, {{0,0}} };
+            qt->t.v1.rank = (uint32_t)shape.size(); qt->t.v1.dimensions = qt->dims.data();
+            qt->t.v1.memType = QNN_TENSORMEMTYPE_RAW;
+            qt->t.v1.clientBuf = {nullptr, 0};
+            QTensor* p = qt.get(); tensor_store.push_back(std::move(qt)); return p;
+        };
+
+        // Look up existing tensor by id if already created
+        auto get = [&](const std::string& nm, uint32_t id,
+                        Qnn_TensorType_t type, const std::vector<uint32_t>& sh) -> QTensor* {
+            if (tensors.count(nm)) return tensors.at(nm);
+            return make_qt(id, type, sh);
+        };
+
+        g4a_exec_in_qt  = get("g4a_mel",  g4a_exec_in_id,  QNN_TENSOR_TYPE_APP_WRITE,
+                               {(uint32_t)g4a_chunk_mel, (uint32_t)g4a_mel_bins});
+        g4a_exec_out_qt = get("g4a_out", g4a_exec_out_id, QNN_TENSOR_TYPE_APP_READ,
+                               {(uint32_t)g4a_chunk_out, (uint32_t)out_dim});
+
+        if (g4a_exec_in_qt)  { g4a_exec_in_qt->t.v1.clientBuf.data  = g4a_input_buf.data();
+                                g4a_exec_in_qt->t.v1.clientBuf.dataSize = (uint32_t)(g4a_input_buf.size() * 2); }
+        if (g4a_exec_out_qt) { g4a_exec_out_qt->t.v1.clientBuf.data  = g4a_output_buf.data();
+                                g4a_exec_out_qt->t.v1.clientBuf.dataSize = (uint32_t)(g4a_output_buf.size() * 2); }
+
+        g4a_exec_inputs  = { g4a_exec_in_qt  ? g4a_exec_in_qt->t  : Qnn_Tensor_t{} };
+        g4a_exec_outputs = { g4a_exec_out_qt ? g4a_exec_out_qt->t : Qnn_Tensor_t{} };
+        fprintf(stderr, "[G4A] exec tensors ready: in_id=%u out_id=%u\n",
+                g4a_exec_in_id, g4a_exec_out_id);
+    }
+
+    bool g4a_load() {
+        // read audio config
+        {
+            std::ifstream f(model_folder + "/config.txt");
+            if (!f.is_open()) { fprintf(stderr, "[G4A] cannot open config.txt\n"); return false; }
+            std::string line;
+            while (std::getline(f, line)) {
+                auto eq = line.find('='); if (eq == std::string::npos) continue;
+                std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+                if      (k == "audio_hidden_dim")          g4a_hidden     = std::stoi(v);
+                else if (k == "audio_num_layers")          g4a_num_layers = std::stoi(v);
+                else if (k == "audio_num_heads")           g4a_num_heads  = std::stoi(v);
+                else if (k == "audio_head_dim")            g4a_head_dim   = std::stoi(v);
+                else if (k == "audio_input_feat_size")     g4a_mel_bins   = std::stoi(v);
+                else if (k == "audio_output_proj_dims")    g4a_out_dim    = std::stoi(v);
+                else if (k == "audio_sscp_conv0_channels") g4a_conv0_ch   = std::stoi(v);
+                else if (k == "audio_sscp_conv1_channels") g4a_conv1_ch   = std::stoi(v);
+                else if (k == "audio_sscp_conv_eps")       g4a_ln_eps     = std::stof(v);
+                else if (k == "audio_rms_norm_eps")        g4a_rms_eps    = std::stof(v);
+                else if (k == "audio_logit_cap")           g4a_logit_cap  = std::stof(v);
+                else if (k == "audio_residual_weight")     g4a_residual   = std::stof(v);
+                else if (k == "audio_conf_conv_kernel_size") g4a_conf_K   = std::stoi(v);
+                else if (k == "audio_context_left")          g4a_context_left  = std::stoi(v);
+                else if (k == "audio_context_right")         g4a_context_right = std::stoi(v);
+            }
+            // chunk_mel: 4× chunk_out; chunk_out from config audio_chunk_size
+            // re-derive chunk sizes from SSCP stride
+            // 2 stride-2 convs: T_mel → T_mel/4 = chunk_out
+            g4a_chunk_out = 12; // default; override from config if present
+        }
+        {
+            std::ifstream f(model_folder + "/config.txt");
+            std::string line;
+            while (std::getline(f, line)) {
+                auto eq = line.find('='); if (eq == std::string::npos) continue;
+                std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+                if (k == "audio_chunk_size") g4a_chunk_out = std::stoi(v);
+            }
+        }
+        g4a_chunk_mel = g4a_chunk_out * 4;
+        g4a_k_scale = std::log(1.0f + std::expf(1.0f)) / std::log(2.0f);
+
+        fprintf(stderr, "[G4A] config: hidden=%d layers=%d heads=%d hd=%d out=%d mel=%d chunk_mel=%d chunk_out=%d\n",
+                g4a_hidden, g4a_num_layers, g4a_num_heads, g4a_head_dim,
+                g4a_out_dim, g4a_mel_bins, g4a_chunk_mel, g4a_chunk_out);
+
+        if (qnn.contextCreate(backend_handle, device_handle, nullptr, &context_handle) != QNN_SUCCESS)
+            return false;
+
+        int max_layers_cfg = g4a_num_layers;
+        if (const char* ml = getenv("CACTUS_ENC_MAX_LAYERS"))
+            max_layers_cfg = std::min(max_layers_cfg, std::stoi(ml));
+        std::string cache_path = model_folder + "/qnn_g4a_T" + std::to_string(g4a_chunk_mel) +
+                                 "_L" + std::to_string(max_layers_cfg) + ".bin";
+        bool from_cache = false;
+        if (file_exists(cache_path) && file_exists(cache_path + ".ids")) {
+            if (context_handle && qnn.contextFree) { qnn.contextFree(context_handle, nullptr); context_handle = nullptr; }
+            from_cache = g4a_load_from_cache(cache_path);
+            if (!from_cache && qnn.contextCreate)
+                qnn.contextCreate(backend_handle, device_handle, nullptr, &context_handle);
+        }
+
+        if (!from_cache && !g4a_build_graph()) return false;
+        g4a_setup_exec_tensors();
+        loaded = true; graph_built = true;
+        return true;
+    }
+
+    size_t g4a_encode(const __fp16* input, __fp16* output, const std::vector<int>& shape) {
+        if (!graph_built || !graph_handle) return 0;
+        size_t in_elems = (size_t)g4a_chunk_mel * g4a_mel_bins;
+        if (shape.size() >= 2) in_elems = (size_t)shape[0] * shape[1];
+        memcpy(g4a_input_buf.data(), input, in_elems * sizeof(uint16_t));
+        if (g4a_exec_in_qt)
+            g4a_exec_in_qt->t.v1.clientBuf.data = g4a_input_buf.data();
+        if (g4a_exec_out_qt)
+            g4a_exec_out_qt->t.v1.clientBuf.data = g4a_output_buf.data();
+        Qnn_ErrorHandle_t err = qnn.graphExecute(
+            graph_handle,
+            g4a_exec_inputs.data(),  (uint32_t)g4a_exec_inputs.size(),
+            g4a_exec_outputs.data(), (uint32_t)g4a_exec_outputs.size(),
+            nullptr, nullptr);
+        if (err != QNN_SUCCESS) {
+            fprintf(stderr, "[G4A] graphExecute failed: %lld\n", (long long)err); return 0;
+        }
+        int out_dim = g4a_out_dim > 0 ? g4a_out_dim : g4a_hidden;
+        size_t out_elems = (size_t)g4a_chunk_out * out_dim;
+        if (output) memcpy(output, g4a_output_buf.data(), out_elems * 2);
+        return out_elems;
     }
 
     void build_enc_layer(int li, QTensor*& h) {
@@ -3920,6 +4826,12 @@ bool QNNDirectEncoder::load(const std::string& model_path) {
 
     if (!I.qnn.contextCreate) return false;
 
+    if (file_exists(folder + "/audio_subsample_conv_projection_conv_0_conv.weights")) {
+        I.is_g4a = true;
+        if (!I.g4a_load()) return false;
+        return true;
+    }
+
     if (file_exists(folder + "/layer_0_ff1_linear1.weights")) {
         if (!I.pk_load()) return false;
         return true;
@@ -3939,6 +4851,7 @@ bool QNNDirectEncoder::preallocate(const std::vector<int>& input_shape,
     auto& I = *impl_;
     if (!I.loaded) return false;
     if (I.is_parakeet) return true;
+    if (I.is_g4a) return true;
     if (input_shape.size() >= 3) {
         I.n_mels = input_shape[1];
         I.T_mel  = input_shape[2];
@@ -3979,6 +4892,7 @@ size_t QNNDirectEncoder::encode(const __fp16* input, __fp16* output,
                                  const std::string& /*input_name*/,
                                  const std::string& /*output_name*/) {
     auto& I = *impl_;
+    if (I.is_g4a) return I.g4a_encode(input, output, shape);
     if (I.is_parakeet) {
         if (!I.loaded || I.pk_n_segs == 0) return 0;
         size_t inter_sz = (size_t)I.pk_T_out * I.pk_hidden_dim;
@@ -4066,23 +4980,35 @@ size_t QNNDirectEncoder::encode(const __fp16* input, __fp16* output,
 }
 
 bool QNNDirectEncoder::is_available() const {
+    if (impl_->is_g4a)      return impl_->loaded && impl_->graph_built;
     if (impl_->is_parakeet) return impl_->loaded && impl_->pk_n_segs > 0;
     return impl_->loaded && impl_->graph_built;
 }
 std::vector<int> QNNDirectEncoder::get_input_shape() const {
+    if (impl_->is_g4a)      return {impl_->g4a_chunk_mel, impl_->g4a_mel_bins};
     if (impl_->is_parakeet) return {impl_->pk_time_frames, impl_->pk_num_mel_bins};
     return {1, impl_->n_mels, impl_->T_mel};
 }
 std::vector<int> QNNDirectEncoder::get_output_shape() const {
+    if (impl_->is_g4a) {
+        int od = impl_->g4a_out_dim > 0 ? impl_->g4a_out_dim : impl_->g4a_hidden;
+        return {impl_->g4a_chunk_out, od};
+    }
     if (impl_->is_parakeet) return {impl_->pk_T_out, impl_->pk_hidden_dim};
     return {impl_->T_enc, impl_->hidden_dim};
 }
 __fp16* QNNDirectEncoder::get_output_buffer() {
+    if (impl_->is_g4a)
+        return reinterpret_cast<__fp16*>(impl_->g4a_output_buf.data());
     if (impl_->is_parakeet && impl_->pk_n_segs > 0)
         return reinterpret_cast<__fp16*>(impl_->pk_segs[impl_->pk_n_segs].out_buf.data());
     return reinterpret_cast<__fp16*>(impl_->output_buf.data());
 }
 size_t QNNDirectEncoder::get_output_buffer_size() const {
+    if (impl_->is_g4a) {
+        int od = impl_->g4a_out_dim > 0 ? impl_->g4a_out_dim : impl_->g4a_hidden;
+        return (size_t)impl_->g4a_chunk_out * od;
+    }
     if (impl_->is_parakeet) return (size_t)impl_->pk_T_out * impl_->pk_hidden_dim;
     return impl_->output_buf.size();
 }

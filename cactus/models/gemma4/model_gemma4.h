@@ -354,6 +354,9 @@ private:
     struct ForwardResult {
         size_t final_hidden_node;
         size_t seq_len;
+        size_t audio_soft_node = 0;
+        size_t num_audio_soft_tokens = 0;
+        size_t audio_tower_node = 0;
     };
 
     ForwardResult forward_multimodal(CactusGraph* gb, const std::vector<uint32_t>& tokens,
@@ -376,6 +379,9 @@ public:
         size_t pli_hidden_source_node = 0;
         std::vector<uint32_t> pli_tokens;
         size_t seq_len = 0;
+        size_t audio_soft_node = 0;
+        size_t num_audio_soft_tokens = 0;
+        size_t audio_tower_node = 0;
     };
 
     const Gemma4VisionModel& vision_encoder() const { return vision_encoder_; }

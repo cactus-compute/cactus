@@ -289,6 +289,9 @@ void cactus_subtract_f16(const __fp16* a, const __fp16* b, __fp16* output, size_
 }
 
 void cactus_multiply_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements) {
+    constexpr float FP16_MAX = 65504.0f;
+    const float32x4_t fp16_max_v = vdupq_n_f32(FP16_MAX);
+    const float32x4_t fp16_min_v = vdupq_n_f32(-FP16_MAX);
     const bool use_streaming = num_elements >= STREAMING_STORE_THRESHOLD;
     CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::ELEMENT_WISE,
         [&](size_t start_idx, size_t end_idx) {
@@ -299,18 +302,33 @@ void cactus_multiply_f16(const __fp16* a, const __fp16* b, __fp16* output, size_
                 for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                     float16x8_t a_vec = vld1q_f16(&a[i]);
                     float16x8_t b_vec = vld1q_f16(&b[i]);
-                    stream_store_f16x8(&output[i], vmulq_f16(a_vec, b_vec));
+                    float32x4_t a_lo = vcvt_f32_f16(vget_low_f16(a_vec));
+                    float32x4_t a_hi = vcvt_f32_f16(vget_high_f16(a_vec));
+                    float32x4_t b_lo = vcvt_f32_f16(vget_low_f16(b_vec));
+                    float32x4_t b_hi = vcvt_f32_f16(vget_high_f16(b_vec));
+                    float32x4_t r_lo = vminq_f32(vmaxq_f32(vmulq_f32(a_lo, b_lo), fp16_min_v), fp16_max_v);
+                    float32x4_t r_hi = vminq_f32(vmaxq_f32(vmulq_f32(a_hi, b_hi), fp16_min_v), fp16_max_v);
+                    stream_store_f16x8(&output[i], vcombine_f16(vcvt_f16_f32(r_lo), vcvt_f16_f32(r_hi)));
                 }
             } else {
                 for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                     float16x8_t a_vec = vld1q_f16(&a[i]);
                     float16x8_t b_vec = vld1q_f16(&b[i]);
-                    vst1q_f16(&output[i], vmulq_f16(a_vec, b_vec));
+                    float32x4_t a_lo = vcvt_f32_f16(vget_low_f16(a_vec));
+                    float32x4_t a_hi = vcvt_f32_f16(vget_high_f16(a_vec));
+                    float32x4_t b_lo = vcvt_f32_f16(vget_low_f16(b_vec));
+                    float32x4_t b_hi = vcvt_f32_f16(vget_high_f16(b_vec));
+                    float32x4_t r_lo = vminq_f32(vmaxq_f32(vmulq_f32(a_lo, b_lo), fp16_min_v), fp16_max_v);
+                    float32x4_t r_hi = vminq_f32(vmaxq_f32(vmulq_f32(a_hi, b_hi), fp16_min_v), fp16_max_v);
+                    vst1q_f16(&output[i], vcombine_f16(vcvt_f16_f32(r_lo), vcvt_f16_f32(r_hi)));
                 }
             }
 
             for (size_t i = vectorized_end; i < end_idx; ++i) {
-                output[i] = a[i] * b[i];
+                float r = (float)a[i] * (float)b[i];
+                if (r > FP16_MAX) r = FP16_MAX;
+                else if (r < -FP16_MAX) r = -FP16_MAX;
+                output[i] = (__fp16)r;
             }
         });
 }

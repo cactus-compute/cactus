@@ -343,6 +343,8 @@ void Gemma4AudioModel::load_weights_to_graph(CactusGraph* gb) {
         return Gemma4AudioModel::AudioWeightNodes::ClipBounds{0, 0, 0, 0};
     };
 
+    if (std::getenv("CACTUS_NO_NPU_ENC")) { disable_npu_ = true; fprintf(stderr, "[g4a] CACTUS_NO_NPU_ENC set, disable_npu_=true\n"); }
+    fprintf(stderr, "[g4a] disable_npu_=%d npu_avail=%d\n", (int)disable_npu_, (int)npu::is_npu_available());
     if (!disable_npu_ && npu::is_npu_available()) {
         std::string npu_path = model_folder_path_ + "/audio_encoder.mlpackage";
         if (std::filesystem::exists(npu_path)) {
@@ -357,7 +359,19 @@ void Gemma4AudioModel::load_weights_to_graph(CactusGraph* gb) {
                 CACTUS_LOG_WARN("npu", "[gemma4-audio] found audio_encoder.mlpackage but failed to enable NPU audio encoder; using CPU");
             }
         } else {
+#if !defined(__APPLE__)
+            npu_encoder_ = npu::create_encoder();
+            if (npu_encoder_ && npu_encoder_->load(model_folder_path_)) {
+                use_npu_encoder_ = true;
+                npu_encoder_->preallocate(npu_encoder_->get_input_shape(), "mel", "");
+            } else {
+                use_npu_encoder_ = false;
+                npu_encoder_.reset();
+                CACTUS_LOG_WARN("npu", "[gemma4-audio] QNN direct encoder failed to load; using CPU audio encoder");
+            }
+#else
             CACTUS_LOG_WARN("npu", "[gemma4-audio] audio_encoder.mlpackage not found; using CPU audio encoder");
+#endif
         }
     } else if (!disable_npu_) {
         CACTUS_LOG_WARN("npu", "[gemma4-audio] NPU backend unavailable on this device; using CPU audio encoder");
@@ -684,73 +698,119 @@ size_t Gemma4AudioModel::build_conformer_block(CactusGraph* gb, size_t hidden, u
 
 size_t Gemma4AudioModel::forward_audio(CactusGraph* gb, const std::vector<float>& mel_features,
                                            size_t num_frames, ComputeBackend backend) {
+    fprintf(stderr, "[g4a-debug] forward_audio: %zu frames, mel_size=%zu\n", num_frames, mel_features.size());
+    fprintf(stderr, "[g4a-debug] mel[0] first 8:");
+    for (int _i = 0; _i < 8 && _i < (int)mel_features.size(); _i++)
+        fprintf(stderr, " %.4f", mel_features[_i]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[g4a-debug] use_npu=%d avail=%d\n", (int)use_npu_encoder_, (npu_encoder_ && npu_encoder_->is_available()) ? 1 : 0);
     if (use_npu_encoder_ && npu_encoder_ && npu_encoder_->is_available()) {
         std::vector<int> npu_input_shape = npu_encoder_->get_input_shape();
         size_t mel_bins = static_cast<size_t>(config_.audio_input_feat_size);
         size_t max_npu_frames = infer_npu_audio_max_frames(npu_input_shape, mel_bins);
-        size_t copy_frames = max_npu_frames > 0 ? std::min(num_frames, max_npu_frames) : num_frames;
-        size_t input_values = copy_frames * mel_bins;
-
-        if (mel_features.size() < input_values) {
-            CACTUS_LOG_WARN("npu", "[gemma4-audio] insufficient mel input values; falling back to CPU audio encoder");
-        } else if (!pack_gemma4_audio_for_npu(mel_features, copy_frames, mel_bins, npu_input_shape,
-                                                 npu_audio_input_scratch_)) {
-            CACTUS_LOG_WARN("npu", "[gemma4-audio] unsupported NPU input shape; falling back to CPU audio encoder");
-        } else {
-            size_t t1 = (copy_frames + 1) / 2;
-            size_t t2 = (t1 + 1) / 2;
+        fprintf(stderr, "[g4a-debug] input_shape=[");
+        for (size_t _i = 0; _i < npu_input_shape.size(); _i++) fprintf(stderr, "%s%d", _i?",":"", npu_input_shape[_i]);
+        fprintf(stderr, "] mel_bins=%zu max_npu_frames=%zu\n", mel_bins, max_npu_frames);
+        if (max_npu_frames > 0 && num_frames > 0) {
             size_t expected_out_dim = config_.audio_output_proj_dims > 0
                 ? static_cast<size_t>(config_.audio_output_proj_dims)
                 : static_cast<size_t>(config_.audio_hidden_dim);
 
             std::vector<int> out_shape = npu_encoder_->get_output_shape();
+            size_t t2_full = ((max_npu_frames + 1) / 2 + 1) / 2;
             size_t out_elements = npu_encoder_->get_output_buffer_size();
             if (out_elements == 0) out_elements = shape_elements(out_shape);
-            if (out_elements == 0) out_elements = std::max<size_t>(1, t2 * expected_out_dim);
+            if (out_elements == 0) out_elements = std::max<size_t>(1, t2_full * expected_out_dim);
 
             if (npu_audio_output_scratch_.size() < out_elements)
                 npu_audio_output_scratch_.resize(out_elements);
 
-            size_t written = npu_encoder_->encode(
-                npu_audio_input_scratch_.data(), npu_audio_output_scratch_.data(), npu_input_shape, "mel", "");
+            size_t num_chunks = (num_frames + max_npu_frames - 1) / max_npu_frames;
+            std::vector<float> chunk_mel_f32(max_npu_frames * mel_bins, 0.0f);
+            std::vector<__fp16> all_audio_tokens;
+            all_audio_tokens.reserve(num_chunks * t2_full * expected_out_dim);
 
-            NPUAudioOutputLayout out_layout;
-            if (written > 0 &&
-                infer_npu_audio_output_layout(out_shape, written, expected_out_dim, out_layout) &&
-                out_layout.hidden_dim == expected_out_dim) {
+            NPUAudioOutputLayout out_layout{};
+            bool layout_known = false;
+            bool npu_ok = true;
+
+            for (size_t chunk_idx = 0; chunk_idx < num_chunks && npu_ok; chunk_idx++) {
+                size_t frame_start = chunk_idx * max_npu_frames;
+                size_t frame_end = std::min(frame_start + max_npu_frames, num_frames);
+                size_t this_frames = frame_end - frame_start;
+
+                std::fill(chunk_mel_f32.begin(), chunk_mel_f32.end(), 0.0f);
+                for (size_t t = 0; t < this_frames; t++)
+                    for (size_t m = 0; m < mel_bins; m++)
+                        chunk_mel_f32[t * mel_bins + m] = mel_features[(frame_start + t) * mel_bins + m];
+
+                if (!pack_gemma4_audio_for_npu(chunk_mel_f32, max_npu_frames, mel_bins, npu_input_shape,
+                                               npu_audio_input_scratch_)) {
+                    CACTUS_LOG_WARN("npu", "[gemma4-audio] unsupported NPU input shape; falling back to CPU audio encoder");
+                    npu_ok = false; break;
+                }
+
+                size_t written = npu_encoder_->encode(
+                    npu_audio_input_scratch_.data(), npu_audio_output_scratch_.data(), npu_input_shape, "mel", "");
+
+                if (written == 0) {
+                    CACTUS_LOG_WARN("npu", "[gemma4-audio] chunk encode failed; falling back to CPU audio encoder");
+                    npu_ok = false; break;
+                }
+
+                if (!layout_known) {
+                    if (!infer_npu_audio_output_layout(out_shape, written, expected_out_dim, out_layout) ||
+                        out_layout.hidden_dim != expected_out_dim) {
+                        CACTUS_LOG_WARN("npu", "[gemma4-audio] NPU output layout mismatch; falling back to CPU audio encoder");
+                        npu_ok = false; break;
+                    }
+                    layout_known = true;
+                }
+
                 const __fp16* src = npu_audio_output_scratch_.data();
                 __fp16* cached_output = npu_encoder_->get_output_buffer();
                 size_t cached_count = npu_encoder_->get_output_buffer_size();
-                size_t required = out_layout.time_steps * out_layout.hidden_dim;
-                if (cached_output != nullptr && cached_count >= required) {
+                if (cached_output != nullptr && cached_count >= out_layout.time_steps * out_layout.hidden_dim)
                     src = cached_output;
-                }
 
+                size_t t1 = (this_frames + 1) / 2;
+                size_t t2 = (t1 + 1) / 2;
                 size_t actual_time = std::min(t2, out_layout.time_steps);
-                if (actual_time > 0) {
-                    const __fp16* final_src = src;
-                    if (out_layout.hidden_axis != (out_layout.dims.size() - 1)) {
-                        if (!materialize_npu_audio_time_major(src, out_layout, actual_time,
-                                                              npu_audio_reorder_scratch_)) {
-                            CACTUS_LOG_WARN("npu", "[gemma4-audio] failed to reorder NPU output layout; falling back to CPU audio encoder");
-                        } else {
-                            final_src = npu_audio_reorder_scratch_.data();
-                        }
-                    }
+                if (actual_time == 0) continue;
 
-                    if (final_src != nullptr) {
-                        size_t hidden = gb->input({actual_time, out_layout.hidden_dim}, Precision::FP16);
-                        gb->set_input(hidden, final_src, Precision::FP16);
-                        return hidden;
+                const __fp16* final_src = src;
+                if (out_layout.hidden_axis != (out_layout.dims.size() - 1)) {
+                    if (!materialize_npu_audio_time_major(src, out_layout, actual_time,
+                                                          npu_audio_reorder_scratch_)) {
+                        CACTUS_LOG_WARN("npu", "[gemma4-audio] reorder failed; falling back to CPU audio encoder");
+                        npu_ok = false; break;
                     }
+                    final_src = npu_audio_reorder_scratch_.data();
                 }
+
+                for (size_t t = 0; t < actual_time; t++)
+                    for (size_t d = 0; d < expected_out_dim; d++)
+                        all_audio_tokens.push_back(final_src[t * expected_out_dim + d]);
             }
 
-            if (written > 0 && out_layout.hidden_dim != expected_out_dim) {
-                CACTUS_LOG_WARN("npu", "[gemma4-audio] NPU output dim mismatch; falling back to CPU audio encoder");
+            if (npu_ok && !all_audio_tokens.empty()) {
+                size_t total_tokens = all_audio_tokens.size() / expected_out_dim;
+                fprintf(stderr, "[g4a-debug] NPU encoder OK: %zu tokens x %zu dim\n", total_tokens, expected_out_dim);
+                for (int _tok = 0; _tok < 3 && _tok < (int)total_tokens; _tok++) {
+                    double _norm = 0;
+                    for (size_t _i = 0; _i < expected_out_dim; _i++) _norm += (double)all_audio_tokens[_tok*expected_out_dim+_i]*(double)all_audio_tokens[_tok*expected_out_dim+_i];
+                    fprintf(stderr, "[g4a-debug] NPU tok%d first4:", _tok);
+                    for (int _i = 0; _i < 4; _i++) fprintf(stderr, " %.4f", (float)all_audio_tokens[_tok*expected_out_dim+_i]);
+                    fprintf(stderr, " norm=%.2f\n", std::sqrt(_norm));
+                }
+                size_t hidden = gb->input({total_tokens, expected_out_dim}, Precision::FP16);
+                gb->set_input(hidden, all_audio_tokens.data(), Precision::FP16);
+                return hidden;
             } else {
-                CACTUS_LOG_WARN("npu", "audio encode failed, falling back to CPU");
+                fprintf(stderr, "[g4a-debug] NPU FAILED: npu_ok=%d all_audio_tokens.size=%zu\n", (int)npu_ok, all_audio_tokens.size());
             }
+        } else if (max_npu_frames == 0) {
+            CACTUS_LOG_WARN("npu", "[gemma4-audio] could not infer NPU frame count; falling back to CPU audio encoder");
         }
     }
 
@@ -768,7 +828,8 @@ size_t Gemma4AudioModel::forward_audio(CactusGraph* gb, const std::vector<float>
 }
 
 size_t Gemma4AudioModel::build_audio_projector(CactusGraph* gb, size_t audio_features, ComputeBackend backend) {
-    size_t normed = gb->rms_norm(audio_features, audio_proj_norm_ones_node_, config_.audio_rms_norm_eps);
+    float eps = config_.audio_rms_norm_eps > 0 ? config_.audio_rms_norm_eps : 1e-6f;
+    size_t normed = gb->rms_norm(audio_features, audio_proj_norm_ones_node_, eps);
     size_t projected = gb->matmul(normed, audio_weights_.embed_audio_proj, true, backend);
     return gb->scalar_multiply(projected, 1.0f / 16.0f);
 }

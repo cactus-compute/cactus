@@ -193,8 +193,8 @@ int cactus_transcribe(
             }
 
             std::string task_text = (prompt[0] != '\0') ? std::string(prompt) : "Transcribe the audio.";
-            auto prefix_tokens = tokenizer->encode("<bos><|turn>user\n" + task_text + "<|audio>");
-            auto suffix_tokens = tokenizer->encode("<audio|><turn|>\n<|turn>model\n");
+            auto prefix_tokens = tokenizer->encode("<bos><|turn>user\n<|audio>");
+            auto suffix_tokens = tokenizer->encode("<audio|>" + task_text + "<turn|>\n<|turn>model\n");
 
             std::vector<uint32_t> tokens;
             tokens.reserve(prefix_tokens.size() + num_soft_tokens + suffix_tokens.size());
@@ -202,6 +202,14 @@ int cactus_transcribe(
             for (size_t j = 0; j < num_soft_tokens; j++)
                 tokens.push_back(audio_token_id);
             tokens.insert(tokens.end(), suffix_tokens.begin(), suffix_tokens.end());
+
+            CACTUS_LOG_WARN("transcribe", "[g4a] prefix_tokens: " << prefix_tokens.size() << " ids:");
+            for (auto t : prefix_tokens) fprintf(stderr, " %u", t);
+            fprintf(stderr, "\n");
+            CACTUS_LOG_WARN("transcribe", "[g4a] audio_token_id=" << audio_token_id << " num_soft=" << num_soft_tokens);
+            CACTUS_LOG_WARN("transcribe", "[g4a] suffix_tokens: " << suffix_tokens.size() << " ids:");
+            for (auto t : suffix_tokens) fprintf(stderr, " %u", t);
+            fprintf(stderr, "\n");
 
             std::vector<std::vector<uint32_t>> stop_token_sequences = {{ tokenizer->get_eos_token() }};
             auto append_stop = [&](const char* stop_text) {

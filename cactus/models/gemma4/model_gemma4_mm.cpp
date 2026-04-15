@@ -90,7 +90,7 @@ Gemma4MmModel::ForwardResult Gemma4MmModel::forward_multimodal(
         backend,
         use_cache);
 
-    return ForwardResult{final_hidden, inputs.seq_len};
+    return ForwardResult{final_hidden, inputs.seq_len, inputs.audio_soft_node, inputs.num_audio_soft_tokens, inputs.audio_tower_node};
 }
 
 Gemma4MmModel::MultimodalInputs Gemma4MmModel::build_multimodal_inputs(
@@ -104,6 +104,7 @@ Gemma4MmModel::MultimodalInputs Gemma4MmModel::build_multimodal_inputs(
     size_t num_vision_soft_tokens = 0;
     size_t audio_soft_node = 0;
     size_t num_audio_soft_tokens = 0;
+    size_t audio_tower_node = 0;
 
     if (!image_paths.empty()) {
         auto preprocessed = vision_encoder_.preprocess_image(image_paths[0]);
@@ -115,6 +116,7 @@ Gemma4MmModel::MultimodalInputs Gemma4MmModel::build_multimodal_inputs(
 
     if (audio_features && !audio_features->empty()) {
         size_t audio_output = audio_encoder_.forward_audio(gb, *audio_features, audio_num_frames, backend);
+        audio_tower_node = audio_output;
         audio_soft_node = audio_encoder_.build_audio_projector(gb, audio_output, backend);
         const auto& audio_buf = gb->get_output_buffer(audio_soft_node);
         num_audio_soft_tokens = audio_buf.shape[0];
@@ -234,6 +236,9 @@ Gemma4MmModel::MultimodalInputs Gemma4MmModel::build_multimodal_inputs(
         .pli_hidden_source_node = merged,
         .pli_tokens = std::move(pli_tokens),
         .seq_len = total_seq_len,
+        .audio_soft_node = audio_soft_node,
+        .num_audio_soft_tokens = num_audio_soft_tokens,
+        .audio_tower_node = audio_tower_node,
     };
 }
 
@@ -274,12 +279,18 @@ uint32_t Gemma4MmModel::decode_multimodal(
 
     size_t seq_len_for_updates = 0;
     size_t final_hidden_node = 0;
+    size_t dbg_audio_soft_node = 0;
+    size_t dbg_num_audio_toks = 0;
+    size_t dbg_audio_tower_node = 0;
 
     if (need_prefill) {
         auto result = forward_multimodal(gb, tokens, image_paths, audio_features,
                                           audio_num_frames, backend, true);
         final_hidden_node = result.final_hidden_node;
         seq_len_for_updates = result.seq_len;
+        dbg_audio_soft_node = result.audio_soft_node;
+        dbg_num_audio_toks = result.num_audio_soft_tokens;
+        dbg_audio_tower_node = result.audio_tower_node;
         prefill_completed_ = true;
         last_token_count_ = tokens.size();
     } else {
@@ -319,6 +330,116 @@ uint32_t Gemma4MmModel::decode_multimodal(
 
     auto* output_ptr = gb->get_output(sampled_token);
     uint32_t result_token = *static_cast<uint32_t*>(output_ptr);
+
+    if (need_prefill && dbg_audio_tower_node != 0) {
+        void* _atptr = gb->get_output(dbg_audio_tower_node);
+        const auto& _atbuf = gb->get_output_buffer(dbg_audio_tower_node);
+        if (_atptr && _atbuf.total_size > 0 && _atbuf.precision == Precision::FP16) {
+            auto* _atf = static_cast<__fp16*>(_atptr);
+            size_t _atdim = _atbuf.shape.size() > 0 ? _atbuf.shape.back() : 0;
+            fprintf(stderr, "[mm-dbg] audio_tower_out: dim=%zu tok0 first8:", _atdim);
+            for (size_t _i = 0; _i < 8 && _i < _atbuf.total_size; _i++)
+                fprintf(stderr, " %.4f", (float)_atf[_i]);
+            double _n2 = 0;
+            for (size_t _i = 0; _i < _atdim && _i < _atbuf.total_size; _i++) _n2 += (double)_atf[_i]*(double)_atf[_i];
+            fprintf(stderr, " norm=%.2f\n", std::sqrt(_n2));
+        }
+    }
+
+    if (need_prefill && dbg_audio_soft_node != 0) {
+        void* _aptr = gb->get_output(dbg_audio_soft_node);
+        const auto& _abuf = gb->get_output_buffer(dbg_audio_soft_node);
+        if (_aptr && _abuf.total_size > 0) {
+            auto* _af = static_cast<__fp16*>(_aptr);
+            size_t _adim = _abuf.shape.size() >= 2 ? _abuf.shape[1] : 1536;
+            fprintf(stderr, "[mm-dbg] audio_proj: %zu toks, %zu dim\n", dbg_num_audio_toks, _adim);
+            {
+                double _norm0 = 0.0;
+                for (size_t _di = 0; _di < _adim; _di++) { float _v = (float)_af[_di]; _norm0 += _v*_v; }
+                fprintf(stderr, "[mm-dbg] audio_proj tok0 first8:");
+                for (size_t _di = 0; _di < 8 && _di < _adim; _di++) fprintf(stderr, " %.4f", (float)_af[_di]);
+                fprintf(stderr, " norm=%.2f\n", std::sqrt(_norm0));
+            }
+            for (size_t _ti = 0; _ti < dbg_num_audio_toks; _ti++) {
+                float _v0 = (float)_af[_ti * _adim];
+                float _v1 = (float)_af[_ti * _adim + 1];
+                float _vmax = 0.0f;
+                bool _has_nan = false, _has_inf = false;
+                for (size_t _di = 0; _di < _adim; _di++) {
+                    float _v = (float)_af[_ti * _adim + _di];
+                    if (std::isnan(_v)) _has_nan = true;
+                    if (std::isinf(_v)) _has_inf = true;
+                    if (std::abs(_v) > _vmax) _vmax = std::abs(_v);
+                }
+                if (_has_nan || _has_inf || _vmax > 100.0f) {
+                    fprintf(stderr, "[mm-dbg]   audio[%zu]: %.3f %.3f max=%.1f %s%s\n",
+                            _ti, _v0, _v1, _vmax,
+                            _has_nan ? "<<NaN!>>" : "", _has_inf ? "<<Inf!>>" : "");
+                }
+            }
+        }
+    }
+
+    if (need_prefill) {
+        const auto& _fhbuf = gb->get_output_buffer(final_hidden_node);
+        void* _fhptr = gb->get_output(final_hidden_node);
+        fprintf(stderr, "[mm-dbg] final_hidden: total=%zu shape[", _fhbuf.total_size);
+        for (size_t _si = 0; _si < _fhbuf.shape.size(); _si++) fprintf(stderr, "%s%d", _si?",":"", _fhbuf.shape[_si]);
+        fprintf(stderr, "] prec=%d ptr=%p\n", (int)_fhbuf.precision, _fhptr);
+        if (_fhptr && _fhbuf.total_size >= 10) {
+            auto* _h = static_cast<__fp16*>(_fhptr);
+            size_t _hdim = _fhbuf.shape.size() >= 2 ? _fhbuf.shape[1] : 1536;
+            size_t _nseq = _fhbuf.total_size / _hdim;
+            fprintf(stderr, "[mm-dbg] final_hidden: %zu seq, %zu hdim\n", _nseq, _hdim);
+            for (size_t _ti : {(size_t)0, (size_t)3, (size_t)4, (size_t)5, (size_t)6, (size_t)8, (size_t)10, (size_t)15, (size_t)16, (size_t)17, (size_t)18, (size_t)19, (size_t)20, (size_t)50, (size_t)102, (size_t)103, _nseq-1}) {
+                if (_ti >= _nseq) continue;
+                float _v0 = (float)_h[_ti * _hdim];
+                float _v1 = (float)_h[_ti * _hdim + 1];
+                bool _is_nan = std::isnan(_v0) || std::isnan(_v1);
+                fprintf(stderr, "[mm-dbg]   tok[%zu]: %.3f %.3f %s\n", _ti, _v0, _v1, _is_nan ? "<<NaN!>>" : "");
+            }
+        }
+    }
+
+    static int _mm_dbg_step = 0;
+    if (_mm_dbg_step < 3) {
+        const auto& _lbuf = gb->get_output_buffer(logits_node);
+        void* _lptr = gb->get_output(logits_node);
+        size_t _lvocab = _lbuf.total_size;
+        fprintf(stderr, "[mm-dbg] logits buf: total=%zu prec=%d shape[", _lvocab, (int)_lbuf.precision);
+        for (size_t _si = 0; _si < _lbuf.shape.size(); _si++) fprintf(stderr, "%s%d", _si?",":"", _lbuf.shape[_si]);
+        fprintf(stderr, "] ptr=%p seq_len=%zu\n", _lptr, seq_len_for_updates);
+        const auto& _ihbuf = gb->get_output_buffer(last_hidden);
+        fprintf(stderr, "[mm-dbg] last_hidden buf: total=%zu shape[", _ihbuf.total_size);
+        for (size_t _si = 0; _si < _ihbuf.shape.size(); _si++) fprintf(stderr, "%s%d", _si?",":"", _ihbuf.shape[_si]);
+        fprintf(stderr, "]\n");
+        if (_lptr && _lvocab > 0) {
+            std::vector<float> _lf(_lvocab);
+            if (_lbuf.precision == Precision::FP32) {
+                std::copy(static_cast<float*>(_lptr), static_cast<float*>(_lptr) + _lvocab, _lf.begin());
+            } else if (_lbuf.precision == Precision::FP16) {
+                auto* _h = static_cast<__fp16*>(_lptr);
+                for (size_t _i = 0; _i < _lvocab; _i++) _lf[_i] = (float)_h[_i];
+            } else {
+                auto* _b = static_cast<uint16_t*>(_lptr);
+                for (size_t _i = 0; _i < _lvocab; _i++) { uint32_t _u = (uint32_t)_b[_i] << 16; memcpy(&_lf[_i], &_u, 4); }
+            }
+            size_t top5[5] = {}; float top5v[5] = {-1e30f,-1e30f,-1e30f,-1e30f,-1e30f};
+            for (size_t _i = 0; _i < _lvocab; _i++) {
+                float _v = _lf[_i];
+                if (_v > top5v[4]) {
+                    top5v[4] = _v; top5[4] = _i;
+                    for (int _j = 3; _j >= 0; _j--) if (top5v[_j+1] > top5v[_j]) { std::swap(top5v[_j],top5v[_j+1]); std::swap(top5[_j],top5[_j+1]); }
+                }
+            }
+            fprintf(stderr, "[mm-dbg] step=%d prefill=%d prec=%d top5: [%zu]=%.2f [%zu]=%.2f [%zu]=%.2f [%zu]=%.2f [%zu]=%.2f → %u\n",
+                _mm_dbg_step, (int)need_prefill, (int)_lbuf.precision,
+                top5[0],top5v[0], top5[1],top5v[1], top5[2],top5v[2], top5[3],top5v[3], top5[4],top5v[4],
+                result_token);
+        }
+        _mm_dbg_step++;
+    }
+
     language_model_.record_sampled_token(result_token);
     return result_token;
 }
@@ -433,6 +554,20 @@ std::vector<float> Gemma4MmModel::get_audio_embeddings(const std::vector<float>&
     size_t projected = audio_encoder_.build_audio_projector(gb, audio_output, backend);
 
     gb->execute();
+
+    {
+        const auto& ao_buf = gb->get_output_buffer(audio_output);
+        if (ao_buf.total_size > 0 && ao_buf.precision == Precision::FP16) {
+            const __fp16* ao_data = ao_buf.data_as<__fp16>();
+            size_t ao_dim = ao_buf.shape.size() > 0 ? ao_buf.shape.back() : 0;
+            fprintf(stderr, "[mm-dbg] audio_tower_out: dim=%zu tok0 first8:", ao_dim);
+            for (size_t _i = 0; _i < 8 && _i < ao_buf.total_size; _i++)
+                fprintf(stderr, " %.4f", (float)ao_data[_i]);
+            double _n2 = 0;
+            for (size_t _i = 0; _i < ao_dim && _i < ao_buf.total_size; _i++) _n2 += (double)ao_data[_i]*(double)ao_data[_i];
+            fprintf(stderr, " norm=%.2f\n", std::sqrt(_n2));
+        }
+    }
 
     const auto& buf = gb->get_output_buffer(projected);
     size_t total = buf.total_size;
