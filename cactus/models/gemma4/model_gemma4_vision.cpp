@@ -463,6 +463,9 @@ size_t Gemma4VisionModel::forward_vision(CactusGraph* gb, const PreprocessedImag
             max_patches = config_.vision_default_output_length * pooling_k * pooling_k;
         }
     }
+    if (!can_use_npu_path) {
+        max_patches = num_real;
+    }
     size_t num_padding = max_patches - num_real;
 
     if (num_padding > 0) {
@@ -521,8 +524,28 @@ size_t Gemma4VisionModel::forward_vision(CactusGraph* gb, const PreprocessedImag
                 hidden = build_vision_transformer_block(gb, hidden, i, cos_node, sin_node, attn_mask_node, backend);
         }
     } else {
-        for (uint32_t i = 0; i < config_.vision_num_layers; i++)
-            hidden = build_vision_transformer_block(gb, hidden, i, cos_node, sin_node, attn_mask_node, backend);
+        for (uint32_t i = 0; i < config_.vision_num_layers; i++) {
+            auto [cn, sn] = build_2d_rope_nodes(gb, img, num_real);
+            hidden = build_vision_transformer_block(gb, hidden, i, cn, sn, 0, backend);
+            gb->execute();
+
+            const auto& out_buf = gb->get_output_buffer(hidden);
+            std::vector<char> tmp(out_buf.byte_size);
+            std::memcpy(tmp.data(), out_buf.get_data(), out_buf.byte_size);
+            auto shape = out_buf.shape;
+            auto prec = out_buf.precision;
+
+            const auto& lw = vision_weights_.layers[i];
+            for (size_t wn : {lw.attn_q_weight, lw.attn_k_weight, lw.attn_v_weight,
+                              lw.attn_output_weight, lw.mlp_gate_proj, lw.mlp_up_proj, lw.mlp_down_proj})
+                gb->release_weight_pages(wn);
+
+            gb->soft_reset_keep_pool();
+            hidden = gb->input(shape, prec);
+            gb->set_input(hidden, tmp.data(), prec);
+        }
+        gb->release_weight_pages(vision_weights_.patch_input_proj);
+        gb->release_weight_pages(vision_weights_.position_table);
     }
 
     if (num_padding > 0)
