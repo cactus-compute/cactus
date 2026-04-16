@@ -74,11 +74,9 @@ file(GLOB KERNEL_SOURCES CONFIGURE_DEPENDS "kernel/*.cpp")
 file(GLOB FFI_SOURCES CONFIGURE_DEPENDS "ffi/*.cpp")
 file(GLOB MODEL_SOURCES CONFIGURE_DEPENDS "models/*.cpp" "models/gemma4/*.cpp")
 file(GLOB TELEMETRY_SOURCES CONFIGURE_DEPENDS "telemetry/*.cpp")
-
-set(SME2_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_sme2.cpp")
 set(I8MM_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_i8mm.cpp")
-list(REMOVE_ITEM KERNEL_SOURCES "${SME2_SOURCE}")
 list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
+
 
 if(APPLE)
     set(NPU_SOURCES "npu/npu_ane.mm")
@@ -141,41 +139,6 @@ function(configure_cactus_target target_name)
     endif()
 endfunction()
 
-set(ENABLE_SME2 "AUTO" CACHE STRING "SME2 build mode: AUTO or OFF")
-set_property(CACHE ENABLE_SME2 PROPERTY STRINGS AUTO OFF)
-
-set(BUILD_SME2 0)
-set(SME2_MARCH_FLAG "-march=armv9.2-a+nosve+nosve2+sme2")
-if(ENABLE_SME2 STREQUAL "AUTO")
-	if(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
-		include(CheckCXXSourceCompiles)
-		set(CMAKE_REQUIRED_FLAGS "-arch arm64 ${SME2_MARCH_FLAG}")
-		check_cxx_source_compiles("
-			#include <arm_sme.h>
-			int main() { return 0; }
-		" COMPILER_SUPPORTS_SME2)
-		unset(CMAKE_REQUIRED_FLAGS)
-
-		if(COMPILER_SUPPORTS_SME2)
-			set(BUILD_SME2 1)
-			message(STATUS "Toolchain supports SME2 - building SME2 kernels")
-		else()
-			message(STATUS "Compiler does not support SME2 - building without SME2")
-		endif()
-
-	else()
-		message(STATUS "Non-arm64 target - building without SME2")
-	endif()
-
-endif()
-
-if(BUILD_SME2)
-	add_library(cactus_sme2_obj OBJECT ${SME2_SOURCE})
-	target_include_directories(cactus_sme2_obj PRIVATE ${COMMON_INCLUDES})
-	target_compile_options(cactus_sme2_obj PRIVATE ${SME2_MARCH_FLAG})
-	set_target_properties(cactus_sme2_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
-	target_compile_definitions(cactus_sme2_obj PRIVATE CACTUS_COMPILE_SME2)
-endif()
 
 # I8MM support: compile kernel_i8mm.cpp with +i8mm
 set(I8MM_MARCH_FLAG "-march=armv8.2-a+fp16+simd+dotprod+i8mm")
@@ -186,17 +149,11 @@ set_target_properties(cactus_i8mm_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(cactus_i8mm_obj PRIVATE CACTUS_COMPILE_I8MM __ARM_FEATURE_MATMUL_INT8=1)
 
 set(EXTRA_OBJECTS $<TARGET_OBJECTS:cactus_i8mm_obj>)
-if(BUILD_SME2)
-	set(EXTRA_OBJECTS ${EXTRA_OBJECTS} $<TARGET_OBJECTS:cactus_sme2_obj>)
-endif()
 
 add_library(cactus STATIC ${COMMON_SOURCES} ${EXTRA_OBJECTS})
 configure_cactus_target(cactus)
 target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_I8MM)
 
-if(BUILD_SME2)
-	target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_SME2)
-endif()
 
 add_library(cactus_ffi SHARED ${COMMON_SOURCES} ${EXTRA_OBJECTS})
 configure_cactus_target(cactus_ffi)
@@ -205,7 +162,3 @@ set_target_properties(cactus_ffi PROPERTIES
     OUTPUT_NAME "cactus"
 )
 target_compile_definitions(cactus_ffi PRIVATE CACTUS_COMPILE_I8MM)
-
-if(BUILD_SME2)
-	target_compile_definitions(cactus_ffi PRIVATE CACTUS_COMPILE_SME2)
-endif()

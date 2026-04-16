@@ -5,8 +5,6 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
-#include <optional>
 #include <stdexcept>
 
 extern "C" {
@@ -16,190 +14,6 @@ extern "C" {
 
 namespace cactus {
 namespace engine {
-
-namespace {
-
-constexpr size_t kPreviewCount = 8;
-constexpr size_t kCactusTensorHeaderSize = 84;
-constexpr uint64_t kCoreMLBlobHeaderBytes = 64;
-constexpr float kFloatTol = 0.02f;
-
-static size_t align_up(size_t value, size_t alignment) {
-    if (alignment == 0) return value;
-    size_t remainder = value % alignment;
-    return remainder == 0 ? value : (value + alignment - remainder);
-}
-
-static bool read_file_to_string(const std::filesystem::path& path, std::string& out) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    return true;
-}
-
-static std::optional<uint64_t> find_blob_offset(const std::string& mil_text, const std::string& symbol_name) {
-    size_t symbol_pos = mil_text.find(symbol_name);
-    if (symbol_pos == std::string::npos) return std::nullopt;
-
-    size_t offset_key = mil_text.find("offset = tensor<uint64, []>(", symbol_pos);
-    if (offset_key == std::string::npos) return std::nullopt;
-    offset_key += std::strlen("offset = tensor<uint64, []>(");
-
-    size_t offset_end = mil_text.find(')', offset_key);
-    if (offset_end == std::string::npos) return std::nullopt;
-
-    try {
-        return static_cast<uint64_t>(std::stoull(mil_text.substr(offset_key, offset_end - offset_key)));
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
-static bool read_fp16_preview(
-    const std::filesystem::path& path,
-    uint64_t offset,
-    size_t count,
-    std::vector<float>& out) {
-
-    out.clear();
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-
-    in.seekg(0, std::ios::end);
-    std::streamoff file_size = in.tellg();
-    if (file_size <= 0 || offset >= static_cast<uint64_t>(file_size)) return false;
-
-    size_t max_count = static_cast<size_t>((static_cast<uint64_t>(file_size) - offset) / sizeof(uint16_t));
-    if (max_count == 0) return false;
-    count = std::min(count, max_count);
-
-    in.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-    std::vector<uint16_t> raw(count, 0);
-    in.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(count * sizeof(uint16_t)));
-    if (in.gcount() < static_cast<std::streamsize>(count * sizeof(uint16_t))) return false;
-
-    out.reserve(count);
-    for (uint16_t bits : raw) {
-        __fp16 value;
-        std::memcpy(&value, &bits, sizeof(value));
-        out.push_back(static_cast<float>(value));
-    }
-    return true;
-}
-
-static bool read_cactus_fp16_preview(
-    const std::filesystem::path& path,
-    size_t count,
-    std::vector<float>& out) {
-
-    out.clear();
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-
-    char header[kCactusTensorHeaderSize] = {};
-    in.read(header, sizeof(header));
-    if (in.gcount() != static_cast<std::streamsize>(sizeof(header))) return false;
-
-    if (std::memcmp(header, "CACT", 4) != 0) return false;
-
-    uint32_t alignment = 1;
-    uint64_t byte_size = 0;
-    std::memcpy(&alignment, header + 8, sizeof(alignment));
-    std::memcpy(&byte_size, header + 52, sizeof(byte_size));
-
-    size_t data_offset = align_up(kCactusTensorHeaderSize, alignment == 0 ? 1 : alignment);
-    size_t max_count = static_cast<size_t>(byte_size / sizeof(uint16_t));
-    if (max_count == 0) return false;
-    count = std::min(count, max_count);
-
-    in.seekg(static_cast<std::streamoff>(data_offset), std::ios::beg);
-    std::vector<uint16_t> raw(count, 0);
-    in.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(count * sizeof(uint16_t)));
-    if (in.gcount() < static_cast<std::streamsize>(count * sizeof(uint16_t))) return false;
-
-    out.reserve(count);
-    for (uint16_t bits : raw) {
-        __fp16 value;
-        std::memcpy(&value, &bits, sizeof(value));
-        out.push_back(static_cast<float>(value));
-    }
-    return true;
-}
-
-static bool all_close(const std::vector<float>& lhs, const std::vector<float>& rhs, float tol = kFloatTol) {
-    if (lhs.size() != rhs.size() || lhs.empty()) return false;
-    for (size_t i = 0; i < lhs.size(); ++i) {
-        if (std::fabs(lhs[i] - rhs[i]) > tol) return false;
-    }
-    return true;
-}
-
-static bool all_shifted_by(
-    const std::vector<float>& lhs,
-    const std::vector<float>& rhs,
-    float expected_shift,
-    float tol = kFloatTol) {
-
-    if (lhs.size() != rhs.size() || lhs.empty()) return false;
-    for (size_t i = 0; i < lhs.size(); ++i) {
-        if (std::fabs((lhs[i] - rhs[i]) - expected_shift) > tol) return false;
-    }
-    return true;
-}
-
-static bool gemma4_vision_npu_package_has_shifted_norms(const std::string& model_folder_path) {
-    namespace fs = std::filesystem;
-
-    fs::path model_folder(model_folder_path);
-    fs::path compiled_dir = model_folder / "vision_encoder.mlmodelc";
-    fs::path mil_path = compiled_dir / "model.mil";
-    fs::path weight_bin_path = compiled_dir / "weights" / "weight.bin";
-    fs::path input_norm_path = model_folder / "vision_encoder_layers_0_input_layernorm.weights";
-    fs::path q_norm_path = model_folder / "vision_encoder_layers_0_self_attn_q_norm.weights";
-
-    if (!fs::exists(mil_path) || !fs::exists(weight_bin_path) ||
-        !fs::exists(input_norm_path) || !fs::exists(q_norm_path)) {
-        return false;
-    }
-
-    std::string mil_text;
-    if (!read_file_to_string(mil_path, mil_text)) return false;
-
-    auto input_norm_offset = find_blob_offset(mil_text, "layers_0_input_layernorm_weight_to_fp16");
-    auto q_norm_offset = find_blob_offset(mil_text, "layers_0_self_attn_q_norm_weight_to_fp16");
-    if (!input_norm_offset || !q_norm_offset) return false;
-
-    std::vector<float> cpu_input_norm;
-    std::vector<float> cpu_q_norm;
-    if (!read_cactus_fp16_preview(input_norm_path, kPreviewCount, cpu_input_norm) ||
-        !read_cactus_fp16_preview(q_norm_path, kPreviewCount, cpu_q_norm)) {
-        return false;
-    }
-
-    const uint64_t blob_header_candidates[] = {0, kCoreMLBlobHeaderBytes};
-    for (uint64_t blob_header : blob_header_candidates) {
-        std::vector<float> npu_input_norm;
-        std::vector<float> npu_q_norm;
-
-        if (!read_fp16_preview(weight_bin_path, *input_norm_offset + blob_header, kPreviewCount, npu_input_norm) ||
-            !read_fp16_preview(weight_bin_path, *q_norm_offset + blob_header, kPreviewCount, npu_q_norm)) {
-            continue;
-        }
-
-        if (all_close(npu_input_norm, cpu_input_norm) && all_close(npu_q_norm, cpu_q_norm)) {
-            return false;
-        }
-
-        if (all_shifted_by(npu_input_norm, cpu_input_norm, 1.0f) &&
-            all_shifted_by(npu_q_norm, cpu_q_norm, 1.0f)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-} // namespace
 
 static std::pair<std::vector<float>, std::vector<float>> compute_2d_rope_tables(
     const Gemma4VisionModel::PreprocessedImage& img, size_t max_patches, size_t head_dim, float theta) {
@@ -267,22 +81,14 @@ void Gemma4VisionModel::load_weights_to_graph(CactusGraph* gb) {
         if (std::filesystem::exists(npu_path)) {
             npu_encoder_ = npu::create_encoder();
             if (npu_encoder_ && npu_encoder_->load(npu_path)) {
-                if (gemma4_vision_npu_package_has_shifted_norms(model_folder_path_)) {
-                    use_npu_encoder_ = false;
-                    npu_encoder_.reset();
-                    CACTUS_LOG_WARN("npu",
-                        "[gemma4-vision] detected stale vision_encoder.mlpackage with +1 shifted norm weights; "
-                        "using CPU vision encoder");
-                } else {
-                    use_npu_encoder_ = true;
-                    std::vector<int> input_shape = npu_encoder_->get_input_shape();
-                    if (input_shape.empty()) {
-                        input_shape = {static_cast<int>(config_.vision_default_output_length *
-                            config_.vision_pooling_kernel_size * config_.vision_pooling_kernel_size),
-                            static_cast<int>(config_.vision_embed_dim)};
-                    }
-                    npu_encoder_->preallocate(input_shape, "hidden_states", "output");
+                use_npu_encoder_ = true;
+                std::vector<int> input_shape = npu_encoder_->get_input_shape();
+                if (input_shape.empty()) {
+                    input_shape = {static_cast<int>(config_.vision_default_output_length *
+                        config_.vision_pooling_kernel_size * config_.vision_pooling_kernel_size),
+                        static_cast<int>(config_.vision_embed_dim)};
                 }
+                npu_encoder_->preallocate(input_shape, "hidden_states", "output");
             } else {
                 use_npu_encoder_ = false;
                 npu_encoder_.reset();
