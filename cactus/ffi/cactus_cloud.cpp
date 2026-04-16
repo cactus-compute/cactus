@@ -339,58 +339,68 @@ CloudCompletionResult cloud_complete_request(const CloudCompletionRequest& reque
                                              long timeout_ms) {
 #ifdef CACTUS_USE_CURL
     std::string base = env_or_default("CACTUS_CLOUD_API_BASE", "https://104.198.76.3/api/v1");
-    std::string text_model = env_or_default("CACTUS_CLOUD_TEXT_MODEL", "gemini-2.5-flash");
-    std::string vlm_model = env_or_default("CACTUS_CLOUD_VLM_MODEL", "gemini-2.5-flash");
+    std::string model = env_or_default("CACTUS_CLOUD_MODEL", "gemini-2.5-flash");
 
     std::string endpoint;
     std::string payload;
 
+    std::string img_b64;
+    std::string img_mime;
     if (request.has_images) {
-        std::vector<std::string> image_paths;
         for (const auto& message : request.messages) {
             for (const auto& image : message.images) {
                 if (!image.empty()) {
-                    image_paths.push_back(image);
+                    std::vector<uint8_t> img_bytes;
+                    if (read_file_bytes(image, img_bytes)) {
+                        img_b64 = cloud_base64_encode(img_bytes.data(), img_bytes.size());
+                        img_mime = infer_mime_type(image);
+                    }
+                    break;
                 }
             }
+            if (!img_b64.empty()) break;
         }
+    }
 
-        if (image_paths.size() > 1) {
-            return {false, false, "", {}, "multiple_images_not_supported"};
+    std::string audio_b64;
+    if (request.has_audio && !request.audio_pcm.empty()) {
+        auto wav = cloud_build_wav(request.audio_pcm.data(), request.audio_pcm.size());
+        audio_b64 = cloud_base64_encode(wav.data(), wav.size());
+    }
+
+    std::string text_prompt = build_cloud_text_prompt(request);
+    bool use_omni = !audio_b64.empty() || (request.has_images && request.has_audio);
+
+    if (use_omni) {
+        endpoint = base + "/omni";
+        payload = "{";
+        payload += "\"text\":\"" + escape_json_string(text_prompt) + "\"";
+        if (!img_b64.empty()) {
+            payload += ",\"image\":\"" + img_b64 + "\"";
+            payload += ",\"image_mime_type\":\"" + img_mime + "\"";
         }
-
-        std::string image_path;
-        if (!image_paths.empty()) {
-            image_path = image_paths.back();
+        if (!audio_b64.empty()) {
+            payload += ",\"audio\":\"" + audio_b64 + "\"";
+            payload += ",\"audio_mime_type\":\"audio/wav\"";
         }
-        if (image_path.empty()) {
-            return {false, false, "", {}, "missing_image_path"};
-        }
-
-        std::vector<uint8_t> img_bytes;
-        if (!read_file_bytes(image_path, img_bytes)) {
-            return {false, false, "", {}, "image_read_failed"};
-        }
-
-        std::string img_b64 = cloud_base64_encode(img_bytes.data(), img_bytes.size());
-        std::string mime = infer_mime_type(image_path);
-        std::string prompt = build_cloud_text_prompt(request);
-
+        payload += ",\"model\":\"" + escape_json_string(model) + "\"";
+        payload += ",\"language\":\"en-US\"";
+        payload += "}";
+    } else if (request.has_images && !img_b64.empty()) {
         endpoint = base + "/vlm";
         payload = "{"
-                  "\"image\":\"" + img_b64 + "\"," 
-                  "\"mime_type\":\"" + mime + "\"," 
-                  "\"prompt\":\"" + escape_json_string(prompt) + "\"," 
-                  "\"language\":\"en-US\"," 
-                  "\"model\":\"" + escape_json_string(vlm_model) + "\""
+                  "\"image\":\"" + img_b64 + "\","
+                  "\"mime_type\":\"" + img_mime + "\","
+                  "\"prompt\":\"" + escape_json_string(text_prompt) + "\","
+                  "\"language\":\"en-US\","
+                  "\"model\":\"" + escape_json_string(model) + "\""
                   "}";
     } else {
         endpoint = base + "/text";
-        std::string text = build_cloud_text_prompt(request);
         payload = "{"
-                  "\"text\":\"" + escape_json_string(text) + "\"," 
-                  "\"language\":\"en-US\"," 
-                  "\"model\":\"" + escape_json_string(text_model) + "\""
+                  "\"text\":\"" + escape_json_string(text_prompt) + "\","
+                  "\"language\":\"en-US\","
+                  "\"model\":\"" + escape_json_string(model) + "\""
                   "}";
     }
 

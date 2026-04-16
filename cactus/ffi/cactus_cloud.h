@@ -21,6 +21,8 @@ struct CloudCompletionRequest {
     std::string local_output;
     std::vector<std::string> local_function_calls;
     bool has_images = false;
+    bool has_audio = false;
+    std::vector<uint8_t> audio_pcm;
     std::string cloud_key;
 };
 

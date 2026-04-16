@@ -795,6 +795,10 @@ int cactus_complete(
             request.local_output = local_output_hint;
             request.local_function_calls = local_calls_hint;
             request.has_images = has_images;
+            request.has_audio = has_audio;
+            if (has_audio && pcm_buffer != nullptr && pcm_buffer_size > 0) {
+                request.audio_pcm.assign(pcm_buffer, pcm_buffer + pcm_buffer_size);
+            }
             request.cloud_key = resolve_cloud_api_key(nullptr);
 
             cloud_future_started = true;
