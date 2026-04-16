@@ -402,7 +402,7 @@ struct InferenceOptions {
     float top_p = 0.0f;
     float min_p = 0.15f;
     float repetition_penalty = 1.1f;
-    float confidence_threshold = 0.7f;
+    float confidence_threshold = -1.0f;
     size_t top_k = 0;
     size_t max_tokens = 100;
     size_t tool_rag_top_k = 2;

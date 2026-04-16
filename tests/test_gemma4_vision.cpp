@@ -80,7 +80,7 @@ bool test_vlm_decode_with_image() {
     }
 
     std::vector<ChatMessage> messages;
-    messages.push_back({"user", "Describe this image briefly.", "", {image_path}, {}});
+    messages.push_back({"user", "Describe this image briefly.", "", {image_path}, {}, 0, {}});
     std::string prompt = tokenizer->format_chat_prompt(messages, true, "", false);
     auto tokens = tokenizer->encode(prompt);
 
