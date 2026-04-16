@@ -518,6 +518,11 @@ PreparedPrompt prepare_prompt(
 
     prompt.model_type = handle->model->get_config().model_type;
 
+    if (prompt.options.confidence_threshold < 0.0f) {
+        float model_default = handle->model->get_config().default_cloud_handoff_threshold;
+        prompt.options.confidence_threshold = (model_default > 0.0f) ? model_default : 0.7f;
+    }
+
     if (prompt.model_type == Config::ModelType::GEMMA4) {
         std::vector<float> audio_samples;
         if (pcm_buffer != nullptr && pcm_buffer_size > 1) {
