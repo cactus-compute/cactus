@@ -205,9 +205,6 @@ set(APPLE_COMMON_OPTIONS
     -O3 -DNDEBUG -ffunction-sections -fdata-sections
 )
 
-include(CheckCXXSourceCompiles)
-
-
 # I8MM support: detected at runtime via sysctl, not all Apple Silicon has FEAT_I8MM
 add_library(cactus_i8mm_obj OBJECT ${I8MM_SOURCE})
 target_include_directories(cactus_i8mm_obj PRIVATE
