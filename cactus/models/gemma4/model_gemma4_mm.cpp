@@ -67,6 +67,18 @@ void Gemma4MmModel::remove_thinking_tokens(const std::vector<std::pair<size_t, s
     language_model_.remove_thinking_tokens(ranges);
 }
 
+void Gemma4MmModel::set_tool_constraints(const std::vector<ToolConstraintSpec>& tools) {
+    language_model_.set_tool_constraints(tools);
+}
+
+void Gemma4MmModel::clear_tool_constraints() {
+    language_model_.clear_tool_constraints();
+}
+
+void Gemma4MmModel::update_tool_constraints(uint32_t token_id) {
+    language_model_.update_tool_constraints(token_id);
+}
+
 void Gemma4MmModel::load_weights_to_graph(CactusGraph*) {
     output_weight_node_id_ = 0;
 }

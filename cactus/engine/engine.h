@@ -293,6 +293,26 @@ TokenizerRuntimeConfig load_tokenizer_runtime_config(const std::string& config_f
 void load_special_tokens_map(const std::string& config_file, std::unordered_map<std::string, uint32_t>& special_tokens);
 std::vector<std::string> split_with_special_tokens(const std::string& text, const std::unordered_map<std::string, uint32_t>& special_tokens);
 
+inline std::string extract_json_string(const std::string& json, size_t& pos) {
+    std::string value;
+    while (pos < json.size() && json[pos] != '"') {
+        if (json[pos] == '\\' && pos + 1 < json.size()) {
+            pos++;
+            if (json[pos] == 'n') value += '\n';
+            else if (json[pos] == 't') value += '\t';
+            else if (json[pos] == 'r') value += '\r';
+            else if (json[pos] == '"') value += '"';
+            else if (json[pos] == '\\') value += '\\';
+            else value += json[pos];
+        } else {
+            value += json[pos];
+        }
+        pos++;
+    }
+    if (pos < json.size()) pos++;
+    return value;
+}
+
 class Tokenizer {
 public:
     virtual ~Tokenizer() = default;
@@ -673,6 +693,7 @@ private:
     void compute_bias();
     void tokenize_grammar_elements();
     void add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set);
+    void add_tokens_containing(char needle, std::unordered_set<uint32_t>& token_set);
     void tokenize_function_names(bool quote_names);
     void init_common_tokens();
     void init_needle_constraints();
@@ -754,9 +775,9 @@ public:
     virtual void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     virtual void compact_kv_cache() {}
 
-    void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
-    void clear_tool_constraints();
-    void update_tool_constraints(uint32_t token_id);
+    virtual void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
+    virtual void clear_tool_constraints();
+    virtual void update_tool_constraints(uint32_t token_id);
 
     void* graph_handle_;
 

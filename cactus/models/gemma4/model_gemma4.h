@@ -352,6 +352,10 @@ public:
     void compact_kv_cache() override;
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) override;
 
+    void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools) override;
+    void clear_tool_constraints() override;
+    void update_tool_constraints(uint32_t token_id) override;
+
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override;
     size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override;

@@ -900,6 +900,7 @@ inline std::vector<ToolFunction> parse_tools_json(const std::string& json) {
     pos = json.find("\"function\"", pos);
     while (pos != std::string::npos) {
         ToolFunction tool;
+        size_t next_search = pos + 1;
         
         size_t name_pos = json.find("\"name\"", pos);
         if (name_pos != std::string::npos) {
@@ -927,12 +928,13 @@ inline std::vector<ToolFunction> parse_tools_json(const std::string& json) {
                     params_end++;
                 }
                 tool.parameters["schema"] = json.substr(params_start, params_end - params_start);
+                next_search = params_end;
             }
         }
-        
+
         tools.push_back(tool);
-        
-        pos = json.find("\"function\"", name_pos);
+
+        pos = json.find("\"function\"", next_search);
     }
 
     return tools;
