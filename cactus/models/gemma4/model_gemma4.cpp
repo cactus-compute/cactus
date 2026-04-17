@@ -227,10 +227,23 @@ size_t Gemma4Model::build_per_layer_input(CactusGraph* gb, size_t hidden, size_t
 size_t Gemma4Model::apply_partial_rope(CactusGraph* gb, size_t tensor, size_t head_dim, size_t rot_dim,
                                            float rope_freq, size_t position_offset) {
     if (rot_dim < head_dim) {
+        size_t half_dim = head_dim / 2;
+        size_t half_rot = rot_dim / 2;
+        size_t pass_len = half_dim - half_rot;
         float adjusted_theta = std::pow(rope_freq, static_cast<float>(rot_dim) / static_cast<float>(head_dim));
-        auto rot_part = gb->slice(tensor, 3, 0, rot_dim);
-        auto pass_part = gb->slice(tensor, 3, rot_dim, head_dim - rot_dim);
-        return gb->concat(gb->rope(rot_part, adjusted_theta, position_offset), pass_part, 3);
+
+        auto left_rot   = gb->slice(tensor, 3, 0,                   half_rot);
+        auto left_pass  = gb->slice(tensor, 3, half_rot,            pass_len);
+        auto right_rot  = gb->slice(tensor, 3, half_dim,            half_rot);
+        auto right_pass = gb->slice(tensor, 3, half_dim + half_rot, pass_len);
+
+        auto rotated = gb->rope(gb->concat(left_rot, right_rot, 3), adjusted_theta, position_offset);
+        auto rotated_left  = gb->slice(rotated, 3, 0,        half_rot);
+        auto rotated_right = gb->slice(rotated, 3, half_rot, half_rot);
+
+        auto new_left  = gb->concat(rotated_left,  left_pass,  3);
+        auto new_right = gb->concat(rotated_right, right_pass, 3);
+        return gb->concat(new_left, new_right, 3);
     }
     return gb->rope(tensor, rope_freq, position_offset);
 }
