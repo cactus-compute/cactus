@@ -14,6 +14,16 @@ void ToolCallConstrainer::add_tokens_for_string(const std::string& str, std::uno
     }
 }
 
+void ToolCallConstrainer::add_tokens_for_prefix_string(const std::string& prefix, std::unordered_set<uint32_t>& token_set) {
+    if (!tokenizer_) return;
+    const uint32_t vocab = tokenizer_->get_vocab_size();
+    for (uint32_t t = 0; t < vocab; t++) {
+        if (tokenizer_->decode({t}).rfind(prefix, 0) == 0) {
+            token_set.insert(t);
+        }
+    }
+}
+
 void ToolCallConstrainer::tokenize_function_names(bool quote_names) {
     all_func_name_tokens_.clear();
     func_name_sequences_.clear();
@@ -313,7 +323,8 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
         add_tokens_for_string(",", comma_tokens_);
         add_tokens_for_string("\"", quote_tokens_);
 
-        tokenize_function_names(false);  
+        tokenize_function_names(false);
+        add_tokens_for_prefix_string("(", paren_open_tokens_);
     } else if (is_gemma_family()) {
         gemma_call_start_tokens_.clear();
         gemma_call_end_tokens_.clear();
@@ -723,6 +734,9 @@ void ToolCallConstrainer::compute_bias() {
                     current_bias_[t] = FORCE_BIAS;
                 }
                 for (uint32_t t : bracket_close_tokens_) {
+                    current_bias_[t] = BLOCK_BIAS;
+                }
+                for (uint32_t t : paren_open_tokens_) {
                     current_bias_[t] = BLOCK_BIAS;
                 }
                 for (uint32_t t : paren_close_tokens_) {

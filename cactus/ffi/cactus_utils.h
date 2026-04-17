@@ -1417,10 +1417,10 @@ static inline void append_lfm2_call(const std::string& entry,
     std::string func_name = trim_lfm2_slice(trimmed_entry, 0, paren_pos);
     std::string args_str = trim_lfm2_slice(trimmed_entry, paren_pos + 1, trimmed_entry.size());
 
-    if (!args_str.empty() && args_str.back() == ')') {
+    while (!args_str.empty() && (args_str.back() == ')' || args_str.back() == ']')) {
         args_str.pop_back();
-        args_str = trim_lfm2_slice(args_str, 0, args_str.size());
     }
+    args_str = trim_lfm2_slice(args_str, 0, args_str.size());
 
     std::string json_call = "{\"name\":\"" + func_name + "\",\"arguments\":{";
 
@@ -1456,6 +1456,12 @@ static inline void append_lfm2_call(const std::string& entry,
         }
 
         std::string arg_value = args_str.substr(val_start, val_end - val_start);
+
+        if (!quoted) {
+            if (arg_value == "True") arg_value = "true";
+            else if (arg_value == "False") arg_value = "false";
+            else if (arg_value == "None") arg_value = "null";
+        }
 
         if (!first_arg) json_call += ",";
         json_call += "\"" + arg_name + "\":";
