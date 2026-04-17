@@ -51,6 +51,122 @@ void KVCache::set_window_size(size_t window, size_t sink) {
     }
 }
 
+void KVCache::configure_swa_layers(const std::vector<size_t>& layer_windows) {
+    for (size_t layer_idx = 0; layer_idx < num_layers && layer_idx < layer_windows.size(); layer_idx++) {
+        auto& cache = layer_caches[layer_idx];
+        size_t w = layer_windows[layer_idx];
+        if (w == 0) {
+            cache.swa_window = 0;
+            cache.swa_ring = 0;
+            cache.head = 0;
+            cache.count = 0;
+            continue;
+        }
+
+        size_t dim = cache.head_dim;
+        if (dim == 0) continue;
+
+        size_t kv_heads = cache.kv_heads;
+        size_t ring = 2 * w;
+
+        cache.swa_window = static_cast<uint32_t>(w);
+        cache.swa_ring = static_cast<uint32_t>(ring);
+        cache.head = 0;
+        cache.count = 0;
+        cache.think_anchor_head = 0;
+        cache.think_anchor_count = 0;
+
+        size_t ring_bytes = ring * kv_heads * dim * element_size;
+        size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+        size_t scales_per_slot = kv_heads * num_groups;
+        size_t num_scales = ring * scales_per_slot;
+
+        cache.keys.assign(ring_bytes, 0);
+        cache.values.assign(ring_bytes, 0);
+        if (precision == Precision::INT8) {
+            cache.key_scales.assign(num_scales, 1.0f);
+            cache.value_scales.assign(num_scales, 1.0f);
+        }
+    }
+}
+
+void KVCache::enter_thinking() {
+    in_thinking = true;
+    thinking_count = 0;
+    for (size_t i = 0; i < layer_caches.size(); i++) {
+        auto& c = layer_caches[i];
+        c.think_anchor_head = c.head;
+        c.think_anchor_count = c.count;
+    }
+}
+
+void KVCache::exit_thinking() {
+    if (!in_thinking) return;
+
+    size_t tc = thinking_count;
+    total_seq_len -= tc;
+
+    for (size_t i = 0; i < layer_caches.size(); i++) {
+        auto& c = layer_caches[i];
+        if (c.swa_window == 0) continue;
+        uint32_t clipped = static_cast<uint32_t>(std::min<size_t>(tc, c.swa_window));
+        c.head = c.think_anchor_head;
+        c.count = (c.count >= clipped) ? (c.count - clipped) : 0;
+    }
+
+    thinking_count = 0;
+    in_thinking = false;
+}
+
+void KVCache::commit_token() {
+    total_seq_len++;
+    if (in_thinking) thinking_count++;
+}
+
+void KVCache::append_swa_token(size_t layer_idx, const __fp16* k_token, const __fp16* v_token) {
+    if (layer_idx >= layer_caches.size()) return;
+    auto& cache = layer_caches[layer_idx];
+    if (cache.swa_window == 0 || cache.swa_ring == 0) return;
+
+    size_t dim = cache.head_dim;
+    size_t kv_heads = cache.kv_heads;
+    size_t elements_per_slot = kv_heads * dim;
+    size_t ring = cache.swa_ring;
+    size_t window = cache.swa_window;
+
+    uint32_t slot;
+    if (in_thinking) {
+        slot = (cache.think_anchor_head + static_cast<uint32_t>(thinking_count % window)) % ring;
+    } else {
+        slot = cache.head;
+    }
+
+    if (precision == Precision::INT8) {
+        size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+        size_t scales_per_slot = kv_heads * num_groups;
+        int8_t* k_dst = reinterpret_cast<int8_t*>(cache.keys.data()) + slot * elements_per_slot;
+        int8_t* v_dst = reinterpret_cast<int8_t*>(cache.values.data()) + slot * elements_per_slot;
+        float* ks_dst = cache.key_scales.data() + slot * scales_per_slot;
+        float* vs_dst = cache.value_scales.data() + slot * scales_per_slot;
+        cactus_quantize_kv_fp16_to_int8(k_token, k_dst, ks_dst, 1, kv_heads, dim);
+        cactus_quantize_kv_fp16_to_int8(v_token, v_dst, vs_dst, 1, kv_heads, dim);
+    } else {
+        size_t bytes_per_slot = elements_per_slot * element_size;
+        std::memcpy(cache.keys.data() + slot * bytes_per_slot, k_token, bytes_per_slot);
+        std::memcpy(cache.values.data() + slot * bytes_per_slot, v_token, bytes_per_slot);
+    }
+
+    if (in_thinking) {
+        uint32_t prev_tc = static_cast<uint32_t>(thinking_count);
+        uint32_t new_tc = prev_tc + 1;
+        cache.head = (cache.think_anchor_head + (new_tc % window)) % ring;
+        if (new_tc <= window && cache.count < ring) cache.count++;
+    } else {
+        cache.head = (cache.head + 1) % ring;
+        if (cache.count < ring) cache.count++;
+    }
+}
+
 void KVCache::reset() {
     current_seq_len = 0;
     total_seq_len = 0;
