@@ -677,11 +677,17 @@ private:
 
     std::unordered_set<uint32_t> tool_start_tokens_;
     std::unordered_set<uint32_t> tool_end_tokens_;
-    std::unordered_set<uint32_t> bracket_open_tokens_;   
-    std::unordered_set<uint32_t> bracket_close_tokens_;  
-    std::unordered_set<uint32_t> paren_open_tokens_;     
-    std::unordered_set<uint32_t> paren_close_tokens_;   
-    std::unordered_set<uint32_t> equals_tokens_;        
+    std::unordered_set<uint32_t> bracket_open_tokens_;
+    std::unordered_set<uint32_t> bracket_close_tokens_;
+    std::unordered_set<uint32_t> paren_open_tokens_;
+    std::unordered_set<uint32_t> paren_close_tokens_;
+    std::unordered_set<uint32_t> equals_tokens_;
+
+    std::string lfm_current_function_;
+    std::string lfm_args_buffer_;
+    std::unordered_set<std::string> lfm_seen_arg_keys_;
+    std::unordered_map<std::string, std::vector<std::string>> lfm_required_params_;
+    std::unordered_map<std::string, std::vector<std::string>> lfm_all_params_;        
 
     std::unordered_set<uint32_t> gemma_call_start_tokens_;    
     std::unordered_set<uint32_t> gemma_call_end_tokens_;       
