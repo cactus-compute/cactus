@@ -7,7 +7,11 @@
 #include <map>
 #include <set>
 
+#include "../engine/engine.h"
+
 namespace gemma {
+
+using cactus::engine::extract_json_string;
 
 inline std::string to_upper(const std::string& s) {
     std::string result = s;
@@ -15,38 +19,19 @@ inline std::string to_upper(const std::string& s) {
     return result;
 }
 
-inline std::string escape(const std::string& s) {
-    return "<escape>" + s + "<escape>";
+inline std::string escape(const std::string& s, bool use_pipe_tags = false) {
+    const char* tag = use_pipe_tags ? "<|\"|>" : "<escape>";
+    return std::string(tag) + s + tag;
 }
 
 inline void skip_whitespace(const std::string& json, size_t& pos) {
     while (pos < json.length() && std::isspace(json[pos])) pos++;
 }
 
-inline std::string extract_json_string(const std::string& json, size_t& pos) {
-    std::string value;
-    while (pos < json.length() && json[pos] != '"') {
-        if (json[pos] == '\\' && pos + 1 < json.length()) {
-            pos++;
-            if (json[pos] == 'n') value += '\n';
-            else if (json[pos] == 't') value += '\t';
-            else if (json[pos] == 'r') value += '\r';
-            else if (json[pos] == '"') value += '"';
-            else if (json[pos] == '\\') value += '\\';
-            else value += json[pos];
-        } else {
-            value += json[pos];
-        }
-        pos++;
-    }
-    if (pos < json.length()) pos++; 
-    return value;
-}
+std::string format_argument(const std::string& json, size_t& pos, bool escape_keys, bool use_pipe_tags);
+std::string format_parameters(const std::string& properties_json, const std::string& /*required_json*/, bool use_pipe_tags);
 
-std::string format_argument(const std::string& json, size_t& pos, bool escape_keys);
-std::string format_parameters(const std::string& properties_json, const std::string& /*required_json*/);
-
-inline std::string format_argument(const std::string& json, size_t& pos, bool escape_keys = true) {
+inline std::string format_argument(const std::string& json, size_t& pos, bool escape_keys = true, bool use_pipe_tags = false) {
     skip_whitespace(json, pos);
     if (pos >= json.length()) return "";
 
@@ -55,10 +40,10 @@ inline std::string format_argument(const std::string& json, size_t& pos, bool es
     if (c == '"') {
         pos++;
         std::string value = extract_json_string(json, pos);
-        return escape(value);
+        return escape(value, use_pipe_tags);
     } else if (c == '{') {
         std::string result = "{";
-        pos++; 
+        pos++;
         bool first = true;
 
         while (pos < json.length()) {
@@ -73,12 +58,12 @@ inline std::string format_argument(const std::string& json, size_t& pos, bool es
             skip_whitespace(json, pos);
             if (pos < json.length() && json[pos] == ':') pos++;
 
-            std::string value = format_argument(json, pos, escape_keys);
+            std::string value = format_argument(json, pos, escape_keys, use_pipe_tags);
 
             if (!first) result += ",";
             first = false;
             if (escape_keys) {
-                result += escape(key) + ":" + value;
+                result += escape(key, use_pipe_tags) + ":" + value;
             } else {
                 result += key + ":" + value;
             }
@@ -87,7 +72,7 @@ inline std::string format_argument(const std::string& json, size_t& pos, bool es
         return result;
     } else if (c == '[') {
         std::string result = "[";
-        pos++; 
+        pos++;
         bool first = true;
 
         while (pos < json.length()) {
@@ -95,7 +80,7 @@ inline std::string format_argument(const std::string& json, size_t& pos, bool es
             if (pos >= json.length() || json[pos] == ']') { pos++; break; }
             if (json[pos] == ',') { pos++; continue; }
 
-            std::string value = format_argument(json, pos, escape_keys);
+            std::string value = format_argument(json, pos, escape_keys, use_pipe_tags);
 
             if (!first) result += ",";
             first = false;
@@ -196,7 +181,7 @@ inline std::string get_json_string_value(const std::string& json, size_t pos) {
     return "";
 }
 
-inline std::string format_parameters(const std::string& properties_json, const std::string& /*required_json*/) {
+inline std::string format_parameters(const std::string& properties_json, const std::string& /*required_json*/, bool use_pipe_tags = false) {
     static const std::set<std::string> standard_keys = {"description", "type", "properties", "required", "nullable"};
 
     size_t pos = 0;
@@ -218,7 +203,7 @@ inline std::string format_parameters(const std::string& properties_json, const s
 
         if (prop_obj.count("description")) {
             std::string desc = get_json_string_value(prop_obj["description"], 0);
-            result += "description:" + escape(desc);
+            result += "description:" + escape(desc, use_pipe_tags);
         }
 
         std::string type_val;
@@ -229,7 +214,7 @@ inline std::string format_parameters(const std::string& properties_json, const s
         if (to_upper(type_val) == "STRING") {
             if (prop_obj.count("enum")) {
                 size_t enum_pos = 0;
-                std::string enum_formatted = format_argument(prop_obj["enum"], enum_pos, true);
+                std::string enum_formatted = format_argument(prop_obj["enum"], enum_pos, true, use_pipe_tags);
                 result += ",enum:" + enum_formatted;
             }
         } else if (to_upper(type_val) == "OBJECT") {
@@ -238,7 +223,7 @@ inline std::string format_parameters(const std::string& properties_json, const s
                 if (prop_obj.count("required")) {
                     nested_required = prop_obj["required"];
                 }
-                result += ",properties:{" + format_parameters(prop_obj["properties"], nested_required) + "}";
+                result += ",properties:{" + format_parameters(prop_obj["properties"], nested_required, use_pipe_tags) + "}";
             }
             if (prop_obj.count("required")) {
                 std::string req_items;
@@ -256,7 +241,7 @@ inline std::string format_parameters(const std::string& properties_json, const s
                             std::string req_item = extract_json_string(prop_obj["required"], req_pos);
                             if (!req_first) req_items += ",";
                             req_first = false;
-                            req_items += escape(req_item);
+                            req_items += escape(req_item, use_pipe_tags);
                         }
                     }
                 }
@@ -280,7 +265,7 @@ inline std::string format_parameters(const std::string& properties_json, const s
                         if (items_obj.count("required")) {
                             items_required = items_obj["required"];
                         }
-                        result += "properties:{" + format_parameters(item_value, items_required) + "}";
+                        result += "properties:{" + format_parameters(item_value, items_required, use_pipe_tags) + "}";
                     } else if (item_key == "required") {
                         result += "required:[";
                         size_t req_pos = 0;
@@ -297,17 +282,17 @@ inline std::string format_parameters(const std::string& properties_json, const s
                                     std::string req_item = extract_json_string(item_value, req_pos);
                                     if (!req_first) result += ",";
                                     req_first = false;
-                                    result += escape(req_item);
+                                    result += escape(req_item, use_pipe_tags);
                                 }
                             }
                         }
                         result += "]";
                     } else if (item_key == "type") {
                         std::string item_type = get_json_string_value(item_value, 0);
-                        result += "type:" + escape(to_upper(item_type));
+                        result += "type:" + escape(to_upper(item_type), use_pipe_tags);
                     } else {
                         size_t val_pos = 0;
-                        result += item_key + ":" + format_argument(item_value, val_pos, true);
+                        result += item_key + ":" + format_argument(item_value, val_pos, true, use_pipe_tags);
                     }
                 }
                 result += "}";
@@ -315,7 +300,7 @@ inline std::string format_parameters(const std::string& properties_json, const s
         }
 
         if (!type_val.empty()) {
-            result += ",type:" + escape(to_upper(type_val));
+            result += ",type:" + escape(to_upper(type_val), use_pipe_tags);
         }
 
         result += "}";
@@ -326,9 +311,10 @@ inline std::string format_parameters(const std::string& properties_json, const s
 
 inline std::string format_function_declaration(const std::string& name,
                                                 const std::string& description,
-                                                const std::string& params_json) {
+                                                const std::string& params_json,
+                                                bool use_pipe_tags = false) {
     std::string result = "declaration:" + name + "{";
-    result += "description:" + escape(description);
+    result += "description:" + escape(description, use_pipe_tags);
 
     if (!params_json.empty()) {
         result += ",parameters:{";
@@ -341,7 +327,7 @@ inline std::string format_function_declaration(const std::string& name,
             if (params.count("required")) {
                 required_json = params["required"];
             }
-            result += "properties:{" + format_parameters(params["properties"], required_json) + "}";
+            result += "properties:{" + format_parameters(params["properties"], required_json, use_pipe_tags) + "}";
         }
 
         if (params.count("required")) {
@@ -360,7 +346,7 @@ inline std::string format_function_declaration(const std::string& name,
                         std::string item = extract_json_string(params["required"], req_pos);
                         if (!first) req_items += ",";
                         first = false;
-                        req_items += escape(item);
+                        req_items += escape(item, use_pipe_tags);
                     }
                 }
             }
@@ -371,7 +357,7 @@ inline std::string format_function_declaration(const std::string& name,
 
         if (params.count("type")) {
             std::string type_val = get_json_string_value(params["type"], 0);
-            result += ",type:" + escape(to_upper(type_val));
+            result += ",type:" + escape(to_upper(type_val), use_pipe_tags);
         }
 
         result += "}";
@@ -397,7 +383,7 @@ inline std::string format_tools(const std::vector<ToolFunction>& tools, bool use
             params_json = it->second;
         }
 
-        result += format_function_declaration(tool.name, tool.description, params_json);
+        result += format_function_declaration(tool.name, tool.description, params_json, use_pipe_tags);
         result += decl_end;
     }
     return result;
