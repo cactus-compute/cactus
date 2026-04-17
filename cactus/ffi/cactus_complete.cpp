@@ -13,7 +13,7 @@
 using namespace cactus::engine;
 using namespace cactus::ffi;
 
-static constexpr size_t ROLLING_ENTROPY_WINDOW = 10;
+static constexpr size_t DEFAULT_ROLLING_ENTROPY_WINDOW = 10;
 
 namespace {
 
@@ -350,6 +350,7 @@ struct EntropyState {
     float total_sum = 0.0f;
     size_t total_count = 0;
     bool spike_handoff = false;
+    size_t window_size = DEFAULT_ROLLING_ENTROPY_WINDOW;
 
     void add(float entropy) {
         window.push_back(entropy);
@@ -357,7 +358,7 @@ struct EntropyState {
         total_sum += entropy;
         total_count++;
 
-        if (window.size() > ROLLING_ENTROPY_WINDOW) {
+        if (window.size() > window_size) {
             window_sum -= window.front();
             window.erase(window.begin());
         }
@@ -819,6 +820,10 @@ int cactus_complete(
         }
 
         EntropyState entropy;
+        {
+            size_t cfg_window = handle->model->get_config().default_rolling_entropy_window;
+            if (cfg_window > 0) entropy.window_size = cfg_window;
+        }
         entropy.add(first_token_entropy);
 
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {

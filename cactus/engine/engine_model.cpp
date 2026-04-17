@@ -692,7 +692,10 @@ bool Config::from_json(const std::string& config_path) {
         default_temperature = 1.0f;
         default_top_p = 0.95f;
         default_top_k = 64;
-        if (model_type == ModelType::GEMMA4) default_cloud_handoff_threshold = 0.92f;
+        if (model_type == ModelType::GEMMA4) {
+            default_cloud_handoff_threshold = 0.92f;
+            default_rolling_entropy_window = 16;
+        }
     } else if (model_type == ModelType::LFM2) {
         default_temperature = 0.3f;
         default_top_p = 0.95f;
