@@ -694,6 +694,7 @@ private:
     void compute_bias();
     void tokenize_grammar_elements();
     void add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set);
+    void add_tokens_for_prefix_string(const std::string& prefix, std::unordered_set<uint32_t>& token_set);
     void add_tokens_containing(char needle, std::unordered_set<uint32_t>& token_set);
     void tokenize_function_names(bool quote_names);
     void init_common_tokens();
