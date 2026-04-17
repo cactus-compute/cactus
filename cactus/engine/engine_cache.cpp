@@ -87,7 +87,86 @@ void KVCache::configure_swa_layers(const std::vector<size_t>& layer_windows) {
             cache.key_scales.assign(num_scales, 1.0f);
             cache.value_scales.assign(num_scales, 1.0f);
         }
+
+        size_t scratch_bytes = w * kv_heads * dim;  // INT8 slot size
+        size_t scratch_scales = w * scales_per_slot;
+        cache.swa_scratch_keys.assign(scratch_bytes, 0);
+        cache.swa_scratch_values.assign(scratch_bytes, 0);
+        cache.swa_scratch_k_scales.assign(scratch_scales, 1.0f);
+        cache.swa_scratch_v_scales.assign(scratch_scales, 1.0f);
+        cache.swa_scratch_len = 0;
     }
+}
+
+size_t KVCache::gather_swa_window(size_t layer_idx) {
+    if (layer_idx >= layer_caches.size()) return 0;
+    auto& c = layer_caches[layer_idx];
+    if (c.swa_window == 0 || c.swa_ring == 0) return 0;
+
+    size_t dim = c.head_dim;
+    size_t kv_heads = c.kv_heads;
+    size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+    size_t scales_per_slot = kv_heads * num_groups;
+    size_t bytes_per_slot = kv_heads * dim;  // INT8
+
+    uint32_t gathered = std::min(c.count, c.swa_window);
+    c.swa_scratch_len = gathered;
+    if (gathered == 0) return 0;
+
+    // Logical order: oldest slot first, newest last. Start slot = (head - gathered) mod ring.
+    uint32_t start = (c.head + c.swa_ring - gathered) % c.swa_ring;
+    uint32_t pre_len = std::min<uint32_t>(gathered, c.swa_ring - start);
+    uint32_t post_len = gathered - pre_len;
+
+    std::memcpy(c.swa_scratch_keys.data(),
+                c.keys.data() + static_cast<size_t>(start) * bytes_per_slot,
+                static_cast<size_t>(pre_len) * bytes_per_slot);
+    std::memcpy(c.swa_scratch_values.data(),
+                c.values.data() + static_cast<size_t>(start) * bytes_per_slot,
+                static_cast<size_t>(pre_len) * bytes_per_slot);
+    std::memcpy(c.swa_scratch_k_scales.data(),
+                c.key_scales.data() + static_cast<size_t>(start) * scales_per_slot,
+                static_cast<size_t>(pre_len) * scales_per_slot * sizeof(float));
+    std::memcpy(c.swa_scratch_v_scales.data(),
+                c.value_scales.data() + static_cast<size_t>(start) * scales_per_slot,
+                static_cast<size_t>(pre_len) * scales_per_slot * sizeof(float));
+
+    if (post_len > 0) {
+        std::memcpy(c.swa_scratch_keys.data() + static_cast<size_t>(pre_len) * bytes_per_slot,
+                    c.keys.data(),
+                    static_cast<size_t>(post_len) * bytes_per_slot);
+        std::memcpy(c.swa_scratch_values.data() + static_cast<size_t>(pre_len) * bytes_per_slot,
+                    c.values.data(),
+                    static_cast<size_t>(post_len) * bytes_per_slot);
+        std::memcpy(c.swa_scratch_k_scales.data() + static_cast<size_t>(pre_len) * scales_per_slot,
+                    c.key_scales.data(),
+                    static_cast<size_t>(post_len) * scales_per_slot * sizeof(float));
+        std::memcpy(c.swa_scratch_v_scales.data() + static_cast<size_t>(pre_len) * scales_per_slot,
+                    c.value_scales.data(),
+                    static_cast<size_t>(post_len) * scales_per_slot * sizeof(float));
+    }
+
+    return gathered;
+}
+
+const int8_t* KVCache::get_swa_scratch_keys_int8(size_t layer_idx) const {
+    if (layer_idx >= layer_caches.size()) return nullptr;
+    return reinterpret_cast<const int8_t*>(layer_caches[layer_idx].swa_scratch_keys.data());
+}
+
+const int8_t* KVCache::get_swa_scratch_values_int8(size_t layer_idx) const {
+    if (layer_idx >= layer_caches.size()) return nullptr;
+    return reinterpret_cast<const int8_t*>(layer_caches[layer_idx].swa_scratch_values.data());
+}
+
+const float* KVCache::get_swa_scratch_k_scales(size_t layer_idx) const {
+    if (layer_idx >= layer_caches.size()) return nullptr;
+    return layer_caches[layer_idx].swa_scratch_k_scales.data();
+}
+
+const float* KVCache::get_swa_scratch_v_scales(size_t layer_idx) const {
+    if (layer_idx >= layer_caches.size()) return nullptr;
+    return layer_caches[layer_idx].swa_scratch_v_scales.data();
 }
 
 void KVCache::enter_thinking() {
@@ -170,6 +249,15 @@ void KVCache::append_swa_token(size_t layer_idx, const __fp16* k_token, const __
 void KVCache::reset() {
     current_seq_len = 0;
     total_seq_len = 0;
+    in_thinking = false;
+    thinking_count = 0;
+    for (auto& c : layer_caches) {
+        c.head = 0;
+        c.count = 0;
+        c.think_anchor_head = 0;
+        c.think_anchor_count = 0;
+        c.swa_scratch_len = 0;
+    }
 }
 
 void* KVCache::get_key_ptr(size_t layer) {
@@ -247,8 +335,70 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
 
         void* k_output = gb->get_output(k_nodes[layer_idx]);
         void* v_output = gb->get_output(v_nodes[layer_idx]);
+        if (!k_output || !v_output) continue;
 
-        if (k_output && v_output) {
+        if (cache.swa_window > 0) {
+            const auto& k_buffer = gb->get_output_buffer(k_nodes[layer_idx]);
+            const auto& v_buffer = gb->get_output_buffer(v_nodes[layer_idx]);
+            size_t dim = cache.head_dim;
+            size_t kv_heads = cache.kv_heads;
+            size_t elements_per_token = kv_heads * dim;
+            size_t num_groups_layer = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+            size_t scales_per_token = kv_heads * num_groups_layer;
+
+            size_t tail_skip;
+            if (k_buffer.total_size == new_total_len * elements_per_token &&
+                v_buffer.total_size == new_total_len * elements_per_token) {
+                tail_skip = old_seq_len;
+            } else if (k_buffer.total_size == seq_len * elements_per_token &&
+                       v_buffer.total_size == seq_len * elements_per_token) {
+                tail_skip = 0;
+            } else {
+                continue;
+            }
+
+            const __fp16* k_src = static_cast<const __fp16*>(k_output) + tail_skip * elements_per_token;
+            const __fp16* v_src = static_cast<const __fp16*>(v_output) + tail_skip * elements_per_token;
+
+            // Fast path: batch-quantize contiguous segments of the ring. If the write
+            // spans a wrap (non-thinking append), split into pre-wrap + post-wrap.
+            // In-thinking uses the sub-ring layout, so fall back to per-token append.
+            if (in_thinking) {
+                for (size_t t = 0; t < seq_len; t++) {
+                    append_swa_token(layer_idx,
+                                     k_src + t * elements_per_token,
+                                     v_src + t * elements_per_token);
+                }
+            } else {
+                uint32_t ring = cache.swa_ring;
+                uint32_t head_before = cache.head;
+                size_t remaining = seq_len;
+                size_t offset = 0;
+                while (remaining > 0) {
+                    uint32_t space = ring - head_before;
+                    uint32_t chunk = static_cast<uint32_t>(std::min<size_t>(remaining, space));
+                    int8_t* k_dst = reinterpret_cast<int8_t*>(cache.keys.data()) + head_before * elements_per_token;
+                    int8_t* v_dst = reinterpret_cast<int8_t*>(cache.values.data()) + head_before * elements_per_token;
+                    float* ks_dst = cache.key_scales.data() + head_before * scales_per_token;
+                    float* vs_dst = cache.value_scales.data() + head_before * scales_per_token;
+                    cactus_quantize_kv_fp16_to_int8(
+                        k_src + offset * elements_per_token, k_dst, ks_dst,
+                        chunk, kv_heads, dim);
+                    cactus_quantize_kv_fp16_to_int8(
+                        v_src + offset * elements_per_token, v_dst, vs_dst,
+                        chunk, kv_heads, dim);
+                    head_before = (head_before + chunk) % ring;
+                    offset += chunk;
+                    remaining -= chunk;
+                }
+                cache.head = head_before;
+                uint32_t new_count = cache.count + static_cast<uint32_t>(seq_len);
+                cache.count = (new_count > ring) ? ring : new_count;
+            }
+
+            any_layer_updated = true;
+            continue;
+        } else {
             const auto& k_buffer = gb->get_output_buffer(k_nodes[layer_idx]);
             const auto& v_buffer = gb->get_output_buffer(v_nodes[layer_idx]);
 

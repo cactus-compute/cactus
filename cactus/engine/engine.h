@@ -527,6 +527,15 @@ struct KVCache {
         uint32_t count = 0;
         uint32_t think_anchor_head = 0;
         uint32_t think_anchor_count = 0;
+
+        // Scratch holding a contiguous view of the last min(count, swa_window) slots.
+        // Populated by gather_swa_window; pointers into it are passed to the attention
+        // kernel. Sized for swa_window slots.
+        std::vector<int8_t> swa_scratch_keys;
+        std::vector<int8_t> swa_scratch_values;
+        std::vector<float>  swa_scratch_k_scales;
+        std::vector<float>  swa_scratch_v_scales;
+        uint32_t swa_scratch_len = 0;
     };
 
     std::vector<LayerCache> layer_caches;
@@ -577,6 +586,16 @@ struct KVCache {
     // Advances total_seq_len (and thinking_count, if in_thinking) by 1. Call after all
     // per-layer appends for a token are complete.
     void commit_token();
+
+    // Gathers the SWA layer's last min(count, swa_window) ring slots into a contiguous
+    // scratch buffer and returns the gathered length. Subsequent calls to the scratch
+    // getters return pointers into this buffer; they remain valid until the next
+    // gather_swa_window call or modifying operation on this layer.
+    size_t gather_swa_window(size_t layer_idx);
+    const int8_t* get_swa_scratch_keys_int8(size_t layer_idx) const;
+    const int8_t* get_swa_scratch_values_int8(size_t layer_idx) const;
+    const float*  get_swa_scratch_k_scales(size_t layer_idx) const;
+    const float*  get_swa_scratch_v_scales(size_t layer_idx) const;
 
     bool is_empty() const { return current_seq_len == 0; }
     void* get_key_ptr(size_t layer);
