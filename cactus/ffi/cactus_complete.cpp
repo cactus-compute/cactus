@@ -83,9 +83,9 @@ std::vector<ToolConstraintSpec> build_tool_constraint_specs(const std::vector<To
     return specs;
 }
 
-void strip_thinking_from_cache(CactusModelHandle* handle,
-                               const std::vector<uint32_t>& generated_tokens,
-                               size_t prompt_len) {
+void prune_thinking_from_processed(CactusModelHandle* handle,
+                                   const std::vector<uint32_t>& generated_tokens,
+                                   size_t prompt_len) {
     const auto& cfg = handle->model->get_config();
     uint32_t open_id = cfg.channel_open_token_id;
     uint32_t close_id = cfg.channel_close_token_id;
@@ -93,8 +93,8 @@ void strip_thinking_from_cache(CactusModelHandle* handle,
                                             open_id, close_id);
     if (ranges.empty()) return;
 
-    handle->model->remove_thinking_tokens(ranges);
     for (auto it = ranges.rbegin(); it != ranges.rend(); ++it) {
+        if (it->first + it->second > handle->processed_tokens.size()) continue;
         auto start = handle->processed_tokens.begin() + it->first;
         handle->processed_tokens.erase(start, start + it->second);
     }
@@ -815,6 +815,12 @@ int cactus_complete(
         generated_tokens.push_back(next_token);
         handle->processed_tokens.push_back(next_token);
 
+        const auto& cfg_gemma4 = handle->model->get_config();
+        const bool thinking_tracking_enabled =
+            prompt.model_type == Config::ModelType::GEMMA4 && prompt.options.enable_thinking_if_supported;
+        const uint32_t channel_open_id = cfg_gemma4.channel_open_token_id;
+        const uint32_t channel_close_id = cfg_gemma4.channel_close_token_id;
+
         if (prompt.options.force_tools && !prompt.tools.empty()) {
             handle->model->update_tool_constraints(next_token);
         }
@@ -835,6 +841,11 @@ int cactus_complete(
             for (size_t i = 1; i < prompt.options.max_tokens; i++) {
                 if (handle->should_stop) break;
 
+                uint32_t input_token = next_token;  // will be appended to cache by this decode call
+                if (thinking_tracking_enabled && input_token == channel_open_id) {
+                    handle->model->enter_thinking();
+                }
+
                 float token_entropy = 0.0f;
                 if (has_gemma4_mixed_media) {
                     next_token = decode_gemma4_mixed_media(handle->processed_tokens, &token_entropy);
@@ -849,6 +860,10 @@ int cactus_complete(
                 }
                 handle->processed_tokens.push_back(next_token);
                 generated_tokens.push_back(next_token);
+
+                if (thinking_tracking_enabled && input_token == channel_close_id) {
+                    handle->model->exit_thinking();
+                }
 
                 entropy.add(token_entropy);
 
@@ -881,12 +896,14 @@ int cactus_complete(
             handle->model->clear_tool_constraints();
         }
 
-        if (prompt.model_type == Config::ModelType::GEMMA4 && prompt.options.enable_thinking_if_supported && !generated_tokens.empty()) {
-            strip_thinking_from_cache(handle, generated_tokens, prompt.tokens.size());
+        // If generation ended mid-thinking (e.g. max_tokens cut it off before <|channel|>
+        // close), force an exit so the cache does not retain partial thinking slots.
+        if (thinking_tracking_enabled && handle->model->is_in_thinking()) {
+            handle->model->exit_thinking();
         }
 
-        if (prompt.model_type == Config::ModelType::GEMMA4) {
-            handle->model->compact_kv_cache();
+        if (prompt.model_type == Config::ModelType::GEMMA4 && prompt.options.enable_thinking_if_supported && !generated_tokens.empty()) {
+            prune_thinking_from_processed(handle, generated_tokens, prompt.tokens.size());
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();

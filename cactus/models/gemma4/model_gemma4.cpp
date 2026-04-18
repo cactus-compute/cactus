@@ -50,22 +50,18 @@ std::vector<size_t> Gemma4Model::get_kv_layer_heads() const {
     return heads;
 }
 
-void Gemma4Model::compact_kv_cache() {
-    uint32_t n = config_.num_layers;
-
-    std::vector<size_t> target_windows(n, 0);
-    for (uint32_t i = 0; i < n; i++) {
-        if (i >= first_shared_layer_) continue;
-        if (!is_global_layer(i))
-            target_windows[i] = config_.sliding_window;
-    }
-    kv_cache_.compact_to_windows(target_windows);
-}
-
 void Gemma4Model::post_init() {
     uint32_t n = config_.num_layers;
 
     kv_cache_.set_window_size(0, 0);
+
+    std::vector<size_t> layer_windows(n, 0);
+    for (uint32_t i = 0; i < n; i++) {
+        if (i >= first_shared_layer_) continue;
+        if (!is_global_layer(i))
+            layer_windows[i] = config_.sliding_window;
+    }
+    kv_cache_.configure_swa_layers(layer_windows);
 
     kv_share_map_.resize(n, -1);
     shared_k_nodes_.resize(n, 0);
@@ -298,7 +294,19 @@ size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t laye
 
     size_t cache_src = (share_src >= 0) ? static_cast<size_t>(share_src) : layer_idx;
     size_t attn;
-    if (use_cache && !kv_cache_.is_empty()) {
+    if (use_cache && kv_cache_.is_swa_layer(cache_src)) {
+        size_t gathered = kv_cache_.gather_swa_window(cache_src);
+        if (gathered > 0) {
+            attn = gb->attention_int8_hybrid(q4, k4, v4, attention_scale_, position_offset,
+                kv_cache_.get_swa_scratch_keys_int8(cache_src),
+                kv_cache_.get_swa_scratch_values_int8(cache_src),
+                kv_cache_.get_swa_scratch_k_scales(cache_src),
+                kv_cache_.get_swa_scratch_v_scales(cache_src),
+                gathered, kv_heads, head_dim, window);
+        } else {
+            attn = gb->attention(q4, k4, v4, attention_scale_, position_offset, window);
+        }
+    } else if (use_cache && !kv_cache_.is_empty()) {
         attn = gb->attention_int8_hybrid(q4, k4, v4, attention_scale_, position_offset,
             kv_cache_.get_keys_int8(cache_src), kv_cache_.get_values_int8(cache_src),
             kv_cache_.get_key_scales(cache_src), kv_cache_.get_value_scales(cache_src),

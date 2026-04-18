@@ -59,12 +59,12 @@ void Gemma4MmModel::reset_cache() {
     last_token_count_ = 0;
 }
 
-void Gemma4MmModel::compact_kv_cache() {
-    language_model_.compact_kv_cache();
+void Gemma4MmModel::enter_thinking() {
+    language_model_.enter_thinking();
 }
 
-void Gemma4MmModel::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) {
-    language_model_.remove_thinking_tokens(ranges);
+void Gemma4MmModel::exit_thinking() {
+    language_model_.exit_thinking();
 }
 
 void Gemma4MmModel::set_tool_constraints(const std::vector<ToolConstraintSpec>& tools) {
