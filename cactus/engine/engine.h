@@ -616,9 +616,6 @@ struct KVCache {
     const int8_t* get_values_int8(size_t layer) const;
     const float* get_key_scales(size_t layer) const;
     const float* get_value_scales(size_t layer) const;
-
-    void remove_token_range(size_t start, size_t count);
-    void compact_to_windows(const std::vector<size_t>& target_windows);
 };
 
 class ToolCallConstrainer {
@@ -824,8 +821,6 @@ public:
     bool has_npu_prefill() const;
     size_t get_prefill_chunk_size() const;
 
-    virtual void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
-    virtual void compact_kv_cache() {}
     virtual void enter_thinking() { kv_cache_.enter_thinking(); }
     virtual void exit_thinking() { kv_cache_.exit_thinking(); }
     bool is_in_thinking() const { return kv_cache_.in_thinking; }

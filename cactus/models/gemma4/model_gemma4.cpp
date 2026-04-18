@@ -50,11 +50,6 @@ std::vector<size_t> Gemma4Model::get_kv_layer_heads() const {
     return heads;
 }
 
-void Gemma4Model::compact_kv_cache() {
-    // SWA layers are bounded by the fixed-size ring buffer (configured in post_init);
-    // nothing left to compact. Global layers remain unbounded linear caches.
-}
-
 void Gemma4Model::post_init() {
     uint32_t n = config_.num_layers;
 
