@@ -826,6 +826,9 @@ public:
 
     virtual void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     virtual void compact_kv_cache() {}
+    virtual void enter_thinking() { kv_cache_.enter_thinking(); }
+    virtual void exit_thinking() { kv_cache_.exit_thinking(); }
+    bool is_in_thinking() const { return kv_cache_.in_thinking; }
 
     virtual void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
     virtual void clear_tool_constraints();

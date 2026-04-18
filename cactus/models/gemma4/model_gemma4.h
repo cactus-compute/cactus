@@ -351,6 +351,8 @@ public:
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
     void compact_kv_cache() override;
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) override;
+    void enter_thinking() override;
+    void exit_thinking() override;
 
     void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools) override;
     void clear_tool_constraints() override;

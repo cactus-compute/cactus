@@ -184,15 +184,39 @@ void KVCache::exit_thinking() {
 
     size_t tc = thinking_count;
     total_seq_len -= tc;
+    size_t target_len = total_seq_len;
 
     for (size_t i = 0; i < layer_caches.size(); i++) {
         auto& c = layer_caches[i];
-        if (c.swa_window == 0) continue;
-        uint32_t clipped = static_cast<uint32_t>(std::min<size_t>(tc, c.swa_window));
-        c.head = c.think_anchor_head;
-        c.count = (c.count >= clipped) ? (c.count - clipped) : 0;
+        if (c.swa_window > 0) {
+            uint32_t clipped = static_cast<uint32_t>(std::min<size_t>(tc, c.swa_window));
+            c.head = c.think_anchor_head;
+            c.count = (c.count >= clipped) ? (c.count - clipped) : 0;
+            continue;
+        }
+
+        size_t kv_heads = c.kv_heads;
+        size_t dim = c.head_dim;
+        if (dim == 0 || kv_heads == 0) continue;
+
+        size_t bytes_per_token = kv_heads * dim * element_size;
+        size_t keep_bytes = target_len * bytes_per_token;
+        if (c.keys.size() > keep_bytes) {
+            c.keys.resize(keep_bytes);
+            c.values.resize(keep_bytes);
+        }
+        if (precision == Precision::INT8) {
+            size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+            size_t scales_per_token = kv_heads * num_groups;
+            size_t keep_scales = target_len * scales_per_token;
+            if (c.key_scales.size() > keep_scales) {
+                c.key_scales.resize(keep_scales);
+                c.value_scales.resize(keep_scales);
+            }
+        }
     }
 
+    current_seq_len = total_seq_len;
     thinking_count = 0;
     in_thinking = false;
 }
@@ -362,12 +386,28 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
 
             // Fast path: batch-quantize contiguous segments of the ring. If the write
             // spans a wrap (non-thinking append), split into pre-wrap + post-wrap.
-            // In-thinking uses the sub-ring layout, so fall back to per-token append.
+            // In-thinking uses the sub-ring layout, so we inline per-token slot math
+            // here -- thinking_count is shared across layers and advanced once at the
+            // bottom of this function, so the per-layer loop computes its own effective
+            // tc offset from `thinking_count + t`.
             if (in_thinking) {
+                size_t window_sz = cache.swa_window;
+                size_t ring_sz = cache.swa_ring;
                 for (size_t t = 0; t < seq_len; t++) {
-                    append_swa_token(layer_idx,
-                                     k_src + t * elements_per_token,
-                                     v_src + t * elements_per_token);
+                    uint32_t tc = static_cast<uint32_t>(thinking_count + t);
+                    uint32_t slot = (cache.think_anchor_head + (tc % window_sz)) % ring_sz;
+                    int8_t* k_dst = reinterpret_cast<int8_t*>(cache.keys.data()) + slot * elements_per_token;
+                    int8_t* v_dst = reinterpret_cast<int8_t*>(cache.values.data()) + slot * elements_per_token;
+                    float* ks_dst = cache.key_scales.data() + slot * scales_per_token;
+                    float* vs_dst = cache.value_scales.data() + slot * scales_per_token;
+                    cactus_quantize_kv_fp16_to_int8(
+                        k_src + t * elements_per_token, k_dst, ks_dst, 1, kv_heads, dim);
+                    cactus_quantize_kv_fp16_to_int8(
+                        v_src + t * elements_per_token, v_dst, vs_dst, 1, kv_heads, dim);
+
+                    uint32_t new_tc = tc + 1;
+                    cache.head = (cache.think_anchor_head + (new_tc % window_sz)) % ring_sz;
+                    if (new_tc <= window_sz && cache.count < ring_sz) cache.count++;
                 }
             } else {
                 uint32_t ring = cache.swa_ring;
@@ -611,6 +651,10 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
 
     if (any_layer_updated) {
         current_seq_len = effective_seq_len;
+    }
+
+    if (in_thinking) {
+        thinking_count += seq_len;
     }
 }
 

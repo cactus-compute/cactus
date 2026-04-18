@@ -67,6 +67,14 @@ void Gemma4MmModel::remove_thinking_tokens(const std::vector<std::pair<size_t, s
     language_model_.remove_thinking_tokens(ranges);
 }
 
+void Gemma4MmModel::enter_thinking() {
+    language_model_.enter_thinking();
+}
+
+void Gemma4MmModel::exit_thinking() {
+    language_model_.exit_thinking();
+}
+
 void Gemma4MmModel::set_tool_constraints(const std::vector<ToolConstraintSpec>& tools) {
     language_model_.set_tool_constraints(tools);
 }
