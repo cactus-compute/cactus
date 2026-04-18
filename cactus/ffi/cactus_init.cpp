@@ -473,6 +473,7 @@ void cactus_reset(cactus_model_t model) {
     handle->model->reset_cache();
     handle->processed_tokens.clear();
     handle->processed_images.clear();
+    handle->user_audio_counts.clear();
 }
 
 void cactus_stop(cactus_model_t model) {

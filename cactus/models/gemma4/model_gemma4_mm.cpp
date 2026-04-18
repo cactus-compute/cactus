@@ -55,8 +55,6 @@ bool Gemma4MmModel::init(const std::string& model_folder, size_t context_size,
 void Gemma4MmModel::reset_cache() {
     Model::reset_cache();
     language_model_.reset_cache();
-    prefill_completed_ = false;
-    last_token_count_ = 0;
 }
 
 void Gemma4MmModel::compact_kv_cache() {
@@ -264,8 +262,6 @@ uint32_t Gemma4MmModel::decode_multimodal(
     bool has_media = !image_paths.empty() || (audio_features && !audio_features->empty());
 
     if (!has_media) {
-        prefill_completed_ = false;
-        last_token_count_ = tokens.size();
         return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
     }
 
@@ -276,31 +272,31 @@ uint32_t Gemma4MmModel::decode_multimodal(
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
     auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
-    bool cache_empty = language_model_.kv_cache_.is_empty();
-    bool need_prefill = cache_empty || !prefill_completed_;
 
-    if (!need_prefill && tokens.size() <= last_token_count_) {
+    size_t cached_len = language_model_.kv_cache_.current_seq_len;
+    if (cached_len >= tokens.size()) {
         reset_cache();
-        need_prefill = true;
+        cached_len = 0;
     }
+    std::vector<uint32_t> forward_tokens = cached_len == 0
+        ? tokens
+        : std::vector<uint32_t>(tokens.end() - (tokens.size() - cached_len), tokens.end());
 
-    size_t seq_len_for_updates = 0;
+    bool delta_has_media = std::any_of(forward_tokens.begin(), forward_tokens.end(), [&](uint32_t t) {
+        return (config_.image_token_id != 0 && t == config_.image_token_id) ||
+               (config_.audio_token_id != 0 && t == config_.audio_token_id);
+    });
+
     size_t final_hidden_node = 0;
-
-    if (need_prefill) {
-        auto result = forward_multimodal(gb, tokens, image_paths, audio_features,
+    size_t seq_len_for_updates = 0;
+    if (delta_has_media) {
+        auto result = forward_multimodal(gb, forward_tokens, image_paths, audio_features,
                                           audio_num_frames, backend, true);
         final_hidden_node = result.final_hidden_node;
         seq_len_for_updates = result.seq_len;
-        prefill_completed_ = true;
-        last_token_count_ = tokens.size();
     } else {
-        size_t delta = tokens.size() - last_token_count_;
-        if (delta == 0) delta = 1;
-        std::vector<uint32_t> incremental_tokens(tokens.end() - delta, tokens.end());
-        final_hidden_node = language_model_.forward(incremental_tokens, true);
-        seq_len_for_updates = incremental_tokens.size();
-        last_token_count_ = tokens.size();
+        final_hidden_node = language_model_.forward(forward_tokens, true);
+        seq_len_for_updates = forward_tokens.size();
     }
 
     auto last_hidden = gb->index(final_hidden_node, seq_len_for_updates - 1, 0);
@@ -345,8 +341,6 @@ uint32_t Gemma4MmModel::decode(const std::vector<uint32_t>& tokens,
                                    float min_p, float repetition_penalty) {
     if (!initialized_ || !graph_handle_)
         throw std::runtime_error("Model not initialized - call init() first");
-    prefill_completed_ = false;
-    last_token_count_ = tokens.size();
     return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
 }
 
@@ -354,8 +348,6 @@ void Gemma4MmModel::prefill(const std::vector<uint32_t>& tokens, size_t chunk_si
                                 const std::string& profile_file) {
     if (!initialized_ || !graph_handle_)
         throw std::runtime_error("Model not initialized - call init() first");
-    prefill_completed_ = false;
-    last_token_count_ = tokens.size();
     language_model_.prefill(tokens, chunk_size, profile_file);
 }
 
@@ -383,9 +375,6 @@ void Gemma4MmModel::prefill_with_images(const std::vector<uint32_t>& tokens,
 
     language_model_.post_execute_updates(gb, result.seq_len);
     language_model_.update_kv_cache(gb, result.seq_len);
-
-    prefill_completed_ = true;
-    last_token_count_ = tokens.size();
 }
 
 uint32_t Gemma4MmModel::decode_with_images(

@@ -335,6 +335,7 @@ void reset_cache(CactusModelHandle* handle) {
     handle->model->reset_cache();
     handle->processed_tokens.clear();
     handle->processed_images.clear();
+    handle->user_audio_counts.clear();
 }
 
 struct PrefillResult {
@@ -539,16 +540,24 @@ PreparedPrompt prepare_prompt(
                 }
             }
         }
-        if (!audio_samples.empty()) {
+        std::vector<size_t> user_indices;
+        for (size_t i = 0; i < prompt.messages.size(); i++) {
+            if (prompt.messages[i].role == "user") user_indices.push_back(i);
+        }
+        auto& counts = handle->user_audio_counts;
+        for (size_t u = 0; u + 1 < user_indices.size(); u++) {
+            if (u < counts.size() && counts[u] > 0) {
+                prompt.messages[user_indices[u]].audio_soft_token_count = counts[u];
+            }
+        }
+        if (!audio_samples.empty() && !user_indices.empty()) {
             auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(audio_samples, handle->model->get_config());
             prompt.audio_features = std::move(audio_prep.features);
             prompt.audio_num_frames = audio_prep.num_frames;
-            for (auto it = prompt.messages.rbegin(); it != prompt.messages.rend(); ++it) {
-                if (it->role == "user") {
-                    it->audio_soft_token_count = audio_prep.num_soft_tokens;
-                    break;
-                }
-            }
+            size_t u = user_indices.size() - 1;
+            prompt.messages[user_indices[u]].audio_soft_token_count = audio_prep.num_soft_tokens;
+            if (counts.size() <= u) counts.resize(u + 1, 0);
+            counts[u] = audio_prep.num_soft_tokens;
         }
     }
 
@@ -755,6 +764,22 @@ int cactus_complete(
         float first_token_entropy = 0.0f;
         uint32_t next_token;
         size_t prompt_tokens;
+
+        if ((has_gemma4_mixed_media || has_audio) && !handle->processed_tokens.empty()) {
+            auto& cache = handle->processed_tokens;
+            size_t common = 0;
+            size_t limit = std::min(cache.size(), prompt.tokens.size());
+            while (common < limit && cache[common] == prompt.tokens[common]) common++;
+            if (common < cache.size()) {
+                CACTUS_LOG_WARN("complete", "KV cache diverges from new prompt at position " << common
+                    << "/" << cache.size() << "; trimming and re-prefilling the divergent suffix");
+                size_t kv_len = handle->model->get_cache_size();
+                if (kv_len > common) {
+                    handle->model->remove_thinking_tokens({{common, kv_len - common}});
+                }
+                cache.resize(common);
+            }
+        }
 
         if (has_gemma4_mixed_media) {
             prompt_tokens = prompt.tokens.size();

@@ -768,6 +768,7 @@ public:
 
 
     void set_cache_window(size_t window_size, size_t sink_size = 4) { kv_cache_.set_window_size(window_size, sink_size); }
+    size_t get_cache_size() const { return kv_cache_.current_seq_len; }
 
     bool load_npu_prefill(const std::string& model_path);
     bool has_npu_prefill() const;

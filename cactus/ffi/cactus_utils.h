@@ -74,6 +74,7 @@ struct CactusModelHandle {
     };
 
     std::vector<std::vector<ProcessedImage>> processed_images;
+    std::vector<size_t> user_audio_counts;
     std::mutex model_mutex;
     std::string model_name;
     std::unique_ptr<cactus::engine::index::Index> corpus_index;

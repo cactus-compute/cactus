@@ -156,6 +156,34 @@ bool BPETokenizer::load_vocabulary_mmap(const std::string& vocab_file, const std
             priority++;
         }
     }
+    
+    auto is_whitespace_only = [](const std::string& s) {
+        if (s.empty()) return false;
+        for (char c : s) {
+            if (c != ' ' && c != '\n' && c != '\t' && c != '\r') return false;
+        }
+        return true;
+    };
+    std::vector<std::string> ws_tokens;
+    for (const auto& tok : id_to_token_) {
+        if (tok.size() >= 2 && is_whitespace_only(tok)) ws_tokens.push_back(tok);
+    }
+    std::sort(ws_tokens.begin(), ws_tokens.end(),
+              [](const std::string& a, const std::string& b) { return a.size() < b.size(); });
+    for (const auto& tok : ws_tokens) {
+        for (size_t i = 1; i < tok.size(); i++) {
+            std::string first = tok.substr(0, i);
+            std::string second = tok.substr(i);
+            if (!token_to_id_.count(first) || !token_to_id_.count(second)) continue;
+            std::string key = first + "\x00" + second;
+            if (merge_map_.find(key) == merge_map_.end()) {
+                merge_rules_.emplace_back(first, second, tok, priority);
+                merge_map_[key] = priority;
+                priority++;
+            }
+            break;
+        }
+    }
 
     std::sort(merge_rules_.begin(), merge_rules_.end(),
               [](const MergeRule& a, const MergeRule& b) {
