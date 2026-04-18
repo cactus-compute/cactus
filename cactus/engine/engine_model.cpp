@@ -370,6 +370,11 @@ void Model::update_kv_cache(CactusGraph* gb, size_t seq_len) {
                                seq_len, config_.num_layers);
 }
 
+void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) {
+    for (auto it = ranges.rbegin(); it != ranges.rend(); ++it)
+        kv_cache_.remove_token_range(it->first, it->second);
+}
+
 std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bool pooled, bool normalize, const std::string& profile_file) {
     std::vector<float> embeddings;
     auto final_hidden = forward(tokens);

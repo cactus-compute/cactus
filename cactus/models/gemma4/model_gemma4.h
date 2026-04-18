@@ -34,6 +34,7 @@ protected:
     void post_init() override;
     std::vector<size_t> get_kv_layer_dims() const override;
     std::vector<size_t> get_kv_layer_heads() const override;
+    void compact_kv_cache() override;
 
     size_t forward_from_embeddings(CactusGraph* gb, size_t hidden, const std::vector<uint32_t>& pli_tokens,
                                    size_t seq_len, ComputeBackend backend, bool use_cache);
@@ -348,8 +349,8 @@ public:
     void reset_cache() override;
     std::vector<float> get_image_embeddings(const std::string& image_path) override;
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
-    void enter_thinking() override;
-    void exit_thinking() override;
+    void compact_kv_cache() override;
+    void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) override;
 
     void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools) override;
     void clear_tool_constraints() override;

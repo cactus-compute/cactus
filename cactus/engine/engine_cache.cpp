@@ -51,237 +51,9 @@ void KVCache::set_window_size(size_t window, size_t sink) {
     }
 }
 
-void KVCache::configure_swa_layers(const std::vector<size_t>& layer_windows) {
-    for (size_t layer_idx = 0; layer_idx < num_layers && layer_idx < layer_windows.size(); layer_idx++) {
-        auto& cache = layer_caches[layer_idx];
-        size_t w = layer_windows[layer_idx];
-        if (w == 0) {
-            cache.swa_window = 0;
-            cache.swa_ring = 0;
-            cache.head = 0;
-            cache.count = 0;
-            continue;
-        }
-
-        size_t dim = cache.head_dim;
-        if (dim == 0) continue;
-
-        size_t kv_heads = cache.kv_heads;
-        size_t ring = 2 * w;
-
-        cache.swa_window = static_cast<uint32_t>(w);
-        cache.swa_ring = static_cast<uint32_t>(ring);
-        cache.head = 0;
-        cache.count = 0;
-        cache.think_anchor_head = 0;
-        cache.think_anchor_count = 0;
-
-        size_t ring_bytes = ring * kv_heads * dim * element_size;
-        size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-        size_t scales_per_slot = kv_heads * num_groups;
-        size_t num_scales = ring * scales_per_slot;
-
-        cache.keys.assign(ring_bytes, 0);
-        cache.values.assign(ring_bytes, 0);
-        if (precision == Precision::INT8) {
-            cache.key_scales.assign(num_scales, 1.0f);
-            cache.value_scales.assign(num_scales, 1.0f);
-        }
-
-        size_t scratch_bytes = w * kv_heads * dim;  // INT8 slot size
-        size_t scratch_scales = w * scales_per_slot;
-        cache.swa_scratch_keys.assign(scratch_bytes, 0);
-        cache.swa_scratch_values.assign(scratch_bytes, 0);
-        cache.swa_scratch_k_scales.assign(scratch_scales, 1.0f);
-        cache.swa_scratch_v_scales.assign(scratch_scales, 1.0f);
-        cache.swa_scratch_len = 0;
-    }
-}
-
-size_t KVCache::gather_swa_window(size_t layer_idx) {
-    if (layer_idx >= layer_caches.size()) return 0;
-    auto& c = layer_caches[layer_idx];
-    if (c.swa_window == 0 || c.swa_ring == 0) return 0;
-
-    size_t dim = c.head_dim;
-    size_t kv_heads = c.kv_heads;
-    size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-    size_t scales_per_slot = kv_heads * num_groups;
-    size_t bytes_per_slot = kv_heads * dim;  // INT8
-
-    uint32_t gathered = std::min(c.count, c.swa_window);
-    c.swa_scratch_len = gathered;
-    if (gathered == 0) return 0;
-
-    // Logical order: oldest slot first, newest last. Start slot = (head - gathered) mod ring.
-    uint32_t start = (c.head + c.swa_ring - gathered) % c.swa_ring;
-    uint32_t pre_len = std::min<uint32_t>(gathered, c.swa_ring - start);
-    uint32_t post_len = gathered - pre_len;
-
-    std::memcpy(c.swa_scratch_keys.data(),
-                c.keys.data() + static_cast<size_t>(start) * bytes_per_slot,
-                static_cast<size_t>(pre_len) * bytes_per_slot);
-    std::memcpy(c.swa_scratch_values.data(),
-                c.values.data() + static_cast<size_t>(start) * bytes_per_slot,
-                static_cast<size_t>(pre_len) * bytes_per_slot);
-    std::memcpy(c.swa_scratch_k_scales.data(),
-                c.key_scales.data() + static_cast<size_t>(start) * scales_per_slot,
-                static_cast<size_t>(pre_len) * scales_per_slot * sizeof(float));
-    std::memcpy(c.swa_scratch_v_scales.data(),
-                c.value_scales.data() + static_cast<size_t>(start) * scales_per_slot,
-                static_cast<size_t>(pre_len) * scales_per_slot * sizeof(float));
-
-    if (post_len > 0) {
-        std::memcpy(c.swa_scratch_keys.data() + static_cast<size_t>(pre_len) * bytes_per_slot,
-                    c.keys.data(),
-                    static_cast<size_t>(post_len) * bytes_per_slot);
-        std::memcpy(c.swa_scratch_values.data() + static_cast<size_t>(pre_len) * bytes_per_slot,
-                    c.values.data(),
-                    static_cast<size_t>(post_len) * bytes_per_slot);
-        std::memcpy(c.swa_scratch_k_scales.data() + static_cast<size_t>(pre_len) * scales_per_slot,
-                    c.key_scales.data(),
-                    static_cast<size_t>(post_len) * scales_per_slot * sizeof(float));
-        std::memcpy(c.swa_scratch_v_scales.data() + static_cast<size_t>(pre_len) * scales_per_slot,
-                    c.value_scales.data(),
-                    static_cast<size_t>(post_len) * scales_per_slot * sizeof(float));
-    }
-
-    return gathered;
-}
-
-const int8_t* KVCache::get_swa_scratch_keys_int8(size_t layer_idx) const {
-    if (layer_idx >= layer_caches.size()) return nullptr;
-    return reinterpret_cast<const int8_t*>(layer_caches[layer_idx].swa_scratch_keys.data());
-}
-
-const int8_t* KVCache::get_swa_scratch_values_int8(size_t layer_idx) const {
-    if (layer_idx >= layer_caches.size()) return nullptr;
-    return reinterpret_cast<const int8_t*>(layer_caches[layer_idx].swa_scratch_values.data());
-}
-
-const float* KVCache::get_swa_scratch_k_scales(size_t layer_idx) const {
-    if (layer_idx >= layer_caches.size()) return nullptr;
-    return layer_caches[layer_idx].swa_scratch_k_scales.data();
-}
-
-const float* KVCache::get_swa_scratch_v_scales(size_t layer_idx) const {
-    if (layer_idx >= layer_caches.size()) return nullptr;
-    return layer_caches[layer_idx].swa_scratch_v_scales.data();
-}
-
-void KVCache::enter_thinking() {
-    in_thinking = true;
-    thinking_count = 0;
-    for (size_t i = 0; i < layer_caches.size(); i++) {
-        auto& c = layer_caches[i];
-        c.think_anchor_head = c.head;
-        c.think_anchor_count = c.count;
-    }
-}
-
-void KVCache::exit_thinking() {
-    if (!in_thinking) return;
-
-    size_t tc = thinking_count;
-    total_seq_len -= tc;
-    size_t target_len = total_seq_len;
-
-    for (size_t i = 0; i < layer_caches.size(); i++) {
-        auto& c = layer_caches[i];
-        if (c.swa_window > 0) {
-            uint32_t clipped = static_cast<uint32_t>(std::min<size_t>(tc, c.swa_window));
-            c.head = c.think_anchor_head;
-            c.count = (c.count >= clipped) ? (c.count - clipped) : 0;
-            continue;
-        }
-
-        size_t kv_heads = c.kv_heads;
-        size_t dim = c.head_dim;
-        if (dim == 0 || kv_heads == 0) continue;
-
-        size_t bytes_per_token = kv_heads * dim * element_size;
-        size_t keep_bytes = target_len * bytes_per_token;
-        if (c.keys.size() > keep_bytes) {
-            c.keys.resize(keep_bytes);
-            c.values.resize(keep_bytes);
-        }
-        if (precision == Precision::INT8) {
-            size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-            size_t scales_per_token = kv_heads * num_groups;
-            size_t keep_scales = target_len * scales_per_token;
-            if (c.key_scales.size() > keep_scales) {
-                c.key_scales.resize(keep_scales);
-                c.value_scales.resize(keep_scales);
-            }
-        }
-    }
-
-    current_seq_len = total_seq_len;
-    thinking_count = 0;
-    in_thinking = false;
-}
-
-void KVCache::commit_token() {
-    total_seq_len++;
-    if (in_thinking) thinking_count++;
-}
-
-void KVCache::append_swa_token(size_t layer_idx, const __fp16* k_token, const __fp16* v_token) {
-    if (layer_idx >= layer_caches.size()) return;
-    auto& cache = layer_caches[layer_idx];
-    if (cache.swa_window == 0 || cache.swa_ring == 0) return;
-
-    size_t dim = cache.head_dim;
-    size_t kv_heads = cache.kv_heads;
-    size_t elements_per_slot = kv_heads * dim;
-    size_t ring = cache.swa_ring;
-    size_t window = cache.swa_window;
-
-    uint32_t slot;
-    if (in_thinking) {
-        slot = (cache.think_anchor_head + static_cast<uint32_t>(thinking_count % window)) % ring;
-    } else {
-        slot = cache.head;
-    }
-
-    if (precision == Precision::INT8) {
-        size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-        size_t scales_per_slot = kv_heads * num_groups;
-        int8_t* k_dst = reinterpret_cast<int8_t*>(cache.keys.data()) + slot * elements_per_slot;
-        int8_t* v_dst = reinterpret_cast<int8_t*>(cache.values.data()) + slot * elements_per_slot;
-        float* ks_dst = cache.key_scales.data() + slot * scales_per_slot;
-        float* vs_dst = cache.value_scales.data() + slot * scales_per_slot;
-        cactus_quantize_kv_fp16_to_int8(k_token, k_dst, ks_dst, 1, kv_heads, dim);
-        cactus_quantize_kv_fp16_to_int8(v_token, v_dst, vs_dst, 1, kv_heads, dim);
-    } else {
-        size_t bytes_per_slot = elements_per_slot * element_size;
-        std::memcpy(cache.keys.data() + slot * bytes_per_slot, k_token, bytes_per_slot);
-        std::memcpy(cache.values.data() + slot * bytes_per_slot, v_token, bytes_per_slot);
-    }
-
-    if (in_thinking) {
-        uint32_t prev_tc = static_cast<uint32_t>(thinking_count);
-        uint32_t new_tc = prev_tc + 1;
-        cache.head = (cache.think_anchor_head + (new_tc % window)) % ring;
-        if (new_tc <= window && cache.count < ring) cache.count++;
-    } else {
-        cache.head = (cache.head + 1) % ring;
-        if (cache.count < ring) cache.count++;
-    }
-}
-
 void KVCache::reset() {
     current_seq_len = 0;
     total_seq_len = 0;
-    in_thinking = false;
-    thinking_count = 0;
-    for (auto& c : layer_caches) {
-        c.head = 0;
-        c.count = 0;
-        c.think_anchor_head = 0;
-        c.think_anchor_count = 0;
-        c.swa_scratch_len = 0;
-    }
 }
 
 void* KVCache::get_key_ptr(size_t layer) {
@@ -359,86 +131,8 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
 
         void* k_output = gb->get_output(k_nodes[layer_idx]);
         void* v_output = gb->get_output(v_nodes[layer_idx]);
-        if (!k_output || !v_output) continue;
 
-        if (cache.swa_window > 0) {
-            const auto& k_buffer = gb->get_output_buffer(k_nodes[layer_idx]);
-            const auto& v_buffer = gb->get_output_buffer(v_nodes[layer_idx]);
-            size_t dim = cache.head_dim;
-            size_t kv_heads = cache.kv_heads;
-            size_t elements_per_token = kv_heads * dim;
-            size_t num_groups_layer = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-            size_t scales_per_token = kv_heads * num_groups_layer;
-
-            size_t tail_skip;
-            if (k_buffer.total_size == new_total_len * elements_per_token &&
-                v_buffer.total_size == new_total_len * elements_per_token) {
-                tail_skip = old_seq_len;
-            } else if (k_buffer.total_size == seq_len * elements_per_token &&
-                       v_buffer.total_size == seq_len * elements_per_token) {
-                tail_skip = 0;
-            } else {
-                continue;
-            }
-
-            const __fp16* k_src = static_cast<const __fp16*>(k_output) + tail_skip * elements_per_token;
-            const __fp16* v_src = static_cast<const __fp16*>(v_output) + tail_skip * elements_per_token;
-
-            // Fast path: batch-quantize contiguous segments of the ring. If the write
-            // spans a wrap (non-thinking append), split into pre-wrap + post-wrap.
-            // In-thinking uses the sub-ring layout, so we inline per-token slot math
-            // here -- thinking_count is shared across layers and advanced once at the
-            // bottom of this function, so the per-layer loop computes its own effective
-            // tc offset from `thinking_count + t`.
-            if (in_thinking) {
-                size_t window_sz = cache.swa_window;
-                size_t ring_sz = cache.swa_ring;
-                for (size_t t = 0; t < seq_len; t++) {
-                    uint32_t tc = static_cast<uint32_t>(thinking_count + t);
-                    uint32_t slot = (cache.think_anchor_head + (tc % window_sz)) % ring_sz;
-                    int8_t* k_dst = reinterpret_cast<int8_t*>(cache.keys.data()) + slot * elements_per_token;
-                    int8_t* v_dst = reinterpret_cast<int8_t*>(cache.values.data()) + slot * elements_per_token;
-                    float* ks_dst = cache.key_scales.data() + slot * scales_per_token;
-                    float* vs_dst = cache.value_scales.data() + slot * scales_per_token;
-                    cactus_quantize_kv_fp16_to_int8(
-                        k_src + t * elements_per_token, k_dst, ks_dst, 1, kv_heads, dim);
-                    cactus_quantize_kv_fp16_to_int8(
-                        v_src + t * elements_per_token, v_dst, vs_dst, 1, kv_heads, dim);
-
-                    uint32_t new_tc = tc + 1;
-                    cache.head = (cache.think_anchor_head + (new_tc % window_sz)) % ring_sz;
-                    if (new_tc <= window_sz && cache.count < ring_sz) cache.count++;
-                }
-            } else {
-                uint32_t ring = cache.swa_ring;
-                uint32_t head_before = cache.head;
-                size_t remaining = seq_len;
-                size_t offset = 0;
-                while (remaining > 0) {
-                    uint32_t space = ring - head_before;
-                    uint32_t chunk = static_cast<uint32_t>(std::min<size_t>(remaining, space));
-                    int8_t* k_dst = reinterpret_cast<int8_t*>(cache.keys.data()) + head_before * elements_per_token;
-                    int8_t* v_dst = reinterpret_cast<int8_t*>(cache.values.data()) + head_before * elements_per_token;
-                    float* ks_dst = cache.key_scales.data() + head_before * scales_per_token;
-                    float* vs_dst = cache.value_scales.data() + head_before * scales_per_token;
-                    cactus_quantize_kv_fp16_to_int8(
-                        k_src + offset * elements_per_token, k_dst, ks_dst,
-                        chunk, kv_heads, dim);
-                    cactus_quantize_kv_fp16_to_int8(
-                        v_src + offset * elements_per_token, v_dst, vs_dst,
-                        chunk, kv_heads, dim);
-                    head_before = (head_before + chunk) % ring;
-                    offset += chunk;
-                    remaining -= chunk;
-                }
-                cache.head = head_before;
-                uint32_t new_count = cache.count + static_cast<uint32_t>(seq_len);
-                cache.count = (new_count > ring) ? ring : new_count;
-            }
-
-            any_layer_updated = true;
-            continue;
-        } else {
+        if (k_output && v_output) {
             const auto& k_buffer = gb->get_output_buffer(k_nodes[layer_idx]);
             const auto& v_buffer = gb->get_output_buffer(v_nodes[layer_idx]);
 
@@ -652,10 +346,6 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
     if (any_layer_updated) {
         current_seq_len = effective_seq_len;
     }
-
-    if (in_thinking) {
-        thinking_count += seq_len;
-    }
 }
 
 void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp16* v_data,
@@ -782,6 +472,77 @@ void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp
 
     if (layer_idx == num_layers - 1) {
         current_seq_len = effective_seq_len;
+    }
+}
+
+void KVCache::remove_token_range(size_t start, size_t count) {
+    if (count == 0 || start >= current_seq_len || start + count > current_seq_len) return;
+
+    size_t tail_tokens = current_seq_len - start - count;
+
+    auto erase_bytes = [](std::vector<uint8_t>& buf, size_t offset, size_t remove, size_t tail) {
+        std::memmove(buf.data() + offset, buf.data() + offset + remove, tail);
+        buf.resize(buf.size() - remove);
+    };
+
+    auto erase_floats = [](std::vector<float>& buf, size_t offset, size_t remove, size_t tail) {
+        std::memmove(buf.data() + offset, buf.data() + offset + remove, tail * sizeof(float));
+        buf.resize(buf.size() - remove);
+    };
+
+    for (size_t i = 0; i < layer_caches.size(); i++) {
+        size_t dim = get_layer_head_dim(i);
+        if (dim == 0) continue;
+        auto& layer = layer_caches[i];
+        size_t num_kv_heads = get_layer_kv_heads(i);
+        size_t bytes_per_tok = num_kv_heads * dim * element_size;
+
+        erase_bytes(layer.keys,   start * bytes_per_tok, count * bytes_per_tok, tail_tokens * bytes_per_tok);
+        erase_bytes(layer.values, start * bytes_per_tok, count * bytes_per_tok, tail_tokens * bytes_per_tok);
+
+        if (precision == Precision::INT8 && !layer.key_scales.empty()) {
+            size_t scaler_per_tok = num_kv_heads * dim / KV_QUANT_GROUP_SIZE;
+            erase_floats(layer.key_scales, start * scaler_per_tok, count * scaler_per_tok, tail_tokens * scaler_per_tok);
+            erase_floats(layer.value_scales, start * scaler_per_tok, count * scaler_per_tok, tail_tokens * scaler_per_tok);
+        }
+    }
+
+    current_seq_len -= count;
+    total_seq_len -= count;
+}
+
+void KVCache::compact_to_windows(const std::vector<size_t>& target_windows) {
+    for (size_t i = 0; i < layer_caches.size(); i++) {
+        size_t dim = get_layer_head_dim(i);
+        if (dim == 0) continue;
+        size_t target = (i < target_windows.size()) ? target_windows[i] : 0;
+        if (target == 0) continue;
+
+        auto& layer = layer_caches[i];
+        size_t num_kv_heads = get_layer_kv_heads(i);
+        size_t layer_tokens = layer.keys.size() / (num_kv_heads * dim * element_size);
+        if (layer_tokens <= target) continue;
+
+        size_t bytes_per_token = num_kv_heads * dim * element_size;
+        size_t keep_bytes = target * bytes_per_token;
+        size_t discard_bytes = (layer_tokens - target) * bytes_per_token;
+
+        std::memmove(layer.keys.data(), layer.keys.data() + discard_bytes, keep_bytes);
+        layer.keys.resize(keep_bytes);
+        std::memmove(layer.values.data(), layer.values.data() + discard_bytes, keep_bytes);
+        layer.values.resize(keep_bytes);
+
+        if (precision == Precision::INT8 && !layer.key_scales.empty()) {
+            size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+            size_t scales_per_token = num_kv_heads * num_groups;
+            size_t keep_scales = target * scales_per_token;
+            size_t discard_scales = (layer_tokens - target) * scales_per_token;
+
+            std::memmove(layer.key_scales.data(), layer.key_scales.data() + discard_scales, keep_scales * sizeof(float));
+            layer.key_scales.resize(keep_scales);
+            std::memmove(layer.value_scales.data(), layer.value_scales.data() + discard_scales, keep_scales * sizeof(float));
+            layer.value_scales.resize(keep_scales);
+        }
     }
 }
 

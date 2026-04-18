@@ -518,30 +518,12 @@ struct KVCache {
         std::vector<float> value_scales;
         size_t head_dim = 0;
         size_t kv_heads = 0;
-
-        // Ring state. swa_window == 0 means this layer is linear (global).
-        // For SWA layers: swa_ring == 2*swa_window; buffers are pre-sized to swa_ring slots.
-        uint32_t swa_window = 0;
-        uint32_t swa_ring = 0;
-        uint32_t head = 0;
-        uint32_t count = 0;
-        uint32_t think_anchor_head = 0;
-        uint32_t think_anchor_count = 0;
-
-        // Scratch holding a contiguous view of the last min(count, swa_window) slots.
-        // Populated by gather_swa_window; pointers into it are passed to the attention
-        // kernel. Sized for swa_window slots.
-        std::vector<int8_t> swa_scratch_keys;
-        std::vector<int8_t> swa_scratch_values;
-        std::vector<float>  swa_scratch_k_scales;
-        std::vector<float>  swa_scratch_v_scales;
-        uint32_t swa_scratch_len = 0;
     };
 
     std::vector<LayerCache> layer_caches;
 
-    size_t window_size = DEFAULT_WINDOW_SIZE;
-    size_t sink_size = DEFAULT_SINK_SIZE;
+    size_t window_size = DEFAULT_WINDOW_SIZE;  
+    size_t sink_size = DEFAULT_SINK_SIZE;    
     size_t current_seq_len = 0;
     size_t total_seq_len = 0;
     size_t max_seq_len = 2048;
@@ -549,21 +531,11 @@ struct KVCache {
     Precision precision;
     size_t element_size = 4;
 
-    bool in_thinking = false;
-    size_t thinking_count = 0;
-
     void set_window_size(size_t window, size_t sink = DEFAULT_SINK_SIZE);
-    void configure_swa_layers(const std::vector<size_t>& layer_windows);
     size_t get_effective_seq_len() const { return current_seq_len; }
     size_t get_total_seq_len() const { return total_seq_len; }
     size_t get_layer_head_dim(size_t layer_idx) const { return layer_caches[layer_idx].head_dim; }
     size_t get_layer_kv_heads(size_t layer_idx) const { return layer_caches[layer_idx].kv_heads; }
-    bool is_swa_layer(size_t layer_idx) const {
-        return layer_idx < layer_caches.size() && layer_caches[layer_idx].swa_window > 0;
-    }
-    uint32_t get_swa_head(size_t layer_idx) const { return layer_caches[layer_idx].head; }
-    uint32_t get_swa_count(size_t layer_idx) const { return layer_caches[layer_idx].count; }
-    uint32_t get_swa_think_anchor(size_t layer_idx) const { return layer_caches[layer_idx].think_anchor_head; }
 
     void init(size_t num_layers, size_t max_seq, const std::vector<size_t>& layer_dims, const std::vector<size_t>& layer_kv_heads, Precision model_precision);
     void reset();
@@ -574,38 +546,15 @@ struct KVCache {
     void update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp16* v_data,
                          size_t num_tokens, size_t kv_heads, size_t head_dim);
 
-    void enter_thinking();
-    void exit_thinking();
-
-    // Ring append for SWA layers. Writes one token's K/V (kv_heads*head_dim FP16 elements)
-    // at the slot implied by the current head / thinking state, then advances that layer's
-    // head and count per the sub-ring rules. The caller is responsible for invoking
-    // commit_token() exactly once after all layers for this token have been appended.
-    void append_swa_token(size_t layer_idx, const __fp16* k_token, const __fp16* v_token);
-
-    // Advances total_seq_len (and thinking_count, if in_thinking) by 1. Call after all
-    // per-layer appends for a token are complete.
-    void commit_token();
-
-    // Gathers the SWA layer's last min(count, swa_window) ring slots into a contiguous
-    // scratch buffer and returns the gathered length. Subsequent calls to the scratch
-    // getters return pointers into this buffer; they remain valid until the next
-    // gather_swa_window call or modifying operation on this layer.
-    size_t gather_swa_window(size_t layer_idx);
-    const int8_t* get_swa_scratch_keys_int8(size_t layer_idx) const;
-    const int8_t* get_swa_scratch_values_int8(size_t layer_idx) const;
-    const float*  get_swa_scratch_k_scales(size_t layer_idx) const;
-    const float*  get_swa_scratch_v_scales(size_t layer_idx) const;
-
     bool is_empty() const { return current_seq_len == 0; }
     void* get_key_ptr(size_t layer);
     void* get_value_ptr(size_t layer);
 
     struct CircularView {
         const void* ptr1;
-        const void* ptr2;
+        const void* ptr2;  
         size_t len1;
-        size_t len2;
+        size_t len2; 
         size_t total_len;
     };
 
@@ -616,6 +565,9 @@ struct KVCache {
     const int8_t* get_values_int8(size_t layer) const;
     const float* get_key_scales(size_t layer) const;
     const float* get_value_scales(size_t layer) const;
+
+    void remove_token_range(size_t start, size_t count);
+    void compact_to_windows(const std::vector<size_t>& target_windows);
 };
 
 class ToolCallConstrainer {
@@ -821,9 +773,8 @@ public:
     bool has_npu_prefill() const;
     size_t get_prefill_chunk_size() const;
 
-    virtual void enter_thinking() { kv_cache_.enter_thinking(); }
-    virtual void exit_thinking() { kv_cache_.exit_thinking(); }
-    bool is_in_thinking() const { return kv_cache_.in_thinking; }
+    virtual void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
+    virtual void compact_kv_cache() {}
 
     virtual void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
     virtual void clear_tool_constraints();
