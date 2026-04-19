@@ -46,6 +46,8 @@ public:
         const std::vector<NPUNamedInput>& inputs,
         __fp16* output,
         const std::string& output_name = "") = 0;
+
+    virtual void reset_state() {}
 };
 
 std::unique_ptr<NPUEncoder> create_encoder();

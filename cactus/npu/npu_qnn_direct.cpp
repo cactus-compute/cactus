@@ -5004,6 +5004,9 @@ __fp16* QNNDirectEncoder::get_output_buffer() {
         return reinterpret_cast<__fp16*>(impl_->pk_segs[impl_->pk_n_segs].out_buf.data());
     return reinterpret_cast<__fp16*>(impl_->output_buf.data());
 }
+void QNNDirectEncoder::reset_state() {
+    // no-op stub; per-backend reset hooks can be added here
+}
 size_t QNNDirectEncoder::get_output_buffer_size() const {
     if (impl_->is_g4a) {
         int od = impl_->g4a_out_dim > 0 ? impl_->g4a_out_dim : impl_->g4a_hidden;

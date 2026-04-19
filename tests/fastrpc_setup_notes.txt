@@ -1,0 +1,169 @@
+FastRPC / Hexagon DSP Skel Setup Notes
+========================================
+Last updated: 2026-04-16
+
+## Overview
+
+This documents what is required to talk to the CDSP on Snapdragon Windows
+via FastRPC (libcdsprpc.dll) and the ggml HTP skel (libggml-htp-v73.so).
+The goal was to bypass the QAIRT SDK and drive the DSP directly.
+
+## Prerequisites / Downloads
+
+### 1. Qualcomm Hexagon SDK 6.4.0.2
+- Required to build the DSP skel (libggml-htp-v73.so) from source
+- Install to C:\Qualcomm\Hexagon_SDK\6.4.0.2\ (default)
+- Provides: hexagon-link, Hexagon_Tools/19.0.04, dspqueue.h, remote.h, etc.
+- The skel in pkg-snapdragon was built with SDK 6.4.0.2 + HEXAGON_Tools 19.0.04
+
+### 2. llama.cpp pkg-snapdragon package
+- Contains the catalog-signed DSP skel and the inf/cat files needed for installation
+- Location: third_party/llama.cpp/pkg-snapdragon/lib/
+  - libggml-htp-v73.so  (355208 bytes — the catalog-signed version)
+  - libggml-htp.inf      (driver installation descriptor)
+  - libggml-htp.cat      (Authenticode catalog for catalog verification)
+  - libcdsprpc.dll       (NOT present here — comes from Qualcomm driver store)
+
+### 3. Windows Kits (for makecert, signtool, pvk2pfx)
+- Windows SDK at C:\Program Files (x86)\Windows Kits\10\
+- ARM64 binaries at bin\10.0.26100.0\arm64\
+  - makecert.exe, pvk2pfx.exe, signtool.exe (for signing cat files)
+
+## Permissions Setup
+
+### Enable Test Signing (requires admin, requires reboot)
+```
+bcdedit /set TESTSIGNING ON
+```
+Verify: msinfo32 → OS Name shows "Test Mode" watermark on desktop.
+
+### Create a Self-Signed Code Signing Certificate
+```
+makecert -r -pe -ss PrivateCertStore -n CN=GGML.HTP.v1 -eku 1.3.6.1.5.5.7.3.3 -sv ggml-htp-v1.pvk ggml-htp-v1.cer
+pvk2pfx.exe -pvk ggml-htp-v1.pvk -spc ggml-htp-v1.cer -pfx ggml-htp-v1.pfx
+```
+
+### Install Certificate to Both Stores (requires admin)
+Open certlm (Local Machine certificates):
+1. Trusted Root Certification Authorities → Import → ggml-htp-v1.cer
+2. Trusted Publishers → Import → ggml-htp-v1.cer
+
+### Build libggml-htp-v73.so with the Certificate
+Before building llama.cpp Hexagon backend:
+```powershell
+$env:HEXAGON_HTP_CERT    = "C:\Users\justi\Certs\ggml-htp-v1.pfx"
+$env:WINDOWS_SDK_BIN     = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\arm64"
+cmake --preset arm64-windows-snapdragon-release -B build-wos
+```
+This signs the catalog (libggml-htp.cat) against your skel binary.
+IMPORTANT: The skel binary in the installed driver package must be IDENTICAL
+(byte-for-byte) to the one the catalog was signed against. Any rebuild
+creates a different binary → catalog mismatch → AEE_EUNABLETOLOAD (0x80000406).
+
+### Install the Driver Package (requires admin)
+```
+pnputil /add-driver pkg-snapdragon\lib\libggml-htp.inf /install
+```
+This installs the skel to C:\Windows\System32\unknown\libggml-htp-v73.so
+(DIRID 6) and registers the catalog.
+
+### Set ADSP_LIBRARY_PATH
+libcdsprpc.dll also searches this path when loading the skel:
+```powershell
+$env:ADSP_LIBRARY_PATH = "C:\Users\justi\GitRepos\qualcomm-npu\third_party\llama.cpp\pkg-snapdragon\lib"
+```
+IMPORTANT: the file at this path must also match the catalog hash. Either
+keep it identical to the installed driver store version, or the DLL will
+refuse to load it.
+
+## Driver Store Layout
+
+Active FastRPC driver (newer — Nov 2025, libcdsprpc.dll = 592176 bytes):
+  qcnspmcdm8380.inf_arm64_e663a92a933cab52\
+    libcdsprpc.dll  — HAS dspqueue_* functions
+    HTP\            — QNN HTP skel
+
+Old FastRPC driver (Sep 2024, libcdsprpc.dll = 467168 bytes):
+  qcnspmcdm8380.inf_arm64_0fd0bef059eeed7d\
+    libcdsprpc.dll  — NO dspqueue_* functions
+    CDSP\           — Qualcomm-signed skels + fastrpc_shell_unsigned_3
+
+Another driver (Jun 2025, 375KB, no dspqueue):
+  qcadsprpc8380.inf_arm64_c177c9ef6a2f6580\
+
+GGML skel package:
+  libggml-htp.inf_arm64_a398a1fc694a092c\
+    libggml-htp-v73.so  — hard-linked to C:\Windows\System32\unknown\
+    libggml-htp.cat     — signed with CN=GGML.HTP.v1
+
+The active kernel driver is qcnspmcdm8380.sys (from the e663a92a package).
+libcdsprpc.dll must be loaded from the e663a92a package (592KB) because only
+it has dspqueue_create, dspqueue_export, etc.
+
+## FastRPC Initialization Sequence
+
+This matches what llama.cpp does for dev_id=0:
+
+1. Load libcdsprpc.dll (from driver store, sort by mtime, pick newest)
+2. remote_handle_control(DSPRPC_GET_DSP_INFO) → get arch version (73 for v73)
+3. remote_session_control(DSPRPC_CONTROL_UNSIGNED_MODULE, domain=3, enable=1)
+   (returns 0x0 but has no effect — unsigned PD is blocked on this driver)
+4. remote_handle64_open(uri, &handle) where uri =
+   "file:///libggml-htp-v73.so?htp_iface_skel_handle_invoke&_modver=1.0&_dom=cdsp"
+   → PASS (returns handle) IF skel is catalog-signed and catalog matches
+5. remote_handle64_control(handle, DSPRPC_CONTROL_LATENCY, ...) [non-fatal]
+6. dspqueue_create(domain=3, ...) → PASS (returns queue handle)
+7. dspqueue_export(queue, &queue_id) → PASS (returns queue_id)
+8. htp_iface_start(handle, sess_id=0, queue_id, n_hvx=0, use_hmx=1)
+   → FAIL: 0x200 = AEE_ERPC ("Error due to fastrpc implementation")
+   Root cause: dspqueue_import on DSP side calls a fastrpc kernel syscall
+   to register the queue. The Windows fastrpc kernel driver (qcnspmcdm8380.sys,
+   Nov 2025) does not properly implement this kernel-side queue sharing
+   mechanism. The DLL function dspqueue_create succeeds on the host, but
+   the DSP cannot import the queue.
+
+## Root Cause Analysis
+
+### What WORKS
+- Loading the catalog-signed skel via remote_handle64_open → PASS
+- dspqueue_create(domain=3) on host → PASS
+- dspqueue_export → PASS, returns valid queue_id
+- RESERVE_NEW_SESSION → PASS (session_id=1, effective_domain=7)
+
+### What FAILS
+- htp_iface_start → 0x200 (AEE_ERPC) with default session (domain=3)
+- htp_iface_start → 0xe (EFAULT) with isolated session (domain=7)
+- AEE_ERPC from dspqueue_import means the fastrpc kernel returned an error
+  when the DSP tried to register the queue. This is a driver-level limitation:
+  the Windows fastrpc kernel (qcnspmcdm8380.sys v1.0.0.13) does not support
+  the DSP-side dspqueue_import kernel interface.
+
+### AEE_EUNABLETOLOAD (0x80000406) — catalog mismatch
+Any modification to the skel binary (even static-linking) changes its hash.
+The catalog was signed against the ORIGINAL binary (355208 bytes). Using a
+different binary → hash mismatch → EUNABLETOLOAD.
+
+### Unsigned PD is blocked
+DSPRPC_CONTROL_UNSIGNED_MODULE returns 0x0 (ok) but does NOT enable the
+unsigned PD mechanism. The Nov 2025 driver removed support for unsigned skels.
+Signed Qualcomm skels (libbenchmark_skel.so, etc.) load fine.
+
+## Confirmed Non-Working Approaches
+- Placing static-linked skel in ADSP_LIBRARY_PATH → catalog mismatch
+- DSPRPC_CONTROL_UNSIGNED_MODULE → returns ok but has no effect
+- Using FASTRPC_GET_URI with session=0 vs raw URI → both fail on dspqueue_import
+- dspqueue_create with domain=3 (default) vs domain=7 (isolated) → both fail
+- Removing RESERVE_NEW_SESSION vs using it → both fail
+
+## Current Status (2026-04-16)
+
+htp_iface_start is the final blocker. dspqueue_import returns AEE_ERPC (0x200)
+regardless of URI or session variant tried. This appears to be a fundamental
+limitation of the Windows fastrpc kernel driver version installed on this device.
+
+## Path Forward
+
+1. QNN/QAIRT path (existing cactus NPU) — already works for Whisper/Gemma4/Parakeet
+2. Qualcomm Hexagon Developer Program — apply for DSP signing authority
+3. QNN C API integration — use Qnn.dll for custom ops without unsigned skel
+4. Monitor future driver updates — newer qcnspmcdm8380.sys may fix dspqueue_import

@@ -120,25 +120,25 @@ static void cactus_matmul_f16_worker(
                     float16x8_t b_lo = vld1q_f16(b_transposed + (col_block + ni) * K + k);
                     float16x8_t b_hi = vld1q_f16(b_transposed + (col_block + ni) * K + k + 8);
 
-                    acc_lo[0][ni] = vfmaq_f32(acc_lo[0][ni], vcvt_f32_f16(vget_low_f16(a0_lo)), vcvt_f32_f16(vget_low_f16(b_lo)));
-                    acc_hi[0][ni] = vfmaq_f32(acc_hi[0][ni], vcvt_f32_f16(vget_high_f16(a0_lo)), vcvt_f32_f16(vget_high_f16(b_lo)));
-                    acc_lo[0][ni] = vfmaq_f32(acc_lo[0][ni], vcvt_f32_f16(vget_low_f16(a0_hi)), vcvt_f32_f16(vget_low_f16(b_hi)));
-                    acc_hi[0][ni] = vfmaq_f32(acc_hi[0][ni], vcvt_f32_f16(vget_high_f16(a0_hi)), vcvt_f32_f16(vget_high_f16(b_hi)));
+                    acc_lo[0][ni] = vfmlalq_low_f16(acc_lo[0][ni], a0_lo, b_lo);
+                    acc_hi[0][ni] = vfmlalq_high_f16(acc_hi[0][ni], a0_lo, b_lo);
+                    acc_lo[0][ni] = vfmlalq_low_f16(acc_lo[0][ni], a0_hi, b_hi);
+                    acc_hi[0][ni] = vfmlalq_high_f16(acc_hi[0][ni], a0_hi, b_hi);
 
-                    acc_lo[1][ni] = vfmaq_f32(acc_lo[1][ni], vcvt_f32_f16(vget_low_f16(a1_lo)), vcvt_f32_f16(vget_low_f16(b_lo)));
-                    acc_hi[1][ni] = vfmaq_f32(acc_hi[1][ni], vcvt_f32_f16(vget_high_f16(a1_lo)), vcvt_f32_f16(vget_high_f16(b_lo)));
-                    acc_lo[1][ni] = vfmaq_f32(acc_lo[1][ni], vcvt_f32_f16(vget_low_f16(a1_hi)), vcvt_f32_f16(vget_low_f16(b_hi)));
-                    acc_hi[1][ni] = vfmaq_f32(acc_hi[1][ni], vcvt_f32_f16(vget_high_f16(a1_hi)), vcvt_f32_f16(vget_high_f16(b_hi)));
+                    acc_lo[1][ni] = vfmlalq_low_f16(acc_lo[1][ni], a1_lo, b_lo);
+                    acc_hi[1][ni] = vfmlalq_high_f16(acc_hi[1][ni], a1_lo, b_lo);
+                    acc_lo[1][ni] = vfmlalq_low_f16(acc_lo[1][ni], a1_hi, b_hi);
+                    acc_hi[1][ni] = vfmlalq_high_f16(acc_hi[1][ni], a1_hi, b_hi);
 
-                    acc_lo[2][ni] = vfmaq_f32(acc_lo[2][ni], vcvt_f32_f16(vget_low_f16(a2_lo)), vcvt_f32_f16(vget_low_f16(b_lo)));
-                    acc_hi[2][ni] = vfmaq_f32(acc_hi[2][ni], vcvt_f32_f16(vget_high_f16(a2_lo)), vcvt_f32_f16(vget_high_f16(b_lo)));
-                    acc_lo[2][ni] = vfmaq_f32(acc_lo[2][ni], vcvt_f32_f16(vget_low_f16(a2_hi)), vcvt_f32_f16(vget_low_f16(b_hi)));
-                    acc_hi[2][ni] = vfmaq_f32(acc_hi[2][ni], vcvt_f32_f16(vget_high_f16(a2_hi)), vcvt_f32_f16(vget_high_f16(b_hi)));
+                    acc_lo[2][ni] = vfmlalq_low_f16(acc_lo[2][ni], a2_lo, b_lo);
+                    acc_hi[2][ni] = vfmlalq_high_f16(acc_hi[2][ni], a2_lo, b_lo);
+                    acc_lo[2][ni] = vfmlalq_low_f16(acc_lo[2][ni], a2_hi, b_hi);
+                    acc_hi[2][ni] = vfmlalq_high_f16(acc_hi[2][ni], a2_hi, b_hi);
 
-                    acc_lo[3][ni] = vfmaq_f32(acc_lo[3][ni], vcvt_f32_f16(vget_low_f16(a3_lo)), vcvt_f32_f16(vget_low_f16(b_lo)));
-                    acc_hi[3][ni] = vfmaq_f32(acc_hi[3][ni], vcvt_f32_f16(vget_high_f16(a3_lo)), vcvt_f32_f16(vget_high_f16(b_lo)));
-                    acc_lo[3][ni] = vfmaq_f32(acc_lo[3][ni], vcvt_f32_f16(vget_low_f16(a3_hi)), vcvt_f32_f16(vget_low_f16(b_hi)));
-                    acc_hi[3][ni] = vfmaq_f32(acc_hi[3][ni], vcvt_f32_f16(vget_high_f16(a3_hi)), vcvt_f32_f16(vget_high_f16(b_hi)));
+                    acc_lo[3][ni] = vfmlalq_low_f16(acc_lo[3][ni], a3_lo, b_lo);
+                    acc_hi[3][ni] = vfmlalq_high_f16(acc_hi[3][ni], a3_lo, b_lo);
+                    acc_lo[3][ni] = vfmlalq_low_f16(acc_lo[3][ni], a3_hi, b_hi);
+                    acc_hi[3][ni] = vfmlalq_high_f16(acc_hi[3][ni], a3_hi, b_hi);
                 }
             }
 
@@ -150,14 +150,14 @@ static void cactus_matmul_f16_worker(
 
                 for (size_t ni = 0; ni < TILE_N && col_block + ni < n_end; ++ni) {
                     float16x8_t b_v = vld1q_f16(b_transposed + (col_block + ni) * K + k);
-                    acc_lo[0][ni] = vfmaq_f32(acc_lo[0][ni], vcvt_f32_f16(vget_low_f16(a0_v)), vcvt_f32_f16(vget_low_f16(b_v)));
-                    acc_hi[0][ni] = vfmaq_f32(acc_hi[0][ni], vcvt_f32_f16(vget_high_f16(a0_v)), vcvt_f32_f16(vget_high_f16(b_v)));
-                    acc_lo[1][ni] = vfmaq_f32(acc_lo[1][ni], vcvt_f32_f16(vget_low_f16(a1_v)), vcvt_f32_f16(vget_low_f16(b_v)));
-                    acc_hi[1][ni] = vfmaq_f32(acc_hi[1][ni], vcvt_f32_f16(vget_high_f16(a1_v)), vcvt_f32_f16(vget_high_f16(b_v)));
-                    acc_lo[2][ni] = vfmaq_f32(acc_lo[2][ni], vcvt_f32_f16(vget_low_f16(a2_v)), vcvt_f32_f16(vget_low_f16(b_v)));
-                    acc_hi[2][ni] = vfmaq_f32(acc_hi[2][ni], vcvt_f32_f16(vget_high_f16(a2_v)), vcvt_f32_f16(vget_high_f16(b_v)));
-                    acc_lo[3][ni] = vfmaq_f32(acc_lo[3][ni], vcvt_f32_f16(vget_low_f16(a3_v)), vcvt_f32_f16(vget_low_f16(b_v)));
-                    acc_hi[3][ni] = vfmaq_f32(acc_hi[3][ni], vcvt_f32_f16(vget_high_f16(a3_v)), vcvt_f32_f16(vget_high_f16(b_v)));
+                    acc_lo[0][ni] = vfmlalq_low_f16(acc_lo[0][ni], a0_v, b_v);
+                    acc_hi[0][ni] = vfmlalq_high_f16(acc_hi[0][ni], a0_v, b_v);
+                    acc_lo[1][ni] = vfmlalq_low_f16(acc_lo[1][ni], a1_v, b_v);
+                    acc_hi[1][ni] = vfmlalq_high_f16(acc_hi[1][ni], a1_v, b_v);
+                    acc_lo[2][ni] = vfmlalq_low_f16(acc_lo[2][ni], a2_v, b_v);
+                    acc_hi[2][ni] = vfmlalq_high_f16(acc_hi[2][ni], a2_v, b_v);
+                    acc_lo[3][ni] = vfmlalq_low_f16(acc_lo[3][ni], a3_v, b_v);
+                    acc_hi[3][ni] = vfmlalq_high_f16(acc_hi[3][ni], a3_v, b_v);
                 }
             }
 

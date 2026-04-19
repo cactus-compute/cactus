@@ -734,6 +734,7 @@ size_t Gemma4AudioModel::forward_audio(CactusGraph* gb, const std::vector<float>
             bool layout_known = false;
             bool npu_ok = true;
 
+            npu_encoder_->reset_state();
             for (size_t chunk_idx = 0; chunk_idx < num_chunks && npu_ok; chunk_idx++) {
                 size_t frame_start = chunk_idx * max_npu_frames;
                 size_t frame_end = std::min(frame_start + max_npu_frames, num_frames);
@@ -830,8 +831,7 @@ size_t Gemma4AudioModel::forward_audio(CactusGraph* gb, const std::vector<float>
 size_t Gemma4AudioModel::build_audio_projector(CactusGraph* gb, size_t audio_features, ComputeBackend backend) {
     float eps = config_.audio_rms_norm_eps > 0 ? config_.audio_rms_norm_eps : 1e-6f;
     size_t normed = gb->rms_norm(audio_features, audio_proj_norm_ones_node_, eps);
-    size_t projected = gb->matmul(normed, audio_weights_.embed_audio_proj, true, backend);
-    return gb->scalar_multiply(projected, 1.0f / 16.0f);
+    return gb->matmul(normed, audio_weights_.embed_audio_proj, true, backend);
 }
 
 }

@@ -55,6 +55,7 @@ public:
         const std::vector<NPUNamedInput>& inputs,
         __fp16* output,
         const std::string& output_name = "") override;
+    void reset_state() override;
 
 private:
     struct Impl;

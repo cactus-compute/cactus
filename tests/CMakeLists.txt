@@ -95,8 +95,27 @@ else()
     message(STATUS "SDL2 not found; microphone tests will be skipped")
 endif()
 
+# test_fastrpc is a standalone FastRPC probe — no libcactus/libmman/SDL2 to avoid
+# libmman hooking Windows memory APIs that interfere with libcdsprpc.dll dspqueue.
+if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_fastrpc.cpp")
+    add_executable(test_fastrpc test_fastrpc.cpp
+        ${CACTUS_ROOT}/npu/fastrpc_drv.cpp)
+    target_include_directories(test_fastrpc PRIVATE ${CACTUS_ROOT})
+    set(_COMPAT_H "${CACTUS_ROOT}/compat_win32.h")
+    set(_COMPAT_INC "${CACTUS_ROOT}/compat_include")
+    if(EXISTS "${_COMPAT_H}")
+        target_compile_options(test_fastrpc PRIVATE -include "${_COMPAT_H}")
+    endif()
+    if(EXISTS "${_COMPAT_INC}")
+        target_include_directories(test_fastrpc BEFORE PRIVATE "${_COMPAT_INC}")
+    endif()
+    target_link_libraries(test_fastrpc PRIVATE wintrust crypt32)
+    message(STATUS "Added standalone test: test_fastrpc")
+endif()
+
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "test_*.cpp")
 list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_utils.cpp")
+list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_fastrpc.cpp")
 
 foreach(TEST_FILE ${TEST_SOURCES})
 
