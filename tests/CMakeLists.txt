@@ -60,6 +60,17 @@ else()
     message(STATUS "SDL2 not found; microphone tests will be skipped")
 endif()
 
+set(CACTUS_HAS_MLX OFF)
+if(APPLE)
+    find_package(MLX QUIET)
+    if(MLX_FOUND)
+        set(CACTUS_HAS_MLX ON)
+        message(STATUS "MLX found — test_mlx_matmul will be linked with MLX")
+    else()
+        message(STATUS "MLX not found — test_mlx_matmul will run in skip mode")
+    endif()
+endif()
+
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "test_*.cpp")
 list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_utils.cpp")
 
@@ -103,6 +114,12 @@ foreach(TEST_FILE ${TEST_SOURCES})
     endif()
 
     target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_ROOT})
+
+    if(CACTUS_HAS_MLX AND (TEST_NAME STREQUAL "test_mlx_matmul" OR TEST_NAME STREQUAL "test_mlx_attention"))
+        target_link_libraries(${TEST_NAME} PRIVATE mlx)
+        target_compile_definitions(${TEST_NAME} PRIVATE CACTUS_HAS_MLX=1)
+        message(STATUS "Test ${TEST_NAME} will link with MLX")
+    endif()
 
     message(STATUS "Added test: ${TEST_NAME}")
 endforeach()

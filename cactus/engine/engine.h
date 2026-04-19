@@ -143,7 +143,7 @@ struct Config {
     enum class Activation {GELU = 0, SILU = 1};
     Activation activation = Activation::SILU;
 
-    enum class Backend {CPU = 0, NPU = 1};
+    enum class Backend {CPU = 0, NPU = 1, MLX = 2};
     Backend default_backend = Backend::CPU;
 
     enum class Precision {INT8 = 0, FP16 = 1, FP32 = 2};
@@ -722,6 +722,7 @@ public:
     virtual ~Model();
 
     const Config& get_config() const { return config_; }
+    virtual void override_backend(Config::Backend b) { config_.default_backend = b; }
     Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
     const std::vector<DebugNode>& get_debug_nodes() const;
 

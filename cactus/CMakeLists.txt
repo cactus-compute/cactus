@@ -86,6 +86,17 @@ else()
     set(NPU_SOURCES "npu/npu.cpp")
 endif()
 
+set(CACTUS_HAS_MLX OFF)
+if(APPLE)
+    find_package(MLX QUIET)
+    if(MLX_FOUND)
+        set(CACTUS_HAS_MLX ON)
+        message(STATUS "MLX found — MLX acceleration available")
+    else()
+        message(STATUS "MLX not found — MLX acceleration will not be available")
+    endif()
+endif()
+
 set(COMMON_SOURCES
     ${ENGINE_SOURCES}
     ${GRAPH_SOURCES}
@@ -132,6 +143,10 @@ function(configure_cactus_target target_name)
         )
         target_include_directories(${target_name} PUBLIC ${CACTUS_CURL_INCLUDE_DIR})
         target_compile_definitions(${target_name} PRIVATE CACTUS_USE_CURL=1)
+        if(CACTUS_HAS_MLX)
+            target_link_libraries(${target_name} PUBLIC mlx)
+            target_compile_definitions(${target_name} PRIVATE CACTUS_HAS_MLX=1)
+        endif()
     elseif(CURL_FOUND)
         target_include_directories(${target_name} PRIVATE ${CURL_INCLUDE_DIRS})
         target_link_libraries(${target_name} PUBLIC ${CURL_LIBRARIES})

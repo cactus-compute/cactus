@@ -1680,3 +1680,15 @@ size_t CactusGraph::weighted_stats_pool(size_t input, size_t weights) {
     for (size_t i = 1; i < xin.shape.size() - 1; ++i) features *= xin.shape[i];
     return add_node(OpType::WEIGHTED_STATS_POOL, {input, weights}, {batch, features * 2});
 }
+
+size_t CactusGraph::fused_mlx_node(const std::vector<size_t>& inputs,
+                                    const std::vector<size_t>& output_shape,
+                                    MLXFusedFn fn) {
+    OpParams params{};
+    params.backend = ComputeBackend::MLX;
+    size_t node_id = add_node(OpType::FUSED_MLX_OP, inputs, output_shape, params);
+    auto* fn_heap = new MLXFusedFn(std::move(fn));
+    nodes_.back()->custom_context = std::shared_ptr<void>(fn_heap,
+        [](void* p) { delete static_cast<MLXFusedFn*>(p); });
+    return node_id;
+}

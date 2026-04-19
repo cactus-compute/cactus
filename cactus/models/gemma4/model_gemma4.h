@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../model.h"
+#include "mlx_gemma4.h"
 
 bool test_gemma4_vision(bool expect_npu);
 bool test_gemma4_audio(bool expect_npu);
@@ -115,6 +116,25 @@ private:
     std::vector<__fp16> v_norm_ones_weight_;
     size_t v_norm_ones_node_ = 0;
     size_t v_norm_ones_global_node_ = 0;
+
+    Gemma4MLXState                          mlx_state_;
+    std::shared_ptr<Gemma4MLXForwardParams> mlx_params_;
+    
+    void build_mlx_params(CactusGraph* gb);
+    void warmup_mlx();
+
+public:
+    void reset_mlx_kv_cache() { mlx_state_.reset(); }
+
+        void override_backend(Config::Backend b) override {
+        Model::override_backend(b);
+#ifdef CACTUS_HAS_MLX
+        if (b == Config::Backend::MLX && !mlx_params_ && graph_handle_) {
+            build_mlx_params(static_cast<CactusGraph*>(graph_handle_));
+            warmup_mlx();
+        }
+#endif
+    }
 };
 
 class Gemma4VisionModel : public Model {
@@ -309,6 +329,13 @@ public:
 
     bool init(const std::string& model_folder, size_t context_size,
               const std::string& system_prompt = "", bool do_warmup = true) override;
+
+    void override_backend(Config::Backend b) override {
+        Model::override_backend(b);
+        vision_encoder_.override_backend(b);
+        audio_encoder_.override_backend(b);
+        language_model_.override_backend(b);
+    }
 
     size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
 

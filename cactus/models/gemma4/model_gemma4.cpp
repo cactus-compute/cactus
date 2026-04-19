@@ -1,5 +1,8 @@
 #include "model_gemma4.h"
 #include "../../graph/graph.h"
+#ifdef CACTUS_HAS_MLX
+#include "mlx_gemma4.h"
+#endif
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -208,6 +211,99 @@ void Gemma4Model::load_weights_to_graph(CactusGraph* gb) {
     } else {
         CACTUS_LOG_WARN("npu", "[gemma4] NPU backend unavailable on this device; using CPU prefill");
     }
+
+#ifdef CACTUS_HAS_MLX
+    if (config_.default_backend == Config::Backend::MLX) {
+        build_mlx_params(gb);
+    }
+#endif
+}
+
+void Gemma4Model::build_mlx_params(CactusGraph* gb) {
+    auto params = std::make_shared<Gemma4MLXForwardParams>();
+    params->gb         = gb;
+    params->num_layers = config_.num_layers;
+    params->hidden_dim = config_.hidden_dim;
+    params->pli_dim    = config_.hidden_size_per_layer_input;
+    params->has_pli    = (config_.hidden_size_per_layer_input > 0);
+    params->norm_eps   = config_.layer_norm_eps;
+    params->attention_scale = attention_scale_;
+    params->per_layer_model_proj_node = weight_nodes_.per_layer_model_proj;
+    params->per_layer_proj_norm_node  = weight_nodes_.per_layer_proj_norm;
+
+    params->layers.resize(config_.num_layers);
+    size_t sliding_head_dim = config_.attention_head_dim;
+    size_t global_head_dim  = config_.global_head_dim > 0
+                              ? config_.global_head_dim
+                              : config_.attention_head_dim * 2;
+
+    for (uint32_t i = 0; i < config_.num_layers; i++) {
+        const auto& wl = weight_nodes_.layers[i];
+        auto& ln = params->layers[i];
+
+        ln.q_weight = wl.attn_q_weight;
+        ln.k_weight = wl.attn_k_weight;
+        ln.v_weight = wl.attn_v_weight;
+        ln.o_weight = wl.attn_output_weight;
+        ln.q_norm = wl.attn_q_norm_weight;
+        ln.k_norm = wl.attn_k_norm_weight;
+        ln.input_ln = wl.input_layernorm_weight;
+        ln.post_attn_ln = wl.post_attention_layernorm_weight;
+        ln.gate_weight = wl.ffn_gate_weight;
+        ln.up_weight = wl.ffn_up_weight;
+        ln.down_weight = wl.ffn_down_weight;
+        ln.pre_ffn_ln = wl.pre_feedforward_layernorm_weight;
+        ln.post_ffn_ln = wl.post_feedforward_layernorm_weight;
+        ln.pli_gate = wl.per_layer_gate;
+        ln.pli_proj = wl.per_layer_proj;
+        ln.pli_norm = wl.post_per_layer_norm;
+        ln.layer_scalar = wl.layer_scalar;
+        ln.is_global = is_global_layer(i);
+        ln.share_src = (i < kv_share_map_.size()) ? kv_share_map_[i] : -1;
+
+        if (ln.is_global) {
+            ln.num_heads = config_.attention_heads;
+            ln.kv_heads = config_.num_global_kv_heads > 0
+                           ? config_.num_global_kv_heads
+                           : config_.attention_kv_heads;
+            ln.head_dim = global_head_dim;
+            float rot_factor = config_.global_partial_rotary_factor;
+            ln.rot_dim = static_cast<size_t>(global_head_dim * rot_factor);
+            ln.rot_dim &= ~1u;
+            ln.rope_freq = std::pow(config_.rope_theta,
+                                    static_cast<float>(ln.rot_dim) /
+                                    static_cast<float>(global_head_dim));
+            ln.window = 0;
+        } else {
+            ln.num_heads = config_.attention_heads;
+            ln.kv_heads  = config_.attention_kv_heads;
+            ln.head_dim  = sliding_head_dim;
+            ln.rot_dim   = sliding_head_dim;
+            ln.rope_freq = config_.rope_local_base_freq;
+            ln.window    = config_.sliding_window;
+        }
+    }
+
+    mlx_params_ = std::move(params);
+    mlx_state_.init(config_.num_layers);
+}
+
+void Gemma4Model::warmup_mlx() {
+#ifdef CACTUS_HAS_MLX
+    if (!mlx_params_ || !graph_handle_) return;
+
+    std::vector<uint32_t> dummy_tokens = {2, 100, 200, 300};
+    auto saved_cache_len = mlx_state_.cached_seq_len;
+    mlx_state_.reset();
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    gb->soft_reset();
+    forward(dummy_tokens, false);
+    gb->execute("");
+
+    mlx_state_.reset();
+    gb->soft_reset();
+#endif
 }
 
 size_t Gemma4Model::build_per_layer_input(CactusGraph* gb, size_t hidden, size_t pli_combined, uint32_t layer_idx,
@@ -472,8 +568,49 @@ size_t Gemma4Model::forward(const std::vector<uint32_t>& tokens, bool use_cache)
     std::fill(shared_k_nodes_.begin(), shared_k_nodes_.end(), 0);
     std::fill(shared_v_nodes_.begin(), shared_v_nodes_.end(), 0);
 
+    auto backend = config_.default_backend == Config::Backend::MLX ? ComputeBackend::MLX
+                 : config_.default_backend == Config::Backend::CPU  ? ComputeBackend::CPU
+                 : ComputeBackend::NPU;
+
+#ifdef CACTUS_HAS_MLX
+    if (backend == ComputeBackend::MLX && mlx_params_) {
+        if (!use_cache) mlx_state_.reset();
+
+        size_t T = tokens.size();
+        std::vector<float> ids(T);
+        for (size_t i = 0; i < T; i++) ids[i] = static_cast<float>(tokens[i]);
+
+        auto token_input  = gb->input({T}, Precision::FP32);
+        auto main_embed   = gb->scalar_multiply(
+            gb->embedding(embedding_node_id_, token_input),
+            std::sqrt(static_cast<float>(config_.hidden_dim)));
+
+        std::vector<size_t> fused_inputs = {main_embed};
+        size_t pli_input_node = 0;
+
+        if (config_.hidden_size_per_layer_input > 0) {
+            pli_input_node = gb->input({T}, Precision::FP32);
+            auto pli_embed = gb->scalar_multiply(
+                gb->embedding(weight_nodes_.embed_tokens_per_layer, pli_input_node),
+                std::sqrt(static_cast<float>(config_.hidden_size_per_layer_input)));
+            fused_inputs.push_back(pli_embed);
+        }
+
+        auto output_node = gb->fused_mlx_node(
+            fused_inputs,
+            {T, config_.hidden_dim},
+            make_gemma4_full_forward_fn(&mlx_state_, mlx_params_));
+
+        gb->set_input(token_input, ids.data(), Precision::FP32);
+        if (pli_input_node)
+            gb->set_input(pli_input_node, ids.data(), Precision::FP32);
+
+        return gb->rms_norm(output_node, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
+    }
+#endif  // CACTUS_HAS_MLX
+
+    if (backend == ComputeBackend::MLX) backend = ComputeBackend::CPU;
     size_t pos_offset = use_cache ? kv_cache_.get_total_seq_len() : 0;
-    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
 
     if (config_.hidden_size_per_layer_input == 0) {
         auto token_input = gb->input({tokens.size()}, Precision::FP32);
@@ -510,7 +647,7 @@ size_t Gemma4Model::forward_split(const std::vector<uint32_t>& tokens, bool use_
 
     size_t seq_len = tokens.size();
     size_t pos_offset = use_cache ? kv_cache_.get_total_seq_len() : 0;
-    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+    auto backend = config_.default_backend == Config::Backend::MLX ? ComputeBackend::MLX : (config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU);
 
     if (config_.hidden_size_per_layer_input == 0) {
         auto token_input = gb->input({seq_len}, Precision::FP32);

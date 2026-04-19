@@ -250,9 +250,9 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     auto final_hidden = forward(tokens, true);
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    auto backend = config_.default_backend == Config::Backend::CPU
-        ? ComputeBackend::CPU
-        : ComputeBackend::NPU;
+    auto backend = config_.default_backend == Config::Backend::MLX ? ComputeBackend::MLX
+                 : config_.default_backend == Config::Backend::CPU  ? ComputeBackend::CPU
+                 : ComputeBackend::NPU;
 
     auto last_hidden = gb->index(final_hidden, tokens.size() - 1, 0);
     const auto& last_hidden_buf = gb->get_output_buffer(last_hidden);
@@ -1038,7 +1038,9 @@ double Model::score_tokens_window_logprob(
     reset_cache();
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
-    const auto backend = (config_.default_backend == Config::Backend::CPU) ? ComputeBackend::CPU : ComputeBackend::NPU;
+    const auto backend = config_.default_backend == Config::Backend::MLX ? ComputeBackend::MLX
+                       : config_.default_backend == Config::Backend::CPU  ? ComputeBackend::CPU
+                       : ComputeBackend::NPU;
 
     const size_t hidden_node = forward(input_tokens, /*use_cache=*/false);
     const auto& hidden_buf = gb->get_output_buffer(hidden_node);

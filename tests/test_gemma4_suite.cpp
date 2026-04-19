@@ -235,6 +235,82 @@ bool test_1k_context() {
 }
 
 
+bool test_1k_context_mlx() {
+    const char* model_path = get_model_path();
+    if (!model_path) {
+        std::cerr << "  SKIP: model path not set\n";
+        return true;
+    }
+
+    print_modality_box("1K CONTEXT (MLX)", "Summarize the data briefly.");
+
+    auto model = create_model(model_path);
+    if (!model) {
+        std::cerr << "  FAIL: create_model returned null\n";
+        return false;
+    }
+
+    if (!model->init(model_path, 2048, "", false)) {
+        std::cerr << "  FAIL: model init\n";
+        return false;
+    }
+
+    model->override_backend(Config::Backend::MLX);
+
+    auto* tokenizer = model->get_tokenizer();
+    if (!tokenizer) {
+        std::cerr << "  FAIL: no tokenizer\n";
+        return false;
+    }
+
+    std::string system_text = "/no_think You are helpful. ";
+    for (int i = 0; i < 50; i++)
+        system_text += "Context " + std::to_string(i) + ": The quick brown fox jumps over the lazy dog. ";
+    std::string user_text;
+    for (int i = 0; i < 50; i++)
+        user_text += "Data point " + std::to_string(i) + " = " + std::to_string(i * 2.71828) + ". ";
+    user_text += "Summarize the data briefly.";
+
+    std::vector<ChatMessage> messages;
+    messages.push_back({"system", system_text, "", {}, {}, 0, {}});
+    messages.push_back({"user",   user_text,   "", {}, {}, 0, {}});
+    std::string prompt = tokenizer->format_chat_prompt(messages, true, "", false);
+    auto tokens = tokenizer->encode(prompt);
+    const size_t prompt_token_count = tokens.size();
+    std::cout << "  prompt_tokens: " << prompt_token_count << "\n";
+
+    std::string output;
+    size_t completion_tokens = 0;
+    double ttft_ms = 0.0;
+    bool saw_first_token = false;
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    for (int i = 0; i < 100; i++) {
+        uint32_t token = model->decode(tokens, 0.0f, 1.0f, 1, "");
+        if (!saw_first_token) {
+            ttft_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+                          std::chrono::high_resolution_clock::now() - start_time).count() / 1000.0;
+            saw_first_token = true;
+        }
+        std::string piece = tokenizer->decode({token});
+        output += piece;
+        tokens.push_back(token);
+        completion_tokens++;
+        if (piece.find("<turn|>") != std::string::npos || piece.find("<eos>") != std::string::npos ||
+            piece.find("<end_of_turn>") != std::string::npos)
+            break;
+    }
+    double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+                               std::chrono::high_resolution_clock::now() - start_time).count() / 1000.0;
+
+    auto metrics = compute_local_perf_metrics(prompt_token_count, completion_tokens, ttft_ms, total_time_ms);
+    print_local_perf_metrics(metrics);
+    std::cout << "  Output: " << preview_text(output) << "\n";
+
+    return !output.empty();
+}
+
+
 bool test_gemma4_vision(bool expect_npu) {
     const char* model_path = get_model_path();
     const char* image_path = get_image_path();
@@ -588,6 +664,7 @@ int main() {
     runner.run_test("text_generation", test_text_generation());
     runner.run_test("tool_call", test_tool_call());
     runner.run_test("1k_context", test_1k_context());
+    runner.run_test("1k_context_mlx", test_1k_context_mlx());
     runner.run_test("vision", test_gemma4_vision(false));
     runner.run_test("vision_npu", test_gemma4_vision(true));
     runner.run_test("audio", test_gemma4_audio(false));

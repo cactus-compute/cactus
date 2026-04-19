@@ -2353,3 +2353,16 @@ void compute_weighted_stats_pool_node(GraphNode& node, const std::vector<std::un
     }
 }
 
+
+
+void compute_fused_mlx_op_node(GraphNode& node,
+                                const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                const std::unordered_map<size_t, size_t>& node_index_map) {
+    auto* fn_ptr = static_cast<MLXFusedFn*>(node.custom_context.get());
+    if (!fn_ptr || !*fn_ptr) return;
+    std::vector<const BufferDesc*> inputs;
+    inputs.reserve(node.input_ids.size());
+    for (size_t i = 0; i < node.input_ids.size(); ++i)
+        inputs.push_back(&get_input(node, i, nodes, node_index_map));
+    (*fn_ptr)(inputs, node.output_buffer);
+}
