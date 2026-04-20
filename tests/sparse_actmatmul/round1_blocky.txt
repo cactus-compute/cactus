@@ -1,0 +1,50 @@
+Cold-cache Sparse-activation INT4 GEMV bench
+hw.concurrency=14  pool_target=256 MB
+[blocky] K=2048  N=2048  sp=50%  grp_skip= 46.8%  dense=  71.8µs (p95  102.4) azero=  72.7µs (0.99x) mask=  79.8µs (0.90x  15.7 GB/s) live=  80.5µs (0.89x  15.6 GB/s) denseBW= 32.8 GB/s
+[blocky] K=2048  N=2048  sp=70%  grp_skip= 66.1%  dense=  74.9µs (p95  100.8) azero=  74.5µs (1.01x) mask=  80.0µs (0.94x  10.0 GB/s) live=  80.7µs (0.93x   9.9 GB/s) denseBW= 31.5 GB/s
+[blocky] K=2048  N=2048  sp=80%  grp_skip= 74.5%  dense=  74.2µs (p95  103.3) azero=  73.0µs (1.02x) mask=  74.4µs (1.00x   8.1 GB/s) live=  75.2µs (0.99x   8.0 GB/s) denseBW= 31.8 GB/s
+[blocky] K=2048  N=4096  sp=50%  grp_skip= 46.8%  dense=  95.2µs (p95  123.8) azero=  89.8µs (1.06x) mask= 106.0µs (0.90x  23.7 GB/s) live= 105.2µs (0.90x  23.8 GB/s) denseBW= 49.6 GB/s
+[blocky] K=2048  N=4096  sp=70%  grp_skip= 66.0%  dense=  90.8µs (p95  106.2) azero=  89.2µs (1.02x) mask= 103.1µs (0.88x  15.5 GB/s) live= 103.9µs (0.87x  15.4 GB/s) denseBW= 52.0 GB/s
+[blocky] K=2048  N=4096  sp=80%  grp_skip= 74.2%  dense=  87.3µs (p95  116.8) azero=  84.3µs (1.04x) mask=  96.1µs (0.91x  12.6 GB/s) live=  96.0µs (0.91x  12.7 GB/s) denseBW= 54.1 GB/s
+[blocky] K=2048  N=8192  sp=50%  grp_skip= 46.9%  dense= 124.0µs (p95  143.3) azero= 129.0µs (0.96x) mask= 155.6µs (0.80x  32.2 GB/s) live= 152.6µs (0.81x  32.8 GB/s) denseBW= 76.1 GB/s
+[blocky] K=2048  N=8192  sp=70%  grp_skip= 65.8%  dense= 126.1µs (p95  150.0) azero= 127.0µs (0.99x) mask= 149.5µs (0.84x  21.6 GB/s) live= 149.3µs (0.84x  21.6 GB/s) denseBW= 74.8 GB/s
+[blocky] K=2048  N=8192  sp=80%  grp_skip= 74.1%  dense= 127.1µs (p95  144.5) azero= 124.8µs (1.02x) mask= 134.6µs (0.94x  18.1 GB/s) live= 135.8µs (0.94x  18.0 GB/s) denseBW= 74.3 GB/s
+[blocky] K=2048  N=16384 sp=50%  grp_skip= 47.5%  dense= 189.5µs (p95  522.8) azero= 194.0µs (0.98x) mask= 262.5µs (0.72x  37.8 GB/s) live= 255.6µs (0.74x  38.8 GB/s) denseBW= 99.6 GB/s
+[blocky] K=2048  N=16384 sp=70%  grp_skip= 65.5%  dense= 179.0µs (p95  232.7) azero= 182.1µs (0.98x) mask= 243.8µs (0.73x  26.7 GB/s) live= 242.5µs (0.74x  26.8 GB/s) denseBW=105.5 GB/s
+[blocky] K=2048  N=16384 sp=80%  grp_skip= 74.2%  dense= 183.9µs (p95  219.1) azero= 184.1µs (1.00x) mask= 206.0µs (0.89x  23.7 GB/s) live= 212.0µs (0.87x  23.0 GB/s) denseBW=102.6 GB/s
+[blocky] K=3072  N=2048  sp=50%  grp_skip= 46.5%  dense=  81.2µs (p95  116.1) azero=  79.1µs (1.03x) mask=  98.0µs (0.83x  19.3 GB/s) live=  91.2µs (0.89x  20.8 GB/s) denseBW= 43.6 GB/s
+[blocky] K=3072  N=2048  sp=70%  grp_skip= 65.9%  dense=  77.6µs (p95  110.9) azero=  81.2µs (0.96x) mask=  88.3µs (0.88x  13.7 GB/s) live=  88.8µs (0.87x  13.6 GB/s) denseBW= 45.6 GB/s
+[blocky] K=3072  N=2048  sp=80%  grp_skip= 77.7%  dense=  78.2µs (p95  107.0) azero=  84.5µs (0.93x) mask=  87.2µs (0.90x   9.0 GB/s) live=  85.8µs (0.91x   9.2 GB/s) denseBW= 45.3 GB/s
+[blocky] K=3072  N=4096  sp=50%  grp_skip= 46.7%  dense= 101.8µs (p95  143.8) azero= 108.4µs (0.94x) mask= 128.6µs (0.79x  29.3 GB/s) live= 126.2µs (0.81x  29.9 GB/s) denseBW= 69.5 GB/s
+[blocky] K=3072  N=4096  sp=70%  grp_skip= 65.7%  dense= 106.0µs (p95  142.6) azero= 109.0µs (0.97x) mask= 124.7µs (0.85x  19.5 GB/s) live= 122.8µs (0.86x  19.8 GB/s) denseBW= 66.7 GB/s
+[blocky] K=3072  N=4096  sp=80%  grp_skip= 77.7%  dense= 107.2µs (p95  141.0) azero= 103.0µs (1.04x) mask= 112.5µs (0.95x  14.0 GB/s) live= 109.4µs (0.98x  14.4 GB/s) denseBW= 66.0 GB/s
+[blocky] K=3072  N=8192  sp=50%  grp_skip= 45.8%  dense= 160.8µs (p95  196.0) azero= 160.4µs (1.00x) mask= 206.3µs (0.78x  37.2 GB/s) live= 199.5µs (0.81x  38.4 GB/s) denseBW= 88.0 GB/s
+[blocky] K=3072  N=8192  sp=70%  grp_skip= 65.8%  dense= 159.9µs (p95  205.3) azero= 159.2µs (1.00x) mask= 197.4µs (0.81x  24.5 GB/s) live= 198.5µs (0.81x  24.4 GB/s) denseBW= 88.5 GB/s
+[blocky] K=3072  N=8192  sp=80%  grp_skip= 76.8%  dense= 158.1µs (p95  191.6) azero= 157.7µs (1.00x) mask= 172.0µs (0.92x  19.1 GB/s) live= 167.1µs (0.95x  19.7 GB/s) denseBW= 89.5 GB/s
+[blocky] K=3072  N=16384 sp=50%  grp_skip= 47.1%  dense= 246.3µs (p95  295.9) azero= 243.4µs (1.01x) mask= 348.5µs (0.71x  43.0 GB/s) live= 356.4µs (0.69x  42.0 GB/s) denseBW=114.9 GB/s
+[blocky] K=3072  N=16384 sp=70%  grp_skip= 65.4%  dense= 246.4µs (p95  282.9) azero= 241.2µs (1.02x) mask= 332.2µs (0.74x  29.5 GB/s) live= 328.8µs (0.75x  29.8 GB/s) denseBW=114.9 GB/s
+[blocky] K=3072  N=16384 sp=80%  grp_skip= 75.8%  dense= 239.5µs (p95  278.8) azero= 251.3µs (0.95x) mask= 289.2µs (0.83x  23.7 GB/s) live= 286.4µs (0.84x  23.9 GB/s) denseBW=118.2 GB/s
+[blocky] K=4096  N=2048  sp=50%  grp_skip= 46.6%  dense=  84.1µs (p95  120.7) azero=  83.7µs (1.00x) mask= 105.0µs (0.80x  24.0 GB/s) live= 106.6µs (0.79x  23.6 GB/s) denseBW= 56.1 GB/s
+[blocky] K=4096  N=2048  sp=70%  grp_skip= 67.4%  dense=  89.5µs (p95  113.5) azero=  86.9µs (1.03x) mask= 102.8µs (0.87x  15.0 GB/s) live= 102.0µs (0.88x  15.1 GB/s) denseBW= 52.7 GB/s
+[blocky] K=4096  N=2048  sp=80%  grp_skip= 77.4%  dense=  87.2µs (p95  109.7) azero=  86.6µs (1.01x) mask=  95.9µs (0.91x  11.1 GB/s) live=  94.0µs (0.93x  11.4 GB/s) denseBW= 54.1 GB/s
+[blocky] K=4096  N=4096  sp=50%  grp_skip= 46.5%  dense= 124.0µs (p95  141.6) azero= 125.7µs (0.99x) mask= 151.9µs (0.82x  33.3 GB/s) live= 151.5µs (0.82x  33.3 GB/s) denseBW= 76.1 GB/s
+[blocky] K=4096  N=4096  sp=70%  grp_skip= 67.3%  dense= 126.3µs (p95  145.8) azero= 125.4µs (1.01x) mask= 150.2µs (0.84x  20.5 GB/s) live= 149.9µs (0.84x  20.6 GB/s) denseBW= 74.7 GB/s
+[blocky] K=4096  N=4096  sp=80%  grp_skip= 77.4%  dense= 126.7µs (p95  142.6) azero= 126.3µs (1.00x) mask= 134.9µs (0.94x  15.8 GB/s) live= 142.6µs (0.89x  14.9 GB/s) denseBW= 74.5 GB/s
+[blocky] K=4096  N=8192  sp=50%  grp_skip= 46.8%  dense= 181.0µs (p95  230.7) azero= 185.6µs (0.97x) mask= 240.2µs (0.75x  41.8 GB/s) live= 251.5µs (0.72x  39.9 GB/s) denseBW=104.3 GB/s
+[blocky] K=4096  N=8192  sp=70%  grp_skip= 67.9%  dense= 185.2µs (p95  229.9) azero= 189.0µs (0.98x) mask= 241.9µs (0.77x  25.0 GB/s) live= 239.0µs (0.78x  25.3 GB/s) denseBW=101.9 GB/s
+[blocky] K=4096  N=8192  sp=80%  grp_skip= 77.0%  dense= 188.1µs (p95  214.0) azero= 185.0µs (1.02x) mask= 214.3µs (0.88x  20.3 GB/s) live= 209.6µs (0.90x  20.7 GB/s) denseBW=100.4 GB/s
+[blocky] K=4096  N=16384 sp=50%  grp_skip= 47.1%  dense= 304.5µs (p95  366.1) azero= 302.9µs (1.01x) mask= 436.8µs (0.70x  45.7 GB/s) live= 441.1µs (0.69x  45.3 GB/s) denseBW=124.0 GB/s
+[blocky] K=4096  N=16384 sp=70%  grp_skip= 67.2%  dense= 302.0µs (p95  363.6) azero= 316.6µs (0.95x) mask= 405.9µs (0.74x  30.5 GB/s) live= 412.0µs (0.73x  30.1 GB/s) denseBW=125.0 GB/s
+[blocky] K=4096  N=16384 sp=80%  grp_skip= 76.4%  dense= 304.0µs (p95  392.5) azero= 312.5µs (0.97x) mask= 360.5µs (0.84x  24.7 GB/s) live= 349.0µs (0.87x  25.6 GB/s) denseBW=124.2 GB/s
+[blocky] K=8192  N=2048  sp=50%  grp_skip= 47.1%  dense= 135.6µs (p95  154.5) azero= 135.9µs (1.00x) mask= 154.2µs (0.88x  32.3 GB/s) live= 152.8µs (0.89x  32.7 GB/s) denseBW= 69.6 GB/s
+[blocky] K=8192  N=2048  sp=70%  grp_skip= 67.6%  dense= 134.8µs (p95  156.5) azero= 135.5µs (0.99x) mask= 147.2µs (0.92x  20.7 GB/s) live= 147.0µs (0.92x  20.8 GB/s) denseBW= 70.0 GB/s
+[blocky] K=8192  N=2048  sp=80%  grp_skip= 78.4%  dense= 134.8µs (p95  152.5) azero= 132.8µs (1.02x) mask= 130.7µs (1.03x  15.6 GB/s) live= 129.3µs (1.04x  15.7 GB/s) denseBW= 70.0 GB/s
+[blocky] K=8192  N=4096  sp=50%  grp_skip= 47.2%  dense= 199.0µs (p95  249.3) azero= 194.5µs (1.02x) mask= 245.5µs (0.81x  40.6 GB/s) live= 264.0µs (0.75x  37.8 GB/s) denseBW= 94.8 GB/s
+[blocky] K=8192  N=4096  sp=70%  grp_skip= 68.0%  dense= 200.0µs (p95  238.2) azero= 201.8µs (0.99x) mask= 232.8µs (0.86x  25.9 GB/s) live= 231.9µs (0.86x  26.0 GB/s) denseBW= 94.4 GB/s
+[blocky] K=8192  N=4096  sp=80%  grp_skip= 78.4%  dense= 205.8µs (p95  244.8) azero= 204.8µs (1.00x) mask= 199.7µs (1.03x  20.5 GB/s) live= 202.3µs (1.02x  20.2 GB/s) denseBW= 91.7 GB/s
+[blocky] K=8192  N=8192  sp=50%  grp_skip= 47.5%  dense= 329.6µs (p95  401.0) azero= 333.4µs (0.99x) mask= 442.3µs (0.75x  44.8 GB/s) live= 454.4µs (0.73x  43.6 GB/s) denseBW=114.5 GB/s
+[blocky] K=8192  N=8192  sp=70%  grp_skip= 67.5%  dense= 327.0µs (p95  384.8) azero= 325.1µs (1.01x) mask= 388.2µs (0.84x  31.6 GB/s) live= 394.4µs (0.83x  31.1 GB/s) denseBW=115.4 GB/s
+[blocky] K=8192  N=8192  sp=80%  grp_skip= 78.6%  dense= 331.3µs (p95  409.2) azero= 330.2µs (1.00x) mask= 335.2µs (0.99x  24.1 GB/s) live= 328.8µs (1.01x  24.6 GB/s) denseBW=113.9 GB/s
+[blocky] K=8192  N=16384 sp=50%  grp_skip= 47.5%  dense= 551.5µs (p95  610.2) azero= 568.8µs (0.97x) mask= 798.3µs (0.69x  49.7 GB/s) live= 832.6µs (0.66x  47.6 GB/s) denseBW=136.9 GB/s
+[blocky] K=8192  N=16384 sp=70%  grp_skip= 67.5%  dense= 557.8µs (p95  600.8) azero= 565.4µs (0.99x) mask= 718.5µs (0.78x  34.2 GB/s) live= 715.1µs (0.78x  34.3 GB/s) denseBW=135.4 GB/s
+[blocky] K=8192  N=16384 sp=80%  grp_skip= 78.6%  dense= 557.7µs (p95  607.6) azero= 552.8µs (1.01x) mask= 592.0µs (0.94x  27.3 GB/s) live= 589.1µs (0.95x  27.5 GB/s) denseBW=135.4 GB/s

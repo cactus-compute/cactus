@@ -1,0 +1,107 @@
+Cold-cache Sparse-activation INT4 GEMV bench
+hw.concurrency=14  pool_target=256 MB
+[blocky] K=2048  N=2048  sp=50% skip=46.8% d=  73.2( 32.2GBs) lpf=0.90x KM=0.95x KMI2=1.06x KMI4=1.06x( 18.1) KMI4f=1.02x( 17.5) KMI4v2=1.04x( 17.9)
+[blocky] K=2048  N=2048  sp=70% skip=66.1% d=  72.9( 32.4GBs) lpf=0.95x KM=1.06x KMI2=1.10x KMI4=1.10x( 12.1) KMI4f=1.09x( 12.0) KMI4v2=1.10x( 12.0)
+[blocky] K=2048  N=2048  sp=80% skip=74.5% d=  78.2( 30.2GBs) lpf=1.14x KM=1.21x KMI2=1.35x KMI4=1.32x( 10.2) KMI4f=1.33x( 10.3) KMI4v2=1.36x( 10.5)
+[blocky] K=2048  N=4096  sp=50% skip=46.8% d=  88.7( 53.2GBs) lpf=0.88x KM=1.12x KMI2=1.27x KMI4=1.31x( 37.0) KMI4f=1.40x( 39.5) KMI4v2=1.23x( 34.8)
+[blocky] K=2048  N=4096  sp=70% skip=66.0% d=  89.9( 52.5GBs) lpf=0.95x KM=1.20x KMI2=1.31x KMI4=1.32x( 23.6) KMI4f=1.27x( 22.7) KMI4v2=1.36x( 24.2)
+[blocky] K=2048  N=4096  sp=80% skip=74.2% d=  84.9( 55.6GBs) lpf=1.00x KM=1.37x KMI2=1.48x KMI4=1.55x( 22.2) KMI4f=1.59x( 22.7) KMI4v2=1.60x( 22.9)
+[blocky] K=2048  N=8192  sp=50% skip=46.9% d= 118.7( 79.5GBs) lpf=0.81x KM=1.11x KMI2=1.24x KMI4=1.24x( 52.5) KMI4f=1.26x( 53.2) KMI4v2=1.28x( 54.1)
+[blocky] K=2048  N=8192  sp=70% skip=65.8% d= 130.0( 72.6GBs) lpf=0.95x KM=1.68x KMI2=1.74x KMI4=1.65x( 41.1) KMI4f=1.72x( 42.7) KMI4v2=1.69x( 41.9)
+[blocky] K=2048  N=8192  sp=80% skip=74.1% d= 119.5( 79.0GBs) lpf=0.97x KM=1.66x KMI2=1.61x KMI4=1.59x( 32.5) KMI4f=1.55x( 31.6) KMI4v2=1.63x( 33.3)
+[blocky] K=2048  N=16384 sp=50% skip=47.5% d= 181.0(104.3GBs) lpf=0.75x KM=1.23x KMI2=1.32x KMI4=1.29x( 70.8) KMI4f=1.32x( 72.0) KMI4v2=1.31x( 71.5)
+[blocky] K=2048  N=16384 sp=70% skip=65.5% d= 190.4( 99.1GBs) lpf=0.92x KM=1.94x KMI2=1.87x KMI4=1.71x( 58.4) KMI4f=1.94x( 66.4) KMI4v2=1.90x( 64.9)
+[blocky] K=2048  N=16384 sp=80% skip=74.2% d= 181.4(104.0GBs) lpf=1.02x KM=2.03x KMI2=2.25x KMI4=2.13x( 57.3) KMI4f=2.33x( 62.5) KMI4v2=1.99x( 53.6)
+[blocky] K=3072  N=2048  sp=50% skip=46.5% d=  76.0( 46.6GBs) lpf=0.96x KM=1.07x KMI2=1.08x KMI4=1.07x( 26.8) KMI4f=1.04x( 25.9) KMI4v2=1.04x( 25.8)
+[blocky] K=3072  N=2048  sp=70% skip=65.9% d=  77.9( 45.4GBs) lpf=0.94x KM=1.17x KMI2=1.13x KMI4=1.13x( 17.5) KMI4f=1.12x( 17.4) KMI4v2=1.14x( 17.7)
+[blocky] K=3072  N=2048  sp=80% skip=77.7% d=  69.1( 51.2GBs) lpf=0.92x KM=1.10x KMI2=1.17x KMI4=1.06x( 12.0) KMI4f=1.05x( 12.0) KMI4v2=1.06x( 12.1)
+[blocky] K=3072  N=4096  sp=50% skip=46.7% d= 110.5( 64.0GBs) lpf=0.89x KM=1.22x KMI2=1.34x KMI4=1.46x( 49.7) KMI4f=1.43x( 48.7) KMI4v2=1.46x( 49.7)
+[blocky] K=3072  N=4096  sp=70% skip=65.7% d= 110.0( 64.4GBs) lpf=0.97x KM=1.40x KMI2=1.78x KMI4=1.62x( 35.8) KMI4f=1.74x( 38.4) KMI4v2=1.71x( 37.7)
+[blocky] K=3072  N=4096  sp=80% skip=77.7% d= 109.9( 64.4GBs) lpf=1.10x KM=1.45x KMI2=1.79x KMI4=1.62x( 23.2) KMI4f=1.52x( 21.8) KMI4v2=1.55x( 22.2)
+[blocky] K=3072  N=8192  sp=50% skip=45.8% d= 151.8( 93.2GBs) lpf=0.70x KM=1.27x KMI2=1.23x KMI4=1.35x( 68.4) KMI4f=1.25x( 63.2) KMI4v2=1.23x( 62.1)
+[blocky] K=3072  N=8192  sp=70% skip=65.8% d= 154.6( 91.6GBs) lpf=0.90x KM=1.41x KMI2=1.63x KMI4=1.54x( 48.2) KMI4f=1.58x( 49.5) KMI4v2=1.69x( 52.8)
+[blocky] K=3072  N=8192  sp=80% skip=76.8% d= 160.8( 88.0GBs) lpf=1.12x KM=1.85x KMI2=2.02x KMI4=2.04x( 41.8) KMI4f=1.99x( 40.8) KMI4v2=2.02x( 41.3)
+[blocky] K=3072  N=16384 sp=50% skip=47.1% d= 244.7(115.7GBs) lpf=0.75x KM=1.34x KMI2=1.46x KMI4=1.45x( 88.9) KMI4f=1.48x( 90.3) KMI4v2=1.28x( 78.2)
+[blocky] K=3072  N=16384 sp=70% skip=65.4% d= 249.7(113.4GBs) lpf=0.89x KM=1.89x KMI2=1.82x KMI4=1.80x( 70.6) KMI4f=1.85x( 72.6) KMI4v2=1.84x( 72.3)
+[blocky] K=3072  N=16384 sp=80% skip=75.8% d= 251.7(112.5GBs) lpf=1.08x KM=2.14x KMI2=2.44x KMI4=2.40x( 65.2) KMI4f=2.36x( 64.2) KMI4v2=2.33x( 63.4)
+[blocky] K=4096  N=2048  sp=50% skip=46.6% d=  89.2( 52.9GBs) lpf=0.89x KM=1.02x KMI2=1.15x KMI4=1.16x( 32.8) KMI4f=1.16x( 32.8) KMI4v2=1.11x( 31.3)
+[blocky] K=4096  N=2048  sp=70% skip=67.4% d=  93.0( 50.7GBs) lpf=1.00x KM=1.25x KMI2=1.48x KMI4=1.37x( 22.6) KMI4f=1.29x( 21.4) KMI4v2=1.30x( 21.5)
+[blocky] K=4096  N=2048  sp=80% skip=77.4% d=  85.3( 55.3GBs) lpf=1.04x KM=1.24x KMI2=1.26x KMI4=1.29x( 16.2) KMI4f=1.28x( 16.0) KMI4v2=1.28x( 16.0)
+[blocky] K=4096  N=4096  sp=50% skip=46.5% d= 128.4( 73.5GBs) lpf=0.89x KM=1.16x KMI2=1.31x KMI4=1.38x( 54.2) KMI4f=1.36x( 53.6) KMI4v2=1.32x( 51.9)
+[blocky] K=4096  N=4096  sp=70% skip=67.3% d= 129.4( 72.9GBs) lpf=0.98x KM=1.51x KMI2=1.63x KMI4=1.68x( 40.1) KMI4f=1.64x( 39.0) KMI4v2=1.61x( 38.3)
+[blocky] K=4096  N=4096  sp=80% skip=77.4% d= 127.3( 74.1GBs) lpf=1.17x KM=1.69x KMI2=1.97x KMI4=2.01x( 33.7) KMI4f=2.14x( 35.9) KMI4v2=2.06x( 34.5)
+[blocky] K=4096  N=8192  sp=50% skip=46.8% d= 186.4(101.2GBs) lpf=0.82x KM=1.29x KMI2=1.30x KMI4=1.45x( 78.1) KMI4f=1.39x( 74.9) KMI4v2=1.35x( 73.0)
+[blocky] K=4096  N=8192  sp=70% skip=67.9% d= 186.3(101.3GBs) lpf=0.93x KM=1.66x KMI2=1.82x KMI4=1.85x( 60.3) KMI4f=1.81x( 58.8) KMI4v2=1.82x( 59.3)
+[blocky] K=4096  N=8192  sp=80% skip=77.0% d= 180.8(104.4GBs) lpf=1.03x KM=2.06x KMI2=2.33x KMI4=2.21x( 53.2) KMI4f=2.06x( 49.6) KMI4v2=2.24x( 53.9)
+[blocky] K=4096  N=16384 sp=50% skip=47.1% d= 323.6(116.7GBs) lpf=0.74x KM=1.61x KMI2=1.69x KMI4=1.66x(102.3) KMI4f=1.66x(102.4) KMI4v2=1.57x( 96.7)
+[blocky] K=4096  N=16384 sp=70% skip=67.2% d= 287.4(131.3GBs) lpf=0.83x KM=1.85x KMI2=2.01x KMI4=1.92x( 82.8) KMI4f=2.02x( 86.8) KMI4v2=1.98x( 85.3)
+[blocky] K=4096  N=16384 sp=80% skip=76.4% d= 312.5(120.8GBs) lpf=1.01x KM=2.30x KMI2=2.57x KMI4=2.24x( 63.9) KMI4f=2.11x( 60.3) KMI4v2=2.50x( 71.3)
+[blocky] K=8192  N=2048  sp=50% skip=47.1% d= 136.3( 69.2GBs) lpf=1.01x KM=1.15x KMI2=1.28x KMI4=1.34x( 49.1) KMI4f=1.35x( 49.4) KMI4v2=1.40x( 51.4)
+[blocky] K=8192  N=2048  sp=70% skip=67.6% d= 123.2( 76.6GBs) lpf=0.98x KM=1.38x KMI2=1.55x KMI4=1.65x( 41.0) KMI4f=1.63x( 40.5) KMI4v2=1.64x( 40.6)
+[blocky] K=8192  N=2048  sp=80% skip=78.4% d= 123.0( 76.7GBs) lpf=1.16x KM=1.59x KMI2=1.74x KMI4=1.72x( 28.4) KMI4f=1.67x( 27.6) KMI4v2=1.85x( 30.6)
+[blocky] K=8192  N=4096  sp=50% skip=47.2% d= 191.1( 98.8GBs) lpf=0.88x KM=1.15x KMI2=1.36x KMI4=1.41x( 73.8) KMI4f=1.40x( 72.8) KMI4v2=1.45x( 75.6)
+[blocky] K=8192  N=4096  sp=70% skip=68.0% d= 195.0( 96.8GBs) lpf=1.01x KM=1.55x KMI2=1.77x KMI4=1.79x( 55.2) KMI4f=1.67x( 51.6) KMI4v2=1.79x( 55.3)
+[blocky] K=8192  N=4096  sp=80% skip=78.4% d= 191.3( 98.6GBs) lpf=1.18x KM=1.90x KMI2=2.10x KMI4=2.15x( 45.9) KMI4f=2.30x( 49.0) KMI4v2=2.17x( 46.3)
+[blocky] K=8192  N=8192  sp=50% skip=47.5% d= 333.3(113.2GBs) lpf=0.91x KM=1.44x KMI2=1.71x KMI4=1.55x( 92.1) KMI4f=1.51x( 90.0) KMI4v2=1.51x( 89.7)
+[blocky] K=8192  N=8192  sp=70% skip=67.5% d= 339.7(111.1GBs) lpf=1.03x KM=1.98x KMI2=2.15x KMI4=2.16x( 78.2) KMI4f=2.11x( 76.3) KMI4v2=2.09x( 75.5)
+[blocky] K=8192  N=8192  sp=80% skip=78.6% d= 326.0(115.8GBs) lpf=1.28x KM=2.58x KMI2=2.51x KMI4=2.64x( 65.6) KMI4f=2.79x( 69.2) KMI4v2=2.79x( 69.3)
+[blocky] K=8192  N=16384 sp=50% skip=47.5% d= 568.2(132.9GBs) lpf=0.85x KM=1.58x KMI2=1.70x KMI4=1.71x(119.2) KMI4f=1.70x(118.8) KMI4v2=1.68x(117.0)
+[blocky] K=8192  N=16384 sp=70% skip=67.5% d= 571.4(132.1GBs) lpf=0.98x KM=2.36x KMI2=2.41x KMI4=2.37x(101.8) KMI4f=2.35x(101.1) KMI4v2=2.26x( 97.3)
+[blocky] K=8192  N=16384 sp=80% skip=78.6% d= 570.1(132.4GBs) lpf=1.26x KM=3.09x KMI2=3.15x KMI4=3.14x( 89.2) KMI4f=3.16x( 89.7) KMI4v2=3.06x( 86.8)
+
+===== FINAL SUMMARY (best kernel per shape) =====
+patt       K     N   sp%   skip%  dense_us   win_us speedup   win_GBs  dBW_GBs  winner
+blocky  2048  2048   50%   46.8%      73.2     69.3   1.06x     18.1    32.2  KMI4
+blocky  2048  2048   70%   66.1%      72.9     66.2   1.10x     12.1    32.4  KMI2
+blocky  2048  2048   80%   74.5%      78.2     57.6   1.36x     10.5    30.2  KMI4v2
+blocky  2048  4096   50%   46.8%      88.7     63.5   1.40x     39.5    53.2  KMI4f
+blocky  2048  4096   70%   66.0%      89.9     66.3   1.36x     24.2    52.5  KMI4v2
+blocky  2048  4096   80%   74.2%      84.9     53.0   1.60x     22.9    55.6  KMI4v2
+blocky  2048  8192   50%   46.9%     118.7     92.6   1.28x     54.1    79.5  KMI4v2
+blocky  2048  8192   70%   65.8%     130.0     74.8   1.74x     43.2    72.6  KMI2
+blocky  2048  8192   80%   74.1%     119.5     72.0   1.66x     33.9    79.0  KM
+blocky  2048 16384   50%   47.5%     181.0    137.1   1.32x     72.3   104.3  KMI2
+blocky  2048 16384   70%   65.5%     190.4     98.0   1.94x     66.4    99.1  KMI4f
+blocky  2048 16384   80%   74.2%     181.4     78.0   2.33x     62.5   104.0  KMI4f
+blocky  3072  2048   50%   46.5%      76.0     70.2   1.08x     27.0    46.6  KMI2
+blocky  3072  2048   70%   65.9%      77.9     66.8   1.17x     18.1    45.4  KM
+blocky  3072  2048   80%   77.7%      69.1     59.2   1.17x     13.3    51.2  KMI2
+blocky  3072  4096   50%   46.7%     110.5     75.8   1.46x     49.7    64.0  KMI4v2
+blocky  3072  4096   70%   65.7%     110.0     61.8   1.78x     39.3    64.4  KMI2
+blocky  3072  4096   80%   77.7%     109.9     61.4   1.79x     25.7    64.4  KMI2
+blocky  3072  8192   50%   45.8%     151.8    112.1   1.35x     68.4    93.2  KMI4
+blocky  3072  8192   70%   65.8%     154.6     91.7   1.69x     52.8    91.6  KMI4v2
+blocky  3072  8192   80%   76.8%     160.8     78.8   2.04x     41.8    88.0  KMI4
+blocky  3072 16384   50%   47.1%     244.7    165.9   1.48x     90.3   115.7  KMI4f
+blocky  3072 16384   70%   65.4%     249.7    132.3   1.89x     74.0   113.4  KM
+blocky  3072 16384   80%   75.8%     251.7    103.2   2.44x     66.3   112.5  KMI2
+blocky  4096  2048   50%   46.6%      89.2     76.8   1.16x     32.8    52.9  KMI4f
+blocky  4096  2048   70%   67.4%      93.0     62.9   1.48x     24.4    50.7  KMI2
+blocky  4096  2048   80%   77.4%      85.3     66.1   1.29x     16.2    55.3  KMI4
+blocky  4096  4096   50%   46.5%     128.4     93.2   1.38x     54.2    73.5  KMI4
+blocky  4096  4096   70%   67.3%     129.4     76.8   1.68x     40.1    72.9  KMI4
+blocky  4096  4096   80%   77.4%     127.3     59.4   2.14x     35.9    74.1  KMI4f
+blocky  4096  8192   50%   46.8%     186.4    128.6   1.45x     78.1   101.2  KMI4
+blocky  4096  8192   70%   67.9%     186.3    100.5   1.85x     60.3   101.3  KMI4
+blocky  4096  8192   80%   77.0%     180.8     77.5   2.33x     56.1   104.4  KMI2
+blocky  4096 16384   50%   47.1%     323.6    192.0   1.69x    104.1   116.7  KMI2
+blocky  4096 16384   70%   67.2%     287.4    142.6   2.02x     86.8   131.3  KMI4f
+blocky  4096 16384   80%   76.4%     312.5    121.6   2.57x     73.4   120.8  KMI2
+blocky  8192  2048   50%   47.1%     136.3     97.1   1.40x     51.4    69.2  KMI4v2
+blocky  8192  2048   70%   67.6%     123.2     74.5   1.65x     41.0    76.6  KMI4
+blocky  8192  2048   80%   78.4%     123.0     66.6   1.85x     30.6    76.7  KMI4v2
+blocky  8192  4096   50%   47.2%     191.1    132.0   1.45x     75.6    98.8  KMI4v2
+blocky  8192  4096   70%   68.0%     195.0    109.1   1.79x     55.3    96.8  KMI4v2
+blocky  8192  4096   80%   78.4%     191.3     83.3   2.30x     49.0    98.6  KMI4f
+blocky  8192  8192   50%   47.5%     333.3    194.8   1.71x    101.8   113.2  KMI2
+blocky  8192  8192   70%   67.5%     339.7    157.0   2.16x     78.2   111.1  KMI4
+blocky  8192  8192   80%   78.6%     326.0    116.8   2.79x     69.3   115.8  KMI4v2
+blocky  8192 16384   50%   47.5%     568.2    332.7   1.71x    119.2   132.9  KMI4
+blocky  8192 16384   70%   67.5%     571.4    237.4   2.41x    103.4   132.1  KMI2
+blocky  8192 16384   80%   78.6%     570.1    180.5   3.16x     89.7   132.4  KMI4f
+
+===== SUCCESS-CRITERION CHECK (blocky only) =====
+target: sp=0.80 ≥3.0x, sp=0.70 ≥2.0x, sp=0.50 ≥1.4x
+  sp=0.80  threshold=3.00x  passed 1/16 shapes
+  sp=0.70  threshold=2.00x  passed 3/16 shapes
+  sp=0.50  threshold=1.40x  passed 8/16 shapes

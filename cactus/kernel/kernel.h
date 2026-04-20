@@ -2,6 +2,7 @@
 #define KERNEL_H
 
 #include <cstddef>
+#include <cstdint>
 #include <arm_neon.h>
 
 enum class Precision;
@@ -75,6 +76,92 @@ void cactus_gemm_int4(const int8_t* A, const float* A_scales,
 void cactus_matmul_int4(const int8_t* A, const float* A_scales,
                         const int8_t* B_packed, const __fp16* B_scales,
                         __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
+
+// Activation-sparse INT4 x INT8 GEMV experiments.
+void cactus_gemv_int4_actsparse_azero(const int8_t* A_masked, float A_scale,
+                                      const int8_t* B_packed, const __fp16* B_scales,
+                                      __fp16* C, size_t K, size_t N, size_t group_size);
+void cactus_gemv_int4_actsparse_bitmask(const int8_t* A_masked, float A_scale,
+                                        const int8_t* B_packed, const __fp16* B_scales,
+                                        const uint64_t* live_group_bitmask,
+                                        __fp16* C, size_t K, size_t N, size_t group_size);
+void cactus_gemv_int4_actsparse_livelist(const int8_t* A_masked, float A_scale,
+                                         const int8_t* B_packed, const __fp16* B_scales,
+                                         const uint16_t* live_groups, size_t num_live,
+                                         __fp16* C, size_t K, size_t N, size_t group_size);
+
+// Round 2.
+void cactus_gemv_int4_actsparse_bitmask_2nb(const int8_t* A_masked, float A_scale,
+                                            const int8_t* B_packed, const __fp16* B_scales,
+                                            const uint64_t* live_group_bitmask,
+                                            __fp16* C, size_t K, size_t N, size_t group_size);
+void cactus_gemv_int4_actsparse_livelist_pf(const int8_t* A_masked, float A_scale,
+                                            const int8_t* B_packed, const __fp16* B_scales,
+                                            const uint16_t* live_groups, size_t num_live,
+                                            __fp16* C, size_t K, size_t N, size_t group_size);
+void cactus_repack_int4_kmajor(const int8_t* B_packed, const __fp16* B_scales,
+                               uint8_t* B_packed_km, __fp16* B_scales_km,
+                               size_t K, size_t N, size_t group_size);
+void cactus_gemv_int4_actsparse_kmajor(const int8_t* A_masked, float A_scale,
+                                       const uint8_t* B_packed_km, const __fp16* B_scales_km,
+                                       const uint16_t* live_groups, size_t num_live,
+                                       __fp16* C, size_t K, size_t N, size_t group_size);
+
+// Round 3.
+void cactus_repack_int4_kmajor_inline(const int8_t* B_packed, const __fp16* B_scales,
+                                      uint8_t* B_km_inline,
+                                      size_t K, size_t N, size_t group_size);
+void cactus_gemv_int4_actsparse_kmi(const int8_t* A_masked, float A_scale,
+                                    const uint8_t* B_km_inline,
+                                    const uint16_t* live_groups, size_t num_live,
+                                    __fp16* C, size_t K, size_t N, size_t group_size);
+
+void cactus_gemv_int4_actsparse_kmi2(const int8_t* A_masked, float A_scale,
+                                     const uint8_t* B_km_inline,
+                                     const uint16_t* live_groups, size_t num_live,
+                                     __fp16* C, size_t K, size_t N, size_t group_size);
+void cactus_gemv_int4_actsparse_kmi4(const int8_t* A_masked, float A_scale,
+                                     const uint8_t* B_km_inline,
+                                     const uint16_t* live_groups, size_t num_live,
+                                     __fp16* C, size_t K, size_t N, size_t group_size);
+
+void cactus_gemv_int4_actsparse_kmi4_chain(const int8_t* A_masked, float A_scale,
+                                           const uint8_t* B_km_inline,
+                                           const uint16_t* live_groups, size_t num_live,
+                                           __fp16* C, size_t K, size_t N, size_t group_size);
+
+// Rounds 4-6.
+void cactus_gemv_int4_actsparse_kmi4_fast(const int8_t* A_masked, float A_scale,
+                                          const uint8_t* B_km_inline,
+                                          const uint16_t* live_groups, size_t num_live,
+                                          __fp16* C, size_t K, size_t N, size_t group_size);
+void cactus_gemv_int4_actsparse_kmi4_v2(const int8_t* A_masked, float A_scale,
+                                        const uint8_t* B_km_inline,
+                                        const uint16_t* live_groups, size_t num_live,
+                                        __fp16* C, size_t K, size_t N, size_t group_size);
+
+// Mask builders.
+size_t cactus_build_actsparse_mask_f16(const __fp16* S, const int8_t* A, size_t K,
+                                       float sparsity, size_t group_size,
+                                       int8_t* A_masked, uint64_t* bitmask,
+                                       uint16_t* live_groups);
+size_t cactus_build_actsparse_mask_f32(const float* S, const int8_t* A, size_t K,
+                                       float sparsity, size_t group_size,
+                                       int8_t* A_masked, uint64_t* bitmask,
+                                       uint16_t* live_groups);
+size_t cactus_build_actsparse_mask_threshold_f32(
+    const float* S, const int8_t* A, size_t K,
+    float threshold, size_t group_size,
+    int8_t* A_masked, uint64_t* bitmask, uint16_t* live_groups);
+
+// NEON-vectorized: apply a caller-provided per-group bitmask to A, producing
+// A_masked (32-byte blocks copied or zeroed) and a live_groups list.
+// Intended for the "post-trained router emits a bitmask" scheme: no floats
+// inspected, no threshold. O(K) but with 32-byte SIMD copies.
+// `bitmask` length >= ceil(K/group_size/64). group_size must be 32.
+size_t cactus_apply_actsparse_bitmask(
+    const uint64_t* bitmask, const int8_t* A, size_t K, size_t group_size,
+    int8_t* A_masked, uint16_t* live_groups);
 
 void cactus_matmul_integer(Precision precision,
                             const int8_t* A, const float* A_scales,
