@@ -1,0 +1,97 @@
+Gemma-4-style MLP (3 small : 4 large per 7 layers) — cold-cache bench
+  small : hidden=1536, intermediate=6144   (E2B)
+  large : hidden=1536, intermediate=12288  (E4B shared-MLP)
+  35 layers total: 15 small + 20 large
+  hw.concurrency=14
+
+Building layer pool + precomputing per-layer router thresholds...
+
+===== PER-CALL MLP-LAYER MEANS (cold cache, includes gate+up+down) =====
+sp%           sm d/us  sm spDn/us(x) sm spUp+Dn/us(x)         lg d/us  lg spDn/us(x) lg spUp+Dn/us(x)
+  50%          92.7        86.0(1.08x)        72.6(1.28x)         144.5       126.5(1.14x)       109.5(1.32x)
+  60%          97.0        81.4(1.19x)        70.5(1.38x)         149.8       117.4(1.28x)       104.0(1.44x)
+  70%          93.2        79.3(1.17x)        66.6(1.40x)         144.8       109.6(1.32x)        91.7(1.58x)
+  80%          95.5        70.1(1.36x)        61.7(1.55x)         145.9       106.0(1.38x)        84.7(1.72x)
+  90%          95.2        65.4(1.46x)        43.0(2.21x)         147.4        94.5(1.56x)        72.7(2.03x)
+
+===== FULL 35-LAYER MLP STACK (weighted sum over small+large) =====
+sp%          dense us    spDn us (x)  spUp+Dn us (x) gate_frac(Amdahl)
+  50%       12996.4     11377.2(1.14x)        9824.1(1.32x)
+  60%       13340.5     10691.2(1.25x)        9337.9(1.43x)
+  70%       12820.3     10211.0(1.26x)        8719.0(1.47x)
+  80%       13087.9      9537.6(1.37x)        7799.0(1.68x)
+  90%       13196.5      8642.4(1.53x)        6319.7(2.09x)
+
+===== DOWN_PROJ SHOOTOUT (E2B: K=6144 N=1536) =====
+
+-- sparsity = 0.50 --
+  num_live=95 of 192 groups (50.5% skip)
+  dense (full)         :  114.58 µs
+  KM                   :   93.42 µs
+  KMI2                 :   86.38 µs
+  KMI4                 :   88.88 µs
+  KMI4_fast            :   74.29 µs
+  KMI4_v2              :   68.71 µs
+  KMI4_chain           :   86.58 µs
+
+-- sparsity = 0.60 --
+  num_live=76 of 192 groups (60.4% skip)
+  dense (full)         :  112.67 µs
+  KM                   :   93.50 µs
+  KMI2                 :   82.58 µs
+  KMI4                 :   82.67 µs
+  KMI4_fast            :   59.12 µs
+  KMI4_v2              :   56.00 µs
+  KMI4_chain           :   79.96 µs
+
+-- sparsity = 0.70 --
+  num_live=57 of 192 groups (70.3% skip)
+  dense (full)         :  112.21 µs
+  KM                   :   77.04 µs
+  KMI2                 :   72.00 µs
+  KMI4                 :   66.96 µs
+  KMI4_fast            :   40.04 µs
+  KMI4_v2              :   40.58 µs
+  KMI4_chain           :   65.83 µs
+
+-- sparsity = 0.80 --
+  num_live=38 of 192 groups (80.2% skip)
+  dense (full)         :  113.42 µs
+  KM                   :   66.92 µs
+  KMI2                 :   60.79 µs
+  KMI4                 :   59.12 µs
+  KMI4_fast            :   25.21 µs
+  KMI4_v2              :   23.88 µs
+  KMI4_chain           :   62.12 µs
+
+-- sparsity = 0.90 --
+  num_live=19 of 192 groups (90.1% skip)
+  dense (full)         :  110.08 µs
+  KM                   :   57.54 µs
+  KMI2                 :   57.21 µs
+  KMI4                 :   59.46 µs
+  KMI4_fast            :   12.58 µs
+  KMI4_v2              :   11.92 µs
+  KMI4_chain           :   62.75 µs
+
+===== AMDAHL VIEW @ 60% (one MLP layer in isolation, cold) =====
+
+  small (INTER=6144)   N_live=2460
+    gate_dense    =    91.8 µs
+    up_dense      =    88.1 µs
+    up_reduced    =    71.9 µs
+    down_dense    =   111.8 µs
+    down_sparse   =    80.7 µs
+    Dense MLP     =   291.8 µs   (gate = 31%)
+    spDown-only   =   260.6 µs   -> 1.12x
+    spUp+Down     =   244.4 µs   -> 1.19x
+
+  large (INTER=12288)   N_live=4916
+    gate_dense    =   117.8 µs
+    up_dense      =   121.4 µs
+    up_reduced    =    79.9 µs
+    down_dense    =   190.5 µs
+    down_sparse   =   112.4 µs
+    Dense MLP     =   429.8 µs   (gate = 27%)
+    spDown-only   =   351.7 µs   -> 1.22x
+    spUp+Down     =   310.1 µs   -> 1.39x

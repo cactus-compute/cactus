@@ -163,6 +163,15 @@ size_t cactus_apply_actsparse_bitmask(
     const uint64_t* bitmask, const int8_t* A, size_t K, size_t group_size,
     int8_t* A_masked, uint16_t* live_groups);
 
+// Fused NEON-vectorized GELU(gate) * up -> int8 quantize. Used by the
+// SwiGLU MLP: the intermediate h = GELU(gate)*up needs to be quantized
+// to int8 for the down_proj kernel. Doing it in one fused pass avoids
+// three separate full-length passes (gelu, mul, quant) over
+// `intermediate`-length buffers.
+void cactus_gelu_mul_quant_fp16_to_int8(
+    const __fp16* gate, const __fp16* up, int8_t* out,
+    size_t n, float quant_scale);
+
 void cactus_matmul_integer(Precision precision,
                             const int8_t* A, const float* A_scales,
                             const int8_t* B, const __fp16* B_scales,

@@ -359,6 +359,60 @@ size_t cactus_build_actsparse_mask_threshold_f32(
     return num_live;
 }
 
+// NEON-vectorized fused GELU(gate) * up -> int8 quantize in one pass.
+// Uses the tanh-based GELU approximation matching `cactus_gelu_f16`:
+//   gelu(x) = 0.5 * x * (1 + tanh( sqrt(2/pi) * (x + 0.044715 * x^3) ))
+void cactus_gelu_mul_quant_fp16_to_int8(
+    const __fp16* gate, const __fp16* up, int8_t* out,
+    size_t n, float quant_scale)
+{
+    const float32x4_t half   = vdupq_n_f32(0.5f);
+    const float32x4_t one    = vdupq_n_f32(1.0f);
+    const float32x4_t sqrt2p = vdupq_n_f32(0.7978845608028654f);
+    const float32x4_t coeff  = vdupq_n_f32(0.044715f);
+    const float32x4_t qsv    = vdupq_n_f32(quant_scale);
+
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        float16x8_t g16 = vld1q_f16(gate + i);
+        float16x8_t u16 = vld1q_f16(up + i);
+        float32x4_t g_lo = vcvt_f32_f16(vget_low_f16(g16));
+        float32x4_t g_hi = vcvt_f32_f16(vget_high_f16(g16));
+        float32x4_t u_lo = vcvt_f32_f16(vget_low_f16(u16));
+        float32x4_t u_hi = vcvt_f32_f16(vget_high_f16(u16));
+
+        float32x4_t g3_lo = vmulq_f32(vmulq_f32(g_lo, g_lo), g_lo);
+        float32x4_t g3_hi = vmulq_f32(vmulq_f32(g_hi, g_hi), g_hi);
+        float32x4_t inner_lo = vfmaq_f32(g_lo, coeff, g3_lo);
+        float32x4_t inner_hi = vfmaq_f32(g_hi, coeff, g3_hi);
+        inner_lo = vmulq_f32(sqrt2p, inner_lo);
+        inner_hi = vmulq_f32(sqrt2p, inner_hi);
+        float32x4_t t_lo = fast_tanh_f32x4(inner_lo);
+        float32x4_t t_hi = fast_tanh_f32x4(inner_hi);
+        float32x4_t gelu_lo = vmulq_f32(vmulq_f32(half, g_lo), vaddq_f32(one, t_lo));
+        float32x4_t gelu_hi = vmulq_f32(vmulq_f32(half, g_hi), vaddq_f32(one, t_hi));
+
+        float32x4_t h_lo = vmulq_f32(vmulq_f32(gelu_lo, u_lo), qsv);
+        float32x4_t h_hi = vmulq_f32(vmulq_f32(gelu_hi, u_hi), qsv);
+
+        int32x4_t q_lo = vcvtnq_s32_f32(h_lo);
+        int32x4_t q_hi = vcvtnq_s32_f32(h_hi);
+        int16x4_t s_lo = vqmovn_s32(q_lo);
+        int16x4_t s_hi = vqmovn_s32(q_hi);
+        int8x8_t s8 = vqmovn_s16(vcombine_s16(s_lo, s_hi));
+        vst1_s8(out + i, s8);
+    }
+    for (; i < n; ++i) {
+        float gv = static_cast<float>(gate[i]);
+        float uv = static_cast<float>(up[i]);
+        float gelu = 0.5f * gv * (1.0f + std::tanh(0.7978845608028654f * (gv + 0.044715f * gv * gv * gv)));
+        float h = gelu * uv * quant_scale;
+        int32_t qv = static_cast<int32_t>(std::round(h));
+        qv = std::max(-128, std::min(127, qv));
+        out[i] = static_cast<int8_t>(qv);
+    }
+}
+
 // NEON-vectorized bitmask application. Assumes group_size == 32 (all the
 // kernels in this file assume that). For each group the 32-byte tile of A
 // is either copied to A_masked (live) or written as zeros (dead); live
