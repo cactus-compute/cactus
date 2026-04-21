@@ -40,3 +40,13 @@ tests/assets/test_wav_info.txt
 vision_activations.json
 gemma-4-eap-extras/
 .githooks/
+examples/
+
+# Raw video sources (extracted frames are committed under dataset/frames/).
+*.mov
+
+# Regeneratable harness artifacts — rebuild via build_dataset.py / run_*.py.
+experiments/handoff_harness/dataset/audio_clean/
+experiments/handoff_harness/dataset/audio_noisy/
+experiments/handoff_harness/dataset/noise_cache/
+experiments/handoff_harness/outputs/
