@@ -694,7 +694,6 @@ bool Config::from_json(const std::string& config_path) {
         default_top_k = 64;
         if (model_type == ModelType::GEMMA4) {
             default_cloud_handoff_threshold = 0.92f;
-            default_rolling_entropy_window = 16;
         }
     } else if (model_type == ModelType::LFM2) {
         default_temperature = 0.3f;
@@ -1133,6 +1132,7 @@ void Model::compute_candidate_probs(CactusGraph* gb, size_t logits_node_id,
     const auto& logits_buf = gb->get_output_buffer(logits_node_id);
     void* logits_ptr = gb->get_output(logits_node_id);
     size_t vocab_size = logits_buf.shape.back();
+    if (vocab_size == 0) return;
     size_t seq_len = 1;
     if (logits_buf.shape.size() >= 2)
         seq_len = logits_buf.shape[logits_buf.shape.size() - 2];

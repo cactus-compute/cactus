@@ -402,7 +402,7 @@ struct InferenceOptions {
     float top_p = 0.0f;
     float min_p = 0.15f;
     float repetition_penalty = 1.1f;
-    float confidence_threshold = -1.0f;
+    float cloud_handoff_threshold = -1.0f;
     size_t top_k = 0;
     size_t max_tokens = 100;
     size_t tool_rag_top_k = 2;
@@ -1325,10 +1325,10 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
         options.tool_rag_top_k = std::stoul(json.substr(pos));
     }
 
-    pos = json.find("\"confidence_threshold\"");
+    pos = json.find("\"cloud_handoff_threshold\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
-        options.confidence_threshold = std::stof(json.substr(pos));
+        options.cloud_handoff_threshold = std::stof(json.substr(pos));
     }
 
     pos = json.find("\"include_stop_sequences\"");

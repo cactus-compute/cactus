@@ -488,9 +488,8 @@ PreparedPrompt prepare_prompt(
 
     prompt.model_type = handle->model->get_config().model_type;
 
-    if (prompt.options.confidence_threshold < 0.0f) {
-        float model_default = handle->model->get_config().default_cloud_handoff_threshold;
-        prompt.options.confidence_threshold = (model_default > 0.0f) ? model_default : 0.93f;
+    if (prompt.options.cloud_handoff_threshold < 0.0f) {
+        prompt.options.cloud_handoff_threshold = handle->model->get_config().default_cloud_handoff_threshold;
     }
 
     if (prompt.model_type == Config::ModelType::GEMMA4) {
@@ -725,6 +724,8 @@ int cactus_complete(
                                 has_images ? prompt.image_paths : empty_imgs,
                                 has_audio  ? prompt.audio_features : empty_audio,
                                 {id_hard, id_easy});
+                        } else {
+                            CACTUS_LOG_WARN("cloud_handoff", "Gemma4MmModel cast failed, skipping pre-gen scoring");
                         }
                     } else {
                         probs = handle->model->score_last_token_candidates(
@@ -736,7 +737,7 @@ int cactus_complete(
                         float total = probs[0] + probs[1];
                         if (total > 0.0f) {
                             float difficulty = probs[0] / total;
-                            pre_gen_hard = (difficulty >= prompt.options.confidence_threshold);
+                            pre_gen_hard = (difficulty >= prompt.options.cloud_handoff_threshold);
                         }
                     }
                 }
