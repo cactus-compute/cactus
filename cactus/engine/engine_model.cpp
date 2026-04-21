@@ -344,6 +344,80 @@ void Model::compute_entropy(CactusGraph* gb, size_t logits_node_id, float* out_e
     *out_entropy = static_cast<float>(entropy / max_entropy);
 }
 
+void Model::compute_candidate_probs(CactusGraph* gb, size_t logits_node_id,
+                                    const std::vector<uint32_t>& candidates,
+                                    std::vector<float>* out_probs) {
+    if (!out_probs) return;
+    out_probs->clear();
+    if (candidates.empty()) return;
+
+    const auto& logits_buf = gb->get_output_buffer(logits_node_id);
+    void* logits_ptr = gb->get_output(logits_node_id);
+    size_t vocab_size = logits_buf.shape.back();
+    size_t seq_len = 1;
+    if (logits_buf.shape.size() >= 2)
+        seq_len = logits_buf.shape[logits_buf.shape.size() - 2];
+    size_t row_offset = (seq_len > 0 ? (seq_len - 1) * vocab_size : 0);
+
+    std::vector<float> logits(vocab_size);
+    if (logits_buf.precision == Precision::FP32) {
+        float* src = static_cast<float*>(logits_ptr) + row_offset;
+        std::copy(src, src + vocab_size, logits.begin());
+    } else if (logits_buf.precision == Precision::FP16) {
+        __fp16* src = static_cast<__fp16*>(logits_ptr) + row_offset;
+        Quantization::fp16_to_fp32(src, logits.data(), vocab_size);
+    } else {
+        int8_t* src = static_cast<int8_t*>(logits_ptr) + row_offset;
+        Quantization::int8_to_fp32(src, logits.data(), vocab_size, 1.0f);
+    }
+
+    float max_logit = *std::max_element(logits.begin(), logits.end());
+    double sum_exp = 0.0;
+    for (size_t i = 0; i < vocab_size; ++i)
+        sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
+
+    out_probs->reserve(candidates.size());
+    for (uint32_t t : candidates) {
+        if (t >= vocab_size) {
+            out_probs->push_back(0.0f);
+            continue;
+        }
+        double p = std::exp(static_cast<double>(logits[t] - max_logit)) / sum_exp;
+        out_probs->push_back(static_cast<float>(p));
+    }
+}
+
+std::vector<float> Model::score_last_token_candidates(const std::vector<uint32_t>& tokens,
+                                                      const std::vector<uint32_t>& candidates) {
+    if (tokens.empty() || candidates.empty()) return {};
+
+    reset_cache();
+    auto final_hidden = forward(tokens, /*use_cache=*/false);
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    auto backend = (config_.default_backend == Config::Backend::CPU)
+        ? ComputeBackend::CPU : ComputeBackend::NPU;
+
+    auto last_hidden = gb->index(final_hidden, tokens.size() - 1, 0);
+    const auto& last_hidden_buf = gb->get_output_buffer(last_hidden);
+    size_t hidden_dim = last_hidden_buf.shape[0];
+    last_hidden = gb->reshape(last_hidden, {1, hidden_dim});
+
+    auto logits_node = gb->matmul(last_hidden, output_weight_node_id_, true, backend);
+
+    if (config_.final_logit_softcapping > 0.0f) {
+        float inv_cap = 1.0f / config_.final_logit_softcapping;
+        logits_node = gb->scalar_multiply(logits_node, inv_cap);
+        logits_node = gb->tanh(logits_node);
+        logits_node = gb->scalar_multiply(logits_node, config_.final_logit_softcapping);
+    }
+    gb->execute();
+
+    std::vector<float> probs;
+    compute_candidate_probs(gb, logits_node, candidates, &probs);
+    return probs;
+}
+
 uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& /*mel_bins*/, float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy,
                                  float min_p, float repetition_penalty,
                                  float* /*out_token_time_start*/, float* /*out_token_time_end*/){

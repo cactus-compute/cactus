@@ -478,7 +478,8 @@ PreparedPrompt prepare_prompt(
     bool apply_tool_constraints,
     bool add_generation_prompt,
     const uint8_t* pcm_buffer = nullptr,
-    size_t pcm_buffer_size = 0
+    size_t pcm_buffer_size = 0,
+    const char* prefill_suffix = nullptr
 ) {
     if (!handle || !handle->model) {
         throw std::runtime_error("Invalid model handle");
@@ -577,6 +578,9 @@ PreparedPrompt prepare_prompt(
         );
         if (full_prompt.find("ERROR:") == 0) {
             throw std::runtime_error(full_prompt.substr(6));
+        }
+        if (prefill_suffix && prefill_suffix[0] != '\0') {
+            full_prompt += prefill_suffix;
         }
         prompt.tokens = tokenizer->encode(full_prompt);
     }
@@ -726,6 +730,12 @@ int cactus_complete(
         handle->should_stop = false;
         auto* tokenizer = handle->model->get_tokenizer();
         auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, true, true, pcm_buffer, pcm_buffer_size);
+
+        if (prompt.model_type == Config::ModelType::GEMMA4) {
+            if (auto* mm = dynamic_cast<Gemma4MmModel*>(handle->model.get())) {
+                mm->set_use_mm_cache(prompt.options.use_multimodal_cache);
+            }
+        }
 
         CACTUS_LOG_DEBUG("complete", "Prompt tokens: " << prompt.tokens.size()
             << ", max_tokens: " << prompt.options.max_tokens);
@@ -1130,6 +1140,74 @@ int cactus_tokenize(
         std::memcpy(token_buffer, toks.data(), toks.size() * sizeof(uint32_t));
         return 0;
     } catch (...) {
+        return -1;
+    }
+}
+
+int cactus_score_candidates(
+    cactus_model_t model,
+    const char* messages_json,
+    const char* options_json,
+    const char* tools_json,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size,
+    const char* prefill_suffix,
+    const uint32_t* candidate_token_ids,
+    size_t n_candidates,
+    float* out_probs
+) {
+    if (!model || !messages_json || !candidate_token_ids || n_candidates == 0 || !out_probs) {
+        last_error_message = "Invalid parameters";
+        return -1;
+    }
+    try {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        handle->should_stop = false;
+        auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json,
+                                     /*apply_tool_constraints=*/false,
+                                     /*add_generation_prompt=*/true,
+                                     pcm_buffer, pcm_buffer_size,
+                                     prefill_suffix);
+
+        if (prompt.model_type == Config::ModelType::GEMMA4) {
+            if (auto* mm = dynamic_cast<Gemma4MmModel*>(handle->model.get())) {
+                mm->set_use_mm_cache(prompt.options.use_multimodal_cache);
+            }
+        }
+
+        std::vector<uint32_t> candidates(candidate_token_ids, candidate_token_ids + n_candidates);
+
+        std::vector<float> probs;
+        bool has_images = prompt.has_images();
+        bool has_audio = prompt.has_audio();
+
+        if (prompt.model_type == Config::ModelType::GEMMA4 && (has_images || has_audio)) {
+            auto* gemma4_mm = dynamic_cast<Gemma4MmModel*>(handle->model.get());
+            if (!gemma4_mm) {
+                last_error_message = "Gemma4 multimodal model handle mismatch";
+                return -1;
+            }
+            std::vector<float> empty_audio;
+            const std::vector<float>& audio_feats = has_audio ? prompt.audio_features : empty_audio;
+            std::vector<std::string> empty_imgs;
+            const std::vector<std::string>& img_paths = has_images ? prompt.image_paths : empty_imgs;
+            probs = gemma4_mm->score_last_token_candidates_with_media(
+                prompt.tokens, img_paths, audio_feats, candidates);
+        } else {
+            probs = handle->model->score_last_token_candidates(prompt.tokens, candidates);
+        }
+
+        // Reset handle state so subsequent calls start fresh; scoring is a
+        // read-only probe and should not populate cached prompt state.
+        handle->processed_tokens.clear();
+        handle->processed_images.clear();
+
+        for (size_t i = 0; i < n_candidates; ++i) {
+            out_probs[i] = (i < probs.size()) ? probs[i] : 0.0f;
+        }
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
         return -1;
     }
 }

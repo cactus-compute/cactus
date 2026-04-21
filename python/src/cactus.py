@@ -350,6 +350,20 @@ _lib.cactus_destroy.restype = None
 _lib.cactus_get_last_error.argtypes = []
 _lib.cactus_get_last_error.restype = ctypes.c_char_p
 
+_lib.cactus_score_candidates.argtypes = [
+    ctypes.c_void_p,            # model
+    ctypes.c_char_p,            # messages_json
+    ctypes.c_char_p,            # options_json
+    ctypes.c_char_p,            # tools_json
+    ctypes.POINTER(ctypes.c_uint8),  # pcm_buffer
+    ctypes.c_size_t,            # pcm_buffer_size
+    ctypes.c_char_p,            # prefill_suffix
+    ctypes.POINTER(ctypes.c_uint32),  # candidate_token_ids
+    ctypes.c_size_t,            # n_candidates
+    ctypes.POINTER(ctypes.c_float),   # out_probs
+]
+_lib.cactus_score_candidates.restype = ctypes.c_int
+
 _lib.cactus_tokenize.argtypes = [
     ctypes.c_void_p,
     ctypes.c_char_p,
@@ -697,6 +711,30 @@ def cactus_embed_speaker(model, audio_path, options_json, pcm_data, mask_weights
     if rc < 0:
         raise RuntimeError(_err("EmbedSpeaker failed"))
     return buf.value.decode("utf-8", errors="ignore")
+
+
+def cactus_score_candidates(model, messages_json, options_json, tools_json,
+                            prefill_suffix, candidate_token_ids, pcm_data=None):
+    """Run prefill through the model with an optional assistant-turn prefix and
+    return softmaxed probabilities for each candidate next-token id."""
+    n = len(candidate_token_ids)
+    cand_arr = (ctypes.c_uint32 * n)(*candidate_token_ids)
+    out_arr = (ctypes.c_float * n)()
+    if pcm_data is not None:
+        pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
+        pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
+        pcm_size = len(pcm_data)
+    else:
+        pcm_ptr = None
+        pcm_size = 0
+    rc = _lib.cactus_score_candidates(
+        model, _enc(messages_json), _enc(options_json), _enc(tools_json),
+        pcm_ptr, pcm_size, _enc(prefill_suffix),
+        cand_arr, n, out_arr,
+    )
+    if rc < 0:
+        raise RuntimeError(_err("Score candidates failed"))
+    return list(out_arr[:n])
 
 
 def cactus_tokenize(model, text):

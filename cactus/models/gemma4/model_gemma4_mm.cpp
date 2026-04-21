@@ -1,8 +1,11 @@
 #include "model_gemma4.h"
 #include "../../graph/graph.h"
 #include <cmath>
+#include <cstring>
+#include <functional>
 #include <stdexcept>
 #include <algorithm>
+#include <string_view>
 
 namespace cactus {
 namespace engine {
@@ -102,7 +105,16 @@ Gemma4MmModel::ForwardResult Gemma4MmModel::forward_multimodal(
         backend,
         use_cache);
 
-    return ForwardResult{final_hidden, inputs.seq_len};
+    ForwardResult r;
+    r.final_hidden_node = final_hidden;
+    r.seq_len = inputs.seq_len;
+    r.vision_soft_node_for_cache = inputs.vision_soft_node_for_cache;
+    r.audio_soft_node_for_cache = inputs.audio_soft_node_for_cache;
+    r.vision_num_soft_tokens = inputs.vision_num_soft_tokens;
+    r.audio_num_soft_tokens = inputs.audio_num_soft_tokens;
+    r.vision_cache_key = std::move(inputs.vision_cache_key);
+    r.audio_cache_key = std::move(inputs.audio_cache_key);
+    return r;
 }
 
 Gemma4MmModel::MultimodalInputs Gemma4MmModel::build_multimodal_inputs(
@@ -116,20 +128,62 @@ Gemma4MmModel::MultimodalInputs Gemma4MmModel::build_multimodal_inputs(
     size_t num_vision_soft_tokens = 0;
     size_t audio_soft_node = 0;
     size_t num_audio_soft_tokens = 0;
+    size_t vision_soft_node_for_cache = 0;
+    size_t audio_soft_node_for_cache = 0;
+    std::string vision_cache_key;
+    std::string audio_cache_key;
+
+    mm_cache_feed_scratch_.clear();
+
+    auto feed_cached = [&](const MmCacheEntry& entry) -> size_t {
+        // Copy cached FP16 data into a scratch buffer that will survive until
+        // gb->execute(), then create an input node pointing to it.
+        mm_cache_feed_scratch_.emplace_back(entry.fp16_data);
+        auto& buf = mm_cache_feed_scratch_.back();
+        size_t node = gb->input({entry.num_tokens, entry.hidden_dim}, Precision::FP16);
+        gb->set_input(node, buf.data(), Precision::FP16);
+        return node;
+    };
 
     if (!image_paths.empty()) {
-        auto preprocessed = vision_encoder_.preprocess_image(image_paths[0]);
-        size_t vision_output = vision_encoder_.forward_vision(gb, preprocessed, backend);
-        vision_soft_node = vision_encoder_.build_vision_projector(gb, vision_output, backend);
-        uint32_t k = config_.vision_pooling_kernel_size;
-        num_vision_soft_tokens = (preprocessed.patch_width / k) * (preprocessed.patch_height / k);
+        vision_cache_key = image_paths[0];
+        auto hit = use_mm_cache_ ? vision_cache_.find(vision_cache_key) : vision_cache_.end();
+        if (hit != vision_cache_.end()) {
+            vision_soft_node = feed_cached(hit->second);
+            num_vision_soft_tokens = hit->second.num_tokens;
+        } else {
+            auto preprocessed = vision_encoder_.preprocess_image(image_paths[0]);
+            size_t vision_output = vision_encoder_.forward_vision(gb, preprocessed, backend);
+            vision_soft_node = vision_encoder_.build_vision_projector(gb, vision_output, backend);
+            uint32_t k = config_.vision_pooling_kernel_size;
+            num_vision_soft_tokens = (preprocessed.patch_width / k) * (preprocessed.patch_height / k);
+            if (use_mm_cache_) {
+                vision_soft_node_for_cache = vision_soft_node;
+            }
+        }
     }
 
     if (audio_features && !audio_features->empty()) {
-        size_t audio_output = audio_encoder_.forward_audio(gb, *audio_features, audio_num_frames, backend);
-        audio_soft_node = audio_encoder_.build_audio_projector(gb, audio_output, backend);
-        const auto& audio_buf = gb->get_output_buffer(audio_soft_node);
-        num_audio_soft_tokens = audio_buf.shape[0];
+        if (use_mm_cache_) {
+            // Hash the feature vector bytes for a stable key. Features are
+            // derived deterministically from PCM so this is a good proxy.
+            const auto* bytes = reinterpret_cast<const char*>(audio_features->data());
+            size_t nbytes = audio_features->size() * sizeof(float);
+            audio_cache_key = std::to_string(std::hash<std::string_view>{}(std::string_view(bytes, nbytes)));
+        }
+        auto hit = use_mm_cache_ ? audio_cache_.find(audio_cache_key) : audio_cache_.end();
+        if (hit != audio_cache_.end()) {
+            audio_soft_node = feed_cached(hit->second);
+            num_audio_soft_tokens = hit->second.num_tokens;
+        } else {
+            size_t audio_output = audio_encoder_.forward_audio(gb, *audio_features, audio_num_frames, backend);
+            audio_soft_node = audio_encoder_.build_audio_projector(gb, audio_output, backend);
+            const auto& audio_buf = gb->get_output_buffer(audio_soft_node);
+            num_audio_soft_tokens = audio_buf.shape[0];
+            if (use_mm_cache_) {
+                audio_soft_node_for_cache = audio_soft_node;
+            }
+        }
     }
 
     uint32_t image_token_id = config_.image_token_id;
@@ -246,6 +300,12 @@ Gemma4MmModel::MultimodalInputs Gemma4MmModel::build_multimodal_inputs(
         .pli_hidden_source_node = merged,
         .pli_tokens = std::move(pli_tokens),
         .seq_len = total_seq_len,
+        .vision_soft_node_for_cache = vision_soft_node_for_cache,
+        .audio_soft_node_for_cache = audio_soft_node_for_cache,
+        .vision_num_soft_tokens = num_vision_soft_tokens,
+        .audio_num_soft_tokens = num_audio_soft_tokens,
+        .vision_cache_key = std::move(vision_cache_key),
+        .audio_cache_key = std::move(audio_cache_key),
     };
 }
 
@@ -286,12 +346,14 @@ uint32_t Gemma4MmModel::decode_multimodal(
 
     size_t seq_len_for_updates = 0;
     size_t final_hidden_node = 0;
+    ForwardResult fwd_for_cache;
 
     if (need_prefill) {
         auto result = forward_multimodal(gb, tokens, image_paths, audio_features,
                                           audio_num_frames, backend, true);
         final_hidden_node = result.final_hidden_node;
         seq_len_for_updates = result.seq_len;
+        fwd_for_cache = result;
         prefill_completed_ = true;
         last_token_count_ = tokens.size();
     } else {
@@ -323,6 +385,8 @@ uint32_t Gemma4MmModel::decode_multimodal(
         gb->execute(profile_file);
     else
         gb->execute();
+
+    populate_mm_cache_from_graph(gb, fwd_for_cache);
 
     compute_entropy(gb, logits_node, out_entropy);
 
@@ -422,6 +486,86 @@ uint32_t Gemma4MmModel::decode_with_media(
     return decode_multimodal(tokens, image_paths, &audio_features, num_frames,
                               temperature, top_p, top_k, profile_file, out_entropy,
                               min_p, repetition_penalty);
+}
+
+void Gemma4MmModel::populate_mm_cache_from_graph(CactusGraph* gb, const ForwardResult& r) {
+    if (!use_mm_cache_) return;
+    auto stash = [&](size_t node, size_t num_tokens, const std::string& key,
+                     std::unordered_map<std::string, MmCacheEntry>& cache) {
+        if (node == 0 || key.empty() || num_tokens == 0) return;
+        const auto& buf = gb->get_output_buffer(node);
+        if (buf.shape.size() < 2) return;
+        size_t hidden_dim = buf.shape[1];
+        size_t total = num_tokens * hidden_dim;
+        MmCacheEntry e;
+        e.num_tokens = num_tokens;
+        e.hidden_dim = hidden_dim;
+        e.fp16_data.resize(total);
+        // Assume FP16 outputs (as in get_image_embeddings / get_audio_embeddings).
+        if (buf.precision == Precision::FP16) {
+            const __fp16* src = static_cast<const __fp16*>(gb->get_output(node));
+            std::memcpy(e.fp16_data.data(), src, total * sizeof(uint16_t));
+        } else {
+            // Fallback: up-cast to FP16 from FP32 for consistency of cache entries.
+            const float* src = static_cast<const float*>(gb->get_output(node));
+            std::vector<__fp16> tmp(total);
+            for (size_t i = 0; i < total; ++i) tmp[i] = static_cast<__fp16>(src[i]);
+            std::memcpy(e.fp16_data.data(), tmp.data(), total * sizeof(uint16_t));
+        }
+        cache[key] = std::move(e);
+    };
+    stash(r.vision_soft_node_for_cache, r.vision_num_soft_tokens, r.vision_cache_key, vision_cache_);
+    stash(r.audio_soft_node_for_cache,  r.audio_num_soft_tokens,  r.audio_cache_key,  audio_cache_);
+}
+
+std::vector<float> Gemma4MmModel::score_last_token_candidates_with_media(
+    const std::vector<uint32_t>& tokens,
+    const std::vector<std::string>& image_paths,
+    const std::vector<float>& audio_features,
+    const std::vector<uint32_t>& candidates) {
+
+    if (!initialized_ || !graph_handle_)
+        throw std::runtime_error("Model not initialized - call init() first");
+    if (tokens.empty() || candidates.empty()) return {};
+
+    bool has_media = !image_paths.empty() || !audio_features.empty();
+    if (!has_media) {
+        return language_model_.score_last_token_candidates(tokens, candidates);
+    }
+
+    size_t audio_num_frames = audio_features.empty()
+        ? 0 : (audio_features.size() / config_.audio_input_feat_size);
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    gb->soft_reset();
+    language_model_.reset_cache();
+    prefill_completed_ = false;
+
+    auto backend = config_.default_backend == Config::Backend::CPU
+        ? ComputeBackend::CPU : ComputeBackend::NPU;
+
+    auto result = forward_multimodal(gb, tokens, image_paths,
+                                     audio_features.empty() ? nullptr : &audio_features,
+                                     audio_num_frames, backend, /*use_cache=*/false);
+
+    auto last_hidden = gb->index(result.final_hidden_node, result.seq_len - 1, 0);
+    const auto& last_buf = gb->get_output_buffer(last_hidden);
+    last_hidden = gb->reshape(last_hidden, {1, last_buf.shape[0]});
+
+    auto logits_node = gb->matmul(last_hidden, language_model_.output_weight_node_id_, true, backend);
+    if (config_.final_logit_softcapping > 0.0f) {
+        float inv_cap = 1.0f / config_.final_logit_softcapping;
+        logits_node = gb->scalar_multiply(logits_node, inv_cap);
+        logits_node = gb->tanh(logits_node);
+        logits_node = gb->scalar_multiply(logits_node, config_.final_logit_softcapping);
+    }
+    gb->execute();
+
+    populate_mm_cache_from_graph(gb, result);
+
+    std::vector<float> probs;
+    compute_candidate_probs(gb, logits_node, candidates, &probs);
+    return probs;
 }
 
 std::vector<float> Gemma4MmModel::get_image_embeddings(const std::string& image_path) {

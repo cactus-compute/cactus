@@ -57,6 +57,24 @@ CACTUS_FFI_EXPORT int cactus_prefill(
     size_t pcm_buffer_size                 // optional: 0 when not used
 );
 
+// Score probabilities of candidate next tokens after an optional assistant-turn
+// prefix (e.g. "This task is "). The chat template is built with
+// add_generation_prompt=true; `prefill_suffix` is appended as raw text before
+// tokenization (no turn-close marker). Supports image/audio multimodal inputs
+// for Gemma4. out_probs must have room for at least n_candidates floats.
+CACTUS_FFI_EXPORT int cactus_score_candidates(
+    cactus_model_t model,
+    const char* messages_json,
+    const char* options_json,                 // optional
+    const char* tools_json,                   // optional
+    const uint8_t* pcm_buffer,                // optional
+    size_t pcm_buffer_size,
+    const char* prefill_suffix,               // optional: raw text appended to assistant turn
+    const uint32_t* candidate_token_ids,
+    size_t n_candidates,
+    float* out_probs
+);
+
 CACTUS_FFI_EXPORT int cactus_tokenize(
     cactus_model_t model,
     const char* text,

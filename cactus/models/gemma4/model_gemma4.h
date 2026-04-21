@@ -1,6 +1,8 @@
 #pragma once
 
 #include "../model.h"
+#include <unordered_map>
+#include <string>
 
 bool test_gemma4_vision(bool expect_npu);
 bool test_gemma4_audio(bool expect_npu);
@@ -346,6 +348,15 @@ public:
         const std::string& profile_file = "", float* out_entropy = nullptr,
         float min_p = 0.15f, float repetition_penalty = 1.1f);
 
+    // Multimodal variant of score_last_token_candidates: runs the full
+    // image+audio+text forward pass and returns softmaxed probs for the
+    // requested candidate token ids at the last position.
+    std::vector<float> score_last_token_candidates_with_media(
+        const std::vector<uint32_t>& tokens,
+        const std::vector<std::string>& image_paths,
+        const std::vector<float>& audio_features,
+        const std::vector<uint32_t>& candidates);
+
     void reset_cache() override;
     std::vector<float> get_image_embeddings(const std::string& image_path) override;
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
@@ -366,6 +377,12 @@ private:
     struct ForwardResult {
         size_t final_hidden_node;
         size_t seq_len;
+        size_t vision_soft_node_for_cache = 0;
+        size_t audio_soft_node_for_cache = 0;
+        size_t vision_num_soft_tokens = 0;
+        size_t audio_num_soft_tokens = 0;
+        std::string vision_cache_key;
+        std::string audio_cache_key;
     };
 
     ForwardResult forward_multimodal(CactusGraph* gb, const std::vector<uint32_t>& tokens,
@@ -373,6 +390,11 @@ private:
                                      const std::vector<float>* audio_features,
                                      size_t audio_num_frames,
                                      ComputeBackend backend, bool use_cache);
+
+    // Post-execute hook: if the forward pass had cache-miss encoder outputs,
+    // extract the projected soft tokens from the executed graph and stash in
+    // vision_cache_ / audio_cache_ for reuse.
+    void populate_mm_cache_from_graph(CactusGraph* gb, const ForwardResult& r);
 
     uint32_t decode_multimodal(const std::vector<uint32_t>& tokens,
                                const std::vector<std::string>& image_paths,
@@ -388,7 +410,20 @@ public:
         size_t pli_hidden_source_node = 0;
         std::vector<uint32_t> pli_tokens;
         size_t seq_len = 0;
+        // For encoder-output caching (option B). If non-zero, these node IDs
+        // should be read back after gb->execute() and stored in the cache
+        // under the corresponding keys. Zero means "already cached" or
+        // "caching disabled" — nothing to do post-execute.
+        size_t vision_soft_node_for_cache = 0;
+        size_t audio_soft_node_for_cache = 0;
+        size_t vision_num_soft_tokens = 0;
+        size_t audio_num_soft_tokens = 0;
+        std::string vision_cache_key;
+        std::string audio_cache_key;
     };
+
+    void set_use_mm_cache(bool on) { use_mm_cache_ = on; }
+    void clear_mm_cache() { vision_cache_.clear(); audio_cache_.clear(); }
 
     const Gemma4VisionModel& vision_encoder() const { return vision_encoder_; }
     Gemma4VisionModel& vision_encoder() { return vision_encoder_; }
@@ -410,6 +445,19 @@ private:
 
     bool prefill_completed_ = false;
     size_t last_token_count_ = 0;
+
+    bool use_mm_cache_ = false;
+    struct MmCacheEntry {
+        std::vector<uint16_t> fp16_data;   // packed FP16
+        size_t num_tokens = 0;
+        size_t hidden_dim = 0;
+    };
+    std::unordered_map<std::string, MmCacheEntry> vision_cache_;
+    std::unordered_map<std::string, MmCacheEntry> audio_cache_;
+
+    // Scratch buffers kept alive through graph execution when cache-hit input
+    // nodes are fed. Cleared at the start of every build_multimodal_inputs.
+    std::vector<std::vector<uint16_t>> mm_cache_feed_scratch_;
 };
 
 }

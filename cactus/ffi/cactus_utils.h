@@ -415,6 +415,10 @@ struct InferenceOptions {
     bool auto_handoff = true;
     bool handoff_with_images = true;
     bool enable_thinking_if_supported = false;
+    // When true, cache projected vision/audio soft-token embeddings keyed by
+    // image path / audio-bytes hash so repeated calls on the same media can
+    // skip the vision/audio encoders entirely.
+    bool use_multimodal_cache = false;
 };
 
 } // namespace ffi
@@ -1377,6 +1381,13 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
         pos = json.find(':', pos) + 1;
         while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
         options.enable_thinking_if_supported = (json.substr(pos, 4) == "true");
+    }
+
+    pos = json.find("\"use_multimodal_cache\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.use_multimodal_cache = (json.substr(pos, 4) == "true");
     }
 
     pos = json.find("\"stop_sequences\"");
