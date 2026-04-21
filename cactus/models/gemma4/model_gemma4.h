@@ -407,9 +407,6 @@ private:
     Gemma4VisionModel vision_encoder_;
     Gemma4AudioModel audio_encoder_;
     Gemma4Model language_model_;
-
-    bool prefill_completed_ = false;
-    size_t last_token_count_ = 0;
 };
 
 }

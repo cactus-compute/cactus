@@ -677,11 +677,17 @@ private:
 
     std::unordered_set<uint32_t> tool_start_tokens_;
     std::unordered_set<uint32_t> tool_end_tokens_;
-    std::unordered_set<uint32_t> bracket_open_tokens_;   
-    std::unordered_set<uint32_t> bracket_close_tokens_;  
-    std::unordered_set<uint32_t> paren_open_tokens_;     
-    std::unordered_set<uint32_t> paren_close_tokens_;   
-    std::unordered_set<uint32_t> equals_tokens_;        
+    std::unordered_set<uint32_t> bracket_open_tokens_;
+    std::unordered_set<uint32_t> bracket_close_tokens_;
+    std::unordered_set<uint32_t> paren_open_tokens_;
+    std::unordered_set<uint32_t> paren_close_tokens_;
+    std::unordered_set<uint32_t> equals_tokens_;
+
+    std::string lfm_current_function_;
+    std::string lfm_args_buffer_;
+    std::unordered_set<std::string> lfm_seen_arg_keys_;
+    std::unordered_map<std::string, std::vector<std::string>> lfm_required_params_;
+    std::unordered_map<std::string, std::vector<std::string>> lfm_all_params_;        
 
     std::unordered_set<uint32_t> gemma_call_start_tokens_;    
     std::unordered_set<uint32_t> gemma_call_end_tokens_;       
@@ -694,6 +700,7 @@ private:
     void compute_bias();
     void tokenize_grammar_elements();
     void add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set);
+    void add_tokens_for_prefix_string(const std::string& prefix, std::unordered_set<uint32_t>& token_set);
     void add_tokens_containing(char needle, std::unordered_set<uint32_t>& token_set);
     void tokenize_function_names(bool quote_names);
     void init_common_tokens();
@@ -768,6 +775,7 @@ public:
 
 
     void set_cache_window(size_t window_size, size_t sink_size = 4) { kv_cache_.set_window_size(window_size, sink_size); }
+    size_t get_cache_size() const { return kv_cache_.current_seq_len; }
 
     bool load_npu_prefill(const std::string& model_path);
     bool has_npu_prefill() const;

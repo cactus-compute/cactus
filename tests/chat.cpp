@@ -402,6 +402,7 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> history_images;
     std::vector<std::string> history_audio;
     std::vector<uint8_t> current_pcm;
+    bool image_committed = false;
     TokenPrinter printer;
     g_printer = &printer;
 
@@ -438,6 +439,7 @@ int main(int argc, char* argv[]) {
             history_audio.clear();
             current_image.clear();
             current_audio.clear();
+            image_committed = false;
             cactus_reset(model);
             std::cout << colored("Conversation reset.\n", Color::YELLOW);
             print_header(system_prompt, current_image, has_vision);
@@ -447,6 +449,7 @@ int main(int argc, char* argv[]) {
         if (input == "/clear") {
             current_image.clear();
             current_audio.clear();
+            image_committed = false;
             std::cout << colored("Image/audio cleared.\n", Color::YELLOW);
             continue;
         }
@@ -479,6 +482,7 @@ int main(int argc, char* argv[]) {
                 continue;
             }
             current_image = path;
+            image_committed = false;
             if (msg.empty()) continue;
             input = msg;
         }
@@ -519,7 +523,8 @@ int main(int argc, char* argv[]) {
         }
 
         history.push_back(input);
-        history_images.push_back(current_image);
+        history_images.push_back(image_committed ? std::string() : current_image);
+        if (!current_image.empty()) image_committed = true;
         history_audio.push_back(current_audio);
 
         // Build messages JSON
