@@ -403,6 +403,12 @@ public:
         size_t audio_num_frames,
         ComputeBackend backend);
 
+    std::vector<float> score_last_token_candidates_with_media(
+        const std::vector<uint32_t>& tokens,
+        const std::vector<std::string>& image_paths,
+        const std::vector<float>& audio_features,
+        const std::vector<uint32_t>& candidates);
+
 private:
     Gemma4VisionModel vision_encoder_;
     Gemma4AudioModel audio_encoder_;

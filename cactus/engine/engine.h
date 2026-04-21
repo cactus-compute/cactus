@@ -772,7 +772,13 @@ public:
 
     double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored);
 
+    virtual std::vector<float> score_last_token_candidates(
+        const std::vector<uint32_t>& tokens,
+        const std::vector<uint32_t>& candidates);
 
+    static void compute_candidate_probs(CactusGraph* gb, size_t logits_node_id,
+                                        const std::vector<uint32_t>& candidates,
+                                        std::vector<float>* out_probs);
 
     void set_cache_window(size_t window_size, size_t sink_size = 4) { kv_cache_.set_window_size(window_size, sink_size); }
 

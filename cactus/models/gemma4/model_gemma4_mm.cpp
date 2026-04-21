@@ -480,5 +480,43 @@ size_t Gemma4MmModel::build_transformer_block(CactusGraph*, size_t, uint32_t, Co
     throw std::runtime_error("build_transformer_block should not be called directly on Gemma4MmModel");
 }
 
+std::vector<float> Gemma4MmModel::score_last_token_candidates_with_media(
+    const std::vector<uint32_t>& tokens,
+    const std::vector<std::string>& image_paths,
+    const std::vector<float>& audio_features,
+    const std::vector<uint32_t>& candidates) {
+    if (!initialized_ || !graph_handle_)
+        throw std::runtime_error("Model not initialized");
+    if (tokens.empty() || candidates.empty()) return {};
+    bool has_media = !image_paths.empty() || !audio_features.empty();
+    if (!has_media)
+        return language_model_.score_last_token_candidates(tokens, candidates);
+    size_t audio_num_frames = audio_features.empty()
+        ? 0 : (audio_features.size() / config_.audio_input_feat_size);
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    gb->soft_reset();
+    language_model_.reset_cache();
+    prefill_completed_ = false;
+    auto backend = config_.default_backend == Config::Backend::CPU
+        ? ComputeBackend::CPU : ComputeBackend::NPU;
+    auto result = forward_multimodal(gb, tokens, image_paths,
+                                     audio_features.empty() ? nullptr : &audio_features,
+                                     audio_num_frames, backend, false);
+    auto last_hidden = gb->index(result.final_hidden_node, result.seq_len - 1, 0);
+    const auto& last_buf = gb->get_output_buffer(last_hidden);
+    last_hidden = gb->reshape(last_hidden, {1, last_buf.shape[0]});
+    auto logits_node = gb->matmul(last_hidden, language_model_.output_weight_node_id_, true, backend);
+    if (config_.final_logit_softcapping > 0.0f) {
+        float inv_cap = 1.0f / config_.final_logit_softcapping;
+        logits_node = gb->scalar_multiply(logits_node, inv_cap);
+        logits_node = gb->tanh(logits_node);
+        logits_node = gb->scalar_multiply(logits_node, config_.final_logit_softcapping);
+    }
+    gb->execute();
+    std::vector<float> probs;
+    language_model_.compute_candidate_probs(gb, logits_node, candidates, &probs);
+    return probs;
+}
+
 }
 }

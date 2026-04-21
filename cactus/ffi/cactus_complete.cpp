@@ -13,8 +13,6 @@
 using namespace cactus::engine;
 using namespace cactus::ffi;
 
-static constexpr size_t DEFAULT_ROLLING_ENTROPY_WINDOW = 10;
-
 namespace {
 
 std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema);
@@ -344,35 +342,6 @@ struct PrefillResult {
     bool was_exact_match = false;
 };
 
-struct EntropyState {
-    std::vector<float> window;
-    float window_sum = 0.0f;
-    float total_sum = 0.0f;
-    size_t total_count = 0;
-    bool spike_handoff = false;
-    size_t window_size = DEFAULT_ROLLING_ENTROPY_WINDOW;
-
-    void add(float entropy) {
-        window.push_back(entropy);
-        window_sum += entropy;
-        total_sum += entropy;
-        total_count++;
-
-        if (window.size() > window_size) {
-            window_sum -= window.front();
-            window.erase(window.begin());
-        }
-    }
-
-    float rolling_confidence() const {
-        return 1.0f - (window_sum / window.size());
-    }
-
-    float mean_confidence() const {
-        return 1.0f - (total_sum / static_cast<float>(total_count));
-    }
-};
-
 struct PreparedPrompt {
     InferenceOptions options;
     Config::ModelType model_type = Config::ModelType::QWEN;
@@ -521,7 +490,7 @@ PreparedPrompt prepare_prompt(
 
     if (prompt.options.confidence_threshold < 0.0f) {
         float model_default = handle->model->get_config().default_cloud_handoff_threshold;
-        prompt.options.confidence_threshold = (model_default > 0.0f) ? model_default : 0.7f;
+        prompt.options.confidence_threshold = (model_default > 0.0f) ? model_default : 0.93f;
     }
 
     if (prompt.model_type == Config::ModelType::GEMMA4) {
@@ -732,6 +701,47 @@ int cactus_complete(
 
         bool has_images = prompt.has_images();
         bool has_audio = prompt.has_audio();
+
+        bool pre_gen_hard = false;
+        if (prompt.options.auto_handoff && (!has_images || prompt.options.handoff_with_images)) {
+            auto* tokenizer = handle->model->get_tokenizer();
+            if (tokenizer) {
+                auto toks_hard = tokenizer->encode("\nThis problem is hard");
+                auto toks_easy = tokenizer->encode("\nThis problem is easy");
+                size_t split = 0;
+                size_t min_len = std::min(toks_hard.size(), toks_easy.size());
+                while (split < min_len && toks_hard[split] == toks_easy[split]) ++split;
+                if (split > 0 && split < toks_hard.size() && split < toks_easy.size()) {
+                    uint32_t id_hard = toks_hard[split];
+                    uint32_t id_easy = toks_easy[split];
+                    std::vector<float> probs;
+                    if (prompt.model_type == Config::ModelType::GEMMA4 && (has_images || has_audio)) {
+                        auto* mm = dynamic_cast<Gemma4MmModel*>(handle->model.get());
+                        if (mm) {
+                            std::vector<std::string> empty_imgs;
+                            std::vector<float> empty_audio;
+                            probs = mm->score_last_token_candidates_with_media(
+                                prompt.tokens,
+                                has_images ? prompt.image_paths : empty_imgs,
+                                has_audio  ? prompt.audio_features : empty_audio,
+                                {id_hard, id_easy});
+                        }
+                    } else {
+                        probs = handle->model->score_last_token_candidates(
+                            prompt.tokens, {id_hard, id_easy});
+                    }
+                    handle->processed_tokens.clear();
+                    handle->processed_images.clear();
+                    if (probs.size() >= 2) {
+                        float total = probs[0] + probs[1];
+                        if (total > 0.0f) {
+                            float difficulty = probs[0] / total;
+                            pre_gen_hard = (difficulty >= prompt.options.confidence_threshold);
+                        }
+                    }
+                }
+            }
+        }
         const bool has_gemma4_mixed_media = prompt.model_type == Config::ModelType::GEMMA4 && has_images && has_audio;
         auto decode_gemma4_mixed_media = [&](const std::vector<uint32_t>& tokens, float* out_entropy) -> uint32_t {
             auto* gemma4_mm = dynamic_cast<Gemma4MmModel*>(handle->model.get());
@@ -808,7 +818,7 @@ int cactus_complete(
             });
         };
 
-        if (confidence < prompt.options.confidence_threshold) {
+        if (pre_gen_hard) {
             maybe_start_cloud_handoff("", {});
         }
 
@@ -818,13 +828,6 @@ int cactus_complete(
         if (prompt.options.force_tools && !prompt.tools.empty()) {
             handle->model->update_tool_constraints(next_token);
         }
-
-        EntropyState entropy;
-        {
-            size_t cfg_window = handle->model->get_config().default_rolling_entropy_window;
-            if (cfg_window > 0) entropy.window_size = cfg_window;
-        }
-        entropy.add(first_token_entropy);
 
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
             if (callback) {
@@ -850,13 +853,6 @@ int cactus_complete(
                 handle->processed_tokens.push_back(next_token);
                 generated_tokens.push_back(next_token);
 
-                entropy.add(token_entropy);
-
-                if (entropy.rolling_confidence() < prompt.options.confidence_threshold) {
-                    entropy.spike_handoff = true;
-                    maybe_start_cloud_handoff("", {});
-                }
-
                 if (prompt.options.force_tools && !prompt.tools.empty()) {
                     handle->model->update_tool_constraints(next_token);
                 }
@@ -874,8 +870,6 @@ int cactus_complete(
         } else {
             trim_stop_suffix(generated_tokens, stop_token_sequences, prompt.options.include_stop_sequences);
         }
-
-        confidence = entropy.mean_confidence();
 
         if (prompt.options.force_tools && !prompt.tools.empty()) {
             handle->model->clear_tool_constraints();
@@ -911,10 +905,6 @@ int cactus_complete(
             if (!prompt.options.enable_thinking_if_supported) {
                 thinking_text.clear();
             }
-        }
-
-        if (confidence < prompt.options.confidence_threshold) {
-            maybe_start_cloud_handoff(regular_response, function_calls);
         }
 
         std::string local_completion = regular_response;
@@ -1175,6 +1165,63 @@ int cactus_score_window(
 
     } catch (const std::exception& e) {
         handle_error_response(e.what(), response_buffer, buffer_size);
+        return -1;
+    }
+}
+
+int cactus_score_candidates(
+    cactus_model_t model,
+    const char* messages_json,
+    const char* options_json,
+    const char* tools_json,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size,
+    const char* prefill_suffix,
+    const uint32_t* candidate_token_ids,
+    size_t n_candidates,
+    float* out_probs
+) {
+    if (!model || !messages_json || !candidate_token_ids || n_candidates == 0 || !out_probs) {
+        last_error_message = "Invalid parameters";
+        return -1;
+    }
+    try {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        handle->should_stop = false;
+        auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json,
+                                     false, true, pcm_buffer, pcm_buffer_size);
+        // Append prefill_suffix tokens if provided
+        if (prefill_suffix && std::strlen(prefill_suffix) > 0) {
+            auto* tokenizer = handle->model->get_tokenizer();
+            if (tokenizer) {
+                auto suffix_toks = tokenizer->encode(std::string(prefill_suffix));
+                prompt.tokens.insert(prompt.tokens.end(), suffix_toks.begin(), suffix_toks.end());
+            }
+        }
+        std::vector<uint32_t> candidates(candidate_token_ids, candidate_token_ids + n_candidates);
+        std::vector<float> probs;
+        bool has_images = prompt.has_images();
+        bool has_audio = prompt.has_audio();
+        if (prompt.model_type == Config::ModelType::GEMMA4 && (has_images || has_audio)) {
+            auto* mm = dynamic_cast<Gemma4MmModel*>(handle->model.get());
+            if (!mm) { last_error_message = "Gemma4 multimodal model handle mismatch"; return -1; }
+            std::vector<std::string> empty_imgs;
+            std::vector<float> empty_audio;
+            probs = mm->score_last_token_candidates_with_media(
+                prompt.tokens,
+                has_images ? prompt.image_paths : empty_imgs,
+                has_audio  ? prompt.audio_features : empty_audio,
+                candidates);
+        } else {
+            probs = handle->model->score_last_token_candidates(prompt.tokens, candidates);
+        }
+        handle->processed_tokens.clear();
+        handle->processed_images.clear();
+        for (size_t i = 0; i < n_candidates; ++i)
+            out_probs[i] = (i < probs.size()) ? probs[i] : 0.0f;
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
         return -1;
     }
 }

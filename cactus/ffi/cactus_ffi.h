@@ -76,6 +76,19 @@ CACTUS_FFI_EXPORT int cactus_score_window(
     size_t buffer_size
 );
 
+CACTUS_FFI_EXPORT int cactus_score_candidates(
+    cactus_model_t model,
+    const char* messages_json,
+    const char* options_json,           // optional
+    const char* tools_json,             // optional
+    const uint8_t* pcm_buffer,          // optional
+    size_t pcm_buffer_size,             // optional
+    const char* prefill_suffix,         // optional
+    const uint32_t* candidate_token_ids,
+    size_t n_candidates,
+    float* out_probs
+);
+
 CACTUS_FFI_EXPORT int cactus_transcribe(
     cactus_model_t model,
     const char* audio_file_path,            // NULL if using pcm_buffer
