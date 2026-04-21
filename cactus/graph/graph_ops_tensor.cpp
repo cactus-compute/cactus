@@ -225,6 +225,18 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
     __fp16* output = node.output_buffer.data_as<__fp16>();
 
     Precision emb_prec = embeddings_buffer.precision;
+    if (emb_prec == Precision::INT2_HADAMARD) {
+        const CactusPliTurboquant* pli = embeddings_buffer.pli_tq;
+        if (pli == nullptr) {
+            throw std::runtime_error("INT2_HADAMARD embedding: pli descriptor missing");
+        }
+        for (size_t i = 0; i < num_indices; i++) {
+            uint32_t idx = static_cast<uint32_t>(indices_ptr[i]);
+            if (idx >= pli->vocab) idx = 0;
+            cactus_pli_tq_dequant_layer_slice(pli, idx, 0, output + i * hidden_dim);
+        }
+        return;
+    }
     if (PrecisionTraits::is_integer(emb_prec) && embeddings_buffer.group_size > 0) {
         const int8_t* embeddings = embeddings_buffer.data_as<int8_t>();
         const __fp16* scales = embeddings_buffer.scales_as_fp16();

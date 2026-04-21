@@ -1,4 +1,5 @@
 #include "graph.h"
+#include "../kernel/kernel.h"
 #include <fstream>
 #include <stdexcept>
 #include <sys/mman.h>
@@ -392,8 +393,12 @@ namespace {
         node.inputs = read_u32_vector(in);
         node.output_shape = read_size_vector(in);
         uint32_t precision_val = read_u32(in);
-        if (precision_val > static_cast<uint32_t>(Precision::INT4)) {
-            throw std::runtime_error("Graph file corrupted: invalid precision");
+        switch (static_cast<Precision>(precision_val)) {
+            case Precision::INT8: case Precision::FP16: case Precision::FP32:
+            case Precision::INT4: case Precision::INT2_HADAMARD:
+                break;
+            default:
+                throw std::runtime_error("Graph file corrupted: invalid precision");
         }
         node.precision = static_cast<Precision>(precision_val);
         read_op_params(in, node);
@@ -472,7 +477,9 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
     size_t node_id = input(shape, precision);
     set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
 
-    if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
+    if (precision == Precision::INT2_HADAMARD) {
+        nodes_[node_index_map_.at(node_id)]->output_buffer.pli_tq = mapped_file->pli_turboquant();
+    } else if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
         set_grouped_scales(node_id, mapped_file->group_size(), mapped_file->num_groups(),
                           const_cast<void*>(mapped_file->scales_data()));
 
@@ -829,7 +836,8 @@ MappedFile::MappedFile(MappedFile&& other) noexcept
       scales_offset_(other.scales_offset_), scales_bytes_(other.scales_bytes_),
       alignment_(other.alignment_),
       is_interleaved_(other.is_interleaved_),
-      original_N_(other.original_N_) {
+      original_N_(other.original_N_),
+      pli_turboquant_(std::move(other.pli_turboquant_)) {
     other.fd_ = -1;
     other.mapped_data_ = nullptr;
     other.file_size_ = 0;
@@ -860,6 +868,7 @@ MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
         alignment_ = other.alignment_;
         is_interleaved_ = other.is_interleaved_;
         original_N_ = other.original_N_;
+        pli_turboquant_ = std::move(other.pli_turboquant_);
         other.fd_ = -1;
         other.mapped_data_ = nullptr;
         other.file_size_ = 0;
@@ -879,6 +888,10 @@ Precision MappedFile::precision() const {
 
 size_t MappedFile::byte_size() const {
     return byte_size_;
+}
+
+const CactusPliTurboquant* MappedFile::pli_turboquant() const {
+    return pli_turboquant_.get();
 }
 
 const void* MappedFile::scales_data() const {
@@ -935,6 +948,24 @@ void MappedFile::parse_header() {
     uint32_t prec_val = *reinterpret_cast<const uint32_t*>(ptr + offset);
     precision_ = static_cast<Precision>(prec_val);
     offset += sizeof(uint32_t);
+
+    // INT2_HADAMARD has an extended header (codebook / input-scale / rotation
+    // offsets) that the generic scales/data offset logic below does not apply
+    // to. Hand the blob to its own parser and return.
+    if (precision_ == Precision::INT2_HADAMARD) {
+        pli_turboquant_ = std::make_unique<CactusPliTurboquant>();
+        if (!cactus_pli_tq_load(pli_turboquant_.get(), mapped_data_, file_size_)) {
+            throw std::runtime_error("INT2_HADAMARD tensor: cactus_pli_tq_load failed");
+        }
+        pli_turboquant_->groups_per_layer = pli_turboquant_->num_groups;
+        byte_size_ = file_size_;
+        data_offset_ = 0;
+        scales_offset_ = 0;
+        scales_bytes_ = 0;
+        group_size_ = pli_turboquant_->group_size;
+        num_groups_ = pli_turboquant_->num_groups;
+        return;
+    }
 
     byte_size_ = *reinterpret_cast<const uint64_t*>(ptr + offset);
     offset += sizeof(uint64_t);
