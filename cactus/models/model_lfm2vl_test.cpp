@@ -1,18 +1,90 @@
 #include "model.h"
 #include "../graph/graph.h"
+#include <fstream>
+#include <optional>
+#include <sstream>
 #include <cmath>
 #include <stdexcept>
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
-#include <nhloman/json.hpp>
+#include <nlohmann/json.hpp>
 
 namespace cactus {
-
 namespace {
-    
+// Looks up a special/added token by its content string in tokenizer.json.
+// Checks `added_tokens` array first (covers special:true tokens like <|image_start|>),
+// then falls back to the base vocab map.
+static std::optional<int32_t> find_token_id_in_tokenizer_json(
+    const std::string& tokenizer_json_path,
+    const std::string& token_text) {
+    std::ifstream in(tokenizer_json_path);
+    if (!in.good()) return std::nullopt;
+
+    nlohmann::json j;
+    try {
+        in >> j;
+    } catch (...) {
+        return std::nullopt;
+    }
+
+    // 1) Prefer added_tokens / special tokens section — this is where
+    //    tokens like <|image_start|> live (special: true in tokenizer.json).
+    if (j.contains("added_tokens") && j["added_tokens"].is_array()) {
+        for (const auto& entry : j["added_tokens"]) {
+            if (!entry.is_object()) continue;
+            if (!entry.contains("content") || !entry.contains("id")) continue;
+            if (!entry["content"].is_string() || !entry["id"].is_number_integer()) continue;
+            if (entry["content"].get<std::string>() == token_text) {
+                return entry["id"].get<int32_t>();
+            }
+        }
+    }
+
+    // 2) Fallback to base vocab map.
+    if (j.contains("model") && j["model"].is_object()) {
+        const auto& model_obj = j["model"];
+        if (model_obj.contains("vocab") && model_obj["vocab"].is_object()) {
+            const auto& vocab = model_obj["vocab"];
+            auto it = vocab.find(token_text);
+            if (it != vocab.end() && it->is_number_integer()) {
+                return it->get<int32_t>();
+            }
+        }
+    }
+
+    return std::nullopt;
 }
 
+// Resolves a control/special token to its single integer ID.
+//
+// On some tokenizer back-ends (e.g. the iOS llama.cpp tokenizer), calling
+// encode() on a special token such as <|image_start|> may return 0 or
+// multiple tokens rather than the expected single ID, because the token is
+// registered as special and is intentionally not produced by the BPE
+// encoder.  We therefore fall back to a direct JSON lookup against the
+// model's tokenizer.json before giving up.
+template <typename TTokenizer>
+static uint32_t resolve_control_token_id(
+    TTokenizer& tokenizer,
+    const std::string& token_text,
+    const std::string& tokenizer_json_path) {
+    const auto ids = tokenizer.encode(token_text);
+    if (ids.size() == 1) return static_cast<uint32_t>(ids[0]);
+
+    // encode() did not return exactly one token — fall back to JSON lookup.
+    if (auto fallback_id = find_token_id_in_tokenizer_json(tokenizer_json_path, token_text)) {
+        return static_cast<uint32_t>(*fallback_id);
+    }
+
+    std::ostringstream oss;
+    oss << "Expected single token encoding for " << token_text
+        << ", got " << ids.size() << " token(s). "
+        << "Ensure tokenizer.json is present at: " << tokenizer_json_path;
+    throw std::runtime_error(oss.str());
+}
+
+} // namespace (anonymous)
 
 namespace engine {
 
@@ -20,7 +92,7 @@ Lfm2VlModel::Lfm2VlModel() : Model() {
     config_.model_type = Config::ModelType::LFM2;
 }
 
-Lfm2VlModel::Lfm2VlModel(const Config& config)
+cactus::engine::Lfm2VlModel::Lfm2VlModel(const Config& config)
         : Model(config),
             vision_tower_(config),
             language_model_(config) {
@@ -91,6 +163,38 @@ void Lfm2VlModel::reset_cache() {
     last_token_count_ = 0;
 }
 
+void Lfm2VlModel::load_weights_to_graph(CactusGraph* gb) {
+    namespace fs = std::filesystem;
+    fs::path base(model_folder_path_);
+
+    auto resolve_weight = [&](const std::string& primary, const std::string& fallback = "") -> std::string {
+        fs::path primary_path = base / primary;
+        if (fs::exists(primary_path)) {
+            return primary_path.string();
+        }
+        if (!fallback.empty()) {
+            fs::path fallback_path = base / fallback;
+            if (fs::exists(fallback_path)) {
+                return fallback_path.string();
+            }
+        }
+        return primary_path.string();
+    };
+
+    try { 
+        projector_weights_.layer_norm_weight = gb->mmap_weights(resolve_weight("projector_layer_norm.weights"));
+        projector_weights_.layer_norm_bias = gb->mmap_weights(resolve_weight("projector_layer_norm.bias.weights"));
+    } catch (const std::exception&) {
+        projector_weights_.layer_norm_weight = 0;
+        projector_weights_.layer_norm_bias = 0;
+    }
+    
+    projector_weights_.linear_1_weight = gb->mmap_weights(resolve_weight("projector_linear_1.weights", "projector_linear1.weights"));
+    projector_weights_.linear_1_bias = gb->mmap_weights(resolve_weight("projector_linear_1.bias.weights", "projector_linear1.bias.weights"));
+    projector_weights_.linear_2_weight = gb->mmap_weights(resolve_weight("projector_linear_2.weights", "projector_linear2.weights"));
+    projector_weights_.linear_2_bias = gb->mmap_weights(resolve_weight("projector_linear_2.bias.weights", "projector_linear2.bias.weights"));
+    output_weight_node_id_ = gb->mmap_weights(resolve_weight("token_embeddings.weights"));
+}
 
 size_t Lfm2VlModel::pixel_unshuffle(CactusGraph* gb, size_t hidden_states, 
                                      size_t height, size_t width, size_t channels) {
@@ -184,7 +288,7 @@ Lfm2VlModel::MergedEmbeddingResult Lfm2VlModel::merge_image_text_embeddings(
     const std::vector<uint32_t>& tokens,
     const std::vector<std::vector<ProjectedTileFeature>>& image_embedding_nodes,
     std::vector<TextEmbeddingInput>& text_embedding_inputs) {
-
+    
     text_embedding_inputs.clear();
 
     Tokenizer* tokenizer = language_model_.get_tokenizer();
@@ -194,13 +298,9 @@ Lfm2VlModel::MergedEmbeddingResult Lfm2VlModel::merge_image_text_embeddings(
 
     const uint32_t image_token_id = tokenizer->get_image_token_id();
 
-    auto get_token_id = [tokenizer](const std::string& token_text) -> uint32_t {
-        auto encoded = tokenizer->encode(token_text);
-        if (encoded.size() != 1) {
-            
-            throw std::runtime_error("Expected single token encoding for " + token_text);
-        }
-        return encoded[0];
+    auto get_token_id = [this, tokenizer](const std::string& token_text) -> uint32_t {
+        const std::string tokenizer_json_path = model_folder_path_ + "/tokenizer.json";
+        return resolve_control_token_id(*tokenizer, token_text, tokenizer_json_path);
     };
 
     const uint32_t image_start_id = get_token_id("<|image_start|>");
