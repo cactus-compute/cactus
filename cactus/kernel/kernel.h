@@ -467,32 +467,25 @@ void cactus_maxpool1d_f16(
     size_t stride
 );
 
-// 2-bit Hadamard-TurboQuant PLI (Precision::INT2_HADAMARD). On-disk layout is
-// documented in the matching .cpp. Descriptor pointers reference the mmap'd
-// blob — no ownership, no copy.
-struct CactusPliTurboquant {
+// Precision::TQ2 descriptor. Pointers reference an mmap'd blob.
+struct CactusTQ2 {
     uint32_t vocab;
-    uint32_t pli_dim;
     uint32_t group_size;
     uint32_t num_groups;
-    uint32_t bits_per_index;
-    uint32_t groups_per_layer;
+    uint32_t per_group_bytes;
 
     const float*    codebook;
-    const uint16_t* input_scale;
+    const __fp16*   input_scale;
     const int8_t*   left_signs;
     const int8_t*   right_signs;
     const uint32_t* permutation;
-    const uint16_t* scales;
+    const __fp16*   scales;
     const uint8_t*  packed;
 
-    uint32_t per_group_bytes;
     uint32_t inv_permutation[256];
 };
 
-int  cactus_pli_tq_load(CactusPliTurboquant* out, const void* blob, size_t blob_size);
-void cactus_pli_tq_dequant_layer_slice(const CactusPliTurboquant* pli,
-                                       uint32_t token_id, uint32_t layer_idx,
-                                       __fp16* out);
+int  cactus_tq2_load(CactusTQ2* out, const void* blob, size_t blob_size);
+void cactus_tq2_dequant_row(const CactusTQ2* tq2, uint32_t token_id, __fp16* out);
 
 #endif

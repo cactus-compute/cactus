@@ -395,7 +395,7 @@ namespace {
         uint32_t precision_val = read_u32(in);
         switch (static_cast<Precision>(precision_val)) {
             case Precision::INT8: case Precision::FP16: case Precision::FP32:
-            case Precision::INT4: case Precision::INT2_HADAMARD:
+            case Precision::INT4: case Precision::TQ2:
                 break;
             default:
                 throw std::runtime_error("Graph file corrupted: invalid precision");
@@ -477,8 +477,8 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
     size_t node_id = input(shape, precision);
     set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
 
-    if (precision == Precision::INT2_HADAMARD) {
-        nodes_[node_index_map_.at(node_id)]->output_buffer.pli_tq = mapped_file->pli_turboquant();
+    if (precision == Precision::TQ2) {
+        nodes_[node_index_map_.at(node_id)]->output_buffer.tq2 = mapped_file->tq2();
     } else if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
         set_grouped_scales(node_id, mapped_file->group_size(), mapped_file->num_groups(),
                           const_cast<void*>(mapped_file->scales_data()));
@@ -506,6 +506,10 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
 
     const auto& shape = mapped_file->shape();
     Precision precision = mapped_file->precision();
+
+    if (precision == Precision::TQ2) {
+        throw std::runtime_error("TQ2 is currently supported only for embeddings; use mmap_embeddings");
+    }
 
     size_t node_id = input(shape, precision);
     set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
@@ -837,7 +841,7 @@ MappedFile::MappedFile(MappedFile&& other) noexcept
       alignment_(other.alignment_),
       is_interleaved_(other.is_interleaved_),
       original_N_(other.original_N_),
-      pli_turboquant_(std::move(other.pli_turboquant_)) {
+      tq2_(std::move(other.tq2_)) {
     other.fd_ = -1;
     other.mapped_data_ = nullptr;
     other.file_size_ = 0;
@@ -868,7 +872,7 @@ MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
         alignment_ = other.alignment_;
         is_interleaved_ = other.is_interleaved_;
         original_N_ = other.original_N_;
-        pli_turboquant_ = std::move(other.pli_turboquant_);
+        tq2_ = std::move(other.tq2_);
         other.fd_ = -1;
         other.mapped_data_ = nullptr;
         other.file_size_ = 0;
@@ -890,8 +894,8 @@ size_t MappedFile::byte_size() const {
     return byte_size_;
 }
 
-const CactusPliTurboquant* MappedFile::pli_turboquant() const {
-    return pli_turboquant_.get();
+const CactusTQ2* MappedFile::tq2() const {
+    return tq2_.get();
 }
 
 const void* MappedFile::scales_data() const {
@@ -949,21 +953,17 @@ void MappedFile::parse_header() {
     precision_ = static_cast<Precision>(prec_val);
     offset += sizeof(uint32_t);
 
-    // INT2_HADAMARD has an extended header (codebook / input-scale / rotation
-    // offsets) that the generic scales/data offset logic below does not apply
-    // to. Hand the blob to its own parser and return.
-    if (precision_ == Precision::INT2_HADAMARD) {
-        pli_turboquant_ = std::make_unique<CactusPliTurboquant>();
-        if (!cactus_pli_tq_load(pli_turboquant_.get(), mapped_data_, file_size_)) {
-            throw std::runtime_error("INT2_HADAMARD tensor: cactus_pli_tq_load failed");
+    if (precision_ == Precision::TQ2) {
+        tq2_ = std::make_unique<CactusTQ2>();
+        if (!cactus_tq2_load(tq2_.get(), mapped_data_, file_size_)) {
+            throw std::runtime_error("TQ2 tensor: cactus_tq2_load failed");
         }
-        pli_turboquant_->groups_per_layer = pli_turboquant_->num_groups;
         byte_size_ = file_size_;
         data_offset_ = 0;
         scales_offset_ = 0;
         scales_bytes_ = 0;
-        group_size_ = pli_turboquant_->group_size;
-        num_groups_ = pli_turboquant_->num_groups;
+        group_size_ = tq2_->group_size;
+        num_groups_ = tq2_->num_groups;
         return;
     }
 

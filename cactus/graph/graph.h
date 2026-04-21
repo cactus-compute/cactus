@@ -99,14 +99,14 @@ namespace GraphFile {
     struct SerializedGraph;
 }
 
-struct CactusPliTurboquant;
+struct CactusTQ2;
 
 enum class Precision {
-    INT8           = 0,
-    FP16           = 1,
-    FP32           = 2,
-    INT4           = 3,
-    INT2_HADAMARD  = 10,
+    INT8 = 0,
+    FP16 = 1,
+    FP32 = 2,
+    INT4 = 3,
+    TQ2  = 10,
 };
 
 enum class ComputeBackend {
@@ -158,19 +158,19 @@ enum class OpType {
 struct PrecisionTraits {
     static constexpr size_t size_of(Precision prec) {
         switch (prec) {
-            case Precision::INT8:          return 1;
-            case Precision::FP16:          return 2;
-            case Precision::FP32:          return 4;
-            case Precision::INT4:          return 1;
-            case Precision::INT2_HADAMARD: return 1;
+            case Precision::INT8: return 1;
+            case Precision::FP16: return 2;
+            case Precision::FP32: return 4;
+            case Precision::INT4: return 1;
+            case Precision::TQ2:  return 1;
         }
         return 1;
     }
 
     static constexpr size_t packed_size_of(Precision prec, size_t count) {
         switch (prec) {
-            case Precision::INT4:          return (count + 1) / 2;
-            case Precision::INT2_HADAMARD: return (count + 3) / 4;
+            case Precision::INT4: return (count + 1) / 2;
+            case Precision::TQ2:  return (count + 3) / 4;
             default: return count * size_of(prec);
         }
     }
@@ -186,22 +186,22 @@ struct PrecisionTraits {
 
     static constexpr bool is_integer(Precision prec) {
         switch (prec) {
-            case Precision::INT8:          return true;
-            case Precision::INT4:          return true;
-            case Precision::INT2_HADAMARD: return true;
-            case Precision::FP16:          return false;
-            case Precision::FP32:          return false;
+            case Precision::INT8: return true;
+            case Precision::INT4: return true;
+            case Precision::TQ2:  return true;
+            case Precision::FP16: return false;
+            case Precision::FP32: return false;
         }
         return true;
     }
 
     static constexpr bool is_floating_point(Precision prec) {
         switch (prec) {
-            case Precision::INT8:          return false;
-            case Precision::INT4:          return false;
-            case Precision::INT2_HADAMARD: return false;
-            case Precision::FP16:          return true;
-            case Precision::FP32:          return true;
+            case Precision::INT8: return false;
+            case Precision::INT4: return false;
+            case Precision::TQ2:  return false;
+            case Precision::FP16: return true;
+            case Precision::FP32: return true;
         }
         return false;
     }
@@ -251,10 +251,8 @@ struct BufferDesc {
     bool is_interleaved = false;
     size_t original_N = 0;
 
-    // For Precision::INT2_HADAMARD: parsed descriptor (codebook / input-scale /
-    // rotation / per-group scales / packed indices) owned by the MappedFile
-    // backing this buffer. Null for any other precision.
-    const CactusPliTurboquant* pli_tq = nullptr;
+    // Set for Precision::TQ2. Descriptor lifetime matches the backing MappedFile.
+    const CactusTQ2* tq2 = nullptr;
 
     void* activation_scales_data = nullptr;
     std::unique_ptr<char[]> owned_activation_scales;
@@ -754,9 +752,8 @@ namespace GraphFile {
         bool is_interleaved() const { return is_interleaved_; }
         size_t original_N() const { return original_N_; }
 
-        // For Precision::INT2_HADAMARD only. Parsed at header-read time; pointers
-        // inside reference the mmap'd blob, whose lifetime matches this object.
-        const CactusPliTurboquant* pli_turboquant() const;
+        // Set for Precision::TQ2; pointers inside reference the mmap'd blob.
+        const CactusTQ2* tq2() const;
 
         void* data();
         const void* data() const;
@@ -783,7 +780,7 @@ namespace GraphFile {
         bool is_interleaved_ = false;
         size_t original_N_ = 0;
 
-        std::unique_ptr<CactusPliTurboquant> pli_turboquant_;
+        std::unique_ptr<CactusTQ2> tq2_;
 
         void parse_header();
         void apply_madvise_hints();
