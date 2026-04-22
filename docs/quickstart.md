@@ -178,7 +178,8 @@ Install Cactus and run your first on-device AI completion.
     char response[4096];
     int result = cactus_complete(
         model, messages, response, sizeof(response),
-        nullptr, nullptr, nullptr, nullptr
+        nullptr, nullptr, nullptr, nullptr,
+        nullptr, 0
     );
     ```
 
@@ -186,10 +187,11 @@ Install Cactus and run your first on-device AI completion.
 
 ## Supported Models
 
-- **LLMs:** Gemma-3 (270M, FunctionGemma-270M, 1B), LiquidAI LFM2 (350M, 2.6B) / LFM2.5 (1.2B-Instruct, 1.2B-Thinking) / LFM2-8B-A1B, Qwen3 (0.6B, 1.7B) (completion, tools, embeddings)
-- **Vision:** LFM2-VL, LFM2.5-VL (with Apple NPU), Qwen3.5 (0.8B, 2B)
+- **LLMs:** Gemma-3 (270M, FunctionGemma-270M, 1B), Gemma-4 (E2B, E4B), Gemma-3n (E2B, E4B), LiquidAI LFM2 (350M, 700M, 2.6B) / LFM2.5 (1.2B-Instruct, 1.2B-Thinking) / LFM2-8B-A1B, Qwen3 (0.6B, 1.7B), Tencent Youtu-LLM-2B (completion, tools, embeddings)
+- **Vision:** Gemma-4 (E2B, E4B), LFM2-VL, LFM2.5-VL (450M, 1.6B) (with Apple NPU), Qwen3.5 (0.8B, 2B)
+- **Audio:** Gemma-4 (E2B, E4B) with native speech understanding
 - **Transcription:** Whisper (Tiny/Base/Small/Medium with Apple NPU), Parakeet (CTC-0.6B/CTC-1.1B/TDT-0.6B-v3 with Apple NPU), Moonshine-Base
-- **VAD:** Silero VAD for voice activity detection
+- **VAD & Diarization:** Silero VAD, PyAnnote segmentation-3.0, WeSpeaker speaker embeddings
 - **Embeddings:** Nomic-Embed, Qwen3-Embedding
 
 See the full list on [HuggingFace](https://huggingface.co/cactus-compute).

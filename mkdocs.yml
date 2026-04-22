@@ -57,6 +57,8 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.snippets:
       base_path: [site_docs]
+  - pymdownx.arithmatex:
+      generic: true
 
 plugins:
   - search
@@ -70,6 +72,10 @@ extra:
       link: https://github.com/cactus-compute/cactus
     - icon: fontawesome/brands/reddit
       link: https://www.reddit.com/r/cactuscompute/
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
 
 extra_css:
   - stylesheets/custom.css
@@ -95,6 +101,8 @@ nav:
   - Contributing: CONTRIBUTING.md
   - Blog:
     - All Posts: blog/README.md
+    - "TurboQuant-H": blog/turboquant-h.md
+    - "Gemma 4 on Cactus": blog/gemma4.md
     - Hybrid Transcription: blog/hybrid_transcription.md
     - "LFM2-24B on Mac": blog/lfm2_24b_a2b.md
     - "Parakeet CTC 1.1B": blog/parakeet.md

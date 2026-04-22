@@ -76,13 +76,18 @@ file(GLOB KERNEL_SOURCES CONFIGURE_DEPENDS "kernel/*.cpp")
 file(GLOB FFI_SOURCES CONFIGURE_DEPENDS "ffi/*.cpp")
 file(GLOB MODEL_SOURCES CONFIGURE_DEPENDS "models/*.cpp" "models/gemma4/*.cpp")
 file(GLOB TELEMETRY_SOURCES CONFIGURE_DEPENDS "telemetry/*.cpp")
+<<<<<<< HEAD
 
 set(SME2_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_sme2.cpp")
 set(SVE2_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_sve2.cpp")
 set(I8MM_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_i8mm.cpp")
 list(REMOVE_ITEM KERNEL_SOURCES "${SME2_SOURCE}")
 list(REMOVE_ITEM KERNEL_SOURCES "${SVE2_SOURCE}")
+=======
+set(I8MM_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_i8mm.cpp")
+>>>>>>> main
 list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
+
 
 if(APPLE)
     set(NPU_SOURCES "npu/npu_ane.mm")
@@ -145,6 +150,7 @@ function(configure_cactus_target target_name)
     endif()
 endfunction()
 
+<<<<<<< HEAD
 set(ENABLE_SME2 "AUTO" CACHE STRING "SME2 build mode: AUTO or OFF")
 set_property(CACHE ENABLE_SME2 PROPERTY STRINGS AUTO OFF)
 set(ENABLE_SVE2 "AUTO" CACHE STRING "SVE2 build mode: AUTO or OFF")
@@ -207,6 +213,8 @@ if(BUILD_SME2)
 	set_target_properties(cactus_sme2_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 	target_compile_definitions(cactus_sme2_obj PRIVATE CACTUS_COMPILE_SME2)
 endif()
+=======
+>>>>>>> main
 
 if(BUILD_SVE2)
 	add_library(cactus_sve2_obj OBJECT ${SVE2_SOURCE})
@@ -225,17 +233,21 @@ set_target_properties(cactus_i8mm_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(cactus_i8mm_obj PRIVATE CACTUS_COMPILE_I8MM __ARM_FEATURE_MATMUL_INT8=1)
 
 set(EXTRA_OBJECTS $<TARGET_OBJECTS:cactus_i8mm_obj>)
+<<<<<<< HEAD
 if(BUILD_SVE2)
 	set(EXTRA_OBJECTS ${EXTRA_OBJECTS} $<TARGET_OBJECTS:cactus_sve2_obj>)
 endif()
 if(BUILD_SME2)
 	set(EXTRA_OBJECTS ${EXTRA_OBJECTS} $<TARGET_OBJECTS:cactus_sme2_obj>)
 endif()
+=======
+>>>>>>> main
 
 add_library(cactus STATIC ${COMMON_SOURCES} ${EXTRA_OBJECTS})
 configure_cactus_target(cactus)
 target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_I8MM)
 
+<<<<<<< HEAD
 if(BUILD_SVE2)
 	target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_SVE2)
 endif()
@@ -243,6 +255,8 @@ endif()
 if(BUILD_SME2)
 	target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_SME2)
 endif()
+=======
+>>>>>>> main
 
 add_library(cactus_ffi SHARED ${COMMON_SOURCES} ${EXTRA_OBJECTS})
 configure_cactus_target(cactus_ffi)
@@ -251,6 +265,7 @@ set_target_properties(cactus_ffi PROPERTIES
     OUTPUT_NAME "cactus"
 )
 target_compile_definitions(cactus_ffi PRIVATE CACTUS_COMPILE_I8MM)
+<<<<<<< HEAD
 
 if(BUILD_SVE2)
 	target_compile_definitions(cactus_ffi PRIVATE CACTUS_COMPILE_SVE2)
@@ -259,3 +274,5 @@ endif()
 if(BUILD_SME2)
 	target_compile_definitions(cactus_ffi PRIVATE CACTUS_COMPILE_SME2)
 endif()
+=======
+>>>>>>> main

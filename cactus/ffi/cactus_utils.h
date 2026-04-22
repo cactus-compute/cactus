@@ -74,6 +74,7 @@ struct CactusModelHandle {
     };
 
     std::vector<std::vector<ProcessedImage>> processed_images;
+    std::vector<size_t> user_audio_counts;
     std::mutex model_mutex;
     std::string model_name;
     std::unique_ptr<cactus::engine::index::Index> corpus_index;
@@ -402,7 +403,7 @@ struct InferenceOptions {
     float top_p = 0.0f;
     float min_p = 0.15f;
     float repetition_penalty = 1.1f;
-    float confidence_threshold = 0.7f;
+    float confidence_threshold = -1.0f;
     size_t top_k = 0;
     size_t max_tokens = 100;
     size_t tool_rag_top_k = 2;
@@ -414,7 +415,7 @@ struct InferenceOptions {
     bool telemetry_enabled = true;
     bool auto_handoff = true;
     bool handoff_with_images = true;
-    bool enable_thinking_if_supported = true;
+    bool enable_thinking_if_supported = false;
 };
 
 } // namespace ffi
@@ -900,6 +901,7 @@ inline std::vector<ToolFunction> parse_tools_json(const std::string& json) {
     pos = json.find("\"function\"", pos);
     while (pos != std::string::npos) {
         ToolFunction tool;
+        size_t next_search = pos + 1;
         
         size_t name_pos = json.find("\"name\"", pos);
         if (name_pos != std::string::npos) {
@@ -927,12 +929,15 @@ inline std::vector<ToolFunction> parse_tools_json(const std::string& json) {
                     params_end++;
                 }
                 tool.parameters["schema"] = json.substr(params_start, params_end - params_start);
+                next_search = params_end;
             }
         }
-        
-        tools.push_back(tool);
-        
-        pos = json.find("\"function\"", name_pos);
+
+        if (!tool.name.empty()) {
+            tools.push_back(tool);
+        }
+
+        pos = json.find("\"function\"", next_search);
     }
 
     return tools;
@@ -1413,10 +1418,10 @@ static inline void append_lfm2_call(const std::string& entry,
     std::string func_name = trim_lfm2_slice(trimmed_entry, 0, paren_pos);
     std::string args_str = trim_lfm2_slice(trimmed_entry, paren_pos + 1, trimmed_entry.size());
 
-    if (!args_str.empty() && args_str.back() == ')') {
+    while (!args_str.empty() && (args_str.back() == ')' || args_str.back() == ']')) {
         args_str.pop_back();
-        args_str = trim_lfm2_slice(args_str, 0, args_str.size());
     }
+    args_str = trim_lfm2_slice(args_str, 0, args_str.size());
 
     std::string json_call = "{\"name\":\"" + func_name + "\",\"arguments\":{";
 
@@ -1434,20 +1439,34 @@ static inline void append_lfm2_call(const std::string& entry,
 
         size_t val_start = eq_pos + 1;
         size_t val_end = val_start;
+        bool quoted = false;
 
         if (val_start < args_str.length() && args_str[val_start] == '"') {
+            quoted = true;
             val_start++;
             val_end = args_str.find('"', val_start);
             if (val_end == std::string::npos) break;
         } else {
-            val_end = args_str.find(',', val_start);
-            if (val_end == std::string::npos) val_end = args_str.length();
+            int depth = 0;
+            for (val_end = val_start; val_end < args_str.length(); val_end++) {
+                char c = args_str[val_end];
+                if (c == '[' || c == '{') depth++;
+                else if (c == ']' || c == '}') depth--;
+                else if (c == ',' && depth == 0) break;
+            }
         }
 
         std::string arg_value = args_str.substr(val_start, val_end - val_start);
 
+        if (!quoted) {
+            if (arg_value == "True") arg_value = "true";
+            else if (arg_value == "False") arg_value = "false";
+            else if (arg_value == "None") arg_value = "null";
+        }
+
         if (!first_arg) json_call += ",";
-        json_call += "\"" + arg_name + "\":\"" + arg_value + "\"";
+        json_call += "\"" + arg_name + "\":";
+        json_call += quoted ? ("\"" + arg_value + "\"") : arg_value;
         first_arg = false;
 
         arg_pos = args_str.find(',', val_end);

@@ -25,7 +25,7 @@ Build requirements: CMake, C++20 compiler, and platform tools (Xcode CLI on macO
 
 ## Usage
 
-All functions mirror the C API documented in `docs/cactus_engine.md`. For vision models (LFM2-VL, LFM2.5-VL), add `"images": ["path/to/image.png"]` to any message.
+All functions mirror the C API documented in `docs/cactus_engine.md`. For vision models (LFM2-VL, LFM2.5-VL, Gemma4, Qwen3.5), add `"images": ["path/to/image.png"]` to any message. For audio models (Gemma4), add `"audio": ["path/to/audio.wav"]`.
 
 For usage examples, see:
 - Test files: `rust/cactus-sys/tests/`

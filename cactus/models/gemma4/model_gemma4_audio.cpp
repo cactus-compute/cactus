@@ -11,6 +11,7 @@ namespace engine {
 
 static const float INV_LN2 = 1.0f / std::log(2.0f);
 static const float GEMMA4_AUDIO_K_SCALE = std::log(1.0f + std::exp(1.0f)) / std::log(2.0f);
+static const char* GEMMA4_AUDIO_NPU_INPUT_NAME = "x";
 
 static size_t shape_elements(const std::vector<int>& shape) {
     if (shape.empty()) return 0;
@@ -350,7 +351,7 @@ void Gemma4AudioModel::load_weights_to_graph(CactusGraph* gb) {
             if (npu_encoder_ && npu_encoder_->load(npu_path)) {
                 use_npu_encoder_ = true;
                 std::vector<int> input_shape = npu_encoder_->get_input_shape();
-                npu_encoder_->preallocate(input_shape, "mel", "");
+                npu_encoder_->preallocate(input_shape, GEMMA4_AUDIO_NPU_INPUT_NAME, "");
             } else {
                 use_npu_encoder_ = false;
                 npu_encoder_.reset();
@@ -363,7 +364,9 @@ void Gemma4AudioModel::load_weights_to_graph(CactusGraph* gb) {
         CACTUS_LOG_WARN("npu", "[gemma4-audio] NPU backend unavailable on this device; using CPU audio encoder");
     }
 
-    if (!use_npu_encoder_) {
+    // Keep CPU audio weights available even when the NPU encoder is enabled.
+    // The runtime may still fall back to the graph path for unsupported inputs.
+    {
         audio_weights_.sscp_conv0_weight = load_weight(
             "audio_subsample_conv_projection_conv_0_conv.weights",
             "audio_subsample_conv_projection_layer0_conv.weights");
@@ -712,7 +715,8 @@ size_t Gemma4AudioModel::forward_audio(CactusGraph* gb, const std::vector<float>
                 npu_audio_output_scratch_.resize(out_elements);
 
             size_t written = npu_encoder_->encode(
-                npu_audio_input_scratch_.data(), npu_audio_output_scratch_.data(), npu_input_shape, "mel", "");
+                npu_audio_input_scratch_.data(), npu_audio_output_scratch_.data(), npu_input_shape,
+                GEMMA4_AUDIO_NPU_INPUT_NAME, "");
 
             NPUAudioOutputLayout out_layout;
             if (written > 0 &&

@@ -11,6 +11,27 @@
 #include <string>
 #include <vector>
 
+extern int test_audio_chat_pcm_main();
+extern int test_audio_cosine_main();
+extern int test_curl_main();
+extern int test_embed_main();
+extern int test_exhaustive_main();
+extern int test_gemma4_audio_main();
+extern int test_gemma4_audio_layers_main();
+extern int test_gemma4_suite_main();
+extern int test_gemma4_thinking_main();
+extern int test_gemma4_vision_main();
+extern int test_graph_main();
+extern int test_index_main();
+extern int test_kernel_main();
+extern int test_kv_cache_main();
+extern int test_llm_main();
+extern int test_model_loading_main();
+extern int test_performance_main();
+extern int test_rag_main();
+extern int test_stt_main();
+extern int test_telemetry_main();
+extern int test_vlm_main();
 
 static void asr_token_callback(const char* token, uint32_t, void*) {
     if (!token) return;
@@ -151,25 +172,31 @@ static void asr_token_callback(const char* token, uint32_t, void*) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         const char* only = getenv("CACTUS_TEST_ONLY");
         std::string filter = (only && only[0]) ? std::string(only) : "";
-
         auto should_run = [&](const char* name) {
             return filter.empty() || filter == name;
         };
 
-        if (should_run("curl"))           test_curl_main();
-        if (should_run("embed"))          test_embed_main();
-        if (should_run("exhaustive"))     test_exhaustive_main();
-        if (should_run("graph"))          test_graph_main();
-        if (should_run("index"))          test_index_main();
-        if (should_run("kernel"))         test_kernel_main();
-        if (should_run("kv_cache"))       test_kv_cache_main();
-        if (should_run("llm"))            test_llm_main();
-        if (should_run("model_loading"))  test_model_loading_main();
-        if (should_run("performance"))    test_performance_main();
-        if (should_run("rag"))            test_rag_main();
-        if (should_run("stt"))            test_stt_main();
-        if (should_run("telemetry"))      test_telemetry_main();
-        if (should_run("vlm"))            test_vlm_main();
+        if (should_run("audio_chat_pcm")) test_audio_chat_pcm_main();
+        if (should_run("audio_cosine")) test_audio_cosine_main();
+        if (should_run("curl")) test_curl_main();
+        if (should_run("embed")) test_embed_main();
+        if (should_run("exhaustive")) test_exhaustive_main();
+        if (should_run("gemma4_audio")) test_gemma4_audio_main();
+        if (should_run("gemma4_audio_layers")) test_gemma4_audio_layers_main();
+        if (should_run("gemma4_suite")) test_gemma4_suite_main();
+        if (should_run("gemma4_thinking")) test_gemma4_thinking_main();
+        if (should_run("gemma4_vision")) test_gemma4_vision_main();
+        if (should_run("graph")) test_graph_main();
+        if (should_run("index")) test_index_main();
+        if (should_run("kernel")) test_kernel_main();
+        if (should_run("kv_cache")) test_kv_cache_main();
+        if (should_run("llm")) test_llm_main();
+        if (should_run("model_loading")) test_model_loading_main();
+        if (should_run("performance")) test_performance_main();
+        if (should_run("rag")) test_rag_main();
+        if (should_run("stt")) test_stt_main();
+        if (should_run("telemetry")) test_telemetry_main();
+        if (should_run("vlm")) test_vlm_main();
         exit(0);
     });
 

@@ -428,3 +428,90 @@ actual fun cactusIndexCompact(index: Long): Int {
 actual fun cactusIndexDestroy(index: Long) {
     cactus_index_destroy(index.toCPointer())
 }
+
+@OptIn(ExperimentalForeignApi::class)
+actual fun cactusDetectLanguage(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String {
+    memScoped {
+        val buffer = allocArray<ByteVar>(65536)
+        val pcmPtr = pcmData?.refTo(0)?.getPointer(this)
+        val result = cactus_detect_language(
+            model.toCPointer(), audioPath, buffer, 65536u, optionsJson,
+            pcmPtr?.reinterpret(), pcmData?.size?.toULong() ?: 0u
+        )
+        if (result < 0) {
+            val error = cactus_get_last_error()?.toKString() ?: "Unknown error"
+            throw RuntimeException(error)
+        }
+        return buffer.toKString()
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+actual fun cactusDiarize(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String {
+    memScoped {
+        val buffer = allocArray<ByteVar>(65536)
+        val pcmPtr = pcmData?.refTo(0)?.getPointer(this)
+        val result = cactus_diarize(
+            model.toCPointer(), audioPath, buffer, 65536u, optionsJson,
+            pcmPtr?.reinterpret(), pcmData?.size?.toULong() ?: 0u
+        )
+        if (result < 0) {
+            val error = cactus_get_last_error()?.toKString() ?: "Unknown error"
+            throw RuntimeException(error)
+        }
+        return buffer.toKString()
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+actual fun cactusEmbedSpeaker(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?, maskWeights: FloatArray?): String {
+    memScoped {
+        val buffer = allocArray<ByteVar>(65536)
+        val pcmPtr = pcmData?.refTo(0)?.getPointer(this)
+        val maskPtr = maskWeights?.let {
+            val arr = allocArray<FloatVar>(it.size)
+            it.forEachIndexed { i, v -> arr[i] = v }
+            arr
+        }
+        val result = cactus_embed_speaker(
+            model.toCPointer(), audioPath, buffer, 65536u, optionsJson,
+            pcmPtr?.reinterpret(), pcmData?.size?.toULong() ?: 0u,
+            maskPtr, maskWeights?.size?.toULong() ?: 0u
+        )
+        if (result < 0) {
+            val error = cactus_get_last_error()?.toKString() ?: "Unknown error"
+            throw RuntimeException(error)
+        }
+        return buffer.toKString()
+    }
+}
+
+actual fun cactusLogSetLevel(level: Int) {
+    cactus_log_set_level(level)
+}
+
+private var _logCallbackRef: StableRef<CactusLogCallback>? = null
+
+@OptIn(ExperimentalForeignApi::class)
+actual fun cactusLogSetCallback(callback: CactusLogCallback?) {
+    _logCallbackRef?.dispose()
+    _logCallbackRef = null
+    if (callback == null) {
+        cactus_log_set_callback(null, null)
+    } else {
+        val callbackRef = StableRef.create(callback)
+        _logCallbackRef = callbackRef
+        cactus_log_set_callback(
+            staticCFunction<Int, CPointer<ByteVar>?, CPointer<ByteVar>?, COpaquePointer?, Unit> { level, component, message, userData ->
+                if (userData != null) {
+                    userData.asStableRef<CactusLogCallback>().get().onLog(
+                        level,
+                        component?.toKString() ?: "",
+                        message?.toKString() ?: ""
+                    )
+                }
+            },
+            callbackRef.asCPointer()
+        )
+    }
+}

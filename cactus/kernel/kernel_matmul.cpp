@@ -158,42 +158,6 @@ static void cactus_matmul_f16_worker(
     }
 }
 
-#if defined(CACTUS_COMPILE_SME2)
-constexpr size_t SME2_M_THRESHOLD = 4;
-
-void cactus_matmul_f16_sme2_caller(
-	const __fp16* a,
-	const __fp16* b_transposed,
-	__fp16* c,
-	size_t M,
-	size_t K,
-	size_t N
-);
-
-void cactus_matmul_int4_sme2_caller(
-    const int8_t* a,
-    const float* a_scales,
-    const int8_t* b_packed,
-    const __fp16* b_scales,
-    __fp16* c,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size
-);
-#endif
-
-#if defined(CACTUS_COMPILE_SVE2)
-void cactus_matmul_f16_sve2_caller(
-    const __fp16* a,
-    const __fp16* b_transposed,
-    __fp16* c,
-    size_t M,
-    size_t K,
-    size_t N
-);
-#endif
-
 void cactus_matmul_f16(
     const __fp16* a,
     const __fp16* b_transposed,
@@ -202,50 +166,6 @@ void cactus_matmul_f16(
     size_t K,
     size_t N
 ) {
-    const bool int4_only_forcing = cpu_forces_int4_only_matmul();
-    const bool force_neon = cpu_forces_neon_matmul() || int4_only_forcing;
-
-#if defined(CACTUS_COMPILE_SVE2)
-    const bool force_sve = int4_only_forcing ? false : cpu_forces_sve_matmul();
-#else
-    const bool force_sve = false;
-#endif
-
-#if defined(CACTUS_COMPILE_SME2)
-    const bool has_sme2 = cpu_has_sme2();
-#else
-    const bool has_sme2 = false;
-#endif
-
-#if defined(CACTUS_COMPILE_SVE2)
-    if (force_sve && cpu_has_sve()) {
-        cactus_matmul_f16_sve2_caller(
-            a, b_transposed, c,
-            M, K, N
-        );
-        return;
-    }
-#endif
-
-#if defined(CACTUS_COMPILE_SME2)
-    if (force_sve && has_sme2) {
-        cactus_matmul_f16_sme2_caller(
-            a, b_transposed, c,
-            M, K, N
-        );
-        return;
-    }
-#endif
-
-#if defined(CACTUS_COMPILE_SME2)
-	if (!force_neon && !force_sve && has_sme2 && M >= SME2_M_THRESHOLD) {
-			cactus_matmul_f16_sme2_caller(
-				a, b_transposed, c,
-				M, K, N
-			);
-		return;
-	}
-#endif
 
 #ifdef __APPLE__
     if (!force_neon && !force_sve && K >= ACCELERATE_K_THRESHOLD && M >= ACCELERATE_M_THRESHOLD) {

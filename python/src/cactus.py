@@ -562,6 +562,8 @@ def cactus_prefill(model, messages_json, options_json, tools_json, pcm_data=None
     )
     if rc < 0:
         raise RuntimeError(_err("Prefill failed"))
+    return buf.value.decode("utf-8", errors="ignore")
+
 def cactus_detect_language(model, audio_path, options_json, pcm_data):
     """Detects the spoken language in audio. Returns JSON string."""
     buf = ctypes.create_string_buffer(65536)

@@ -19,6 +19,9 @@ private object CactusJNI {
     @JvmStatic external fun nativeStop(handle: Long)
     @JvmStatic external fun nativeComplete(handle: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): String
     @JvmStatic external fun nativePrefill(handle: Long, messagesJson: String, optionsJson: String?, toolsJson: String?, pcmData: ByteArray?): String
+    @JvmStatic external fun nativeDetectLanguage(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
+    @JvmStatic external fun nativeLogSetLevel(level: Int)
+    @JvmStatic external fun nativeLogSetCallback(callback: CactusLogCallback?)
     @JvmStatic external fun nativeTranscribe(handle: Long, audioPath: String?, prompt: String?, optionsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): String
     @JvmStatic external fun nativeEmbed(handle: Long, text: String, normalize: Boolean): FloatArray
     @JvmStatic external fun nativeRagQuery(handle: Long, query: String, topK: Int): String
@@ -104,3 +107,9 @@ actual fun cactusIndexCompact(index: Long): Int =
     CactusJNI.nativeIndexCompact(index)
 actual fun cactusIndexDestroy(index: Long) =
     CactusJNI.nativeIndexDestroy(index)
+actual fun cactusDetectLanguage(model: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String =
+    CactusJNI.nativeDetectLanguage(model, audioPath, optionsJson, pcmData)
+actual fun cactusLogSetLevel(level: Int) =
+    CactusJNI.nativeLogSetLevel(level)
+actual fun cactusLogSetCallback(callback: CactusLogCallback?) =
+    CactusJNI.nativeLogSetCallback(callback)

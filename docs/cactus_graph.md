@@ -41,7 +41,8 @@ The framework supports three precision types for tensors:
 enum class Precision {
     INT4,
     INT8,
-    FP16
+    FP16,
+    FP32
 };
 ```
 
@@ -185,6 +186,55 @@ size_t rope_output = graph.rope(input, theta, position_offset);
 ```cpp
 size_t silu_out = graph.silu(input);
 size_t gelu_out = graph.gelu(input);
+size_t gelu_erf_out = graph.gelu_erf(input);  // GeLU with erf approximation
+size_t sigmoid_out = graph.sigmoid(input);
+size_t tanh_out = graph.tanh(input);
+size_t relu_out = graph.relu(input);
+size_t glu_out = graph.glu(input, axis);      // Gated Linear Unit
+```
+
+#### Convolution Operations
+```cpp
+// 1D convolutions
+size_t conv1d_out = graph.conv1d(input, weight, has_bias, bias, stride);
+size_t conv1d_k3_out = graph.conv1d_k3(input, weight, stride);
+size_t conv1d_causal = graph.conv1d_causal(input, weight, kernel_size, dilation);
+size_t conv1d_pointwise = graph.conv1d_pointwise(input, weight, has_bias, bias);
+size_t conv1d_depthwise = graph.conv1d_same_depthwise_k9(input, weight, has_bias, bias);
+
+// 2D convolutions
+size_t conv2d_out = graph.conv2d_k3s2p1(input, weight, has_bias, bias);
+size_t conv2d_dw = graph.conv2d_depthwise_k3s2p1(input, weight, has_bias, bias);
+size_t conv2d_pw = graph.conv2d_pointwise_1x1(input, weight, has_bias, bias);
+```
+
+#### Normalization
+```cpp
+size_t groupnorm_out = graph.groupnorm(input, weight, bias, num_groups, epsilon);
+size_t batchnorm_out = graph.batchnorm(input, weight, bias, running_mean, running_var, axis, epsilon);
+```
+
+#### Recurrent & Sequence Operations
+```cpp
+size_t lstm_out = graph.lstm_cell(input, h_prev, c_prev, weight_ih, weight_hh, bias_ih, bias_hh);
+size_t deltanet_out = graph.gated_deltanet_decode(query, key, value, gate_log, beta, initial_state, scale);
+size_t deltanet_prefill = graph.gated_deltanet_prefill(query, key, value, gate_log, beta, initial_state, chunk_size, scale);
+```
+
+#### Mixture of Experts (MoE)
+```cpp
+size_t moe_gated = graph.moe_layer_gated(hidden, routing_probs, topk_indices,
+    w1_weights, w3_weights, w2_weights,
+    num_experts, num_experts_per_tok, normalize_routing, epsilon, routed_scaling_factor);
+
+size_t moe_ungated = graph.moe_layer_ungated(hidden, routing_probs, topk_indices,
+    w1_weights, w2_weights,
+    num_experts, num_experts_per_tok, normalize_routing, epsilon, routed_scaling_factor, activation);
+```
+
+#### Signal Processing
+```cpp
+size_t stft_out = graph.stft(input, weight, stride, num_fft_bins);
 ```
 
 ### Indexing and Gathering
@@ -213,6 +263,7 @@ size_t weights = graph.mmap_weights("model_weights.bin");
 #### Concatenation
 ```cpp
 size_t concatenated = graph.concat(tensor1, tensor2, axis);
+size_t multi_cat = graph.cat({tensor1, tensor2, tensor3}, axis); // cat multiple tensors
 ```
 
 #### Slicing
@@ -228,6 +279,22 @@ size_t indexed = graph.index(input, index_value, dimension);
 #### Top-K Selection
 ```cpp
 size_t topk_values = graph.topk(input, k);
+```
+
+#### Persistent Nodes
+```cpp
+size_t persistent = graph.persistent(source_node);  // cache result across executions
+```
+
+#### AltUp Operations
+```cpp
+size_t prediction = graph.altup_predict(coefs, streams, num_streams);
+size_t correction = graph.altup_correct(coefs, innovation, predictions, num_predictions);
+```
+
+#### Bilinear Interpolation
+```cpp
+size_t interpolated = graph.bilinear_interpolation(pos_embeds, dst_height, dst_width);
 ```
 
 #### Sampling
@@ -264,7 +331,7 @@ graph.set_quantization_scale(node_id, scale);
 ### Graph Persistence
 
 #### Saving graphs
-```python
+```cpp
 const std::string filename = "test_graph_save_load.cg";
 
 CactusGraph graph;
@@ -274,8 +341,8 @@ size_t sum_id = graph.add(input_a, input_b);
 graph.save(filename);
 
 ```
-#### Loading Graphs 
-```python
+#### Loading Graphs
+```cpp
 CactusGraph loaded = CactusGraph::load(filename);
 std::vector<__fp16> data_a = {1, 2, 3, 4, 5, 6};
 std::vector<__fp16> data_b = {10, 20, 30, 40, 50, 60};

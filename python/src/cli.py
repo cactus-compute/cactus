@@ -111,6 +111,52 @@ def run_command(cmd, cwd=None, check=True):
     return result
 
 
+def _is_stale_binary(binary_path, dependency_paths):
+    binary_path = Path(binary_path)
+    if not binary_path.exists():
+        return True
+
+    try:
+        binary_mtime = binary_path.stat().st_mtime
+    except OSError:
+        return True
+
+    for dep in dependency_paths:
+        dep_path = Path(dep)
+        if not dep_path.exists():
+            continue
+        try:
+            if dep_path.stat().st_mtime > binary_mtime:
+                return True
+        except OSError:
+            continue
+
+    return False
+
+
+def _ensure_chat_binary(project_root, lib_path):
+    tests_dir = project_root / "tests"
+    build_dir = tests_dir / "build"
+    chat_binary = build_dir / "chat"
+    chat_cpp = tests_dir / "chat.cpp"
+
+    if not _is_stale_binary(chat_binary, [lib_path, chat_cpp]):
+        return chat_binary
+
+    print_color(YELLOW, "Refreshing chat binary for current Cactus library...")
+    build_args = argparse.Namespace(
+        apple=False,
+        android=False,
+        flutter=False,
+        python=False,
+    )
+    result = cmd_build(build_args)
+    if result != 0 or not chat_binary.exists():
+        raise RuntimeError("Failed to rebuild chat binary")
+
+    return chat_binary
+
+
 def ensure_vad_weights(model_id, weights_dir, precision='INT8'):
     """Bundle Silero VAD weights into <weights_dir>/vad/ for ASR models."""
     is_asr = (
@@ -352,12 +398,12 @@ def cmd_download(args):
     except ImportError:
         Lfm2VlForConditionalGeneration = None
 
-    is_vlm = 'vl' in model_name.lower() or 'vlm' in model_name.lower()
-    is_whisper = 'whisper' in model_name.lower()
-    is_parakeet = 'parakeet' in model_name.lower()
-    is_vad = 'silero-vad' in model_name.lower()
-    is_pyannote = 'segmentation-3.0' in model_name.lower()
-    is_wespeaker = 'wespeaker' in model_name.lower()
+    is_vlm = 'vl' in model_id.lower() or 'vlm' in model_id.lower()
+    is_whisper = 'whisper' in model_id.lower()
+    is_parakeet = 'parakeet' in model_id.lower()
+    is_vad = 'silero-vad' in model_id.lower()
+    is_pyannote = 'segmentation-3.0' in model_id.lower()
+    is_wespeaker = 'wespeaker' in model_id.lower()
 
     try:
         if is_vlm:
@@ -604,12 +650,12 @@ def cmd_download(args):
         config = convert_hf_model_weights(model, weights_dir, precision, args)
         del model
 
-        model_name_lower = model_name.lower()
-        if 'extract' in model_name_lower:
+        model_id_lower = model_id.lower()
+        if 'extract' in model_id_lower:
             config['model_variant'] = 'extract'
-        elif 'vlm' in model_name_lower:
+        elif 'vlm' in model_id_lower:
             config['model_variant'] = 'vlm'
-        elif 'rag' in model_name_lower:
+        elif 'rag' in model_id_lower:
             config['model_variant'] = 'rag'
         else:
             config.setdefault('model_variant', 'default')
@@ -630,7 +676,7 @@ def cmd_download(args):
             tokenizer,
             weights_dir,
             token=token,
-            model_id=model_name,
+            model_id=model_id,
             labels=tokenizer_labels,
             model_type=config.get('model_type'),
         )
@@ -726,6 +772,35 @@ def cmd_build(args):
 
     is_darwin = platform.system() == "Darwin"
 
+    sdl2_available = False
+    sdl2_flags = []
+    sdl2_link = []
+    if is_darwin:
+        sdl2_check = subprocess.run(["brew", "list", "sdl2"], capture_output=True)
+        if sdl2_check.returncode == 0:
+            sdl2_prefix_result = subprocess.run(["brew", "--prefix", "sdl2"], capture_output=True, text=True)
+            if sdl2_prefix_result.returncode == 0:
+                sdl2_prefix = sdl2_prefix_result.stdout.strip()
+                sdl2_flags = ["-DHAVE_SDL2", f"-I{sdl2_prefix}/include", f"-I{sdl2_prefix}/include/SDL2"]
+                sdl2_link = [f"-L{sdl2_prefix}/lib", "-lSDL2"]
+                sdl2_available = True
+    else:
+        sdl2_check = subprocess.run(["pkg-config", "--exists", "sdl2"], capture_output=True)
+        if sdl2_check.returncode == 0:
+            cflags = subprocess.run(["pkg-config", "--cflags", "sdl2"], capture_output=True, text=True)
+            libs = subprocess.run(["pkg-config", "--libs", "sdl2"], capture_output=True, text=True)
+            if cflags.returncode == 0 and libs.returncode == 0:
+                sdl2_flags = ["-DHAVE_SDL2"] + cflags.stdout.strip().split()
+                sdl2_link = libs.stdout.strip().split()
+                sdl2_available = True
+
+    if sdl2_available:
+        print_color(GREEN, "SDL2 found - building with live audio support")
+    else:
+        print_color(YELLOW, "SDL2 not found - live mic recording will be disabled")
+        print_color(YELLOW, "Install SDL2 for live mic support: brew install sdl2 (macOS)")
+        print_color(YELLOW, "Then run `cactus build`")
+
     if is_darwin:
         if not vendored_curl.exists():
             print_color(RED, f"Error: vendored libcurl not found at {vendored_curl}")
@@ -736,6 +811,7 @@ def cmd_build(args):
             compiler, "-std=c++20", "-O3",
             "-DACCELERATE_NEW_LAPACK",
             f"-I{PROJECT_ROOT}",
+            *sdl2_flags,
             str(chat_cpp),
             str(lib_path),
             "-o", "chat",
@@ -746,17 +822,20 @@ def cmd_build(args):
             "-framework", "Security",
             "-framework", "SystemConfiguration",
             "-framework", "CFNetwork",
+            *sdl2_link,
         ]
     else:
         compiler = "g++"
         cmd = [
             compiler, "-std=c++20", "-O3",
             f"-I{PROJECT_ROOT}",
+            *sdl2_flags,
             str(chat_cpp),
             str(lib_path),
             "-o", "chat",
             "-lcurl",
-            "-pthread"
+            "-pthread",
+            *sdl2_link,
         ]
 
     if not check_command(compiler):
@@ -774,46 +853,12 @@ def cmd_build(args):
     if asr_cpp.exists():
         print("Compiling asr.cpp...")
 
-        # Check for SDL2 and get flags
-        sdl2_available = False
-        sdl2_include = ""
-        sdl2_lib = ""
-
-        if is_darwin:
-            sdl2_check = subprocess.run(["brew", "list", "sdl2"], capture_output=True)
-            if sdl2_check.returncode == 0:
-                sdl2_prefix_result = subprocess.run(["brew", "--prefix", "sdl2"], capture_output=True, text=True)
-                if sdl2_prefix_result.returncode == 0:
-                    sdl2_prefix = sdl2_prefix_result.stdout.strip()
-                    sdl2_include = f"-I{sdl2_prefix}/include"
-                    sdl2_lib = f"-L{sdl2_prefix}/lib -lSDL2"
-                    sdl2_available = True
-        else:
-            sdl2_check = subprocess.run(["pkg-config", "--exists", "sdl2"], capture_output=True)
-            if sdl2_check.returncode == 0:
-                cflags = subprocess.run(["pkg-config", "--cflags", "sdl2"], capture_output=True, text=True)
-                libs = subprocess.run(["pkg-config", "--libs", "sdl2"], capture_output=True, text=True)
-                if cflags.returncode == 0 and libs.returncode == 0:
-                    sdl2_include = cflags.stdout.strip()
-                    sdl2_lib = libs.stdout.strip()
-                    sdl2_available = True
-
-        if sdl2_available:
-            print_color(GREEN, "SDL2 found - building with live transcription support")
-        else:
-            print_color(YELLOW, "SDL2 not found - live transcription will be disabled")
-            print_color(YELLOW, "Install SDL2 for live mic support: brew install sdl2 (macOS)")
-            print_color(YELLOW, "Then run `cactus build`")
-
         if is_darwin:
             cmd = [
                 compiler, "-std=c++20", "-O3",
                 "-DACCELERATE_NEW_LAPACK",
                 f"-I{PROJECT_ROOT}",
-            ]
-            if sdl2_available:
-                cmd.extend(["-DHAVE_SDL2", sdl2_include])
-            cmd.extend([
+                *sdl2_flags,
                 str(asr_cpp),
                 str(lib_path),
                 "-o", "asr",
@@ -824,25 +869,20 @@ def cmd_build(args):
                 "-framework", "Security",
                 "-framework", "SystemConfiguration",
                 "-framework", "CFNetwork",
-            ])
-            if sdl2_available:
-                cmd.extend(sdl2_lib.split())
+                *sdl2_link,
+            ]
         else:
             cmd = [
                 compiler, "-std=c++20", "-O3",
                 f"-I{PROJECT_ROOT}",
-            ]
-            if sdl2_available:
-                cmd.extend(["-DHAVE_SDL2", sdl2_include])
-            cmd.extend([
+                *sdl2_flags,
                 str(asr_cpp),
                 str(lib_path),
                 "-o", "asr",
                 "-lcurl",
-                "-pthread"
-            ])
-            if sdl2_available:
-                cmd.extend(sdl2_lib.split())
+                "-pthread",
+                *sdl2_link,
+            ]
 
         result = subprocess.run(cmd, cwd=build_dir)
         if result.returncode != 0:
@@ -1019,10 +1059,10 @@ def cmd_run(args):
             print_color(RED, f"Error: Unsupported image format. Supported: {', '.join(valid_exts)}")
             return 1
 
-    chat_binary = PROJECT_ROOT / "tests" / "build" / "chat"
-
-    if not chat_binary.exists():
-        print_color(RED, f"Error: Chat binary not found at {chat_binary}")
+    try:
+        chat_binary = _ensure_chat_binary(PROJECT_ROOT, lib_path)
+    except RuntimeError as exc:
+        print_color(RED, f"Error: {exc}")
         return 1
 
     os.system('clear' if platform.system() != 'Windows' else 'cls')
@@ -1047,8 +1087,8 @@ def cmd_run(args):
     prompt = getattr(args, 'prompt', None)
     if prompt:
         cmd_args.extend(['--prompt', prompt])
-    if getattr(args, 'no_thinking', False):
-        cmd_args.append('--no-thinking')
+    if getattr(args, 'thinking', False):
+        cmd_args.append('--thinking')
 
     os.execv(str(chat_binary), cmd_args)
 
@@ -2079,8 +2119,8 @@ def create_parser():
                             help='System prompt to prepend to all messages')
     run_parser.add_argument('--prompt',
                             help='Initial prompt to send immediately')
-    run_parser.add_argument('--no-thinking', action='store_true',
-                            help='Disable thinking/reasoning for models that support it')
+    run_parser.add_argument('--thinking', action='store_true',
+                            help='Enable thinking/reasoning for models that support it')
 
     transcribe_parser = subparsers.add_parser('transcribe', help='Download ASR model and run transcription')
     transcribe_parser.add_argument('model_id', nargs='?', default=DEFAULT_ASR_MODEL_ID,

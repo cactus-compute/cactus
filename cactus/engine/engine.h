@@ -154,6 +154,7 @@ struct Config {
     size_t default_top_k = 20;
     float default_max_tps = -1.0f;
     float default_cloud_handoff_threshold = 0.0f;
+    size_t default_rolling_entropy_window = 10;
 
     std::vector<std::string> layer_types;
     size_t conv_L_cache = 0;
@@ -293,6 +294,26 @@ TokenizerRuntimeConfig load_tokenizer_runtime_config(const std::string& config_f
 void load_special_tokens_map(const std::string& config_file, std::unordered_map<std::string, uint32_t>& special_tokens);
 std::vector<std::string> split_with_special_tokens(const std::string& text, const std::unordered_map<std::string, uint32_t>& special_tokens);
 
+inline std::string extract_json_string(const std::string& json, size_t& pos) {
+    std::string value;
+    while (pos < json.size() && json[pos] != '"') {
+        if (json[pos] == '\\' && pos + 1 < json.size()) {
+            pos++;
+            if (json[pos] == 'n') value += '\n';
+            else if (json[pos] == 't') value += '\t';
+            else if (json[pos] == 'r') value += '\r';
+            else if (json[pos] == '"') value += '"';
+            else if (json[pos] == '\\') value += '\\';
+            else value += json[pos];
+        } else {
+            value += json[pos];
+        }
+        pos++;
+    }
+    if (pos < json.size()) pos++;
+    return value;
+}
+
 class Tokenizer {
 public:
     virtual ~Tokenizer() = default;
@@ -301,7 +322,7 @@ public:
     virtual std::string decode(const std::vector<uint32_t>& tokens) const = 0;
 
     virtual std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const;
-    virtual std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "", bool enable_thinking_if_supported = true) const;
+    virtual std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "", bool enable_thinking_if_supported = false) const;
 
     virtual uint32_t get_vocab_size() const = 0;
     virtual uint32_t get_unk_token() const = 0;
@@ -337,9 +358,9 @@ protected:
 
     void detect_model_type(const std::string& config_path);
     void load_chat_template(const std::string& template_file);
-    std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = true) const;
+    std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
-    std::string format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = true) const;
+    std::string format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_lfm2_vl_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_needle_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
@@ -656,11 +677,17 @@ private:
 
     std::unordered_set<uint32_t> tool_start_tokens_;
     std::unordered_set<uint32_t> tool_end_tokens_;
-    std::unordered_set<uint32_t> bracket_open_tokens_;   
-    std::unordered_set<uint32_t> bracket_close_tokens_;  
-    std::unordered_set<uint32_t> paren_open_tokens_;     
-    std::unordered_set<uint32_t> paren_close_tokens_;   
-    std::unordered_set<uint32_t> equals_tokens_;        
+    std::unordered_set<uint32_t> bracket_open_tokens_;
+    std::unordered_set<uint32_t> bracket_close_tokens_;
+    std::unordered_set<uint32_t> paren_open_tokens_;
+    std::unordered_set<uint32_t> paren_close_tokens_;
+    std::unordered_set<uint32_t> equals_tokens_;
+
+    std::string lfm_current_function_;
+    std::string lfm_args_buffer_;
+    std::unordered_set<std::string> lfm_seen_arg_keys_;
+    std::unordered_map<std::string, std::vector<std::string>> lfm_required_params_;
+    std::unordered_map<std::string, std::vector<std::string>> lfm_all_params_;        
 
     std::unordered_set<uint32_t> gemma_call_start_tokens_;    
     std::unordered_set<uint32_t> gemma_call_end_tokens_;       
@@ -673,6 +700,8 @@ private:
     void compute_bias();
     void tokenize_grammar_elements();
     void add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set);
+    void add_tokens_for_prefix_string(const std::string& prefix, std::unordered_set<uint32_t>& token_set);
+    void add_tokens_containing(char needle, std::unordered_set<uint32_t>& token_set);
     void tokenize_function_names(bool quote_names);
     void init_common_tokens();
     void init_needle_constraints();
@@ -746,6 +775,7 @@ public:
 
 
     void set_cache_window(size_t window_size, size_t sink_size = 4) { kv_cache_.set_window_size(window_size, sink_size); }
+    size_t get_cache_size() const { return kv_cache_.current_seq_len; }
 
     bool load_npu_prefill(const std::string& model_path);
     bool has_npu_prefill() const;
@@ -754,9 +784,9 @@ public:
     virtual void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     virtual void compact_kv_cache() {}
 
-    void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
-    void clear_tool_constraints();
-    void update_tool_constraints(uint32_t token_id);
+    virtual void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
+    virtual void clear_tool_constraints();
+    virtual void update_tool_constraints(uint32_t token_id);
 
     void* graph_handle_;
 

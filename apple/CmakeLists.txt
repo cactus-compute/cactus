@@ -27,9 +27,7 @@ endif()
 file(GLOB ENGINE_SOURCES "${SOURCE_DIR}/engine/*.cpp")
 file(GLOB GRAPH_SOURCES "${SOURCE_DIR}/graph/*.cpp")
 file(GLOB KERNEL_SOURCES "${SOURCE_DIR}/kernel/*.cpp")
-set(SME2_SOURCE "${SOURCE_DIR}/kernel/kernel_sme2.cpp")
 set(I8MM_SOURCE "${SOURCE_DIR}/kernel/kernel_i8mm.cpp")
-list(REMOVE_ITEM KERNEL_SOURCES "${SME2_SOURCE}")
 list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
 file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp" "${SOURCE_DIR}/models/gemma4/*.cpp")
@@ -200,47 +198,12 @@ target_compile_definitions(cactus PRIVATE
     ACCELERATE_NEW_LAPACK
 )
 
-# SME2 support: compile kernel_sme2.cpp separately with armv9.2-a if Xcode supports it
-set(ENABLE_SME2 "AUTO" CACHE STRING "SME2 build mode: AUTO or OFF")
-set_property(CACHE ENABLE_SME2 PROPERTY STRINGS AUTO OFF)
-set(BUILD_SME2 0)
-set(SME2_MARCH_FLAG "-march=armv9.2-a+nosve+nosve2+sme2")
-
-if(ENABLE_SME2 STREQUAL "AUTO")
-    include(CheckCXXSourceCompiles)
-    set(CMAKE_REQUIRED_FLAGS "${SME2_MARCH_FLAG}")
-    check_cxx_source_compiles("
-        #include <arm_sme.h>
-        int main() { return 0; }
-    " COMPILER_SUPPORTS_SME2)
-    unset(CMAKE_REQUIRED_FLAGS)
-    if(COMPILER_SUPPORTS_SME2)
-        set(BUILD_SME2 1)
-        message(STATUS "Xcode supports SME2 - building SME2 kernels")
-    else()
-        message(STATUS "Xcode does not support SME2 - building without SME2")
-    endif()
-endif()
-
-if(BUILD_SME2)
-    set(APPLE_COMMON_OPTIONS
-        -pthread -Wall -Wextra -pedantic
-        -Wno-c++20-designator -Wno-missing-field-initializers
-        -fomit-frame-pointer -funroll-loops -ftree-vectorize
-        -O3 -DNDEBUG -ffunction-sections -fdata-sections
-    )
-    add_library(cactus_sme2_obj OBJECT ${SME2_SOURCE})
-    target_include_directories(cactus_sme2_obj PRIVATE
-        ${SOURCE_DIR} ${SOURCE_DIR}/engine ${SOURCE_DIR}/graph
-        ${SOURCE_DIR}/kernel ${SOURCE_DIR}/ffi ${SOURCE_DIR}/telemetry ${SOURCE_DIR}/npu
-    )
-    target_compile_options(cactus_sme2_obj PRIVATE ${SME2_MARCH_FLAG} ${APPLE_COMMON_OPTIONS})
-    target_compile_definitions(cactus_sme2_obj PRIVATE CACTUS_COMPILE_SME2 PLATFORM_CPU_ONLY=1)
-    set_target_properties(cactus_sme2_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-    target_sources(cactus PRIVATE $<TARGET_OBJECTS:cactus_sme2_obj>)
-    target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_SME2)
-endif()
+set(APPLE_COMMON_OPTIONS
+    -pthread -Wall -Wextra -pedantic
+    -Wno-c++20-designator -Wno-missing-field-initializers
+    -fomit-frame-pointer -funroll-loops -ftree-vectorize
+    -O3 -DNDEBUG -ffunction-sections -fdata-sections
+)
 
 # I8MM support: detected at runtime via sysctl, not all Apple Silicon has FEAT_I8MM
 add_library(cactus_i8mm_obj OBJECT ${I8MM_SOURCE})

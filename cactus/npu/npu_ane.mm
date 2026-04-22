@@ -711,12 +711,6 @@ static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* ar
             MLFeatureValue* inFeature = inputDict[key];
             if (inFeature && inFeature.multiArrayValue) {
                 MLMultiArray* arr = inFeature.multiArrayValue;
-                CACTUS_LOG_WARN("npu",
-                                "[CactusANE] multi input name="
-                                    << [key UTF8String]
-                                    << " shape=" << [[arr.shape description] UTF8String]
-                                    << " strides=" << [[arr.strides description] UTF8String]
-                                    << " dtype=" << (long)arr.dataType);
             }
         }
     }
@@ -725,12 +719,6 @@ static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* ar
     if (!outFeature || !outFeature.multiArrayValue) return 0;
     if (!logged_multi_layout) {
         MLMultiArray* outArr = outFeature.multiArrayValue;
-        CACTUS_LOG_WARN("npu",
-                        "[CactusANE] multi output name="
-                            << [outputName UTF8String]
-                            << " shape=" << [[outArr.shape description] UTF8String]
-                            << " strides=" << [[outArr.strides description] UTF8String]
-                            << " dtype=" << (long)outArr.dataType);
         logged_multi_layout = true;
     }
     return copyMLArrayToFP16(outFeature.multiArrayValue, output);

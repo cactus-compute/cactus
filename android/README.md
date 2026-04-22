@@ -108,7 +108,7 @@ cactusDestroy(model)
 ```
 <!-- --8<-- [end:example] -->
 
-For vision models (LFM2-VL, LFM2.5-VL), add `"images": ["path/to/image.png"]` to any message. See [Engine API](/docs/cactus_engine.md) for details.
+For vision models (LFM2-VL, LFM2.5-VL, Gemma4, Qwen3.5), add `"images": ["path/to/image.png"]` to any message. For audio models (Gemma4), add `"audio": ["path/to/audio.wav"]`. See [Engine API](/docs/cactus_engine.md) for details.
 
 ### Completion with Options and Streaming
 
@@ -324,7 +324,8 @@ fun cactusPrefill(
     model: Long,
     messagesJson: String,
     optionsJson: String?,
-    toolsJson: String?
+    toolsJson: String?,
+    pcmData: ByteArray? = null
 ): String
 ```
 
@@ -336,7 +337,8 @@ fun cactusComplete(
     messagesJson: String,
     optionsJson: String?,
     toolsJson: String?,
-    callback: CactusTokenCallback?
+    callback: CactusTokenCallback?,
+    pcmData: ByteArray? = null
 ): String
 ```
 

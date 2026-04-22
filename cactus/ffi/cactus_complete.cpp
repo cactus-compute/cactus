@@ -13,7 +13,7 @@
 using namespace cactus::engine;
 using namespace cactus::ffi;
 
-static constexpr size_t ROLLING_ENTROPY_WINDOW = 10;
+static constexpr size_t DEFAULT_ROLLING_ENTROPY_WINDOW = 10;
 
 namespace {
 
@@ -335,6 +335,7 @@ void reset_cache(CactusModelHandle* handle) {
     handle->model->reset_cache();
     handle->processed_tokens.clear();
     handle->processed_images.clear();
+    handle->user_audio_counts.clear();
 }
 
 struct PrefillResult {
@@ -350,6 +351,7 @@ struct EntropyState {
     float total_sum = 0.0f;
     size_t total_count = 0;
     bool spike_handoff = false;
+    size_t window_size = DEFAULT_ROLLING_ENTROPY_WINDOW;
 
     void add(float entropy) {
         window.push_back(entropy);
@@ -357,7 +359,7 @@ struct EntropyState {
         total_sum += entropy;
         total_count++;
 
-        if (window.size() > ROLLING_ENTROPY_WINDOW) {
+        if (window.size() > window_size) {
             window_sum -= window.front();
             window.erase(window.begin());
         }
@@ -518,6 +520,11 @@ PreparedPrompt prepare_prompt(
 
     prompt.model_type = handle->model->get_config().model_type;
 
+    if (prompt.options.confidence_threshold < 0.0f) {
+        float model_default = handle->model->get_config().default_cloud_handoff_threshold;
+        prompt.options.confidence_threshold = (model_default > 0.0f) ? model_default : 0.7f;
+    }
+
     if (prompt.model_type == Config::ModelType::GEMMA4) {
         std::vector<float> audio_samples;
         if (pcm_buffer != nullptr && pcm_buffer_size > 1) {
@@ -533,16 +540,24 @@ PreparedPrompt prepare_prompt(
                 }
             }
         }
-        if (!audio_samples.empty()) {
+        std::vector<size_t> user_indices;
+        for (size_t i = 0; i < prompt.messages.size(); i++) {
+            if (prompt.messages[i].role == "user") user_indices.push_back(i);
+        }
+        auto& counts = handle->user_audio_counts;
+        for (size_t u = 0; u + 1 < user_indices.size(); u++) {
+            if (u < counts.size() && counts[u] > 0) {
+                prompt.messages[user_indices[u]].audio_soft_token_count = counts[u];
+            }
+        }
+        if (!audio_samples.empty() && !user_indices.empty()) {
             auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(audio_samples, handle->model->get_config());
             prompt.audio_features = std::move(audio_prep.features);
             prompt.audio_num_frames = audio_prep.num_frames;
-            for (auto it = prompt.messages.rbegin(); it != prompt.messages.rend(); ++it) {
-                if (it->role == "user") {
-                    it->audio_soft_token_count = audio_prep.num_soft_tokens;
-                    break;
-                }
-            }
+            size_t u = user_indices.size() - 1;
+            prompt.messages[user_indices[u]].audio_soft_token_count = audio_prep.num_soft_tokens;
+            if (counts.size() <= u) counts.resize(u + 1, 0);
+            counts[u] = audio_prep.num_soft_tokens;
         }
     }
 
@@ -726,6 +741,21 @@ int cactus_complete(
 
         bool has_images = prompt.has_images();
         bool has_audio = prompt.has_audio();
+        const bool has_gemma4_mixed_media = prompt.model_type == Config::ModelType::GEMMA4 && has_images && has_audio;
+        auto decode_gemma4_mixed_media = [&](const std::vector<uint32_t>& tokens, float* out_entropy) -> uint32_t {
+            auto* gemma4_mm = dynamic_cast<Gemma4MmModel*>(handle->model.get());
+            if (!gemma4_mm) {
+                throw std::runtime_error("Gemma4 mixed-media decode requested on non-Gemma4 multimodal model");
+            }
+            return gemma4_mm->decode_with_media(
+                tokens,
+                prompt.image_paths,
+                prompt.audio_features,
+                prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
+                "", out_entropy,
+                prompt.options.min_p, prompt.options.repetition_penalty
+            );
+        };
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());
 
@@ -735,7 +765,26 @@ int cactus_complete(
         uint32_t next_token;
         size_t prompt_tokens;
 
-        if (has_audio) {
+        if ((has_gemma4_mixed_media || has_audio) && !handle->processed_tokens.empty()) {
+            auto& cache = handle->processed_tokens;
+            size_t common = 0;
+            size_t limit = std::min(cache.size(), prompt.tokens.size());
+            while (common < limit && cache[common] == prompt.tokens[common]) common++;
+            if (common < cache.size()) {
+                CACTUS_LOG_WARN("complete", "KV cache diverges from new prompt at position " << common
+                    << "/" << cache.size() << "; trimming and re-prefilling the divergent suffix");
+                size_t kv_len = handle->model->get_cache_size();
+                if (kv_len > common) {
+                    handle->model->remove_thinking_tokens({{common, kv_len - common}});
+                }
+                cache.resize(common);
+            }
+        }
+
+        if (has_gemma4_mixed_media) {
+            prompt_tokens = prompt.tokens.size();
+            next_token = decode_gemma4_mixed_media(prompt.tokens, &first_token_entropy);
+        } else if (has_audio) {
             prompt_tokens = prompt.tokens.size();
             next_token = handle->model->decode_with_audio(
                 prompt.tokens, prompt.audio_features,
@@ -772,6 +821,10 @@ int cactus_complete(
             request.local_output = local_output_hint;
             request.local_function_calls = local_calls_hint;
             request.has_images = has_images;
+            request.has_audio = has_audio;
+            if (has_audio && pcm_buffer != nullptr && pcm_buffer_size > 0) {
+                request.audio_pcm.assign(pcm_buffer, pcm_buffer + pcm_buffer_size);
+            }
             request.cloud_key = resolve_cloud_api_key(nullptr);
 
             cloud_future_started = true;
@@ -792,6 +845,10 @@ int cactus_complete(
         }
 
         EntropyState entropy;
+        {
+            size_t cfg_window = handle->model->get_config().default_rolling_entropy_window;
+            if (cfg_window > 0) entropy.window_size = cfg_window;
+        }
         entropy.add(first_token_entropy);
 
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
@@ -804,7 +861,9 @@ int cactus_complete(
                 if (handle->should_stop) break;
 
                 float token_entropy = 0.0f;
-                if (has_audio) {
+                if (has_gemma4_mixed_media) {
+                    next_token = decode_gemma4_mixed_media(handle->processed_tokens, &token_entropy);
+                } else if (has_audio) {
                     next_token = handle->model->decode_with_audio(
                         handle->processed_tokens, prompt.audio_features,
                         prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,

@@ -1,5 +1,4 @@
 import ctypes
-from os import wait
 import numpy as np
 
 from .cactus import _lib, cactus_node_t, cactus_tensor_info_t

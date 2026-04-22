@@ -66,7 +66,9 @@ int result = cactus_complete(
     options,          // generation options
     nullptr,          // tools JSON
     nullptr,          // streaming callback
-    nullptr           // user data
+    nullptr,          // user data
+    nullptr,          // pcm audio buffer
+    0                 // pcm buffer size
 );
 ```
 Example response from Gemma3-270m

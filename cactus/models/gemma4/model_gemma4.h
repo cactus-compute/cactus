@@ -338,11 +338,23 @@ public:
         float min_p = 0.15f, float repetition_penalty = 1.1f,
         float* out_token_time_start = nullptr, float* out_token_time_end = nullptr) override;
 
+    uint32_t decode_with_media(
+        const std::vector<uint32_t>& tokens,
+        const std::vector<std::string>& image_paths,
+        const std::vector<float>& audio_features,
+        float temperature = -1.0f, float top_p = -1.0f, size_t top_k = 0,
+        const std::string& profile_file = "", float* out_entropy = nullptr,
+        float min_p = 0.15f, float repetition_penalty = 1.1f);
+
     void reset_cache() override;
     std::vector<float> get_image_embeddings(const std::string& image_path) override;
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
     void compact_kv_cache() override;
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) override;
+
+    void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools) override;
+    void clear_tool_constraints() override;
+    void update_tool_constraints(uint32_t token_id) override;
 
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override;
@@ -395,9 +407,6 @@ private:
     Gemma4VisionModel vision_encoder_;
     Gemma4AudioModel audio_encoder_;
     Gemma4Model language_model_;
-
-    bool prefill_completed_ = false;
-    size_t last_token_count_ = 0;
 };
 
 }
