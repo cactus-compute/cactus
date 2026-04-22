@@ -86,8 +86,8 @@ void cactus_matmul_f16(const __fp16* a, const __fp16* b_transposed, __fp16* c,
 
 #ifdef __APPLE__
 constexpr size_t MPS_F16_M_THRESHOLD = 128;
-constexpr size_t MPS_F16_K_THRESHOLD = 2048;
-constexpr size_t MPS_F16_N_THRESHOLD = 2048;
+constexpr size_t MPS_F16_K_THRESHOLD = 1024;
+constexpr size_t MPS_F16_N_THRESHOLD = 1024;
 constexpr size_t MPS_INT4_M_THRESHOLD = 256;
 constexpr size_t MPS_INT4_K_THRESHOLD = 1024;
 constexpr size_t MPS_INT4_N_THRESHOLD = 1024;
