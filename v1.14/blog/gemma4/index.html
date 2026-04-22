@@ -15,6 +15,10 @@
         <link rel="canonical" href="https://docs.cactuscompute.com/v1.14/blog/gemma4/">
       
       
+        <link rel="prev" href="../turboquant-h/">
+      
+      
+        <link rel="next" href="../hybrid_transcription/">
       
       
         
@@ -368,10 +372,12 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
+      <li class="md-tabs__item md-tabs__item--active">
         <a href="../" class="md-tabs__link">
           
   
@@ -1031,28 +1037,31 @@
       
   
   
+    
   
   
+  
     
     
     
     
+      
+        
+        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
         
           
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
-        
-          
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
             
   
   
@@ -1070,7 +1079,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1104,6 +1113,271 @@
   
 
       </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../turboquant-h/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TurboQuant-H
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gemma 4 on Cactus
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gemma 4 on Cactus
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#whats-actually-new-here" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's actually new here
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Performance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-benchmarks-are-hard-to-believe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The benchmarks are hard to believe
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The benchmarks are hard to believe">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LLM
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Vision
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#audio" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audio
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#model-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Model Architecture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-this-unlocks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What this unlocks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What this unlocks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#voice-control-that-actually-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Voice control that actually works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#voice-agents-that-run-locally" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Voice agents that run locally
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hybrid-inference-knowing-when-to-ask-for-help" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hybrid inference: knowing when to ask for help
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#building-on-any-platform" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building on any platform
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#try-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Try it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-with-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build with it
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1438,7 +1712,7 @@
   
 
 
-  <h1>Gemma 4 on Cactus: The first model you can talk to, show things, and trust to know when it needs help</h1>
+  <h1>Gemma 4 on Cactus</h1>
 
 <p>Gemma 4 is the first on-device model that genuinely works across text, vision, and audio in a single architecture, and does it well enough that you stop thinking about the model and start thinking about what to build with it.</p>
 <p>We shipped day-one support in Cactus. Here's what that means in practice and why we think this changes the trajectory of on-device AI.</p>
@@ -1762,6 +2036,44 @@
       
         <footer class="md-footer">
   
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../turboquant-h/" class="md-footer__link md-footer__link--prev" aria-label="Previous: TurboQuant-H">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                TurboQuant-H
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../hybrid_transcription/" class="md-footer__link md-footer__link--next" aria-label="Next: Hybrid Transcription">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Hybrid Transcription
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
     
   
   <div class="md-footer-meta md-typeset">
