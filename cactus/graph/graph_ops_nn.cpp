@@ -230,6 +230,17 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             throw std::runtime_error("Group-wise quantized matmul requires pretransposed weights");
         }
 
+#ifdef __APPLE__
+        if (rhs_buffer.precision == Precision::INT4 &&
+            lhs_buffer.precision == Precision::FP16 &&
+            M >= MPS_INT4_M_THRESHOLD && K >= MPS_INT4_K_THRESHOLD && N >= MPS_INT4_N_THRESHOLD &&
+            cactus_mps_available()) {
+            cactus_matmul_int4_mps(lhs_buffer.data_as<__fp16>(), rhs, rhs_scales,
+                                   output, M, K, N, rhs_buffer.group_size);
+            return;
+        }
+#endif
+
         const int8_t* lhs_int8;
         const float* lhs_scales;
 
