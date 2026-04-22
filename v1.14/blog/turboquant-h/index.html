@@ -1934,7 +1934,7 @@
 </table>
 <p>The per-layer embedding table is 2.5 GB. More than half the model. This is not unique to Gemma 4. The AltUp design pattern, where per-layer vocabulary projections replace a single shared embedding, is becoming standard for models that need large vocabularies (262K tokens for multilingual coverage) without proportionally large hidden dimensions. Gemma 3n uses the same architecture. Any model that follows this pattern will be embedding-dominated.</p>
 <h2 id="3-turboquant-h">3. TurboQuant-H<a class="headerlink" href="#3-turboquant-h" title="Permanent link">&para;</a></h2>
-<p>TurboQuant-H shares the core insight from TurboQuant; rotation concentrates coordinates into a well-behaved distribution, enabling aggressive scalar quantization — but simplifies the pipeline for offline weight quantization.</p>
+<p>TurboQuant-H shares the core insight from TurboQuant; rotation concentrates coordinates into a well-behaved distribution, enabling aggressive scalar quantization, but simplifies the pipeline for offline weight quantization.</p>
 <h3 id="31-comparison-with-turboquant">3.1 Comparison with TurboQuant<a class="headerlink" href="#31-comparison-with-turboquant" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -1952,8 +1952,8 @@
 </tr>
 <tr>
 <td><strong>Rotation</strong></td>
-<td>Random orthogonal matrix via QR of Gaussian, $O(d^2)$</td>
-<td>Normalized Hadamard matrix, $O(N \log N)$, symmetric = self-inverse</td>
+<td>Random orthogonal matrix via QR of Gaussian, <span class="arithmatex">\(O(d^2)\)</span></td>
+<td>Normalized Hadamard matrix, <span class="arithmatex">\(O(N \log N)\)</span>, symmetric = self-inverse</td>
 </tr>
 <tr>
 <td><strong>Quantizer</strong></td>
@@ -1967,7 +1967,7 @@
 </tr>
 <tr>
 <td><strong>Bias correction</strong></td>
-<td>Two-stage: MSE quantizer at $b-1$ bits + 1-bit QJL residual</td>
+<td>Two-stage: MSE quantizer at <span class="arithmatex">\(b-1\)</span> bits + 1-bit QJL residual</td>
 <td>Single-stage: no QJL correction</td>
 </tr>
 <tr>
@@ -1983,24 +1983,24 @@
 </tbody>
 </table>
 <h3 id="32-formal-description">3.2 Formal Description<a class="headerlink" href="#32-formal-description" title="Permanent link">&para;</a></h3>
-<p>Let $\mathbf{E} \in \mathbb{R}^{V \times D}$ be the PLI embedding matrix with vocabulary size $V = 262{,}144$ and embedding dimension $D = 8{,}190$. We partition each row into $P = \lceil D/G \rceil = 64$ positional groups of $G = 128$ contiguous elements. The $p$-th positional group of vocabulary row $v$ is denoted $\mathbf{x}_{v,p} \in \mathbb{R}^G$.</p>
+<p>Let <span class="arithmatex">\(\mathbf{E} \in \mathbb{R}^{V \times D}\)</span> be the PLI embedding matrix with vocabulary size <span class="arithmatex">\(V = 262{,}144\)</span> and embedding dimension <span class="arithmatex">\(D = 8{,}190\)</span>. We partition each row into <span class="arithmatex">\(P = \lceil D/G \rceil = 64\)</span> positional groups of <span class="arithmatex">\(G = 128\)</span> contiguous elements. The <span class="arithmatex">\(p\)</span>-th positional group of vocabulary row <span class="arithmatex">\(v\)</span> is denoted <span class="arithmatex">\(\mathbf{x}_{v,p} \in \mathbb{R}^G\)</span>.</p>
 <p><strong>Quantization</strong> (offline, during weight conversion):</p>
-<p><strong>Step 1: Hadamard rotation.</strong> For each row $v$ and position $p$, rotate:</p>
-<p>$$\hat{\mathbf{x}}<em v_p="v,p">{v,p} = \bar{\mathbf{H}}_G \cdot \mathbf{x}</em>$$</p>
-<p>where $\bar{\mathbf{H}}_G = \frac{1}{\sqrt{G}} \mathbf{H}_G$ is the $G \times G$ normalized Hadamard matrix, satisfying $\bar{\mathbf{H}}_G^T \bar{\mathbf{H}}_G = \mathbf{I}$ and $\bar{\mathbf{H}}_G = \bar{\mathbf{H}}_G^T$. The $\frac{1}{\sqrt{G}}$ normalization ensures the transform is its own inverse.</p>
-<p><strong>Step 2: Codebook training.</strong> For each positional group $p \in {1, \ldots, P}$, collect the rotated values from all $V$ vocabulary rows and train a Lloyd-Max codebook $\mathcal{C}_p = {c_1, c_2, c_3, c_4}$ (at $b = 2$ bits, 4 centroids) by minimizing:</p>
-<p>$$\mathcal{C}<em _mathcal_C="\mathcal{C">p^* = \arg\min</em> - c \right)^2$$}} \sum_{v=1}^{V} \sum_{i=1}^{G} \min_{c \in \mathcal{C}} \left( \hat{x}_{v,p,i</p>
-<p>This trains each codebook on $V \times G = 262{,}144 \times 128 \approx 33.6\text{M}$ data points, giving the Lloyd-Max algorithm sufficient statistics for accurate centroid placement. Each positional group gets its own codebook because the weight distributions vary across positions in the embedding dimension. We tried a single joint codebook shared across all positions; per-position was consistently better.</p>
+<p><strong>Step 1: Hadamard rotation.</strong> For each row <span class="arithmatex">\(v\)</span> and position <span class="arithmatex">\(p\)</span>, rotate:</p>
+<div class="arithmatex">\[\hat{\mathbf{x}}_{v,p} = \bar{\mathbf{H}}_G \cdot \mathbf{x}_{v,p}\]</div>
+<p>where <span class="arithmatex">\(\bar{\mathbf{H}}_G = \frac{1}{\sqrt{G}} \mathbf{H}_G\)</span> is the <span class="arithmatex">\(G \times G\)</span> normalized Hadamard matrix, satisfying <span class="arithmatex">\(\bar{\mathbf{H}}_G^T \bar{\mathbf{H}}_G = \mathbf{I}\)</span> and <span class="arithmatex">\(\bar{\mathbf{H}}_G = \bar{\mathbf{H}}_G^T\)</span>. The <span class="arithmatex">\(\frac{1}{\sqrt{G}}\)</span> normalization ensures the transform is its own inverse.</p>
+<p><strong>Step 2: Codebook training.</strong> For each positional group <span class="arithmatex">\(p \in \{1, \ldots, P\}\)</span>, collect the rotated values from all <span class="arithmatex">\(V\)</span> vocabulary rows and train a Lloyd-Max codebook <span class="arithmatex">\(\mathcal{C}_p = \{c_1, c_2, c_3, c_4\}\)</span> (at <span class="arithmatex">\(b = 2\)</span> bits, 4 centroids) by minimizing:</p>
+<div class="arithmatex">\[\mathcal{C}_p^* = \arg\min_{\mathcal{C}} \sum_{v=1}^{V} \sum_{i=1}^{G} \min_{c \in \mathcal{C}} \left( \hat{x}_{v,p,i} - c \right)^2\]</div>
+<p>This trains each codebook on <span class="arithmatex">\(V \times G = 262{,}144 \times 128 \approx 33.6\text{M}\)</span> data points, giving the Lloyd-Max algorithm sufficient statistics for accurate centroid placement. Each positional group gets its own codebook because the weight distributions vary across positions in the embedding dimension. We tried a single joint codebook shared across all positions; per-position was consistently better.</p>
 <p>The codebook values are stored at FP16 (16 bits per centroid), contributing:</p>
-<p>$$\frac{2^b \cdot 16}{G} = \frac{4 \cdot 16}{128} = 0.125 \text{ bits/element overhead}$$</p>
+<div class="arithmatex">\[\frac{2^b \cdot 16}{G} = \frac{4 \cdot 16}{128} = 0.125 \text{ bits/element overhead}\]</div>
 <p><strong>Step 3: Quantize by proximity.</strong> Each rotated element maps to its nearest centroid:</p>
-<p>$$q_{v,p,i} = \arg\min_{j \in {1,\ldots,2^b}} \left| \hat{x}_{v,p,i} - c_j \right|$$</p>
-<p>Store the 2-bit indices $q_{v,p,i}$ and the $P = 64$ FP16 codebooks ${\mathcal{C}_1, \ldots, \mathcal{C}_P}$.</p>
+<div class="arithmatex">\[q_{v,p,i} = \arg\min_{j \in \{1,\ldots,2^b\}} \left| \hat{x}_{v,p,i} - c_j \right|\]</div>
+<p>Store the 2-bit indices <span class="arithmatex">\(q_{v,p,i}\)</span> and the <span class="arithmatex">\(P = 64\)</span> FP16 codebooks <span class="arithmatex">\(\{\mathcal{C}_1, \ldots, \mathcal{C}_P\}\)</span>.</p>
 <p><strong>Dequantization</strong> (at inference):</p>
-<p>$$\tilde{\mathbf{x}}<em v_p="v,p">{v,p} = \bar{\mathbf{H}}_G \cdot \text{scatter}(\mathcal{C}_p, \mathbf{q}</em>)$$</p>
-<p>where $\text{scatter}(\mathcal{C}<em v_p="v,p">p, \mathbf{q}</em>)<em q__v_p_i="q_{v,p,i">i = c</em>_G$ is symmetric and orthogonal, the inverse rotation is the same forward transform. No transpose is needed.}}$ maps indices back to centroids. Since $\bar{\mathbf{H}</p>
+<div class="arithmatex">\[\tilde{\mathbf{x}}_{v,p} = \bar{\mathbf{H}}_G \cdot \text{scatter}(\mathcal{C}_p, \mathbf{q}_{v,p})\]</div>
+<p>where <span class="arithmatex">\(\text{scatter}(\mathcal{C}_p, \mathbf{q}_{v,p})_i = c_{q_{v,p,i}}\)</span> maps indices back to centroids. Since <span class="arithmatex">\(\bar{\mathbf{H}}_G\)</span> is symmetric and orthogonal, the inverse rotation is the same forward transform. No transpose is needed.</p>
 <p><strong>Effective bit rate:</strong></p>
-<p>$$b_{\text{eff}} = b + \frac{2^b \cdot 16}{G} = 2 + 0.125 = 2.125 \text{ bits/element}$$</p>
+<div class="arithmatex">\[b_{\text{eff}} = b + \frac{2^b \cdot 16}{G} = 2 + 0.125 = 2.125 \text{ bits/element}\]</div>
 <h3 id="33-the-quantization-pipeline">3.3 The Quantization Pipeline<a class="headerlink" href="#33-the-quantization-pipeline" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>QUANTIZATION (offline, during cactus convert)
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>==============================================
@@ -2065,9 +2065,9 @@
 <a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>FP16 embedding -&gt; feed to transformer layer
 </code></pre></div>
 <h3 id="34-design-decisions">3.4 Design Decisions<a class="headerlink" href="#34-design-decisions" title="Permanent link">&para;</a></h3>
-<p><strong>Why Hadamard instead of random orthogonal?</strong> The normalized Hadamard matrix $\bar{\mathbf{H}}_G = \frac{1}{\sqrt{G}} \mathbf{H}_G$ is deterministic, $O(N \log N)$ to apply via the butterfly factorization (same structure as the FFT), and its own inverse ($\bar{\mathbf{H}} = \bar{\mathbf{H}}^T = \bar{\mathbf{H}}^{-1}$). For offline weight quantization we don't need the data-oblivious guarantees of a random rotation, we have full access to the weight data at conversion time. The Hadamard rotation still concentrates coordinates, which is all we need to make low-bit scalar quantization work. Note: the unnormalized Hadamard satisfies $\mathbf{H}\mathbf{H}^T = G \cdot \mathbf{I}$, so the $\frac{1}{\sqrt{G}}$ factor is essential for the self-inverse property.</p>
-<p><strong>Why no QJL correction?</strong> TurboQuant's second stage exists because MSE-optimal quantizers introduce multiplicative bias in inner product estimation. At 1-bit, $\mathbb{E}[\langle \mathbf{y}, Q(\mathbf{x}) \rangle] = \frac{2}{\pi} \langle \mathbf{y}, \mathbf{x} \rangle$, a 36% shrinkage. The QJL residual corrects this at the cost of 1 additional bit per dimension. But we're quantizing at 2 bits with a trained codebook, not a precomputed scalar quantizer. The per-position Lloyd-Max codebook already minimizes distortion over the actual weight distribution, and the Hadamard rotation ensures the codebook sees well-spread inputs. At 2 bits with group-128, the inner product bias is small enough that the downstream perplexity impact is negligible (PPL 1.91 vs 1.85). Adding QJL would cost an extra bit per dimension for a correction that isn't needed at this operating point.</p>
-<p><strong>Why per-position codebooks instead of per-coordinate?</strong> TurboQuant can use a single precomputed quantizer because random rotation makes all coordinates identically distributed (each follows $\text{Beta}(\frac{1}{2}, \frac{d-1}{2})$ on the unit sphere). Hadamard rotation concentrates coordinates but doesn't make them identically distributed — there are structured patterns from the butterfly network. Per-position codebooks (one codebook per group of 128 dimensions, trained across all 262K vocabulary rows at that position) adapt to these patterns. We tried a single joint codebook shared across all positions; per-position was consistently better.</p>
+<p><strong>Why Hadamard instead of random orthogonal?</strong> The normalized Hadamard matrix <span class="arithmatex">\(\bar{\mathbf{H}}_G = \frac{1}{\sqrt{G}} \mathbf{H}_G\)</span> is deterministic, <span class="arithmatex">\(O(N \log N)\)</span> to apply via the butterfly factorization (same structure as the FFT), and its own inverse (<span class="arithmatex">\(\bar{\mathbf{H}} = \bar{\mathbf{H}}^T = \bar{\mathbf{H}}^{-1}\)</span>). For offline weight quantization we don't need the data-oblivious guarantees of a random rotation, we have full access to the weight data at conversion time. The Hadamard rotation still concentrates coordinates, which is all we need to make low-bit scalar quantization work. Note: the unnormalized Hadamard satisfies <span class="arithmatex">\(\mathbf{H}\mathbf{H}^T = G \cdot \mathbf{I}\)</span>, so the <span class="arithmatex">\(\frac{1}{\sqrt{G}}\)</span> factor is essential for the self-inverse property.</p>
+<p><strong>Why no QJL correction?</strong> TurboQuant's second stage exists because MSE-optimal quantizers introduce multiplicative bias in inner product estimation. At 1-bit, <span class="arithmatex">\(\mathbb{E}[\langle \mathbf{y}, Q(\mathbf{x}) \rangle] = \frac{2}{\pi} \langle \mathbf{y}, \mathbf{x} \rangle\)</span>, a 36% shrinkage. The QJL residual corrects this at the cost of 1 additional bit per dimension. But we're quantizing at 2 bits with a trained codebook, not a precomputed scalar quantizer. The per-position Lloyd-Max codebook already minimizes distortion over the actual weight distribution, and the Hadamard rotation ensures the codebook sees well-spread inputs. At 2 bits with group-128, the inner product bias is small enough that the downstream perplexity impact is negligible (PPL 1.91 vs 1.85). Adding QJL would cost an extra bit per dimension for a correction that isn't needed at this operating point.</p>
+<p><strong>Why per-position codebooks instead of per-coordinate?</strong> TurboQuant can use a single precomputed quantizer because random rotation makes all coordinates identically distributed (each follows <span class="arithmatex">\(\text{Beta}(\frac{1}{2}, \frac{d-1}{2})\)</span> on the unit sphere). Hadamard rotation concentrates coordinates but doesn't make them identically distributed — there are structured patterns from the butterfly network. Per-position codebooks (one codebook per group of 128 dimensions, trained across all 262K vocabulary rows at that position) adapt to these patterns. We tried a single joint codebook shared across all positions; per-position was consistently better.</p>
 <p><strong>Why group size 128?</strong> We swept group sizes from 32 to 512. The qualitative tradeoffs:</p>
 <table>
 <thead>
@@ -2181,13 +2181,13 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>token_ids → gather 2-bit indices → scatter codebook → Hadamard rotation → FP16 → transformer
 </code></pre></div>
 <h3 id="53-overhead-analysis">5.3 Overhead Analysis<a class="headerlink" href="#53-overhead-analysis" title="Permanent link">&para;</a></h3>
-<p>The Hadamard butterfly on a group of $G = 128$ elements has $\log_2(G) = 7$ stages. Each stage performs $G/2 = 64$ add/subtract pairs (the butterfly operations). Over 7 stages that is $7 \times 64 = 448$ add/sub operations per group. On ARM NEON (128-bit SIMD, 8 FP16 lanes), each stage processes the group in $G / (2 \times 8) = 8$ vector instructions, giving $7 \times 8 = 56$ vector operations per group.</p>
-<p>For a single PLI embedding row of $D = 8{,}190$ elements:</p>
-<p>$$\text{Groups per row} = \lceil 8190 / 128 \rceil = 64$$</p>
-<p>$$\text{Total vector ops} = 64 \times 56 = 3{,}584$$</p>
-<p>At one vector add/sub per cycle on a 2 GHz A15 NEON unit, this completes in under 2 microseconds per embedding lookup. The gather from a table that is $8 / 2.125 \approx 3.8\times$ smaller in memory more than compensates for the rotation cost in bandwidth savings.</p>
+<p>The Hadamard butterfly on a group of <span class="arithmatex">\(G = 128\)</span> elements has <span class="arithmatex">\(\log_2(G) = 7\)</span> stages. Each stage performs <span class="arithmatex">\(G/2 = 64\)</span> add/subtract pairs (the butterfly operations). Over 7 stages that is <span class="arithmatex">\(7 \times 64 = 448\)</span> add/sub operations per group. On ARM NEON (128-bit SIMD, 8 FP16 lanes), each stage processes the group in <span class="arithmatex">\(G / (2 \times 8) = 8\)</span> vector instructions, giving <span class="arithmatex">\(7 \times 8 = 56\)</span> vector operations per group.</p>
+<p>For a single PLI embedding row of <span class="arithmatex">\(D = 8{,}190\)</span> elements:</p>
+<div class="arithmatex">\[\text{Groups per row} = \lceil 8190 / 128 \rceil = 64\]</div>
+<div class="arithmatex">\[\text{Total vector ops} = 64 \times 56 = 3{,}584\]</div>
+<p>At one vector add/sub per cycle on a 2 GHz A15 NEON unit, this completes in under 2 microseconds per embedding lookup. The gather from a table that is <span class="arithmatex">\(8 / 2.125 \approx 3.8\times\)</span> smaller in memory more than compensates for the rotation cost in bandwidth savings.</p>
 <h2 id="6-related-work">6. Related Work<a class="headerlink" href="#6-related-work" title="Permanent link">&para;</a></h2>
-<p><strong>TurboQuant</strong> (Zandieh et al., ICLR 2026) introduced data-oblivious vector quantization with random rotation and QJL correction for KV cache compression, achieving near-optimal distortion rates within a constant factor of $\approx 2.7$ from information-theoretic lower bounds.</p>
+<p><strong>TurboQuant</strong> (Zandieh et al., ICLR 2026) introduced data-oblivious vector quantization with random rotation and QJL correction for KV cache compression, achieving near-optimal distortion rates within a constant factor of <span class="arithmatex">\(\approx 2.7\)</span> from information-theoretic lower bounds.</p>
 <p><strong>QuIP#</strong> (Tseng et al., 2024) uses the randomized Hadamard transform for weight quantization of linear layers, but does not address embedding tables or per-layer embeddings.</p>
 <p><strong>GPTQ, AWQ</strong> focus on linear layer weight quantization with calibration data. These methods do not handle embedding tables, which are pure lookup operations with no gradient flow during inference.</p>
 <p>To our knowledge, TurboQuant-H is the first application of rotation-based vector quantization specifically to per-layer embedding tables, which is where the technique yields the largest storage benefit due to the embedding-dominated weight distribution in AltUp architectures.</p>
@@ -2213,8 +2213,8 @@
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="s">               Quantization in Embedding-Dominated Models}</span><span class="p">,</span>
 <a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="na">author</span><span class="w">    </span><span class="p">=</span><span class="w"> </span><span class="s">{Mosoyan, Karen and Ndubuaku, Henry}</span><span class="p">,</span>
 <a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="na">year</span><span class="w">      </span><span class="p">=</span><span class="w"> </span><span class="s">{2026}</span><span class="p">,</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="na">url</span><span class="w">       </span><span class="p">=</span><span class="w"> </span><span class="s">{https://github.com/cactus-compute/cactus}</span><span class="p">,</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="na">note</span><span class="w">      </span><span class="p">=</span><span class="w"> </span><span class="s">{Cactus Compute Technical Report}</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="na">url</span><span class="w">       </span><span class="p">=</span><span class="w"> </span><span class="s">{https://docs.cactuscompute.com/latest/blog/turboquant-h/}</span><span class="p">,</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="na">note</span><span class="w">      </span><span class="p">=</span><span class="w"> </span><span class="s">{Cactus Compute Research Preview}</span>
 <a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="p">}</span>
 </code></pre></div>
 <h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">&para;</a></h2>
@@ -2360,6 +2360,10 @@
     
     
       <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
       
     
   </body>
