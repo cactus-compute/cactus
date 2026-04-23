@@ -452,15 +452,11 @@ def extract_opf_config(cfg, config):
         'label_names': ','.join(label_names),
         'num_experts': int(cfg_get(cfg, 'num_local_experts', 0)),
         'num_experts_per_tok': int(cfg_get(cfg, 'num_experts_per_tok', 0)),
-        'moe_intermediate_size': int(cfg_get(cfg, 'intermediate_size', 0)),
         'sliding_window': int(cfg_get(cfg, 'sliding_window', 0)),
-        'attention_bias': bool(cfg_get(cfg, 'attention_bias', True)),
         'rope_scaling_factor': float(cfg_get(rope_params, 'factor', 1.0)),
         'rope_beta_fast': float(cfg_get(rope_params, 'beta_fast', 32.0)),
         'rope_beta_slow': float(cfg_get(rope_params, 'beta_slow', 1.0)),
         'rope_original_max_position_embeddings': int(cfg_get(rope_params, 'original_max_position_embeddings', 4096)),
-        'swiglu_limit': 7.0,
-        'swiglu_alpha': 1.702,
     }
 
 

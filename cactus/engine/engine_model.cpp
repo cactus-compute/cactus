@@ -648,8 +648,6 @@ bool Config::from_json(const std::string& config_path) {
                 start = end + 1;
             }
         }
-        else if (key == "swiglu_alpha") swiglu_alpha = std::stof(value);
-        else if (key == "swiglu_limit") swiglu_limit = std::stof(value);
         else if (key == "rope_local_base_freq") rope_local_base_freq = std::stof(value);
         else if (key == "final_logit_softcapping") final_logit_softcapping = std::stof(value);
         else if (key == "global_partial_rotary_factor") global_partial_rotary_factor = std::stof(value);

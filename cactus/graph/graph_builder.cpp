@@ -467,9 +467,7 @@ size_t CactusGraph::moe_layer_openai(size_t hidden,
                                      const std::vector<size_t>& w3_biases,
                                      const std::vector<size_t>& w2_biases,
                                      size_t num_experts,
-                                     size_t num_experts_per_tok,
-                                     float swiglu_alpha,
-                                     float swiglu_limit) {
+                                     size_t num_experts_per_tok) {
     const auto& hidden_buffer = get_output_buffer(hidden);
     const auto& routing_buffer = get_output_buffer(routing_probs);
     const auto& topk_buffer = get_output_buffer(topk_indices);
@@ -505,8 +503,6 @@ size_t CactusGraph::moe_layer_openai(size_t hidden,
     params.activation = Activation::OPENAI_GLU;
     params.moe_gated = true;
     params.moe_has_biases = true;
-    params.swiglu_alpha = swiglu_alpha;
-    params.swiglu_limit = swiglu_limit;
     return add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params);
 }
 
@@ -577,7 +573,8 @@ size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scal
 
 size_t CactusGraph::attention_masked(size_t query, size_t key, size_t value, size_t mask, float scale,
                                      bool is_causal, ComputeBackend backend, bool additive_mask,
-                                     size_t position_offset, size_t window_size, float logit_cap) {
+                                     size_t position_offset, size_t window_size, float logit_cap,
+                                     size_t sinks) {
     OpParams params{
         .scale = scale,
         .position_offset = position_offset,
@@ -587,27 +584,11 @@ size_t CactusGraph::attention_masked(size_t query, size_t key, size_t value, siz
     };
     params.attention_mask_is_additive = additive_mask;
     params.logit_cap = logit_cap;
+    std::vector<size_t> inputs = {query, key, value, mask};
+    if (sinks != 0) inputs.push_back(sinks);
     const auto& qs = get_output_buffer(query).shape;
     const auto& vs = get_output_buffer(value).shape;
-    return add_node(OpType::ATTENTION, {query, key, value, mask}, {qs[0], qs[1], qs[2], vs[3]}, params);
-}
-
-size_t CactusGraph::attention_masked_with_sinks(size_t query, size_t key, size_t value, size_t mask, size_t sinks,
-                                                float scale, bool is_causal, ComputeBackend backend,
-                                                bool additive_mask, size_t position_offset, size_t window_size,
-                                                float logit_cap) {
-    OpParams params{
-        .scale = scale,
-        .position_offset = position_offset,
-        .window_size = window_size,
-        .is_causal = is_causal,
-        .backend = backend
-    };
-    params.attention_mask_is_additive = additive_mask;
-    params.logit_cap = logit_cap;
-    const auto& qs = get_output_buffer(query).shape;
-    const auto& vs = get_output_buffer(value).shape;
-    return add_node(OpType::ATTENTION, {query, key, value, mask, sinks}, {qs[0], qs[1], qs[2], vs[3]}, params);
+    return add_node(OpType::ATTENTION, inputs, {qs[0], qs[1], qs[2], vs[3]}, params);
 }
 
 size_t CactusGraph::rel_pos_bias(size_t query, size_t relative_key, float scale) {

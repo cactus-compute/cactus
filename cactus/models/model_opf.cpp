@@ -189,10 +189,10 @@ size_t OPFModel::build_attention(CactusGraph* gb, size_t normalized_input, uint3
         k4 = rope(k4);
     }
 
-    auto attn = gb->attention_masked_with_sinks(q4, k4, v4,
-                                                build_bidirectional_band_mask(gb, seq_len),
-                                                layer.attn_sinks, attention_scale_,
-                                                false, backend, true);
+    auto attn = gb->attention_masked(q4, k4, v4,
+                                     build_bidirectional_band_mask(gb, seq_len),
+                                     attention_scale_, false, backend, true, 0, 0, 0.0f,
+                                     layer.attn_sinks);
     auto out = gb->matmul(gb->reshape(attn, {seq_len, num_q * head_dim}),
                           layer.attn_output_weight, true, backend);
     return gb->add(out, layer.attn_output_bias);
@@ -215,8 +215,7 @@ size_t OPFModel::build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_
         normalized_h, routing, topk_idx,
         layer.expert_w1_weight, layer.expert_w3_weight, layer.expert_w2_weight,
         layer.expert_w1_bias,   layer.expert_w3_bias,   layer.expert_w2_bias,
-        config_.num_experts, config_.num_experts_per_tok,
-        config_.swiglu_alpha, config_.swiglu_limit);
+        config_.num_experts, config_.num_experts_per_tok);
     return gb->scalar_multiply(moe, top_k_f);
 }
 

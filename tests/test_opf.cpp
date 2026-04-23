@@ -1,12 +1,3 @@
-// End-to-end test for openai/privacy-filter (token-classification encoder).
-// Drives the C++ engine directly since `classify()` is not yet FFI-exposed.
-//
-// Run:
-//   CACTUS_OPF_MODEL=/path/to/converted/weights ./test_opf
-//
-// The weights directory is produced by `cactus convert openai/privacy-filter
-// <out> --precision FP16` (or INT4).
-
 #include "test_utils.h"
 
 #include "../cactus/engine/engine.h"
@@ -70,8 +61,6 @@ static bool test_opf_classify() {
         return false;
     }
 
-    // The long paragraph used both as the single-pass case and as the building
-    // block for the 6× repeat that exercises the 257-token sliding window.
     const std::string long_paragraph =
         "Jordan Ellis lives at 1427 Willow Bend Avenue, Apt. 4C, Brookhaven, NY 11719. "
         "Their phone number is 555-0147 and their email is jordan.ellis@example-test.com. "
@@ -91,8 +80,6 @@ static bool test_opf_classify() {
         "A prior support request included passport placeholder X0000000 "
         "and driver's license placeholder D1234567";
 
-    // Labels observed for one pass of the paragraph (FP16; see the main OPF
-    // comment for why opaque IDs all read as account_number and not secret).
     const std::vector<std::string> long_paragraph_labels = {
         "private_person", "private_person", "private_person", "private_person",
         "private_address", "private_address", "private_address", "private_address",
@@ -103,29 +90,22 @@ static bool test_opf_classify() {
         "account_number", "account_number", "account_number",
     };
 
-    // 6× repeat: ~1500 tokens, well above the 257-token sliding-window
-    // bandwidth, so most queries cannot attend across repeat boundaries.
-    // Expected labels scale by 6× assuming the model behaves consistently
-    // per-repeat (the test prints a warning if that assumption is off).
     std::string long_paragraph_x6;
     long_paragraph_x6.reserve(long_paragraph.size() * 6 + 12);
     for (int i = 0; i < 6; ++i) {
         if (i > 0) long_paragraph_x6 += "\n\n";
         long_paragraph_x6 += long_paragraph;
     }
-    // Observed x6 histogram (INT4): per-copy count drifts from 19 → ~20 because
-    // each copy attends to a different slice of its neighbors through the
-    // sliding window. Calibrated to match actual output, not a pure 6×.
     std::vector<std::string> long_paragraph_x6_labels;
     auto push_n = [&](const char* label, int n) {
         for (int i = 0; i < n; ++i) long_paragraph_x6_labels.emplace_back(label);
     };
-    push_n("account_number",  42);  // 6×6 + 6 drift
-    push_n("private_address", 25);  // 6×4 + 1 drift
-    push_n("private_person",  24);  // 6×4
-    push_n("private_phone",   18);  // 6×3
-    push_n("private_date",     6);  // 6×1
-    push_n("private_email",    6);  // 6×1
+    push_n("account_number",  42);
+    push_n("private_address", 25);
+    push_n("private_person",  24);
+    push_n("private_phone",   18);
+    push_n("private_date",     6);
+    push_n("private_email",    6);
 
     const std::vector<TestCase> cases = {
         {"My name is Alice Smith",
@@ -137,11 +117,8 @@ static bool test_opf_classify() {
         {"Visit https://secret-url.example/xyz for the password hunter2",
          {"private_url", "secret"}},
         {"The weather is nice today and the cat is on the mat",
-         {}},  // no PII
+         {}},
         {long_paragraph, long_paragraph_labels},
-        // Sliding-window exerciser: 6× the long paragraph concatenated back
-        // to back. Each repeat is ~254 tokens (> the 128-per-side window), so
-        // repeat i cannot attend to repeats i-2 or i+2 at all.
         {long_paragraph_x6, long_paragraph_x6_labels},
     };
 
@@ -154,7 +131,6 @@ static bool test_opf_classify() {
         bool ok = spans_match(spans, c.expected_labels);
         all_ok = all_ok && ok;
 
-        // Keep the printed text short for the mega-repeat case.
         std::string preview = c.text.substr(0, 80);
         if (c.text.size() > 80) preview += "...";
         std::cout << (ok ? "✓" : "✗") << " " << preview << "\n"
@@ -169,7 +145,6 @@ static bool test_opf_classify() {
                 std::cout << "\n    [" << s.token_start << ".." << s.token_end << ") " << s.label;
             }
         } else {
-            // For the long case print a label-count histogram instead of full spans.
             std::map<std::string, int> hist;
             for (const auto& s : spans) hist[s.label]++;
             for (const auto& kv : hist) {

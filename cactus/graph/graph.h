@@ -596,9 +596,7 @@ public:
                             const std::vector<size_t>& w3_biases,
                             const std::vector<size_t>& w2_biases,
                             size_t num_experts,
-                            size_t num_experts_per_tok,
-                            float swiglu_alpha,
-                            float swiglu_limit);
+                            size_t num_experts_per_tok);
     size_t rms_norm(size_t input, size_t weight, float epsilon = 1e-5f);
     size_t rope(size_t input, float theta, size_t position_offset = 0, ComputeBackend backend = ComputeBackend::CPU);
     size_t rope_gptj(size_t input, float theta, size_t position_offset = 0, size_t rot_dim = 0, ComputeBackend backend = ComputeBackend::CPU);
@@ -613,12 +611,7 @@ public:
     size_t attention_masked(size_t query, size_t key, size_t value, size_t mask, float scale,
                             bool is_causal = true, ComputeBackend backend = ComputeBackend::CPU,
                             bool additive_mask = false, size_t position_offset = 0, size_t window_size = 0,
-                            float logit_cap = 0.0f);
-    size_t attention_masked_with_sinks(size_t query, size_t key, size_t value, size_t mask, size_t sinks,
-                                       float scale, bool is_causal = true,
-                                       ComputeBackend backend = ComputeBackend::CPU,
-                                       bool additive_mask = false, size_t position_offset = 0,
-                                       size_t window_size = 0, float logit_cap = 0.0f);
+                            float logit_cap = 0.0f, size_t sinks = 0);
     size_t rel_pos_bias(size_t query, size_t relative_key, float scale);
 
     size_t attention_int8_hybrid(size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,

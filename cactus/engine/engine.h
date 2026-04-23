@@ -164,8 +164,6 @@ struct Config {
 
     uint32_t num_labels = 0;
     std::vector<std::string> label_names;
-    float swiglu_alpha = 1.702f;
-    float swiglu_limit = 7.0f;
 
     uint32_t altup_num_inputs = 4;
     uint32_t laurel_rank = 64;
