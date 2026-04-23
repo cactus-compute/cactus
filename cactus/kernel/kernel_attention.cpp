@@ -367,7 +367,14 @@ static inline void cactus_attention_f16_fast(
     });
 }
 
-void cactus_attention_f16(
+// Shared implementation of the masked + sinks attention kernel. When
+// `sinks == nullptr` this is the baseline attention (structurally identical to
+// the original `cactus_attention_f16`). When `sinks != nullptr` it prepends a
+// per-head virtual kv slot whose logit equals `sinks[q_head_idx]` — the slot
+// participates in the softmax denominator but contributes nothing to the
+// weighted value sum, matching the reference `eager_attention_forward` in the
+// HF modeling code (concat-sink-then-softmax-then-drop).
+static void cactus_attention_f16_impl(
     const __fp16* queries,
     const __fp16* keys,
     const __fp16* values,
@@ -386,14 +393,15 @@ void cactus_attention_f16(
     bool mask_is_additive,
     bool mask_per_head,
     size_t v_head_dim,
-    float logit_cap
+    float logit_cap,
+    const __fp16* sinks
 ) {
     if (v_head_dim == 0) v_head_dim = head_dim;
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }
 
-    if (mask == nullptr && head_dim % 8 == 0 && v_head_dim % 8 == 0 && logit_cap == 0.0f) {
+    if (sinks == nullptr && mask == nullptr && head_dim % 8 == 0 && v_head_dim % 8 == 0 && logit_cap == 0.0f) {
         cactus_attention_f16_fast(
             queries, keys, values, output,
             batch_size, seq_len, kv_seq_len,
@@ -449,10 +457,18 @@ void cactus_attention_f16(
                 const __fp16* M = mask ? (mask + batch_idx * mask_batch_stride) : nullptr;
                     const __fp16* q_vec = Q_base + q_pos * q_seq_stride + q_head_idx * head_dim;
                     __fp16* o_vec = O_base + q_pos * o_seq_stride + q_head_idx * v_head_dim;
-                    
+
                     float running_max = -std::numeric_limits<float>::infinity();
                     float running_sum = 0.0f;
-                    
+
+                    // Seed online softmax with the sink logit: a virtual kv slot
+                    // that contributes `exp(sink - running_max)` to the denominator
+                    // but no vector to the value accumulator.
+                    if (sinks != nullptr) {
+                        running_max = static_cast<float>(sinks[q_head_idx]);
+                        running_sum = 1.0f;
+                    }
+
                     for (size_t i = 0; i < output_accum_low.size(); ++i) {
                         output_accum_low[i] = vdupq_n_f32(0.0f);
                         output_accum_high[i] = vdupq_n_f32(0.0f);
@@ -674,6 +690,69 @@ void cactus_attention_f16(
                     }
             }
         });
+}
+
+// Public wrapper preserving the original signature; forwards a null sink pointer.
+void cactus_attention_f16(
+    const __fp16* queries,
+    const __fp16* keys,
+    const __fp16* values,
+    __fp16* output,
+    size_t batch_size,
+    size_t seq_len,
+    size_t kv_seq_len,
+    size_t num_q_heads,
+    size_t num_kv_heads,
+    size_t head_dim,
+    float scale,
+    const __fp16* mask,
+    size_t position_offset,
+    size_t window_size,
+    bool is_causal,
+    bool mask_is_additive,
+    bool mask_per_head,
+    size_t v_head_dim,
+    float logit_cap
+) {
+    cactus_attention_f16_impl(queries, keys, values, output,
+                              batch_size, seq_len, kv_seq_len,
+                              num_q_heads, num_kv_heads, head_dim,
+                              scale, mask, position_offset, window_size,
+                              is_causal, mask_is_additive, mask_per_head,
+                              v_head_dim, logit_cap, /*sinks=*/nullptr);
+}
+
+// Variant exposing per-q-head attention sinks. The sinks tensor has shape
+// `[num_q_heads]` (fp16) and is interpreted as a virtual extra kv slot per
+// head during softmax; matches HF OPF's `eager_attention_forward`.
+void cactus_attention_f16_with_sinks(
+    const __fp16* queries,
+    const __fp16* keys,
+    const __fp16* values,
+    const __fp16* sinks,
+    __fp16* output,
+    size_t batch_size,
+    size_t seq_len,
+    size_t kv_seq_len,
+    size_t num_q_heads,
+    size_t num_kv_heads,
+    size_t head_dim,
+    float scale,
+    const __fp16* mask,
+    size_t position_offset,
+    size_t window_size,
+    bool is_causal,
+    bool mask_is_additive,
+    bool mask_per_head,
+    size_t v_head_dim,
+    float logit_cap
+) {
+    cactus_attention_f16_impl(queries, keys, values, output,
+                              batch_size, seq_len, kv_seq_len,
+                              num_q_heads, num_kv_heads, head_dim,
+                              scale, mask, position_offset, window_size,
+                              is_causal, mask_is_additive, mask_per_head,
+                              v_head_dim, logit_cap, sinks);
 }
 
 void cactus_attention_hybrid_int8_fp16(
@@ -1172,6 +1251,104 @@ struct RoPECacheF16 {
 
 static thread_local RoPECacheF16 rope_cache_f16;
 
+// YaRN cache: parameters change often enough (model-specific) that we tag with
+// the scaling factor + ramp bounds + original ctx and invalidate if any differ.
+struct RoPEYarnCacheF16 {
+    std::vector<__fp16> cos_table;
+    std::vector<__fp16> sin_table;
+    size_t max_seq_len = 0;
+    size_t head_dim = 0;
+    float theta = 0.0f;
+    float scaling_factor = 1.0f;
+    float beta_fast = 0.0f;
+    float beta_slow = 0.0f;
+    size_t original_ctx = 0;
+    bool initialized = false;
+};
+
+static thread_local RoPEYarnCacheF16 rope_yarn_cache_f16;
+
+// YaRN NTK-by-parts inv-freq interpolation plus a cos/sin concentration factor.
+// Matches the OPF reference implementation in `opf/_model/model.py`:
+//   concentration = 0.1 * log(scaling_factor) + 1            (if scaling_factor > 1)
+//   low  = d_half * log(original_ctx / (beta_fast * 2π)) / log(theta)
+//   high = d_half * log(original_ctx / (beta_slow * 2π)) / log(theta)
+//   ramp(i) = clamp((i - low) / (high - low), 0, 1)
+//   inv_freq(i) = extrapolation * (1 - ramp) + interpolation * ramp    (HF convention)
+// Note: HF's rope-util encodes `mask = 1 - ramp` and uses
+// `interp * (1 - mask) + extrap * mask` — algebraically identical to the above.
+void precompute_rope_tables_yarn_f16(size_t seq_len, size_t head_dim, float theta,
+                                     float scaling_factor, float beta_fast, float beta_slow,
+                                     size_t original_ctx) {
+    auto& cache = rope_yarn_cache_f16;
+    if (cache.initialized &&
+        cache.max_seq_len >= seq_len &&
+        cache.head_dim == head_dim &&
+        cache.theta == theta &&
+        cache.scaling_factor == scaling_factor &&
+        cache.beta_fast == beta_fast &&
+        cache.beta_slow == beta_slow &&
+        cache.original_ctx == original_ctx) {
+        return;
+    }
+
+    const size_t half_dim = head_dim / 2;
+    const size_t table_size = seq_len * half_dim;
+    cache.cos_table.resize(table_size);
+    cache.sin_table.resize(table_size);
+
+    const float d_half = static_cast<float>(half_dim);
+    const float log_theta = std::log(theta);
+    const float concentration = scaling_factor > 1.0f
+        ? (0.1f * std::log(scaling_factor) + 1.0f)
+        : 1.0f;
+
+    float low = 0.0f, high = d_half - 1.0f;
+    if (scaling_factor > 1.0f) {
+        const float ln_ctx = std::log(static_cast<float>(original_ctx));
+        const float two_pi = 2.0f * static_cast<float>(M_PI);
+        low = d_half * (ln_ctx - std::log(beta_fast * two_pi)) / log_theta;
+        high = d_half * (ln_ctx - std::log(beta_slow * two_pi)) / log_theta;
+        if (high <= low) high = low + 1e-3f;
+    }
+    const float ramp_denom = high - low;
+
+    std::vector<float> inv_freq(half_dim);
+    for (size_t i = 0; i < half_dim; ++i) {
+        const float freq = std::pow(theta, (2.0f * static_cast<float>(i)) / static_cast<float>(head_dim));
+        const float extrapolation = 1.0f / freq;
+        if (scaling_factor <= 1.0f) {
+            inv_freq[i] = extrapolation;
+            continue;
+        }
+        const float interpolation = 1.0f / (scaling_factor * freq);
+        float ramp = (static_cast<float>(i) - low) / ramp_denom;
+        if (ramp < 0.0f) ramp = 0.0f;
+        if (ramp > 1.0f) ramp = 1.0f;
+        const float mask = 1.0f - ramp;
+        inv_freq[i] = interpolation * (1.0f - mask) + extrapolation * mask;
+    }
+
+    for (size_t pos = 0; pos < seq_len; ++pos) {
+        const float pos_f = static_cast<float>(pos);
+        for (size_t i = 0; i < half_dim; ++i) {
+            const float angle = pos_f * inv_freq[i];
+            const size_t idx = pos * half_dim + i;
+            cache.cos_table[idx] = static_cast<__fp16>(std::cos(angle) * concentration);
+            cache.sin_table[idx] = static_cast<__fp16>(std::sin(angle) * concentration);
+        }
+    }
+
+    cache.max_seq_len = seq_len;
+    cache.head_dim = head_dim;
+    cache.theta = theta;
+    cache.scaling_factor = scaling_factor;
+    cache.beta_fast = beta_fast;
+    cache.beta_slow = beta_slow;
+    cache.original_ctx = original_ctx;
+    cache.initialized = true;
+}
+
 void precompute_rope_tables_f16(size_t seq_len, size_t head_dim, float theta) {
     if (rope_cache_f16.initialized && 
         rope_cache_f16.max_seq_len >= seq_len && 
@@ -1338,6 +1515,91 @@ void cactus_gpt_j_rope_f16(
                     size_t copy_idx = rot_dim;
                     const size_t copy_end_vec = (head_dim / TAIL_SIMD_WIDTH) * TAIL_SIMD_WIDTH;
 
+                    for (; copy_idx + TAIL_SIMD_WIDTH <= copy_end_vec; copy_idx += TAIL_SIMD_WIDTH) {
+                        float16x8_t v = vld1q_f16(&input_ptr[copy_idx]);
+                        vst1q_f16(&output_ptr[copy_idx], v);
+                    }
+                    for (; copy_idx < head_dim; ++copy_idx) {
+                        output_ptr[copy_idx] = input_ptr[copy_idx];
+                    }
+                }
+            }
+        });
+}
+
+// YaRN-scaled GPT-J-layout RoPE. Identical rotation math to the base variant;
+// the only difference is the precomputed cos/sin table, which uses NTK-by-parts
+// inv_freq interpolation and a concentration multiplier (see
+// precompute_rope_tables_yarn_f16).
+void cactus_gpt_j_yarn_rope_f16(
+    const __fp16* input,
+    __fp16* output,
+    size_t batch_size,
+    size_t seq_len,
+    size_t num_heads,
+    size_t head_dim,
+    size_t rot_dim,
+    size_t start_pos,
+    float theta,
+    float scaling_factor,
+    float beta_fast,
+    float beta_slow,
+    size_t original_ctx
+) {
+    const size_t half_rot_dim = rot_dim / 2;
+
+    CactusRoPEF16::precompute_rope_tables_yarn_f16(seq_len + start_pos, rot_dim, theta,
+                                                   scaling_factor, beta_fast, beta_slow, original_ctx);
+
+    const __fp16* cos_cache = CactusRoPEF16::rope_yarn_cache_f16.cos_table.data() + start_pos * half_rot_dim;
+    const __fp16* sin_cache = CactusRoPEF16::rope_yarn_cache_f16.sin_table.data() + start_pos * half_rot_dim;
+
+    CactusThreading::parallel_for(batch_size * seq_len, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+        [&](size_t start_idx, size_t end_idx) {
+            for (size_t idx = start_idx; idx < end_idx; ++idx) {
+                const size_t batch_idx = idx / seq_len;
+                const size_t seq_idx = idx % seq_len;
+
+                for (size_t head_idx = 0; head_idx < num_heads; ++head_idx) {
+                    const size_t offset = ((batch_idx * seq_len + seq_idx) * num_heads + head_idx) * head_dim;
+                    const __fp16* input_ptr = input + offset;
+                    __fp16* output_ptr = output + offset;
+
+                    const __fp16* cos_ptr = cos_cache + seq_idx * half_rot_dim;
+                    const __fp16* sin_ptr = sin_cache + seq_idx * half_rot_dim;
+
+                    constexpr size_t SIMD_WIDTH = 8;
+                    const size_t vectorized_half_rot_dim = (half_rot_dim / SIMD_WIDTH) * SIMD_WIDTH;
+
+                    for (size_t i = 0; i < vectorized_half_rot_dim; i += SIMD_WIDTH) {
+                        float16x8_t cos_vec = vld1q_f16(&cos_ptr[i]);
+                        float16x8_t sin_vec = vld1q_f16(&sin_ptr[i]);
+
+                        float16x8x2_t x_vec = vld2q_f16(&input_ptr[2*i]);
+                        float16x8_t x_first_half = x_vec.val[0];
+                        float16x8_t x_second_half = x_vec.val[1];
+
+                        float16x8_t first_result = vfmsq_f16(vmulq_f16(x_first_half, cos_vec), x_second_half, sin_vec);
+                        float16x8_t second_result = vfmaq_f16(vmulq_f16(x_second_half, cos_vec), x_first_half, sin_vec);
+
+                        float16x8x2_t t;
+                        t.val[0] = first_result;
+                        t.val[1] = second_result;
+                        vst2q_f16(&output_ptr[2*i], t);
+                    }
+
+                    for (size_t i = vectorized_half_rot_dim; i < half_rot_dim; ++i) {
+                        const __fp16 cos_val = cos_ptr[i];
+                        const __fp16 sin_val = sin_ptr[i];
+                        const __fp16 x_first_half = input_ptr[2*i];
+                        const __fp16 x_second_half = input_ptr[2*i + 1];
+                        output_ptr[2*i] = x_first_half * cos_val - x_second_half * sin_val;
+                        output_ptr[2*i + 1] = x_second_half * cos_val + x_first_half * sin_val;
+                    }
+
+                    constexpr size_t TAIL_SIMD_WIDTH = 8;
+                    size_t copy_idx = rot_dim;
+                    const size_t copy_end_vec = (head_dim / TAIL_SIMD_WIDTH) * TAIL_SIMD_WIDTH;
                     for (; copy_idx + TAIL_SIMD_WIDTH <= copy_end_vec; copy_idx += TAIL_SIMD_WIDTH) {
                         float16x8_t v = vld1q_f16(&input_ptr[copy_idx]);
                         vst1q_f16(&output_ptr[copy_idx], v);

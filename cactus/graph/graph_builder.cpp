@@ -457,6 +457,67 @@ size_t CactusGraph::moe_layer(size_t hidden,
     return add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params);
 }
 
+size_t CactusGraph::moe_layer_openai(size_t hidden,
+                                     size_t routing_probs,
+                                     size_t topk_indices,
+                                     const std::vector<size_t>& w1_weights,
+                                     const std::vector<size_t>& w3_weights,
+                                     const std::vector<size_t>& w2_weights,
+                                     const std::vector<size_t>& w1_biases,
+                                     const std::vector<size_t>& w3_biases,
+                                     const std::vector<size_t>& w2_biases,
+                                     size_t num_experts,
+                                     size_t num_experts_per_tok,
+                                     float swiglu_alpha,
+                                     float swiglu_limit) {
+    const auto& hidden_buffer = get_output_buffer(hidden);
+    const auto& routing_buffer = get_output_buffer(routing_probs);
+    const auto& topk_buffer = get_output_buffer(topk_indices);
+
+    if (hidden_buffer.shape.size() != 2) {
+        throw std::runtime_error("moe_layer_openai expects [tokens, hidden_dim] for hidden");
+    }
+    if (routing_buffer.shape.size() != 2 || topk_buffer.shape.size() != 2) {
+        throw std::runtime_error("moe_layer_openai expects 2D routing_probs and topk_indices");
+    }
+    if (routing_buffer.shape[0] != hidden_buffer.shape[0] || topk_buffer.shape[0] != hidden_buffer.shape[0]) {
+        throw std::runtime_error("moe_layer_openai token dimension mismatch across inputs");
+    }
+    if (w1_weights.size() != num_experts || w3_weights.size() != num_experts || w2_weights.size() != num_experts) {
+        throw std::runtime_error("moe_layer_openai expects num_experts weight tensors for each of w1, w3, w2");
+    }
+    if (w1_biases.size() != num_experts || w3_biases.size() != num_experts || w2_biases.size() != num_experts) {
+        throw std::runtime_error("moe_layer_openai expects num_experts bias tensors for each of w1, w3, w2");
+    }
+
+    std::vector<size_t> input_ids;
+    input_ids.reserve(3 + 6 * num_experts);
+    input_ids.push_back(hidden);
+    input_ids.push_back(routing_probs);
+    input_ids.push_back(topk_indices);
+    for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w1_weights[i]);
+    for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w3_weights[i]);
+    for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w2_weights[i]);
+    for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w1_biases[i]);
+    for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w3_biases[i]);
+    for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w2_biases[i]);
+
+    OpParams params;
+    params.num_experts = num_experts;
+    params.num_experts_per_tok = num_experts_per_tok;
+    params.normalize_routing = false;
+    params.epsilon = 0.0f;
+    params.scalar = 1.0f;
+    params.output_precision = hidden_buffer.precision;
+    params.activation = Activation::OPENAI_GLU;
+    params.moe_gated = true;
+    params.moe_has_biases = true;
+    params.swiglu_alpha = swiglu_alpha;
+    params.swiglu_limit = swiglu_limit;
+
+    return add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params);
+}
+
 size_t CactusGraph::layernorm(size_t input, size_t weight, size_t bias, float epsilon) {
     OpParams params{.epsilon = epsilon};
     return add_node(OpType::LAYERNORM, {input, weight, bias}, {}, params);
@@ -537,6 +598,25 @@ size_t CactusGraph::attention_masked(size_t query, size_t key, size_t value, siz
     const auto& qs = get_output_buffer(query).shape;
     const auto& vs = get_output_buffer(value).shape;
     return add_node(OpType::ATTENTION, {query, key, value, mask}, {qs[0], qs[1], qs[2], vs[3]}, params);
+}
+
+size_t CactusGraph::attention_masked_with_sinks(size_t query, size_t key, size_t value, size_t mask, size_t sinks,
+                                                float scale, bool is_causal, ComputeBackend backend,
+                                                bool additive_mask, size_t position_offset, size_t window_size,
+                                                float logit_cap) {
+    OpParams params{
+        .scale = scale,
+        .position_offset = position_offset,
+        .window_size = window_size,
+        .is_causal = is_causal,
+        .backend = backend
+    };
+    params.attention_mask_is_additive = additive_mask;
+    params.logit_cap = logit_cap;
+    params.has_attention_sinks = true;
+    const auto& qs = get_output_buffer(query).shape;
+    const auto& vs = get_output_buffer(value).shape;
+    return add_node(OpType::ATTENTION, {query, key, value, mask, sinks}, {qs[0], qs[1], qs[2], vs[3]}, params);
 }
 
 size_t CactusGraph::rel_pos_bias(size_t query, size_t relative_key, float scale) {
@@ -1390,6 +1470,22 @@ size_t CactusGraph::rope_gptj(size_t input, float theta, size_t position_offset,
     params.position_offset = position_offset;
     params.scalar = static_cast<float>(rot_dim);
     params.backend = backend;
+    return add_node(OpType::ROPE_GPTJ, {input}, {}, params);
+}
+
+size_t CactusGraph::rope_gptj_yarn(size_t input, float theta, float scaling_factor,
+                                   float beta_fast, float beta_slow, size_t original_ctx,
+                                   size_t position_offset, size_t rot_dim,
+                                   ComputeBackend backend) {
+    OpParams params;
+    params.theta = theta;
+    params.position_offset = position_offset;
+    params.scalar = static_cast<float>(rot_dim);
+    params.backend = backend;
+    params.rope_scaling_factor = scaling_factor;
+    params.rope_beta_fast = beta_fast;
+    params.rope_beta_slow = beta_slow;
+    params.rope_original_ctx = original_ctx;
     return add_node(OpType::ROPE_GPTJ, {input}, {}, params);
 }
 

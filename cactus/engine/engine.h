@@ -126,8 +126,14 @@ struct Config {
     bool attention_bias = false;
     float rope_scaling_factor = 1.0f;
     float rope_mscale_all_dim = 0.0f;
+    // YaRN NTK-by-parts RoPE knobs. `rope_beta_fast` corresponds to the lower
+    // ramp bound (larger ntk_beta) and `rope_beta_slow` to the upper bound in
+    // the HF convention. `rope_original_ctx` is the pre-scaling context length.
+    float rope_beta_fast = 32.0f;
+    float rope_beta_slow = 1.0f;
+    uint32_t rope_original_ctx = 0;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, PYANNOTE = 16, WESPEAKER = 17, NEEDLE = 18};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, PYANNOTE = 16, WESPEAKER = 17, NEEDLE = 18, OPF = 19};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
@@ -158,6 +164,13 @@ struct Config {
 
     std::vector<std::string> layer_types;
     size_t conv_L_cache = 0;
+
+    // OPF token-classification head: number of output classes and their names (in id order).
+    uint32_t num_labels = 0;
+    std::vector<std::string> label_names;
+    // OPF MoE activation knobs (quick-GELU GLU with asymmetric clamps on gate/up).
+    float swiglu_alpha = 1.702f;
+    float swiglu_limit = 7.0f;
 
     uint32_t altup_num_inputs = 4;
     uint32_t laurel_rank = 64;
