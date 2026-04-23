@@ -1781,9 +1781,6 @@ public:
         std::string label;
     };
 
-    // Custom token-classification entry point. Tokenizes `text`, runs a single
-    // bidirectional forward pass, and returns BIOES spans decoded with the
-    // constrained-Viterbi procedure baked into this class.
     std::vector<Span> classify(const std::string& text);
 
 protected:
@@ -1803,22 +1800,17 @@ protected:
     void post_init() override;
 
 private:
-    // Builds the [seq_len, seq_len] additive bidirectional-sliding-window mask in-graph.
     size_t build_bidirectional_band_mask(CactusGraph* gb, size_t seq_len) const;
-
-    // Viterbi-constrained BIOES decoder; operates on CPU float logits.
     std::vector<int> viterbi_decode(const float* logits, size_t seq_len, size_t num_classes) const;
 
     struct LabelTables {
-        // Derived from config_.label_names at post_init.
-        std::vector<std::string> class_names;       // per token-class id (length == num_classes)
-        std::vector<int> token_to_span_label;       // span index (0 == background) per token class
-        std::vector<char> token_boundary_tag;       // 'B','I','E','S', or 'O'
-        std::vector<std::string> span_class_names;  // ["O","account_number",...]
+        std::vector<std::string> class_names;
+        std::vector<int> token_to_span_label;
+        std::vector<char> token_boundary_tag;
+        std::vector<std::string> span_class_names;
         int background_token_idx = 0;
     } label_tables_;
 
-    // Cached CRF transition/start/end scores. _NEG_INF sentinel marks illegal edges.
     std::vector<float> crf_start_scores_;
     std::vector<float> crf_end_scores_;
     std::vector<float> crf_transition_scores_;

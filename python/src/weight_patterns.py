@@ -213,7 +213,6 @@ def get_layer_weight_patterns(i, precision, model_type=None, skip_kv=False):
         (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False) if not is_whisper and not skip_kv and not is_youtu else None,
         (['self_attn.v_proj.weight', 'attn.v_proj.weight'], precision, f'layer_{i}_attn_v.weights', False) if not is_whisper and not skip_kv and not is_youtu else None,
         (['self_attn.o_proj.weight', 'attn.o_proj.weight', 'attn.c_proj.weight', 'self_attn.out_proj.weight'], precision, f'layer_{i}_attn_output.weights', False) if not is_whisper else None,
-        # OPF: per-head attention sinks (learned scalars) + QKV/O biases + MoE router.
         (['self_attn.sinks'], 'FP16', f'layer_{i}_attn_sinks.weights', False) if is_opf else None,
         (['self_attn.q_proj.bias'], precision, f'layer_{i}_attn_q.bias', False) if is_opf else None,
         (['self_attn.k_proj.bias'], precision, f'layer_{i}_attn_k.bias', False) if is_opf else None,

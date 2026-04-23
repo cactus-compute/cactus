@@ -440,7 +440,6 @@ def extract_complex_gemma_config(cfg, root_config):
     return result
 
 def extract_opf_config(cfg, config):
-    """Extract OpenAI Privacy Filter specific configuration."""
     rope_params = cfg_get(cfg, 'rope_parameters', {}) or {}
     id2label = cfg_get(cfg, 'id2label', {}) or {}
     num_labels = len(id2label) if id2label else int(cfg_get(cfg, 'num_labels', 0))

@@ -92,43 +92,42 @@ void compute_scatter_topk_node(GraphNode& node, const std::vector<std::unique_pt
     const auto& indices_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& values_buffer = get_input(node, 1, nodes, node_index_map);
 
-    if (indices_buffer.shape != values_buffer.shape) {
-        throw std::runtime_error("ScatterTopK requires indices and values with identical shapes");
+    if (indices_buffer.shape != values_buffer.shape || indices_buffer.shape.size() != 2) {
+        throw std::runtime_error("ScatterTopK expects 2D indices/values with matching shapes");
     }
-    if (indices_buffer.shape.size() != 2) {
-        throw std::runtime_error("ScatterTopK currently supports 2D tensors");
+    if (indices_buffer.precision != Precision::FP32) {
+        throw std::runtime_error("ScatterTopK expects FP32 indices");
     }
-
-    size_t batch_size = indices_buffer.shape[0];
-    size_t top_k = indices_buffer.shape[1];
-    size_t num_classes = node.params.num_classes;
-
-    if (num_classes == 0) {
-        throw std::runtime_error("ScatterTopK requires num_classes > 0");
-    }
-
-    float* output = node.output_buffer.data_as<float>();
-    std::fill(output, output + num_classes * batch_size, 0.0f);
-
-    if (indices_buffer.precision != Precision::FP32 || values_buffer.precision != Precision::FP32) {
-        throw std::runtime_error("ScatterTopK currently expects FP32 inputs");
-    }
+    const size_t batch_size = indices_buffer.shape[0];
+    const size_t top_k = indices_buffer.shape[1];
+    const size_t num_classes = node.params.num_classes;
+    if (num_classes == 0) throw std::runtime_error("ScatterTopK requires num_classes > 0");
 
     const float* indices_data = indices_buffer.data_as<float>();
-    const float* values_data = values_buffer.data_as<float>();
+    const bool values_are_fp16 = values_buffer.precision == Precision::FP16;
+    if (!values_are_fp16 && values_buffer.precision != Precision::FP32) {
+        throw std::runtime_error("ScatterTopK expects FP16 or FP32 values");
+    }
 
-    for (size_t b = 0; b < batch_size; ++b) {
-        for (size_t k = 0; k < top_k; ++k) {
-            float raw_index = indices_data[b * top_k + k];
-            if (!std::isfinite(raw_index)) {
-                throw std::runtime_error("ScatterTopK index is not finite");
+    auto scatter = [&](auto* output, auto value_of) {
+        using T = std::remove_reference_t<decltype(*output)>;
+        std::fill(output, output + batch_size * num_classes, T{});
+        for (size_t b = 0; b < batch_size; ++b) {
+            for (size_t k = 0; k < top_k; ++k) {
+                const float raw = indices_data[b * top_k + k];
+                if (!std::isfinite(raw)) throw std::runtime_error("ScatterTopK index is not finite");
+                const size_t expert = static_cast<size_t>(raw + 0.5f);
+                if (expert >= num_classes) throw std::runtime_error("ScatterTopK index out of range");
+                output[b * num_classes + expert] = value_of(b * top_k + k);
             }
-            size_t expert_index = static_cast<size_t>(raw_index + 0.5f);
-            if (expert_index >= num_classes) {
-                throw std::runtime_error("ScatterTopK index out of range");
-            }
-            float weight = values_data[b * top_k + k];
-            output[expert_index * batch_size + b] = weight;
         }
+    };
+
+    if (values_are_fp16) {
+        const __fp16* src = values_buffer.data_as<__fp16>();
+        scatter(node.output_buffer.data_as<__fp16>(), [&](size_t i) { return src[i]; });
+    } else {
+        const float* src = values_buffer.data_as<float>();
+        scatter(node.output_buffer.data_as<float>(), [&](size_t i) { return src[i]; });
     }
 }

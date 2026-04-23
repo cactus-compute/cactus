@@ -474,20 +474,17 @@ size_t CactusGraph::moe_layer_openai(size_t hidden,
     const auto& routing_buffer = get_output_buffer(routing_probs);
     const auto& topk_buffer = get_output_buffer(topk_indices);
 
-    if (hidden_buffer.shape.size() != 2) {
-        throw std::runtime_error("moe_layer_openai expects [tokens, hidden_dim] for hidden");
+    const size_t tokens = hidden_buffer.shape.size() == 2 ? hidden_buffer.shape[0] : 0;
+    if (tokens == 0 ||
+        routing_buffer.shape.size() != 2 || routing_buffer.shape[0] != tokens ||
+        topk_buffer.shape.size() != 2    || topk_buffer.shape[0] != tokens) {
+        throw std::runtime_error("moe_layer_openai expects 2D hidden/routing/topk aligned on tokens");
     }
-    if (routing_buffer.shape.size() != 2 || topk_buffer.shape.size() != 2) {
-        throw std::runtime_error("moe_layer_openai expects 2D routing_probs and topk_indices");
-    }
-    if (routing_buffer.shape[0] != hidden_buffer.shape[0] || topk_buffer.shape[0] != hidden_buffer.shape[0]) {
-        throw std::runtime_error("moe_layer_openai token dimension mismatch across inputs");
-    }
-    if (w1_weights.size() != num_experts || w3_weights.size() != num_experts || w2_weights.size() != num_experts) {
-        throw std::runtime_error("moe_layer_openai expects num_experts weight tensors for each of w1, w3, w2");
-    }
-    if (w1_biases.size() != num_experts || w3_biases.size() != num_experts || w2_biases.size() != num_experts) {
-        throw std::runtime_error("moe_layer_openai expects num_experts bias tensors for each of w1, w3, w2");
+    for (const auto* v : {&w1_weights, &w3_weights, &w2_weights,
+                          &w1_biases,  &w3_biases,  &w2_biases}) {
+        if (v->size() != num_experts) {
+            throw std::runtime_error("moe_layer_openai: weight/bias list size != num_experts");
+        }
     }
 
     std::vector<size_t> input_ids;
@@ -495,18 +492,14 @@ size_t CactusGraph::moe_layer_openai(size_t hidden,
     input_ids.push_back(hidden);
     input_ids.push_back(routing_probs);
     input_ids.push_back(topk_indices);
-    for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w1_weights[i]);
-    for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w3_weights[i]);
-    for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w2_weights[i]);
-    for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w1_biases[i]);
-    for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w3_biases[i]);
-    for (size_t i = 0; i < num_experts; ++i) input_ids.push_back(w2_biases[i]);
+    for (const auto* v : {&w1_weights, &w3_weights, &w2_weights,
+                          &w1_biases,  &w3_biases,  &w2_biases}) {
+        input_ids.insert(input_ids.end(), v->begin(), v->end());
+    }
 
     OpParams params;
     params.num_experts = num_experts;
     params.num_experts_per_tok = num_experts_per_tok;
-    params.normalize_routing = false;
-    params.epsilon = 0.0f;
     params.scalar = 1.0f;
     params.output_precision = hidden_buffer.precision;
     params.activation = Activation::OPENAI_GLU;
@@ -514,7 +507,6 @@ size_t CactusGraph::moe_layer_openai(size_t hidden,
     params.moe_has_biases = true;
     params.swiglu_alpha = swiglu_alpha;
     params.swiglu_limit = swiglu_limit;
-
     return add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params);
 }
 
@@ -613,7 +605,6 @@ size_t CactusGraph::attention_masked_with_sinks(size_t query, size_t key, size_t
     };
     params.attention_mask_is_additive = additive_mask;
     params.logit_cap = logit_cap;
-    params.has_attention_sinks = true;
     const auto& qs = get_output_buffer(query).shape;
     const auto& vs = get_output_buffer(value).shape;
     return add_node(OpType::ATTENTION, {query, key, value, mask, sinks}, {qs[0], qs[1], qs[2], vs[3]}, params);
@@ -1314,18 +1305,16 @@ size_t CactusGraph::scatter_topk(size_t indices, size_t values, size_t num_class
     const auto& indices_buffer = get_output_buffer(indices);
     const auto& values_buffer = get_output_buffer(values);
 
-    if (indices_buffer.shape != values_buffer.shape) {
-        throw std::runtime_error("ScatterTopK requires indices and values with identical shapes");
+    if (indices_buffer.shape != values_buffer.shape || indices_buffer.shape.size() != 2) {
+        throw std::runtime_error("ScatterTopK expects 2D indices/values with matching shapes");
     }
-    if (indices_buffer.shape.size() != 2) {
-        throw std::runtime_error("ScatterTopK currently supports 2D tensors [batch, top_k]");
-    }
-    if (indices_buffer.precision != Precision::FP32 || values_buffer.precision != Precision::FP32) {
-        throw std::runtime_error("ScatterTopK expects FP32 indices and values");
+    if (indices_buffer.precision != Precision::FP32 ||
+        (values_buffer.precision != Precision::FP16 && values_buffer.precision != Precision::FP32)) {
+        throw std::runtime_error("ScatterTopK expects FP32 indices and FP16/FP32 values");
     }
 
-    std::vector<size_t> output_shape = {num_classes, indices_buffer.shape[0]};
-    OpParams params{.output_precision = Precision::FP32, .num_classes = num_classes};
+    std::vector<size_t> output_shape = {indices_buffer.shape[0], num_classes};
+    OpParams params{.output_precision = values_buffer.precision, .num_classes = num_classes};
     return add_node(OpType::SCATTER_TOPK, {indices, values}, output_shape, params);
 }
 

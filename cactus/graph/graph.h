@@ -118,8 +118,6 @@ enum class Activation {
     RELU,
     SIGMOID,
     TANH,
-    // OpenAI-style clamped GLU: glu = clamp(gate, max=limit) * sigmoid(clamp(gate, max=limit) * alpha);
-    // merged = glu * (clamp(up, ±limit) + 1). Matches GPT-OSS / openai-privacy-filter MLPs.
     OPENAI_GLU
 };
 
@@ -358,20 +356,13 @@ struct OpParams {
     size_t num_experts_per_tok = 0;
     bool moe_gated = true;
     Activation activation = Activation::SILU;
-    // Extra MoE inputs present: per-expert biases on w1, w3, w2 (all or none).
     bool moe_has_biases = false;
-    // OpenAI-style GLU knobs — only consulted when `activation == OPENAI_GLU`.
     float swiglu_alpha = 1.702f;
     float swiglu_limit = 7.0f;
-    // YaRN RoPE knobs — only consulted when `rope_scaling_factor > 1` on a
-    // ROPE_GPTJ op. Defaults keep base-RoPE behavior for other callers.
     float rope_scaling_factor = 1.0f;
     float rope_beta_fast = 32.0f;
     float rope_beta_slow = 1.0f;
     size_t rope_original_ctx = 0;
-    // Marks an ATTENTION node as having a 5th (sinks) input in addition to
-    // the optional 4th mask input.
-    bool has_attention_sinks = false;
 
     std::vector<float> bias_values;
     std::vector<uint32_t> bias_indices;
@@ -595,10 +586,6 @@ public:
                      float epsilon,
                      float routed_scaling_factor,
                      Activation activation);
-    // OpenAI-style gated MoE: per-expert biases on w1/w3/w2 and OPENAI_GLU activation.
-    // `routing_probs` is expected to already hold the normalized top-k weights
-    // (e.g. `softmax(topk_vals) / top_k`), indexed by expert id over the full
-    // expert grid — same convention as the existing moe_layer.
     size_t moe_layer_openai(size_t hidden,
                             size_t routing_probs,
                             size_t topk_indices,
@@ -615,8 +602,6 @@ public:
     size_t rms_norm(size_t input, size_t weight, float epsilon = 1e-5f);
     size_t rope(size_t input, float theta, size_t position_offset = 0, ComputeBackend backend = ComputeBackend::CPU);
     size_t rope_gptj(size_t input, float theta, size_t position_offset = 0, size_t rot_dim = 0, ComputeBackend backend = ComputeBackend::CPU);
-    // YaRN-scaled RoPE (GPT-J interleaved layout). Falls back to base RoPE when
-    // `scaling_factor <= 1`. Matches the OPF / GPT-OSS YaRN variant used by HF.
     size_t rope_gptj_yarn(size_t input, float theta, float scaling_factor,
                           float beta_fast, float beta_slow, size_t original_ctx,
                           size_t position_offset = 0, size_t rot_dim = 0,
@@ -629,9 +614,6 @@ public:
                             bool is_causal = true, ComputeBackend backend = ComputeBackend::CPU,
                             bool additive_mask = false, size_t position_offset = 0, size_t window_size = 0,
                             float logit_cap = 0.0f);
-    // Attention with per-Q-head sink logits concatenated into the softmax
-    // column dimension, matching HF OPF's `eager_attention_forward`. `sinks`
-    // must be a [num_q_heads] FP16 tensor.
     size_t attention_masked_with_sinks(size_t query, size_t key, size_t value, size_t mask, size_t sinks,
                                        float scale, bool is_causal = true,
                                        ComputeBackend backend = ComputeBackend::CPU,

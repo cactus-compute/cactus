@@ -943,10 +943,6 @@ void cactus_add_bias_rows_f16(__fp16* dst, size_t rows, size_t cols, const __fp1
         });
 }
 
-// Fused OpenAI-style GLU merge used by `moe_layer_openai`:
-//   gate = min(gate, limit); up = clamp(up, +-limit);
-//   glu  = gate * sigmoid(alpha * gate);   merged = glu * (up + 1).
-// Runs in-place on `gate` (reads up side-by-side). fp32 sigmoid for stability.
 void cactus_openai_glu_merge_f16(__fp16* gate, const __fp16* up, size_t num_elements,
                                  float alpha, float limit) {
     CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,

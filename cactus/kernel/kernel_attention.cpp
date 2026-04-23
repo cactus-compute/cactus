@@ -367,14 +367,7 @@ static inline void cactus_attention_f16_fast(
     });
 }
 
-// Shared implementation of the masked + sinks attention kernel. When
-// `sinks == nullptr` this is the baseline attention (structurally identical to
-// the original `cactus_attention_f16`). When `sinks != nullptr` it prepends a
-// per-head virtual kv slot whose logit equals `sinks[q_head_idx]` — the slot
-// participates in the softmax denominator but contributes nothing to the
-// weighted value sum, matching the reference `eager_attention_forward` in the
-// HF modeling code (concat-sink-then-softmax-then-drop).
-static void cactus_attention_f16_impl(
+void cactus_attention_f16(
     const __fp16* queries,
     const __fp16* keys,
     const __fp16* values,
@@ -461,9 +454,6 @@ static void cactus_attention_f16_impl(
                     float running_max = -std::numeric_limits<float>::infinity();
                     float running_sum = 0.0f;
 
-                    // Seed online softmax with the sink logit: a virtual kv slot
-                    // that contributes `exp(sink - running_max)` to the denominator
-                    // but no vector to the value accumulator.
                     if (sinks != nullptr) {
                         running_max = static_cast<float>(sinks[q_head_idx]);
                         running_sum = 1.0f;
@@ -690,69 +680,6 @@ static void cactus_attention_f16_impl(
                     }
             }
         });
-}
-
-// Public wrapper preserving the original signature; forwards a null sink pointer.
-void cactus_attention_f16(
-    const __fp16* queries,
-    const __fp16* keys,
-    const __fp16* values,
-    __fp16* output,
-    size_t batch_size,
-    size_t seq_len,
-    size_t kv_seq_len,
-    size_t num_q_heads,
-    size_t num_kv_heads,
-    size_t head_dim,
-    float scale,
-    const __fp16* mask,
-    size_t position_offset,
-    size_t window_size,
-    bool is_causal,
-    bool mask_is_additive,
-    bool mask_per_head,
-    size_t v_head_dim,
-    float logit_cap
-) {
-    cactus_attention_f16_impl(queries, keys, values, output,
-                              batch_size, seq_len, kv_seq_len,
-                              num_q_heads, num_kv_heads, head_dim,
-                              scale, mask, position_offset, window_size,
-                              is_causal, mask_is_additive, mask_per_head,
-                              v_head_dim, logit_cap, /*sinks=*/nullptr);
-}
-
-// Variant exposing per-q-head attention sinks. The sinks tensor has shape
-// `[num_q_heads]` (fp16) and is interpreted as a virtual extra kv slot per
-// head during softmax; matches HF OPF's `eager_attention_forward`.
-void cactus_attention_f16_with_sinks(
-    const __fp16* queries,
-    const __fp16* keys,
-    const __fp16* values,
-    const __fp16* sinks,
-    __fp16* output,
-    size_t batch_size,
-    size_t seq_len,
-    size_t kv_seq_len,
-    size_t num_q_heads,
-    size_t num_kv_heads,
-    size_t head_dim,
-    float scale,
-    const __fp16* mask,
-    size_t position_offset,
-    size_t window_size,
-    bool is_causal,
-    bool mask_is_additive,
-    bool mask_per_head,
-    size_t v_head_dim,
-    float logit_cap
-) {
-    cactus_attention_f16_impl(queries, keys, values, output,
-                              batch_size, seq_len, kv_seq_len,
-                              num_q_heads, num_kv_heads, head_dim,
-                              scale, mask, position_offset, window_size,
-                              is_causal, mask_is_additive, mask_per_head,
-                              v_head_dim, logit_cap, sinks);
 }
 
 void cactus_attention_hybrid_int8_fp16(
@@ -1251,8 +1178,6 @@ struct RoPECacheF16 {
 
 static thread_local RoPECacheF16 rope_cache_f16;
 
-// YaRN cache: parameters change often enough (model-specific) that we tag with
-// the scaling factor + ramp bounds + original ctx and invalidate if any differ.
 struct RoPEYarnCacheF16 {
     std::vector<__fp16> cos_table;
     std::vector<__fp16> sin_table;
@@ -1268,15 +1193,6 @@ struct RoPEYarnCacheF16 {
 
 static thread_local RoPEYarnCacheF16 rope_yarn_cache_f16;
 
-// YaRN NTK-by-parts inv-freq interpolation plus a cos/sin concentration factor.
-// Matches the OPF reference implementation in `opf/_model/model.py`:
-//   concentration = 0.1 * log(scaling_factor) + 1            (if scaling_factor > 1)
-//   low  = d_half * log(original_ctx / (beta_fast * 2π)) / log(theta)
-//   high = d_half * log(original_ctx / (beta_slow * 2π)) / log(theta)
-//   ramp(i) = clamp((i - low) / (high - low), 0, 1)
-//   inv_freq(i) = extrapolation * (1 - ramp) + interpolation * ramp    (HF convention)
-// Note: HF's rope-util encodes `mask = 1 - ramp` and uses
-// `interp * (1 - mask) + extrap * mask` — algebraically identical to the above.
 void precompute_rope_tables_yarn_f16(size_t seq_len, size_t head_dim, float theta,
                                      float scaling_factor, float beta_fast, float beta_slow,
                                      size_t original_ctx) {
@@ -1527,10 +1443,6 @@ void cactus_gpt_j_rope_f16(
         });
 }
 
-// YaRN-scaled GPT-J-layout RoPE. Identical rotation math to the base variant;
-// the only difference is the precomputed cos/sin table, which uses NTK-by-parts
-// inv_freq interpolation and a concentration multiplier (see
-// precompute_rope_tables_yarn_f16).
 void cactus_gpt_j_yarn_rope_f16(
     const __fp16* input,
     __fp16* output,

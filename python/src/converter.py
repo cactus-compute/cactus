@@ -501,50 +501,38 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
         gc.collect()
 
     if detected_model_type == 'opf':
-        # Classifier head + MoE experts stored as packed 3D tensors per layer.
+        def _save(tensor, name, prec):
+            save_tensor_with_header(tensor, output_dir / name, prec, transpose=False,
+                                    stats_tracker=quantization_stats, args=args,
+                                    model_type=detected_model_type)
+
         for name, save_name in OPF_GLOBAL_WEIGHTS:
             if name in state_dict:
-                save_tensor_with_header(
-                    state_dict[name], output_dir / save_name, precision, transpose=False,
-                    stats_tracker=quantization_stats, args=args, model_type=detected_model_type
-                )
+                _save(state_dict[name], save_name, precision)
                 saved_tensor_full_names.add(name)
 
         num_experts = int(model_config.get('num_experts', 0))
         intermediate_size = int(model_config.get('moe_intermediate_size', model_config.get('ffn_intermediate_dim', 0)))
         if num_experts <= 0 or intermediate_size <= 0:
             raise ValueError(f"OPF requires num_experts>0 and intermediate_size>0 (got {num_experts}, {intermediate_size})")
+
         for i in range(num_layers):
             prefix = f'model.layers.{i}.mlp.experts.'
             gate_up = state_dict.get(prefix + 'gate_up_proj')
             gate_up_bias = state_dict.get(prefix + 'gate_up_proj_bias')
             down = state_dict.get(prefix + 'down_proj')
             down_bias = state_dict.get(prefix + 'down_proj_bias')
-            if gate_up is None or gate_up_bias is None or down is None or down_bias is None:
+            if any(t is None for t in (gate_up, gate_up_bias, down, down_bias)):
                 raise ValueError(f"OPF layer {i}: missing packed expert tensors under {prefix}")
 
-            # gate_up_proj[e]: HF [H, 2I], chunked at -1 into gate+up; cactus expects w1/w3 as [I, H].
             for e in range(num_experts):
-                gate_e = gate_up[e, :, :intermediate_size].transpose(0, 1).contiguous()
-                up_e = gate_up[e, :, intermediate_size:].transpose(0, 1).contiguous()
-                gate_b = gate_up_bias[e, :intermediate_size].contiguous()
-                up_b = gate_up_bias[e, intermediate_size:].contiguous()
-                # down_proj[e]: HF [I, H]; cactus expects w2 as [H, I].
-                down_e = down[e].transpose(0, 1).contiguous()
-                down_b = down_bias[e].contiguous()
-
-                save_tensor_with_header(gate_e, output_dir / f'layer_{i}_moe_expert_{e}_w1.weights', precision, transpose=False,
-                                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
-                save_tensor_with_header(up_e, output_dir / f'layer_{i}_moe_expert_{e}_w3.weights', precision, transpose=False,
-                                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
-                save_tensor_with_header(down_e, output_dir / f'layer_{i}_moe_expert_{e}_w2.weights', precision, transpose=False,
-                                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
-                save_tensor_with_header(gate_b, output_dir / f'layer_{i}_moe_expert_{e}_w1.bias', 'FP16', transpose=False,
-                                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
-                save_tensor_with_header(up_b, output_dir / f'layer_{i}_moe_expert_{e}_w3.bias', 'FP16', transpose=False,
-                                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
-                save_tensor_with_header(down_b, output_dir / f'layer_{i}_moe_expert_{e}_w2.bias', 'FP16', transpose=False,
-                                        stats_tracker=quantization_stats, args=args, model_type=detected_model_type)
+                base = f'layer_{i}_moe_expert_{e}_'
+                _save(gate_up[e, :, :intermediate_size].transpose(0, 1).contiguous(), base + 'w1.weights', precision)
+                _save(gate_up[e, :, intermediate_size:].transpose(0, 1).contiguous(), base + 'w3.weights', precision)
+                _save(down[e].transpose(0, 1).contiguous(),                            base + 'w2.weights', precision)
+                _save(gate_up_bias[e, :intermediate_size].contiguous(),                base + 'w1.bias', 'FP16')
+                _save(gate_up_bias[e, intermediate_size:].contiguous(),                base + 'w3.bias', 'FP16')
+                _save(down_bias[e].contiguous(),                                       base + 'w2.bias', 'FP16')
 
             for key in ('gate_up_proj', 'gate_up_proj_bias', 'down_proj', 'down_proj_bias'):
                 saved_tensor_full_names.add(prefix + key)
