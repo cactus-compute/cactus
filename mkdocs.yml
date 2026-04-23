@@ -102,6 +102,7 @@ nav:
   - Blog:
     - All Posts: blog/README.md
     - "TurboQuant-H": blog/turboquant-h.md
+    - "Pruning Gemma 4": blog/gemma4-pruning.md
     - "Gemma 4 on Cactus": blog/gemma4.md
     - Hybrid Transcription: blog/hybrid_transcription.md
     - "LFM2-24B on Mac": blog/lfm2_24b_a2b.md
