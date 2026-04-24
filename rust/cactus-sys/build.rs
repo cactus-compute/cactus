@@ -84,6 +84,7 @@ fn link_platform_dependencies() {
     }
     println!("cargo:rustc-link-lib=curl");
     println!("cargo:rustc-link-lib=c++");
+    link_vendored_xgrammar();
 }
 
 #[cfg(target_os = "linux")]
@@ -92,10 +93,31 @@ fn link_platform_dependencies() {
     println!("cargo:rustc-link-lib=m");
     println!("cargo:rustc-link-lib=pthread");
     println!("cargo:rustc-link-lib=curl");
+    link_vendored_xgrammar();
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn link_platform_dependencies() {}
+
+fn link_vendored_xgrammar() {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let repo_root = manifest_dir.ancestors().nth(2).unwrap();
+    let xgrammar_root = repo_root.join("libs/xgrammar");
+
+    let xgrammar_lib = if cfg!(target_os = "macos") {
+        xgrammar_root.join("macos/libxgrammar.a")
+    } else if cfg!(target_os = "linux") {
+        xgrammar_root.join("linux/aarch64/libxgrammar.a")
+    } else {
+        xgrammar_root.join("macos/libxgrammar.a")
+    };
+
+    if xgrammar_lib.exists() {
+        let xgrammar_dir = xgrammar_root.join("macos");
+        println!("cargo:rustc-link-search=native={}", xgrammar_dir.display());
+        println!("cargo:rustc-link-lib=static=xgrammar");
+    }
+}
 
 fn generate_bindings(cactus_src: &Path) {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
