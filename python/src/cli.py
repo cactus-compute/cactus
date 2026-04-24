@@ -748,6 +748,7 @@ def cmd_build(args):
     cactus_dir = PROJECT_ROOT / "cactus"
     lib_path = cactus_dir / "build" / "libcactus.a"
     vendored_curl = PROJECT_ROOT / "libs" / "curl" / "macos" / "libcurl.a"
+    vendored_xgrammar = PROJECT_ROOT / "libs" / "xgrammar" / "macos" / "libxgrammar.a"
 
     print_color(YELLOW, "Building Cactus library...")
     build_script = cactus_dir / "build.sh"
@@ -806,14 +807,20 @@ def cmd_build(args):
             print_color(RED, f"Error: vendored libcurl not found at {vendored_curl}")
             print("Build it first and place it in libs/curl/macos/libcurl.a")
             return 1
+        if not vendored_xgrammar.exists():
+            print_color(RED, f"Error: vendored xgrammar not found at {vendored_xgrammar}")
+            print("Build it first and place it in libs/xgrammar/macos/libxgrammar.a")
+            return 1
         compiler = "clang++"
         cmd = [
             compiler, "-std=c++20", "-O3",
             "-DACCELERATE_NEW_LAPACK",
             f"-I{PROJECT_ROOT}",
+            f"-I{PROJECT_ROOT / 'libs' / 'xgrammar' / 'include'}",
             *sdl2_flags,
             str(chat_cpp),
             str(lib_path),
+            str(vendored_xgrammar),
             "-o", "chat",
             str(vendored_curl),
             "-framework", "Accelerate",
@@ -858,9 +865,11 @@ def cmd_build(args):
                 compiler, "-std=c++20", "-O3",
                 "-DACCELERATE_NEW_LAPACK",
                 f"-I{PROJECT_ROOT}",
+                f"-I{PROJECT_ROOT / 'libs' / 'xgrammar' / 'include'}",
                 *sdl2_flags,
                 str(asr_cpp),
                 str(lib_path),
+                str(vendored_xgrammar),
                 "-o", "asr",
                 str(vendored_curl),
                 "-framework", "Accelerate",
@@ -1549,7 +1558,7 @@ def cmd_test(args):
     if getattr(args, 'exhaustive', False):
         cmd.append("--exhaustive")
     test_filter = args.only
-    for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance']:
+    for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance', 'grammar']:
         if getattr(args, _test_name, False):
             test_filter = _test_name
             break
@@ -2173,7 +2182,7 @@ def create_parser():
     test_parser.add_argument('--exhaustive', action='store_true',
                              help='Run exhaustive golden tests for all model families and precisions')
     test_parser.add_argument('--only', help='(deprecated, use --<test_name> instead) Only run the specified test')
-    for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance']:
+    for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance', 'grammar']:
         test_parser.add_argument(f'--{_test_name}', action='store_true',
                                  help=f'Only run the {_test_name} tests')
     test_parser.add_argument('--enable-telemetry', action='store_true',

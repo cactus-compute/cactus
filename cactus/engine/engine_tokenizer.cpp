@@ -13,6 +13,23 @@ namespace cactus {
 namespace engine {
 
 namespace {
+    
+bool model_uses_bpe_tokenizer(const std::string& merges_file) {
+    std::ifstream merges_check(merges_file);
+    if (!merges_check.is_open()) {
+        return false;
+    }
+
+    std::string line;
+    int line_count = 0;
+    while (std::getline(merges_check, line) && line_count < 10) {
+        if (!line.empty() && line[0] != '#') {
+            return true;
+        }
+        ++line_count;
+    }
+    return false;
+}
 
 std::string trim_copy(const std::string& value) {
     size_t start = value.find_first_not_of(" \t\r\n");
@@ -231,6 +248,27 @@ TokenizerRuntimeConfig load_tokenizer_runtime_config(const std::string& config_f
     }
 
     return config;
+}
+
+std::unique_ptr<Tokenizer> create_tokenizer_from_model_dir(const std::string& model_dir) {
+    const std::string vocab_file = model_dir + "/vocab.txt";
+    const std::string merges_file = model_dir + "/merges.txt";
+    const std::string config_file = model_dir + "/tokenizer_config.txt";
+
+    TokenizerRuntimeConfig runtime_config = load_tokenizer_runtime_config(config_file);
+
+    std::unique_ptr<Tokenizer> tokenizer;
+    if (runtime_config.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::BPE ||
+        (runtime_config.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::UNKNOWN && model_uses_bpe_tokenizer(merges_file))) {
+        tokenizer = std::make_unique<BPETokenizer>();
+    } else {
+        tokenizer = std::make_unique<SPTokenizer>();
+    }
+
+    if (!tokenizer->load_vocabulary_with_config(vocab_file, merges_file, config_file)) {
+        return nullptr;
+    }
+    return tokenizer;
 }
 
 void load_special_tokens_map(const std::string& config_file, std::unordered_map<std::string, uint32_t>& special_tokens) {

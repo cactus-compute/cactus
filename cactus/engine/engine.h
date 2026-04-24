@@ -5,7 +5,16 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
+#include <thread>
 #include <cstdint>
+
+#include <xgrammar/compiler.h>
+#include <xgrammar/config.h>
+#include <xgrammar/exception.h>
+#include <xgrammar/grammar.h>
+#include <xgrammar/matcher.h>
+#include <xgrammar/object.h>
+#include <xgrammar/tokenizer_info.h>
 
 #include "../graph/graph.h"
 
@@ -215,6 +224,69 @@ struct Config {
     std::string to_json() const;
 };
 
+struct GrammarVocabulary {
+    enum class Type {
+        RAW,
+        BYTE_LEVEL,
+        BYTE_FALLBACK
+    };
+
+    std::vector<std::string> encoded_vocab;
+    Type vocab_type = Type::RAW;
+    size_t vocab_size;
+    std::vector<uint32_t> stop_token_ids;
+};
+
+class Grammar {
+public:
+    Grammar();
+    ~Grammar() = default;
+
+    static Grammar gbnf(const std::string& gbnf, const std::string& start_symbol = "root");
+    static Grammar json();
+    static Grammar universal();
+    static Grammar json_schema(
+        const std::string& json_schema,
+        bool any_whitespace = true,
+        int indent = 2,
+        std::pair<std::string, std::string> separators = {",", ":"},
+        bool strict_mode = true,
+        int max_whitespace_count = -1
+    );
+    static Grammar regex(const std::string& regex);
+    static Grammar structural_tag(const std::string& structural_tag_json);
+    static Grammar unite(const std::vector<Grammar>& grammars);
+    static Grammar concatenate(const std::vector<Grammar>& grammars);
+
+    bool is_empty() const;
+    bool is_universal() const;
+
+    const xgrammar::Grammar& raw_value() const;
+
+private:
+    explicit Grammar(xgrammar::Grammar raw_grammar);
+
+    xgrammar::Grammar grammar;
+    bool is_universal_ = false;
+};
+
+class GrammarMatcher {
+public:
+    GrammarMatcher(
+        const Grammar* grammar,
+        const GrammarVocabulary& tokenizer_info,
+        int max_threads = std::thread::hardware_concurrency()
+    );
+    ~GrammarMatcher() = default;
+
+    void reset();
+    bool accept(uint32_t token_id, bool log_rejection = true);
+    bool next_bitmask(std::vector<int32_t>& token_bitmask, size_t logits_buffer_size);
+
+private:
+    xgrammar::GrammarMatcher matcher;
+    xgrammar::TokenizerInfo tokenizer_info;
+};
 
 
 struct MergeRule {
@@ -324,10 +396,12 @@ public:
     virtual std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const;
     virtual std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "", bool enable_thinking_if_supported = false) const;
 
+    virtual GrammarVocabulary get_grammar_vocabulary() const;
     virtual uint32_t get_vocab_size() const = 0;
     virtual uint32_t get_unk_token() const = 0;
     virtual uint32_t get_bos_token() const = 0;
     virtual uint32_t get_eos_token() const = 0;
+    virtual const std::vector<std::string>& get_encoded_vocab() const = 0;
     virtual bool has_chat_template() const { return has_chat_template_; }
     std::string get_default_stop_sequence() const;
 
@@ -382,6 +456,7 @@ public:
     uint32_t get_unk_token() const override { return unk_token_id_; }
     uint32_t get_bos_token() const override { return bos_token_id_; }
     uint32_t get_eos_token() const override { return eos_token_id_; }
+    const std::vector<std::string>& get_encoded_vocab() const override { return id_to_token_; }
 
 private:
     std::unordered_map<std::string, uint32_t> token_to_id_;
@@ -420,6 +495,8 @@ private:
     void load_special_tokens(const std::string& config_file);
 };
 
+std::unique_ptr<Tokenizer> create_tokenizer_from_model_dir(const std::string& model_dir);
+
 class SPTokenizer : public Tokenizer {
 public:
     SPTokenizer();
@@ -434,6 +511,7 @@ public:
     uint32_t get_unk_token() const override { return unk_token_id_; }
     uint32_t get_bos_token() const override { return bos_token_id_; }
     uint32_t get_eos_token() const override { return eos_token_id_; }
+    const std::vector<std::string>& get_encoded_vocab() const override { return id_to_token_; }
 
 private:
     struct TrieNode {
