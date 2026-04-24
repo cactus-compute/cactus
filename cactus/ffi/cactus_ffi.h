@@ -20,6 +20,7 @@ extern "C" {
 typedef void* cactus_model_t;
 typedef void* cactus_index_t;
 typedef void* cactus_stream_transcribe_t;
+typedef void* cactus_grammar_t;
 
 typedef void (*cactus_token_callback)(const char* token, uint32_t token_id, void* user_data);
 
@@ -251,7 +252,7 @@ typedef uint64_t cactus_node_t;
 typedef struct {
     int32_t precision;
     size_t rank;
-    size_t shape[8]; 
+    size_t shape[8];
     size_t num_elements;
     size_t byte_size;
 } cactus_tensor_info_t;
@@ -446,6 +447,33 @@ CACTUS_FFI_EXPORT int cactus_graph_get_output_ptr(cactus_graph_t graph,
 cactus_node_t node, void** out_ptr);
 CACTUS_FFI_EXPORT int cactus_graph_get_output_info(cactus_graph_t graph,
 cactus_node_t node, cactus_tensor_info_t* out_info);
+
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_gbnf(const char* gbnf, const char* start_symbol);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_json();
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_empty();
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_universal();
+
+typedef struct cactus_grammar_json_schema_options_t {
+    bool any_whitespace;                    // negates indent and separators if true
+    int indent;
+    const char* separators[2];
+    bool strict_mode;
+    int max_whitespace_count;               // -1 means no limit
+} cactus_grammar_json_schema_options_t;
+
+CACTUS_FFI_EXPORT cactus_grammar_json_schema_options_t cactus_grammar_json_schema_default_options(void);
+
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_json_schema(
+    const char* json_schema,
+    cactus_grammar_json_schema_options_t options
+);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_regex(const char* regex);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_structural_tag(const char* structural_tag_json);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_union(cactus_grammar_t* grammars, size_t num_grammars);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_concatenate(cactus_grammar_t* grammars, size_t num_grammars);
+CACTUS_FFI_EXPORT bool cactus_grammar_is_empty(cactus_grammar_t grammar);
+CACTUS_FFI_EXPORT bool cactus_grammar_is_universal(cactus_grammar_t grammar);
+CACTUS_FFI_EXPORT void cactus_grammar_destroy(cactus_grammar_t grammar);
 
 #ifdef __cplusplus
 }
