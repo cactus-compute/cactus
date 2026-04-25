@@ -302,6 +302,7 @@ protected:
     
     size_t build_vision_mlp(CactusGraph* gb, size_t hidden_states, uint32_t layer_idx,
                            ComputeBackend backend);
+    void ensure_cpu_vision_weights_loaded(CactusGraph* gb);
 
     void load_weights_to_graph(CactusGraph* gb) override;
     size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
@@ -346,6 +347,7 @@ protected:
 
     std::unique_ptr<npu::NPUEncoder> npu_encoder_;
     bool use_npu_encoder_ = false;
+    bool cpu_vision_weights_loaded_ = false;
 };
 
 

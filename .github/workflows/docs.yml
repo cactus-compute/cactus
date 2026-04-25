@@ -1,0 +1,52 @@
+name: Deploy Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - blog/**
+      - mkdocs.yml
+      - .github/assemble-docs.sh
+      - .github/docs-overrides/**
+      - .github/workflows/docs.yml
+      - python/README.md
+      - apple/README.md
+      - android/README.md
+      - flutter/README.md
+      - rust/README.md
+      - README.md
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: pip install "mkdocs==1.6.1" "mkdocs-material==9.7.5" "mike==2.1.4"
+
+      - name: Build and deploy docs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          TAG=$(cat CACTUS_VERSION | tr -d '[:space:]')
+          bash .github/assemble-docs.sh "$TAG"
+          mike deploy "$TAG" latest --update-aliases --push
+
+          git checkout gh-pages
+          echo "docs.cactuscompute.com" > CNAME
+          git add CNAME
+          git commit -m "Preserve CNAME for custom domain" --allow-empty || true
+          git push origin gh-pages
+          git checkout -

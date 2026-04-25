@@ -490,6 +490,66 @@ size_t similarity = fixture.graph().divide(dot_product, fixture.graph().multiply
 3. **Test edge cases**: Include tests for broadcasting, empty tensors, and large inputs
 4. **Check precision**: Test operations with different precision types
 
+### Contributing Graph Operations
+1. ** Define the op in core graph types ** 
+Add the new OpType in `cactus/graph/graph.h`
+If the op needs additional parameters, add the fields to OpParams in the same file 
+
+2. ** Add a graph builder API **  
+Add a builder method in `cactus/graph/graph_builder.cpp` and its declaration in 
+`cactus/graph/graph.h`
+Follow the pattern of existing builder methods, e.g. for a new "relu" op:
+```cpp
+size_t CactusGraph::relu(size_t input) {
+    OpParams params;
+    return add_node(OpType::RELU, {input}, params);
+}
+```
+3. ** Implement the op in the execution engine **
+Implement the krnel or graph op code in the relevant file, usually in `cactus/kernel/`
+Register the new op in the dispatch table in `cactus/graph/graph_execute.cpp` for the supported backends (CPU, NPU)
+
+4. ** Export op in FFI bindings **
+- header: `cactus/ffi/cactus_ffi.h`
+- implementation: `cactus/ffi/cactus_ffi.cpp`
+
+5. ** Add python ctypes declaration ** 
+Add `_lib.cactus_graph_my_new_op.argtypes/restype` in `python/src/cactus.py`
+
+6. ** Add python graph wrapper ** 
+Add `Graph.my_new_op(...)` in `python/src/graph.py`, and optionally a Tensor
+  convenience method.
+
+7. ** Add serialization schema entry if needed **
+If your op has extra parameters that need to be saved/loaded that are not in the 
+default node, add new ParamField enum values. 
+
+If the op has any graph-persistent params:
+
+- add any new ParamField enum values in cactus/graph/graph_param_io.cpp
+- add read/write logic for those fields
+- add the op’s schema entry in `op_schema(...)`
+
+If the op has no params, you may not need to touch schema beyond maybe adding an
+empty schema entry.
+
+The syntax pattern there is:
+```
+{OpType::MY_NEW_OP, {
+    {ParamField::Alpha, FieldPersistence::Persistent},
+    {ParamField::Mode, FieldPersistence::Persistent},
+}},
+```
+8. ** Add test coverage **
+Add unit tests to `tests/test_graph.cpp` covering the native graph function, and 
+add python tests in `python/tests/test_graph.py` covering the Python API and end-to-end execution.
+
+and then support those fields in `write_field(...)` / `read_field(...)`.
+
+If a field is runtime-only, mark it RuntimeOnly instead of Persistent.
+
+
+
 ### Error Handling
 ```cpp
 try {

@@ -45,6 +45,156 @@ TokenizerRuntimeConfig::Decoder parse_decoder(const std::string& value) {
     return TokenizerRuntimeConfig::Decoder::NONE;
 }
 
+void skip_json_whitespace(const std::string& json, size_t& pos) {
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) {
+        ++pos;
+    }
+}
+
+bool extract_added_token_object(const std::string& json, size_t& pos, std::string& out_object) {
+    skip_json_whitespace(json, pos);
+    if (pos >= json.size() || json[pos] != '{') {
+        return false;
+    }
+
+    size_t start = pos;
+    size_t depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+
+    while (pos < json.size()) {
+        char c = json[pos++];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == '"') {
+            in_string = !in_string;
+            continue;
+        }
+        if (in_string) {
+            continue;
+        }
+        if (c == '{') {
+            ++depth;
+        } else if (c == '}') {
+            if (depth == 0) {
+                return false;
+            }
+            --depth;
+            if (depth == 0) {
+                out_object = json.substr(start, pos - start);
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool parse_added_token_entry(const std::string& object, std::string& token_content, uint32_t& token_id,
+                             bool& is_special) {
+    token_content.clear();
+    token_id = 0;
+    is_special = false;
+
+    size_t id_key = object.find("\"id\"");
+    if (id_key == std::string::npos) {
+        return false;
+    }
+    size_t id_colon = object.find(':', id_key);
+    if (id_colon == std::string::npos) {
+        return false;
+    }
+    size_t id_pos = id_colon + 1;
+    skip_json_whitespace(object, id_pos);
+    size_t id_end = id_pos;
+    while (id_end < object.size() && std::isdigit(static_cast<unsigned char>(object[id_end]))) {
+        ++id_end;
+    }
+    if (id_end == id_pos) {
+        return false;
+    }
+    token_id = static_cast<uint32_t>(std::stoul(object.substr(id_pos, id_end - id_pos)));
+
+    size_t content_key = object.find("\"content\"");
+    if (content_key == std::string::npos) {
+        return false;
+    }
+    size_t content_colon = object.find(':', content_key);
+    if (content_colon == std::string::npos) {
+        return false;
+    }
+    size_t content_pos = object.find('"', content_colon + 1);
+    if (content_pos == std::string::npos) {
+        return false;
+    }
+    ++content_pos;
+    token_content = extract_json_string(object, content_pos);
+
+    size_t special_key = object.find("\"special\"");
+    if (special_key != std::string::npos) {
+        size_t special_colon = object.find(':', special_key);
+        if (special_colon != std::string::npos) {
+            size_t special_pos = special_colon + 1;
+            skip_json_whitespace(object, special_pos);
+            is_special = object.compare(special_pos, 4, "true") == 0;
+        }
+    }
+
+    return true;
+}
+
+void load_tokenizer_json_added_special_tokens(
+    const std::string& tokenizer_json_path,
+    std::unordered_map<std::string, uint32_t>& special_tokens) {
+    std::ifstream file(tokenizer_json_path);
+    if (!file.is_open()) {
+        return;
+    }
+
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    size_t pos = content.find("\"added_tokens\"");
+    if (pos == std::string::npos) {
+        return;
+    }
+
+    pos = content.find('[', pos);
+    if (pos == std::string::npos) {
+        return;
+    }
+    ++pos;
+
+    while (pos < content.size()) {
+        skip_json_whitespace(content, pos);
+        if (pos >= content.size() || content[pos] == ']') {
+            break;
+        }
+
+        std::string object;
+        if (!extract_added_token_object(content, pos, object)) {
+            ++pos;
+            continue;
+        }
+
+        std::string token_content;
+        uint32_t token_id = 0;
+        bool is_special = false;
+        if (parse_added_token_entry(object, token_content, token_id, is_special) && is_special) {
+            special_tokens[token_content] = token_id;
+        }
+
+        skip_json_whitespace(content, pos);
+        if (pos < content.size() && content[pos] == ',') {
+            ++pos;
+        }
+    }
+}
+
 }  // namespace
 
 TokenizerRuntimeConfig load_tokenizer_runtime_config(const std::string& config_file) {
@@ -87,44 +237,47 @@ void load_special_tokens_map(const std::string& config_file, std::unordered_map<
     special_tokens.clear();
 
     std::ifstream file(config_file);
-    if (!file.is_open()) {
-        return;
+    if (file.is_open()) {
+        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+        size_t pos = content.find("\"special_tokens\"");
+        if (pos != std::string::npos) {
+            pos = content.find("{", pos);
+            if (pos != std::string::npos) {
+                size_t end_pos = content.find("}", pos);
+                if (end_pos != std::string::npos) {
+                    std::string special_tokens_section = content.substr(pos + 1, end_pos - pos - 1);
+                    std::istringstream iss(special_tokens_section);
+                    std::string line;
+
+                    while (std::getline(iss, line)) {
+                        size_t colon_pos = line.find(":");
+                        if (colon_pos == std::string::npos) continue;
+
+                        std::string id_part = line.substr(0, colon_pos);
+                        std::string token_part = line.substr(colon_pos + 1);
+
+                        size_t id_start = id_part.find("\"");
+                        size_t id_end = id_part.find("\"", id_start + 1);
+                        if (id_start == std::string::npos || id_end == std::string::npos) continue;
+
+                        uint32_t token_id =
+                            static_cast<uint32_t>(std::stoul(id_part.substr(id_start + 1, id_end - id_start - 1)));
+
+                        size_t token_start = token_part.find("\"");
+                        if (token_start == std::string::npos) continue;
+                        size_t value_pos = token_start + 1;
+                        std::string token_content = extract_json_string(token_part, value_pos);
+                        special_tokens[token_content] = token_id;
+                    }
+                }
+            }
+        }
     }
 
-    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-
-    size_t pos = content.find("\"special_tokens\"");
-    if (pos == std::string::npos) return;
-
-    pos = content.find("{", pos);
-    if (pos == std::string::npos) return;
-
-    size_t end_pos = content.find("}", pos);
-    if (end_pos == std::string::npos) return;
-
-    std::string special_tokens_section = content.substr(pos + 1, end_pos - pos - 1);
-    std::istringstream iss(special_tokens_section);
-    std::string line;
-
-    while (std::getline(iss, line)) {
-        size_t colon_pos = line.find(":");
-        if (colon_pos == std::string::npos) continue;
-
-        std::string id_part = line.substr(0, colon_pos);
-        std::string token_part = line.substr(colon_pos + 1);
-
-        size_t id_start = id_part.find("\"");
-        size_t id_end = id_part.find("\"", id_start + 1);
-        if (id_start == std::string::npos || id_end == std::string::npos) continue;
-
-        uint32_t token_id = static_cast<uint32_t>(std::stoul(id_part.substr(id_start + 1, id_end - id_start - 1)));
-
-        size_t token_start = token_part.find("\"");
-        if (token_start == std::string::npos) continue;
-        size_t value_pos = token_start + 1;
-        std::string token_content = extract_json_string(token_part, value_pos);
-        special_tokens[token_content] = token_id;
-    }
+    size_t slash_pos = config_file.find_last_of("/\\");
+    std::string dir = (slash_pos == std::string::npos) ? "." : config_file.substr(0, slash_pos);
+    load_tokenizer_json_added_special_tokens(dir + "/tokenizer.json", special_tokens);
 }
 
 std::vector<std::string> split_with_special_tokens(const std::string& text,

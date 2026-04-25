@@ -1,4 +1,5 @@
 #include "graph.h"
+#include "graph_param_io.h"
 #include <fstream>
 #include <stdexcept>
 #include <sys/mman.h>
@@ -35,14 +36,6 @@ namespace {
       out.write(reinterpret_cast<const char*>(&v), sizeof(v));
     }
 
-    inline void write_i32(std::ostream& out, int32_t v) {
-      out.write(reinterpret_cast<const char*>(&v), sizeof(v));
-    }
-
-    inline void write_f32(std::ostream& out, float v) {
-      out.write(reinterpret_cast<const char*>(&v), sizeof(v));
-    }
-
     void write_size_vector(std::ostream& out, const std::vector<size_t>& values) {
       uint32_t size = static_cast<uint32_t>(values.size());
       write_u32(out, size);
@@ -56,118 +49,6 @@ namespace {
       write_u32(out, size);
       for (uint32_t v : values) {
         write_u32(out, v);
-      }
-    }
-
-    void write_op_params(std::ostream& out, const GraphFile::NodeEntry& node) {
-      uint32_t param_flags = 0;
-
-      constexpr uint32_t PARAM_SCALAR            = 1u << 0;
-      constexpr uint32_t PARAM_AXIS              = 1u << 1;
-      constexpr uint32_t PARAM_NEW_SHAPE         = 1u << 2;
-      constexpr uint32_t PARAM_PRETRANSPOSED_RHS = 1u << 3;
-      constexpr uint32_t PARAM_BACKEND           = 1u << 4;
-      constexpr uint32_t PARAM_SLICE             = 1u << 5;
-      constexpr uint32_t PARAM_EPSILON           = 1u << 6;
-      constexpr uint32_t PARAM_NUM_GROUPS        = 1u << 7;
-      constexpr uint32_t PARAM_INDEX_VALUE       = 1u << 8;
-
-      switch (node.op_type) {
-        case OpType::POW:
-        case OpType::SCALAR_ADD:
-        case OpType::SCALAR_SUBTRACT:
-        case OpType::SCALAR_MULTIPLY:
-        case OpType::SCALAR_DIVIDE:
-          param_flags |= PARAM_SCALAR;
-          break;
-        default:
-          break;
-      }
-
-      switch (node.op_type) {
-        case OpType::SOFTMAX:
-        case OpType::SUM:
-        case OpType::MEAN:
-        case OpType::VARIANCE:
-        case OpType::MIN:
-        case OpType::MAX:
-        case OpType::INDEX:
-        case OpType::CONCAT:
-        case OpType::CAT:
-          param_flags |= PARAM_AXIS;
-          break;
-        default:
-          break;
-      }
-
-      if (node.op_type == OpType::INDEX) {
-        param_flags |= PARAM_INDEX_VALUE;
-      }
-
-      switch (node.op_type) {
-        case OpType::VIEW:
-        case OpType::RESHAPE:
-        case OpType::FLATTEN:
-          param_flags |= PARAM_NEW_SHAPE;
-          break;
-        default:
-          break;
-      }
-
-      if (node.op_type == OpType::MATMUL) {
-        param_flags |= PARAM_PRETRANSPOSED_RHS;
-        param_flags |= PARAM_BACKEND;
-      }
-
-      if (node.op_type == OpType::SLICE) {
-        param_flags |= PARAM_AXIS;
-        param_flags |= PARAM_SLICE;
-      }
-
-      switch (node.op_type) {
-        case OpType::RMS_NORM:
-        case OpType::LAYERNORM:
-        case OpType::GROUPNORM:
-        case OpType::BATCHNORM:
-          param_flags |= PARAM_EPSILON;
-          break;
-        default:
-          break;
-      }
-
-      if (node.op_type == OpType::GROUPNORM) {
-        param_flags |= PARAM_NUM_GROUPS;
-      }
-
-      write_u32(out, param_flags);
-
-      if (param_flags & PARAM_SCALAR) {
-        write_f32(out, node.params.scalar);
-      }
-      if (param_flags & PARAM_AXIS) {
-        write_i32(out, static_cast<int32_t>(node.params.axis));
-      }
-      if (param_flags & PARAM_NEW_SHAPE) {
-        write_size_vector(out, node.params.new_shape);
-      }
-      if (param_flags & PARAM_PRETRANSPOSED_RHS) {
-        write_u32(out, node.params.pretransposed_rhs ? 1u : 0u);
-      }
-      if (param_flags & PARAM_BACKEND) {
-        write_u32(out, static_cast<uint32_t>(node.params.backend));
-      }
-      if (param_flags & PARAM_SLICE) {
-        write_u64(out, static_cast<uint64_t>(node.params.slice_start));
-        write_u64(out, static_cast<uint64_t>(node.params.slice_length));
-      }
-      if (param_flags & PARAM_EPSILON) {
-        write_f32(out, node.params.epsilon);
-      }
-      if (param_flags & PARAM_NUM_GROUPS) {
-        write_u64(out, static_cast<uint64_t>(node.params.num_groups));
-      }
-      if (param_flags & PARAM_INDEX_VALUE) {
-        write_u64(out, static_cast<uint64_t>(node.params.index_value));
       }
     }
 
@@ -210,7 +91,7 @@ namespace {
         write_u32_vector(out, node.inputs);
         write_size_vector(out, node.output_shape);
         write_u32(out, static_cast<uint32_t>(node.precision));
-        write_op_params(out, node);
+        GraphParamIO::write_op_params(out, node.op_type, node.params);
       }
 
       if (!out) {
@@ -237,24 +118,6 @@ namespace {
         return v;
     }
 
-    int32_t read_i32(std::istream& in) {
-        int32_t v = 0;
-        in.read(reinterpret_cast<char*>(&v), sizeof(v));
-        if (!in) {
-            throw std::runtime_error("Unexpected EOF while reading int32");
-        }
-        return v;
-    }
-
-    float read_f32(std::istream& in) {
-        float v = 0.0f;
-        in.read(reinterpret_cast<char*>(&v), sizeof(v));
-        if (!in) {
-            throw std::runtime_error("Unexpected EOF while reading float");
-        }
-        return v;
-    }
-
     std::vector<uint32_t> read_u32_vector(std::istream& in) {
         uint32_t count = read_u32(in);
         std::vector<uint32_t> values;
@@ -273,67 +136,6 @@ namespace {
             values.push_back(static_cast<size_t>(read_u64(in)));
         }
         return values;
-    }
-
-    void read_op_params(std::istream& in, GraphFile::NodeEntry& node) {
-        uint32_t param_flags = read_u32(in);
-
-        constexpr uint32_t PARAM_SCALAR            = 1u << 0;
-        constexpr uint32_t PARAM_AXIS              = 1u << 1;
-        constexpr uint32_t PARAM_NEW_SHAPE         = 1u << 2;
-        constexpr uint32_t PARAM_PRETRANSPOSED_RHS = 1u << 3;
-        constexpr uint32_t PARAM_BACKEND           = 1u << 4;
-        constexpr uint32_t PARAM_SLICE             = 1u << 5;
-        constexpr uint32_t PARAM_EPSILON           = 1u << 6;
-        constexpr uint32_t PARAM_NUM_GROUPS        = 1u << 7;
-        constexpr uint32_t PARAM_INDEX_VALUE       = 1u << 8;
-        constexpr uint32_t PARAM_KNOWN_MASK =
-            PARAM_SCALAR |
-            PARAM_AXIS |
-            PARAM_NEW_SHAPE |
-            PARAM_PRETRANSPOSED_RHS |
-            PARAM_BACKEND |
-            PARAM_SLICE |
-            PARAM_EPSILON |
-            PARAM_NUM_GROUPS |
-            PARAM_INDEX_VALUE;
-
-        if ((param_flags & ~PARAM_KNOWN_MASK) != 0) {
-            throw std::runtime_error("Graph file corrupted: unknown param flags");
-        }
-
-        if (param_flags & PARAM_SCALAR) {
-            node.params.scalar = read_f32(in);
-        }
-        if (param_flags & PARAM_AXIS) {
-            node.params.axis = static_cast<int>(read_i32(in));
-        }
-        if (param_flags & PARAM_NEW_SHAPE) {
-            node.params.new_shape = read_size_vector(in);
-        }
-        if (param_flags & PARAM_PRETRANSPOSED_RHS) {
-            node.params.pretransposed_rhs = (read_u32(in) != 0);
-        }
-        if (param_flags & PARAM_BACKEND) {
-            uint32_t backend_val = read_u32(in);
-            if (backend_val > static_cast<uint32_t>(ComputeBackend::NPU)) {
-                throw std::runtime_error("Graph file corrupted: invalid backend");
-            }
-            node.params.backend = static_cast<ComputeBackend>(backend_val);
-        }
-        if (param_flags & PARAM_SLICE) {
-            node.params.slice_start = static_cast<size_t>(read_u64(in));
-            node.params.slice_length = static_cast<size_t>(read_u64(in));
-        }
-        if (param_flags & PARAM_EPSILON) {
-            node.params.epsilon = read_f32(in);
-        }
-        if (param_flags & PARAM_NUM_GROUPS) {
-            node.params.num_groups = static_cast<size_t>(read_u64(in));
-        }
-        if (param_flags & PARAM_INDEX_VALUE) {
-            node.params.index_value = static_cast<size_t>(read_u64(in));
-        }
     }
 
     bool is_binary_broadcast_op(OpType op_type) {
@@ -373,7 +175,7 @@ namespace {
         if (header.magic != CACTUS_GRAPH_MAGIC) {
             throw std::runtime_error("Invalid graph file: bad magic");
         }
-        if (header.version != 1) {
+        if (header.version != 4) {
             throw std::runtime_error("Unsupported graph file version: " +
                 std::to_string(header.version));
         }
@@ -396,7 +198,7 @@ namespace {
             throw std::runtime_error("Graph file corrupted: invalid precision");
         }
         node.precision = static_cast<Precision>(precision_val);
-        read_op_params(in, node);
+        GraphParamIO::read_op_params(in, node.op_type, node.params);
         return node;
     }
     
@@ -607,7 +409,7 @@ void save_graph(const CactusGraph& graph,
 
   SerializedGraph sg;
   sg.header.magic = CACTUS_GRAPH_MAGIC;
-  sg.header.version = 1;
+  sg.header.version = 4;
   sg.header.node_count = static_cast<uint32_t>(graph.nodes_.size());
   sg.header.flags = 0;
 
