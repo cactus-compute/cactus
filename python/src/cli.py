@@ -398,12 +398,13 @@ def cmd_download(args):
     except ImportError:
         Lfm2VlForConditionalGeneration = None
 
-    is_vlm = 'vl' in model_id.lower() or 'vlm' in model_id.lower()
-    is_whisper = 'whisper' in model_id.lower()
-    is_parakeet = 'parakeet' in model_id.lower()
-    is_vad = 'silero-vad' in model_id.lower()
-    is_pyannote = 'segmentation-3.0' in model_id.lower()
-    is_wespeaker = 'wespeaker' in model_id.lower()
+    model_name = str(model_id)
+    is_vlm = 'vl' in model_name.lower() or 'vlm' in model_name.lower()
+    is_whisper = 'whisper' in model_name.lower()
+    is_parakeet = 'parakeet' in model_name.lower()
+    is_vad = 'silero-vad' in model_name.lower()
+    is_pyannote = 'segmentation-3.0' in model_name.lower()
+    is_wespeaker = 'wespeaker' in model_name.lower()
 
     try:
         if is_vlm:
