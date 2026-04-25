@@ -467,4 +467,25 @@ void cactus_maxpool1d_f16(
     size_t stride
 );
 
+// Precision::TQ2 descriptor. Pointers reference an mmap'd blob.
+struct CactusTQ2 {
+    uint32_t vocab;
+    uint32_t group_size;
+    uint32_t num_groups;
+    uint32_t per_group_bytes;
+
+    const float*    codebook;
+    const __fp16*   input_scale;
+    const int8_t*   left_signs;
+    const int8_t*   right_signs;
+    const uint32_t* permutation;
+    const __fp16*   scales;
+    const uint8_t*  packed;
+
+    uint32_t inv_permutation[256];
+};
+
+int  cactus_tq2_load(CactusTQ2* out, const void* blob, size_t blob_size);
+void cactus_tq2_dequant_row(const CactusTQ2* tq2, uint32_t token_id, __fp16* out);
+
 #endif
