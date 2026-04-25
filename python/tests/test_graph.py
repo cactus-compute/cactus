@@ -1,4 +1,5 @@
 import unittest
+
 import numpy as np
 import sys
 import tempfile
@@ -135,6 +136,44 @@ class TestGraphTensorOps(unittest.TestCase):
         expected = np.array([1, 2, 3, 4, 5, 6], dtype=np.float16)
         np.testing.assert_allclose(out, expected, atol=1e-2)
 
+    def test_reshape(self):
+        g = Graph()
+        a = g.input((2, 3))
+        y = a.reshape((3, 2))
+
+        g.set_input(a, np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float16))
+        g.execute()
+
+        out = y.numpy()
+        expected = np.array([[1, 2], [3, 4], [5, 6]], dtype=np.float16)
+        np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_transpose(self):
+        g = Graph()
+        a = g.input((2, 3))
+        y = a.transpose()
+
+        data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float16)
+        g.set_input(a, data)
+        g.execute()
+
+        out = y.numpy()
+        expected = data.T.astype(np.float16)
+        np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_permute(self):
+        g = Graph()
+        a = g.input((2, 3, 4))
+        y = a.permute((1, 0, 2))
+
+        data = np.arange(24, dtype=np.float16).reshape(2, 3, 4)
+        g.set_input(a, data)
+        g.execute()
+
+        out = y.numpy()
+        expected = np.transpose(data, (1, 0, 2)).astype(np.float16)
+        np.testing.assert_allclose(out, expected, atol=1e-2)
+
     def test_concat(self):
         g = Graph()
         a = g.input((2, 2))
@@ -176,6 +215,182 @@ class TestGraphTensorOps(unittest.TestCase):
         out = y.numpy()
         expected = np.array([[1, 2, 5, 6, 7], [3, 4, 8, 9, 10]], dtype=np.float16)
         np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_matmul(self):
+        g = Graph()
+        a = g.input((2, 3))
+        b = g.input((3, 2))
+        y = a.matmul(b)
+
+        a_data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float16)
+        b_data = np.array([[7, 8], [9, 10], [11, 12]], dtype=np.float16)
+        g.set_input(a, a_data)
+        g.set_input(b, b_data)
+        g.execute()
+
+        out = y.numpy()
+        expected = (a_data.astype(np.float32) @ b_data.astype(np.float32)).astype(np.float16)
+        np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_gather(self):
+        g = Graph()
+        embeddings = g.input((4, 2))
+        indices = g.input((3,), dtype=Graph.FP32)
+        y = g.gather(embeddings, indices)
+
+        embedding_data = np.array(
+            [[10, 11], [20, 21], [30, 31], [40, 41]],
+            dtype=np.float16,
+        )
+        index_data = np.array([2, 0, 3], dtype=np.float32)
+        g.set_input(embeddings, embedding_data)
+        g.set_input(indices, index_data, dtype=Graph.FP32)
+        g.execute()
+
+        out = y.numpy()
+        expected = embedding_data[[2, 0, 3]]
+        np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_slice(self):
+        g = Graph()
+        a = g.input((4, 3))
+        y = a.slice(axis=0, start=1, length=2)
+
+        data = np.arange(12, dtype=np.float16).reshape(4, 3)
+        g.set_input(a, data)
+        g.execute()
+
+        out = y.numpy()
+        expected = data[1:3]
+        np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_index(self):
+        g = Graph()
+        a = g.input((4, 3))
+        y = a.index(2, axis=0)
+
+        data = np.arange(12, dtype=np.float16).reshape(4, 3)
+        g.set_input(a, data)
+        g.execute()
+
+        out = y.numpy()
+        expected = data[2]
+        np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_mean(self):
+        g = Graph()
+        a = g.input((2, 3))
+        y = a.mean(axis=1)
+
+        data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float16)
+        g.set_input(a, data)
+        g.execute()
+
+        out = y.numpy()
+        expected = data.astype(np.float32).mean(axis=1).astype(np.float16)
+        np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_variance(self):
+        g = Graph()
+        a = g.input((2, 3))
+        y = a.variance(axis=1)
+
+        data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float16)
+        g.set_input(a, data)
+        g.execute()
+
+        out = y.numpy()
+        expected = data.astype(np.float32).var(axis=1).astype(np.float16)
+        np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_min(self):
+        g = Graph()
+        a = g.input((2, 3))
+        y = a.min(axis=1)
+
+        data = np.array([[3, 1, 2], [6, 4, 5]], dtype=np.float16)
+        g.set_input(a, data)
+        g.execute()
+
+        out = y.numpy()
+        expected = data.min(axis=1).astype(np.float16)
+        np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_max(self):
+        g = Graph()
+        a = g.input((2, 3))
+        y = a.max(axis=1)
+
+        data = np.array([[3, 1, 2], [6, 4, 5]], dtype=np.float16)
+        g.set_input(a, data)
+        g.execute()
+
+        out = y.numpy()
+        expected = data.max(axis=1).astype(np.float16)
+        np.testing.assert_allclose(out, expected, atol=1e-2)
+
+
+class TestGraphNorms(unittest.TestCase):
+
+    def test_layernorm_matches_alias(self):
+        g = Graph()
+        x = g.input((2, 3))
+        weight = g.input((3,))
+        bias = g.input((3,))
+        y_primary = g.layernorm(x, weight, bias, eps=1e-5)
+        y_alias = g.layer_norm(x, weight, bias, eps=1e-5)
+
+        x_data = np.array([[1.0, 3.0, 5.0], [2.0, 4.0, 8.0]], dtype=np.float16)
+        weight_data = np.array([1.0, 1.5, 0.5], dtype=np.float16)
+        bias_data = np.array([0.25, -0.5, 1.0], dtype=np.float16)
+        g.set_input(x, x_data)
+        g.set_input(weight, weight_data)
+        g.set_input(bias, bias_data)
+        g.execute()
+
+        np.testing.assert_allclose(y_primary.numpy(), y_alias.numpy(), atol=1e-2)
+
+    def test_groupnorm_matches_alias(self):
+        g = Graph()
+        x = g.input((1, 4))
+        weight = g.input((4,))
+        bias = g.input((4,))
+        y_primary = g.groupnorm(x, weight, bias, num_groups=2, eps=1e-5)
+        y_alias = g.group_norm(x, weight, bias, num_groups=2, eps=1e-5)
+
+        x_data = np.array([[1.0, 3.0, 2.0, 4.0]], dtype=np.float16)
+        weight_data = np.array([1.0, 1.0, 0.5, 0.5], dtype=np.float16)
+        bias_data = np.array([0.0, 0.5, 1.0, -1.0], dtype=np.float16)
+        g.set_input(x, x_data)
+        g.set_input(weight, weight_data)
+        g.set_input(bias, bias_data)
+        g.execute()
+
+        np.testing.assert_allclose(y_primary.numpy(), y_alias.numpy(), atol=1e-2)
+
+    def test_batchnorm_matches_alias(self):
+        g = Graph()
+        x = g.input((1, 3))
+        weight = g.input((3,))
+        bias = g.input((3,))
+        running_mean = g.input((3,))
+        running_var = g.input((3,))
+        y_primary = g.batchnorm(x, weight, bias, running_mean, running_var, axis=1, eps=1e-5)
+        y_alias = g.batch_norm(x, weight, bias, running_mean, running_var, axis=1, eps=1e-5)
+
+        x_data = np.array([[1.0, 2.0, 3.0]], dtype=np.float16)
+        weight_data = np.array([1.0, 1.5, 2.0], dtype=np.float16)
+        bias_data = np.array([0.0, -1.0, 0.5], dtype=np.float16)
+        mean_data = np.array([0.5, 1.0, 1.5], dtype=np.float16)
+        var_data = np.array([1.0, 4.0, 9.0], dtype=np.float16)
+        g.set_input(x, x_data)
+        g.set_input(weight, weight_data)
+        g.set_input(bias, bias_data)
+        g.set_input(running_mean, mean_data)
+        g.set_input(running_var, var_data)
+        g.execute()
+
+        np.testing.assert_allclose(y_primary.numpy(), y_alias.numpy(), atol=1e-2)
 
 
 class TestGraphActivations(unittest.TestCase):
@@ -315,6 +530,148 @@ class TestGraphSaveLoad(unittest.TestCase):
             self.assertEqual(info["shape"], expected_info["shape"])
             self.assertEqual(info["precision"], expected_info["precision"])
             np.testing.assert_allclose(out, expected, atol=5e-2)
+
+    def test_save_load_roundtrip_matmul(self):
+        g = Graph()
+
+        a = g.input((2, 3))
+        b = g.input((3, 2))
+        out_node = a.matmul(b)
+
+        a_data = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float16)
+        b_data = np.array([[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]], dtype=np.float16)
+
+        g.set_input(a, a_data)
+        g.set_input(b, b_data)
+        g.execute()
+        expected = out_node.numpy()
+        expected_info = g.output_info(out_node)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "matmul_graph.cg"
+            g.save(path)
+
+            loaded = Graph.load(path)
+            loaded_a = self._rebind_tensor(loaded, a)
+            loaded_b = self._rebind_tensor(loaded, b)
+            loaded_out = self._rebind_tensor(loaded, out_node)
+
+            loaded.set_input(loaded_a, a_data)
+            loaded.set_input(loaded_b, b_data)
+            loaded.execute()
+
+            out = loaded_out.numpy()
+            info = loaded.output_info(loaded_out)
+
+            self.assertEqual(info["shape"], expected_info["shape"])
+            self.assertEqual(info["precision"], expected_info["precision"])
+            np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_save_load_roundtrip_permute(self):
+        g = Graph()
+
+        a = g.input((2, 1, 2))
+        out_node = a.permute((1, 0, 2))
+
+        data = np.array([[[58.0, 64.0]], [[139.0, 154.0]]], dtype=np.float16)
+
+        g.set_input(a, data)
+        g.execute()
+        expected = out_node.numpy()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "permute_graph.cg"
+            g.save(path)
+
+            loaded = Graph.load(path)
+            loaded_a = self._rebind_tensor(loaded, a)
+            loaded_out = self._rebind_tensor(loaded, out_node)
+
+            loaded.set_input(loaded_a, data)
+            loaded.execute()
+
+            out = loaded_out.numpy()
+            np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_save_load_roundtrip_gather(self):
+        g = Graph()
+
+        embeddings = g.input((4, 2))
+        indices = g.input((3,), dtype=Graph.FP32)
+        out_node = g.gather(embeddings, indices)
+
+        embedding_data = np.array(
+            [[10, 11], [20, 21], [30, 31], [40, 41]],
+            dtype=np.float16,
+        )
+        index_data = np.array([2, 0, 3], dtype=np.float32)
+
+        g.set_input(embeddings, embedding_data)
+        g.set_input(indices, index_data, dtype=Graph.FP32)
+        g.execute()
+        expected = out_node.numpy()
+        expected_info = g.output_info(out_node)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "gather_graph.cg"
+            g.save(path)
+
+            loaded = Graph.load(path)
+            loaded_embeddings = self._rebind_tensor(loaded, embeddings)
+            loaded_indices = self._rebind_tensor(loaded, indices)
+            loaded_out = self._rebind_tensor(loaded, out_node)
+
+            loaded.set_input(loaded_embeddings, embedding_data)
+            loaded.set_input(loaded_indices, index_data, dtype=Graph.FP32)
+            loaded.execute()
+
+            out = loaded_out.numpy()
+            info = loaded.output_info(loaded_out)
+
+            self.assertEqual(info["shape"], expected_info["shape"])
+            self.assertEqual(info["precision"], expected_info["precision"])
+            np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_save_load_roundtrip_layernorm(self):
+        g = Graph()
+
+        x = g.input((2, 3))
+        weight = g.input((3,))
+        bias = g.input((3,))
+        out_node = g.layernorm(x, weight, bias, eps=1e-5)
+
+        x_data = np.array([[1.0, 3.0, 5.0], [2.0, 4.0, 8.0]], dtype=np.float16)
+        weight_data = np.array([1.0, 1.5, 0.5], dtype=np.float16)
+        bias_data = np.array([0.25, -0.5, 1.0], dtype=np.float16)
+
+        g.set_input(x, x_data)
+        g.set_input(weight, weight_data)
+        g.set_input(bias, bias_data)
+        g.execute()
+        expected = out_node.numpy()
+        expected_info = g.output_info(out_node)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "layernorm_graph.cg"
+            g.save(path)
+
+            loaded = Graph.load(path)
+            loaded_x = self._rebind_tensor(loaded, x)
+            loaded_weight = self._rebind_tensor(loaded, weight)
+            loaded_bias = self._rebind_tensor(loaded, bias)
+            loaded_out = self._rebind_tensor(loaded, out_node)
+
+            loaded.set_input(loaded_x, x_data)
+            loaded.set_input(loaded_weight, weight_data)
+            loaded.set_input(loaded_bias, bias_data)
+            loaded.execute()
+
+            out = loaded_out.numpy()
+            info = loaded.output_info(loaded_out)
+
+            self.assertEqual(info["shape"], expected_info["shape"])
+            self.assertEqual(info["precision"], expected_info["precision"])
+            np.testing.assert_allclose(out, expected, atol=1e-2)
 
 
 if __name__ == "__main__":
