@@ -33,6 +33,9 @@ extern "C" {
 class CactusGraph;
 
 namespace cactus {
+
+enum class KVQuantMethod { INT8_GROUP, TURBOQUANT };
+
 namespace npu {
     class NPUPrefill;
 }
@@ -123,6 +126,12 @@ struct Config {
 
     std::vector<std::string> layer_types;
     size_t conv_L_cache = 0;
+
+    KVQuantMethod kv_quant_method = KVQuantMethod::INT8_GROUP;
+    size_t tq_projection_dim = 64;
+    size_t tq_key_angle_bits = 2;
+    size_t tq_value_angle_bits = 2;
+    bool tq_use_qjl = true;
 
     bool from_json(const std::string& json_path);
     std::string to_json() const;
@@ -341,14 +350,23 @@ struct KVCache {
     struct LayerCache {
         std::vector<uint8_t> keys;
         std::vector<uint8_t> values;
-        std::vector<float> key_scales;   
-        std::vector<float> value_scales; 
+        std::vector<float> key_scales;
+        std::vector<float> value_scales;
+        
+        std::vector<float>   tq_key_radii;
+        std::vector<uint8_t> tq_key_angles;
+        std::vector<float>   tq_key_error_norms;
+        std::vector<uint8_t> tq_key_qjl_bits;
+        std::vector<float>   tq_val_radii;
+        std::vector<uint8_t> tq_val_angles;
+        std::vector<float>   tq_val_error_norms;
+        std::vector<uint8_t> tq_val_qjl_bits;
     };
 
     std::vector<LayerCache> layer_caches;
 
-    size_t window_size = DEFAULT_WINDOW_SIZE;  
-    size_t sink_size = DEFAULT_SINK_SIZE;    
+    size_t window_size = DEFAULT_WINDOW_SIZE;
+    size_t sink_size = DEFAULT_SINK_SIZE;
     size_t current_seq_len = 0;
     size_t total_seq_len = 0;
     size_t max_seq_len = 2048;
@@ -357,12 +375,21 @@ struct KVCache {
     size_t num_layers = 0;
     Precision precision;
     size_t element_size = 4;
+    KVQuantMethod quant_method = KVQuantMethod::INT8_GROUP;
+    size_t tq_key_angle_bits = 2;
+    size_t tq_value_angle_bits = 2;
+    size_t tq_projection_dim = 64;
+    bool tq_use_qjl = true;
+    std::vector<uint8_t> tq_rotation_signs;
+    std::vector<uint8_t> tq_projection_matrix;
 
     void set_window_size(size_t window, size_t sink = DEFAULT_SINK_SIZE);
     size_t get_effective_seq_len() const { return current_seq_len; }
     size_t get_total_seq_len() const { return total_seq_len; }
 
-    void init(size_t num_layers, size_t max_seq, size_t num_kv_heads, size_t head_dim, Precision model_precision);
+    void init(size_t num_layers, size_t max_seq, size_t num_kv_heads, size_t head_dim, Precision model_precision,
+              KVQuantMethod method = KVQuantMethod::INT8_GROUP, size_t tq_proj_dim = 64,
+              size_t tq_k_bits = 2, size_t tq_v_bits = 2, bool tq_qjl = true, uint64_t tq_seed = 42);
     void reset();
     void update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_nodes,
                           const std::vector<size_t>& v_nodes, size_t seq_len,
@@ -377,9 +404,9 @@ struct KVCache {
 
     struct CircularView {
         const void* ptr1;
-        const void* ptr2;  
+        const void* ptr2;
         size_t len1;
-        size_t len2; 
+        size_t len2;
         size_t total_len;
     };
 
@@ -390,6 +417,17 @@ struct KVCache {
     const int8_t* get_values_int8(size_t layer) const;
     const float* get_key_scales(size_t layer) const;
     const float* get_value_scales(size_t layer) const;
+
+    const float*   get_tq_key_radii(size_t layer) const;
+    const uint8_t* get_tq_key_angles(size_t layer) const;
+    const float*   get_tq_key_error_norms(size_t layer) const;
+    const uint8_t* get_tq_key_qjl_bits(size_t layer) const;
+    const float*   get_tq_val_radii(size_t layer) const;
+    const uint8_t* get_tq_val_angles(size_t layer) const;
+    const float*   get_tq_val_error_norms(size_t layer) const;
+    const uint8_t* get_tq_val_qjl_bits(size_t layer) const;
+    const uint8_t* get_tq_rotation_signs() const { return tq_rotation_signs.data(); }
+    const uint8_t* get_tq_projection_matrix() const { return tq_projection_matrix.data(); }
 };
 
 class ToolCallConstrainer {
@@ -525,6 +563,8 @@ public:
     virtual void reset_cache() { kv_cache_.reset(); }
 
     double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored);
+
+    virtual double score_tokens_cached_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored);
 
 
 

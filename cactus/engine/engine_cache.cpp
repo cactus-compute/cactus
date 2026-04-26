@@ -5,21 +5,98 @@
 #include <cstring>
 #include <stdexcept>
 
+namespace {
+using LC = cactus::engine::KVCache::LayerCache;
+
+static void tq_resize(LC& c, size_t cap_tokens, size_t kv_heads,
+                      size_t k_ang_bytes, size_t v_ang_bytes, size_t qjl_bytes,
+                      bool use_qjl) {
+    size_t n = cap_tokens * kv_heads;
+    c.tq_key_radii.resize(n);
+    c.tq_key_angles.resize(n * k_ang_bytes);
+    c.tq_val_radii.resize(n);
+    c.tq_val_angles.resize(n * v_ang_bytes);
+    if (use_qjl) {
+        c.tq_key_error_norms.resize(n);
+        c.tq_key_qjl_bits.resize(n * qjl_bytes);
+    } else {
+        c.tq_key_error_norms.clear();
+        c.tq_key_qjl_bits.clear();
+    }
+    // V never uses QJL in this codebase — drop these buffers always.
+    c.tq_val_error_norms.clear();
+    c.tq_val_qjl_bits.clear();
+}
+
+static void tq_encode_kv(LC& c,
+                         const __fp16* k_fp16, const __fp16* v_fp16,
+                         size_t dst_token_offset, size_t num_tokens,
+                         size_t kv_heads, size_t head_dim,
+                         size_t k_angle_bits, size_t v_angle_bits, size_t projection_dim,
+                         size_t k_ang_bytes, size_t v_ang_bytes, size_t qjl_bytes,
+                         bool use_qjl,
+                         const uint8_t* rot_signs, const uint8_t* proj_mat) {
+    size_t e = dst_token_offset * kv_heads;
+    float*   k_err = use_qjl ? c.tq_key_error_norms.data() + e : nullptr;
+    uint8_t* k_qjl = use_qjl ? c.tq_key_qjl_bits.data()   + e * qjl_bytes : nullptr;
+    cactus_turboquant_encode_kv_fp16(
+        k_fp16,
+        c.tq_key_radii.data()       + e, c.tq_key_angles.data()      + e * k_ang_bytes,
+        k_err, k_qjl,
+        rot_signs, proj_mat, num_tokens, kv_heads, head_dim, k_angle_bits, projection_dim);
+    cactus_turboquant_encode_kv_fp16(
+        v_fp16,
+        c.tq_val_radii.data()       + e, c.tq_val_angles.data()      + e * v_ang_bytes,
+        nullptr, nullptr,
+        rot_signs, proj_mat, num_tokens, kv_heads, head_dim, v_angle_bits, projection_dim);
+}
+
+static void tq_shift(LC& c, size_t dst_token, size_t src_token, size_t count,
+                     size_t kv_heads, size_t k_ang_bytes, size_t v_ang_bytes, size_t qjl_bytes) {
+    if (count == 0 || dst_token == src_token) return;
+    size_t d = dst_token * kv_heads, s = src_token * kv_heads, n = count * kv_heads;
+    std::memmove(c.tq_key_radii.data()  + d, c.tq_key_radii.data()  + s, n * sizeof(float));
+    std::memmove(c.tq_key_angles.data() + d * k_ang_bytes, c.tq_key_angles.data() + s * k_ang_bytes, n * k_ang_bytes);
+    std::memmove(c.tq_val_radii.data()  + d, c.tq_val_radii.data()  + s, n * sizeof(float));
+    std::memmove(c.tq_val_angles.data() + d * v_ang_bytes, c.tq_val_angles.data() + s * v_ang_bytes, n * v_ang_bytes);
+    if (!c.tq_key_error_norms.empty())
+        std::memmove(c.tq_key_error_norms.data() + d, c.tq_key_error_norms.data() + s, n * sizeof(float));
+    if (!c.tq_key_qjl_bits.empty())
+        std::memmove(c.tq_key_qjl_bits.data() + d * qjl_bytes, c.tq_key_qjl_bits.data() + s * qjl_bytes, n * qjl_bytes);
+}
+} // anonymous namespace
+
 namespace cactus {
 namespace engine {
 
-void KVCache::init(size_t layers, size_t max_seq, size_t kv_heads, size_t dim, Precision model_precision) {
+void KVCache::init(size_t layers, size_t max_seq, size_t kv_heads, size_t dim, Precision model_precision,
+                   KVQuantMethod method, size_t tq_proj_dim,
+                   size_t tq_k_bits, size_t tq_v_bits, bool tq_qjl, uint64_t tq_seed) {
     num_layers = layers;
     max_seq_len = max_seq;
     num_kv_heads = kv_heads;
     head_dim = dim;
     precision = model_precision;
     element_size = PrecisionTraits::size_of(precision);
+    quant_method = method;
+    tq_projection_dim = tq_proj_dim;
+    tq_key_angle_bits = tq_k_bits;
+    tq_value_angle_bits = tq_v_bits;
+    tq_use_qjl = tq_qjl;
 
     layer_caches.resize(num_layers);
 
     current_seq_len = 0;
     total_seq_len = 0;
+
+    if (quant_method == KVQuantMethod::TURBOQUANT && dim > 0) {
+        tq_rotation_signs.resize((dim + 7) / 8);
+        size_t proj_groups = (tq_projection_dim + 7) / 8;
+        size_t rot_row_bytes = (dim + 7) / 8;
+        tq_projection_matrix.resize(proj_groups * rot_row_bytes * 8);
+        cactus_turboquant_init(tq_rotation_signs.data(), tq_projection_matrix.data(),
+                               dim, tq_projection_dim, tq_seed);
+    }
 }
 
 void KVCache::set_window_size(size_t window, size_t sink) {
@@ -41,6 +118,14 @@ void KVCache::set_window_size(size_t window, size_t sink) {
             cache.value_scales.resize(num_scales);
             std::fill(cache.key_scales.begin(), cache.key_scales.end(), 1.0f);
             std::fill(cache.value_scales.begin(), cache.value_scales.end(), 1.0f);
+        }
+
+        if (quant_method == KVQuantMethod::TURBOQUANT) {
+            size_t k_ang_bytes = turboquant_angles_bytes_per_head(head_dim, tq_key_angle_bits);
+                size_t v_ang_bytes = turboquant_angles_bytes_per_head(head_dim, tq_value_angle_bits);
+            size_t qjl_bytes = turboquant_qjl_bytes_per_head(tq_projection_dim);
+            for (auto& cache : layer_caches)
+                tq_resize(cache, window_size, num_kv_heads, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl);
         }
     }
 }
@@ -130,6 +215,54 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
         if (k_output && v_output) {
             const auto& k_buffer = gb->get_output_buffer(k_nodes[layer_idx]);
             const auto& v_buffer = gb->get_output_buffer(v_nodes[layer_idx]);
+
+            if (quant_method == KVQuantMethod::TURBOQUANT) {
+                size_t k_ang_bytes = turboquant_angles_bytes_per_head(dim, tq_key_angle_bits);
+                size_t v_ang_bytes = turboquant_angles_bytes_per_head(dim, tq_value_angle_bits);
+                size_t qjl_bytes = turboquant_qjl_bytes_per_head(tq_projection_dim);
+                const __fp16* k_fp16 = static_cast<const __fp16*>(k_output);
+                const __fp16* v_fp16 = static_cast<const __fp16*>(v_output);
+                const uint8_t* rot  = tq_rotation_signs.data();
+                const uint8_t* proj = tq_projection_matrix.data();
+
+                if (new_total_len * elements_per_token == k_buffer.total_size &&
+                    new_total_len * elements_per_token == v_buffer.total_size) {
+                    any_layer_updated = true;
+                    if (!use_sliding_window) {
+                        tq_resize(cache, new_total_len, kv_heads, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl);
+                        tq_encode_kv(cache, k_fp16, v_fp16, 0, new_total_len, kv_heads, dim, tq_key_angle_bits, tq_value_angle_bits, tq_projection_dim, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl, rot, proj);
+                    } else {
+                        size_t remaining_window = window_size - sink_size;
+                        size_t skip_tokens      = new_total_len - window_size;
+                        bool first_slide = (cache.tq_key_radii.size() != window_size * kv_heads);
+                        if (first_slide) {
+                            tq_resize(cache, window_size, kv_heads, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl);
+                            tq_encode_kv(cache, k_fp16, v_fp16, 0, sink_size, kv_heads, dim, tq_key_angle_bits, tq_value_angle_bits, tq_projection_dim, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl, rot, proj);
+                        }
+                        size_t src_elem = (sink_size + skip_tokens) * elements_per_token;
+                        tq_encode_kv(cache, k_fp16 + src_elem, v_fp16 + src_elem, sink_size, remaining_window, kv_heads, dim, tq_key_angle_bits, tq_value_angle_bits, tq_projection_dim, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl, rot, proj);
+                    }
+                }
+                else if (seq_len * elements_per_token == k_buffer.total_size &&
+                         seq_len * elements_per_token == v_buffer.total_size) {
+                    any_layer_updated = true;
+                    if (!use_sliding_window) {
+                        tq_resize(cache, new_total_len, kv_heads, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl);
+                        tq_encode_kv(cache, k_fp16, v_fp16, old_seq_len, seq_len, kv_heads, dim, tq_key_angle_bits, tq_value_angle_bits, tq_projection_dim, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl, rot, proj);
+                    } else {
+                        if (cache.tq_key_radii.size() != window_size * kv_heads)
+                            tq_resize(cache, window_size, kv_heads, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl);
+                        size_t tokens_to_shift = window_size - sink_size - seq_len;
+                        if (tokens_to_shift > 0 && old_seq_len > sink_size) {
+                            size_t shift_src = old_seq_len - tokens_to_shift;
+                            if (shift_src > sink_size)
+                                tq_shift(cache, sink_size, shift_src, tokens_to_shift, kv_heads, k_ang_bytes, v_ang_bytes, qjl_bytes);
+                        }
+                        tq_encode_kv(cache, k_fp16, v_fp16, window_size - seq_len, seq_len, kv_heads, dim, tq_key_angle_bits, tq_value_angle_bits, tq_projection_dim, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl, rot, proj);
+                    }
+                }
+                continue;
+            }
 
             size_t expected_elements = new_total_len * elements_per_token;
 
@@ -357,6 +490,39 @@ void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp
     bool use_sliding_window = (window_size > 0 && new_total_len > window_size);
     size_t effective_seq_len = use_sliding_window ? window_size : new_total_len;
 
+    if (quant_method == KVQuantMethod::TURBOQUANT) {
+        size_t k_ang_bytes = turboquant_angles_bytes_per_head(dim, tq_key_angle_bits);
+                size_t v_ang_bytes = turboquant_angles_bytes_per_head(dim, tq_value_angle_bits);
+        size_t qjl_bytes = turboquant_qjl_bytes_per_head(tq_projection_dim);
+        const uint8_t* rot  = tq_rotation_signs.data();
+        const uint8_t* proj = tq_projection_matrix.data();
+
+        if (!use_sliding_window) {
+            tq_resize(cache, new_total_len, kv_heads, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl);
+            tq_encode_kv(cache, k_data, v_data, old_seq_len, num_tokens, kv_heads, dim, tq_key_angle_bits, tq_value_angle_bits, tq_projection_dim, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl, rot, proj);
+        } else {
+            if (cache.tq_key_radii.size() != window_size * kv_heads)
+                tq_resize(cache, window_size, kv_heads, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl);
+            size_t remaining_window = window_size - sink_size;
+            if (num_tokens >= remaining_window) {
+                size_t skip = num_tokens - remaining_window;
+                tq_encode_kv(cache, k_data + skip * elements_per_token, v_data + skip * elements_per_token,
+                             sink_size, remaining_window, kv_heads, dim, tq_key_angle_bits, tq_value_angle_bits, tq_projection_dim, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl, rot, proj);
+            } else {
+                size_t tokens_to_shift = remaining_window - num_tokens;
+                if (tokens_to_shift > 0 && old_seq_len > sink_size) {
+                    size_t shift_src = old_seq_len - tokens_to_shift;
+                    if (shift_src > sink_size)
+                        tq_shift(cache, sink_size, shift_src, tokens_to_shift, kv_heads, k_ang_bytes, v_ang_bytes, qjl_bytes);
+                }
+                tq_encode_kv(cache, k_data, v_data, window_size - num_tokens, num_tokens, kv_heads, dim, tq_key_angle_bits, tq_value_angle_bits, tq_projection_dim, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl, rot, proj);
+            }
+        }
+        if (layer_idx == num_layers - 1)
+            current_seq_len = effective_seq_len;
+        return;
+    }
+
     if (!use_sliding_window) {
         size_t total_bytes = new_total_len * bytes_per_token;
         cache.keys.resize(total_bytes);
@@ -489,6 +655,41 @@ const float* KVCache::get_value_scales(size_t layer) const {
         return nullptr;
     }
     return layer_caches[layer].value_scales.data();
+}
+
+const float* KVCache::get_tq_key_radii(size_t layer) const {
+    if (layer >= num_layers || current_seq_len == 0) return nullptr;
+    return layer_caches[layer].tq_key_radii.data();
+}
+const uint8_t* KVCache::get_tq_key_angles(size_t layer) const {
+    if (layer >= num_layers || current_seq_len == 0) return nullptr;
+    return layer_caches[layer].tq_key_angles.data();
+}
+const float* KVCache::get_tq_key_error_norms(size_t layer) const {
+    if (layer >= num_layers || current_seq_len == 0) return nullptr;
+    if (layer_caches[layer].tq_key_error_norms.empty()) return nullptr;
+    return layer_caches[layer].tq_key_error_norms.data();
+}
+const uint8_t* KVCache::get_tq_key_qjl_bits(size_t layer) const {
+    if (layer >= num_layers || current_seq_len == 0) return nullptr;
+    if (layer_caches[layer].tq_key_qjl_bits.empty()) return nullptr;
+    return layer_caches[layer].tq_key_qjl_bits.data();
+}
+const float* KVCache::get_tq_val_radii(size_t layer) const {
+    if (layer >= num_layers || current_seq_len == 0) return nullptr;
+    return layer_caches[layer].tq_val_radii.data();
+}
+const uint8_t* KVCache::get_tq_val_angles(size_t layer) const {
+    if (layer >= num_layers || current_seq_len == 0) return nullptr;
+    return layer_caches[layer].tq_val_angles.data();
+}
+const float* KVCache::get_tq_val_error_norms(size_t layer) const {
+    if (layer >= num_layers || current_seq_len == 0) return nullptr;
+    return layer_caches[layer].tq_val_error_norms.data();
+}
+const uint8_t* KVCache::get_tq_val_qjl_bits(size_t layer) const {
+    if (layer >= num_layers || current_seq_len == 0) return nullptr;
+    return layer_caches[layer].tq_val_qjl_bits.data();
 }
 
 void ConvCache::init(size_t layers, size_t hidden_dim, size_t window_len, Precision model_precision) {

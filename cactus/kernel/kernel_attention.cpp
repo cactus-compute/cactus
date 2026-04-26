@@ -1078,19 +1078,38 @@ void cactus_attention_hybrid_turboquant_fp16(
                             const size_t ci = batch_idx * cache_batch_stride
                                             + kv_pos * num_kv_heads + kv_head_idx;
                             const float radius   = cached_key_radii[ci];
-                            const float err_norm = cached_key_error_norms[ci];
-                            float polar_dot = dot_2bit_f32(q_rot_f32, q_sum,
-                                                           cached_key_angles + ci * key_angles_bytes,
-                                                           head_dim) * radius;
-                            size_t matches = xnor_popcount(cached_key_qjl_bits + ci * qjl_bytes,
-                                                           q_qjl_bits, qjl_bytes);
-                            float avg_sign = (2.0f * static_cast<float>(matches)
-                                              - static_cast<float>(projection_dim))
-                                             / static_cast<float>(projection_dim);
-                            float half_pi_avg = 1.5707963f * avg_sign;
-                            float x2 = half_pi_avg * half_pi_avg;
-                            float sinval = half_pi_avg * (1.0f - x2 * (1.0f/6.0f - x2 * (1.0f/120.0f)));
-                            float score = q_norm * (polar_dot + err_norm * sinval) * scale;
+                            float polar_dot;
+                            if (angle_bits == 2) {
+                                polar_dot = dot_2bit_f32(q_rot_f32, q_sum,
+                                                         cached_key_angles + ci * key_angles_bytes,
+                                                         head_dim) * radius;
+                            } else if (angle_bits == 3) {
+                                polar_dot = dot_3bit_f32(q_rot_f32,
+                                                         cached_key_angles + ci * key_angles_bytes,
+                                                         head_dim) * radius;
+                            } else if (angle_bits == 8) {
+                                polar_dot = dot_8bit_f32(q_rot_f32,
+                                                         cached_key_angles + ci * key_angles_bytes,
+                                                         head_dim) * radius;
+                            } else {
+                                polar_dot = dot_4bit_f32(q_rot_f32,
+                                                         cached_key_angles + ci * key_angles_bytes,
+                                                         head_dim) * radius;
+                            }
+                            float qjl_corr = 0.0f;
+                            if (cached_key_error_norms && cached_key_qjl_bits) {
+                                const float err_norm = cached_key_error_norms[ci];
+                                size_t matches = xnor_popcount(cached_key_qjl_bits + ci * qjl_bytes,
+                                                               q_qjl_bits, qjl_bytes);
+                                float avg_sign = (2.0f * static_cast<float>(matches)
+                                                  - static_cast<float>(projection_dim))
+                                                 / static_cast<float>(projection_dim);
+                                float half_pi_avg = 1.5707963f * avg_sign;
+                                float x2 = half_pi_avg * half_pi_avg;
+                                float sinval = half_pi_avg * (1.0f - x2 * (1.0f/6.0f - x2 * (1.0f/120.0f)));
+                                qjl_corr = err_norm * sinval;
+                            }
+                            float score = q_norm * (polar_dot + qjl_corr) * scale;
                             block_scores[kv_idx] = score;
                             block_max = std::max(block_max, score);
                         } else {
@@ -1156,6 +1175,16 @@ void cactus_attention_hybrid_turboquant_fp16(
                                             + kv_pos * num_kv_heads + kv_head_idx;
                             if (value_angle_bits == 2) {
                                 accumulate_2bit_f32(
+                                    cached_value_angles + ci * val_angles_bytes,
+                                    attn_weight * cached_value_radii[ci],
+                                    cached_acc, head_dim);
+                            } else if (value_angle_bits == 3) {
+                                accumulate_3bit_f32(
+                                    cached_value_angles + ci * val_angles_bytes,
+                                    attn_weight * cached_value_radii[ci],
+                                    cached_acc, head_dim);
+                            } else if (value_angle_bits == 8) {
+                                accumulate_8bit_f32(
                                     cached_value_angles + ci * val_angles_bytes,
                                     attn_weight * cached_value_radii[ci],
                                     cached_acc, head_dim);
