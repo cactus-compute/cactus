@@ -706,10 +706,10 @@ void accumulate_8bit_f32(
 //   byte0 = code0 | (code1 << 3) | ((code2 & 0x3) << 6)
 //   byte1 = ((code2 >> 2) & 0x1) | (code3 << 1) | (code4 << 4) | ((code5 & 0x1) << 7)
 //   byte2 = ((code5 >> 1) & 0x3) | (code6 << 2) | (code7 << 5)
+// head_dim is always a power of two >= 8 (asserted in the encoder), so dim is a multiple of 8.
 static void quantize_3bit(const float* src, uint8_t* dst, size_t dim) {
     const float sqrt_dim = sqrtf(static_cast<float>(dim));
-    size_t i = 0;
-    size_t out = 0;
+    size_t i = 0, out = 0;
     while (i + 8 <= dim) {
         int c[8];
         for (int j = 0; j < 8; j++) {
@@ -718,28 +718,10 @@ static void quantize_3bit(const float* src, uint8_t* dst, size_t dim) {
             for (int b = 0; b < 7; b++) if (v > TQ_3BIT_BOUNDARIES[b]) code = b + 1;
             c[j] = code;
         }
-        dst[out++] = (uint8_t)(c[0] | (c[1] << 3) | ((c[2] & 0x3) << 6));
-        dst[out++] = (uint8_t)(((c[2] >> 2) & 0x1) | (c[3] << 1) | (c[4] << 4) | ((c[5] & 0x1) << 7));
-        dst[out++] = (uint8_t)(((c[5] >> 1) & 0x3) | (c[6] << 2) | (c[7] << 5));
+        dst[out++] = (uint8_t)( c[0]                  |  (c[1] << 3) | ((c[2] & 0x3) << 6));
+        dst[out++] = (uint8_t)(((c[2] >> 2) & 0x1)    |  (c[3] << 1) |  (c[4] << 4)        | ((c[5] & 0x1) << 7));
+        dst[out++] = (uint8_t)(((c[5] >> 1) & 0x3)    |  (c[6] << 2) |  (c[7] << 5));
         i += 8;
-    }
-    // Tail (rare since head_dim is power of 2 >= 8)
-    while (i < dim) {
-        size_t remaining = dim - i;
-        size_t take = std::min<size_t>(8, remaining);
-        int c[8] = {0};
-        for (size_t j = 0; j < take; j++) {
-            float v = src[i + j] * sqrt_dim;
-            int code = 0;
-            for (int b = 0; b < 7; b++) if (v > TQ_3BIT_BOUNDARIES[b]) code = b + 1;
-            c[j] = code;
-        }
-        dst[out++] = (uint8_t)(c[0] | (c[1] << 3) | ((c[2] & 0x3) << 6));
-        if (out + 0 < (dim / 8) * 3 + (remaining > 0 ? 3 : 0)) {
-            dst[out++] = (uint8_t)(((c[2] >> 2) & 0x1) | (c[3] << 1) | (c[4] << 4) | ((c[5] & 0x1) << 7));
-            dst[out++] = (uint8_t)(((c[5] >> 1) & 0x3) | (c[6] << 2) | (c[7] << 5));
-        }
-        i += take;
     }
 }
 
