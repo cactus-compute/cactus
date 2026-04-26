@@ -508,6 +508,7 @@ bool test_mps_matmul_f16_correctness() {
     }
 
     cactus_matmul_f16_mps(A.data(), BT.data(), C_mps.data(), M, K, N);
+    cactus_mps_synchronize();
 
     for (size_t m = 0; m < M; ++m) {
         for (size_t n = 0; n < N; ++n) {
@@ -600,6 +601,7 @@ bool test_mps_matmul_int4_correctness() {
     std::vector<__fp16> C_mps(M * N);
     cactus_matmul_int4_mps(A.data(), reinterpret_cast<const int8_t*>(B_packed.data()),
                            B_scales_inter.data(), C_mps.data(), M, K, N, group_size);
+    cactus_mps_synchronize();
 
     float max_err = 0.0f;
     for (size_t m = 0; m < M; ++m) {
@@ -616,6 +618,81 @@ bool test_mps_matmul_int4_correctness() {
 
     std::cout << "  MPS INT4 matmul max abs error: " << max_err << std::endl;
     return max_err < 0.1f;
+}
+
+bool test_mps_attention_f16_correctness() {
+    if (!cactus_mps_available()) return true;
+    const size_t seq_len = 64, kv_seq_len = 64;
+    const size_t num_q_heads = 4, num_kv_heads = 2, head_dim = 64;
+    const float scale = 1.0f / sqrtf(static_cast<float>(head_dim));
+
+    std::mt19937 gen(13);
+    std::uniform_real_distribution<float> dis(-0.5f, 0.5f);
+
+    std::vector<__fp16> Q(seq_len * num_q_heads * head_dim);
+    std::vector<__fp16> K(kv_seq_len * num_kv_heads * head_dim);
+    std::vector<__fp16> V(kv_seq_len * num_kv_heads * head_dim);
+    for (size_t i = 0; i < Q.size(); ++i) Q[i] = static_cast<__fp16>(dis(gen));
+    for (size_t i = 0; i < K.size(); ++i) K[i] = static_cast<__fp16>(dis(gen));
+    for (size_t i = 0; i < V.size(); ++i) V[i] = static_cast<__fp16>(dis(gen));
+
+    std::vector<__fp16> O_mps(seq_len * num_q_heads * head_dim);
+    std::vector<__fp16> O_ref(seq_len * num_q_heads * head_dim);
+
+    cactus_attention_f16_mps(Q.data(), K.data(), V.data(), O_mps.data(),
+                             seq_len, kv_seq_len, num_q_heads, num_kv_heads,
+                             head_dim, scale, 0);
+    cactus_mps_synchronize();
+
+    cactus_attention_f16(Q.data(), K.data(), V.data(), O_ref.data(),
+                         1, seq_len, kv_seq_len, num_q_heads, num_kv_heads,
+                         head_dim, scale, nullptr, 0, 0, true, false, false, head_dim, 0.0f);
+
+    float max_err = 0.0f;
+    for (size_t i = 0; i < O_mps.size(); ++i) {
+        float err = std::abs(static_cast<float>(O_mps[i]) - static_cast<float>(O_ref[i]));
+        if (err > max_err) max_err = err;
+    }
+
+    std::cout << "  MPS attention F16 max abs error: " << max_err << std::endl;
+    return max_err < 0.05f;
+}
+
+bool test_mpsgraph_attention_f16_correctness() {
+    if (!cactus_mps_available()) return true;
+    const size_t seq_len = 64, kv_seq_len = 64;
+    const size_t num_q_heads = 4, num_kv_heads = 2, head_dim = 64;
+    const float scale = 1.0f / sqrtf(static_cast<float>(head_dim));
+
+    std::mt19937 gen(17);
+    std::uniform_real_distribution<float> dis(-0.5f, 0.5f);
+
+    std::vector<__fp16> Q(seq_len * num_q_heads * head_dim);
+    std::vector<__fp16> K(kv_seq_len * num_kv_heads * head_dim);
+    std::vector<__fp16> V(kv_seq_len * num_kv_heads * head_dim);
+    for (size_t i = 0; i < Q.size(); ++i) Q[i] = static_cast<__fp16>(dis(gen));
+    for (size_t i = 0; i < K.size(); ++i) K[i] = static_cast<__fp16>(dis(gen));
+    for (size_t i = 0; i < V.size(); ++i) V[i] = static_cast<__fp16>(dis(gen));
+
+    std::vector<__fp16> O_g(seq_len * num_q_heads * head_dim);
+    std::vector<__fp16> O_ref(seq_len * num_q_heads * head_dim);
+
+    cactus_attention_f16_mpsgraph(Q.data(), K.data(), V.data(), O_g.data(),
+                                   seq_len, kv_seq_len, num_q_heads, num_kv_heads,
+                                   head_dim, scale, 0);
+
+    cactus_attention_f16(Q.data(), K.data(), V.data(), O_ref.data(),
+                         1, seq_len, kv_seq_len, num_q_heads, num_kv_heads,
+                         head_dim, scale, nullptr, 0, 0, true, false, false, head_dim, 0.0f);
+
+    float max_err = 0.0f;
+    for (size_t i = 0; i < O_g.size(); ++i) {
+        float err = std::abs(static_cast<float>(O_g[i]) - static_cast<float>(O_ref[i]));
+        if (err > max_err) max_err = err;
+    }
+
+    std::cout << "  MPSGraph SDPA F16 max abs error: " << max_err << std::endl;
+    return max_err < 0.05f;
 }
 #endif
 
@@ -638,6 +715,8 @@ int main() {
 #ifdef __APPLE__
     runner.run_test("Kernel MPS FP16 MatMul Correctness", test_mps_matmul_f16_correctness());
     runner.run_test("Kernel MPS INT4 MatMul Correctness", test_mps_matmul_int4_correctness());
+    runner.run_test("Kernel MPS Attention F16 Correctness", test_mps_attention_f16_correctness());
+    runner.run_test("Kernel MPSGraph SDPA F16 Correctness", test_mpsgraph_attention_f16_correctness());
 #endif
 
     runner.print_summary();

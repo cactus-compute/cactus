@@ -394,6 +394,17 @@ void cactus_attention_f16(
     }
 
     if (mask == nullptr && head_dim % 8 == 0 && v_head_dim % 8 == 0 && logit_cap == 0.0f) {
+#ifdef __APPLE__
+        if (cactus_mps_enabled() && cactus_mps_available() &&
+            is_causal && window_size == 0 && batch_size == 1 &&
+            head_dim == v_head_dim && head_dim <= 256 &&
+            seq_len >= MPS_ATTN_SEQ_THRESHOLD) {
+            cactus_attention_f16_mpsgraph(queries, keys, values, output,
+                                           seq_len, kv_seq_len, num_q_heads, num_kv_heads,
+                                           head_dim, scale, position_offset);
+            return;
+        }
+#endif
         cactus_attention_f16_fast(
             queries, keys, values, output,
             batch_size, seq_len, kv_seq_len,

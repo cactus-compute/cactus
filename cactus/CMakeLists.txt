@@ -55,6 +55,7 @@ if(APPLE)
     find_library(COREML_FRAMEWORK CoreML REQUIRED)
     find_library(METAL_FRAMEWORK Metal REQUIRED)
     find_library(MPS_FRAMEWORK MetalPerformanceShaders REQUIRED)
+    find_library(MPSGRAPH_FRAMEWORK MetalPerformanceShadersGraph REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
     find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
     find_library(SECURITY_FRAMEWORK Security REQUIRED)
@@ -130,6 +131,7 @@ function(configure_cactus_target target_name)
             ${COREML_FRAMEWORK}
             ${METAL_FRAMEWORK}
             ${MPS_FRAMEWORK}
+            ${MPSGRAPH_FRAMEWORK}
             ${FOUNDATION_FRAMEWORK}
             ${ACCELERATE_FRAMEWORK}
             ${SECURITY_FRAMEWORK}
