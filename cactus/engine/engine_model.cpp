@@ -147,11 +147,6 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     if (const char* env_vb = std::getenv("CACTUS_TQ_VALUE_BITS")) {
         config_.tq_value_angle_bits = static_cast<size_t>(std::stoul(env_vb));
     }
-    if (const char* env_bits = std::getenv("CACTUS_TQ_BITS")) {
-        size_t b = static_cast<size_t>(std::stoul(env_bits));
-        config_.tq_key_angle_bits = b;
-        config_.tq_value_angle_bits = b;
-    }
     if (const char* env_qjl = std::getenv("CACTUS_TQ_QJL")) {
         std::string s(env_qjl);
         config_.tq_use_qjl = !(s == "0" || s == "false" || s == "off");

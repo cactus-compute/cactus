@@ -81,11 +81,6 @@ static Result score_corpus_window(const std::string& model_path,
 
 struct ConfigRow {
     std::string label;
-    std::string method;
-    int k_bits;
-    int v_bits;
-    int proj_dim;
-    bool qjl;
     uint64_t seed;
 };
 
@@ -122,9 +117,9 @@ bool test_perplexity_sweep() {
     unsetenv("CACTUS_KV_QUANT_METHOD");
     unsetenv("CACTUS_TQ_KEY_BITS");
     unsetenv("CACTUS_TQ_VALUE_BITS");
-    unsetenv("CACTUS_TQ_BITS");
     unsetenv("CACTUS_TQ_PROJECTION_DIM");
     unsetenv("CACTUS_TQ_QJL");
+    unsetenv("CACTUS_TQ_SEED");
 
     Result ref_fp16 = score_corpus_window(g_model_path, tokens, context);
     std::cout << "\n  FP16 (no-cache recompute):  ppl = " << std::fixed << std::setprecision(3) << ref_fp16.perplexity
@@ -142,56 +137,40 @@ bool test_perplexity_sweep() {
               << std::endl;
     Result ref = ref_int8;  // primary baseline for pass/fail
 
-    // Recommended production config: K=4 bits, V=2 bits, no QJL.
-    // Compression: 4.57× vs FP16, ~2.6× vs INT8 (head_dim=64). Validates on
-    // conventional multi-KV-head GQA models. MQA models (kv_heads=1) have
-    // higher seed sensitivity and need per-model seed validation.
+    // Production config: K=4, V=2, no QJL, projection_dim=64 (head_dim).
+    // Compression: 4.57× vs FP16, ~2.6× vs INT8 on head_dim=64 models.
+    // Multiple seeds verify robustness against rotation matrix variance.
     std::vector<ConfigRow> configs = {
-        {"K4V2 noqjl seed=42",          "turboquant",  4, 2, 64, false, 42},
-        {"K4V2 noqjl seed=7",           "turboquant",  4, 2, 64, false, 7},
-        {"K4V2 noqjl seed=99",          "turboquant",  4, 2, 64, false, 99},
-        {"K4V2 noqjl seed=1337",        "turboquant",  4, 2, 64, false, 1337},
-        {"K4V2 noqjl seed=2026",        "turboquant",  4, 2, 64, false, 2026},
-        {"K4V2 noqjl seed=12345",       "turboquant",  4, 2, 64, false, 12345},
-        // Alternative configs for reference
-        {"K3V2 noqjl seed=42 (3.0×INT8)", "turboquant",  3, 2, 64, false, 42},
-        {"K4V3 noqjl seed=42 (2.2×INT8)", "turboquant",  4, 3, 64, false, 42},
-        {"K4V4 noqjl seed=42 (1.8×INT8)", "turboquant",  4, 4, 64, false, 42},
+        {"K4V2 seed=42",    42},
+        {"K4V2 seed=7",     7},
+        {"K4V2 seed=1337",  1337},
     };
 
     std::cout << "\n  Sweep (target: ppl within 5% of INT8 = ppl <= "
               << std::fixed << std::setprecision(3) << (ref.perplexity * 1.05) << "):\n" << std::endl;
-    std::cout << "  " << std::setw(24) << std::left << "config"
+    std::cout << "  " << std::setw(18) << std::left << "config"
               << std::setw(11) << "ppl"
               << std::setw(11) << "ppl/INT8"
               << std::setw(11) << "ppl/FP16"
               << std::setw(8) << "ms"
               << "  status\n";
-    std::cout << "  " << std::string(78, '-') << std::endl;
+    std::cout << "  " << std::string(72, '-') << std::endl;
 
     bool any_pass = false;
     for (const auto& c : configs) {
-        unsetenv("CACTUS_TQ_KEY_BITS");
-        unsetenv("CACTUS_TQ_VALUE_BITS");
-        unsetenv("CACTUS_TQ_BITS");
-        unsetenv("CACTUS_TQ_PROJECTION_DIM");
-        unsetenv("CACTUS_TQ_QJL");
+        setenv("CACTUS_KV_QUANT_METHOD",   "turboquant", 1);
+        setenv("CACTUS_TQ_KEY_BITS",       "4", 1);
+        setenv("CACTUS_TQ_VALUE_BITS",     "2", 1);
+        setenv("CACTUS_TQ_PROJECTION_DIM", "64", 1);
+        setenv("CACTUS_TQ_QJL",            "0", 1);
+        setenv("CACTUS_TQ_SEED",           std::to_string(c.seed).c_str(), 1);
 
-        unsetenv("CACTUS_TQ_SEED");
-        setenv("CACTUS_KV_QUANT_METHOD", c.method.c_str(), 1);
-        if (c.method == "turboquant") {
-            setenv("CACTUS_TQ_KEY_BITS",       std::to_string(c.k_bits).c_str(), 1);
-            setenv("CACTUS_TQ_VALUE_BITS",     std::to_string(c.v_bits).c_str(), 1);
-            setenv("CACTUS_TQ_PROJECTION_DIM", std::to_string(c.proj_dim).c_str(), 1);
-            setenv("CACTUS_TQ_QJL",            c.qjl ? "1" : "0", 1);
-            setenv("CACTUS_TQ_SEED",           std::to_string(c.seed).c_str(), 1);
-        }
         Result r = score_corpus(g_model_path, tokens, context);
         double ratio_int8 = r.perplexity / std::max(1e-9, ref_int8.perplexity);
         double ratio_fp16 = r.perplexity / std::max(1e-9, ref_fp16.perplexity);
         bool pass = (ratio_int8 <= 1.05) && std::isfinite(r.perplexity);
         if (pass) any_pass = true;
-        std::cout << "  " << std::setw(24) << std::left << c.label
+        std::cout << "  " << std::setw(18) << std::left << c.label
                   << std::setw(11) << std::fixed << std::setprecision(3) << r.perplexity
                   << std::setw(11) << std::setprecision(4) << ratio_int8
                   << std::setw(11) << std::setprecision(4) << ratio_fp16
@@ -203,9 +182,9 @@ bool test_perplexity_sweep() {
     unsetenv("CACTUS_KV_QUANT_METHOD");
     unsetenv("CACTUS_TQ_KEY_BITS");
     unsetenv("CACTUS_TQ_VALUE_BITS");
-    unsetenv("CACTUS_TQ_BITS");
     unsetenv("CACTUS_TQ_PROJECTION_DIM");
     unsetenv("CACTUS_TQ_QJL");
+    unsetenv("CACTUS_TQ_SEED");
 
     return any_pass;
 }

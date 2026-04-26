@@ -16,14 +16,6 @@ static constexpr float TQ_4BIT_CENTROIDS[16] = {
      0.1284f,  0.3882f,  0.6568f,  0.9424f,  1.2562f,  1.6180f,  2.0690f,  2.7326f
 };
 
-static constexpr float TQ_3BIT_CENTROIDS[8] = {
-    -2.1519f, -1.3439f, -0.7560f, -0.2451f, 0.2451f, 0.7560f, 1.3439f, 2.1519f
-};
-
-static constexpr float TQ_3BIT_BOUNDARIES[7] = {
-    -1.7479f, -1.0500f, -0.5006f, 0.0f, 0.5006f, 1.0500f, 1.7479f
-};
-
 static constexpr float TQ_4BIT_BOUNDARIES[15] = {
     -2.4008f, -1.8435f, -1.4371f, -1.0993f, -0.7996f, -0.5224f, -0.2582f,
      0.0f,
@@ -602,220 +594,9 @@ void dequantize_2bit(const uint8_t* src, float* dst, size_t dim) {
     }
 }
 
-// 8-bit uniform quantizer on the rotated unit sphere coordinates (√d·u' ≈ N(0,1)).
-// Simple linear mapping: code = clip(round(z * 128 / Q_RANGE + 128), 0, 255)
-// where Q_RANGE = 3.5 covers >99.95% of N(0,1).
-static constexpr float TQ_8BIT_RANGE = 3.5f;  // half-range
-static constexpr float TQ_8BIT_SCALE = 128.0f / TQ_8BIT_RANGE;        // value -> code
-static constexpr float TQ_8BIT_INV_SCALE = TQ_8BIT_RANGE / 128.0f;    // code -> value
-
-static void quantize_8bit(const float* src, uint8_t* dst, size_t dim) {
-    const float sqrt_dim = sqrtf(static_cast<float>(dim));
-    const float32x4_t sd = vdupq_n_f32(sqrt_dim);
-    const float32x4_t scale_v = vdupq_n_f32(TQ_8BIT_SCALE);
-    const float32x4_t off_v = vdupq_n_f32(128.0f);
-    const int32x4_t zero_i = vdupq_n_s32(0);
-    const int32x4_t max_i = vdupq_n_s32(255);
-    size_t i = 0;
-    for (; i + 4 <= dim; i += 4) {
-        float32x4_t v = vmulq_f32(vld1q_f32(src + i), sd);
-        int32x4_t code = vcvtnq_s32_f32(vfmaq_f32(off_v, v, scale_v));
-        code = vmaxq_s32(vminq_s32(code, max_i), zero_i);
-        dst[i + 0] = (uint8_t)vgetq_lane_s32(code, 0);
-        dst[i + 1] = (uint8_t)vgetq_lane_s32(code, 1);
-        dst[i + 2] = (uint8_t)vgetq_lane_s32(code, 2);
-        dst[i + 3] = (uint8_t)vgetq_lane_s32(code, 3);
-    }
-    for (; i < dim; i++) {
-        float v = src[i] * sqrt_dim * TQ_8BIT_SCALE + 128.0f;
-        int code = (int)(v + 0.5f);
-        if (code < 0) code = 0;
-        if (code > 255) code = 255;
-        dst[i] = (uint8_t)code;
-    }
-}
-
-void dequantize_8bit(const uint8_t* src, float* dst, size_t dim) {
-    const float inv_sd = 1.0f / sqrtf(static_cast<float>(dim));
-    const float scale = TQ_8BIT_INV_SCALE * inv_sd;
-    const float32x4_t scale_v = vdupq_n_f32(scale);
-    const float32x4_t off_v = vdupq_n_f32(-128.0f * scale);
-    size_t i = 0;
-    for (; i + 4 <= dim; i += 4) {
-        int32x4_t c = {src[i + 0], src[i + 1], src[i + 2], src[i + 3]};
-        vst1q_f32(dst + i, vfmaq_f32(off_v, vcvtq_f32_s32(c), scale_v));
-    }
-    for (; i < dim; i++) {
-        dst[i] = ((float)src[i] - 128.0f) * scale;
-    }
-}
-
-float dot_8bit_f32(
-    const float* __restrict q,
-    const uint8_t* __restrict packed,
-    size_t dim
-) {
-    const float inv_sd = 1.0f / sqrtf(static_cast<float>(dim));
-    const float scale = TQ_8BIT_INV_SCALE * inv_sd;
-    const float32x4_t scale_v = vdupq_n_f32(scale);
-    const float32x4_t off_v = vdupq_n_f32(-128.0f * scale);
-    float32x4_t acc0 = vdupq_n_f32(0.0f);
-    float32x4_t acc1 = vdupq_n_f32(0.0f);
-    size_t i = 0;
-    for (; i + 8 <= dim; i += 8) {
-        int32x4_t c0 = {packed[i + 0], packed[i + 1], packed[i + 2], packed[i + 3]};
-        int32x4_t c1 = {packed[i + 4], packed[i + 5], packed[i + 6], packed[i + 7]};
-        float32x4_t v0 = vfmaq_f32(off_v, vcvtq_f32_s32(c0), scale_v);
-        float32x4_t v1 = vfmaq_f32(off_v, vcvtq_f32_s32(c1), scale_v);
-        acc0 = vfmaq_f32(acc0, vld1q_f32(q + i),     v0);
-        acc1 = vfmaq_f32(acc1, vld1q_f32(q + i + 4), v1);
-    }
-    float result = vaddvq_f32(vaddq_f32(acc0, acc1));
-    for (; i < dim; i++) {
-        result += q[i] * (((float)packed[i] - 128.0f) * scale);
-    }
-    return result;
-}
-
-void accumulate_8bit_f32(
-    const uint8_t* __restrict packed,
-    float weight_radius,
-    float* __restrict accum,
-    size_t dim
-) {
-    const float inv_sd = 1.0f / sqrtf(static_cast<float>(dim));
-    const float scale = TQ_8BIT_INV_SCALE * inv_sd * weight_radius;
-    const float32x4_t scale_v = vdupq_n_f32(scale);
-    const float32x4_t off_v = vdupq_n_f32(-128.0f * scale);
-    size_t i = 0;
-    for (; i + 8 <= dim; i += 8) {
-        int32x4_t c0 = {packed[i + 0], packed[i + 1], packed[i + 2], packed[i + 3]};
-        int32x4_t c1 = {packed[i + 4], packed[i + 5], packed[i + 6], packed[i + 7]};
-        float32x4_t v0 = vfmaq_f32(off_v, vcvtq_f32_s32(c0), scale_v);
-        float32x4_t v1 = vfmaq_f32(off_v, vcvtq_f32_s32(c1), scale_v);
-        vst1q_f32(accum + i,     vaddq_f32(vld1q_f32(accum + i),     v0));
-        vst1q_f32(accum + i + 4, vaddq_f32(vld1q_f32(accum + i + 4), v1));
-    }
-    for (; i < dim; i++) {
-        accum[i] += (((float)packed[i] - 128.0f) * scale);
-    }
-}
-
-// 3-bit Lloyd-Max codes packed 8 codes per 3 bytes.
-// Layout (LSB-first):
-//   byte0 = code0 | (code1 << 3) | ((code2 & 0x3) << 6)
-//   byte1 = ((code2 >> 2) & 0x1) | (code3 << 1) | (code4 << 4) | ((code5 & 0x1) << 7)
-//   byte2 = ((code5 >> 1) & 0x3) | (code6 << 2) | (code7 << 5)
-// head_dim is always a power of two >= 8 (asserted in the encoder), so dim is a multiple of 8.
-static void quantize_3bit(const float* src, uint8_t* dst, size_t dim) {
-    const float sqrt_dim = sqrtf(static_cast<float>(dim));
-    size_t i = 0, out = 0;
-    while (i + 8 <= dim) {
-        int c[8];
-        for (int j = 0; j < 8; j++) {
-            float v = src[i + j] * sqrt_dim;
-            int code = 0;
-            for (int b = 0; b < 7; b++) if (v > TQ_3BIT_BOUNDARIES[b]) code = b + 1;
-            c[j] = code;
-        }
-        dst[out++] = (uint8_t)( c[0]                  |  (c[1] << 3) | ((c[2] & 0x3) << 6));
-        dst[out++] = (uint8_t)(((c[2] >> 2) & 0x1)    |  (c[3] << 1) |  (c[4] << 4)        | ((c[5] & 0x1) << 7));
-        dst[out++] = (uint8_t)(((c[5] >> 1) & 0x3)    |  (c[6] << 2) |  (c[7] << 5));
-        i += 8;
-    }
-}
-
-void dequantize_3bit(const uint8_t* src, float* dst, size_t dim) {
-    const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
-    float lut[8];
-    for (int i = 0; i < 8; i++) lut[i] = TQ_3BIT_CENTROIDS[i] * inv_sqrt_dim;
-    size_t i = 0;
-    size_t in = 0;
-    while (i + 8 <= dim) {
-        uint8_t b0 = src[in], b1 = src[in + 1], b2 = src[in + 2];
-        in += 3;
-        int c0 = b0 & 0x7;
-        int c1 = (b0 >> 3) & 0x7;
-        int c2 = ((b0 >> 6) & 0x3) | ((b1 & 0x1) << 2);
-        int c3 = (b1 >> 1) & 0x7;
-        int c4 = (b1 >> 4) & 0x7;
-        int c5 = ((b1 >> 7) & 0x1) | ((b2 & 0x3) << 1);
-        int c6 = (b2 >> 2) & 0x7;
-        int c7 = (b2 >> 5) & 0x7;
-        dst[i + 0] = lut[c0]; dst[i + 1] = lut[c1];
-        dst[i + 2] = lut[c2]; dst[i + 3] = lut[c3];
-        dst[i + 4] = lut[c4]; dst[i + 5] = lut[c5];
-        dst[i + 6] = lut[c6]; dst[i + 7] = lut[c7];
-        i += 8;
-    }
-}
-
-float dot_3bit_f32(
-    const float* __restrict q,
-    const uint8_t* __restrict packed,
-    size_t dim
-) {
-    const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
-    float lut[8];
-    for (int i = 0; i < 8; i++) lut[i] = TQ_3BIT_CENTROIDS[i] * inv_sqrt_dim;
-    float32x4_t acc0 = vdupq_n_f32(0.0f);
-    float32x4_t acc1 = vdupq_n_f32(0.0f);
-    size_t i = 0;
-    size_t in = 0;
-    while (i + 8 <= dim) {
-        uint8_t b0 = packed[in], b1 = packed[in + 1], b2 = packed[in + 2];
-        in += 3;
-        float tmp[8];
-        tmp[0] = lut[b0 & 0x7];
-        tmp[1] = lut[(b0 >> 3) & 0x7];
-        tmp[2] = lut[((b0 >> 6) & 0x3) | ((b1 & 0x1) << 2)];
-        tmp[3] = lut[(b1 >> 1) & 0x7];
-        tmp[4] = lut[(b1 >> 4) & 0x7];
-        tmp[5] = lut[((b1 >> 7) & 0x1) | ((b2 & 0x3) << 1)];
-        tmp[6] = lut[(b2 >> 2) & 0x7];
-        tmp[7] = lut[(b2 >> 5) & 0x7];
-        acc0 = vfmaq_f32(acc0, vld1q_f32(q + i),     vld1q_f32(tmp));
-        acc1 = vfmaq_f32(acc1, vld1q_f32(q + i + 4), vld1q_f32(tmp + 4));
-        i += 8;
-    }
-    return vaddvq_f32(vaddq_f32(acc0, acc1));
-}
-
-void accumulate_3bit_f32(
-    const uint8_t* __restrict packed,
-    float weight_radius,
-    float* __restrict accum,
-    size_t dim
-) {
-    const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
-    const float wr = inv_sqrt_dim * weight_radius;
-    float lut[8];
-    for (int i = 0; i < 8; i++) lut[i] = TQ_3BIT_CENTROIDS[i] * wr;
-    size_t i = 0;
-    size_t in = 0;
-    while (i + 8 <= dim) {
-        uint8_t b0 = packed[in], b1 = packed[in + 1], b2 = packed[in + 2];
-        in += 3;
-        float tmp[8];
-        tmp[0] = lut[b0 & 0x7];
-        tmp[1] = lut[(b0 >> 3) & 0x7];
-        tmp[2] = lut[((b0 >> 6) & 0x3) | ((b1 & 0x1) << 2)];
-        tmp[3] = lut[(b1 >> 1) & 0x7];
-        tmp[4] = lut[(b1 >> 4) & 0x7];
-        tmp[5] = lut[((b1 >> 7) & 0x1) | ((b2 & 0x3) << 1)];
-        tmp[6] = lut[(b2 >> 2) & 0x7];
-        tmp[7] = lut[(b2 >> 5) & 0x7];
-        vst1q_f32(accum + i,     vaddq_f32(vld1q_f32(accum + i),     vld1q_f32(tmp)));
-        vst1q_f32(accum + i + 4, vaddq_f32(vld1q_f32(accum + i + 4), vld1q_f32(tmp + 4)));
-        i += 8;
-    }
-}
-
 static void quantize_nbit(const float* src, uint8_t* dst, size_t dim, size_t angle_bits) {
-    if      (angle_bits == 2) quantize_2bit(src, dst, dim);
-    else if (angle_bits == 3) quantize_3bit(src, dst, dim);
-    else if (angle_bits == 8) quantize_8bit(src, dst, dim);
-    else                      quantize_4bit(src, dst, dim);
+    if (angle_bits == 2) quantize_2bit(src, dst, dim);
+    else                 quantize_4bit(src, dst, dim);
 }
 
 void cactus_turboquant_init(
@@ -928,10 +709,8 @@ void cactus_turboquant_encode_kv_fp16(
                 quantize_nbit(buf, q_angles, head_dim, angle_bits);
 
                 if (dst_error_norms) {
-                    if      (angle_bits == 2) dequantize_2bit(q_angles, residual, head_dim);
-                    else if (angle_bits == 3) dequantize_3bit(q_angles, residual, head_dim);
-                    else if (angle_bits == 8) dequantize_8bit(q_angles, residual, head_dim);
-                    else                       dequantize_4bit(q_angles, residual, head_dim);
+                    if (angle_bits == 2) dequantize_2bit(q_angles, residual, head_dim);
+                    else                 dequantize_4bit(q_angles, residual, head_dim);
 
                     float32x4_t r_vec    = vdupq_n_f32(radius);
                     float32x4_t err_acc0 = vdupq_n_f32(0.0f);
@@ -1023,10 +802,8 @@ void cactus_turboquant_decode_kv_fp16(
             float* buf = _buf.data();
             for (size_t idx = start; idx < end; idx++) {
                 float radius = radii[idx];
-                if      (angle_bits == 2) dequantize_2bit(angles + idx * angles_bytes, buf, head_dim);
-                else if (angle_bits == 3) dequantize_3bit(angles + idx * angles_bytes, buf, head_dim);
-                else if (angle_bits == 8) dequantize_8bit(angles + idx * angles_bytes, buf, head_dim);
-                else                       dequantize_4bit(angles + idx * angles_bytes, buf, head_dim);
+                if (angle_bits == 2) dequantize_2bit(angles + idx * angles_bytes, buf, head_dim);
+                else                 dequantize_4bit(angles + idx * angles_bytes, buf, head_dim);
                 float32x4_t r_vec = vdupq_n_f32(radius);
                 size_t d = 0;
                 for (; d + 16 <= head_dim; d += 16) {
