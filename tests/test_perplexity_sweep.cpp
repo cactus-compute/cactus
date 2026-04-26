@@ -142,26 +142,21 @@ bool test_perplexity_sweep() {
               << std::endl;
     Result ref = ref_int8;  // primary baseline for pass/fail
 
-    // Read configs from env; default config set is comprehensive
+    // Recommended production config: K=4 bits, V=2 bits, no QJL.
+    // Compression: 4.57× vs FP16, ~2.6× vs INT8 (head_dim=64). Validates on
+    // conventional multi-KV-head GQA models. MQA models (kv_heads=1) have
+    // higher seed sensitivity and need per-model seed validation.
     std::vector<ConfigRow> configs = {
-        // K4V4 noqjl — quality-focused (works for large head_dim)
-        {"K4V4 noqjl seed=42",          "turboquant",  4, 4, 64, false, 42},
-        {"K4V4 noqjl seed=7",           "turboquant",  4, 4, 64, false, 7},
-        {"K4V4 noqjl seed=12345",       "turboquant",  4, 4, 64, false, 12345},
-        {"K4V4 noqjl seed=2026",        "turboquant",  4, 4, 64, false, 2026},
-        // K4V2 noqjl — compression-focused (works for small head_dim)
         {"K4V2 noqjl seed=42",          "turboquant",  4, 2, 64, false, 42},
+        {"K4V2 noqjl seed=7",           "turboquant",  4, 2, 64, false, 7},
+        {"K4V2 noqjl seed=99",          "turboquant",  4, 2, 64, false, 99},
+        {"K4V2 noqjl seed=1337",        "turboquant",  4, 2, 64, false, 1337},
+        {"K4V2 noqjl seed=2026",        "turboquant",  4, 2, 64, false, 2026},
         {"K4V2 noqjl seed=12345",       "turboquant",  4, 2, 64, false, 12345},
-        // 8-bit V — should solve gemma's V-sensitivity
-        {"K4V8 noqjl",                  "turboquant",  4, 8, 64, false, 42},
-        {"K4V8 noqjl s=12345",          "turboquant",  4, 8, 64, false, 12345},
-        {"K3V8 noqjl",                  "turboquant",  3, 8, 64, false, 42},
-        // K8 with K8V4
-        {"K8V4 noqjl",                  "turboquant",  8, 4, 64, false, 42},
-        {"K8V8 noqjl",                  "turboquant",  8, 8, 64, false, 42},
-        // K4V4 with QJL on
-        {"K4V4 qjl m=64",               "turboquant",  4, 4, 64, true,  42},
-        {"K4V4 qjl m=128",              "turboquant",  4, 4, 128,true,  42},
+        // Alternative configs for reference
+        {"K3V2 noqjl seed=42 (3.0×INT8)", "turboquant",  3, 2, 64, false, 42},
+        {"K4V3 noqjl seed=42 (2.2×INT8)", "turboquant",  4, 3, 64, false, 42},
+        {"K4V4 noqjl seed=42 (1.8×INT8)", "turboquant",  4, 4, 64, false, 42},
     };
 
     std::cout << "\n  Sweep (target: ppl within 5% of INT8 = ppl <= "

@@ -122,7 +122,7 @@ void KVCache::set_window_size(size_t window, size_t sink) {
 
         if (quant_method == KVQuantMethod::TURBOQUANT) {
             size_t k_ang_bytes = turboquant_angles_bytes_per_head(head_dim, tq_key_angle_bits);
-                size_t v_ang_bytes = turboquant_angles_bytes_per_head(head_dim, tq_value_angle_bits);
+            size_t v_ang_bytes = turboquant_angles_bytes_per_head(head_dim, tq_value_angle_bits);
             size_t qjl_bytes = turboquant_qjl_bytes_per_head(tq_projection_dim);
             for (auto& cache : layer_caches)
                 tq_resize(cache, window_size, num_kv_heads, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl);
@@ -492,7 +492,7 @@ void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp
 
     if (quant_method == KVQuantMethod::TURBOQUANT) {
         size_t k_ang_bytes = turboquant_angles_bytes_per_head(dim, tq_key_angle_bits);
-                size_t v_ang_bytes = turboquant_angles_bytes_per_head(dim, tq_value_angle_bits);
+        size_t v_ang_bytes = turboquant_angles_bytes_per_head(dim, tq_value_angle_bits);
         size_t qjl_bytes = turboquant_qjl_bytes_per_head(tq_projection_dim);
         const uint8_t* rot  = tq_rotation_signs.data();
         const uint8_t* proj = tq_projection_matrix.data();
