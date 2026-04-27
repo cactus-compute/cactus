@@ -1512,3 +1512,102 @@ void cactus_gemv_int4_actsparse_kmi4_v2(
     });
     pool.wait_all();
 }
+
+// ---------------------------------------------------------------------------
+// N-sparse up-proj (Round 1: simple per-n_block loop over live N-groups).
+// ---------------------------------------------------------------------------
+static inline void nsparse_up_compute_nblock(
+    const int8_t* A,
+    const uint8_t* B_packed,
+    const __fp16*  B_scales_row,     // scales for this n_block: [num_k_groups * 4]
+    size_t         k_base_offset,    // always 0 here
+    size_t         n_block,
+    size_t         num_k_groups,
+    size_t         K_group_size,
+    __fp16*        C,
+    size_t         n_start,
+    size_t         actual_n,
+    float          A_scale)
+{
+    (void)k_base_offset;
+    float32x4_t running_sum = vdupq_n_f32(0.0f);
+    for (size_t g = 0; g < num_k_groups; ++g) {
+        const size_t k_base = g * K_group_size;
+        const int8_t* a_ptr = A + k_base;
+        const uint8_t* b_base = B_packed + (n_block * num_k_groups * K_group_size + k_base) * 2;
+        __builtin_prefetch(b_base + K_group_size * 2, 0, 3);
+
+        int32x4_t acc = vdupq_n_s32(0);
+        int8x16_t a_lo = vld1q_s8(a_ptr);
+        int8x16_t a_hi = vld1q_s8(a_ptr + 16);
+        int8x16_t b0, b1, b2, b3;
+        as_unpack_nibbles(b_base,      b1, b0);
+        as_unpack_nibbles(b_base + 16, b3, b2);
+        acc = AS_DOTQ_LANE(acc, b0, a_lo, 0);
+        acc = AS_DOTQ_LANE(acc, b1, a_lo, 1);
+        acc = AS_DOTQ_LANE(acc, b2, a_lo, 2);
+        acc = AS_DOTQ_LANE(acc, b3, a_lo, 3);
+        as_unpack_nibbles(b_base + 32, b1, b0);
+        as_unpack_nibbles(b_base + 48, b3, b2);
+        acc = AS_DOTQ_LANE(acc, b0, a_hi, 0);
+        acc = AS_DOTQ_LANE(acc, b1, a_hi, 1);
+        acc = AS_DOTQ_LANE(acc, b2, a_hi, 2);
+        acc = AS_DOTQ_LANE(acc, b3, a_hi, 3);
+
+        float32x4_t scales = vcvt_f32_f16(vld1_f16(B_scales_row + g * 4));
+        running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc), scales);
+    }
+    float32x4_t result = vmulq_n_f32(running_sum, A_scale);
+    float16x4_t result_f16 = vcvt_f16_f32(result);
+    if (actual_n == 4) {
+        vst1_f16(C + n_start, result_f16);
+    } else {
+        for (size_t ni = 0; ni < actual_n; ++ni) {
+            C[n_start + ni] = vget_lane_f16(result_f16, 0);
+            result_f16 = vext_f16(result_f16, result_f16, 1);
+        }
+    }
+}
+
+void cactus_gemv_int4_nsparse_up(
+    const int8_t* A, float A_scale,
+    const int8_t* B_packed_raw, const __fp16* B_scales,
+    const uint16_t* live_N_groups, size_t num_live,
+    __fp16* C, size_t K, size_t N,
+    size_t K_group_size, size_t N_group_size)
+{
+    const uint8_t* B_packed = reinterpret_cast<const uint8_t*>(B_packed_raw);
+    if (K == 0 || N == 0 || num_live == 0) return;
+    if (N_group_size % 4 != 0) return;  // must pack into whole n_blocks
+    const size_t num_k_groups     = K / K_group_size;
+    const size_t nblocks_per_ngrp = N_group_size / 4;
+    const size_t N_blocks_total   = (N + 3) / 4;
+
+    auto process_live_range = [=](size_t ig_start, size_t ig_end) {
+        for (size_t ig = ig_start; ig < ig_end; ++ig) {
+            const size_t Ng = live_N_groups[ig];
+            const size_t nb_start = Ng * nblocks_per_ngrp;
+            const size_t nb_end   = std::min(nb_start + nblocks_per_ngrp, N_blocks_total);
+            for (size_t nb = nb_start; nb < nb_end; ++nb) {
+                const size_t n_start  = nb * 4;
+                const size_t actual_n = std::min(size_t(4), N - n_start);
+                const __fp16* scale_row = B_scales + nb * num_k_groups * 4;
+                nsparse_up_compute_nblock(
+                    A, B_packed, scale_row, 0, nb,
+                    num_k_groups, K_group_size,
+                    C, n_start, actual_n, A_scale);
+            }
+        }
+    };
+
+    auto& pool = CactusThreading::get_thread_pool();
+    const size_t work_total = num_live * nblocks_per_ngrp;
+    size_t num_threads = CactusThreading::GemmThreading::get_gemv_threads(work_total, pool.num_workers());
+    num_threads = std::min(num_threads, num_live);
+    if (num_threads <= 1) {
+        process_live_range(0, num_live);
+    } else {
+        pool.enqueue_n_threads(num_live, num_threads, process_live_range);
+        pool.wait_all();
+    }
+}

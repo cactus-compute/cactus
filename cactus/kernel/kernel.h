@@ -172,6 +172,30 @@ void cactus_gelu_mul_quant_fp16_to_int8(
     const __fp16* gate, const __fp16* up, int8_t* out,
     size_t n, float quant_scale);
 
+// N-sparse INT4 GEMV for the SwiGLU up-proj. Skips whole output-row
+// groups that the router marked dead.
+//
+// `live_N_groups` is the same kind of list the down-proj sparse kernels
+// consume (indices into [0, N / N_group_size)), but here it addresses
+// N-groups of 32 consecutive OUTPUT rows — not K-groups. Each live N-group
+// spans 8 consecutive n_blocks (4 output rows per n_block × 8 = 32 rows).
+//
+// Layout contract matches cactus_gemv_int4: B is the 4-row interleaved
+// INT4 pack with per-(n_block, k-group) fp16 scales. A is the INT8
+// activation vector of length K. Only the output rows inside live groups
+// are written; the caller is responsible for zeroing C up front if it
+// wants the dead rows to be definitely zero (otherwise they are left
+// untouched).
+//
+// `N_group_size` is the output-row grouping (must be a multiple of 4);
+// use 32 to match the K-group convention so up and down share one mask.
+void cactus_gemv_int4_nsparse_up(
+    const int8_t* A, float A_scale,
+    const int8_t* B_packed, const __fp16* B_scales,
+    const uint16_t* live_N_groups, size_t num_live,
+    __fp16* C, size_t K, size_t N,
+    size_t K_group_size, size_t N_group_size);
+
 void cactus_matmul_integer(Precision precision,
                             const int8_t* A, const float* A_scales,
                             const int8_t* B, const __fp16* B_scales,
