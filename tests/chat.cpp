@@ -125,7 +125,9 @@ bool record_audio(std::vector<uint8_t>& pcm_out) {
 } // anonymous namespace
 #endif // HAVE_SDL2
 
-constexpr int MAX_TOKENS = 1024;
+// TEMP: capped to 50 so sparse/dense A/B compares identical output lengths.
+// Revert to 1024 for normal chat use.
+constexpr int MAX_TOKENS = 50;
 constexpr size_t MAX_BYTES_PER_TOKEN = 64;
 constexpr size_t RESPONSE_BUFFER_SIZE = MAX_TOKENS * MAX_BYTES_PER_TOKEN;
 
@@ -548,10 +550,12 @@ int main(int argc, char* argv[]) {
         }
         messages_json << "]";
 
+        // TEMP: stop_sequences emptied so we always generate MAX_TOKENS,
+        // otherwise sparse A/B runs hit EOS early on garbage output.
         std::string options = "{\"temperature\":0.7,\"top_p\":0.95,\"top_k\":40,\"max_tokens\":"
                     + std::to_string(MAX_TOKENS)
                     + ",\"enable_thinking_if_supported\":" + (enable_thinking ? "true" : "false")
-                    + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
+                    + ",\"stop_sequences\":[]}";
 
         std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
 
