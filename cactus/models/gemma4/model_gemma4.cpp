@@ -313,9 +313,21 @@ size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t laye
 size_t Gemma4Model::build_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                   ComputeBackend backend) const {
     const auto& layer = weight_nodes_.layers[layer_idx];
+    // Gate is both the non-linearity for the SwiGLU product AND the router
+    // source for activation sparsity. Running gate first (full/dense) gives
+    // us the router before up_proj starts, so up_proj can skip rows that
+    // the router drops.
     auto gate = gb->gelu(gb->matmul(input, layer.ffn_gate_weight, true, backend));
-    auto up = gb->matmul(input, layer.ffn_up_weight, true, backend);
-    return gb->matmul(gb->multiply(gate, up), layer.ffn_down_weight, true, backend);
+    // N-sparse up_proj: only produces live rows. Dead rows of the output
+    // stay whatever the graph buffer was initialised to (zeroes on fresh
+    // execution). Active only for M == 1 (decode); prefill falls through
+    // to the dense path inside compute_matmul_node.
+    auto up = gb->matmul_actsparse_mlp_up(input, layer.ffn_up_weight, gate, 0.75f, backend);
+    auto h = gb->multiply(gate, up);
+    // K-sparse down_proj, using the SAME router source as up so the masks
+    // match. `h` rows at dead positions are zero (because `up` was zero
+    // there), so the K-sparse kernel wastes nothing.
+    return gb->matmul_actsparse_mlp_down(h, layer.ffn_down_weight, gate, 0.75f, backend);
 }
 
 size_t Gemma4Model::build_moe(CactusGraph* gb, size_t input, uint32_t layer_idx,

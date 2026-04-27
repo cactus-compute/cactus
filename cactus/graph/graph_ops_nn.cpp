@@ -1,6 +1,7 @@
 #include "graph.h"
 #include "../kernel/kernel.h"
 #include "../kernel/kernel_utils.h"
+#include <arm_neon.h>
 #include <cstring>
 #include <vector>
 #include <stdexcept>
@@ -9,6 +10,8 @@
 #include <assert.h>
 #include <algorithm>
 #include <limits>
+#include <mutex>
+#include <unordered_map>
 
 namespace {
     thread_local std::vector<__fp16> transpose_buffer_fp16;
@@ -18,6 +21,134 @@ namespace {
     thread_local const __fp16* cached_quant_src = nullptr;
     thread_local size_t cached_quant_M = 0;
     thread_local size_t cached_quant_K = 0;
+
+    // Activation-sparse MLP down-proj scratch + per-weight K-major repack cache.
+    // Keyed by the raw weight pointer (stable for an mmapped tensor across a run).
+    struct ActSparseCache {
+        std::unordered_map<const void*, std::vector<uint8_t>> km_inline;
+        std::mutex mu;
+    };
+    inline ActSparseCache& actsparse_cache() {
+        static ActSparseCache c;
+        return c;
+    }
+    thread_local std::vector<int8_t>  actsp_h_masked;
+    thread_local std::vector<uint64_t> actsp_bitmask;
+    thread_local std::vector<uint16_t> actsp_live_groups;
+    thread_local std::vector<float>    actsp_group_max_f32;
+    thread_local std::vector<float>    actsp_sorted_scratch;
+
+    // No across-call cache: the graph BufferPool recycles router
+    // pointers across layers, so a ptr-keyed cache produces stale hits
+    // and the up/down masks go out of sync (which corrupts output).
+    // Rebuilding per call is ~5 µs with the NEON path below — cheap.
+
+    // Runtime kill switches. Useful for A/B bisection without rebuilding:
+    //   CACTUS_ACTSPARSE_DISABLE=1       both paths off (baseline dense)
+    //   CACTUS_ACTSPARSE_UP_DISABLE=1    only up stays dense
+    //   CACTUS_ACTSPARSE_DOWN_DISABLE=1  only down stays dense
+    //   CACTUS_ACTSPARSE_TRACE=1         one-time stderr line when the
+    //                                    sparse path first fires
+    inline bool env_flag_on(const char* name) {
+        const char* e = std::getenv(name);
+        return e && e[0] && e[0] != '0';
+    }
+    inline bool actsparse_all_disabled() {
+        static const bool v = env_flag_on("CACTUS_ACTSPARSE_DISABLE");
+        return v;
+    }
+    inline bool actsparse_up_disabled() {
+        static const bool v = env_flag_on("CACTUS_ACTSPARSE_UP_DISABLE");
+        return v;
+    }
+    inline bool actsparse_down_disabled() {
+        static const bool v = env_flag_on("CACTUS_ACTSPARSE_DOWN_DISABLE");
+        return v;
+    }
+    inline bool actsparse_trace() {
+        static const bool v = env_flag_on("CACTUS_ACTSPARSE_TRACE");
+        return v;
+    }
+    // CACTUS_ACTSPARSE_SPARSITY=0.60 (or 0.70, 0.75, ...) overrides the
+    // value the graph builder set in OpParams. Returns the builder's
+    // value if the env var is absent or malformed.
+    inline float actsparse_sparsity_override(float builder_value) {
+        static const float v = []() {
+            const char* e = std::getenv("CACTUS_ACTSPARSE_SPARSITY");
+            if (!e || !e[0]) return -1.0f;
+            float x = std::atof(e);
+            if (x < 0.0f || x >= 1.0f) return -1.0f;
+            return x;
+        }();
+        return (v >= 0.0f) ? v : builder_value;
+    }
+    inline void actsparse_note_fire(const char* which) {
+        if (!actsparse_trace()) return;
+        static thread_local bool once_up = false;
+        static thread_local bool once_down = false;
+        if (which[0] == 'u' && !once_up) {
+            std::fprintf(stderr, "[actsparse] first UP   call on this thread\n");
+            once_up = true;
+        } else if (which[0] == 'd' && !once_down) {
+            std::fprintf(stderr, "[actsparse] first DOWN call on this thread\n");
+            once_down = true;
+        }
+    }
+
+    // NEON-vectorised |fp16| group-max over 32 lanes per group.
+    // Reduces 32 fp16 to a single float max using two 8-wide fp16 absmax
+    // reductions + a 4-wide f32 pair reduction.
+    inline void actsparse_group_max_abs_f16(const __fp16* src, size_t num_groups,
+                                             size_t group_size, float* out)
+    {
+        for (size_t g = 0; g < num_groups; ++g) {
+            const __fp16* p = src + g * group_size;
+            float16x8_t acc = vabsq_f16(vld1q_f16(p));
+            for (size_t j = 8; j < group_size; j += 8) {
+                acc = vmaxq_f16(acc, vabsq_f16(vld1q_f16(p + j)));
+            }
+            __fp16 m = vmaxvq_f16(acc);
+            out[g] = static_cast<float>(m);
+        }
+    }
+
+    // Build the router bitmask + live_groups list from an fp16 router
+    // (the pre-gated gate output). Same deterministic nth_element -> up
+    // and down derive identical live sets when called with the same
+    // router + sparsity, which is exactly the SwiGLU pattern.
+    inline size_t actsparse_build_router_mask(
+        const __fp16* router, size_t N_router, size_t group_size,
+        float sparsity,
+        uint64_t* out_bitmask, uint16_t* out_live_groups)
+    {
+        const size_t num_groups = N_router / group_size;
+        if (actsp_group_max_f32.size() < num_groups)
+            actsp_group_max_f32.resize(num_groups);
+        actsparse_group_max_abs_f16(router, num_groups, group_size,
+                                    actsp_group_max_f32.data());
+
+        size_t drop = static_cast<size_t>(sparsity * static_cast<float>(num_groups));
+        if (drop >= num_groups) drop = num_groups - 1;
+        if (actsp_sorted_scratch.size() < num_groups)
+            actsp_sorted_scratch.resize(num_groups);
+        std::memcpy(actsp_sorted_scratch.data(), actsp_group_max_f32.data(),
+                    num_groups * sizeof(float));
+        std::nth_element(actsp_sorted_scratch.begin(),
+                         actsp_sorted_scratch.begin() + drop,
+                         actsp_sorted_scratch.begin() + num_groups);
+        float thr = actsp_sorted_scratch[drop];
+
+        const size_t nqw = (num_groups + 63) / 64;
+        std::memset(out_bitmask, 0, nqw * sizeof(uint64_t));
+        size_t num_live = 0;
+        for (size_t g = 0; g < num_groups; ++g) {
+            if (actsp_group_max_f32[g] > thr) {
+                out_bitmask[g >> 6] |= uint64_t(1) << (g & 63);
+                out_live_groups[num_live++] = static_cast<uint16_t>(g);
+            }
+        }
+        return num_live;
+    }
 
     void ensure_transpose_buffer_fp16(size_t required_size) {
         if (transpose_buffer_fp16.size() < required_size) {
@@ -245,6 +376,126 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             lhs_scales = quant_scales_buffer.data();
         } else {
             throw std::runtime_error("Quantized matmul requires INT8 (pre-quantized) or FP16 activations");
+        }
+
+        // Activation-sparse SwiGLU MLP fast path. Fires only for M == 1
+        // with INT4 group-quantized RHS and group_size == 32.
+        //   * matmul_actsparse_mlp_up sets  actsparse_mlp_up_sparsity   > 0
+        //   * matmul_actsparse_mlp_down sets actsparse_mlp_down_sparsity > 0
+        // The router source is node input[2] (an fp16 [N_router] tensor,
+        // normally the post-gelu gate output). Both up and down derive
+        // their bitmask from it with deterministic nth_element -> the
+        // live set is identical across the pair.
+        const float actsp_up_sparsity   =
+            node.params.actsparse_mlp_up_sparsity > 0.0f
+                ? actsparse_sparsity_override(node.params.actsparse_mlp_up_sparsity)
+                : 0.0f;
+        const float actsp_down_sparsity =
+            node.params.actsparse_mlp_down_sparsity > 0.0f
+                ? actsparse_sparsity_override(node.params.actsparse_mlp_down_sparsity)
+                : 0.0f;
+        const bool  is_actsp_up   = actsp_up_sparsity   > 0.0f && !actsparse_up_disabled();
+        const bool  is_actsp_down = actsp_down_sparsity > 0.0f && !actsparse_down_disabled();
+        const size_t actsp_gs = rhs_buffer.group_size;
+
+        if ((is_actsp_up || is_actsp_down) && M == 1 &&
+            rhs_buffer.precision == Precision::INT4 && actsp_gs == 32 &&
+            node.input_ids.size() >= 3 && !actsparse_all_disabled())
+        {
+            const auto& router_buffer = get_input(node, 2, nodes, node_index_map);
+            if (router_buffer.precision == Precision::FP16) {
+                const __fp16* router = router_buffer.data_as<__fp16>();
+                // Router length = number of intermediate channels. For up
+                // this is N_out; for down this is K_in. Either way it's
+                // the INTER dim shared by both projections.
+                const size_t N_router = is_actsp_up ? N : K;
+
+                const size_t num_groups = N_router / actsp_gs;
+                if (actsp_bitmask.size() < (num_groups + 63) / 64)
+                    actsp_bitmask.resize((num_groups + 63) / 64);
+                if (actsp_live_groups.size() < num_groups)
+                    actsp_live_groups.resize(num_groups);
+
+                const float sparsity = is_actsp_up ? actsp_up_sparsity
+                                                   : actsp_down_sparsity;
+                const size_t nqw = (num_groups + 63) / 64;
+                if (actsp_bitmask.size() < nqw) actsp_bitmask.resize(nqw);
+                if (actsp_live_groups.size() < num_groups) actsp_live_groups.resize(num_groups);
+                const size_t num_live = actsparse_build_router_mask(
+                    router, N_router, actsp_gs, sparsity,
+                    actsp_bitmask.data(), actsp_live_groups.data());
+
+                if (is_actsp_up) {
+                    actsparse_note_fire("up");
+                    // CACTUS_ACTSPARSE_DEBUG_DENSE=1 -> take the sparse
+                    // code path (mask build, etc.) but run the DENSE kernel
+                    // at the end. Isolates "kernel is wrong" from "graph
+                    // plumbing is wrong".
+                    static const bool debug_dense = env_flag_on("CACTUS_ACTSPARSE_DEBUG_DENSE");
+                    if (debug_dense) {
+                        cactus_matmul_integer(rhs_buffer.precision,
+                                        lhs_int8, lhs_scales,
+                                        rhs, rhs_scales, output,
+                                        M, K, N, rhs_buffer.group_size);
+                        return;
+                    }
+                    std::memset(output, 0, N * sizeof(__fp16));
+                    cactus_gemv_int4_nsparse_up(
+                        lhs_int8, lhs_scales[0],
+                        rhs, rhs_scales,
+                        actsp_live_groups.data(), num_live,
+                        output, K, N, actsp_gs, /*N_group_size=*/actsp_gs);
+                    return;
+                }
+
+                // Down path: apply bitmask to h, run K-sparse GEMV on a
+                // K-major inline repack of the down weights (cached per
+                // weight pointer).
+                const size_t N_blocks_down = (N + 3) / 4;
+                const uint8_t* km_inline;
+                {
+                    auto& cache = actsparse_cache();
+                    std::lock_guard<std::mutex> lk(cache.mu);
+                    auto it = cache.km_inline.find(static_cast<const void*>(rhs));
+                    if (it != cache.km_inline.end()) {
+                        km_inline = it->second.data();
+                    } else {
+                        std::vector<uint8_t> buf(num_groups * N_blocks_down * 72);
+                        cactus_repack_int4_kmajor_inline(
+                            rhs, rhs_scales, buf.data(), K, N, actsp_gs);
+                        auto ins = cache.km_inline.emplace(
+                            static_cast<const void*>(rhs), std::move(buf));
+                        km_inline = ins.first->second.data();
+                    }
+                }
+
+                actsparse_note_fire("down");
+                static const bool debug_dense_d = env_flag_on("CACTUS_ACTSPARSE_DEBUG_DENSE");
+                if (debug_dense_d) {
+                    cactus_matmul_integer(rhs_buffer.precision,
+                                    lhs_int8, lhs_scales,
+                                    rhs, rhs_scales, output,
+                                    M, K, N, rhs_buffer.group_size);
+                    return;
+                }
+
+                if (actsp_h_masked.size() < K) actsp_h_masked.resize(K);
+                // Rebuild live_groups from the bitmask AND zero dead lanes
+                // of A in one NEON pass.
+                size_t num_live_apply = cactus_apply_actsparse_bitmask(
+                    actsp_bitmask.data(), lhs_int8, K, actsp_gs,
+                    actsp_h_masked.data(), actsp_live_groups.data());
+
+                const float scale0 = lhs_scales[0];
+                // Use the sanity-tested kmi4_fast everywhere — dispatch
+                // tuning is a follow-up once correctness is locked in.
+                cactus_gemv_int4_actsparse_kmi4_fast(
+                    actsp_h_masked.data(), scale0, km_inline,
+                    actsp_live_groups.data(), num_live_apply,
+                    output, K, N, actsp_gs);
+                (void)num_groups;
+                return;
+            }
         }
 
         cactus_matmul_integer(rhs_buffer.precision,

@@ -335,6 +335,19 @@ struct OpParams {
     BroadcastInfo broadcast_info;
     ComputeBackend backend = ComputeBackend::CPU;
 
+    // If > 0, this MATMUL node is a SwiGLU MLP down-proj that should run
+    // the activation-sparse K-skip path (for M=1 only). Input node index 2
+    // is the router source (the pre-activation gate output, fp16[N]);
+    // per-group |gate| max is thresholded at (1 - sparsity) quantile and
+    // K-groups below the threshold are dropped from down's input.
+    float actsparse_mlp_down_sparsity = 0.0f;
+
+    // If > 0, this MATMUL node is the SwiGLU up-proj running the N-sparse
+    // (row-skip) path. Input node index 2 is the router source
+    // (same fp16[N] gate tensor used by the down path so the masks match);
+    // rows in dead N-groups are left untouched in the output.
+    float actsparse_mlp_up_sparsity = 0.0f;
+
     size_t dilation = 1;
     size_t stride = 1;
     float temperature = 1.0f;
@@ -524,6 +537,24 @@ public:
     size_t flatten(size_t input, int start_dim = 0, int end_dim = -1);
     
     size_t matmul(size_t input1, size_t input2, bool pretransposed_rhs = false, ComputeBackend backend = ComputeBackend::CPU);
+
+    // SwiGLU MLP down-proj with activation-sparse K-skip when M == 1.
+    // `router_src` is an fp16 tensor of shape [N_intermediate] (normally
+    // the post-activation gate output); per-group |router_src| max drives
+    // which K-groups survive. `sparsity` is the target drop fraction.
+    size_t matmul_actsparse_mlp_down(size_t input1, size_t input2,
+                                     size_t router_src, float sparsity,
+                                     ComputeBackend backend = ComputeBackend::CPU);
+
+    // SwiGLU MLP up-proj with activation-sparse N-skip (row drop) when
+    // M == 1. Uses the SAME router_src as the matching down-proj so the
+    // sparsity pattern is consistent across the pair. Dead rows in the
+    // output are left untouched by the kernel (caller is expected to have
+    // a newly-zeroed output buffer — the graph runtime allocates fresh
+    // buffers per execution so this is automatic).
+    size_t matmul_actsparse_mlp_up(size_t input1, size_t input2,
+                                   size_t router_src, float sparsity,
+                                   ComputeBackend backend = ComputeBackend::CPU);
     size_t transpose(size_t input, ComputeBackend backend = ComputeBackend::CPU);
     size_t transposeN(size_t input, const std::vector<size_t>& permutation, ComputeBackend backend = ComputeBackend::CPU);
     size_t reshape(size_t input, const std::vector<size_t>& new_shape);

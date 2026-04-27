@@ -157,6 +157,70 @@ size_t CactusGraph::matmul(size_t input1, size_t input2, bool pretransposed_rhs,
     return add_node(OpType::MATMUL, {input1, input2}, output_shape, params);
 }
 
+size_t CactusGraph::matmul_actsparse_mlp_down(size_t input1, size_t input2,
+                                              size_t router_src, float sparsity,
+                                              ComputeBackend backend) {
+    const auto& lhs_buffer = get_output_buffer(input1);
+    const auto& rhs_buffer = get_output_buffer(input2);
+
+    if (lhs_buffer.shape.size() != 2 || rhs_buffer.shape.size() != 2) {
+        throw std::invalid_argument("Matrix multiplication requires 2D tensors");
+    }
+    (void)get_output_buffer(router_src);  // just to validate the node id
+
+    size_t M = lhs_buffer.shape[0];
+    size_t K = lhs_buffer.shape[1];
+    size_t rhs_K = rhs_buffer.shape[1];
+
+    size_t N;
+    if (rhs_buffer.is_interleaved && rhs_buffer.original_N > 0) {
+        N = rhs_buffer.original_N;
+    } else {
+        N = rhs_buffer.shape[0];
+    }
+
+    if (K != rhs_K) {
+        throw std::invalid_argument("Matrix dimensions incompatible for actsparse matmul");
+    }
+
+    std::vector<size_t> output_shape = {M, N};
+    OpParams params{.pretransposed_rhs = true, .backend = backend};
+    params.actsparse_mlp_down_sparsity = sparsity;
+    return add_node(OpType::MATMUL, {input1, input2, router_src}, output_shape, params);
+}
+
+size_t CactusGraph::matmul_actsparse_mlp_up(size_t input1, size_t input2,
+                                            size_t router_src, float sparsity,
+                                            ComputeBackend backend) {
+    const auto& lhs_buffer = get_output_buffer(input1);
+    const auto& rhs_buffer = get_output_buffer(input2);
+
+    if (lhs_buffer.shape.size() != 2 || rhs_buffer.shape.size() != 2) {
+        throw std::invalid_argument("Matrix multiplication requires 2D tensors");
+    }
+    (void)get_output_buffer(router_src);
+
+    size_t M = lhs_buffer.shape[0];
+    size_t K = lhs_buffer.shape[1];
+    size_t rhs_K = rhs_buffer.shape[1];
+
+    size_t N;
+    if (rhs_buffer.is_interleaved && rhs_buffer.original_N > 0) {
+        N = rhs_buffer.original_N;
+    } else {
+        N = rhs_buffer.shape[0];
+    }
+
+    if (K != rhs_K) {
+        throw std::invalid_argument("Matrix dimensions incompatible for actsparse matmul");
+    }
+
+    std::vector<size_t> output_shape = {M, N};
+    OpParams params{.pretransposed_rhs = true, .backend = backend};
+    params.actsparse_mlp_up_sparsity = sparsity;
+    return add_node(OpType::MATMUL, {input1, input2, router_src}, output_shape, params);
+}
+
 size_t CactusGraph::transpose(size_t input, ComputeBackend backend) {
     const auto& input_buffer = get_output_buffer(input);
     std::vector<size_t> output_shape = input_buffer.shape;
