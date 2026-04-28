@@ -1,3 +1,9 @@
+---
+title: "Cactus Index FFI API Reference"
+description: "On-device vector database C API for storing and querying embeddings. Supports cosine similarity search, memory-mapped files, and RAG applications."
+keywords: ["vector database", "embeddings", "cosine similarity", "RAG", "on-device search", "C FFI"]
+---
+
 # Cactus Index FFI Documentation
 
 The Cactus Index provides a clean C FFI (Foreign Function Interface) for integrating a vector database into various applications. This documentation covers all available functions, their parameters, and usage examples.
@@ -274,7 +280,7 @@ int cactus_index_query(
 
 **Returns:** 0 on success, -1 on error (if buffers too small, no data copied)
 
-**Example**
+**Example:**
 ```c
 float query1[768] = {/* ... */};
 float query2[768] = {/* ... */};
@@ -330,6 +336,15 @@ Releases all resources associated with the index.
 
 ```c
 void cactus_index_destroy(cactus_index_t index);
+```
+
+**Parameters:**
+- `index`: Index handle from `cactus_index_init` (required)
+
+**Example:**
+```c
+cactus_index_destroy(index);
+index = NULL;
 ```
 
 ## Examples
@@ -547,3 +562,12 @@ cactus_index_destroy(new_index);
 4. **Thread Safety**: One index instance per thread
 5. **Batching**: Add 100-1000 documents per call for best performance
 6. **Errors**: Use `cactus_get_last_error()` for error details
+
+## See Also
+
+- [Cactus Engine API](/docs/cactus_engine.md) — LLM inference, embeddings (`cactus_embed`), and RAG query APIs
+- [Cactus Graph API](/docs/cactus_graph.md) — Low-level computational graph for custom tensor operations
+- [Python SDK](/python/) — Python bindings with vector index support
+- [Swift SDK](/apple/) — Swift vector index functions
+- [Kotlin/Android SDK](/android/) — Kotlin vector index functions
+- [Flutter SDK](/flutter/) — Dart vector index functions

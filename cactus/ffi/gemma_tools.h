@@ -53,6 +53,7 @@ inline std::string format_argument(const std::string& json, size_t& pos, bool es
     char c = json[pos];
 
     if (c == '"') {
+        pos++;
         std::string value = extract_json_string(json, pos);
         return escape(value);
     } else if (c == '{') {
@@ -240,7 +241,7 @@ inline std::string format_parameters(const std::string& properties_json, const s
                 result += ",properties:{" + format_parameters(prop_obj["properties"], nested_required) + "}";
             }
             if (prop_obj.count("required")) {
-                result += ",required:[";
+                std::string req_items;
                 size_t req_pos = 0;
                 skip_whitespace(prop_obj["required"], req_pos);
                 if (req_pos < prop_obj["required"].length() && prop_obj["required"][req_pos] == '[') {
@@ -253,13 +254,15 @@ inline std::string format_parameters(const std::string& properties_json, const s
                         if (prop_obj["required"][req_pos] == '"') {
                             req_pos++;
                             std::string req_item = extract_json_string(prop_obj["required"], req_pos);
-                            if (!req_first) result += ",";
+                            if (!req_first) req_items += ",";
                             req_first = false;
-                            result += escape(req_item);
+                            req_items += escape(req_item);
                         }
                     }
                 }
-                result += "]";
+                if (!req_items.empty()) {
+                    result += ",required:[" + req_items + "]";
+                }
             }
         } else if (to_upper(type_val) == "ARRAY") {
             if (prop_obj.count("items")) {
@@ -342,7 +345,7 @@ inline std::string format_function_declaration(const std::string& name,
         }
 
         if (params.count("required")) {
-            result += ",required:[";
+            std::string req_items;
             size_t req_pos = 0;
             skip_whitespace(params["required"], req_pos);
             if (req_pos < params["required"].length() && params["required"][req_pos] == '[') {
@@ -355,13 +358,15 @@ inline std::string format_function_declaration(const std::string& name,
                     if (params["required"][req_pos] == '"') {
                         req_pos++;
                         std::string item = extract_json_string(params["required"], req_pos);
-                        if (!first) result += ",";
+                        if (!first) req_items += ",";
                         first = false;
-                        result += escape(item);
+                        req_items += escape(item);
                     }
                 }
             }
-            result += "]";
+            if (!req_items.empty()) {
+                result += ",required:[" + req_items + "]";
+            }
         }
 
         if (params.count("type")) {
@@ -377,12 +382,15 @@ inline std::string format_function_declaration(const std::string& name,
 }
 
 template<typename ToolFunction>
-inline std::string format_tools(const std::vector<ToolFunction>& tools) {
+inline std::string format_tools(const std::vector<ToolFunction>& tools, bool use_pipe_tags = false) {
     if (tools.empty()) return "";
+
+    const char* decl_start = use_pipe_tags ? "<|tool>" : "<start_function_declaration>";
+    const char* decl_end   = use_pipe_tags ? "<tool|>" : "<end_function_declaration>";
 
     std::string result;
     for (const auto& tool : tools) {
-        result += "<start_function_declaration>";
+        result += decl_start;
         std::string params_json;
         auto it = tool.parameters.find("schema");
         if (it != tool.parameters.end()) {
@@ -390,11 +398,25 @@ inline std::string format_tools(const std::vector<ToolFunction>& tools) {
         }
 
         result += format_function_declaration(tool.name, tool.description, params_json);
-        result += "<end_function_declaration>";
+        result += decl_end;
     }
     return result;
 }
 
+
+inline size_t match_quote_tag(const std::string& s, size_t pos) {
+    if (s.compare(pos, 8, "<escape>") == 0) return 8;
+    if (s.compare(pos, 5, "<|\"|>") == 0) return 5;
+    return 0;
+}
+
+inline size_t find_quote_tag(const std::string& s, size_t pos) {
+    size_t e = s.find("<escape>", pos);
+    size_t t = s.find("<|\"|>", pos);
+    if (e == std::string::npos) return t;
+    if (t == std::string::npos) return e;
+    return std::min(e, t);
+}
 
 inline std::string unescape(const std::string& s) {
     const std::string ESCAPE_TAG = "<escape>";
@@ -427,12 +449,13 @@ inline std::string args_to_json(const std::string& args_content) {
         while (pos < args_content.length() && std::isspace(args_content[pos])) pos++;
 
         if (pos < args_content.length()) {
-            if (args_content.compare(pos, 8, "<escape>") == 0) {
-                pos += 8; 
-                size_t val_end = args_content.find("<escape>", pos);
+            size_t qtag_len = match_quote_tag(args_content, pos);
+            if (qtag_len > 0) {
+                pos += qtag_len;
+                size_t val_end = find_quote_tag(args_content, pos);
                 if (val_end != std::string::npos) {
                     value = "\"" + args_content.substr(pos, val_end - pos) + "\"";
-                    pos = val_end + 8; 
+                    pos = val_end + match_quote_tag(args_content, val_end);
                 }
             } else if (args_content[pos] == '{') {
                 int depth = 1;
@@ -464,12 +487,13 @@ inline std::string args_to_json(const std::string& args_content) {
                     if (!first_item) value += ",";
                     first_item = false;
 
-                    if (arr_content.compare(arr_pos, 8, "<escape>") == 0) {
-                        arr_pos += 8;
-                        size_t end = arr_content.find("<escape>", arr_pos);
+                    size_t aq_len = match_quote_tag(arr_content, arr_pos);
+                    if (aq_len > 0) {
+                        arr_pos += aq_len;
+                        size_t end = find_quote_tag(arr_content, arr_pos);
                         if (end != std::string::npos) {
                             value += "\"" + arr_content.substr(arr_pos, end - arr_pos) + "\"";
-                            arr_pos = end + 8;
+                            arr_pos = end + match_quote_tag(arr_content, end);
                         }
                     } else {
                         size_t end = arr_content.find_first_of(",]", arr_pos);
@@ -499,8 +523,11 @@ inline std::string args_to_json(const std::string& args_content) {
 }
 
 inline void parse_function_calls(std::string& response, std::vector<std::string>& function_calls) {
-    const std::string CALL_START = "<start_function_call>";
-    const std::string CALL_END = "<end_function_call>";
+
+    const std::string CALL_START = (response.find("<|tool_call>") != std::string::npos)
+        ? "<|tool_call>" : "<start_function_call>";
+    const std::string CALL_END = (CALL_START == "<|tool_call>")
+        ? "<tool_call|>" : "<end_function_call>";
     size_t pos = 0;
 
     while ((pos = response.find(CALL_START, pos)) != std::string::npos) {

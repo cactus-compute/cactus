@@ -5,10 +5,17 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
+import yaml
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.constants import HF_HUB_CACHE
 from .cli import cmd_convert, get_weights_dir, PROJECT_ROOT
 
 STAGE_DIR = PROJECT_ROOT / "stage"
+
+FALLBACK_LICENSES = {
+    "snakers4/silero-vad": "mit",
+}
 
 
 def sha256(file):
@@ -53,6 +60,29 @@ def export_pro_weights(model_id, bits):
     build_script = pro_repo / "apple" / "build.sh"
     if not build_script.exists():
         return None
+
+    if "gemma-4" in model_id.lower():
+        build_dir = pro_repo / "apple" / "build"
+        output_names = {
+            "gemma4-vision": "vision_encoder",
+            "gemma4-audio": "audio_encoder"
+        }
+        mlpackages = []
+        for enc_type, out_name in output_names.items():
+            result = subprocess.run(
+                ["bash", str(build_script), "--model", model_id, "--bits", bits, "--type", enc_type],
+                cwd=pro_repo,
+                capture_output=True,
+            )
+            mlpackage = build_dir / "model.mlpackage"
+            if result.returncode == 0 and mlpackage.exists():
+                dest = build_dir.parent / f"{out_name}.mlpackage"
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.move(str(mlpackage), str(dest))
+                mlpackages.append(dest)
+        return mlpackages or None
+
     result = subprocess.run(
         ["bash", str(build_script), "--model", model_id, "--bits", bits],
         cwd=pro_repo,
@@ -61,7 +91,7 @@ def export_pro_weights(model_id, bits):
     if result.returncode != 0:
         return None
     mlpackage = pro_repo / "apple" / "build" / "model.mlpackage"
-    return mlpackage if mlpackage.exists() else None
+    return [mlpackage] if mlpackage.exists() else None
 
 
 def get_prev_config(api, repo, current):
@@ -100,9 +130,12 @@ def update_org_readme(api, org):
         return 1
 
     try:
-        api.create_repo(repo_id=f"{org}/README", repo_type="space", exist_ok=True)
+        api.create_repo(repo_id=f"{org}/README", repo_type="space", space_sdk="static", exist_ok=True)
+        frontmatter_data = {"title": org, "sdk": "static", "pinned": True}
+        frontmatter = "---\n" + yaml.safe_dump(frontmatter_data, sort_keys=False) + "---\n\n"
+        content = (frontmatter + readme.read_text()).encode()
         api.upload_file(
-            path_or_fileobj=str(readme),
+            path_or_fileobj=content,
             path_in_repo="README.md",
             repo_id=f"{org}/README",
             repo_type="space",
@@ -153,9 +186,10 @@ def export_and_publish_model(args, api):
 
             if args.apple:
                 try:
-                    mlpackage = export_pro_weights(args.model, bits)
-                    if mlpackage:
-                        shutil.copytree(str(mlpackage), str(exported / mlpackage.name))
+                    mlpackages = export_pro_weights(args.model, bits)
+                    if mlpackages:
+                        for mlp in mlpackages:
+                            shutil.copytree(str(mlp), str(exported / mlp.name))
                         apple_zip = weights_dir / f"{model_name_lower}-{precision}-apple.zip"
                         zip_dir(exported, apple_zip)
                         fingerprint.update(sha256(apple_zip).encode())
@@ -170,6 +204,33 @@ def export_and_publish_model(args, api):
             json.dump(config, f, indent=2)
 
         api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
+
+        try:
+            info = api.model_info(args.model)
+            source_license = (getattr(info.card_data, "license", None) if info.card_data is not None else None) or FALLBACK_LICENSES.get(args.model)
+        except Exception:
+            source_license = FALLBACK_LICENSES.get(args.model)
+
+        meta = {"base_model": args.model}
+        if args.pipeline_tag:
+            meta["pipeline_tag"] = args.pipeline_tag
+        if args.tags:
+            meta["tags"] = [tag.strip() for tag in args.tags.split(",") if tag.strip()]
+        if source_license:
+            meta["license"] = source_license
+        if args.description:
+            meta["description"] = args.description
+        readme = f"---\n{yaml.safe_dump(meta, default_flow_style=False, allow_unicode=True).strip()}\n---\n"
+        try:
+            api.upload_file(
+                path_or_fileobj=readme.encode("utf-8"),
+                path_in_repo="README.md",
+                repo_id=repo_id,
+                repo_type="model",
+                commit_message="Update model card",
+            )
+        except Exception:
+            print("Model card update failed")
 
         if changed(config, get_prev_config(api, repo_id, args.version)):
             api.upload_folder(
@@ -198,6 +259,10 @@ def export_and_publish_model(args, api):
     finally:
         if stage.exists():
             shutil.rmtree(stage)
+        hf_model_cache = Path(HF_HUB_CACHE) / ("models--" + args.model.replace("/", "--"))
+        if hf_model_cache.exists():
+            print(f"Cleaning HF cache: {hf_model_cache}")
+            shutil.rmtree(hf_model_cache)
 
 
 def main():
@@ -210,6 +275,9 @@ def main():
     parser.add_argument("--int8", action="store_true")
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--apple", action="store_true")
+    parser.add_argument("--pipeline-tag", dest="pipeline_tag")
+    parser.add_argument("--tags", help="Comma-separated list of HuggingFace tags")
+    parser.add_argument("--description")
     args = parser.parse_args()
 
     token = os.environ.get("HF_TOKEN")

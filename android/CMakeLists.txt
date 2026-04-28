@@ -7,6 +7,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../cactus)
 set(CACTUS_CURL_ROOT "${CMAKE_SOURCE_DIR}/../libs/curl" CACHE PATH "Path to vendored libcurl artifacts")
 
+set(_CACTUS_VERSION_FILE "${CMAKE_SOURCE_DIR}/../CACTUS_VERSION")
+if(EXISTS "${_CACTUS_VERSION_FILE}")
+    file(READ "${_CACTUS_VERSION_FILE}" _CACTUS_VERSION_CONTENT)
+    string(STRIP "${_CACTUS_VERSION_CONTENT}" CACTUS_VERSION_STR)
+    message(STATUS "Cactus version: ${CACTUS_VERSION_STR}")
+else()
+    set(CACTUS_VERSION_STR "")
+endif()
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
     message(STATUS "CMAKE_BUILD_TYPE was not set, defaulting to Release.")
@@ -15,7 +24,9 @@ endif()
 file(GLOB ENGINE_SOURCES "${SOURCE_DIR}/engine/*.cpp")
 file(GLOB GRAPH_SOURCES "${SOURCE_DIR}/graph/*.cpp")
 file(GLOB KERNEL_SOURCES "${SOURCE_DIR}/kernel/*.cpp")
-file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
+set(I8MM_SOURCE "${SOURCE_DIR}/kernel/kernel_i8mm.cpp")
+list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
+file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp" "${SOURCE_DIR}/models/gemma4/*.cpp")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
 file(GLOB TELEMETRY_SOURCES "${SOURCE_DIR}/telemetry/*.cpp")
 set(NPU_SOURCES "${SOURCE_DIR}/npu/npu.cpp")
@@ -112,6 +123,9 @@ endif()
 set(COMMON_COMPILE_DEFINITIONS
     PLATFORM_CPU_ONLY=1
 )
+if(NOT "${CACTUS_VERSION_STR}" STREQUAL "")
+    list(APPEND COMMON_COMPILE_DEFINITIONS "CACTUS_COMPILE_TIME_VERSION=\"${CACTUS_VERSION_STR}\"")
+endif()
 
 target_compile_definitions(cactus PRIVATE ${COMMON_COMPILE_DEFINITIONS})
 target_compile_definitions(cactus_static PRIVATE ${COMMON_COMPILE_DEFINITIONS})
@@ -157,12 +171,42 @@ if (${ANDROID_ABI} STREQUAL "arm64-v8a")
         __ARM_FEATURE_FP16_VECTOR_ARITHMETIC=1
         __ARM_FEATURE_DOTPROD=1
     )
-    
+
     target_compile_options(cactus PRIVATE ${ARM_OPTIONS})
     target_compile_options(cactus_static PRIVATE ${ARM_OPTIONS})
-    
+
     target_compile_definitions(cactus PRIVATE ${ARM_DEFINITIONS})
     target_compile_definitions(cactus_static PRIVATE ${ARM_DEFINITIONS})
+
+
+    # I8MM support: compile kernel_i8mm.cpp separately with +i8mm
+    set(I8MM_MARCH_FLAG "-march=armv8.2-a+fp16+simd+dotprod+i8mm")
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "${I8MM_MARCH_FLAG}")
+    check_cxx_source_compiles("
+        #include <arm_neon.h>
+        int main() {
+            int32x4_t acc = vmmlaq_s32(vdupq_n_s32(0), vdupq_n_s8(0), vdupq_n_s8(0));
+            return vgetq_lane_s32(acc, 0);
+        }
+    " COMPILER_SUPPORTS_I8MM)
+    unset(CMAKE_REQUIRED_FLAGS)
+
+    if(COMPILER_SUPPORTS_I8MM)
+        message(STATUS "NDK supports I8MM - building I8MM kernels")
+        add_library(cactus_i8mm_obj OBJECT ${I8MM_SOURCE})
+        target_include_directories(cactus_i8mm_obj PRIVATE ${COMMON_INCLUDE_DIRS})
+        target_compile_options(cactus_i8mm_obj PRIVATE ${I8MM_MARCH_FLAG} ${COMMON_COMPILE_OPTIONS} ${OPTIMIZATION_OPTIONS})
+        target_compile_definitions(cactus_i8mm_obj PRIVATE CACTUS_COMPILE_I8MM __ARM_FEATURE_MATMUL_INT8=1 ${COMMON_COMPILE_DEFINITIONS})
+        set_target_properties(cactus_i8mm_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+        target_sources(cactus PRIVATE $<TARGET_OBJECTS:cactus_i8mm_obj>)
+        target_sources(cactus_static PRIVATE $<TARGET_OBJECTS:cactus_i8mm_obj>)
+        target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_I8MM)
+        target_compile_definitions(cactus_static PRIVATE CACTUS_COMPILE_I8MM)
+    else()
+        message(STATUS "NDK does not support I8MM - building without I8MM")
+    endif()
 else()
     message(FATAL_ERROR "Unsupported Android ABI: ${ANDROID_ABI}. Cactus only supports arm64-v8a due to ARM NEON requirements.")
 endif()

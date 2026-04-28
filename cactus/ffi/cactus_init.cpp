@@ -8,8 +8,8 @@
 #include <sstream>
 #include <dirent.h>
 #include <sys/stat.h>
-#include <cstdlib>
 #include <chrono>
+#include <filesystem>
 
 using namespace cactus::engine;
 using namespace cactus::ffi;
@@ -19,8 +19,7 @@ static constexpr size_t RAG_MIN_CHUNK_TOKENS = 24;
 static constexpr size_t RAG_CHUNK_OVERLAP = 32;
 
 static void apply_no_cloud_telemetry_env() {
-    const char* env = std::getenv("CACTUS_NO_CLOUD_TELE");
-    if (env && env[0] != '\0' && !(env[0] == '0' && env[1] == '\0')) {
+    if (cactus::ffi::env_flag_enabled("CACTUS_NO_CLOUD_TELE")) {
         cactus::telemetry::setCloudDisabled(true);
     }
 }
@@ -251,6 +250,9 @@ static bool build_corpus_index(CactusModelHandle* handle, const std::string& cor
     std::string index_path = corpus_dir + "/index.bin";
     std::string data_path = corpus_dir + "/data.bin";
 
+    std::remove(index_path.c_str());
+    std::remove(data_path.c_str());
+
     try {
         handle->corpus_index = std::make_unique<index::Index>(index_path, data_path, embedding_dim);
     } catch (const std::exception& e) {
@@ -399,7 +401,10 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
         }
 
         auto model_type = handle->model->get_config().model_type;
-        if (model_type == Config::ModelType::WHISPER || model_type == Config::ModelType::MOONSHINE) {
+        if (model_type == Config::ModelType::WHISPER ||
+            model_type == Config::ModelType::MOONSHINE ||
+            model_type == Config::ModelType::PARAKEET ||
+            model_type == Config::ModelType::PARAKEET_TDT) {
             std::string vad_path = model_path_str + "/vad";
             handle->vad_model = create_model(vad_path);
             if (!handle->vad_model) {
@@ -467,6 +472,8 @@ void cactus_reset(cactus_model_t model) {
     auto* handle = static_cast<CactusModelHandle*>(model);
     handle->model->reset_cache();
     handle->processed_tokens.clear();
+    handle->processed_images.clear();
+    handle->user_audio_counts.clear();
 }
 
 void cactus_stop(cactus_model_t model) {

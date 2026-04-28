@@ -2,6 +2,7 @@
 #include "../graph/graph.h"
 #include "../kernel/kernel.h"
 #include <stdexcept>
+#include <algorithm>
 
 namespace cactus {
 namespace engine {

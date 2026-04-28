@@ -102,15 +102,19 @@ void Lfm2VlModel::load_weights_to_graph(CactusGraph* gb) {
         return primary_path.string();
     };
 
-    projector_weights_.layer_norm_weight = gb->mmap_weights(resolve_weight("projector_layer_norm.weights"));
-    
-    projector_weights_.layer_norm_bias = gb->mmap_weights(resolve_weight("projector_layer_norm.bias.weights"));
+    try { 
+        projector_weights_.layer_norm_weight = gb->mmap_weights(resolve_weight("projector_layer_norm.weights"));
+        projector_weights_.layer_norm_bias = gb->mmap_weights(resolve_weight("projector_layer_norm.bias.weights"));
+    } catch (const std::exception&) {
+        projector_weights_.layer_norm_weight = 0;
+        projector_weights_.layer_norm_bias = 0;
+    }
     
     projector_weights_.linear_1_weight = gb->mmap_weights(resolve_weight("projector_linear_1.weights", "projector_linear1.weights"));
     projector_weights_.linear_1_bias = gb->mmap_weights(resolve_weight("projector_linear_1.bias.weights", "projector_linear1.bias.weights"));
     projector_weights_.linear_2_weight = gb->mmap_weights(resolve_weight("projector_linear_2.weights", "projector_linear2.weights"));
     projector_weights_.linear_2_bias = gb->mmap_weights(resolve_weight("projector_linear_2.bias.weights", "projector_linear2.bias.weights"));
-    output_weight_node_id_ = gb->mmap_weights(resolve_weight("output_weight.weights"));
+    output_weight_node_id_ = gb->mmap_weights(resolve_weight("token_embeddings.weights"));
 }
 
 size_t Lfm2VlModel::pixel_unshuffle(CactusGraph* gb, size_t hidden_states, 
@@ -142,8 +146,11 @@ size_t Lfm2VlModel::build_multimodal_projector(CactusGraph* gb, size_t image_fea
     const size_t in_channels = vision_hidden * factor * factor;
     const size_t seq_len = new_h * new_w;
     size_t flattened = gb->reshape(unshuffled, {seq_len, in_channels});
-    size_t normalized = gb->layernorm(flattened, projector_weights_.layer_norm_weight,
-                                      projector_weights_.layer_norm_bias, config_.layer_norm_eps);
+    size_t normalized = flattened;
+    if (projector_weights_.layer_norm_weight != 0 && projector_weights_.layer_norm_bias != 0) {
+        normalized = gb->layernorm(flattened, projector_weights_.layer_norm_weight,
+                                   projector_weights_.layer_norm_bias, config_.layer_norm_eps);
+    }
     size_t hidden = gb->matmul(normalized, projector_weights_.linear_1_weight, true, backend);
     hidden = gb->add(hidden, projector_weights_.linear_1_bias);
     hidden = gb->gelu(hidden);
@@ -389,7 +396,9 @@ uint32_t Lfm2VlModel::decode(const std::vector<uint32_t>& tokens,
                                float top_p,
                                size_t top_k,
                                const std::string& profile_file,
-                               float* out_entropy) {
+                               float* out_entropy,
+                               float min_p,
+                               float repetition_penalty) {
     if (!initialized_ || !graph_handle_) {
         throw std::runtime_error("Model not initialized - call init() first");
     }
@@ -407,7 +416,7 @@ uint32_t Lfm2VlModel::decode(const std::vector<uint32_t>& tokens,
     image_prefill_completed_ = false;
     last_token_count_ = tokens.size();
 
-    return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy);
+    return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
 }
 
 void Lfm2VlModel::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, const std::string& profile_file) {
@@ -419,6 +428,35 @@ void Lfm2VlModel::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size
     last_token_count_ = tokens.size();
 
     language_model_.prefill(tokens, chunk_size, profile_file);
+}
+
+void Lfm2VlModel::prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
+                                      const std::string& profile_file) {
+    if (!initialized_ || !graph_handle_) {
+        throw std::runtime_error("Model not initialized - call init() first");
+    }
+    if (tokens.empty()) {
+        return;
+    }
+    if (image_paths.empty()) {
+        prefill(tokens, get_prefill_chunk_size(), profile_file);
+        return;
+    }
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    gb->soft_reset();
+    auto backend = config_.default_backend == Config::Backend::CPU
+        ? ComputeBackend::CPU
+        : ComputeBackend::NPU;
+
+    auto forward_result = forward_images(gb, tokens, image_paths, backend, true);
+    gb->execute(profile_file);
+
+    language_model_.post_execute_updates(gb, forward_result.seq_len);
+    language_model_.update_kv_cache(gb, forward_result.seq_len);
+
+    image_prefill_completed_ = true;
+    last_token_count_ = tokens.size();
 }
 
 Lfm2VlModel::ForwardImageResult Lfm2VlModel::forward_images(
@@ -474,7 +512,9 @@ uint32_t Lfm2VlModel::decode_with_images(
     float top_p,
     size_t top_k,
     const std::string& profile_file,
-    float* out_entropy) {
+    float* out_entropy,
+    float min_p,
+    float repetition_penalty) {
 
     if (!initialized_ || !graph_handle_) {
         throw std::runtime_error("Model not initialized - call init() first");
@@ -484,7 +524,7 @@ uint32_t Lfm2VlModel::decode_with_images(
 
         image_prefill_completed_ = false;
         last_token_count_ = tokens.size();
-        return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy);
+        return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
     }
 
     if (temperature < 0) {
@@ -542,7 +582,8 @@ uint32_t Lfm2VlModel::decode_with_images(
     }
 
     auto logits_node_id = gb->matmul(final_hidden_node, language_model_.output_weight_node_id_, true, backend);
-    auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k);
+    size_t sampled_token_id =
+        language_model_.sample_token(gb, logits_node_id, temperature, top_p, top_k, min_p, repetition_penalty, nullptr);
     if (!profile_file.empty()) {
         gb->execute(profile_file);
 
@@ -551,52 +592,15 @@ uint32_t Lfm2VlModel::decode_with_images(
 
     }
 
-    if (out_entropy) {
-        const auto& logits_buf = gb->get_output_buffer(logits_node_id);
-        void* logits_ptr = gb->get_output(logits_node_id);
-        size_t vocab_size = logits_buf.shape.back();
-        size_t seq_len = 1;
-        if (logits_buf.shape.size() >= 2) {
-            seq_len = logits_buf.shape[logits_buf.shape.size() - 2];
-        }
-        size_t row_offset = (seq_len > 0 ? (seq_len - 1) * vocab_size : 0);
-
-        std::vector<float> logits(vocab_size);
-        if (logits_buf.precision == Precision::FP32) {
-            float* src = static_cast<float*>(logits_ptr) + row_offset;
-            std::copy(src, src + vocab_size, logits.begin());
-        } else if (logits_buf.precision == Precision::FP16) {
-            __fp16* src = static_cast<__fp16*>(logits_ptr) + row_offset;
-            Quantization::fp16_to_fp32(src, logits.data(), vocab_size);
-        } else {
-            int8_t* src = static_cast<int8_t*>(logits_ptr) + row_offset;
-            Quantization::int8_to_fp32(src, logits.data(), vocab_size, 1.0f);
-        }
-        float max_logit = *std::max_element(logits.begin(), logits.end());
-        double sum_exp = 0.0;
-        for (size_t i = 0; i < vocab_size; ++i) {
-            sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
-        }
-        double log_sum_exp = static_cast<double>(max_logit) + std::log(sum_exp);
-
-        double entropy = 0.0;
-        for (size_t i = 0; i < vocab_size; ++i) {
-            double log_prob = static_cast<double>(logits[i]) - log_sum_exp;
-            double prob = std::exp(log_prob);
-            if (prob > 1e-10) {
-                entropy -= prob * log_prob;
-            }
-        }
-
-        double max_entropy = std::log(static_cast<double>(vocab_size));
-        *out_entropy = static_cast<float>(entropy / max_entropy);
-    }
+    compute_entropy(gb, logits_node_id, out_entropy);
 
     language_model_.post_execute_updates(gb, seq_len_for_updates);
     language_model_.update_kv_cache(gb, seq_len_for_updates);
 
     auto* output_ptr = gb->get_output(sampled_token_id);
-    return *static_cast<uint32_t*>(output_ptr);
+    uint32_t result = *static_cast<uint32_t*>(output_ptr);
+    language_model_.record_sampled_token(result);
+    return result;
 }
 
 }

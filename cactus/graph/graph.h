@@ -96,6 +96,7 @@ private:
 
 namespace GraphFile {
     class MappedFile;
+    struct SerializedGraph;
 }
 
 enum class Precision {
@@ -122,13 +123,14 @@ enum class Activation {
 enum class OpType {
     INPUT, PRECISION_CAST,
     ADD, ADD_CLIPPED, SUBTRACT, MULTIPLY, DIVIDE,
+    ABS, POW, FLATTEN, VIEW,
     MATMUL, TRANSPOSE, RESHAPE, SLICE, GATHER, EMBEDDING,
     BILINEAR_INTERPOLATION,
     SUM, MEAN, VARIANCE, MIN, MAX,
-    RMS_NORM, ROPE, ROPE_GPTJ, SOFTMAX, ATTENTION, ATTENTION_INT8_HYBRID, CONV1D_CAUSAL, CONV1D_K3, CONV1D_K7S3, CONV1D,
+    RMS_NORM, ROPE, ROPE_GPTJ, SOFTMAX, ATTENTION, ATTENTION_INT8_HYBRID, ATTENTION_TURBOQUANT_HYBRID, REL_POS_BIAS, CONV1D_CAUSAL, CONV1D_K3, CONV1D_K7S3, CONV1D, CONV1D_SAME_DEPTHWISE_K9, CONV1D_POINTWISE, CONV2D_K3S2P1, CONV2D_DEPTHWISE_K3S2P1, CONV2D_POINTWISE_1X1, GLU, BATCHNORM,
     SCALAR_ADD, SCALAR_SUBTRACT, SCALAR_MULTIPLY, SCALAR_DIVIDE, SCALAR_EXP, SCALAR_SQRT, SCALAR_COS, SCALAR_SIN, SCALAR_LOG,
     RELU, SILU, GELU, GELU_ERF, SIGMOID, TANH,
-    SAMPLE, CONCAT,
+    SAMPLE, CONCAT, CAT,
     SCATTER_TOPK,
     TOPK, LAYERNORM, GROUPNORM,
     MOE_LAYER,
@@ -136,7 +138,18 @@ enum class OpType {
     PERSISTENT,
     QUANTIZE_ACTIVATIONS,
     LSTM_CELL,
-    STFT
+    GATED_DELTANET_DECODE,
+    GATED_DELTANET_PREFILL,
+    STFT,
+    ALTUP_PREDICT,
+    ALTUP_CORRECT,
+    GAUSSIAN_TOPK,
+    MAXPOOL1D,
+    BILSTM_SEQUENCE,
+    LEAKY_RELU,
+    CONV2D_K3S1P1,
+    STATS_POOL,
+    WEIGHTED_STATS_POOL
 };
 
 struct PrecisionTraits {
@@ -314,6 +327,8 @@ struct OpParams {
     size_t slice_length = 0;
     size_t window_size = 0;
     bool is_causal = true;  
+    bool attention_mask_is_additive = false;
+    float logit_cap = 0.0f;
     std::vector<size_t> new_shape;
     std::vector<size_t> permutation;
     Precision output_precision = Precision::INT8;
@@ -324,6 +339,8 @@ struct OpParams {
     size_t stride = 1;
     float temperature = 1.0f;
     float top_p = 1.0f;
+    float min_p = 0.15f;
+    float repetition_penalty = 1.1f;
     size_t top_k = 0;
     size_t random_seed = 0;
     
@@ -332,6 +349,7 @@ struct OpParams {
     size_t num_groups = 0;
     size_t dst_height = 0;
     size_t dst_width = 0;
+    bool align_corners = true;
     bool normalize_routing = false;
     size_t num_experts = 0;
     size_t num_experts_per_tok = 0;
@@ -345,10 +363,21 @@ struct OpParams {
     const int8_t* cached_values_int8 = nullptr;
     const float* cached_k_scales = nullptr;
     const float* cached_v_scales = nullptr;
+    const float* cached_k_radii = nullptr;
+    const uint8_t* cached_k_angles = nullptr;
+    const float* cached_v_radii = nullptr;
+    const uint8_t* cached_v_angles = nullptr;
+    const uint8_t* rotation_signs = nullptr;
+    size_t angle_bits = 2;
+    size_t value_angle_bits = 2;
     size_t cache_seq_len = 0;
     size_t num_kv_heads = 0;
     size_t head_dim = 0;
     size_t num_fft_bins = 0;
+    size_t chunk_size = 0;
+    size_t num_altup_inputs = 0;
+    size_t v_head_dim = 0;
+    size_t kernel_size = 0;
 };
 
 struct GraphNode {
@@ -359,6 +388,28 @@ struct GraphNode {
     OpParams params;
     
     GraphNode(size_t node_id, OpType type);
+};
+
+using nodes_vector = std::vector<std::unique_ptr<GraphNode>>;
+using node_index_map_t = std::unordered_map<size_t, size_t>;
+
+inline const BufferDesc& get_input(const GraphNode& node, size_t idx,
+                                   const nodes_vector& nodes,
+                                   const node_index_map_t& node_index_map) {
+    return nodes[node_index_map.at(node.input_ids[idx])]->output_buffer;
+}
+
+struct AxisDims {
+    size_t outer, axis_size, inner;
+    static AxisDims from_shape(const std::vector<size_t>& shape, size_t axis) {
+        AxisDims d;
+        d.outer = 1;
+        for (size_t i = 0; i < axis; i++) d.outer *= shape[i];
+        d.axis_size = shape[axis];
+        d.inner = 1;
+        for (size_t i = axis + 1; i < shape.size(); i++) d.inner *= shape[i];
+        return d;
+    }
 };
 
 template<typename T>
@@ -382,6 +433,15 @@ void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
 void compute_persistent_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_gated_deltanet_decode_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_gated_deltanet_prefill_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_altup_predict_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_altup_correct_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_maxpool1d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_bilstm_sequence_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_weighted_stats_pool_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 
 void shrink_thread_local_buffers();
 class BufferPool {
@@ -391,6 +451,8 @@ public:
 
     BufferPool(const BufferPool&) = delete;
     BufferPool& operator=(const BufferPool&) = delete;
+    BufferPool(BufferPool&&) noexcept = default;
+    BufferPool& operator=(BufferPool&&) noexcept = default;
 
     char* acquire(size_t byte_size);
     void release(char* ptr, size_t byte_size);
@@ -419,23 +481,31 @@ namespace ValidationUtils {
 class CactusGraph {
 public:
     CactusGraph();
+    ~CactusGraph() = default;
+
+    CactusGraph(const CactusGraph&) = delete;
+    CactusGraph& operator=(const CactusGraph&) = delete;
+    CactusGraph(CactusGraph&&) noexcept = default;
+    CactusGraph& operator=(CactusGraph&&) noexcept = default;
 
     struct DebugNodeEntry {
         uint32_t layer_idx;
         std::string name;
         size_t node_id;
     };
+
+    void save(const std::string& path);
+    static CactusGraph load(const std::string& path);
     
     size_t input(const std::vector<size_t>& shape, Precision precision = Precision::INT8);
     size_t precision_cast(size_t input, Precision target_precision);
     size_t quantize_activations(size_t input);  
     
     size_t add(size_t input1, size_t input2);
-    size_t add_clipped(size_t input1, size_t input2);  
+    size_t add_clipped(size_t input1, size_t input2);
     size_t subtract(size_t input1, size_t input2);
     size_t multiply(size_t input1, size_t input2);
     size_t divide(size_t input1, size_t input2);
-    
     
     size_t scalar_add(size_t input, float value);
     size_t scalar_subtract(size_t input, float value);
@@ -453,6 +523,12 @@ public:
     size_t gelu_erf(size_t input);
     size_t sigmoid(size_t input);
     size_t tanh(size_t input);
+    size_t glu(size_t input, int axis = -1);
+
+    size_t abs(size_t input);
+    size_t pow(size_t input, float exponent);
+    size_t view(size_t input, const std::vector<size_t>& new_shape);
+    size_t flatten(size_t input, int start_dim = 0, int end_dim = -1);
     
     size_t matmul(size_t input1, size_t input2, bool pretransposed_rhs = false, ComputeBackend backend = ComputeBackend::CPU);
     size_t transpose(size_t input, ComputeBackend backend = ComputeBackend::CPU);
@@ -478,11 +554,12 @@ public:
     void release_all_weight_pages();
     size_t embedding(const std::string& filename, size_t indices);
     size_t embedding(size_t embedding_tensor, size_t indices);
-    size_t bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width);
+    size_t bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width, bool align_corners = true);
 
     size_t layernorm(size_t input, size_t weight, size_t bias, float epsilon = 1e-5f);
     size_t layernorm(size_t input, size_t weight, float epsilon = 1e-5f);  // No bias version
     size_t groupnorm(size_t input, size_t weight, size_t bias, size_t num_groups = 32, float epsilon = 1e-5f);
+    size_t batchnorm(size_t input, size_t weight, size_t bias, size_t running_mean, size_t running_var, int axis = 1, float epsilon = 1e-5f);
     size_t topk(size_t input, size_t k);
     size_t moe_layer(size_t hidden,
                      size_t routing_probs,
@@ -494,7 +571,9 @@ public:
                      size_t num_experts_per_tok,
                      bool normalize_routing,
                      float epsilon,
-                     float routed_scaling_factor);
+                     float routed_scaling_factor,
+                     Activation activation = Activation::SILU,
+                     size_t per_expert_scale = 0);
     size_t moe_layer(size_t hidden,
                      size_t routing_probs,
                      size_t topk_indices,
@@ -513,25 +592,68 @@ public:
     size_t attention(size_t query, size_t key, size_t value, float scale, bool is_causal = true, ComputeBackend backend = ComputeBackend::CPU);
     size_t attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, ComputeBackend backend = ComputeBackend::CPU);
     size_t attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, size_t window_size, ComputeBackend backend = ComputeBackend::CPU);
+    size_t attention_masked(size_t query, size_t key, size_t value, size_t mask, float scale,
+                            bool is_causal = true, ComputeBackend backend = ComputeBackend::CPU,
+                            bool additive_mask = false, size_t position_offset = 0, size_t window_size = 0,
+                            float logit_cap = 0.0f);
+    size_t rel_pos_bias(size_t query, size_t relative_key, float scale);
 
     size_t attention_int8_hybrid(size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,
                                  const int8_t* cached_keys, const int8_t* cached_values,
                                  const float* k_scales, const float* v_scales,
-                                 size_t cache_len, size_t num_kv_heads, size_t head_dim, size_t window_size = 0);
+                                 size_t cache_len, size_t num_kv_heads, size_t head_dim,
+                                 size_t window_size = 0, size_t v_head_dim = 0);
+
+    size_t attention_turboquant_hybrid(size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,
+                                       const float* k_radii, const uint8_t* k_angles,
+                                       const float* v_radii, const uint8_t* v_angles,
+                                       const uint8_t* rot_signs,
+                                       size_t angle_bits, size_t value_angle_bits, size_t cache_len, size_t num_kv_heads, size_t head_dim, size_t window_size = 0);
 
     size_t conv1d_causal(size_t input, size_t weight, size_t kernel_size, size_t dilation = 1);
     size_t conv1d_k3(size_t input, size_t weight, size_t stride);
     size_t conv1d_k7s3(size_t input, size_t weight, size_t bias);
     size_t conv1d(size_t input, size_t weight, size_t stride);
     size_t conv1d(size_t input, size_t weight, size_t bias, size_t stride);
+    size_t conv1d_same_depthwise_k9(size_t input, size_t weight);
+    size_t conv1d_same_depthwise_k9(size_t input, size_t weight, size_t bias);
+    size_t conv1d_pointwise(size_t input, size_t weight);
+    size_t conv1d_pointwise(size_t input, size_t weight, size_t bias);
+    size_t conv2d_k3s2p1(size_t input, size_t weight);
+    size_t conv2d_k3s2p1(size_t input, size_t weight, size_t bias);
+    size_t conv2d_depthwise_k3s2p1(size_t input, size_t weight);
+    size_t conv2d_depthwise_k3s2p1(size_t input, size_t weight, size_t bias);
+    size_t conv2d_pointwise_1x1(size_t input, size_t weight);
+    size_t conv2d_pointwise_1x1(size_t input, size_t weight, size_t bias);
 
     size_t lstm_cell(size_t input, size_t h_prev, size_t c_prev, size_t weight_ih, size_t weight_hh, size_t bias_ih, size_t bias_hh);
+    size_t gated_deltanet_decode(size_t query, size_t key, size_t value, size_t gate_log, size_t beta,
+                                 size_t initial_state, float scale = 0.0f);
+    size_t gated_deltanet_prefill(size_t query, size_t key, size_t value, size_t gate_log, size_t beta,
+                                  size_t initial_state, size_t chunk_size = 64, float scale = 0.0f);
     size_t stft(size_t input, size_t weight, size_t stride, size_t num_fft_bins);
+
+    size_t altup_predict(size_t coefs, const size_t* streams, size_t num_streams);
+    size_t altup_correct(size_t coefs, size_t innovation, const size_t* predictions, size_t num_predictions);
+
+    size_t gaussian_topk(size_t input, float ppf);
+
+    size_t maxpool1d(size_t input, size_t kernel_size, size_t stride);
+    size_t leaky_relu(size_t input, float negative_slope = 0.01f);
+    size_t bilstm_sequence(size_t input, size_t w_ih_fwd, size_t w_hh_fwd, size_t b_ih_fwd, size_t b_hh_fwd,
+                           size_t w_ih_bwd, size_t w_hh_bwd, size_t b_ih_bwd, size_t b_hh_bwd);
+    size_t conv2d_k3s1p1(size_t input, size_t weight);
+    size_t conv2d_k3s1p1(size_t input, size_t weight, size_t bias);
+    size_t stats_pool(size_t input);
+    size_t weighted_stats_pool(size_t input, size_t weights);
 
     size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20,
                   const std::unordered_map<uint32_t, float>& logit_bias = {});
+    size_t sample_with_options(size_t logits, float temperature, float top_p, float min_p, float repetition_penalty,
+                               size_t top_k, const std::unordered_map<uint32_t, float>& logit_bias = {});
     
     size_t concat(size_t input1, size_t input2, int axis = 0);
+    size_t cat(const std::vector<size_t>& inputs, int axis);
     size_t scatter_topk(size_t indices, size_t values, size_t num_classes);
     
     void set_input(size_t node_id, const void* data, Precision precision);
@@ -562,6 +684,7 @@ public:
     std::unordered_map<size_t, size_t> node_index_map_;
 
 private:
+    static CactusGraph from_serialized(const GraphFile::SerializedGraph& serialized);
     size_t next_node_id_;
     std::vector<std::unique_ptr<GraphFile::MappedFile>> mapped_files_;
     std::unordered_map<std::string, size_t> weight_cache_;
@@ -582,6 +705,32 @@ namespace GraphFile {
         Precision precision;
         size_t byte_size;
     };
+
+    struct GraphHeader {
+        uint32_t magic;
+        uint32_t version;
+        uint32_t node_count;
+        uint32_t flags = 0;
+    };
+
+    struct NodeEntry {
+        uint32_t index; // serialized node index 0..n-1
+        OpType op_type;
+        std::vector<uint32_t> inputs;
+        std::vector<size_t> output_shape;
+        Precision precision;
+        OpParams params;
+    };
+
+    struct SerializedGraph {
+        GraphHeader header;
+        std::vector<NodeEntry> nodes;
+        std::vector <uint32_t> graph_inputs; // IDs of serialized inputs
+        std::vector<uint32_t> graph_outputs; // IDs of serialized outputs
+    };
+
+    SerializedGraph load_graph(const std::string& filename);
+    void save_graph(const CactusGraph& graph, const std::string& filename);
     
     void save_node(CactusGraph& graph, size_t node_id, const std::string& filename);
     

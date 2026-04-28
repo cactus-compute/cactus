@@ -85,6 +85,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     std::string vocab_file = model_folder + "/vocab.txt";
     std::string merges_file = model_folder + "/merges.txt";
     std::string tokenizer_config_file = model_folder + "/tokenizer_config.txt";
+    TokenizerRuntimeConfig tokenizer_runtime_config = load_tokenizer_runtime_config(tokenizer_config_file);
 
     std::ifstream merges_check(merges_file);
     bool has_merges = false;
@@ -101,7 +102,8 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         merges_check.close();
     }
 
-    if (has_merges) {
+    if (tokenizer_runtime_config.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::BPE ||
+        (tokenizer_runtime_config.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::UNKNOWN && has_merges)) {
         tokenizer_ = std::make_unique<BPETokenizer>();
     } else {
         tokenizer_ = std::make_unique<SPTokenizer>();
@@ -122,13 +124,19 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
 
     load_weights_to_graph(gb);
 
-    if (config_.model_type == Config::ModelType::GEMMA) {
+    if (config_.model_type == Config::ModelType::GEMMA3N || config_.model_type == Config::ModelType::GEMMA4) {
+        attention_scale_ = 1.0f;
+    } else if (config_.model_type == Config::ModelType::GEMMA) {
         attention_scale_ = 1.0f / std::sqrt(256.0f);
     } else {
         attention_scale_ = 1.0f / std::sqrt(static_cast<float>(config_.attention_head_dim));
     }
 
-    Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER || config_.model_type == Config::ModelType::MOONSHINE)
+    Precision cache_precision = (config_.model_type == Config::ModelType::WHISPER ||
+                                 config_.model_type == Config::ModelType::MOONSHINE ||
+                                 config_.model_type == Config::ModelType::PARAKEET ||
+                                 config_.model_type == Config::ModelType::PARAKEET_TDT ||
+                                 config_.model_type == Config::ModelType::NEEDLE)
                                ? Precision::FP16
                                : Precision::INT8;
 
@@ -155,7 +163,7 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     if (const char* env_seed = std::getenv("CACTUS_TQ_SEED")) {
         tq_seed = static_cast<uint64_t>(std::stoull(env_seed));
     }
-    kv_cache_.init(config_.num_layers, context_size, config_.attention_kv_heads, config_.attention_head_dim, cache_precision,
+    kv_cache_.init(config_.num_layers, context_size, get_kv_layer_dims(), get_kv_layer_heads(), cache_precision,
                    config_.kv_quant_method, config_.tq_projection_dim,
                    config_.tq_key_angle_bits, config_.tq_value_angle_bits, config_.tq_use_qjl, tq_seed);
 
@@ -177,9 +185,17 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
 
     initialized_ = true;
 
-    if (do_warmup && config_.model_type != Config::ModelType::WHISPER && config_.model_type != Config::ModelType::MOONSHINE) {
+    if (do_warmup &&
+        config_.model_type != Config::ModelType::WHISPER &&
+        config_.model_type != Config::ModelType::MOONSHINE &&
+        config_.model_type != Config::ModelType::PARAKEET &&
+        config_.model_type != Config::ModelType::PARAKEET_TDT &&
+        config_.model_type != Config::ModelType::NEEDLE) {
         std::string warmup_text = system_prompt.empty() ? "Hello" : system_prompt;
         auto warmup_tokens = tokenizer_->encode(warmup_text);
+        if (config_.model_type == Config::ModelType::GEMMA4) {
+            warmup_tokens = {2};
+        }
         forward(warmup_tokens);
         auto* gb = static_cast<CactusGraph*>(graph_handle_);
         gb->execute();
@@ -238,8 +254,15 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, cons
     process_chunk(final_chunk);
 }
 
+void Model::prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
+                                const std::string& profile_file) {
+    (void)image_paths;
+    prefill(tokens, get_prefill_chunk_size(), profile_file);
+}
+
 uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, float top_p,
-                        size_t top_k, const std::string& profile_file, float* out_entropy) {
+                        size_t top_k, const std::string& profile_file, float* out_entropy,
+                        float min_p, float repetition_penalty) {
 
     if (temperature < 0) {
         temperature = config_.default_temperature;
@@ -263,67 +286,101 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     last_hidden = gb->reshape(last_hidden, {1, hidden_dim});
 
     auto logits_node_id = gb->matmul(last_hidden, output_weight_node_id_, true, backend);
-    auto sampled_token_id = gb->sample(logits_node_id, temperature, top_p, top_k, tool_constrainer_.get_bias());
+
+    if (config_.final_logit_softcapping > 0.0f) {
+        float inv_cap = 1.0f / config_.final_logit_softcapping;
+        logits_node_id = gb->scalar_multiply(logits_node_id, inv_cap);
+        logits_node_id = gb->tanh(logits_node_id);
+        logits_node_id = gb->scalar_multiply(logits_node_id, config_.final_logit_softcapping);
+    }
+    auto sampled_token_id = sample_token(gb, logits_node_id, temperature, top_p, top_k, min_p, repetition_penalty);
 
     gb->execute(profile_file);
 
-    if (out_entropy) {
-        const auto& logits_buf = gb->get_output_buffer(logits_node_id);
-        void* logits_ptr = gb->get_output(logits_node_id);
-        size_t vocab_size = logits_buf.shape.back();
-        size_t seq_len = 1;
-        if (logits_buf.shape.size() >= 2) {
-            seq_len = logits_buf.shape[logits_buf.shape.size() - 2];
-        }
-        size_t row_offset = (seq_len > 0 ? (seq_len - 1) * vocab_size : 0);
-
-        std::vector<float> logits(vocab_size);
-        if (logits_buf.precision == Precision::FP32) {
-            float* src = static_cast<float*>(logits_ptr) + row_offset;
-            std::copy(src, src + vocab_size, logits.begin());
-        } else if (logits_buf.precision == Precision::FP16) {
-            __fp16* src = static_cast<__fp16*>(logits_ptr) + row_offset;
-            Quantization::fp16_to_fp32(src, logits.data(), vocab_size);
-        } else {
-            int8_t* src = static_cast<int8_t*>(logits_ptr) + row_offset;
-            Quantization::int8_to_fp32(src, logits.data(), vocab_size, 1.0f);
-        }
-
-        float max_logit = *std::max_element(logits.begin(), logits.end());
-        double sum_exp = 0.0;
-        for (size_t i = 0; i < vocab_size; ++i) {
-            sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
-        }
-        double log_sum_exp = static_cast<double>(max_logit) + std::log(sum_exp);
-
-        double entropy = 0.0;
-        for (size_t i = 0; i < vocab_size; ++i) {
-            double log_prob = static_cast<double>(logits[i]) - log_sum_exp;
-            double prob = std::exp(log_prob);
-            if (prob > 1e-10) {
-                entropy -= prob * log_prob;
-            }
-        }
-
-        double max_entropy = std::log(static_cast<double>(vocab_size));
-        *out_entropy = static_cast<float>(entropy / max_entropy);
-    }
+    compute_entropy(gb, logits_node_id, out_entropy);
 
     post_execute_updates(gb, tokens.size());
     update_kv_cache(gb, tokens.size());
 
     auto* output_ptr = gb->get_output(sampled_token_id);
-    return *static_cast<uint32_t*>(output_ptr);
+    uint32_t result_token = *static_cast<uint32_t*>(output_ptr);
+    record_sampled_token(result_token);
+    return result_token;
 }
 
-uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& /*mel_bins*/, float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy){
-    return decode(tokens, temperature, top_p, top_k, profile_file, out_entropy);
+size_t Model::sample_token(CactusGraph* gb, size_t logits_node_id, float temperature, float top_p, size_t top_k,
+                           float min_p, float repetition_penalty,
+                           const std::unordered_map<uint32_t, float>* extra_bias) const {
+    auto combined_bias = tool_constrainer_.get_bias();
+    for (const auto& [token_id, boost] : vocab_bias_) {
+        combined_bias[token_id] += boost;
+    }
+    if (extra_bias) {
+        for (const auto& [token_id, boost] : *extra_bias) {
+            combined_bias[token_id] += boost;
+        }
+    }
+    if (!token_history_.empty() && repetition_penalty > 1.0f && std::isfinite(repetition_penalty)) {
+        float log_penalty = std::log(repetition_penalty);
+        for (uint32_t tok : token_history_) {
+            combined_bias[tok] -= log_penalty;
+        }
+    }
+    return gb->sample_with_options(logits_node_id, temperature, top_p, min_p, 1.0f, top_k, combined_bias);
+}
+
+void Model::compute_entropy(CactusGraph* gb, size_t logits_node_id, float* out_entropy) {
+    if (!out_entropy) return;
+
+    const auto& logits_buf = gb->get_output_buffer(logits_node_id);
+    void* logits_ptr = gb->get_output(logits_node_id);
+    size_t vocab_size = logits_buf.shape.back();
+    size_t seq_len = 1;
+    if (logits_buf.shape.size() >= 2)
+        seq_len = logits_buf.shape[logits_buf.shape.size() - 2];
+    size_t row_offset = (seq_len > 0 ? (seq_len - 1) * vocab_size : 0);
+
+    std::vector<float> logits(vocab_size);
+    if (logits_buf.precision == Precision::FP32) {
+        float* src = static_cast<float*>(logits_ptr) + row_offset;
+        std::copy(src, src + vocab_size, logits.begin());
+    } else if (logits_buf.precision == Precision::FP16) {
+        __fp16* src = static_cast<__fp16*>(logits_ptr) + row_offset;
+        Quantization::fp16_to_fp32(src, logits.data(), vocab_size);
+    } else {
+        int8_t* src = static_cast<int8_t*>(logits_ptr) + row_offset;
+        Quantization::int8_to_fp32(src, logits.data(), vocab_size, 1.0f);
+    }
+
+    float max_logit = *std::max_element(logits.begin(), logits.end());
+    double sum_exp = 0.0;
+    for (size_t i = 0; i < vocab_size; ++i)
+        sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
+    double log_sum_exp = static_cast<double>(max_logit) + std::log(sum_exp);
+
+    double entropy = 0.0;
+    for (size_t i = 0; i < vocab_size; ++i) {
+        double log_prob = static_cast<double>(logits[i]) - log_sum_exp;
+        double prob = std::exp(log_prob);
+        if (prob > 1e-10)
+            entropy -= prob * log_prob;
+    }
+
+    double max_entropy = std::log(static_cast<double>(vocab_size));
+    *out_entropy = static_cast<float>(entropy / max_entropy);
+}
+
+uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& /*mel_bins*/, float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy,
+                                 float min_p, float repetition_penalty,
+                                 float* /*out_token_time_start*/, float* /*out_token_time_end*/){
+    return decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
 }
 
 uint32_t Model::decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
-                                     float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy) {
+                                     float temperature, float top_p, size_t top_k, const std::string& profile_file, float* out_entropy,
+                                     float min_p, float repetition_penalty) {
     (void)image_paths;
-    return decode(tokens, temperature, top_p, top_k, profile_file, out_entropy);
+    return decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
 }
 
 std::vector<float> Model::get_image_embeddings(const std::string& /*image_path*/) {
@@ -335,11 +392,14 @@ std::vector<float> Model::get_audio_embeddings(const std::vector<float>& /*mel_b
 }
 
 void Model::update_kv_cache(CactusGraph* gb, size_t seq_len) {
-    kv_cache_.update_from_graph(gb, cache_k_output_nodes_, cache_v_output_nodes_, 
-                               seq_len, config_.num_layers, config_.attention_kv_heads, 
-                               config_.attention_head_dim);
+    kv_cache_.update_from_graph(gb, cache_k_output_nodes_, cache_v_output_nodes_,
+                               seq_len, config_.num_layers);
 }
 
+void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) {
+    for (auto it = ranges.rbegin(); it != ranges.rend(); ++it)
+        kv_cache_.remove_token_range(it->first, it->second);
+}
 
 std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bool pooled, bool normalize, const std::string& profile_file) {
     std::vector<float> embeddings;
@@ -464,7 +524,7 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "use_expert_bias") use_expert_bias = (value == "true" || value == "1");
         else if (key == "routed_scaling_factor") routed_scaling_factor = std::stof(value);
         else if (key == "tie_word_embeddings") tie_word_embeddings = (value == "true" || value == "1");
-        else if (key == "vision_hidden_dim") vision_hidden_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_hidden_dim" || key == "vision_hidden_size") vision_hidden_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "vision_num_layers") vision_num_layers = static_cast<uint32_t>(std::stoul(value));
         else if (key == "vision_attention_heads") vision_attention_heads = static_cast<uint32_t>(std::stoul(value));
         else if (key == "vision_image_size") vision_image_size = static_cast<uint32_t>(std::stoul(value));
@@ -475,6 +535,7 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "use_pixel_shuffle") use_pixel_shuffle = (value == "true" || value == "1");
         else if (key == "pixel_shuffle_factor") pixel_shuffle_factor = static_cast<uint32_t>(std::stoul(value));
         else if (key == "use_image_tokens") use_image_tokens = (value == "true" || value == "1");
+        else if (key == "image_token_id") image_token_id = static_cast<uint32_t>(std::stoul(value));
         else if (key == "use_layout_tags") use_layout_tags = (value == "true" || value == "1");
         else if (key == "image_seq_len") image_seq_len = static_cast<uint32_t>(std::stoul(value));
         else if (key == "global_image_size") global_image_size = static_cast<uint32_t>(std::stoul(value));
@@ -497,12 +558,23 @@ bool Config::from_json(const std::string& config_path) {
             else precision = Precision::FP32;
         }
         else if (key == "model_type") {
+            std::string model_type_value = value;
+            std::transform(model_type_value.begin(), model_type_value.end(), model_type_value.begin(), ::tolower);
             if (value == "gemma" || value == "GEMMA") model_type = ModelType::GEMMA;
             else if (value == "lfm2" || value == "LFM2" || value == "lfm2_moe" || value == "LFM2_MOE") model_type = ModelType::LFM2;
             else if (value == "bert" || value == "BERT") model_type = ModelType::NOMIC;
             else if (value == "whisper" || value == "WHISPER") model_type = ModelType::WHISPER;
             else if (value == "moonshine" || value == "MOONSHINE") model_type = ModelType::MOONSHINE;
             else if (value == "silero_vad" || value == "SILERO_VAD") model_type = ModelType::SILERO_VAD;
+            else if (value == "parakeet" || value == "PARAKEET") model_type = ModelType::PARAKEET;
+            else if (model_type_value.rfind("qwen3_5", 0) == 0) model_type = ModelType::QWEN3P5;
+            else if (value == "parakeet_tdt" || value == "PARAKEET_TDT") model_type = ModelType::PARAKEET_TDT;
+            else if (value == "gemma3n" || value == "GEMMA3N") model_type = ModelType::GEMMA3N;
+            else if (value == "needle" || value == "NEEDLE") model_type = ModelType::NEEDLE;
+            else if (value == "gemma4" || value == "GEMMA4" || value == "tinyllama" || value == "TINYLLAMA") model_type = ModelType::GEMMA4;
+            else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
+            else if (value == "pyannote" || value == "PYANNOTE") model_type = ModelType::PYANNOTE;
+            else if (value == "wespeaker" || value == "WESPEAKER") model_type = ModelType::WESPEAKER;
             else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {
@@ -539,12 +611,117 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "num_encoder_layers") num_encoder_layers = static_cast<uint32_t>(std::stoul(value));
         else if (key == "num_decoder_layers") num_decoder_layers = static_cast<uint32_t>(std::stoul(value));
         else if (key == "partial_rotary_factor") partial_rotary_factor = std::stof(value);
+        else if (key == "pad_token_id") pad_token_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "conv_kernel_size") conv_kernel_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "subsampling_conv_kernel_size") subsampling_conv_kernel_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "subsampling_conv_stride") subsampling_conv_stride = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "subsampling_conv_channels") subsampling_conv_channels = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "subsampling_factor") subsampling_factor = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "num_mel_bins") num_mel_bins = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "encoder_hidden_act") encoder_hidden_act = value;
+        else if (key == "linear_num_key_heads") linear_num_key_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_key_head_dim") linear_key_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_num_value_heads") linear_num_value_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_value_head_dim") linear_value_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_q_proj_dim") linear_q_proj_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "kv_lora_rank") kv_lora_rank = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "q_lora_rank") q_lora_rank = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "qk_head_dim") qk_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "qk_nope_head_dim") qk_nope_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "qk_rope_head_dim") qk_rope_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "v_head_dim") v_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "rope_interleave") rope_interleave = (value == "true" || value == "1");
+        else if (key == "attention_bias") attention_bias = (value == "true" || value == "1");
+        else if (key == "rope_scaling_factor") rope_scaling_factor = std::stof(value);
+        else if (key == "rope_mscale_all_dim") rope_mscale_all_dim = std::stof(value);
+        else if (key == "linear_k_proj_dim") linear_k_proj_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "linear_v_proj_dim") linear_v_proj_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "predictor_hidden_dim") predictor_hidden_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "predictor_num_layers") predictor_num_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "tdt_joint_dim") tdt_joint_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "tdt_num_durations") tdt_num_durations = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "tdt_blank_id") tdt_blank_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "tdt_durations") {
+            tdt_durations.clear();
+            std::stringstream ss(value);
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                size_t first = item.find_first_not_of(" \t");
+                if (first == std::string::npos) continue;
+                size_t last = item.find_last_not_of(" \t");
+                item = item.substr(first, last - first + 1);
+                tdt_durations.push_back(static_cast<uint32_t>(std::stoul(item)));
+            }
+        }
+        else if (key == "altup_num_inputs") altup_num_inputs = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "laurel_rank") laurel_rank = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "hidden_size_per_layer_input") hidden_size_per_layer_input = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "num_kv_shared_layers") num_kv_shared_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "sliding_window") sliding_window = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "rope_local_base_freq") rope_local_base_freq = std::stof(value);
+        else if (key == "final_logit_softcapping") final_logit_softcapping = std::stof(value);
+        else if (key == "global_partial_rotary_factor") global_partial_rotary_factor = std::stof(value);
+        else if (key == "expert_intermediate_size") expert_intermediate_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "global_head_dim") global_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "num_global_kv_heads" || key == "num_global_key_value_heads") num_global_kv_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "attention_k_eq_v") attention_k_eq_v = (value == "true" || value == "1");
+        else if (key == "enable_moe_block") enable_moe_block = (value == "true" || value == "1");
+        else if (key == "vision_head_dim") vision_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_kv_heads") vision_kv_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_intermediate_size") vision_intermediate_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_position_embedding_size") vision_position_embedding_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_pooling_kernel_size") vision_pooling_kernel_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_default_output_length") vision_default_output_length = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "vision_rope_theta") vision_rope_theta = std::stof(value);
+        else if (key == "audio_hidden_dim") audio_hidden_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_num_layers") audio_num_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_num_heads") audio_num_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_head_dim") audio_head_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_input_feat_size") audio_input_feat_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_conf_conv_kernel_size") audio_conf_conv_kernel_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_chunk_size") audio_chunk_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_context_left") audio_context_left = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_context_right") audio_context_right = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_logit_cap") audio_logit_cap = std::stof(value);
+        else if (key == "audio_residual_weight") audio_residual_weight = std::stof(value);
+        else if (key == "audio_output_proj_dims") audio_output_proj_dims = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_vocab_size") audio_vocab_size = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_vocab_offset") audio_vocab_offset = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_soft_tokens") audio_soft_tokens = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_sscp_conv0_channels") audio_sscp_conv0_channels = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_sscp_conv1_channels") audio_sscp_conv1_channels = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_sscp_conv_eps") audio_sscp_conv_eps = std::stof(value);
+        else if (key == "audio_rms_norm_eps") audio_rms_norm_eps = std::stof(value);
+        else if (key == "audio_fft_length") audio_fft_length = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "audio_fft_overdrive") {
+            audio_fft_overdrive = (value == "true" || value == "1");
+            audio_fft_length = audio_fft_overdrive ? 1024u : 512u;
+        }
+        else if (key == "audio_token_id") audio_token_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "channel_open_token_id") channel_open_token_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "channel_close_token_id") channel_close_token_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "activation_sparsity_ppf") {
+            activation_sparsity_ppf.clear();
+            std::stringstream ss(value);
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                size_t first = item.find_first_not_of(" \t");
+                if (first == std::string::npos) continue;
+                size_t last = item.find_last_not_of(" \t");
+                item = item.substr(first, last - first + 1);
+                activation_sparsity_ppf.push_back(std::stof(item));
+            }
+        }
     }
 
-    if (model_type == ModelType::GEMMA) {
+    if (is_gemma_family(model_type)) {
         default_temperature = 1.0f;
         default_top_p = 0.95f;
         default_top_k = 64;
+        if (model_type == ModelType::GEMMA4) {
+            default_cloud_handoff_threshold = 0.92f;
+            default_rolling_entropy_window = 16;
+        }
     } else if (model_type == ModelType::LFM2) {
         default_temperature = 0.3f;
         default_top_p = 0.95f;
@@ -553,7 +730,7 @@ bool Config::from_json(const std::string& config_path) {
         default_temperature = 0.6f;
         default_top_p = 0.95f;
         default_top_k = 20;
-    } else if (model_type == ModelType::QWEN) {
+    } else if (model_type == ModelType::QWEN3P5) {
         default_temperature = 0.7f;
         default_top_p = 0.8f;
         default_top_k = 20;
@@ -568,6 +745,26 @@ bool Config::from_json(const std::string& config_path) {
         default_top_k = 0;
         default_max_tps = 6.5f;
         default_cloud_handoff_threshold = 0.35f;
+    } else if (model_type == ModelType::PARAKEET) {
+        default_temperature = 0.0f;
+        default_top_p = 0.0f;
+        default_top_k = 0;
+        default_max_tps = 8.0f;
+        default_cloud_handoff_threshold = 0.35f;
+    } else if (model_type == ModelType::PARAKEET_TDT) {
+        default_temperature = 0.0f;
+        default_top_p = 0.0f;
+        default_top_k = 0;
+        default_max_tps = 8.0f;
+        default_cloud_handoff_threshold = 0.35f;
+    } else if (model_type == ModelType::NEEDLE) {
+        default_temperature = 0.0f;
+        default_top_p = 0.0f;
+        default_top_k = 0;
+    } else if (model_type == ModelType::YOUTU) {
+        default_temperature = 1.0f;
+        default_top_p = 0.95f;
+        default_top_k = 20;
     }
 
     return true;
@@ -598,11 +795,23 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
         return std::make_unique<Lfm2VlModel>(config);
     }
 
+    const bool has_audio_support =
+        config.audio_num_layers > 0 ||
+        config.audio_hidden_dim > 0;
+
+    if (config.model_type == Config::ModelType::GEMMA4 && (has_vision_support || has_audio_support)) {
+        return std::make_unique<Gemma4MmModel>(config);
+    }
+
     switch (config.model_type) {
         case Config::ModelType::QWEN:
             return std::make_unique<QwenModel>(config);
+        case Config::ModelType::QWEN3P5:
+            return std::make_unique<Qwen3p5Model>(config);
         case Config::ModelType::GEMMA:
             return std::make_unique<GemmaModel>(config);
+        case Config::ModelType::GEMMA3N:
+            return std::make_unique<GemmaModel3n>(config);
         case Config::ModelType::LFM2:
             if (config.num_experts > 0 && config.moe_intermediate_dim > 0 && config.num_experts_per_tok > 0) {
                 return std::make_unique<LFM2MoEModel>(config);
@@ -616,6 +825,20 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<MoonshineModel>(config);
         case Config::ModelType::SILERO_VAD:
             return std::make_unique<SileroVADModel>(config);
+        case Config::ModelType::PARAKEET:
+            return std::make_unique<ParakeetModel>(config);
+        case Config::ModelType::PARAKEET_TDT:
+            return std::make_unique<ParakeetTDTModel>(config);
+        case Config::ModelType::NEEDLE:
+            return std::make_unique<NeedleModel>(config);
+        case Config::ModelType::GEMMA4:
+            return std::make_unique<Gemma4Model>(config);
+        case Config::ModelType::YOUTU:
+            return std::make_unique<YoutuModel>(config);
+        case Config::ModelType::PYANNOTE:
+            return std::make_unique<PyAnnoteModel>(config);
+        case Config::ModelType::WESPEAKER:
+            return std::make_unique<WeSpeakerModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }
@@ -733,15 +956,19 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
     const int chunk_size = npu_prefill_->get_chunk_size();
     const int hidden_dim = npu_prefill_->get_hidden_dim();
     const int num_layers = npu_prefill_->get_num_layers();
-    const int num_kv_heads = npu_prefill_->get_num_kv_heads();
-    const int head_dim = npu_prefill_->get_head_dim();
+    const int fallback_num_kv_heads = npu_prefill_->get_num_kv_heads();
+    const int fallback_head_dim = npu_prefill_->get_head_dim();
+
+    const std::vector<size_t> layer_dims = get_kv_layer_dims();
+    const std::vector<size_t> layer_heads = get_kv_layer_heads();
+    const int layers_to_update = std::min<int>(num_layers, static_cast<int>(config_.num_layers));
 
     std::vector<__fp16> all_embeddings = get_token_embeddings(tokens);
     if (all_embeddings.empty()) {
         throw std::runtime_error("Failed to get token embeddings for NPU prefill");
     }
 
-    if (config_.model_type == Config::ModelType::GEMMA) {
+    if (Config::is_gemma_family(config_.model_type)) {
         float scale = std::sqrt(static_cast<float>(hidden_dim));
         for (size_t i = 0; i < all_embeddings.size(); i++) {
             all_embeddings[i] = __fp16(static_cast<float>(all_embeddings[i]) * scale);
@@ -765,13 +992,30 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
         npu::NPUPrefillDirectResult direct_result = npu_prefill_->prefill_chunk_direct(chunk_embeddings, position_offset);
 
         if (direct_result.valid) {
-            for (int layer_idx = 0; layer_idx < num_layers; layer_idx++) {
+            for (int layer_idx = 0; layer_idx < layers_to_update; layer_idx++) {
                 const auto& k_ref = direct_result.k_caches[layer_idx];
                 const auto& v_ref = direct_result.v_caches[layer_idx];
 
                 if (k_ref.data && v_ref.data) {
+                    size_t layer_kv_heads = layer_idx < static_cast<int>(layer_heads.size())
+                        ? layer_heads[layer_idx]
+                        : static_cast<size_t>(fallback_num_kv_heads);
+                    size_t layer_head_dim = layer_idx < static_cast<int>(layer_dims.size())
+                        ? layer_dims[layer_idx]
+                        : static_cast<size_t>(fallback_head_dim);
+
+                    size_t expected = static_cast<size_t>(chunk_size) * layer_kv_heads * layer_head_dim;
+                    if (expected > 0 && (k_ref.count < expected || v_ref.count < expected)) {
+                        CACTUS_LOG_WARN(
+                            "npu",
+                            "NPU prefill cache output too small for layer " << layer_idx
+                            << " (expected>=" << expected
+                            << ", got k=" << k_ref.count << ", v=" << v_ref.count << "); skipping layer");
+                        continue;
+                    }
+
                     kv_cache_.update_from_npu(layer_idx, k_ref.data, v_ref.data,
-                                               actual_tokens, num_kv_heads, head_dim);
+                                               actual_tokens, layer_kv_heads, layer_head_dim);
                 }
             }
         }

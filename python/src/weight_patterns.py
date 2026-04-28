@@ -6,7 +6,8 @@ EMBED_NAMES = [
     'embeddings.weight',
     'transformer.wte.weight',
     'model.decoder.embed_tokens.weight',
-    'decoder.embed_tokens.weight'
+    'decoder.embed_tokens.weight',
+    'token_embeddings'
 ]
 
 MOONSHINE_GLOBAL_WEIGHTS = [
@@ -88,6 +89,42 @@ CONNECTOR_KEYS = [
     'connector.proj.weight'
 ]
 
+GEMMA3N_GLOBAL_WEIGHTS = [
+    ('model.language_model.altup_projections.0.weight', 'altup_proj_0.weights'),
+    ('model.language_model.altup_projections.1.weight', 'altup_proj_1.weights'),
+    ('model.language_model.altup_projections.2.weight', 'altup_proj_2.weights'),
+    ('model.language_model.altup_unembed_projections.0.weight', 'altup_unembed_proj_0.weights'),
+    ('model.language_model.altup_unembed_projections.1.weight', 'altup_unembed_proj_1.weights'),
+    ('model.language_model.altup_unembed_projections.2.weight', 'altup_unembed_proj_2.weights'),
+    ('model.language_model.embed_tokens_per_layer.weight', 'embed_tokens_per_layer.weights'),
+    ('model.language_model.per_layer_model_projection.weight', 'per_layer_model_proj.weights'),
+    ('model.language_model.per_layer_projection_norm.weight', 'per_layer_proj_norm.weights'),
+    ('model.embed_vision.embedding.weight', 'embed_vision_embedding.weights'),
+    ('model.embed_vision.embedding_projection.weight', 'embed_vision_proj.weights'),
+    ('model.embed_vision.soft_embedding_norm.weight', 'embed_vision_soft_norm.weights'),
+    ('model.embed_vision.hard_embedding_norm.weight', 'embed_vision_hard_norm.weights'),
+    ('model.embed_audio.embedding.weight', 'embed_audio_embedding.weights'),
+    ('model.embed_audio.embedding_projection.weight', 'embed_audio_proj.weights'),
+    ('model.embed_audio.soft_embedding_norm.weight', 'embed_audio_soft_norm.weights'),
+    ('model.embed_audio.hard_embedding_norm.weight', 'embed_audio_hard_norm.weights'),
+]
+
+GEMMA3N_VISION_TOWER_PREFIX = 'model.vision_tower.timm_model.'
+GEMMA3N_AUDIO_TOWER_PREFIX = 'model.audio_tower.'
+
+GEMMA4_GLOBAL_WEIGHTS = [
+    ('model.language_model.embed_tokens_per_layer.weight', 'embed_tokens_per_layer.weights'),
+    ('model.language_model.per_layer_model_projection.weight', 'per_layer_model_proj.weights'),
+    ('model.language_model.per_layer_projection_norm.weight', 'per_layer_proj_norm.weights'),
+    ('model.embed_vision.embedding.weight', 'embed_vision_embedding.weights'),
+    ('model.embed_vision.embedding_projection.weight', 'embed_vision_proj.weights'),
+    ('model.embed_audio.embedding.weight', 'embed_audio_embedding.weights'),
+    ('model.embed_audio.embedding_projection.weight', 'embed_audio_proj.weights'),
+]
+
+GEMMA4_VISION_TOWER_PREFIX = 'model.vision_tower.'
+GEMMA4_AUDIO_TOWER_PREFIX = 'model.audio_tower.'
+
 WHISPER_GLOBAL_WEIGHTS = [
     ('decoder.embed_tokens.weight', 'decoder_token_embeddings.weights'),
     ('decoder.embed_positions.weight', 'decoder_position_embeddings.weights'),
@@ -104,17 +141,102 @@ WHISPER_GLOBAL_WEIGHTS = [
 ]
 
 
-def get_layer_weight_patterns(i, precision, model_type=None):
+NEEDLE_GLOBAL_WEIGHTS = [
+    ('embedding.embedding',              'token_embeddings.weights',          False),
+    ('embedding.embedding',              'output_weight.weights',             False),
+    ('encoder.final_norm.scale',         'encoder_layer_norm_weight.weights', False),
+    ('decoder.ZCRMSNorm_0.scale',        'output_norm.weights',               False),
+    ('contrastive_proj.kernel',          'contrastive_proj.weights',          True),
+    ('log_temp',                         'log_temp.weights',                  False),
+]
+
+NEEDLE_ENCODER_LAYER_WEIGHTS = [
+    ('ZCRMSNorm_0.scale',     'input_norm.weights',      False),
+    ('attn_gate',              'attn_gate.weights',       False),
+    ('ZCRMSNorm_1.scale',     'post_attn_norm.weights',  False),
+    ('self_attn.q_proj.kernel',   'attn_q.weights',      True),
+    ('self_attn.k_proj.kernel',   'attn_k.weights',      True),
+    ('self_attn.v_proj.kernel',   'attn_v.weights',      True),
+    ('self_attn.out_proj.kernel', 'attn_output.weights',  True),
+    ('self_attn.q_norm.scale',    'attn_q_norm.weights',  False),
+    ('self_attn.k_norm.scale',    'attn_k_norm.weights',  False),
+    ('FeedForward_0.gate_proj.kernel', 'ffn_gate.weights', True),
+    ('FeedForward_0.up_proj.kernel',   'ffn_up.weights',   True),
+    ('FeedForward_0.down_proj.kernel', 'mlp_fc2.weights',  True),
+]
+
+NEEDLE_DECODER_LAYER_WEIGHTS = [
+    ('ZCRMSNorm_0.scale',       'input_norm.weights',           False),
+    ('ZCRMSNorm_1.scale',       'post_attn_norm.weights',       False),
+    ('self_attn_gate',           'self_attn_gate.weights',       False),
+    ('cross_attn_gate',          'cross_attn_gate.weights',      False),
+    ('ZCRMSNorm_2.scale',       'final_norm.weights',            False),
+    ('self_attn.q_proj.kernel',     'attn_q.weights',            True),
+    ('self_attn.k_proj.kernel',     'attn_k.weights',            True),
+    ('self_attn.v_proj.kernel',     'attn_v.weights',            True),
+    ('self_attn.out_proj.kernel',   'attn_output.weights',        True),
+    ('self_attn.q_norm.scale',      'attn_q_norm.weights',        False),
+    ('self_attn.k_norm.scale',      'attn_k_norm.weights',        False),
+    ('cross_attn.q_proj.kernel',    'encoder_attn_q.weights',     True),
+    ('cross_attn.k_proj.kernel',    'encoder_attn_k.weights',     True),
+    ('cross_attn.v_proj.kernel',    'encoder_attn_v.weights',     True),
+    ('cross_attn.out_proj.kernel',  'encoder_attn_output.weights', True),
+    ('cross_attn.q_norm.scale',     'encoder_attn_q_norm.weights', False),
+    ('cross_attn.k_norm.scale',     'encoder_attn_k_norm.weights', False),
+    ('FeedForward_0.gate_proj.kernel', 'ffn_gate.weights',         True),
+    ('FeedForward_0.up_proj.kernel',   'ffn_up.weights',           True),
+    ('FeedForward_0.down_proj.kernel', 'mlp_fc2.weights',          True),
+]
+
+
+def get_layer_weight_patterns(i, precision, model_type=None, skip_kv=False):
     is_whisper = model_type == 'whisper'
+    is_qwen_family = isinstance(model_type, str) and ('qwen' in model_type)
+    is_youtu = model_type == 'youtu'
 
     patterns = [
-        (['self_attn.q_proj.weight', 'attn.q_proj.weight', 'attn.c_attn.weight'], precision, f'layer_{i}_attn_q.weights', False) if not is_whisper else None,
-        (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False) if not is_whisper else None,
-        (['self_attn.v_proj.weight', 'attn.v_proj.weight'], precision, f'layer_{i}_attn_v.weights', False) if not is_whisper else None,
+        # Youtu MLA attention weights
+        (['self_attn.q_a_proj.weight'], precision, f'layer_{i}_attn_q_a.weights', False) if is_youtu else None,
+        (['self_attn.q_a_layernorm.weight'], precision, f'layer_{i}_attn_q_a_norm.weights', False) if is_youtu else None,
+        (['self_attn.q_b_proj.weight'], precision, f'layer_{i}_attn_q_b.weights', False) if is_youtu else None,
+        (['self_attn.kv_a_proj_with_mqa.weight'], precision, f'layer_{i}_attn_kv_a.weights', False) if is_youtu else None,
+        (['self_attn.kv_a_layernorm.weight'], precision, f'layer_{i}_attn_kv_a_norm.weights', False) if is_youtu else None,
+        (['self_attn.kv_b_proj.weight'], precision, f'layer_{i}_attn_kv_b.weights', False) if is_youtu else None,
+        (['self_attn.q_proj.weight', 'attn.q_proj.weight', 'attn.c_attn.weight'], precision, f'layer_{i}_attn_q.weights', False) if not is_whisper and not is_youtu else None,
+        (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False) if not is_whisper and not skip_kv and not is_youtu else None,
+        (['self_attn.v_proj.weight', 'attn.v_proj.weight'], precision, f'layer_{i}_attn_v.weights', False) if not is_whisper and not skip_kv and not is_youtu else None,
         (['self_attn.o_proj.weight', 'attn.o_proj.weight', 'attn.c_proj.weight', 'self_attn.out_proj.weight'], precision, f'layer_{i}_attn_output.weights', False) if not is_whisper else None,
+        # Qwen3.5 linear-attention path
+        (['linear_attn.in_proj_qkv.weight'], precision, f'layer_{i}_linear_attn_qkv.weights', False) if is_qwen_family else None,
+        (['linear_attn.in_proj_a.weight'], precision, f'layer_{i}_linear_attn_a.weights', False) if is_qwen_family else None,
+        (['linear_attn.in_proj_b.weight'], precision, f'layer_{i}_linear_attn_b.weights', False) if is_qwen_family else None,
+        (['linear_attn.in_proj_z.weight'], precision, f'layer_{i}_linear_attn_z.weights', False) if is_qwen_family else None,
+        (['linear_attn.out_proj.weight'], precision, f'layer_{i}_linear_attn_output.weights', False) if is_qwen_family else None,
+        (['linear_attn.norm.weight'], precision, f'layer_{i}_linear_attn_norm.weights', False) if is_qwen_family else None,
+        (['linear_attn.conv1d.weight'], precision, f'layer_{i}_linear_attn_conv1d.weights', False) if is_qwen_family else None,
+        (['linear_attn.A_log'], precision, f'layer_{i}_linear_attn_A_log.weights', False) if is_qwen_family else None,
+        (['linear_attn.dt_bias'], precision, f'layer_{i}_linear_attn_dt_bias.weights', False) if is_qwen_family else None,
+        ([
+            'self_attn.deltanet_gate_proj.weight',
+            'self_attn.gated_deltanet_gate_proj.weight',
+            'self_attn.attn_gate_proj.weight',
+            'self_attn.f_gate_proj.weight',
+            'self_attn.attn_f_gate_proj.weight',
+            'self_attn.attn_gate.weight',
+            'self_attn.attn_f_gate.weight',
+        ], precision, f'layer_{i}_deltanet_gate.weights', False) if is_qwen_family else None,
+        ([
+            'self_attn.deltanet_beta_proj.weight',
+            'self_attn.gated_deltanet_beta_proj.weight',
+            'self_attn.attn_beta_proj.weight',
+            'self_attn.f_beta_proj.weight',
+            'self_attn.attn_f_beta_proj.weight',
+            'self_attn.attn_beta.weight',
+            'self_attn.attn_f_beta.weight',
+        ], precision, f'layer_{i}_deltanet_beta.weights', False) if is_qwen_family else None,
         (['input_layernorm.weight', 'ln_1.weight', 'operator_norm.weight'], precision, f'layer_{i}_input_norm.weights', False),
         (['self_attn.q_norm.weight', 'self_attn.q_layernorm.weight'], precision, f'layer_{i}_attn_q_norm.weights', False),
-        (['self_attn.k_norm.weight', 'self_attn.k_layernorm.weight'], precision, f'layer_{i}_attn_k_norm.weights', False),
+        (['self_attn.k_norm.weight', 'self_attn.k_layernorm.weight'], precision, f'layer_{i}_attn_k_norm.weights', False) if not skip_kv else None,
         (['mlp.gate_proj.weight', 'mlp.c_fc.weight', 'feed_forward.w1.weight', 'ff.ff_proj.weight'], precision, f'layer_{i}_ffn_gate.weights', False),
         (['mlp.up_proj.weight', 'feed_forward.w3.weight', 'ff.ff_noact.weight'], precision, f'layer_{i}_ffn_up.weights', False),
         (['mlp.down_proj.weight', 'mlp.c_proj.weight', 'feed_forward.w2.weight', 'ff.ff_out.weight'], precision, f'layer_{i}_ffn_down.weights', False),
@@ -123,9 +245,18 @@ def get_layer_weight_patterns(i, precision, model_type=None):
         (['feed_forward.experts.{channel}.w1.weight'], precision, f'layer_{i}_moe_expert_{{channel}}_w1.weights', False),
         (['feed_forward.experts.{channel}.w3.weight'], precision, f'layer_{i}_moe_expert_{{channel}}_w3.weights', False),
         (['feed_forward.experts.{channel}.w2.weight'], precision, f'layer_{i}_moe_expert_{{channel}}_w2.weights', False),
+        (['moe.gate_proj'], precision, f'layer_{i}_moe_gate_proj.weights', False),
+        (['moe.up_proj'], precision, f'layer_{i}_moe_up_proj.weights', False),
+        (['moe.down_proj'], precision, f'layer_{i}_moe_down_proj.weights', False),
+        (['moe.per_expert_scale'], 'FP16', f'layer_{i}_moe_per_expert_scale.weights', False),
+        (['router.proj.weight'], precision, f'layer_{i}_router_proj.weights', False),
+        (['router.scale'], 'FP16', f'layer_{i}_router_scale.weights', False),
         (['post_attention_layernorm.weight', 'ln_2.weight', 'ffn_norm.weight', 'norm2.weight'], precision, f'layer_{i}_post_attn_norm.weights', False),
         (['pre_feedforward_layernorm.weight'], precision, f'layer_{i}_pre_ffn_norm.weights', False),
         (['post_feedforward_layernorm.weight'], precision, f'layer_{i}_post_ffn_norm.weights', False),
+        (['post_feedforward_layernorm_1.weight'], precision, f'layer_{i}_post_ffn_norm_1.weights', False),
+        (['post_feedforward_layernorm_2.weight'], precision, f'layer_{i}_post_ffn_norm_2.weights', False),
+        (['pre_feedforward_layernorm_2.weight'], precision, f'layer_{i}_pre_ffn_norm_2.weights', False),
         (['conv.in_proj.weight'], precision, f'layer_{i}_conv_in_proj.weights', False),
         (['conv.out_proj.weight'], precision, f'layer_{i}_conv_out_proj.weights', False),
         (['conv.conv.weight'], precision, f'layer_{i}_conv_depthwise.weights', False),
@@ -171,6 +302,18 @@ def get_layer_weight_patterns(i, precision, model_type=None):
         (['self_attn.out_proj.bias'], precision, f'layer_{i}_self_attn_output.bias', False) if is_whisper else None,
         (['self_attn_layer_norm.weight'], precision, f'layer_{i}_self_attn_norm.weights', False),
         (['self_attn_layer_norm.bias'], precision, f'layer_{i}_self_attn_norm.bias', False),
+        (['altup.router_norm.weight'], precision, f'layer_{i}_altup_router_norm.weights', False),
+        (['altup.prediction_coefs.weight'], 'FP16', f'layer_{i}_altup_prediction_coefs.weights', False),
+        (['altup.correction_coefs.weight'], 'FP16', f'layer_{i}_altup_correction_coefs.weights', False),
+        (['altup.correct_output_scale'], 'FP16', f'layer_{i}_altup_correct_output_scale.weights', False),
+        (['altup.modality_router.weight'], precision, f'layer_{i}_altup_modality_router.weights', False),
+        (['laurel.linear_left.weight'], precision, f'layer_{i}_laurel_left.weights', False),
+        (['laurel.linear_right.weight'], precision, f'layer_{i}_laurel_right.weights', False),
+        (['laurel.post_laurel_norm.weight'], precision, f'layer_{i}_laurel_norm.weights', False),
+        (['per_layer_projection.weight'], precision, f'layer_{i}_per_layer_proj.weights', False),
+        (['per_layer_input_gate.weight'], precision, f'layer_{i}_per_layer_gate.weights', False),
+        (['post_per_layer_input_norm.weight'], precision, f'layer_{i}_post_per_layer_norm.weights', False),
+        (['layer_scalar'], 'FP16', f'layer_{i}_layer_scalar.weights', False),
     ]
 
     return [p for p in patterns if p is not None]

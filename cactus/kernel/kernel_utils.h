@@ -9,6 +9,8 @@
 #if defined(__ANDROID__)
 #include <sys/auxv.h>
 #include <asm/hwcap.h>
+#include <sched.h>
+#include <fstream>
 #endif
 #include <algorithm>
 #include <cmath>
@@ -44,6 +46,32 @@ inline void stream_store_f16x8(__fp16* dst, float16x8_t val) {
 #endif
 }
 
+inline bool cpu_has_i8mm() {
+#if defined(__aarch64__)
+    static std::once_flag once;
+    static bool has = false;
+
+    std::call_once(once, []() {
+#if defined(__APPLE__)
+    int ret = 0;
+    size_t size = sizeof(ret);
+    if (sysctlbyname("hw.optional.arm.FEAT_I8MM", &ret, &size, nullptr, 0) == 0) {
+        has = (ret == 1);
+    }
+#elif defined(__ANDROID__)
+    unsigned long hwcap2 = getauxval(AT_HWCAP2);
+    #ifndef HWCAP2_I8MM
+    #define HWCAP2_I8MM (1 << 13)
+    #endif
+    has = (hwcap2 & HWCAP2_I8MM) != 0;
+#endif
+    });
+
+    return has;
+#else
+    return false;
+#endif
+}
 
 inline float32x4_t fast_exp_f32x4(float32x4_t x) {
     const float32x4_t log2e = vdupq_n_f32(1.4426950408889634f);
@@ -80,26 +108,68 @@ inline float32x4_t fast_exp_f32x4(float32x4_t x) {
     return vmulq_f32(p, scale);
 }
 
+// Cephes-style 13/6 rational tanh approximation (same coefficients as Eigen).
+// Constants are stored as static splatted arrays so the compiler emits a single
+// pc-relative `ldr q` per load.
+alignas(16) inline constexpr float kFastTanhAlpha[7][4] = {
+    { 4.89352455891786e-03f, 4.89352455891786e-03f, 4.89352455891786e-03f, 4.89352455891786e-03f },
+    { 6.37261928875436e-04f, 6.37261928875436e-04f, 6.37261928875436e-04f, 6.37261928875436e-04f },
+    { 1.48572235717979e-05f, 1.48572235717979e-05f, 1.48572235717979e-05f, 1.48572235717979e-05f },
+    { 5.12229709037114e-08f, 5.12229709037114e-08f, 5.12229709037114e-08f, 5.12229709037114e-08f },
+    {-8.60467152213735e-11f,-8.60467152213735e-11f,-8.60467152213735e-11f,-8.60467152213735e-11f },
+    { 2.00018790482477e-13f, 2.00018790482477e-13f, 2.00018790482477e-13f, 2.00018790482477e-13f },
+    {-2.76076847742355e-16f,-2.76076847742355e-16f,-2.76076847742355e-16f,-2.76076847742355e-16f },
+};
+alignas(16) inline constexpr float kFastTanhBeta[4][4] = {
+    { 4.89352518554385e-03f, 4.89352518554385e-03f, 4.89352518554385e-03f, 4.89352518554385e-03f },
+    { 2.26843463243900e-03f, 2.26843463243900e-03f, 2.26843463243900e-03f, 2.26843463243900e-03f },
+    { 1.18534705686654e-04f, 1.18534705686654e-04f, 1.18534705686654e-04f, 1.18534705686654e-04f },
+    { 1.19825839466702e-06f, 1.19825839466702e-06f, 1.19825839466702e-06f, 1.19825839466702e-06f },
+};
+alignas(16) inline constexpr float kFastTanhClampHi[4] = { 9.0f, 9.0f, 9.0f, 9.0f };
+alignas(16) inline constexpr float kFastTanhClampLo[4] = {-9.0f,-9.0f,-9.0f,-9.0f };
+
 inline float32x4_t fast_tanh_f32x4(float32x4_t x) {
-    const float32x4_t one = vdupq_n_f32(1.0f);
-    const float32x4_t neg_one = vdupq_n_f32(-1.0f);
-
-    uint32x4_t pos_sat = vcgtq_f32(x, vdupq_n_f32(4.5f));
-    uint32x4_t neg_sat = vcltq_f32(x, vdupq_n_f32(-4.5f));
-
-    const float32x4_t c27 = vdupq_n_f32(27.0f);
-    const float32x4_t c9 = vdupq_n_f32(9.0f);
-
+    x = vmaxq_f32(vld1q_f32(kFastTanhClampLo), vminq_f32(vld1q_f32(kFastTanhClampHi), x));
     float32x4_t x2 = vmulq_f32(x, x);
-    float32x4_t num = vaddq_f32(c27, x2);   
-    float32x4_t den = vfmaq_f32(c27, c9, x2);  
+    float32x4_t p = vfmaq_f32(vld1q_f32(kFastTanhAlpha[5]), vld1q_f32(kFastTanhAlpha[6]), x2);
+    p = vfmaq_f32(vld1q_f32(kFastTanhAlpha[4]), p, x2);
+    p = vfmaq_f32(vld1q_f32(kFastTanhAlpha[3]), p, x2);
+    p = vfmaq_f32(vld1q_f32(kFastTanhAlpha[2]), p, x2);
+    p = vfmaq_f32(vld1q_f32(kFastTanhAlpha[1]), p, x2);
+    p = vfmaq_f32(vld1q_f32(kFastTanhAlpha[0]), p, x2);
+    p = vmulq_f32(p, x);
+    float32x4_t q = vfmaq_f32(vld1q_f32(kFastTanhBeta[2]), vld1q_f32(kFastTanhBeta[3]), x2);
+    q = vfmaq_f32(vld1q_f32(kFastTanhBeta[1]), q, x2);
+    q = vfmaq_f32(vld1q_f32(kFastTanhBeta[0]), q, x2);
+    return vdivq_f32(p, q);
+}
 
-    float32x4_t result = vmulq_f32(x, vdivq_f32(num, den));
+constexpr size_t SIMD_F16_WIDTH = 8;
 
-    result = vbslq_f32(pos_sat, one, result);
-    result = vbslq_f32(neg_sat, neg_one, result);
+inline size_t simd_align(size_t count, size_t width = SIMD_F16_WIDTH) {
+    return (count / width) * width;
+}
 
-    return result;
+inline void f16x8_split_f32(float16x8_t v, float32x4_t& lo, float32x4_t& hi) {
+    lo = vcvt_f32_f16(vget_low_f16(v));
+    hi = vcvt_f32_f16(vget_high_f16(v));
+}
+
+inline float16x8_t f32_merge_f16(float32x4_t lo, float32x4_t hi) {
+    return vcombine_f16(vcvt_f16_f32(lo), vcvt_f16_f32(hi));
+}
+
+inline float32x4_t fast_sigmoid_f32x4(float32x4_t x) {
+    const float32x4_t one = vdupq_n_f32(1.0f);
+    return vdivq_f32(one, vaddq_f32(one, fast_exp_f32x4(vnegq_f32(x))));
+}
+
+template<typename F32x4Op>
+inline float16x8_t apply_f32_op_on_f16x8(float16x8_t v, F32x4Op op) {
+    float32x4_t lo, hi;
+    f16x8_split_f32(v, lo, hi);
+    return f32_merge_f16(op(lo), op(hi));
 }
 
 inline void unpack_int4_as_int8x16x2(const uint8_t* ptr, int8x16_t& high_decoded, int8x16_t& low_decoded) {
@@ -109,6 +179,80 @@ inline void unpack_int4_as_int8x16x2(const uint8_t* ptr, int8x16_t& high_decoded
 }
 
 namespace CactusThreading {
+
+#if defined(__ANDROID__)
+    struct CoreTopology {
+        std::vector<int> performance_cores;  
+        std::vector<int> all_cores;
+
+        static CoreTopology& get() {
+            static CoreTopology topo = detect();
+            return topo;
+        }
+
+    private:
+        static int read_sysfs_int(const char* path) {
+            std::ifstream f(path);
+            if (!f.is_open()) return -1;
+            int val = -1;
+            f >> val;
+            return val;
+        }
+
+        static CoreTopology detect() {
+            CoreTopology topo;
+            constexpr int MAX_CPUS = 16;
+            std::vector<std::pair<int, int>> core_caps; 
+
+            for (int i = 0; i < MAX_CPUS; ++i) {
+                char path[128];
+
+                snprintf(path, sizeof(path),
+                         "/sys/devices/system/cpu/cpu%d/cpu_capacity", i);
+                int cap = read_sysfs_int(path);
+                if (cap > 0) {
+                    core_caps.push_back({i, cap});
+                    topo.all_cores.push_back(i);
+                    continue;
+                }
+
+                snprintf(path, sizeof(path),
+                         "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+                int freq = read_sysfs_int(path);
+                if (freq > 0) {
+                    core_caps.push_back({i, freq});
+                    topo.all_cores.push_back(i);
+                }
+            }
+
+            if (core_caps.empty()) return topo;
+
+            int max_cap = 0;
+            for (auto& [id, cap] : core_caps) {
+                max_cap = std::max(max_cap, cap);
+            }
+
+            int threshold = static_cast<int>(max_cap * 0.70);
+            for (auto& [id, cap] : core_caps) {
+                if (cap >= threshold) {
+                    topo.performance_cores.push_back(id);
+                }
+            }
+
+            return topo;
+        }
+    };
+
+    inline bool pin_current_thread_to_cores(const std::vector<int>& cores) {
+        if (cores.empty()) return false;
+        cpu_set_t mask;
+        CPU_ZERO(&mask);
+        for (int core : cores) {
+            CPU_SET(core, &mask);
+        }
+        return sched_setaffinity(0, sizeof(mask), &mask) == 0;
+    }
+#endif
 
     class ThreadPool {
     private:
@@ -156,9 +300,25 @@ namespace CactusThreading {
             : stop(false), pending_tasks(0) {
             num_workers_ = std::min(num_threads, MAX_WORKERS);
             if (num_workers_ == 0) num_workers_ = 1;
+
+#if defined(__ANDROID__)
+            auto& topo = CoreTopology::get();
+            if (!topo.performance_cores.empty()) {
+                num_workers_ = std::min(num_workers_, topo.performance_cores.size());
+            }
+#endif
+
             workers.reserve(num_workers_);
             for (size_t i = 0; i < num_workers_; ++i) {
-                workers.emplace_back(&ThreadPool::worker_thread, this);
+                workers.emplace_back([this]() {
+#if defined(__ANDROID__)
+                    auto& perf = CoreTopology::get().performance_cores;
+                    if (!perf.empty()) {
+                        pin_current_thread_to_cores(perf);
+                    }
+#endif
+                    worker_thread();
+                });
             }
         }
 
@@ -470,5 +630,52 @@ namespace CactusThreading {
 
 }
 
+template<typename SimdOp, typename ScalarOp>
+void elementwise_op_f16(const __fp16* input, __fp16* output, size_t num_elements,
+                        bool use_streaming, CactusThreading::ParallelConfig config,
+                        SimdOp simd_op, ScalarOp scalar_op, size_t unroll = 4) {
+    CactusThreading::parallel_for(num_elements, config,
+        [&](size_t start, size_t end) {
+            const size_t n = end - start;
+            const size_t vec_end = start + simd_align(n);
 
-#endif // KERNEL_UTILS_H 
+            if (use_streaming && unroll >= 4) {
+                const size_t unrolled_end = start + simd_align(n, SIMD_F16_WIDTH * 4);
+                for (size_t i = start; i < unrolled_end; i += SIMD_F16_WIDTH * 4) {
+                    __builtin_prefetch(&input[i + 256], 0, 0);
+                    float16x8_t v0 = simd_op(vld1q_f16(&input[i]));
+                    float16x8_t v1 = simd_op(vld1q_f16(&input[i + 8]));
+                    float16x8_t v2 = simd_op(vld1q_f16(&input[i + 16]));
+                    float16x8_t v3 = simd_op(vld1q_f16(&input[i + 24]));
+                    stream_store_f16x8(&output[i], v0);
+                    stream_store_f16x8(&output[i + 8], v1);
+                    stream_store_f16x8(&output[i + 16], v2);
+                    stream_store_f16x8(&output[i + 24], v3);
+                }
+                for (size_t i = unrolled_end; i < vec_end; i += SIMD_F16_WIDTH) {
+                    stream_store_f16x8(&output[i], simd_op(vld1q_f16(&input[i])));
+                }
+            } else if (use_streaming && unroll >= 2) {
+                const size_t unrolled_end = start + simd_align(n, SIMD_F16_WIDTH * 2);
+                for (size_t i = start; i < unrolled_end; i += SIMD_F16_WIDTH * 2) {
+                    __builtin_prefetch(&input[i + 128], 0, 0);
+                    float16x8_t v0 = simd_op(vld1q_f16(&input[i]));
+                    float16x8_t v1 = simd_op(vld1q_f16(&input[i + 8]));
+                    stream_store_f16x8(&output[i], v0);
+                    stream_store_f16x8(&output[i + 8], v1);
+                }
+                for (size_t i = unrolled_end; i < vec_end; i += SIMD_F16_WIDTH) {
+                    stream_store_f16x8(&output[i], simd_op(vld1q_f16(&input[i])));
+                }
+            } else {
+                for (size_t i = start; i < vec_end; i += SIMD_F16_WIDTH) {
+                    vst1q_f16(&output[i], simd_op(vld1q_f16(&input[i])));
+                }
+            }
+            for (size_t i = vec_end; i < end; ++i) {
+                output[i] = scalar_op(input[i]);
+            }
+        });
+}
+
+#endif // KERNEL_UTILS_H

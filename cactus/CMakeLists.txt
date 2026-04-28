@@ -4,6 +4,15 @@ project(Cactus LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+set(_CACTUS_VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../CACTUS_VERSION")
+if(EXISTS "${_CACTUS_VERSION_FILE}")
+    file(READ "${_CACTUS_VERSION_FILE}" _CACTUS_VERSION_CONTENT)
+    string(STRIP "${_CACTUS_VERSION_CONTENT}" CACTUS_VERSION_STR)
+    message(STATUS "Cactus version: ${CACTUS_VERSION_STR}")
+else()
+    set(CACTUS_VERSION_STR "")
+endif()
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
     message(STATUS "CMAKE_BUILD_TYPE was not set, defaulting to Release.")
@@ -59,12 +68,15 @@ else()
     )
 endif()
 
-file(GLOB ENGINE_SOURCES "engine/*.cpp")
-file(GLOB GRAPH_SOURCES "graph/*.cpp")
-file(GLOB KERNEL_SOURCES "kernel/*.cpp")
-file(GLOB FFI_SOURCES "ffi/*.cpp")
-file(GLOB MODEL_SOURCES "models/*.cpp")
-file(GLOB TELEMETRY_SOURCES "telemetry/*.cpp")
+file(GLOB ENGINE_SOURCES CONFIGURE_DEPENDS "engine/*.cpp")
+file(GLOB GRAPH_SOURCES CONFIGURE_DEPENDS "graph/*.cpp")
+file(GLOB KERNEL_SOURCES CONFIGURE_DEPENDS "kernel/*.cpp")
+file(GLOB FFI_SOURCES CONFIGURE_DEPENDS "ffi/*.cpp")
+file(GLOB MODEL_SOURCES CONFIGURE_DEPENDS "models/*.cpp" "models/gemma4/*.cpp")
+file(GLOB TELEMETRY_SOURCES CONFIGURE_DEPENDS "telemetry/*.cpp")
+set(I8MM_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/kernel/kernel_i8mm.cpp")
+list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
+
 
 if(APPLE)
     set(NPU_SOURCES "npu/npu_ane.mm")
@@ -104,6 +116,10 @@ function(configure_cactus_target target_name)
         target_compile_options(${target_name} PRIVATE -Wno-pedantic)
     endif()
 
+    if(NOT "${CACTUS_VERSION_STR}" STREQUAL "")
+        target_compile_definitions(${target_name} PRIVATE CACTUS_COMPILE_TIME_VERSION="${CACTUS_VERSION_STR}")
+    endif()
+
     if(APPLE)
         target_link_libraries(${target_name} PUBLIC
             ${COREML_FRAMEWORK}
@@ -123,12 +139,26 @@ function(configure_cactus_target target_name)
     endif()
 endfunction()
 
-add_library(cactus STATIC ${COMMON_SOURCES})
-configure_cactus_target(cactus)
 
-add_library(cactus_ffi SHARED ${COMMON_SOURCES})
+# I8MM support: compile kernel_i8mm.cpp with +i8mm
+set(I8MM_MARCH_FLAG "-march=armv8.2-a+fp16+simd+dotprod+i8mm")
+add_library(cactus_i8mm_obj OBJECT ${I8MM_SOURCE})
+target_include_directories(cactus_i8mm_obj PRIVATE ${COMMON_INCLUDES})
+target_compile_options(cactus_i8mm_obj PRIVATE ${I8MM_MARCH_FLAG})
+set_target_properties(cactus_i8mm_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_definitions(cactus_i8mm_obj PRIVATE CACTUS_COMPILE_I8MM __ARM_FEATURE_MATMUL_INT8=1)
+
+set(EXTRA_OBJECTS $<TARGET_OBJECTS:cactus_i8mm_obj>)
+
+add_library(cactus STATIC ${COMMON_SOURCES} ${EXTRA_OBJECTS})
+configure_cactus_target(cactus)
+target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_I8MM)
+
+
+add_library(cactus_ffi SHARED ${COMMON_SOURCES} ${EXTRA_OBJECTS})
 configure_cactus_target(cactus_ffi)
 set_target_properties(cactus_ffi PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     OUTPUT_NAME "cactus"
 )
+target_compile_definitions(cactus_ffi PRIVATE CACTUS_COMPILE_I8MM)

@@ -10,6 +10,15 @@ set(CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.0" CACHE STRING "Minimu
 set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../cactus)
 set(CACTUS_CURL_ROOT "${CMAKE_SOURCE_DIR}/../libs/curl" CACHE PATH "Path to vendored libcurl artifacts")
 
+set(_CACTUS_VERSION_FILE "${CMAKE_SOURCE_DIR}/../CACTUS_VERSION")
+if(EXISTS "${_CACTUS_VERSION_FILE}")
+    file(READ "${_CACTUS_VERSION_FILE}" _CACTUS_VERSION_CONTENT)
+    string(STRIP "${_CACTUS_VERSION_CONTENT}" CACTUS_VERSION_STR)
+    message(STATUS "Cactus version: ${CACTUS_VERSION_STR}")
+else()
+    set(CACTUS_VERSION_STR "")
+endif()
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
     message(STATUS "CMAKE_BUILD_TYPE was not set, defaulting to Release.")
@@ -18,13 +27,16 @@ endif()
 file(GLOB ENGINE_SOURCES "${SOURCE_DIR}/engine/*.cpp")
 file(GLOB GRAPH_SOURCES "${SOURCE_DIR}/graph/*.cpp")
 file(GLOB KERNEL_SOURCES "${SOURCE_DIR}/kernel/*.cpp")
+set(I8MM_SOURCE "${SOURCE_DIR}/kernel/kernel_i8mm.cpp")
+list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
 file(GLOB FFI_SOURCES "${SOURCE_DIR}/ffi/*.cpp")
-file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp")
+file(GLOB MODEL_SOURCES "${SOURCE_DIR}/models/*.cpp" "${SOURCE_DIR}/models/gemma4/*.cpp")
 file(GLOB TELEMETRY_SOURCES "${SOURCE_DIR}/telemetry/*.cpp")
 
 enable_language(OBJCXX)
 
 set(NPU_SOURCES "${SOURCE_DIR}/npu/npu_ane.mm")
+set_source_files_properties(${NPU_SOURCES} PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     string(TOLOWER "${CMAKE_OSX_SYSROOT}" SYSROOT_LOWER)
@@ -146,6 +158,9 @@ endif()
 target_compile_definitions(cactus PRIVATE
     PLATFORM_CPU_ONLY=1
 )
+if(NOT "${CACTUS_VERSION_STR}" STREQUAL "")
+    target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_TIME_VERSION="${CACTUS_VERSION_STR}")
+endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_compile_definitions(cactus PRIVATE TARGET_OS_IPHONE=1)
@@ -182,6 +197,26 @@ target_compile_definitions(cactus PRIVATE
     __ARM_FEATURE_MATMUL_INT8=1
     ACCELERATE_NEW_LAPACK
 )
+
+set(APPLE_COMMON_OPTIONS
+    -pthread -Wall -Wextra -pedantic
+    -Wno-c++20-designator -Wno-missing-field-initializers
+    -fomit-frame-pointer -funroll-loops -ftree-vectorize
+    -O3 -DNDEBUG -ffunction-sections -fdata-sections
+)
+
+# I8MM support: detected at runtime via sysctl, not all Apple Silicon has FEAT_I8MM
+add_library(cactus_i8mm_obj OBJECT ${I8MM_SOURCE})
+target_include_directories(cactus_i8mm_obj PRIVATE
+    ${SOURCE_DIR} ${SOURCE_DIR}/engine ${SOURCE_DIR}/graph
+    ${SOURCE_DIR}/kernel ${SOURCE_DIR}/ffi ${SOURCE_DIR}/telemetry ${SOURCE_DIR}/npu
+)
+target_compile_options(cactus_i8mm_obj PRIVATE -march=armv8.2-a+fp16+simd+dotprod+i8mm ${APPLE_COMMON_OPTIONS})
+target_compile_definitions(cactus_i8mm_obj PRIVATE CACTUS_COMPILE_I8MM __ARM_FEATURE_MATMUL_INT8=1 PLATFORM_CPU_ONLY=1)
+set_target_properties(cactus_i8mm_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+target_sources(cactus PRIVATE $<TARGET_OBJECTS:cactus_i8mm_obj>)
+target_compile_definitions(cactus PRIVATE CACTUS_COMPILE_I8MM)
 
 target_link_options(cactus PRIVATE -Wl,-dead_strip)
 target_link_options(cactus PRIVATE -flto)

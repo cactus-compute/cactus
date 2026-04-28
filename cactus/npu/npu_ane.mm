@@ -5,7 +5,188 @@
 #import <CoreML/CoreML.h>
 #import <Foundation/Foundation.h>
 #include <iostream>
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <cstdlib>
+#include <string>
+#include <vector>
 #include "../graph/graph.h"
+
+namespace {
+
+static std::string to_lower_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+static bool parse_compute_units(const char* raw_value, MLComputeUnits& out_units) {
+    if (!raw_value || raw_value[0] == '\0') {
+        return false;
+    }
+
+    std::string value = to_lower_ascii(raw_value);
+    if (value == "all" || value == "default") {
+        out_units = MLComputeUnitsAll;
+        return true;
+    }
+    if (value == "cpu_and_ne" || value == "cpu-ne" || value == "cpu_ne" ||
+        value == "ne" || value == "ane" || value == "cpuandneuralengine") {
+        out_units = MLComputeUnitsCPUAndNeuralEngine;
+        return true;
+    }
+    if (value == "cpu_and_gpu" || value == "cpu_gpu" || value == "cpu-gpu" ||
+        value == "cpuandgpu") {
+        out_units = MLComputeUnitsCPUAndGPU;
+        return true;
+    }
+    if (value == "cpu_only" || value == "cpu-only" || value == "cpu") {
+        out_units = MLComputeUnitsCPUOnly;
+        return true;
+    }
+
+    return false;
+}
+
+static const char* compute_units_to_string(MLComputeUnits units) {
+    switch (units) {
+        case MLComputeUnitsAll:
+            return "ALL";
+        case MLComputeUnitsCPUAndGPU:
+            return "CPU_AND_GPU";
+        case MLComputeUnitsCPUOnly:
+            return "CPU_ONLY";
+        case MLComputeUnitsCPUAndNeuralEngine:
+            return "CPU_AND_NE";
+    }
+    return "UNKNOWN";
+}
+
+static bool model_path_looks_like_audio_encoder(NSString* model_path) {
+    if (!model_path) return false;
+    NSString* lower = [[model_path lastPathComponent] lowercaseString];
+    return [lower containsString:@"audio_encoder"];
+}
+
+static bool model_path_looks_like_vision_encoder(NSString* model_path) {
+    if (!model_path) return false;
+    NSString* lower = [[model_path lastPathComponent] lowercaseString];
+    return [lower containsString:@"vision_encoder"];
+}
+
+static void maybe_apply_compute_units_env(const char* env_name, MLComputeUnits& target) {
+    const char* raw = std::getenv(env_name);
+    if (!raw || raw[0] == '\0') return;
+
+    MLComputeUnits parsed;
+    if (parse_compute_units(raw, parsed)) {
+        target = parsed;
+        return;
+    }
+
+    CACTUS_LOG_WARN("npu", "Ignoring invalid " << env_name << "=" << raw);
+}
+
+static MLComputeUnits resolve_compute_units_for_model(NSString* model_path, bool is_prefill) {
+    MLComputeUnits units = MLComputeUnitsCPUAndNeuralEngine;
+
+    // Gemma4 multimodal encoders show better fidelity on CPU+GPU.
+    if (!is_prefill && model_path_looks_like_audio_encoder(model_path)) {
+        units = MLComputeUnitsCPUAndGPU;
+    }
+    if (!is_prefill && model_path_looks_like_vision_encoder(model_path)) {
+        units = MLComputeUnitsCPUAndGPU;
+    }
+
+    maybe_apply_compute_units_env("CACTUS_ANE_COMPUTE_UNITS", units);
+    if (is_prefill) {
+        maybe_apply_compute_units_env("CACTUS_ANE_PREFILL_COMPUTE_UNITS", units);
+    } else {
+        maybe_apply_compute_units_env("CACTUS_ANE_ENCODER_COMPUTE_UNITS", units);
+        if (model_path_looks_like_audio_encoder(model_path)) {
+            maybe_apply_compute_units_env("CACTUS_ANE_AUDIO_COMPUTE_UNITS", units);
+        }
+        if (model_path_looks_like_vision_encoder(model_path)) {
+            maybe_apply_compute_units_env("CACTUS_ANE_VISION_COMPUTE_UNITS", units);
+        }
+    }
+
+    return units;
+}
+
+static bool should_recompile_mlpackage(NSString* mlpackage_path, NSString* mlmodelc_path) {
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:mlmodelc_path]) return true;
+
+    const char* force = std::getenv("CACTUS_ANE_FORCE_RECOMPILE");
+    if (force && force[0] != '\0' && std::strcmp(force, "0") != 0) {
+        return true;
+    }
+
+    NSError* pkg_err = nil;
+    NSError* cache_err = nil;
+    NSDictionary* pkg_attr = [fm attributesOfItemAtPath:mlpackage_path error:&pkg_err];
+    NSDictionary* cache_attr = [fm attributesOfItemAtPath:mlmodelc_path error:&cache_err];
+    if (!pkg_attr || !cache_attr || pkg_err || cache_err) {
+        return false;
+    }
+
+    NSDate* pkg_mtime = pkg_attr[NSFileModificationDate];
+    NSDate* cache_mtime = cache_attr[NSFileModificationDate];
+    if (!pkg_mtime || !cache_mtime) {
+        return false;
+    }
+    return ([pkg_mtime compare:cache_mtime] == NSOrderedDescending);
+}
+
+static NSURL* resolve_or_compile_model_url(NSString* path, NSError** error) {
+    NSURL* modelURL = [NSURL fileURLWithPath:path];
+    if (![path hasSuffix:@".mlpackage"]) {
+        return modelURL;
+    }
+
+    BOOL isDir = NO;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir] || !isDir) {
+        CACTUS_LOG_ERROR("npu", "ANE mlpackage path is not a valid directory: " << [path UTF8String]);
+        return modelURL;
+    }
+
+    NSString* cachedPath = [[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"mlmodelc"];
+    NSURL* cachedURL = [NSURL fileURLWithPath:cachedPath];
+    NSFileManager* fm = [NSFileManager defaultManager];
+
+    if (!should_recompile_mlpackage(path, cachedPath)) {
+        return cachedURL;
+    }
+
+    if ([fm fileExistsAtPath:cachedPath]) {
+        NSError* rmErr = nil;
+        [fm removeItemAtPath:cachedPath error:&rmErr];
+        if (rmErr) {
+            CACTUS_LOG_WARN("npu", "Failed to remove stale mlmodelc: " << [[rmErr localizedDescription] UTF8String]);
+        } else {
+            CACTUS_LOG_INFO("npu", "Removed stale mlmodelc cache, recompiling: " << [cachedPath UTF8String]);
+        }
+    }
+
+    NSURL* compiledURL = [MLModel compileModelAtURL:modelURL error:error];
+    if (*error || !compiledURL) {
+        CACTUS_LOG_ERROR("npu", "ANE model compilation failed: " << [[*error localizedDescription] UTF8String]);
+        return modelURL;
+    }
+
+    NSError* moveError = nil;
+    [fm moveItemAtURL:compiledURL toURL:cachedURL error:&moveError];
+    if (moveError) {
+        CACTUS_LOG_WARN("npu", "Could not persist compiled mlmodelc cache: " << [[moveError localizedDescription] UTF8String]);
+        return compiledURL;
+    }
+    return cachedURL;
+}
+
+} // namespace
 
 @interface CactusANEImpl : NSObject
 
@@ -19,6 +200,12 @@
 @property (nonatomic, strong) NSString* cachedOutputName;
 @property (nonatomic, assign) NSUInteger cachedOutputSize;
 @property (nonatomic, strong) MLPredictionOptions* predictionOptions;
+@property (nonatomic, strong) NSMutableDictionary<NSString*, MLMultiArray*>* cachedMultiInputArrays;
+@property (nonatomic, strong) MLMultiArray* cachedMultiOutputArray;
+@property (nonatomic, strong) MLPredictionOptions* multiPredictionOptions;
+@property (nonatomic, assign) BOOL multiInputPreallocated;
+@property (nonatomic, assign) BOOL hasOutputBackings;
+@property (nonatomic, assign) BOOL hasMultiOutputBackings;
 
 - (instancetype)initWithModelPath:(NSString*)path;
 - (NSArray<NSNumber*>*)getInputShape;
@@ -33,6 +220,10 @@
                              data:(const __fp16*)data
                             shape:(NSArray<NSNumber*>*)shape
                        outputName:(NSString*)outputName;
+- (BOOL)preallocateMultiInputBuffersWithOutputName:(NSString*)outputName;
+- (size_t)predictMultiInputWithDict:(NSMutableDictionary<NSString*, MLFeatureValue*>*)inputDict
+                         outputData:(__fp16*)output
+                         outputName:(NSString*)outputName;
 
 @end
 
@@ -42,38 +233,14 @@
     self = [super init];
     if (self) {
         NSError* error = nil;
-        NSURL* modelURL = [NSURL fileURLWithPath:path];
+        NSURL* modelURL = resolve_or_compile_model_url(path, &error);
 
         MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
-        config.computeUnits = MLComputeUnitsCPUAndNeuralEngine;
-
-        if ([path hasSuffix:@".mlpackage"]) {
-            BOOL isDir = NO;
-            if (![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir] || !isDir) {
-                CACTUS_LOG_ERROR("npu", "ANE mlpackage path is not a valid directory: " << [path UTF8String]);
-                return self;
-            }
-            NSString* cachedPath = [[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"mlmodelc"];
-            NSURL* cachedURL = [NSURL fileURLWithPath:cachedPath];
-
-            if ([[NSFileManager defaultManager] fileExistsAtPath:cachedPath]) {
-                modelURL = cachedURL;
-            } else {
-                NSURL* compiledURL = [MLModel compileModelAtURL:modelURL error:&error];
-                if (error) {
-                    CACTUS_LOG_ERROR("npu", "ANE model compilation failed: " << [[error localizedDescription] UTF8String]);
-                    return self;
-                }
-
-                NSError* moveError = nil;
-                [[NSFileManager defaultManager] moveItemAtURL:compiledURL toURL:cachedURL error:&moveError];
-                if (moveError) {
-                    modelURL = compiledURL;
-                } else {
-                    modelURL = cachedURL;
-                }
-            }
-        }
+        config.computeUnits = resolve_compute_units_for_model(path, false);
+        CACTUS_LOG_INFO("npu",
+                        "ANEEncoder compute units: "
+                            << compute_units_to_string(config.computeUnits)
+                            << " for " << [path UTF8String]);
 
         _model = [MLModel modelWithContentsOfURL:modelURL configuration:config error:&error];
         if (_model) {
@@ -125,9 +292,15 @@
 
     NSError* error = nil;
 
+    MLMultiArrayDataType inputDataType = MLMultiArrayDataTypeFloat16;
+    MLFeatureDescription* inputDesc = _modelDescription.inputDescriptionsByName[inputName];
+    if (inputDesc && inputDesc.multiArrayConstraint) {
+        inputDataType = inputDesc.multiArrayConstraint.dataType;
+    }
+
     _cachedInputArray = [[MLMultiArray alloc]
         initWithShape:shape
-             dataType:MLMultiArrayDataTypeFloat16
+             dataType:inputDataType
                 error:&error];
 
     if (error) {
@@ -140,13 +313,21 @@
     _cachedOutputName = outputName ? [outputName copy]
                                    : _modelDescription.outputDescriptionsByName.allKeys.firstObject;
 
+    CACTUS_LOG_DEBUG("npu",
+                     "[CactusANE] prealloc input name="
+                         << [_cachedInputName UTF8String]
+                         << " shape=" << [[_cachedInputArray.shape description] UTF8String]
+                         << " strides=" << [[_cachedInputArray.strides description] UTF8String]
+                         << " dtype=" << (long)_cachedInputArray.dataType);
+
     MLFeatureDescription* outputDesc = _modelDescription.outputDescriptionsByName[_cachedOutputName];
     if (outputDesc && outputDesc.type == MLFeatureTypeMultiArray) {
         NSArray<NSNumber*>* outputShape = outputDesc.multiArrayConstraint.shape;
+        MLMultiArrayDataType outputDataType = outputDesc.multiArrayConstraint.dataType;
 
         _cachedOutputArray = [[MLMultiArray alloc]
             initWithShape:outputShape
-                 dataType:MLMultiArrayDataTypeFloat16
+                 dataType:outputDataType
                     error:&error];
 
         if (error) {
@@ -160,9 +341,19 @@
             _cachedOutputSize *= [dim unsignedIntegerValue];
         }
 
+        CACTUS_LOG_DEBUG("npu",
+                         "[CactusANE] prealloc output name="
+                             << [_cachedOutputName UTF8String]
+                             << " shape=" << [[_cachedOutputArray.shape description] UTF8String]
+                             << " strides=" << [[_cachedOutputArray.strides description] UTF8String]
+                             << " dtype=" << (long)_cachedOutputArray.dataType);
+
         _predictionOptions = [[MLPredictionOptions alloc] init];
-        if (@available(macOS 14.0, iOS 17.0, *)) {
-            _predictionOptions.outputBackings = @{_cachedOutputName: _cachedOutputArray};
+        _hasOutputBackings = NO;
+        if (_predictionOptions && _cachedOutputArray && _cachedOutputName) {
+            _predictionOptions.outputBackings =
+                @{ _cachedOutputName: _cachedOutputArray };
+            _hasOutputBackings = YES;
         }
     }
 
@@ -196,14 +387,21 @@
     NSError* error = nil;
     MLMultiArray* inputArray = nil;
 
-    BOOL useCached = [self canUseCachedBufferWithInput:inputName shape:shape outputName:outputName];
+    MLMultiArrayDataType expectedDataType = MLMultiArrayDataTypeFloat16;
+    MLFeatureDescription* inputDesc = _modelDescription.inputDescriptionsByName[inputName];
+    if (inputDesc && inputDesc.multiArrayConstraint) {
+        expectedDataType = inputDesc.multiArrayConstraint.dataType;
+    }
+
+    BOOL useCached = (expectedDataType == MLMultiArrayDataTypeFloat16) &&
+        [self canUseCachedBufferWithInput:inputName shape:shape outputName:outputName];
 
     if (useCached) {
         inputArray = _cachedInputArray;
     } else {
         inputArray = [[MLMultiArray alloc]
             initWithShape:shape
-                 dataType:MLMultiArrayDataTypeFloat16
+                 dataType:expectedDataType
                     error:&error];
 
         if (error) {
@@ -217,8 +415,15 @@
         totalElements *= [dim unsignedIntegerValue];
     }
 
-    __fp16* inputPtr = (__fp16*)inputArray.dataPointer;
-    memcpy(inputPtr, data, totalElements * sizeof(__fp16));
+    if (expectedDataType == MLMultiArrayDataTypeFloat16) {
+        __fp16* inputPtr = (__fp16*)inputArray.dataPointer;
+        memcpy(inputPtr, data, totalElements * sizeof(__fp16));
+    } else {
+        float* inputPtr = (float*)inputArray.dataPointer;
+        for (NSUInteger i = 0; i < totalElements; i++) {
+            inputPtr[i] = (float)data[i];
+        }
+    }
 
     MLFeatureValue* inputFeature = [MLFeatureValue featureValueWithMultiArray:inputArray];
     NSDictionary* inputDict = @{inputName: inputFeature};
@@ -233,7 +438,7 @@
 
     id<MLFeatureProvider> outputProvider = nil;
 
-    if (useCached && _predictionOptions) {
+    if (useCached && _hasOutputBackings && _predictionOptions) {
         outputProvider = [_model predictionFromFeatures:inputProvider
                                                 options:_predictionOptions
                                                   error:&error];
@@ -252,12 +457,271 @@
                             : _modelDescription.outputDescriptionsByName.allKeys.firstObject;
     }
 
-    if (useCached && _predictionOptions && _cachedOutputArray) {
-        return _cachedOutputArray;
+    MLFeatureValue* outputFeature = [outputProvider featureValueForName:outName];
+    static bool logged_output_feature_layout = false;
+    if (!logged_output_feature_layout && outputFeature && outputFeature.multiArrayValue) {
+        MLMultiArray* outArr = outputFeature.multiArrayValue;
+        CACTUS_LOG_DEBUG("npu",
+                         "[CactusANE] output feature name="
+                             << [outName UTF8String]
+                             << " shape=" << [[outArr.shape description] UTF8String]
+                             << " strides=" << [[outArr.strides description] UTF8String]
+                             << " dtype=" << (long)outArr.dataType);
+        logged_output_feature_layout = true;
+    }
+    return outputFeature.multiArrayValue;
+}
+
+static size_t copyMLArrayToFP16(MLMultiArray* array, __fp16* output) {
+    size_t count = array.count;
+    if (!array || !output || count == 0) return 0;
+
+    std::vector<size_t> dims;
+    std::vector<size_t> strides;
+    const size_t rank = array.shape.count;
+    bool have_layout = rank == array.strides.count && rank > 0;
+    if (have_layout) {
+        dims.resize(rank);
+        strides.resize(rank);
+        for (size_t i = 0; i < rank; ++i) {
+            NSInteger d = [array.shape[i] integerValue];
+            NSInteger s = [array.strides[i] integerValue];
+            if (d <= 0 || s < 0) {
+                have_layout = false;
+                break;
+            }
+            dims[i] = static_cast<size_t>(d);
+            strides[i] = static_cast<size_t>(s);
+        }
     }
 
-    MLFeatureValue* outputFeature = [outputProvider featureValueForName:outName];
-    return outputFeature.multiArrayValue;
+    if (!have_layout) {
+        if (array.dataType == MLMultiArrayDataTypeFloat16) {
+            if (output != (__fp16*)array.dataPointer) {
+                memcpy(output, array.dataPointer, count * sizeof(__fp16));
+            }
+        } else {
+            const float* src = (const float*)array.dataPointer;
+            for (size_t i = 0; i < count; i++) output[i] = (__fp16)src[i];
+        }
+        return count;
+    }
+
+    auto is_contiguous = [&]() -> bool {
+        if (!have_layout) return false;
+        size_t expected = 1;
+        for (size_t i = rank; i-- > 0;) {
+            if (dims[i] > 1 && strides[i] != expected) return false;
+            expected *= dims[i];
+        }
+        return true;
+    };
+
+    if (false && is_contiguous()) {
+        if (array.dataType == MLMultiArrayDataTypeFloat16) {
+            if (output != (__fp16*)array.dataPointer) {
+                memcpy(output, array.dataPointer, count * sizeof(__fp16));
+            }
+        } else {
+            const float* src = (const float*)array.dataPointer;
+            for (size_t i = 0; i < count; i++) output[i] = (__fp16)src[i];
+        }
+        return count;
+    }
+
+    std::vector<size_t> idx(rank, 0);
+    if (array.dataType == MLMultiArrayDataTypeFloat16) {
+        const __fp16* src = (const __fp16*)array.dataPointer;
+        for (size_t i = 0; i < count; ++i) {
+            size_t offset = 0;
+            for (size_t d = 0; d < rank; ++d) {
+                offset += idx[d] * strides[d];
+            }
+            output[i] = src[offset];
+
+            for (size_t d = rank; d-- > 0;) {
+                idx[d]++;
+                if (idx[d] < dims[d]) break;
+                idx[d] = 0;
+            }
+        }
+    } else {
+        const float* src = (const float*)array.dataPointer;
+        for (size_t i = 0; i < count; ++i) {
+            size_t offset = 0;
+            for (size_t d = 0; d < rank; ++d) {
+                offset += idx[d] * strides[d];
+            }
+            output[i] = (__fp16)src[offset];
+
+            for (size_t d = rank; d-- > 0;) {
+                idx[d]++;
+                if (idx[d] < dims[d]) break;
+                idx[d] = 0;
+            }
+        }
+    }
+    return count;
+}
+
+static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* array) {
+    if (!array || !data || count == 0) return;
+
+    std::vector<size_t> dims;
+    std::vector<size_t> strides;
+    const size_t rank = array.shape.count;
+    bool have_layout = rank == array.strides.count && rank > 0;
+    if (have_layout) {
+        dims.resize(rank);
+        strides.resize(rank);
+        for (size_t i = 0; i < rank; ++i) {
+            NSInteger d = [array.shape[i] integerValue];
+            NSInteger s = [array.strides[i] integerValue];
+            if (d <= 0 || s < 0) {
+                have_layout = false;
+                break;
+            }
+            dims[i] = static_cast<size_t>(d);
+            strides[i] = static_cast<size_t>(s);
+        }
+    }
+
+    if (!have_layout) {
+        if (array.dataType == MLMultiArrayDataTypeFloat16) {
+            memcpy(array.dataPointer, data, count * sizeof(__fp16));
+        } else {
+            float* dst = (float*)array.dataPointer;
+            for (size_t i = 0; i < count; i++) dst[i] = (float)data[i];
+        }
+        return;
+    }
+
+    auto is_contiguous = [&]() -> bool {
+        if (!have_layout) return false;
+        size_t expected = 1;
+        for (size_t i = rank; i-- > 0;) {
+            if (dims[i] > 1 && strides[i] != expected) return false;
+            expected *= dims[i];
+        }
+        return true;
+    };
+
+    if (false && is_contiguous()) {
+        if (array.dataType == MLMultiArrayDataTypeFloat16) {
+            memcpy(array.dataPointer, data, count * sizeof(__fp16));
+        } else {
+            float* dst = (float*)array.dataPointer;
+            for (size_t i = 0; i < count; i++) dst[i] = (float)data[i];
+        }
+        return;
+    }
+
+    std::vector<size_t> idx(rank, 0);
+    if (array.dataType == MLMultiArrayDataTypeFloat16) {
+        __fp16* dst = (__fp16*)array.dataPointer;
+        for (size_t i = 0; i < count; ++i) {
+            size_t offset = 0;
+            for (size_t d = 0; d < rank; ++d) {
+                offset += idx[d] * strides[d];
+            }
+            dst[offset] = data[i];
+
+            for (size_t d = rank; d-- > 0;) {
+                idx[d]++;
+                if (idx[d] < dims[d]) break;
+                idx[d] = 0;
+            }
+        }
+    } else {
+        float* dst = (float*)array.dataPointer;
+        for (size_t i = 0; i < count; ++i) {
+            size_t offset = 0;
+            for (size_t d = 0; d < rank; ++d) {
+                offset += idx[d] * strides[d];
+            }
+            dst[offset] = (float)data[i];
+
+            for (size_t d = rank; d-- > 0;) {
+                idx[d]++;
+                if (idx[d] < dims[d]) break;
+                idx[d] = 0;
+            }
+        }
+    }
+}
+
+- (BOOL)preallocateMultiInputBuffersWithOutputName:(NSString*)outputName {
+    if (!_model || !_modelDescription) return NO;
+
+    NSError* error = nil;
+    _cachedMultiInputArrays = [NSMutableDictionary new];
+
+    for (NSString* inputName in _modelDescription.inputDescriptionsByName) {
+        MLFeatureDescription* desc = _modelDescription.inputDescriptionsByName[inputName];
+        if (desc.type != MLFeatureTypeMultiArray) continue;
+
+        MLMultiArray* array = [[MLMultiArray alloc]
+            initWithShape:desc.multiArrayConstraint.shape
+                 dataType:desc.multiArrayConstraint.dataType
+                    error:&error];
+        if (!array || error) return NO;
+        _cachedMultiInputArrays[inputName] = array;
+    }
+
+    NSString* outName = (outputName && outputName.length > 0)
+        ? outputName : _modelDescription.outputDescriptionsByName.allKeys.firstObject;
+
+    MLFeatureDescription* outputDesc = _modelDescription.outputDescriptionsByName[outName];
+    if (outputDesc && outputDesc.type == MLFeatureTypeMultiArray) {
+        _cachedMultiOutputArray = [[MLMultiArray alloc]
+            initWithShape:outputDesc.multiArrayConstraint.shape
+                 dataType:outputDesc.multiArrayConstraint.dataType
+                    error:&error];
+        if (!_cachedMultiOutputArray || error) return NO;
+
+        _multiPredictionOptions = [[MLPredictionOptions alloc] init];
+        _hasMultiOutputBackings = NO;
+    }
+
+    _multiInputPreallocated = YES;
+    return YES;
+}
+
+- (size_t)predictMultiInputWithDict:(NSMutableDictionary<NSString*, MLFeatureValue*>*)inputDict
+                         outputData:(__fp16*)output
+                         outputName:(NSString*)outputName {
+    if (!_model) return 0;
+
+    NSError* error = nil;
+    MLDictionaryFeatureProvider* provider =
+        [[MLDictionaryFeatureProvider alloc] initWithDictionary:inputDict error:&error];
+    if (!provider || error) return 0;
+
+    id<MLFeatureProvider> result = nil;
+    if (_hasMultiOutputBackings && _multiPredictionOptions) {
+        result = [_model predictionFromFeatures:provider options:_multiPredictionOptions error:&error];
+    } else {
+        result = [_model predictionFromFeatures:provider error:&error];
+    }
+    if (!result || error) return 0;
+
+    static bool logged_multi_layout = false;
+    if (!logged_multi_layout) {
+        for (NSString* key in inputDict) {
+            MLFeatureValue* inFeature = inputDict[key];
+            if (inFeature && inFeature.multiArrayValue) {
+                MLMultiArray* arr = inFeature.multiArrayValue;
+            }
+        }
+    }
+
+    MLFeatureValue* outFeature = [result featureValueForName:outputName];
+    if (!outFeature || !outFeature.multiArrayValue) return 0;
+    if (!logged_multi_layout) {
+        MLMultiArray* outArr = outFeature.multiArrayValue;
+        logged_multi_layout = true;
+    }
+    return copyMLArrayToFP16(outFeature.multiArrayValue, output);
 }
 
 @end
@@ -297,7 +761,7 @@ bool ANEEncoder::load(const std::string& model_path) {
         NSString* path = [NSString stringWithUTF8String:model_path.c_str()];
 
         if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
-            CACTUS_LOG_WARN("npu", "ANEEncoder model file not found: " << model_path);
+            CACTUS_LOG_WARN("npu", "not using NPU");
             return false;
         }
 
@@ -364,7 +828,6 @@ size_t ANEEncoder::encode(const __fp16* input,
             shapeArray = newShapeArray;
         }
 
-        // Use cached names
         NSString* inName = impl.cachedInputName;
         if (!inName) {
             inName = [NSString stringWithUTF8String:input_name.c_str()];
@@ -380,12 +843,7 @@ size_t ANEEncoder::encode(const __fp16* input,
                                              outputName:outName];
 
         if (mlOutput) {
-            size_t count = mlOutput.count;
-            __fp16* outputPtr = (__fp16*)mlOutput.dataPointer;
-            if (output != outputPtr) {
-                memcpy(output, outputPtr, count * sizeof(__fp16));
-            }
-            return count;
+            return copyMLArrayToFP16(mlOutput, output);
         }
     }
 
@@ -423,14 +881,62 @@ std::vector<int> ANEEncoder::get_output_shape() const {
 __fp16* ANEEncoder::get_output_buffer() {
     if (!impl_) return nullptr;
     CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
-    if (!impl.cachedOutputArray) return nullptr;
+    if (!impl.hasOutputBackings || !impl.cachedOutputArray) return nullptr;
     return (__fp16*)impl.cachedOutputArray.dataPointer;
 }
 
 size_t ANEEncoder::get_output_buffer_size() const {
     if (!impl_) return 0;
     CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
+    if (!impl.hasOutputBackings || !impl.cachedOutputArray) return 0;
     return impl.cachedOutputSize;
+}
+
+size_t ANEEncoder::encode_multimodal_input(
+    const std::vector<NPUNamedInput>& inputs,
+    __fp16* output,
+    const std::string& output_name) {
+    if (!impl_ || !output || inputs.empty()) return 0;
+
+    @autoreleasepool {
+        CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
+
+        NSString* outName = output_name.empty()
+            ? impl.modelDescription.outputDescriptionsByName.allKeys.firstObject
+            : [NSString stringWithUTF8String:output_name.c_str()];
+
+        if (!impl.multiInputPreallocated) {
+            [impl preallocateMultiInputBuffersWithOutputName:outName];
+        }
+
+        NSMutableDictionary<NSString*, MLFeatureValue*>* inputDict = [NSMutableDictionary new];
+
+        for (const auto& input : inputs) {
+            NSString* nsName = [NSString stringWithUTF8String:input.name.c_str()];
+
+            size_t total = 1;
+            for (int dim : input.shape) total *= dim;
+
+            MLMultiArray* array = impl.cachedMultiInputArrays[nsName];
+            if (!array) {
+                MLMultiArrayDataType dataType = MLMultiArrayDataTypeFloat16;
+                MLFeatureDescription* desc = impl.modelDescription.inputDescriptionsByName[nsName];
+                if (desc && desc.multiArrayConstraint) dataType = desc.multiArrayConstraint.dataType;
+
+                NSMutableArray<NSNumber*>* shapeArray = [NSMutableArray arrayWithCapacity:input.shape.size()];
+                for (int dim : input.shape) [shapeArray addObject:@(dim)];
+
+                NSError* arrayError = nil;
+                array = [[MLMultiArray alloc] initWithShape:shapeArray dataType:dataType error:&arrayError];
+                if (!array || arrayError) return 0;
+            }
+
+            copyFP16ToMLArray(input.data, total, array);
+            inputDict[nsName] = [MLFeatureValue featureValueWithMultiArray:array];
+        }
+
+        return [impl predictMultiInputWithDict:inputDict outputData:output outputName:outName];
+    }
 }
 
 std::unique_ptr<NPUEncoder> create_encoder() {
@@ -459,6 +965,7 @@ bool is_npu_available() {
 @property (nonatomic, strong) MLMultiArray* cachedOffsetArray;
 @property (nonatomic, strong) NSMutableDictionary<NSString*, MLMultiArray*>* cachedOutputArrays;
 @property (nonatomic, strong) MLPredictionOptions* predictionOptions;
+@property (nonatomic, assign) BOOL hasOutputBackings;
 
 - (instancetype)initWithModelPath:(NSString*)path;
 - (void)preallocateBuffers;
@@ -474,38 +981,14 @@ bool is_npu_available() {
     self = [super init];
     if (self) {
         NSError* error = nil;
-        NSURL* modelURL = [NSURL fileURLWithPath:path];
+        NSURL* modelURL = resolve_or_compile_model_url(path, &error);
 
         MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
-        config.computeUnits = MLComputeUnitsCPUAndNeuralEngine;
-
-        if ([path hasSuffix:@".mlpackage"]) {
-            BOOL isDir = NO;
-            if (![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir] || !isDir) {
-                CACTUS_LOG_ERROR("npu", "ANE prefill mlpackage path is not a valid directory: " << [path UTF8String]);
-                return self;
-            }
-            NSString* cachedPath = [[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"mlmodelc"];
-            NSURL* cachedURL = [NSURL fileURLWithPath:cachedPath];
-
-            if ([[NSFileManager defaultManager] fileExistsAtPath:cachedPath]) {
-                modelURL = cachedURL;
-            } else {
-                NSURL* compiledURL = [MLModel compileModelAtURL:modelURL error:&error];
-                if (error) {
-                    CACTUS_LOG_ERROR("npu", "ANE prefill model compilation failed: " << [[error localizedDescription] UTF8String]);
-                    return self;
-                }
-
-                NSError* moveError = nil;
-                [[NSFileManager defaultManager] moveItemAtURL:compiledURL toURL:cachedURL error:&moveError];
-                if (moveError) {
-                    modelURL = compiledURL;
-                } else {
-                    modelURL = cachedURL;
-                }
-            }
-        }
+        config.computeUnits = resolve_compute_units_for_model(path, true);
+        CACTUS_LOG_INFO("npu",
+                        "ANEPrefill compute units: "
+                            << compute_units_to_string(config.computeUnits)
+                            << " for " << [path UTF8String]);
 
         _model = [MLModel modelWithContentsOfURL:modelURL configuration:config error:&error];
         if (_model) {
@@ -594,8 +1077,10 @@ bool is_npu_available() {
     }
 
     _predictionOptions = [[MLPredictionOptions alloc] init];
+    _hasOutputBackings = NO;
     if (@available(macOS 14.0, iOS 17.0, *)) {
         _predictionOptions.outputBackings = outputBackings;
+        _hasOutputBackings = YES;
     }
 }
 
@@ -627,7 +1112,22 @@ bool is_npu_available() {
     id<MLFeatureProvider> outputProvider = [_model predictionFromFeatures:inputProvider
                                                                   options:_predictionOptions
                                                                     error:&error];
-    return (error == nil && outputProvider != nil);
+    if (error || !outputProvider) return NO;
+
+    if (!_hasOutputBackings) {
+        for (NSString* outputName in _cachedOutputArrays) {
+            MLFeatureValue* outFeature = [outputProvider featureValueForName:outputName];
+            if (!outFeature || !outFeature.multiArrayValue) return NO;
+
+            MLMultiArray* dst = _cachedOutputArrays[outputName];
+            if (!dst) return NO;
+
+            size_t copied = copyMLArrayToFP16(outFeature.multiArrayValue, (__fp16*)dst.dataPointer);
+            if (copied == 0) return NO;
+        }
+    }
+
+    return YES;
 }
 
 - (MLMultiArray*)getOutputArray:(NSString*)name {

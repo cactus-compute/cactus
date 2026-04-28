@@ -289,17 +289,11 @@ size_t LFM2MoEModel::build_attention(CactusGraph* gb, size_t normalized_input, u
                 attention_scale_, position_offset,
                 kv_cache_.get_tq_key_radii(layer_idx),
                 kv_cache_.get_tq_key_angles(layer_idx),
-                kv_cache_.get_tq_key_error_norms(layer_idx),
-                kv_cache_.get_tq_key_qjl_bits(layer_idx),
                 kv_cache_.get_tq_val_radii(layer_idx),
                 kv_cache_.get_tq_val_angles(layer_idx),
-                kv_cache_.get_tq_val_error_norms(layer_idx),
-                kv_cache_.get_tq_val_qjl_bits(layer_idx),
                 kv_cache_.get_tq_rotation_signs(),
-                kv_cache_.get_tq_projection_matrix(),
                 kv_cache_.tq_key_angle_bits,
                 kv_cache_.tq_value_angle_bits,
-                kv_cache_.tq_projection_dim,
                 kv_cache_.current_seq_len, num_kv_heads, head_dim
             );
         } else {
@@ -424,15 +418,6 @@ size_t LFM2MoEModel::forward(CactusGraph* gb, const std::vector<uint32_t>& token
     }
     auto seq_len = static_cast<size_t>(tokens.size());
     auto input_node_id = gb->input({seq_len}, Precision::FP32);
-    const auto& embedding_buffer = gb->get_output_buffer(embedding_node_id_);
-    
-    for (size_t i = 0; i < embedding_buffer.shape.size(); ++i) {
-        
-        if (i + 1 < embedding_buffer.shape.size()) {
-            
-        }
-    }
-    
     auto hidden = gb->embedding(embedding_node_id_, input_node_id);
     auto final_hidden = forward(gb, hidden, seq_len, backend, use_cache);
     

@@ -286,13 +286,19 @@ static void signed_dot_expanded(
 }
 
 void rotate_forward(float* data, const uint8_t* signs_packed, size_t dim) {
-    apply_signs(data, signs_packed, dim);
-    hadamard_inplace(data, dim);
+    const size_t row_bytes = (dim + 7) / 8;
+    for (size_t layer = 0; layer < TURBOQUANT_ROTATION_LAYERS; ++layer) {
+        apply_signs(data, signs_packed + layer * row_bytes, dim);
+        hadamard_inplace(data, dim);
+    }
 }
 
 void rotate_inverse(float* data, const uint8_t* signs_packed, size_t dim) {
-    hadamard_inplace(data, dim);
-    apply_signs(data, signs_packed, dim);
+    const size_t row_bytes = (dim + 7) / 8;
+    for (size_t layer = TURBOQUANT_ROTATION_LAYERS; layer > 0; --layer) {
+        hadamard_inplace(data, dim);
+        apply_signs(data, signs_packed + (layer - 1) * row_bytes, dim);
+    }
 }
 
 float dot_2bit_f32(
@@ -452,32 +458,69 @@ float dot_4bit_f32(
     size_t dim
 ) {
     const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
-    float lut[16];
+
+    __fp16 fp16_lut[16] __attribute__((aligned(16)));
     for (int i = 0; i < 16; i++)
-        lut[i] = TQ_4BIT_CENTROIDS[i] * inv_sqrt_dim;
+        fp16_lut[i] = static_cast<__fp16>(TQ_4BIT_CENTROIDS[i] * inv_sqrt_dim);
+
+    uint8x16x2_t split = vld2q_u8(reinterpret_cast<const uint8_t*>(fp16_lut));
+    const uint8x16_t v_lo_lut = split.val[0];
+    const uint8x16_t v_hi_lut = split.val[1];
 
     float32x4_t acc0 = vdupq_n_f32(0.0f);
     float32x4_t acc1 = vdupq_n_f32(0.0f);
+    float32x4_t acc2 = vdupq_n_f32(0.0f);
+    float32x4_t acc3 = vdupq_n_f32(0.0f);
+
     size_t p = 0;
     size_t i = 0;
-    for (; i + 8 <= dim; i += 8) {
-        float tmp[8];
-        tmp[0] = lut[packed[p]   & 0xF]; tmp[1] = lut[packed[p]   >> 4];
-        tmp[2] = lut[packed[p+1] & 0xF]; tmp[3] = lut[packed[p+1] >> 4];
-        tmp[4] = lut[packed[p+2] & 0xF]; tmp[5] = lut[packed[p+2] >> 4];
-        tmp[6] = lut[packed[p+3] & 0xF]; tmp[7] = lut[packed[p+3] >> 4];
-        p += 4;
-        acc0 = vfmaq_f32(acc0, vld1q_f32(q + i),     vld1q_f32(tmp));
-        acc1 = vfmaq_f32(acc1, vld1q_f32(q + i + 4), vld1q_f32(tmp + 4));
+
+    const uint8x8_t mask_lo = vdup_n_u8(0x0F);
+    for (; i + 16 <= dim; i += 16) {
+        uint8x8_t packed8 = vld1_u8(packed + p);
+        p += 8;
+        uint8x8_t lo_nib = vand_u8(packed8, mask_lo);
+        uint8x8_t hi_nib = vshr_n_u8(packed8, 4);
+
+        uint8x8_t idx_lo = vzip1_u8(lo_nib, hi_nib);
+        uint8x8_t idx_hi = vzip2_u8(lo_nib, hi_nib);
+        uint8x16_t indices = vcombine_u8(idx_lo, idx_hi);
+
+        uint8x16_t lo_bytes = vqtbl1q_u8(v_lo_lut, indices);
+        uint8x16_t hi_bytes = vqtbl1q_u8(v_hi_lut, indices);
+
+        uint8x16_t fp16_pairs_lo = vzip1q_u8(lo_bytes, hi_bytes);
+        uint8x16_t fp16_pairs_hi = vzip2q_u8(lo_bytes, hi_bytes);
+
+        float16x8_t f16_lo = vreinterpretq_f16_u8(fp16_pairs_lo);
+        float16x8_t f16_hi = vreinterpretq_f16_u8(fp16_pairs_hi);
+
+        float32x4_t f32_0 = vcvt_f32_f16(vget_low_f16(f16_lo));
+        float32x4_t f32_1 = vcvt_f32_f16(vget_high_f16(f16_lo));
+        float32x4_t f32_2 = vcvt_f32_f16(vget_low_f16(f16_hi));
+        float32x4_t f32_3 = vcvt_f32_f16(vget_high_f16(f16_hi));
+
+        acc0 = vfmaq_f32(acc0, vld1q_f32(q + i),      f32_0);
+        acc1 = vfmaq_f32(acc1, vld1q_f32(q + i + 4),  f32_1);
+        acc2 = vfmaq_f32(acc2, vld1q_f32(q + i + 8),  f32_2);
+        acc3 = vfmaq_f32(acc3, vld1q_f32(q + i + 12), f32_3);
     }
-    float result = vaddvq_f32(vaddq_f32(acc0, acc1));
-    for (; i + 2 <= dim; i += 2) {
-        result += q[i]     * lut[packed[p] & 0xF];
-        result += q[i + 1] * lut[packed[p] >> 4];
-        p++;
+
+    float result = vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1),
+                                        vaddq_f32(acc2, acc3)));
+
+    if (i < dim) {
+        float lut[16];
+        for (int k = 0; k < 16; k++)
+            lut[k] = TQ_4BIT_CENTROIDS[k] * inv_sqrt_dim;
+        for (; i + 2 <= dim; i += 2) {
+            result += q[i]     * lut[packed[p] & 0xF];
+            result += q[i + 1] * lut[packed[p] >> 4];
+            p++;
+        }
+        if (i < dim)
+            result += q[i] * lut[packed[p] & 0xF];
     }
-    if (i < dim)
-        result += q[i] * lut[packed[p] & 0xF];
     return result;
 }
 
@@ -489,29 +532,58 @@ void accumulate_4bit_f32(
 ) {
     const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
     const float wr = inv_sqrt_dim * weight_radius;
-    float lut[16];
+
+    __fp16 fp16_lut[16] __attribute__((aligned(16)));
     for (int i = 0; i < 16; i++)
-        lut[i] = TQ_4BIT_CENTROIDS[i] * wr;
+        fp16_lut[i] = static_cast<__fp16>(TQ_4BIT_CENTROIDS[i] * wr);
+    uint8x16x2_t split = vld2q_u8(reinterpret_cast<const uint8_t*>(fp16_lut));
+    const uint8x16_t v_lo_lut = split.val[0];
+    const uint8x16_t v_hi_lut = split.val[1];
 
     size_t p = 0;
     size_t i = 0;
-    for (; i + 8 <= dim; i += 8) {
-        float tmp[8];
-        tmp[0] = lut[packed[p]   & 0xF]; tmp[1] = lut[packed[p]   >> 4];
-        tmp[2] = lut[packed[p+1] & 0xF]; tmp[3] = lut[packed[p+1] >> 4];
-        tmp[4] = lut[packed[p+2] & 0xF]; tmp[5] = lut[packed[p+2] >> 4];
-        tmp[6] = lut[packed[p+3] & 0xF]; tmp[7] = lut[packed[p+3] >> 4];
-        p += 4;
-        vst1q_f32(accum + i,     vaddq_f32(vld1q_f32(accum + i),     vld1q_f32(tmp)));
-        vst1q_f32(accum + i + 4, vaddq_f32(vld1q_f32(accum + i + 4), vld1q_f32(tmp + 4)));
+
+    const uint8x8_t mask_lo = vdup_n_u8(0x0F);
+    for (; i + 16 <= dim; i += 16) {
+        uint8x8_t packed8 = vld1_u8(packed + p);
+        p += 8;
+        uint8x8_t lo_nib = vand_u8(packed8, mask_lo);
+        uint8x8_t hi_nib = vshr_n_u8(packed8, 4);
+        uint8x8_t idx_lo = vzip1_u8(lo_nib, hi_nib);
+        uint8x8_t idx_hi = vzip2_u8(lo_nib, hi_nib);
+        uint8x16_t indices = vcombine_u8(idx_lo, idx_hi);
+
+        uint8x16_t lo_bytes = vqtbl1q_u8(v_lo_lut, indices);
+        uint8x16_t hi_bytes = vqtbl1q_u8(v_hi_lut, indices);
+
+        uint8x16_t fp16_pairs_lo = vzip1q_u8(lo_bytes, hi_bytes);
+        uint8x16_t fp16_pairs_hi = vzip2q_u8(lo_bytes, hi_bytes);
+
+        float16x8_t f16_lo = vreinterpretq_f16_u8(fp16_pairs_lo);
+        float16x8_t f16_hi = vreinterpretq_f16_u8(fp16_pairs_hi);
+
+        float32x4_t v0 = vcvt_f32_f16(vget_low_f16(f16_lo));
+        float32x4_t v1 = vcvt_f32_f16(vget_high_f16(f16_lo));
+        float32x4_t v2 = vcvt_f32_f16(vget_low_f16(f16_hi));
+        float32x4_t v3 = vcvt_f32_f16(vget_high_f16(f16_hi));
+
+        vst1q_f32(accum + i,      vaddq_f32(vld1q_f32(accum + i),      v0));
+        vst1q_f32(accum + i + 4,  vaddq_f32(vld1q_f32(accum + i + 4),  v1));
+        vst1q_f32(accum + i + 8,  vaddq_f32(vld1q_f32(accum + i + 8),  v2));
+        vst1q_f32(accum + i + 12, vaddq_f32(vld1q_f32(accum + i + 12), v3));
     }
-    for (; i + 2 <= dim; i += 2) {
-        accum[i]     += lut[packed[p] & 0xF];
-        accum[i + 1] += lut[packed[p] >> 4];
-        p++;
+
+    if (i < dim) {
+        float lut[16];
+        for (int k = 0; k < 16; k++) lut[k] = TQ_4BIT_CENTROIDS[k] * wr;
+        for (; i + 2 <= dim; i += 2) {
+            accum[i]     += lut[packed[p] & 0xF];
+            accum[i + 1] += lut[packed[p] >> 4];
+            p++;
+        }
+        if (i < dim)
+            accum[i] += lut[packed[p] & 0xF];
     }
-    if (i < dim)
-        accum[i] += lut[packed[p] & 0xF];
 }
 
 static void quantize_2bit(const float* src, uint8_t* dst, size_t dim) {

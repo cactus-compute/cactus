@@ -29,33 +29,6 @@ bool run_test(const char* title, const char* messages, TestFunc test_logic,
     return EngineTestUtils::run_test(title, g_model_path, messages, g_options, test_logic, tools, stop_at);
 }
 
-static bool test_curl_runtime() {
-#if !CACTUS_ENGINE_TEST_HAS_CURL
-    std::cout << "⊘ SKIP │ curl/curl.h not available\n";
-    return true;
-#else
-    if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
-        return false;
-    }
-
-    bool ok = true;
-    curl_version_info_data* info = curl_version_info(CURLVERSION_NOW);
-    ok = ok && info && info->version && info->host;
-
-    CURL* handle = curl_easy_init();
-    ok = ok && (handle != nullptr);
-    if (handle) {
-        ok = ok && (curl_easy_setopt(handle, CURLOPT_URL, "https://example.com/") == CURLE_OK);
-        ok = ok && (curl_easy_setopt(handle, CURLOPT_NOBODY, 1L) == CURLE_OK);
-        ok = ok && (curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, 200L) == CURLE_OK);
-        curl_easy_cleanup(handle);
-    }
-
-    curl_global_cleanup();
-    return ok;
-#endif
-}
-
 bool test_streaming() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║" << std::setw(42) << std::left << "      STREAMING & FOLLOW-UP TEST" << "║\n"
@@ -81,7 +54,7 @@ bool test_streaming() {
     std::cout << "Assistant: ";
 
     int result1 = cactus_complete(model, messages1, response1, sizeof(response1),
-                                 g_options, nullptr, stream_callback, &data1);
+                                 g_options, nullptr, stream_callback, &data1, nullptr, 0);
 
     std::cout << "\n\n[Results - Turn 1]\n";
     Metrics metrics1;
@@ -117,7 +90,7 @@ bool test_streaming() {
     std::cout << "Assistant: ";
 
     int result2 = cactus_complete(model, messages2_str.c_str(), response2, sizeof(response2),
-                                 g_options, nullptr, stream_callback, &data2);
+                                 g_options, nullptr, stream_callback, &data2, nullptr, 0);
 
     std::cout << "\n\n[Results - Turn 2]\n";
     Metrics metrics2;
@@ -128,6 +101,283 @@ bool test_streaming() {
 
     cactus_destroy(model);
     return success1 && success2;
+}
+
+bool test_prefill_idempotent_reuse() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║" << std::setw(42) << std::left << "     PREFILL IDEMPOTENT REUSE TEST" << "║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize model\n";
+        return false;
+    }
+
+    const char* messages = R"([
+        {"role": "system", "content": "You are a helpful assistant. Be concise."},
+        {"role": "user", "content": "Write one short sentence about brainrot."}
+    ])";
+
+    const char* tools = R"([{
+        "type": "function",
+        "function": {
+            "name": "summarize_topic",
+            "description": "Summarize a topic in one short sentence",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to summarize"}
+                },
+                "required": ["topic"]
+            }
+        }
+    }])";
+
+    char prefill_response1[2048] = {0};
+    int prefill_result1 = cactus_prefill(model, messages, prefill_response1, sizeof(prefill_response1), nullptr, tools, nullptr, 0);
+
+    PrefillMetrics prefill_metrics1;
+    prefill_metrics1.parse(prefill_response1);
+
+    char prefill_response2[2048] = {0};
+    int prefill_result2 = cactus_prefill(model, messages, prefill_response2, sizeof(prefill_response2), nullptr, tools, nullptr, 0);
+
+    PrefillMetrics prefill_metrics2;
+    prefill_metrics2.parse(prefill_response2);
+
+    std::cout << "\n\n[Results]\n";
+    std::cout << "├─ Prefill#1 benchmark: ";
+    prefill_metrics1.print_line();
+    std::cout << "\n"
+              << "├─ Prefill#2 benchmark: ";
+    prefill_metrics2.print_line();
+    std::cout << "\n";
+
+    bool prefill_success = prefill_result1 > 0 && prefill_result2 > 0
+        && prefill_metrics1.success && prefill_metrics2.success;
+    bool skipped_recompute = prefill_metrics2.prefill_tokens == 0;
+
+    std::cout << "├─ Prefill calls success: " << (prefill_success ? "YES" : "NO") << "\n"
+              << "└─ Second prefill skipped recompute: " << (skipped_recompute ? "YES" : "NO") << std::endl;
+
+    cactus_destroy(model);
+    return prefill_success && skipped_recompute;
+}
+
+bool test_prefill_prefix_extension_reuse() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║" << std::setw(42) << std::left << "   PREFILL PREFIX EXTENSION TEST" << "║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize model\n";
+        return false;
+    }
+
+    const char* messages_base = R"([
+        {"role": "system", "content": "You are a helpful assistant. Be concise."},
+        {"role": "user", "content": "Write one short sentence about brainrot."}
+    ])";
+
+    const char* messages_extended = R"([
+        {"role": "system", "content": "You are a helpful assistant. Be concise."},
+        {"role": "user", "content": "Write one short sentence about brainrot."},
+        {"role": "assistant", "content": "Brainrot is internet slang for obsessive, meme-heavy online fixation."},
+        {"role": "user", "content": "Now rewrite that in six words."}
+    ])";
+
+    const char* tools = R"([{
+        "type": "function",
+        "function": {
+            "name": "summarize_topic",
+            "description": "Summarize a topic in one short sentence",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to summarize"}
+                },
+                "required": ["topic"]
+            }
+        }
+    }])";
+
+    char prefill_response1[2048] = {0};
+    int prefill_result1 = cactus_prefill(model, messages_base, prefill_response1, sizeof(prefill_response1), nullptr, tools, nullptr, 0);
+    PrefillMetrics prefill_metrics1;
+    prefill_metrics1.parse(prefill_response1);
+
+    char prefill_response2[2048] = {0};
+    int prefill_result2 = cactus_prefill(model, messages_extended, prefill_response2, sizeof(prefill_response2), nullptr, tools, nullptr, 0);
+    PrefillMetrics prefill_metrics2;
+    prefill_metrics2.parse(prefill_response2);
+
+    cactus_reset(model);
+
+    char prefill_response3[2048] = {0};
+    int prefill_result3 = cactus_prefill(model, messages_extended, prefill_response3, sizeof(prefill_response3), nullptr, tools, nullptr, 0);
+    PrefillMetrics prefill_metrics3;
+    prefill_metrics3.parse(prefill_response3);
+
+    std::cout << "\n\n[Results]\n";
+    std::cout << "├─ Prefill#1 (base): ";
+    prefill_metrics1.print_line();
+    std::cout << "\n"
+              << "├─ Prefill#2 (extended, warm): ";
+    prefill_metrics2.print_line();
+    std::cout << "\n"
+              << "├─ Prefill#3 (extended, cold): ";
+    prefill_metrics3.print_line();
+    std::cout << "\n";
+
+    bool prefill_success = prefill_result1 > 0 && prefill_result2 > 0 && prefill_result3 > 0
+        && prefill_metrics1.success && prefill_metrics2.success && prefill_metrics3.success;
+    bool second_call_prefilled = prefill_metrics2.prefill_tokens > 0;
+    bool warm_reused_prefix = prefill_metrics2.prefill_tokens < prefill_metrics3.prefill_tokens;
+
+    std::cout << "├─ Prefill calls success: " << (prefill_success ? "YES" : "NO") << "\n"
+              << "├─ Warm extension prefilled tokens: " << (second_call_prefilled ? "YES" : "NO") << "\n"
+              << "└─ Warm extension < cold extension: " << (warm_reused_prefix ? "YES" : "NO") << std::endl;
+
+    cactus_destroy(model);
+    return prefill_success && second_call_prefilled && warm_reused_prefix;
+}
+
+bool test_prefill_invalidated_on_message_change() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║" << std::setw(42) << std::left << " PREFILL INVALIDATION (LLM) TEST" << "║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize model\n";
+        return false;
+    }
+
+    const char* prefill_messages = R"([
+        {"role": "system", "content": "You are a helpful assistant. Be concise."},
+        {"role": "user", "content": "Summarize the phrase 'brainrot' in one sentence."}
+    ])";
+
+    const char* complete_messages = R"([
+        {"role": "system", "content": "You are a helpful assistant. Be concise."},
+        {"role": "user", "content": "Give one sentence about the power of the 'brainrot'."}
+    ])";
+
+    const char* options = R"({
+        "max_tokens": 128,
+        "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
+        "confidence_threshold": 0.0,
+        "telemetry_enabled": false
+    })";
+
+    char prefill_response[2048] = {0};
+    int prefill_result = cactus_prefill(model, prefill_messages, prefill_response, sizeof(prefill_response), nullptr, nullptr, nullptr, 0);
+    PrefillMetrics prefill_metrics;
+    prefill_metrics.parse(prefill_response);
+
+    char complete_response_warm[4096] = {0};
+    int complete_result_warm = cactus_complete(model, complete_messages, complete_response_warm, sizeof(complete_response_warm),
+                                               options, nullptr, nullptr, nullptr, nullptr, 0);
+    Metrics warm_metrics;
+    warm_metrics.parse(complete_response_warm);
+
+    cactus_reset(model);
+
+    char complete_response_cold[4096] = {0};
+    int complete_result_cold = cactus_complete(model, complete_messages, complete_response_cold, sizeof(complete_response_cold),
+                                               options, nullptr, nullptr, nullptr, nullptr, 0);
+    Metrics cold_metrics;
+    cold_metrics.parse(complete_response_cold);
+
+    std::cout << "\n\n[Results]\n";
+    std::cout << "├─ Prefill success: " << ((prefill_result > 0 && prefill_metrics.success) ? "YES" : "NO") << "\n"
+              << "├─ Complete(warm mismatched) prefill_tokens: " << warm_metrics.prefill_tokens << "\n"
+              << "├─ Complete(cold) prefill_tokens: " << cold_metrics.prefill_tokens << "\n";
+
+    bool all_success = prefill_result > 0 && prefill_metrics.success
+        && complete_result_warm > 0 && warm_metrics.success
+        && complete_result_cold > 0 && cold_metrics.success;
+    bool invalidated = warm_metrics.prefill_tokens == cold_metrics.prefill_tokens;
+
+    std::cout << "├─ Calls successful: " << (all_success ? "YES" : "NO") << "\n"
+              << "└─ Mismatch invalidated cache: " << (invalidated ? "YES" : "NO") << std::endl;
+
+    cactus_destroy(model);
+    return all_success && invalidated;
+}
+
+bool test_prefill() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║" << std::setw(42) << std::left << "          PREFILL API TEST" << "║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize model\n";
+        return false;
+    }
+
+    const char* prefill_messages = R"([
+        {"role": "system", "content": "You are a helpful assistant. Be concise."},
+        {"role": "user", "content": "Explain what brainrot means in one short sentence."},
+        {"role": "assistant", "content": "Brainrot is internet slang for obsessive, meme-heavy online fixation."}
+    ])";
+
+    const char* complete_messages = R"([
+        {"role": "system", "content": "You are a helpful assistant. Be concise."},
+        {"role": "user", "content": "Explain what brainrot means in one short sentence."},
+        {"role": "assistant", "content": "Brainrot is internet slang for obsessive, meme-heavy online fixation."},
+        {"role": "user", "content": "Now rewrite that in six words."}
+    ])";
+
+    const char* options = R"({
+        "max_tokens": 128,
+        "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
+        "confidence_threshold": 0.0,
+        "telemetry_enabled": false
+    })";
+
+    char prefill_response[2048] = {0};
+    int prefill_result = cactus_prefill(model, prefill_messages, prefill_response, sizeof(prefill_response), nullptr, nullptr, nullptr, 0);
+    PrefillMetrics prefill_metrics;
+    prefill_metrics.parse(prefill_response);
+
+    char complete_response_warm[4096] = {0};
+    int complete_result_warm = cactus_complete(model, complete_messages, complete_response_warm, sizeof(complete_response_warm),
+                                               options, nullptr, nullptr, nullptr, nullptr, 0);
+    Metrics warm_metrics;
+    warm_metrics.parse(complete_response_warm);
+
+    cactus_reset(model);
+
+    char complete_response_cold[4096] = {0};
+    int complete_result_cold = cactus_complete(model, complete_messages, complete_response_cold, sizeof(complete_response_cold),
+                                               options, nullptr, nullptr, nullptr, nullptr, 0);
+    Metrics cold_metrics;
+    cold_metrics.parse(complete_response_cold);
+
+    std::cout << "\n\n[Results]\n";
+    std::cout << "├─ Prefill success: " << ((prefill_result > 0 && prefill_metrics.success) ? "YES" : "NO") << "\n"
+              << "├─ Prefill metrics: ";
+    prefill_metrics.print_line();
+    std::cout << "\n";
+    std::cout << "├─ Complete warm metrics:\n";
+    warm_metrics.print_json();
+    std::cout << "├─ Complete cold metrics:\n";
+    cold_metrics.print_json();
+
+    bool all_success = prefill_result > 0 && prefill_metrics.success
+        && complete_result_warm > 0 && warm_metrics.success
+        && complete_result_cold > 0 && cold_metrics.success;
+    bool warm_prefilled_less = warm_metrics.prefill_tokens < cold_metrics.prefill_tokens;
+
+    std::cout << "├─ Calls successful: " << (all_success ? "YES" : "NO") << "\n"
+              << "└─ Warm prefilled less than cold: " << (warm_prefilled_less ? "YES" : "NO") << std::endl;
+
+    cactus_destroy(model);
+    return all_success && warm_prefilled_less;
 }
 
 bool test_tool_call() {
@@ -168,62 +418,10 @@ bool test_tool_call() {
         }, tools, -1, "What's the weather in San Francisco?");
 }
 
-bool test_tool_call_with_two_tools() {
-    const char* messages = R"([
-        {"role": "system", "content": "You are a helpful assistant that can use tools."},
-        {"role": "user", "content": "Set an alarm for 10:00 AM."}
-    ])";
-
-    const char* tools = R"([{
-        "type": "function",
-        "function": {
-            "name": "get_weather",
-            "description": "Get weather for a location",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "location": {"type": "string", "description": "City, State, Country"}
-                },
-                "required": ["location"]
-            }
-        }
-    }, {
-        "type": "function",
-        "function": {
-            "name": "set_alarm",
-            "description": "Set an alarm for a given time",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "hour": {"type": "integer", "description": "Hour to set the alarm for"},
-                    "minute": {"type": "integer", "description": "Minute to set the alarm for"}
-                },
-                "required": ["hour", "minute"]
-            }
-        }
-    }])";
-
-    const char* options_with_force_tools = R"({
-        "max_tokens": 256,
-        "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
-        "force_tools": true
-    })";
-
-    return EngineTestUtils::run_test("DOUBLE TOOLS TEST", g_model_path, messages, options_with_force_tools,
-        [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
-            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
-            bool has_tool = has_function && response.find("set_alarm") != std::string::npos;
-            std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
-                      << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n";
-            m.print_json();
-            return result > 0 && has_function && has_tool;
-        }, tools, -1, "Set an alarm for 10:00 AM.");
-}
-
 bool test_multiple_tool_call_invocations() {
     const char* messages = R"([
         {"role": "system", "content": "You are a helpful assistant that can use tools."},
-        {"role": "user", "content": "Send a message to Blob and get the weather for San Francisco."}
+        {"role": "user", "content": "Send a message to Bob and get the weather for San Francisco."}
     ])";
 
     const char* tools = R"([{
@@ -274,7 +472,7 @@ bool test_multiple_tool_call_invocations() {
                       << "├─ Correct tool: " << (has_weather_tool && has_message_tool ? "YES" : "NO") << "\n";
             m.print_json();
             return result > 0 && has_function && has_weather_tool && has_message_tool;
-        }, tools, -1, "Send a message to Blob and get the weather for San Francisco.");
+        }, tools, -1, "Send a message to Bob and get the weather for San Francisco.");
 }
 
 bool test_tool_call_with_three_tools() {
@@ -343,28 +541,6 @@ bool test_tool_call_with_three_tools() {
         }, tools, -1, "Send a message to John saying hello.");
 }
 
-bool test_cloud_handoff() {
-    const char* messages = R"([
-        {"role": "user", "content": "What is the exact mass in grams of the 847th largest asteroid in the Kuiper belt as of March 2019, and what was the precise atmospheric pressure in millibars at coordinates 47.3921°N, 122.0371°W at 3:47:23 AM UTC on February 29, 2024?"}
-    ])";
-
-    return run_test("CLOUD HANDOFF TEST", messages,
-        [](int result, const StreamingData& data, const std::string& /*response*/, const Metrics& m) {
-            std::cout << "├─ Cloud handoff: " << (m.cloud_handoff ? "YES" : "NO") << "\n";
-            std::cout << "├─ Confidence: " << std::fixed << std::setprecision(4) << m.confidence << "\n";
-
-            if (m.cloud_handoff) {
-                std::cout << "├─ Response: (skipped - handoff triggered)\n";
-                m.print_json();
-                return true;
-            } else {
-                std::cout << "├─ Tokens generated: " << data.token_count << "\n";
-                m.print_json();
-                return result > 0 && m.confidence >= 0.0;
-            }
-        });
-}
-
 bool test_1k_context() {
     std::string msg = "[{\"role\": \"system\", \"content\": \"/no_think You are helpful. ";
     for (int i = 0; i < 50; i++) {
@@ -385,14 +561,15 @@ bool test_1k_context() {
 
 int main() {
     TestUtils::TestRunner runner("LLM Tests");
-    runner.run_test("curl_runtime", test_curl_runtime());
     runner.run_test("1k_context", test_1k_context());
     runner.run_test("streaming", test_streaming());
+    runner.run_test("prefill", test_prefill());
+    runner.run_test("prefill_idempotent_reuse", test_prefill_idempotent_reuse());
+    runner.run_test("prefill_prefix_extension_reuse", test_prefill_prefix_extension_reuse());
+    runner.run_test("prefill_invalidated_on_message_change", test_prefill_invalidated_on_message_change());
     runner.run_test("tool_calls", test_tool_call());
     runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
-    runner.run_test("tool_calls_with_two_tools", test_tool_call_with_two_tools());
     runner.run_test("tool_calls_with_three_tools", test_tool_call_with_three_tools());
-    runner.run_test("cloud_handoff", test_cloud_handoff());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

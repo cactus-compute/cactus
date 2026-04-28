@@ -1,0 +1,57 @@
+# Cactus
+
+> Energy-efficient AI inference engine for running LLMs, vision models, and speech models on phones, wearables, Macs, and ARM devices like Raspberry Pi. Built by Cactus Compute, Inc. (YC S25).
+
+Cactus has three layers: Cactus Kernels (ARM SIMD kernels for Apple, Snapdragon, Google Tensor, Exynos, MediaTek, Raspberry Pi), Cactus Graph (zero-copy computation graph, like PyTorch for mobile), and Cactus Engine (high-level inference API with OpenAI-compatible chat completion, tool calling, auto-RAG, vision, audio, transcription, embeddings, diarization, speaker embeddings, and cloud handoff).
+
+Supported models include Gemma 4 (E2B, E4B with vision + audio), Gemma 3/3n, Qwen 3/3.5, LiquidAI LFM2/LFM2.5 (incl. VL and MoE), Whisper, Moonshine, Parakeet (CTC/TDT), Nomic Embed, Silero VAD, PyAnnote segmentation, and WeSpeaker. Models run at INT4/INT8 precision with Apple NPU acceleration on supported hardware. Pre-converted weights at https://huggingface.co/Cactus-Compute.
+
+## Docs
+
+- [Engine API](docs/cactus_engine.md): C FFI for LLM inference, chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, audio, voice activity detection, speaker diarization, and speaker embeddings
+- [Graph API](docs/cactus_graph.md): Computational graph framework for tensor operations, matrix multiplication, attention, normalization, convolutions, MoE layers, and activation functions
+- [Vector Index](docs/cactus_index.md): On-device vector database with cosine similarity search for RAG applications
+- [Fine-tuning Guide](docs/finetuning.md): Deploying Unsloth LoRA fine-tunes to mobile devices via Cactus
+- [Compatibility](docs/compatibility.md): Runtime and weight versioning across releases
+
+## SDKs
+
+- [Python](python/README.md): Python bindings via FFI with streaming, vision, audio, and graph API support
+- [Swift](apple/README.md): Swift API for iOS, macOS, and Android with XCFramework and NPU support
+- [Kotlin/Android](android/README.md): Kotlin API for Android and Kotlin Multiplatform (iOS + Android)
+- [Flutter](flutter/README.md): Dart FFI bindings for iOS, macOS, and Android
+- [Rust](rust/README.md): Raw FFI bindings auto-generated via bindgen
+- [React Native](https://github.com/cactus-compute/cactus-react-native): React Native SDK (external repo)
+
+## Blog
+
+- [TurboQuant-H](blog/turboquant-h.md): Hadamard rotation for 2-bit per-layer embedding quantization — 4x PLI compression, 40% total model size reduction
+- [Gemma 4 on Cactus](blog/gemma4.md): Native multimodal voice, vision, and audio on-device with hybrid cloud handoff
+- [Hybrid Transcription](blog/hybrid_transcription.md): Sub-150ms transcription with cloud-level accuracy using on-device/cloud hybrid inference
+- [LFM2 24B Review](blog/lfm2_24b_a2b.md): Running LFM2-24B MoE (A2B) locally on Mac for coding use cases
+- [Parakeet CTC 1.1B Review](blog/parakeet.md): Sub-200ms on-device transcription with NVIDIA Parakeet CTC 1.1B on Apple Silicon
+- [LFM-2.5-350m](blog/lfm2.5_350m.md): 140 tok/sec single-core INT8 inference across seven devices
+
+## Key Concepts
+
+- **Cloud Handoff**: When the on-device model's confidence drops below a threshold, Cactus signals `cloud_handoff: true` so the app can route to a cloud API
+- **Auto-RAG**: Pass a corpus directory at init and Cactus automatically retrieves relevant context for each query
+- **Tool Calling**: Define tools as JSON and Cactus returns structured `function_calls` in the response
+- **Tool RAG**: When many tools are defined, Cactus selects the top-k most relevant tools per query
+- **Streaming**: All completion and transcription APIs support token-level streaming callbacks
+- **Audio in Messages**: Gemma 4 models accept `"audio": ["path.wav"]` in message JSON for native audio understanding
+- **Vision in Messages**: VLM models (Gemma 4, LFM2-VL, Qwen3.5) accept `"images": ["path.png"]` in message JSON
+- **Thinking**: Models that support chain-of-thought (Gemma 4) return a `thinking` field when `enable_thinking_if_supported` is set
+- **TurboQuant-H**: Hadamard rotation + Lloyd-Max codebook quantization for 2-bit per-layer embeddings, reducing embedding-dominated models by 40%
+- **INT4 Quantization**: Lossy weight quantization for ~50% memory reduction with minimal quality loss
+- **NPU Acceleration**: Apple Neural Engine support for vision, audio, and transcription model encoders
+- **Speaker Diarization**: PyAnnote segmentation-3.0 for multi-speaker detection with per-frame scores
+- **Speaker Embeddings**: WeSpeaker ResNet34-LM for 256-dim speaker vectors with optional diarization mask weighting
+
+## Links
+
+- GitHub: https://github.com/cactus-compute/cactus
+- Docs: https://docs.cactuscompute.com/
+- Website: https://cactuscompute.com/
+- HuggingFace Weights: https://huggingface.co/Cactus-Compute
+- Reddit: https://www.reddit.com/r/cactuscompute/

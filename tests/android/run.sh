@@ -7,7 +7,10 @@ export CACTUS_CURL_ROOT
 
 MODEL_NAME="$1"
 TRANSCRIBE_MODEL_NAME="$2"
-VAD_MODEL_NAME="$3"
+WHISPER_MODEL_NAME="$3"
+VAD_MODEL_NAME="$4"
+DIARIZE_MODEL_NAME="$5"
+EMBED_SPEAKER_MODEL_NAME="$6"
 
 echo "Running Cactus tests on Android..."
 echo "============================"
@@ -233,10 +236,23 @@ if ! cmake --build "$android_build_dir" -j "$n_jobs"; then
 fi
 
 echo "Discovering test executables..."
-test_executables=($(find "$android_build_dir" -maxdepth 1 -name "test_*" -type f | sort))
+all_test_executables=($(find "$android_build_dir" -maxdepth 1 -name "test_*" -type f | sort))
+
+if [ ${#all_test_executables[@]} -eq 0 ]; then
+    echo "No test executables found"
+    exit 1
+fi
+
+test_executables=()
+for test_exe in "${all_test_executables[@]}"; do
+    test_name=$(basename "$test_exe" | sed 's/^test_//')
+    if [ -z "${CACTUS_TEST_ONLY:-}" ] || [ "$test_name" = "$CACTUS_TEST_ONLY" ]; then
+        test_executables+=("$test_exe")
+    fi
+done
 
 if [ ${#test_executables[@]} -eq 0 ]; then
-    echo "No test executables found"
+    echo "No test executables match filter: $CACTUS_TEST_ONLY"
     exit 1
 fi
 
@@ -247,10 +263,16 @@ echo "Step 4: Deploying to device..."
 
 model_dir=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 transcribe_model_dir=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+whisper_model_dir=$(echo "$WHISPER_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 vad_model_dir=$(echo "$VAD_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+diarize_model_dir=$(echo "$DIARIZE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+embed_speaker_model_dir=$(echo "$EMBED_SPEAKER_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 model_src="$PROJECT_ROOT/weights/$model_dir"
 transcribe_model_src="$PROJECT_ROOT/weights/$transcribe_model_dir"
+whisper_model_src="$PROJECT_ROOT/weights/$whisper_model_dir"
 vad_model_src="$PROJECT_ROOT/weights/$vad_model_dir"
+diarize_model_src="$PROJECT_ROOT/weights/$diarize_model_dir"
+embed_speaker_model_src="$PROJECT_ROOT/weights/$embed_speaker_model_dir"
 assets_src="$PROJECT_ROOT/tests/assets"
 
 device_test_dir="/data/local/tmp/cactus_tests"
@@ -262,7 +284,10 @@ adb -s "$DEVICE_ID" shell "mkdir -p $device_test_dir $device_model_dir $device_a
 echo "Pushing model weights..."
 adb -s "$DEVICE_ID" push "$model_src" "$device_model_dir/"
 adb -s "$DEVICE_ID" push "$transcribe_model_src" "$device_model_dir/"
+adb -s "$DEVICE_ID" push "$whisper_model_src" "$device_model_dir/"
 adb -s "$DEVICE_ID" push "$vad_model_src" "$device_model_dir/"
+adb -s "$DEVICE_ID" push "$diarize_model_src" "$device_model_dir/"
+adb -s "$DEVICE_ID" push "$embed_speaker_model_src" "$device_model_dir/"
 
 echo "Pushing test assets..."
 adb -s "$DEVICE_ID" push "$assets_src" "$device_assets_dir/"
@@ -279,7 +304,10 @@ echo "Step 5: Running tests..."
 echo "------------------------"
 echo "Using model path: $device_model_dir/$model_dir"
 echo "Using transcribe model path: $device_model_dir/$transcribe_model_dir"
+echo "Using whisper model path: $device_model_dir/$whisper_model_dir"
 echo "Using VAD model path: $device_model_dir/$vad_model_dir"
+echo "Using diarize model path: $device_model_dir/$diarize_model_dir"
+echo "Using embed_speaker model path: $device_model_dir/$embed_speaker_model_dir"
 echo "Using assets path: $device_assets_dir/assets"
 echo "Using index path: $device_assets_dir/assets"
 
@@ -289,7 +317,10 @@ for test_exe in "${test_executables[@]}"; do
     adb -s "$DEVICE_ID" shell "cd $device_test_dir && \
         export CACTUS_TEST_MODEL=$device_model_dir/$model_dir && \
         export CACTUS_TEST_TRANSCRIBE_MODEL=$device_model_dir/$transcribe_model_dir && \
+        export CACTUS_TEST_WHISPER_MODEL=$device_model_dir/$whisper_model_dir && \
         export CACTUS_TEST_VAD_MODEL=$device_model_dir/$vad_model_dir && \
+        export CACTUS_TEST_DIARIZE_MODEL=$device_model_dir/$diarize_model_dir && \
+        export CACTUS_TEST_EMBED_SPEAKER_MODEL=$device_model_dir/$embed_speaker_model_dir && \
         export CACTUS_TEST_ASSETS=$device_assets_dir/assets && \
         export CACTUS_INDEX_PATH=$device_assets_dir/assets && \
         export CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE} && \

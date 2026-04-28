@@ -3,7 +3,7 @@
 #include "../npu/npu.h"
 #include <cmath>
 #include <stdexcept>
-#include <set>
+
 
 namespace cactus {
 namespace engine {
@@ -105,17 +105,11 @@ size_t GemmaModel::build_attention(CactusGraph* gb, size_t normalized_input, uin
                 attention_scale_, position_offset,
                 kv_cache_.get_tq_key_radii(layer_idx),
                 kv_cache_.get_tq_key_angles(layer_idx),
-                kv_cache_.get_tq_key_error_norms(layer_idx),
-                kv_cache_.get_tq_key_qjl_bits(layer_idx),
                 kv_cache_.get_tq_val_radii(layer_idx),
                 kv_cache_.get_tq_val_angles(layer_idx),
-                kv_cache_.get_tq_val_error_norms(layer_idx),
-                kv_cache_.get_tq_val_qjl_bits(layer_idx),
                 kv_cache_.get_tq_rotation_signs(),
-                kv_cache_.get_tq_projection_matrix(),
                 kv_cache_.tq_key_angle_bits,
                 kv_cache_.tq_value_angle_bits,
-                kv_cache_.tq_projection_dim,
                 kv_cache_.current_seq_len, num_kv_heads, head_dim, window_size
             );
         } else {
@@ -194,11 +188,7 @@ size_t GemmaModel::forward(const std::vector<uint32_t>& tokens, bool use_cache) 
     float embed_scale = std::sqrt(static_cast<float>(config_.hidden_dim));
     hidden = gb->scalar_multiply(hidden, embed_scale);
 
-    static std::set<uint32_t> skip_layers = {};
     for (uint32_t layer_idx = 0; layer_idx < config_.num_layers; layer_idx++) {
-        if (skip_layers.count(layer_idx)) {
-            continue;
-        }
         hidden = build_transformer_block(gb, hidden, layer_idx, backend, use_cache, position_offset);
     }
 

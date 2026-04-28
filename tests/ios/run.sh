@@ -7,7 +7,10 @@ export CACTUS_CURL_ROOT
 
 MODEL_NAME="$1"
 TRANSCRIBE_MODEL_NAME="$2"
-VAD_MODEL_NAME="$3"
+WHISPER_MODEL_NAME="$3"
+VAD_MODEL_NAME="$4"
+DIARIZE_MODEL_NAME="$5"
+EMBED_SPEAKER_MODEL_NAME="$6"
 RUN_ASR="${CACTUS_RUN_ASR:-0}"
 ASR_AUDIO_SOURCE="${CACTUS_ASR_AUDIO_SOURCE:-}"
 ASR_AUDIO_FILE="${CACTUS_ASR_AUDIO_FILE:-}"
@@ -149,13 +152,23 @@ else
         echo "Selected: $device_name (Device)"
     fi
 
-    if ! security find-identity -v -p codesigning | grep -q "Apple Development"; then
+    matching_identity=$(security find-identity -p codesigning 2>/dev/null | grep "Apple Development" | head -1 || true)
+    valid_identity=$(security find-identity -v -p codesigning 2>/dev/null | grep "Apple Development" | head -1 || true)
+
+    if [ -z "$matching_identity" ]; then
         echo "No development certificates found"
         echo "To fix this:"
         echo "  1. Open Xcode > Settings > Accounts"
         echo "  2. Add your Apple ID"
         echo "  3. Download development certificates"
         exit 1
+    fi
+
+    if [ -z "$valid_identity" ]; then
+        echo "Warning: Apple Development identity found, but macOS did not report it as a valid identity."
+        echo "Proceeding and letting xcodebuild attempt automatic signing anyway."
+        echo "If signing fails later, reissue the Apple Development certificate/private key pair in Xcode."
+        echo "Detected identity: $matching_identity"
     fi
 fi
 
@@ -183,7 +196,7 @@ bundle_id="com.cactus.test.${USER}"
 echo "Using Bundle ID: $bundle_id"
 
 if [ "$device_type" = "device" ]; then
-    development_team=$(security find-certificate -a -c "Apple Development" -p | openssl x509 -noout -subject | grep -oE 'OU=[A-Z0-9]{10}' | head -1 | cut -d= -f2)
+    development_team=$(security find-certificate -a -c "Apple Development" -p "$HOME/Library/Keychains/login.keychain-db" | openssl x509 -noout -subject | grep -oE 'OU=[A-Z0-9]{10}' | head -1 | cut -d= -f2)
     if [ -z "$development_team" ]; then
         echo "Could not extract Team ID from certificate"
         exit 1
@@ -270,10 +283,16 @@ fi
 
 model_dir=$(echo "$MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 transcribe_model_dir=$(echo "$TRANSCRIBE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+whisper_model_dir=$(echo "$WHISPER_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 vad_model_dir=$(echo "$VAD_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+diarize_model_dir=$(echo "$DIARIZE_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
+embed_speaker_model_dir=$(echo "$EMBED_SPEAKER_MODEL_NAME" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')
 model_src="$PROJECT_ROOT/weights/$model_dir"
 transcribe_model_src="$PROJECT_ROOT/weights/$transcribe_model_dir"
+whisper_model_src="$PROJECT_ROOT/weights/$whisper_model_dir"
 vad_model_src="$PROJECT_ROOT/weights/$vad_model_dir"
+diarize_model_src="$PROJECT_ROOT/weights/$diarize_model_dir"
+embed_speaker_model_src="$PROJECT_ROOT/weights/$embed_speaker_model_dir"
 assets_src="$PROJECT_ROOT/tests/assets"
 
 if [ ! -d "$model_src" ] || [ ! -f "$model_src/config.txt" ]; then
@@ -284,13 +303,25 @@ if [ ! -d "$transcribe_model_src" ] || [ ! -f "$transcribe_model_src/config.txt"
     echo "Error: transcribe model weights missing or invalid at $transcribe_model_src"
     exit 1
 fi
+if [ ! -d "$whisper_model_src" ] || [ ! -f "$whisper_model_src/config.txt" ]; then
+    echo "Error: whisper model weights missing or invalid at $whisper_model_src"
+    exit 1
+fi
 if [ ! -d "$vad_model_src" ] || [ ! -f "$vad_model_src/config.txt" ]; then
     echo "Error: VAD model weights missing or invalid at $vad_model_src"
     exit 1
 fi
+if [ ! -d "$diarize_model_src" ] || [ ! -f "$diarize_model_src/config.txt" ]; then
+    echo "Error: diarize model weights missing or invalid at $diarize_model_src"
+    exit 1
+fi
+if [ ! -d "$embed_speaker_model_src" ] || [ ! -f "$embed_speaker_model_src/config.txt" ]; then
+    echo "Error: embed_speaker model weights missing or invalid at $embed_speaker_model_src"
+    exit 1
+fi
 
 echo "Copying model weights to app bundle..."
-rm -rf "$app_path/$model_dir" "$app_path/$transcribe_model_dir" "$app_path/$vad_model_dir"
+rm -rf "$app_path/$model_dir" "$app_path/$transcribe_model_dir" "$app_path/$whisper_model_dir" "$app_path/$vad_model_dir"
 if ! cp -R "$model_src" "$app_path/"; then
     echo "Error: Could not copy model weights from $model_src"
     exit 1
@@ -299,14 +330,28 @@ if ! cp -R "$transcribe_model_src" "$app_path/"; then
     echo "Error: Could not copy transcribe model weights from $transcribe_model_src"
     exit 1
 fi
+if ! cp -R "$whisper_model_src" "$app_path/"; then
+    echo "Error: Could not copy whisper model weights from $whisper_model_src"
+    exit 1
+fi
 if ! cp -R "$vad_model_src" "$app_path/"; then
     echo "Error: Could not copy VAD model weights from $vad_model_src"
+    exit 1
+fi
+rm -rf "$app_path/$diarize_model_dir"
+if ! cp -R "$diarize_model_src" "$app_path/"; then
+    echo "Error: Could not copy diarize model weights from $diarize_model_src"
+    exit 1
+fi
+rm -rf "$app_path/$embed_speaker_model_dir"
+if ! cp -R "$embed_speaker_model_src" "$app_path/"; then
+    echo "Error: Could not copy embed_speaker model weights from $embed_speaker_model_src"
     exit 1
 fi
 
 # Whisper/Moonshine init expects a bundled "<transcribe_model>/vad" directory.
 transcribe_lower=$(echo "$transcribe_model_dir" | tr '[:upper:]' '[:lower:]')
-if [[ "$transcribe_lower" == *"whisper"* || "$transcribe_lower" == *"moonshine"* ]]; then
+if [[ "$transcribe_lower" == *"whisper"* || "$transcribe_lower" == *"moonshine"* || "$transcribe_lower" == *"parakeet"* ]]; then
     if [ ! -f "$app_path/$transcribe_model_dir/vad/config.txt" ]; then
         echo "Transcribe model missing bundled VAD; injecting from $vad_model_src"
         mkdir -p "$app_path/$transcribe_model_dir/vad"
@@ -363,23 +408,31 @@ if [ "$device_type" = "simulator" ]; then
     fi
     echo "Using model path: $model_dir"
     echo "Using transcribe model path: $transcribe_model_dir"
+    echo "Using whisper model path: $whisper_model_dir"
+    echo "Using VAD model path: $vad_model_dir"
+    echo "Using diarize model path: $diarize_model_dir"
+    echo "Using embed_speaker model path: $embed_speaker_model_dir"
     echo "Using assets path: assets"
     echo "Using index path: assets"
 
     sim_env=(
         "SIMCTL_CHILD_CACTUS_TEST_MODEL=$model_dir"
         "SIMCTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL=$transcribe_model_dir"
+        "SIMCTL_CHILD_CACTUS_TEST_WHISPER_MODEL=$whisper_model_dir"
         "SIMCTL_CHILD_CACTUS_TEST_VAD_MODEL=$vad_model_dir"
+        "SIMCTL_CHILD_CACTUS_TEST_DIARIZE_MODEL=$diarize_model_dir"
+        "SIMCTL_CHILD_CACTUS_TEST_EMBED_SPEAKER_MODEL=$embed_speaker_model_dir"
         "SIMCTL_CHILD_CACTUS_TEST_ASSETS=assets"
         "SIMCTL_CHILD_CACTUS_INDEX_PATH=assets"
         "SIMCTL_CHILD_CACTUS_NO_CLOUD_TELE=$CACTUS_NO_CLOUD_TELE"
+        "SIMCTL_CHILD_CACTUS_TEST_ONLY=${CACTUS_TEST_ONLY:-}"
     )
     if [ "$RUN_ASR" = "1" ]; then
         sim_env+=("SIMCTL_CHILD_CACTUS_RUN_ASR=1")
         sim_env+=("SIMCTL_CHILD_CACTUS_ASR_AUDIO_FILE=$ASR_AUDIO_FILE")
     fi
-    if [ -n "$CACTUS_CLOUD_API_KEY" ]; then
-        sim_env+=("SIMCTL_CHILD_CACTUS_CLOUD_API_KEY=$CACTUS_CLOUD_API_KEY")
+    if [ -n "$CACTUS_CLOUD_KEY" ]; then
+        sim_env+=("SIMCTL_CHILD_CACTUS_CLOUD_KEY=$CACTUS_CLOUD_KEY")
     fi
     if [ -n "$CACTUS_CLOUD_STRICT_SSL" ]; then
         sim_env+=("SIMCTL_CHILD_CACTUS_CLOUD_STRICT_SSL=$CACTUS_CLOUD_STRICT_SSL")
@@ -409,23 +462,31 @@ else
     echo "(Logs will be fetched from device after completion)"
     echo "Using model path: $model_dir"
     echo "Using transcribe model path: $transcribe_model_dir"
+    echo "Using whisper model path: $whisper_model_dir"
+    echo "Using VAD model path: $vad_model_dir"
+    echo "Using diarize model path: $diarize_model_dir"
+    echo "Using embed_speaker model path: $embed_speaker_model_dir"
     echo "Using assets path: assets"
     echo "Using index path: assets"
 
     device_env=(
         "DEVICECTL_CHILD_CACTUS_TEST_MODEL=$model_dir"
         "DEVICECTL_CHILD_CACTUS_TEST_TRANSCRIBE_MODEL=$transcribe_model_dir"
+        "DEVICECTL_CHILD_CACTUS_TEST_WHISPER_MODEL=$whisper_model_dir"
         "DEVICECTL_CHILD_CACTUS_TEST_VAD_MODEL=$vad_model_dir"
+        "DEVICECTL_CHILD_CACTUS_TEST_DIARIZE_MODEL=$diarize_model_dir"
+        "DEVICECTL_CHILD_CACTUS_TEST_EMBED_SPEAKER_MODEL=$embed_speaker_model_dir"
         "DEVICECTL_CHILD_CACTUS_TEST_ASSETS=assets"
         "DEVICECTL_CHILD_CACTUS_INDEX_PATH=assets"
         "DEVICECTL_CHILD_CACTUS_NO_CLOUD_TELE=$CACTUS_NO_CLOUD_TELE"
+        "DEVICECTL_CHILD_CACTUS_TEST_ONLY=${CACTUS_TEST_ONLY:-}"
     )
     if [ "$RUN_ASR" = "1" ]; then
         device_env+=("DEVICECTL_CHILD_CACTUS_RUN_ASR=1")
         device_env+=("DEVICECTL_CHILD_CACTUS_ASR_AUDIO_FILE=$ASR_AUDIO_FILE")
     fi
-    if [ -n "$CACTUS_CLOUD_API_KEY" ]; then
-        device_env+=("DEVICECTL_CHILD_CACTUS_CLOUD_API_KEY=$CACTUS_CLOUD_API_KEY")
+    if [ -n "$CACTUS_CLOUD_KEY" ]; then
+        device_env+=("DEVICECTL_CHILD_CACTUS_CLOUD_KEY=$CACTUS_CLOUD_KEY")
     fi
     if [ -n "$CACTUS_CLOUD_STRICT_SSL" ]; then
         device_env+=("DEVICECTL_CHILD_CACTUS_CLOUD_STRICT_SSL=$CACTUS_CLOUD_STRICT_SSL")

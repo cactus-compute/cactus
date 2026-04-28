@@ -1,16 +1,24 @@
+---
+title: "Cactus Swift Multiplatform SDK"
+description: "Swift API for running AI models on-device on iOS, macOS, and Android. Supports transcription, embeddings, RAG, and tool calling."
+keywords: ["Swift SDK", "iOS", "macOS", "XCFramework", "on-device AI", "Apple Silicon", "NPU"]
+---
+
 # Cactus for Swift Multiplatform
 
 Run AI models on-device with a simple Swift API on iOS, macOS, and Android.
 
+> **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
+
 ## Building
 
+<!-- --8<-- [start:install] -->
 ```bash
+git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
 cactus build --apple
 ```
 
 Build outputs (in `apple/`):
-
-see the main [README.md](../README.md) for how to use CLI & download weight
 
 | File | Description |
 |------|-------------|
@@ -18,6 +26,9 @@ see the main [README.md](../README.md) for how to use CLI & download weight
 | `cactus-macos.xcframework/` | macOS framework |
 | `libcactus-device.a` | Static library for iOS device |
 | `libcactus-simulator.a` | Static library for iOS simulator |
+<!-- --8<-- [end:install] -->
+
+See the main [README.md](../README.md) for how to use CLI & download weights
 
 For Android, build `libcactus.so` from the `android/` directory.
 
@@ -38,6 +49,7 @@ CACTUS_CURL_ROOT=/absolute/path/to/curl cactus build --apple
 
 ## Integration
 
+<!-- --8<-- [start:integration] -->
 ### iOS/macOS: XCFramework (Recommended)
 
 1. Drag `cactus-ios.xcframework` (or `cactus-macos.xcframework`) into your Xcode project
@@ -51,6 +63,7 @@ CACTUS_CURL_ROOT=/absolute/path/to/curl cactus build --apple
    - "Header Search Paths" → path to folder
    - "Import Paths" (Swift) → path to folder
 3. Copy `Cactus.swift` into your project
+<!-- --8<-- [end:integration] -->
 
 ### Android (Swift SDK)
 
@@ -74,57 +87,97 @@ swift build --swift-sdk aarch64-unknown-linux-android28 \
 
 ## Usage
 
+Handles are typed as `CactusModelT`, `CactusIndexT`, and `CactusStreamTranscribeT` (all `UnsafeMutableRawPointer` aliases).
+
 ### Basic Completion
 
+<!-- --8<-- [start:example] -->
 ```swift
 import Foundation
 
-let model = try Cactus(modelPath: "/path/to/model")
-let result = try model.complete("What is the capital of France?")
-```
+let model = try cactusInit("/path/to/model", nil, false)
+defer { cactusDestroy(model) }
 
-### Chat Messages
+let messages = #"[{"role":"user","content":"What is the capital of France?"}]"#
+let resultJson = try cactusComplete(model, messages, nil, nil, nil)
+print(resultJson)
+```
+<!-- --8<-- [end:example] -->
+
+For vision models (LFM2-VL, LFM2.5-VL, Gemma4, Qwen3.5), add `"images": ["path/to/image.png"]` to any message. For audio models (Gemma4), add `"audio": ["path/to/audio.wav"]`. See [Engine API](/docs/cactus_engine.md) for details.
+
+### Completion with Options and Streaming
 
 ```swift
-let result = try model.complete(messages: [
-    .system("You are a helpful assistant."),
-    .user("What is 2 + 2?")
-])
-```
+let options = #"{"max_tokens":256,"temperature":0.7}"#
 
-### Completion Options
-
-```swift
-let options = Cactus.CompletionOptions(
-    temperature: 0.7,
-    topP: 0.9,
-    topK: 40,
-    maxTokens: 256,
-    stopSequences: ["\n\n"]
-)
-
-let result = try model.complete("Write a haiku:", options: options)
-```
-
-### Streaming Tokens
-
-```swift
-let result = try model.complete(
-    messages: [.user("Tell me a story")],
-    onToken: { token, tokenId in
-        print(token, terminator: "")
-        fflush(stdout)
-    }
-)
-```
-
-### Async/Await
-
-```swift
-let result = try await model.complete(messages: [.user("Hello!")])
-
-for try await token in model.completeStream(messages: [.user("Tell me a joke")]) {
+let resultJson = try cactusComplete(model, messages, options, nil as String?) { token, _ in
     print(token, terminator: "")
+}
+print(resultJson)
+```
+
+### Prefill
+
+Pre-processes input text and populates the KV cache without generating output tokens. This reduces latency for subsequent calls to `cactusComplete`.
+
+```swift
+func cactusPrefill(
+    _ model: CactusModelT,
+    _ messagesJson: String,
+    _ optionsJson: String?,
+    _ toolsJson: String?
+) throws -> String
+```
+
+```swift
+let tools = #"[
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather for a location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City, State, Country"}
+                },
+                "required": ["location"]
+            }
+        }
+    }
+]"#
+
+let messages = #"[
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "What is the weather in Paris?"},
+    {"role": "assistant", "content": "<|tool_call_start|>get_weather(location=\"Paris\")<|tool_call_end|>"},
+    {"role": "tool", "content": "{\"name\": \"get_weather\", \"content\": \"Sunny, 72°F\"}"},
+    {"role": "assistant", "content": "It's sunny and 72°F in Paris!"}
+]"#
+
+let resultJson = try cactusPrefill(model, messages, nil, tools)
+
+let completionMessages = #"[
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "What is the weather in Paris?"},
+    {"role": "assistant", "content": "<|tool_call_start|>get_weather(location=\"Paris\")<|tool_call_end|>"},
+    {"role": "tool", "content": "{\"name\": \"get_weather\", \"content\": \"Sunny, 72°F\"}"},
+    {"role": "assistant", "content": "It's sunny and 72°F in Paris!"},
+    {"role": "user", "content": "What about SF?"}
+]"#
+let completion = try cactusComplete(model, completionMessages, nil, tools, nil)
+```
+
+**Response format:**
+```json
+{
+    "success": true,
+    "error": null,
+    "prefill_tokens": 25,
+    "prefill_tps": 166.1,
+    "total_time_ms": 150.5,
+    "ram_usage_mb": 245.67
 }
 ```
 
@@ -132,169 +185,272 @@ for try await token in model.completeStream(messages: [.user("Tell me a joke")])
 
 ```swift
 // From file
-let result = try model.transcribe(audioPath: "/path/to/audio.wav")
+let resultJson = try cactusTranscribe(model, "/path/to/audio.wav", nil, nil, nil as ((String, UInt32) -> Void)?, nil as Data?)
+print(resultJson)
 
-// From PCM data
-let pcmData: Data = ... // 16kHz mono PCM
-let result = try model.transcribe(pcmData: pcmData)
+// From PCM data (16 kHz mono)
+let pcmData: Data = ...
+let resultJson2 = try cactusTranscribe(model, nil, nil, nil, nil as ((String, UInt32) -> Void)?, pcmData)
+print(resultJson2)
 ```
 
-### Embeddings
+`segments` contains timestamps (seconds): phrase-level for Whisper, word-level for Parakeet TDT, one segment per transcription window for Parakeet CTC and Moonshine (consecutive VAD speech regions up to 30s).
 
 ```swift
-let embedding = try model.embed(text: "Hello, world!")
-let imageEmbedding = try model.imageEmbed("/path/to/image.jpg")
-let audioEmbedding = try model.audioEmbed("/path/to/audio.wav")
+if let data = resultJson.data(using: .utf8),
+   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+   let segments = obj["segments"] as? [[String: Any]] {
+    for seg in segments {
+        let start = seg["start"] as? Double ?? 0
+        let end = seg["end"] as? Double ?? 0
+        let text = seg["text"] as? String ?? ""
+        print(String(format: "[%.3fs - %.3fs] %@", start, end, text))
+    }
+}
 ```
 
-### Tokenization
+**Custom vocabulary** biases the decoder toward domain-specific words (supported for Whisper and Moonshine models). Pass `custom_vocabulary` and `vocabulary_boost` in the options JSON:
 
 ```swift
-let tokens = try model.tokenize("Hello, world!")
-let scores = try model.scoreWindow(tokens: tokens, start: 0, end: tokens.count, context: 512)
+let options = #"{"custom_vocabulary": ["Omeprazole", "HIPAA", "Cactus"], "vocabulary_boost": 3.0}"#
+let result = try cactusTranscribe(model, "/path/to/audio.wav", nil, options, nil as ((String, UInt32) -> Void)?, nil as Data?)
 ```
 
 ### Streaming Transcription
 
 ```swift
-let stream = try model.createStreamTranscriber()
-try stream.insert(pcmData: audioChunk1)
-try stream.insert(pcmData: audioChunk2)
-let partial = try stream.process()
-print("Partial: \(partial.text)")
-let final = try stream.finalize()
-print("Final: \(final.text)")
-stream.close()
+let stream = try cactusStreamTranscribeStart(model, nil as String?)
+
+let partialJson = try cactusStreamTranscribeProcess(stream, audioChunk)
+print(partialJson)
+
+let finalJson = try cactusStreamTranscribeStop(stream)
+print(finalJson)
 ```
 
-### RAG (Retrieval-Augmented Generation)
+Streaming also accepts `custom_vocabulary` in the options passed to `cactusStreamTranscribeStart`. The bias is applied for the lifetime of the stream session.
+
+### Embeddings
 
 ```swift
-let model = try Cactus(
-    modelPath: "/path/to/model",
-    corpusDir: "/path/to/documents"
-)
+let embedding      = try cactusEmbed(model, "Hello, world!", true)
+let imageEmbedding = try cactusImageEmbed(model, "/path/to/image.jpg")
+let audioEmbedding = try cactusAudioEmbed(model, "/path/to/audio.wav")
+```
 
-let result = try model.complete("What does the documentation say about X?")
+### Tokenization
+
+```swift
+let tokens = try cactusTokenize(model, "Hello, world!")
+let scoresJson = try cactusScoreWindow(model, tokens, 0, tokens.count, min(tokens.count, 512))
+print(scoresJson)
+```
+
+### Detect Language
+
+```swift
+let langJson = try cactusDetectLanguage(model, "/path/to/audio.wav", nil, nil)
+print(langJson)
+```
+
+### VAD
+
+```swift
+let vadJson = try cactusVad(model, "/path/to/audio.wav", nil as String?, nil as Data?)
+print(vadJson)
+```
+
+### Diarize
+
+```swift
+let diarizeJson = try cactusDiarize(model, "/path/to/audio.wav", nil, nil as Data?)
+print(diarizeJson)
+```
+
+Options (all optional):
+- `step_ms` (int, default 1000) — sliding window stride in milliseconds
+- `threshold` (float) — zero out per-speaker scores below this value
+- `num_speakers` (int) — keep only the N most active speakers
+- `min_speakers` / `max_speakers` (int) — speaker count bounds
+- `raw_powerset` (bool, default false) — return raw 7-class powerset scores instead of 3-speaker probabilities
+
+### Embed Speaker
+
+```swift
+let embedJson = try cactusEmbedSpeaker(model, "/path/to/audio.wav", nil, nil as Data?)
+print(embedJson)
+
+// With diarization mask for speaker-specific embedding
+let embedJson = try cactusEmbedSpeaker(model, "/path/to/audio.wav", nil, nil as Data?, maskWeights)
+```
+
+Returns a 256-dimensional speaker embedding. When `maskWeights` (a per-frame weight array from diarization) is provided, the embedding is extracted using weighted stats pooling for speaker-specific embeddings.
+
+### RAG
+
+```swift
+let ragJson = try cactusRagQuery(model, "What is machine learning?", 5)
+print(ragJson)
 ```
 
 ### Vector Index
 
 ```swift
-let index = try CactusIndex(indexDir: "/path/to/index", embeddingDim: 384)
-let embeddings = [try model.embed(text: "doc1"), try model.embed(text: "doc2")]
-try index.add(
-    ids: [1, 2],
-    documents: ["Document 1", "Document 2"],
-    embeddings: embeddings
-)
-let results = try index.query(embedding: try model.embed(text: "search query"), topK: 5)
-results.forEach { print("ID: \($0.id), Score: \($0.score)") }
-index.close()
+let index = try cactusIndexInit("/path/to/index", 384)
+defer { cactusIndexDestroy(index) }
+
+try cactusIndexAdd(index, [Int32(1), Int32(2)], ["doc1", "doc2"],
+                   [[Float(0.1), Float(0.2), ...], [Float(0.3), Float(0.4), ...]], nil)
+
+let results = try cactusIndexQuery(index, [Float(0.1), Float(0.2), ...], nil)
+
+try cactusIndexDelete(index, [Int32(2)])
+try cactusIndexCompact(index)
 ```
 
 ## API Reference
 
-### Cactus
+All functions are top-level and mirror the C FFI directly.
+
+### Types
 
 ```swift
-init(modelPath: String, corpusDir: String? = nil) throws
-
-func complete(_ prompt: String, options: CompletionOptions = .default) throws -> CompletionResult
-func complete(messages: [Message], options: CompletionOptions = .default, tools: [[String: Any]]? = nil, onToken: ((String, UInt32) -> Void)? = nil) throws -> CompletionResult
-
-func transcribe(audioPath: String, prompt: String? = nil, options: TranscriptionOptions = .default) throws -> TranscriptionResult
-func transcribe(pcmData: Data, prompt: String? = nil, options: TranscriptionOptions = .default) throws -> TranscriptionResult
-
-func embed(text: String, normalize: Bool = true) throws -> [Float]
-func imageEmbed(_ imagePath: String) throws -> [Float]
-func audioEmbed(_ audioPath: String) throws -> [Float]
-func ragQuery(_ query: String, topK: Int = 5) throws -> String
-
-func tokenize(_ text: String) throws -> [UInt32]
-func scoreWindow(tokens: [UInt32], start: Int, end: Int, context: Int) throws -> String
-func createStreamTranscriber() throws -> StreamTranscriber
-
-func reset()  // Clear KV cache
-func stop()   // Stop generation
+public typealias CactusModelT           = UnsafeMutableRawPointer
+public typealias CactusIndexT           = UnsafeMutableRawPointer
+public typealias CactusStreamTranscribeT = UnsafeMutableRawPointer
 ```
 
-### CompletionResult
+All `throws` functions throw `NSError` (domain `"cactus"`) on failure.
+
+### Init / Lifecycle
 
 ```swift
-struct CompletionResult {
-    let text: String                   
-    let functionCalls: [[String: Any]]? 
-    let promptTokens: Int
-    let completionTokens: Int
-    let timeToFirstToken: Double  
-    let totalTime: Double   
-    let prefillTokensPerSecond: Double
-    let decodeTokensPerSecond: Double
-    let confidence: Double  
-    let needsCloudHandoff: Bool
-}
+func cactusInit(_ modelPath: String, _ corpusDir: String?, _ cacheIndex: Bool) throws -> CactusModelT
+func cactusDestroy(_ model: CactusModelT)
+func cactusReset(_ model: CactusModelT)
+func cactusStop(_ model: CactusModelT)
+func cactusGetLastError() -> String
 ```
 
-### Message
+### Prefill
 
 ```swift
-struct Message {
-    static func system(_ content: String) -> Message
-    static func user(_ content: String) -> Message
-    static func assistant(_ content: String) -> Message
-}
+func cactusPrefill(
+    _ model: CactusModelT,
+    _ messagesJson: String,
+    _ optionsJson: String?,
+    _ toolsJson: String?,
+    _ pcmData: Data? = nil
+) throws -> String
 ```
 
-### CompletionOptions
+### Completion
 
 ```swift
-struct CompletionOptions {
-    var temperature: Float = 0.7
-    var topP: Float = 0.9
-    var topK: Int = 40
-    var maxTokens: Int = 512
-    var stopSequences: [String] = []
-    var confidenceThreshold: Float = 0.0
-
-    static let `default` = CompletionOptions()
-}
+func cactusComplete(
+    _ model: CactusModelT,
+    _ messagesJson: String,
+    _ optionsJson: String?,
+    _ toolsJson: String?,
+    _ callback: ((String, UInt32) -> Void)?,
+    _ pcmData: Data? = nil
+) throws -> String
 ```
 
-### StreamTranscriber
+### Transcription
 
 ```swift
-class StreamTranscriber {
-    func insert(pcmData: Data) throws
-    func process(language: String? = nil) throws -> TranscriptionResult
-    func finalize() throws -> TranscriptionResult
-    func close()
-}
+func cactusTranscribe(
+    _ model: CactusModelT,
+    _ audioPath: String?,
+    _ prompt: String?,
+    _ optionsJson: String?,
+    _ callback: ((String, UInt32) -> Void)?,
+    _ pcmData: Data?
+) throws -> String
+
+func cactusStreamTranscribeStart(_ model: CactusModelT, _ optionsJson: String?) throws -> CactusStreamTranscribeT
+func cactusStreamTranscribeProcess(_ stream: CactusStreamTranscribeT, _ pcmData: Data) throws -> String
+func cactusStreamTranscribeStop(_ stream: CactusStreamTranscribeT) throws -> String
 ```
 
-### CactusIndex
+### Embeddings
 
 ```swift
-class CactusIndex {
-    init(indexDir: String, embeddingDim: Int) throws
+func cactusEmbed(_ model: CactusModelT, _ text: String, _ normalize: Bool) throws -> [Float]
+func cactusImageEmbed(_ model: CactusModelT, _ imagePath: String) throws -> [Float]
+func cactusAudioEmbed(_ model: CactusModelT, _ audioPath: String) throws -> [Float]
+```
 
-    func add(ids: [Int], documents: [String], embeddings: [[Float]], metadatas: [String]? = nil) throws
-    func delete(ids: [Int]) throws
-    func query(embedding: [Float], topK: Int = 5) throws -> [IndexResult]
-    func compact() throws
-    func close()
-}
+### Tokenization / Scoring
 
-struct IndexResult {
-    let id: Int
-    let score: Float
-}
+```swift
+func cactusTokenize(_ model: CactusModelT, _ text: String) throws -> [UInt32]
+func cactusScoreWindow(_ model: CactusModelT, _ tokens: [UInt32], _ start: Int, _ end: Int, _ context: Int) throws -> String
+```
+
+### Detect Language
+
+```swift
+func cactusDetectLanguage(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?) throws -> String
+```
+
+### VAD
+
+```swift
+func cactusVad(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?) throws -> String
+```
+
+### Diarize
+
+```swift
+func cactusDiarize(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?) throws -> String
+```
+
+### Embed Speaker
+
+```swift
+func cactusEmbedSpeaker(_ model: CactusModelT, _ audioPath: String?, _ optionsJson: String?, _ pcmData: Data?, _ maskWeights: [Float]? = nil) throws -> String
+```
+
+### RAG
+
+```swift
+func cactusRagQuery(_ model: CactusModelT, _ query: String, _ topK: Int) throws -> String
+```
+
+### Vector Index
+
+```swift
+func cactusIndexInit(_ indexDir: String, _ embeddingDim: Int) throws -> CactusIndexT
+func cactusIndexDestroy(_ index: CactusIndexT)
+func cactusIndexAdd(_ index: CactusIndexT, _ ids: [Int32], _ documents: [String], _ embeddings: [[Float]], _ metadatas: [String]?) throws
+func cactusIndexDelete(_ index: CactusIndexT, _ ids: [Int32]) throws
+func cactusIndexGet(_ index: CactusIndexT, _ ids: [Int32]) throws -> String
+func cactusIndexQuery(_ index: CactusIndexT, _ embedding: [Float], _ optionsJson: String?) throws -> String
+func cactusIndexCompact(_ index: CactusIndexT) throws
+```
+
+### Logging
+
+```swift
+func cactusLogSetLevel(_ level: Int32)  // 0=DEBUG, 1=INFO, 2=WARN (default), 3=ERROR, 4=NONE
+func cactusLogSetCallback(_ callback: ((Int32, String, String) -> Void)?)
+```
+
+### Telemetry
+
+```swift
+func cactusSetTelemetryEnvironment(_ path: String)
+func cactusSetAppId(_ appId: String)
+func cactusTelemetryFlush()
+func cactusTelemetryShutdown()
 ```
 
 ## Requirements
 
 **Apple Platforms:**
-- iOS 14.0+ / macOS 13.0+ / tvOS 14.0+ / watchOS 7.0+
+- iOS 13.0+ / macOS 13.0+
 - Xcode 14.0+
 - Swift 5.7+
 
@@ -302,3 +458,11 @@ struct IndexResult {
 - Swift 6.0+ with [Swift SDK for Android](https://www.swift.org/documentation/articles/swift-sdk-for-android-getting-started.html)
 - Android NDK 27d+
 - Android API 28+ / arm64-v8a
+
+## See Also
+
+- [Cactus Engine API](/docs/cactus_engine.md) — Full C API reference underlying the Swift bindings
+- [Cactus Index API](/docs/cactus_index.md) — Vector database API for RAG applications
+- [Fine-tuning Guide](/docs/finetuning.md) — Deploy custom fine-tunes to iOS/macOS
+- [Kotlin/Android SDK](/android/) — Kotlin alternative for Android
+- [Flutter SDK](/flutter/) — Cross-platform alternative using Dart

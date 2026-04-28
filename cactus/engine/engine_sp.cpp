@@ -1,6 +1,8 @@
 #include "engine.h"
 #include <cassert>
+#include <cstdio>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -35,6 +37,7 @@ void SPTokenizer::cleanup_mmap() {
 }
 
 bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, const std::string& /*merges_file*/, const std::string& config_file) {
+    runtime_config_ = load_tokenizer_runtime_config(config_file);
     std::string config_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/config.txt";
     detect_model_type(config_path);
     
@@ -83,13 +86,20 @@ bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, con
             }
             
             if (!token.empty() && id != UINT32_MAX) {
+                float score = -static_cast<float>(id);
+                size_t tab_in_token = token.find('\t');
+                if (tab_in_token != std::string::npos) {
+                    std::string score_str = token.substr(tab_in_token + 1);
+                    if (!score_str.empty()) score = std::stof(score_str);
+                    token = token.substr(0, tab_in_token);
+                }
                 token_to_id_[token] = id;
                 if (id >= id_to_token_.size()) {
                     id_to_token_.resize(id + 1);
                     token_scores_.resize(id + 1, 0.0f);
                 }
                 id_to_token_[id] = token;
-                token_scores_[id] = 0.0f;
+                token_scores_[id] = score;
             }
         }
         vocab_size_ = id_to_token_.size();
@@ -136,6 +146,12 @@ bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, con
                 unk_token_id_ = std::stoul(value);
             } else if (key == "bos_token_id") {
                 bos_token_id_ = std::stoul(value);
+            } else if (key == "sp_model_type") {
+                sp_bpe_mode_ = (value == "bpe" || value == "BPE");
+            } else if (key == "sp_add_dummy_prefix") {
+                sp_add_dummy_prefix_ = (value == "true" || value == "1");
+            } else if (key == "sp_byte_fallback") {
+                sp_byte_fallback_ = (value == "true" || value == "1");
             }
         }
     }
@@ -207,6 +223,16 @@ void SPTokenizer::build_trie() {
 
 std::string SPTokenizer::preprocess_text(const std::string& text) const {
     if (text.empty()) return text;
+
+    if (sp_bpe_mode_) {
+        std::string processed;
+        if (sp_add_dummy_prefix_) processed += "\xE2\x96\x81";
+        for (char c : text) {
+            if (c == ' ') processed += "\xE2\x96\x81";
+            else processed += c;
+        }
+        return processed;
+    }
 
     std::string processed = "";
     if (model_type_ == ModelType::BERT) {
@@ -358,40 +384,53 @@ std::vector<std::pair<std::string, uint32_t>> SPTokenizer::tokenize_with_trie(co
     return result;
 }
 
-std::vector<std::string> SPTokenizer::split_with_special_tokens(const std::string& text) const {
-    std::vector<std::string> result;
-    
-    size_t start = 0;
-    while (start < text.size()) {
-        size_t best_match_pos = text.size();
-        size_t best_match_len = 0;
-        std::string best_special_token;
-        
-        for (const auto& [special_token, token_id] : special_tokens_) {
-            size_t pos = text.find(special_token, start);
-            if (pos != std::string::npos && pos < best_match_pos) {
-                best_match_pos = pos;
-                best_match_len = special_token.length();
-                best_special_token = special_token;
-            }
-        }
-        
-        if (best_match_pos < text.size()) {
-            if (best_match_pos > start) {
-                std::string before = text.substr(start, best_match_pos - start);
-                result.push_back(before);
-            }
-            result.push_back(best_special_token);
-            start = best_match_pos + best_match_len;
-        } else {
-            if (start < text.size()) {
-                result.push_back(text.substr(start));
-            }
-            break;
-        }
+std::vector<uint32_t> SPTokenizer::tokenize_with_bpe(const std::string& text) const {
+    std::vector<std::string> symbols;
+    for (size_t i = 0; i < text.size(); ) {
+        size_t char_len = 1;
+        unsigned char byte = static_cast<unsigned char>(text[i]);
+        if ((byte & 0xE0) == 0xC0) char_len = 2;
+        else if ((byte & 0xF0) == 0xE0) char_len = 3;
+        else if ((byte & 0xF8) == 0xF0) char_len = 4;
+        if (i + char_len <= text.size()) symbols.push_back(text.substr(i, char_len));
+        i += char_len;
     }
-    
+
+    while (symbols.size() > 1) {
+        int best_index = -1;
+        float best_score = -std::numeric_limits<float>::infinity();
+        for (size_t i = 0; i + 1 < symbols.size(); ++i) {
+            auto it = token_to_id_.find(symbols[i] + symbols[i + 1]);
+            if (it == token_to_id_.end()) continue;
+            float score = it->second < token_scores_.size()
+                ? token_scores_[it->second]
+                : -static_cast<float>(it->second);
+            if (score > best_score) { best_score = score; best_index = static_cast<int>(i); }
+        }
+        if (best_index < 0) break;
+        symbols[best_index] += symbols[best_index + 1];
+        symbols.erase(symbols.begin() + best_index + 1);
+    }
+
+    std::vector<uint32_t> result;
+    for (const auto& symbol : symbols) {
+        auto it = token_to_id_.find(symbol);
+        if (it != token_to_id_.end()) { result.push_back(it->second); continue; }
+        if (sp_byte_fallback_) {
+            for (unsigned char b : symbol) {
+                char buf[7]; std::snprintf(buf, sizeof(buf), "<0x%02X>", b);
+                auto byte_it = token_to_id_.find(buf);
+                result.push_back(byte_it != token_to_id_.end() ? byte_it->second : unk_token_id_);
+            }
+            continue;
+        }
+        result.push_back(unk_token_id_);
+    }
     return result;
+}
+
+std::vector<std::string> SPTokenizer::split_with_special_tokens(const std::string& text) const {
+    return cactus::engine::split_with_special_tokens(text, special_tokens_);
 }
 
 std::vector<uint32_t> SPTokenizer::encode(const std::string& text) const {
@@ -406,11 +445,16 @@ std::vector<uint32_t> SPTokenizer::encode(const std::string& text) const {
             token_ids.push_back(special_it->second);
         } else {
             std::string processed = preprocess_text(segment);
+            if (processed.empty()) continue;
 
-            auto token_pairs = tokenize_with_trie(processed);
-
-            for (const auto& [token, id] : token_pairs) {
-                token_ids.push_back(id);
+            if (sp_bpe_mode_) {
+                auto ids = tokenize_with_bpe(processed);
+                token_ids.insert(token_ids.end(), ids.begin(), ids.end());
+            } else {
+                auto token_pairs = tokenize_with_trie(processed);
+                for (const auto& [token, id] : token_pairs) {
+                    token_ids.push_back(id);
+                }
             }
         }
     }
@@ -419,113 +463,45 @@ std::vector<uint32_t> SPTokenizer::encode(const std::string& text) const {
 }
 
 std::string SPTokenizer::decode(const std::vector<uint32_t>& tokens) const {
-    std::string result;
-
     if (tokens.size() == 1) {
-        uint32_t token_id = tokens[0];
-        if (token_id < id_to_token_.size()) {
-            std::string token = id_to_token_[token_id];
-
-            size_t pos = 0;
-            while (pos < token.length()) {
-                if (pos + 2 < token.length() &&
-                    static_cast<unsigned char>(token[pos]) == 0xE2 &&
-                    static_cast<unsigned char>(token[pos+1]) == 0x96 &&
-                    static_cast<unsigned char>(token[pos+2]) == 0x81) {
-                    result += ' ';
-                    pos += 3;
-                } else {
-                    result += token[pos];
-                    pos++;
-                }
+        if (tokens[0] >= id_to_token_.size()) return {};
+        const std::string& piece = id_to_token_[tokens[0]];
+        unsigned int byte_val;
+        if (piece.size() == 6 && std::sscanf(piece.c_str(), "<0x%02X>", &byte_val) == 1) {
+            return std::string(1, static_cast<char>(byte_val));
+        }
+        std::string result;
+        for (size_t i = 0; i < piece.length(); ) {
+            if (i + 2 < piece.length() &&
+                static_cast<unsigned char>(piece[i])   == 0xE2 &&
+                static_cast<unsigned char>(piece[i+1]) == 0x96 &&
+                static_cast<unsigned char>(piece[i+2]) == 0x81) {
+                result += ' ';
+                i += 3;
+            } else {
+                result += piece[i++];
             }
         }
         return result;
     }
 
-    for (size_t i = 0; i < tokens.size(); i++) {
-        uint32_t token_id = tokens[i];
-        if (token_id < id_to_token_.size()) {
-            std::string token = id_to_token_[token_id];
-
-            size_t pos = 0;
-            while (pos < token.length()) {
-                if (pos + 2 < token.length() &&
-                    static_cast<unsigned char>(token[pos]) == 0xE2 &&
-                    static_cast<unsigned char>(token[pos+1]) == 0x96 &&
-                    static_cast<unsigned char>(token[pos+2]) == 0x81) {
-                    if (!result.empty()) {
-                        result += ' ';
-                    }
-                    pos += 3;
-                } else {
-                    result += token[pos];
-                    pos++;
-                }
-            }
+    std::string raw;
+    for (uint32_t token_id : tokens) {
+        if (token_id >= id_to_token_.size()) continue;
+        const std::string& piece = id_to_token_[token_id];
+        unsigned int byte_val;
+        if (piece.size() == 6 && std::sscanf(piece.c_str(), "<0x%02X>", &byte_val) == 1) {
+            raw.push_back(static_cast<char>(byte_val));
+        } else {
+            raw += piece;
         }
     }
-
-    return result;
+    return postprocess_text(raw);
 }
 
 void SPTokenizer::load_special_tokens(const std::string& config_file) {
-    std::ifstream file(config_file);
-    if (!file.is_open()) {
-        return;
-    }
-    
-    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    
-    size_t pos = content.find("\"special_tokens\"");
-    if (pos == std::string::npos) return;
-    
-    pos = content.find("{", pos);
-    if (pos == std::string::npos) return;
-    
-    size_t end_pos = content.find("}", pos);
-    if (end_pos == std::string::npos) return;
-    
-    std::string special_tokens_section = content.substr(pos + 1, end_pos - pos - 1);
-    
-    std::istringstream iss(special_tokens_section);
-    std::string line;
-    
-    while (std::getline(iss, line)) {
-        size_t colon_pos = line.find(":");
-        if (colon_pos == std::string::npos) continue;
-        
-        std::string id_part = line.substr(0, colon_pos);
-        std::string token_part = line.substr(colon_pos + 1);
-        
-        size_t id_start = id_part.find("\"");
-        size_t id_end = id_part.find("\"", id_start + 1);
-        if (id_start == std::string::npos || id_end == std::string::npos) continue;
-        
-        std::string id_str = id_part.substr(id_start + 1, id_end - id_start - 1);
-        uint32_t token_id = std::stoul(id_str);
-        
-        size_t token_start = token_part.find("\"");
-        size_t token_end = token_part.rfind("\"");
-        if (token_start == std::string::npos || token_end == std::string::npos || token_start >= token_end) continue;
-        
-        std::string token_content = token_part.substr(token_start + 1, token_end - token_start - 1);
-        
-        special_tokens_[token_content] = token_id;
-    }
+    load_special_tokens_map(config_file, special_tokens_);
 }
-
-void SPTokenizer::load_chat_template(const std::string& template_file) {
-    std::ifstream file(template_file);
-    if (!file.is_open()) {
-        has_chat_template_ = false;
-        return;
-    }
-    
-    chat_template_ = std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    has_chat_template_ = !chat_template_.empty();
-}
-
 
 } // namespace engine
 } // namespace cactus

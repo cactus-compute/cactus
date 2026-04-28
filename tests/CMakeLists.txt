@@ -24,14 +24,15 @@ if(APPLE)
     set(CACTUS_CURL_LIBRARY_MACOS "${CACTUS_CURL_ROOT}/macos/libcurl.a")
     cactus_require_vendored_curl("${CACTUS_CURL_INCLUDE_DIR}" "${CACTUS_CURL_LIBRARY_MACOS}" "macOS")
 else()
+    find_package(CURL)
 endif()
 
 set(CACTUS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../cactus)
 set(CACTUS_BUILD_DIR ${CACTUS_ROOT}/build)
 
-find_library(CACTUS_LIB 
+find_library(CACTUS_LIB
     NAMES cactus
-    PATHS ${CACTUS_BUILD_DIR} ${CACTUS_BUILD_DIR}/lib
+    HINTS ${CACTUS_BUILD_DIR} ${CACTUS_BUILD_DIR}/lib
     REQUIRED
 )
  
@@ -46,6 +47,7 @@ if(NOT APPLE)
 else()
     find_library(COREML_FRAMEWORK CoreML REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
     find_library(SECURITY_FRAMEWORK Security REQUIRED)
     find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
     find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
@@ -58,7 +60,7 @@ else()
     message(STATUS "SDL2 not found; microphone tests will be skipped")
 endif()
 
-file(GLOB TEST_SOURCES "test_*.cpp")
+file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "test_*.cpp")
 list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_utils.cpp")
 
 foreach(TEST_FILE ${TEST_SOURCES})
@@ -84,9 +86,14 @@ foreach(TEST_FILE ${TEST_SOURCES})
         target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})
         target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_CURL_INCLUDE_DIR})
         message(STATUS "Test ${TEST_NAME} will link with libcurl")
+    elseif(CURL_FOUND)
+        target_link_libraries(${TEST_NAME} PRIVATE ${CURL_LIBRARIES})
+        target_include_directories(${TEST_NAME} PRIVATE ${CURL_INCLUDE_DIRS})
+        message(STATUS "Test ${TEST_NAME} will link with system libcurl")
     endif()
     if(APPLE)
         target_link_libraries(${TEST_NAME} PRIVATE
+            ${ACCELERATE_FRAMEWORK}
             ${COREML_FRAMEWORK}
             ${FOUNDATION_FRAMEWORK}
             ${SECURITY_FRAMEWORK}
@@ -114,9 +121,13 @@ foreach(APP_NAME chat asr)
         if(APPLE)
             target_link_libraries(${APP_NAME} PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})
             target_include_directories(${APP_NAME} PRIVATE ${CACTUS_CURL_INCLUDE_DIR})
+        elseif(CURL_FOUND)
+            target_link_libraries(${APP_NAME} PRIVATE ${CURL_LIBRARIES})
+            target_include_directories(${APP_NAME} PRIVATE ${CURL_INCLUDE_DIRS})
         endif()
         if(APPLE)
             target_link_libraries(${APP_NAME} PRIVATE
+                ${ACCELERATE_FRAMEWORK}
                 ${COREML_FRAMEWORK}
                 ${FOUNDATION_FRAMEWORK}
                 ${SECURITY_FRAMEWORK}
@@ -125,11 +136,11 @@ foreach(APP_NAME chat asr)
             )
         endif()
 
-        if(SDL2_FOUND AND APP_NAME STREQUAL "asr")
+        if(SDL2_FOUND AND (APP_NAME STREQUAL "asr" OR APP_NAME STREQUAL "chat"))
             target_link_libraries(${APP_NAME} PRIVATE ${SDL2_LIBRARIES})
             target_include_directories(${APP_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
             target_compile_definitions(${APP_NAME} PRIVATE HAVE_SDL2)
-            message(STATUS "asr will link with SDL2 for live transcription")
+            message(STATUS "${APP_NAME} will link with SDL2 for live audio")
         endif()
 
         target_include_directories(${APP_NAME} PRIVATE ${CACTUS_ROOT})

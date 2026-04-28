@@ -3,15 +3,56 @@ import sys
 import os
 import argparse
 import re
+import json
 import subprocess
 import shutil
 import platform
-import json
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).parent.resolve()
-PROJECT_ROOT = SCRIPT_DIR.parent.parent
-DEFAULT_MODEL_ID = "LiquidAI/LFM2.5-1.2B-Instruct"
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def _looks_like_project_root(path: Path) -> bool:
+    return (
+        (path / "python" / "src" / "cli.py").exists()
+        and (path / "cactus").exists()
+        and (path / "tests").exists()
+    )
+
+
+def _resolve_project_root() -> Path:
+    # Optional explicit override for environments running from installed packages.
+    env_root = os.getenv("CACTUS_PROJECT_ROOT", "").strip()
+    if env_root:
+        candidate = Path(env_root).expanduser().resolve()
+        if _looks_like_project_root(candidate):
+            return candidate
+
+    # Prefer the repo containing this CLI module.
+    module_root = SCRIPT_DIR.parent.parent
+    if _looks_like_project_root(module_root):
+        return module_root
+
+    # Fallback: repo containing current working directory.
+    cwd = Path.cwd().resolve()
+    for candidate in [cwd, *cwd.parents]:
+        if _looks_like_project_root(candidate):
+            return candidate
+
+    # Final fallback for unusual layouts.
+    return module_root
+
+
+PROJECT_ROOT = _resolve_project_root()
+DEFAULT_MODEL_ID = "google/gemma-4-E2B-it"
+DEFAULT_TEST_TRANSCRIBE_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
+DEFAULT_TEST_WHISPER_MODEL_ID = "openai/whisper-small"
+DEFAULT_TEST_DIARIZE_MODEL_ID = "pyannote/segmentation-3.0"
+DEFAULT_TEST_EMBED_SPEAKER_MODEL_ID = "pyannote/wespeaker-voxceleb-resnet34-LM"
+WEIGHTS_VARIANT_CHOICES = ["auto", "apple", "standard"]
+
+with open(PROJECT_ROOT / "models.json") as _f:
+    MODELS_REGISTRY = json.load(_f)
 
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
@@ -25,19 +66,26 @@ def print_color(color, message):
     print(f"{color}{message}{NC}")
 
 
-def get_model_dir_name(model_id):
-    """Convert HuggingFace model ID to local directory name."""
-    model_name = model_id.split('/')[-1]
-    model_name = model_name.lower()
-    return model_name
+from .downloads import get_model_dir_name, get_weights_dir, download_from_hf as _download_from_hf_impl
 
 
-def get_weights_dir(model_id):
-    """Get the weights directory path for a model."""
-    if 'silero-vad' in model_id.lower():
-        return PROJECT_ROOT / "weights" / "silero-vad"
-    model_dir = get_model_dir_name(model_id)
-    return PROJECT_ROOT / "weights" / model_dir
+NEEDLE_CHECKPOINT_REPO = "Cactus-Compute/needle"
+NEEDLE_TOKENIZER_REPO = "Cactus-Compute/needle-tokenizer"
+NEEDLE_CHECKPOINT_FILE = "needle.pkl"
+
+
+def is_needle_model_id(model_id):
+    normalized = (model_id or "").strip().lower()
+    if "/" in normalized:
+        normalized = normalized.split("/")[-1]
+    return normalized == "needle" or normalized.startswith("needle-") or normalized.startswith("needle_")
+
+
+def get_effective_weights_dir(model_id, args=None):
+    if not is_needle_model_id(model_id):
+        return get_weights_dir(model_id)
+    return (PROJECT_ROOT / "weights" / "needle").resolve()
+
 
 
 def check_command(cmd):
@@ -63,9 +111,59 @@ def run_command(cmd, cwd=None, check=True):
     return result
 
 
+def _is_stale_binary(binary_path, dependency_paths):
+    binary_path = Path(binary_path)
+    if not binary_path.exists():
+        return True
+
+    try:
+        binary_mtime = binary_path.stat().st_mtime
+    except OSError:
+        return True
+
+    for dep in dependency_paths:
+        dep_path = Path(dep)
+        if not dep_path.exists():
+            continue
+        try:
+            if dep_path.stat().st_mtime > binary_mtime:
+                return True
+        except OSError:
+            continue
+
+    return False
+
+
+def _ensure_chat_binary(project_root, lib_path):
+    tests_dir = project_root / "tests"
+    build_dir = tests_dir / "build"
+    chat_binary = build_dir / "chat"
+    chat_cpp = tests_dir / "chat.cpp"
+
+    if not _is_stale_binary(chat_binary, [lib_path, chat_cpp]):
+        return chat_binary
+
+    print_color(YELLOW, "Refreshing chat binary for current Cactus library...")
+    build_args = argparse.Namespace(
+        apple=False,
+        android=False,
+        flutter=False,
+        python=False,
+    )
+    result = cmd_build(build_args)
+    if result != 0 or not chat_binary.exists():
+        raise RuntimeError("Failed to rebuild chat binary")
+
+    return chat_binary
+
+
 def ensure_vad_weights(model_id, weights_dir, precision='INT8'):
-    """Bundle Silero VAD weights into <weights_dir>/vad/ for whisper/moonshine models."""
-    is_asr = 'whisper' in model_id.lower() or 'moonshine' in model_id.lower()
+    """Bundle Silero VAD weights into <weights_dir>/vad/ for ASR models."""
+    is_asr = (
+        'whisper' in model_id.lower()
+        or 'moonshine' in model_id.lower()
+        or 'parakeet' in model_id.lower()
+    )
     if not is_asr:
         return
     vad_dir = weights_dir / "vad"
@@ -97,68 +195,14 @@ def ensure_vad_weights(model_id, weights_dir, precision='INT8'):
 
 def download_from_hf(model_id, weights_dir, precision):
     """Download pre-converted model from Cactus-Compute HuggingFace."""
-    try:
-        from huggingface_hub import hf_hub_download, list_repo_files
-        import zipfile
-    except ImportError:
-        print_color(RED, "Error: huggingface_hub package not found.")
-        print("Please run: pip install huggingface_hub")
-        return False
-
-    model_name = get_model_dir_name(model_id)
-    org = "Cactus-Compute"
-    repo_id = f"{org}/{model_id.split('/')[-1]}"
-
-    try:
-        precision_lower = precision.lower()
-        apple_zip = f"{model_name}-{precision_lower}-apple.zip"
-        standard_zip = f"{model_name}-{precision_lower}.zip"
-
-        repo_files = list_repo_files(repo_id, repo_type="model")
-
-        zip_file = None
-        if f"weights/{apple_zip}" in repo_files:
-            zip_file = apple_zip
-        elif f"weights/{standard_zip}" in repo_files:
-            zip_file = standard_zip
-        else:
-            print_color(YELLOW, f"Pre-converted model not found in {repo_id}")
-            return False
-
-        print_color(BLUE, f"Downloading from {repo_id}...")
-
-        zip_path = hf_hub_download(
-            repo_id=repo_id,
-            filename=f"weights/{zip_file}",
-            repo_type="model"
-        )
-
-        weights_dir.mkdir(parents=True, exist_ok=True)
-
-        print_color(YELLOW, "Extracting model weights...")
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(weights_dir)
-
-        if not (weights_dir / "config.txt").exists():
-            print_color(RED, f"Error: Downloaded model is missing config.txt")
-            if weights_dir.exists():
-                shutil.rmtree(weights_dir)
-            return False
-
-        print_color(GREEN, f"Successfully downloaded pre-converted model to {weights_dir}")
-        return True
-
-    except Exception:
-        print_color(YELLOW, f"Could not download from {repo_id}")
-        if weights_dir.exists():
-            shutil.rmtree(weights_dir)
-        return False
+    return _download_from_hf_impl(model_id, weights_dir, precision)
 
 
 def cmd_download(args):
     """Download model weights. By default downloads pre-converted weights from Cactus-Compute."""
     model_id = args.model_id
-    weights_dir = get_weights_dir(model_id)
+    is_local = Path(model_id).is_dir()
+    weights_dir = get_effective_weights_dir(model_id, args)
     reconvert = getattr(args, 'reconvert', False)
     precision = getattr(args, 'precision', 'INT4')
 
@@ -175,10 +219,36 @@ def cmd_download(args):
     print_color(YELLOW, f"Model weights not found. Downloading {model_id}...")
     print("=" * 45)
 
-    if not reconvert:
+    if not is_local and is_needle_model_id(model_id):
+        try:
+            from huggingface_hub import hf_hub_download, snapshot_download
+            from .converter import convert_needle_checkpoint
+
+            print_color(YELLOW, "Using Needle exporter...")
+            token = getattr(args, 'token', None)
+            cache_dir = getattr(args, 'cache_dir', None)
+
+            ck_path = hf_hub_download(repo_id=NEEDLE_CHECKPOINT_REPO, filename=NEEDLE_CHECKPOINT_FILE,
+                                      repo_type="model", token=token, cache_dir=cache_dir)
+            tk_snap = Path(snapshot_download(repo_id=NEEDLE_TOKENIZER_REPO, repo_type="dataset",
+                                            allow_patterns=["*.model"], token=token, cache_dir=cache_dir))
+            tk_path = next(tk_snap.rglob("*.model"), None)
+            if not tk_path:
+                raise FileNotFoundError(f"No .model file in tokenizer snapshot: {tk_snap}")
+
+            convert_needle_checkpoint(ck_path, tk_path, weights_dir, precision)
+            print_color(GREEN, f"Successfully exported Needle weights to {weights_dir}")
+            return 0
+        except Exception as e:
+            print_color(RED, f"Error: {e}")
+            return 1
+
+    if not reconvert and not is_local:
         if download_from_hf(model_id, weights_dir, precision):
             ensure_vad_weights(model_id, weights_dir, precision)
             return 0
+
+    tokenizer_labels = None
 
     try:
         import torch
@@ -201,24 +271,73 @@ def cmd_download(args):
 
     print(f"Converting {model_id} to {precision}...")
 
-    from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, AutoModelForImageTextToText, AutoModel, AutoConfig
+    from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModel
 
-    def _download_config_json(repo_id):
-        from huggingface_hub import hf_hub_download
-        config_path = hf_hub_download(repo_id=repo_id, filename="config.json", cache_dir=cache_dir, token=token)
+    import logging
+    logging.getLogger("transformers").setLevel(logging.ERROR)
+    import transformers
+    transformers.logging.set_verbosity_error()
+
+    def _download_config_json(repo_id, revision=None):
+        if Path(repo_id).is_dir():
+            config_path = Path(repo_id) / "config.json"
+        else:
+            from huggingface_hub import hf_hub_download
+            config_path = hf_hub_download(
+                repo_id=repo_id,
+                filename="config.json",
+                cache_dir=cache_dir,
+                token=token,
+                revision=revision,
+            )
         with open(config_path, 'r', encoding='utf-8') as fh:
             return json.load(fh)
 
-    def _load_raw_hf_state_dict(repo_id):
-        from huggingface_hub import snapshot_download
+    def _resolve_hf_revision(repo_id):
+        env_revision = os.getenv("CACTUS_HF_REVISION", "").strip()
+        if env_revision:
+            return env_revision
+        if repo_id.lower() == "nvidia/parakeet-tdt-0.6b-v3":
+            return "refs/pr/7"
+        return None
+
+    class _MinimalTokenizer:
+        """Fallback tokenizer for Parakeet-TDT when HF tokenizer load fails."""
+        def __init__(self, name_or_path, config_obj=None):
+            self.name_or_path = name_or_path
+            self.model_max_length = 131072
+            self.pad_token_id = 0
+            self.eos_token_id = 0
+
+            try:
+                pad_id = config_obj.get('pad_token_id', 0) if isinstance(config_obj, dict) else 0
+                self.pad_token_id = int(pad_id) if pad_id is not None else 0
+            except Exception:
+                self.pad_token_id = 0
+
+            try:
+                decoding = config_obj.get('decoding', {}) if isinstance(config_obj, dict) else {}
+                blank_id = decoding.get('blank_id', None) if isinstance(decoding, dict) else None
+                if blank_id is not None:
+                    self.eos_token_id = int(blank_id)
+                else:
+                    self.eos_token_id = self.pad_token_id
+            except Exception:
+                self.eos_token_id = self.pad_token_id
+
+    def _load_raw_hf_state_dict(repo_id, cast_to_bf16=True):
         from safetensors.torch import load_file as load_safetensors_file
 
-        snapshot_path = Path(snapshot_download(
-            repo_id=repo_id,
-            cache_dir=cache_dir,
-            token=token,
-            allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.bin", "*.bin.index.json"],
-        ))
+        if Path(repo_id).is_dir():
+            snapshot_path = Path(repo_id)
+        else:
+            from huggingface_hub import snapshot_download
+            snapshot_path = Path(snapshot_download(
+                repo_id=repo_id,
+                cache_dir=cache_dir,
+                token=token,
+                allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.bin", "*.bin.index.json"],
+            ))
 
         index_candidates = [
             "model.safetensors.index.json",
@@ -243,9 +362,11 @@ def cmd_download(args):
         if not shard_files:
             raise RuntimeError("No checkpoint shard files found in HuggingFace snapshot.")
 
+        print(f"  Found {len(shard_files)} checkpoint shard file(s)")
         merged_state_dict = {}
-        for shard_name in shard_files:
+        for idx, shard_name in enumerate(shard_files, 1):
             shard_path = snapshot_path / shard_name
+            print(f"  Loading shard {idx}/{len(shard_files)}: {shard_name}")
             if shard_name.endswith(".safetensors"):
                 shard_state = load_safetensors_file(str(shard_path), device="cpu")
             elif shard_name.endswith(".bin"):
@@ -254,6 +375,22 @@ def cmd_download(args):
                 continue
             merged_state_dict.update(shard_state)
 
+        if cast_to_bf16:
+            fp_keys = [
+                k for k, v in merged_state_dict.items()
+                if hasattr(v, "is_floating_point") and v.is_floating_point() and v.dtype != torch.bfloat16
+            ]
+            total_fp = len(fp_keys)
+            if total_fp > 0:
+                print(f"  Normalizing {total_fp} floating tensors to bfloat16...")
+            for i, k in enumerate(fp_keys, 1):
+                merged_state_dict[k] = merged_state_dict[k].to(torch.bfloat16)
+                if i % 200 == 0 or i == total_fp:
+                    print(f"    dtype normalize progress: {i}/{total_fp}")
+        else:
+            print("  Keeping checkpoint dtypes as-is (Gemma4 fast path)")
+
+
         return merged_state_dict
 
     try:
@@ -261,12 +398,17 @@ def cmd_download(args):
     except ImportError:
         Lfm2VlForConditionalGeneration = None
 
-    is_vlm = 'vl' in model_id.lower() or 'vlm' in model_id.lower()
-    is_whisper = 'whisper' in model_id.lower()
-    is_vad = 'silero-vad' in model_id.lower()
+    model_name = str(model_id)
+    is_vlm = 'vl' in model_name.lower() or 'vlm' in model_name.lower()
+    is_whisper = 'whisper' in model_name.lower()
+    is_parakeet = 'parakeet' in model_name.lower()
+    is_vad = 'silero-vad' in model_name.lower()
+    is_pyannote = 'segmentation-3.0' in model_name.lower()
+    is_wespeaker = 'wespeaker' in model_name.lower()
 
     try:
         if is_vlm:
+            from transformers import AutoProcessor, AutoModelForImageTextToText, AutoConfig
             missing_deps = []
             try:
                 from PIL import Image
@@ -322,12 +464,94 @@ def cmd_download(args):
         elif 'moonshine' in model_id.lower():
             from transformers import MoonshineForConditionalGeneration
             print(f"  Note: Loading Moonshine model using MoonshineForConditionalGeneration...")
-            model = MoonshineForConditionalGeneration.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+            model = MoonshineForConditionalGeneration.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, dtype=torch.bfloat16, token=token)
             tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
 
         elif is_whisper:
             tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
-            model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+            model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, dtype=torch.bfloat16, token=token)
+
+        elif is_parakeet:
+            from huggingface_hub import hf_hub_download, snapshot_download
+            from safetensors.torch import load_file as load_safetensors
+
+            revision = _resolve_hf_revision(model_id)
+            config_obj = _download_config_json(model_id, revision=revision)
+            is_parakeet_tdt = 'parakeet-tdt' in model_id.lower()
+            if 'parakeet-tdt' in model_id.lower():
+                cfg_labels = config_obj.get('labels', [])
+                if isinstance(cfg_labels, list) and cfg_labels:
+                    tokenizer_labels = cfg_labels
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    model_id,
+                    cache_dir=cache_dir,
+                    trust_remote_code=True,
+                    token=token,
+                    revision=revision,
+                )
+            except Exception as tok_err:
+                tokenizer = None
+                if "TokenizersBackend" in str(tok_err) or "does not exist or is not currently imported" in str(tok_err):
+                    from transformers import PreTrainedTokenizerFast
+                    print("  Note: Using PreTrainedTokenizerFast fallback for Parakeet tokenizer...")
+                    try:
+                        tokenizer = PreTrainedTokenizerFast.from_pretrained(
+                            model_id,
+                            cache_dir=cache_dir,
+                            token=token,
+                            revision=revision,
+                        )
+                    except Exception as fast_tok_err:
+                        tok_err = fast_tok_err
+
+                if tokenizer is None:
+                    if is_parakeet_tdt and isinstance(tokenizer_labels, list) and tokenizer_labels:
+                        print(f"  Note: Parakeet-TDT tokenizer load failed, using labels fallback ({tok_err})")
+                        tokenizer = _MinimalTokenizer(model_id, config_obj)
+                    else:
+                        raise
+
+            state_dict = None
+            try:
+                weights_path = hf_hub_download(
+                    repo_id=model_id,
+                    filename="model.safetensors",
+                    cache_dir=cache_dir,
+                    token=token,
+                    revision=revision,
+                )
+                state_dict = load_safetensors(weights_path, device="cpu")
+            except Exception:
+                snapshot_path = snapshot_download(
+                    repo_id=model_id,
+                    cache_dir=cache_dir,
+                    token=token,
+                    revision=revision,
+                )
+                index_path = Path(snapshot_path) / "model.safetensors.index.json"
+                if not index_path.exists():
+                    raise
+                with open(index_path, "r", encoding="utf-8") as f:
+                    index_data = json.load(f)
+                shard_files = sorted(set(index_data.get("weight_map", {}).values()))
+                if not shard_files:
+                    raise RuntimeError("Parakeet safetensors index has no shard entries")
+                state_dict = {}
+                for shard_name in shard_files:
+                    shard_path = Path(snapshot_path) / shard_name
+                    shard_state = load_safetensors(str(shard_path), device="cpu")
+                    state_dict.update(shard_state)
+
+            class _StateDictModel:
+                def __init__(self, config, state_dict):
+                    self.config = config
+                    self._state_dict = state_dict
+
+                def state_dict(self):
+                    return self._state_dict
+
+            model = _StateDictModel(config_obj, state_dict)
 
         elif is_vad:
             import urllib.request
@@ -350,6 +574,35 @@ def cmd_download(args):
             print_color(GREEN, f"Successfully downloaded and converted weights to {weights_dir}")
             return 0
 
+        elif is_pyannote or is_wespeaker:
+            try:
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    from pyannote.audio import Model as PyannoteModel
+            except ImportError:
+                print_color(RED, "Error: pyannote.audio is required. Install with: pip install pyannote.audio")
+                return 1
+            from .converter import convert_pyannote_weights, convert_wespeaker_weights
+
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                pyannote_model = PyannoteModel.from_pretrained(model_id, token=token)
+            pyannote_model.eval()
+
+            if is_pyannote:
+                convert_pyannote_weights(pyannote_model, weights_dir, precision, args)
+            else:
+                convert_wespeaker_weights(pyannote_model, weights_dir, precision, args)
+
+            del pyannote_model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            print_color(GREEN, f"Successfully downloaded and converted weights to {weights_dir}")
+            return 0
+
         else:
             config_json = _download_config_json(model_id)
             model_type = str(config_json.get('model_type', '')).lower()
@@ -364,9 +617,21 @@ def cmd_download(args):
                 else:
                     raise
 
-            if model_type == 'lfm2_moe':
-                print("  Note: Loading raw checkpoint tensors for lfm2_moe conversion...")
-                raw_state_dict = _load_raw_hf_state_dict(model_id)
+            if (
+                model_type == 'lfm2_moe'
+                or model_type.startswith('qwen3_5')
+                or model_type == 'youtu'
+                or 'gemma4' in model_type
+                or 'gemma3n' in model_type
+            ):
+                if model_type == 'lfm2_moe':
+                    print("  Note: Loading raw checkpoint tensors for lfm2_moe conversion...")
+                elif 'gemma4' in model_type:
+                    print(f"  Note: Loading raw checkpoint tensors for {model_type} conversion...")
+                else:
+                    print(f"  Note: Loading raw checkpoint tensors for {model_type} conversion...")
+                cast_to_bf16 = ('gemma4' not in model_type)
+                raw_state_dict = _load_raw_hf_state_dict(model_id, cast_to_bf16=cast_to_bf16)
 
                 class _RawModelWrapper:
                     def __init__(self, state_dict, config):
@@ -379,18 +644,19 @@ def cmd_download(args):
                 model = _RawModelWrapper(raw_state_dict, config_json)
             else:
                 try:
-                    model = AutoModelForCausalLM.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+                    model = AutoModelForCausalLM.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, dtype=torch.bfloat16, token=token)
                 except ValueError:
-                    model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, token=token)
+                    model = AutoModel.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True, dtype=torch.bfloat16, token=token)
 
         config = convert_hf_model_weights(model, weights_dir, precision, args)
+        del model
 
-        model_name_l = model_id.lower()
-        if 'extract' in model_name_l:
+        model_id_lower = model_id.lower()
+        if 'extract' in model_id_lower:
             config['model_variant'] = 'extract'
-        elif 'vlm' in model_name_l:
+        elif 'vlm' in model_id_lower:
             config['model_variant'] = 'vlm'
-        elif 'rag' in model_name_l:
+        elif 'rag' in model_id_lower:
             config['model_variant'] = 'rag'
         else:
             config.setdefault('model_variant', 'default')
@@ -400,15 +666,22 @@ def cmd_download(args):
             config['precision'] = "FP16"
         else:
             config['precision'] = precision
+        config['quantization'] = precision # this is for CLI display only
 
         config_path = weights_dir / "config.txt"
         with open(config_path, 'w') as f:
             for key, value in config.items():
                 f.write(f"{key}={format_config_value(value)}\n")
 
-        convert_hf_tokenizer(tokenizer, weights_dir, token=token)
+        convert_hf_tokenizer(
+            tokenizer,
+            weights_dir,
+            token=token,
+            model_id=model_id,
+            labels=tokenizer_labels,
+            model_type=config.get('model_type'),
+        )
 
-        del model
         del tokenizer
         import torch
         if torch.cuda.is_available():
@@ -500,6 +773,35 @@ def cmd_build(args):
 
     is_darwin = platform.system() == "Darwin"
 
+    sdl2_available = False
+    sdl2_flags = []
+    sdl2_link = []
+    if is_darwin:
+        sdl2_check = subprocess.run(["brew", "list", "sdl2"], capture_output=True)
+        if sdl2_check.returncode == 0:
+            sdl2_prefix_result = subprocess.run(["brew", "--prefix", "sdl2"], capture_output=True, text=True)
+            if sdl2_prefix_result.returncode == 0:
+                sdl2_prefix = sdl2_prefix_result.stdout.strip()
+                sdl2_flags = ["-DHAVE_SDL2", f"-I{sdl2_prefix}/include", f"-I{sdl2_prefix}/include/SDL2"]
+                sdl2_link = [f"-L{sdl2_prefix}/lib", "-lSDL2"]
+                sdl2_available = True
+    else:
+        sdl2_check = subprocess.run(["pkg-config", "--exists", "sdl2"], capture_output=True)
+        if sdl2_check.returncode == 0:
+            cflags = subprocess.run(["pkg-config", "--cflags", "sdl2"], capture_output=True, text=True)
+            libs = subprocess.run(["pkg-config", "--libs", "sdl2"], capture_output=True, text=True)
+            if cflags.returncode == 0 and libs.returncode == 0:
+                sdl2_flags = ["-DHAVE_SDL2"] + cflags.stdout.strip().split()
+                sdl2_link = libs.stdout.strip().split()
+                sdl2_available = True
+
+    if sdl2_available:
+        print_color(GREEN, "SDL2 found - building with live audio support")
+    else:
+        print_color(YELLOW, "SDL2 not found - live mic recording will be disabled")
+        print_color(YELLOW, "Install SDL2 for live mic support: brew install sdl2 (macOS)")
+        print_color(YELLOW, "Then run `cactus build`")
+
     if is_darwin:
         if not vendored_curl.exists():
             print_color(RED, f"Error: vendored libcurl not found at {vendored_curl}")
@@ -510,6 +812,7 @@ def cmd_build(args):
             compiler, "-std=c++20", "-O3",
             "-DACCELERATE_NEW_LAPACK",
             f"-I{PROJECT_ROOT}",
+            *sdl2_flags,
             str(chat_cpp),
             str(lib_path),
             "-o", "chat",
@@ -520,17 +823,20 @@ def cmd_build(args):
             "-framework", "Security",
             "-framework", "SystemConfiguration",
             "-framework", "CFNetwork",
+            *sdl2_link,
         ]
     else:
         compiler = "g++"
         cmd = [
             compiler, "-std=c++20", "-O3",
             f"-I{PROJECT_ROOT}",
+            *sdl2_flags,
             str(chat_cpp),
             str(lib_path),
             "-o", "chat",
             "-lcurl",
-            "-pthread"
+            "-pthread",
+            *sdl2_link,
         ]
 
     if not check_command(compiler):
@@ -548,45 +854,12 @@ def cmd_build(args):
     if asr_cpp.exists():
         print("Compiling asr.cpp...")
 
-        # Check for SDL2 and get flags
-        sdl2_available = False
-        sdl2_include = ""
-        sdl2_lib = ""
-
-        if is_darwin:
-            sdl2_check = subprocess.run(["brew", "list", "sdl2"], capture_output=True)
-            if sdl2_check.returncode == 0:
-                sdl2_prefix_result = subprocess.run(["brew", "--prefix", "sdl2"], capture_output=True, text=True)
-                if sdl2_prefix_result.returncode == 0:
-                    sdl2_prefix = sdl2_prefix_result.stdout.strip()
-                    sdl2_include = f"-I{sdl2_prefix}/include"
-                    sdl2_lib = f"-L{sdl2_prefix}/lib -lSDL2"
-                    sdl2_available = True
-        else:
-            sdl2_check = subprocess.run(["pkg-config", "--exists", "sdl2"], capture_output=True)
-            if sdl2_check.returncode == 0:
-                cflags = subprocess.run(["pkg-config", "--cflags", "sdl2"], capture_output=True, text=True)
-                libs = subprocess.run(["pkg-config", "--libs", "sdl2"], capture_output=True, text=True)
-                if cflags.returncode == 0 and libs.returncode == 0:
-                    sdl2_include = cflags.stdout.strip()
-                    sdl2_lib = libs.stdout.strip()
-                    sdl2_available = True
-
-        if sdl2_available:
-            print_color(GREEN, "SDL2 found - building with live transcription support")
-        else:
-            print_color(YELLOW, "SDL2 not found - live transcription will be disabled")
-            print_color(YELLOW, "Install SDL2 for live mic support: brew install sdl2 (macOS)")
-
         if is_darwin:
             cmd = [
                 compiler, "-std=c++20", "-O3",
                 "-DACCELERATE_NEW_LAPACK",
                 f"-I{PROJECT_ROOT}",
-            ]
-            if sdl2_available:
-                cmd.extend(["-DHAVE_SDL2", sdl2_include])
-            cmd.extend([
+                *sdl2_flags,
                 str(asr_cpp),
                 str(lib_path),
                 "-o", "asr",
@@ -597,25 +870,20 @@ def cmd_build(args):
                 "-framework", "Security",
                 "-framework", "SystemConfiguration",
                 "-framework", "CFNetwork",
-            ])
-            if sdl2_available:
-                cmd.extend(sdl2_lib.split())
+                *sdl2_link,
+            ]
         else:
             cmd = [
                 compiler, "-std=c++20", "-O3",
                 f"-I{PROJECT_ROOT}",
-            ]
-            if sdl2_available:
-                cmd.extend(["-DHAVE_SDL2", sdl2_include])
-            cmd.extend([
+                *sdl2_flags,
                 str(asr_cpp),
                 str(lib_path),
                 "-o", "asr",
                 "-lcurl",
-                "-pthread"
-            ])
-            if sdl2_available:
-                cmd.extend(sdl2_lib.split())
+                "-pthread",
+                *sdl2_link,
+            ]
 
         result = subprocess.run(cmd, cwd=build_dir)
         if result.returncode != 0:
@@ -759,7 +1027,7 @@ def cmd_run(args):
     api_key = prompt_for_api_key(config)
 
     if api_key:
-        os.environ["CACTUS_CLOUD_API_KEY"] = api_key
+        os.environ["CACTUS_CLOUD_KEY"] = api_key
 
     model_id = args.model_id
 
@@ -779,22 +1047,54 @@ def cmd_run(args):
         download_result = cmd_download(args)
         if download_result != 0:
             return download_result
-        weights_dir = get_weights_dir(model_id)
+        weights_dir = get_effective_weights_dir(model_id, args)
 
-    chat_binary = PROJECT_ROOT / "tests" / "build" / "chat"
+    image_path = getattr(args, 'image', None)
+    if image_path:
+        image_path = str(Path(image_path).resolve())
+        if not Path(image_path).exists():
+            print_color(RED, f"Error: Image file not found: {image_path}")
+            return 1
+        valid_exts = {'.png', '.jpg', '.jpeg', '.bmp'}
+        if Path(image_path).suffix.lower() not in valid_exts:
+            print_color(RED, f"Error: Unsupported image format. Supported: {', '.join(valid_exts)}")
+            return 1
 
-    if not chat_binary.exists():
-        print_color(RED, f"Error: Chat binary not found at {chat_binary}")
+    try:
+        chat_binary = _ensure_chat_binary(PROJECT_ROOT, lib_path)
+    except RuntimeError as exc:
+        print_color(RED, f"Error: {exc}")
         return 1
 
     os.system('clear' if platform.system() != 'Windows' else 'cls')
     print_color(GREEN, f"Starting Cactus Chat with model: {model_id}")
     print()
 
-    os.execv(str(chat_binary), [str(chat_binary), str(weights_dir)])
+    audio_path = getattr(args, 'audio', None)
+    if audio_path:
+        audio_path = str(Path(audio_path).resolve())
+        if not Path(audio_path).exists():
+            print_color(RED, f"Error: Audio file not found: {audio_path}")
+            return 1
+
+    cmd_args = [str(chat_binary), str(weights_dir)]
+    if image_path:
+        cmd_args.extend(['--image', image_path])
+    if audio_path:
+        cmd_args.extend(['--audio', audio_path])
+    system_prompt = getattr(args, 'system', None)
+    if system_prompt:
+        cmd_args.extend(['--system', system_prompt])
+    prompt = getattr(args, 'prompt', None)
+    if prompt:
+        cmd_args.extend(['--prompt', prompt])
+    if getattr(args, 'thinking', False):
+        cmd_args.append('--thinking')
+
+    os.execv(str(chat_binary), cmd_args)
 
 
-DEFAULT_ASR_MODEL_ID = "openai/whisper-small"
+DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 
 def _pick_android_device_id(preferred_device=None):
     if preferred_device:
@@ -910,7 +1210,7 @@ def _cmd_transcribe_android(weights_dir, audio_file, args):
         print_color(RED, "Failed to push audio file to device")
         return 1
 
-    cloud_api_key = os.environ.get("CACTUS_CLOUD_API_KEY", "")
+    cloud_api_key = os.environ.get("CACTUS_CLOUD_KEY", os.environ.get("CACTUS_CLOUD_API_KEY", ""))
     cloud_strict_ssl = os.environ.get("CACTUS_CLOUD_STRICT_SSL", "")
     cloud_handoff_threshold = os.environ.get("CACTUS_CLOUD_HANDOFF_THRESHOLD", "")
     ca_bundle = os.environ.get("CACTUS_CA_BUNDLE", "")
@@ -918,7 +1218,7 @@ def _cmd_transcribe_android(weights_dir, audio_file, args):
     force_handoff = os.environ.get("CACTUS_FORCE_HANDOFF", "")
     env_exports = []
     if cloud_api_key:
-        env_exports.append(f"export CACTUS_CLOUD_API_KEY='{cloud_api_key}'")
+        env_exports.append(f"export CACTUS_CLOUD_KEY='{cloud_api_key}'")
     if cloud_strict_ssl:
         env_exports.append(f"export CACTUS_CLOUD_STRICT_SSL='{cloud_strict_ssl}'")
     if cloud_handoff_threshold:
@@ -971,7 +1271,7 @@ def cmd_transcribe(args):
     api_key = prompt_for_api_key(config)
 
     if api_key:
-        os.environ["CACTUS_CLOUD_API_KEY"] = api_key
+        os.environ["CACTUS_CLOUD_KEY"] = api_key
 
     model_id = getattr(args, 'model_id', DEFAULT_ASR_MODEL_ID)
     audio_file = getattr(args, 'audio_file', None)
@@ -1085,7 +1385,7 @@ def cmd_eval(args):
     if download_result != 0:
         return download_result
 
-    weights_dir = get_weights_dir(model_id)
+    weights_dir = get_effective_weights_dir(model_id, args)
     extra = getattr(args, 'extra_args', None) or []
 
     def extra_has_flag(flag: str) -> bool:
@@ -1187,17 +1487,21 @@ def cmd_test(args):
             "If tests fail unexpectedly, rerun with --reconvert."
         )
 
-    if getattr(args, 'large', False):
+    if getattr(args, 'benchmark', False):
         args.model = 'LiquidAI/LFM2.5-VL-1.6B'
-        args.transcribe_model = 'openai/whisper-small'
+        args.transcribe_model = 'nvidia/parakeet-ctc-1.1b'
         print_color(BLUE, f"Using large models: {args.model}, {args.transcribe_model}, {args.vad_model}")
 
     if getattr(args, 'reconvert', False):
-        for model_id in [
+        reconvert_models = [
             getattr(args, 'model', 'LiquidAI/LFM2-VL-450M'),
-            getattr(args, 'transcribe_model', 'openai/whisper-small'),
-            getattr(args, 'vad_model', 'snakers4/silero-vad')
-        ]:
+            getattr(args, 'transcribe_model', DEFAULT_TEST_TRANSCRIBE_MODEL_ID),
+            getattr(args, 'whisper_model', DEFAULT_TEST_WHISPER_MODEL_ID),
+            getattr(args, 'vad_model', 'snakers4/silero-vad'),
+            getattr(args, 'diarize_model', DEFAULT_TEST_DIARIZE_MODEL_ID),
+            getattr(args, 'embed_speaker_model', DEFAULT_TEST_EMBED_SPEAKER_MODEL_ID),
+        ]
+        for model_id in reconvert_models:
             class DownloadArgs:
                 pass
             dl_args = DownloadArgs()
@@ -1208,7 +1512,8 @@ def cmd_test(args):
                 dl_args.precision = args.precision
             else:
                 is_asr = 'whisper' in model_id.lower() or 'moonshine' in model_id.lower() or 'silero-vad' in model_id.lower()
-                dl_args.precision = 'INT8' if is_asr else 'INT4'
+                is_fp16_only = 'segmentation-3.0' in model_id.lower() or 'wespeaker' in model_id.lower()
+                dl_args.precision = 'FP16' if is_fp16_only else ('INT8' if is_asr else 'INT4')
             if args.token:
                 dl_args.token = args.token
             if cmd_download(dl_args) != 0:
@@ -1226,8 +1531,14 @@ def cmd_test(args):
         cmd.extend(["--model", args.model])
     if args.transcribe_model:
         cmd.extend(["--transcribe_model", args.transcribe_model])
-    if args.vad_model:
+    if getattr(args, 'whisper_model', None):
+        cmd.extend(["--whisper_model", args.whisper_model])
+    if getattr(args, 'vad_model', None):
         cmd.extend(["--vad_model", args.vad_model])
+    if getattr(args, 'diarize_model', None):
+        cmd.extend(["--diarize_model", args.diarize_model])
+    if getattr(args, 'embed_speaker_model', None):
+        cmd.extend(["--embed_speaker_model", args.embed_speaker_model])
     if args.precision:
         cmd.extend(["--precision", args.precision])
     if getattr(args, 'no_rebuild', False):
@@ -1236,8 +1547,15 @@ def cmd_test(args):
         cmd.append("--android")
     if args.ios:
         cmd.append("--ios")
-    if args.only:
-        cmd.extend(["--only", args.only])
+    if getattr(args, 'exhaustive', False):
+        cmd.append("--exhaustive")
+    test_filter = args.only
+    for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance']:
+        if getattr(args, _test_name, False):
+            test_filter = _test_name
+            break
+    if test_filter:
+        cmd.extend(["--only", test_filter])
     env = os.environ.copy()
     if getattr(args, 'enable_telemetry', False):
         env.pop("CACTUS_NO_CLOUD_TELE", None)
@@ -1282,6 +1600,15 @@ def cmd_clean(args):
         shutil.rmtree(telemetry_cache)
     else:
         print(f"Telemetry cache not found: {telemetry_cache}")
+
+    # Re-cache API key from config so users don't need to run `cactus auth` again
+    from .config_utils import CactusConfig
+    config = CactusConfig()
+    saved_key = config.load_config().get("api_key", "")
+    if saved_key:
+        config.cache_api_key(saved_key)
+        masked = saved_key[:4] + "..." + saved_key[-4:]
+        print(f"Restored cached API key: {masked}")
 
     print()
     print("Removing compiled libraries and frameworks...")
@@ -1387,6 +1714,7 @@ def merge_lora_adapter(base_model_id, lora_path, cache_dir=None, token=None):
         base_model_id,
         cache_dir=cache_dir,
         trust_remote_code=True,
+        dtype=torch.bfloat16,
         token=token
     )
     tokenizer = AutoTokenizer.from_pretrained(
@@ -1434,6 +1762,10 @@ def cmd_convert(args):
         merged_model.save_pretrained(temp_merged_dir)
         tokenizer.save_pretrained(temp_merged_dir)
 
+        lora_tok_config = Path(lora_path) / "tokenizer_config.json"
+        if lora_tok_config.exists():
+            shutil.copy2(lora_tok_config, Path(temp_merged_dir) / "tokenizer_config.json")
+
         del merged_model
         import torch
         if torch.cuda.is_available():
@@ -1446,6 +1778,7 @@ def cmd_convert(args):
 
     download_args = DownloadArgs()
     download_args.model_id = model_id
+    download_args.original_model_id = args.model_name
     download_args.precision = args.precision
     download_args.cache_dir = cache_dir
     download_args.token = token
@@ -1467,6 +1800,118 @@ def cmd_convert(args):
         if temp_merged_dir and Path(temp_merged_dir).exists():
             print_color(YELLOW, "Cleaning up temp directory...")
             shutil.rmtree(temp_merged_dir)
+
+
+def cmd_list(args):
+    """List all supported models and their download status."""
+    PIPELINE_DISPLAY = {
+        "text-generation": "Text Generation",
+        "image-text-to-text": "Vision",
+        "automatic-speech-recognition": "Speech Recognition",
+        "feature-extraction": "Embeddings",
+        "voice-activity-detection": "Voice Activity Detection",
+    }
+    PIPELINE_ORDER = list(PIPELINE_DISPLAY.keys())
+    SHOW_TAGS = {"tools", "vision", "embed", "transcription"}
+    EMBED_ALIASES = {"text-embed", "image-embed", "speech-embed"}
+
+    DIM = '\033[2m'
+    BOLD = '\033[1m'
+
+    def filter_tags(tags):
+        result = set()
+        for t in tags:
+            if t in SHOW_TAGS:
+                result.add(t)
+            elif t in EMBED_ALIASES:
+                result.add("embed")
+        return sorted(result)
+
+    def get_dir_size(path):
+        total = 0
+        for entry in path.rglob('*'):
+            if entry.is_file():
+                total += entry.stat().st_size
+        return total
+
+    def format_size(size_bytes):
+        if size_bytes >= 1_000_000_000:
+            return f"{size_bytes / 1_073_741_824:.1f} GB"
+        return f"{size_bytes / 1_048_576:.0f} MB"
+
+    # Group models by pipeline_tag preserving order
+    groups = {}
+    for entry in MODELS_REGISTRY:
+        tag = entry["pipeline_tag"]
+        groups.setdefault(tag, []).append(entry)
+
+    # Find max model name length for alignment
+    max_name = max(len(e["model"]) for e in MODELS_REGISTRY)
+    max_tags_len = 20
+
+    only_downloaded = getattr(args, 'downloaded', False)
+
+    if only_downloaded:
+        print(f"\n {BOLD}Downloaded Models{NC}")
+    else:
+        print(f"\n {BOLD}Supported Models{NC}")
+    print(f" {'─' * 66}")
+
+    for ptag in PIPELINE_ORDER:
+        models = groups.get(ptag)
+        if not models:
+            continue
+
+        section = PIPELINE_DISPLAY[ptag]
+        section_printed = False
+
+        for entry in models:
+            model_id = entry["model"]
+            tags = filter_tags(entry["tags"])
+            tags_str = ", ".join(tags)
+
+            weights_dir = get_weights_dir(model_id)
+            config_path = weights_dir / "config.txt"
+            downloaded = config_path.exists()
+
+            if only_downloaded and not downloaded:
+                continue
+
+            if not section_printed:
+                print(f"\n {BOLD}{section}{NC}")
+                section_printed = True
+
+            if downloaded:
+                prefix = f" {GREEN}\u2b07{NC}  "
+                # Read quantization (weight quantization level, not compute precision)
+                quantization = ""
+                try:
+                    for line in config_path.read_text().splitlines():
+                        if line.startswith("quantization="):
+                            quantization = line.split("=", 1)[1].strip()
+                            break
+                except OSError:
+                    pass
+                dir_size = get_dir_size(weights_dir)
+                size_str = format_size(dir_size)
+                if quantization:
+                    info = f"{size_str} ({quantization})"
+                else:
+                    info = size_str
+            else:
+                prefix = "    "
+                info = ""
+
+            name_pad = model_id.ljust(max_name)
+            tags_pad = tags_str.ljust(max_tags_len)
+
+            if info:
+                print(f"{prefix}{name_pad}  {DIM}{tags_pad}{NC}  {info}")
+            else:
+                print(f"{prefix}{name_pad}  {DIM}{tags_pad}{NC}")
+
+    print()
+    return 0
 
 
 def create_parser():
@@ -1502,19 +1947,19 @@ def create_parser():
   -----------------------------------------------------------------
 
   cactus transcribe [model]            live microphone transcription
-                                       default model: whisper-small
+                                       default model: parakeet-tdt-0.6b-v3
 
     Optional flags:
     --file <audio.wav>                 transcribe audio file instead of mic
-    --precision INT4|INT8|FP16         default: INT8
+    --precision INT4|INT8|FP16         default: INT4
     --token <token>                    HF token (for gated models)
     --reconvert                        force model weights reconversion from source
 
     Examples:
     cactus transcribe                  live microphone transcription
     cactus transcribe --file audio.wav transcribe single file
-    cactus transcribe openai/whisper-small   use different model
-    cactus transcribe openai/whisper-small --file audio.wav
+    cactus transcribe nvidia/parakeet-ctc-1.1b     use different model
+    cactus transcribe nvidia/parakeet-tdt-0.6b-v3 --file audio.wav
 
    -----------------------------------------------------------------
 
@@ -1554,14 +1999,29 @@ def create_parser():
 
     Optional flags:
     --model <model>                    default: LFM2-VL-450M
-    --transcribe_model <model>         default: openai/whisper-small
-    --large                            use larger models (LFM2.5-VL-1.6B + openai/whisper-small)
+    --transcribe_model <model>         default: nvidia/parakeet-tdt-0.6b-v3
+    --whisper_model <model>            default: openai/whisper-small (language detection)
+    --benchmark                        use larger models (LFM2.5-VL-1.6B + nvidia/parakeet-ctc-1.1b)
     --precision INT4|INT8|FP16         regenerates weights with precision
     --reconvert                        force model weights reconversion from source
     --no-rebuild                       skip building library and tests
-    --only <test_name>                 run specific test (llm, vlm, stt, embed, rag, graph, index, kernel, kv_cache, performance, etc)
+    --llm                              run only LLM tests
+    --vlm                              run only VLM tests
+    --stt                              run only speech-to-text tests
+    --embed                            run only embedding tests
+    --rag                              run only RAG tests
+    --graph                            run only graph tests
+    --index                            run only index tests
+    --kernel                           run only kernel tests
+    --kv_cache                         run only KV cache tests
+    --performance                      run only performance benchmarks
     --ios                              run on connected iPhone
     --android                          run on connected Android
+
+  -----------------------------------------------------------------
+
+  cactus list                          list all supported models
+                                       shows download status
 
   -----------------------------------------------------------------
 
@@ -1604,6 +2064,9 @@ def create_parser():
                                  help='Quantization precision (default: INT4)')
     download_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     download_parser.add_argument('--token', help='HuggingFace API token')
+
+    download_parser.add_argument('--weights-variant', choices=WEIGHTS_VARIANT_CHOICES, default='auto',
+                                 help='Weights package preference: auto (default), apple, or standard')
     download_parser.add_argument('--reconvert', action='store_true',
                                  help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
 
@@ -1624,10 +2087,22 @@ def create_parser():
                             help='Quantization precision (default: INT4)')
     run_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     run_parser.add_argument('--token', help='HuggingFace API token')
+    run_parser.add_argument('--weights-variant', choices=WEIGHTS_VARIANT_CHOICES, default='auto',
+                            help='Weights package preference for auto-download: auto, apple, or standard')
     run_parser.add_argument('--no-cloud-tele', action='store_true',
                             help='Disable cloud telemetry (write to cache only)')
     run_parser.add_argument('--reconvert', action='store_true',
                             help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
+    run_parser.add_argument('--image',
+                            help='Path to image file for VLM inference (attached to first message)')
+    run_parser.add_argument('--audio',
+                            help='Path to audio file (WAV) for audio chat (attached to first message)')
+    run_parser.add_argument('--system',
+                            help='System prompt to prepend to all messages')
+    run_parser.add_argument('--prompt',
+                            help='Initial prompt to send immediately')
+    run_parser.add_argument('--thinking', action='store_true',
+                            help='Enable thinking/reasoning for models that support it')
 
     transcribe_parser = subparsers.add_parser('transcribe', help='Download ASR model and run transcription')
     transcribe_parser.add_argument('model_id', nargs='?', default=DEFAULT_ASR_MODEL_ID,
@@ -1636,8 +2111,8 @@ def create_parser():
                                    help='Audio file to transcribe (WAV format). Omit for live microphone.')
     transcribe_parser.add_argument('--language', default='en',
                                    help='Language code for transcription (default: en). Examples: es, fr, de, zh, ja')
-    transcribe_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'], default='INT8',
-                                   help='Quantization precision (default: INT8)')
+    transcribe_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'], default='INT4',
+                                   help='Quantization precision (default: INT4)')
     transcribe_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     transcribe_parser.add_argument('--token', help='HuggingFace API token')
     transcribe_parser.add_argument('--no-cloud-tele', action='store_true',
@@ -1660,6 +2135,8 @@ def create_parser():
                              help='Quantization precision (default: INT4)')
     eval_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     eval_parser.add_argument('--token', help='HuggingFace API token')
+    eval_parser.add_argument('--weights-variant', choices=WEIGHTS_VARIANT_CHOICES, default='auto',
+                             help='Weights package preference for auto-download: auto, apple, or standard')
     eval_parser.add_argument('--tools', action='store_true', help='Run tools evals (default)')
     eval_parser.add_argument('--vlm', action='store_true', help='Run VLM-specific evals')
     eval_parser.add_argument('--stt', action='store_true', help='Run speech-to-text evals')
@@ -1673,12 +2150,18 @@ def create_parser():
     test_parser = subparsers.add_parser('test', help='Run the test suite')
     test_parser.add_argument('--model', default='LiquidAI/LFM2-VL-450M',
                              help='Model to use for tests')
-    test_parser.add_argument('--transcribe_model', default='openai/whisper-small',
+    test_parser.add_argument('--transcribe_model', default=DEFAULT_TEST_TRANSCRIBE_MODEL_ID,
                              help='Transcribe model to use')
+    test_parser.add_argument('--whisper_model', default=DEFAULT_TEST_WHISPER_MODEL_ID,
+                             help='Whisper model to use for language detection tests')
     test_parser.add_argument('--vad_model', default='snakers4/silero-vad',
                              help='VAD model to use')
-    test_parser.add_argument('--large', action='store_true',
-                             help='Use larger models (LFM2.5-VL-1.6B + openai/whisper-small)')
+    test_parser.add_argument('--diarize_model', default=DEFAULT_TEST_DIARIZE_MODEL_ID,
+                             help='Diarization model to use')
+    test_parser.add_argument('--embed_speaker_model', default=DEFAULT_TEST_EMBED_SPEAKER_MODEL_ID,
+                             help='Speaker embedding model to use')
+    test_parser.add_argument('--benchmark', action='store_true',
+                             help='Use larger models (LFM2.5-VL-1.6B + nvidia/parakeet-ctc-1.1b)')
     test_parser.add_argument('--precision', choices=['INT4', 'INT8', 'FP16'],
                              help='Regenerate weights with this precision (deletes existing weights)')
     test_parser.add_argument('--no-rebuild', action='store_true',
@@ -1688,7 +2171,12 @@ def create_parser():
                              help='Run tests on Android')
     test_parser.add_argument('--ios', action='store_true',
                              help='Run tests on iOS')
-    test_parser.add_argument('--only', help='Only run the specified test (llm, vlm, stt, embed, rag, graph, index, kernel, kv_cache, performance, etc)')
+    test_parser.add_argument('--exhaustive', action='store_true',
+                             help='Run exhaustive golden tests for all model families and precisions')
+    test_parser.add_argument('--only', help='(deprecated, use --<test_name> instead) Only run the specified test')
+    for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance']:
+        test_parser.add_argument(f'--{_test_name}', action='store_true',
+                                 help=f'Only run the {_test_name} tests')
     test_parser.add_argument('--enable-telemetry', action='store_true',
                              help='Enable cloud telemetry (disabled by default in tests)')
     test_parser.add_argument('--reconvert', action='store_true',
@@ -1701,6 +2189,10 @@ def create_parser():
                              help='Show current key status without prompting')
 
     clean_parser = subparsers.add_parser('clean', help='Remove all build artifacts')
+
+    list_parser = subparsers.add_parser('list', help='List supported models')
+    list_parser.add_argument('--downloaded', action='store_true',
+                             help='Only show downloaded models')
 
     convert_parser = subparsers.add_parser('convert', help='Convert model to custom output directory')
     convert_parser.add_argument('model_name', help='HuggingFace model name')
@@ -1751,6 +2243,8 @@ def main():
         sys.exit(cmd_auth(args))
     elif args.command == 'clean':
         sys.exit(cmd_clean(args))
+    elif args.command == 'list':
+        sys.exit(cmd_list(args))
     elif args.command == 'convert':
         sys.exit(cmd_convert(args))
     else:

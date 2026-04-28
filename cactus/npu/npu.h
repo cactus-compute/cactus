@@ -10,6 +10,12 @@ namespace cactus {
 namespace npu {
 
 
+struct NPUNamedInput {
+    std::string name;
+    const __fp16* data;
+    std::vector<int> shape;
+};
+
 class NPUEncoder {
 public:
     virtual ~NPUEncoder() = default;
@@ -35,6 +41,11 @@ public:
     virtual __fp16* get_output_buffer() = 0;
 
     virtual size_t get_output_buffer_size() const = 0;
+
+    virtual size_t encode_multimodal_input(
+        const std::vector<NPUNamedInput>& inputs,
+        __fp16* output,
+        const std::string& output_name = "") = 0;
 };
 
 std::unique_ptr<NPUEncoder> create_encoder();

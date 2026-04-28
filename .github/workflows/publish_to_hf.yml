@@ -38,29 +38,22 @@ on:
         required: false
         type: boolean
         default: false
-
-env:
-  MODELS_CONFIG: |
-    [
-      {"model": "google/gemma-3-270m-it",           "int4": true,  "int8": true,  "fp16": false, "apple": false},
-      {"model": "google/functiongemma-270m-it",     "int4": true,  "int8": true,  "fp16": false, "apple": false},
-      {"model": "LiquidAI/LFM2-350M",               "int4": true,  "int8": true,  "fp16": false, "apple": false},
-      {"model": "Qwen/Qwen3-0.6B",                  "int4": true,  "int8": true,  "fp16": false, "apple": false},
-      {"model": "LiquidAI/LFM2-700M",               "int4": true,  "int8": true,  "fp16": false, "apple": false},
-      {"model": "google/gemma-3-1b-it",             "int4": true,  "int8": true,  "fp16": false, "apple": false},
-      {"model": "LiquidAI/LFM2.5-1.2B-Thinking",    "int4": true,  "int8": true,  "fp16": false, "apple": false},
-      {"model": "LiquidAI/LFM2.5-1.2B-Instruct",    "int4": true,  "int8": true,  "fp16": false, "apple": false},
-      {"model": "Qwen/Qwen3-1.7B",                  "int4": true,  "int8": true,  "fp16": false, "apple": false},
-      {"model": "LiquidAI/LFM2-2.6B",               "int4": true,  "int8": true,  "fp16": false, "apple": false},
-      {"model": "LiquidAI/LFM2-VL-450M",            "int4": true,  "int8": true,  "fp16": false, "apple": true},
-      {"model": "LiquidAI/LFM2.5-VL-1.6B",          "int4": true,  "int8": true,  "fp16": false, "apple": true},
-      {"model": "UsefulSensors/moonshine-base",     "int4": true,  "int8": true,  "fp16": false, "apple": true},
-      {"model": "openai/whisper-small",             "int4": true,  "int8": true,  "fp16": false, "apple": true},
-      {"model": "openai/whisper-medium",            "int4": true,  "int8": true,  "fp16": false, "apple": true},
-      {"model": "snakers4/silero-vad",              "int4": true,  "int8": true,  "fp16": false, "apple": false},
-      {"model": "nomic-ai/nomic-embed-text-v2-moe", "int4": true,  "int8": true,  "fp16": false, "apple": false},
-      {"model": "Qwen/Qwen3-Embedding-0.6B",        "int4": true,  "int8": true,  "fp16": false, "apple": false}
-    ]
+      pipeline_tag:
+        description: Pipeline tag (e.g. text-generation)
+        required: false
+        type: string
+      tags:
+        description: Comma-separated tags (e.g. completion,tools)
+        required: false
+        type: string
+      description:
+        description: Model description
+        required: false
+        type: string
+      branch:
+        description: Branch override (uses version tag if empty)
+        required: false
+        type: string
 
 jobs:
   publish:
@@ -77,7 +70,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.version.outputs.tag }}
+          ref: ${{ github.event.inputs.branch || steps.version.outputs.tag }}
 
       - uses: actions/checkout@v4
         with:
@@ -99,13 +92,19 @@ jobs:
           VERSION="${{ steps.version.outputs.tag }}"
 
           publish_model() {
-            local model=$1 int4=$2 int8=$3 fp16=$4 apple=$5
-            FLAGS="--version $VERSION --org $ORG --model $model"
-            [ "$int4" == "true" ] && FLAGS="$FLAGS --int4"
-            [ "$int8" == "true" ] && FLAGS="$FLAGS --int8"
-            [ "$fp16" == "true" ] && FLAGS="$FLAGS --fp16"
-            [ "$apple" == "true" ] && FLAGS="$FLAGS --apple"
-            python -m src.publish_to_hf --task export_model $FLAGS
+            local model=$1 int4=$2 int8=$3 fp16=$4 apple=$5 pipeline_tag=$6 tags=$7 description="${8:-}"
+            local FLAGS=(--version "$VERSION" --org "$ORG" --model "$model")
+            [ "$int4" == "true" ] && FLAGS+=(--int4)
+            [ "$int8" == "true" ] && FLAGS+=(--int8)
+            [ "$fp16" == "true" ] && FLAGS+=(--fp16)
+            [ "$apple" == "true" ] && FLAGS+=(--apple)
+            [ -n "$pipeline_tag" ] && FLAGS+=(--pipeline-tag "$pipeline_tag")
+            [ -n "$tags" ] && FLAGS+=(--tags "$tags")
+            set +e
+            python -m src.publish_to_hf --task export_model "${FLAGS[@]}" --description "$description"
+            local rc=$?
+            set -e
+            return $rc
           }
 
           if [ -n "${{ github.event.inputs.model }}" ]; then
@@ -114,19 +113,35 @@ jobs:
               "${{ github.event.inputs.int4 }}" \
               "${{ github.event.inputs.int8 }}" \
               "${{ github.event.inputs.fp16 }}" \
-              "${{ github.event.inputs.apple }}"
+              "${{ github.event.inputs.apple }}" \
+              "${{ github.event.inputs.pipeline_tag }}" \
+              "${{ github.event.inputs.tags }}" \
+              "${{ github.event.inputs.description }}"
           else
-            echo "$MODELS_CONFIG" | jq -c '.[]' | while read -r config; do
+            FAILED_MODELS=()
+            while read -r config; do
               model=$(echo "$config" | jq -r '.model')
               int4=$(echo "$config" | jq -r '.int4')
               int8=$(echo "$config" | jq -r '.int8')
               fp16=$(echo "$config" | jq -r '.fp16')
               apple=$(echo "$config" | jq -r '.apple')
-              publish_model "$model" "$int4" "$int8" "$fp16" "$apple"
-            done
+              pipeline_tag=$(echo "$config" | jq -r '.pipeline_tag // ""')
+              tags=$(echo "$config" | jq -r 'if .tags then .tags | join(",") else "" end')
+              description=$(echo "$config" | jq -r '.description // ""')
+              if ! publish_model "$model" "$int4" "$int8" "$fp16" "$apple" "$pipeline_tag" "$tags" "$description"; then
+                echo "::error::Failed to publish $model"
+                FAILED_MODELS+=("$model")
+              fi
+            done < <(jq -c '.[]' "$GITHUB_WORKSPACE/models.json")
+
+            if [ ${#FAILED_MODELS[@]} -gt 0 ]; then
+              echo "::error::Failed models: ${FAILED_MODELS[*]}"
+              exit 1
+            fi
           fi
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_HUB_DISABLE_XET: "1"
 
       - name: Update organization README
         if: "!github.event.inputs.model"

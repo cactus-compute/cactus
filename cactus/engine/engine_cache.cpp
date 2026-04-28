@@ -69,13 +69,11 @@ static void tq_shift(LC& c, size_t dst_token, size_t src_token, size_t count,
 namespace cactus {
 namespace engine {
 
-void KVCache::init(size_t layers, size_t max_seq, size_t kv_heads, size_t dim, Precision model_precision,
+void KVCache::init(size_t layers, size_t max_seq, const std::vector<size_t>& layer_dims, const std::vector<size_t>& layer_kv_heads, Precision model_precision,
                    KVQuantMethod method, size_t tq_proj_dim,
                    size_t tq_k_bits, size_t tq_v_bits, bool tq_qjl, uint64_t tq_seed) {
     num_layers = layers;
     max_seq_len = max_seq;
-    num_kv_heads = kv_heads;
-    head_dim = dim;
     precision = model_precision;
     element_size = PrecisionTraits::size_of(precision);
     quant_method = method;
@@ -85,11 +83,16 @@ void KVCache::init(size_t layers, size_t max_seq, size_t kv_heads, size_t dim, P
     tq_use_qjl = tq_qjl;
 
     layer_caches.resize(num_layers);
+    for (size_t i = 0; i < num_layers; i++) {
+        layer_caches[i].head_dim = layer_dims[i];
+        layer_caches[i].kv_heads = layer_kv_heads[i];
+    }
 
     current_seq_len = 0;
     total_seq_len = 0;
 
-    if (quant_method == KVQuantMethod::TURBOQUANT && dim > 0) {
+    if (quant_method == KVQuantMethod::TURBOQUANT && !layer_dims.empty() && layer_dims[0] > 0) {
+        size_t dim = layer_dims[0];
         tq_rotation_signs.resize((dim + 7) / 8);
         size_t proj_groups = (tq_projection_dim + 7) / 8;
         size_t rot_row_bytes = (dim + 7) / 8;
@@ -103,12 +106,16 @@ void KVCache::set_window_size(size_t window, size_t sink) {
     window_size = window;
     sink_size = sink;
 
-    if (num_kv_heads > 0 && head_dim > 0 && window_size > 0) {
-        size_t cache_bytes = window_size * num_kv_heads * head_dim * element_size;
-        size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-        size_t num_scales = window_size * num_kv_heads * num_groups;
+    if (window_size > 0) {
+        for (size_t layer_idx = 0; layer_idx < num_layers; layer_idx++) {
+            size_t head_dim = get_layer_head_dim(layer_idx);
+            if (head_dim == 0) continue;
+            size_t layer_kv = get_layer_kv_heads(layer_idx);
+            size_t cache_bytes = window_size * layer_kv * head_dim * element_size;
+            size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+            size_t num_scales = window_size * layer_kv * num_groups;
+            auto& cache = layer_caches[layer_idx];
 
-        for (auto& cache : layer_caches) {
             cache.keys.resize(cache_bytes);
             cache.values.resize(cache_bytes);
             std::memset(cache.keys.data(), 0, cache_bytes);
@@ -121,11 +128,15 @@ void KVCache::set_window_size(size_t window, size_t sink) {
         }
 
         if (quant_method == KVQuantMethod::TURBOQUANT) {
-            size_t k_ang_bytes = turboquant_angles_bytes_per_head(head_dim, tq_key_angle_bits);
-            size_t v_ang_bytes = turboquant_angles_bytes_per_head(head_dim, tq_value_angle_bits);
-            size_t qjl_bytes = turboquant_qjl_bytes_per_head(tq_projection_dim);
-            for (auto& cache : layer_caches)
-                tq_resize(cache, window_size, num_kv_heads, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl);
+            for (size_t layer_idx = 0; layer_idx < num_layers; layer_idx++) {
+                size_t layer_head_dim = get_layer_head_dim(layer_idx);
+                if (layer_head_dim == 0) continue;
+                size_t layer_kv = get_layer_kv_heads(layer_idx);
+                size_t k_ang_bytes = turboquant_angles_bytes_per_head(layer_head_dim, tq_key_angle_bits);
+                size_t v_ang_bytes = turboquant_angles_bytes_per_head(layer_head_dim, tq_value_angle_bits);
+                size_t qjl_bytes = turboquant_qjl_bytes_per_head(tq_projection_dim);
+                tq_resize(layer_caches[layer_idx], window_size, layer_kv, k_ang_bytes, v_ang_bytes, qjl_bytes, tq_use_qjl);
+            }
         }
     }
 }
@@ -185,13 +196,9 @@ KVCache::CircularView KVCache::get_value_view(size_t layer) {
 
 void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_nodes,
                                const std::vector<size_t>& v_nodes, size_t seq_len,
-                               size_t layers, size_t kv_heads, size_t dim) {
+                               size_t layers) {
     size_t old_seq_len = current_seq_len;
     size_t new_total_len = old_seq_len + seq_len;
-    size_t elements_per_token = kv_heads * dim;
-    size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-    size_t scales_per_token = kv_heads * num_groups;
-    size_t bytes_per_token = elements_per_token * element_size;
 
     total_seq_len += seq_len;
 
@@ -207,6 +214,9 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
     bool any_layer_updated = false;
 
     for (size_t layer_idx = 0; layer_idx < layers; layer_idx++) {
+        if (k_nodes[layer_idx] == 0 || v_nodes[layer_idx] == 0)
+            continue;
+
         auto& cache = layer_caches[layer_idx];
 
         void* k_output = gb->get_output(k_nodes[layer_idx]);
@@ -215,6 +225,13 @@ void KVCache::update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_no
         if (k_output && v_output) {
             const auto& k_buffer = gb->get_output_buffer(k_nodes[layer_idx]);
             const auto& v_buffer = gb->get_output_buffer(v_nodes[layer_idx]);
+
+            size_t dim = get_layer_head_dim(layer_idx);
+            size_t kv_heads = get_layer_kv_heads(layer_idx);
+            size_t elements_per_token = kv_heads * dim;
+            size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+            size_t scales_per_token = kv_heads * num_groups;
+            size_t bytes_per_token = elements_per_token * element_size;
 
             if (quant_method == KVQuantMethod::TURBOQUANT) {
                 size_t k_ang_bytes = turboquant_angles_bytes_per_head(dim, tq_key_angle_bits);
@@ -626,6 +643,77 @@ void KVCache::update_from_npu(size_t layer_idx, const __fp16* k_data, const __fp
 
     if (layer_idx == num_layers - 1) {
         current_seq_len = effective_seq_len;
+    }
+}
+
+void KVCache::remove_token_range(size_t start, size_t count) {
+    if (count == 0 || start >= current_seq_len || start + count > current_seq_len) return;
+
+    size_t tail_tokens = current_seq_len - start - count;
+
+    auto erase_bytes = [](std::vector<uint8_t>& buf, size_t offset, size_t remove, size_t tail) {
+        std::memmove(buf.data() + offset, buf.data() + offset + remove, tail);
+        buf.resize(buf.size() - remove);
+    };
+
+    auto erase_floats = [](std::vector<float>& buf, size_t offset, size_t remove, size_t tail) {
+        std::memmove(buf.data() + offset, buf.data() + offset + remove, tail * sizeof(float));
+        buf.resize(buf.size() - remove);
+    };
+
+    for (size_t i = 0; i < layer_caches.size(); i++) {
+        size_t dim = get_layer_head_dim(i);
+        if (dim == 0) continue;
+        auto& layer = layer_caches[i];
+        size_t num_kv_heads = get_layer_kv_heads(i);
+        size_t bytes_per_tok = num_kv_heads * dim * element_size;
+
+        erase_bytes(layer.keys,   start * bytes_per_tok, count * bytes_per_tok, tail_tokens * bytes_per_tok);
+        erase_bytes(layer.values, start * bytes_per_tok, count * bytes_per_tok, tail_tokens * bytes_per_tok);
+
+        if (precision == Precision::INT8 && !layer.key_scales.empty()) {
+            size_t scaler_per_tok = num_kv_heads * dim / KV_QUANT_GROUP_SIZE;
+            erase_floats(layer.key_scales, start * scaler_per_tok, count * scaler_per_tok, tail_tokens * scaler_per_tok);
+            erase_floats(layer.value_scales, start * scaler_per_tok, count * scaler_per_tok, tail_tokens * scaler_per_tok);
+        }
+    }
+
+    current_seq_len -= count;
+    total_seq_len -= count;
+}
+
+void KVCache::compact_to_windows(const std::vector<size_t>& target_windows) {
+    for (size_t i = 0; i < layer_caches.size(); i++) {
+        size_t dim = get_layer_head_dim(i);
+        if (dim == 0) continue;
+        size_t target = (i < target_windows.size()) ? target_windows[i] : 0;
+        if (target == 0) continue;
+
+        auto& layer = layer_caches[i];
+        size_t num_kv_heads = get_layer_kv_heads(i);
+        size_t layer_tokens = layer.keys.size() / (num_kv_heads * dim * element_size);
+        if (layer_tokens <= target) continue;
+
+        size_t bytes_per_token = num_kv_heads * dim * element_size;
+        size_t keep_bytes = target * bytes_per_token;
+        size_t discard_bytes = (layer_tokens - target) * bytes_per_token;
+
+        std::memmove(layer.keys.data(), layer.keys.data() + discard_bytes, keep_bytes);
+        layer.keys.resize(keep_bytes);
+        std::memmove(layer.values.data(), layer.values.data() + discard_bytes, keep_bytes);
+        layer.values.resize(keep_bytes);
+
+        if (precision == Precision::INT8 && !layer.key_scales.empty()) {
+            size_t num_groups = (dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+            size_t scales_per_token = num_kv_heads * num_groups;
+            size_t keep_scales = target * scales_per_token;
+            size_t discard_scales = (layer_tokens - target) * scales_per_token;
+
+            std::memmove(layer.key_scales.data(), layer.key_scales.data() + discard_scales, keep_scales * sizeof(float));
+            layer.key_scales.resize(keep_scales);
+            std::memmove(layer.value_scales.data(), layer.value_scales.data() + discard_scales, keep_scales * sizeof(float));
+            layer.value_scales.resize(keep_scales);
+        }
     }
 }
 
