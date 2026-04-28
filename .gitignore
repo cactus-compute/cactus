@@ -41,3 +41,5 @@ vision_activations.json
 gemma-4-eap-extras/
 .githooks/
 examples/
+
+packed*

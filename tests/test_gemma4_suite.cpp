@@ -582,17 +582,23 @@ bool test_gemma4_vision_audio() {
 }
 
 
-int main() {
+int main(int argc, char** argv) {
     TestUtils::TestRunner runner("Gemma4 Suite");
 
-    runner.run_test("text_generation", test_text_generation());
-    runner.run_test("tool_call", test_tool_call());
-    runner.run_test("1k_context", test_1k_context());
-    runner.run_test("vision", test_gemma4_vision(false));
-    runner.run_test("vision_npu", test_gemma4_vision(true));
-    runner.run_test("audio", test_gemma4_audio(false));
-    runner.run_test("audio_npu", test_gemma4_audio(true));
-    runner.run_test("vision_audio", test_gemma4_vision_audio());
+    auto want = [&](const char* name) {
+        if (argc <= 1) return true;
+        for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == name) return true;
+        return false;
+    };
+
+    if (want("text_generation")) runner.run_test("text_generation", test_text_generation());
+    if (want("tool_call"))       runner.run_test("tool_call", test_tool_call());
+    if (want("1k_context"))      runner.run_test("1k_context", test_1k_context());
+    if (want("vision"))          runner.run_test("vision", test_gemma4_vision(false));
+    if (want("vision_npu"))      runner.run_test("vision_npu", test_gemma4_vision(true));
+    if (want("audio"))           runner.run_test("audio", test_gemma4_audio(false));
+    if (want("audio_npu"))       runner.run_test("audio_npu", test_gemma4_audio(true));
+    if (want("vision_audio"))    runner.run_test("vision_audio", test_gemma4_vision_audio());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

@@ -118,8 +118,13 @@ void dequant_group(const CactusTQ2* tq2, uint32_t token_id, uint32_t group_idx, 
     }
 
     const __fp16* is = tq2->input_scale + group_idx * gs;
+    const __fp16* isr = tq2->input_scale_recip
+        ? tq2->input_scale_recip + group_idx * gs
+        : nullptr;
     for (uint32_t j = 0; j < gs; j += 8) {
-        vst1q_f16(out + j, vdivq_f16(vld1q_f16(y + j), vld1q_f16(is + j)));
+        float16x8_t sv = isr ? vld1q_f16(isr + j)
+                              : vdivq_f16(vdupq_n_f16(1), vld1q_f16(is + j));
+        vst1q_f16(out + j, vmulq_f16(vld1q_f16(y + j), sv));
     }
 }
 
@@ -166,6 +171,11 @@ int cactus_tq2_load(CactusTQ2* out, const void* blob_ptr, size_t blob_size) {
 
     out->codebook    = reinterpret_cast<const float*>(blob + off_cb);
     out->input_scale = reinterpret_cast<const __fp16*>(blob + off_is);
+    out->input_scale_recip_storage.resize((size_t)num_groups * group_size);
+    for (size_t i = 0; i < out->input_scale_recip_storage.size(); ++i) {
+        out->input_scale_recip_storage[i] = (__fp16)(1.0f / (float)out->input_scale[i]);
+    }
+    out->input_scale_recip = out->input_scale_recip_storage.data();
     out->left_signs  = reinterpret_cast<const int8_t*>(blob + off_rot);
     out->right_signs = reinterpret_cast<const int8_t*>(blob + off_rot + group_size);
     out->permutation = reinterpret_cast<const uint32_t*>(blob + off_rot + 2u * group_size);

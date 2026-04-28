@@ -221,7 +221,27 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     const bool lhs_is_prequantized_int8 = (lhs_buffer.precision == Precision::INT8 &&
                                             lhs_buffer.has_activation_scales());
 
-    if (PrecisionTraits::is_integer(rhs_buffer.precision) && rhs_buffer.group_size > 0) {
+    if (rhs_buffer.precision == Precision::TQ2 || rhs_buffer.precision == Precision::TQ1
+        || rhs_buffer.precision == Precision::TQ3 || rhs_buffer.precision == Precision::TQ4) {
+        if (!pretransposed_rhs) {
+            throw std::runtime_error("TQ matmul requires pretransposed weights");
+        }
+        if (lhs_buffer.precision != Precision::FP16) {
+            throw std::runtime_error("TQ matmul requires FP16 activations");
+        }
+        __fp16* output = node.output_buffer.data_as<__fp16>();
+        if (rhs_buffer.precision == Precision::TQ2) {
+            if (rhs_buffer.tq2 == nullptr) {
+                throw std::runtime_error("TQ2 matmul: descriptor missing");
+            }
+            cactus_matmul_tq2_f16(rhs_buffer.tq2, lhs_buffer.data_as<__fp16>(), output, M, K, N);
+        } else {
+            if (rhs_buffer.tqn == nullptr) {
+                throw std::runtime_error("TQN matmul: descriptor missing");
+            }
+            cactus_matmul_tqn_f16(rhs_buffer.tqn, lhs_buffer.data_as<__fp16>(), output, M, K, N);
+        }
+    } else if (PrecisionTraits::is_integer(rhs_buffer.precision) && rhs_buffer.group_size > 0) {
         const int8_t* rhs = rhs_buffer.data_as<int8_t>();
         const __fp16* rhs_scales = rhs_buffer.scales_as_fp16();
         __fp16* output = node.output_buffer.data_as<__fp16>();
@@ -311,6 +331,23 @@ namespace {
                                             bool lhs_prequantized = false) {
         if (rhs_buffer.precision == Precision::FP16) {
             cactus_matmul_f16(lhs, rhs_buffer.data_as<__fp16>(), output, M, K, N);
+            return;
+        }
+
+        if (rhs_buffer.precision == Precision::TQ2) {
+            if (rhs_buffer.tq2 == nullptr) {
+                throw std::runtime_error("moe_layer TQ2 expert weight descriptor missing");
+            }
+            cactus_matmul_tq2_f16(rhs_buffer.tq2, lhs, output, M, K, N);
+            return;
+        }
+
+        if (rhs_buffer.precision == Precision::TQ1 || rhs_buffer.precision == Precision::TQ3
+            || rhs_buffer.precision == Precision::TQ4) {
+            if (rhs_buffer.tqn == nullptr) {
+                throw std::runtime_error("moe_layer TQN expert weight descriptor missing");
+            }
+            cactus_matmul_tqn_f16(rhs_buffer.tqn, lhs, output, M, K, N);
             return;
         }
 
@@ -2352,4 +2389,3 @@ void compute_weighted_stats_pool_node(GraphNode& node, const std::vector<std::un
         }
     }
 }
-

@@ -395,7 +395,8 @@ namespace {
         uint32_t precision_val = read_u32(in);
         switch (static_cast<Precision>(precision_val)) {
             case Precision::INT8: case Precision::FP16: case Precision::FP32:
-            case Precision::INT4: case Precision::TQ2:
+            case Precision::INT4:
+            case Precision::TQ1: case Precision::TQ2: case Precision::TQ3: case Precision::TQ4:
                 break;
             default:
                 throw std::runtime_error("Graph file corrupted: invalid precision");
@@ -479,6 +480,8 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
 
     if (precision == Precision::TQ2) {
         nodes_[node_index_map_.at(node_id)]->output_buffer.tq2 = mapped_file->tq2();
+    } else if (precision == Precision::TQ1 || precision == Precision::TQ3 || precision == Precision::TQ4) {
+        nodes_[node_index_map_.at(node_id)]->output_buffer.tqn = mapped_file->tqn();
     } else if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
         set_grouped_scales(node_id, mapped_file->group_size(), mapped_file->num_groups(),
                           const_cast<void*>(mapped_file->scales_data()));
@@ -507,14 +510,15 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
     const auto& shape = mapped_file->shape();
     Precision precision = mapped_file->precision();
 
-    if (precision == Precision::TQ2) {
-        throw std::runtime_error("TQ2 is currently supported only for embeddings; use mmap_embeddings");
-    }
-
     size_t node_id = input(shape, precision);
     set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
 
-    if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
+    if (precision == Precision::TQ2) {
+        nodes_[node_index_map_.at(node_id)]->output_buffer.tq2 = mapped_file->tq2();
+    } else if (precision == Precision::TQ1 || precision == Precision::TQ3
+               || precision == Precision::TQ4) {
+        nodes_[node_index_map_.at(node_id)]->output_buffer.tqn = mapped_file->tqn();
+    } else if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
         set_grouped_scales(node_id, mapped_file->group_size(), mapped_file->num_groups(),
                           const_cast<void*>(mapped_file->scales_data()));
 
@@ -841,12 +845,16 @@ MappedFile::MappedFile(MappedFile&& other) noexcept
       alignment_(other.alignment_),
       is_interleaved_(other.is_interleaved_),
       original_N_(other.original_N_),
-      tq2_(std::move(other.tq2_)) {
+      tq2_(std::move(other.tq2_)),
+      tqn_(std::move(other.tqn_)),
+      dequanted_fp16_(std::move(other.dequanted_fp16_)),
+      dequanted_count_(other.dequanted_count_) {
     other.fd_ = -1;
     other.mapped_data_ = nullptr;
     other.file_size_ = 0;
     other.is_interleaved_ = false;
     other.original_N_ = 0;
+    other.dequanted_count_ = 0;
 }
 
 MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
@@ -873,11 +881,15 @@ MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
         is_interleaved_ = other.is_interleaved_;
         original_N_ = other.original_N_;
         tq2_ = std::move(other.tq2_);
+        tqn_ = std::move(other.tqn_);
+        dequanted_fp16_ = std::move(other.dequanted_fp16_);
+        dequanted_count_ = other.dequanted_count_;
         other.fd_ = -1;
         other.mapped_data_ = nullptr;
         other.file_size_ = 0;
         other.is_interleaved_ = false;
         other.original_N_ = 0;
+        other.dequanted_count_ = 0;
     }
     return *this;
 }
@@ -898,15 +910,48 @@ const CactusTQ2* MappedFile::tq2() const {
     return tq2_.get();
 }
 
+const CactusTQN* MappedFile::tqn() const {
+    return tqn_.get();
+}
+
+const __fp16* MappedFile::dequant_to_fp16() {
+    if (dequanted_fp16_) {
+        return dequanted_fp16_.get();
+    }
+    if (shape_.size() != 2) {
+        throw std::runtime_error("dequant_to_fp16: only 2D TQ tensors supported");
+    }
+    size_t N = shape_[0], K = shape_[1];
+    size_t total = N * K;
+    dequanted_fp16_ = std::unique_ptr<__fp16[]>(new __fp16[total]);
+    dequanted_count_ = total;
+    if (precision_ == Precision::TQ2 && tq2_) {
+        cactus_tq2_dequant_layer(tq2_.get(), dequanted_fp16_.get());
+    } else if ((precision_ == Precision::TQ1 || precision_ == Precision::TQ3
+                || precision_ == Precision::TQ4) && tqn_) {
+        cactus_tqn_dequant_layer(tqn_.get(), dequanted_fp16_.get());
+    } else {
+        throw std::runtime_error("dequant_to_fp16: not a TQ tensor");
+    }
+    // After dequant the public face is FP16; existing graph paths can read it
+    // through data() / byte_size() as if it were a plain FP16 weight file.
+    precision_ = Precision::FP16;
+    byte_size_ = total * sizeof(__fp16);
+    data_offset_ = 0;
+    return dequanted_fp16_.get();
+}
+
 const void* MappedFile::scales_data() const {
     return static_cast<const char*>(mapped_data_) + scales_offset_;
 }
 
 void* MappedFile::data() {
+    if (dequanted_fp16_) return dequanted_fp16_.get();
     return static_cast<char*>(mapped_data_) + data_offset_;
 }
 
 const void* MappedFile::data() const {
+    if (dequanted_fp16_) return dequanted_fp16_.get();
     return static_cast<const char*>(mapped_data_) + data_offset_;
 }
 
@@ -964,6 +1009,22 @@ void MappedFile::parse_header() {
         scales_bytes_ = 0;
         group_size_ = tq2_->group_size;
         num_groups_ = tq2_->num_groups;
+        return;
+    }
+
+    if (precision_ == Precision::TQ1 || precision_ == Precision::TQ3
+        || precision_ == Precision::TQ4) {
+        tqn_ = std::make_unique<CactusTQN>();
+        if (!cactus_tqn_load(tqn_.get(), mapped_data_, file_size_)) {
+            throw std::runtime_error("TQN tensor: cactus_tqn_load failed");
+        }
+        // Shape from header: dim0/dim1 already in shape_.
+        byte_size_ = file_size_;
+        data_offset_ = 0;
+        scales_offset_ = 0;
+        scales_bytes_ = 0;
+        group_size_ = tqn_->group_size;
+        num_groups_ = tqn_->num_groups;
         return;
     }
 

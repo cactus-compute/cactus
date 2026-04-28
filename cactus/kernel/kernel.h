@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <arm_neon.h>
+#include <vector>
 
 enum class Precision;
 
@@ -476,6 +477,7 @@ struct CactusTQ2 {
 
     const float*    codebook;
     const __fp16*   input_scale;
+    const __fp16*   input_scale_recip;
     const int8_t*   left_signs;
     const int8_t*   right_signs;
     const uint32_t* permutation;
@@ -483,9 +485,89 @@ struct CactusTQ2 {
     const uint8_t*  packed;
 
     uint32_t inv_permutation[256];
+    std::vector<__fp16> input_scale_recip_storage;
 };
 
 int  cactus_tq2_load(CactusTQ2* out, const void* blob, size_t blob_size);
 void cactus_tq2_dequant_row(const CactusTQ2* tq2, uint32_t token_id, __fp16* out);
+
+// Materialize all [N, K] rows into a fp16 buffer for reference/debug use.
+// Caller-provided buffer must hold N*K __fp16 elements.
+void cactus_tq2_dequant_layer(const CactusTQ2* tq2, __fp16* out);
+
+
+// Generic TQ-N descriptor. Backs Precision::TQ3 (3-bit) and Precision::TQ4
+// (4-bit). The `bits` field tells the kernel which unpack to use. Pointers
+// reference an mmap'd blob.
+//
+// Header layout (matches python/src/tqh_pack.py write_tq_weights):
+//   136-byte fixed header, fields at:
+//     128: rotation_family   (0 = randomized hadamard gs<=256,
+//                             1 = orthogonal full-width gs == K, num_groups == 1)
+//     132: has_input_scale   (0/1)
+//   Followed by 32-byte-aligned blocks:
+//     codebook   fp32[2^bits]
+//     input_scale fp16[K]                       (if has_input_scale)
+//     rotation:  hadamard => int8[gs] left || int8[gs] right || u32[gs] perm
+//                orth     => fp16[K*K] R
+//     scales     fp16[N * num_groups]            (per-row L2 norms)
+//     packed     uint8[N * num_groups * per_group_bytes]
+//                LSB-first within each byte:
+//                  bits == 3: 8 indices per 24-bit LE word (3 bytes)
+//                  bits == 4: 2 indices per byte (low nibble, then high nibble)
+struct CactusTQN {
+    uint32_t dim0;           // rows (N)
+    uint32_t dim1;           // cols (K)
+    uint32_t group_size;
+    uint32_t num_groups;
+    uint32_t bits;           // 3 or 4
+    uint32_t rotation_family;
+    uint32_t per_group_bytes; // group_size * bits / 8
+    uint32_t has_input_scale;
+
+    const float*    codebook;     // [2^bits]
+    const __fp16*   input_scale;  // [K] or null
+    const __fp16*   input_scale_recip; // [K] or null
+    const __fp16*   scales;       // [N * num_groups]
+    const uint8_t*  packed;       // packed indices
+
+    // Hadamard rotation pointers (rotation_family == 0):
+    const int8_t*   left_signs;
+    const int8_t*   right_signs;
+    const uint32_t* permutation;
+    uint32_t        inv_permutation[256];
+
+    // Orthogonal full-width rotation (rotation_family == 1):
+    const __fp16*   orth_R;       // [K*K] or null
+    std::vector<__fp16> input_scale_recip_storage;
+};
+
+// Loads a TQ3 (precision=11, bits=3) or TQ4 (precision=12, bits=4) blob.
+int  cactus_tqn_load(CactusTQN* out, const void* blob, size_t blob_size);
+// Per-row dequant — handles both rotation families and both bit-widths.
+void cactus_tqn_dequant_row(const CactusTQN* tqn, uint32_t row_id, __fp16* out);
+// Materialize the full [N, K] tensor as fp16 for reference/debug use.
+// Caller buffer = N*K __fp16.
+void cactus_tqn_dequant_layer(const CactusTQN* tqn, __fp16* out);
+
+// Fused gemv for Precision::TQ4 with hadamard rotation: y[N] = TQ4(weight) @ x[K].
+// Reads the packed indices + scales + signs/perm + codebook directly from the
+// mmapped blob — never materializes the full fp16 weight matrix. Decode-only
+// (M==1). The activation x is fp16[K]; output y is fp16[N].
+//
+// Internally folds tqn->input_scale into x once, then per row dequantizes one
+// group at a time, immediately accumulates against the corresponding slice of
+// x, and discards the dequantized values. Memory pressure is dominated by the
+// packed indices stream (~K*N/2 bytes for the whole tensor).
+void cactus_gemv_tq4_hadamard_f16(const CactusTQN* tqn, const __fp16* x,
+                                   __fp16* y, size_t N);
+
+// Packed TQ matmul paths. These never materialize the full weight matrix:
+// weights are dequantized into per-row/per-group scratch inside the kernel.
+// A is fp16 [M, K], packed weight rows are [N, K], C is fp16 [M, N].
+void cactus_matmul_tq2_f16(const CactusTQ2* tq2, const __fp16* A, __fp16* C,
+                           size_t M, size_t K, size_t N);
+void cactus_matmul_tqn_f16(const CactusTQN* tqn, const __fp16* A, __fp16* C,
+                           size_t M, size_t K, size_t N);
 
 #endif

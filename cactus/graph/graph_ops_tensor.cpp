@@ -237,6 +237,18 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
         }
         return;
     }
+    if (emb_prec == Precision::TQ1 || emb_prec == Precision::TQ3 || emb_prec == Precision::TQ4) {
+        const CactusTQN* tqn = embeddings_buffer.tqn;
+        if (tqn == nullptr) {
+            throw std::runtime_error("TQN embedding: descriptor missing");
+        }
+        for (size_t i = 0; i < num_indices; i++) {
+            uint32_t idx = static_cast<uint32_t>(indices_ptr[i]);
+            if (idx >= tqn->dim0) idx = 0;
+            cactus_tqn_dequant_row(tqn, idx, output + i * hidden_dim);
+        }
+        return;
+    }
     if (PrecisionTraits::is_integer(emb_prec) && embeddings_buffer.group_size > 0) {
         const int8_t* embeddings = embeddings_buffer.data_as<int8_t>();
         const __fp16* scales = embeddings_buffer.scales_as_fp16();

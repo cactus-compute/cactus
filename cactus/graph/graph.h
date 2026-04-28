@@ -100,13 +100,17 @@ namespace GraphFile {
 }
 
 struct CactusTQ2;
+struct CactusTQN;
 
 enum class Precision {
     INT8 = 0,
     FP16 = 1,
     FP32 = 2,
     INT4 = 3,
+    TQ1  = 9,
     TQ2  = 10,
+    TQ3  = 11,
+    TQ4  = 12,
 };
 
 enum class ComputeBackend {
@@ -162,7 +166,10 @@ struct PrecisionTraits {
             case Precision::FP16: return 2;
             case Precision::FP32: return 4;
             case Precision::INT4: return 1;
+            case Precision::TQ1:  return 1;
             case Precision::TQ2:  return 1;
+            case Precision::TQ3:  return 1;
+            case Precision::TQ4:  return 1;
         }
         return 1;
     }
@@ -170,7 +177,10 @@ struct PrecisionTraits {
     static constexpr size_t packed_size_of(Precision prec, size_t count) {
         switch (prec) {
             case Precision::INT4: return (count + 1) / 2;
+            case Precision::TQ1:  return (count + 7) / 8;
             case Precision::TQ2:  return (count + 3) / 4;
+            case Precision::TQ3:  return (count * 3 + 7) / 8;
+            case Precision::TQ4:  return (count + 1) / 2;
             default: return count * size_of(prec);
         }
     }
@@ -188,7 +198,10 @@ struct PrecisionTraits {
         switch (prec) {
             case Precision::INT8: return true;
             case Precision::INT4: return true;
+            case Precision::TQ1:  return true;
             case Precision::TQ2:  return true;
+            case Precision::TQ3:  return true;
+            case Precision::TQ4:  return true;
             case Precision::FP16: return false;
             case Precision::FP32: return false;
         }
@@ -199,7 +212,10 @@ struct PrecisionTraits {
         switch (prec) {
             case Precision::INT8: return false;
             case Precision::INT4: return false;
+            case Precision::TQ1:  return false;
             case Precision::TQ2:  return false;
+            case Precision::TQ3:  return false;
+            case Precision::TQ4:  return false;
             case Precision::FP16: return true;
             case Precision::FP32: return true;
         }
@@ -251,8 +267,11 @@ struct BufferDesc {
     bool is_interleaved = false;
     size_t original_N = 0;
 
-    // Set for Precision::TQ2. Descriptor lifetime matches the backing MappedFile.
+    // Set for Precision::TQ2 (legacy 2-bit) and TQ3/TQ4 via the generic CactusTQN
+    // descriptor (carries `bits` field internally). Descriptor lifetime matches
+    // the backing MappedFile.
     const CactusTQ2* tq2 = nullptr;
+    const CactusTQN* tqn = nullptr;
 
     void* activation_scales_data = nullptr;
     std::unique_ptr<char[]> owned_activation_scales;
@@ -752,8 +771,16 @@ namespace GraphFile {
         bool is_interleaved() const { return is_interleaved_; }
         size_t original_N() const { return original_N_; }
 
-        // Set for Precision::TQ2; pointers inside reference the mmap'd blob.
+        // Set for Precision::TQ2; for TQ3/TQ4, use tqn() for the generic descriptor.
+        // Pointers inside reference the mmap'd blob.
         const CactusTQ2* tq2() const;
+        const CactusTQN* tqn() const;
+
+        // Debug/reference escape hatch only. Runtime TQ matmul and embedding
+        // paths keep weights packed and dequantize inside fused kernels.
+        // After dequant_to_fp16() returns, data() points into the owned buffer
+        // and precision()/byte_size() reflect FP16.
+        const __fp16* dequant_to_fp16();
 
         void* data();
         const void* data() const;
@@ -781,6 +808,9 @@ namespace GraphFile {
         size_t original_N_ = 0;
 
         std::unique_ptr<CactusTQ2> tq2_;
+        std::unique_ptr<CactusTQN> tqn_;
+        std::unique_ptr<__fp16[]> dequanted_fp16_;
+        size_t dequanted_count_ = 0;
 
         void parse_header();
         void apply_madvise_hints();
