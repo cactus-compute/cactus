@@ -134,6 +134,7 @@ enum class OpType {
     SCATTER_TOPK,
     TOPK, LAYERNORM, GROUPNORM,
     MOE_LAYER,
+    GROUPED_MLP_INT8,
     INDEX,
     PERSISTENT,
     QUANTIZE_ACTIVATIONS,
@@ -371,6 +372,33 @@ struct OpParams {
     size_t num_altup_inputs = 0;
     size_t v_head_dim = 0;
     size_t kernel_size = 0;
+
+    // Grouped MLP K=96 routing (Cactus-Compute/gemma4-e2b-grouped-k96).
+    // cluster_offsets has length k_groups+1; values are aligned to cactus's
+    // INT8 GCD (32) so per-cluster slabs map to whole 4-row N-blocks and
+    // 32-element K-groups in the interleaved weight layout.
+    std::vector<uint32_t> cluster_offsets;
+    size_t k_groups = 0;
+    size_t k_active = 0;
+
+    // K96 "packed" path: per-cluster contiguous up_w + down_w bytes from a
+    // single mmapped file. When `k96_packed_base` is non-null, the grouped MLP
+    // op uses these instead of separate up/down BufferDescs.
+    //
+    //   k96_packed_base:     start of mmap'd packed file (read-only)
+    //   k96_cluster_sizes:   length k_groups, cluster N_c (multiple of 32, may be 0)
+    //   k96_up_w_offsets:    length k_groups, byte offset into base for cluster c's up_w
+    //   k96_up_s_offsets:    length k_groups, byte offset into base for cluster c's up_s
+    //   k96_down_w_offsets:  length k_groups, byte offset into base for cluster c's down_w
+    //   k96_down_s_offsets:  length k_groups, byte offset into base for cluster c's down_s
+    //   k96_packed_is_int4:  true if up_w/down_w are INT4-packed
+    const char* k96_packed_base = nullptr;
+    const uint32_t* k96_cluster_sizes = nullptr;
+    const uint64_t* k96_up_w_offsets = nullptr;
+    const uint64_t* k96_up_s_offsets = nullptr;
+    const uint64_t* k96_down_w_offsets = nullptr;
+    const uint64_t* k96_down_s_offsets = nullptr;
+    bool k96_packed_is_int4 = false;
 };
 
 struct GraphNode {
@@ -554,6 +582,26 @@ public:
     size_t groupnorm(size_t input, size_t weight, size_t bias, size_t num_groups = 32, float epsilon = 1e-5f);
     size_t batchnorm(size_t input, size_t weight, size_t bias, size_t running_mean, size_t running_var, int axis = 1, float epsilon = 1e-5f);
     size_t topk(size_t input, size_t k);
+    // K-grouped experts MLP at INT8: gate_proj is full, up/down are selective
+    // over the top-`k_active` clusters (out of `k_groups`). cluster_offsets is
+    // length k_groups+1, values 32-aligned, contiguous-block layout.
+    size_t grouped_mlp_int8(size_t hidden, size_t gate_weight, size_t up_weight,
+                             size_t down_weight, size_t k_groups, size_t k_active,
+                             const std::vector<uint32_t>& cluster_offsets);
+    // Variant using a per-cluster contiguously-packed weight file (see
+    // k96_packed_base in OpParams). gate_weight is still the full d_ffn matrix.
+    size_t grouped_mlp_int8_packed(size_t hidden, size_t gate_weight,
+                                    size_t k_groups, size_t k_active,
+                                    const std::vector<uint32_t>& cluster_offsets,
+                                    const char* packed_base,
+                                    const uint32_t* cluster_sizes,
+                                    const uint64_t* up_w_offsets,
+                                    const uint64_t* up_s_offsets,
+                                    const uint64_t* down_w_offsets,
+                                    const uint64_t* down_s_offsets,
+                                    size_t hidden_dim,
+                                    size_t d_ffn,
+                                    Precision packed_precision);
     size_t moe_layer(size_t hidden,
                      size_t routing_probs,
                      size_t topk_indices,

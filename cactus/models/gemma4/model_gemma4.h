@@ -13,7 +13,7 @@ class Gemma4Model : public Model {
 public:
     Gemma4Model();
     explicit Gemma4Model(const Config& config);
-    ~Gemma4Model() override = default;
+    ~Gemma4Model() override;
 
 protected:
     size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
@@ -115,6 +115,33 @@ private:
     std::vector<__fp16> v_norm_ones_weight_;
     size_t v_norm_ones_node_ = 0;
     size_t v_norm_ones_global_node_ = 0;
+
+    // K=96 grouped-experts MLP routing (Cactus-Compute/gemma4-e2b-grouped-k96).
+    // When `k96_enabled_` is true, build_mlp uses gb->grouped_mlp_int8 with the
+    // per-layer cluster offsets loaded from k96_cluster_offsets.bin.
+    bool k96_enabled_ = false;
+    size_t k96_k_groups_ = 0;
+    size_t k96_k_active_ = 0;
+    std::vector<std::vector<uint32_t>> k96_cluster_offsets_;
+
+    // K96 "packed" path (per-cluster contiguous up_w + down_w). When `k96_packed_`
+    // is true, we mmap one file per layer (`layer_N_ffn_packed.weights`) and
+    // build the MLP with `gb->grouped_mlp_int8_packed`. Gate is unchanged.
+    struct PackedFFN {
+        void*  base = nullptr;     // mmap base
+        size_t size = 0;
+        int    fd = -1;
+        bool   is_int4 = false;
+        size_t hidden_dim = 0;
+        size_t d_ffn = 0;
+        std::vector<uint32_t> cluster_sizes;  // length k_groups
+        std::vector<uint64_t> up_w_offsets;
+        std::vector<uint64_t> up_s_offsets;
+        std::vector<uint64_t> down_w_offsets;
+        std::vector<uint64_t> down_s_offsets;
+    };
+    bool k96_packed_ = false;
+    std::vector<PackedFFN> k96_packed_layers_;
 };
 
 class Gemma4VisionModel : public Model {

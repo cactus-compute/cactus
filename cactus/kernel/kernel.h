@@ -48,6 +48,78 @@ void cactus_gemv_int8(const int8_t* A, float A_scale,
                       const int8_t* B, const __fp16* B_scales,
                       __fp16* C, size_t K, size_t N, size_t group_size);
 
+// Single-threaded INT8 GEMV (no internal thread-pool dispatch). For use when
+// the caller already partitions work across threads (e.g. K96 packed MLP).
+void cactus_gemv_int8_st(const int8_t* A, float A_scale,
+                          const int8_t* B, const __fp16* B_scales,
+                          __fp16* C, size_t K, size_t N, size_t group_size);
+
+// Single-threaded INT8 GEMV restricted to N-block range [block_start, block_end).
+// `accumulate=true` adds into existing C; `accumulate=false` overwrites.
+void cactus_gemv_int8_block_range(const int8_t* A, float A_scale,
+                                   const int8_t* B, const __fp16* B_scales,
+                                   __fp16* C, size_t K, size_t N, size_t group_size,
+                                   size_t block_start, size_t block_end,
+                                   bool accumulate);
+
+// Selective-N GEMV: process only the listed N-blocks (each block = 4 output rows).
+// active_blocks must be sorted ascending; non-active output positions are LEFT
+// UNTOUCHED (caller is responsible for zeroing C ahead of time when desired).
+// Layout of B / B_scales matches cactus_gemv_int8 exactly.
+void cactus_gemv_int8_active_blocks(
+    const int8_t* A, float A_scale,
+    const int8_t* B, const __fp16* B_scales,
+    __fp16* C,
+    size_t K, size_t N, size_t group_size,
+    const uint16_t* active_blocks, size_t num_active_blocks);
+
+// Selective-K GEMV: process only the listed K-groups (each = group_size K-elements).
+// active_kgroups must be sorted ascending. Non-listed K-groups contribute 0 to the dot
+// product (i.e., they're masked out). Output written for ALL N positions.
+void cactus_gemv_int8_active_kgroups(
+    const int8_t* A, float A_scale,
+    const int8_t* B, const __fp16* B_scales,
+    __fp16* C,
+    size_t K, size_t N, size_t group_size,
+    const uint16_t* active_kgroups, size_t num_active_kgroups);
+
+// Same as cactus_gemv_int8_active_kgroups but takes runs of contiguous K-groups.
+// runs is an array of pairs [start_kgroup, count_kgroups], length = 2*num_runs.
+// Inner loop iterates contiguous K-groups within each run, which keeps sequential
+// B reads — much friendlier to the hardware prefetcher than a per-group skip-list.
+void cactus_gemv_int8_active_kgroup_runs(
+    const int8_t* A, float A_scale,
+    const int8_t* B, const __fp16* B_scales,
+    __fp16* C,
+    size_t K, size_t N, size_t group_size,
+    const uint16_t* runs, size_t num_runs);
+
+// Same as cactus_gemv_int8_active_blocks but takes runs of contiguous N-blocks.
+// runs is an array of pairs [start_block, count_blocks], length = 2*num_runs.
+void cactus_gemv_int8_active_block_runs(
+    const int8_t* A, float A_scale,
+    const int8_t* B, const __fp16* B_scales,
+    __fp16* C,
+    size_t K, size_t N, size_t group_size,
+    const uint16_t* runs, size_t num_runs);
+
+// INT4 variants of the selective kernels above. Layout matches cactus_gemv_int4
+// (planar packed nibbles, 2 values per byte; same N_blocks/K-groups/scales
+// layout as INT8 but B byte offset uses *2 instead of *4).
+void cactus_gemv_int4_active_kgroup_runs(
+    const int8_t* A, float A_scale,
+    const int8_t* B_packed, const __fp16* B_scales,
+    __fp16* C,
+    size_t K, size_t N, size_t group_size,
+    const uint16_t* runs, size_t num_runs);
+
+void cactus_gemv_int4_active_block_runs(
+    const int8_t* A, float A_scale,
+    const int8_t* B_packed, const __fp16* B_scales,
+    __fp16* C,
+    size_t K, size_t N, size_t group_size,
+    const uint16_t* runs, size_t num_runs);
+
 void cactus_gemm_int8(const int8_t* A, const float* A_scales,
                       const int8_t* B, const __fp16* B_scales,
                       __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
@@ -60,13 +132,69 @@ void cactus_gemv_int8_i8mm(const int8_t* A, float A_scale,
                             const int8_t* B, const __fp16* B_scales,
                             __fp16* C, size_t K, size_t N, size_t group_size);
 
+// Single-threaded i8mm GEMV (no internal pool). For use inside outer parallel.
+void cactus_gemv_int8_i8mm_st(const int8_t* A, float A_scale,
+                               const int8_t* B, const __fp16* B_scales,
+                               __fp16* C, size_t K, size_t N, size_t group_size);
+
 void cactus_gemm_int8_i8mm(const int8_t* A, const float* A_scales,
                             const int8_t* B, const __fp16* B_scales,
                             __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
 
+// I8MM versions of the K96 selective gemv kernels. Same semantics as the
+// non-i8mm variants in kernel_matmul.cpp, but use vmmlaq_s32 inner loops.
+void cactus_gemv_int8_active_block_runs_i8mm(
+    const int8_t* A, float A_scale,
+    const int8_t* B, const __fp16* B_scales,
+    __fp16* C,
+    size_t K, size_t N, size_t group_size,
+    const uint16_t* runs, size_t num_runs);
+
+void cactus_gemv_int8_active_kgroup_runs_i8mm(
+    const int8_t* A, float A_scale,
+    const int8_t* B, const __fp16* B_scales,
+    __fp16* C,
+    size_t K, size_t N, size_t group_size,
+    const uint16_t* runs, size_t num_runs);
+
 void cactus_gemv_int4(const int8_t* A, float A_scale,
                       const int8_t* B_packed, const __fp16* B_scales,
                       __fp16* C, size_t K, size_t N, size_t group_size);
+
+// Single-threaded INT4 GEMV (no internal thread-pool dispatch).
+void cactus_gemv_int4_st(const int8_t* A, float A_scale,
+                          const int8_t* B_packed, const __fp16* B_scales,
+                          __fp16* C, size_t K, size_t N, size_t group_size);
+
+// Single-threaded INT4 GEMV restricted to N-block range [block_start, block_end).
+void cactus_gemv_int4_block_range(const int8_t* A, float A_scale,
+                                   const int8_t* B_packed, const __fp16* B_scales,
+                                   __fp16* C, size_t K, size_t N, size_t group_size,
+                                   size_t block_start, size_t block_end,
+                                   bool accumulate);
+
+// Single-threaded INT4 GEMV restricted to a single contiguous K-axis subrange
+// [k_lo, k_lo + k_count) (in K elements; both must be multiples of group_size).
+// A is sized k_count (the K subrange of activations); B_packed/B_scales are the
+// FULL cluster's down-projection weights (cluster K = K_full). C receives the
+// partial result for ALL n_blocks of N from contributions of just this K
+// subrange. Layout matches cactus_gemv_int4 (planar packed nibbles).
+void cactus_gemv_int4_st_kslice(const int8_t* A, float A_scale,
+                                 const int8_t* B_packed, const __fp16* B_scales,
+                                 __fp16* C,
+                                 size_t K_full, size_t N, size_t group_size,
+                                 size_t k_lo, size_t k_count);
+
+// Same as cactus_gemv_int4_st_kslice but accumulates the partial result
+// directly into a float fp32 accumulator y_acc (size N). Skips the fp16
+// round-trip of writing tmp_y then re-reading and converting. Used by the
+// K96 sub-cluster split path so each sub-task's down contribution is folded
+// straight into the per-worker fp32 accumulator.
+void cactus_gemv_int4_st_kslice_fp32acc(const int8_t* A, float A_scale,
+                                          const int8_t* B_packed, const __fp16* B_scales,
+                                          float* y_acc,
+                                          size_t K_full, size_t N, size_t group_size,
+                                          size_t k_lo, size_t k_count);
 
 void cactus_gemm_int4(const int8_t* A, const float* A_scales,
                       const int8_t* B_packed, const __fp16* B_scales,

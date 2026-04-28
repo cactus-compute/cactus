@@ -355,6 +355,82 @@ size_t CactusGraph::topk(size_t input, size_t k) {
     return add_node(OpType::TOPK, {input}, output_shape, params);
 }
 
+size_t CactusGraph::grouped_mlp_int8(size_t hidden, size_t gate_weight, size_t up_weight,
+                                       size_t down_weight, size_t k_groups, size_t k_active,
+                                       const std::vector<uint32_t>& cluster_offsets) {
+    const auto& hidden_buf = get_output_buffer(hidden);
+    if (hidden_buf.shape.size() < 2) {
+        throw std::runtime_error("grouped_mlp_int8 requires hidden of rank >= 2");
+    }
+    if (cluster_offsets.size() != k_groups + 1) {
+        throw std::runtime_error("grouped_mlp_int8: cluster_offsets size must be k_groups+1");
+    }
+    const auto& down_buf = get_output_buffer(down_weight);
+    size_t hidden_dim;
+    if (down_buf.is_interleaved && down_buf.original_N > 0) {
+        hidden_dim = down_buf.original_N;
+    } else {
+        hidden_dim = down_buf.shape[down_buf.shape.size() - 2];
+    }
+
+    std::vector<size_t> output_shape = hidden_buf.shape;
+    output_shape[output_shape.size() - 1] = hidden_dim;
+
+    OpParams params;
+    params.output_precision = Precision::FP16;
+    params.k_groups = k_groups;
+    params.k_active = k_active;
+    params.cluster_offsets = cluster_offsets;
+
+    return add_node(OpType::GROUPED_MLP_INT8,
+                    {hidden, gate_weight, up_weight, down_weight},
+                    output_shape, params);
+}
+
+size_t CactusGraph::grouped_mlp_int8_packed(size_t hidden, size_t gate_weight,
+                                             size_t k_groups, size_t k_active,
+                                             const std::vector<uint32_t>& cluster_offsets,
+                                             const char* packed_base,
+                                             const uint32_t* cluster_sizes,
+                                             const uint64_t* up_w_offsets,
+                                             const uint64_t* up_s_offsets,
+                                             const uint64_t* down_w_offsets,
+                                             const uint64_t* down_s_offsets,
+                                             size_t hidden_dim,
+                                             size_t d_ffn,
+                                             Precision packed_precision) {
+    const auto& hidden_buf = get_output_buffer(hidden);
+    if (hidden_buf.shape.size() < 2) {
+        throw std::runtime_error("grouped_mlp_int8_packed requires hidden of rank >= 2");
+    }
+    if (cluster_offsets.size() != k_groups + 1) {
+        throw std::runtime_error("grouped_mlp_int8_packed: cluster_offsets size must be k_groups+1");
+    }
+
+    std::vector<size_t> output_shape = hidden_buf.shape;
+    output_shape[output_shape.size() - 1] = hidden_dim;
+
+    OpParams params;
+    params.output_precision = Precision::FP16;
+    params.k_groups = k_groups;
+    params.k_active = k_active;
+    params.cluster_offsets = cluster_offsets;
+    params.k96_packed_base = packed_base;
+    params.k96_cluster_sizes = cluster_sizes;
+    params.k96_up_w_offsets = up_w_offsets;
+    params.k96_up_s_offsets = up_s_offsets;
+    params.k96_down_w_offsets = down_w_offsets;
+    params.k96_down_s_offsets = down_s_offsets;
+    params.k96_packed_is_int4 = (packed_precision == Precision::INT4);
+    // Stash dims via shape length.
+    (void)d_ffn; (void)hidden_dim;
+
+    // Inputs: hidden + gate (down/up are passed via raw pointers, not nodes).
+    return add_node(OpType::GROUPED_MLP_INT8,
+                    {hidden, gate_weight},
+                    output_shape, params);
+}
+
 size_t CactusGraph::moe_layer(size_t hidden,
                               size_t routing_probs,
                               size_t topk_indices,

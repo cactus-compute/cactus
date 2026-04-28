@@ -68,6 +68,7 @@ DECLARE_COMPUTE(compute_sample_node);
 DECLARE_COMPUTE(compute_topk_node);
 DECLARE_COMPUTE(compute_scatter_topk_node);
 DECLARE_COMPUTE(compute_moe_layer_node);
+DECLARE_COMPUTE(compute_grouped_mlp_int8_node);
 DECLARE_COMPUTE(compute_persistent_node);
 DECLARE_COMPUTE(compute_quantize_activations_node);
 extern void shrink_thread_local_buffers();
@@ -140,6 +141,7 @@ static const std::unordered_map<OpType, ComputeFn> dispatch_table = {
     {OpType::TOPK, compute_topk_node},
     {OpType::SCATTER_TOPK, compute_scatter_topk_node},
     {OpType::MOE_LAYER, compute_moe_layer_node},
+    {OpType::GROUPED_MLP_INT8, compute_grouped_mlp_int8_node},
     {OpType::PERSISTENT, compute_persistent_node},
     {OpType::QUANTIZE_ACTIVATIONS, compute_quantize_activations_node},
     {OpType::LSTM_CELL, compute_lstm_cell_node},

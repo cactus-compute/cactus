@@ -1,9 +1,16 @@
 #include "model_gemma4.h"
 #include "../../graph/graph.h"
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace cactus {
 namespace engine {
@@ -12,6 +19,17 @@ Gemma4Model::Gemma4Model() : Model() {}
 
 Gemma4Model::Gemma4Model(const Config& config) : Model(config) {
     weight_nodes_.layers.resize(config.num_layers);
+}
+
+Gemma4Model::~Gemma4Model() {
+    for (auto& p : k96_packed_layers_) {
+        if (p.base != nullptr && p.size > 0) {
+            ::munmap(p.base, p.size);
+        }
+        if (p.fd >= 0) {
+            ::close(p.fd);
+        }
+    }
 }
 
 bool Gemma4Model::is_global_layer(uint32_t idx) const {
@@ -86,6 +104,132 @@ void Gemma4Model::load_weights_to_graph(CactusGraph* gb) {
     uint32_t n = config_.num_layers;
     uint32_t num_shared = config_.num_kv_shared_layers;
     first_shared_layer_ = (n > num_shared) ? n - num_shared : n;
+    // Load K=96 grouped-experts metadata if present (gemma4-e2b-grouped-k96).
+    {
+        std::string k96_path = model_folder_path_ + "/k96_cluster_offsets.bin";
+        if (std::filesystem::exists(k96_path)) {
+            std::ifstream f(k96_path, std::ios::binary);
+            char magic[4]; f.read(magic, 4);
+            if (std::memcmp(magic, "CK96", 4) != 0) {
+                std::fprintf(stderr, "[gemma4] k96: %s has bad magic, ignoring\n", k96_path.c_str());
+            } else {
+                uint32_t version, n_layers;
+                f.read(reinterpret_cast<char*>(&version), 4);
+                f.read(reinterpret_cast<char*>(&n_layers), 4);
+                if (version == 1 && n_layers == config_.num_layers) {
+                    k96_cluster_offsets_.resize(n_layers);
+                    uint32_t kg_first = 0;
+                    for (uint32_t l = 0; l < n_layers; ++l) {
+                        uint32_t kg; f.read(reinterpret_cast<char*>(&kg), 4);
+                        if (l == 0) kg_first = kg;
+                        k96_cluster_offsets_[l].resize(kg + 1);
+                        f.read(reinterpret_cast<char*>(k96_cluster_offsets_[l].data()),
+                               (kg + 1) * sizeof(uint32_t));
+                    }
+                    k96_enabled_ = true;
+                    k96_k_groups_ = kg_first;
+                    k96_k_active_ = kg_first / 2;  // d=0.50 (48 of 96).
+                    std::fprintf(stderr, "[gemma4] k96: enabled grouped MLP routing, K=%zu K_active=%zu\n",
+                                 k96_k_groups_, k96_k_active_);
+                }
+            }
+        }
+
+        // Detect packed FFN format: parse k96.meta for `k96_packed=1` and load
+        // the per-layer packed file. We mmap each layer's blob and parse the
+        // 128-byte header + per-cluster table.
+        if (k96_enabled_) {
+            std::string meta_path = model_folder_path_ + "/k96.meta";
+            bool want_packed = false;
+            if (std::filesystem::exists(meta_path)) {
+                std::ifstream m(meta_path);
+                std::string line;
+                while (std::getline(m, line)) {
+                    if (line.find("k96_packed=1") != std::string::npos) {
+                        want_packed = true;
+                        break;
+                    }
+                }
+            }
+            if (want_packed) {
+                k96_packed_layers_.resize(config_.num_layers);
+                size_t loaded_count = 0;
+                for (uint32_t l = 0; l < config_.num_layers; ++l) {
+                    std::string path = model_folder_path_ + "/layer_" + std::to_string(l) +
+                                        "_ffn_packed.weights";
+                    if (!std::filesystem::exists(path)) {
+                        // This layer will fall back to the non-packed path.
+                        continue;
+                    }
+                    int fd = ::open(path.c_str(), O_RDONLY);
+                    if (fd < 0) continue;
+                    struct stat st{};
+                    if (::fstat(fd, &st) != 0) { ::close(fd); continue; }
+                    size_t fsz = (size_t)st.st_size;
+                    void* base = ::mmap(nullptr, fsz, PROT_READ, MAP_PRIVATE, fd, 0);
+                    if (base == MAP_FAILED) { ::close(fd); continue; }
+
+                    // Parse header.
+                    const char* p = static_cast<const char*>(base);
+                    if (std::memcmp(p, "CKPK", 4) != 0) {
+                        std::fprintf(stderr, "[gemma4] k96 packed: bad magic in %s\n", path.c_str());
+                        ::munmap(base, fsz); ::close(fd); continue;
+                    }
+                    uint32_t version, prec_code, hidden_dim, d_ffn, kg, gs, n_active;
+                    std::memcpy(&version,    p + 4,  4);
+                    std::memcpy(&prec_code,  p + 8,  4);
+                    std::memcpy(&hidden_dim, p + 12, 4);
+                    std::memcpy(&d_ffn,      p + 16, 4);
+                    std::memcpy(&kg,         p + 20, 4);
+                    std::memcpy(&gs,         p + 24, 4);
+                    std::memcpy(&n_active,   p + 28, 4);
+                    (void)version; (void)gs; (void)n_active;
+
+                    auto& pf = k96_packed_layers_[l];
+                    pf.base = base; pf.size = fsz; pf.fd = fd;
+                    pf.is_int4 = (prec_code == 3);
+                    pf.hidden_dim = hidden_dim;
+                    pf.d_ffn = d_ffn;
+                    pf.cluster_sizes.resize(kg);
+                    pf.up_w_offsets.resize(kg);
+                    pf.up_s_offsets.resize(kg);
+                    pf.down_w_offsets.resize(kg);
+                    pf.down_s_offsets.resize(kg);
+
+                    const char* tbl = p + 128;  // header padded to 128 bytes
+                    for (uint32_t c = 0; c < kg; ++c) {
+                        const char* row = tbl + c * 40;
+                        uint32_t N_c, _pad;
+                        uint64_t uw, us, dw, ds;
+                        std::memcpy(&N_c,  row + 0,  4);
+                        std::memcpy(&_pad, row + 4,  4);
+                        std::memcpy(&uw,   row + 8,  8);
+                        std::memcpy(&us,   row + 16, 8);
+                        std::memcpy(&dw,   row + 24, 8);
+                        std::memcpy(&ds,   row + 32, 8);
+                        pf.cluster_sizes[c]   = N_c;
+                        pf.up_w_offsets[c]    = uw;
+                        pf.up_s_offsets[c]    = us;
+                        pf.down_w_offsets[c]  = dw;
+                        pf.down_s_offsets[c]  = ds;
+                    }
+                    loaded_count++;
+                }
+                if (loaded_count > 0) {
+                    k96_packed_ = true;
+                    bool any_int4 = false;
+                    for (auto& pf : k96_packed_layers_) {
+                        if (pf.base != nullptr && pf.is_int4) { any_int4 = true; break; }
+                    }
+                    std::fprintf(stderr, "[gemma4] k96 packed: loaded %zu/%u packed FFN files (%s)\n",
+                                 loaded_count, config_.num_layers,
+                                 any_int4 ? "INT4" : "INT8");
+                } else {
+                    k96_packed_layers_.clear();
+                }
+            }
+        }
+    }
 
     embedding_node_id_ = gb->mmap_embeddings(embedding_file_path_);
     weight_nodes_.output_norm_weight = gb->mmap_weights(model_folder_path_ + "/output_norm.weights");
@@ -120,8 +264,18 @@ void Gemma4Model::load_weights_to_graph(CactusGraph* gb) {
         layer.attn_q_norm_weight               = gb->mmap_weights(prefix + "attn_q_norm.weights");
         layer.attn_k_norm_weight               = is_shared ? 0 : gb->mmap_weights(prefix + "attn_k_norm.weights");
         layer.ffn_gate_weight                  = gb->mmap_weights(prefix + "ffn_gate.weights");
-        layer.ffn_up_weight                    = gb->mmap_weights(prefix + "ffn_up.weights");
-        layer.ffn_down_weight                  = gb->mmap_weights(prefix + "ffn_down.weights");
+        // In packed K96 mode, up/down come from a single packed mmapped blob
+        // (see k96_packed_layers_); skip the per-projection files if absent.
+        if (k96_packed_ && !std::filesystem::exists(prefix + "ffn_up.weights")) {
+            layer.ffn_up_weight = 0;
+        } else {
+            layer.ffn_up_weight                = gb->mmap_weights(prefix + "ffn_up.weights");
+        }
+        if (k96_packed_ && !std::filesystem::exists(prefix + "ffn_down.weights")) {
+            layer.ffn_down_weight = 0;
+        } else {
+            layer.ffn_down_weight              = gb->mmap_weights(prefix + "ffn_down.weights");
+        }
         layer.post_attention_layernorm_weight   = gb->mmap_weights(prefix + "post_attn_norm.weights");
         layer.pre_feedforward_layernorm_weight  = gb->mmap_weights(prefix + "pre_ffn_norm.weights");
         layer.post_feedforward_layernorm_weight = gb->mmap_weights(prefix + "post_ffn_norm.weights");
@@ -313,6 +467,32 @@ size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t laye
 size_t Gemma4Model::build_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                   ComputeBackend backend) const {
     const auto& layer = weight_nodes_.layers[layer_idx];
+    if (k96_enabled_ && layer_idx < k96_cluster_offsets_.size() &&
+        !k96_cluster_offsets_[layer_idx].empty()) {
+        if (k96_packed_ && layer_idx < k96_packed_layers_.size() &&
+            k96_packed_layers_[layer_idx].base != nullptr) {
+            const auto& pf = k96_packed_layers_[layer_idx];
+            return gb->grouped_mlp_int8_packed(
+                input,
+                layer.ffn_gate_weight,
+                k96_k_groups_, k96_k_active_,
+                k96_cluster_offsets_[layer_idx],
+                static_cast<const char*>(pf.base),
+                pf.cluster_sizes.data(),
+                pf.up_w_offsets.data(),
+                pf.up_s_offsets.data(),
+                pf.down_w_offsets.data(),
+                pf.down_s_offsets.data(),
+                pf.hidden_dim, pf.d_ffn,
+                pf.is_int4 ? Precision::INT4 : Precision::INT8);
+        }
+        return gb->grouped_mlp_int8(input,
+                                     layer.ffn_gate_weight,
+                                     layer.ffn_up_weight,
+                                     layer.ffn_down_weight,
+                                     k96_k_groups_, k96_k_active_,
+                                     k96_cluster_offsets_[layer_idx]);
+    }
     auto gate = gb->gelu(gb->matmul(input, layer.ffn_gate_weight, true, backend));
     auto up = gb->matmul(input, layer.ffn_up_weight, true, backend);
     return gb->matmul(gb->multiply(gate, up), layer.ffn_down_weight, true, backend);

@@ -178,6 +178,45 @@ inline void unpack_int4_as_int8x16x2(const uint8_t* ptr, int8x16_t& high_decoded
     low_decoded = vshrq_n_s8(vshlq_n_s8(packed, 4), 4);
 }
 
+// Lane-broadcast SDOTQ: keep in sync with kernel_matmul.cpp's CACTUS_DOTQ_LANE
+// (this header version is exported for callers outside the kernel TU).
+#if defined(__ARM_FEATURE_DOTPROD)
+    #define CACTUS_KU_DOTQ_LANE(acc, b, a, lane) vdotq_laneq_s32(acc, b, a, lane)
+#else
+    static inline int32x4_t cactus_ku_dotq_with_pattern(int32x4_t acc, int8x16_t b, int8x8_t a_pattern) {
+        int8x8_t b_lo = vget_low_s8(b);
+        int8x8_t b_hi = vget_high_s8(b);
+        int16x8_t prod_lo = vmull_s8(b_lo, a_pattern);
+        int16x8_t prod_hi = vmull_s8(b_hi, a_pattern);
+        int32x4_t sum_lo = vpaddlq_s16(prod_lo);
+        int32x4_t sum_hi = vpaddlq_s16(prod_hi);
+        int32x2_t final_lo = vpadd_s32(vget_low_s32(sum_lo), vget_high_s32(sum_lo));
+        int32x2_t final_hi = vpadd_s32(vget_low_s32(sum_hi), vget_high_s32(sum_hi));
+        return vaddq_s32(acc, vcombine_s32(final_lo, final_hi));
+    }
+    static inline int32x4_t cactus_ku_dotq_lane0(int32x4_t acc, int8x16_t b, int8x16_t a) {
+        int8x8_t a_lo = vget_low_s8(a);
+        int8x8_t p = vreinterpret_s8_s32(vdup_lane_s32(vreinterpret_s32_s8(a_lo), 0));
+        return cactus_ku_dotq_with_pattern(acc, b, p);
+    }
+    static inline int32x4_t cactus_ku_dotq_lane1(int32x4_t acc, int8x16_t b, int8x16_t a) {
+        int8x8_t a_lo = vget_low_s8(a);
+        int8x8_t p = vreinterpret_s8_s32(vdup_lane_s32(vreinterpret_s32_s8(a_lo), 1));
+        return cactus_ku_dotq_with_pattern(acc, b, p);
+    }
+    static inline int32x4_t cactus_ku_dotq_lane2(int32x4_t acc, int8x16_t b, int8x16_t a) {
+        int8x8_t a_hi = vget_high_s8(a);
+        int8x8_t p = vreinterpret_s8_s32(vdup_lane_s32(vreinterpret_s32_s8(a_hi), 0));
+        return cactus_ku_dotq_with_pattern(acc, b, p);
+    }
+    static inline int32x4_t cactus_ku_dotq_lane3(int32x4_t acc, int8x16_t b, int8x16_t a) {
+        int8x8_t a_hi = vget_high_s8(a);
+        int8x8_t p = vreinterpret_s8_s32(vdup_lane_s32(vreinterpret_s32_s8(a_hi), 1));
+        return cactus_ku_dotq_with_pattern(acc, b, p);
+    }
+    #define CACTUS_KU_DOTQ_LANE(acc, b, a, lane) cactus_ku_dotq_lane##lane(acc, b, a)
+#endif
+
 namespace CactusThreading {
 
 #if defined(__ANDROID__)

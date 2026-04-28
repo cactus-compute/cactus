@@ -9,6 +9,8 @@
 #include <assert.h>
 #include <algorithm>
 #include <limits>
+#include <chrono>
+#include <cstdio>
 
 namespace {
     thread_local std::vector<__fp16> transpose_buffer_fp16;
@@ -269,6 +271,1468 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             cactus_transpose_2d_f16(rhs, transpose_buffer_fp16.data(),
                                     rhs_shape[0], rhs_shape[1], 0, rhs_shape[0]);
             cactus_matmul_f16(lhs, transpose_buffer_fp16.data(), output, M, K, N);
+        }
+    }
+}
+
+// ─── Grouped MLP K=96 (gemma4-e2b-grouped-k96) ───────────────────────────────
+namespace {
+    // Per-token scratch reused across decode calls. Sized for the larger
+    // Gemma-4 wide layer (D_FFN=12288).
+    thread_local std::vector<__fp16> gmlp_gate_batched; // M * d_ffn (prefill batched gate proj)
+    thread_local std::vector<__fp16> gmlp_up_partial;   // d_ffn
+    thread_local std::vector<__fp16> gmlp_h_full;       // d_ffn
+    thread_local std::vector<int8_t> gmlp_h_int8;       // d_ffn
+    thread_local std::vector<int8_t> gmlp_x_int8_batched; // M * hidden_dim
+    thread_local std::vector<float>  gmlp_x_scales_batched; // M
+    thread_local std::vector<float>  gmlp_group_max;    // k_groups
+    thread_local std::vector<uint16_t> gmlp_block_runs;  // 2 * k_active pairs
+    thread_local std::vector<uint16_t> gmlp_kgroup_runs; // 2 * k_active pairs
+    thread_local std::vector<uint16_t> gmlp_active_groups; // k_active
+
+    inline void ensure_gmlp_buffers(size_t M, size_t hidden_dim, size_t d_ffn,
+                                     size_t k_groups, size_t k_active) {
+        if (gmlp_gate_batched.size()    < M * d_ffn)      gmlp_gate_batched.resize(M * d_ffn);
+        if (gmlp_up_partial.size()      < d_ffn)          gmlp_up_partial.resize(d_ffn);
+        if (gmlp_h_full.size()          < d_ffn)          gmlp_h_full.resize(d_ffn);
+        if (gmlp_h_int8.size()          < d_ffn)          gmlp_h_int8.resize(d_ffn);
+        if (gmlp_x_int8_batched.size()  < M * hidden_dim) gmlp_x_int8_batched.resize(M * hidden_dim);
+        if (gmlp_x_scales_batched.size()< M)              gmlp_x_scales_batched.resize(M);
+        if (gmlp_group_max.size()       < k_groups)       gmlp_group_max.resize(k_groups);
+        if (gmlp_active_groups.size()   < k_active)       gmlp_active_groups.resize(k_active);
+        if (gmlp_block_runs.capacity()  < 2 * k_active)   gmlp_block_runs.reserve(2 * k_active);
+        if (gmlp_kgroup_runs.capacity() < 2 * k_active)   gmlp_kgroup_runs.reserve(2 * k_active);
+    }
+
+    // ─── Optional profiling for the grouped MLP ──────────────────────────────
+    // Set K96_PROF=1 to dump per-step accumulated nanoseconds to stderr at the
+    // end of the run. Designed to localize the bottleneck inside the per-token
+    // grouped-MLP loop on decode (M=1).
+    struct GmlpProf {
+        bool enabled = false;
+        bool dump_registered = false;
+        uint64_t ns_quantize = 0;
+        uint64_t ns_gate     = 0;
+        uint64_t ns_gelu_max = 0;
+        uint64_t ns_topk     = 0;
+        uint64_t ns_runs     = 0;
+        uint64_t ns_up       = 0;
+        uint64_t ns_h        = 0;
+        uint64_t ns_quant_h  = 0;
+        uint64_t ns_down     = 0;
+        uint64_t ns_reduce   = 0;
+        uint64_t ns_dispatch = 0; // sum across workers of per-cluster work (worker-side wall-time aggregate)
+        std::atomic<uint64_t> ns_pcl_up{0};
+        std::atomic<uint64_t> ns_pcl_h{0};
+        std::atomic<uint64_t> ns_pcl_quant{0};
+        std::atomic<uint64_t> ns_pcl_down{0};
+        std::atomic<uint64_t> ns_pcl_acc{0};
+        uint64_t calls       = 0;
+        void check_env() {
+            const char* e = getenv("K96_PROF");
+            enabled = (e && e[0] && e[0] != '0');
+        }
+        void dump() const {
+            if (!enabled || calls == 0) return;
+            uint64_t total = ns_quantize + ns_gate + ns_gelu_max + ns_topk +
+                             ns_runs + ns_up + ns_h + ns_quant_h + ns_down + ns_reduce;
+            auto pct = [&](uint64_t v) { return total ? (100.0 * double(v) / double(total)) : 0.0; };
+            uint64_t pup    = ns_pcl_up.load();
+            uint64_t ph     = ns_pcl_h.load();
+            uint64_t pq     = ns_pcl_quant.load();
+            uint64_t pdn    = ns_pcl_down.load();
+            uint64_t pacc   = ns_pcl_acc.load();
+            uint64_t ptot   = pup + ph + pq + pdn + pacc;
+            auto ppct = [&](uint64_t v) { return ptot ? (100.0 * double(v) / double(ptot)) : 0.0; };
+            fprintf(stderr,
+                "[K96_PROF] calls=%llu total=%.3f ms\n"
+                "  quant_x      %8.3f ms (%5.2f%%)\n"
+                "  gate_proj    %8.3f ms (%5.2f%%)\n"
+                "  gelu+max     %8.3f ms (%5.2f%%)\n"
+                "  topk         %8.3f ms (%5.2f%%)\n"
+                "  build_runs   %8.3f ms (%5.2f%%)\n"
+                "  up_proj      %8.3f ms (%5.2f%%)\n"
+                "  h_compute    %8.3f ms (%5.2f%%)\n"
+                "  quant_h      %8.3f ms (%5.2f%%)\n"
+                "  down_proj    %8.3f ms (%5.2f%%)\n"
+                "  reduce       %8.3f ms (%5.2f%%)\n"
+                "  -- per-cluster (sum across workers) --\n"
+                "  pcl_up       %8.3f ms (%5.2f%%)\n"
+                "  pcl_h        %8.3f ms (%5.2f%%)\n"
+                "  pcl_quant    %8.3f ms (%5.2f%%)\n"
+                "  pcl_down     %8.3f ms (%5.2f%%)\n"
+                "  pcl_acc      %8.3f ms (%5.2f%%)\n",
+                (unsigned long long)calls,
+                total / 1e6,
+                ns_quantize / 1e6, pct(ns_quantize),
+                ns_gate     / 1e6, pct(ns_gate),
+                ns_gelu_max / 1e6, pct(ns_gelu_max),
+                ns_topk     / 1e6, pct(ns_topk),
+                ns_runs     / 1e6, pct(ns_runs),
+                ns_up       / 1e6, pct(ns_up),
+                ns_h        / 1e6, pct(ns_h),
+                ns_quant_h  / 1e6, pct(ns_quant_h),
+                ns_down     / 1e6, pct(ns_down),
+                ns_reduce   / 1e6, pct(ns_reduce),
+                pup  / 1e6, ppct(pup),
+                ph   / 1e6, ppct(ph),
+                pq   / 1e6, ppct(pq),
+                pdn  / 1e6, ppct(pdn),
+                pacc / 1e6, ppct(pacc));
+            fflush(stderr);
+        }
+    };
+    static GmlpProf& gmlp_prof() {
+        static GmlpProf p;
+        static bool inited = false;
+        if (!inited) {
+            p.check_env();
+            if (p.enabled) {
+                std::atexit([](){ /* will dump via the static instance below */ });
+            }
+            inited = true;
+        }
+        return p;
+    }
+    // Register a single atexit dumper.
+    struct GmlpProfDumper {
+        ~GmlpProfDumper() { gmlp_prof().dump(); }
+    };
+    static GmlpProfDumper gmlp_prof_dumper;
+
+    using gmlp_clk = std::chrono::steady_clock;
+    static inline uint64_t gmlp_now_ns() {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   gmlp_clk::now().time_since_epoch()).count();
+    }
+
+    // GELU(tanh) approximation over a fp16 range, in-place; tracks the max-abs.
+    // Returns the max-abs of the (post-GELU) values. Operates on `n` elements
+    // starting at `p`. Assumes n % 8 falls back to scalar tail.
+    static inline float gelu_inplace_maxabs_fp16(__fp16* p, size_t n) {
+        const float32x4_t v_half    = vdupq_n_f32(0.5f);
+        const float32x4_t v_one     = vdupq_n_f32(1.0f);
+        const float32x4_t v_sqrt2pi = vdupq_n_f32(0.7978845608028654f);
+        const float32x4_t v_coeff   = vdupq_n_f32(0.044715f);
+        float32x4_t v_max = vdupq_n_f32(0.f);
+        size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            float16x8_t xh = vld1q_f16(p + i);
+            float32x4_t x_lo = vcvt_f32_f16(vget_low_f16(xh));
+            float32x4_t x_hi = vcvt_f32_f16(vget_high_f16(xh));
+            auto gelu = [&](float32x4_t x) {
+                float32x4_t x2 = vmulq_f32(x, x);
+                float32x4_t x3 = vmulq_f32(x2, x);
+                float32x4_t z  = vmulq_f32(v_sqrt2pi, vaddq_f32(x, vmulq_f32(v_coeff, x3)));
+                float32x4_t zc = vmaxq_f32(vdupq_n_f32(-4.5f), vminq_f32(vdupq_n_f32(4.5f), z));
+                float32x4_t z2 = vmulq_f32(zc, zc);
+                float32x4_t num = vmulq_f32(zc, vaddq_f32(vdupq_n_f32(27.f), z2));
+                float32x4_t den = vaddq_f32(vdupq_n_f32(27.f), vmulq_f32(vdupq_n_f32(9.f), z2));
+                float32x4_t tanh_z = vdivq_f32(num, den);
+                return vmulq_f32(vmulq_f32(v_half, x), vaddq_f32(v_one, tanh_z));
+            };
+            float32x4_t g_lo = gelu(x_lo);
+            float32x4_t g_hi = gelu(x_hi);
+            float16x8_t out = vcombine_f16(vcvt_f16_f32(g_lo), vcvt_f16_f32(g_hi));
+            vst1q_f16(p + i, out);
+            v_max = vmaxq_f32(v_max, vabsq_f32(g_lo));
+            v_max = vmaxq_f32(v_max, vabsq_f32(g_hi));
+        }
+        float m = vmaxvq_f32(v_max);
+        for (; i < n; ++i) {
+            float x = static_cast<float>(p[i]);
+            float x3 = x * x * x;
+            float z  = 0.7978845608028654f * (x + 0.044715f * x3);
+            if (z > 4.5f) z = 4.5f; else if (z < -4.5f) z = -4.5f;
+            float z2 = z * z;
+            float tanh_z = (z * (27.f + z2)) / (27.f + 9.f * z2);
+            float gv = 0.5f * x * (1.f + tanh_z);
+            p[i] = static_cast<__fp16>(gv);
+            float a = std::fabs(gv);
+            if (a > m) m = a;
+        }
+        return m;
+    }
+
+    // Vectorized GELU(tanh) over fp16 values + per-cluster max-abs reduction.
+    // gate_full is mutated to gelu(gate_full); group_max[c] = max |gate_full[i]|
+    // over neurons i in cluster c. Cluster c spans [offsets[c], offsets[c+1]).
+    void fused_gelu_and_cluster_max(__fp16* gate_full, size_t /*d_ffn*/,
+                                     const uint32_t* offsets, size_t k_groups,
+                                     float* group_max) {
+        const float32x4_t v_half    = vdupq_n_f32(0.5f);
+        const float32x4_t v_one     = vdupq_n_f32(1.0f);
+        const float32x4_t v_sqrt2pi = vdupq_n_f32(0.7978845608028654f);
+        const float32x4_t v_coeff   = vdupq_n_f32(0.044715f);
+        for (size_t g = 0; g < k_groups; ++g) {
+            uint32_t s = offsets[g];
+            uint32_t e = offsets[g + 1];
+            if (e <= s) { group_max[g] = -std::numeric_limits<float>::infinity(); continue; }
+            float32x4_t v_max = vdupq_n_f32(0.f);
+            __fp16* p = gate_full + s;
+            size_t n = static_cast<size_t>(e - s);
+            size_t i = 0;
+            for (; i + 8 <= n; i += 8) {
+                float16x8_t xh = vld1q_f16(p + i);
+                float32x4_t x_lo = vcvt_f32_f16(vget_low_f16(xh));
+                float32x4_t x_hi = vcvt_f32_f16(vget_high_f16(xh));
+                auto gelu = [&](float32x4_t x) {
+                    float32x4_t x2 = vmulq_f32(x, x);
+                    float32x4_t x3 = vmulq_f32(x2, x);
+                    float32x4_t z  = vmulq_f32(v_sqrt2pi, vaddq_f32(x, vmulq_f32(v_coeff, x3)));
+                    float32x4_t zc = vmaxq_f32(vdupq_n_f32(-4.5f), vminq_f32(vdupq_n_f32(4.5f), z));
+                    float32x4_t z2 = vmulq_f32(zc, zc);
+                    float32x4_t num = vmulq_f32(zc, vaddq_f32(vdupq_n_f32(27.f), z2));
+                    float32x4_t den = vaddq_f32(vdupq_n_f32(27.f), vmulq_f32(vdupq_n_f32(9.f), z2));
+                    float32x4_t tanh_z = vdivq_f32(num, den);
+                    return vmulq_f32(vmulq_f32(v_half, x), vaddq_f32(v_one, tanh_z));
+                };
+                float32x4_t g_lo = gelu(x_lo);
+                float32x4_t g_hi = gelu(x_hi);
+                float16x8_t out = vcombine_f16(vcvt_f16_f32(g_lo), vcvt_f16_f32(g_hi));
+                vst1q_f16(p + i, out);
+                v_max = vmaxq_f32(v_max, vabsq_f32(g_lo));
+                v_max = vmaxq_f32(v_max, vabsq_f32(g_hi));
+            }
+            float m = vmaxvq_f32(v_max);
+            // Tail: scalar fallback for clusters whose size isn't a multiple of 8.
+            for (; i < n; ++i) {
+                float x = static_cast<float>(p[i]);
+                float x3 = x * x * x;
+                float z  = 0.7978845608028654f * (x + 0.044715f * x3);
+                if (z > 4.5f) z = 4.5f; else if (z < -4.5f) z = -4.5f;
+                float z2 = z * z;
+                float tanh_z = (z * (27.f + z2)) / (27.f + 9.f * z2);
+                float gv = 0.5f * x * (1.f + tanh_z);
+                p[i] = static_cast<__fp16>(gv);
+                float a = std::fabs(gv);
+                if (a > m) m = a;
+            }
+            group_max[g] = m;
+        }
+    }
+}
+
+// Fwd-declare: packed (per-cluster contiguous) variant.
+static void compute_grouped_mlp_int8_packed(GraphNode& node,
+                                             const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                             const std::unordered_map<size_t, size_t>& node_index_map);
+
+void compute_grouped_mlp_int8_node(GraphNode& node,
+                                    const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                    const std::unordered_map<size_t, size_t>& node_index_map) {
+    if (node.params.k96_packed_base != nullptr) {
+        compute_grouped_mlp_int8_packed(node, nodes, node_index_map);
+        return;
+    }
+    const auto& hidden_buf = get_input(node, 0, nodes, node_index_map);
+    const auto& gate_buf   = get_input(node, 1, nodes, node_index_map);
+    const auto& up_buf     = get_input(node, 2, nodes, node_index_map);
+    const auto& down_buf   = get_input(node, 3, nodes, node_index_map);
+
+    if (hidden_buf.precision != Precision::FP16) {
+        throw std::runtime_error("grouped_mlp_int8: hidden must be FP16");
+    }
+    if (!PrecisionTraits::is_integer(gate_buf.precision) || gate_buf.group_size == 0 ||
+        !PrecisionTraits::is_integer(up_buf.precision)   || up_buf.group_size == 0 ||
+        !PrecisionTraits::is_integer(down_buf.precision) || down_buf.group_size == 0) {
+        throw std::runtime_error("grouped_mlp_int8: weights must be group-quantized integer");
+    }
+    if (gate_buf.precision != up_buf.precision || gate_buf.precision != down_buf.precision) {
+        throw std::runtime_error("grouped_mlp_int8: gate/up/down weight precisions must match");
+    }
+    if (gate_buf.precision != Precision::INT8 && gate_buf.precision != Precision::INT4) {
+        throw std::runtime_error("grouped_mlp_int8: only INT8 or INT4 weights supported");
+    }
+    const bool is_int4 = (gate_buf.precision == Precision::INT4);
+
+    const auto& shape = hidden_buf.shape;
+    size_t K = shape.back();   // hidden_dim
+    size_t M = 1;
+    for (size_t i = 0; i + 1 < shape.size(); ++i) M *= shape[i];
+
+    size_t d_ffn = gate_buf.is_interleaved ? gate_buf.original_N : gate_buf.shape[0];
+    size_t hidden_dim = down_buf.is_interleaved ? down_buf.original_N : down_buf.shape[0];
+
+    const size_t k_groups = node.params.k_groups;
+    const size_t k_active = node.params.k_active;
+    const auto& offsets = node.params.cluster_offsets;
+    if (offsets.size() != k_groups + 1) {
+        throw std::runtime_error("grouped_mlp_int8: cluster_offsets size mismatch");
+    }
+    if (offsets.back() != d_ffn) {
+        throw std::runtime_error("grouped_mlp_int8: last offset != D_FFN");
+    }
+
+    ensure_gmlp_buffers(M, K, d_ffn, k_groups, k_active);
+
+    const __fp16* hidden_fp16 = hidden_buf.data_as<__fp16>();
+    __fp16* output = node.output_buffer.data_as<__fp16>();
+
+    const int8_t*  gate_w = gate_buf.data_as<int8_t>();
+    const __fp16*  gate_s = gate_buf.scales_as_fp16();
+    const int8_t*  up_w   = up_buf.data_as<int8_t>();
+    const __fp16*  up_s   = up_buf.scales_as_fp16();
+    const int8_t*  down_w = down_buf.data_as<int8_t>();
+    const __fp16*  down_s = down_buf.scales_as_fp16();
+
+    GmlpProf& prof = gmlp_prof();
+    const bool prof_on = prof.enabled;
+    uint64_t t0 = prof_on ? gmlp_now_ns() : 0;
+
+    // 1. Quantise all M activation rows to int8 (one pass).
+    for (size_t t = 0; t < M; ++t) {
+        const __fp16* x = hidden_fp16 + t * K;
+        float maxabs = cactus_fp16_max_abs(x, K);
+        float x_scale = std::max(maxabs / 127.0f, 1e-10f);
+        gmlp_x_scales_batched[t] = x_scale;
+        cactus_fp16_to_int8(x, gmlp_x_int8_batched.data() + t * K, K, x_scale);
+    }
+    if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_quantize += t1 - t0; t0 = t1; }
+
+    // 2. Batched gate_proj: one GEMM call covers all M tokens. For decode (M=1)
+    //    this dispatches to gemv; for prefill (M>1) we get the much faster gemm
+    //    path instead of M serial gemv calls. Use the precision-aware dispatcher
+    //    so INT4 weights take the int4 path.
+    cactus_matmul_integer(gate_buf.precision,
+                          gmlp_x_int8_batched.data(), gmlp_x_scales_batched.data(),
+                          gate_w, gate_s,
+                          gmlp_gate_batched.data(),
+                          M, K, d_ffn, gate_buf.group_size);
+    if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_gate += t1 - t0; t0 = t1; }
+
+    // The per-token routing + selective up/down still loop. This is fine for
+    // decode (M=1). For long prefill it's still serial but the gate_proj —
+    // typically the largest single matmul in the MLP — has been batched.
+    for (size_t t = 0; t < M; ++t) {
+        const int8_t* x_int8 = gmlp_x_int8_batched.data() + t * K;
+        float x_scale = gmlp_x_scales_batched[t];
+        __fp16* gate_full = gmlp_gate_batched.data() + t * d_ffn;
+        __fp16* y = output + t * hidden_dim;
+
+        // 3. Fused vectorised GELU(tanh) + per-cluster max-abs (in place on gate row).
+        fused_gelu_and_cluster_max(gate_full, d_ffn,
+                                    offsets.data(), k_groups,
+                                    gmlp_group_max.data());
+        if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_gelu_max += t1 - t0; t0 = t1; }
+
+        // 4. Top-k_active groups.
+        std::vector<std::pair<float, uint16_t>> idx(k_groups);
+        for (size_t g = 0; g < k_groups; ++g) idx[g] = { gmlp_group_max[g], static_cast<uint16_t>(g) };
+        std::partial_sort(idx.begin(), idx.begin() + k_active, idx.end(),
+                          [](const auto& a, const auto& b){ return a.first > b.first; });
+        for (size_t i = 0; i < k_active; ++i) gmlp_active_groups[i] = idx[i].second;
+        std::sort(gmlp_active_groups.begin(), gmlp_active_groups.begin() + k_active);
+        if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_topk += t1 - t0; t0 = t1; }
+
+        // 5. Build N-block & K-group runs (cluster spans are 32-aligned by the
+        //    converter, so they map cleanly to 4-row N-blocks (32/8=4) and
+        //    32-element K-groups).
+        gmlp_block_runs.clear();
+        gmlp_kgroup_runs.clear();
+        size_t i = 0;
+        while (i < k_active) {
+            uint16_t g0 = gmlp_active_groups[i];
+            size_t j = i;
+            while (j + 1 < k_active && gmlp_active_groups[j + 1] == gmlp_active_groups[j] + 1) ++j;
+            uint32_t s = offsets[g0];
+            uint32_t e = offsets[gmlp_active_groups[j] + 1];
+            // s,e are multiples of 32 ⇒ multiples of 4 ⇒ multiples of GROUP_SIZE.
+            uint32_t blk_start = s / 4;
+            uint32_t blk_count = (e - s) / 4;
+            if (blk_count > 0) {
+                gmlp_block_runs.push_back(static_cast<uint16_t>(blk_start));
+                gmlp_block_runs.push_back(static_cast<uint16_t>(blk_count));
+                uint32_t kg_start = s / 32;
+                uint32_t kg_count = (e - s) / 32;
+                gmlp_kgroup_runs.push_back(static_cast<uint16_t>(kg_start));
+                gmlp_kgroup_runs.push_back(static_cast<uint16_t>(kg_count));
+            }
+            i = j + 1;
+        }
+        if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_runs += t1 - t0; t0 = t1; }
+
+        // 6. Selective up_proj. INT4/INT8 share layout; only B byte-stride differs.
+        if (is_int4) {
+            cactus_gemv_int4_active_block_runs(
+                x_int8, x_scale,
+                up_w, up_s,
+                gmlp_up_partial.data(),
+                K, d_ffn, up_buf.group_size,
+                gmlp_block_runs.data(), gmlp_block_runs.size() / 2);
+        } else {
+            cactus_gemv_int8_active_block_runs(
+                x_int8, x_scale,
+                up_w, up_s,
+                gmlp_up_partial.data(),
+                K, d_ffn, up_buf.group_size,
+                gmlp_block_runs.data(), gmlp_block_runs.size() / 2);
+        }
+        if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_up += t1 - t0; t0 = t1; }
+
+        // 7. h_active = gate_act * up at active positions; vectorised max-abs.
+        // Each run length n_pos = blk_count*4 is a multiple of 32 (cluster
+        // spans are 32-aligned by the converter), so we can stride by 8 fp16
+        // lanes safely without scalar tail.
+        float h_max;
+        {
+            float16x8_t v_max = vdupq_n_f16(static_cast<__fp16>(1e-6f));
+            const __fp16* gp = gate_full;
+            const __fp16* up = gmlp_up_partial.data();
+            __fp16* hp = gmlp_h_full.data();
+            for (size_t r = 0; r < gmlp_block_runs.size(); r += 2) {
+                uint32_t pos = uint32_t(gmlp_block_runs[r]) * 4u;
+                uint32_t n_pos = uint32_t(gmlp_block_runs[r + 1]) * 4u;
+                for (uint32_t k = 0; k < n_pos; k += 8) {
+                    float16x8_t a = vld1q_f16(gp + pos + k);
+                    float16x8_t b = vld1q_f16(up + pos + k);
+                    float16x8_t v = vmulq_f16(a, b);
+                    vst1q_f16(hp + pos + k, v);
+                    v_max = vmaxq_f16(v_max, vabsq_f16(v));
+                }
+            }
+            // Reduce max across the lanes via fp32 (avoids fp16 reduce intrinsic
+            // platform variance).
+            float32x4_t m_lo = vcvt_f32_f16(vget_low_f16(v_max));
+            float32x4_t m_hi = vcvt_f32_f16(vget_high_f16(v_max));
+            float32x4_t mm = vmaxq_f32(m_lo, m_hi);
+            h_max = vmaxvq_f32(mm);
+            if (h_max < 1e-6f) h_max = 1e-6f;
+        }
+        if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_h += t1 - t0; t0 = t1; }
+        float h_scale = h_max / 127.0f;
+        float inv = 1.0f / h_scale;
+        {
+            float32x4_t v_inv = vdupq_n_f32(inv);
+            const __fp16* hp = gmlp_h_full.data();
+            int8_t* qp = gmlp_h_int8.data();
+            for (size_t r = 0; r < gmlp_block_runs.size(); r += 2) {
+                uint32_t pos = uint32_t(gmlp_block_runs[r]) * 4u;
+                uint32_t n_pos = uint32_t(gmlp_block_runs[r + 1]) * 4u;
+                for (uint32_t k = 0; k < n_pos; k += 16) {
+                    float16x8_t f0 = vld1q_f16(hp + pos + k);
+                    float16x8_t f1 = vld1q_f16(hp + pos + k + 8);
+                    float32x4_t a0 = vmulq_f32(vcvt_f32_f16(vget_low_f16(f0)), v_inv);
+                    float32x4_t a1 = vmulq_f32(vcvt_f32_f16(vget_high_f16(f0)), v_inv);
+                    float32x4_t a2 = vmulq_f32(vcvt_f32_f16(vget_low_f16(f1)), v_inv);
+                    float32x4_t a3 = vmulq_f32(vcvt_f32_f16(vget_high_f16(f1)), v_inv);
+                    int32x4_t q0 = vcvtnq_s32_f32(a0);
+                    int32x4_t q1 = vcvtnq_s32_f32(a1);
+                    int32x4_t q2 = vcvtnq_s32_f32(a2);
+                    int32x4_t q3 = vcvtnq_s32_f32(a3);
+                    int16x8_t s01 = vcombine_s16(vqmovn_s32(q0), vqmovn_s32(q1));
+                    int16x8_t s23 = vcombine_s16(vqmovn_s32(q2), vqmovn_s32(q3));
+                    int8x16_t out = vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23));
+                    vst1q_s8(qp + pos + k, out);
+                }
+            }
+        }
+        if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_quant_h += t1 - t0; t0 = t1; }
+
+        // 8. Selective down_proj. Output written for ALL hidden_dim positions.
+        if (is_int4) {
+            cactus_gemv_int4_active_kgroup_runs(
+                gmlp_h_int8.data(), h_scale,
+                down_w, down_s,
+                y,
+                d_ffn, hidden_dim, down_buf.group_size,
+                gmlp_kgroup_runs.data(), gmlp_kgroup_runs.size() / 2);
+        } else {
+            cactus_gemv_int8_active_kgroup_runs(
+                gmlp_h_int8.data(), h_scale,
+                down_w, down_s,
+                y,
+                d_ffn, hidden_dim, down_buf.group_size,
+                gmlp_kgroup_runs.data(), gmlp_kgroup_runs.size() / 2);
+        }
+        if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_down += t1 - t0; t0 = t1; }
+        if (prof_on) {
+            prof.calls++;
+            // Dump every N calls (~one per token across 30 layers ≈ 30 calls/token).
+            // 600 calls ≈ 20 tokens of data.
+            if (prof.calls % 600 == 0) prof.dump();
+        }
+    }
+}
+
+// ─── K96 PACKED grouped MLP ────────────────────────────────────────────────
+//
+// Per-cluster contiguous packed format: one mmapped blob holds, for each of
+// the K=96 clusters, the cluster's up_w + up_s + down_w + down_s back-to-back.
+// For decode (M=1) this lets the kernel walk one contiguous file region per
+// active cluster instead of jumping between two separate up_w_full / down_w_full
+// arrays. Avoids the d_ffn-sized fp16 intermediate buffer entirely — each
+// cluster's `h` slice (≤cluster_size_max ~256 elements) lives in tiny per-thread
+// scratch buffers.
+//
+namespace {
+    // Per-thread scratch for the packed kernel. Indexed by an explicit thread
+    // index passed from the dispatch lambda (NOT thread_local — the global pool
+    // workers vary in count, and we want stable indexing into per-thread y
+    // accumulators).
+    struct GmlpPackedScratch {
+        std::vector<float>  y_acc;    // hidden_dim, fp32 partial sum for y
+        std::vector<__fp16> up_part;  // max cluster_size, up_proj output then h
+        std::vector<int8_t> h_int8;   // max cluster_size
+        std::vector<__fp16> tmp_y;    // hidden_dim, fp16 down-proj output
+    };
+    thread_local std::vector<__fp16> gmp_gate_batched;     // M * d_ffn
+    thread_local std::vector<int8_t> gmp_x_int8_batched;   // M * hidden
+    thread_local std::vector<float>  gmp_x_scales_batched; // M
+    thread_local std::vector<float>  gmp_group_max;        // k_groups
+    thread_local std::vector<uint16_t> gmp_active_groups;  // k_active
+
+    inline void ensure_packed_buffers(size_t M, size_t hidden, size_t d_ffn,
+                                       size_t k_groups, size_t k_active) {
+        if (gmp_gate_batched.size()      < M * d_ffn)   gmp_gate_batched.resize(M * d_ffn);
+        if (gmp_x_int8_batched.size()    < M * hidden)  gmp_x_int8_batched.resize(M * hidden);
+        if (gmp_x_scales_batched.size()  < M)           gmp_x_scales_batched.resize(M);
+        if (gmp_group_max.size()         < k_groups)    gmp_group_max.resize(k_groups);
+        if (gmp_active_groups.size()     < k_active)    gmp_active_groups.resize(k_active);
+    }
+
+    // Fused INT4 gate_proj + GeLU(tanh) + per-cluster max-abs. For decode (M=1)
+    // only — performs GEMV on int4 gate_w, applies GELU in place to the gate
+    // output, and finalizes per-cluster max-abs in registers, without ever
+    // re-reading gate_full from main memory after the GEMV stores it.
+    //
+    // Parallelizes over CONTIGUOUS N-block slabs aligned to actual cluster
+    // boundaries (cluster sizes vary 32..256, so 32-element alignment alone is
+    // not sufficient — we snap each split point to the nearest cluster offset).
+    // Each slab contains 1+ clusters but no cluster ever spans two slabs, so
+    // group_max[c] has a single owner and needs no atomic update.
+    static inline void fused_gate_proj_gelu_cluster_max_int4(
+        const int8_t* x_int8, float x_scale,
+        const int8_t* gate_w, const __fp16* gate_s,
+        __fp16* gate_full,
+        size_t hidden_dim, size_t d_ffn, size_t group_size,
+        const uint32_t* offsets, size_t k_groups,
+        float* group_max)
+    {
+        auto& pool = CactusThreading::get_thread_pool();
+        const size_t num_workers = pool.num_workers();
+        const size_t total_blocks = d_ffn / 4;
+        // Match (and slightly exceed) the per-precision gemv thread cap. The
+        // generic GEMV path caps to ~5 on macOS/Linux for moderate N. We can
+        // afford more here since each worker also folds in the GELU+max post-
+        // pass, increasing per-block work, but more than ~8 threads dispatches
+        // out-pace the data they process. Override via K96_FUSED_GATE_THREADS.
+        static const size_t fused_gate_threads_env = []() -> size_t {
+            const char* e = getenv("K96_FUSED_GATE_THREADS");
+            if (!e) return 0;
+            int v = atoi(e);
+            return v > 0 ? static_cast<size_t>(v) : 0;
+        }();
+        const size_t cap = (fused_gate_threads_env > 0) ? fused_gate_threads_env : 5;
+        const size_t threads = std::max<size_t>(1,
+            std::min({num_workers, total_blocks / 8, cap, k_groups}));
+        // Compute per-worker [block_lo, block_hi) ranges. Slab boundaries MUST
+        // sit on actual cluster boundaries — only some 32-element boundaries
+        // are cluster boundaries (cluster sizes vary 32..256). We pick a target
+        // offset for each split (proportional share of d_ffn) and SNAP to the
+        // nearest cluster boundary.
+        std::vector<size_t> blk_starts(threads + 1, 0);
+        for (size_t w = 1; w < threads; ++w) {
+            size_t target_off = (d_ffn * w) / threads;
+            // Find the first cluster boundary >= target_off.
+            size_t c = 0;
+            while (c <= k_groups && offsets[c] < target_off) ++c;
+            if (c > k_groups) c = k_groups;
+            size_t off = offsets[c];
+            blk_starts[w] = off / 4;
+        }
+        blk_starts[threads] = total_blocks;
+        // Discard empty slabs (multiple cluster boundaries could collapse to
+        // identical offsets if some clusters are empty). Re-pack.
+        size_t kept = 1;
+        for (size_t w = 1; w <= threads; ++w) {
+            if (blk_starts[w] > blk_starts[kept - 1]) {
+                blk_starts[kept++] = blk_starts[w];
+            }
+        }
+        const size_t real_threads = kept - 1;
+        // Initialise group_max for empty clusters; non-empty clusters will be
+        // exclusively overwritten by their owning worker (slabs are cluster-
+        // aligned so a cluster never spans two workers).
+        for (size_t c = 0; c < k_groups; ++c) {
+            if (offsets[c] == offsets[c + 1]) {
+                group_max[c] = -std::numeric_limits<float>::infinity();
+            }
+        }
+        auto worker = [&](size_t wid) {
+            const size_t blk_lo = blk_starts[wid];
+            const size_t blk_hi = blk_starts[wid + 1];
+            if (blk_hi <= blk_lo) return;
+            const size_t n_lo = blk_lo * 4;
+            const size_t n_hi = blk_hi * 4;
+            // GEMV the worker's slab.
+            cactus_gemv_int4_block_range(x_int8, x_scale,
+                                          gate_w, gate_s,
+                                          gate_full,
+                                          hidden_dim, /*N=*/n_hi,
+                                          group_size,
+                                          blk_lo, blk_hi,
+                                          /*accumulate=*/false);
+            // Walk the clusters that fall fully inside [n_lo, n_hi). Find
+            // first cluster c with offsets[c] >= n_lo via linear scan.
+            size_t c = 0;
+            while (c < k_groups && offsets[c] < n_lo) ++c;
+            for (; c < k_groups; ++c) {
+                uint32_t cs = offsets[c];
+                uint32_t ce = offsets[c + 1];
+                if (cs >= n_hi) break;          // out of this slab
+                if (ce > n_hi) break;           // safety: never happens since slabs are 32-aligned
+                if (ce <= cs) continue;         // empty
+                __fp16* p = gate_full + cs;
+                float m = gelu_inplace_maxabs_fp16(p, ce - cs);
+                group_max[c] = m;
+            }
+        };
+        if (real_threads <= 1) { worker(0); return; }
+        // Single-mutex-acquisition dispatch: emplace `real_threads-1` tasks
+        // under one mutex lock instead of `real_threads-1` separate enqueues.
+        pool.enqueue_n_threads(real_threads - 1, real_threads - 1,
+            [&worker](size_t start, size_t end) {
+                for (size_t w = start; w < end; ++w) worker(w + 1);
+            });
+        worker(0);
+        pool.wait_all();
+    }
+}
+
+static void compute_grouped_mlp_int8_packed(GraphNode& node,
+                                             const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                             const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& hidden_buf = get_input(node, 0, nodes, node_index_map);
+    const auto& gate_buf   = get_input(node, 1, nodes, node_index_map);
+
+    if (hidden_buf.precision != Precision::FP16) {
+        throw std::runtime_error("grouped_mlp_int8_packed: hidden must be FP16");
+    }
+    if (!PrecisionTraits::is_integer(gate_buf.precision) || gate_buf.group_size == 0) {
+        throw std::runtime_error("grouped_mlp_int8_packed: gate must be group-quantized");
+    }
+    const bool is_int4 = node.params.k96_packed_is_int4;
+    const size_t group_size = gate_buf.group_size;
+
+    const auto& shape = hidden_buf.shape;
+    size_t hidden_dim = shape.back();
+    size_t M = 1;
+    for (size_t i = 0; i + 1 < shape.size(); ++i) M *= shape[i];
+
+    size_t d_ffn = gate_buf.is_interleaved ? gate_buf.original_N : gate_buf.shape[0];
+
+    const size_t k_groups = node.params.k_groups;
+    size_t k_active = node.params.k_active;
+    // Optional runtime override for INT4 K96-packed: lower k_active to reduce
+    // up/down bytes touched per token. Validated for accuracy at 42 (~12.5%
+    // memory savings vs 48). Setting via K96_K_ACTIVE_OVERRIDE.
+    if (is_int4) {
+        static const size_t k_active_override = []() -> size_t {
+            const char* env = getenv("K96_K_ACTIVE_OVERRIDE");
+            if (!env) return 0;
+            int v = atoi(env);
+            if (v <= 0) return 0;
+            return static_cast<size_t>(v);
+        }();
+        if (k_active_override > 0 && k_active_override < k_active) {
+            k_active = k_active_override;
+        }
+    }
+    const auto& offsets = node.params.cluster_offsets;
+    if (offsets.size() != k_groups + 1) {
+        throw std::runtime_error("grouped_mlp_int8_packed: cluster_offsets size mismatch");
+    }
+
+    const char* base = node.params.k96_packed_base;
+    const uint32_t* cluster_sizes = node.params.k96_cluster_sizes;
+    const uint64_t* up_w_off = node.params.k96_up_w_offsets;
+    const uint64_t* up_s_off = node.params.k96_up_s_offsets;
+    const uint64_t* dn_w_off = node.params.k96_down_w_offsets;
+    const uint64_t* dn_s_off = node.params.k96_down_s_offsets;
+
+    ensure_packed_buffers(M, hidden_dim, d_ffn, k_groups, k_active);
+
+    const __fp16* hidden_fp16 = hidden_buf.data_as<__fp16>();
+    __fp16* output = node.output_buffer.data_as<__fp16>();
+    const int8_t* gate_w = gate_buf.data_as<int8_t>();
+    const __fp16* gate_s = gate_buf.scales_as_fp16();
+
+    GmlpProf& prof = gmlp_prof();
+    const bool prof_on = prof.enabled;
+    uint64_t t0 = prof_on ? gmlp_now_ns() : 0;
+
+    // 1. Quantise activations.
+    for (size_t t = 0; t < M; ++t) {
+        const __fp16* x = hidden_fp16 + t * hidden_dim;
+        float maxabs = cactus_fp16_max_abs(x, hidden_dim);
+        float xs = std::max(maxabs / 127.0f, 1e-10f);
+        gmp_x_scales_batched[t] = xs;
+        cactus_fp16_to_int8(x, gmp_x_int8_batched.data() + t * hidden_dim, hidden_dim, xs);
+    }
+    if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_quantize += t1 - t0; t0 = t1; }
+
+    // 2. Batched gate_proj. For decode (M=1) on INT4 we can use a fused kernel
+    //    that rolls gate_proj + GeLU + per-cluster max-abs into a single sweep
+    //    over gate weights — eliminating the post-gate pass over gate_full
+    //    (`fused_gelu_and_cluster_max`). This is gated by K96_FUSED_GATE_ROUTE
+    //    (default OFF: on M-series the parallelization granularity of the fused
+    //    path costs more than the saved post-pass for d_ffn ~6k; the saving is
+    //    small enough to fall within run-to-run noise).
+    static const bool fused_gate_route_enabled = []() {
+        const char* env = getenv("K96_FUSED_GATE_ROUTE");
+        if (!env) return false;  // default OFF: empirically a slight regression vs legacy
+        return atoi(env) != 0;
+    }();
+    const bool use_fused_gate_route = is_int4 && M == 1 && fused_gate_route_enabled;
+    if (use_fused_gate_route) {
+        fused_gate_proj_gelu_cluster_max_int4(
+            gmp_x_int8_batched.data(), gmp_x_scales_batched[0],
+            gate_w, gate_s,
+            gmp_gate_batched.data(),
+            hidden_dim, d_ffn, gate_buf.group_size,
+            offsets.data(), k_groups,
+            gmp_group_max.data());
+    } else {
+        cactus_matmul_integer(gate_buf.precision,
+                              gmp_x_int8_batched.data(), gmp_x_scales_batched.data(),
+                              gate_w, gate_s,
+                              gmp_gate_batched.data(),
+                              M, hidden_dim, d_ffn, gate_buf.group_size);
+    }
+    if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_gate += t1 - t0; t0 = t1; }
+
+    auto& pool = CactusThreading::get_thread_pool();
+    const size_t num_workers = pool.num_workers();
+
+    // Per-worker scratch storage. Reused across decode steps.
+    // NOT thread_local — we index by an explicit worker id assigned by the
+    // dispatcher, and the underlying physical thread varies per launch.
+    static std::vector<GmlpPackedScratch> scratch;
+    static std::mutex scratch_mu;
+    {
+        std::lock_guard<std::mutex> lk(scratch_mu);
+        if (scratch.size() < num_workers + 1) scratch.resize(num_workers + 1);
+        for (size_t w = 0; w < num_workers + 1; ++w) {
+            if (scratch[w].y_acc.size()    < hidden_dim) scratch[w].y_acc.resize(hidden_dim);
+            if (scratch[w].up_part.size()  < 512)        scratch[w].up_part.resize(512);
+            if (scratch[w].h_int8.size()   < 512)        scratch[w].h_int8.resize(512);
+            if (scratch[w].tmp_y.size()    < hidden_dim) scratch[w].tmp_y.resize(hidden_dim);
+        }
+    }
+
+    for (size_t t = 0; t < M; ++t) {
+        const int8_t* x_int8 = gmp_x_int8_batched.data() + t * hidden_dim;
+        float x_scale = gmp_x_scales_batched[t];
+        __fp16* gate_full = gmp_gate_batched.data() + t * d_ffn;
+        __fp16* y = output + t * hidden_dim;
+
+        // 3. Fused vectorised GELU(tanh) + per-cluster max-abs.
+        // If fused gate-routing was used above, gate_full is already post-GELU
+        // and gmp_group_max is already populated — skip this pass.
+        if (!use_fused_gate_route) {
+            fused_gelu_and_cluster_max(gate_full, d_ffn,
+                                        offsets.data(), k_groups,
+                                        gmp_group_max.data());
+        }
+        if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_gelu_max += t1 - t0; t0 = t1; }
+
+        // 4. Top-k_active groups (by gelu max-abs).
+        std::vector<std::pair<float, uint16_t>> idx(k_groups);
+        for (size_t g = 0; g < k_groups; ++g) idx[g] = { gmp_group_max[g], static_cast<uint16_t>(g) };
+        std::partial_sort(idx.begin(), idx.begin() + k_active, idx.end(),
+                          [](const auto& a, const auto& b){ return a.first > b.first; });
+        for (size_t i = 0; i < k_active; ++i) gmp_active_groups[i] = idx[i].second;
+        // Sort active groups so memory walk is monotonic where possible (cache-friendlier).
+        std::sort(gmp_active_groups.begin(), gmp_active_groups.begin() + k_active);
+        if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_topk += t1 - t0; t0 = t1; }
+
+        // 5+6+7+8. Fused per-cluster up→h→down. Parallelized across active clusters.
+        // Each worker holds a private fp32 y_acc[hidden_dim] partial sum; we
+        // sum them into the final y at the end.
+        const size_t num_threads = std::min(num_workers, k_active);
+
+        // Runtime toggle for the INT4 two-phase split-down path.
+        // Empirically slower than the per-cluster path on M-series CPUs
+        // (extra dispatch costs and lost streaming locality more than offset
+        // the cluster-tail recovery), so default OFF. Set `K96_SPLIT_DOWN=1`
+        // to opt in for benchmarking.
+        static const bool int4_split_down_enabled = []() {
+            const char* env = getenv("K96_SPLIT_DOWN");
+            if (!env) return false;
+            return atoi(env) != 0;
+        }();
+        const bool use_int4_split_down = is_int4 && int4_split_down_enabled;
+
+        // Zero touched scratch regions for the workers we'll dispatch (only used by the
+        // legacy single-phase path; INT4 split-down writes y directly).
+        if (!use_int4_split_down) {
+            for (size_t w = 0; w < num_threads; ++w) {
+                std::fill(scratch[w].y_acc.begin(),
+                          scratch[w].y_acc.begin() + hidden_dim, 0.0f);
+            }
+        }
+
+        // Copy thread_local data into stack-local arrays so worker threads can
+        // safely access them without depending on the originating thread's TLS.
+        // (Thread-local addresses are stable while the originating thread is
+        // alive — but only if the kernel is invoked from the same thread that
+        // owns the TLS slot; under nested pool dispatch this isn't guaranteed.)
+        std::vector<uint16_t> active_groups_copy(gmp_active_groups.begin(),
+                                                  gmp_active_groups.begin() + k_active);
+        const uint16_t* active_groups_ptr = active_groups_copy.data();
+        const __fp16* gate_full_ptr = gate_full;
+
+        const bool pcl_prof = prof_on && (getenv("K96_PROF_PCL") != nullptr);
+
+        // ---- INT4 two-phase split-down path -----------------------------------
+        // Phase 1 (cluster-parallel, work-stealing): up_proj + h = gate*up +
+        //   per-cluster h_max + h quantize. h_int8 / h_scale stored in a shared
+        //   per-cluster registry indexed by active-slot.
+        // Phase 2 (N-block-parallel): for each n_block in [0, hidden_dim/4), sum
+        //   contributions from all active clusters into a single fp32 accumulator
+        //   and write fp16 directly to y. Eliminates the cluster-tail tail since
+        //   the unit of work (N-block) has identical cost regardless of cluster.
+        if (use_int4_split_down) {
+            // Per-token shared registry: contiguous int8 storage for h, plus
+            // per-cluster offsets / scales / weight pointers. Sized for k_active
+            // clusters of up to 256 elements each (pessimistic but tiny).
+            std::vector<int8_t>          h_storage(k_active * 256);
+            std::vector<uint32_t>        h_offsets(k_active + 1, 0);
+            std::vector<float>           h_scale_per(k_active, 0.0f);
+            std::vector<const uint8_t*>  down_w_ptrs(k_active, nullptr);
+            std::vector<const __fp16*>   down_s_ptrs(k_active, nullptr);
+            std::vector<uint32_t>        N_c_per(k_active, 0);
+
+            // Pre-compute per-cluster offsets into shared h_storage and weight
+            // pointers (cheap; serial; lets phase 1 workers just write).
+            uint32_t cum = 0;
+            for (size_t ai = 0; ai < k_active; ++ai) {
+                const uint32_t c = active_groups_ptr[ai];
+                const uint32_t N_c = cluster_sizes[c];
+                h_offsets[ai] = cum;
+                cum += (N_c + 15) & ~15u;  // 16B alignment for vectorised loads
+                N_c_per[ai] = N_c;
+                if (N_c > 0) {
+                    down_w_ptrs[ai] = reinterpret_cast<const uint8_t*>(base + dn_w_off[c]);
+                    down_s_ptrs[ai] = reinterpret_cast<const __fp16*>(base + dn_s_off[c]);
+                }
+            }
+            h_offsets[k_active] = cum;
+            if (h_storage.size() < cum) h_storage.resize(cum);
+
+            // Phase 1 atomic counter (work-stealing on clusters).
+            const size_t N_blocks = hidden_dim / 4;
+            // CHUNK=8: each chunk = 8 N-blocks = 32 columns of hidden_dim. With
+            // 48 chunks total and 14 workers, ~3.4 chunks/worker — balances
+            // dispatch overhead vs work-stealing granularity.
+            constexpr size_t CHUNK = 8;
+            const size_t num_chunks = (N_blocks + CHUNK - 1) / CHUNK;
+            std::atomic<size_t> next_cluster{0};
+            std::atomic<size_t> next_chunk{0};
+
+            auto phase1_task = [&, active_groups_ptr, gate_full_ptr, pcl_prof](size_t worker_id) {
+                auto& sc = scratch[worker_id];
+                uint64_t l_up = 0, l_h = 0, l_q = 0;
+                uint64_t lt0 = pcl_prof ? gmlp_now_ns() : 0;
+                while (true) {
+                    size_t ai = next_cluster.fetch_add(1, std::memory_order_relaxed);
+                    if (ai >= k_active) break;
+                    const uint32_t c = active_groups_ptr[ai];
+                    const uint32_t N_c = cluster_sizes[c];
+                    if (N_c == 0) {
+                        h_scale_per[ai] = 0.0f;
+                        continue;
+                    }
+                    if (sc.up_part.size() < N_c) sc.up_part.resize(N_c);
+
+                    const int8_t* up_w_c = reinterpret_cast<const int8_t*>(base + up_w_off[c]);
+                    const __fp16* up_s_c = reinterpret_cast<const __fp16*>(base + up_s_off[c]);
+                    const uint32_t s     = offsets[c];
+
+                    // (a) up_proj on the cluster: K=hidden_dim, N=N_c
+                    cactus_gemv_int4_st(x_int8, x_scale, up_w_c, up_s_c,
+                                         sc.up_part.data(),
+                                         hidden_dim, N_c, group_size);
+                    if (pcl_prof) { uint64_t lt1 = gmlp_now_ns(); l_up += lt1 - lt0; lt0 = lt1; }
+
+                    // (b) h = gate_slice * up_partial; track per-cluster max-abs.
+                    const __fp16* gp = gate_full_ptr + s;
+                    __fp16* up = sc.up_part.data();
+                    float h_max;
+                    {
+                        float16x8_t v_max = vdupq_n_f16(static_cast<__fp16>(1e-6f));
+                        for (uint32_t k = 0; k < N_c; k += 8) {
+                            float16x8_t a = vld1q_f16(gp + k);
+                            float16x8_t b = vld1q_f16(up + k);
+                            float16x8_t v = vmulq_f16(a, b);
+                            vst1q_f16(up + k, v);  // overwrite up_part in place with h
+                            v_max = vmaxq_f16(v_max, vabsq_f16(v));
+                        }
+                        float32x4_t m_lo = vcvt_f32_f16(vget_low_f16(v_max));
+                        float32x4_t m_hi = vcvt_f32_f16(vget_high_f16(v_max));
+                        float32x4_t mm = vmaxq_f32(m_lo, m_hi);
+                        h_max = vmaxvq_f32(mm);
+                        if (h_max < 1e-6f) h_max = 1e-6f;
+                    }
+                    if (pcl_prof) { uint64_t lt1 = gmlp_now_ns(); l_h += lt1 - lt0; lt0 = lt1; }
+                    float h_scale = h_max / 127.0f;
+                    float inv = 1.0f / h_scale;
+                    h_scale_per[ai] = h_scale;
+
+                    // (c) Quantize h into the SHARED registry slot for this cluster.
+                    int8_t* qp = h_storage.data() + h_offsets[ai];
+                    {
+                        float32x4_t v_inv = vdupq_n_f32(inv);
+                        for (uint32_t k = 0; k < N_c; k += 16) {
+                            float16x8_t f0 = vld1q_f16(up + k);
+                            float16x8_t f1 = vld1q_f16(up + k + 8);
+                            float32x4_t a0 = vmulq_f32(vcvt_f32_f16(vget_low_f16(f0)), v_inv);
+                            float32x4_t a1 = vmulq_f32(vcvt_f32_f16(vget_high_f16(f0)), v_inv);
+                            float32x4_t a2 = vmulq_f32(vcvt_f32_f16(vget_low_f16(f1)), v_inv);
+                            float32x4_t a3 = vmulq_f32(vcvt_f32_f16(vget_high_f16(f1)), v_inv);
+                            int32x4_t q0 = vcvtnq_s32_f32(a0);
+                            int32x4_t q1 = vcvtnq_s32_f32(a1);
+                            int32x4_t q2 = vcvtnq_s32_f32(a2);
+                            int32x4_t q3 = vcvtnq_s32_f32(a3);
+                            int16x8_t s01 = vcombine_s16(vqmovn_s32(q0), vqmovn_s32(q1));
+                            int16x8_t s23 = vcombine_s16(vqmovn_s32(q2), vqmovn_s32(q3));
+                            int8x16_t out = vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23));
+                            vst1q_s8(qp + k, out);
+                        }
+                    }
+                    if (pcl_prof) { uint64_t lt1 = gmlp_now_ns(); l_q += lt1 - lt0; lt0 = lt1; }
+                }
+                if (pcl_prof) {
+                    prof.ns_pcl_up.fetch_add(l_up, std::memory_order_relaxed);
+                    prof.ns_pcl_h.fetch_add(l_h, std::memory_order_relaxed);
+                    prof.ns_pcl_quant.fetch_add(l_q, std::memory_order_relaxed);
+                }
+            };
+
+            // Per-task fp32 chunk accumulator; cluster-outer order preserves
+            // cluster-contiguous memory access (critical for L1/L2 hit rate).
+            auto phase2_task = [&]() {
+                alignas(16) float chunk_acc[CHUNK * 4];
+                while (true) {
+                    size_t ci = next_chunk.fetch_add(1, std::memory_order_relaxed);
+                    if (ci >= num_chunks) break;
+                    const size_t nb_lo = ci * CHUNK;
+                    const size_t nb_hi = std::min(nb_lo + CHUNK, N_blocks);
+                    const size_t span = nb_hi - nb_lo;
+                    // Zero chunk accumulator.
+                    for (size_t k = 0; k < span * 4; k += 4) {
+                        vst1q_f32(chunk_acc + k, vdupq_n_f32(0.0f));
+                    }
+                    // Cluster-outer: walk each cluster's down_w contiguously
+                    // for our n_block range (cache-friendly).
+                    for (size_t ai = 0; ai < k_active; ++ai) {
+                        const uint32_t N_c = N_c_per[ai];
+                        if (N_c == 0) continue;
+                        const float h_scale = h_scale_per[ai];
+                        const float32x4_t v_h_scale = vdupq_n_f32(h_scale);
+                        const int8_t* A = h_storage.data() + h_offsets[ai];
+                        const uint8_t* B_packed = down_w_ptrs[ai];
+                        const __fp16* B_scales = down_s_ptrs[ai];
+                        const size_t num_groups = N_c / group_size;
+                        const int8x16_t a_lo = vld1q_s8(A);
+                        const int8x16_t a_hi = vld1q_s8(A + 16);
+                        // For N_c > 32, we have multiple groups; each group
+                        // updates `a_lo`/`a_hi` from its own A slab below.
+                        for (size_t bi = 0; bi < span; ++bi) {
+                            const size_t n_block = nb_lo + bi;
+                            float32x4_t cluster_sum = vdupq_n_f32(0.0f);
+                            // Walk K-groups of this cluster; consecutive
+                            // n_blocks are stride-of-N_c*2 apart for B_packed
+                            // and stride-of-num_groups*4 for B_scales.
+                            int32x4_t acc;
+                            int8x16_t b0, b1, b2, b3;
+                            int8x16_t a_lo_g, a_hi_g;
+                            for (size_t g = 0; g < num_groups; ++g) {
+                                const size_t k_base = g * group_size;
+                                const uint8_t* b_base =
+                                    B_packed + (n_block * N_c + k_base) * 2;
+                                if (g == 0 && k_base == 0) {
+                                    a_lo_g = a_lo; a_hi_g = a_hi;
+                                } else {
+                                    const int8_t* ap = A + k_base;
+                                    a_lo_g = vld1q_s8(ap);
+                                    a_hi_g = vld1q_s8(ap + 16);
+                                }
+                                acc = vdupq_n_s32(0);
+                                unpack_int4_as_int8x16x2(b_base, b1, b0);
+                                unpack_int4_as_int8x16x2(b_base + 16, b3, b2);
+                                acc = CACTUS_KU_DOTQ_LANE(acc, b0, a_lo_g, 0);
+                                acc = CACTUS_KU_DOTQ_LANE(acc, b1, a_lo_g, 1);
+                                acc = CACTUS_KU_DOTQ_LANE(acc, b2, a_lo_g, 2);
+                                acc = CACTUS_KU_DOTQ_LANE(acc, b3, a_lo_g, 3);
+                                unpack_int4_as_int8x16x2(b_base + 32, b1, b0);
+                                unpack_int4_as_int8x16x2(b_base + 48, b3, b2);
+                                acc = CACTUS_KU_DOTQ_LANE(acc, b0, a_hi_g, 0);
+                                acc = CACTUS_KU_DOTQ_LANE(acc, b1, a_hi_g, 1);
+                                acc = CACTUS_KU_DOTQ_LANE(acc, b2, a_hi_g, 2);
+                                acc = CACTUS_KU_DOTQ_LANE(acc, b3, a_hi_g, 3);
+                                float32x4_t scales = vcvt_f32_f16(
+                                    vld1_f16(B_scales + (n_block * num_groups + g) * 4));
+                                cluster_sum = vmlaq_f32(cluster_sum,
+                                                         vcvtq_f32_s32(acc), scales);
+                            }
+                            float32x4_t prev = vld1q_f32(chunk_acc + bi * 4);
+                            prev = vmlaq_f32(prev, cluster_sum, v_h_scale);
+                            vst1q_f32(chunk_acc + bi * 4, prev);
+                        }
+                    }
+                    // Write fp16 directly to y for this chunk (no inter-worker
+                    // reduction — each n_block is owned exclusively by its worker).
+                    for (size_t bi = 0; bi < span; ++bi) {
+                        float32x4_t v = vld1q_f32(chunk_acc + bi * 4);
+                        vst1_f16(y + (nb_lo + bi) * 4, vcvt_f16_f32(v));
+                    }
+                }
+            };
+
+            uint64_t tp1_0 = prof_on ? gmlp_now_ns() : 0;
+            const size_t p1_threads = std::min(num_workers, k_active);
+            if (p1_threads <= 1) {
+                phase1_task(0);
+            } else {
+                pool.enqueue_n_threads(p1_threads - 1, p1_threads - 1,
+                    [&](size_t start, size_t end) {
+                        for (size_t w = start; w < end; ++w) phase1_task(w + 1);
+                    });
+                phase1_task(0);
+                pool.wait_all();
+            }
+            if (prof_on) { uint64_t tp1_1 = gmlp_now_ns(); prof.ns_up += tp1_1 - tp1_0; }
+
+            uint64_t tp2_0 = prof_on ? gmlp_now_ns() : 0;
+            const size_t p2_threads = std::min(num_workers, num_chunks);
+            if (p2_threads <= 1) {
+                phase2_task();
+            } else {
+                pool.enqueue_n_threads(p2_threads - 1, p2_threads - 1,
+                    [&](size_t /*start*/, size_t /*end*/) {
+                        phase2_task();
+                    });
+                phase2_task();
+                pool.wait_all();
+            }
+            if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_down += t1 - tp2_0; t0 = t1; }
+            if (prof_on) {
+                prof.calls++;
+                if (prof.calls % 600 == 0) prof.dump();
+            }
+            continue;  // skip legacy path below
+        }
+        // ---- end INT4 split-down ----------------------------------------------
+
+        // ---- INT4 sub-cluster-split path --------------------------------------
+        // Splits BIG clusters (N_c > SUB_SPLIT_THRESHOLD) into 32-aligned
+        // sub-row-ranges of ~SUB_SPLIT_TARGET rows each. Each sub-task is still
+        // a sequential stream of weights for one cluster's row subrange (up_w
+        // slab) and one cluster's k-slice (down_w with one k-group run), so L2
+        // streaming locality is preserved. Total work units expand from
+        // k_active (~48) to ~50-70 of more uniform size, dropping the
+        // straggler tail without adding a global barrier.
+        static const size_t sub_split_threshold = []() -> size_t {
+            const char* env = getenv("K96_SUB_SPLIT_THRESH");
+            // Default 192: only split very large clusters (>192 rows).
+            // Empirically best on M-series is (THRESH, TARGET) = (192, 128).
+            // Lower thresholds (96/64) split too aggressively — extra
+            // dispatch + h_max/quantize duplication + per-sub-task fp32
+            // accumulator writes outweigh tail recovery.
+            if (!env) return 192;
+            int v = atoi(env);
+            return v > 0 ? static_cast<size_t>(v) : 192;
+        }();
+        static const size_t sub_split_target = []() -> size_t {
+            const char* env = getenv("K96_SUB_SPLIT_TARGET");
+            if (!env) return 128;
+            int v = atoi(env);
+            return v > 0 ? static_cast<size_t>(v) : 128;
+        }();
+        static const bool sub_split_enabled = []() {
+            const char* env = getenv("K96_SUB_SPLIT");
+            // Default OFF: empirically slightly slower than legacy per-cluster
+            // dispatch on M-series (the down-GEMV K-slice doesn't shrink its
+            // 384-N-block iteration with smaller K, so per-byte arithmetic
+            // intensity drops). Set K96_SUB_SPLIT=1 to opt in for benchmarking.
+            if (!env) return false;
+            return atoi(env) != 0;
+        }();
+
+        if (is_int4 && sub_split_enabled) {
+            // Find max cluster size among active clusters to decide whether to
+            // bother building sub-tasks at all.
+            uint32_t max_N_c = 0;
+            for (size_t ai = 0; ai < k_active; ++ai) {
+                uint32_t N_c = cluster_sizes[active_groups_ptr[ai]];
+                if (N_c > max_N_c) max_N_c = N_c;
+            }
+            if (max_N_c > sub_split_threshold) {
+                // Build sub_tasks: each entry is (active_idx, row_off, row_cnt).
+                // active_idx indexes active_groups_ptr (so we can recover c).
+                // Row offsets and counts are 32-multiples (clusters are 32-aligned).
+                struct SubTask { uint16_t ai; uint16_t row_off; uint16_t row_cnt; };
+                std::vector<SubTask> sub_tasks;
+                sub_tasks.reserve(k_active * 2);
+                for (size_t ai = 0; ai < k_active; ++ai) {
+                    const uint32_t N_c = cluster_sizes[active_groups_ptr[ai]];
+                    if (N_c == 0) continue;
+                    if (N_c <= sub_split_threshold) {
+                        sub_tasks.push_back({static_cast<uint16_t>(ai), 0,
+                                              static_cast<uint16_t>(N_c)});
+                    } else {
+                        // Split into chunks of ~sub_split_target rows, 32-aligned.
+                        size_t n_chunks = (N_c + sub_split_target - 1) / sub_split_target;
+                        if (n_chunks < 2) n_chunks = 2;
+                        size_t chunk = (N_c + n_chunks - 1) / n_chunks;
+                        // Round chunk up to multiple of 32.
+                        chunk = (chunk + 31) & ~size_t(31);
+                        if (chunk == 0) chunk = 32;
+                        for (size_t r = 0; r < N_c; r += chunk) {
+                            size_t c_cnt = std::min(chunk, size_t(N_c) - r);
+                            sub_tasks.push_back({static_cast<uint16_t>(ai),
+                                                  static_cast<uint16_t>(r),
+                                                  static_cast<uint16_t>(c_cnt)});
+                        }
+                    }
+                }
+                const size_t num_sub = sub_tasks.size();
+                const SubTask* sub_tasks_ptr = sub_tasks.data();
+                if (getenv("K96_SUB_SPLIT_DEBUG") != nullptr) {
+                    static std::atomic<int> printed{0};
+                    if (printed.fetch_add(1) < 3) {
+                        fprintf(stderr, "[k96 sub-split] k_active=%zu num_sub=%zu max_N_c=%u sizes=",
+                                k_active, num_sub, max_N_c);
+                        for (size_t ai = 0; ai < k_active && ai < 16; ++ai) {
+                            fprintf(stderr, "%u ", cluster_sizes[active_groups_ptr[ai]]);
+                        }
+                        fprintf(stderr, "\n");
+                    }
+                }
+
+                const size_t num_threads_sub = std::min(num_workers, num_sub);
+                // Zero per-worker fp32 accumulators.
+                for (size_t w = 0; w < num_threads_sub; ++w) {
+                    std::fill(scratch[w].y_acc.begin(),
+                              scratch[w].y_acc.begin() + hidden_dim, 0.0f);
+                }
+
+                std::atomic<size_t> next_sub{0};
+                auto sub_task_fn = [&, active_groups_ptr, gate_full_ptr, sub_tasks_ptr]
+                                    (size_t worker_id) {
+                    auto& sc = scratch[worker_id];
+                    while (true) {
+                        size_t si = next_sub.fetch_add(1, std::memory_order_relaxed);
+                        if (si >= num_sub) break;
+                        const SubTask st = sub_tasks_ptr[si];
+                        const uint32_t c = active_groups_ptr[st.ai];
+                        const uint32_t N_c = cluster_sizes[c];
+                        const uint32_t row_off = st.row_off;
+                        const uint32_t row_cnt = st.row_cnt;
+                        if (sc.up_part.size() < row_cnt) sc.up_part.resize(row_cnt);
+                        if (sc.h_int8.size()  < row_cnt) sc.h_int8.resize(row_cnt);
+
+                        const int8_t* up_w_c   = reinterpret_cast<const int8_t*>(base + up_w_off[c]);
+                        const __fp16* up_s_c   = reinterpret_cast<const __fp16*>(base + up_s_off[c]);
+                        const int8_t* down_w_c = reinterpret_cast<const int8_t*>(base + dn_w_off[c]);
+                        const __fp16* down_s_c = reinterpret_cast<const __fp16*>(base + dn_s_off[c]);
+
+                        const uint32_t s = offsets[c];
+                        const size_t up_num_groups = hidden_dim / group_size;
+
+                        // (a) up_proj on row subrange: shift B base/scales to
+                        // start at n_block = row_off/4. N=row_cnt.
+                        const size_t n_block_off = row_off / 4;
+                        const int8_t* up_w_sub = up_w_c + (n_block_off * hidden_dim) * 2;  // INT4: *2
+                        const __fp16* up_s_sub = up_s_c + n_block_off * up_num_groups * 4;
+                        cactus_gemv_int4_st(x_int8, x_scale,
+                                             up_w_sub, up_s_sub,
+                                             sc.up_part.data(),
+                                             hidden_dim, row_cnt, group_size);
+
+                        // (b) h = gate_slice * up_partial + max-abs.
+                        const __fp16* gp = gate_full_ptr + s + row_off;
+                        __fp16* up = sc.up_part.data();
+                        float h_max;
+                        {
+                            float16x8_t v_max = vdupq_n_f16(static_cast<__fp16>(1e-6f));
+                            for (uint32_t k = 0; k < row_cnt; k += 8) {
+                                float16x8_t a = vld1q_f16(gp + k);
+                                float16x8_t b = vld1q_f16(up + k);
+                                float16x8_t v = vmulq_f16(a, b);
+                                vst1q_f16(up + k, v);
+                                v_max = vmaxq_f16(v_max, vabsq_f16(v));
+                            }
+                            float32x4_t m_lo = vcvt_f32_f16(vget_low_f16(v_max));
+                            float32x4_t m_hi = vcvt_f32_f16(vget_high_f16(v_max));
+                            float32x4_t mm = vmaxq_f32(m_lo, m_hi);
+                            h_max = vmaxvq_f32(mm);
+                            if (h_max < 1e-6f) h_max = 1e-6f;
+                        }
+                        float h_scale = h_max / 127.0f;
+                        float inv = 1.0f / h_scale;
+
+                        // (c) Quantize h into sc.h_int8.
+                        {
+                            float32x4_t v_inv = vdupq_n_f32(inv);
+                            int8_t* qp = sc.h_int8.data();
+                            for (uint32_t k = 0; k < row_cnt; k += 16) {
+                                float16x8_t f0 = vld1q_f16(up + k);
+                                float16x8_t f1 = vld1q_f16(up + k + 8);
+                                float32x4_t a0 = vmulq_f32(vcvt_f32_f16(vget_low_f16(f0)), v_inv);
+                                float32x4_t a1 = vmulq_f32(vcvt_f32_f16(vget_high_f16(f0)), v_inv);
+                                float32x4_t a2 = vmulq_f32(vcvt_f32_f16(vget_low_f16(f1)), v_inv);
+                                float32x4_t a3 = vmulq_f32(vcvt_f32_f16(vget_high_f16(f1)), v_inv);
+                                int32x4_t q0 = vcvtnq_s32_f32(a0);
+                                int32x4_t q1 = vcvtnq_s32_f32(a1);
+                                int32x4_t q2 = vcvtnq_s32_f32(a2);
+                                int32x4_t q3 = vcvtnq_s32_f32(a3);
+                                int16x8_t s01 = vcombine_s16(vqmovn_s32(q0), vqmovn_s32(q1));
+                                int16x8_t s23 = vcombine_s16(vqmovn_s32(q2), vqmovn_s32(q3));
+                                int8x16_t out = vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23));
+                                vst1q_s8(qp + k, out);
+                            }
+                        }
+
+                        // (d+e) down_proj k-slice with FP32 accumulation
+                        // directly into per-worker y_acc. Avoids the fp16
+                        // tmp_y round-trip — saves a hidden_dim load+store
+                        // per sub-task, which matters because sub-task count
+                        // is higher than cluster count.
+                        cactus_gemv_int4_st_kslice_fp32acc(
+                            sc.h_int8.data(), h_scale,
+                            down_w_c, down_s_c,
+                            sc.y_acc.data(),
+                            N_c, hidden_dim, group_size,
+                            row_off, row_cnt);
+                    }
+                };
+
+                // Dispatch: main thread runs as worker 0, others enqueued.
+                if (num_threads_sub <= 1) {
+                    sub_task_fn(0);
+                } else {
+                    std::vector<std::future<void>> futures;
+                    futures.reserve(num_threads_sub - 1);
+                    for (size_t w = 1; w < num_threads_sub; ++w) {
+                        futures.push_back(pool.enqueue([&, w](){ sub_task_fn(w); }));
+                    }
+                    sub_task_fn(0);
+                    for (auto& f : futures) f.get();
+                }
+
+                if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_down += t1 - t0; t0 = t1; }
+
+                // Reduce per-worker y_acc into final y (fp16). Vectorised.
+                {
+                    size_t k = 0;
+                    for (; k + 4 <= hidden_dim; k += 4) {
+                        float32x4_t s = vld1q_f32(scratch[0].y_acc.data() + k);
+                        for (size_t w = 1; w < num_threads_sub; ++w) {
+                            s = vaddq_f32(s, vld1q_f32(scratch[w].y_acc.data() + k));
+                        }
+                        vst1_f16(y + k, vcvt_f16_f32(s));
+                    }
+                    for (; k < hidden_dim; ++k) {
+                        float ssum = scratch[0].y_acc[k];
+                        for (size_t w = 1; w < num_threads_sub; ++w) ssum += scratch[w].y_acc[k];
+                        y[k] = static_cast<__fp16>(ssum);
+                    }
+                }
+                if (prof_on) {
+                    prof.calls++;
+                    if (prof.calls % 600 == 0) prof.dump();
+                }
+                continue;  // skip legacy per-cluster path
+            }
+        }
+        // ---- end INT4 sub-cluster-split ---------------------------------------
+
+        // Atomic next-cluster index for work-stealing load balance. Cluster
+        // sizes vary from ~24 to ~256, so static partitioning is highly
+        // imbalanced. Each worker grabs the next cluster from this counter.
+        std::atomic<size_t> next_cluster{0};
+        auto cluster_task = [&, active_groups_ptr, gate_full_ptr, pcl_prof](size_t /*cluster_lo*/, size_t /*cluster_hi*/, size_t worker_id) {
+            auto& sc = scratch[worker_id];
+            uint64_t l_up = 0, l_h = 0, l_q = 0, l_dn = 0, l_acc = 0;
+            uint64_t lt0 = pcl_prof ? gmlp_now_ns() : 0;
+            while (true) {
+                size_t ai = next_cluster.fetch_add(1, std::memory_order_relaxed);
+                if (ai >= k_active) break;
+                const uint32_t c = active_groups_ptr[ai];
+                const uint32_t N_c = cluster_sizes[c];
+                if (N_c == 0) continue;
+                if (sc.up_part.size() < N_c) sc.up_part.resize(N_c);
+                if (sc.h_int8.size()  < N_c) sc.h_int8.resize(N_c);
+
+                const int8_t* up_w_c   = reinterpret_cast<const int8_t*>(base + up_w_off[c]);
+                const __fp16* up_s_c   = reinterpret_cast<const __fp16*>(base + up_s_off[c]);
+                const int8_t* down_w_c = reinterpret_cast<const int8_t*>(base + dn_w_off[c]);
+                const __fp16* down_s_c = reinterpret_cast<const __fp16*>(base + dn_s_off[c]);
+
+                const uint32_t s = offsets[c];
+
+                // (a) up_proj on the cluster: K=hidden_dim, N=N_c
+                if (is_int4) {
+                    cactus_gemv_int4_st(x_int8, x_scale,
+                                         up_w_c, up_s_c,
+                                         sc.up_part.data(),
+                                         hidden_dim, N_c, group_size);
+                } else if (cpu_has_i8mm()) {
+                    cactus_gemv_int8_i8mm_st(x_int8, x_scale,
+                                              up_w_c, up_s_c,
+                                              sc.up_part.data(),
+                                              hidden_dim, N_c, group_size);
+                } else {
+                    cactus_gemv_int8_st(x_int8, x_scale,
+                                         up_w_c, up_s_c,
+                                         sc.up_part.data(),
+                                         hidden_dim, N_c, group_size);
+                }
+                if (pcl_prof) { uint64_t lt1 = gmlp_now_ns(); l_up += lt1 - lt0; lt0 = lt1; }
+
+                // (b) h = gate_slice * up_partial + per-cluster max-abs.
+                const __fp16* gp = gate_full_ptr + s;
+                __fp16* up = sc.up_part.data();
+                float h_max;
+                {
+                    float16x8_t v_max = vdupq_n_f16(static_cast<__fp16>(1e-6f));
+                    for (uint32_t k = 0; k < N_c; k += 8) {
+                        float16x8_t a = vld1q_f16(gp + k);
+                        float16x8_t b = vld1q_f16(up + k);
+                        float16x8_t v = vmulq_f16(a, b);
+                        vst1q_f16(up + k, v);  // overwrite up_part in place with h
+                        v_max = vmaxq_f16(v_max, vabsq_f16(v));
+                    }
+                    float32x4_t m_lo = vcvt_f32_f16(vget_low_f16(v_max));
+                    float32x4_t m_hi = vcvt_f32_f16(vget_high_f16(v_max));
+                    float32x4_t mm = vmaxq_f32(m_lo, m_hi);
+                    h_max = vmaxvq_f32(mm);
+                    if (h_max < 1e-6f) h_max = 1e-6f;
+                }
+                if (pcl_prof) { uint64_t lt1 = gmlp_now_ns(); l_h += lt1 - lt0; lt0 = lt1; }
+                float h_scale = h_max / 127.0f;
+                float inv = 1.0f / h_scale;
+                {
+                    float32x4_t v_inv = vdupq_n_f32(inv);
+                    int8_t* qp = sc.h_int8.data();
+                    for (uint32_t k = 0; k < N_c; k += 16) {
+                        float16x8_t f0 = vld1q_f16(up + k);
+                        float16x8_t f1 = vld1q_f16(up + k + 8);
+                        float32x4_t a0 = vmulq_f32(vcvt_f32_f16(vget_low_f16(f0)), v_inv);
+                        float32x4_t a1 = vmulq_f32(vcvt_f32_f16(vget_high_f16(f0)), v_inv);
+                        float32x4_t a2 = vmulq_f32(vcvt_f32_f16(vget_low_f16(f1)), v_inv);
+                        float32x4_t a3 = vmulq_f32(vcvt_f32_f16(vget_high_f16(f1)), v_inv);
+                        int32x4_t q0 = vcvtnq_s32_f32(a0);
+                        int32x4_t q1 = vcvtnq_s32_f32(a1);
+                        int32x4_t q2 = vcvtnq_s32_f32(a2);
+                        int32x4_t q3 = vcvtnq_s32_f32(a3);
+                        int16x8_t s01 = vcombine_s16(vqmovn_s32(q0), vqmovn_s32(q1));
+                        int16x8_t s23 = vcombine_s16(vqmovn_s32(q2), vqmovn_s32(q3));
+                        int8x16_t out = vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23));
+                        vst1q_s8(qp + k, out);
+                    }
+                }
+                if (pcl_prof) { uint64_t lt1 = gmlp_now_ns(); l_q += lt1 - lt0; lt0 = lt1; }
+
+                // (c) down_proj into per-worker fp16 tmp_y, then accumulate
+                // fp16->fp32 into y_acc.
+                __fp16* tmp_y_buf = sc.tmp_y.data();
+                if (is_int4) {
+                    cactus_gemv_int4_st(sc.h_int8.data(), h_scale,
+                                         down_w_c, down_s_c,
+                                         tmp_y_buf,
+                                         N_c, hidden_dim, group_size);
+                } else if (cpu_has_i8mm()) {
+                    cactus_gemv_int8_i8mm_st(sc.h_int8.data(), h_scale,
+                                              down_w_c, down_s_c,
+                                              tmp_y_buf,
+                                              N_c, hidden_dim, group_size);
+                } else {
+                    cactus_gemv_int8_st(sc.h_int8.data(), h_scale,
+                                         down_w_c, down_s_c,
+                                         tmp_y_buf,
+                                         N_c, hidden_dim, group_size);
+                }
+                if (pcl_prof) { uint64_t lt1 = gmlp_now_ns(); l_dn += lt1 - lt0; lt0 = lt1; }
+
+                {
+                    float* ya = sc.y_acc.data();
+                    const __fp16* yp = tmp_y_buf;
+                    size_t k = 0;
+                    for (; k + 8 <= hidden_dim; k += 8) {
+                        float32x4_t a0 = vld1q_f32(ya + k);
+                        float32x4_t a1 = vld1q_f32(ya + k + 4);
+                        float16x8_t v  = vld1q_f16(yp + k);
+                        a0 = vaddq_f32(a0, vcvt_f32_f16(vget_low_f16(v)));
+                        a1 = vaddq_f32(a1, vcvt_f32_f16(vget_high_f16(v)));
+                        vst1q_f32(ya + k, a0);
+                        vst1q_f32(ya + k + 4, a1);
+                    }
+                    for (; k < hidden_dim; ++k) ya[k] += float(yp[k]);
+                }
+                if (pcl_prof) { uint64_t lt1 = gmlp_now_ns(); l_acc += lt1 - lt0; lt0 = lt1; }
+            }
+            if (pcl_prof) {
+                prof.ns_pcl_up.fetch_add(l_up, std::memory_order_relaxed);
+                prof.ns_pcl_h.fetch_add(l_h, std::memory_order_relaxed);
+                prof.ns_pcl_quant.fetch_add(l_q, std::memory_order_relaxed);
+                prof.ns_pcl_down.fetch_add(l_dn, std::memory_order_relaxed);
+                prof.ns_pcl_acc.fetch_add(l_acc, std::memory_order_relaxed);
+            }
+        };
+
+        if (num_threads <= 1) {
+            cluster_task(0, k_active, 0);
+        } else {
+            // Single-mutex batched dispatch: emplace N-1 tasks in one critical
+            // section, then have main thread do worker 0 inline. Avoids the
+            // 13× packaged_task heap alloc + mutex acquire of pool.enqueue().
+            const size_t per = k_active / num_threads;
+            const size_t rem = k_active % num_threads;
+            std::atomic<size_t> remaining{num_threads - 1};
+            // Use a condition variable + atomic for completion.
+            // For simplicity we use the existing pool.enqueue but reduce overhead
+            // via shared completion counter.
+            std::vector<std::future<void>> futures;
+            futures.reserve(num_threads - 1);
+            for (size_t w = 1; w < num_threads; ++w) {
+                size_t lo = w * per + std::min(w, rem);
+                size_t hi = lo + per + (w < rem ? 1 : 0);
+                futures.push_back(pool.enqueue([&, lo, hi, w](){
+                    cluster_task(lo, hi, w);
+                }));
+            }
+            {
+                size_t lo = 0;
+                size_t hi = (0 < rem ? per + 1 : per);
+                cluster_task(lo, hi, 0);
+            }
+            for (auto& f : futures) f.get();
+        }
+        if (prof_on) { uint64_t t1 = gmlp_now_ns(); prof.ns_down += t1 - t0; t0 = t1; }
+
+        // 9. Reduce per-worker y_acc into final y (fp16). Vectorised.
+        {
+            size_t k = 0;
+            for (; k + 4 <= hidden_dim; k += 4) {
+                float32x4_t s = vld1q_f32(scratch[0].y_acc.data() + k);
+                for (size_t w = 1; w < num_threads; ++w) {
+                    s = vaddq_f32(s, vld1q_f32(scratch[w].y_acc.data() + k));
+                }
+                vst1_f16(y + k, vcvt_f16_f32(s));
+            }
+            for (; k < hidden_dim; ++k) {
+                float s = scratch[0].y_acc[k];
+                for (size_t w = 1; w < num_threads; ++w) s += scratch[w].y_acc[k];
+                y[k] = static_cast<__fp16>(s);
+            }
+        }
+        if (prof_on) {
+            prof.calls++;
+            if (prof.calls % 600 == 0) prof.dump();
         }
     }
 }
