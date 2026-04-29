@@ -356,6 +356,10 @@ public:
     void clear_tool_constraints() override;
     void update_tool_constraints(uint32_t token_id) override;
 
+    double score_tokens_cached_logprob(const std::vector<uint32_t>& tokens,
+                                       size_t start, size_t end, size_t context,
+                                       size_t* tokens_scored) override;
+
 protected:
     size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool, size_t) override;
     size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override;

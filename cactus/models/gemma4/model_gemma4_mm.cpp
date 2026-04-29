@@ -335,6 +335,12 @@ size_t Gemma4MmModel::forward(const std::vector<uint32_t>& tokens, bool use_cach
     return language_model_.forward(tokens, use_cache);
 }
 
+double Gemma4MmModel::score_tokens_cached_logprob(const std::vector<uint32_t>& tokens,
+                                                  size_t start, size_t end, size_t context,
+                                                  size_t* tokens_scored) {
+    return language_model_.score_tokens_cached_logprob(tokens, start, end, context, tokens_scored);
+}
+
 uint32_t Gemma4MmModel::decode(const std::vector<uint32_t>& tokens,
                                    float temperature, float top_p, size_t top_k,
                                    const std::string& profile_file, float* out_entropy,
