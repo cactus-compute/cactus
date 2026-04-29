@@ -473,6 +473,7 @@ void rotate_forward(float *data, const uint8_t *signs_packed, size_t dim);
 void rotate_inverse(float *data, const uint8_t *signs_packed, size_t dim);
 void dequantize_2bit(const uint8_t *src, float *dst, size_t dim);
 void dequantize_4bit(const uint8_t *src, float *dst, size_t dim);
+void dequantize_6bit(const uint8_t *src, float *dst, size_t dim);
 float dot_2bit_f32(const float *__restrict q, float q_sum,
                    const uint8_t *__restrict packed, size_t dim);
 void accumulate_2bit_f32(const uint8_t *__restrict packed, float weight_radius,
@@ -481,6 +482,10 @@ float dot_4bit_f32(const float *__restrict q,
                    const uint8_t *__restrict packed, size_t dim);
 void accumulate_4bit_f32(const uint8_t *packed, float weight_radius,
                          float *accum, size_t dim);
+float dot_6bit_f32(const float *__restrict q,
+                   const uint8_t *__restrict packed, size_t dim);
+void accumulate_6bit_f32(const uint8_t *__restrict packed, float weight_radius,
+                         float *__restrict accum, size_t dim);
 
 void cactus_attention_hybrid_turboquant_fp16(
     const __fp16 *queries,

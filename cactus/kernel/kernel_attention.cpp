@@ -1117,6 +1117,10 @@ void cactus_attention_hybrid_turboquant_fp16(
                                 polar_dot = dot_2bit_f32(q_rot_f32, q_sum,
                                                          cached_key_angles + ci * key_angles_bytes,
                                                          head_dim) * radius;
+                            } else if (angle_bits == 6) {
+                                polar_dot = dot_6bit_f32(q_rot_f32,
+                                                         cached_key_angles + ci * key_angles_bytes,
+                                                         head_dim) * radius;
                             } else {
                                 polar_dot = dot_4bit_f32(q_rot_f32,
                                                          cached_key_angles + ci * key_angles_bytes,
@@ -1188,6 +1192,11 @@ void cactus_attention_hybrid_turboquant_fp16(
                                             + kv_pos * num_kv_heads + kv_head_idx;
                             if (value_angle_bits == 2) {
                                 accumulate_2bit_f32(
+                                    cached_value_angles + ci * val_angles_bytes,
+                                    attn_weight * cached_value_radii[ci],
+                                    cached_acc, head_dim);
+                            } else if (value_angle_bits == 6) {
+                                accumulate_6bit_f32(
                                     cached_value_angles + ci * val_angles_bytes,
                                     attn_weight * cached_value_radii[ci],
                                     cached_acc, head_dim);

@@ -127,20 +127,39 @@ bool test_perplexity_context_sweep() {
     for (auto c : ctx_lengths) std::cout << " " << c;
     std::cout << std::endl;
 
-    const char* seed_env = std::getenv("CACTUS_TQ_SEED");
-    std::string seed = seed_env ? seed_env : "42";
+    // Seeds and configs swept simultaneously. Override:
+    //   CACTUS_TQ_SEEDS=7,1337         (default 7,1337)
+    //   CACTUS_SWEEP_CONFIGS=K4V2,K4V4,K6V2,K6V4 (default all four)
+    auto parse_csv = [](const char* env, const std::string& def) {
+        std::vector<std::string> v;
+        std::string s = env ? env : def;
+        std::stringstream ss(s); std::string tok;
+        while (std::getline(ss, tok, ',')) if (!tok.empty()) v.push_back(tok);
+        return v;
+    };
+    std::vector<std::string> seeds = parse_csv(std::getenv("CACTUS_TQ_SEEDS"), "7,1337");
+    std::vector<std::string> cfgs  = parse_csv(std::getenv("CACTUS_SWEEP_CONFIGS"), "K4V2,K4V4,K6V2,K6V4");
+
+    auto parse_kv = [](const std::string& cfg, std::string& kbits, std::string& vbits) {
+        // Format: K<digit>V<digit> e.g. K4V2, K6V4
+        kbits = std::string(1, cfg[1]);
+        vbits = std::string(1, cfg[3]);
+    };
+
+    std::cout << "\n  Seeds: "; for (auto& s : seeds) std::cout << s << " ";
+    std::cout << "\n  Configs: "; for (auto& c : cfgs) std::cout << c << " ";
+    std::cout << "\n";
 
     std::cout << "\n  " << std::setw(8) << std::left << "ctx"
+              << std::setw(8) << "config"
+              << std::setw(7) << "seed"
               << std::setw(11) << "INT8 ppl"
-              << std::setw(11) << "K4V2 ppl"
-              << std::setw(13) << "K4V2/INT8"
-              << std::setw(11) << "K4V4 ppl"
-              << std::setw(13) << "K4V4/INT8"
+              << std::setw(11) << "TQ ppl"
+              << std::setw(13) << "TQ/INT8"
               << std::setw(10) << "INT8 ms"
-              << std::setw(10) << "K4V2 ms"
-              << std::setw(10) << "K4V4 ms"
+              << std::setw(10) << "TQ ms"
               << "\n";
-    std::cout << "  " << std::string(96, '-') << std::endl;
+    std::cout << "  " << std::string(78, '-') << std::endl;
 
     bool any_ok = false;
     for (size_t ctx : ctx_lengths) {
@@ -155,39 +174,32 @@ bool test_perplexity_context_sweep() {
         setenv("CACTUS_KV_QUANT_METHOD", "int8", 1);
         Result int8_r = score_corpus(g_model_path, tokens, ctx);
 
-        clear_tq_env();
-        setenv("CACTUS_KV_QUANT_METHOD", "turboquant", 1);
-        setenv("CACTUS_TQ_KEY_BITS", "4", 1);
-        setenv("CACTUS_TQ_VALUE_BITS", "2", 1);
-        setenv("CACTUS_TQ_SEED", seed.c_str(), 1);
-        Result k4v2 = score_corpus(g_model_path, tokens, ctx);
+        for (const auto& cfg : cfgs) {
+            std::string kbits, vbits;
+            parse_kv(cfg, kbits, vbits);
+            for (const auto& seed : seeds) {
+                clear_tq_env();
+                setenv("CACTUS_KV_QUANT_METHOD", "turboquant", 1);
+                setenv("CACTUS_TQ_KEY_BITS", kbits.c_str(), 1);
+                setenv("CACTUS_TQ_VALUE_BITS", vbits.c_str(), 1);
+                setenv("CACTUS_TQ_SEED", seed.c_str(), 1);
+                Result tq = score_corpus(g_model_path, tokens, ctx);
 
-        clear_tq_env();
-        setenv("CACTUS_KV_QUANT_METHOD", "turboquant", 1);
-        setenv("CACTUS_TQ_KEY_BITS", "4", 1);
-        setenv("CACTUS_TQ_VALUE_BITS", "4", 1);
-        setenv("CACTUS_TQ_SEED", seed.c_str(), 1);
-        Result k4v4 = score_corpus(g_model_path, tokens, ctx);
+                double ratio = tq.perplexity / std::max(1e-9, int8_r.perplexity);
+                std::cout << "  " << std::setw(8) << std::left << ctx
+                          << std::setw(8) << cfg
+                          << std::setw(7) << seed
+                          << std::setw(11) << std::fixed << std::setprecision(3) << int8_r.perplexity
+                          << std::setw(11) << std::setprecision(3) << tq.perplexity
+                          << std::setw(13) << std::setprecision(4) << ratio
+                          << std::setw(10) << std::setprecision(0) << int8_r.ms
+                          << std::setw(10) << std::setprecision(0) << tq.ms
+                          << std::endl;
 
-        clear_tq_env();
-
-        double r2 = k4v2.perplexity / std::max(1e-9, int8_r.perplexity);
-        double r4 = k4v4.perplexity / std::max(1e-9, int8_r.perplexity);
-
-        std::cout << "  " << std::setw(8) << std::left << ctx
-                  << std::setw(11) << std::fixed << std::setprecision(3) << int8_r.perplexity
-                  << std::setw(11) << std::setprecision(3) << k4v2.perplexity
-                  << std::setw(13) << std::setprecision(4) << r2
-                  << std::setw(11) << std::setprecision(3) << k4v4.perplexity
-                  << std::setw(13) << std::setprecision(4) << r4
-                  << std::setw(10) << std::setprecision(0) << int8_r.ms
-                  << std::setw(10) << std::setprecision(0) << k4v2.ms
-                  << std::setw(10) << std::setprecision(0) << k4v4.ms
-                  << std::endl;
-
-        if (std::isfinite(int8_r.perplexity) && std::isfinite(k4v2.perplexity) && std::isfinite(k4v4.perplexity)) {
-            any_ok = true;
+                if (std::isfinite(tq.perplexity)) any_ok = true;
+            }
         }
+        clear_tq_env();
     }
 
     return any_ok;

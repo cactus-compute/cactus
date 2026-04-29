@@ -2,6 +2,7 @@
 #include "kernel_utils.h"
 #include <arm_neon.h>
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -579,9 +580,142 @@ void dequantize_2bit(const uint8_t* src, float* dst, size_t dim) {
     }
 }
 
+// 6-bit Lloyd-Max codebook for unit-variance Gaussian, computed once at first use.
+// Iterative Lloyd's algorithm: centroid[i] = E[x | b[i-1] < x < b[i]].
+static const float* tq_6bit_centroids() {
+    static const std::array<float, 64> values = []() {
+        constexpr int N = 64;
+        constexpr int ITERS = 60;
+        constexpr float kInvSqrt2 = 0.70710678118f;
+        constexpr float kInvSqrt2pi = 0.39894228040f;
+
+        std::array<float, N> c{};
+        for (int i = 0; i < N; i++)
+            c[i] = -4.0f + 8.0f * (float(i) + 0.5f) / float(N);
+
+        std::array<float, N - 1> b{};
+        for (int iter = 0; iter < ITERS; iter++) {
+            for (int i = 0; i < N - 1; i++) b[i] = 0.5f * (c[i] + c[i+1]);
+            for (int i = 0; i < N; i++) {
+                float lo = (i == 0) ? -1e30f : b[i - 1];
+                float hi = (i == N - 1) ? 1e30f : b[i];
+                auto phi = [&](float x){ return kInvSqrt2pi * std::exp(-0.5f * x * x); };
+                auto Phi = [&](float x){ return 0.5f * (1.0f + std::erf(x * kInvSqrt2)); };
+                float num = phi(lo) - phi(hi);
+                float den = Phi(hi) - Phi(lo);
+                if (den > 1e-30f) c[i] = num / den;
+            }
+        }
+        return c;
+    }();
+    return values.data();
+}
+
+// 6-bit pack: 4 codes (24 bits) per 3 bytes. dim must be a multiple of 4.
+static void quantize_6bit(const float* src, uint8_t* dst, size_t dim) {
+    const float* centroids = tq_6bit_centroids();
+    const float sqrt_dim = sqrtf(static_cast<float>(dim));
+
+    auto encode = [&](float x) -> uint8_t {
+        const float v = x * sqrt_dim;
+        int lo = 0, hi = 63;
+        while (lo < hi) {
+            int mid = (lo + hi) / 2;
+            float boundary = 0.5f * (centroids[mid] + centroids[mid + 1]);
+            if (v < boundary) hi = mid;
+            else              lo = mid + 1;
+        }
+        return static_cast<uint8_t>(lo);
+    };
+
+    size_t i = 0;
+    size_t p = 0;
+    for (; i + 4 <= dim; i += 4) {
+        uint8_t c0 = encode(src[i]);
+        uint8_t c1 = encode(src[i + 1]);
+        uint8_t c2 = encode(src[i + 2]);
+        uint8_t c3 = encode(src[i + 3]);
+        dst[p]     = c0 | uint8_t((c1 & 0x03) << 6);
+        dst[p + 1] = uint8_t(c1 >> 2) | uint8_t((c2 & 0x0F) << 4);
+        dst[p + 2] = uint8_t(c2 >> 4) | uint8_t(c3 << 2);
+        p += 3;
+    }
+}
+
+void dequantize_6bit(const uint8_t* src, float* dst, size_t dim) {
+    const float* centroids = tq_6bit_centroids();
+    const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
+
+    size_t i = 0;
+    size_t p = 0;
+    for (; i + 4 <= dim; i += 4) {
+        uint8_t b0 = src[p];
+        uint8_t b1 = src[p + 1];
+        uint8_t b2 = src[p + 2];
+        uint8_t c0 = b0 & 0x3F;
+        uint8_t c1 = uint8_t((b0 >> 6) | ((b1 & 0x0F) << 2)) & 0x3F;
+        uint8_t c2 = uint8_t((b1 >> 4) | ((b2 & 0x03) << 4)) & 0x3F;
+        uint8_t c3 = uint8_t(b2 >> 2) & 0x3F;
+        dst[i]     = centroids[c0] * inv_sqrt_dim;
+        dst[i + 1] = centroids[c1] * inv_sqrt_dim;
+        dst[i + 2] = centroids[c2] * inv_sqrt_dim;
+        dst[i + 3] = centroids[c3] * inv_sqrt_dim;
+        p += 3;
+    }
+}
+
+float dot_6bit_f32(const float* __restrict q, const uint8_t* __restrict packed, size_t dim) {
+    const float* centroids = tq_6bit_centroids();
+    const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
+
+    float result = 0.0f;
+    size_t i = 0;
+    size_t p = 0;
+    for (; i + 4 <= dim; i += 4) {
+        uint8_t b0 = packed[p];
+        uint8_t b1 = packed[p + 1];
+        uint8_t b2 = packed[p + 2];
+        uint8_t c0 = b0 & 0x3F;
+        uint8_t c1 = uint8_t((b0 >> 6) | ((b1 & 0x0F) << 2)) & 0x3F;
+        uint8_t c2 = uint8_t((b1 >> 4) | ((b2 & 0x03) << 4)) & 0x3F;
+        uint8_t c3 = uint8_t(b2 >> 2) & 0x3F;
+        result += q[i]     * centroids[c0];
+        result += q[i + 1] * centroids[c1];
+        result += q[i + 2] * centroids[c2];
+        result += q[i + 3] * centroids[c3];
+        p += 3;
+    }
+    return result * inv_sqrt_dim;
+}
+
+void accumulate_6bit_f32(const uint8_t* __restrict packed, float weight_radius,
+                         float* __restrict accum, size_t dim) {
+    const float* centroids = tq_6bit_centroids();
+    const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
+    const float wr = inv_sqrt_dim * weight_radius;
+
+    size_t i = 0;
+    size_t p = 0;
+    for (; i + 4 <= dim; i += 4) {
+        uint8_t b0 = packed[p];
+        uint8_t b1 = packed[p + 1];
+        uint8_t b2 = packed[p + 2];
+        uint8_t c0 = b0 & 0x3F;
+        uint8_t c1 = uint8_t((b0 >> 6) | ((b1 & 0x0F) << 2)) & 0x3F;
+        uint8_t c2 = uint8_t((b1 >> 4) | ((b2 & 0x03) << 4)) & 0x3F;
+        uint8_t c3 = uint8_t(b2 >> 2) & 0x3F;
+        accum[i]     += centroids[c0] * wr;
+        accum[i + 1] += centroids[c1] * wr;
+        accum[i + 2] += centroids[c2] * wr;
+        accum[i + 3] += centroids[c3] * wr;
+        p += 3;
+    }
+}
+
 static void quantize_nbit(const float* src, uint8_t* dst, size_t dim, size_t angle_bits) {
-    if (angle_bits == 2) quantize_2bit(src, dst, dim);
-    else                 quantize_4bit(src, dst, dim);
+    if (angle_bits == 2)      quantize_2bit(src, dst, dim);
+    else if (angle_bits == 6) quantize_6bit(src, dst, dim);
+    else                      quantize_4bit(src, dst, dim);
 }
 
 void cactus_turboquant_init(
@@ -687,8 +821,9 @@ void cactus_turboquant_decode_kv_fp16(
             float* buf = _buf.data();
             for (size_t idx = start; idx < end; idx++) {
                 float radius = radii[idx];
-                if (angle_bits == 2) dequantize_2bit(angles + idx * angles_bytes, buf, head_dim);
-                else                 dequantize_4bit(angles + idx * angles_bytes, buf, head_dim);
+                if (angle_bits == 2)      dequantize_2bit(angles + idx * angles_bytes, buf, head_dim);
+                else if (angle_bits == 6) dequantize_6bit(angles + idx * angles_bytes, buf, head_dim);
+                else                      dequantize_4bit(angles + idx * angles_bytes, buf, head_dim);
                 float32x4_t r_vec = vdupq_n_f32(radius);
                 size_t d = 0;
                 for (; d + 16 <= head_dim; d += 16) {
