@@ -1422,6 +1422,7 @@ public:
         float repetition_penalty = 1.1f) override;
 
     void reset_cache() override;
+    double score_tokens_cached_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored) override;
     std::vector<float> get_image_embeddings(const std::string& image_path) override;
 
 protected:

@@ -445,20 +445,19 @@ inline size_t turboquant_angles_bytes_per_head(size_t head_dim,
   return (head_dim * angle_bits + 7) / 8;
 }
 
-inline size_t turboquant_qjl_bytes_per_head(size_t projection_dim) {
-  return (projection_dim + 7) / 8;
+constexpr size_t TURBOQUANT_ROTATION_LAYERS = 3;
+
+inline size_t turboquant_rotation_signs_bytes(size_t head_dim) {
+  return ((head_dim + 7) / 8) * TURBOQUANT_ROTATION_LAYERS;
 }
 
-void cactus_turboquant_init(uint8_t *rotation_signs, uint8_t *projection_matrix,
-                            size_t head_dim, size_t projection_dim,
-                            uint64_t seed);
+void cactus_turboquant_init(uint8_t *rotation_signs,
+                            size_t head_dim, uint64_t seed);
 
 void cactus_turboquant_encode_kv_fp16(
     const __fp16 *src, float *dst_radii, uint8_t *dst_angles,
-    float *dst_error_norms, uint8_t *dst_qjl_bits,
-    const uint8_t *rotation_signs, const uint8_t *projection_matrix,
-    size_t seq_len, size_t kv_heads, size_t head_dim, size_t angle_bits,
-    size_t projection_dim);
+    const uint8_t *rotation_signs,
+    size_t seq_len, size_t kv_heads, size_t head_dim, size_t angle_bits);
 
 
 void cactus_turboquant_decode_kv_fp16(const float *radii, const uint8_t *angles,
@@ -483,21 +482,15 @@ float dot_4bit_f32(const float *__restrict q,
 void accumulate_4bit_f32(const uint8_t *packed, float weight_radius,
                          float *accum, size_t dim);
 
-size_t xnor_popcount(const uint8_t *a, const uint8_t *b, size_t nbytes);
-void signed_dot(const uint8_t *__restrict proj_group,
-                const float *__restrict vec, size_t dim,
-                float *__restrict out);
-
 void cactus_attention_hybrid_turboquant_fp16(
     const __fp16 *queries,
     const float *cached_key_radii, const uint8_t *cached_key_angles,
-    const float *cached_key_error_norms, const uint8_t *cached_key_qjl_bits,
     const float *cached_value_radii, const uint8_t *cached_value_angles,
-    const uint8_t *rotation_signs, const uint8_t *projection_matrix,
+    const uint8_t *rotation_signs,
     const __fp16 *keys_new, const __fp16 *values_new, __fp16 *output,
     size_t batch_size, size_t seq_len, size_t cache_len, size_t new_len,
     size_t num_q_heads, size_t num_kv_heads, size_t head_dim, float scale,
-    size_t angle_bits, size_t value_angle_bits, size_t projection_dim,
+    size_t angle_bits, size_t value_angle_bits,
     size_t position_offset = 0, bool is_causal = true,
     size_t window_size = 0);
 

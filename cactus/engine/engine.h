@@ -163,10 +163,8 @@ struct Config {
     size_t conv_L_cache = 0;
 
     KVQuantMethod kv_quant_method = KVQuantMethod::INT8_GROUP;
-    size_t tq_projection_dim = 64;
     size_t tq_key_angle_bits = 2;
     size_t tq_value_angle_bits = 2;
-    bool tq_use_qjl = true;
 
     uint32_t altup_num_inputs = 4;
     uint32_t laurel_rank = 64;
@@ -530,12 +528,8 @@ struct KVCache {
 
         std::vector<float>   tq_key_radii;
         std::vector<uint8_t> tq_key_angles;
-        std::vector<float>   tq_key_error_norms;
-        std::vector<uint8_t> tq_key_qjl_bits;
         std::vector<float>   tq_val_radii;
         std::vector<uint8_t> tq_val_angles;
-        std::vector<float>   tq_val_error_norms;
-        std::vector<uint8_t> tq_val_qjl_bits;
     };
 
     std::vector<LayerCache> layer_caches;
@@ -551,10 +545,7 @@ struct KVCache {
     KVQuantMethod quant_method = KVQuantMethod::INT8_GROUP;
     size_t tq_key_angle_bits = 2;
     size_t tq_value_angle_bits = 2;
-    size_t tq_projection_dim = 64;
-    bool tq_use_qjl = true;
     std::vector<uint8_t> tq_rotation_signs;
-    std::vector<uint8_t> tq_projection_matrix;
 
     void set_window_size(size_t window, size_t sink = DEFAULT_SINK_SIZE);
     size_t get_effective_seq_len() const { return current_seq_len; }
@@ -563,8 +554,8 @@ struct KVCache {
     size_t get_layer_kv_heads(size_t layer_idx) const { return layer_caches[layer_idx].kv_heads; }
 
     void init(size_t num_layers, size_t max_seq, const std::vector<size_t>& layer_dims, const std::vector<size_t>& layer_kv_heads, Precision model_precision,
-              KVQuantMethod method = KVQuantMethod::INT8_GROUP, size_t tq_proj_dim = 64,
-              size_t tq_k_bits = 2, size_t tq_v_bits = 2, bool tq_qjl = true, uint64_t tq_seed = 42);
+              KVQuantMethod method = KVQuantMethod::INT8_GROUP,
+              size_t tq_k_bits = 2, size_t tq_v_bits = 2, uint64_t tq_seed = 42);
     void reset();
     void update_from_graph(CactusGraph* gb, const std::vector<size_t>& k_nodes,
                           const std::vector<size_t>& v_nodes, size_t seq_len,
@@ -595,14 +586,9 @@ struct KVCache {
 
     const float*   get_tq_key_radii(size_t layer) const;
     const uint8_t* get_tq_key_angles(size_t layer) const;
-    const float*   get_tq_key_error_norms(size_t layer) const;
-    const uint8_t* get_tq_key_qjl_bits(size_t layer) const;
     const float*   get_tq_val_radii(size_t layer) const;
     const uint8_t* get_tq_val_angles(size_t layer) const;
-    const float*   get_tq_val_error_norms(size_t layer) const;
-    const uint8_t* get_tq_val_qjl_bits(size_t layer) const;
     const uint8_t* get_tq_rotation_signs() const { return tq_rotation_signs.data(); }
-    const uint8_t* get_tq_projection_matrix() const { return tq_projection_matrix.data(); }
 
     void remove_token_range(size_t start, size_t count);
     void compact_to_windows(const std::vector<size_t>& target_windows);

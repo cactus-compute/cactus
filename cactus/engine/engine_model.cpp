@@ -146,26 +146,19 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         if (s == "turboquant" || s == "tq") config_.kv_quant_method = KVQuantMethod::TURBOQUANT;
         else config_.kv_quant_method = KVQuantMethod::INT8_GROUP;
     }
-    if (const char* env_proj = std::getenv("CACTUS_TQ_PROJECTION_DIM")) {
-        config_.tq_projection_dim = static_cast<size_t>(std::stoul(env_proj));
-    }
     if (const char* env_kb = std::getenv("CACTUS_TQ_KEY_BITS")) {
         config_.tq_key_angle_bits = static_cast<size_t>(std::stoul(env_kb));
     }
     if (const char* env_vb = std::getenv("CACTUS_TQ_VALUE_BITS")) {
         config_.tq_value_angle_bits = static_cast<size_t>(std::stoul(env_vb));
     }
-    if (const char* env_qjl = std::getenv("CACTUS_TQ_QJL")) {
-        std::string s(env_qjl);
-        config_.tq_use_qjl = !(s == "0" || s == "false" || s == "off");
-    }
     uint64_t tq_seed = 42;
     if (const char* env_seed = std::getenv("CACTUS_TQ_SEED")) {
         tq_seed = static_cast<uint64_t>(std::stoull(env_seed));
     }
     kv_cache_.init(config_.num_layers, context_size, get_kv_layer_dims(), get_kv_layer_heads(), cache_precision,
-                   config_.kv_quant_method, config_.tq_projection_dim,
-                   config_.tq_key_angle_bits, config_.tq_value_angle_bits, config_.tq_use_qjl, tq_seed);
+                   config_.kv_quant_method,
+                   config_.tq_key_angle_bits, config_.tq_value_angle_bits, tq_seed);
 
     size_t window_size = std::min(context_size, size_t(512));
     size_t sink_size = 4;

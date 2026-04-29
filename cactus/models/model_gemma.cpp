@@ -15,7 +15,7 @@ GemmaModel::GemmaModel(const Config& config) : Model(config) {
 }
 
 void GemmaModel::post_init() {
-    kv_cache_.set_window_size(0, 0); 
+    kv_cache_.set_window_size(0, 0);
 }
 
 void GemmaModel::load_weights_to_graph(CactusGraph* gb) {

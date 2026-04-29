@@ -953,13 +953,12 @@ void cactus_attention_hybrid_int8_fp16(
 void cactus_attention_hybrid_turboquant_fp16(
     const __fp16 *queries,
     const float *cached_key_radii,      const uint8_t *cached_key_angles,
-    const float *cached_key_error_norms, const uint8_t *cached_key_qjl_bits,
     const float *cached_value_radii,    const uint8_t *cached_value_angles,
-    const uint8_t *rotation_signs, const uint8_t *projection_matrix,
+    const uint8_t *rotation_signs,
     const __fp16 *keys_new, const __fp16 *values_new, __fp16 *output,
     size_t batch_size, size_t seq_len, size_t cache_len, size_t new_len,
     size_t num_q_heads, size_t num_kv_heads, size_t head_dim, float scale,
-    size_t angle_bits, size_t value_angle_bits, size_t projection_dim,
+    size_t angle_bits, size_t value_angle_bits,
     size_t position_offset, bool is_causal, size_t window_size
 ) {
     if (scale == 0.0f) {
@@ -976,8 +975,6 @@ void cactus_attention_hybrid_turboquant_fp16(
 
     const size_t key_angles_bytes = turboquant_angles_bytes_per_head(head_dim, angle_bits);
     const size_t val_angles_bytes = turboquant_angles_bytes_per_head(head_dim, value_angle_bits);
-    const size_t qjl_bytes        = turboquant_qjl_bytes_per_head(projection_dim);
-    const size_t rot_row_bytes    = head_dim / 8;
 
     const size_t q_batch_stride = seq_len * num_q_heads * head_dim;
     const size_t kv_new_batch_stride = new_len * num_kv_heads * head_dim;
@@ -992,13 +989,10 @@ void cactus_attention_hybrid_turboquant_fp16(
             std::vector<float> _q_rot_f32(head_dim);
             std::vector<float> _cached_acc(head_dim);
             std::vector<float> _new_acc(head_dim);
-            std::vector<uint8_t> _q_qjl_bits(qjl_bytes);
             std::vector<float> block_scores(BLOCK_SIZE);
             float* q_rot_f32 = _q_rot_f32.data();
             float* cached_acc = _cached_acc.data();
             float* new_acc = _new_acc.data();
-            uint8_t* q_qjl_bits = _q_qjl_bits.data();
-            float jl_dots[8];
 
             for (size_t work_idx = start_idx; work_idx < end_idx; ++work_idx) {
                 const size_t batch_idx = work_idx / (num_q_heads * seq_len);
@@ -1080,31 +1074,6 @@ void cactus_attention_hybrid_turboquant_fp16(
                         for (; d < head_dim; d++) q_sum += q_rot_f32[d];
                     }
 
-                    memset(q_qjl_bits, 0, qjl_bytes);
-                    size_t p = 0;
-                    for (; p + 8 <= projection_dim; p += 8) {
-                        signed_dot(projection_matrix + (p >> 3) * rot_row_bytes * 8,
-                                   q_rot_f32, head_dim, jl_dots);
-                        for (int r = 0; r < 8; r++) {
-                            if (jl_dots[r] > 0.f) {
-                                const size_t slot = p + r;
-                                q_qjl_bits[slot >> 3] |= (1u << (slot & 7));
-                            }
-                        }
-                    }
-                    if (p < projection_dim) {
-                        const uint8_t* grp = projection_matrix + (p >> 3) * rot_row_bytes * 8;
-                        for (; p < projection_dim; p++) {
-                            float dot_v = 0.f;
-                            const size_t rig = p & 7;
-                            for (size_t d2 = 0; d2 < head_dim; d2 += 8) {
-                                uint8_t byte = grp[(d2 >> 3) * 8 + rig];
-                                for (int b = 0; b < 8; b++)
-                                    dot_v += ((byte >> b) & 1) ? -q_rot_f32[d2 + b] : q_rot_f32[d2 + b];
-                            }
-                            if (dot_v > 0.f) q_qjl_bits[p >> 3] |= (1u << (p & 7));
-                        }
-                    }
                 }
 
                 memset(cached_acc, 0, head_dim * sizeof(float));
@@ -1153,20 +1122,7 @@ void cactus_attention_hybrid_turboquant_fp16(
                                                          cached_key_angles + ci * key_angles_bytes,
                                                          head_dim) * radius;
                             }
-                            float qjl_corr = 0.0f;
-                            if (cached_key_error_norms && cached_key_qjl_bits) {
-                                const float err_norm = cached_key_error_norms[ci];
-                                size_t matches = xnor_popcount(cached_key_qjl_bits + ci * qjl_bytes,
-                                                               q_qjl_bits, qjl_bytes);
-                                float avg_sign = (2.0f * static_cast<float>(matches)
-                                                  - static_cast<float>(projection_dim))
-                                                 / static_cast<float>(projection_dim);
-                                float half_pi_avg = 1.5707963f * avg_sign;
-                                float x2 = half_pi_avg * half_pi_avg;
-                                float sinval = half_pi_avg * (1.0f - x2 * (1.0f/6.0f - x2 * (1.0f/120.0f)));
-                                qjl_corr = err_norm * sinval;
-                            }
-                            float score = q_norm * (polar_dot + qjl_corr) * scale;
+                            float score = q_norm * polar_dot * scale;
                             block_scores[kv_idx] = score;
                             block_max = std::max(block_max, score);
                         } else {

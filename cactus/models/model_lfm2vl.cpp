@@ -419,6 +419,12 @@ uint32_t Lfm2VlModel::decode(const std::vector<uint32_t>& tokens,
     return language_model_.decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
 }
 
+double Lfm2VlModel::score_tokens_cached_logprob(
+    const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context,
+    size_t* tokens_scored) {
+    return language_model_.score_tokens_cached_logprob(tokens, start, end, context, tokens_scored);
+}
+
 void Lfm2VlModel::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size, const std::string& profile_file) {
     if (!initialized_ || !graph_handle_) {
         throw std::runtime_error("Model not initialized - call init() first");

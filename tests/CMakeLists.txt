@@ -18,7 +18,7 @@ endfunction()
 
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -pthread -Wall -Wextra -pedantic -O3")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -pthread -Wall -Wextra -pedantic -std=c++20 -O3 -Wno-c++11-extensions")
     set(CACTUS_CURL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../libs/curl" CACHE PATH "Path to vendored libcurl artifacts")
     set(CACTUS_CURL_INCLUDE_DIR "${CACTUS_CURL_ROOT}/include")
     set(CACTUS_CURL_LIBRARY_MACOS "${CACTUS_CURL_ROOT}/macos/libcurl.a")
@@ -96,6 +96,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
             ${ACCELERATE_FRAMEWORK}
             ${COREML_FRAMEWORK}
             ${FOUNDATION_FRAMEWORK}
+            ${ACCELERATE_FRAMEWORK}
             ${SECURITY_FRAMEWORK}
             ${SYSTEMCONFIGURATION_FRAMEWORK}
             ${CFNETWORK_FRAMEWORK}
@@ -130,6 +131,7 @@ foreach(APP_NAME chat asr)
                 ${ACCELERATE_FRAMEWORK}
                 ${COREML_FRAMEWORK}
                 ${FOUNDATION_FRAMEWORK}
+                ${ACCELERATE_FRAMEWORK}
                 ${SECURITY_FRAMEWORK}
                 ${SYSTEMCONFIGURATION_FRAMEWORK}
                 ${CFNETWORK_FRAMEWORK}

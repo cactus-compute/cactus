@@ -156,7 +156,7 @@ bool test_perplexity_sweep() {
               << std::endl;
     Result ref = ref_int8;  // primary baseline for pass/fail
 
-    // Production config: K=4, V=2, no QJL, projection_dim=64 (head_dim).
+    // Production config: K=4, V=2.
     // Compression: 4.57× vs FP16, ~2.6× vs INT8 on head_dim=64 models.
     // Multiple seeds verify robustness against rotation matrix variance.
     std::vector<ConfigRow> configs = {

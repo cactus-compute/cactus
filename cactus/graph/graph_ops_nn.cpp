@@ -788,11 +788,9 @@ void compute_attention_turboquant_hybrid_node(GraphNode& node, const std::vector
         query_buffer.data_as<__fp16>(),
         node.params.cached_k_radii,
         node.params.cached_k_angles,
-        nullptr, nullptr,
         node.params.cached_v_radii,
         node.params.cached_v_angles,
         node.params.rotation_signs,
-        nullptr,
         key_new_buffer.data_as<__fp16>(),
         value_new_buffer.data_as<__fp16>(),
         node.output_buffer.data_as<__fp16>(),
@@ -801,7 +799,6 @@ void compute_attention_turboquant_hybrid_node(GraphNode& node, const std::vector
         node.params.scale,
         node.params.angle_bits,
         node.params.value_angle_bits,
-        0,
         node.params.position_offset, true,
         node.params.window_size
     );
