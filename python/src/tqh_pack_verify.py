@@ -26,12 +26,18 @@ import tqh_runtime  # noqa: E402
 
 from . import tqh_pack  # noqa: E402
 
+TQ_FLAG_CODE_ORDERED_INDICES = 1 << 0
+TQ_FLAG_PANEL_MAJOR = 1 << 1
+TQ_PANEL_N = 4
+TQ_PANEL_K_CHUNK = 16
+
 
 def _read_cactus_tq_weights(path: Path):
     """Parse the tqh_pack-emitted .weights file back into raw arrays."""
     blob = path.read_bytes()
     if blob[:4] != b'CACT':
         raise ValueError("magic mismatch")
+    flags = struct.unpack_from('<I', blob, 4)[0]
     ndim = struct.unpack_from('<I', blob, 12)[0]
     dim0 = struct.unpack_from('<Q', blob, 16)[0]
     dim1 = struct.unpack_from('<Q', blob, 24)[0]
@@ -71,12 +77,21 @@ def _read_cactus_tq_weights(path: Path):
                              ).reshape(dim1, dim1)
         left = right = perm = None
 
-    scales = np.frombuffer(blob, dtype=np.float16, count=dim0 * num_groups, offset=off_sc
-                           ).reshape(dim0, num_groups)
+    if flags & TQ_FLAG_PANEL_MAJOR:
+        n_blocks = (dim0 + TQ_PANEL_N - 1) // TQ_PANEL_N
+        scales_raw = np.frombuffer(blob, dtype=np.float16,
+                                   count=n_blocks * num_groups * TQ_PANEL_N,
+                                   offset=off_sc).reshape(n_blocks, num_groups, TQ_PANEL_N)
+        scales = np.zeros((dim0, num_groups), dtype=np.float16)
+        for n in range(dim0):
+            scales[n] = scales_raw[n // TQ_PANEL_N, :, n % TQ_PANEL_N]
+    else:
+        scales = np.frombuffer(blob, dtype=np.float16, count=dim0 * num_groups, offset=off_sc
+                               ).reshape(dim0, num_groups)
 
     packed_ix = np.frombuffer(blob, dtype=np.uint8, count=indices_bytes, offset=off_ix)
 
-    out = dict(precision=precision, dim0=dim0, dim1=dim1, group_size=group_size,
+    out = dict(flags=flags, precision=precision, dim0=dim0, dim1=dim1, group_size=group_size,
                num_groups=num_groups, bits=bits, rotation_family=rotation_family,
                codebook=codebook, input_scale=input_scale, scales=scales,
                packed_ix=packed_ix)
@@ -107,6 +122,20 @@ def _unpack_indices_lsb(packed: np.ndarray, group_size: int, bits: int,
     return out.reshape(N, num_groups * group_size)
 
 
+def _unpack_indices_lsb_panel(packed: np.ndarray, group_size: int, bits: int,
+                              N: int, num_groups: int) -> np.ndarray:
+    chunks = group_size // TQ_PANEL_K_CHUNK
+    bytes_per_chunk = TQ_PANEL_K_CHUNK * bits // 8
+    per_group_bytes = group_size * bits // 8
+    n_blocks = (N + TQ_PANEL_N - 1) // TQ_PANEL_N
+    panel = packed.reshape(n_blocks, num_groups, chunks, TQ_PANEL_N, bytes_per_chunk)
+    row_major = np.zeros((N, num_groups, chunks, bytes_per_chunk), dtype=np.uint8)
+    for n in range(N):
+        row_major[n] = panel[n // TQ_PANEL_N, :, :, n % TQ_PANEL_N, :]
+    return _unpack_indices_lsb(row_major.reshape(N, num_groups * per_group_bytes),
+                               group_size, bits, N, num_groups)
+
+
 def _dehydrate_from_cactus(rec: dict) -> np.ndarray:
     """Mirror tqh_runtime.dehydrate_layer math from the cactus-emitted blob."""
     import torch
@@ -115,7 +144,10 @@ def _dehydrate_from_cactus(rec: dict) -> np.ndarray:
     G = rec['num_groups']
     bits = rec['bits']
     cb = torch.from_numpy(rec['codebook'].astype(np.float32))
-    indices = _unpack_indices_lsb(rec['packed_ix'], gs, bits, N, G)
+    if rec['flags'] & TQ_FLAG_PANEL_MAJOR:
+        indices = _unpack_indices_lsb_panel(rec['packed_ix'], gs, bits, N, G)
+    else:
+        indices = _unpack_indices_lsb(rec['packed_ix'], gs, bits, N, G)
     idx = torch.from_numpy(indices.astype(np.int32))
     norms = torch.from_numpy(rec['scales'].astype(np.float16)).float()  # [N, G]
     if rec['rotation_family'] == 0:
@@ -134,7 +166,13 @@ def _dehydrate_from_cactus(rec: dict) -> np.ndarray:
     out = torch.empty(N, K, dtype=torch.float32)
     for g in range(G):
         s, e = g * gs, (g + 1) * gs
-        dq = cb[idx[:, s:e]]                              # [N, gs]
+        group_idx = idx[:, s:e]
+        if (rec['rotation_family'] == 0
+                and (rec['flags'] & TQ_FLAG_CODE_ORDERED_INDICES)):
+            # Runtime packed idx_new[k] = reference idx_old[inv_perm[k]].
+            # Convert back to reference order before applying R.T below.
+            group_idx = group_idx[:, torch.from_numpy(perm)]
+        dq = cb[group_idx]                                # [N, gs]
         recon = (dq @ R.T) * norms[:, g:g + 1]            # [N, gs]
         out[:, s:e] = recon
     if rec['input_scale'] is not None:
@@ -144,7 +182,8 @@ def _dehydrate_from_cactus(rec: dict) -> np.ndarray:
 
 
 def verify_one_layer(packed_dir: Path, layer_name: str = None,
-                     extra_scale_check: bool = True) -> dict:
+                     extra_scale_check: bool = True,
+                     panel_major: bool = False) -> dict:
     """Pack a single layer through tqh_pack and compare to tqh_runtime."""
     meta = json.loads((packed_dir / 'metadata.json').read_text())
     if layer_name is None:
@@ -175,6 +214,7 @@ def verify_one_layer(packed_dir: Path, layer_name: str = None,
         group_size=gs, bits=loaded['bits'],
         rotation_kind=rot_kind, rotation_seed=seed,
         full_orth_R=full_R, extra_scale=1.0,
+        panel_major=panel_major and rot_kind == 'hadamard',
     )
     print(f"  packed file size: {tmp_path.stat().st_size / 1024:.1f} KB")
 
@@ -206,5 +246,8 @@ if __name__ == '__main__':
     ap.add_argument('--packed-dir', required=True)
     ap.add_argument('--layer', default=None,
                     help='Layer name to verify (defaults to first in metadata)')
+    ap.add_argument('--panel-major', action='store_true',
+                    help='Verify the 4-row panel-major Hadamard runtime layout')
     args = ap.parse_args()
-    verify_one_layer(Path(args.packed_dir), layer_name=args.layer)
+    verify_one_layer(Path(args.packed_dir), layer_name=args.layer,
+                     panel_major=args.panel_major)

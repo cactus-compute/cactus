@@ -39,7 +39,7 @@ endfunction()
 
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-field-initializers")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -march=armv8.2-a+fp16+fp16fml+simd+dotprod+i8mm -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-field-initializers")
     add_compile_definitions(
         __ARM_NEON=1
         __ARM_FEATURE_FP16_VECTOR_ARITHMETIC=1
@@ -59,7 +59,7 @@ if(APPLE)
     find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
     find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
 else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-field-initializers")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+fp16+fp16fml+simd+dotprod+i8mm -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-field-initializers")
     add_compile_definitions(
         __ARM_NEON=1
         __ARM_FEATURE_FP16_VECTOR_ARITHMETIC=1
@@ -141,7 +141,7 @@ endfunction()
 
 
 # I8MM support: compile kernel_i8mm.cpp with +i8mm
-set(I8MM_MARCH_FLAG "-march=armv8.2-a+fp16+simd+dotprod+i8mm")
+set(I8MM_MARCH_FLAG "-march=armv8.2-a+fp16+fp16fml+simd+dotprod+i8mm")
 add_library(cactus_i8mm_obj OBJECT ${I8MM_SOURCE})
 target_include_directories(cactus_i8mm_obj PRIVATE ${COMMON_INCLUDES})
 target_compile_options(cactus_i8mm_obj PRIVATE ${I8MM_MARCH_FLAG})

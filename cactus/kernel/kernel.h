@@ -474,6 +474,7 @@ struct CactusTQ2 {
     uint32_t group_size;
     uint32_t num_groups;
     uint32_t per_group_bytes;
+    uint32_t flags;
 
     const float*    codebook;
     const __fp16*   input_scale;
@@ -502,6 +503,8 @@ void cactus_tq2_dequant_layer(const CactusTQ2* tq2, __fp16* out);
 //
 // Header layout (matches python/src/tqh_pack.py write_tq_weights):
 //   136-byte fixed header, fields at:
+//       4: flags             (bit 0 = hadamard indices stored in code/K order,
+//                             bit 1 = 4-row panel-major indices/scales)
 //     128: rotation_family   (0 = randomized hadamard gs<=256,
 //                             1 = orthogonal full-width gs == K, num_groups == 1)
 //     132: has_input_scale   (0/1)
@@ -511,7 +514,10 @@ void cactus_tq2_dequant_layer(const CactusTQ2* tq2, __fp16* out);
 //     rotation:  hadamard => int8[gs] left || int8[gs] right || u32[gs] perm
 //                orth     => fp16[K*K] R
 //     scales     fp16[N * num_groups]            (per-row L2 norms)
+//                or fp16[ceil(N/4) * num_groups * 4] when panel-major
 //     packed     uint8[N * num_groups * per_group_bytes]
+//                or uint8[ceil(N/4) * num_groups * 4 * per_group_bytes]
+//                when panel-major, ordered as [n_block, group, k16_chunk, lane, bytes]
 //                LSB-first within each byte:
 //                  bits == 3: 8 indices per 24-bit LE word (3 bytes)
 //                  bits == 4: 2 indices per byte (low nibble, then high nibble)
@@ -524,6 +530,7 @@ struct CactusTQN {
     uint32_t rotation_family;
     uint32_t per_group_bytes; // group_size * bits / 8
     uint32_t has_input_scale;
+    uint32_t flags;
 
     const float*    codebook;     // [2^bits]
     const __fp16*   input_scale;  // [K] or null

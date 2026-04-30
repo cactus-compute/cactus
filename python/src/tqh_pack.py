@@ -16,6 +16,8 @@ Encoding alignment with cactus_tq2_load (cactus/kernel/kernel_tq2.cpp):
     derived from `seed + 17*group_dim` so the chain
         out[k] = tmp[inv_perm[k]]; out *= right; FWHT(out); out *= left
     reproduces  dq @ R^T  with R = (left.unsq * H_norm * right.unsq)[:, perm].
+    New files set TQ_FLAG_CODE_ORDERED_INDICES and pre-apply inv_perm to Hadamard
+    indices, letting runtime skip those permutation gathers.
 
 GEMMA4_WEIGHT_SCALE folding: tensor_io.py multiplies/divides certain Gemma4
 tensors by 16.0 at save time; we fold the same factor into per-row scales so
@@ -49,6 +51,12 @@ PRECISION_TQ3 = 11
 PRECISION_TQ4 = 12
 
 _BITS_TO_PRECISION = {1: PRECISION_TQ1, 2: PRECISION_TQ2, 3: PRECISION_TQ3, 4: PRECISION_TQ4}
+
+TQ_FLAG_CODE_ORDERED_INDICES = 1 << 0
+TQ_FLAG_PANEL_MAJOR = 1 << 1
+
+TQ_PANEL_N = 4
+TQ_PANEL_K_CHUNK = 16
 
 GEMMA4_WEIGHT_SCALE = 16.0
 
@@ -194,6 +202,39 @@ def pack_indices_lsb(indices_2d: np.ndarray, group_size: int, bits: int) -> np.n
     return out.reshape(N, G * per_group_bytes)
 
 
+def pack_panel_major(packed_row_major: np.ndarray, norms: np.ndarray,
+                     group_size: int, bits: int) -> tuple[np.ndarray, np.ndarray]:
+    """Repack row-major TQ bytes/scales into 4-row panels for runtime kernels.
+
+    Layout:
+        indices: [ceil(N/4), G, group_size/16, 4, 16*bits/8]
+        scales:  [ceil(N/4), G, 4]
+
+    Rows past N in the final panel are zero-filled. Kernels use dim0 to mask them.
+    """
+    N, packed_cols = packed_row_major.shape
+    G = norms.shape[1]
+    per_group_bytes = group_size * bits // 8
+    if packed_cols != G * per_group_bytes:
+        raise ValueError(f"packed cols mismatch: {packed_cols} != {G * per_group_bytes}")
+    if group_size % TQ_PANEL_K_CHUNK != 0:
+        raise ValueError(f"group_size={group_size} must be divisible by {TQ_PANEL_K_CHUNK}")
+
+    chunks = group_size // TQ_PANEL_K_CHUNK
+    bytes_per_chunk = TQ_PANEL_K_CHUNK * bits // 8
+    n_blocks = (N + TQ_PANEL_N - 1) // TQ_PANEL_N
+
+    row = packed_row_major.reshape(N, G, chunks, bytes_per_chunk)
+    ix_panel = np.zeros((n_blocks, G, chunks, TQ_PANEL_N, bytes_per_chunk), dtype=np.uint8)
+    sc_panel = np.zeros((n_blocks, G, TQ_PANEL_N), dtype=np.float16)
+    for n in range(N):
+        nb = n // TQ_PANEL_N
+        lane = n % TQ_PANEL_N
+        ix_panel[nb, :, :, lane, :] = row[n]
+        sc_panel[nb, :, lane] = norms[n]
+    return ix_panel.reshape(-1), sc_panel.reshape(-1)
+
+
 # ── Cactus TQ2/TQ3 .weights writer ───────────────────────────────────────────
 
 def write_tq_weights(
@@ -209,6 +250,7 @@ def write_tq_weights(
     rotation_seed: int = 1234,
     full_orth_R: Optional[np.ndarray] = None,  # required if rotation_kind == 'orthogonal'
     extra_scale: float = 1.0,      # folded into norms (e.g. GEMMA4_WEIGHT_SCALE)
+    panel_major: bool = False,     # 4-row panel layout for Hadamard matmul kernels
 ):
     """Emit a TQ2/TQ3 .weights file matching cactus_tq{2,3}_load layout.
 
@@ -216,7 +258,8 @@ def write_tq_weights(
     header schema):
 
         offset 0    'CACT'
-        offset 4    flags = 0
+        offset 4    flags (bit 0 = hadamard indices stored in code/K order,
+                            bit 1 = 4-row panel-major indices/scales)
         offset 8    alignment = 32
         offset 12   ndim = 2
         offset 16   dim0 (rows N)
@@ -257,9 +300,19 @@ def write_tq_weights(
     if bits not in _BITS_TO_PRECISION:
         raise ValueError(f"unsupported bits={bits}; expected one of {sorted(_BITS_TO_PRECISION)}")
 
+    flags = 0
+    indices_to_pack = indices
     if rotation_kind == 'hadamard':
         rotation_family = 0
         left, right, perm = make_hadamard_components(group_size, rotation_seed)
+        inv_perm = np.empty_like(perm)
+        inv_perm[perm] = np.arange(group_size, dtype=np.uint32)
+        indices_to_pack = (
+            indices.reshape(N, num_groups, group_size)[:, :, inv_perm]
+            .reshape(N, K)
+            .copy()
+        )
+        flags |= TQ_FLAG_CODE_ORDERED_INDICES
         rot_blob = (left.astype(np.int8).tobytes()
                     + right.astype(np.int8).tobytes()
                     + perm.astype(np.uint32).tobytes())
@@ -273,16 +326,26 @@ def write_tq_weights(
     else:
         raise ValueError(f"unknown rotation_kind={rotation_kind}")
 
+    if panel_major and rotation_kind != 'hadamard':
+        raise ValueError("panel_major is only supported for hadamard TQ weights")
+    if panel_major and group_size % TQ_PANEL_K_CHUNK != 0:
+        raise ValueError(f"panel_major requires group_size divisible by {TQ_PANEL_K_CHUNK}")
+
     cb_bytes = codebook.astype(np.float32).tobytes()
     is_present = input_scale is not None
     is_bytes = input_scale.astype(np.float16).tobytes() if is_present else b''
 
     # Fold extra_scale into per-row norms (saves a runtime multiply).
     norms_eff = (norms.astype(np.float32) * float(extra_scale)).astype(np.float16)
-    sc_bytes = norms_eff.tobytes()
-
-    packed = pack_indices_lsb(indices.astype(np.uint8), group_size, bits)
-    ix_bytes = packed.tobytes()
+    packed = pack_indices_lsb(indices_to_pack.astype(np.uint8), group_size, bits)
+    if panel_major:
+        flags |= TQ_FLAG_PANEL_MAJOR
+        packed_panel, norms_panel = pack_panel_major(packed, norms_eff, group_size, bits)
+        ix_bytes = packed_panel.tobytes()
+        sc_bytes = norms_panel.astype(np.float16).tobytes()
+    else:
+        ix_bytes = packed.tobytes()
+        sc_bytes = norms_eff.tobytes()
 
     HEADER_SIZE = 136  # extended (with rotation_family + has_input_scale)
     off_after_header = align_offset(HEADER_SIZE, CACTUS_ALIGNMENT)
@@ -298,7 +361,7 @@ def write_tq_weights(
 
     with open(out_path, 'wb') as f:
         f.write(CACTUS_MAGIC)                                    # 0
-        f.write(struct.pack('<I', 0))                             # 4   flags
+        f.write(struct.pack('<I', flags))                         # 4   flags
         f.write(struct.pack('<I', CACTUS_ALIGNMENT))              # 8   alignment
         f.write(struct.pack('<I', 2))                             # 12  ndim
         f.write(struct.pack('<Q', N))                             # 16  dim0
@@ -405,7 +468,8 @@ def _hf_layer_name_to_cactus(hf_name: str) -> Optional[str]:
 # ── Main assembler ───────────────────────────────────────────────────────────
 
 def assemble(baseline_dir: Path, pli_embed_dir: Path, transformer_dir: Path,
-             output_dir: Path, *, bank_seed: Optional[int] = None) -> None:
+             output_dir: Path, *, bank_seed: Optional[int] = None,
+             panel_major_transformers: bool = False) -> None:
     """Build a complete cactus weights/ dir from the three packed_shipping pieces."""
     baseline_dir = Path(baseline_dir)
     pli_embed_dir = Path(pli_embed_dir)
@@ -441,6 +505,7 @@ def assemble(baseline_dir: Path, pli_embed_dir: Path, transformer_dir: Path,
             group_size=gs, bits=loaded['bits'],
             rotation_kind='hadamard', rotation_seed=seed,
             extra_scale=scale,
+            panel_major=panel_major_transformers,
         )
         bit_counts[loaded['bits']] += 1
     print(f"  bit-width distribution: {dict(sorted(bit_counts.items()))}")
@@ -648,6 +713,9 @@ if __name__ == '__main__':
     ap.add_argument('--transformer-dir', required=True)
     ap.add_argument('--output-dir',      required=True)
     ap.add_argument('--seed', type=int, default=None)
+    ap.add_argument('--panel-major-transformers', action='store_true',
+                    help='emit transformer TQ weights in experimental 4-row panel-major layout')
     args = ap.parse_args()
     assemble(Path(args.baseline_dir), Path(args.pli_embed_dir),
-             Path(args.transformer_dir), Path(args.output_dir), bank_seed=args.seed)
+             Path(args.transformer_dir), Path(args.output_dir), bank_seed=args.seed,
+             panel_major_transformers=args.panel_major_transformers)
