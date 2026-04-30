@@ -1,32 +1,40 @@
-# TQ Kernel Fixtures
+# TQ Kernel Inputs
 
-These binary fixtures exercise the isolated TQ2/TQ4 GEMV and GEMM kernels in
-the same shape as the model runtime path.
-
-Each fixture contains:
-
-1. A `TQFX` v4 header.
-2. A fp16 codebook.
-3. Raw per-K `input_scale`.
-4. Hadamard `left_signs`, `right_signs`, and `permutation`.
-5. Per-output-row/per-group norms.
-6. Packed TQ indices in code-ordered layout.
-7. Raw fp16 activations.
-8. Expected fp16 outputs.
-
-The public isolated kernels receive raw activations. They must fold
-`1 / input_scale` into activations, apply the randomized Hadamard activation
-rotation, read packed codebook indices, multiply row/group norms, and write the
-final fp16 output. They must not consume pre-rotated activations or
-pre-dequantized weights.
-
-Regenerate fixtures with any Python that has NumPy available:
+`test_tq_kernels` loads real converted Gemma4 TQ weights directly from:
 
 ```sh
-python3 tests/generate_tq_kernel_fixtures.py --out tests/assets/tq_kernels
+weights/gemma-4-e2b-it-tqh-u4-codeorder
 ```
 
-Build and run only this test:
+Override that path with:
+
+```sh
+CACTUS_TQ_WEIGHTS_ROOT=/path/to/weights
+```
+
+The files in this directory are only raw fp16 activation inputs. They do not
+contain packed weights or expected outputs. Expected outputs are computed in the
+test by a scalar reference path from the same loaded weight slice.
+
+Activation file format:
+
+```text
+magic:   "TQAC"
+version: uint32 = 1
+M:       uint32
+K:       uint32
+data:    fp16[M * K]
+```
+
+Regenerate activation inputs:
+
+```sh
+python3 tests/generate_tq_activation_assets.py \
+  --weights-root weights/gemma-4-e2b-it-tqh-u4-codeorder \
+  --out tests/assets/tq_kernels
+```
+
+Run the test:
 
 ```sh
 cmake -S tests -B tests/build
