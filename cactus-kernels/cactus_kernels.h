@@ -208,6 +208,8 @@ struct CactusTQMatrix {
     uint32_t num_groups;
     uint32_t flags;
     const __fp16* codebook;
+    const __fp16* input_scale;
+    const __fp16* input_scale_recip;
     const __fp16* norms;
     const uint8_t* packed_indices;
     const int8_t* left_signs;

@@ -91,6 +91,22 @@ static inline float16x8_t cactus_tq_signs_to_f16(const int8_t* signs, uint32_t o
     return vcvtq_f16_s16(vmovl_s8(vld1_s8(signs + offset)));
 }
 
+static inline float16x8_t cactus_tq_input_scale_recip8(const CactusTQMatrix& W, uint32_t offset) {
+    if (W.input_scale_recip != nullptr) {
+        return vld1q_f16(W.input_scale_recip + offset);
+    }
+    if (W.input_scale != nullptr) {
+        return vdivq_f16(vdupq_n_f16(1), vld1q_f16(W.input_scale + offset));
+    }
+    return vdupq_n_f16(1);
+}
+
+static inline __fp16 cactus_tq_input_scale_recip1(const CactusTQMatrix& W, uint32_t offset) {
+    if (W.input_scale_recip != nullptr) return W.input_scale_recip[offset];
+    if (W.input_scale != nullptr) return static_cast<__fp16>(1.0f / static_cast<float>(W.input_scale[offset]));
+    return static_cast<__fp16>(1);
+}
+
 static inline uint32_t cactus_tq_panel_chunks(const CactusTQMatrix& W) {
     return W.group_size / kTQPanelKChunk;
 }
@@ -243,6 +259,7 @@ static void cactus_tq_fwht_f16(__fp16* x, uint32_t n) {
 static void cactus_tq_transform_hadamard_group(
     const CactusTQMatrix& W,
     const __fp16* x_group,
+    uint32_t group,
     __fp16* code_basis) {
     const uint32_t gs = W.group_size;
     __fp16 tmp[256];
@@ -250,13 +267,17 @@ static void cactus_tq_transform_hadamard_group(
 
     uint32_t k = 0;
     for (; k + 8 <= gs; k += 8) {
+        const uint32_t offset = group * gs + k;
         float16x8_t x_v = vld1q_f16(x_group + k);
+        x_v = vmulq_f16(x_v, cactus_tq_input_scale_recip8(W, offset));
         float16x8_t s_v = cactus_tq_signs_to_f16(W.left_signs, k);
         vst1q_f16(work + k, vmulq_f16(x_v, s_v));
     }
     for (; k < gs; ++k) {
+        const uint32_t offset = group * gs + k;
         const float sign = W.left_signs ? static_cast<float>(W.left_signs[k]) : 1.0f;
-        work[k] = static_cast<__fp16>(static_cast<float>(x_group[k]) * sign);
+        const float scale = static_cast<float>(cactus_tq_input_scale_recip1(W, offset));
+        work[k] = static_cast<__fp16>(static_cast<float>(x_group[k]) * scale * sign);
     }
 
     if (gs == 128) {
@@ -299,6 +320,7 @@ static void cactus_tq_transform_hadamard_activations(
                 cactus_tq_transform_hadamard_group(
                     W,
                     A + m * W.K + g * W.group_size,
+                    static_cast<uint32_t>(g),
                     code_basis + m * W.K + g * W.group_size);
             }
         });

@@ -33,8 +33,10 @@ set(CACTUS_BUILD_DIR ${CACTUS_ROOT}/build)
 find_library(CACTUS_LIB
     NAMES cactus
     HINTS ${CACTUS_BUILD_DIR} ${CACTUS_BUILD_DIR}/lib
-    REQUIRED
 )
+if(NOT CACTUS_LIB)
+    message(STATUS "Cactus library not found; non-kernel tests will be skipped")
+endif()
  
 set(MMAN_LIB "")
 if(NOT APPLE)
@@ -83,6 +85,11 @@ foreach(TEST_FILE ${TEST_SOURCES})
         continue()
     endif()
 
+    if(NOT CACTUS_LIB)
+        message(STATUS "Skipping ${TEST_NAME}: cactus library not found")
+        continue()
+    endif()
+
     add_executable(${TEST_NAME} ${TEST_FILE} test_utils.cpp)
     target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_LIB})
 
@@ -128,6 +135,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 foreach(APP_NAME chat asr)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${APP_NAME}.cpp")
+        if(NOT CACTUS_LIB)
+            message(STATUS "Skipping ${APP_NAME}: cactus library not found")
+            continue()
+        endif()
+
         add_executable(${APP_NAME} ${APP_NAME}.cpp)
         target_link_libraries(${APP_NAME} PRIVATE ${CACTUS_LIB})
 

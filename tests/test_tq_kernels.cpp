@@ -32,6 +32,8 @@ struct FixtureHeader {
 struct Fixture {
     FixtureHeader header{};
     std::vector<__fp16> codebook;
+    std::vector<__fp16> input_scale;
+    std::vector<__fp16> input_scale_recip;
     std::vector<int8_t> left_signs;
     std::vector<int8_t> right_signs;
     std::vector<uint32_t> permutation;
@@ -71,7 +73,7 @@ bool load_fixture(const std::string& path, Fixture& fixture) {
 
     size_t offset = 0;
     if (!read_bytes(bytes, offset, &fixture.header, sizeof(FixtureHeader))) return false;
-    if (std::memcmp(fixture.header.magic, "TQFX", 4) != 0 || fixture.header.version != 3) {
+    if (std::memcmp(fixture.header.magic, "TQFX", 4) != 0 || fixture.header.version != 4) {
         std::cerr << path << ": bad fixture header\n";
         return false;
     }
@@ -94,6 +96,12 @@ bool load_fixture(const std::string& path, Fixture& fixture) {
     const size_t C_count = static_cast<size_t>(fixture.header.M) * fixture.header.N;
 
     if (!read_vector(bytes, offset, fixture.codebook, codebook_count)) return false;
+    if (!read_vector(bytes, offset, fixture.input_scale, fixture.header.K)) return false;
+    fixture.input_scale_recip.resize(fixture.input_scale.size());
+    for (size_t i = 0; i < fixture.input_scale.size(); ++i) {
+        fixture.input_scale_recip[i] =
+            static_cast<__fp16>(1.0f / static_cast<float>(fixture.input_scale[i]));
+    }
     if (!read_vector(bytes, offset, fixture.left_signs, fixture.header.group_size)) return false;
     if (!read_vector(bytes, offset, fixture.right_signs, fixture.header.group_size)) return false;
     if (!read_vector(bytes, offset, fixture.permutation, fixture.header.group_size)) return false;
@@ -153,6 +161,8 @@ bool run_fixture(const std::string& name) {
         fixture.header.num_groups,
         fixture.header.flags,
         fixture.codebook.data(),
+        fixture.input_scale.data(),
+        fixture.input_scale_recip.data(),
         fixture.norms.data(),
         fixture.packed.data(),
         fixture.left_signs.data(),
