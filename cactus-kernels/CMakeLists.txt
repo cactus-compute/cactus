@@ -86,4 +86,14 @@ if(BUILD_TESTING OR CACTUS_BUILD_TESTS)
             target_link_libraries(${TEST_NAME} PRIVATE ${ACCELERATE_FRAMEWORK})
         endif()
     endforeach()
+
+    add_executable(test_tq tests/test_tq.cpp)
+    target_link_libraries(test_tq PRIVATE cactus_kernels)
+    target_include_directories(test_tq PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(test_tq PRIVATE
+        CACTUS_TEST_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/assets"
+    )
+    if(APPLE)
+        target_link_libraries(test_tq PRIVATE ${ACCELERATE_FRAMEWORK})
+    endif()
 endif()

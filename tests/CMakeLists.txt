@@ -33,10 +33,8 @@ set(CACTUS_BUILD_DIR ${CACTUS_ROOT}/build)
 find_library(CACTUS_LIB
     NAMES cactus
     HINTS ${CACTUS_BUILD_DIR} ${CACTUS_BUILD_DIR}/lib
+    REQUIRED
 )
-if(NOT CACTUS_LIB)
-    message(STATUS "Cactus library not found; non-kernel tests will be skipped")
-endif()
  
 set(MMAN_LIB "")
 if(NOT APPLE)
@@ -62,34 +60,12 @@ else()
     message(STATUS "SDL2 not found; microphone tests will be skipped")
 endif()
 
-set(CACTUS_KERNELS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../cactus-kernels")
-if(EXISTS "${CACTUS_KERNELS_ROOT}/CMakeLists.txt" AND NOT TARGET cactus_kernels)
-    add_subdirectory("${CACTUS_KERNELS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/cactus-kernels")
-endif()
-
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "test_*.cpp")
 list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_utils.cpp")
 
 foreach(TEST_FILE ${TEST_SOURCES})
 
     get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
-
-    if(TEST_NAME STREQUAL "test_tq_kernels")
-        add_executable(${TEST_NAME} ${TEST_FILE})
-        target_link_libraries(${TEST_NAME} PRIVATE cactus_kernels)
-        target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_KERNELS_ROOT})
-        if(APPLE)
-            target_link_libraries(${TEST_NAME} PRIVATE ${ACCELERATE_FRAMEWORK})
-        endif()
-        message(STATUS "Added test: ${TEST_NAME}")
-        continue()
-    endif()
-
-    if(NOT CACTUS_LIB)
-        message(STATUS "Skipping ${TEST_NAME}: cactus library not found")
-        continue()
-    endif()
-
     add_executable(${TEST_NAME} ${TEST_FILE} test_utils.cpp)
     target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_LIB})
 
@@ -135,11 +111,6 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 foreach(APP_NAME chat asr)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${APP_NAME}.cpp")
-        if(NOT CACTUS_LIB)
-            message(STATUS "Skipping ${APP_NAME}: cactus library not found")
-            continue()
-        endif()
-
         add_executable(${APP_NAME} ${APP_NAME}.cpp)
         target_link_libraries(${APP_NAME} PRIVATE ${CACTUS_LIB})
 

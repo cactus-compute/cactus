@@ -27,8 +27,6 @@ profile.txt
 *_profile.txt
 *.dylib
 *.bin
-!tests/assets/tq_kernels/
-!tests/assets/tq_kernels/*.bin
 tmp
 
 ruy
