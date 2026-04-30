@@ -1,10 +1,3 @@
-// Test harness for cactus_tq2 / cactus_tq4 GEMV and GEMM kernels.
-//
-// Structure:
-//   §1  Weight loading   — parse .weights binary into CactusTQMatrix
-//   §2  Reference impl   — scalar FWHT + codebook dot, used as correctness baseline
-//   §3  Test runner      — load weights, generate random activations, compare kernel vs reference
-
 #include "../cactus_kernels.h"
 #include "tq_weight_loader.h"
 
@@ -33,11 +26,9 @@ static void fwht(float* x, uint32_t n) {
 
 static uint8_t unpack_index(const uint8_t* base, uint32_t bits, uint32_t k) {
     if (bits == 4) return (k & 1u) ? (base[k / 2] >> 4) : (base[k / 2] & 0x0Fu);
-    // bits == 2
     return (base[k / 4] >> ((k & 3u) * 2u)) & 0x3u;
 }
 
-// Compute y += W * x  (float, all groups)
 static void tq_reference_gemv(const TQWeightData& w, const float* x, float* y) {
     uint32_t pgb = (w.group_size * w.bits) / 8;
     for (uint32_t n = 0; n < w.N; ++n) {
@@ -63,7 +54,6 @@ static void tq_reference_gemv(const TQWeightData& w, const float* x, float* y) {
     }
 }
 
-// M-row batched version
 static std::vector<float> tq_reference_gemm(const TQWeightData& w, const float* A, uint32_t M) {
     std::vector<float> out(size_t(M) * w.N, 0.f);
     for (uint32_t m = 0; m < M; ++m)
@@ -113,7 +103,6 @@ static bool run(const char* name, const char* path, uint32_t max_rows, uint32_t 
     auto A_f  = random_activations(M, w.K, 42);
     auto ref  = tq_reference_gemm(w, A_f.data(), M);
 
-    // convert activations to fp16 for kernel
     std::vector<__fp16> A_h(A_f.size());
     for (size_t i = 0; i < A_f.size(); ++i) A_h[i] = __fp16(A_f[i]);
 
