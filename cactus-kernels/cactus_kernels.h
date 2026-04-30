@@ -195,6 +195,50 @@ void cactus_matmul_f16(
     size_t K,
     size_t N);
 
+enum CactusTQFlags : uint32_t {
+    CACTUS_TQ_FLAG_PANEL_MAJOR = 1u << 0,
+    CACTUS_TQ_FLAG_CODE_ORDERED_INDICES = 1u << 1
+};
+
+struct CactusTQMatrix {
+    uint32_t bits;
+    uint32_t K;
+    uint32_t N;
+    uint32_t group_size;
+    uint32_t num_groups;
+    uint32_t flags;
+    const __fp16* codebook;
+    const __fp16* norms;
+    const uint8_t* packed_indices;
+    const int8_t* left_signs;
+    const int8_t* right_signs;
+    const uint32_t* permutation;
+};
+
+uint32_t cactus_tq_packed_group_bytes(uint32_t bits, uint32_t group_size);
+
+void cactus_tq4_gemv(
+    const CactusTQMatrix* W,
+    const __fp16* x,
+    __fp16* y);
+
+void cactus_tq4_gemm(
+    const CactusTQMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
+
+void cactus_tq2_gemv(
+    const CactusTQMatrix* W,
+    const __fp16* x,
+    __fp16* y);
+
+void cactus_tq2_gemm(
+    const CactusTQMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
+
 void cactus_gemv_int8(
     const int8_t* A,
     float A_scale,
