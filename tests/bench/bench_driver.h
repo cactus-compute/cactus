@@ -8,21 +8,19 @@
 
 namespace bench {
 
-// ── Matmul backend interface ────────────────────────────────────────────────
-
 struct MatmulBackendVariant {
     const char* name;
     const char* framework;
 
-    // Prepare an opaque weights handle for the (N,K) shape from raw fp32 weights.
     void* (*prepare_weights)(const float* fp32, size_t N, size_t K);
 
-    // Optional per-backend activation prep (some backends quantize once per call).
+    // May be null. Backends that quantize activations once per call set it.
     void* (*prepare_activations)(const float* fp32, size_t M, size_t K, void* weights);
 
-    // Run the kernel. If `output` is non-null, fill it with FP32 output for accuracy.
-    // If `reference` is non-null, the backend may fill it with its own internal
-    // ground-truth (some backends compare against their own reference).
+    // If `output` is non-null, fill it with FP32 output for accuracy. If
+    // `reference` is non-null, the backend may fill it with its own internal
+    // ground truth (used by backends whose precision differs from the FP32
+    // reference enough to need a tighter, kernel-internal tolerance).
     void (*run_kernel)(size_t M, size_t K, size_t N,
                        void* weights, void* activations,
                        const int8_t* act_int8, const float* act_scales,
@@ -33,8 +31,6 @@ struct MatmulBackendVariant {
 
 void register_matmul_backend(MatmulBackendVariant v);
 const std::vector<MatmulBackendVariant>& get_matmul_backends();
-
-// ── Attention backend interface ─────────────────────────────────────────────
 
 struct AttnBackendVariant {
     const char* name;
@@ -49,8 +45,6 @@ struct AttnBackendVariant {
 
 void register_attn_backend(AttnBackendVariant v);
 const std::vector<AttnBackendVariant>& get_attn_backends();
-
-// ── Drivers ─────────────────────────────────────────────────────────────────
 
 bool run_matmul_benchmark(const MatmulBenchOptions& opt);
 bool run_attn_benchmark(const AttnBenchOptions& opt);

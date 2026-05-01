@@ -14,8 +14,6 @@
 
 namespace {
 
-// ── Matmul (Q8_0 — group size 32 INT8) ─────────────────────────────────────
-
 namespace matmul {
 
 struct Weights {
@@ -106,13 +104,11 @@ void run_kernel(size_t M, size_t K, size_t N,
     w->output.resize(M * w->N);
 
     const auto* cpu_traits = ggml_get_type_traits_cpu(w->type);
-    // Honor the bench's --threads override (default: hardware_concurrency).
     size_t target_threads = static_cast<size_t>(
         bench::get_effective_threads(static_cast<int>(std::thread::hardware_concurrency())));
     target_threads = std::max<size_t>(1, target_threads);
 
-    // Serial path for small N: skip threadpool wakeup entirely (eliminates
-    // ~tens-of-μs per call for tiny matmul).
+    // Serial path skips threadpool wakeup (saves tens of μs per call at tiny N).
     if (target_threads == 1 || w->N < 64) {
         gemv_slice(cpu_traits->vec_dot, cpu_traits->nrows,
                    w->quantized.data(), w->row_stride,
@@ -139,8 +135,6 @@ void cleanup(void* weights, void* activations) {
 }
 
 } // namespace matmul
-
-// ── Attention (flash + matmul-composed, INT8 KV) ────────────────────────────
 
 namespace attn {
 
@@ -218,12 +212,9 @@ static SetupResult setup_common(const bench::AttnDims& dims, size_t seq_len, siz
     return r;
 }
 
-// Shared ggml threadpool — single pool reused across all states.
-// Without this, each state creates its own pool with `hardware_concurrency`
-// threads. With NS=64 states at small cache, that means 64 × 14 ≈ 900
-// threads sitting on condition variables, fighting the OS scheduler. That
-// causes the per-call cost to balloon at small cache_len (where NS is large)
-// and produce the non-monotonic ggml decode curve.
+// Shared ggml threadpool — without this, each state creates its own pool with
+// `hardware_concurrency` threads, so at small cache (large NS) hundreds of
+// threads sit on condition variables and the per-call cost balloons.
 static ggml_threadpool* get_ggml_threadpool() {
     static ggml_threadpool* tp = nullptr;
     static int last_threads = -1;
@@ -340,9 +331,6 @@ static int reg = [] {
         "ggml_q8_0", "ggml",
         matmul::prepare_q8, matmul::prepare_act, matmul::run_kernel, matmul::cleanup
     });
-    // Prefill: keep just the fused flash_attn path (canonical llama.cpp
-    // when --flash-attn is on). The matmul-composed prefill path was
-    // removed — it produced a parallel curve that just cluttered the chart.
     bench::register_attn_backend({
         "ggml_fa_q8_prefill", "ggml", bench::AttnMode::PREFILL,
         attn::fa_q8_prefill, attn::run, attn::cleanup
@@ -351,9 +339,6 @@ static int reg = [] {
         "ggml_fa_q8_decode", "ggml", bench::AttnMode::DECODE,
         attn::fa_q8_decode, attn::run, attn::cleanup
     });
-    // ggml_mm_q8_decode (matmul-composed) was dropped — it produces wrong
-    // output (nrmse=1.24). The flash-attention path (ggml_fa_q8_decode) is
-    // ggml's real fused attention kernel and is what we compare against.
     return 0;
 }();
 

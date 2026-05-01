@@ -16,13 +16,10 @@ namespace bench {
 constexpr size_t kGroupSize = 32;
 constexpr size_t kBlockSize = 4;
 
-// Default sweep dimensions used by the 5 benchmark graphs.
 inline const std::vector<size_t>& default_dim_sweep() {
     static const std::vector<size_t> dims = {128, 256, 512, 1024, 2048, 4096};
     return dims;
 }
-
-// ── Matmul benchmark configuration ──────────────────────────────────────────
 
 enum class MatmulGraph {
     GEMV_D,    // (1 x d) @ (d x N), with N=d swept
@@ -35,7 +32,7 @@ struct MatmulConfig {
     size_t M;
     size_t K;
     size_t N;
-    size_t sweep_dim;  // The varying dim that this config represents
+    size_t sweep_dim;
 };
 
 struct MatmulBenchOptions {
@@ -48,13 +45,11 @@ struct MatmulBenchOptions {
     std::string csv_path;
 };
 
-// ── Attention benchmark configuration ───────────────────────────────────────
-
 enum class AttnMode { PREFILL, DECODE };
 
 enum class AttnGraph {
-    PREFILL_S,        // Attention prefill, S swept, d=1024, h=8
-    DECODE_CACHE,     // Hybrid decode, cache_len swept, d=1024, h=8
+    PREFILL_S,
+    DECODE_CACHE,
 };
 
 struct AttnDims {
@@ -77,14 +72,12 @@ struct AttnBenchOptions {
     int iterations = 200;
     int num_threads = 0;
     std::vector<AttnGraph> graphs = {AttnGraph::PREFILL_S, AttnGraph::DECODE_CACHE};
-    std::vector<size_t> dims;       // Values of S / cache_len to sweep
+    std::vector<size_t> dims;
     size_t model_dim = 1024;
     size_t num_heads = 8;
     std::string backends_filter;
     std::string csv_path;
 };
-
-// ── Misc helpers ────────────────────────────────────────────────────────────
 
 inline double now_ms() {
     return std::chrono::duration<double, std::milli>(
