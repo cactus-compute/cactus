@@ -292,3 +292,6 @@ target_link_libraries(matmul_bench PRIVATE bench_lib)
 
 add_executable(attn_bench bench/attn_bench.cpp)
 target_link_libraries(attn_bench PRIVATE bench_lib)
+
+add_executable(accuracy_test bench/accuracy_test.cpp)
+target_link_libraries(accuracy_test PRIVATE bench_lib)
