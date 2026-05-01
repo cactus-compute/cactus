@@ -74,12 +74,6 @@ void cactus_gemv_int4_block_range(const int8_t* A, float A_scale,
                                    size_t block_start, size_t block_end,
                                    bool accumulate);
 
-void cactus_gemv_int4_st_kslice_fp32acc(const int8_t* A, float A_scale,
-                                          const int8_t* B_packed, const __fp16* B_scales,
-                                          float* y_acc,
-                                          size_t K_full, size_t N, size_t group_size,
-                                          size_t k_lo, size_t k_count);
-
 void cactus_gemm_int4(const int8_t* A, const float* A_scales,
                       const int8_t* B_packed, const __fp16* B_scales,
                       __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
