@@ -519,12 +519,8 @@ namespace {
     };
     static std::vector<DenseFusedScratch> dense_fused_scratch;
 
-    // Single-threaded fp16 -> int8 quantization for the once-per-layer h vector.
-    // cactus_fp16_to_int8's parallel_for crosses ELEMENT_WISE.min_work_gate at
-    // d_ffn=12288 and dispatches ~5 threads, whose orchestration cost (mutex,
-    // futex wakeup, straggler wait on heterogeneous mobile cores) dominates the
-    // few-microsecond SIMD work. Running inline on the dispatch thread skips
-    // that overhead on both Apple silicon and Android big.LITTLE.
+    // Inline to skip cactus_fp16_to_int8's parallel_for orchestration, which
+    // dispatches ~5 threads at d_ffn=12288 and dominates the SIMD work.
     static inline void fp16_to_int8_inplace(const __fp16* src, int8_t* dst, size_t n, float scale) {
         const float inv_scale = 1.0f / scale;
         const float32x4_t inv_vec = vdupq_n_f32(inv_scale);
