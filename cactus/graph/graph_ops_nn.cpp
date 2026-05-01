@@ -518,6 +518,35 @@ namespace {
         std::vector<__fp16> up_tile;
     };
     static std::vector<DenseFusedScratch> dense_fused_scratch;
+
+    // Single-threaded fp16 -> int8 quantization for the once-per-layer h vector.
+    // cactus_fp16_to_int8's parallel_for crosses ELEMENT_WISE.min_work_gate at
+    // d_ffn=12288 and dispatches ~5 threads, whose orchestration cost (mutex,
+    // futex wakeup, straggler wait on heterogeneous mobile cores) dominates the
+    // few-microsecond SIMD work. Running inline on the dispatch thread skips
+    // that overhead on both Apple silicon and Android big.LITTLE.
+    static inline void fp16_to_int8_inplace(const __fp16* src, int8_t* dst, size_t n, float scale) {
+        const float inv_scale = 1.0f / scale;
+        const float32x4_t inv_vec = vdupq_n_f32(inv_scale);
+        const float32x4_t min_vec = vdupq_n_f32(-128.0f);
+        const float32x4_t max_vec = vdupq_n_f32(127.0f);
+        size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            float16x8_t in = vld1q_f16(src + i);
+            float32x4_t lo = vmulq_f32(vcvt_f32_f16(vget_low_f16(in)),  inv_vec);
+            float32x4_t hi = vmulq_f32(vcvt_f32_f16(vget_high_f16(in)), inv_vec);
+            lo = vmaxq_f32(vminq_f32(lo, max_vec), min_vec);
+            hi = vmaxq_f32(vminq_f32(hi, max_vec), min_vec);
+            int16x8_t s = vcombine_s16(vqmovn_s32(vcvtnq_s32_f32(lo)),
+                                        vqmovn_s32(vcvtnq_s32_f32(hi)));
+            vst1_s8(dst + i, vqmovn_s16(s));
+        }
+        for (; i < n; ++i) {
+            float v = static_cast<float>(src[i]) * inv_scale;
+            if (v > 127.0f) v = 127.0f; else if (v < -128.0f) v = -128.0f;
+            dst[i] = static_cast<int8_t>(std::lround(v));
+        }
+    }
 }
 
 void compute_dense_mlp_int4_fused_node(
@@ -648,7 +677,7 @@ void compute_dense_mlp_int4_fused_node(
 
         const float h_maxabs = cactus_fp16_max_abs(h_full, d_ffn);
         const float h_scale = std::max(h_maxabs / 127.0f, 1e-10f);
-        cactus_fp16_to_int8(h_full, h_int8, d_ffn, h_scale);
+        fp16_to_int8_inplace(h_full, h_int8, d_ffn, h_scale);
 
         run(num_threads_p2, [&](size_t /*worker_id*/) {
             while (true) {
