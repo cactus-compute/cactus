@@ -518,73 +518,6 @@ namespace {
         std::vector<__fp16> up_tile;
     };
     static std::vector<DenseFusedScratch> dense_fused_scratch;
-
-    static inline void gelu_tanh_inplace_fp16(__fp16* p, size_t n) {
-        const float sqrt_2_over_pi = 0.7978845608028654f;
-        const float coeff = 0.044715f;
-        const float32x4_t half = vdupq_n_f32(0.5f);
-        const float32x4_t one  = vdupq_n_f32(1.0f);
-        const float32x4_t sqrt_2_pi_vec = vdupq_n_f32(sqrt_2_over_pi);
-        const float32x4_t coeff_vec     = vdupq_n_f32(coeff);
-        size_t i = 0;
-        for (; i + 8 <= n; i += 8) {
-            float16x8_t x_f16 = vld1q_f16(p + i);
-            float32x4_t x_lo = vcvt_f32_f16(vget_low_f16(x_f16));
-            float32x4_t x_hi = vcvt_f32_f16(vget_high_f16(x_f16));
-            float32x4_t x3_lo = vmulq_f32(vmulq_f32(x_lo, x_lo), x_lo);
-            float32x4_t x3_hi = vmulq_f32(vmulq_f32(x_hi, x_hi), x_hi);
-            float32x4_t inner_lo = vmulq_f32(sqrt_2_pi_vec, vfmaq_f32(x_lo, coeff_vec, x3_lo));
-            float32x4_t inner_hi = vmulq_f32(sqrt_2_pi_vec, vfmaq_f32(x_hi, coeff_vec, x3_hi));
-            float32x4_t tanh_lo = fast_tanh_f32x4(inner_lo);
-            float32x4_t tanh_hi = fast_tanh_f32x4(inner_hi);
-            float32x4_t g_lo = vmulq_f32(vmulq_f32(half, x_lo), vaddq_f32(one, tanh_lo));
-            float32x4_t g_hi = vmulq_f32(vmulq_f32(half, x_hi), vaddq_f32(one, tanh_hi));
-            vst1q_f16(p + i, vcombine_f16(vcvt_f16_f32(g_lo), vcvt_f16_f32(g_hi)));
-        }
-        for (; i < n; ++i) {
-            float x = static_cast<float>(p[i]);
-            float inner = sqrt_2_over_pi * (x + coeff * x * x * x);
-            p[i] = static_cast<__fp16>(0.5f * x * (1.0f + tanhf(inner)));
-        }
-    }
-
-    // Inline mirror of cactus_multiply_f16's small-N SIMD body. k_count is
-    // tile-sized (≤ 128 for Gemma-4) so streaming stores aren't relevant.
-    static inline void multiply_inplace_fp16(const __fp16* a, const __fp16* b, __fp16* out, size_t n) {
-        size_t i = 0;
-        for (; i + 8 <= n; i += 8) {
-            float16x8_t va = vld1q_f16(a + i);
-            float16x8_t vb = vld1q_f16(b + i);
-            vst1q_f16(out + i, vmulq_f16(va, vb));
-        }
-        for (; i < n; ++i) out[i] = a[i] * b[i];
-    }
-
-    // Single-threaded mirror of cactus_fp16_to_int8's SIMD body (kernel_quants.cpp).
-    // Called once per layer on the dispatch thread; staying single-threaded avoids
-    // a parallel_for barrier between phase 1 and phase 2.
-    static inline void fp16_to_int8_inplace(const __fp16* src, int8_t* dst, size_t n, float scale) {
-        const float inv_scale = 1.0f / scale;
-        const float32x4_t inv_vec = vdupq_n_f32(inv_scale);
-        const float32x4_t min_vec = vdupq_n_f32(-128.0f);
-        const float32x4_t max_vec = vdupq_n_f32(127.0f);
-        size_t i = 0;
-        for (; i + 8 <= n; i += 8) {
-            float16x8_t in = vld1q_f16(src + i);
-            float32x4_t lo = vmulq_f32(vcvt_f32_f16(vget_low_f16(in)),  inv_vec);
-            float32x4_t hi = vmulq_f32(vcvt_f32_f16(vget_high_f16(in)), inv_vec);
-            lo = vmaxq_f32(vminq_f32(lo, max_vec), min_vec);
-            hi = vmaxq_f32(vminq_f32(hi, max_vec), min_vec);
-            int16x8_t s = vcombine_s16(vqmovn_s32(vcvtnq_s32_f32(lo)),
-                                        vqmovn_s32(vcvtnq_s32_f32(hi)));
-            vst1_s8(dst + i, vqmovn_s16(s));
-        }
-        for (; i < n; ++i) {
-            float v = static_cast<float>(src[i]) * inv_scale;
-            if (v > 127.0f) v = 127.0f; else if (v < -128.0f) v = -128.0f;
-            dst[i] = static_cast<int8_t>(std::lround(v));
-        }
-    }
 }
 
 void compute_dense_mlp_int4_fused_node(
@@ -705,17 +638,17 @@ void compute_dense_mlp_int4_fused_node(
                 cactus_gemv_int4_block_range(
                     x_int8, x_scale, gate_w, gate_s, gate_tile_buf - k_lo,
                     hidden_dim, d_ffn, group_size, blk_start, blk_end);
-                gelu_tanh_inplace_fp16(gate_tile_buf, k_count);
+                cactus_gelu_f16(gate_tile_buf, gate_tile_buf, k_count);
                 cactus_gemv_int4_block_range(
                     x_int8, x_scale, up_w, up_s, up_tile_buf - k_lo,
                     hidden_dim, d_ffn, group_size, blk_start, blk_end);
-                multiply_inplace_fp16(gate_tile_buf, up_tile_buf, h_full + k_lo, k_count);
+                cactus_multiply_f16(gate_tile_buf, up_tile_buf, h_full + k_lo, k_count);
             }
         });
 
         const float h_maxabs = cactus_fp16_max_abs(h_full, d_ffn);
         const float h_scale = std::max(h_maxabs / 127.0f, 1e-10f);
-        fp16_to_int8_inplace(h_full, h_int8, d_ffn, h_scale);
+        cactus_fp16_to_int8(h_full, h_int8, d_ffn, h_scale);
 
         run(num_threads_p2, [&](size_t /*worker_id*/) {
             while (true) {
