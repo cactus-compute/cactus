@@ -681,7 +681,16 @@ void compute_dense_mlp_int4_fused_node(
         std::atomic<size_t> p1_next{0};
         std::atomic<size_t> p2_next{0};
 
-        auto phase1_task = [&](size_t worker_id) {
+        auto run = [&](size_t nt, auto&& task) {
+            if (nt <= 1) { task(0); return; }
+            pool.enqueue_n_threads(nt - 1, nt - 1, [&](size_t s, size_t e) {
+                for (size_t w = s; w < e; ++w) task(w + 1);
+            });
+            task(0);
+            pool.wait_all();
+        };
+
+        run(num_threads_p1, [&](size_t worker_id) {
             auto& sc = dense_fused_scratch[worker_id];
             __fp16* gate_tile_buf = sc.gate_tile.data();
             __fp16* up_tile_buf   = sc.up_tile.data();
@@ -695,31 +704,20 @@ void compute_dense_mlp_int4_fused_node(
 
                 cactus_gemv_int4_block_range(
                     x_int8, x_scale, gate_w, gate_s, gate_tile_buf - k_lo,
-                    hidden_dim, d_ffn, group_size, blk_start, blk_end, false);
+                    hidden_dim, d_ffn, group_size, blk_start, blk_end);
                 gelu_tanh_inplace_fp16(gate_tile_buf, k_count);
                 cactus_gemv_int4_block_range(
                     x_int8, x_scale, up_w, up_s, up_tile_buf - k_lo,
-                    hidden_dim, d_ffn, group_size, blk_start, blk_end, false);
+                    hidden_dim, d_ffn, group_size, blk_start, blk_end);
                 multiply_inplace_fp16(gate_tile_buf, up_tile_buf, h_full + k_lo, k_count);
             }
-        };
-
-        if (num_threads_p1 <= 1) {
-            phase1_task(0);
-        } else {
-            pool.enqueue_n_threads(num_threads_p1 - 1, num_threads_p1 - 1,
-                [&](size_t start, size_t end) {
-                    for (size_t w = start; w < end; ++w) phase1_task(w + 1);
-                });
-            phase1_task(0);
-            pool.wait_all();
-        }
+        });
 
         const float h_maxabs = cactus_fp16_max_abs(h_full, d_ffn);
         const float h_scale = std::max(h_maxabs / 127.0f, 1e-10f);
         fp16_to_int8_inplace(h_full, h_int8, d_ffn, h_scale);
 
-        auto phase2_task = [&](size_t /*worker_id*/) {
+        run(num_threads_p2, [&](size_t /*worker_id*/) {
             while (true) {
                 size_t tile_id = p2_next.fetch_add(1, std::memory_order_relaxed);
                 if (tile_id >= tiles_hidden) break;
@@ -727,20 +725,9 @@ void compute_dense_mlp_int4_fused_node(
                 const size_t blk_end   = std::min(blk_start + tile_n_blocks, blocks_hidden);
                 cactus_gemv_int4_block_range(
                     h_int8, h_scale, down_w, down_s, y,
-                    d_ffn, hidden_dim, group_size, blk_start, blk_end, false);
+                    d_ffn, hidden_dim, group_size, blk_start, blk_end);
             }
-        };
-
-        if (num_threads_p2 <= 1) {
-            phase2_task(0);
-        } else {
-            pool.enqueue_n_threads(num_threads_p2 - 1, num_threads_p2 - 1,
-                [&](size_t start, size_t end) {
-                    for (size_t w = start; w < end; ++w) phase2_task(w + 1);
-                });
-            phase2_task(0);
-            pool.wait_all();
-        }
+        });
     }
 }
 

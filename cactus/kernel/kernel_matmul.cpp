@@ -649,8 +649,7 @@ void cactus_gemv_int4_block_range(
     const int8_t* B_packed_raw, const __fp16* B_scales,
     __fp16* C,
     size_t K, size_t N, size_t group_size,
-    size_t block_start, size_t block_end,
-    bool accumulate
+    size_t block_start, size_t block_end
 ) {
     const uint8_t* B_packed = reinterpret_cast<const uint8_t*>(B_packed_raw);
     if (K == 0 || N == 0 || block_end <= block_start) return;
@@ -660,10 +659,6 @@ void cactus_gemv_int4_block_range(
     for (; n_block + 1 < block_end; n_block += 2) {
         const size_t n_start_a = n_block * 4;
         const size_t n_start_b = (n_block + 1) * 4;
-        const bool a_full = (n_start_a + 4 <= N);
-        const bool b_full = (n_start_b + 4 <= N);
-        if (!a_full || !b_full) break;
-
         float32x4_t sum_a = vdupq_n_f32(0.0f);
         float32x4_t sum_b = vdupq_n_f32(0.0f);
 
@@ -715,19 +710,12 @@ void cactus_gemv_int4_block_range(
             sum_a = vmlaq_f32(sum_a, vcvtq_f32_s32(acc_a), sa);
             sum_b = vmlaq_f32(sum_b, vcvtq_f32_s32(acc_b), sb);
         }
-        float32x4_t result_a = vmulq_n_f32(sum_a, A_scale);
-        float32x4_t result_b = vmulq_n_f32(sum_b, A_scale);
-        if (accumulate) {
-            result_a = vaddq_f32(vcvt_f32_f16(vld1_f16(C + n_start_a)), result_a);
-            result_b = vaddq_f32(vcvt_f32_f16(vld1_f16(C + n_start_b)), result_b);
-        }
-        vst1_f16(C + n_start_a, vcvt_f16_f32(result_a));
-        vst1_f16(C + n_start_b, vcvt_f16_f32(result_b));
+        vst1_f16(C + n_start_a, vcvt_f16_f32(vmulq_n_f32(sum_a, A_scale)));
+        vst1_f16(C + n_start_b, vcvt_f16_f32(vmulq_n_f32(sum_b, A_scale)));
     }
 
     for (; n_block < block_end; ++n_block) {
         const size_t n_start = n_block * 4;
-        const size_t actual_n = (n_start + 4 <= N) ? 4 : (N - n_start);
         float32x4_t running_sum = vdupq_n_f32(0.0f);
         for (size_t g = 0; g < num_groups; ++g) {
             const size_t k_base = g * group_size;
@@ -752,27 +740,7 @@ void cactus_gemv_int4_block_range(
             float32x4_t scales = vcvt_f32_f16(vld1_f16(B_scales + (n_block * num_groups + g) * 4));
             running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc), scales);
         }
-        float32x4_t result = vmulq_n_f32(running_sum, A_scale);
-        if (accumulate) {
-            float32x4_t prev;
-            if (actual_n == 4) {
-                prev = vcvt_f32_f16(vld1_f16(C + n_start));
-            } else {
-                __fp16 tmp[4] = {0,0,0,0};
-                for (size_t ni = 0; ni < actual_n; ni++) tmp[ni] = C[n_start + ni];
-                prev = vcvt_f32_f16(vld1_f16(tmp));
-            }
-            result = vaddq_f32(prev, result);
-        }
-        float16x4_t result_f16 = vcvt_f16_f32(result);
-        if (actual_n == 4) {
-            vst1_f16(C + n_start, result_f16);
-        } else {
-            for (size_t ni = 0; ni < actual_n; ni++) {
-                C[n_start + ni] = vget_lane_f16(result_f16, 0);
-                result_f16 = vext_f16(result_f16, result_f16, 1);
-            }
-        }
+        vst1_f16(C + n_start, vcvt_f16_f32(vmulq_n_f32(running_sum, A_scale)));
     }
 }
 
