@@ -17,8 +17,6 @@ namespace {
 static constexpr int kRuyGemvThreads = 1;
 static constexpr int kRuyGemmThreads = 4;
 
-// ── Matmul (INT8 only) ──────────────────────────────────────────────────────
-
 struct Int8Weights {
     size_t K = 0, N = 0;
     std::vector<int8_t> int8_rowmajor;
@@ -27,9 +25,8 @@ struct Int8Weights {
     std::vector<int32_t> ruy_output;
 };
 
-// Shared ruy::Context across all matrices — without this, NM matrices each
-// create their own Context with thread pool, leading to 4k+ worker threads
-// at small dims. Single shared Context with the bench's thread budget.
+// Shared ruy::Context — without this, each matrix creates its own Context
+// with thread pool, leading to 4k+ worker threads at small dims.
 static ruy::Context* get_ruy_context(int max_threads) {
     static std::unique_ptr<ruy::Context> ctx;
     static int last_threads = -1;
@@ -133,13 +130,9 @@ void ruy_run_kernel(size_t M, size_t /*K*/, size_t /*N*/,
     if (output) std::memcpy(output, w->neon_output.data(), M * w->N * sizeof(float));
 }
 
-// ── Attention via LiteRT primitives (matmul-composed) ──────────────────────
-//
-// LiteRT/TFLite has no fused attention op, so we hand-compose Q·Kᵀ →
-// softmax → @V using its INT8 matmul kernels. Same semantic as ggml's
-// `mm_q8_*` matmul-composed paths. The cactus and onnxrt comparisons remain
-// against fused attention kernels; this gives a fair "best you can do with
-// LiteRT primitives" comparison point.
+// LiteRT/TFLite has no fused attention op, so attention here is hand-composed
+// from its INT8 matmul kernels (Q·Kᵀ → softmax → @V). Cactus and onnxrt are
+// compared against fused kernels; this is the best LiteRT-primitive baseline.
 
 namespace attn {
 
@@ -227,10 +220,10 @@ static void softmax_causal(float* scores, size_t seq_len, size_t kv_seq_len) {
 }
 
 struct KVHead {
-    std::vector<int8_t> k_int8;          // [kv_seq_len, head_dim] row-major
-    std::vector<float>  k_scales;        // [kv_seq_len] per row
-    std::vector<int8_t> vt_int8;         // [head_dim, kv_seq_len] V transposed
-    std::vector<float>  vt_scales;       // [head_dim] per row
+    std::vector<int8_t> k_int8;
+    std::vector<float>  k_scales;
+    std::vector<int8_t> vt_int8;
+    std::vector<float>  vt_scales;
 };
 
 struct AttnState {
@@ -239,7 +232,7 @@ struct AttnState {
     float scale = 0.0f;
     std::vector<KVHead> kv_heads;
     std::vector<float> fp32_q;
-    int ruy_threads = 1;     // resolved from --threads at prepare time
+    int ruy_threads = 1;
     std::vector<int8_t>  q_int8_buf;
     std::vector<float>   q_scales_buf;
     std::vector<int32_t> int32_buf;
@@ -323,8 +316,8 @@ static void run_ruy(void* state, float* output) {
     }
 }
 
-// Decode-only NEON path (TFLite MatrixBatchVectorMultiplyAccumulate is a
-// vector-matrix kernel; only useful when query has 1 row).
+// TFLite's MatrixBatchVectorMultiplyAccumulate is vector-matrix only, so the
+// NEON path is decode-only (query must have 1 row).
 static void run_neon(void* state, float* output) {
     auto* s = static_cast<AttnState*>(state);
     size_t kvl = s->kv_seq_len, hd = s->dims.head_dim;
@@ -380,7 +373,6 @@ static int reg = [] {
     });
 
     using P = bench::AttnMode;
-    // Matmul-composed attention via Ruy GEMM (covers prefill and decode).
     bench::register_attn_backend({
         "litert_ruy_prefill", "litert", P::PREFILL,
         attn::prefill, attn::run_ruy, attn::cleanup
@@ -389,7 +381,6 @@ static int reg = [] {
         "litert_ruy_decode", "litert", P::DECODE,
         attn::decode,  attn::run_ruy, attn::cleanup
     });
-    // Decode-only path via TFLite NEON MBVMA (vector-matrix kernel).
     bench::register_attn_backend({
         "litert_neon_decode", "litert", P::DECODE,
         attn::decode,  attn::run_neon, attn::cleanup

@@ -131,9 +131,7 @@ struct OrtActivations {
 struct SessionKey { size_t M, K, N; };
 struct SessionKeyHash {
     size_t operator()(const SessionKey& k) const noexcept {
-        // Pack the three small ints into a single 64-bit value before hashing.
-        // This avoids the high collision rate that XOR-with-shift produces
-        // when M, K, N are powers of two.
+        // Avoid XOR-with-shift's high collision rate on power-of-two M, K, N.
         uint64_t packed = (static_cast<uint64_t>(k.M) * 0x9e3779b97f4a7c15ull)
                         ^ (static_cast<uint64_t>(k.K) * 0xbf58476d1ce4e5b9ull)
                         ^ (static_cast<uint64_t>(k.N) * 0x94d049bb133111ebull);
@@ -192,7 +190,7 @@ void run_kernel(size_t M, size_t K, size_t N,
     if (!w || !a) return;
 
     auto session = get_matmul_session(M, K, N);
-    if (!session) return;     // session creation failed; error already logged
+    if (!session) return;
     auto& mem = get_cpu_mem();
     const size_t n_blocks = K / bench::kGroupSize;
     const size_t b_last_dim = bench::kGroupSize;
@@ -250,29 +248,15 @@ void* i8_prepare(const float* fp32, size_t N, size_t K) {
     return w;
 }
 
-// ── Attention via com.microsoft.GroupQueryAttention (FP16) ──────────────────
-//
-// GQA is the only ORT contrib attention op with FP16 support on CPU EP.
-// MultiHeadAttention's CPU registration is FP32-only; same for
-// DecoderMaskedMultiHeadAttention. We use GQA with num_heads==kv_num_heads
-// for graphs 4 & 5.
-//
-//   onnxrt_gqa_prefill         — FP16 Q/K/V, empty past KV (graph 4)
-//   onnxrt_gqa_decode_fp16kv   — FP16 query (M=1), FP16 past KV of length
-//                                cache_len, plus 1 new K/V token (graph 5;
-//                                NOT INT8 KV — ORT has no quantized-KV op)
-//
-// GQA layout:
-//   query / key / value  : [batch, seq, heads*head_dim]      (BSH)
-//   past_key / past_value: [batch, kv_heads, past_seq, head_dim]  (BNSH)
-//   seqlens_k            : int32[batch], = past_sequence_length
-//   total_sequence_length: int32 scalar, = past + new
-//   present_key / present_value (outputs we ignore): BNSH
+// GQA is the only ORT contrib attention op with FP16 support on CPU EP
+// (MultiHeadAttention and DecoderMaskedMultiHeadAttention CPU registrations
+// are FP32-only). We use GQA with num_heads==kv_num_heads. Decode runs FP16
+// KV, not INT8 — ORT has no quantized-KV attention op.
 
 namespace gqa {
 
-constexpr int kElemFloat16 = 10;  // ONNX TensorProto DataType FP16
-constexpr int kElemInt32   = 6;   // INT32
+constexpr int kElemFloat16 = 10;
+constexpr int kElemInt32   = 6;
 constexpr int kAttrTypeInt   = 2;
 constexpr int kAttrTypeFloat = 1;
 
@@ -289,7 +273,7 @@ static PBuf attr_float(const char* name, float val) {
     a.fld_str(1, name);
     uint32_t bits;
     std::memcpy(&bits, &val, 4);
-    a.varint(static_cast<uint64_t>(2) << 3 | 5);  // field 2, fixed32
+    a.varint(static_cast<uint64_t>(2) << 3 | 5);
     a.d.push_back(static_cast<uint8_t>(bits & 0xFF));
     a.d.push_back(static_cast<uint8_t>((bits >> 8) & 0xFF));
     a.d.push_back(static_cast<uint8_t>((bits >> 16) & 0xFF));
@@ -298,9 +282,8 @@ static PBuf attr_float(const char* name, float val) {
     return a;
 }
 
-// 0-dim (scalar) value-info: tensor type with empty shape.
 static PBuf make_scalar_value_info(const char* name, int elem_type) {
-    PBuf shape;  // intentionally empty
+    PBuf shape;
     PBuf tensor; tensor.fld_vi(1, elem_type); tensor.fld_ld(2, shape);
     PBuf type;   type.fld_ld(1, tensor);
     PBuf vi;     vi.fld_str(1, name); vi.fld_ld(2, type);
@@ -312,15 +295,11 @@ static std::vector<uint8_t> build_gqa_model(size_t q_seq, size_t past_seq, size_
     const size_t hidden = num_heads * head_dim;
     const size_t new_kv_seq = total_seq - past_seq;
     const bool with_past = (past_seq > 0);
-    // Spec is permissive about layout, but the CPU compute path expects K/V
-    // in 4D BNSH (gqa_attention_base.h:341 — k = K + kv_input_chunk_length *
-    // (i / kv_num_heads_factor)). Q stays 3D BSH; output stays 3D BSH.
-
-    // GQA's past_key/past_value/present_key/present_value are optional. For
-    // the prompt (prefill) phase we skip them entirely — empty strings in the
-    // node's input/output lists, and no matching value_info on the graph. If
-    // we instead pass shape-[1,h,0,d] tensors, the CPU GQA kernel's prompt
-    // path produces wrong results (validated empirically: nrmse=0.87).
+    // The CPU compute path expects K/V as 4D BNSH (gqa_attention_base.h:341).
+    // For prefill (no past), we omit past_key/past_value entirely — empty
+    // strings in the node's input list and no matching value_info. Passing
+    // shape-[1,h,0,d] tensors instead silently corrupts output on the prompt
+    // path (nrmse=0.87).
     PBuf node;
     node.fld_str(1, "Q");
     node.fld_str(1, "K");
@@ -330,10 +309,8 @@ static std::vector<uint8_t> build_gqa_model(size_t q_seq, size_t past_seq, size_
     node.fld_str(1, "seqlens_k");
     node.fld_str(1, "total_seq_len");
     node.fld_str(2, "Y");
-    // GQA op schema requires 3+ outputs. Empty-string outputs aren't allowed,
-    // so always declare present_key/present_value — even for prefill they're
-    // valid: they end up containing K and V written into a freshly-grown
-    // cache buffer.
+    // GQA schema requires 3+ outputs and disallows empty-string outputs, so
+    // present_key/present_value are always declared (even for prefill).
     node.fld_str(2, "present_key");
     node.fld_str(2, "present_value");
     node.fld_str(4, "GroupQueryAttention");
@@ -376,7 +353,6 @@ static std::vector<uint8_t> build_gqa_model(size_t q_seq, size_t past_seq, size_
     graph.fld_ld(11, sk_vi);
     graph.fld_ld(11, ts_vi);
     graph.fld_ld(12, y_vi);
-    // present_key/present_value always declared (GQA schema requires them).
     {
         auto presk_vi = make_value_info("present_key", kElemFloat16,
                                          make_dim_value(1), make_dim_value(num_heads),
@@ -399,7 +375,6 @@ static std::vector<uint8_t> build_gqa_model(size_t q_seq, size_t past_seq, size_
     return model.d;
 }
 
-// FP16 conversions (manual, to avoid leaning on __fp16 in this header-public code).
 static uint16_t fp32_to_fp16_bits(float f) {
     uint32_t x; std::memcpy(&x, &f, 4);
     uint32_t sign = (x >> 16) & 0x8000;
@@ -433,7 +408,7 @@ static float fp16_bits_to_fp32(uint16_t h) {
     float f; std::memcpy(&f, &out, 4); return f;
 }
 
-// Driver Q layout [head, seq, head_dim] → ORT BSH layout [1, seq, head*head_dim] FP16.
+// Driver [head, seq, head_dim] → ORT BSH [1, seq, head*head_dim] FP16.
 static void pack_bsh(const float* src, uint16_t* dst,
                       size_t num_heads, size_t seq, size_t head_dim) {
     for (size_t s = 0; s < seq; ++s)
@@ -445,8 +420,8 @@ static void pack_bsh(const float* src, uint16_t* dst,
         }
 }
 
-// Driver K/V layout [head, seq, head_dim] → ORT BNSH layout [1, head, seq, head_dim] FP16.
-// Physical buffer order is identical (head outermost) — just FP32→FP16 cast.
+// Driver [head, seq, head_dim] and ORT BNSH [1, head, seq, head_dim] share
+// the same physical buffer order, so this is just FP32 → FP16.
 static void pack_bnsh(const float* src, uint16_t* dst,
                        size_t num_heads, size_t seq, size_t head_dim) {
     const size_t total = num_heads * seq * head_dim;
@@ -454,7 +429,6 @@ static void pack_bnsh(const float* src, uint16_t* dst,
         dst[i] = fp32_to_fp16_bits(src[i]);
 }
 
-// ORT BSH FP16 → driver [head, seq, head_dim] FP32.
 static void unpack_bsh(const uint16_t* src, float* dst,
                         size_t num_heads, size_t seq, size_t head_dim) {
     for (size_t h = 0; h < num_heads; ++h)
@@ -474,12 +448,12 @@ struct GqaState {
     size_t total_seq;
     size_t hidden;
 
-    std::vector<uint16_t> q_fp16;             // BSH [1, q_seq, hidden]
-    std::vector<uint16_t> k_new_fp16;         // BSH [1, new_kv_seq, hidden]
-    std::vector<uint16_t> v_new_fp16;         // BSH [1, new_kv_seq, hidden]
-    std::vector<uint16_t> past_key_fp16;      // BNSH [1, h, past_seq, d]
-    std::vector<uint16_t> past_value_fp16;    // BNSH [1, h, past_seq, d]
-    std::vector<uint16_t> present_key_buf;    // BNSH [1, h, total_seq, d] (output, ignored)
+    std::vector<uint16_t> q_fp16;
+    std::vector<uint16_t> k_new_fp16;
+    std::vector<uint16_t> v_new_fp16;
+    std::vector<uint16_t> past_key_fp16;
+    std::vector<uint16_t> past_value_fp16;
+    std::vector<uint16_t> present_key_buf;
     std::vector<uint16_t> present_value_buf;
     int32_t seqlens_k_val = 0;
     int32_t total_seq_val = 0;
@@ -500,11 +474,9 @@ static void* gqa_prepare_impl(const bench::AttnDims& dims, size_t seq_len, size_
     s->dims = dims;
     s->hidden = dims.num_q_heads * dims.head_dim;
 
-    // GQA's `seqlens_k` semantic: "index of the last valid token in the
-    // K cache AFTER processing" — i.e., total_sequence_length - 1.
-    // Confirmed against the python prefill test: `seqlens_k = cache_seqlens
-    // - 1` where `cache_seqlens = total_sequence_length`. (The past_seq
-    // interpretation happens to match for decode but is wrong for prefill.)
+    // GQA's `seqlens_k` is "index of the last valid token in the K cache
+    // AFTER processing", i.e., total_sequence_length - 1. The past_seq
+    // interpretation happens to match for decode but is wrong for prefill.
     if (mode == bench::AttnMode::PREFILL) {
         s->q_seq      = seq_len;
         s->past_seq   = 0;
@@ -517,27 +489,22 @@ static void* gqa_prepare_impl(const bench::AttnDims& dims, size_t seq_len, size_
         s->past_seq   = cache_len;
         s->new_kv_seq = 1;
         s->total_seq  = cache_len + 1;
-        s->seqlens_k_val = static_cast<int32_t>(cache_len);   // = total_seq - 1
+        s->seqlens_k_val = static_cast<int32_t>(cache_len);
         s->total_seq_val = static_cast<int32_t>(cache_len + 1);
     }
 
-    // Q
     s->q_fp16.resize(s->q_seq * s->hidden);
     pack_bsh(fp32_q, s->q_fp16.data(), dims.num_q_heads, s->q_seq, dims.head_dim);
 
-    // Split K/V: first past_seq tokens go to past_*, last new_kv_seq tokens go to K/V.
-    // Driver passes K/V in [head, total_kv_seq, head_dim] layout.
     s->past_key_fp16.resize(dims.num_kv_heads * s->past_seq * dims.head_dim);
     s->past_value_fp16.resize(dims.num_kv_heads * s->past_seq * dims.head_dim);
     s->k_new_fp16.resize(s->new_kv_seq * s->hidden);
     s->v_new_fp16.resize(s->new_kv_seq * s->hidden);
 
     if (mode == bench::AttnMode::PREFILL) {
-        // No past — whole K/V is "new", BSH layout (3D).
         pack_bsh(fp32_k, s->k_new_fp16.data(), dims.num_kv_heads, s->new_kv_seq, dims.head_dim);
         pack_bsh(fp32_v, s->v_new_fp16.data(), dims.num_kv_heads, s->new_kv_seq, dims.head_dim);
     } else {
-        // Decode: split driver K/V into past (BNSH) + new (BSH).
         auto split_pack = [&](const float* src, uint16_t* past_dst, uint16_t* new_dst) {
             std::vector<float> past_only(dims.num_kv_heads * s->past_seq * dims.head_dim);
             std::vector<float> new_only(dims.num_kv_heads * s->new_kv_seq * dims.head_dim);
@@ -597,8 +564,8 @@ void gqa_run(void* state, float* output) {
     int64_t pkv_shape[] = {1, (int64_t)s->dims.num_kv_heads,
                             (int64_t)s->past_seq, (int64_t)s->dims.head_dim};
     int64_t sk_shape[] = {1};
-    // 0-dim (scalar) tensor: pass nullptr shape with dim_count=0. A
-    // zero-sized array is non-portable (gcc/clang extension).
+    // 0-dim scalar tensor: pass nullptr shape with dim_count=0 (a zero-sized
+    // array is a gcc/clang extension, not portable).
     const int64_t* ts_shape = nullptr;
 
     if (with_past) {
@@ -624,9 +591,6 @@ void gqa_run(void* state, float* output) {
             unpack_bsh(y, output, s->dims.num_q_heads, s->q_seq, s->dims.head_dim);
         }
     } else {
-        // Prefill: Q/K/V + seqlens_k + total_seq_len. Past inputs are skipped
-        // via empty-string node-input names in the model. We still bind 3
-        // outputs because GQA's schema requires them; we only read Y.
         Ort::Value inputs[5] = {
             Ort::Value::CreateTensor(mem, s->q_fp16.data(), s->q_fp16.size() * sizeof(uint16_t),
                                       q_shape, 3, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16),
@@ -660,8 +624,8 @@ static int reg = [] {
         "onnxrt_gqa_prefill", "onnxrt", bench::AttnMode::PREFILL,
         gqa::gqa_prefill, gqa::gqa_run, gqa::gqa_cleanup
     });
-    // FP16 KV — NOT INT8 KV. Plot with a precision tag: comparison vs cactus's
-    // hybrid_int8 is precision-asymmetric. ORT has no INT8-KV-cache attention op.
+    // FP16 KV (not INT8) — comparison vs cactus's hybrid_int8 is
+    // precision-asymmetric; ORT has no INT8-KV-cache attention op.
     bench::register_attn_backend({
         "onnxrt_gqa_decode_fp16kv", "onnxrt", bench::AttnMode::DECODE,
         gqa::gqa_decode_fp16kv, gqa::gqa_run, gqa::gqa_cleanup

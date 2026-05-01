@@ -9,8 +9,6 @@
 
 namespace {
 
-// ── Matmul ──────────────────────────────────────────────────────────────────
-
 namespace matmul {
 
 struct Weights {
@@ -69,8 +67,6 @@ void cleanup(void* weights, void*) {
 
 } // namespace matmul
 
-// ── Attention ───────────────────────────────────────────────────────────────
-
 namespace attn {
 
 struct State {
@@ -85,8 +81,7 @@ struct State {
     std::vector<float> k_scales, v_scales;
 };
 
-// Driver layout for Q/K/V is [head, seq, head_dim].
-// Cactus prefill expects [batch, seq, head, head_dim] (= [seq, head, head_dim] when batch=1).
+// Driver layout [head, seq, head_dim] → cactus prefill layout [seq, head, head_dim] (batch=1).
 static void transpose_seq_head(const float* src, __fp16* dst,
                                 size_t heads, size_t seq, size_t head_dim) {
     for (size_t s = 0; s < seq; ++s)
@@ -206,8 +201,6 @@ void run(void* state, float* output) {
 void cleanup(void* state) { delete static_cast<State*>(state); }
 
 } // namespace attn
-
-// ── Registration ────────────────────────────────────────────────────────────
 
 static int reg = []{
     bench::register_matmul_backend({

@@ -149,16 +149,11 @@ namespace { [[maybe_unused]] static int reg_xnn = []{ return 0; }(); }
 
 #endif // WITH_EXECUTORCH
 
-
-// ── ExecuTorch fused-attention backends (extension/llm/custom_ops) ──────────
-// Separate flag (WITH_EXECUTORCH_LLM) because this requires a built ExecuTorch
-// tree, not just XNNPACK. Uses torch::executor::native::custom_sdpa_out for
-// FP32 prefill (graph 4) and custom_quantized_sdpa_out for INT8 per-channel
-// decode (graph 5). Both paths are precision/scheme-asymmetric vs cactus:
-//   • cactus prefill is FP16; ET custom_sdpa is FP32-only.
-//   • cactus decode uses FP16 Q + INT8 KV with per-group(32) scales; ET
-//     custom_quantized_sdpa uses INT8 Q/K/V with per-channel scales.
-// Backend names include the precision/scheme tag so plot legends stay honest.
+// WITH_EXECUTORCH_LLM is separate from WITH_EXECUTORCH because the LLM custom
+// ops require a built ExecuTorch tree, not just XNNPACK. cactus prefill is
+// FP16 vs ET custom_sdpa FP32-only; cactus decode is FP16 Q + INT8 KV
+// per-group(32) vs ET custom_quantized_sdpa INT8 Q/K/V per-channel — the
+// asymmetry is reflected in the backend names.
 
 #ifdef WITH_EXECUTORCH_LLM
 
@@ -181,23 +176,18 @@ using et::runtime::KernelRuntimeContext;
 using etext::TensorPtr;
 using etext::make_tensor_ptr;
 
-// ── FP32 prefill (graph 4) ──────────────────────────────────────────────────
-// Driver supplies Q/K/V as FP32 in [head, seq, head_dim]. custom_sdpa_out
-// expects BSNH = [B, S, N, H] (no is_seq_at_dim_1 flag exists for the
-// non-quantized variant; default is BSNH per op_sdpa.cpp).
-//
-// We transpose driver buffers to BSNH at prepare-time.
+// custom_sdpa_out has no is_seq_at_dim_1 flag (the default BSNH is hard-coded
+// per op_sdpa.cpp), so we must transpose driver's BNSH buffers to BSNH.
 
 namespace et_attn_prefill {
 
 struct State {
     bench::AttnDims dims;
     size_t seq_len = 0;
-    std::vector<float> q, k, v;     // BSNH layout
-    std::vector<float> out;          // BSNH layout from kernel
+    std::vector<float> q, k, v;
+    std::vector<float> out;
 };
 
-// [head, seq, head_dim] (BNSH with B=1) → [seq, head, head_dim] (BSNH with B=1).
 static void transpose_bnsh_to_bsnh(const float* src, float* dst,
                                     size_t heads, size_t seq, size_t head_dim) {
     for (size_t s = 0; s < seq; ++s)
@@ -207,7 +197,6 @@ static void transpose_bnsh_to_bsnh(const float* src, float* dst,
             std::memcpy(out, in, head_dim * sizeof(float));
         }
 }
-// Inverse for output.
 static void transpose_bsnh_to_bnsh(const float* src, float* dst,
                                     size_t heads, size_t seq, size_t head_dim) {
     for (size_t h = 0; h < heads; ++h)
@@ -245,7 +234,6 @@ void run(void* state, float* output) {
     SZ S = static_cast<SZ>(s->seq_len);
     SZ D = static_cast<SZ>(d.head_dim);
 
-    // BSNH shape: [B, S, num_heads, head_dim]
     auto q_t = make_tensor_ptr({B, S, Hq,  D}, s->q.data(),  ScalarType::Float);
     auto k_t = make_tensor_ptr({B, S, Hkv, D}, s->k.data(),  ScalarType::Float);
     auto v_t = make_tensor_ptr({B, S, Hkv, D}, s->v.data(),  ScalarType::Float);
@@ -273,38 +261,30 @@ void cleanup(void* state) { delete static_cast<State*>(state); }
 
 } // namespace et_attn_prefill
 
-// ── INT8 per-channel decode (graph 5) ───────────────────────────────────────
-// Quantize Q (1 token), K and V (cache_len+1 tokens) per-row in BSNH layout.
-// Per-channel scale = one scale per [B, S, N] row (per head_dim vector).
-// Symmetric INT8 (zero_point=0). BSNH layout = is_seq_at_dim_1=true.
-
 namespace et_attn_decode_q8pc {
 
 struct State {
     bench::AttnDims dims;
     size_t kv_seq_len = 0;
-    // BNSH layout for data (matches driver's [head, seq, head_dim] directly).
-    // Scales/zp: 4D [B, N, S, 1].
-    //
-    // The header (op_sdpa.h) declares this last bool parameter as
+    // The header (op_sdpa.h) declares the last bool parameter as
     // `is_seq_at_dim_1`, but the implementation (op_sdpa.cpp) renames the
     // same parameter to `is_seq_at_dim_2` in its body. The body's name
     // describes the actual behavior: passing `true` selects `SeqDim::TWO`
     // (BNSH = seq at dim 2). We pass `true` to match our BNSH buffer.
+    // Scales/zp must be 4D matching the first N-1 dims of the data tensor
+    // ([B, N, S, 1]); zero-points must be Char (INT8).
     std::vector<int8_t> q_int8, k_int8, v_int8;
     std::vector<float>  q_scales, k_scales, v_scales;
     std::vector<int8_t> q_zp, k_zp, v_zp;
     std::vector<float>  out;
 };
 
-// Quantize per-row from driver layout [head, seq, head_dim] (= BNSH B=1)
-// directly — no transpose. Scales/zp produced in [N, S, 1] order to match.
 static void quantize_bnsh(const float* src, size_t heads, size_t seq, size_t head_dim,
                            int8_t* q_out, float* scales_out, int8_t* zp_out) {
     for (size_t h = 0; h < heads; ++h) {
         for (size_t s = 0; s < seq; ++s) {
             const float* in = src + (h * seq + s) * head_dim;
-            const size_t row_idx = h * seq + s;     // BNSH row index (B=1)
+            const size_t row_idx = h * seq + s;
             int8_t* qrow = q_out + row_idx * head_dim;
             float max_abs = 0.0f;
             for (size_t d = 0; d < head_dim; ++d) max_abs = std::max(max_abs, std::abs(in[d]));
@@ -356,11 +336,9 @@ void run(void* state, float* output) {
     SZ KVL = static_cast<SZ>(s->kv_seq_len);
     SZ D = static_cast<SZ>(d.head_dim);
 
-    // BNSH for data tensors (driver layout, no transpose).
     auto q_t  = make_tensor_ptr({B, Hq,  S,   D}, s->q_int8.data(), ScalarType::Char);
     auto k_t  = make_tensor_ptr({B, Hkv, KVL, D}, s->k_int8.data(), ScalarType::Char);
     auto v_t  = make_tensor_ptr({B, Hkv, KVL, D}, s->v_int8.data(), ScalarType::Char);
-    // Scales/zp same rank as data, BNSH-aligned: [B, N, S, 1].
     auto qs_t = make_tensor_ptr({B, Hq,  S,   1}, s->q_scales.data(), ScalarType::Float);
     auto ks_t = make_tensor_ptr({B, Hkv, KVL, 1}, s->k_scales.data(), ScalarType::Float);
     auto vs_t = make_tensor_ptr({B, Hkv, KVL, 1}, s->v_scales.data(), ScalarType::Float);
@@ -381,17 +359,15 @@ void run(void* state, float* output) {
         /*start_pos*/ static_cast<int64_t>(s->kv_seq_len - 1),
         no_mask,
         /*dropout_p*/ 0.0,
-        /*is_causal*/ true,          // shifted causal mask aligned to start_pos
+        /*is_causal*/ true,
         scale,
         qz, qs,
         kz, ks,
         vz, vs,
-        /*is_seq_at_dim_1*/ true,    // BNSH. Header param name vs impl body
+        /*is_seq_at_dim_1*/ true,    // BNSH; header param name vs impl body
                                      // disagree (see struct comment above).
         *o_t);
 
-    // Output is BSNH [1, 1, Hq, D]. With seq=1 it's the same memory layout
-    // as driver's [head, seq, head_dim]; just copy.
     if (output)
         std::memcpy(output, s->out.data(), s->out.size() * sizeof(float));
 }

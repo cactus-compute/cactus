@@ -11,25 +11,16 @@
 
 namespace bench {
 
-// Target weight-pool size we want to exceed so each iteration's working set
-// can't fit in L2/SLC (Apple Silicon SLC tops out around 32–48 MB on M-series).
-// 64 MB is a comfortable upper bound that still keeps total memory in check
-// across backends.
+// Working-set target — exceed Apple Silicon SLC (~32-48MB) so weight reads
+// miss to RAM, matching real inference where every layer has unique weights.
 static constexpr size_t kCacheBypassBytes = 64u * 1024u * 1024u;
 
-// Sanity caps. With ORT session caching done in backend_onnxrt.cpp, raising
-// NM is cheap. NM=4096 at d=128 is 64MB pool — exceeds Apple Silicon SLC
-// (~32-48MB) so weight reads genuinely miss to RAM, matching real-inference
-// access patterns where every layer has unique weights.
 static constexpr size_t kMaxMatrixCount = 4096;
 static constexpr size_t kMaxAttnStateCount = 512;
 
-// Per-config: probe each backend solo, then skip from the interleaved loop
-// any backend that's >25× slower than cactus. Slow ones drag the round-robin
-// (the loop is bounded by the slowest backend per iteration). Skipped
-// backends still get a separate solo timed pass — with warmup — so their
-// reported number reflects sustained performance, not first-call setup
-// overhead.
+// Slow backends are excluded from the interleaved loop (otherwise the
+// round-robin is bounded by the slowest per iteration), then re-timed in a
+// solo warmed pass so their number still reflects sustained performance.
 static constexpr int    kProbeIters     = 3;
 static constexpr double kSlowMultiplier = 25.0;
 static constexpr int    kSoloWarmup     = 5;
@@ -94,16 +85,9 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
     std::mt19937 gen(270270u);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
 
-    // Per-config interleaving: for each (M,K,N) shape we prep ALL backends'
-    // weights & activations up front, then drive them round-robin so each
-    // iteration is "one call to every backend, in order." This averages
-    // thermal/frequency state across backends instead of letting whichever
-    // backend runs first cool the CPU for whichever runs second.
-    //
-    // A probe phase ahead of the main loop excludes any backend >25× slower
-    // than cactus from the round-robin (otherwise the slowest backend gates
-    // the entire loop's wall time). Skipped backends still report a
-    // probe-derived time for visibility.
+    // Round-robin across backends per iteration averages thermal/frequency
+    // state — without it, whichever backend runs first cools the CPU for
+    // whichever runs second.
     struct Entry { void* w = nullptr; void* a = nullptr; };
     struct BackendSlot {
         const MatmulBackendVariant* backend = nullptr;
@@ -111,21 +95,18 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
         AccuracyResult acc;
         bool prepared = false;
         bool skipped_slow = false;
-        double probe_avg_ms = 0.0;     // measured solo
-        double total_ms = 0.0;          // interleaved (200 iters) for normal backends; solo (kSoloIters, warmed) for skipped
-        int effective_iters = 0;        // how many iterations contributed to total_ms
+        double probe_avg_ms = 0.0;
+        double total_ms = 0.0;
+        int effective_iters = 0;
     };
 
     for (const auto& cfg : configs) {
         const size_t M = cfg.M, K = cfg.K, N = cfg.N;
 
-        // Dynamic weight-pool size: cycle through enough distinct matrices
-        // that the per-backend quantized weight set exceeds L2/SLC cache, so
-        // each iteration's weight load actually misses to RAM (matches real
-        // inference where every layer has unique weights). Floor=2 (always
-        // cycle something so we don't get register-level reuse on a single
-        // matrix); cap=kMaxMatrixCount so small dims don't blow up memory.
-        const size_t weight_bytes = N * K;  // INT8 quantized footprint
+        // NM cycles enough distinct quantized matrices to push the weight
+        // working set past kCacheBypassBytes. Floor=2 so a single matrix
+        // doesn't sit in registers across iterations.
+        const size_t weight_bytes = N * K;
         const size_t NM_for_bypass = (kCacheBypassBytes + weight_bytes - 1)
                                       / std::max(weight_bytes, size_t(1));
         const size_t NM = std::min(kMaxMatrixCount, std::max(size_t(2), NM_for_bypass));
@@ -148,7 +129,6 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
         reference_matmul_fp32(act.fp32.data(), fp32_w[0].data(),
                               reference.data(), M, K, N);
 
-        // ── Prep + accuracy check (sequential — one-shot per backend) ──────
         std::vector<BackendSlot> slots(active.size());
         const size_t out_count = M * N;
 
@@ -188,11 +168,9 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
             slot.acc = check_accuracy(ref, captured.data(), out_count, tol);
         }
 
-        // FP32 source weights are no longer needed — every backend has its own
-        // quantized copy. Drop them so we don't pay 4× memory at high NM.
+        // Drop FP32 source weights so we don't pay 4× memory at high NM.
         std::vector<std::vector<float>>().swap(fp32_w);
 
-        // ── Probe phase: measure each backend solo, mark slow ones ─────────
         for (auto& slot : slots) {
             if (!slot.prepared) continue;
             double total = 0.0;
@@ -230,9 +208,6 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
             }
         }
 
-        // ── Solo timed pass for skipped backends ───────────────────────────
-        // Warmup + small timed loop so the reported number reflects
-        // sustained throughput, not first-call setup overhead.
         for (auto& slot : slots) {
             if (!slot.prepared || !slot.skipped_slow) continue;
             for (int w = 0; w < kSoloWarmup; ++w) {
@@ -256,7 +231,6 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
             }
         }
 
-        // ── Interleaved warmup: iter w hits every backend in order ─────────
         for (int w = 0; w < opt.warmup; ++w) {
             size_t idx = static_cast<size_t>(w) % NM;
             for (auto& slot : slots) {
@@ -268,7 +242,6 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
             }
         }
 
-        // ── Interleaved timed loop ─────────────────────────────────────────
         for (int it = 0; it < opt.iterations; ++it) {
             size_t idx = static_cast<size_t>(it) % NM;
             for (auto& slot : slots) {
@@ -283,7 +256,6 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
             }
         }
 
-        // ── Report + CSV ───────────────────────────────────────────────────
         for (auto& slot : slots) {
             if (!slot.prepared) continue;
             int iters = slot.effective_iters > 0 ? slot.effective_iters : 1;
@@ -367,13 +339,9 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
     std::mt19937 gen(270270u);
     std::uniform_real_distribution<float> dist(-0.5f, 0.5f);
 
-    // Per-config: prep all (active, mode-matching) backends, then drive them
-    // round-robin across iterations for thermal fairness. Multiple Q/K/V
-    // "states" are cycled so the K/V working set exceeds L2/SLC. A probe
-    // phase excludes any backend >25× slower than cactus from the loop.
     struct AttnSlot {
         const AttnBackendVariant* backend = nullptr;
-        std::vector<void*> states;    // one per Q/K/V tuple
+        std::vector<void*> states;
         AccuracyResult acc;
         bool prepared = false;
         bool skipped_slow = false;
@@ -388,10 +356,8 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
         const size_t kvl = (cfg.mode == AttnMode::PREFILL) ? sl : (cfg.cache_len + 1);
         const float scale = 1.0f / std::sqrt(static_cast<float>(dims.head_dim));
 
-        // Pick state count to push the per-state KV footprint past 64MB.
-        // Per-state working set ≈ Q + K + V + per-backend state overhead. We
-        // size against the dominant K+V FP32 reference: 2 * num_kv_heads *
-        // kvl * head_dim * sizeof(float).
+        // NS cycles enough Q/K/V states to push the per-state KV footprint
+        // past kCacheBypassBytes; sized against K+V (dominant term).
         const size_t per_state_kv_bytes = 2 * dims.num_kv_heads * kvl * dims.head_dim * sizeof(float);
         const size_t NS_for_bypass = (kCacheBypassBytes + per_state_kv_bytes - 1)
                                       / std::max(per_state_kv_bytes, size_t(1));
@@ -408,7 +374,6 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
         size_t q_count = dims.num_q_heads * sl * dims.head_dim;
         size_t kv_count = dims.num_kv_heads * kvl * dims.head_dim;
 
-        // Generate NS distinct (Q, K, V) tuples.
         std::vector<std::vector<float>> q_set(NS), k_set(NS), v_set(NS);
         for (size_t s = 0; s < NS; ++s) {
             q_set[s].resize(q_count);
@@ -419,14 +384,12 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
             for (auto& x : v_set[s]) x = dist(gen);
         }
 
-        // Reference computed against state 0 — accuracy check uses state 0 too.
         std::vector<float> reference(q_count);
         reference_attention_fp32(q_set[0].data(), k_set[0].data(), v_set[0].data(),
                                  reference.data(),
                                  dims.num_q_heads, dims.num_kv_heads,
                                  sl, kvl, dims.head_dim, scale);
 
-        // ── Prep + accuracy (sequential per backend) ───────────────────────
         std::vector<AttnSlot> slots;
         for (const auto* backend : active) {
             if (backend->mode != cfg.mode) continue;
@@ -456,12 +419,10 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
                                        attn_tolerance(backend->name));
         }
 
-        // FP32 source K/V is no longer needed by any backend after prep.
         std::vector<std::vector<float>>().swap(q_set);
         std::vector<std::vector<float>>().swap(k_set);
         std::vector<std::vector<float>>().swap(v_set);
 
-        // ── Probe phase: solo-time each backend, mark slow ones ────────────
         for (auto& slot : slots) {
             if (!slot.prepared) continue;
             double total = 0.0;
@@ -496,7 +457,6 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
             }
         }
 
-        // ── Solo timed pass for skipped backends ───────────────────────────
         for (auto& slot : slots) {
             if (!slot.prepared || !slot.skipped_slow) continue;
             for (int w = 0; w < kSoloWarmup; ++w) {
@@ -514,7 +474,6 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
             }
         }
 
-        // ── Interleaved warmup ─────────────────────────────────────────────
         for (int w = 0; w < opt.warmup; ++w) {
             size_t idx = static_cast<size_t>(w) % NS;
             for (auto& slot : slots) {
@@ -523,7 +482,6 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
             }
         }
 
-        // ── Interleaved timed loop ─────────────────────────────────────────
         for (int it = 0; it < opt.iterations; ++it) {
             size_t idx = static_cast<size_t>(it) % NS;
             for (auto& slot : slots) {
@@ -535,7 +493,6 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
             }
         }
 
-        // ── Report + CSV ───────────────────────────────────────────────────
         for (auto& slot : slots) {
             if (!slot.prepared) continue;
             int iters = slot.effective_iters > 0 ? slot.effective_iters : 1;
