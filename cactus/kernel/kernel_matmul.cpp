@@ -662,7 +662,7 @@ void cactus_gemv_int4_block_range(
         const size_t n_start_b = (n_block + 1) * 4;
         const bool a_full = (n_start_a + 4 <= N);
         const bool b_full = (n_start_b + 4 <= N);
-        if (!a_full || !b_full) break;  // fall through to scalar tail
+        if (!a_full || !b_full) break;
 
         float32x4_t sum_a = vdupq_n_f32(0.0f);
         float32x4_t sum_b = vdupq_n_f32(0.0f);

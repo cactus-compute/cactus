@@ -520,37 +520,69 @@ namespace {
     static std::vector<DenseFusedScratch> dense_fused_scratch;
 
     static inline void gelu_tanh_inplace_fp16(__fp16* p, size_t n) {
-        const float32x4_t v_half    = vdupq_n_f32(0.5f);
-        const float32x4_t v_one     = vdupq_n_f32(1.0f);
-        const float32x4_t v_sqrt2pi = vdupq_n_f32(0.7978845608028654f);
-        const float32x4_t v_coeff   = vdupq_n_f32(0.044715f);
+        const float sqrt_2_over_pi = 0.7978845608028654f;
+        const float coeff = 0.044715f;
+        const float32x4_t half = vdupq_n_f32(0.5f);
+        const float32x4_t one  = vdupq_n_f32(1.0f);
+        const float32x4_t sqrt_2_pi_vec = vdupq_n_f32(sqrt_2_over_pi);
+        const float32x4_t coeff_vec     = vdupq_n_f32(coeff);
         size_t i = 0;
         for (; i + 8 <= n; i += 8) {
-            float16x8_t xh = vld1q_f16(p + i);
-            float32x4_t x_lo = vcvt_f32_f16(vget_low_f16(xh));
-            float32x4_t x_hi = vcvt_f32_f16(vget_high_f16(xh));
-            auto gelu = [&](float32x4_t x) {
-                float32x4_t x2 = vmulq_f32(x, x);
-                float32x4_t x3 = vmulq_f32(x2, x);
-                float32x4_t z  = vmulq_f32(v_sqrt2pi, vaddq_f32(x, vmulq_f32(v_coeff, x3)));
-                float32x4_t zc = vmaxq_f32(vdupq_n_f32(-4.5f), vminq_f32(vdupq_n_f32(4.5f), z));
-                float32x4_t z2 = vmulq_f32(zc, zc);
-                float32x4_t num = vmulq_f32(zc, vaddq_f32(vdupq_n_f32(27.f), z2));
-                float32x4_t den = vaddq_f32(vdupq_n_f32(27.f), vmulq_f32(vdupq_n_f32(9.f), z2));
-                float32x4_t tanh_z = vdivq_f32(num, den);
-                return vmulq_f32(vmulq_f32(v_half, x), vaddq_f32(v_one, tanh_z));
-            };
-            float16x8_t out = vcombine_f16(vcvt_f16_f32(gelu(x_lo)), vcvt_f16_f32(gelu(x_hi)));
-            vst1q_f16(p + i, out);
+            float16x8_t x_f16 = vld1q_f16(p + i);
+            float32x4_t x_lo = vcvt_f32_f16(vget_low_f16(x_f16));
+            float32x4_t x_hi = vcvt_f32_f16(vget_high_f16(x_f16));
+            float32x4_t x3_lo = vmulq_f32(vmulq_f32(x_lo, x_lo), x_lo);
+            float32x4_t x3_hi = vmulq_f32(vmulq_f32(x_hi, x_hi), x_hi);
+            float32x4_t inner_lo = vmulq_f32(sqrt_2_pi_vec, vfmaq_f32(x_lo, coeff_vec, x3_lo));
+            float32x4_t inner_hi = vmulq_f32(sqrt_2_pi_vec, vfmaq_f32(x_hi, coeff_vec, x3_hi));
+            float32x4_t tanh_lo = fast_tanh_f32x4(inner_lo);
+            float32x4_t tanh_hi = fast_tanh_f32x4(inner_hi);
+            float32x4_t g_lo = vmulq_f32(vmulq_f32(half, x_lo), vaddq_f32(one, tanh_lo));
+            float32x4_t g_hi = vmulq_f32(vmulq_f32(half, x_hi), vaddq_f32(one, tanh_hi));
+            vst1q_f16(p + i, vcombine_f16(vcvt_f16_f32(g_lo), vcvt_f16_f32(g_hi)));
         }
         for (; i < n; ++i) {
             float x = static_cast<float>(p[i]);
-            float x3 = x * x * x;
-            float z  = 0.7978845608028654f * (x + 0.044715f * x3);
-            if (z > 4.5f) z = 4.5f; else if (z < -4.5f) z = -4.5f;
-            float z2 = z * z;
-            float tanh_z = (z * (27.f + z2)) / (27.f + 9.f * z2);
-            p[i] = static_cast<__fp16>(0.5f * x * (1.f + tanh_z));
+            float inner = sqrt_2_over_pi * (x + coeff * x * x * x);
+            p[i] = static_cast<__fp16>(0.5f * x * (1.0f + tanhf(inner)));
+        }
+    }
+
+    // Inline mirror of cactus_multiply_f16's small-N SIMD body. k_count is
+    // tile-sized (≤ 128 for Gemma-4) so streaming stores aren't relevant.
+    static inline void multiply_inplace_fp16(const __fp16* a, const __fp16* b, __fp16* out, size_t n) {
+        size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            float16x8_t va = vld1q_f16(a + i);
+            float16x8_t vb = vld1q_f16(b + i);
+            vst1q_f16(out + i, vmulq_f16(va, vb));
+        }
+        for (; i < n; ++i) out[i] = a[i] * b[i];
+    }
+
+    // Single-threaded mirror of cactus_fp16_to_int8's SIMD body (kernel_quants.cpp).
+    // Called once per layer on the dispatch thread; staying single-threaded avoids
+    // a parallel_for barrier between phase 1 and phase 2.
+    static inline void fp16_to_int8_inplace(const __fp16* src, int8_t* dst, size_t n, float scale) {
+        const float inv_scale = 1.0f / scale;
+        const float32x4_t inv_vec = vdupq_n_f32(inv_scale);
+        const float32x4_t min_vec = vdupq_n_f32(-128.0f);
+        const float32x4_t max_vec = vdupq_n_f32(127.0f);
+        size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            float16x8_t in = vld1q_f16(src + i);
+            float32x4_t lo = vmulq_f32(vcvt_f32_f16(vget_low_f16(in)),  inv_vec);
+            float32x4_t hi = vmulq_f32(vcvt_f32_f16(vget_high_f16(in)), inv_vec);
+            lo = vmaxq_f32(vminq_f32(lo, max_vec), min_vec);
+            hi = vmaxq_f32(vminq_f32(hi, max_vec), min_vec);
+            int16x8_t s = vcombine_s16(vqmovn_s32(vcvtnq_s32_f32(lo)),
+                                        vqmovn_s32(vcvtnq_s32_f32(hi)));
+            vst1_s8(dst + i, vqmovn_s16(s));
+        }
+        for (; i < n; ++i) {
+            float v = static_cast<float>(src[i]) * inv_scale;
+            if (v > 127.0f) v = 127.0f; else if (v < -128.0f) v = -128.0f;
+            dst[i] = static_cast<int8_t>(std::lround(v));
         }
     }
 }
@@ -620,9 +652,8 @@ void compute_dense_mlp_int4_fused_node(
 
     auto& pool = CactusThreading::get_thread_pool();
     const size_t num_workers = pool.num_workers();
-    if (dense_fused_scratch.size() < num_workers + 1) dense_fused_scratch.resize(num_workers + 1);
-    for (size_t w = 0; w < num_workers + 1; ++w) {
-        auto& sc = dense_fused_scratch[w];
+    if (dense_fused_scratch.size() < num_workers) dense_fused_scratch.resize(num_workers);
+    for (auto& sc : dense_fused_scratch) {
         if (sc.gate_tile.size() < tile_rows) sc.gate_tile.resize(tile_rows);
         if (sc.up_tile.size()   < tile_rows) sc.up_tile.resize(tile_rows);
     }
@@ -635,8 +666,10 @@ void compute_dense_mlp_int4_fused_node(
         cactus_fp16_to_int8(x, dense_x_int8.data() + t * hidden_dim, hidden_dim, xs);
     }
 
-    const size_t num_threads = std::min(num_workers,
-                                         std::max(blocks_d_ffn, blocks_hidden));
+    const size_t tiles_d_ffn  = (blocks_d_ffn  + tile_n_blocks - 1) / tile_n_blocks;
+    const size_t tiles_hidden = (blocks_hidden + tile_n_blocks - 1) / tile_n_blocks;
+    const size_t num_threads_p1 = std::min(num_workers, tiles_d_ffn);
+    const size_t num_threads_p2 = std::min(num_workers, tiles_hidden);
 
     for (size_t t = 0; t < M; ++t) {
         const int8_t* x_int8 = dense_x_int8.data() + t * hidden_dim;
@@ -644,9 +677,6 @@ void compute_dense_mlp_int4_fused_node(
         __fp16* y = output + t * hidden_dim;
         __fp16* h_full = dense_h_fp16.data();
         int8_t* h_int8 = dense_h_int8.data();
-
-        const size_t tiles_d_ffn  = (blocks_d_ffn  + tile_n_blocks - 1) / tile_n_blocks;
-        const size_t tiles_hidden = (blocks_hidden + tile_n_blocks - 1) / tile_n_blocks;
 
         std::atomic<size_t> p1_next{0};
         std::atomic<size_t> p2_next{0};
@@ -670,24 +700,14 @@ void compute_dense_mlp_int4_fused_node(
                 cactus_gemv_int4_block_range(
                     x_int8, x_scale, up_w, up_s, up_tile_buf - k_lo,
                     hidden_dim, d_ffn, group_size, blk_start, blk_end, false);
-
-                __fp16* h_dst = h_full + k_lo;
-                size_t k = 0;
-                for (; k + 8 <= k_count; k += 8) {
-                    float16x8_t a = vld1q_f16(gate_tile_buf + k);
-                    float16x8_t b = vld1q_f16(up_tile_buf + k);
-                    vst1q_f16(h_dst + k, vmulq_f16(a, b));
-                }
-                for (; k < k_count; ++k) {
-                    h_dst[k] = static_cast<__fp16>(float(gate_tile_buf[k]) * float(up_tile_buf[k]));
-                }
+                multiply_inplace_fp16(gate_tile_buf, up_tile_buf, h_full + k_lo, k_count);
             }
         };
 
-        if (num_threads <= 1) {
+        if (num_threads_p1 <= 1) {
             phase1_task(0);
         } else {
-            pool.enqueue_n_threads(num_threads - 1, num_threads - 1,
+            pool.enqueue_n_threads(num_threads_p1 - 1, num_threads_p1 - 1,
                 [&](size_t start, size_t end) {
                     for (size_t w = start; w < end; ++w) phase1_task(w + 1);
                 });
@@ -695,31 +715,10 @@ void compute_dense_mlp_int4_fused_node(
             pool.wait_all();
         }
 
-        float h_maxabs = cactus_fp16_max_abs(h_full, d_ffn);
+        const float h_maxabs = cactus_fp16_max_abs(h_full, d_ffn);
         const float h_scale = std::max(h_maxabs / 127.0f, 1e-10f);
-        const float h_inv = 1.0f / h_scale;
-        {
-            const float32x4_t v_inv = vdupq_n_f32(h_inv);
-            size_t k = 0;
-            for (; k + 16 <= d_ffn; k += 16) {
-                float16x8_t f0 = vld1q_f16(h_full + k);
-                float16x8_t f1 = vld1q_f16(h_full + k + 8);
-                float32x4_t a0 = vmulq_f32(vcvt_f32_f16(vget_low_f16(f0)),  v_inv);
-                float32x4_t a1 = vmulq_f32(vcvt_f32_f16(vget_high_f16(f0)), v_inv);
-                float32x4_t a2 = vmulq_f32(vcvt_f32_f16(vget_low_f16(f1)),  v_inv);
-                float32x4_t a3 = vmulq_f32(vcvt_f32_f16(vget_high_f16(f1)), v_inv);
-                int16x8_t s01 = vcombine_s16(vqmovn_s32(vcvtnq_s32_f32(a0)), vqmovn_s32(vcvtnq_s32_f32(a1)));
-                int16x8_t s23 = vcombine_s16(vqmovn_s32(vcvtnq_s32_f32(a2)), vqmovn_s32(vcvtnq_s32_f32(a3)));
-                vst1q_s8(h_int8 + k, vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23)));
-            }
-            for (; k < d_ffn; ++k) {
-                int q = (int)std::lround(float(h_full[k]) * h_inv);
-                if (q > 127) q = 127; else if (q < -128) q = -128;
-                h_int8[k] = static_cast<int8_t>(q);
-            }
-        }
+        fp16_to_int8_inplace(h_full, h_int8, d_ffn, h_scale);
 
-        const size_t num_threads_p2 = std::min(num_workers, std::max<size_t>(1, blocks_hidden));
         auto phase2_task = [&](size_t /*worker_id*/) {
             while (true) {
                 size_t tile_id = p2_next.fetch_add(1, std::memory_order_relaxed);
