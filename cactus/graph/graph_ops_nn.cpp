@@ -517,7 +517,6 @@ namespace {
         std::vector<__fp16> gate_tile;
         std::vector<__fp16> up_tile;
     };
-    static std::vector<DenseFusedScratch> dense_fused_scratch;
 
     // Inline to skip cactus_fp16_to_int8's parallel_for orchestration, which
     // dispatches ~5 threads at d_ffn=12288 and dominates the SIMD work.
@@ -610,10 +609,10 @@ void compute_dense_mlp_int4_fused_node(
 
     auto& pool = CactusThreading::get_thread_pool();
     const size_t num_workers = pool.num_workers();
-    if (dense_fused_scratch.size() < num_workers) dense_fused_scratch.resize(num_workers);
+    std::vector<DenseFusedScratch> dense_fused_scratch(num_workers);
     for (auto& sc : dense_fused_scratch) {
-        if (sc.gate_tile.size() < tile_rows) sc.gate_tile.resize(tile_rows);
-        if (sc.up_tile.size()   < tile_rows) sc.up_tile.resize(tile_rows);
+        sc.gate_tile.resize(tile_rows);
+        sc.up_tile.resize(tile_rows);
     }
 
     for (size_t t = 0; t < M; ++t) {

@@ -134,7 +134,6 @@ enum class OpType {
     SCATTER_TOPK,
     TOPK, LAYERNORM, GROUPNORM,
     MOE_LAYER,
-    DENSE_MLP_INT4_FUSED,
     INDEX,
     PERSISTENT,
     QUANTIZE_ACTIVATIONS,
@@ -150,7 +149,8 @@ enum class OpType {
     LEAKY_RELU,
     CONV2D_K3S1P1,
     STATS_POOL,
-    WEIGHTED_STATS_POOL
+    WEIGHTED_STATS_POOL,
+    DENSE_MLP_INT4_FUSED
 };
 
 struct PrecisionTraits {

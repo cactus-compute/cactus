@@ -172,7 +172,6 @@ static const char* op_type_names[] = {
     "SCATTER_TOPK",
     "TOPK", "LAYERNORM", "GROUPNORM",
     "MOE_LAYER",
-    "DENSE_MLP_INT4_FUSED",
     "INDEX",
     "PERSISTENT",
     "QUANTIZE_ACTIVATIONS",
@@ -188,7 +187,8 @@ static const char* op_type_names[] = {
     "LEAKY_RELU",
     "CONV2D_K3S1P1",
     "STATS_POOL",
-    "WEIGHTED_STATS_POOL"
+    "WEIGHTED_STATS_POOL",
+    "DENSE_MLP_INT4_FUSED"
 };
 
 static const char* get_op_name(OpType op) {
