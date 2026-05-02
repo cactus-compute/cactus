@@ -314,8 +314,8 @@ size_t Gemma4Model::build_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                   ComputeBackend backend) const {
     const auto& layer = weight_nodes_.layers[layer_idx];
     static const bool dense_mlp_fused_disabled = []() {
-        const char* env = std::getenv("CACTUS_DENSE_MLP_FUSED");
-        return env && env[0] == '0';
+        const char* env = std::getenv("CACTUS_DISABLE_DENSE_MLP_FUSED");
+        return env && env[0] && env[0] != '0';
     }();
     if (!dense_mlp_fused_disabled) {
         const auto& gate_buf = gb->get_output_buffer(layer.ffn_gate_weight);
