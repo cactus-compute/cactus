@@ -806,6 +806,10 @@ float dot_6bit_f32(const float* __restrict q,
                    const uint8_t* __restrict packed, size_t dim);
 void accumulate_6bit_f32(const uint8_t* __restrict packed, float weight_radius,
                          float* __restrict accum, size_t dim);
+float dot_8bit_f32(const float* __restrict q,
+                   const uint8_t* __restrict packed, size_t dim);
+void accumulate_8bit_f32(const uint8_t* __restrict packed, float weight_radius,
+                         float* __restrict accum, size_t dim);
 
 void cactus_attention_hybrid_turboquant_fp16(
     const __fp16* queries,

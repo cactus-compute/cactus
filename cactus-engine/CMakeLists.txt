@@ -149,4 +149,24 @@ if(BUILD_TESTING OR CACTUS_BUILD_TESTS)
     if(NOT CACTUS_HAS_CURL)
         target_link_libraries(test_perplexity PRIVATE curl)
     endif()
+
+    add_executable(test_seed_sweep tests/test_seed_sweep.cpp tests/test_utils.cpp)
+    target_link_libraries(test_seed_sweep PRIVATE cactus_engine)
+    target_include_directories(test_seed_sweep PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    if(NOT CACTUS_HAS_CURL)
+        target_link_libraries(test_seed_sweep PRIVATE curl)
+    endif()
+
+    add_executable(test_bfcl_eval tests/test_bfcl_eval.cpp tests/test_utils.cpp)
+    target_link_libraries(test_bfcl_eval PRIVATE cactus_engine)
+    target_include_directories(test_bfcl_eval PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    if(NOT CACTUS_HAS_CURL)
+        target_link_libraries(test_bfcl_eval PRIVATE curl)
+    endif()
 endif()

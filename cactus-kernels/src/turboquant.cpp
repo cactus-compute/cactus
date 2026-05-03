@@ -378,13 +378,20 @@ float dot_4bit_f32(
 ) {
     const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
 
-    __fp16 fp16_lut[16] __attribute__((aligned(16)));
-    for (int i = 0; i < 16; i++)
-        fp16_lut[i] = static_cast<__fp16>(TQ_4BIT_CENTROIDS[i] * inv_sqrt_dim);
-
-    uint8x16x2_t split = vld2q_u8(reinterpret_cast<const uint8_t*>(fp16_lut));
-    const uint8x16_t v_lo_lut = split.val[0];
-    const uint8x16_t v_hi_lut = split.val[1];
+    thread_local size_t cached_d4_dim = 0;
+    thread_local __fp16 cached_d4_lut[16] __attribute__((aligned(16)));
+    thread_local uint8x16_t cached_d4_lo;
+    thread_local uint8x16_t cached_d4_hi;
+    if (cached_d4_dim != dim) {
+        for (int i = 0; i < 16; i++)
+            cached_d4_lut[i] = static_cast<__fp16>(TQ_4BIT_CENTROIDS[i] * inv_sqrt_dim);
+        uint8x16x2_t split = vld2q_u8(reinterpret_cast<const uint8_t*>(cached_d4_lut));
+        cached_d4_lo = split.val[0];
+        cached_d4_hi = split.val[1];
+        cached_d4_dim = dim;
+    }
+    const uint8x16_t v_lo_lut = cached_d4_lo;
+    const uint8x16_t v_hi_lut = cached_d4_hi;
 
     float32x4_t acc0 = vdupq_n_f32(0.0f);
     float32x4_t acc1 = vdupq_n_f32(0.0f);
@@ -668,24 +675,26 @@ void dequantize_6bit(const uint8_t* src, float* dst, size_t dim) {
 
 float dot_6bit_f32(const float* __restrict q, const uint8_t* __restrict packed, size_t dim) {
     const float* centroids = tq_6bit_centroids();
-    const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
 
-    __fp16 lut_fp16[64] __attribute__((aligned(16)));
-    for (int i = 0; i < 64; i++) lut_fp16[i] = static_cast<__fp16>(centroids[i] * inv_sqrt_dim);
-
-    uint8_t lut_lo[64] __attribute__((aligned(16)));
-    uint8_t lut_hi[64] __attribute__((aligned(16)));
-    {
+    thread_local size_t cached_dim = 0;
+    thread_local uint8_t cached_lut_lo[64] __attribute__((aligned(16)));
+    thread_local uint8_t cached_lut_hi[64] __attribute__((aligned(16)));
+    if (cached_dim != dim) {
+        const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
+        __fp16 lut_fp16[64] __attribute__((aligned(16)));
+        for (int i = 0; i < 64; i++) lut_fp16[i] = static_cast<__fp16>(centroids[i] * inv_sqrt_dim);
         const uint8_t* src = reinterpret_cast<const uint8_t*>(lut_fp16);
         for (int i = 0; i < 64; i++) {
-            lut_lo[i] = src[2 * i];
-            lut_hi[i] = src[2 * i + 1];
+            cached_lut_lo[i] = src[2 * i];
+            cached_lut_hi[i] = src[2 * i + 1];
         }
+        cached_dim = dim;
     }
-    uint8x16x4_t v_lut_lo = {{vld1q_u8(lut_lo),     vld1q_u8(lut_lo + 16),
-                              vld1q_u8(lut_lo + 32), vld1q_u8(lut_lo + 48)}};
-    uint8x16x4_t v_lut_hi = {{vld1q_u8(lut_hi),     vld1q_u8(lut_hi + 16),
-                              vld1q_u8(lut_hi + 32), vld1q_u8(lut_hi + 48)}};
+    uint8x16x4_t v_lut_lo = {{vld1q_u8(cached_lut_lo),     vld1q_u8(cached_lut_lo + 16),
+                              vld1q_u8(cached_lut_lo + 32), vld1q_u8(cached_lut_lo + 48)}};
+    uint8x16x4_t v_lut_hi = {{vld1q_u8(cached_lut_hi),     vld1q_u8(cached_lut_hi + 16),
+                              vld1q_u8(cached_lut_hi + 32), vld1q_u8(cached_lut_hi + 48)}};
+    const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
 
     float32x4_t acc0 = vdupq_n_f32(0.0f);
     float32x4_t acc1 = vdupq_n_f32(0.0f);

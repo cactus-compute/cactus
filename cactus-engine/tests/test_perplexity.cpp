@@ -2,6 +2,8 @@
 #include "src/engine.h"
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -15,7 +17,7 @@ using cactus::engine::create_model;
 
 static const char* g_model_path = std::getenv("CACTUS_TEST_MODEL");
 
-static const char* PERPLEXITY_CORPUS =
+static const char* PERPLEXITY_CORPUS_PROSE =
     "It is a truth universally acknowledged, that a single man in possession "
     "of a good fortune, must be in want of a wife. However little known the "
     "feelings or views of such a man may be on his first entering a "
@@ -26,6 +28,36 @@ static const char* PERPLEXITY_CORPUS =
     "persuade his father to permit him to accompany me and to become my "
     "fellow student, but in vain. His father was a narrow-minded trader, and "
     "saw idleness and ruin in the aspirations and ambition of his son.";
+
+static const char* PERPLEXITY_CORPUS =
+    "<start_of_turn>user\nWrite a detailed explanation of how compilers work, "
+    "covering lexical analysis, parsing, semantic analysis, optimization, and "
+    "code generation. Use specific examples from production compilers."
+    "<end_of_turn>\n<start_of_turn>model\n"
+    "Compilers translate human-readable source code into machine instructions "
+    "that processors can execute. The translation pipeline has five canonical "
+    "phases. First, lexical analysis (also called tokenization or scanning) "
+    "reads the source as a stream of characters and groups them into tokens "
+    "such as identifiers, keywords, operators, and literals. Tools like flex "
+    "and re2c automate this phase using regular expressions. Second, parsing "
+    "consumes the token stream and builds an abstract syntax tree (AST) "
+    "according to the language's grammar. Most modern compilers use either "
+    "recursive descent (Clang, V8) or generated LR parsers (yacc, bison). "
+    "Third, semantic analysis traverses the AST to enforce typing rules, "
+    "resolve names and scopes, check for undefined variables, and attach "
+    "type information to expressions. Fourth, optimization transforms an "
+    "intermediate representation to reduce the number of instructions or "
+    "memory accesses while preserving semantics. LLVM's IR is the canonical "
+    "example: SSA form makes data-flow analysis tractable, enabling passes "
+    "like dead code elimination, loop-invariant code motion, common "
+    "subexpression elimination, and inlining. Finally, code generation lowers "
+    "the optimized IR into target machine code, handling register allocation, "
+    "instruction selection, and scheduling. GCC and LLVM both use modular "
+    "back-ends that emit code for x86, ARM, RISC-V, and other architectures "
+    "from a shared front-end. Just-in-time compilers like V8's TurboFan and "
+    "Java's HotSpot interleave these phases at runtime, recompiling hot code "
+    "with profile-guided optimization."
+    "<end_of_turn>";
 
 struct Result {
     double total_logprob = 0.0;
@@ -90,7 +122,20 @@ bool test_perplexity_comparison() {
         std::cerr << "Failed to initialize tokenizer model" << std::endl;
         return false;
     }
-    auto tokens = tokenizer_model->get_tokenizer()->encode(PERPLEXITY_CORPUS);
+    const char* corpus_sel = std::getenv("CACTUS_PPL_CORPUS");
+    std::string corpus_buf;
+    const char* selected = nullptr;
+    if (corpus_sel && std::string(corpus_sel) == "prose") {
+        selected = PERPLEXITY_CORPUS_PROSE;
+    } else if (corpus_sel && std::ifstream(corpus_sel).good()) {
+        std::ifstream f(corpus_sel);
+        std::stringstream ss; ss << f.rdbuf();
+        corpus_buf = ss.str();
+        selected = corpus_buf.c_str();
+    } else {
+        selected = PERPLEXITY_CORPUS;
+    }
+    auto tokens = tokenizer_model->get_tokenizer()->encode(selected);
     tokenizer_model.reset();
 
     std::cout << "  Corpus: " << tokens.size() << " tokens, "
@@ -98,7 +143,10 @@ bool test_perplexity_comparison() {
 
     if (tokens.size() < 8) return false;
 
-    const size_t context = std::min<size_t>(512, tokens.size());
+    size_t ctx_cap = 512;
+    if (const char* c = std::getenv("CACTUS_PPL_CTX")) ctx_cap = std::stoul(c);
+    const size_t context = std::min<size_t>(ctx_cap, tokens.size());
+    std::cout << "  Context: " << context << " tokens" << std::endl;
 
     Result ref;
     bool have_ref = false;
@@ -117,25 +165,47 @@ bool test_perplexity_comparison() {
 
     std::cout << "\n  [Cache-aware scoring]" << std::endl;
 
+    const char* only_mode = std::getenv("CACTUS_PPL_ONLY");
+    Result int8_r{}, tq4_r{}, tq6_r{}, tq8_r{};
+    bool run_int8 = !only_mode || std::string(only_mode) == "int8";
+    bool run_k4 = !only_mode || std::string(only_mode) == "k4";
+    bool run_k6 = !only_mode || std::string(only_mode) == "k6";
+    bool run_k8 = !only_mode || std::string(only_mode) == "k8";
+
+    if (run_int8) {
+        unsetenv("CACTUS_KV_TQ_BITS");
+        int8_r = score_corpus_cached(g_model_path, tokens, context);
+        print_result("INT8 group (default)", int8_r);
+    }
+    if (run_k4) {
+        setenv("CACTUS_KV_TQ_BITS", "4", 1);
+        tq4_r = score_corpus_cached(g_model_path, tokens, context);
+        print_result("TurboQuant K=4", tq4_r);
+    }
+
+    if (run_k6) {
+        setenv("CACTUS_KV_TQ_BITS", "6", 1);
+        tq6_r = score_corpus_cached(g_model_path, tokens, context);
+        print_result("TurboQuant K=6", tq6_r);
+    }
+
+    if (run_k8) {
+        setenv("CACTUS_KV_TQ_BITS", "8", 1);
+        tq8_r = score_corpus_cached(g_model_path, tokens, context);
+        print_result("TurboQuant K=8", tq8_r);
+    }
+
     unsetenv("CACTUS_KV_TQ_BITS");
-    Result int8_r = score_corpus_cached(g_model_path, tokens, context);
-    print_result("INT8 group (default)", int8_r);
 
-    setenv("CACTUS_KV_TQ_BITS", "4", 1);
-    Result tq4_r = score_corpus_cached(g_model_path, tokens, context);
-    print_result("TurboQuant K=4", tq4_r);
-
-    setenv("CACTUS_KV_TQ_BITS", "6", 1);
-    Result tq6_r = score_corpus_cached(g_model_path, tokens, context);
-    print_result("TurboQuant K=6", tq6_r);
-
-    unsetenv("CACTUS_KV_TQ_BITS");
+    if (only_mode) return true;
 
     std::cout << std::fixed << std::setprecision(4);
     std::cout << "  TQ-K4/INT8 ppl ratio:   "
               << (tq4_r.perplexity / std::max(1e-9, int8_r.perplexity)) << std::endl;
     std::cout << "  TQ-K6/INT8 ppl ratio:   "
               << (tq6_r.perplexity / std::max(1e-9, int8_r.perplexity)) << std::endl;
+    std::cout << "  TQ-K8/INT8 ppl ratio:   "
+              << (tq8_r.perplexity / std::max(1e-9, int8_r.perplexity)) << std::endl;
     if (have_ref) {
         std::cout << "  INT8/FP16 ppl ratio:    "
                   << (int8_r.perplexity / std::max(1e-9, ref.perplexity)) << std::endl;
@@ -143,17 +213,20 @@ bool test_perplexity_comparison() {
                   << (tq4_r.perplexity / std::max(1e-9, ref.perplexity)) << std::endl;
         std::cout << "  TQ-K6/FP16 ppl ratio:   "
                   << (tq6_r.perplexity / std::max(1e-9, ref.perplexity)) << std::endl;
+        std::cout << "  TQ-K8/FP16 ppl ratio:   "
+                  << (tq8_r.perplexity / std::max(1e-9, ref.perplexity)) << std::endl;
     }
 
     bool ok = std::isfinite(int8_r.perplexity) && int8_r.perplexity > 0.0
            && std::isfinite(tq4_r.perplexity)  && tq4_r.perplexity  > 0.0
-           && std::isfinite(tq6_r.perplexity)  && tq6_r.perplexity  > 0.0;
+           && std::isfinite(tq6_r.perplexity)  && tq6_r.perplexity  > 0.0
+           && std::isfinite(tq8_r.perplexity)  && tq8_r.perplexity  > 0.0;
     return ok;
 }
 
 int main() {
     TestUtils::TestRunner runner("Perplexity");
-    runner.run_test("KV-quant perplexity (FP16 vs INT8 vs TQ-K4 vs TQ-K6)",
+    runner.run_test("KV-quant perplexity (FP16 vs INT8 vs TQ-K4 vs TQ-K6 vs TQ-K8)",
                     test_perplexity_comparison());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

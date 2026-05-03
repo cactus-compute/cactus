@@ -1,4 +1,5 @@
 #include "engine.h"
+#include <cstdio>
 #include "../models/model.h"
 #include "cactus_graph.h"
 #include <fstream>
@@ -134,7 +135,26 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     }
     if (env_tq_bits) {
         size_t b = std::stoul(env_tq_bits);
-        if (b == 4 || b == 6) cache_tq_angle_bits_ = b;
+        if (b == 2 || b == 4 || b == 6 || b == 8) cache_tq_angle_bits_ = b;
+    }
+    cache_tq_k_bits_ = cache_tq_angle_bits_;
+    cache_tq_v_bits_ = cache_tq_angle_bits_;
+    if (const char* env_kbits = std::getenv("CACTUS_KV_TQ_K_BITS")) {
+        size_t b = std::stoul(env_kbits);
+        if (b == 2 || b == 4 || b == 6 || b == 8) {
+            cache_tq_k_bits_ = b;
+            if (cache_tq_angle_bits_ == 0) cache_tq_angle_bits_ = b;
+        }
+    }
+    if (const char* env_vbits = std::getenv("CACTUS_KV_TQ_V_BITS")) {
+        size_t b = std::stoul(env_vbits);
+        if (b == 2 || b == 4 || b == 6 || b == 8) {
+            cache_tq_v_bits_ = b;
+            if (cache_tq_angle_bits_ == 0) cache_tq_angle_bits_ = b;
+        }
+    }
+    if (const char* env_seed = std::getenv("CACTUS_KV_TQ_SEED")) {
+        cache_tq_seed_ = std::stoul(env_seed);
     }
 
     post_init();
@@ -352,10 +372,14 @@ void Model::init_graph_cache(CactusGraph* gb) {
         size_t window = (i < layer_windows.size()) ? layer_windows[i] : cache_window_size_;
         size_t max_seq = (window > 0) ? window : cache_max_seq_len_;
         if (cache_tq_angle_bits_ > 0) {
+            size_t k_bits = cache_tq_k_bits_ > 0 ? cache_tq_k_bits_ : cache_tq_angle_bits_;
+            size_t v_bits = cache_tq_v_bits_ > 0 ? cache_tq_v_bits_ : cache_tq_angle_bits_;
             graph_cache_k_nodes_[i] = gb->kv_cache_state_tq(max_seq, layer_heads[i], layer_dims[i],
-                                                            cache_tq_angle_bits_, window, cache_sink_size_);
+                                                            k_bits, window, cache_sink_size_,
+                                                            cache_tq_seed_);
             graph_cache_v_nodes_[i] = gb->kv_cache_state_tq(max_seq, layer_heads[i], layer_dims[i],
-                                                            cache_tq_angle_bits_, window, cache_sink_size_);
+                                                            v_bits, window, cache_sink_size_,
+                                                            cache_tq_seed_);
         } else {
             graph_cache_k_nodes_[i] = gb->kv_cache_state(max_seq, layer_heads[i], layer_dims[i], window, cache_sink_size_);
             graph_cache_v_nodes_[i] = gb->kv_cache_state(max_seq, layer_heads[i], layer_dims[i], window, cache_sink_size_);
@@ -994,7 +1018,17 @@ double Model::score_tokens_window_logprob(
     const size_t first_pos = start - ctx_begin - 1;
     const size_t hidden_slice = gb->slice(hidden_node, /*axis=*/0, first_pos, target_len);
     bool transpose_w = true;
-    const size_t logits_node = gb->matmul(hidden_slice, output_weight_node_id_, transpose_w, backend);
+    size_t logits_node = gb->matmul(hidden_slice, output_weight_node_id_, transpose_w, backend);
+    if (config_.final_logit_softcapping > 0.0f) {
+        const auto& lp = gb->get_output_buffer(logits_node);
+        if (lp.precision != Precision::FP16) {
+            logits_node = gb->precision_cast(logits_node, Precision::FP16);
+        }
+        float inv_cap = 1.0f / config_.final_logit_softcapping;
+        logits_node = gb->scalar_multiply(logits_node, inv_cap);
+        logits_node = gb->tanh(logits_node);
+        logits_node = gb->scalar_multiply(logits_node, config_.final_logit_softcapping);
+    }
     gb->execute();
 
     const auto& logits_buf = gb->get_output_buffer(logits_node);
@@ -1047,9 +1081,13 @@ double Model::score_tokens_cached_logprob(
     size_t start,
     size_t end,
     size_t context,
-    size_t* tokens_scored
+    size_t* tokens_scored,
+    std::vector<float>* per_pos_logprob,
+    std::vector<uint32_t>* per_pos_argmax
 ) {
     if (tokens_scored) *tokens_scored = 0;
+    if (per_pos_logprob) per_pos_logprob->clear();
+    if (per_pos_argmax) per_pos_argmax->clear();
     if (tokens.empty()) return 0.0;
     if (end > tokens.size()) end = tokens.size();
     if (start < 1) start = 1;
@@ -1128,11 +1166,24 @@ double Model::score_tokens_cached_logprob(
         const uint32_t y = tokens[i];
         if (y >= vocab_size) throw std::runtime_error("Target token out of vocab range");
 
-        float max_logit = *std::max_element(row.begin(), row.end());
+        auto max_it = std::max_element(row.begin(), row.end());
+        float max_logit = *max_it;
+        uint32_t argmax_tok = static_cast<uint32_t>(std::distance(row.begin(), max_it));
+        if (const char* d = std::getenv("CACTUS_NAN_DETECT")) {
+            if (d[0] != '0' && !std::isfinite(max_logit)) {
+                std::fprintf(stderr, "[NaN] iter i=%zu first non-finite max_logit=%g cache_total=%zu\n",
+                             i, max_logit, cache_total_seq_len_);
+                if (tokens_scored) *tokens_scored = count;
+                return total_logprob;
+            }
+        }
         double sum = 0.0;
         for (size_t j = 0; j < vocab_size; ++j) sum += std::exp(double(row[j] - max_logit));
         const double lse = double(max_logit) + std::log(sum);
-        total_logprob += double(row[y]) - lse;
+        const double lp = double(row[y]) - lse;
+        total_logprob += lp;
+        if (per_pos_logprob) per_pos_logprob->push_back(static_cast<float>(lp));
+        if (per_pos_argmax) per_pos_argmax->push_back(argmax_tok);
         ++count;
     }
 

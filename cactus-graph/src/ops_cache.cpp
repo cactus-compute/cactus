@@ -1,4 +1,5 @@
 #include "../cactus_graph.h"
+#include <cstdio>
 #include "cactus_kernels.h"
 #include <cstring>
 #include <algorithm>
@@ -404,6 +405,12 @@ void compute_attention_cached_tq_node(
     size_t new_seq_len = key_new_buf.total_size / (kv_heads * hdim);
     size_t history_len = (cache_len >= new_seq_len) ? cache_len - new_seq_len : 0;
 
+    size_t kernel_window = node.params.window_size;
+    size_t kv_total_len = history_len + new_seq_len;
+    if (kernel_window > 0 && kernel_window >= kv_total_len) {
+        kernel_window = 0;
+    }
+
     cactus_attention_hybrid_turboquant_fp16(
         query_buf.data_as<__fp16>(),
         k_radii, k_angles,
@@ -418,7 +425,7 @@ void compute_attention_cached_tq_node(
         k_angle_bits, v_angle_bits,
         node.params.position_offset,
         true,
-        node.params.window_size);
+        kernel_window);
 }
 
 void compute_conv_cache_state_node(
