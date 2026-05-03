@@ -41,6 +41,8 @@ set(KERNEL_SOURCES
     src/quants.cpp
     src/reduce.cpp
     src/scalar.cpp
+    src/turboquant.cpp
+    src/turboquant_attention.cpp
 )
 
 add_library(cactus_kernels STATIC ${KERNEL_SOURCES})
