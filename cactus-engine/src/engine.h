@@ -681,6 +681,7 @@ protected:
     size_t cache_window_size_ = 0;
     size_t cache_sink_size_ = 4;
     size_t cache_max_seq_len_ = 2048;
+    size_t cache_tq_angle_bits_ = 0;
     void init_graph_cache(CactusGraph* gb);
     void invalidate_graph_cache(CactusGraph* gb);
 

@@ -125,11 +125,16 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     cache_sink_size_ = 4;
     const char* env_window = std::getenv("CACTUS_KV_WINDOW_SIZE");
     const char* env_sink = std::getenv("CACTUS_KV_SINK_SIZE");
+    const char* env_tq_bits = std::getenv("CACTUS_KV_TQ_BITS");
     if (env_window) {
         cache_window_size_ = std::stoul(env_window);
     }
     if (env_sink) {
         cache_sink_size_ = std::stoul(env_sink);
+    }
+    if (env_tq_bits) {
+        size_t b = std::stoul(env_tq_bits);
+        if (b == 4 || b == 6) cache_tq_angle_bits_ = b;
     }
 
     post_init();
@@ -346,8 +351,15 @@ void Model::init_graph_cache(CactusGraph* gb) {
         if (layer_dims[i] == 0) continue;  // shared layers have dim=0
         size_t window = (i < layer_windows.size()) ? layer_windows[i] : cache_window_size_;
         size_t max_seq = (window > 0) ? window : cache_max_seq_len_;
-        graph_cache_k_nodes_[i] = gb->kv_cache_state(max_seq, layer_heads[i], layer_dims[i], window, cache_sink_size_);
-        graph_cache_v_nodes_[i] = gb->kv_cache_state(max_seq, layer_heads[i], layer_dims[i], window, cache_sink_size_);
+        if (cache_tq_angle_bits_ > 0) {
+            graph_cache_k_nodes_[i] = gb->kv_cache_state_tq(max_seq, layer_heads[i], layer_dims[i],
+                                                            cache_tq_angle_bits_, window, cache_sink_size_);
+            graph_cache_v_nodes_[i] = gb->kv_cache_state_tq(max_seq, layer_heads[i], layer_dims[i],
+                                                            cache_tq_angle_bits_, window, cache_sink_size_);
+        } else {
+            graph_cache_k_nodes_[i] = gb->kv_cache_state(max_seq, layer_heads[i], layer_dims[i], window, cache_sink_size_);
+            graph_cache_v_nodes_[i] = gb->kv_cache_state(max_seq, layer_heads[i], layer_dims[i], window, cache_sink_size_);
+        }
     }
     cache_total_seq_len_ = 0;
 }
@@ -912,8 +924,13 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
                     gb->set_external_input(v_input, const_cast<__fp16*>(v_ref.data), Precision::FP16);
 
                     size_t layer_window = get_kv_layer_windows()[layer_idx];
-                    gb->kv_cache_append(k_input, graph_cache_k_nodes_[layer_idx], layer_window, cache_sink_size_);
-                    gb->kv_cache_append(v_input, graph_cache_v_nodes_[layer_idx], layer_window, cache_sink_size_);
+                    if (cache_tq_angle_bits_ > 0) {
+                        gb->kv_cache_append_tq(k_input, graph_cache_k_nodes_[layer_idx], layer_window, cache_sink_size_);
+                        gb->kv_cache_append_tq(v_input, graph_cache_v_nodes_[layer_idx], layer_window, cache_sink_size_);
+                    } else {
+                        gb->kv_cache_append(k_input, graph_cache_k_nodes_[layer_idx], layer_window, cache_sink_size_);
+                        gb->kv_cache_append(v_input, graph_cache_v_nodes_[layer_idx], layer_window, cache_sink_size_);
+                    }
                 }
             }
             gb->execute();
