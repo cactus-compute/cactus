@@ -1,8 +1,8 @@
 #include "cactus_ffi.h"
 #include "cactus_utils.h"
 
+#include <utility>
 #include <vector>
-#include <optional>
 
 using namespace cactus::ffi;
 using namespace cactus::engine;
@@ -35,6 +35,17 @@ static bool handle_bool_exception(const char* operation, const std::string& erro
     return false;
 }
 
+template <typename Factory>
+static cactus_grammar_t make_grammar(const char* operation, Factory&& factory) {
+    try {
+        return new CactusGrammarHandle{
+            std::make_unique<Grammar>(std::forward<Factory>(factory)())
+        };
+    } catch (const std::exception& e) {
+        return handle_exception(operation, e.what());
+    }
+}
+
 } // anonymous namespace
 
 extern "C" {
@@ -45,28 +56,30 @@ cactus_grammar_json_schema_options_t cactus_grammar_json_schema_default_options(
 
 cactus_grammar_t cactus_grammar_init_gbnf(const char* gbnf, const char* start_symbol) {
     if (!gbnf) {
-        return handle_exception("cactus_grammar_init_gbnf", "gbnf is null");
+        return handle_exception(__func__, "gbnf is null");
     }
 
-    try {
-        return new CactusGrammarHandle{
-            std::make_unique<Grammar>(Grammar::gbnf(gbnf, start_symbol ? start_symbol : "root"))
-        };
-    } catch (const std::exception& e) {
-        return handle_exception("cactus_grammar_init_gbnf", e.what());
-    }
+    return make_grammar(__func__, [&] {
+        return Grammar::gbnf(gbnf, start_symbol ? start_symbol : "root");
+    });
 }
 
 cactus_grammar_t cactus_grammar_init_json() {
-    return new CactusGrammarHandle{std::make_unique<Grammar>(Grammar::json())};
+    return make_grammar(__func__, [] {
+        return Grammar::json();
+    });
 }
 
 cactus_grammar_t cactus_grammar_init_empty() {
-    return new CactusGrammarHandle{std::make_unique<Grammar>()};
+    return make_grammar(__func__, [] {
+        return Grammar();
+    });
 }
 
 cactus_grammar_t cactus_grammar_init_universal() {
-    return new CactusGrammarHandle{std::make_unique<Grammar>(Grammar::universal())};
+    return make_grammar(__func__, [] {
+        return Grammar::universal();
+    });
 }
 
 cactus_grammar_t cactus_grammar_init_json_schema(
@@ -74,83 +87,66 @@ cactus_grammar_t cactus_grammar_init_json_schema(
     cactus_grammar_json_schema_options_t options
 ) {
     if (!json_schema) {
-        return handle_exception("cactus_grammar_init_json_schema", "json_schema is null");
+        return handle_exception(__func__, "json_schema is null");
     }
 
-    try {
-        if ((!options.any_whitespace) && (!options.separators[0] || !options.separators[1])) {
-            return handle_exception(
-                "cactus_grammar_init_json_schema",
-                "json schema separators must have 2 strings"
-            );
-        }
-        return new CactusGrammarHandle{
-            std::make_unique<Grammar>(Grammar::json_schema(
-                json_schema,
-                options.any_whitespace,
-                options.indent,
-                {
-                    options.separators[0] ? options.separators[0] : ",",
-                    options.separators[1] ? options.separators[1] : ":"
-                },
-                options.strict_mode,
-                options.max_whitespace_count
-            ))
-        };
-    } catch (const std::exception& e) {
-        return handle_exception("cactus_grammar_init_json_schema", e.what());
+    if ((!options.any_whitespace) && (!options.separators[0] || !options.separators[1])) {
+        return handle_exception(
+            __func__,
+            "json schema separators must have 2 strings"
+        );
     }
+
+    return make_grammar(__func__, [&] {
+        return Grammar::json_schema(
+            json_schema,
+            options.any_whitespace,
+            options.indent,
+            {
+                options.separators[0] ? options.separators[0] : ",",
+                options.separators[1] ? options.separators[1] : ":"
+            },
+            options.strict_mode,
+            options.max_whitespace_count
+        );
+    });
 }
 
 cactus_grammar_t cactus_grammar_init_regex(const char* regex) {
     if (!regex) {
-        return handle_exception("cactus_grammar_init_regex", "regex is null");
+        return handle_exception(__func__, "regex is null");
     }
 
-    try {
-        return new CactusGrammarHandle{std::make_unique<Grammar>(Grammar::regex(regex))};
-    } catch (const std::exception& e) {
-        return handle_exception("cactus_grammar_init_regex", e.what());
-    }
+    return make_grammar(__func__, [&] {
+        return Grammar::regex(regex);
+    });
 }
 
 cactus_grammar_t cactus_grammar_init_structural_tag(const char* structural_tag_json) {
     if (!structural_tag_json) {
-        return handle_exception("cactus_grammar_init_structural_tag", "structural_tag_json is null");
+        return handle_exception(__func__, "structural_tag_json is null");
     }
 
-    try {
-        return new CactusGrammarHandle{
-            std::make_unique<Grammar>(Grammar::structural_tag(structural_tag_json))
-        };
-    } catch (const std::exception& e) {
-        return handle_exception("cactus_grammar_init_structural_tag", e.what());
-    }
+    return make_grammar(__func__, [&] {
+        return Grammar::structural_tag(structural_tag_json);
+    });
 }
 
 cactus_grammar_t cactus_grammar_union(cactus_grammar_t* grammars, size_t num_grammars) {
-    try {
-        return new CactusGrammarHandle{
-            std::make_unique<Grammar>(Grammar::unite(collect_grammars(grammars, num_grammars)))
-        };
-    } catch (const std::exception& e) {
-        return handle_exception("cactus_grammar_union", e.what());
-    }
+    return make_grammar(__func__, [&] {
+        return Grammar::unite(collect_grammars(grammars, num_grammars));
+    });
 }
 
 cactus_grammar_t cactus_grammar_concatenate(cactus_grammar_t* grammars, size_t num_grammars) {
-    try {
-        return new CactusGrammarHandle{
-            std::make_unique<Grammar>(Grammar::concatenate(collect_grammars(grammars, num_grammars)))
-        };
-    } catch (const std::exception& e) {
-        return handle_exception("cactus_grammar_concatenate", e.what());
-    }
+    return make_grammar(__func__, [&] {
+        return Grammar::concatenate(collect_grammars(grammars, num_grammars));
+    });
 }
 
 bool cactus_grammar_is_empty(cactus_grammar_t grammar) {
     if (!grammar) {
-        return handle_bool_exception("cactus_grammar_is_empty", "grammar is null");
+        return handle_bool_exception(__func__, "grammar is null");
     }
 
     return static_cast<CactusGrammarHandle*>(grammar)->grammar->is_empty();
@@ -158,7 +154,7 @@ bool cactus_grammar_is_empty(cactus_grammar_t grammar) {
 
 bool cactus_grammar_is_universal(cactus_grammar_t grammar) {
     if (!grammar) {
-        return handle_bool_exception("cactus_grammar_is_universal", "grammar is null");
+        return handle_bool_exception(__func__, "grammar is null");
     }
 
     return static_cast<CactusGrammarHandle*>(grammar)->grammar->is_universal();
