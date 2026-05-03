@@ -138,3 +138,15 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(cactus_engine PRIVATE -Wno-pedantic)
 endif()
+
+if(BUILD_TESTING OR CACTUS_BUILD_TESTS)
+    add_executable(test_perplexity tests/test_perplexity.cpp tests/test_utils.cpp)
+    target_link_libraries(test_perplexity PRIVATE cactus_engine)
+    target_include_directories(test_perplexity PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    if(NOT CACTUS_HAS_CURL)
+        target_link_libraries(test_perplexity PRIVATE curl)
+    endif()
+endif()
