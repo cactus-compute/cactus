@@ -111,6 +111,31 @@ class GrammarMatcher {
   bool FillNextTokenBitmask(DLTensor* next_token_bitmask, int index = 0, bool debug_print = false);
 
   /*!
+   * \brief Traverse a draft token tree and fill the token bitmask for each node.
+   *
+   * This function performs a DFS traversal of the speculative decoding tree and fills
+   * the token bitmask for each node based on grammar constraints.
+   *
+   * \param retrieve_next_token DLTensor where retrieve_next_token[i] gives the index of
+   *        the child node of node i, or -1 if no child exists.
+   * \param retrieve_next_sibling DLTensor where retrieve_next_sibling[i] gives the index of
+   *        the sibling node of node i, or -1 if no sibling exists.
+   * \param draft_tokens DLTensor of draft token ids at each node.
+   * \param token_bitmask DLTensor to store the bitmask (2D: num_nodes x bitmask_size).
+   * \param time_threshold Maximum allowed time in seconds for the DFS traversal.
+   *        If the traversal exceeds this threshold, it returns false.
+   *        A value <= 0 disables the timeout (default: -1.0).
+   * \return true if the traversal completed successfully, false if it timed out.
+   */
+  bool TraverseDraftTree(
+      const DLTensor* retrieve_next_token,
+      const DLTensor* retrieve_next_sibling,
+      const DLTensor* draft_tokens,
+      DLTensor* token_bitmask,
+      double time_threshold = -1.0
+  );
+
+  /*!
    * \brief Find the jump-forward string for jump-forward decoding. This is the longest string that
    will be valid according to the current syntax.
    * \note This method does not change the grammar state.

@@ -9,6 +9,7 @@ set(CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.0" CACHE STRING "Minimu
 
 set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../cactus)
 set(CACTUS_CURL_ROOT "${CMAKE_SOURCE_DIR}/../libs/curl" CACHE PATH "Path to vendored libcurl artifacts")
+set(CACTUS_XGRAMMAR_ROOT "${CMAKE_SOURCE_DIR}/../libs/xgrammar" CACHE PATH "Path to vendored xgrammar artifacts")
 
 set(_CACTUS_VERSION_FILE "${CMAKE_SOURCE_DIR}/../CACTUS_VERSION")
 if(EXISTS "${_CACTUS_VERSION_FILE}")
@@ -23,6 +24,12 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
     message(STATUS "CMAKE_BUILD_TYPE was not set, defaulting to Release.")
 endif()
+
+function(cactus_require_vendored_xgrammar include_dir library_path platform_label)
+    if(NOT EXISTS "${include_dir}/xgrammar/xgrammar.h" OR NOT EXISTS "${library_path}")
+        message(FATAL_ERROR "Vendored ${platform_label} xgrammar not found. Expected: ${include_dir}/xgrammar/xgrammar.h and ${library_path}")
+    endif()
+endfunction()
 
 file(GLOB ENGINE_SOURCES "${SOURCE_DIR}/engine/*.cpp")
 file(GLOB GRAPH_SOURCES "${SOURCE_DIR}/graph/*.cpp")
@@ -113,10 +120,14 @@ find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(CACTUS_CURL_INCLUDE_DIR "${CACTUS_CURL_ROOT}/include")
     set(CACTUS_CURL_LIBRARY_MACOS "${CACTUS_CURL_ROOT}/macos/libcurl.a")
+    set(CACTUS_XGRAMMAR_INCLUDE_DIR "${CACTUS_XGRAMMAR_ROOT}/include")
+    set(CACTUS_XGRAMMAR_LIBRARY_MACOS "${CACTUS_XGRAMMAR_ROOT}/macos/libxgrammar.a")
     if(NOT EXISTS "${CACTUS_CURL_INCLUDE_DIR}/curl/curl.h" OR NOT EXISTS "${CACTUS_CURL_LIBRARY_MACOS}")
         message(FATAL_ERROR "Vendored macOS libcurl not found. Expected: ${CACTUS_CURL_INCLUDE_DIR}/curl/curl.h and ${CACTUS_CURL_LIBRARY_MACOS}")
     endif()
+    cactus_require_vendored_xgrammar("${CACTUS_XGRAMMAR_INCLUDE_DIR}" "${CACTUS_XGRAMMAR_LIBRARY_MACOS}" "macOS")
     message(STATUS "Using vendored libcurl for macOS: ${CACTUS_CURL_LIBRARY_MACOS}")
+    message(STATUS "Using vendored xgrammar for macOS: ${CACTUS_XGRAMMAR_LIBRARY_MACOS}")
     target_link_libraries(cactus PUBLIC
         ${COREML_FRAMEWORK}
         ${FOUNDATION_FRAMEWORK}
@@ -125,9 +136,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         ${SYSTEMCONFIGURATION_FRAMEWORK}
         ${CFNETWORK_FRAMEWORK}
         "${CACTUS_CURL_LIBRARY_MACOS}"
+        "${CACTUS_XGRAMMAR_LIBRARY_MACOS}"
     )
     target_include_directories(cactus PUBLIC "${CACTUS_CURL_INCLUDE_DIR}")
-    target_compile_definitions(cactus PRIVATE CACTUS_USE_CURL=1)
+    target_include_directories(cactus PUBLIC "${CACTUS_XGRAMMAR_INCLUDE_DIR}")
+    target_compile_definitions(cactus PRIVATE CACTUS_USE_CURL=1 CACTUS_USE_XGRAMMAR=1)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_link_libraries(cactus PUBLIC
         ${COREML_FRAMEWORK}
@@ -138,19 +151,26 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         ${CFNETWORK_FRAMEWORK}
     )
     set(CACTUS_CURL_INCLUDE_DIR "${CACTUS_CURL_ROOT}/include")
+    set(CACTUS_XGRAMMAR_INCLUDE_DIR "${CACTUS_XGRAMMAR_ROOT}/include")
     string(TOLOWER "${CMAKE_OSX_SYSROOT}" CACTUS_SYSROOT_LOWER)
     if(CACTUS_SYSROOT_LOWER MATCHES "simulator")
         set(CACTUS_CURL_LIBRARY_IOS "${CACTUS_CURL_ROOT}/ios/simulator/libcurl.a")
+        set(CACTUS_XGRAMMAR_LIBRARY_IOS "${CACTUS_XGRAMMAR_ROOT}/ios/simulator/libxgrammar.a")
     else()
         set(CACTUS_CURL_LIBRARY_IOS "${CACTUS_CURL_ROOT}/ios/device/libcurl.a")
+        set(CACTUS_XGRAMMAR_LIBRARY_IOS "${CACTUS_XGRAMMAR_ROOT}/ios/device/libxgrammar.a")
     endif()
     if(NOT EXISTS "${CACTUS_CURL_INCLUDE_DIR}/curl/curl.h" OR NOT EXISTS "${CACTUS_CURL_LIBRARY_IOS}")
         message(FATAL_ERROR "Vendored iOS libcurl not found for sysroot ${CMAKE_OSX_SYSROOT}. Expected: ${CACTUS_CURL_INCLUDE_DIR}/curl/curl.h and ${CACTUS_CURL_LIBRARY_IOS}")
     endif()
+    cactus_require_vendored_xgrammar("${CACTUS_XGRAMMAR_INCLUDE_DIR}" "${CACTUS_XGRAMMAR_LIBRARY_IOS}" "iOS")
     message(STATUS "Using vendored libcurl for iOS: ${CACTUS_CURL_LIBRARY_IOS}")
+    message(STATUS "Using vendored xgrammar for iOS: ${CACTUS_XGRAMMAR_LIBRARY_IOS}")
     target_link_libraries(cactus PUBLIC "${CACTUS_CURL_LIBRARY_IOS}")
+    target_link_libraries(cactus PUBLIC "${CACTUS_XGRAMMAR_LIBRARY_IOS}")
     target_include_directories(cactus PUBLIC "${CACTUS_CURL_INCLUDE_DIR}")
-    target_compile_definitions(cactus PRIVATE CACTUS_USE_CURL=1)
+    target_include_directories(cactus PUBLIC "${CACTUS_XGRAMMAR_INCLUDE_DIR}")
+    target_compile_definitions(cactus PRIVATE CACTUS_USE_CURL=1 CACTUS_USE_XGRAMMAR=1)
 else()
     target_link_libraries(cactus PUBLIC ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK} ${ACCELERATE_FRAMEWORK})
 endif()
