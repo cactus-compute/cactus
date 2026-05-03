@@ -207,17 +207,6 @@ void compute_attention_cached_node(
         v_hdim);
 }
 
-// ============================================================================
-// TurboQuant KV cache (Hadamard rotation + Lloyd-Max codebook).
-// Cache layout:
-//   [64 B TQCacheMetadata]
-//   [max_seq * kv_heads * angle_bytes_per_head bytes of packed angles]
-//   [max_seq * kv_heads * sizeof(float) bytes of radii]
-//   [turboquant_rotation_signs_bytes(head_dim) bytes of rotation signs]
-// rotation_signs is initialized once when the cache is created and shared
-// across all tokens — the encode/decode/attention kernels read it back.
-// ============================================================================
-
 namespace {
 
 struct TQCacheMetadata {

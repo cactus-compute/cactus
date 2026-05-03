@@ -585,8 +585,6 @@ void dequantize_2bit(const uint8_t* src, float* dst, size_t dim) {
     }
 }
 
-// 6-bit Lloyd-Max codebook for unit-variance Gaussian, computed once at first use.
-// Iterative Lloyd's algorithm: centroid[i] = E[x | b[i-1] < x < b[i]].
 static const float* tq_6bit_centroids() {
     static const std::array<float, 64> values = []() {
         constexpr int N = 64;
@@ -616,7 +614,6 @@ static const float* tq_6bit_centroids() {
     return values.data();
 }
 
-// 6-bit pack: 4 codes (24 bits) per 3 bytes. dim must be a multiple of 4.
 static void quantize_6bit(const float* src, uint8_t* dst, size_t dim) {
     const float* centroids = tq_6bit_centroids();
     const float sqrt_dim = sqrtf(static_cast<float>(dim));
@@ -669,21 +666,10 @@ void dequantize_6bit(const uint8_t* src, float* dst, size_t dim) {
     }
 }
 
-// NEON-optimized 6-bit dot product.
-// Strategy: scalar bit-unpack 16 codes per iteration, then SIMD LUT lookup
-// against an FP16 codebook split into low-byte / high-byte tables for
-// vqtbl4q_u8 (4-table 16-index lookup), then FP16->FP32 conversion and FMA.
-//
-// LUT layout: 64 FP16 centroids = 128 bytes. Deinterleaved as 64 low-bytes
-// (4 NEON registers) and 64 high-bytes (4 NEON registers). One vqtbl4q_u8 per
-// half retrieves 16 indices' worth of bytes, vzip recombines into FP16 pairs.
-//
-// Per iteration: 12 packed bytes -> 16 codes -> 16 FP16 lookups -> 16 FMAs.
 float dot_6bit_f32(const float* __restrict q, const uint8_t* __restrict packed, size_t dim) {
     const float* centroids = tq_6bit_centroids();
     const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
 
-    // Build FP16 LUT scaled by inv_sqrt_dim, then split into low/high byte tables.
     __fp16 lut_fp16[64] __attribute__((aligned(16)));
     for (int i = 0; i < 64; i++) lut_fp16[i] = static_cast<__fp16>(centroids[i] * inv_sqrt_dim);
 
@@ -708,10 +694,7 @@ float dot_6bit_f32(const float* __restrict q, const uint8_t* __restrict packed, 
 
     size_t i = 0;
     size_t p = 0;
-    // Main loop: 16 codes / iteration (12 packed bytes consumed).
     for (; i + 16 <= dim; i += 16) {
-        // Unpack 16 6-bit codes into idx[0..15] using scalar shifts/masks.
-        // Each group of 3 bytes -> 4 codes.
         uint8_t idx[16] __attribute__((aligned(16)));
         for (int g = 0; g < 4; g++) {
             uint8_t b0 = packed[p + 3*g];
@@ -724,18 +707,15 @@ float dot_6bit_f32(const float* __restrict q, const uint8_t* __restrict packed, 
         }
         p += 12;
 
-        // Look up 16 FP16 centroids via 4-table lookup over low/high byte LUTs.
         uint8x16_t idx_vec = vld1q_u8(idx);
         uint8x16_t lo_bytes = vqtbl4q_u8(v_lut_lo, idx_vec);
         uint8x16_t hi_bytes = vqtbl4q_u8(v_lut_hi, idx_vec);
 
-        // Interleave low/high byte to reconstruct 16 FP16 values (32 bytes).
         uint8x16_t fp16_pairs_lo = vzip1q_u8(lo_bytes, hi_bytes);
         uint8x16_t fp16_pairs_hi = vzip2q_u8(lo_bytes, hi_bytes);
         float16x8_t f16_lo = vreinterpretq_f16_u8(fp16_pairs_lo);
         float16x8_t f16_hi = vreinterpretq_f16_u8(fp16_pairs_hi);
 
-        // FP16 -> FP32 (4 vectors of 4 values each) and FMA against query.
         float32x4_t f32_0 = vcvt_f32_f16(vget_low_f16(f16_lo));
         float32x4_t f32_1 = vcvt_f32_f16(vget_high_f16(f16_lo));
         float32x4_t f32_2 = vcvt_f32_f16(vget_low_f16(f16_hi));
@@ -750,7 +730,6 @@ float dot_6bit_f32(const float* __restrict q, const uint8_t* __restrict packed, 
     float result = vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1),
                                         vaddq_f32(acc2, acc3)));
 
-    // Tail: remaining values in 4-code (3-byte) groups, then individual.
     for (; i + 4 <= dim; i += 4) {
         uint8_t b0 = packed[p];
         uint8_t b1 = packed[p + 1];
@@ -769,14 +748,12 @@ float dot_6bit_f32(const float* __restrict q, const uint8_t* __restrict packed, 
     return result;
 }
 
-// NEON-optimized 6-bit value-side accumulate. Same LUT scheme as dot.
 void accumulate_6bit_f32(const uint8_t* __restrict packed, float weight_radius,
                          float* __restrict accum, size_t dim) {
     const float* centroids = tq_6bit_centroids();
     const float inv_sqrt_dim = 1.0f / sqrtf(static_cast<float>(dim));
     const float wr = inv_sqrt_dim * weight_radius;
 
-    // FP16 LUT pre-scaled by wr.
     __fp16 lut_fp16[64] __attribute__((aligned(16)));
     for (int i = 0; i < 64; i++) lut_fp16[i] = static_cast<__fp16>(centroids[i] * wr);
 
@@ -849,8 +826,6 @@ void accumulate_6bit_f32(const uint8_t* __restrict packed, float weight_radius,
     }
 }
 
-// 8-bit Lloyd-Max codebook for unit-variance Gaussian (256 levels).
-// Same iterative algorithm as 6-bit, just N=256.
 static const float* tq_8bit_centroids() {
     static const std::array<float, 256> values = []() {
         constexpr int N = 256;
@@ -880,7 +855,6 @@ static const float* tq_8bit_centroids() {
     return values.data();
 }
 
-// 8-bit: 1 byte per code, no packing.
 static void quantize_8bit(const float* src, uint8_t* dst, size_t dim) {
     const float* centroids = tq_8bit_centroids();
     const float sqrt_dim = sqrtf(static_cast<float>(dim));
@@ -945,31 +919,20 @@ void cactus_turboquant_init(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Diagnostic: per-channel variance dump for K activations encoded by the
-// TurboQuant kernel. Set CACTUS_TQ_DUMP_VARIANCE=1 to enable. Accumulates
-// pre-rotation and post-rotation sum-of-squares per channel across all
-// encode invocations, dumps to stderr at process exit.
-// ---------------------------------------------------------------------------
 struct TQVarianceDump;
 static TQVarianceDump& tq_var_dump();
 
 struct TQVarianceDump {
     std::mutex mu;
-    // Per head_dim stats (gemma-4 has 256 + 512 simultaneously).
-    // Running per-channel moments via Welford-style incremental update.
-    // M2/M3/M4 in the convention that yields variance, skewness, kurtosis.
     struct PerHd {
         std::vector<double> pre_sum_sq;
         std::vector<double> post_sum_sq;
         std::vector<double> post_max_abs;
-        // Welford accumulators for post-rotation distribution per channel.
-        std::vector<double> mean;     // running mean
-        std::vector<double> M2;       // sum of squared deviations
-        std::vector<double> M3;       // for skewness
-        std::vector<double> M4;       // for kurtosis
-        // Reservoir for percentile estimation (Algorithm R, k=4096 per channel).
-        std::vector<std::vector<float>> reservoir;  // hd x k
+        std::vector<double> mean;
+        std::vector<double> M2;
+        std::vector<double> M3;
+        std::vector<double> M4;
+        std::vector<std::vector<float>> reservoir;
         static constexpr size_t RESERVOIR_K = 4096;
         uint64_t n_samples = 0;
     };
@@ -1003,8 +966,6 @@ struct TQVarianceDump {
         s.n_samples++;
         const uint64_t n = s.n_samples;
 
-        // Linear congruential PRNG (per-thread state would be cleaner, but
-        // we hold the mutex for accumulate so a static is fine).
         static thread_local uint64_t rng_state = 0xC0FFEE;
         auto next_rand = [&]() {
             rng_state = rng_state * 6364136223846793005ULL + 1442695040888963407ULL;
@@ -1019,7 +980,6 @@ struct TQVarianceDump {
             double a = std::abs(qv);
             if (a > s.post_max_abs[i]) s.post_max_abs[i] = a;
 
-            // Welford update for moments.
             double delta = qv - s.mean[i];
             double delta_n = delta / static_cast<double>(n);
             double delta_n2 = delta_n * delta_n;
@@ -1030,7 +990,6 @@ struct TQVarianceDump {
             s.M3[i] += term1 * delta_n * static_cast<double>(n - 2) - 3.0 * delta_n * s.M2[i];
             s.M2[i] += term1;
 
-            // Reservoir sampling for percentile estimation.
             if (s.reservoir[i].size() < PerHd::RESERVOIR_K) {
                 s.reservoir[i].push_back(static_cast<float>(qv));
             } else {
@@ -1065,7 +1024,6 @@ struct TQVarianceDump {
             "  post-rotation: median=%.4g p99=%.4g min=%.4g max=%.4g  max/median=%.2f\n",
             post_s[0], post_s[1], post_s[2], post_s[3], post_s[4]);
 
-        // Top-M outlier channels by post-rotation max-abs.
         std::vector<std::pair<double, size_t>> ranked;
         ranked.reserve(hd);
         for (size_t i = 0; i < hd; i++) ranked.push_back({s.post_max_abs[i], i});
@@ -1078,7 +1036,6 @@ struct TQVarianceDump {
             std::fprintf(stderr, "\n");
         }
 
-        // CSV per-channel distribution dump if requested.
         if (csv) {
             const double n = static_cast<double>(s.n_samples);
             for (size_t i = 0; i < hd; i++) {
@@ -1090,7 +1047,6 @@ struct TQVarianceDump {
                     kurtosis = (n > 0) ? n * s.M4[i] / (s.M2[i] * s.M2[i]) - 3.0 : 0.0;
                 }
 
-                // Compute percentiles from reservoir sample.
                 std::vector<float> r = s.reservoir[i];
                 std::sort(r.begin(), r.end());
                 auto pct = [&](double q) -> double {
@@ -1111,7 +1067,6 @@ struct TQVarianceDump {
     }
     void dump() {
         std::lock_guard<std::mutex> lock(mu);
-        // Open CSV if requested.
         FILE* csv = nullptr;
         if (const char* path = std::getenv("CACTUS_TQ_DUMP_CSV")) {
             csv = std::fopen(path, "w");
@@ -1128,23 +1083,9 @@ static TQVarianceDump& tq_var_dump() {
     static TQVarianceDump g;
     return g;
 }
-// (atexit registration happens lazily inside TQVarianceDump::enabled() on first
-//  call when the env var is set, so the registrar isn't a separate static init.)
 
-// ---------------------------------------------------------------------------
-// Adaptive bit allocation POC: read outlier channel indices from env vars.
-// CACTUS_TQ_ADAPTIVE_HD256=12,45,67,...   for sliding layers (head_dim=256)
-// CACTUS_TQ_ADAPTIVE_HD512=12,45,67,...   for global layers (head_dim=512)
-//
-// When set, in the encode path we snap *non-outlier* channels to the K=4
-// codebook (lossy), then quantize the whole vector at K=8 (lossless on the
-// outliers, K=4-precision on the rest). This simulates the QUALITY of
-// per-channel adaptive bit allocation; storage is still K=8 (no memory win
-// in this POC). Validates that adaptive helps quality before we build the
-// full per-channel storage layout.
-// ---------------------------------------------------------------------------
 struct AdaptiveOutliers {
-    std::map<size_t, std::vector<bool>> mask;  // hd -> bool array, true = outlier
+    std::map<size_t, std::vector<bool>> mask;
 
     AdaptiveOutliers() {
         for (size_t hd : {size_t(64), size_t(128), size_t(256), size_t(512)}) {
@@ -1186,22 +1127,15 @@ struct AdaptiveOutliers {
     }
 };
 
-// Snap a unit-normalized post-rotation value to its K=4 centroid.
-// Mirrors quantize_4bit -> dequantize_4bit roundtrip on a single channel.
 static inline float snap_to_4bit_unit(float v_unit, float sqrt_dim) {
-    // Apply the same sqrt_dim scaling and codebook lookup as quantize_4bit.
     float scaled = v_unit * sqrt_dim;
     int code = 0;
     for (int b = 0; b < 15; b++) {
         if (scaled > TQ_4BIT_BOUNDARIES[b]) code = b + 1;
     }
-    // Return the dequantized value back in unit-normalized space.
     return TQ_4BIT_CENTROIDS[code] / sqrt_dim;
 }
 
-// Apply adaptive simulation to a post-rotation, unit-normalized buffer.
-// Non-outlier channels are snapped to K=4 precision in-place;
-// outlier channels keep full precision (will be quantized at angle_bits).
 static inline void apply_adaptive_simulation(float* buf, size_t head_dim) {
     const std::vector<bool>* mask = AdaptiveOutliers::get().lookup(head_dim);
     if (!mask) return;
@@ -1282,7 +1216,6 @@ void cactus_turboquant_encode_kv_fp16(
                     for (; d < head_dim; d++) buf[d] *= inv_r;
                 }
 
-                // Diagnostic: snapshot pre-rotation (unit-normalized) values before rotate_forward.
                 std::vector<float> pre_snapshot;
                 if (dump) {
                     pre_snapshot.assign(buf, buf + head_dim);
@@ -1294,7 +1227,6 @@ void cactus_turboquant_encode_kv_fp16(
                     tq_var_dump().accumulate(pre_snapshot.data(), buf, head_dim);
                 }
 
-                // Adaptive bit allocation POC: snap non-outlier channels to K=4 precision.
                 apply_adaptive_simulation(buf, head_dim);
 
                 uint8_t* q_angles = dst_angles + idx * angles_bytes;
@@ -1302,8 +1234,6 @@ void cactus_turboquant_encode_kv_fp16(
             }
         });
 
-    // Diagnostic: dump encoded cache contents to disk for cross-run bit-diff.
-    // Set CACTUS_CACHE_DIFF_DUMP=<dir>; first 100 calls dumped as cache_NNNNN.bin.
     static std::atomic<size_t> tq_encode_call_counter{0};
     if (const char* dump_dir = std::getenv("CACTUS_CACHE_DIFF_DUMP")) {
         const size_t call_idx = tq_encode_call_counter.fetch_add(1, std::memory_order_relaxed);

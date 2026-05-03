@@ -1709,7 +1709,7 @@ size_t CactusGraph::kv_cache_state_tq(size_t max_seq_len, size_t num_kv_heads, s
     size_t angle_bytes_per_head = (head_dim * angle_bits + 7) / 8;
     size_t angles_total = max_seq_len * num_kv_heads * angle_bytes_per_head;
     size_t radii_total = max_seq_len * num_kv_heads * sizeof(float);
-    size_t signs_total = ((head_dim + 7) / 8) * 3;  // TURBOQUANT_ROTATION_LAYERS = 3
+    size_t signs_total = ((head_dim + 7) / 8) * 3;
     size_t total_bytes = 64 + angles_total + radii_total + signs_total;
 
     OpParams params{};

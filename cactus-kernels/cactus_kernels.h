@@ -766,11 +766,6 @@ inline size_t kv_scales_count(
     return seq_len * kv_heads * num_groups;
 }
 
-// ============================================================================
-// TurboQuant KV cache (ported from v1 turboquant branch).
-// Hadamard rotation + Lloyd-Max scalar codebook for K/V cache compression.
-// ============================================================================
-
 inline size_t turboquant_angles_bytes_per_head(size_t head_dim, size_t angle_bits) {
     return (head_dim * angle_bits + 7) / 8;
 }
@@ -792,7 +787,6 @@ void cactus_turboquant_decode_kv_fp16(
     const float* radii, const uint8_t* angles, const uint8_t* rotation_signs,
     __fp16* dst, size_t seq_len, size_t kv_heads, size_t head_dim, size_t angle_bits);
 
-// Low-level TurboQuant primitives (used by attention/encode internally).
 void hadamard_inplace(float* __restrict data, size_t dim);
 void apply_signs(float* __restrict data, const uint8_t* __restrict signs_packed, size_t dim);
 void rotate_forward(float* data, const uint8_t* signs_packed, size_t dim);
