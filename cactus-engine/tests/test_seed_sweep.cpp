@@ -42,7 +42,8 @@ static Result score_cached(const std::string& model_path,
                             size_t context) {
     auto model = create_model(model_path);
     if (!model) throw std::runtime_error("create_model failed");
-    if (!model->init(model_path, 2048, "", true)) throw std::runtime_error("init failed");
+    size_t init_ctx = std::max<size_t>(2048, std::max<size_t>(context, tokens.size()) + 64);
+    if (!model->init(model_path, init_ctx, "", true)) throw std::runtime_error("init failed");
     Result r;
     r.start_pos = 1;
     auto t0 = std::chrono::high_resolution_clock::now();
