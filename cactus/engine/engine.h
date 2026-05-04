@@ -265,18 +265,29 @@ public:
     const xgrammar::Grammar& raw_value() const;
 
 private:
-    explicit Grammar(xgrammar::Grammar raw_grammar);
+    Grammar(xgrammar::Grammar raw_grammar);
 
     xgrammar::Grammar grammar;
     bool is_universal_ = false;
 };
 
+class GrammarMatcher;
+
+class GrammarEngine {
+public:
+    GrammarEngine(const GrammarVocabulary& vocab);
+    ~GrammarEngine() = default;
+
+    GrammarMatcher compile_matcher(const Grammar& grammar);
+
+private:
+    xgrammar::GrammarCompiler compiler;
+    xgrammar::TokenizerInfo tokenizer_info;
+};
+
 class GrammarMatcher {
 public:
-    GrammarMatcher(
-        const Grammar* grammar,
-        const GrammarVocabulary& tokenizer_info
-    );
+    GrammarMatcher(xgrammar::GrammarMatcher matcher, xgrammar::TokenizerInfo tokenizer_info);
     ~GrammarMatcher() = default;
 
     void rollback(int tokens = 1);
@@ -288,8 +299,6 @@ public:
     bool next_bitmask(std::vector<int32_t>& bitmask, size_t logits_buffer_size);
 
 private:
-    GrammarMatcher(xgrammar::GrammarMatcher matcher, xgrammar::TokenizerInfo tokenizer_info);
-
     xgrammar::GrammarMatcher matcher;
     xgrammar::TokenizerInfo tokenizer_info;
 };

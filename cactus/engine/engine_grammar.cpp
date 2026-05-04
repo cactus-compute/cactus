@@ -158,20 +158,21 @@ const xgrammar::Grammar& Grammar::raw_value() const {
     return grammar;
 }
 
-GrammarMatcher::GrammarMatcher(const Grammar* grammar, const GrammarVocabulary& vocab)
-    : matcher(nullptr), tokenizer_info(nullptr) {
-    if (grammar->is_empty()) {
-        throw std::runtime_error("Cannot create GrammarMatcher with empty grammar");
-    }
-    xgrammar::TokenizerInfo xgrammar_tokenizer_info = to_xgrammar_tokenizer_info(vocab);
-    auto compiler = xgrammar::GrammarCompiler(
-        xgrammar_tokenizer_info,
+GrammarEngine::GrammarEngine(const GrammarVocabulary& vocab)
+    : compiler(nullptr), tokenizer_info(to_xgrammar_tokenizer_info(vocab)) {
+    compiler = xgrammar::GrammarCompiler(
+        tokenizer_info,
         static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))
     );
+}
 
-    auto compiled_grammar = compiler.CompileGrammar(grammar->raw_value());
-    matcher = xgrammar::GrammarMatcher(compiled_grammar);
-    this->tokenizer_info = xgrammar_tokenizer_info;
+GrammarMatcher GrammarEngine::compile_matcher(const Grammar& grammar) {
+    if (grammar.is_empty()) {
+        throw std::runtime_error("Cannot create GrammarMatcher with empty grammar");
+    }
+
+    auto compiled_grammar = compiler.CompileGrammar(grammar.raw_value());
+    return GrammarMatcher(xgrammar::GrammarMatcher(compiled_grammar), tokenizer_info);
 }
 
 GrammarMatcher::GrammarMatcher(xgrammar::GrammarMatcher matcher, xgrammar::TokenizerInfo tokenizer_info)

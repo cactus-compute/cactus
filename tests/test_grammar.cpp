@@ -37,19 +37,24 @@ static bool accept_text(GrammarMatcher& matcher, const GrammarFixture& fixture, 
     return true;
 }
 
+static GrammarMatcher make_matcher(const Grammar& grammar, const GrammarFixture& fixture) {
+    GrammarEngine engine(fixture.vocab);
+    return engine.compile_matcher(grammar);
+}
+
 static bool accepts_complete_text(const Grammar& grammar, const GrammarFixture& fixture, const std::string& text) {
-    GrammarMatcher matcher(&grammar, fixture.vocab);
+    GrammarMatcher matcher = make_matcher(grammar, fixture);
     if (!accept_text(matcher, fixture, text)) return false;
     return matcher.accept(fixture.tokenizer->get_eos_token());
 }
 
 static bool rejects_text(const Grammar& grammar, const GrammarFixture& fixture, const std::string& text) {
-    GrammarMatcher matcher(&grammar, fixture.vocab);
+    GrammarMatcher matcher = make_matcher(grammar, fixture);
     return !accept_text(matcher, fixture, text);
 }
 
 static bool rejects_eos_after_text(const Grammar& grammar, const GrammarFixture& fixture, const std::string& text) {
-    GrammarMatcher matcher(&grammar, fixture.vocab);
+    GrammarMatcher matcher = make_matcher(grammar, fixture);
     if (!accept_text(matcher, fixture, text)) return true;
     return !matcher.accept(fixture.tokenizer->get_eos_token());
 }
@@ -272,7 +277,7 @@ static bool test_json_schema_accepts_expected_text(const GrammarFixture& fixture
 
 static bool test_grammar_matcher_reset_restores_initial_state(const GrammarFixture& fixture) {
     Grammar grammar = Grammar::ebnf("root ::= \"hello\"");
-    GrammarMatcher matcher(&grammar, fixture.vocab);
+    GrammarMatcher matcher = make_matcher(grammar, fixture);
 
     if (!accept_text(matcher, fixture, "hello")) return false;
     if (!matcher.accept(fixture.tokenizer->get_eos_token())) return false;
@@ -285,7 +290,7 @@ static bool test_grammar_matcher_reset_restores_initial_state(const GrammarFixtu
 
 static bool test_grammar_matcher_rollback_restores_previous_state(const GrammarFixture& fixture) {
     Grammar grammar = Grammar::ebnf("root ::= \"hello\" | \"hi\"");
-    GrammarMatcher matcher(&grammar, fixture.vocab);
+    GrammarMatcher matcher = make_matcher(grammar, fixture);
     const std::vector<uint32_t> hello_tokens = fixture.tokenizer->encode("hello");
     const std::vector<uint32_t> hi_tokens = fixture.tokenizer->encode("hi");
     const uint32_t eos_token = fixture.tokenizer->get_eos_token();
@@ -305,7 +310,7 @@ static bool test_grammar_matcher_rollback_restores_previous_state(const GrammarF
 
 static bool test_grammar_matcher_completion_state(const GrammarFixture& fixture) {
     Grammar grammar = Grammar::ebnf("root ::= \"hello\"");
-    GrammarMatcher matcher(&grammar, fixture.vocab);
+    GrammarMatcher matcher = make_matcher(grammar, fixture);
     const uint32_t eos_token = fixture.tokenizer->get_eos_token();
 
     if (matcher.is_completed() || matcher.is_terminated()) return false;
@@ -317,7 +322,7 @@ static bool test_grammar_matcher_completion_state(const GrammarFixture& fixture)
 
 static bool test_grammar_matcher_fork_preserves_accept_state(const GrammarFixture& fixture) {
     Grammar grammar = Grammar::ebnf("root ::= \"hello world\"");
-    GrammarMatcher matcher(&grammar, fixture.vocab);
+    GrammarMatcher matcher = make_matcher(grammar, fixture);
     const std::vector<uint32_t> tokens = fixture.tokenizer->encode("hello world");
     const uint32_t eos_token = fixture.tokenizer->get_eos_token();
 
@@ -344,7 +349,7 @@ static bool test_grammar_matcher_fork_preserves_accept_state(const GrammarFixtur
 
 static bool test_grammar_matcher_next_bitmask_tracks_simple_grammar(const GrammarFixture& fixture) {
     Grammar grammar = Grammar::ebnf("root ::= \"hello\"");
-    GrammarMatcher matcher(&grammar, fixture.vocab);
+    GrammarMatcher matcher = make_matcher(grammar, fixture);
     const std::vector<uint32_t> hello_tokens = fixture.tokenizer->encode("hello");
     const uint32_t eos_token = fixture.tokenizer->get_eos_token();
 
@@ -368,7 +373,7 @@ static bool test_grammar_matcher_next_bitmask_tracks_simple_grammar(const Gramma
 
 static bool test_grammar_matcher_next_bitmask_zeroes_overallocated_tail(const GrammarFixture& fixture) {
     Grammar grammar = Grammar::ebnf("root ::= \"hello\"");
-    GrammarMatcher matcher(&grammar, fixture.vocab);
+    GrammarMatcher matcher = make_matcher(grammar, fixture);
     std::vector<int32_t> bitmask;
 
     if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size + 1)) return false;
