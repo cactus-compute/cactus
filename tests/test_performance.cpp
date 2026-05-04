@@ -430,6 +430,73 @@ void benchmark_reduction_ops(TestUtils::TestRunner& runner, const BenchmarkConfi
 }
 
 template<typename T>
+void benchmark_axis_reduction_inner1_ops(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
+    const std::vector<std::pair<std::string, std::function<size_t(CactusGraph&, size_t)>>> ops = {
+        {"Axis Sum", [](CactusGraph& b, size_t a) { return b.sum(a, 1); }},
+        {"Axis Mean", [](CactusGraph& b, size_t a) { return b.mean(a, 1); }},
+        {"Axis Variance", [](CactusGraph& b, size_t a) { return b.variance(a, 1); }},
+        {"Axis Min", [](CactusGraph& b, size_t a) { return b.min(a, 1); }},
+        {"Axis Max", [](CactusGraph& b, size_t a) { return b.max(a, 1); }}
+    };
+
+    Precision precision = TestUtils::default_precision<T>();
+
+    for (const auto& [op_name, op_func] : ops) {
+        for (size_t dim : config.dimensions) {
+            size_t total_elements = dim * dim;
+
+            TestUtils::TestFixture<T> fixture(op_name);
+            size_t input_a = fixture.create_input({dim, dim}, precision);
+
+            std::vector<T> data_a(total_elements);
+            setup_random_data(data_a);
+            fixture.set_input_data(input_a, data_a, precision);
+
+            op_func(fixture.graph(), input_a);
+
+            double time_ms = time_operation<T>([&]() {
+                fixture.execute();
+            }, config.iterations);
+
+            double gb_per_sec = (total_elements * PrecisionTraits::size_of(precision)) / (time_ms * 1e6);
+
+            std::ostringstream details;
+            details << std::fixed << std::setprecision(3) << time_ms << "ms, "
+                    << std::setprecision(2) << gb_per_sec << " GB/s";
+            runner.log_performance(op_name + " " + std::to_string(dim) + "x" + std::to_string(dim),
+                                   details.str());
+        }
+    }
+
+    for (size_t dim : config.dimensions) {
+        const size_t channels = 4;
+        size_t total_elements = dim * dim * channels;
+
+        TestUtils::TestFixture<T> fixture("Axis Variance Non-Inner1");
+        size_t input_a = fixture.create_input({dim, dim, channels}, precision);
+
+        std::vector<T> data_a(total_elements);
+        setup_random_data(data_a);
+        fixture.set_input_data(input_a, data_a, precision);
+
+        fixture.graph().variance(input_a, 1);
+
+        double time_ms = time_operation<T>([&]() {
+            fixture.execute();
+        }, config.iterations);
+
+        double gb_per_sec = (total_elements * PrecisionTraits::size_of(precision)) / (time_ms * 1e6);
+
+        std::ostringstream details;
+        details << std::fixed << std::setprecision(3) << time_ms << "ms, "
+                << std::setprecision(2) << gb_per_sec << " GB/s";
+        runner.log_performance("Axis Variance Non-Inner1 " + std::to_string(dim) + "x" +
+                               std::to_string(dim) + "x" + std::to_string(channels),
+                               details.str());
+    }
+}
+
+template<typename T>
 void benchmark_advanced_ops(TestUtils::TestRunner& runner, const BenchmarkConfig& config) {
     Precision precision = TestUtils::default_precision<T>();
 
@@ -1027,6 +1094,12 @@ bool test_reduction_operations_performance(TestUtils::TestRunner& runner) {
     return true;
 }
 
+bool test_axis_reduction_inner1_operations_performance(TestUtils::TestRunner& runner) {
+    BenchmarkConfig config;
+    benchmark_axis_reduction_inner1_ops<__fp16>(runner, config);
+    return true;
+}
+
 bool test_advanced_operations_performance(TestUtils::TestRunner& runner) {
     BenchmarkConfig config;
     benchmark_advanced_ops<__fp16>(runner, config);
@@ -1195,6 +1268,7 @@ int main() {
     runner.run_test("Grouped INT8 MatMul", test_grouped_int8_matmul_performance(runner));
     runner.run_test("Unary Operations", test_unary_operations_performance(runner));
     runner.run_test("Reduction Operations", test_reduction_operations_performance(runner));
+    runner.run_test("Axis Reduction Inner1 Operations", test_axis_reduction_inner1_operations_performance(runner));
     runner.run_test("Advanced Operations", test_advanced_operations_performance(runner));
     runner.run_test("Engine Operations", test_engine_operations_performance(runner));
     runner.run_test("Gather Operations", test_gather_operations_performance(runner));
