@@ -254,7 +254,7 @@ public:
         int max_whitespace_count = -1
     );
     static Grammar regex(const std::string& regex);
-    static Grammar structural_tag(const std::string& structural_tag_json);
+    static Grammar structural_tag(const std::string& structural_tag_json, const GrammarVocabulary* vocab = nullptr);
     static Grammar unite(const std::vector<Grammar>& grammars);
     static Grammar concatenate(const std::vector<Grammar>& grammars);
 
@@ -275,8 +275,7 @@ class GrammarMatcher {
 public:
     GrammarMatcher(
         const Grammar* grammar,
-        const GrammarVocabulary& tokenizer_info,
-        int max_threads = std::thread::hardware_concurrency()
+        const GrammarVocabulary& tokenizer_info
     );
     ~GrammarMatcher() = default;
 

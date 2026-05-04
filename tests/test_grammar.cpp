@@ -219,7 +219,7 @@ static bool test_union_with_universal_returns_universal() {
 }
 
 static bool test_structural_tag_accepts_and_rejects_expected_text(const GrammarFixture& fixture) {
-    Grammar grammar = Grammar::structural_tag(tool_call_structural_tag_json());
+    Grammar grammar = Grammar::structural_tag(tool_call_structural_tag_json(), &fixture.vocab);
 
     return accepts_complete_text(
         grammar,

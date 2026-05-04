@@ -81,8 +81,37 @@ Grammar Grammar::regex(const std::string& regex) {
     return Grammar(xgrammar::Grammar::FromRegex(regex));
 }
 
-Grammar Grammar::structural_tag(const std::string& structural_tag_json) {
-    auto result = xgrammar::Grammar::FromStructuralTag(structural_tag_json);
+namespace {
+
+static xgrammar::VocabType to_xgrammar_vocab_type(GrammarVocabulary::Type vocab_type) {
+    switch (vocab_type) {
+        case GrammarVocabulary::Type::RAW:
+            return xgrammar::VocabType::RAW;
+        case GrammarVocabulary::Type::BYTE_LEVEL:
+            return xgrammar::VocabType::BYTE_LEVEL;
+        case GrammarVocabulary::Type::BYTE_FALLBACK:
+            return xgrammar::VocabType::BYTE_FALLBACK;
+    }
+}
+
+static xgrammar::TokenizerInfo to_xgrammar_tokenizer_info(const GrammarVocabulary& vocab) {
+    std::vector<int32_t> stop_token_ids_int32(vocab.stop_token_ids.begin(), vocab.stop_token_ids.end());
+    return xgrammar::TokenizerInfo(
+        vocab.encoded_vocab,
+        to_xgrammar_vocab_type(vocab.vocab_type),
+        static_cast<int>(vocab.vocab_size),
+        stop_token_ids_int32,
+        false
+    );
+}
+
+} // anonymous namespace
+
+Grammar Grammar::structural_tag(const std::string& structural_tag_json, const GrammarVocabulary* vocab) {
+    auto result = xgrammar::Grammar::FromStructuralTag(
+        structural_tag_json,
+        vocab ? std::optional<xgrammar::TokenizerInfo>(to_xgrammar_tokenizer_info(*vocab)) : std::nullopt
+    );
     if (std::holds_alternative<xgrammar::Grammar>(result)) {
         return Grammar(std::get<xgrammar::Grammar>(std::move(result)));
     }
@@ -129,35 +158,16 @@ const xgrammar::Grammar& Grammar::raw_value() const {
     return grammar;
 }
 
-namespace {
-
-static xgrammar::VocabType to_xgrammar_vocab_type(GrammarVocabulary::Type vocab_type) {
-    switch (vocab_type) {
-        case GrammarVocabulary::Type::RAW:
-            return xgrammar::VocabType::RAW;
-        case GrammarVocabulary::Type::BYTE_LEVEL:
-            return xgrammar::VocabType::BYTE_LEVEL;
-        case GrammarVocabulary::Type::BYTE_FALLBACK:
-            return xgrammar::VocabType::BYTE_FALLBACK;
-    }
-}
-
-} // anonymous namespace
-
-GrammarMatcher::GrammarMatcher(const Grammar* grammar, const GrammarVocabulary& vocab, int max_threads)
+GrammarMatcher::GrammarMatcher(const Grammar* grammar, const GrammarVocabulary& vocab)
     : matcher(nullptr), tokenizer_info(nullptr) {
     if (grammar->is_empty()) {
         throw std::runtime_error("Cannot create GrammarMatcher with empty grammar");
     }
-    std::vector<int32_t> stop_token_ids_int32(vocab.stop_token_ids.begin(), vocab.stop_token_ids.end());
-    xgrammar::TokenizerInfo xgrammar_tokenizer_info{
-        vocab.encoded_vocab,
-        to_xgrammar_vocab_type(vocab.vocab_type),
-        static_cast<int>(vocab.vocab_size),
-        stop_token_ids_int32,
-        false
-    };
-    auto compiler = xgrammar::GrammarCompiler(xgrammar_tokenizer_info, max_threads);
+    xgrammar::TokenizerInfo xgrammar_tokenizer_info = to_xgrammar_tokenizer_info(vocab);
+    auto compiler = xgrammar::GrammarCompiler(
+        xgrammar_tokenizer_info,
+        static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))
+    );
 
     auto compiled_grammar = compiler.CompileGrammar(grammar->raw_value());
     matcher = xgrammar::GrammarMatcher(compiled_grammar);
