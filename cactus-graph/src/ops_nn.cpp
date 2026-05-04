@@ -362,6 +362,41 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     }
 }
 
+void compute_dense_mlp_cq_fused_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& hidden_buf = get_input(node, 0, nodes, node_index_map);
+    const auto& gate_buf   = get_input(node, 1, nodes, node_index_map);
+    const auto& up_buf     = get_input(node, 2, nodes, node_index_map);
+    const auto& down_buf   = get_input(node, 3, nodes, node_index_map);
+
+    if (hidden_buf.precision != Precision::FP16 || node.output_buffer.precision != Precision::FP16) {
+        throw std::runtime_error("dense_mlp_cq_fused expects FP16 hidden/output");
+    }
+    if (!gate_buf.is_cq() || !up_buf.is_cq() || !down_buf.is_cq()) {
+        throw std::runtime_error("dense_mlp_cq_fused expects CQ-quantized gate/up/down weights");
+    }
+    if (gate_buf.group_size != up_buf.group_size || gate_buf.group_size != down_buf.group_size) {
+        throw std::runtime_error("dense_mlp_cq_fused: gate/up/down group_size must match");
+    }
+    if (PrecisionTraits::cq_bits(gate_buf.precision) != 4 ||
+        PrecisionTraits::cq_bits(up_buf.precision)   != 4 ||
+        PrecisionTraits::cq_bits(down_buf.precision) != 4) {
+        throw std::runtime_error("dense_mlp_cq_fused currently only supports CQ4");
+    }
+
+    const auto& shape = hidden_buf.shape;
+    size_t M = 1;
+    for (size_t i = 0; i + 1 < shape.size(); ++i) M *= shape[i];
+
+    const __fp16* x = hidden_buf.data_as<__fp16>();
+    __fp16* y = node.output_buffer.data_as<__fp16>();
+
+    CactusQuantMatrix gate_mat = gate_buf.to_cq_matrix();
+    CactusQuantMatrix up_mat   = up_buf.to_cq_matrix();
+    CactusQuantMatrix down_mat = down_buf.to_cq_matrix();
+
+    cactus_dense_mlp_cq_fused(&gate_mat, &up_mat, &down_mat, x, static_cast<uint32_t>(M), y);
+}
+
 void compute_rms_norm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& weight_buffer = get_input(node, 1, nodes, node_index_map);

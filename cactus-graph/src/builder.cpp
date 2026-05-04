@@ -1677,6 +1677,31 @@ size_t CactusGraph::weighted_stats_pool(size_t input, size_t weights) {
     return add_node(OpType::WEIGHTED_STATS_POOL, {input, weights}, {batch, features * 2});
 }
 
+size_t CactusGraph::dense_mlp_cq_fused(size_t hidden, size_t gate_weight,
+                                        size_t up_weight, size_t down_weight) {
+    const auto& hidden_buf = get_output_buffer(hidden);
+    if (hidden_buf.shape.size() < 2) {
+        throw std::runtime_error("dense_mlp_cq_fused requires hidden of rank >= 2");
+    }
+    const auto& down_buf = get_output_buffer(down_weight);
+    size_t hidden_dim;
+    if (down_buf.is_interleaved && down_buf.original_N > 0) {
+        hidden_dim = down_buf.original_N;
+    } else {
+        hidden_dim = down_buf.shape[0];
+    }
+
+    std::vector<size_t> output_shape = hidden_buf.shape;
+    output_shape[output_shape.size() - 1] = hidden_dim;
+
+    OpParams params;
+    params.output_precision = Precision::FP16;
+
+    return add_node(OpType::DENSE_MLP_CQ_FUSED,
+                    {hidden, gate_weight, up_weight, down_weight},
+                    output_shape, params);
+}
+
 size_t CactusGraph::kv_cache_state(size_t max_seq_len, size_t num_kv_heads, size_t head_dim,
                                     size_t window_size, size_t sink_size) {
     size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;

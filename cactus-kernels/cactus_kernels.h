@@ -274,6 +274,14 @@ void cactus_quant_matmul(
     uint32_t M,
     __fp16* C);
 
+void cactus_dense_mlp_cq_fused(
+    const CactusQuantMatrix* gate_W,
+    const CactusQuantMatrix* up_W,
+    const CactusQuantMatrix* down_W,
+    const __fp16* x,
+    uint32_t M,
+    __fp16* y);
+
 void cactus_rms_norm_f16(
     const __fp16* input,
     const __fp16* weight,

@@ -1,4 +1,5 @@
 #include "test_utils.h"
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -89,6 +90,236 @@ bool test_matmul_cq() {
         if (std::abs(static_cast<float>(C[i])) > 1e-6f) has_nonzero = true;
     }
     return has_nonzero;
+}
+
+namespace dense_mlp_cq4_test {
+
+struct CQ4 {
+    uint32_t K, N;
+    uint32_t group_size, num_groups;
+    std::vector<__fp16> codebook;
+    std::vector<__fp16> input_scale;
+    std::vector<__fp16> input_scale_recip;
+    std::vector<__fp16> norms;
+    std::vector<int8_t> left_signs;
+    std::vector<int8_t> right_signs;
+    std::vector<uint32_t> permutation;
+    std::vector<uint8_t> packed;
+
+    std::vector<int8_t> expanded;
+    std::vector<float>  norm_f32;
+
+    CQ4(uint32_t k, uint32_t n, uint32_t gs, uint32_t seed)
+        : K(k), N(n), group_size(gs), num_groups(k / gs) {
+        std::mt19937 gen(seed);
+        std::uniform_real_distribution<float> dist(-1.f, 1.f);
+        constexpr uint32_t cb_size = 16;
+
+        codebook.resize(cb_size);
+        for (auto& v : codebook) v = static_cast<__fp16>(dist(gen));
+
+        input_scale.resize(K);
+        input_scale_recip.resize(K);
+        for (uint32_t i = 0; i < K; i++) {
+            float s = 0.5f + std::abs(dist(gen));
+            input_scale[i] = static_cast<__fp16>(s);
+            input_scale_recip[i] = static_cast<__fp16>(1.f / s);
+        }
+
+        norms.resize(static_cast<size_t>(N) * num_groups);
+        for (auto& v : norms) v = static_cast<__fp16>(dist(gen) * 0.1f);
+
+        left_signs.resize(group_size);
+        right_signs.resize(group_size);
+        for (auto& v : left_signs) v = (gen() & 1) ? 1 : -1;
+        for (auto& v : right_signs) v = (gen() & 1) ? 1 : -1;
+
+        permutation.resize(group_size);
+        for (uint32_t i = 0; i < group_size; i++) permutation[i] = i;
+
+        const uint32_t pgb = cactus_quant_packed_group_bytes(4, group_size);
+        packed.resize(static_cast<size_t>(N) * num_groups * pgb);
+        for (auto& v : packed) v = static_cast<uint8_t>(gen() & 0xFF);
+    }
+
+    // Mirrors io.cpp's on-load expansion so benches don't repeatedly rebuild it.
+    void preexpand() {
+        constexpr uint32_t bits = 4;
+        constexpr uint32_t cb_size = 16;
+        int8_t cb_i8[16] = {};
+        float cb_max = 0.f;
+        for (uint32_t i = 0; i < cb_size; i++) {
+            float v = std::abs(static_cast<float>(codebook[i]));
+            if (v > cb_max) cb_max = v;
+        }
+        float cb_sc = cb_max / 127.f;
+        if (cb_sc < 1e-10f) cb_sc = 1e-10f;
+        for (uint32_t i = 0; i < cb_size; i++)
+            cb_i8[i] = static_cast<int8_t>(std::round(static_cast<float>(codebook[i]) / cb_sc));
+
+        const size_t N_blocks = (N + 3) / 4;
+        const uint32_t pgb = cactus_quant_packed_group_bytes(bits, group_size);
+        expanded.assign(N_blocks * num_groups * group_size * 4, 0);
+        norm_f32.assign(N_blocks * num_groups * 4, 0.f);
+
+        auto unpack16 = [&](const uint8_t* p) {
+            uint8_t u[16];
+            for (int i = 0; i < 8; i++) {
+                u[2*i]     = (p[i] & 0x0F);
+                u[2*i + 1] = (p[i] >> 4);
+            }
+            std::array<int8_t, 16> r{};
+            for (int i = 0; i < 16; i++) r[i] = cb_i8[u[i]];
+            return r;
+        };
+
+        for (size_t nb = 0; nb < N_blocks; ++nb) {
+            size_t n_start = nb * 4;
+            size_t valid_n = std::min(size_t(4), static_cast<size_t>(N) - n_start);
+            for (uint32_t g = 0; g < num_groups; ++g) {
+                std::array<std::array<std::array<int8_t,16>,16>,4> exp4{};
+                uint32_t n_vecs = group_size / 16;
+                for (size_t ni = 0; ni < valid_n; ++ni) {
+                    const uint8_t* pk = packed.data() + (static_cast<size_t>(n_start+ni)*num_groups+g)*pgb;
+                    for (uint32_t v = 0; v < n_vecs; ++v) {
+                        exp4[ni][v] = unpack16(pk + (v*16*bits)/8);
+                    }
+                }
+                int8_t* dst = expanded.data() + (nb*num_groups+g)*group_size*4;
+                for (uint32_t v = 0; v < n_vecs; ++v) {
+                    for (uint32_t k = 0; k < 16; k++) {
+                        for (size_t ni = 0; ni < 4; ni++) {
+                            dst[v*64 + k*4 + ni] = exp4[ni][v][k];
+                        }
+                    }
+                }
+                float* nd = norm_f32.data() + (nb*num_groups+g)*4;
+                for (size_t ni = 0; ni < 4; ++ni)
+                    nd[ni] = (n_start+ni < N) ? static_cast<float>(norms[(n_start+ni)*num_groups+g]) * cb_sc : 0.f;
+            }
+        }
+    }
+
+    CactusQuantMatrix matrix() const {
+        return CactusQuantMatrix{
+            .bits = 4, .K = K, .N = N,
+            .group_size = group_size, .num_groups = num_groups,
+            .flags = CACTUS_QUANT_FLAG_CODE_ORDERED_INDICES,
+            .codebook = codebook.data(),
+            .input_scale = input_scale.data(),
+            .input_scale_recip = input_scale_recip.data(),
+            .norms = norms.data(),
+            .packed_indices = packed.data(),
+            .left_signs = left_signs.data(),
+            .right_signs = right_signs.data(),
+            .permutation = permutation.data(),
+            .expanded = expanded.empty() ? nullptr : expanded.data(),
+            .norm_f32 = norm_f32.empty() ? nullptr : norm_f32.data(),
+        };
+    }
+};
+
+}  // namespace dense_mlp_cq4_test
+
+bool test_dense_mlp_cq4_fused_vs_unfused() {
+    using dense_mlp_cq4_test::CQ4;
+    constexpr uint32_t M = 1;
+    constexpr uint32_t hidden = 256, d_ffn = 512, gs = 128;
+
+    CQ4 gate(hidden, d_ffn, gs, /*seed=*/11);
+    CQ4 up  (hidden, d_ffn, gs, /*seed=*/22);
+    CQ4 down(d_ffn, hidden, gs, /*seed=*/33);
+
+    std::mt19937 gen(101);
+    std::uniform_real_distribution<float> dist(-0.5f, 0.5f);
+    std::vector<__fp16> x(M * hidden);
+    for (auto& v : x) v = static_cast<__fp16>(dist(gen));
+
+    auto gate_W = gate.matrix();
+    auto up_W = up.matrix();
+    auto down_W = down.matrix();
+
+    std::vector<__fp16> gate_out(M * d_ffn), up_out(M * d_ffn), h_full(M * d_ffn);
+    std::vector<__fp16> y_unfused(M * hidden, static_cast<__fp16>(0));
+    cactus_quant_matmul(&gate_W, x.data(), M, gate_out.data());
+    cactus_gelu_f16(gate_out.data(), gate_out.data(), M * d_ffn);
+    cactus_quant_matmul(&up_W, x.data(), M, up_out.data());
+    cactus_multiply_f16(gate_out.data(), up_out.data(), h_full.data(), M * d_ffn);
+    cactus_quant_matmul(&down_W, h_full.data(), M, y_unfused.data());
+
+    std::vector<__fp16> y_fused(M * hidden, static_cast<__fp16>(0));
+    cactus_dense_mlp_cq_fused(&gate_W, &up_W, &down_W, x.data(), M, y_fused.data());
+
+    float max_abs_diff = 0.f;
+    for (size_t i = 0; i < y_unfused.size(); ++i) {
+        if (!std::isfinite(static_cast<float>(y_fused[i]))) return false;
+        float d = std::fabs(static_cast<float>(y_fused[i]) - static_cast<float>(y_unfused[i]));
+        if (d > max_abs_diff) max_abs_diff = d;
+    }
+    if (max_abs_diff > 1e-3f) {
+        std::cout << "  fused vs unfused max_abs_diff=" << max_abs_diff << "\n";
+        return false;
+    }
+    return true;
+}
+
+bool test_dense_mlp_cq4_fused_graph() {
+    using dense_mlp_cq4_test::CQ4;
+    constexpr uint32_t M = 1;
+    constexpr uint32_t hidden = 256, d_ffn = 512, gs = 128;
+    CQ4 gate(hidden, d_ffn, gs, 44);
+    CQ4 up  (hidden, d_ffn, gs, 55);
+    CQ4 down(d_ffn, hidden, gs, 66);
+
+    std::mt19937 gen(202);
+    std::uniform_real_distribution<float> dist(-0.5f, 0.5f);
+    std::vector<__fp16> x(M * hidden);
+    for (auto& v : x) v = static_cast<__fp16>(dist(gen));
+
+    CactusGraph g;
+    size_t hidden_node = g.input({M, hidden}, Precision::FP16);
+    size_t gate_node = g.input({d_ffn, hidden}, Precision::CQ4);
+    size_t up_node   = g.input({d_ffn, hidden}, Precision::CQ4);
+    size_t down_node = g.input({hidden, d_ffn}, Precision::CQ4);
+
+    auto attach_cq4 = [&](size_t node_id, const CQ4& w) {
+        g.set_external_input(node_id, const_cast<uint8_t*>(w.packed.data()), Precision::CQ4);
+        g.set_grouped_scales(node_id, w.group_size, w.num_groups,
+                             const_cast<__fp16*>(w.norms.data()));
+        BufferDesc& buf = const_cast<BufferDesc&>(g.get_output_buffer(node_id));
+        buf.cq_codebook = w.codebook.data();
+        buf.cq_input_scale = w.input_scale.data();
+        buf.cq_input_scale_recip = w.input_scale_recip.data();
+        buf.cq_norms = w.norms.data();
+        buf.cq_left_signs = w.left_signs.data();
+        buf.cq_right_signs = w.right_signs.data();
+        buf.cq_permutation = w.permutation.data();
+        buf.cq_flags = CACTUS_QUANT_FLAG_CODE_ORDERED_INDICES;
+    };
+    attach_cq4(gate_node, gate);
+    attach_cq4(up_node, up);
+    attach_cq4(down_node, down);
+
+    size_t y_node = g.dense_mlp_cq_fused(hidden_node, gate_node, up_node, down_node);
+    g.set_input(hidden_node, x.data(), Precision::FP16);
+    g.execute();
+
+    __fp16* result = static_cast<__fp16*>(g.get_output(y_node));
+    for (size_t i = 0; i < M * hidden; i++) {
+        if (!std::isfinite(static_cast<float>(result[i]))) return false;
+    }
+
+    auto gate_W = gate.matrix();
+    auto up_W = up.matrix();
+    auto down_W = down.matrix();
+    std::vector<__fp16> y_ref(M * hidden, static_cast<__fp16>(0));
+    cactus_dense_mlp_cq_fused(&gate_W, &up_W, &down_W, x.data(), M, y_ref.data());
+    float max_abs_diff = 0.f;
+    for (size_t i = 0; i < M * hidden; ++i) {
+        float d = std::fabs(static_cast<float>(result[i]) - static_cast<float>(y_ref[i]));
+        if (d > max_abs_diff) max_abs_diff = d;
+    }
+    return max_abs_diff <= 1e-3f;
 }
 
 bool test_attention_int8_hybrid() {
@@ -551,6 +782,37 @@ bool run_benchmarks() {
         bench("attention_int8 cache=512", []{}, [&]{ g.execute(); });
     }
     {
+        using dense_mlp_cq4_test::CQ4;
+        constexpr uint32_t M = 1;
+        constexpr uint32_t hidden = 2304, d_ffn = 9216, gs = 128;
+        CQ4 gate(hidden, d_ffn, gs, 71);
+        CQ4 up  (hidden, d_ffn, gs, 72);
+        CQ4 down(d_ffn, hidden, gs, 73);
+        gate.preexpand();
+        up.preexpand();
+        down.preexpand();
+        auto gate_W = gate.matrix();
+        auto up_W = up.matrix();
+        auto down_W = down.matrix();
+        std::vector<__fp16> x(M * hidden);
+        std::mt19937 bgen(101);
+        std::uniform_real_distribution<float> bdist(-0.5f, 0.5f);
+        for (auto& v : x) v = static_cast<__fp16>(bdist(bgen));
+
+        std::vector<__fp16> gate_out(M * d_ffn), up_out(M * d_ffn), h_full(M * d_ffn);
+        std::vector<__fp16> y(M * hidden);
+        bench("dense_mlp_cq4 unfused 1x2304x9216", []{}, [&]{
+            cactus_quant_matmul(&gate_W, x.data(), M, gate_out.data());
+            cactus_gelu_f16(gate_out.data(), gate_out.data(), M * d_ffn);
+            cactus_quant_matmul(&up_W, x.data(), M, up_out.data());
+            cactus_multiply_f16(gate_out.data(), up_out.data(), h_full.data(), M * d_ffn);
+            cactus_quant_matmul(&down_W, h_full.data(), M, y.data());
+        });
+        bench("dense_mlp_cq4 fused   1x2304x9216", []{}, [&]{
+            cactus_dense_mlp_cq_fused(&gate_W, &up_W, &down_W, x.data(), M, y.data());
+        });
+    }
+    {
         const size_t batch = 1024, dim = 1024;
         std::vector<__fp16> in(batch * dim), w(dim);
         TestUtils::fill_random_fp16(in);
@@ -581,6 +843,8 @@ int main() {
 
     runner.run_test("Matrix Multiplication", test_matrix_multiplication());
     runner.run_test("MatMul CQ", test_matmul_cq());
+    runner.run_test("Dense MLP CQ4 fused vs unfused", test_dense_mlp_cq4_fused_vs_unfused());
+    runner.run_test("Dense MLP CQ4 fused (graph)", test_dense_mlp_cq4_fused_graph());
     runner.run_test("Transpose", test_transpose());
     runner.run_test("Reshape", test_reshape());
     runner.run_test("RMS Norm", test_rms_norm());

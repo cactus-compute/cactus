@@ -111,7 +111,8 @@ enum class OpType {
     CONV_CACHE_STATE, CONV_CACHE_APPEND,
     RFFT, IRFFT, MEL_FILTER_BANK, SPECTROGRAM,
     IMAGE_PREPROCESS,
-    CLAMP
+    CLAMP,
+    DENSE_MLP_CQ_FUSED
 };
 
 struct PrecisionTraits {
@@ -666,6 +667,8 @@ public:
         Activation activation);
     size_t stats_pool(size_t input);
     size_t weighted_stats_pool(size_t input, size_t weights);
+    size_t dense_mlp_cq_fused(size_t hidden, size_t gate_weight,
+                               size_t up_weight, size_t down_weight);
 
     size_t sample(
         size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20,

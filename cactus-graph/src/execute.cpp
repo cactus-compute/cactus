@@ -80,10 +80,11 @@ DECLARE_COMPUTE(compute_rfft_node);
 DECLARE_COMPUTE(compute_irfft_node);
 DECLARE_COMPUTE(compute_mel_filter_bank_node);
 DECLARE_COMPUTE(compute_spectrogram_node);
+DECLARE_COMPUTE(compute_dense_mlp_cq_fused_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::CLAMP) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::DENSE_MLP_CQ_FUSED) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -177,6 +178,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::IRFFT)] = compute_irfft_node;
     dispatch_flat[static_cast<int>(OpType::MEL_FILTER_BANK)] = compute_mel_filter_bank_node;
     dispatch_flat[static_cast<int>(OpType::SPECTROGRAM)] = compute_spectrogram_node;
+    dispatch_flat[static_cast<int>(OpType::DENSE_MLP_CQ_FUSED)] = compute_dense_mlp_cq_fused_node;
     return true;
 }
 

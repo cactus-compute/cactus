@@ -312,6 +312,20 @@ size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t laye
 size_t Gemma4Model::build_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                   ComputeBackend backend) const {
     const auto& layer = weight_nodes_.layers[layer_idx];
+    const auto& gate_buf = gb->get_output_buffer(layer.ffn_gate_weight);
+    const auto& up_buf   = gb->get_output_buffer(layer.ffn_up_weight);
+    const auto& down_buf = gb->get_output_buffer(layer.ffn_down_weight);
+    if (gate_buf.is_cq() && up_buf.is_cq() && down_buf.is_cq() &&
+        PrecisionTraits::cq_bits(gate_buf.precision) == 4 &&
+        PrecisionTraits::cq_bits(up_buf.precision) == 4 &&
+        PrecisionTraits::cq_bits(down_buf.precision) == 4 &&
+        gate_buf.group_size == up_buf.group_size &&
+        gate_buf.group_size == down_buf.group_size) {
+        return gb->dense_mlp_cq_fused(input,
+                                      layer.ffn_gate_weight,
+                                      layer.ffn_up_weight,
+                                      layer.ffn_down_weight);
+    }
     auto gate = gb->gelu(gb->matmul(input, layer.ffn_gate_weight, true, backend));
     auto up = gb->matmul(input, layer.ffn_up_weight, true, backend);
     return gb->matmul(gb->multiply(gate, up), layer.ffn_down_weight, true, backend);
