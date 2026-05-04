@@ -224,17 +224,17 @@ struct Config {
     std::string to_json() const;
 };
 
-struct GrammarVocabulary {
-    enum class Type {
-        RAW,
-        BYTE_LEVEL,
-        BYTE_FALLBACK
-    };
+class GrammarVocabulary {
+public:
+    GrammarVocabulary(xgrammar::TokenizerInfo tokenizer_info);
 
-    std::vector<std::string> encoded_vocab;
-    Type vocab_type = Type::RAW;
-    size_t vocab_size;
-    std::vector<uint32_t> stop_token_ids;
+    size_t vocab_size() const;
+    const std::vector<uint32_t>& stop_token_ids() const;
+    const xgrammar::TokenizerInfo& raw_value() const;
+
+private:
+    xgrammar::TokenizerInfo tokenizer_info;
+    std::vector<uint32_t> stop_token_ids_;
 };
 
 class Grammar {

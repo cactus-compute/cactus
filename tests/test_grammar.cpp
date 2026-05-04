@@ -10,22 +10,24 @@ using namespace cactus::engine;
 
 namespace {
 
+static std::unique_ptr<cactus::engine::Tokenizer> create_test_tokenizer() {
+    const char* model_path = std::getenv("CACTUS_TEST_MODEL");
+    if (!model_path) {
+        throw std::runtime_error("CACTUS_TEST_MODEL is not set");
+    }
+
+    auto tokenizer = create_tokenizer_from_model_dir(model_path);
+    if (!tokenizer) {
+        throw std::runtime_error("Failed to load tokenizer from test model files");
+    }
+    return tokenizer;
+}
+
 struct GrammarFixture {
     std::unique_ptr<cactus::engine::Tokenizer> tokenizer;
     GrammarVocabulary vocab;
 
-    GrammarFixture() : vocab() {
-        const char* model_path = std::getenv("CACTUS_TEST_MODEL");
-        if (!model_path) {
-            throw std::runtime_error("CACTUS_TEST_MODEL is not set");
-        }
-
-        tokenizer = create_tokenizer_from_model_dir(model_path);
-        if (!tokenizer) {
-            throw std::runtime_error("Failed to load tokenizer from test model files");
-        }
-        vocab = tokenizer->get_grammar_vocabulary();
-    }
+    GrammarFixture() : tokenizer(create_test_tokenizer()), vocab(tokenizer->get_grammar_vocabulary()) {}
 };
 
 static bool accept_text(GrammarMatcher& matcher, const GrammarFixture& fixture, const std::string& text) {
@@ -356,17 +358,17 @@ static bool test_grammar_matcher_next_bitmask_tracks_simple_grammar(const Gramma
     if (hello_tokens.empty()) return false;
 
     std::vector<int32_t> bitmask;
-    if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size)) return false;
+    if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size())) return false;
     if (!bitmask_allows_token(bitmask, hello_tokens.front())) return false;
     if (bitmask_allows_token(bitmask, eos_token)) return false;
 
     for (size_t i = 0; i < hello_tokens.size(); ++i) {
-        if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size)) return false;
+        if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size())) return false;
         if (!bitmask_allows_token(bitmask, hello_tokens[i])) return false;
         if (!matcher.accept(hello_tokens[i])) return false;
     }
 
-    if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size)) return false;
+    if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size())) return false;
     if (!bitmask_allows_token(bitmask, eos_token)) return false;
     return !bitmask_allows_token(bitmask, hello_tokens.front());
 }
@@ -376,7 +378,7 @@ static bool test_grammar_matcher_next_bitmask_zeroes_overallocated_tail(const Gr
     GrammarMatcher matcher = make_matcher(grammar, fixture);
     std::vector<int32_t> bitmask;
 
-    if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size + 1)) return false;
+    if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size() + 1)) return false;
     return (bitmask.back() & 0xFF000000u) == 0;
 }
 

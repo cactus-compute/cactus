@@ -9,6 +9,42 @@
 namespace cactus {
 namespace engine {
 
+namespace {
+
+static xgrammar::VocabType to_xgrammar_vocab_type(const TokenizerRuntimeConfig& runtime_config) {
+    const auto has_none = runtime_config.decoder == TokenizerRuntimeConfig::Decoder::NONE
+        && runtime_config.normalizer == TokenizerRuntimeConfig::Normalizer::NONE;
+    const auto is_byte_level = runtime_config.decoder == TokenizerRuntimeConfig::Decoder::BYTE_LEVEL
+        || runtime_config.normalizer == TokenizerRuntimeConfig::Normalizer::BYTE_LEVEL;
+    if (runtime_config.byte_fallback) {
+        return xgrammar::VocabType::BYTE_FALLBACK;
+    }
+    if (is_byte_level || has_none) {
+        return xgrammar::VocabType::BYTE_LEVEL;
+    }
+    return xgrammar::VocabType::RAW;
+}
+
+} // anonymous namespace
+
+GrammarVocabulary::GrammarVocabulary(xgrammar::TokenizerInfo tokenizer_info)
+    : tokenizer_info(std::move(tokenizer_info)) {
+    const auto& stop_token_ids = this->tokenizer_info.GetStopTokenIds();
+    stop_token_ids_.assign(stop_token_ids.begin(), stop_token_ids.end());
+}
+
+size_t GrammarVocabulary::vocab_size() const {
+    return static_cast<size_t>(tokenizer_info.GetVocabSize());
+}
+
+const std::vector<uint32_t>& GrammarVocabulary::stop_token_ids() const {
+    return stop_token_ids_;
+}
+
+const xgrammar::TokenizerInfo& GrammarVocabulary::raw_value() const {
+    return tokenizer_info;
+}
+
 GrammarVocabulary Tokenizer::get_grammar_vocabulary() const {
     std::vector<uint32_t> stop_token_ids = {get_eos_token()};
     std::string default_stop = get_default_stop_sequence();
@@ -19,20 +55,15 @@ GrammarVocabulary Tokenizer::get_grammar_vocabulary() const {
         }
     }
 
-    GrammarVocabulary::Type vocab_type = GrammarVocabulary::Type::RAW;
-
-    const auto has_none = runtime_config_.decoder == TokenizerRuntimeConfig::Decoder::NONE
-        && runtime_config_.normalizer == TokenizerRuntimeConfig::Normalizer::NONE;
-    const auto is_byte_level = runtime_config_.decoder == TokenizerRuntimeConfig::Decoder::BYTE_LEVEL
-        || runtime_config_.normalizer == TokenizerRuntimeConfig::Normalizer::BYTE_LEVEL;
-    if (runtime_config_.byte_fallback) {
-        vocab_type = GrammarVocabulary::Type::BYTE_FALLBACK;
-    } else if (is_byte_level || has_none) {
-        vocab_type = GrammarVocabulary::Type::BYTE_LEVEL;
-    }
-
     const auto& encoded_vocab = get_encoded_vocab();
-    return GrammarVocabulary{encoded_vocab, vocab_type, encoded_vocab.size(), stop_token_ids};
+    std::vector<int32_t> stop_token_ids_int32(stop_token_ids.begin(), stop_token_ids.end());
+    return GrammarVocabulary(xgrammar::TokenizerInfo(
+        encoded_vocab,
+        to_xgrammar_vocab_type(runtime_config_),
+        static_cast<int>(encoded_vocab.size()),
+        stop_token_ids_int32,
+        false
+    ));
 }
 
 Grammar::Grammar() : grammar(xgrammar::NullObj{}), is_universal_(false) {}
@@ -81,36 +112,10 @@ Grammar Grammar::regex(const std::string& regex) {
     return Grammar(xgrammar::Grammar::FromRegex(regex));
 }
 
-namespace {
-
-static xgrammar::VocabType to_xgrammar_vocab_type(GrammarVocabulary::Type vocab_type) {
-    switch (vocab_type) {
-        case GrammarVocabulary::Type::RAW:
-            return xgrammar::VocabType::RAW;
-        case GrammarVocabulary::Type::BYTE_LEVEL:
-            return xgrammar::VocabType::BYTE_LEVEL;
-        case GrammarVocabulary::Type::BYTE_FALLBACK:
-            return xgrammar::VocabType::BYTE_FALLBACK;
-    }
-}
-
-static xgrammar::TokenizerInfo to_xgrammar_tokenizer_info(const GrammarVocabulary& vocab) {
-    std::vector<int32_t> stop_token_ids_int32(vocab.stop_token_ids.begin(), vocab.stop_token_ids.end());
-    return xgrammar::TokenizerInfo(
-        vocab.encoded_vocab,
-        to_xgrammar_vocab_type(vocab.vocab_type),
-        static_cast<int>(vocab.vocab_size),
-        stop_token_ids_int32,
-        false
-    );
-}
-
-} // anonymous namespace
-
 Grammar Grammar::structural_tag(const std::string& structural_tag_json, const GrammarVocabulary* vocab) {
     auto result = xgrammar::Grammar::FromStructuralTag(
         structural_tag_json,
-        vocab ? std::optional<xgrammar::TokenizerInfo>(to_xgrammar_tokenizer_info(*vocab)) : std::nullopt
+        vocab ? std::optional<xgrammar::TokenizerInfo>(vocab->raw_value()) : std::nullopt
     );
     if (std::holds_alternative<xgrammar::Grammar>(result)) {
         return Grammar(std::get<xgrammar::Grammar>(std::move(result)));
@@ -159,7 +164,7 @@ const xgrammar::Grammar& Grammar::raw_value() const {
 }
 
 GrammarEngine::GrammarEngine(const GrammarVocabulary& vocab)
-    : compiler(nullptr), tokenizer_info(to_xgrammar_tokenizer_info(vocab)) {
+    : compiler(nullptr), tokenizer_info(vocab.raw_value()) {
     compiler = xgrammar::GrammarCompiler(
         tokenizer_info,
         static_cast<int>(std::max(1u, std::thread::hardware_concurrency()))
