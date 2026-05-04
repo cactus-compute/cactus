@@ -61,6 +61,13 @@ static bool rejects_eos_after_text(const Grammar& grammar, const GrammarFixture&
     return !matcher.accept(fixture.tokenizer->get_eos_token(), false);
 }
 
+static bool bitmask_allows_token(const std::vector<int32_t>& bitmask, uint32_t token_id) {
+    const size_t word_index = token_id / 32;
+    const uint32_t bit_index = token_id % 32;
+    if (word_index >= bitmask.size()) return false;
+    return ((bitmask[word_index]) & (uint32_t{1} << bit_index)) != 0;
+}
+
 static std::string tool_call_structural_tag_json() {
     return R"({
         "type": "structural_tag",
@@ -280,6 +287,39 @@ static bool test_grammar_matcher_reset_restores_initial_state(const GrammarFixtu
         && matcher.accept(fixture.tokenizer->get_eos_token(), false);
 }
 
+static bool test_grammar_matcher_next_bitmask_tracks_simple_grammar(const GrammarFixture& fixture) {
+    Grammar grammar = Grammar::gbnf("root ::= \"hello\"");
+    GrammarMatcher matcher(&grammar, fixture.vocab);
+    const std::vector<uint32_t> hello_tokens = fixture.tokenizer->encode("hello");
+    const uint32_t eos_token = fixture.tokenizer->get_eos_token();
+
+    if (hello_tokens.empty()) return false;
+
+    std::vector<int32_t> bitmask;
+    if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size)) return false;
+    if (!bitmask_allows_token(bitmask, hello_tokens.front())) return false;
+    if (bitmask_allows_token(bitmask, eos_token)) return false;
+
+    for (size_t i = 0; i < hello_tokens.size(); ++i) {
+        if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size)) return false;
+        if (!bitmask_allows_token(bitmask, hello_tokens[i])) return false;
+        if (!matcher.accept(hello_tokens[i], false)) return false;
+    }
+
+    if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size)) return false;
+    if (!bitmask_allows_token(bitmask, eos_token)) return false;
+    return !bitmask_allows_token(bitmask, hello_tokens.front());
+}
+
+static bool test_grammar_matcher_next_bitmask_zeroes_overallocated_tail(const GrammarFixture& fixture) {
+    Grammar grammar = Grammar::gbnf("root ::= \"hello\"");
+    GrammarMatcher matcher(&grammar, fixture.vocab);
+    std::vector<int32_t> bitmask;
+
+    if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size + 1)) return false;
+    return (bitmask.back() & 0xFF000000u) == 0;
+}
+
 
 } // anonymous namespace
 
@@ -302,6 +342,8 @@ int main() {
         runner.run_test("union_with_universal_returns_universal", test_union_with_universal_returns_universal());
         runner.run_test("structural_tag_language", test_structural_tag_accepts_and_rejects_expected_text(fixture));
         runner.run_test("grammar_matcher_reset", test_grammar_matcher_reset_restores_initial_state(fixture));
+        runner.run_test("grammar_matcher_next_bitmask", test_grammar_matcher_next_bitmask_tracks_simple_grammar(fixture));
+        runner.run_test("grammar_matcher_next_bitmask_overallocated_tail", test_grammar_matcher_next_bitmask_zeroes_overallocated_tail(fixture));
     } catch (const std::exception& e) {
         std::cerr << "[✗] Grammar test setup failed: " << e.what() << "\n";
     }
