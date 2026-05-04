@@ -357,8 +357,13 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
         const float scale = 1.0f / std::sqrt(static_cast<float>(dims.head_dim));
 
         // NS cycles enough Q/K/V states to push the per-state KV footprint
-        // past kCacheBypassBytes; sized against K+V (dominant term).
-        const size_t per_state_kv_bytes = 2 * dims.num_kv_heads * kvl * dims.head_dim * sizeof(float);
+        // past kCacheBypassBytes. We size against the *smallest* backend storage
+        // (INT8 K+V plus fp32 group scales) so quantized backends don't get
+        // unfair L2/SLC locality on small cache_lens.
+        const size_t groups_per_token = std::max<size_t>(1, dims.head_dim / 32);
+        const size_t per_state_kv_bytes =
+            2 * dims.num_kv_heads * kvl * dims.head_dim * sizeof(int8_t) +
+            2 * dims.num_kv_heads * kvl * groups_per_token * sizeof(float);
         const size_t NS_for_bypass = (kCacheBypassBytes + per_state_kv_bytes - 1)
                                       / std::max(per_state_kv_bytes, size_t(1));
         const size_t NS = std::min(kMaxAttnStateCount, std::max(static_cast<size_t>(2), NS_for_bypass));
