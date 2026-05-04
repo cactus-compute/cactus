@@ -1,6 +1,7 @@
 #ifndef CACTUS_UTILS_H
 #define CACTUS_UTILS_H
 
+#include "cactus_ffi.h"
 #include "../engine/engine.h"
 #include "../models/model.h"
 #include <string>
@@ -58,10 +59,6 @@ inline size_t get_memory_footprint_bytes() {
 inline double get_ram_usage_mb() {
     return get_memory_footprint_bytes() / (1024.0 * 1024.0);
 }
-
-struct CactusGrammarHandle {
-    std::unique_ptr<cactus::engine::Grammar> grammar;
-};
 
 struct CactusModelHandle {
     std::unique_ptr<cactus::engine::Model> model;
@@ -1856,6 +1853,8 @@ inline std::vector<float> pcm_to_float(const uint8_t* pcm_buffer, size_t pcm_buf
         out[i] = static_cast<float>(samples[i]) / 32768.0f;
     return out;
 }
+
+cactus_grammar_vocabulary_t make_grammar_vocabulary_from_tokenizer(const cactus::engine::Tokenizer& tokenizer);
 
 } // namespace ffi
 } // namespace cactus
