@@ -93,7 +93,7 @@ struct Config {
     float rescale_factor = 0.00392156862745098f;
     float image_mean = 0.5f;
     float image_std = 0.5f;
-    
+
     uint32_t downsample_factor = 2;
     uint32_t min_tiles = 2;
     uint32_t max_tiles = 10;
@@ -279,8 +279,11 @@ public:
     );
     ~GrammarMatcher() = default;
 
+    void rollback(int tokens = 1);
     void reset();
-    bool accept(uint32_t token_id, bool log_rejection = true);
+    bool is_completed() const;
+    bool is_terminated() const;
+    bool accept(uint32_t token_id, bool log_rejection = false);
     bool next_bitmask(std::vector<int32_t>& token_bitmask, size_t logits_buffer_size);
 
 private:
@@ -294,7 +297,7 @@ struct MergeRule {
     std::string second;
     std::string merged;
     uint32_t priority;
-    
+
     MergeRule(const std::string& f, const std::string& s, const std::string& m, uint32_t p)
         : first(f), second(s), merged(m), priority(p) {}
 };
@@ -406,7 +409,7 @@ public:
     std::string get_default_stop_sequence() const;
 
     virtual bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) = 0;
-    
+
     uint32_t get_image_token_id() const { return image_token_id_; }
     uint32_t get_fake_token_id() const { return fake_token_id_; }
     uint32_t get_global_img_token_id() const { return global_img_token_id_; }
@@ -418,7 +421,7 @@ protected:
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
     bool has_chat_template_ = false;
     std::string chat_template_;
-    
+
     uint32_t image_token_id_ = 396;
     uint32_t fake_token_id_ = 49189;
     uint32_t global_img_token_id_ = 49152;
@@ -462,7 +465,7 @@ private:
     std::unordered_map<std::string, uint32_t> token_to_id_;
     std::vector<std::string> id_to_token_;
     std::vector<MergeRule> merge_rules_;
-    std::unordered_map<std::string, uint32_t> merge_map_;  
+    std::unordered_map<std::string, uint32_t> merge_map_;
 
     uint32_t vocab_size_;
     uint32_t unk_token_id_;
@@ -477,14 +480,14 @@ private:
 
     std::vector<std::string> apply_bpe(const std::vector<std::string>& tokens) const;
     std::pair<int, uint32_t> find_best_merge_fast(const std::vector<std::string>& tokens) const;
-    
+
     std::string bytes_to_unicode(const std::string& text) const;
     std::string unicode_to_bytes(const std::string& text) const;
     std::vector<std::string> byte_level_split(const std::string& text) const;
     std::vector<std::string> utf8_split(const std::string& text) const;
 
     void cleanup_mmap();
-    
+
 private:
     mutable std::unordered_map<uint8_t, std::string> byte_to_unicode_;
     mutable std::unordered_map<std::string, uint8_t> unicode_to_byte_;
@@ -557,9 +560,9 @@ public:
     struct CircularView {
         const void* ptr1;
         size_t len1;
-        const void* ptr2; 
+        const void* ptr2;
         size_t len2;
-        size_t total_len; 
+        size_t total_len;
     };
 
     void init(size_t layers, size_t hidden_dim, size_t window_len, Precision model_precision);
@@ -577,9 +580,9 @@ public:
 
 private:
     struct LayerState {
-        std::vector<uint8_t> data;  
-        size_t head = 0; 
-        size_t count = 0; 
+        std::vector<uint8_t> data;
+        size_t head = 0;
+        size_t count = 0;
     };
 
     std::vector<LayerState> layer_states;
@@ -600,8 +603,8 @@ struct KVCache {
 
     std::vector<LayerCache> layer_caches;
 
-    size_t window_size = DEFAULT_WINDOW_SIZE;  
-    size_t sink_size = DEFAULT_SINK_SIZE;    
+    size_t window_size = DEFAULT_WINDOW_SIZE;
+    size_t sink_size = DEFAULT_SINK_SIZE;
     size_t current_seq_len = 0;
     size_t total_seq_len = 0;
     size_t max_seq_len = 2048;
@@ -630,9 +633,9 @@ struct KVCache {
 
     struct CircularView {
         const void* ptr1;
-        const void* ptr2;  
+        const void* ptr2;
         size_t len1;
-        size_t len2; 
+        size_t len2;
         size_t total_len;
     };
 
@@ -651,36 +654,36 @@ struct KVCache {
 class ToolCallConstrainer {
 public:
     enum class State {
-        DONE,                   
+        DONE,
 
-        QWEN_START,             
-        QWEN_EXPECT_OPEN_BRACE, 
-        QWEN_EXPECT_NAME_KEY, 
+        QWEN_START,
+        QWEN_EXPECT_OPEN_BRACE,
+        QWEN_EXPECT_NAME_KEY,
         QWEN_EXPECT_NAME_COLON,
         QWEN_EXPECT_NAME_VALUE,
-        QWEN_EXPECT_COMMA, 
-        QWEN_EXPECT_ARGS_KEY, 
-        QWEN_EXPECT_ARGS_COLON, 
+        QWEN_EXPECT_COMMA,
+        QWEN_EXPECT_ARGS_KEY,
+        QWEN_EXPECT_ARGS_COLON,
         QWEN_IN_ARGUMENTS,
         QWEN_EXPECT_CLOSE_BRACE,
         QWEN_EXPECT_END,
 
         NEEDLE_START,
 
-        LFM_START,              
-        LFM_EXPECT_BRACKET, 
+        LFM_START,
+        LFM_EXPECT_BRACKET,
         LFM_IN_FUNC_NAME,
         LFM_EXPECT_PAREN,
-        LFM_IN_ARGUMENTS, 
-        LFM_EXPECT_BRACKET_CLOSE, 
-        LFM_EXPECT_END,   
+        LFM_IN_ARGUMENTS,
+        LFM_EXPECT_BRACKET_CLOSE,
+        LFM_EXPECT_END,
 
-        GEMMA_START,           
-        GEMMA_EXPECT_CALL, 
-        GEMMA_IN_FUNC_NAME, 
-        GEMMA_EXPECT_BRACE, 
-        GEMMA_IN_ARGUMENTS, 
-        GEMMA_EXPECT_END 
+        GEMMA_START,
+        GEMMA_EXPECT_CALL,
+        GEMMA_IN_FUNC_NAME,
+        GEMMA_EXPECT_BRACE,
+        GEMMA_IN_ARGUMENTS,
+        GEMMA_EXPECT_END
     };
 
     void init(Config::ModelType model_type,
@@ -725,14 +728,14 @@ private:
 
     std::unordered_set<uint32_t> qwen_tool_call_start_tokens_;
     std::unordered_set<uint32_t> qwen_tool_call_end_tokens_;
-    std::unordered_set<uint32_t> open_brace_tokens_;         
-    std::unordered_set<uint32_t> close_brace_tokens_;       
-    std::unordered_set<uint32_t> colon_tokens_;            
-    std::unordered_set<uint32_t> comma_tokens_;          
-    std::unordered_set<uint32_t> name_key_tokens_;           
-    std::unordered_set<uint32_t> args_key_tokens_;         
-    std::unordered_set<uint32_t> quote_tokens_;            
-    std::unordered_set<uint32_t> backtick_tokens_;   
+    std::unordered_set<uint32_t> open_brace_tokens_;
+    std::unordered_set<uint32_t> close_brace_tokens_;
+    std::unordered_set<uint32_t> colon_tokens_;
+    std::unordered_set<uint32_t> comma_tokens_;
+    std::unordered_set<uint32_t> name_key_tokens_;
+    std::unordered_set<uint32_t> args_key_tokens_;
+    std::unordered_set<uint32_t> quote_tokens_;
+    std::unordered_set<uint32_t> backtick_tokens_;
     std::unordered_set<uint32_t> all_func_name_tokens_;
     std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;
     NeedleJsonState needle_json_state_ = NeedleJsonState::FREE;
@@ -765,13 +768,13 @@ private:
     std::string lfm_args_buffer_;
     std::unordered_set<std::string> lfm_seen_arg_keys_;
     std::unordered_map<std::string, std::vector<std::string>> lfm_required_params_;
-    std::unordered_map<std::string, std::vector<std::string>> lfm_all_params_;        
+    std::unordered_map<std::string, std::vector<std::string>> lfm_all_params_;
 
-    std::unordered_set<uint32_t> gemma_call_start_tokens_;    
-    std::unordered_set<uint32_t> gemma_call_end_tokens_;       
-    std::unordered_set<uint32_t> gemma_response_start_tokens_; 
-    std::unordered_set<uint32_t> gemma_call_prefix_tokens_;    
-    std::unordered_set<uint32_t> escape_tokens_;              
+    std::unordered_set<uint32_t> gemma_call_start_tokens_;
+    std::unordered_set<uint32_t> gemma_call_end_tokens_;
+    std::unordered_set<uint32_t> gemma_response_start_tokens_;
+    std::unordered_set<uint32_t> gemma_call_prefix_tokens_;
+    std::unordered_set<uint32_t> escape_tokens_;
 
     std::unordered_map<uint32_t, float> current_bias_;
 
@@ -811,7 +814,7 @@ public:
     const std::vector<DebugNode>& get_debug_nodes() const;
 
     virtual bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true);
-    
+
     virtual bool init(CactusGraph* external_graph, const std::string& model_folder, size_t context_size,
               const std::string& system_prompt = "", bool do_warmup = true);
 
@@ -835,9 +838,9 @@ public:
                       float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, bool normalize = false, const std::string& profile_file = "");
-    
+
     virtual std::vector<float> get_image_embeddings(const std::string& image_path);
-    
+
     virtual std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features);
 
     virtual void reset_cache() { kv_cache_.reset(); token_history_.clear(); }
@@ -892,14 +895,14 @@ protected:
     static void compute_entropy(CactusGraph* gb, size_t logits_node_id, float* out_entropy);
 
     virtual size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) = 0;
-    
+
     virtual size_t forward(const std::vector<float>& audio_features, const std::vector<uint32_t>& tokens, bool use_cache = false);
-    
+
     virtual void load_weights_to_graph(CactusGraph* gb) = 0;
-    
+
     virtual size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
                           ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) = 0;
-    
+
                           virtual size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
                     ComputeBackend backend) const = 0;
     virtual size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
@@ -976,33 +979,33 @@ public:
     };
 
     struct PreprocessedImage {
-        std::vector<float> pixel_values;       
-        std::vector<int> pixel_attention_mask; 
-        std::vector<std::pair<int,int>> spatial_shapes;  
-        std::vector<size_t> pixel_values_shape;           
-        std::vector<size_t> pixel_attention_mask_shape;   
-        std::vector<size_t> spatial_shapes_shape;         
-        int num_patches_height;                 
-        int num_patches_width;                  
-        int actual_num_patches;                 
-        int num_tiles;                          
-        int patch_dim;                          
-        int max_patches_per_tile;               
-          
-        int image_rows;                         
-        int image_cols;                         
-        int image_height;                       
-        int image_width;                        
-        int tokens_per_tile;                    
-        int thumbnail_tokens;                   
-        
+        std::vector<float> pixel_values;
+        std::vector<int> pixel_attention_mask;
+        std::vector<std::pair<int,int>> spatial_shapes;
+        std::vector<size_t> pixel_values_shape;
+        std::vector<size_t> pixel_attention_mask_shape;
+        std::vector<size_t> spatial_shapes_shape;
+        int num_patches_height;
+        int num_patches_width;
+        int actual_num_patches;
+        int num_tiles;
+        int patch_dim;
+        int max_patches_per_tile;
+
+        int image_rows;
+        int image_cols;
+        int image_height;
+        int image_width;
+        int tokens_per_tile;
+        int thumbnail_tokens;
+
         ~PreprocessedImage();
     };
 
     struct SpatialShapeResult {
-        std::vector<std::pair<int, int>> shapes;  
-        int grid_rows;                             
-        int grid_cols;                             
+        std::vector<std::pair<int, int>> shapes;
+        int grid_rows;
+        int grid_cols;
     };
 
     explicit Siglip2Preprocessor(const Config& config);

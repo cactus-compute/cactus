@@ -29,23 +29,17 @@ struct GrammarFixture {
 
 static bool accept_text(GrammarMatcher& matcher, const GrammarFixture& fixture, const std::string& text) {
     const std::vector<uint32_t> tokens = fixture.tokenizer->encode(text);
-    if (tokens.empty() && !text.empty()) {
-        return false;
-    }
+    if (tokens.empty() && !text.empty()) return false;
     for (uint32_t token : tokens) {
-        if (!matcher.accept(token, false)) {
-            return false;
-        }
+        if (!matcher.accept(token)) return false;
     }
     return true;
 }
 
 static bool accepts_complete_text(const Grammar& grammar, const GrammarFixture& fixture, const std::string& text) {
     GrammarMatcher matcher(&grammar, fixture.vocab);
-    if (!accept_text(matcher, fixture, text)) {
-        return false;
-    }
-    return matcher.accept(fixture.tokenizer->get_eos_token(), false);
+    if (!accept_text(matcher, fixture, text)) return false;
+    return matcher.accept(fixture.tokenizer->get_eos_token());
 }
 
 static bool rejects_text(const Grammar& grammar, const GrammarFixture& fixture, const std::string& text) {
@@ -55,10 +49,8 @@ static bool rejects_text(const Grammar& grammar, const GrammarFixture& fixture, 
 
 static bool rejects_eos_after_text(const Grammar& grammar, const GrammarFixture& fixture, const std::string& text) {
     GrammarMatcher matcher(&grammar, fixture.vocab);
-    if (!accept_text(matcher, fixture, text)) {
-        return true;
-    }
-    return !matcher.accept(fixture.tokenizer->get_eos_token(), false);
+    if (!accept_text(matcher, fixture, text)) return true;
+    return !matcher.accept(fixture.tokenizer->get_eos_token());
 }
 
 static bool bitmask_allows_token(const std::vector<int32_t>& bitmask, uint32_t token_id) {
@@ -274,17 +266,45 @@ static bool test_grammar_matcher_reset_restores_initial_state(const GrammarFixtu
     Grammar grammar = Grammar::gbnf("root ::= \"hello\"");
     GrammarMatcher matcher(&grammar, fixture.vocab);
 
-    if (!accept_text(matcher, fixture, "hello")) {
-        return false;
-    }
-    if (!matcher.accept(fixture.tokenizer->get_eos_token(), false)) {
-        return false;
-    }
+    if (!accept_text(matcher, fixture, "hello")) return false;
+    if (!matcher.accept(fixture.tokenizer->get_eos_token())) return false;
 
     matcher.reset();
     return rejects_text(grammar, fixture, "goodbye")
         && accept_text(matcher, fixture, "hello")
-        && matcher.accept(fixture.tokenizer->get_eos_token(), false);
+        && matcher.accept(fixture.tokenizer->get_eos_token());
+}
+
+static bool test_grammar_matcher_rollback_restores_previous_state(const GrammarFixture& fixture) {
+    Grammar grammar = Grammar::gbnf("root ::= \"hello\" | \"hi\"");
+    GrammarMatcher matcher(&grammar, fixture.vocab);
+    const std::vector<uint32_t> hello_tokens = fixture.tokenizer->encode("hello");
+    const std::vector<uint32_t> hi_tokens = fixture.tokenizer->encode("hi");
+    const uint32_t eos_token = fixture.tokenizer->get_eos_token();
+
+    for (uint32_t token : hello_tokens) {
+        if (!matcher.accept(token)) return false;
+    }
+    if (!matcher.accept(eos_token)) return false;
+
+    matcher.rollback(static_cast<int>(hello_tokens.size()) + 1);
+
+    for (uint32_t token : hi_tokens) {
+        if (!matcher.accept(token)) return false;
+    }
+    return matcher.accept(eos_token);
+}
+
+static bool test_grammar_matcher_completion_state(const GrammarFixture& fixture) {
+    Grammar grammar = Grammar::gbnf("root ::= \"hello\"");
+    GrammarMatcher matcher(&grammar, fixture.vocab);
+    const uint32_t eos_token = fixture.tokenizer->get_eos_token();
+
+    if (matcher.is_completed() || matcher.is_terminated()) return false;
+    if (!accept_text(matcher, fixture, "hello")) return false;
+    if (!matcher.is_completed() || matcher.is_terminated()) return false;
+    if (!matcher.accept(eos_token)) return false;
+    return matcher.is_completed() && matcher.is_terminated();
 }
 
 static bool test_grammar_matcher_next_bitmask_tracks_simple_grammar(const GrammarFixture& fixture) {
@@ -303,7 +323,7 @@ static bool test_grammar_matcher_next_bitmask_tracks_simple_grammar(const Gramma
     for (size_t i = 0; i < hello_tokens.size(); ++i) {
         if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size)) return false;
         if (!bitmask_allows_token(bitmask, hello_tokens[i])) return false;
-        if (!matcher.accept(hello_tokens[i], false)) return false;
+        if (!matcher.accept(hello_tokens[i])) return false;
     }
 
     if (!matcher.next_bitmask(bitmask, fixture.vocab.vocab_size)) return false;
@@ -342,6 +362,8 @@ int main() {
         runner.run_test("union_with_universal_returns_universal", test_union_with_universal_returns_universal());
         runner.run_test("structural_tag_language", test_structural_tag_accepts_and_rejects_expected_text(fixture));
         runner.run_test("grammar_matcher_reset", test_grammar_matcher_reset_restores_initial_state(fixture));
+        runner.run_test("grammar_matcher_rollback", test_grammar_matcher_rollback_restores_previous_state(fixture));
+        runner.run_test("grammar_matcher_completion_state", test_grammar_matcher_completion_state(fixture));
         runner.run_test("grammar_matcher_next_bitmask", test_grammar_matcher_next_bitmask_tracks_simple_grammar(fixture));
         runner.run_test("grammar_matcher_next_bitmask_overallocated_tail", test_grammar_matcher_next_bitmask_zeroes_overallocated_tail(fixture));
     } catch (const std::exception& e) {

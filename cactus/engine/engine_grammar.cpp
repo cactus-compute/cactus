@@ -157,8 +157,20 @@ GrammarMatcher::GrammarMatcher(const Grammar* grammar, const GrammarVocabulary& 
     this->tokenizer_info = xgrammar_tokenizer_info;
 }
 
+void GrammarMatcher::rollback(int tokens) {
+    matcher.Rollback(tokens);
+}
+
 void GrammarMatcher::reset() {
     matcher.Reset();
+}
+
+bool GrammarMatcher::is_completed() const {
+    return matcher.IsCompleted();
+}
+
+bool GrammarMatcher::is_terminated() const {
+    return matcher.IsTerminated();
 }
 
 bool GrammarMatcher::accept(uint32_t token_id, bool log_rejection) {
