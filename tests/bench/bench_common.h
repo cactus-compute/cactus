@@ -75,6 +75,8 @@ struct AttnBenchOptions {
     std::vector<size_t> dims;
     size_t model_dim = 1024;
     size_t num_heads = 8;
+    size_t num_kv_heads = 0;  // 0 = use num_heads (MHA); >0 enables GQA/MQA
+    size_t head_dim_override = 0;  // 0 = derive from model_dim/num_heads
     std::string backends_filter;
     std::string csv_path;
 };
@@ -120,7 +122,8 @@ void reference_attention_fp32(const float* Q, const float* K, const float* V,
                                float* output,
                                size_t num_q_heads, size_t num_kv_heads,
                                size_t seq_len, size_t kv_seq_len,
-                               size_t head_dim, float scale);
+                               size_t head_dim, float scale,
+                               size_t window_size = 0);
 
 struct AccuracyResult {
     float max_abs_error = 0.0f;
