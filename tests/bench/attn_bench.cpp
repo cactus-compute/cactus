@@ -11,7 +11,7 @@ int main(int argc, char** argv) {
                   << "Usage: " << argv[0]
                   << " [--iterations N] [--warmup N]\n"
                   << "       [--graphs attn_prefill_s,attn_decode_cache]\n"
-                  << "       [--dims 128,256,...] [--model_dim N] [--heads N]\n"
+                  << "       [--dims 128,256,...] [--model_dim N] [--heads N] [--kv_heads N] [--head_dim N]\n"
                   << "       [--backends fw1,fw2] [--threads N|max] [--csv path]\n";
         return 1;
     }

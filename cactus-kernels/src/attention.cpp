@@ -676,9 +676,9 @@ void cactus_attention_f16(
         });
 }
 
-// Decode-only specialization (seq_len=1, head_dim%32==0, quant_group_size=32, no
-// window, fully causal). Pre-quantizes Q to INT8 once per head, then uses
-// vdotq_s32 in K scoring — ~3× faster K dots than the FP16 FMA path.
+// Decode-only specialization. Pre-quantizes Q to INT8 once per head, then uses
+// vdotq_s32 in K scoring. Sliding-window only safe when the cache is unrolled
+// (slot index == absolute position); the dispatcher enforces this.
 static void cactus_attention_hybrid_int8_fp16_decode_dot(
     const __fp16* queries,
     const int8_t* keys_cached,
@@ -696,7 +696,8 @@ static void cactus_attention_hybrid_int8_fp16_decode_dot(
     size_t head_dim,
     float scale,
     size_t position_offset,
-    bool is_causal
+    bool is_causal,
+    size_t window_size
 ) {
     const size_t kv_seq_len = cache_len + new_len;
 
@@ -774,8 +775,10 @@ static void cactus_attention_hybrid_int8_fp16_decode_dot(
 
                 const size_t absolute_q_pos = position_offset;
                 size_t kv_end = is_causal ? std::min(kv_seq_len, absolute_q_pos + 1) : kv_seq_len;
+                size_t kv_start = (window_size > 0 && absolute_q_pos > window_size)
+                                  ? absolute_q_pos - window_size : 0;
 
-                for (size_t kv_block_start = 0; kv_block_start < kv_end; kv_block_start += BLOCK_SIZE) {
+                for (size_t kv_block_start = kv_start; kv_block_start < kv_end; kv_block_start += BLOCK_SIZE) {
                     const size_t kv_block_end = std::min(kv_block_start + BLOCK_SIZE, kv_end);
                     const size_t block_size = kv_block_end - kv_block_start;
 
@@ -1034,18 +1037,20 @@ void cactus_attention_hybrid_int8_fp16(
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }
 
+    // Fast path requires slot==abs identity, broken once the ring buffer rolls.
+    const bool cache_unrolled = position_offset <= cache_len;
     if (seq_len == 1 &&
         head_dim == v_head_dim &&
         head_dim <= 256 &&
         head_dim % 32 == 0 &&
         quant_group_size == 32 &&
-        window_size == 0) {
+        (window_size == 0 || cache_unrolled)) {
         cactus_attention_hybrid_int8_fp16_decode_dot(
             queries, keys_cached, values_cached, k_scales, v_scales,
             keys_new, values_new, output,
             batch_size, cache_len, new_len,
             num_q_heads, num_kv_heads, head_dim,
-            scale, position_offset, is_causal);
+            scale, position_offset, is_causal, window_size);
         return;
     }
 

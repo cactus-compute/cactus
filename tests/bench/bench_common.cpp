@@ -61,9 +61,11 @@ std::vector<AttnConfig> build_attn_configs(const AttnBenchOptions& opt) {
     if (dims.empty()) dims = default_dim_sweep();
 
     AttnDims base{};
-    base.head_dim = opt.model_dim / opt.num_heads;
+    base.head_dim = opt.head_dim_override > 0
+                    ? opt.head_dim_override
+                    : opt.model_dim / opt.num_heads;
     base.num_q_heads = opt.num_heads;
-    base.num_kv_heads = opt.num_heads;
+    base.num_kv_heads = opt.num_kv_heads > 0 ? opt.num_kv_heads : opt.num_heads;
 
     std::vector<AttnConfig> out;
     for (auto g : opt.graphs) {
@@ -208,7 +210,8 @@ void reference_attention_fp32(const float* Q, const float* K, const float* V,
                                float* output,
                                size_t num_q_heads, size_t num_kv_heads,
                                size_t seq_len, size_t kv_seq_len,
-                               size_t head_dim, float scale) {
+                               size_t head_dim, float scale,
+                               size_t window_size) {
     size_t gqa_ratio = num_q_heads / num_kv_heads;
 
     for (size_t qh = 0; qh < num_q_heads; ++qh) {
@@ -218,9 +221,11 @@ void reference_attention_fp32(const float* Q, const float* K, const float* V,
             std::vector<double> scores(kv_seq_len);
             double max_score = -1e30;
 
+            const size_t abs_q = sq + (kv_seq_len - seq_len);
             for (size_t sk = 0; sk < kv_seq_len; ++sk) {
-                bool is_masked = sk > sq + (kv_seq_len - seq_len);
-                if (is_masked) { scores[sk] = -1e30; continue; }
+                bool causal_masked = sk > abs_q;
+                bool window_masked = (window_size > 0 && abs_q > window_size && sk < abs_q - window_size);
+                if (causal_masked || window_masked) { scores[sk] = -1e30; continue; }
                 double dot = 0.0;
                 for (size_t d = 0; d < head_dim; ++d)
                     dot += static_cast<double>(Q[qh * seq_len * head_dim + sq * head_dim + d]) *
@@ -429,6 +434,12 @@ bool parse_attn_bench_args(int argc, char** argv, AttnBenchOptions& opt, std::st
         } else if (a == "--heads") {
             if (++i >= argc) { err = "Missing --heads value"; return false; }
             opt.num_heads = static_cast<size_t>(std::max(1, std::stoi(argv[i])));
+        } else if (a == "--kv_heads") {
+            if (++i >= argc) { err = "Missing --kv_heads value"; return false; }
+            opt.num_kv_heads = static_cast<size_t>(std::max(1, std::stoi(argv[i])));
+        } else if (a == "--head_dim") {
+            if (++i >= argc) { err = "Missing --head_dim value"; return false; }
+            opt.head_dim_override = static_cast<size_t>(std::max(1, std::stoi(argv[i])));
         } else if (a == "--csv") {
             if (++i >= argc) { err = "Missing --csv value"; return false; }
             opt.csv_path = argv[i];
