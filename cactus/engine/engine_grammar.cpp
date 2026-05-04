@@ -164,12 +164,19 @@ GrammarMatcher::GrammarMatcher(const Grammar* grammar, const GrammarVocabulary& 
     this->tokenizer_info = xgrammar_tokenizer_info;
 }
 
+GrammarMatcher::GrammarMatcher(xgrammar::GrammarMatcher matcher, xgrammar::TokenizerInfo tokenizer_info)
+    : matcher(std::move(matcher)), tokenizer_info(std::move(tokenizer_info)) {}
+
 void GrammarMatcher::rollback(int tokens) {
     matcher.Rollback(tokens);
 }
 
 void GrammarMatcher::reset() {
     matcher.Reset();
+}
+
+GrammarMatcher GrammarMatcher::fork() const {
+    return GrammarMatcher(matcher.Fork(), tokenizer_info);
 }
 
 bool GrammarMatcher::is_completed() const {

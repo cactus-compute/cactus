@@ -315,6 +315,33 @@ static bool test_grammar_matcher_completion_state(const GrammarFixture& fixture)
     return matcher.is_completed() && matcher.is_terminated();
 }
 
+static bool test_grammar_matcher_fork_preserves_accept_state(const GrammarFixture& fixture) {
+    Grammar grammar = Grammar::ebnf("root ::= \"hello world\"");
+    GrammarMatcher matcher(&grammar, fixture.vocab);
+    const std::vector<uint32_t> tokens = fixture.tokenizer->encode("hello world");
+    const uint32_t eos_token = fixture.tokenizer->get_eos_token();
+
+    if (tokens.size() < 2) return false;
+
+    const size_t fork_point = tokens.size() / 2;
+
+    for (size_t i = 0; i < fork_point; ++i) {
+        if (!matcher.accept(tokens[i])) return false;
+    }
+
+    GrammarMatcher forked = matcher.fork();
+
+    for (size_t i = fork_point; i < tokens.size(); ++i) {
+        if (!matcher.accept(tokens[i])) return false;
+    }
+    if (!matcher.accept(eos_token)) return false;
+
+    for (size_t i = fork_point; i < tokens.size(); ++i) {
+        if (!forked.accept(tokens[i])) return false;
+    }
+    return forked.accept(eos_token);
+}
+
 static bool test_grammar_matcher_next_bitmask_tracks_simple_grammar(const GrammarFixture& fixture) {
     Grammar grammar = Grammar::ebnf("root ::= \"hello\"");
     GrammarMatcher matcher(&grammar, fixture.vocab);
@@ -373,6 +400,7 @@ int main() {
         runner.run_test("grammar_matcher_reset", test_grammar_matcher_reset_restores_initial_state(fixture));
         runner.run_test("grammar_matcher_rollback", test_grammar_matcher_rollback_restores_previous_state(fixture));
         runner.run_test("grammar_matcher_completion_state", test_grammar_matcher_completion_state(fixture));
+        runner.run_test("grammar_matcher_fork", test_grammar_matcher_fork_preserves_accept_state(fixture));
         runner.run_test("grammar_matcher_next_bitmask", test_grammar_matcher_next_bitmask_tracks_simple_grammar(fixture));
         runner.run_test("grammar_matcher_next_bitmask_overallocated_tail", test_grammar_matcher_next_bitmask_zeroes_overallocated_tail(fixture));
     } catch (const std::exception& e) {

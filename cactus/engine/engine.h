@@ -282,12 +282,15 @@ public:
 
     void rollback(int tokens = 1);
     void reset();
+    GrammarMatcher fork() const;
     bool is_completed() const;
     bool is_terminated() const;
     bool accept(uint32_t token_id, bool log_rejection = false);
     bool next_bitmask(std::vector<int32_t>& bitmask, size_t logits_buffer_size);
 
 private:
+    GrammarMatcher(xgrammar::GrammarMatcher matcher, xgrammar::TokenizerInfo tokenizer_info);
+
     xgrammar::GrammarMatcher matcher;
     xgrammar::TokenizerInfo tokenizer_info;
 };
