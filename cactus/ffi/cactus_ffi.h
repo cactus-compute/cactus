@@ -448,7 +448,7 @@ cactus_node_t node, void** out_ptr);
 CACTUS_FFI_EXPORT int cactus_graph_get_output_info(cactus_graph_t graph,
 cactus_node_t node, cactus_tensor_info_t* out_info);
 
-CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_gbnf(const char* gbnf, const char* start_symbol);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_ebnf(const char* ebnf, const char* start_symbol);
 CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_json();
 CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_empty();
 CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_universal();
@@ -471,6 +471,7 @@ CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_regex(const char* regex);
 CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_structural_tag(const char* structural_tag_json);
 CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_union(cactus_grammar_t* grammars, size_t num_grammars);
 CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_concatenate(cactus_grammar_t* grammars, size_t num_grammars);
+CACTUS_FFI_EXPORT int cactus_grammar_get_ebnf(cactus_grammar_t grammar, char* buffer, size_t buffer_size);
 CACTUS_FFI_EXPORT bool cactus_grammar_is_empty(cactus_grammar_t grammar);
 CACTUS_FFI_EXPORT bool cactus_grammar_is_universal(cactus_grammar_t grammar);
 CACTUS_FFI_EXPORT void cactus_grammar_destroy(cactus_grammar_t grammar);

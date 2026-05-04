@@ -242,7 +242,7 @@ public:
     Grammar();
     ~Grammar() = default;
 
-    static Grammar gbnf(const std::string& gbnf, const std::string& start_symbol = "root");
+    static Grammar ebnf(const std::string& ebnf, const std::string& start_symbol = "root");
     static Grammar json();
     static Grammar universal();
     static Grammar json_schema(
@@ -260,6 +260,7 @@ public:
 
     bool is_empty() const;
     bool is_universal() const;
+    std::string ebnf() const;
 
     const xgrammar::Grammar& raw_value() const;
 
@@ -284,7 +285,7 @@ public:
     bool is_completed() const;
     bool is_terminated() const;
     bool accept(uint32_t token_id, bool log_rejection = false);
-    bool next_bitmask(std::vector<int32_t>& token_bitmask, size_t logits_buffer_size);
+    bool next_bitmask(std::vector<int32_t>& bitmask, size_t logits_buffer_size);
 
 private:
     xgrammar::GrammarMatcher matcher;

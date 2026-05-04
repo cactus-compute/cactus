@@ -40,8 +40,8 @@ Grammar::Grammar() : grammar(xgrammar::NullObj{}), is_universal_(false) {}
 Grammar::Grammar(xgrammar::Grammar raw_grammar)
     : grammar(raw_grammar), is_universal_(false) {}
 
-Grammar Grammar::gbnf(const std::string& gbnf, const std::string& start_symbol) {
-    return Grammar(xgrammar::Grammar::FromEBNF(gbnf, start_symbol));
+Grammar Grammar::ebnf(const std::string& ebnf, const std::string& start_symbol) {
+    return Grammar(xgrammar::Grammar::FromEBNF(ebnf, start_symbol));
 }
 
 Grammar Grammar::json() {
@@ -118,6 +118,13 @@ bool Grammar::is_universal() const {
     return is_universal_;
 }
 
+std::string Grammar::ebnf() const {
+    if (is_empty()) {
+        throw std::runtime_error("Cannot get EBNF for empty grammar");
+    }
+    return grammar.ToString();
+}
+
 const xgrammar::Grammar& Grammar::raw_value() const {
     return grammar;
 }
@@ -181,10 +188,10 @@ bool GrammarMatcher::accept(uint32_t token_id, bool log_rejection) {
     return accepted;
 }
 
-bool GrammarMatcher::next_bitmask(std::vector<int32_t>& token_bitmask, size_t logits_buffer_size) {
+bool GrammarMatcher::next_bitmask(std::vector<int32_t>& bitmask, size_t logits_buffer_size) {
     const size_t vocab_bitmask_size = xgrammar::GetBitmaskSize(tokenizer_info.GetVocabSize());
     const size_t logits_bitmask_size = xgrammar::GetBitmaskSize(logits_buffer_size);
-    token_bitmask.assign(std::max(vocab_bitmask_size, logits_bitmask_size), 0);
+    bitmask.assign(std::max(vocab_bitmask_size, logits_bitmask_size), 0);
 
     int64_t bitmask_shape[1];
     int64_t bitmask_strides[1];
@@ -192,7 +199,7 @@ bool GrammarMatcher::next_bitmask(std::vector<int32_t>& token_bitmask, size_t lo
     bitmask_strides[0] = 1;
 
     DLTensor bitmask_tensor;
-    bitmask_tensor.data = token_bitmask.data();
+    bitmask_tensor.data = bitmask.data();
     bitmask_tensor.device = DLDevice{kDLCPU, 0};
     bitmask_tensor.ndim = 1;
     bitmask_tensor.dtype = xgrammar::GetBitmaskDLType();

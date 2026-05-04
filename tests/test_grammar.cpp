@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <ostream>
 
 using namespace cactus::engine;
 
@@ -116,7 +117,7 @@ static std::string tool_call_structural_tag_json() {
 static bool test_empty_grammar_properties() {
     Grammar empty;
     Grammar empty2;
-    Grammar simple = Grammar::gbnf("root ::= \"hello\"");
+    Grammar simple = Grammar::ebnf("root ::= \"hello\"");
 
     if (!empty.is_empty() || !empty2.is_empty() || simple.is_empty()) {
         return false;
@@ -137,9 +138,16 @@ static bool test_empty_grammar_properties() {
         && !concat_with_simple.is_empty();
 }
 
+static bool test_ebnf_string_export_matches_parenthesized_input_ebnf() {
+    const std::string source = "root ::= ((\"hello\") | (\"hi\"))\n";
+    Grammar grammar = Grammar::ebnf(source);
+
+    return grammar.ebnf() == source;
+}
+
 static bool test_concat_accepts_expected_language(const GrammarFixture& fixture) {
-    Grammar left = Grammar::gbnf("root ::= \"hello\"");
-    Grammar right = Grammar::gbnf("root ::= \" world\"");
+    Grammar left = Grammar::ebnf("root ::= \"hello\"");
+    Grammar right = Grammar::ebnf("root ::= \" world\"");
     Grammar combined = Grammar::concatenate({left, right});
 
     return accepts_complete_text(combined, fixture, "hello world")
@@ -148,8 +156,8 @@ static bool test_concat_accepts_expected_language(const GrammarFixture& fixture)
 }
 
 static bool test_union_accepts_expected_language(const GrammarFixture& fixture) {
-    Grammar left = Grammar::gbnf("root ::= \"hello\"");
-    Grammar right = Grammar::gbnf("root ::= \"goodbye\"");
+    Grammar left = Grammar::ebnf("root ::= \"hello\"");
+    Grammar right = Grammar::ebnf("root ::= \"goodbye\"");
     Grammar combined = Grammar::unite({left, right});
 
     return accepts_complete_text(combined, fixture, "hello")
@@ -159,9 +167,9 @@ static bool test_union_accepts_expected_language(const GrammarFixture& fixture) 
 
 static bool test_three_way_concat(const GrammarFixture& fixture) {
     Grammar combined = Grammar::concatenate({
-        Grammar::gbnf("root ::= \"alpha\""),
-        Grammar::gbnf("root ::= \"-\""),
-        Grammar::gbnf("root ::= \"beta\"")
+        Grammar::ebnf("root ::= \"alpha\""),
+        Grammar::ebnf("root ::= \"-\""),
+        Grammar::ebnf("root ::= \"beta\"")
     });
 
     return accepts_complete_text(combined, fixture, "alpha-beta")
@@ -171,9 +179,9 @@ static bool test_three_way_concat(const GrammarFixture& fixture) {
 
 static bool test_three_way_union(const GrammarFixture& fixture) {
     Grammar combined = Grammar::unite({
-        Grammar::gbnf("root ::= \"red\""),
-        Grammar::gbnf("root ::= \"green\""),
-        Grammar::gbnf("root ::= \"blue\"")
+        Grammar::ebnf("root ::= \"red\""),
+        Grammar::ebnf("root ::= \"green\""),
+        Grammar::ebnf("root ::= \"blue\"")
     });
 
     return accepts_complete_text(combined, fixture, "red")
@@ -183,7 +191,7 @@ static bool test_three_way_union(const GrammarFixture& fixture) {
 }
 
 static bool test_unordered_choice(const GrammarFixture& fixture) {
-    Grammar combined = Grammar::gbnf("root ::= \"a\" | \"ab\"");
+    Grammar combined = Grammar::ebnf("root ::= \"a\" | \"ab\"");
 
     return accepts_complete_text(combined, fixture, "a")
         && accepts_complete_text(combined, fixture, "ab")
@@ -206,7 +214,7 @@ static bool test_universal_grammar_accepts_anything(const GrammarFixture& fixtur
 
 static bool test_union_with_universal_returns_universal() {
     Grammar universal = Grammar::universal();
-    Grammar specific = Grammar::gbnf("root ::= \"hello\"");
+    Grammar specific = Grammar::ebnf("root ::= \"hello\"");
     return Grammar::unite({specific, universal}).is_universal();
 }
 
@@ -263,7 +271,7 @@ static bool test_json_schema_accepts_expected_text(const GrammarFixture& fixture
 }
 
 static bool test_grammar_matcher_reset_restores_initial_state(const GrammarFixture& fixture) {
-    Grammar grammar = Grammar::gbnf("root ::= \"hello\"");
+    Grammar grammar = Grammar::ebnf("root ::= \"hello\"");
     GrammarMatcher matcher(&grammar, fixture.vocab);
 
     if (!accept_text(matcher, fixture, "hello")) return false;
@@ -276,7 +284,7 @@ static bool test_grammar_matcher_reset_restores_initial_state(const GrammarFixtu
 }
 
 static bool test_grammar_matcher_rollback_restores_previous_state(const GrammarFixture& fixture) {
-    Grammar grammar = Grammar::gbnf("root ::= \"hello\" | \"hi\"");
+    Grammar grammar = Grammar::ebnf("root ::= \"hello\" | \"hi\"");
     GrammarMatcher matcher(&grammar, fixture.vocab);
     const std::vector<uint32_t> hello_tokens = fixture.tokenizer->encode("hello");
     const std::vector<uint32_t> hi_tokens = fixture.tokenizer->encode("hi");
@@ -296,7 +304,7 @@ static bool test_grammar_matcher_rollback_restores_previous_state(const GrammarF
 }
 
 static bool test_grammar_matcher_completion_state(const GrammarFixture& fixture) {
-    Grammar grammar = Grammar::gbnf("root ::= \"hello\"");
+    Grammar grammar = Grammar::ebnf("root ::= \"hello\"");
     GrammarMatcher matcher(&grammar, fixture.vocab);
     const uint32_t eos_token = fixture.tokenizer->get_eos_token();
 
@@ -308,7 +316,7 @@ static bool test_grammar_matcher_completion_state(const GrammarFixture& fixture)
 }
 
 static bool test_grammar_matcher_next_bitmask_tracks_simple_grammar(const GrammarFixture& fixture) {
-    Grammar grammar = Grammar::gbnf("root ::= \"hello\"");
+    Grammar grammar = Grammar::ebnf("root ::= \"hello\"");
     GrammarMatcher matcher(&grammar, fixture.vocab);
     const std::vector<uint32_t> hello_tokens = fixture.tokenizer->encode("hello");
     const uint32_t eos_token = fixture.tokenizer->get_eos_token();
@@ -332,7 +340,7 @@ static bool test_grammar_matcher_next_bitmask_tracks_simple_grammar(const Gramma
 }
 
 static bool test_grammar_matcher_next_bitmask_zeroes_overallocated_tail(const GrammarFixture& fixture) {
-    Grammar grammar = Grammar::gbnf("root ::= \"hello\"");
+    Grammar grammar = Grammar::ebnf("root ::= \"hello\"");
     GrammarMatcher matcher(&grammar, fixture.vocab);
     std::vector<int32_t> bitmask;
 
@@ -347,6 +355,7 @@ int main() {
     TestUtils::TestRunner runner("Grammar Tests");
 
     runner.run_test("empty_properties", test_empty_grammar_properties());
+    runner.run_test("ebnf_export_matches", test_ebnf_string_export_matches_parenthesized_input_ebnf());
     runner.run_test("regex_json_schema_init", test_regex_and_json_schema_construction());
 
     try {
