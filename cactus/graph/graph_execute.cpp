@@ -68,6 +68,7 @@ DECLARE_COMPUTE(compute_sample_node);
 DECLARE_COMPUTE(compute_topk_node);
 DECLARE_COMPUTE(compute_scatter_topk_node);
 DECLARE_COMPUTE(compute_moe_layer_node);
+DECLARE_COMPUTE(compute_dense_mlp_int4_fused_node);
 DECLARE_COMPUTE(compute_persistent_node);
 DECLARE_COMPUTE(compute_quantize_activations_node);
 extern void shrink_thread_local_buffers();
@@ -140,6 +141,7 @@ static const std::unordered_map<OpType, ComputeFn> dispatch_table = {
     {OpType::TOPK, compute_topk_node},
     {OpType::SCATTER_TOPK, compute_scatter_topk_node},
     {OpType::MOE_LAYER, compute_moe_layer_node},
+    {OpType::DENSE_MLP_INT4_FUSED, compute_dense_mlp_int4_fused_node},
     {OpType::PERSISTENT, compute_persistent_node},
     {OpType::QUANTIZE_ACTIVATIONS, compute_quantize_activations_node},
     {OpType::LSTM_CELL, compute_lstm_cell_node},
@@ -185,7 +187,8 @@ static const char* op_type_names[] = {
     "LEAKY_RELU",
     "CONV2D_K3S1P1",
     "STATS_POOL",
-    "WEIGHTED_STATS_POOL"
+    "WEIGHTED_STATS_POOL",
+    "DENSE_MLP_INT4_FUSED"
 };
 
 static const char* get_op_name(OpType op) {

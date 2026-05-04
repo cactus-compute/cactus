@@ -313,6 +313,23 @@ size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t laye
 size_t Gemma4Model::build_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                   ComputeBackend backend) const {
     const auto& layer = weight_nodes_.layers[layer_idx];
+    static const bool dense_mlp_fused_disabled = []() {
+        const char* env = std::getenv("CACTUS_DISABLE_DENSE_MLP_FUSED");
+        return env && env[0] && env[0] != '0';
+    }();
+    if (!dense_mlp_fused_disabled) {
+        const auto& gate_buf = gb->get_output_buffer(layer.ffn_gate_weight);
+        const auto& up_buf   = gb->get_output_buffer(layer.ffn_up_weight);
+        const auto& down_buf = gb->get_output_buffer(layer.ffn_down_weight);
+        if (gate_buf.precision == Precision::INT4 && gate_buf.group_size > 0 &&
+            up_buf.precision   == Precision::INT4 && up_buf.group_size   > 0 &&
+            down_buf.precision == Precision::INT4 && down_buf.group_size > 0) {
+            return gb->dense_mlp_int4_fused(input,
+                                             layer.ffn_gate_weight,
+                                             layer.ffn_up_weight,
+                                             layer.ffn_down_weight);
+        }
+    }
     auto gate = gb->gelu(gb->matmul(input, layer.ffn_gate_weight, true, backend));
     auto up = gb->matmul(input, layer.ffn_up_weight, true, backend);
     return gb->matmul(gb->multiply(gate, up), layer.ffn_down_weight, true, backend);

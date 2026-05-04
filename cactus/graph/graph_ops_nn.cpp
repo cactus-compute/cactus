@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <algorithm>
 #include <limits>
+#include <atomic>
 
 namespace {
     thread_local std::vector<__fp16> transpose_buffer_fp16;
@@ -508,6 +509,182 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
             const auto* expert_row = expert_out + i * hidden_dim;
             cactus_add_scaled_f16(out_row, expert_row, out_row, hidden_dim, route_weight);
         }
+    }
+}
+
+namespace {
+    struct DenseFusedScratch {
+        std::vector<__fp16> gate_tile;
+        std::vector<__fp16> up_tile;
+    };
+
+    // Inline to skip cactus_fp16_to_int8's parallel_for orchestration, which
+    // dispatches ~5 threads at d_ffn=12288 and dominates the SIMD work.
+    static inline void fp16_to_int8_inplace(const __fp16* src, int8_t* dst, size_t n, float scale) {
+        const float inv_scale = 1.0f / scale;
+        const float32x4_t inv_vec = vdupq_n_f32(inv_scale);
+        const float32x4_t min_vec = vdupq_n_f32(-128.0f);
+        const float32x4_t max_vec = vdupq_n_f32(127.0f);
+        size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            float16x8_t in = vld1q_f16(src + i);
+            float32x4_t lo = vmulq_f32(vcvt_f32_f16(vget_low_f16(in)),  inv_vec);
+            float32x4_t hi = vmulq_f32(vcvt_f32_f16(vget_high_f16(in)), inv_vec);
+            lo = vmaxq_f32(vminq_f32(lo, max_vec), min_vec);
+            hi = vmaxq_f32(vminq_f32(hi, max_vec), min_vec);
+            int16x8_t s = vcombine_s16(vqmovn_s32(vcvtnq_s32_f32(lo)),
+                                        vqmovn_s32(vcvtnq_s32_f32(hi)));
+            vst1_s8(dst + i, vqmovn_s16(s));
+        }
+        for (; i < n; ++i) {
+            float v = static_cast<float>(src[i]) * inv_scale;
+            if (v > 127.0f) v = 127.0f; else if (v < -128.0f) v = -128.0f;
+            dst[i] = static_cast<int8_t>(std::lround(v));
+        }
+    }
+}
+
+void compute_dense_mlp_int4_fused_node(
+        GraphNode& node,
+        const std::vector<std::unique_ptr<GraphNode>>& nodes,
+        const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& hidden_buf = get_input(node, 0, nodes, node_index_map);
+    const auto& gate_buf   = get_input(node, 1, nodes, node_index_map);
+    const auto& up_buf     = get_input(node, 2, nodes, node_index_map);
+    const auto& down_buf   = get_input(node, 3, nodes, node_index_map);
+
+    if (hidden_buf.precision != Precision::FP16) {
+        throw std::runtime_error("dense_mlp_int4_fused: hidden must be FP16");
+    }
+    if (gate_buf.precision != Precision::INT4 || gate_buf.group_size == 0 ||
+        up_buf.precision   != Precision::INT4 || up_buf.group_size   == 0 ||
+        down_buf.precision != Precision::INT4 || down_buf.group_size == 0) {
+        throw std::runtime_error("dense_mlp_int4_fused: weights must be INT4 group-quantized");
+    }
+    const size_t group_size = gate_buf.group_size;
+    if (up_buf.group_size != group_size || down_buf.group_size != group_size) {
+        throw std::runtime_error("dense_mlp_int4_fused: gate/up/down group_size must match");
+    }
+
+    const auto& shape = hidden_buf.shape;
+    const size_t hidden_dim_in = shape.back();
+    size_t M = 1;
+    for (size_t i = 0; i + 1 < shape.size(); ++i) M *= shape[i];
+
+    const size_t d_ffn      = gate_buf.is_interleaved ? gate_buf.original_N : gate_buf.shape[0];
+    const size_t hidden_dim = down_buf.is_interleaved ? down_buf.original_N : down_buf.shape[0];
+    if (hidden_dim_in != hidden_dim) {
+        throw std::runtime_error("dense_mlp_int4_fused: hidden dim mismatch with down weight");
+    }
+    if (d_ffn % 4 != 0 || d_ffn % group_size != 0 || hidden_dim % 4 != 0) {
+        throw std::runtime_error("dense_mlp_int4_fused: d_ffn must be a multiple of 4 and of group_size, hidden_dim a multiple of 4");
+    }
+    const size_t blocks_d_ffn  = d_ffn / 4;
+    const size_t blocks_hidden = hidden_dim / 4;
+
+    constexpr size_t tile_n_blocks = 32;
+    constexpr size_t tile_rows = tile_n_blocks * 4;
+    if (tile_rows % group_size != 0) {
+        throw std::runtime_error("dense_mlp_int4_fused: tile_rows must be a multiple of group_size");
+    }
+
+    const __fp16* hidden_fp16 = hidden_buf.data_as<__fp16>();
+    __fp16* output = node.output_buffer.data_as<__fp16>();
+
+    const int8_t* gate_w = gate_buf.data_as<int8_t>();
+    const __fp16* gate_s = gate_buf.scales_as_fp16();
+    const int8_t* up_w   = up_buf.data_as<int8_t>();
+    const __fp16* up_s   = up_buf.scales_as_fp16();
+    const int8_t* down_w = down_buf.data_as<int8_t>();
+    const __fp16* down_s = down_buf.scales_as_fp16();
+
+    thread_local std::vector<int8_t> dense_x_int8;
+    thread_local std::vector<float>  dense_x_scales;
+    thread_local std::vector<__fp16> dense_h_fp16;
+    thread_local std::vector<int8_t> dense_h_int8;
+    if (dense_x_int8.size()   < M * hidden_dim) dense_x_int8.resize(M * hidden_dim);
+    if (dense_x_scales.size() < M)              dense_x_scales.resize(M);
+    if (dense_h_fp16.size()   < d_ffn)          dense_h_fp16.resize(d_ffn);
+    if (dense_h_int8.size()   < d_ffn)          dense_h_int8.resize(d_ffn);
+
+    auto& pool = CactusThreading::get_thread_pool();
+    const size_t num_workers = pool.num_workers();
+    std::vector<DenseFusedScratch> dense_fused_scratch(num_workers);
+    for (auto& sc : dense_fused_scratch) {
+        sc.gate_tile.resize(tile_rows);
+        sc.up_tile.resize(tile_rows);
+    }
+
+    for (size_t t = 0; t < M; ++t) {
+        const __fp16* x = hidden_fp16 + t * hidden_dim;
+        float maxabs = cactus_fp16_max_abs(x, hidden_dim);
+        float xs = std::max(maxabs / 127.0f, 1e-10f);
+        dense_x_scales[t] = xs;
+        cactus_fp16_to_int8(x, dense_x_int8.data() + t * hidden_dim, hidden_dim, xs);
+    }
+
+    const size_t tiles_d_ffn  = (blocks_d_ffn  + tile_n_blocks - 1) / tile_n_blocks;
+    const size_t tiles_hidden = (blocks_hidden + tile_n_blocks - 1) / tile_n_blocks;
+    const size_t num_threads_p1 = std::min(num_workers, tiles_d_ffn);
+    const size_t num_threads_p2 = std::min(num_workers, tiles_hidden);
+
+    for (size_t t = 0; t < M; ++t) {
+        const int8_t* x_int8 = dense_x_int8.data() + t * hidden_dim;
+        const float x_scale = dense_x_scales[t];
+        __fp16* y = output + t * hidden_dim;
+        __fp16* h_full = dense_h_fp16.data();
+        int8_t* h_int8 = dense_h_int8.data();
+
+        std::atomic<size_t> p1_next{0};
+        std::atomic<size_t> p2_next{0};
+
+        auto run = [&](size_t nt, auto&& task) {
+            if (nt <= 1) { task(0); return; }
+            pool.enqueue_n_threads(nt - 1, nt - 1, [&](size_t s, size_t e) {
+                for (size_t w = s; w < e; ++w) task(w + 1);
+            });
+            task(0);
+            pool.wait_all();
+        };
+
+        run(num_threads_p1, [&](size_t worker_id) {
+            auto& sc = dense_fused_scratch[worker_id];
+            __fp16* gate_tile_buf = sc.gate_tile.data();
+            __fp16* up_tile_buf   = sc.up_tile.data();
+            while (true) {
+                size_t tile_id = p1_next.fetch_add(1, std::memory_order_relaxed);
+                if (tile_id >= tiles_d_ffn) break;
+                const size_t blk_start = tile_id * tile_n_blocks;
+                const size_t blk_end   = std::min(blk_start + tile_n_blocks, blocks_d_ffn);
+                const size_t k_lo      = blk_start * 4;
+                const size_t k_count   = (blk_end - blk_start) * 4;
+
+                cactus_gemv_int4_block_range(
+                    x_int8, x_scale, gate_w, gate_s, gate_tile_buf - k_lo,
+                    hidden_dim, d_ffn, group_size, blk_start, blk_end);
+                cactus_gelu_f16(gate_tile_buf, gate_tile_buf, k_count);
+                cactus_gemv_int4_block_range(
+                    x_int8, x_scale, up_w, up_s, up_tile_buf - k_lo,
+                    hidden_dim, d_ffn, group_size, blk_start, blk_end);
+                cactus_multiply_f16(gate_tile_buf, up_tile_buf, h_full + k_lo, k_count);
+            }
+        });
+
+        const float h_maxabs = cactus_fp16_max_abs(h_full, d_ffn);
+        const float h_scale = std::max(h_maxabs / 127.0f, 1e-10f);
+        fp16_to_int8_inplace(h_full, h_int8, d_ffn, h_scale);
+
+        run(num_threads_p2, [&](size_t /*worker_id*/) {
+            while (true) {
+                size_t tile_id = p2_next.fetch_add(1, std::memory_order_relaxed);
+                if (tile_id >= tiles_hidden) break;
+                const size_t blk_start = tile_id * tile_n_blocks;
+                const size_t blk_end   = std::min(blk_start + tile_n_blocks, blocks_hidden);
+                cactus_gemv_int4_block_range(
+                    h_int8, h_scale, down_w, down_s, y,
+                    d_ffn, hidden_dim, group_size, blk_start, blk_end);
+            }
+        });
     }
 }
 

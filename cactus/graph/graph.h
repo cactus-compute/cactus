@@ -149,7 +149,8 @@ enum class OpType {
     LEAKY_RELU,
     CONV2D_K3S1P1,
     STATS_POOL,
-    WEIGHTED_STATS_POOL
+    WEIGHTED_STATS_POOL,
+    DENSE_MLP_INT4_FUSED
 };
 
 struct PrecisionTraits {
@@ -424,6 +425,7 @@ void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphN
 void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_persistent_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
+void compute_dense_mlp_int4_fused_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
 void compute_gated_deltanet_decode_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map);
@@ -554,6 +556,8 @@ public:
     size_t groupnorm(size_t input, size_t weight, size_t bias, size_t num_groups = 32, float epsilon = 1e-5f);
     size_t batchnorm(size_t input, size_t weight, size_t bias, size_t running_mean, size_t running_var, int axis = 1, float epsilon = 1e-5f);
     size_t topk(size_t input, size_t k);
+    size_t dense_mlp_int4_fused(size_t hidden, size_t gate_weight,
+                                 size_t up_weight, size_t down_weight);
     size_t moe_layer(size_t hidden,
                      size_t routing_probs,
                      size_t topk_indices,
