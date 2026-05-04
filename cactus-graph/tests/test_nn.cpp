@@ -835,6 +835,200 @@ bool run_benchmarks() {
         g.set_input(ii, in.data(), Precision::FP16);
         bench("softmax 1024x1024", []{}, [&]{ g.execute(); });
     }
+    {
+        // 30-layer transformer block: rms_norm, attn (Q/K/V/O fp16) with kv-cache,
+        // MLP (CQ4 fused or canonical chain), residuals, post-norms. Weights are
+        // reused across all 30 layers to keep the bench under ~30 MB.
+        using dense_mlp_cq4_test::CQ4;
+        constexpr uint32_t num_layers = 30;
+        constexpr uint32_t M = 1;
+        constexpr uint32_t hidden = 2304, d_ffn = 9216, gs = 128;
+        constexpr uint32_t num_heads = 8, num_kv_heads = 2, head_dim = 256;
+        constexpr uint32_t q_dim = num_heads * head_dim;
+        constexpr uint32_t kv_dim = num_kv_heads * head_dim;
+        constexpr uint32_t cache_len = 256;
+
+        CQ4 gate(hidden, d_ffn, gs, 171);
+        CQ4 up  (hidden, d_ffn, gs, 172);
+        CQ4 down(d_ffn, hidden, gs, 173);
+        gate.preexpand();
+        up.preexpand();
+        down.preexpand();
+
+        std::mt19937 wgen(901);
+        std::uniform_real_distribution<float> wdist(-0.03f, 0.03f);
+        auto rand_fp16 = [&](size_t n) {
+            std::vector<__fp16> v(n);
+            for (auto& x : v) x = static_cast<__fp16>(wdist(wgen));
+            return v;
+        };
+        std::vector<__fp16> wq = rand_fp16(static_cast<size_t>(q_dim) * hidden);
+        std::vector<__fp16> wk = rand_fp16(static_cast<size_t>(kv_dim) * hidden);
+        std::vector<__fp16> wv = rand_fp16(static_cast<size_t>(kv_dim) * hidden);
+        std::vector<__fp16> wo = rand_fp16(static_cast<size_t>(hidden) * q_dim);
+        std::vector<__fp16> rn_input(hidden, static_cast<__fp16>(1.0f));
+        std::vector<__fp16> rn_post_attn(hidden, static_cast<__fp16>(1.0f));
+        std::vector<__fp16> rn_pre_ffn(hidden, static_cast<__fp16>(1.0f));
+        std::vector<__fp16> rn_post_ffn(hidden, static_cast<__fp16>(1.0f));
+
+        std::vector<__fp16> x0(M * hidden);
+        for (auto& v : x0) v = static_cast<__fp16>(wdist(wgen));
+
+        const float attn_scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+        auto attach_cq4 = [&](CactusGraph& g, size_t node_id, const CQ4& w) {
+            g.set_external_input(node_id, const_cast<uint8_t*>(w.packed.data()), Precision::CQ4);
+            g.set_grouped_scales(node_id, w.group_size, w.num_groups,
+                                 const_cast<__fp16*>(w.norms.data()));
+            BufferDesc& buf = const_cast<BufferDesc&>(g.get_output_buffer(node_id));
+            buf.cq_codebook = w.codebook.data();
+            buf.cq_input_scale = w.input_scale.data();
+            buf.cq_input_scale_recip = w.input_scale_recip.data();
+            buf.cq_norms = w.norms.data();
+            buf.cq_left_signs = w.left_signs.data();
+            buf.cq_right_signs = w.right_signs.data();
+            buf.cq_permutation = w.permutation.data();
+            buf.cq_flags = CACTUS_QUANT_FLAG_CODE_ORDERED_INDICES;
+            // Without these owned copies, every CQ matmul rebuilds the int8 GEMV
+            // layout from packed indices on each call.
+            if (!w.expanded.empty()) {
+                auto exp_owned = std::make_unique<int8_t[]>(w.expanded.size());
+                std::memcpy(exp_owned.get(), w.expanded.data(), w.expanded.size());
+                buf.cq_expanded = std::move(exp_owned);
+            }
+            if (!w.norm_f32.empty()) {
+                auto nf_owned = std::make_unique<float[]>(w.norm_f32.size());
+                std::memcpy(nf_owned.get(), w.norm_f32.data(), w.norm_f32.size() * sizeof(float));
+                buf.cq_norm_f32 = std::move(nf_owned);
+            }
+        };
+
+        auto build_decode_graph = [&](CactusGraph& g, bool fused,
+                                      std::vector<size_t>& k_caches,
+                                      std::vector<size_t>& v_caches,
+                                      size_t& x_in_node) {
+            size_t wq_n = g.input({q_dim, hidden}, Precision::FP16);
+            size_t wk_n = g.input({kv_dim, hidden}, Precision::FP16);
+            size_t wv_n = g.input({kv_dim, hidden}, Precision::FP16);
+            size_t wo_n = g.input({hidden, q_dim}, Precision::FP16);
+            size_t rn_in_n   = g.input({hidden}, Precision::FP16);
+            size_t rn_pa_n   = g.input({hidden}, Precision::FP16);
+            size_t rn_pre_n  = g.input({hidden}, Precision::FP16);
+            size_t rn_post_n = g.input({hidden}, Precision::FP16);
+
+            size_t gate_n = g.input({d_ffn, hidden}, Precision::CQ4);
+            size_t up_n   = g.input({d_ffn, hidden}, Precision::CQ4);
+            size_t down_n = g.input({hidden, d_ffn}, Precision::CQ4);
+            attach_cq4(g, gate_n, gate);
+            attach_cq4(g, up_n,   up);
+            attach_cq4(g, down_n, down);
+
+            x_in_node = g.input({M, hidden}, Precision::FP16);
+            size_t hidden_node = x_in_node;
+
+            k_caches.resize(num_layers);
+            v_caches.resize(num_layers);
+
+            for (uint32_t L = 0; L < num_layers; ++L) {
+                k_caches[L] = g.kv_cache_state(cache_len, num_kv_heads, head_dim, cache_len, 0);
+                v_caches[L] = g.kv_cache_state(cache_len, num_kv_heads, head_dim, cache_len, 0);
+
+                size_t normed = g.rms_norm(hidden_node, rn_in_n, 1e-6f);
+
+                size_t q = g.matmul(normed, wq_n, true);
+                size_t k = g.matmul(normed, wk_n, true);
+                size_t v = g.matmul(normed, wv_n, true);
+
+                size_t q4 = g.reshape(q, {1, M, num_heads, head_dim});
+                size_t k4 = g.reshape(k, {1, M, num_kv_heads, head_dim});
+                size_t v4 = g.reshape(v, {1, M, num_kv_heads, head_dim});
+
+                g.kv_cache_append(k4, k_caches[L], cache_len, 0);
+                g.kv_cache_append(v4, v_caches[L], cache_len, 0);
+                size_t attn = g.attention_cached(q4, k4, v4,
+                                                 k_caches[L], v_caches[L],
+                                                 attn_scale, cache_len, 0);
+
+                size_t attn2 = g.reshape(attn, {M, q_dim});
+                size_t o = g.matmul(attn2, wo_n, true);
+
+                size_t post_attn = g.rms_norm(o, rn_pa_n, 1e-6f);
+                size_t residual = g.add(hidden_node, post_attn);
+
+                size_t pre_ffn = g.rms_norm(residual, rn_pre_n, 1e-6f);
+                size_t mlp_raw;
+                if (fused) {
+                    mlp_raw = g.dense_mlp_cq_fused(pre_ffn, gate_n, up_n, down_n);
+                } else {
+                    size_t gate_proj = g.matmul(pre_ffn, gate_n, true);
+                    size_t gated = g.gelu(gate_proj);
+                    size_t up_proj = g.matmul(pre_ffn, up_n, true);
+                    size_t hffn = g.multiply(gated, up_proj);
+                    mlp_raw = g.matmul(hffn, down_n, true);
+                }
+                size_t post_ffn = g.rms_norm(mlp_raw, rn_post_n, 1e-6f);
+                hidden_node = g.add(residual, post_ffn);
+            }
+
+            g.set_input(wq_n, wq.data(), Precision::FP16);
+            g.set_input(wk_n, wk.data(), Precision::FP16);
+            g.set_input(wv_n, wv.data(), Precision::FP16);
+            g.set_input(wo_n, wo.data(), Precision::FP16);
+            g.set_input(rn_in_n,   rn_input.data(),     Precision::FP16);
+            g.set_input(rn_pa_n,   rn_post_attn.data(), Precision::FP16);
+            g.set_input(rn_pre_n,  rn_pre_ffn.data(),   Precision::FP16);
+            g.set_input(rn_post_n, rn_post_ffn.data(),  Precision::FP16);
+        };
+
+        // Set CacheMetadata.current_seq_len at the head of the buffer so each step
+        // hits the sliding-window eviction path and runs attention at full window.
+        auto prewarm = [&](CactusGraph& g, const std::vector<size_t>& caches) {
+            for (size_t cn : caches) {
+                auto* raw = static_cast<uint8_t*>(g.get_output(cn));
+                if (!raw) continue;
+                *reinterpret_cast<uint64_t*>(raw + 0) = static_cast<uint64_t>(cache_len);
+            }
+        };
+
+        auto run_variant = [&](bool fused) {
+            CactusGraph g;
+            std::vector<size_t> k_caches, v_caches;
+            size_t x_in_node = 0;
+            build_decode_graph(g, fused, k_caches, v_caches, x_in_node);
+            g.set_input(x_in_node, x0.data(), Precision::FP16);
+
+            g.execute();
+            prewarm(g, k_caches);
+            prewarm(g, v_caches);
+            g.execute();
+
+            constexpr int iters = 100;
+            TestUtils::Timer t;
+            for (int i = 0; i < iters; ++i) {
+                prewarm(g, k_caches);
+                prewarm(g, v_caches);
+                g.execute();
+            }
+            return t.elapsed_ms() / static_cast<double>(iters);
+        };
+
+        double ms_unfused = run_variant(false);
+        double ms_fused   = run_variant(true);
+        double tps_unfused = 1000.0 / ms_unfused;
+        double tps_fused   = 1000.0 / ms_fused;
+        double delta_pct = (tps_fused - tps_unfused) / tps_unfused * 100.0;
+
+        std::cout << "  ⚡ " << std::left << std::setw(34)
+                  << "gemma4-e2b decode unfused (30L)"
+                  << std::fixed << std::setprecision(3) << ms_unfused << " ms   "
+                  << std::setprecision(1) << tps_unfused << " tok/s\n";
+        std::cout << "  ⚡ " << std::left << std::setw(34)
+                  << "gemma4-e2b decode fused   (30L)"
+                  << std::fixed << std::setprecision(3) << ms_fused << " ms   "
+                  << std::setprecision(1) << tps_fused << " tok/s   ("
+                  << std::showpos << std::setprecision(1) << delta_pct
+                  << std::noshowpos << "% tok/s)\n";
+    }
     return true;
 }
 
