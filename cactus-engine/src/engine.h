@@ -518,6 +518,7 @@ private:
     std::vector<std::string> function_names_;
     std::string generated_text_;
     int brace_depth_ = 0;
+    bool in_argument_string_ = false;
 
     std::string call_start_tag_;
     std::string call_end_tag_;

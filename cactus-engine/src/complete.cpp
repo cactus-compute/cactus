@@ -725,7 +725,9 @@ int cactus_complete(
         std::string cloud_error;
         std::future<CloudCompletionResult> cloud_future;
         bool cloud_future_started = false;
-        const bool cloud_eligible = prompt.options.auto_handoff && (!has_images || prompt.options.handoff_with_images);
+        const bool cloud_disabled = env_flag_enabled("CACTUS_DISABLE_CLOUD_HANDOFF");
+        const bool cloud_eligible = !cloud_disabled &&
+            prompt.options.auto_handoff && (!has_images || prompt.options.handoff_with_images);
 
         auto maybe_start_cloud_handoff = [&](const std::string& local_output_hint,
                                              const std::vector<std::string>& local_calls_hint) {
@@ -761,11 +763,6 @@ int cactus_complete(
             handle->model->update_tool_constraints(next_token);
         }
 
-        {
-            std::string _decoded = tokenizer->decode({next_token});
-            fprintf(stderr, "[step 0] sampled_tok=%u (text=%s)\n", next_token, _decoded.c_str());
-        }
-
         EntropyState entropy;
         {
             size_t cfg_window = handle->model->get_config().default_rolling_entropy_window;
@@ -796,11 +793,6 @@ int cactus_complete(
                 }
                 handle->processed_tokens.push_back(next_token);
                 generated_tokens.push_back(next_token);
-
-                {
-                    std::string _decoded = tokenizer->decode({next_token});
-                    fprintf(stderr, "[step %zu] sampled_tok=%u (text=%s)\n", i, next_token, _decoded.c_str());
-                }
 
                 entropy.add(token_entropy);
 

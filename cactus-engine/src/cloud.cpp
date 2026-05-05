@@ -18,6 +18,7 @@ namespace ffi {
 
 namespace {
 
+#ifdef CACTUS_USE_CURL
 std::string compact_error_detail(std::string detail) {
     detail = trim_string(detail);
     if (detail.empty()) return {};
@@ -35,6 +36,7 @@ std::string compact_error_detail(std::string detail) {
     }
     return detail;
 }
+#endif
 
 } // namespace
 
@@ -293,6 +295,9 @@ CloudResponse cloud_transcribe_request(const std::string& audio_b64,
                                        const std::string& fallback_text,
                                        long timeout_seconds,
                                        const char* cloud_key) {
+    if (env_flag_enabled("CACTUS_DISABLE_CLOUD_HANDOFF")) {
+        return {fallback_text, "", false, "cloud_handoff_disabled"};
+    }
 #ifdef CACTUS_USE_CURL
     std::string base = env_or_default("CACTUS_CLOUD_API_BASE", "https://104.198.76.3/api/v1");
     std::string endpoint = base + "/transcribe";
@@ -331,12 +336,19 @@ CloudResponse cloud_transcribe_request(const std::string& audio_b64,
 #else
     (void)audio_b64;
     (void)timeout_seconds;
+    (void)cloud_key;
     return {fallback_text, "", false, "curl_not_enabled"};
 #endif
 }
 
 CloudCompletionResult cloud_complete_request(const CloudCompletionRequest& request,
                                              long timeout_ms) {
+    if (env_flag_enabled("CACTUS_DISABLE_CLOUD_HANDOFF")) {
+        CloudCompletionResult result;
+        result.ok = false;
+        result.error = "cloud_handoff_disabled";
+        return result;
+    }
 #ifdef CACTUS_USE_CURL
     std::string base = env_or_default("CACTUS_CLOUD_API_BASE", "https://104.198.76.3/api/v1");
     std::string model = env_or_default("CACTUS_CLOUD_MODEL", "gemini-2.5-flash");

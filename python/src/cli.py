@@ -800,10 +800,7 @@ def cmd_build(args):
         print_color(YELLOW, "Then run `cactus build`")
 
     if is_darwin:
-        if not vendored_curl.exists():
-            print_color(RED, f"Error: vendored libcurl not found at {vendored_curl}")
-            print("Build it first and place it in libs/curl/macos/libcurl.a")
-            return 1
+        curl_link = [str(vendored_curl)] if vendored_curl.exists() else ["-lcurl"]
         compiler = "clang++"
         cmd = [
             compiler, "-std=c++20", "-O3",
@@ -816,7 +813,7 @@ def cmd_build(args):
             str(chat_cpp),
             str(lib_path),
             "-o", "chat",
-            str(vendored_curl),
+            *curl_link,
             "-framework", "Accelerate",
             "-framework", "CoreML",
             "-framework", "Foundation",
@@ -858,6 +855,7 @@ def cmd_build(args):
         print("Compiling asr.cpp...")
 
         if is_darwin:
+            curl_link = [str(vendored_curl)] if vendored_curl.exists() else ["-lcurl"]
             cmd = [
                 compiler, "-std=c++20", "-O3",
                 "-DACCELERATE_NEW_LAPACK",
@@ -866,7 +864,7 @@ def cmd_build(args):
                 str(asr_cpp),
                 str(lib_path),
                 "-o", "asr",
-                str(vendored_curl),
+                *curl_link,
                 "-framework", "Accelerate",
                 "-framework", "CoreML",
                 "-framework", "Foundation",

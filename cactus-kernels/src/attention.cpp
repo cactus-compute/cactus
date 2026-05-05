@@ -829,7 +829,6 @@ void cactus_attention_hybrid_int8_fp16(
                                     }
                                 }
                             } else {
-                                // fp16 KV cache: buffer stores __fp16 directly
                                 const __fp16* k_vec = reinterpret_cast<const __fp16*>(K_cached_base) +
                                     kv_pos * k_seq_stride + kv_head_idx * head_dim;
 
@@ -928,7 +927,6 @@ void cactus_attention_hybrid_int8_fp16(
                                     }
                                 }
                             } else {
-                                // fp16 KV cache: buffer stores __fp16 directly
                                 const __fp16* v_vec = reinterpret_cast<const __fp16*>(V_cached_base) +
                                     kv_pos * v_seq_stride + kv_head_idx * v_head_dim;
 
@@ -1227,7 +1225,7 @@ void precompute_rope_tables_f16(size_t seq_len, size_t head_dim, float theta) {
     if (cache->initialized && cache->max_seq_len >= seq_len) {
         return;
     }
-    
+
     const size_t half_dim = head_dim / 2;
     const size_t table_size = seq_len * half_dim;
 
@@ -1244,13 +1242,13 @@ void precompute_rope_tables_f16(size_t seq_len, size_t head_dim, float theta) {
         for (size_t i = 0; i < half_dim; ++i) {
             const float freq = 1.0f / powf(theta, (2.0f * i) / head_dim);
             const float angle = pos_float * freq;
-            
+
             const size_t idx = pos * half_dim + i;
             cache->cos_table[idx] = static_cast<__fp16>(cosf(angle));
             cache->sin_table[idx] = static_cast<__fp16>(sinf(angle));
         }
     }
-    
+
     cache->max_seq_len = seq_len;
     cache->initialized = true;
 }

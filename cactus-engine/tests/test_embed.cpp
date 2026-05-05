@@ -91,7 +91,7 @@ static bool test_audio_embeddings() {
         return true;
     }
 
-    const size_t buffer_size = 1024 * 1024 * 4;
+    const size_t buffer_size = 1024 * 1024;
     std::vector<float> embeddings(buffer_size / sizeof(float));
     size_t embedding_dim = 0;
 

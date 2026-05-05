@@ -40,4 +40,3 @@ tests/assets/test_wav_info.txt
 vision_activations.json
 gemma-4-eap-extras/
 .githooks/
-test_weights/
