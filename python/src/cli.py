@@ -749,7 +749,11 @@ def cmd_build(args):
     cactus_dir = PROJECT_ROOT / "cactus"
     lib_path = cactus_dir / "build" / "libcactus.a"
     vendored_curl = PROJECT_ROOT / "libs" / "curl" / "macos" / "libcurl.a"
-    vendored_xgrammar = PROJECT_ROOT / "libs" / "xgrammar" / "macos" / "libxgrammar.a"
+    xgrammar_include = PROJECT_ROOT / "libs" / "xgrammar" / "include"
+    if platform.system() == "Darwin":
+        vendored_xgrammar = PROJECT_ROOT / "libs" / "xgrammar" / "macos" / "libxgrammar.a"
+    else:
+        vendored_xgrammar = PROJECT_ROOT / "libs" / "xgrammar" / "linux" / "aarch64" / "libxgrammar.a"
 
     print_color(YELLOW, "Building Cactus library...")
     build_script = cactus_dir / "build.sh"
@@ -833,13 +837,19 @@ def cmd_build(args):
             *sdl2_link,
         ]
     else:
+        if not vendored_xgrammar.exists():
+            print_color(RED, f"Error: vendored xgrammar not found at {vendored_xgrammar}")
+            print("Build it first and place it in libs/xgrammar/linux/aarch64/libxgrammar.a")
+            return 1
         compiler = "g++"
         cmd = [
             compiler, "-std=c++20", "-O3",
             f"-I{PROJECT_ROOT}",
+            f"-I{xgrammar_include}",
             *sdl2_flags,
             str(chat_cpp),
             str(lib_path),
+            str(vendored_xgrammar),
             "-o", "chat",
             "-lcurl",
             "-pthread",
@@ -885,9 +895,11 @@ def cmd_build(args):
             cmd = [
                 compiler, "-std=c++20", "-O3",
                 f"-I{PROJECT_ROOT}",
+                f"-I{xgrammar_include}",
                 *sdl2_flags,
                 str(asr_cpp),
                 str(lib_path),
+                str(vendored_xgrammar),
                 "-o", "asr",
                 "-lcurl",
                 "-pthread",
