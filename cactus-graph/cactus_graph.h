@@ -9,6 +9,7 @@
 #include <functional>
 #include <cassert>
 #include <cstring>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <mutex>
@@ -111,7 +112,8 @@ enum class OpType {
     CONV_CACHE_STATE, CONV_CACHE_APPEND,
     RFFT, IRFFT, MEL_FILTER_BANK, SPECTROGRAM,
     IMAGE_PREPROCESS,
-    CLAMP
+    CLAMP,
+    DENSE_MLP_TQ_FUSED
 };
 
 struct PrecisionTraits {
@@ -268,10 +270,50 @@ struct BufferDesc {
     const __fp16* cq_rotation = nullptr; // [K×K] row-major, orthogonal only
     uint32_t cq_flags = 0;
 
-    std::unique_ptr<int8_t[]> cq_expanded;
-    std::unique_ptr<float[]> cq_norm_f32;
+    mutable std::unique_ptr<int8_t[]> cq_expanded;
+    mutable std::unique_ptr<float[]> cq_norm_f32;
+
+    void ensure_cq_i8_cache() const {
+        const char* enabled = std::getenv("CACTUS_TQ_I8_CACHE");
+        if (!(enabled && enabled[0] && enabled[0] != '0')) return;
+        if (cq_expanded || cq_norm_f32) return;
+        if (!is_cq() || precision != Precision::CQ4) return;
+        if ((cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0) return;
+        if ((group_size % 16) != 0) return;
+
+        const size_t n = shape.size() >= 2 ? shape[0] : 1;
+        const size_t n_blocks = (n + 3) / 4;
+        const size_t expanded_count = n_blocks * num_groups * group_size * 4;
+        const size_t norm_count = n_blocks * num_groups * 4;
+        auto expanded = std::make_unique<int8_t[]>(expanded_count);
+        auto norm = std::make_unique<float[]>(norm_count);
+
+        CactusQuantMatrix mat{
+            .bits = PrecisionTraits::cq_bits(precision),
+            .K = static_cast<uint32_t>(shape.size() >= 2 ? shape[1] : shape[0]),
+            .N = static_cast<uint32_t>(shape.size() >= 2 ? shape[0] : 1),
+            .group_size = static_cast<uint32_t>(group_size),
+            .num_groups = static_cast<uint32_t>(num_groups),
+            .flags = cq_flags,
+            .codebook = cq_codebook,
+            .input_scale = cq_input_scale,
+            .input_scale_recip = cq_input_scale_recip,
+            .norms = cq_norms,
+            .packed_indices = static_cast<const uint8_t*>(get_data()),
+            .left_signs = cq_left_signs,
+            .right_signs = cq_right_signs,
+            .permutation = cq_permutation,
+            .expanded = nullptr,
+            .norm_f32 = nullptr,
+            .rotation = cq_rotation,
+        };
+        cactus_quant_prepare_i8_cache(&mat, expanded.get(), norm.get());
+        cq_expanded = std::move(expanded);
+        cq_norm_f32 = std::move(norm);
+    }
 
     CactusQuantMatrix to_cq_matrix() const {
+        ensure_cq_i8_cache();
         return CactusQuantMatrix{
             .bits = PrecisionTraits::cq_bits(precision),
             .K = static_cast<uint32_t>(shape.size() >= 2 ? shape[1] : shape[0]),
@@ -666,6 +708,7 @@ public:
         size_t num_experts, size_t num_experts_per_tok,
         bool normalize_routing, float epsilon, float routed_scaling_factor,
         Activation activation);
+    size_t dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight);
     size_t stats_pool(size_t input);
     size_t weighted_stats_pool(size_t input, size_t weights);
 

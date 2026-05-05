@@ -408,6 +408,26 @@ size_t CactusGraph::moe_layer(size_t hidden,
     return add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params);
 }
 
+size_t CactusGraph::dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight) {
+    const auto& hidden_buffer = get_output_buffer(hidden);
+    const auto& down_buffer = get_output_buffer(down_weight);
+    if (hidden_buffer.shape.empty()) {
+        throw std::runtime_error("dense_mlp_tq_fused expects non-scalar hidden");
+    }
+    if (!PrecisionTraits::is_cq(down_buffer.precision) || down_buffer.shape.size() != 2) {
+        throw std::runtime_error("dense_mlp_tq_fused expects 2D TQ down weight");
+    }
+
+    std::vector<size_t> output_shape = hidden_buffer.shape;
+    output_shape.back() = down_buffer.shape[0];
+
+    OpParams params;
+    params.output_precision = Precision::FP16;
+    return add_node(OpType::DENSE_MLP_TQ_FUSED,
+                    {hidden, gate_weight, up_weight, down_weight},
+                    output_shape, params);
+}
+
 size_t CactusGraph::moe_layer(size_t hidden,
                               size_t routing_probs,
                               size_t topk_indices,

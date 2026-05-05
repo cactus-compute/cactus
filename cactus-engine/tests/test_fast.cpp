@@ -17,10 +17,18 @@
 
 static const int N_TOKENS = 50;
 
+static int prompt_repeats() {
+    const char* env = std::getenv("CACTUS_TEST_PROMPT_REPEATS");
+    if (!env || !*env) return 130;
+    int value = std::atoi(env);
+    return value > 0 ? value : 1;
+}
+
 static std::string build_prompt() {
     std::string content;
     content.reserve(6400);
-    for (int i = 0; i < 130; ++i) {
+    int repeats = prompt_repeats();
+    for (int i = 0; i < repeats; ++i) {
         content += "The quick brown fox jumps over the lazy dog. ";
     }
 
@@ -86,7 +94,7 @@ int main() {
         }
     }
     std::string prompt = build_prompt();
-    fprintf(stderr, "Model loaded. Running ~1000-token prompt, max_tokens=%d...\n", N_TOKENS);
+    fprintf(stderr, "Model loaded. Running prompt_repeats=%d, max_tokens=%d...\n", prompt_repeats(), N_TOKENS);
 
     auto t0 = std::chrono::steady_clock::now();
     char response[65536] = {};

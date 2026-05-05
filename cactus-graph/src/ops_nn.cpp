@@ -369,6 +369,59 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     }
 }
 
+void compute_dense_mlp_tq_fused_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& hidden_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& gate_buffer = get_input(node, 1, nodes, node_index_map);
+    const auto& up_buffer = get_input(node, 2, nodes, node_index_map);
+    const auto& down_buffer = get_input(node, 3, nodes, node_index_map);
+
+    if (hidden_buffer.precision != Precision::FP16 || node.output_buffer.precision != Precision::FP16) {
+        throw std::runtime_error("dense_mlp_tq_fused expects FP16 hidden/output");
+    }
+    if (!PrecisionTraits::is_cq(gate_buffer.precision) || !PrecisionTraits::is_cq(up_buffer.precision) ||
+        !PrecisionTraits::is_cq(down_buffer.precision) ||
+        gate_buffer.group_size == 0 || up_buffer.group_size == 0 || down_buffer.group_size == 0) {
+        throw std::runtime_error("dense_mlp_tq_fused expects TQ gate/up/down weights");
+    }
+    if (hidden_buffer.shape.empty() || gate_buffer.shape.size() != 2 || up_buffer.shape.size() != 2 || down_buffer.shape.size() != 2) {
+        throw std::runtime_error("dense_mlp_tq_fused expects rank >=1 hidden and rank-2 weights");
+    }
+
+    const size_t hidden_dim = hidden_buffer.shape.back();
+    size_t M = 1;
+    for (size_t i = 0; i + 1 < hidden_buffer.shape.size(); ++i) M *= hidden_buffer.shape[i];
+
+    const size_t d_ffn = gate_buffer.shape[0];
+    if (up_buffer.shape[0] != d_ffn || gate_buffer.shape[1] != hidden_dim || up_buffer.shape[1] != hidden_dim ||
+        down_buffer.shape[1] != d_ffn) {
+        throw std::runtime_error("dense_mlp_tq_fused weight dimensions do not match hidden");
+    }
+
+    thread_local std::vector<__fp16> gate_buf;
+    thread_local std::vector<__fp16> up_buf;
+    thread_local std::vector<__fp16> prod_buf;
+    const size_t inter_size = M * d_ffn;
+    if (gate_buf.size() < inter_size) gate_buf.resize(inter_size);
+    if (up_buf.size() < inter_size) up_buf.resize(inter_size);
+    if (prod_buf.size() < inter_size) prod_buf.resize(inter_size);
+
+    const __fp16* hidden = hidden_buffer.data_as<__fp16>();
+    __fp16* gate = gate_buf.data();
+    __fp16* up = up_buf.data();
+    __fp16* prod = prod_buf.data();
+    __fp16* output = node.output_buffer.data_as<__fp16>();
+
+    CactusQuantMatrix gate_mat = gate_buffer.to_cq_matrix();
+    CactusQuantMatrix up_mat = up_buffer.to_cq_matrix();
+    CactusQuantMatrix down_mat = down_buffer.to_cq_matrix();
+
+    cactus_quant_matmul(&gate_mat, hidden, static_cast<uint32_t>(M), gate);
+    cactus_gelu_f16(gate, gate, inter_size);
+    cactus_quant_matmul(&up_mat, hidden, static_cast<uint32_t>(M), up);
+    cactus_multiply_f16(gate, up, prod, inter_size);
+    cactus_quant_matmul(&down_mat, prod, static_cast<uint32_t>(M), output);
+}
+
 void compute_rms_norm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& weight_buffer = get_input(node, 1, nodes, node_index_map);

@@ -1205,38 +1205,54 @@ struct RoPECacheF16 {
     RoPECacheF16() : max_seq_len(0), head_dim(0), theta(0.0f), initialized(false) {}
 };
 
-static thread_local RoPECacheF16 rope_cache_f16;
+static thread_local std::vector<RoPECacheF16> rope_caches_f16;
+static thread_local RoPECacheF16* active_rope_cache_f16 = nullptr;
 
 void precompute_rope_tables_f16(size_t seq_len, size_t head_dim, float theta) {
-    if (rope_cache_f16.initialized && 
-        rope_cache_f16.max_seq_len >= seq_len && 
-        rope_cache_f16.head_dim == head_dim && 
-        rope_cache_f16.theta == theta) {
+    RoPECacheF16* cache = nullptr;
+    for (auto& candidate : rope_caches_f16) {
+        if (candidate.initialized && candidate.head_dim == head_dim && candidate.theta == theta) {
+            cache = &candidate;
+            break;
+        }
+    }
+    if (!cache) {
+        rope_caches_f16.emplace_back();
+        cache = &rope_caches_f16.back();
+        cache->head_dim = head_dim;
+        cache->theta = theta;
+    }
+
+    active_rope_cache_f16 = cache;
+    if (cache->initialized && cache->max_seq_len >= seq_len) {
         return;
     }
-        
+    
     const size_t half_dim = head_dim / 2;
     const size_t table_size = seq_len * half_dim;
-    
-    rope_cache_f16.cos_table.resize(table_size);
-    rope_cache_f16.sin_table.resize(table_size);
-        
-    for (size_t pos = 0; pos < seq_len; ++pos) {
+
+    size_t start_pos = 0;
+    if (cache->initialized) {
+        start_pos = cache->max_seq_len;
+    }
+
+    cache->cos_table.resize(table_size);
+    cache->sin_table.resize(table_size);
+
+    for (size_t pos = start_pos; pos < seq_len; ++pos) {
         const float pos_float = static_cast<float>(pos);
         for (size_t i = 0; i < half_dim; ++i) {
             const float freq = 1.0f / powf(theta, (2.0f * i) / head_dim);
             const float angle = pos_float * freq;
             
             const size_t idx = pos * half_dim + i;
-            rope_cache_f16.cos_table[idx] = static_cast<__fp16>(cosf(angle));
-            rope_cache_f16.sin_table[idx] = static_cast<__fp16>(sinf(angle));
+            cache->cos_table[idx] = static_cast<__fp16>(cosf(angle));
+            cache->sin_table[idx] = static_cast<__fp16>(sinf(angle));
         }
     }
     
-    rope_cache_f16.max_seq_len = seq_len;
-    rope_cache_f16.head_dim = head_dim;
-    rope_cache_f16.theta = theta;
-    rope_cache_f16.initialized = true;
+    cache->max_seq_len = seq_len;
+    cache->initialized = true;
 }
 
 }
@@ -1255,8 +1271,9 @@ void cactus_rope_f16(
     
     CactusRoPEF16::precompute_rope_tables_f16(seq_len + start_pos, head_dim, theta);
     
-    const __fp16* cos_cache = CactusRoPEF16::rope_cache_f16.cos_table.data() + start_pos * half_dim;
-    const __fp16* sin_cache = CactusRoPEF16::rope_cache_f16.sin_table.data() + start_pos * half_dim;
+    const auto& cache = *CactusRoPEF16::active_rope_cache_f16;
+    const __fp16* cos_cache = cache.cos_table.data() + start_pos * half_dim;
+    const __fp16* sin_cache = cache.sin_table.data() + start_pos * half_dim;
 
     CactusThreading::parallel_for(batch_size * seq_len, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
         [&](size_t start_idx, size_t end_idx) {
@@ -1320,8 +1337,9 @@ void cactus_gpt_j_rope_f16(
     
     CactusRoPEF16::precompute_rope_tables_f16(seq_len + start_pos, rot_dim, theta);
     
-    const __fp16* cos_cache = CactusRoPEF16::rope_cache_f16.cos_table.data() + start_pos * half_rot_dim;
-    const __fp16* sin_cache = CactusRoPEF16::rope_cache_f16.sin_table.data() + start_pos * half_rot_dim;
+    const auto& cache = *CactusRoPEF16::active_rope_cache_f16;
+    const __fp16* cos_cache = cache.cos_table.data() + start_pos * half_rot_dim;
+    const __fp16* sin_cache = cache.sin_table.data() + start_pos * half_rot_dim;
 
     CactusThreading::parallel_for(batch_size * seq_len, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
         [&](size_t start_idx, size_t end_idx) {

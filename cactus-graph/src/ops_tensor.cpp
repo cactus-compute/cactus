@@ -5,6 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <vector>
+#include <unordered_map>
 
 void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     if (node.params.backend == ComputeBackend::NPU) {
@@ -338,15 +339,34 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
     Precision emb_prec = embeddings_buffer.precision;
     if (PrecisionTraits::is_cq(emb_prec) && embeddings_buffer.group_size > 0) {
         bool orthogonal = (embeddings_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0;
+        std::unordered_map<size_t, size_t> row_cache;
+        std::vector<__fp16> cached_rows;
+        if (num_indices > 16) {
+            row_cache.reserve(std::min<size_t>(num_indices, 256));
+        }
         for (size_t i = 0; i < num_indices; i++) {
             size_t idx = static_cast<size_t>(indices_ptr[i]);
             if (idx >= vocab_size) {
                 throw std::runtime_error("Embedding index out of bounds: " + std::to_string(idx) + " >= " + std::to_string(vocab_size));
             }
+            if (num_indices > 16) {
+                auto it = row_cache.find(idx);
+                if (it != row_cache.end()) {
+                    std::memcpy(output + i * hidden_dim,
+                                cached_rows.data() + it->second * hidden_dim,
+                                hidden_dim * sizeof(__fp16));
+                    continue;
+                }
+            }
             if (orthogonal)
                 dequantize_orthogonal_embedding_row(embeddings_buffer, idx, output + i * hidden_dim);
             else
                 dequantize_cq_embedding_row(embeddings_buffer, idx, output + i * hidden_dim);
+            if (num_indices > 16) {
+                const size_t cache_slot = cached_rows.size() / hidden_dim;
+                row_cache.emplace(idx, cache_slot);
+                cached_rows.insert(cached_rows.end(), output + i * hidden_dim, output + (i + 1) * hidden_dim);
+            }
         }
     } else if (PrecisionTraits::is_integer(emb_prec) && embeddings_buffer.group_size > 0) {
         const int8_t* embeddings = embeddings_buffer.data_as<int8_t>();
