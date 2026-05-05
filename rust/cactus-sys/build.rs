@@ -114,10 +114,14 @@ fn link_vendored_xgrammar() {
         (dir, lib)
     };
 
-    if xgrammar_lib.exists() {
-        println!("cargo:rustc-link-search=native={}", xgrammar_dir.display());
-        println!("cargo:rustc-link-lib=static=xgrammar");
-    }
+    assert!(
+        xgrammar_lib.exists(),
+        "Vendored xgrammar archive not found at {}",
+        xgrammar_lib.display()
+    );
+
+    println!("cargo:rustc-link-search=native={}", xgrammar_dir.display());
+    println!("cargo:rustc-link-lib=static=xgrammar");
 }
 
 fn generate_bindings(cactus_src: &Path) {

@@ -82,6 +82,10 @@ else()
         __ARM_FEATURE_DOTPROD=1
         __ARM_FEATURE_MATMUL_INT8=1
     )
+
+    set(CACTUS_XGRAMMAR_INCLUDE_DIR "${CACTUS_XGRAMMAR_ROOT}/include")
+    set(CACTUS_XGRAMMAR_LIBRARY_LINUX_AARCH64 "${CACTUS_XGRAMMAR_ROOT}/linux/aarch64/libxgrammar.a")
+    cactus_require_vendored_xgrammar("${CACTUS_XGRAMMAR_INCLUDE_DIR}" "${CACTUS_XGRAMMAR_LIBRARY_LINUX_AARCH64}" "Linux ARM64")
 endif()
 
 file(GLOB ENGINE_SOURCES CONFIGURE_DEPENDS "engine/*.cpp")
@@ -150,6 +154,16 @@ function(configure_cactus_target target_name)
         target_include_directories(${target_name} PUBLIC ${CACTUS_CURL_INCLUDE_DIR})
         target_include_directories(${target_name} PUBLIC ${CACTUS_XGRAMMAR_INCLUDE_DIR})
         target_compile_definitions(${target_name} PRIVATE CACTUS_USE_CURL=1 CACTUS_USE_XGRAMMAR=1)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_include_directories(${target_name} PUBLIC ${CACTUS_XGRAMMAR_INCLUDE_DIR})
+        target_link_libraries(${target_name} PUBLIC ${CACTUS_XGRAMMAR_LIBRARY_LINUX_AARCH64})
+        target_compile_definitions(${target_name} PRIVATE CACTUS_USE_XGRAMMAR=1)
+
+        if(CURL_FOUND)
+            target_include_directories(${target_name} PRIVATE ${CURL_INCLUDE_DIRS})
+            target_link_libraries(${target_name} PUBLIC ${CURL_LIBRARIES})
+            target_compile_definitions(${target_name} PRIVATE CACTUS_USE_CURL)
+        endif()
     elseif(CURL_FOUND)
         target_include_directories(${target_name} PRIVATE ${CURL_INCLUDE_DIRS})
         target_link_libraries(${target_name} PUBLIC ${CURL_LIBRARIES})
