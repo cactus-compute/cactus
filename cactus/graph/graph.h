@@ -763,6 +763,11 @@ namespace GraphFile {
         void prefetch_pages();
 
     private:
+        enum class StorageMode {
+            MappedFile,
+            OwnedRam,
+        };
+
         int fd_;
         void* mapped_data_;
         size_t file_size_, data_offset_;
@@ -777,9 +782,11 @@ namespace GraphFile {
 
         bool is_interleaved_ = false;
         size_t original_N_ = 0;
+        StorageMode storage_mode_ = StorageMode::MappedFile;
 
         void parse_header();
         void apply_madvise_hints();
+        void load_file_into_ram();
     };
 }
 

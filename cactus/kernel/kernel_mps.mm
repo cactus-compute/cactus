@@ -3,8 +3,13 @@
 #import <Metal/Metal.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #import <MetalPerformanceShadersGraph/MetalPerformanceShadersGraph.h>
+#include <atomic>
 #include "kernel.h"
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <unistd.h>
 #include <vector>
 
@@ -356,13 +361,130 @@ static id<MTLBuffer> cactus_buffer_view(const void* ptr, size_t len, size_t* out
 
 static bool g_mps_enabled = true;
 
+struct CactusMPSTraceCounters {
+    std::atomic<uint64_t> matmul_f16{0};
+    std::atomic<uint64_t> gemv_int4{0};
+    std::atomic<uint64_t> matmul_int4{0};
+    std::atomic<uint64_t> attention_f16{0};
+    std::atomic<uint64_t> attention_graph{0};
+};
+
+static CactusMPSTraceCounters g_mps_trace_counters;
+static std::atomic<uint64_t> g_mps_trace_event_index{0};
+
+static bool parse_env_bool(const char* name, bool* out_value) {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw || !out_value) {
+        return false;
+    }
+
+    std::string value(raw);
+    for (char& ch : value) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+
+    if (value == "1" || value == "true" || value == "yes" || value == "on") {
+        *out_value = true;
+        return true;
+    }
+    if (value == "0" || value == "false" || value == "no" || value == "off") {
+        *out_value = false;
+        return true;
+    }
+
+    return false;
+}
+
+static bool cactus_mps_env_enabled() {
+    bool enabled = true;
+    if (parse_env_bool("CACTUS_MPS", &enabled)) {
+        return enabled;
+    }
+
+    bool disabled = false;
+    if (parse_env_bool("CACTUS_DISABLE_MPS", &disabled)) {
+        return !disabled;
+    }
+
+    return true;
+}
+
+static bool cactus_mps_trace_enabled() {
+    bool enabled = false;
+    return parse_env_bool("CACTUS_MPS_TRACE", &enabled) && enabled;
+}
+
+static bool cactus_mps_trace_summary_enabled() {
+    bool enabled = false;
+    if (parse_env_bool("CACTUS_MPS_TRACE_SUMMARY", &enabled)) {
+        return enabled;
+    }
+    return cactus_mps_trace_enabled();
+}
+
+static void cactus_mps_trace_dump_summary() {
+    if (!cactus_mps_trace_summary_enabled()) {
+        return;
+    }
+
+    cactus_mps_init();
+    const int enabled = (g_mps_enabled && cactus_mps_env_enabled()) ? 1 : 0;
+    const int available = (g_device != nil && g_queue != nil) ? 1 : 0;
+
+    const unsigned long long matmul_f16 =
+        static_cast<unsigned long long>(g_mps_trace_counters.matmul_f16.load(std::memory_order_relaxed));
+    const unsigned long long gemv_int4 =
+        static_cast<unsigned long long>(g_mps_trace_counters.gemv_int4.load(std::memory_order_relaxed));
+    const unsigned long long matmul_int4 =
+        static_cast<unsigned long long>(g_mps_trace_counters.matmul_int4.load(std::memory_order_relaxed));
+    const unsigned long long attention_f16 =
+        static_cast<unsigned long long>(g_mps_trace_counters.attention_f16.load(std::memory_order_relaxed));
+    const unsigned long long attention_graph =
+        static_cast<unsigned long long>(g_mps_trace_counters.attention_graph.load(std::memory_order_relaxed));
+    const unsigned long long total =
+        matmul_f16 + gemv_int4 + matmul_int4 + attention_f16 + attention_graph;
+
+    std::fprintf(stderr,
+                 "[MPS_TRACE_SUMMARY] enabled=%d available=%d total=%llu matmul_f16=%llu gemv_int4=%llu "
+                 "matmul_int4=%llu attention_f16=%llu attention_graph=%llu\n",
+                 enabled, available, total, matmul_f16, gemv_int4, matmul_int4, attention_f16, attention_graph);
+    std::fflush(stderr);
+}
+
+static void cactus_mps_trace_register_summary() {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        std::atexit(cactus_mps_trace_dump_summary);
+    });
+}
+
+static void cactus_mps_trace_log(const char* kernel_name, const std::string& details) {
+    if (!cactus_mps_trace_enabled() && !cactus_mps_trace_summary_enabled()) {
+        return;
+    }
+
+    cactus_mps_trace_register_summary();
+
+    if (!cactus_mps_trace_enabled()) {
+        return;
+    }
+
+    const unsigned long long event_index =
+        static_cast<unsigned long long>(1 + g_mps_trace_event_index.fetch_add(1, std::memory_order_relaxed));
+    std::fprintf(stderr, "[MPS_TRACE] #%llu %s %s\n", event_index, kernel_name, details.c_str());
+    std::fflush(stderr);
+}
+
 bool cactus_mps_available() {
+    if (cactus_mps_trace_summary_enabled()) {
+        cactus_mps_trace_register_summary();
+    }
     cactus_mps_init();
     return g_device != nil && g_queue != nil;
 }
 
 void cactus_mps_set_enabled(bool enabled) { g_mps_enabled = enabled; }
-bool cactus_mps_enabled() { return g_mps_enabled; }
+bool cactus_mps_enabled() { return g_mps_enabled && cactus_mps_env_enabled(); }
 
 static id<MTLCommandBuffer> cactus_mps_active_cmd() {
     if (!g_pending_cmd) {
@@ -396,6 +518,12 @@ void cactus_matmul_f16_mps(const __fp16* A, const __fp16* B_T, __fp16* C,
     cactus_mps_init();
     if (!g_device || !g_queue) return;
 
+    g_mps_trace_counters.matmul_f16.fetch_add(1, std::memory_order_relaxed);
+    cactus_mps_trace_log("matmul_f16",
+                         "M=" + std::to_string(M) +
+                         " K=" + std::to_string(K) +
+                         " N=" + std::to_string(N));
+
     @autoreleasepool {
         const size_t fp16 = sizeof(__fp16);
         size_t offA, offB, offC;
@@ -423,6 +551,12 @@ void cactus_gemv_int4_mps(const __fp16* A, const int8_t* B_packed, const __fp16*
     cactus_mps_init();
     if (!g_device || !g_queue || !g_gemv_pso) return;
     if (N % 4 != 0 || K % group_size != 0) return;
+
+    g_mps_trace_counters.gemv_int4.fetch_add(1, std::memory_order_relaxed);
+    cactus_mps_trace_log("gemv_int4",
+                         "K=" + std::to_string(K) +
+                         " N=" + std::to_string(N) +
+                         " group_size=" + std::to_string(group_size));
 
     @autoreleasepool {
         const size_t fp16 = sizeof(__fp16);
@@ -457,6 +591,13 @@ void cactus_matmul_int4_mps(const __fp16* A, const int8_t* B_packed, const __fp1
     cactus_mps_init();
     if (!g_device || !g_queue || !g_dequant_pso) return;
     if (N % 4 != 0 || K % group_size != 0) return;
+
+    g_mps_trace_counters.matmul_int4.fetch_add(1, std::memory_order_relaxed);
+    cactus_mps_trace_log("matmul_int4",
+                         "M=" + std::to_string(M) +
+                         " K=" + std::to_string(K) +
+                         " N=" + std::to_string(N) +
+                         " group_size=" + std::to_string(group_size));
 
     @autoreleasepool {
         const size_t fp16 = sizeof(__fp16);
@@ -502,6 +643,15 @@ void cactus_attention_f16_mps(const __fp16* Q, const __fp16* K, const __fp16* V,
     cactus_mps_init();
     if (!g_device || !g_queue || !g_attn_v2_pso) return;
     if (head_dim > 256 || head_dim % 16 != 0) return;
+
+    g_mps_trace_counters.attention_f16.fetch_add(1, std::memory_order_relaxed);
+    cactus_mps_trace_log("attention_f16",
+                         "seq_len=" + std::to_string(seq_len) +
+                         " kv_seq_len=" + std::to_string(kv_seq_len) +
+                         " num_q_heads=" + std::to_string(num_q_heads) +
+                         " num_kv_heads=" + std::to_string(num_kv_heads) +
+                         " head_dim=" + std::to_string(head_dim) +
+                         " position_offset=" + std::to_string(position_offset));
 
     @autoreleasepool {
         const size_t fp16 = sizeof(__fp16);
@@ -631,6 +781,15 @@ void cactus_attention_f16_mpsgraph(const __fp16* Q, const __fp16* K, const __fp1
                                     size_t head_dim, float scale, size_t position_offset) {
     cactus_mps_init();
     if (!g_device || !g_queue) return;
+
+    g_mps_trace_counters.attention_graph.fetch_add(1, std::memory_order_relaxed);
+    cactus_mps_trace_log("attention_graph",
+                         "seq_len=" + std::to_string(seq_len) +
+                         " kv_seq_len=" + std::to_string(kv_seq_len) +
+                         " num_q_heads=" + std::to_string(num_q_heads) +
+                         " num_kv_heads=" + std::to_string(num_kv_heads) +
+                         " head_dim=" + std::to_string(head_dim) +
+                         " position_offset=" + std::to_string(position_offset));
 
     @autoreleasepool {
         const size_t fp16 = sizeof(__fp16);

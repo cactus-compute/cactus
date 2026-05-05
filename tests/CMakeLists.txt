@@ -48,6 +48,7 @@ else()
     find_library(COREML_FRAMEWORK CoreML REQUIRED)
     find_library(METAL_FRAMEWORK Metal REQUIRED)
     find_library(MPS_FRAMEWORK MetalPerformanceShaders REQUIRED)
+    find_library(MPSGRAPH_FRAMEWORK MetalPerformanceShadersGraph REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
     find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
     find_library(SECURITY_FRAMEWORK Security REQUIRED)
@@ -99,6 +100,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
             ${COREML_FRAMEWORK}
             ${METAL_FRAMEWORK}
             ${MPS_FRAMEWORK}
+            ${MPSGRAPH_FRAMEWORK}
             ${FOUNDATION_FRAMEWORK}
             ${SECURITY_FRAMEWORK}
             ${SYSTEMCONFIGURATION_FRAMEWORK}
@@ -133,6 +135,9 @@ foreach(APP_NAME chat asr)
             target_link_libraries(${APP_NAME} PRIVATE
                 ${ACCELERATE_FRAMEWORK}
                 ${COREML_FRAMEWORK}
+                ${METAL_FRAMEWORK}
+                ${MPS_FRAMEWORK}
+                ${MPSGRAPH_FRAMEWORK}
                 ${FOUNDATION_FRAMEWORK}
                 ${SECURITY_FRAMEWORK}
                 ${SYSTEMCONFIGURATION_FRAMEWORK}
