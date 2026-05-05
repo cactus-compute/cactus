@@ -676,7 +676,6 @@ void cactus_attention_f16(
         });
 }
 
-// seq_len=1 fast path.
 static void cactus_attention_hybrid_int8_fp16_decode_dot(
     const __fp16* queries,
     const int8_t* keys_cached,
@@ -702,7 +701,7 @@ static void cactus_attention_hybrid_int8_fp16_decode_dot(
     constexpr size_t VECTOR_WIDTH = 8;
     constexpr size_t BLOCK_SIZE = 64;
     constexpr size_t QGROUP = 32;
-    constexpr size_t MAX_HEAD_DIM = 256;
+    constexpr size_t MAX_HEAD_DIM = 512;
     constexpr size_t MAX_QUANT_GROUPS = MAX_HEAD_DIM / QGROUP;
     constexpr size_t MAX_ACCUM_SLOTS = MAX_HEAD_DIM / VECTOR_WIDTH;
 
@@ -739,8 +738,6 @@ static void cactus_attention_hybrid_int8_fp16_decode_dot(
                 const __fp16* V_new_base = values_new + batch_idx * v_new_batch_stride;
                 __fp16* o_vec = output + batch_idx * o_batch_stride + q_head_idx * head_dim;
 
-                // Per-group symmetric INT8 quantization of Q. We absorb the full
-                // mul-by-scale into a single fp32 mul per group later (deferred scale).
                 for (size_t qg = 0; qg < num_quant_groups; ++qg) {
                     const __fp16* q_grp = q_vec + qg * QGROUP;
                     float16x8_t amax_v = vabsq_f16(vld1q_f16(q_grp));
@@ -783,16 +780,9 @@ static void cactus_attention_hybrid_int8_fp16_decode_dot(
 
                     float block_max = -std::numeric_limits<float>::infinity();
 
-                    // Determine the range of kv positions in this block that hit the
-                    // INT8 cache (vs the fp16 new tokens). With seq_len=1 and causal
-                    // truth, these are contiguous: cached ∈ [start, min(end, cache_len)),
-                    // new ∈ [max(start, cache_len), end).
                     const size_t cached_kv_end = std::min(kv_block_end, cache_len);
                     const size_t new_kv_start = std::max(kv_block_start, cache_len);
 
-                    // Cached (INT8) keys: scored with vdotq, processed in groups of 4.
-                    // Per-block FP32 sum is held in a NEON vector and reduced once at the end
-                    // (deferred horizontal-add) — same pattern as ggml's q8_0 vec_dot.
                     size_t kv_pos = kv_block_start;
                     for (; kv_pos + 3 < cached_kv_end; kv_pos += 4) {
                         const int8_t* k1 = K_cached_base + kv_pos * kv_seq_stride + kv_head_idx * head_dim;
@@ -870,7 +860,6 @@ static void cactus_attention_hybrid_int8_fp16_decode_dot(
                         block_max = std::max(block_max, score);
                     }
 
-                    // New tokens (fp16): rare (new_len typically 1) — fp16 fma path.
                     for (kv_pos = std::max(kv_pos, new_kv_start); kv_pos < kv_block_end; ++kv_pos) {
                         if (is_causal && kv_pos > absolute_q_pos) {
                             block_scores[kv_pos - kv_block_start] = -std::numeric_limits<float>::infinity();
@@ -911,7 +900,6 @@ static void cactus_attention_hybrid_int8_fp16_decode_dot(
                     for (size_t i = 0; i < num_accum_slots; ++i)
                         block_accum[i] = vdupq_n_f16((__fp16)0.0f);
 
-                    // Cached V positions in groups of 4 — better pipelines int8→fp16 + fma.
                     const size_t cached_block_end = std::min(kv_block_end, cache_len);
                     size_t v_kv = kv_block_start;
                     for (; v_kv + 3 < cached_block_end; v_kv += 4) {
@@ -972,7 +960,6 @@ static void cactus_attention_hybrid_int8_fp16_decode_dot(
                             }
                         }
                     }
-                    // New tokens (fp16 V) — typically just one position.
                     for (size_t kv_idx = std::max(v_kv, std::max(kv_block_start, cache_len)); kv_idx < kv_block_end; ++kv_idx) {
                         const float w = block_scores[kv_idx - kv_block_start];
                         if (w == 0.0f) continue;
@@ -1038,7 +1025,7 @@ void cactus_attention_hybrid_int8_fp16(
 
     if (seq_len == 1 &&
         head_dim == v_head_dim &&
-        head_dim <= 256 &&
+        head_dim <= 512 &&
         head_dim % 32 == 0 &&
         quant_group_size == 32) {
         cactus_attention_hybrid_int8_fp16_decode_dot(
