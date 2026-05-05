@@ -7,6 +7,35 @@ template<typename FinalizeFn>
 static void axis_reduce_f32_impl(const __fp16* input, __fp16* output,
                                  size_t outer_size, size_t axis_size, size_t inner_size,
                                  FinalizeFn finalize) {
+    if (inner_size == 1) {
+        CactusThreading::parallel_for(outer_size, CactusThreading::Thresholds::AXIS_REDUCE,
+            [&](size_t start_outer, size_t end_outer) {
+                constexpr size_t W = SIMD_F16_WIDTH;
+                const size_t vec_axis = simd_align(axis_size);
+
+                for (size_t outer = start_outer; outer < end_outer; ++outer) {
+                    const __fp16* row = input + outer * axis_size;
+                    float32x4_t sum_lo = vdupq_n_f32(0.0f);
+                    float32x4_t sum_hi = vdupq_n_f32(0.0f);
+
+                    for (size_t a = 0; a < vec_axis; a += W) {
+                        float32x4_t lo, hi;
+                        f16x8_split_f32(vld1q_f16(row + a), lo, hi);
+                        sum_lo = vaddq_f32(sum_lo, lo);
+                        sum_hi = vaddq_f32(sum_hi, hi);
+                    }
+
+                    float total = vaddvq_f32(vaddq_f32(sum_lo, sum_hi));
+                    for (size_t a = vec_axis; a < axis_size; ++a) {
+                        total += static_cast<float>(row[a]);
+                    }
+
+                    output[outer] = static_cast<__fp16>(finalize(total, axis_size));
+                }
+            });
+        return;
+    }
+
     CactusThreading::parallel_for_2d(outer_size, inner_size, CactusThreading::Thresholds::AXIS_REDUCE,
         [&](size_t outer, size_t inner) {
             constexpr size_t W = SIMD_F16_WIDTH;
@@ -41,6 +70,37 @@ static void axis_reduce_f16_impl(const __fp16* input, __fp16* output,
                                  size_t outer_size, size_t axis_size, size_t inner_size,
                                  float16x8_t init_vec, __fp16 init_scalar,
                                  SimdReduceOp simd_reduce, ScalarReduceOp scalar_reduce) {
+    if (inner_size == 1) {
+        CactusThreading::parallel_for(outer_size, CactusThreading::Thresholds::AXIS_REDUCE,
+            [&](size_t start_outer, size_t end_outer) {
+                constexpr size_t W = SIMD_F16_WIDTH;
+                const size_t vec_axis = simd_align(axis_size);
+
+                for (size_t outer = start_outer; outer < end_outer; ++outer) {
+                    const __fp16* row = input + outer * axis_size;
+                    float16x8_t acc = init_vec;
+
+                    for (size_t a = 0; a < vec_axis; a += W) {
+                        acc = simd_reduce(acc, vld1q_f16(row + a));
+                    }
+
+                    __fp16 result = init_scalar;
+                    __fp16 arr[W];
+                    vst1q_f16(arr, acc);
+                    for (size_t j = 0; j < W; ++j) {
+                        result = scalar_reduce(result, arr[j]);
+                    }
+
+                    for (size_t a = vec_axis; a < axis_size; ++a) {
+                        result = scalar_reduce(result, row[a]);
+                    }
+
+                    output[outer] = result;
+                }
+            });
+        return;
+    }
+
     CactusThreading::parallel_for_2d(outer_size, inner_size, CactusThreading::Thresholds::AXIS_REDUCE,
         [&](size_t outer, size_t inner) {
             constexpr size_t W = SIMD_F16_WIDTH;
@@ -154,6 +214,44 @@ double cactus_variance_all_f16(const __fp16* data, size_t num_elements) {
 }
 
 void cactus_variance_axis_f16(const __fp16* input, __fp16* output, size_t outer_size, size_t axis_size, size_t inner_size) {
+    if (inner_size == 1) {
+        CactusThreading::parallel_for(outer_size, CactusThreading::Thresholds::AXIS_REDUCE,
+            [&](size_t start_outer, size_t end_outer) {
+                constexpr size_t W = SIMD_F16_WIDTH;
+                const size_t vec_axis = simd_align(axis_size);
+
+                for (size_t outer = start_outer; outer < end_outer; ++outer) {
+                    const __fp16* row = input + outer * axis_size;
+                    float32x4_t sum_lo = vdupq_n_f32(0.0f);
+                    float32x4_t sum_hi = vdupq_n_f32(0.0f);
+                    float32x4_t sq_lo = vdupq_n_f32(0.0f);
+                    float32x4_t sq_hi = vdupq_n_f32(0.0f);
+
+                    for (size_t a = 0; a < vec_axis; a += W) {
+                        float32x4_t lo, hi;
+                        f16x8_split_f32(vld1q_f16(row + a), lo, hi);
+                        sum_lo = vaddq_f32(sum_lo, lo);
+                        sum_hi = vaddq_f32(sum_hi, hi);
+                        sq_lo = vfmaq_f32(sq_lo, lo, lo);
+                        sq_hi = vfmaq_f32(sq_hi, hi, hi);
+                    }
+
+                    float sum = vaddvq_f32(vaddq_f32(sum_lo, sum_hi));
+                    float sum_sq = vaddvq_f32(vaddq_f32(sq_lo, sq_hi));
+                    for (size_t a = vec_axis; a < axis_size; ++a) {
+                        float x = static_cast<float>(row[a]);
+                        sum += x;
+                        sum_sq += x * x;
+                    }
+
+                    float mean = sum / static_cast<float>(axis_size);
+                    float mean_sq = sum_sq / static_cast<float>(axis_size);
+                    output[outer] = static_cast<__fp16>(mean_sq - mean * mean);
+                }
+            });
+        return;
+    }
+
     CactusThreading::parallel_for_2d(outer_size, inner_size, CactusThreading::Thresholds::AXIS_REDUCE,
         [&](size_t outer, size_t inner) {
             float sum = 0.0f, sum_sq = 0.0f;
