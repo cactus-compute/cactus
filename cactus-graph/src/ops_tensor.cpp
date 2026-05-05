@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cmath>
 #include <stdexcept>
+#include <vector>
 
 void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     if (node.params.backend == ComputeBackend::NPU) {
@@ -199,6 +200,116 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
     }
 }
 
+namespace {
+
+uint8_t unpack_cq_index(const uint8_t* packed, uint32_t bits, uint32_t k) {
+    switch (bits) {
+        case 1:
+            return (packed[k / 8] >> (k & 7u)) & 0x1u;
+        case 2:
+            return (packed[k / 4] >> ((k & 3u) * 2u)) & 0x3u;
+        case 3: {
+            uint32_t bit_offset = k * 3;
+            uint32_t byte_idx = bit_offset / 8;
+            uint32_t bit_idx = bit_offset % 8;
+            uint32_t word = packed[byte_idx] | (static_cast<uint32_t>(packed[byte_idx + 1]) << 8);
+            return (word >> bit_idx) & 0x7u;
+        }
+        case 4:
+            return (k & 1u) ? ((packed[k / 2] >> 4) & 0xFu) : (packed[k / 2] & 0xFu);
+        default:
+            return 0;
+    }
+}
+
+void fwht_normalized(std::vector<float>& x) {
+    const uint32_t n = static_cast<uint32_t>(x.size());
+    for (uint32_t h = 1; h < n; h <<= 1) {
+        for (uint32_t i = 0; i < n; i += (h << 1)) {
+            for (uint32_t j = i; j < i + h; ++j) {
+                float a = x[j];
+                float b = x[j + h];
+                x[j] = a + b;
+                x[j + h] = a - b;
+            }
+        }
+    }
+    const float inv = 1.0f / std::sqrt(static_cast<float>(n));
+    for (float& v : x) v *= inv;
+}
+
+void dequantize_orthogonal_embedding_row(const BufferDesc& buf, size_t row, __fp16* out) {
+    const uint32_t bits     = PrecisionTraits::cq_bits(buf.precision);
+    const uint32_t K        = static_cast<uint32_t>(buf.shape[1]);
+    const uint32_t pgb      = cactus_quant_packed_group_bytes(bits, K);
+    const uint8_t* packed   = buf.data_as<uint8_t>() + static_cast<size_t>(row) * pgb;
+    const __fp16* codebook  = buf.cq_codebook;
+    const float   norm      = static_cast<float>(buf.cq_norms[row]);
+    const __fp16* isr       = buf.cq_input_scale_recip;
+    // R is [K, K] row-major: R[j, i] is at rotation[j*K + i]
+    // recon[j] = sum_i dq[i] * R.T[j,i] = sum_i dq[i] * R[i,j]
+    // i.e. recon = R.T @ dq  (R.T[j,:] = R[:,j])
+    const __fp16* R = buf.cq_rotation;
+
+    // Decode codebook values into float scratch
+    std::vector<float> dq(K);
+    for (uint32_t i = 0; i < K; ++i)
+        dq[i] = static_cast<float>(codebook[unpack_cq_index(packed, bits, i)]);
+
+    // recon = dq @ R.T: recon[j] = sum_i dq[i] * R[j, i] = sum_i dq[i] * R[j*K + i]
+    for (uint32_t j = 0; j < K; ++j) {
+        float acc = 0.0f;
+        for (uint32_t i = 0; i < K; ++i)
+            acc += dq[i] * static_cast<float>(R[static_cast<size_t>(j) * K + i]);
+        float scale = isr ? static_cast<float>(isr[j]) : 1.0f;
+        out[j] = static_cast<__fp16>(acc * norm * scale);
+    }
+}
+
+void dequantize_cq_embedding_row(const BufferDesc& embeddings_buffer, size_t row, __fp16* out_row) {
+    const uint32_t bits = PrecisionTraits::cq_bits(embeddings_buffer.precision);
+    const uint32_t hidden_dim = static_cast<uint32_t>(embeddings_buffer.shape[1]);
+    const uint32_t group_size = static_cast<uint32_t>(embeddings_buffer.group_size);
+    const uint32_t num_groups = static_cast<uint32_t>(embeddings_buffer.num_groups);
+    const uint32_t packed_group_bytes = cactus_quant_packed_group_bytes(bits, group_size);
+    const uint8_t* packed_base = embeddings_buffer.data_as<uint8_t>();
+    const __fp16* codebook = embeddings_buffer.cq_codebook;
+    const __fp16* norms = embeddings_buffer.cq_norms;
+    const __fp16* input_scale_recip = embeddings_buffer.cq_input_scale_recip;
+    const int8_t* left = embeddings_buffer.cq_left_signs;
+    const int8_t* right = embeddings_buffer.cq_right_signs;
+    const uint32_t* perm = embeddings_buffer.cq_permutation;
+
+    std::vector<float> rotated(group_size);
+    for (uint32_t g = 0; g < num_groups; ++g) {
+        std::fill(rotated.begin(), rotated.end(), 0.0f);
+        const uint8_t* packed = packed_base + (static_cast<size_t>(row) * num_groups + g) * packed_group_bytes;
+
+        for (uint32_t k = 0; k < group_size; ++k) {
+            uint8_t idx = unpack_cq_index(packed, bits, k);
+            uint32_t dst = perm ? perm[k] : k;
+            float rs = right ? static_cast<float>(right[dst]) : 1.0f;
+            rotated[dst] = static_cast<float>(codebook[idx]) * rs;
+        }
+
+        fwht_normalized(rotated);
+
+        const float norm = static_cast<float>(norms[static_cast<size_t>(row) * num_groups + g]);
+        for (uint32_t k = 0; k < group_size; ++k) {
+            uint32_t col = g * group_size + k;
+            float ls = left ? static_cast<float>(left[k]) : 1.0f;
+            float scale = input_scale_recip ? static_cast<float>(input_scale_recip[col]) : 1.0f;
+            out_row[col] = static_cast<__fp16>(rotated[k] * ls * norm * scale);
+        }
+    }
+
+    for (uint32_t col = num_groups * group_size; col < hidden_dim; ++col) {
+        out_row[col] = static_cast<__fp16>(0);
+    }
+}
+
+}
+
 void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& embeddings_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& indices_buffer = get_input(node, 1, nodes, node_index_map);
@@ -225,7 +336,19 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
     __fp16* output = node.output_buffer.data_as<__fp16>();
 
     Precision emb_prec = embeddings_buffer.precision;
-    if (PrecisionTraits::is_integer(emb_prec) && embeddings_buffer.group_size > 0) {
+    if (PrecisionTraits::is_cq(emb_prec) && embeddings_buffer.group_size > 0) {
+        bool orthogonal = (embeddings_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0;
+        for (size_t i = 0; i < num_indices; i++) {
+            size_t idx = static_cast<size_t>(indices_ptr[i]);
+            if (idx >= vocab_size) {
+                throw std::runtime_error("Embedding index out of bounds: " + std::to_string(idx) + " >= " + std::to_string(vocab_size));
+            }
+            if (orthogonal)
+                dequantize_orthogonal_embedding_row(embeddings_buffer, idx, output + i * hidden_dim);
+            else
+                dequantize_cq_embedding_row(embeddings_buffer, idx, output + i * hidden_dim);
+        }
+    } else if (PrecisionTraits::is_integer(emb_prec) && embeddings_buffer.group_size > 0) {
         const int8_t* embeddings = embeddings_buffer.data_as<int8_t>();
         const __fp16* scales = embeddings_buffer.scales_as_fp16();
         size_t group_size = embeddings_buffer.group_size;

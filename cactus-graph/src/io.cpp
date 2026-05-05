@@ -9,35 +9,6 @@
 #include <cstring>
 #include <cmath>
 
-static inline int8x16_t tq_expand_i8_16(const uint8_t* packed, uint32_t bits, int8x16_t cb_lut) {
-    if (bits == 4) {
-        uint8x8_t bytes = vld1_u8(packed);
-        uint8x8_t lo = vand_u8(bytes, vdup_n_u8(0x0F));
-        uint8x8_t hi = vshr_n_u8(bytes, 4);
-        return vqtbl1q_s8(cb_lut, vcombine_u8(vzip1_u8(lo, hi), vzip2_u8(lo, hi)));
-    } else if (bits == 2) {
-        uint8_t b0 = packed[0], b1 = packed[1], b2 = packed[2], b3 = packed[3];
-        uint64_t lo_w = ((uint64_t)(b0&3))|((uint64_t)((b0>>2)&3)<<8)|((uint64_t)((b0>>4)&3)<<16)|((uint64_t)((b0>>6)&3)<<24)|
-                        ((uint64_t)(b1&3)<<32)|((uint64_t)((b1>>2)&3)<<40)|((uint64_t)((b1>>4)&3)<<48)|((uint64_t)((b1>>6)&3)<<56);
-        uint64_t hi_w = ((uint64_t)(b2&3))|((uint64_t)((b2>>2)&3)<<8)|((uint64_t)((b2>>4)&3)<<16)|((uint64_t)((b2>>6)&3)<<24)|
-                        ((uint64_t)(b3&3)<<32)|((uint64_t)((b3>>2)&3)<<40)|((uint64_t)((b3>>4)&3)<<48)|((uint64_t)((b3>>6)&3)<<56);
-        return vqtbl1q_s8(cb_lut, vcombine_u8(vcreate_u8(lo_w), vcreate_u8(hi_w)));
-    } else if (bits == 1) {
-        uint8_t b0 = packed[0], b1 = packed[1];
-        uint64_t lo_w = ((uint64_t)((b0>>0)&1))|((uint64_t)((b0>>1)&1)<<8)|((uint64_t)((b0>>2)&1)<<16)|((uint64_t)((b0>>3)&1)<<24)|
-                        ((uint64_t)((b0>>4)&1)<<32)|((uint64_t)((b0>>5)&1)<<40)|((uint64_t)((b0>>6)&1)<<48)|((uint64_t)((b0>>7)&1)<<56);
-        uint64_t hi_w = ((uint64_t)((b1>>0)&1))|((uint64_t)((b1>>1)&1)<<8)|((uint64_t)((b1>>2)&1)<<16)|((uint64_t)((b1>>3)&1)<<24)|
-                        ((uint64_t)((b1>>4)&1)<<32)|((uint64_t)((b1>>5)&1)<<40)|((uint64_t)((b1>>6)&1)<<48)|((uint64_t)((b1>>7)&1)<<56);
-        return vqtbl1q_s8(cb_lut, vcombine_u8(vcreate_u8(lo_w), vcreate_u8(hi_w)));
-    } else { // bits == 3
-        uint64_t raw = 0; std::memcpy(&raw, packed, 6);
-        uint64_t lo_w = 0, hi_w = 0;
-        for (int i = 0; i < 8; i++) lo_w |= ((raw >> (i*3)) & 7ULL) << (i*8);
-        for (int i = 0; i < 8; i++) hi_w |= ((raw >> ((i+8)*3)) & 7ULL) << (i*8);
-        return vqtbl1q_s8(cb_lut, vcombine_u8(vcreate_u8(lo_w), vcreate_u8(hi_w)));
-    }
-}
-
 namespace {
     constexpr uint32_t fourcc(char a, char b, char c, char d) {
         return static_cast<uint32_t>(static_cast<uint8_t>(a)) |
@@ -49,6 +20,7 @@ namespace {
     constexpr uint32_t CACTUS_MAGIC = 0x54434143;
     constexpr uint32_t CACTUS_GRAPH_MAGIC = fourcc('C', 'G', 'R', 'F');
     constexpr uint32_t FLAG_HAS_SCALES = 1 << 0;
+    constexpr uint32_t FLAG_ORTHOGONAL_ROTATION = 1 << 1;
     constexpr uint32_t FLAG_INTERLEAVED = 1 << 3;
     constexpr size_t HEADER_SIZE = 84;
 
@@ -304,7 +276,40 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
     size_t node_id = input(shape, precision);
     set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
 
-    if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
+    if (PrecisionTraits::is_cq(precision) && mapped_file->group_size() > 0) {
+        auto& buffer = nodes_[node_index_map_.at(node_id)]->output_buffer;
+        buffer.group_size = mapped_file->group_size();
+        buffer.num_groups = mapped_file->num_groups();
+
+        const char* scales_base = static_cast<const char*>(mapped_file->scales_data());
+        uint32_t bits = PrecisionTraits::cq_bits(precision);
+        uint32_t cb_size = 1u << bits;
+        uint32_t gs = static_cast<uint32_t>(mapped_file->group_size());
+        uint32_t K = gs * static_cast<uint32_t>(mapped_file->num_groups());
+        uint32_t N = static_cast<uint32_t>(shape.size() >= 2 ? shape[0] : 1);
+
+        size_t off = 0;
+        buffer.cq_codebook = reinterpret_cast<const __fp16*>(scales_base + off);
+        off += cb_size * sizeof(__fp16);
+        buffer.cq_input_scale = reinterpret_cast<const __fp16*>(scales_base + off);
+        off += K * sizeof(__fp16);
+        buffer.cq_input_scale_recip = reinterpret_cast<const __fp16*>(scales_base + off);
+        off += K * sizeof(__fp16);
+        buffer.cq_norms = reinterpret_cast<const __fp16*>(scales_base + off);
+        off += static_cast<size_t>(N) * mapped_file->num_groups() * sizeof(__fp16);
+
+        if (mapped_file->is_orthogonal_rotation()) {
+            buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
+            buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
+        } else {
+            buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
+            off += gs;
+            buffer.cq_right_signs = reinterpret_cast<const int8_t*>(scales_base + off);
+            off += gs;
+            buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
+            buffer.cq_flags = 0;
+        }
+    } else if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
         set_grouped_scales(node_id, mapped_file->group_size(), mapped_file->num_groups(),
                           const_cast<void*>(mapped_file->scales_data()));
 
@@ -357,82 +362,19 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
         off += K * sizeof(__fp16);
         buffer.cq_norms = reinterpret_cast<const __fp16*>(scales_base + off);
         off += static_cast<size_t>(N) * mapped_file->num_groups() * sizeof(__fp16);
-        buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-        off += gs;
-        buffer.cq_right_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-        off += gs;
-        buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
-        buffer.cq_flags = 0;
 
-
-        {
-            uint32_t num_grps = static_cast<uint32_t>(mapped_file->num_groups());
-            uint32_t pgb_bytes = cactus_quant_packed_group_bytes(bits, gs);
-            size_t N_blocks = (N + 3) / 4;
-
-
-            int8_t cb_i8[16] = {};
-            float cb_max = 0.f;
-            for (uint32_t i = 0; i < cb_size; i++) {
-                float v = std::abs(static_cast<float>(buffer.cq_codebook[i]));
-                if (v > cb_max) cb_max = v;
-            }
-            float cb_scale_val = cb_max / 127.f;
-            if (cb_scale_val < 1e-10f) cb_scale_val = 1e-10f;
-            for (uint32_t i = 0; i < cb_size; i++)
-                cb_i8[i] = static_cast<int8_t>(std::round(static_cast<float>(buffer.cq_codebook[i]) / cb_scale_val));
-            int8x16_t cb_lut = vld1q_s8(cb_i8);
-
-
-            buffer.cq_expanded = std::make_unique<int8_t[]>(N_blocks * num_grps * gs * 4);
-            buffer.cq_norm_f32 = std::make_unique<float[]>(N_blocks * num_grps * 4);
-
-            const uint8_t* packed_base = static_cast<const uint8_t*>(buffer.get_data());
-
-            for (size_t nb = 0; nb < N_blocks; ++nb) {
-                size_t n_start = nb * 4;
-                size_t valid_n = std::min(size_t(4), static_cast<size_t>(N) - n_start);
-
-                for (uint32_t g = 0; g < num_grps; ++g) {
-                    int8x16_t exp[4][16]; // max gs=256 → 16 vectors
-                    uint32_t n_vecs = gs / 16;
-
-                    for (size_t ni = 0; ni < valid_n; ++ni) {
-                        const uint8_t* packed = packed_base
-                            + (static_cast<size_t>(n_start + ni) * num_grps + g) * pgb_bytes;
-                        for (uint32_t v = 0; v < n_vecs; ++v)
-                            exp[ni][v] = tq_expand_i8_16(packed + (v * 16 * bits) / 8, bits, cb_lut);
-                    }
-                    for (size_t ni = valid_n; ni < 4; ++ni)
-                        for (uint32_t v = 0; v < n_vecs; ++v)
-                            exp[ni][v] = vdupq_n_s8(0);
-
-
-                    int8_t* dst = buffer.cq_expanded.get() + (nb * num_grps + g) * gs * 4;
-                    for (uint32_t v = 0; v < n_vecs; ++v) {
-                        int32x4_t r0 = vreinterpretq_s32_s8(exp[0][v]);
-                        int32x4_t r1 = vreinterpretq_s32_s8(exp[1][v]);
-                        int32x4_t r2 = vreinterpretq_s32_s8(exp[2][v]);
-                        int32x4_t r3 = vreinterpretq_s32_s8(exp[3][v]);
-                        int32x4_t t01_lo = vzip1q_s32(r0, r1);
-                        int32x4_t t01_hi = vzip2q_s32(r0, r1);
-                        int32x4_t t23_lo = vzip1q_s32(r2, r3);
-                        int32x4_t t23_hi = vzip2q_s32(r2, r3);
-                        vst1q_s8(dst + v*64,    vreinterpretq_s8_s64(vzip1q_s64(vreinterpretq_s64_s32(t01_lo), vreinterpretq_s64_s32(t23_lo))));
-                        vst1q_s8(dst + v*64+16, vreinterpretq_s8_s64(vzip2q_s64(vreinterpretq_s64_s32(t01_lo), vreinterpretq_s64_s32(t23_lo))));
-                        vst1q_s8(dst + v*64+32, vreinterpretq_s8_s64(vzip1q_s64(vreinterpretq_s64_s32(t01_hi), vreinterpretq_s64_s32(t23_hi))));
-                        vst1q_s8(dst + v*64+48, vreinterpretq_s8_s64(vzip2q_s64(vreinterpretq_s64_s32(t01_hi), vreinterpretq_s64_s32(t23_hi))));
-                    }
-
-
-                    float* nd = buffer.cq_norm_f32.get() + (nb * num_grps + g) * 4;
-                    for (size_t ni = 0; ni < 4; ++ni)
-                        nd[ni] = (n_start + ni < N)
-                            ? static_cast<float>(buffer.cq_norms[(n_start + ni) * num_grps + g]) * cb_scale_val
-                            : 0.f;
-                }
-            }
+        if (mapped_file->is_orthogonal_rotation()) {
+            buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
+            buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
+        } else {
+            buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
+            off += gs;
+            buffer.cq_right_signs = reinterpret_cast<const int8_t*>(scales_base + off);
+            off += gs;
+            buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
+            buffer.cq_flags = 0;
         }
+
     } else if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
         set_grouped_scales(node_id, mapped_file->group_size(), mapped_file->num_groups(),
                           const_cast<void*>(mapped_file->scales_data()));
@@ -759,11 +701,13 @@ MappedFile::MappedFile(MappedFile&& other) noexcept
       scales_offset_(other.scales_offset_), scales_bytes_(other.scales_bytes_),
       alignment_(other.alignment_),
       is_interleaved_(other.is_interleaved_),
+      is_orthogonal_rotation_(other.is_orthogonal_rotation_),
       original_N_(other.original_N_) {
     other.fd_ = -1;
     other.mapped_data_ = nullptr;
     other.file_size_ = 0;
     other.is_interleaved_ = false;
+    other.is_orthogonal_rotation_ = false;
     other.original_N_ = 0;
 }
 
@@ -789,11 +733,13 @@ MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
         scales_bytes_ = other.scales_bytes_;
         alignment_ = other.alignment_;
         is_interleaved_ = other.is_interleaved_;
+        is_orthogonal_rotation_ = other.is_orthogonal_rotation_;
         original_N_ = other.original_N_;
         other.fd_ = -1;
         other.mapped_data_ = nullptr;
         other.file_size_ = 0;
         other.is_interleaved_ = false;
+        other.is_orthogonal_rotation_ = false;
         other.original_N_ = 0;
     }
     return *this;
@@ -845,6 +791,7 @@ void MappedFile::parse_header() {
     uint32_t flags = *reinterpret_cast<const uint32_t*>(ptr + offset);
     offset += sizeof(uint32_t);
     is_interleaved_ = (flags & FLAG_INTERLEAVED) != 0;
+    is_orthogonal_rotation_ = (flags & FLAG_ORTHOGONAL_ROTATION) != 0;
 
     alignment_ = *reinterpret_cast<const uint32_t*>(ptr + offset);
     offset += sizeof(uint32_t);
@@ -904,10 +851,6 @@ void MappedFile::apply_madvise_hints() {
     }
 
     madvise(static_cast<char*>(mapped_data_) + data_offset_, byte_size_, MADV_SEQUENTIAL);
-
-    if (byte_size_ > 1024 * 1024) {
-        madvise(static_cast<char*>(mapped_data_) + data_offset_, byte_size_, MADV_WILLNEED);
-    }
 }
 
 void MappedFile::release_pages() {

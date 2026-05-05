@@ -16,7 +16,7 @@ inline std::string to_upper(const std::string& s) {
 }
 
 inline std::string escape(const std::string& s) {
-    return "<escape>" + s + "<escape>";
+    return "<|\"|>" + s + "<|\"|>";
 }
 
 inline void skip_whitespace(const std::string& json, size_t& pos) {

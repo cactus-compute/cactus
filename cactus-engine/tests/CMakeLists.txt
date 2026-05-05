@@ -14,16 +14,19 @@ if(APPLE)
     set(CACTUS_CURL_ROOT "${CACTUS_ENGINE_ROOT}/libs/curl")
     set(CACTUS_CURL_INCLUDE_DIR "${CACTUS_CURL_ROOT}/include")
     set(CACTUS_CURL_LIBRARY_MACOS "${CACTUS_CURL_ROOT}/macos/libcurl.a")
+    if(NOT EXISTS "${CACTUS_CURL_LIBRARY_MACOS}")
+        unset(CACTUS_CURL_LIBRARY_MACOS)
+        find_library(CACTUS_CURL_LIBRARY_MACOS NAMES curl)
+    endif()
 else()
     find_package(CURL)
 endif()
 
 # --- Find the pre-built cactus library ---
-find_library(CACTUS_LIB
-    NAMES cactus
-    HINTS ${CACTUS_PROJECT_ROOT}/cactus/build
-    REQUIRED
-)
+set(CACTUS_LIB "${CACTUS_PROJECT_ROOT}/cactus/build/libcactus.a")
+if(NOT EXISTS "${CACTUS_LIB}")
+    message(FATAL_ERROR "Missing ${CACTUS_LIB}; build the top-level cactus target first")
+endif()
 
 # --- Platform libraries ---
 if(NOT APPLE)
@@ -58,7 +61,6 @@ foreach(TEST_FILE ${TEST_SOURCES})
 
     if(APPLE)
         target_link_libraries(${TEST_NAME} PRIVATE
-            ${CACTUS_CURL_LIBRARY_MACOS}
             ${ACCELERATE_FRAMEWORK}
             ${COREML_FRAMEWORK}
             ${FOUNDATION_FRAMEWORK}
@@ -66,7 +68,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
             ${SYSTEMCONFIGURATION_FRAMEWORK}
             ${CFNETWORK_FRAMEWORK}
         )
-        target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_CURL_INCLUDE_DIR})
+        if(CACTUS_CURL_LIBRARY_MACOS)
+            target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})
+            target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_CURL_INCLUDE_DIR})
+        endif()
     elseif(CURL_FOUND)
         target_link_libraries(${TEST_NAME} PRIVATE ${CURL_LIBRARIES})
         target_include_directories(${TEST_NAME} PRIVATE ${CURL_INCLUDE_DIRS})

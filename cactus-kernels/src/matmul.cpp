@@ -1420,3 +1420,78 @@ void cactus_quant_matmul(
     }
 }
 
+// Orthogonal TQH matmul.
+// W->rotation is [K×K] fp16 row-major: R[k, i] = rotation[k*K + i].
+// Math:
+//   A_rot[m, i] = sum_k (A[m,k] * input_scale_recip[k]) * R[k, i]    (one gemv per m)
+//   C[m, n]     = norm[n] * dot(cb[idx[n,:]], A_rot[m])               (quant dot per (m,n))
+void cactus_quant_orthogonal_matmul(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C) {
+    if (!W || !A || !C || M == 0) return;
+    if (!W->rotation || !W->packed_indices || !W->codebook || !W->norms) return;
+
+    const uint32_t K    = W->K;
+    const uint32_t N    = W->N;
+    const uint32_t bits = W->bits;
+    const uint32_t pgb  = cactus_quant_packed_group_bytes(bits, K); // bytes per row of indices
+
+    // Build codebook in float for arithmetic
+    const uint32_t n_cb = 1u << bits;
+    std::vector<float> cb_f32(n_cb);
+    for (uint32_t c = 0; c < n_cb; ++c)
+        cb_f32[c] = static_cast<float>(W->codebook[c]);
+
+    // Per-row activation transform: A_rot[m, i] = sum_k A_scaled[m,k] * R[k,i]
+    // R stored row-major: R[k, i] = rotation[k*K + i]
+    std::vector<float> A_rot(static_cast<size_t>(M) * K, 0.0f);
+    for (uint32_t m = 0; m < M; ++m) {
+        const __fp16* a_row = A + static_cast<size_t>(m) * K;
+        float* ar_row = A_rot.data() + static_cast<size_t>(m) * K;
+        for (uint32_t k = 0; k < K; ++k) {
+            float a_val = static_cast<float>(a_row[k]);
+            if (W->input_scale_recip) a_val *= static_cast<float>(W->input_scale_recip[k]);
+            const __fp16* R_row_k = W->rotation + static_cast<size_t>(k) * K;
+            for (uint32_t i = 0; i < K; ++i)
+                ar_row[i] += a_val * static_cast<float>(R_row_k[i]);
+        }
+    }
+
+    // For each (m, n): C[m,n] = norm[n] * dot(cb[idx[n,:]], A_rot[m])
+    // num_groups = 1 for orthogonal (whole row = one group)
+    auto& pool = CactusThreading::get_thread_pool();
+    CactusThreading::parallel_for(
+        static_cast<size_t>(N),
+        CactusThreading::ParallelConfig{64, 1},
+        [&](size_t n_start, size_t n_end) {
+            for (size_t n = n_start; n < n_end; ++n) {
+                const uint8_t* packed = W->packed_indices + n * pgb;
+                float norm_n = static_cast<float>(W->norms[n]);
+                for (uint32_t m = 0; m < M; ++m) {
+                    const float* ar = A_rot.data() + static_cast<size_t>(m) * K;
+                    float acc = 0.0f;
+                    for (uint32_t i = 0; i < K; ++i) {
+                        uint32_t bit_off = i * bits;
+                        uint32_t byte_idx = bit_off / 8;
+                        uint32_t bit_idx  = bit_off % 8;
+                        uint8_t raw = packed[byte_idx];
+                        uint8_t idx;
+                        if (bits == 4) {
+                            idx = (i & 1u) ? ((raw >> 4) & 0xFu) : (raw & 0xFu);
+                        } else if (bits == 2) {
+                            idx = (raw >> (bit_idx)) & 0x3u;
+                        } else {
+                            // generic LSB unpack
+                            uint32_t word = raw | (static_cast<uint32_t>(packed[byte_idx+1]) << 8);
+                            idx = static_cast<uint8_t>((word >> bit_idx) & ((1u << bits) - 1u));
+                        }
+                        acc += cb_f32[idx] * ar[i];
+                    }
+                    C[static_cast<size_t>(m) * N + n] = static_cast<__fp16>(acc * norm_n);
+                }
+            }
+        });
+}
+

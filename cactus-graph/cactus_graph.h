@@ -265,6 +265,7 @@ struct BufferDesc {
     const int8_t* cq_left_signs = nullptr;
     const int8_t* cq_right_signs = nullptr;
     const uint32_t* cq_permutation = nullptr;
+    const __fp16* cq_rotation = nullptr; // [K×K] row-major, orthogonal only
     uint32_t cq_flags = 0;
 
     std::unique_ptr<int8_t[]> cq_expanded;
@@ -288,6 +289,7 @@ struct BufferDesc {
             .permutation = cq_permutation,
             .expanded = cq_expanded.get(),
             .norm_f32 = cq_norm_f32.get(),
+            .rotation = cq_rotation,
         };
     }
 
@@ -767,6 +769,7 @@ namespace GraphFile {
         size_t num_groups() const { return num_groups_; }
         const void* scales_data() const;
         bool is_interleaved() const { return is_interleaved_; }
+        bool is_orthogonal_rotation() const { return is_orthogonal_rotation_; }
         size_t original_N() const { return original_N_; }
         void* data();
         const void* data() const;
@@ -787,6 +790,7 @@ namespace GraphFile {
         size_t scales_bytes_ = 0;
         uint32_t alignment_ = 32;
         bool is_interleaved_ = false;
+        bool is_orthogonal_rotation_ = false;
         size_t original_N_ = 0;
 
         void parse_header();
