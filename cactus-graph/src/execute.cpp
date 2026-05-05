@@ -304,6 +304,42 @@ void CactusGraph::execute(const std::string& profile_file) {
         need_debug = env_debug;
     }
 
+    // Binary tensor dump: CACTUS_TENSOR_DUMP=/dir writes each node output to
+    // {dir}/{call_idx:06}_{node_id}_{op_type}.bin with a 48-byte header:
+    //   magic(4) call_idx(8) node_id(8) op_type(4) precision(4) ndim(4)
+    //   shape[0..3](4×8=32) data(variable)
+    static const char* s_dump_dir = std::getenv("CACTUS_TENSOR_DUMP");
+    static uint64_t s_call_idx = 0;
+
+    auto dump_node = [&](const GraphNode& nd) {
+        if (!s_dump_dir || nd.output_buffer.get_data() == nullptr) return;
+        char path[1024];
+        std::snprintf(path, sizeof(path), "%s/%06llu_%zu_%u.bin",
+                      s_dump_dir,
+                      (unsigned long long)s_call_idx,
+                      nd.id,
+                      static_cast<unsigned>(nd.op_type));
+        std::FILE* f = std::fopen(path, "wb");
+        if (!f) return;
+        const uint32_t magic = 0x504D4443; // "CDMP"
+        const uint64_t node_id = static_cast<uint64_t>(nd.id);
+        const uint32_t op_type_u = static_cast<uint32_t>(nd.op_type);
+        const uint32_t prec_u = static_cast<uint32_t>(nd.output_buffer.precision);
+        const uint32_t ndim_u = static_cast<uint32_t>(nd.output_buffer.shape.size());
+        std::fwrite(&magic,      4, 1, f);
+        std::fwrite(&s_call_idx, 8, 1, f);
+        std::fwrite(&node_id,    8, 1, f);
+        std::fwrite(&op_type_u,  4, 1, f);
+        std::fwrite(&prec_u,     4, 1, f);
+        std::fwrite(&ndim_u,     4, 1, f);
+        uint64_t shape_buf[4] = {};
+        for (size_t si = 0; si < nd.output_buffer.shape.size() && si < 4; ++si)
+            shape_buf[si] = static_cast<uint64_t>(nd.output_buffer.shape[si]);
+        std::fwrite(shape_buf, 8, 4, f);
+        std::fwrite(nd.output_buffer.get_data(), 1, nd.output_buffer.byte_size, f);
+        std::fclose(f);
+    };
+
     if (!need_debug) {
         for (size_t i = 0; i < n; ++i) {
             auto& node = nodes_[i];
@@ -315,10 +351,12 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
             node->output_buffer.allocate_from_pool(pool);
             dispatch_node(*node, nodes_, node_index_map_);
+            dump_node(*node);
             if (node->op_type == OpType::PERSISTENT) {
                 populated_node_ids_.insert(node->id);
             }
         }
+        if (s_dump_dir) ++s_call_idx;
         return;
     }
 

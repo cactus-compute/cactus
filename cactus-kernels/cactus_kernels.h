@@ -276,6 +276,11 @@ void cactus_quant_matmul(
     uint32_t M,
     __fp16* C);
 
+void cactus_quant_prepare_i8_cache(
+    const CactusQuantMatrix* W,
+    int8_t* expanded,
+    float* norm_f32);
+
 void cactus_quant_orthogonal_matmul(
     const CactusQuantMatrix* W,
     const __fp16* A,

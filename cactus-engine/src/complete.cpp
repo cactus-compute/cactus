@@ -250,7 +250,6 @@ std::vector<std::vector<uint32_t>> build_stop_sequences(
     if (model_type == Config::ModelType::GEMMA4) {
         stop_token_sequences.push_back(tokenizer->encode("<turn|>"));
         if (has_tools) {
-            stop_token_sequences.push_back(tokenizer->encode("<tool_call|>"));
             stop_token_sequences.push_back(tokenizer->encode("<|tool_response>"));
         }
     }
@@ -762,6 +761,11 @@ int cactus_complete(
             handle->model->update_tool_constraints(next_token);
         }
 
+        {
+            std::string _decoded = tokenizer->decode({next_token});
+            fprintf(stderr, "[step 0] sampled_tok=%u (text=%s)\n", next_token, _decoded.c_str());
+        }
+
         EntropyState entropy;
         {
             size_t cfg_window = handle->model->get_config().default_rolling_entropy_window;
@@ -792,6 +796,11 @@ int cactus_complete(
                 }
                 handle->processed_tokens.push_back(next_token);
                 generated_tokens.push_back(next_token);
+
+                {
+                    std::string _decoded = tokenizer->decode({next_token});
+                    fprintf(stderr, "[step %zu] sampled_tok=%u (text=%s)\n", i, next_token, _decoded.c_str());
+                }
 
                 entropy.add(token_entropy);
 

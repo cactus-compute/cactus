@@ -257,6 +257,9 @@ void ToolCallConstrainer::compute_bias() {
             for (uint32_t t : gemma_call_end_tokens_) {
                 current_bias_[t] = BLOCK_BIAS;
             }
+            for (uint32_t t : gemma_call_start_tokens_) {
+                current_bias_[t] = BLOCK_BIAS;
+            }
             break;
 
         case State::GEMMA_EXPECT_END:

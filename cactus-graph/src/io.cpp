@@ -30,6 +30,26 @@ namespace {
         return offset + (alignment - remainder);
     }
 
+    void prepare_cq_i8_cache(BufferDesc& buffer) {
+        if (!PrecisionTraits::is_cq(buffer.precision) || buffer.group_size == 0 || buffer.num_groups == 0) return;
+        if ((buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0) return;
+        if ((buffer.group_size % 16) != 0) return;
+
+        const uint32_t bits = PrecisionTraits::cq_bits(buffer.precision);
+        if (bits == 0 || bits > 4) return;
+
+        const size_t n = buffer.shape.size() >= 2 ? buffer.shape[0] : 1;
+        const size_t n_blocks = (n + 3) / 4;
+        const size_t expanded_count = n_blocks * buffer.num_groups * buffer.group_size * 4;
+        const size_t norm_count = n_blocks * buffer.num_groups * 4;
+
+        buffer.cq_expanded = std::make_unique<int8_t[]>(expanded_count);
+        buffer.cq_norm_f32 = std::make_unique<float[]>(norm_count);
+
+        CactusQuantMatrix mat = buffer.to_cq_matrix();
+        cactus_quant_prepare_i8_cache(&mat, buffer.cq_expanded.get(), buffer.cq_norm_f32.get());
+    }
+
     inline void write_u32(std::ostream& out, uint32_t v) {
       out.write(reinterpret_cast<const char*>(&v), sizeof(v));
     }
@@ -373,6 +393,7 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
             off += gs;
             buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
             buffer.cq_flags = 0;
+            prepare_cq_i8_cache(buffer);
         }
 
     } else if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
