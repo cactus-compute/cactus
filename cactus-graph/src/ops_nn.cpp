@@ -12,60 +12,11 @@
 
 namespace {
     thread_local std::vector<__fp16> transpose_buffer_fp16;
-    thread_local std::vector<int8_t> quant_activation_buffer;
-    thread_local std::vector<float> quant_scales_buffer;
-
-    thread_local const __fp16* cached_quant_src = nullptr;
-    thread_local size_t cached_quant_M = 0;
-    thread_local size_t cached_quant_K = 0;
 
     void ensure_transpose_buffer_fp16(size_t required_size) {
         if (transpose_buffer_fp16.size() < required_size) {
             transpose_buffer_fp16.resize(required_size);
         }
-    }
-
-    void ensure_quant_buffers(size_t M, size_t K) {
-        size_t required_data = M * K;
-        if (quant_activation_buffer.size() < required_data) {
-            quant_activation_buffer.resize(required_data);
-        }
-        if (quant_scales_buffer.size() < M) {
-            quant_scales_buffer.resize(M);
-        }
-    }
-
-    void quantize_activations_fp16_to_int8(const __fp16* src, int8_t* dst, float* scales, size_t M, size_t K) {
-        if (src == cached_quant_src && M == cached_quant_M && K == cached_quant_K) {
-            return;
-        }
-
-        constexpr size_t PARALLEL_THRESHOLD = 16;
-
-        if (M >= PARALLEL_THRESHOLD) {
-            CactusThreading::parallel_for(M, CactusThreading::Thresholds::ELEMENT_WISE,
-                [src, dst, scales, K](size_t m_start, size_t m_end) {
-                    for (size_t m = m_start; m < m_end; m++) {
-                        float max_abs = cactus_fp16_max_abs(src + m * K, K);
-                        float scale = max_abs / 127.0f;
-                        if (scale < 1e-10f) scale = 1e-10f;
-                        scales[m] = scale;
-                        cactus_fp16_to_int8(src + m * K, dst + m * K, K, scale);
-                    }
-                });
-        } else {
-            for (size_t m = 0; m < M; m++) {
-                float max_abs = cactus_fp16_max_abs(src + m * K, K);
-                float scale = max_abs / 127.0f;
-                if (scale < 1e-10f) scale = 1e-10f;
-                scales[m] = scale;
-                cactus_fp16_to_int8(src + m * K, dst + m * K, K, scale);
-            }
-        }
-
-        cached_quant_src = src;
-        cached_quant_M = M;
-        cached_quant_K = K;
     }
 
     const __fp16* as_fp16_ptr(const BufferDesc& buffer, std::vector<__fp16>& scratch) {
@@ -136,62 +87,6 @@ namespace {
 
 void shrink_thread_local_buffers() {
     std::vector<__fp16>().swap(transpose_buffer_fp16);
-    std::vector<int8_t>().swap(quant_activation_buffer);
-    std::vector<float>().swap(quant_scales_buffer);
-    cached_quant_src = nullptr;
-    cached_quant_M = 0;
-    cached_quant_K = 0;
-}
-
-void compute_quantize_activations_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
-    const auto& shape = input_buffer.shape;
-
-    if (input_buffer.precision != Precision::FP16) {
-        throw std::runtime_error("QUANTIZE_ACTIVATIONS requires FP16 input");
-    }
-
-    if (shape.size() < 2) {
-        throw std::runtime_error("QUANTIZE_ACTIVATIONS requires at least 2D tensor");
-    }
-
-    size_t K = shape.back();
-    size_t M = 1;
-    for (size_t i = 0; i < shape.size() - 1; ++i) {
-        M *= shape[i];
-    }
-
-    if (!node.output_buffer.has_activation_scales() ||
-        node.output_buffer.num_rows_for_activation_scales != M) {
-        node.output_buffer.allocate_activation_scales(M);
-    }
-
-    const __fp16* src = input_buffer.data_as<__fp16>();
-    int8_t* dst = node.output_buffer.data_as<int8_t>();
-    float* scales = node.output_buffer.activation_scales_as_float();
-
-    constexpr size_t PARALLEL_THRESHOLD = 16;
-
-    if (M >= PARALLEL_THRESHOLD) {
-        CactusThreading::parallel_for(M, CactusThreading::Thresholds::ELEMENT_WISE,
-            [src, dst, scales, K](size_t m_start, size_t m_end) {
-                for (size_t m = m_start; m < m_end; m++) {
-                    float max_abs = cactus_fp16_max_abs(src + m * K, K);
-                    float scale = max_abs / 127.0f;
-                    if (scale < 1e-10f) scale = 1e-10f;
-                    scales[m] = scale;
-                    cactus_fp16_to_int8(src + m * K, dst + m * K, K, scale);
-                }
-            });
-    } else {
-        for (size_t m = 0; m < M; m++) {
-            float max_abs = cactus_fp16_max_abs(src + m * K, K);
-            float scale = max_abs / 127.0f;
-            if (scale < 1e-10f) scale = 1e-10f;
-            scales[m] = scale;
-            cactus_fp16_to_int8(src + m * K, dst + m * K, K, scale);
-        }
-    }
 }
 
 void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -218,39 +113,16 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         throw std::runtime_error("NPU matrix multiplication not yet implemented");
     }
 
-    const bool lhs_is_prequantized_int8 = (lhs_buffer.precision == Precision::INT8 &&
-                                            lhs_buffer.has_activation_scales());
+    if (PrecisionTraits::is_cq(rhs_buffer.precision) && rhs_buffer.group_size > 0) {
+        if (lhs_buffer.precision != Precision::FP16) {
+            throw std::runtime_error("TQ matmul requires FP16 activations");
+        }
 
-    if (PrecisionTraits::is_integer(rhs_buffer.precision) && rhs_buffer.group_size > 0) {
-        const int8_t* rhs = rhs_buffer.data_as<int8_t>();
-        const __fp16* rhs_scales = rhs_buffer.scales_as_fp16();
+        const __fp16* lhs = lhs_buffer.data_as<__fp16>();
         __fp16* output = node.output_buffer.data_as<__fp16>();
 
-        if (!pretransposed_rhs) {
-            throw std::runtime_error("Group-wise quantized matmul requires pretransposed weights");
-        }
-
-        const int8_t* lhs_int8;
-        const float* lhs_scales;
-
-        if (lhs_is_prequantized_int8) {
-            lhs_int8 = lhs_buffer.data_as<int8_t>();
-            lhs_scales = lhs_buffer.activation_scales_as_float();
-        } else if (lhs_buffer.precision == Precision::FP16) {
-            ensure_quant_buffers(M, K);
-            cached_quant_src = nullptr;
-            quantize_activations_fp16_to_int8(lhs_buffer.data_as<__fp16>(), quant_activation_buffer.data(),
-                                              quant_scales_buffer.data(), M, K);
-            lhs_int8 = quant_activation_buffer.data();
-            lhs_scales = quant_scales_buffer.data();
-        } else {
-            throw std::runtime_error("Quantized matmul requires INT8 (pre-quantized) or FP16 activations");
-        }
-
-        cactus_matmul_integer(rhs_buffer.precision,
-                        lhs_int8, lhs_scales,
-                        rhs, rhs_scales, output,
-                        M, K, N, rhs_buffer.group_size);
+        CactusQuantMatrix mat = rhs_buffer.to_cq_matrix();
+        cactus_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
     } else {
         if (lhs_buffer.precision != Precision::FP16) {
             throw std::runtime_error("FP16 matmul requires FP16 activations (got precision " + std::to_string(static_cast<int>(lhs_buffer.precision)) + ")");
@@ -278,11 +150,9 @@ namespace {
     thread_local std::vector<__fp16> moe_gate_buf;
     thread_local std::vector<__fp16> moe_up_buf;
     thread_local std::vector<__fp16> moe_expert_out_buf;
-    thread_local std::vector<int8_t> moe_lhs_q_buf;
-    thread_local std::vector<float> moe_lhs_scales_buf;
-    thread_local std::vector<size_t> moe_expert_offsets_buf;  
-    thread_local std::vector<size_t> moe_expert_tokens_buf; 
-    thread_local std::vector<float> moe_routing_denom_buf; 
+    thread_local std::vector<size_t> moe_expert_offsets_buf;
+    thread_local std::vector<size_t> moe_expert_tokens_buf;
+    thread_local std::vector<float> moe_routing_denom_buf;
 
     void ensure_moe_buffers(size_t max_tokens, size_t hidden_dim, size_t intermediate_dim,
                             size_t num_experts, size_t top_k) {
@@ -292,10 +162,6 @@ namespace {
         if (moe_gate_buf.size() < inter_size) moe_gate_buf.resize(inter_size);
         if (moe_up_buf.size() < inter_size) moe_up_buf.resize(inter_size);
         if (moe_expert_out_buf.size() < hidden_size) moe_expert_out_buf.resize(hidden_size);
-        size_t max_k = std::max(hidden_dim, intermediate_dim);
-        size_t quant_size = max_tokens * max_k;
-        if (moe_lhs_q_buf.size() < quant_size) moe_lhs_q_buf.resize(quant_size);
-        if (moe_lhs_scales_buf.size() < max_tokens) moe_lhs_scales_buf.resize(max_tokens);
         size_t total_assignments = max_tokens * top_k;
         if (moe_expert_offsets_buf.size() < num_experts + 1) moe_expert_offsets_buf.resize(num_experts + 1);
         if (moe_expert_tokens_buf.size() < total_assignments) moe_expert_tokens_buf.resize(total_assignments);
@@ -303,37 +169,23 @@ namespace {
     }
 
     void moe_matmul(const __fp16* lhs,
-                                            size_t M,
-                                            size_t K,
-                                            const BufferDesc& rhs_buffer,
-                                            __fp16* output,
-                                            size_t N,
-                                            bool lhs_prequantized = false) {
+                    size_t M,
+                    size_t K,
+                    const BufferDesc& rhs_buffer,
+                    __fp16* output,
+                    size_t N) {
         if (rhs_buffer.precision == Precision::FP16) {
             cactus_matmul_f16(lhs, rhs_buffer.data_as<__fp16>(), output, M, K, N);
             return;
         }
 
-        if (PrecisionTraits::is_integer(rhs_buffer.precision) && rhs_buffer.group_size > 0) {
-            int8_t* lhs_q = moe_lhs_q_buf.data();
-            float* lhs_scales = moe_lhs_scales_buf.data();
-            if (!lhs_prequantized) {
-                for (size_t row = 0; row < M; ++row) {
-                    float scale = cactus_fp16_max_abs(lhs + row * K, K) / 127.0f;
-                    if (scale < 1e-10f) scale = 1e-10f;
-                    lhs_scales[row] = scale;
-                    cactus_fp16_to_int8(lhs + row * K, lhs_q + row * K, K, scale);
-                }
-            }
-            cactus_matmul_integer(rhs_buffer.precision,
-                           lhs_q, lhs_scales,
-                           rhs_buffer.data_as<int8_t>(),
-                           rhs_buffer.scales_as_fp16(),
-                           output, M, K, N, rhs_buffer.group_size);
+        if (PrecisionTraits::is_cq(rhs_buffer.precision) && rhs_buffer.group_size > 0) {
+            CactusQuantMatrix mat = rhs_buffer.to_cq_matrix();
+            cactus_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
             return;
         }
 
-        throw std::runtime_error("moe_layer only supports FP16 or grouped INT4/INT8 expert weights");
+        throw std::runtime_error("moe_layer only supports FP16 or TQ expert weights");
     }
 }
 
@@ -464,7 +316,6 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
         __fp16* expert_out = moe_expert_out_buf.data();
 
         moe_matmul(compact_hidden, selected_count, hidden_dim, w1_buffer, gate, expert_intermediate_dim);
-        const bool w1_was_int8 = w1_buffer.is_grouped_int8();
 
         switch (activation) {
             case Activation::GELU:
@@ -484,7 +335,7 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
         if (gated) {
             const auto& w3_buffer = get_input(node, 3 + num_experts + expert_idx, nodes, node_index_map);
-            moe_matmul(compact_hidden, selected_count, hidden_dim, w3_buffer, up, expert_intermediate_dim, w1_was_int8);
+            moe_matmul(compact_hidden, selected_count, hidden_dim, w3_buffer, up, expert_intermediate_dim);
             cactus_multiply_f16(gate, up, gate, selected_count * expert_intermediate_dim);
         }
 
@@ -939,7 +790,7 @@ void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_p
 
         std::vector<__fp16> W_fp16(W_size);
 
-        if (W.is_grouped_int8()) {
+        if (W.is_cq()) {
             const __fp16* scales = W.scales_as_fp16();
             const size_t K_total = W1 * K;
             const size_t group_size = W.group_size;
@@ -1025,7 +876,7 @@ void compute_conv1d_k3_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
         std::vector<__fp16> W_fp16(W_size);
 
-        if (W.is_grouped_int8()) {
+        if (W.is_cq()) {
             const __fp16* scales = W.scales_as_fp16();
             const size_t K_total = C_in * K;
             const size_t group_size = W.group_size;
@@ -1191,7 +1042,7 @@ void compute_conv1d_same_depthwise_k9_node(GraphNode& node, const std::vector<st
         const int8_t* W_int8 = W.data_as<int8_t>();
         std::vector<__fp16> W_fp16(W_size);
 
-        if (W.is_grouped_int8()) {
+        if (W.is_cq()) {
             const __fp16* scales = W.scales_as_fp16();
             const size_t K_total = K;
             const size_t group_size = W.group_size;
@@ -1292,7 +1143,7 @@ void compute_conv2d_k3s2p1_node(GraphNode& node, const std::vector<std::unique_p
         const int8_t* W_int8 = W.data_as<int8_t>();
         std::vector<__fp16> W_fp16(W_size);
 
-        if (W.is_grouped_int8()) {
+        if (W.is_cq()) {
             const __fp16* scales = W.scales_as_fp16();
             const size_t group_size = W.group_size;
             if (group_size == 0 || (K_total % group_size) != 0 || scales == nullptr) {
@@ -1407,7 +1258,7 @@ void compute_conv2d_depthwise_k3s2p1_node(GraphNode& node, const std::vector<std
         const int8_t* W_int8 = W.data_as<int8_t>();
         std::vector<__fp16> W_fp16(W_size);
 
-        if (W.is_grouped_int8()) {
+        if (W.is_cq()) {
             const __fp16* scales = W.scales_as_fp16();
             const size_t group_size = W.group_size;
             if (group_size == 0 || (K_total % group_size) != 0 || scales == nullptr) {
@@ -1523,7 +1374,7 @@ void compute_conv2d_pointwise_1x1_node(GraphNode& node, const std::vector<std::u
         const int8_t* W_int8 = W.data_as<int8_t>();
         std::vector<__fp16> W_fp16(W_size);
 
-        if (W.is_grouped_int8()) {
+        if (W.is_cq()) {
             const __fp16* scales = W.scales_as_fp16();
             const size_t group_size = W.group_size;
             if (group_size == 0 || (K_total % group_size) != 0 || scales == nullptr) {
@@ -1635,7 +1486,7 @@ void compute_conv1d_pointwise_node(GraphNode& node, const std::vector<std::uniqu
         const int8_t* W_int8 = W.data_as<int8_t>();
         std::vector<__fp16> W_fp16(W_size);
 
-        if (W.is_grouped_int8()) {
+        if (W.is_cq()) {
             const __fp16* scales = W.scales_as_fp16();
             const size_t group_size = W.group_size;
             if (group_size == 0 || (K_total % group_size) != 0 || scales == nullptr) {

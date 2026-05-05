@@ -18,7 +18,13 @@
 
 namespace cactus {
 
-enum class LogLevel { DEBUG = 0, INFO = 1, WARN = 2, ERROR = 3, NONE = 4 };
+enum class LogLevel { 
+    DEBUG = 0, 
+    INFO = 1, 
+    WARN = 2, 
+    ERROR = 3, 
+    NONE = 4 
+};
 
 class Logger {
 public:
@@ -96,11 +102,16 @@ enum class OpType {
     RELU, SILU, GELU, GELU_ERF, SIGMOID, TANH,
     SAMPLE, CONCAT, CAT,
     SCATTER_TOPK, TOPK, LAYERNORM, GROUPNORM,
-    MOE_LAYER, INDEX, PERSISTENT, QUANTIZE_ACTIVATIONS,
+    MOE_LAYER, INDEX, PERSISTENT,
     LSTM_CELL, GATED_DELTANET_DECODE, GATED_DELTANET_PREFILL,
     STFT, ALTUP_PREDICT, ALTUP_CORRECT, GAUSSIAN_TOPK,
     MAXPOOL1D, BILSTM_SEQUENCE, LEAKY_RELU,
-    CONV2D_K3S1P1, STATS_POOL, WEIGHTED_STATS_POOL
+    CONV2D_K3S1P1, STATS_POOL, WEIGHTED_STATS_POOL,
+    KV_CACHE_STATE, KV_CACHE_APPEND, ATTENTION_CACHED,
+    CONV_CACHE_STATE, CONV_CACHE_APPEND,
+    RFFT, IRFFT, MEL_FILTER_BANK, SPECTROGRAM,
+    IMAGE_PREPROCESS,
+    CLAMP
 };
 
 struct PrecisionTraits {
@@ -109,29 +120,51 @@ struct PrecisionTraits {
             case Precision::INT8: return 1;
             case Precision::FP16: return 2;
             case Precision::FP32: return 4;
-            case Precision::INT4: return 1;
+            case Precision::CQ1:
+            case Precision::CQ2:
+            case Precision::CQ3:
+            case Precision::CQ4: return 1; // packed, not element-sized
         }
         return 1;
     }
 
-    static constexpr size_t packed_size_of(Precision prec, size_t count) {
+    static constexpr bool is_cq(Precision prec) {
+        return prec == Precision::CQ1 || prec == Precision::CQ2 ||
+               prec == Precision::CQ3 || prec == Precision::CQ4;
+    }
+
+    static constexpr uint32_t cq_bits(Precision prec) {
         switch (prec) {
-            case Precision::INT4: return (count + 1) / 2;
-            default: return count * size_of(prec);
+            case Precision::CQ1: return 1;
+            case Precision::CQ2: return 2;
+            case Precision::CQ3: return 3;
+            case Precision::CQ4: return 4;
+            default: return 0;
         }
+    }
+
+    static constexpr size_t packed_size_of(Precision prec, size_t count) {
+        if (is_cq(prec)) {
+            uint32_t bits = cq_bits(prec);
+            return (count * bits + 7) / 8;
+        }
+        return count * size_of(prec);
     }
 
     static size_t byte_offset_of(Precision prec, size_t element_offset) {
-        switch (prec) {
-            case Precision::INT4:
-                assert(element_offset % 32 == 0);
-                return element_offset / 2;
-            default: return element_offset * size_of(prec);
+        if (is_cq(prec)) {
+            uint32_t bits = cq_bits(prec);
+            return (element_offset * bits) / 8;
         }
+        return element_offset * size_of(prec);
     }
 
     static constexpr bool is_integer(Precision prec) {
-        return prec == Precision::INT8 || prec == Precision::INT4;
+        return prec == Precision::INT8;
+    }
+
+    static constexpr bool is_quantized(Precision prec) {
+        return is_cq(prec);
     }
 
     static constexpr bool is_floating_point(Precision prec) {
@@ -155,9 +188,9 @@ struct BroadcastInfo {
 };
 
 struct TensorConfig {
-    Precision default_precision = Precision::INT8;
-    Precision compute_precision = Precision::INT8;
-    Precision output_precision = Precision::INT8;
+    Precision default_precision = Precision::FP16;
+    Precision compute_precision = Precision::FP16;
+    Precision output_precision = Precision::FP16;
     bool auto_mixed_precision = false;
     static TensorConfig& global();
 };
@@ -209,7 +242,7 @@ struct BufferDesc {
     size_t num_rows_for_activation_scales = 0;
 
     BufferDesc();
-    BufferDesc(const std::vector<size_t>& s, Precision prec = Precision::INT8);
+    BufferDesc(const std::vector<size_t>& s, Precision prec = Precision::FP16);
     ~BufferDesc();
     BufferDesc(BufferDesc&& other) noexcept;
     BufferDesc& operator=(BufferDesc&& other) noexcept;
@@ -223,8 +256,40 @@ struct BufferDesc {
     template<typename T> const T* data_as() const { return static_cast<const T*>(get_data()); }
 
     const __fp16* scales_as_fp16() const { return reinterpret_cast<const __fp16*>(scales_data); }
-    bool is_grouped_int8() const { return precision == Precision::INT8 && group_size > 0; }
-    bool is_grouped_int4() const { return precision == Precision::INT4 && group_size > 0; }
+    bool is_cq() const { return PrecisionTraits::is_cq(precision) && group_size > 0; }
+
+    const __fp16* cq_codebook = nullptr;
+    const __fp16* cq_input_scale = nullptr;
+    const __fp16* cq_input_scale_recip = nullptr;
+    const __fp16* cq_norms = nullptr;
+    const int8_t* cq_left_signs = nullptr;
+    const int8_t* cq_right_signs = nullptr;
+    const uint32_t* cq_permutation = nullptr;
+    uint32_t cq_flags = 0;
+
+    std::unique_ptr<int8_t[]> cq_expanded;
+    std::unique_ptr<float[]> cq_norm_f32;
+
+    CactusQuantMatrix to_cq_matrix() const {
+        return CactusQuantMatrix{
+            .bits = PrecisionTraits::cq_bits(precision),
+            .K = static_cast<uint32_t>(shape.size() >= 2 ? shape[1] : shape[0]),
+            .N = static_cast<uint32_t>(shape.size() >= 2 ? shape[0] : 1),
+            .group_size = static_cast<uint32_t>(group_size),
+            .num_groups = static_cast<uint32_t>(num_groups),
+            .flags = cq_flags,
+            .codebook = cq_codebook,
+            .input_scale = cq_input_scale,
+            .input_scale_recip = cq_input_scale_recip,
+            .norms = cq_norms,
+            .packed_indices = static_cast<const uint8_t*>(get_data()),
+            .left_signs = cq_left_signs,
+            .right_signs = cq_right_signs,
+            .permutation = cq_permutation,
+            .expanded = cq_expanded.get(),
+            .norm_f32 = cq_norm_f32.get(),
+        };
+    }
 
     void set_grouped_scales(size_t gs, size_t ng, void* scales_ptr) {
         group_size = gs; num_groups = ng; scales_data = scales_ptr;
@@ -267,7 +332,7 @@ struct OpParams {
     float logit_cap = 0.0f;
     std::vector<size_t> new_shape;
     std::vector<size_t> permutation;
-    Precision output_precision = Precision::INT8;
+    Precision output_precision = Precision::FP16;
     BroadcastInfo broadcast_info;
     ComputeBackend backend = ComputeBackend::CPU;
 
@@ -307,6 +372,32 @@ struct OpParams {
     size_t num_altup_inputs = 0;
     size_t v_head_dim = 0;
     size_t kernel_size = 0;
+    size_t max_cache_seq_len = 0;
+    size_t cache_sink_size = 0;
+
+    size_t hop_length = 0;
+    float power = 2.0f;
+    bool center = true;
+    float mel_floor = 1e-10f;
+    float dither = 0.0f;
+    float preemphasis_coef = 0.0f;
+    bool remove_dc_offset = false;
+    int log_mel_mode = 0;
+    int pad_mode_type = 0;
+    size_t num_mel_filters = 0;
+    size_t sampling_rate = 16000;
+    float min_frequency = 0.0f;
+    float max_frequency = 8000.0f;
+    int mel_norm_type = 0;
+    int mel_scale_type = 0;
+
+    int patch_size = 16;
+    float rescale_factor = 1.0f / 255.0f;
+    float image_mean[3] = {0.5f, 0.5f, 0.5f};
+    float image_std[3] = {0.5f, 0.5f, 0.5f};
+    int target_width = 0;
+    int target_height = 0;
+    int image_channels = 3;
 };
 
 struct GraphNode {
@@ -380,7 +471,7 @@ public:
     void save(const std::string& path);
     static CactusGraph load(const std::string& path);
 
-    size_t input(const std::vector<size_t>& shape, Precision precision = Precision::INT8);
+    size_t input(const std::vector<size_t>& shape, Precision precision = Precision::FP16);
     void set_input(size_t node_id, const void* data, Precision precision);
     void set_external_input(size_t node_id, void* data, Precision precision);
     void* get_output(size_t node_id);
@@ -405,10 +496,10 @@ public:
     size_t abs(size_t input);
     size_t pow(size_t input, float exponent);
     size_t precision_cast(size_t input, Precision target_precision);
-    size_t quantize_activations(size_t input);
 
     size_t relu(size_t input);
     size_t leaky_relu(size_t input, float negative_slope = 0.01f);
+    size_t clamp(size_t input, float lo, float hi);
     size_t silu(size_t input);
     size_t gelu(size_t input);
     size_t gelu_erf(size_t input);
@@ -471,6 +562,33 @@ public:
         size_t cache_len, size_t num_kv_heads, size_t head_dim,
         size_t window_size = 0, size_t v_head_dim = 0);
 
+    size_t kv_cache_state(
+        size_t max_seq_len,
+        size_t num_kv_heads,
+        size_t head_dim,
+        size_t window_size = 0,
+        size_t sink_size = 4);
+
+    size_t kv_cache_append(
+        size_t new_kv,
+        size_t cache_state_node,
+        size_t window_size = 0,
+        size_t sink_size = 4);
+
+    size_t attention_cached(
+        size_t query,
+        size_t key_new,
+        size_t value_new,
+        size_t k_cache_state,
+        size_t v_cache_state,
+        float scale,
+        size_t position_offset = 0,
+        size_t window_size = 0,
+        size_t v_head_dim = 0);
+
+    size_t conv_cache_state(size_t window_size, size_t hidden_dim);
+    size_t conv_cache_append(size_t new_data, size_t cache_state_node);
+
     size_t conv1d_causal(size_t input, size_t weight, size_t kernel_size, size_t dilation = 1);
     size_t conv1d_k3(size_t input, size_t weight, size_t stride);
     size_t conv1d_k7s3(size_t input, size_t weight, size_t bias);
@@ -489,10 +607,31 @@ public:
     size_t conv2d_k3s1p1(size_t input, size_t weight);
     size_t conv2d_k3s1p1(size_t input, size_t weight, size_t bias);
     size_t stft(size_t input, size_t weight, size_t stride, size_t num_fft_bins);
+
+    size_t rfft(size_t input);
+    size_t irfft(size_t input, size_t output_length);
+    size_t mel_filter_bank(
+        size_t num_frequency_bins, size_t num_mel_filters,
+        float min_frequency, float max_frequency, size_t sampling_rate,
+        int norm_type = 1, int scale_type = 2);
+    size_t spectrogram(
+        size_t waveform, size_t mel_filters_node,
+        size_t frame_length, size_t hop_length, size_t fft_length,
+        float power = 2.0f, bool center = true, int pad_mode = 0,
+        float mel_floor = 1e-10f, int log_mel_mode = 0,
+        float dither = 0.0f, float preemphasis = 0.0f,
+        bool remove_dc_offset = false);
+
+    size_t image_preprocess(
+        size_t pixel_input,
+        int src_width, int src_height,
+        int target_width, int target_height,
+        int patch_size, int channels = 3,
+        float rescale_factor = 1.0f / 255.0f,
+        const float* mean = nullptr, const float* std_dev = nullptr);
+
     size_t bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width, bool align_corners = true);
     size_t maxpool1d(size_t input, size_t kernel_size, size_t stride);
-
-    // --- Recurrent ---
 
     size_t lstm_cell(
         size_t input, size_t h_prev, size_t c_prev,
@@ -654,74 +793,5 @@ namespace GraphFile {
         void apply_madvise_hints();
     };
 }
-
-namespace cactus {
-namespace npu {
-
-struct NPUNamedInput {
-    std::string name;
-    const __fp16* data;
-    std::vector<int> shape;
-};
-
-class NPUEncoder {
-public:
-    virtual ~NPUEncoder() = default;
-    virtual bool load(const std::string& model_path) = 0;
-    virtual bool preallocate(
-        const std::vector<int>& input_shape,
-        const std::string& input_name = "x",
-        const std::string& output_name = "") = 0;
-    virtual size_t encode(
-        const __fp16* input, __fp16* output,
-        const std::vector<int>& shape,
-        const std::string& input_name = "x",
-        const std::string& output_name = "") = 0;
-    virtual bool is_available() const = 0;
-    virtual std::vector<int> get_input_shape() const = 0;
-    virtual std::vector<int> get_output_shape() const = 0;
-    virtual __fp16* get_output_buffer() = 0;
-    virtual size_t get_output_buffer_size() const = 0;
-    virtual size_t encode_multimodal_input(
-        const std::vector<NPUNamedInput>& inputs,
-        __fp16* output,
-        const std::string& output_name = "") = 0;
-};
-
-std::unique_ptr<NPUEncoder> create_encoder();
-bool is_npu_available();
-
-struct NPUBufferRef {
-    const __fp16* data;
-    size_t count;
-};
-
-struct NPUPrefillDirectResult {
-    NPUBufferRef hidden;
-    std::vector<NPUBufferRef> k_caches;
-    std::vector<NPUBufferRef> v_caches;
-    bool valid;
-};
-
-class NPUPrefill {
-public:
-    virtual ~NPUPrefill() = default;
-    virtual bool load(const std::string& model_path) = 0;
-    virtual bool is_available() const = 0;
-    virtual int get_chunk_size() const = 0;
-    virtual int get_hidden_dim() const = 0;
-    virtual int get_num_layers() const = 0;
-    virtual int get_num_kv_heads() const = 0;
-    virtual int get_head_dim() const = 0;
-    virtual NPUPrefillDirectResult prefill_chunk_direct(
-        const std::vector<__fp16>& embeddings,
-        int position_offset = 0,
-        const std::string& input_name = "x") = 0;
-};
-
-std::unique_ptr<NPUPrefill> create_prefill();
-
-} // namespace npu
-} // namespace cactus
 
 #endif

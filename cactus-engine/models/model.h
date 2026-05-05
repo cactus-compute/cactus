@@ -1,7 +1,6 @@
 #pragma once
 
-#include "../engine/engine.h"
-#include "../npu/npu.h"
+#include "../src/engine.h"
 
 namespace cactus {
 namespace engine {

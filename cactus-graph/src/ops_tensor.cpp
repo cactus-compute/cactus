@@ -151,7 +151,7 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
         node.output_buffer.set_external(base_ptr + byte_offset);
         node.output_buffer.precision = input_buffer.precision;
 
-        if (input_buffer.is_grouped_int8()) {
+        if (input_buffer.is_cq()) {
             size_t num_groups = input_buffer.num_groups;
             size_t scales_bytes = slice_length * num_groups * sizeof(__fp16);
             node.output_buffer.owned_scales = std::make_unique<char[]>(scales_bytes);
@@ -238,14 +238,7 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
             {12, 13, 14, 15, 28, 29, 30, 31, 44, 45, 46, 47, 60, 61, 62, 63} // lane 3
         };
 
-        auto load_table = [emb_prec](const int8_t* base) -> int8x16x4_t {
-            if (emb_prec == Precision::INT4) {
-                const uint8_t* ubase = reinterpret_cast<const uint8_t*>(base);
-                int8x16_t low_a, high_a, low_b, high_b;
-                unpack_int4_as_int8x16x2(ubase, high_a, low_a);
-                unpack_int4_as_int8x16x2(ubase + 16, high_b, low_b);
-                return {low_a, high_a, low_b, high_b};
-            }
+        auto load_table = [](const int8_t* base) -> int8x16x4_t {
             return vld1q_s8_x4(base);
         };
 
@@ -290,7 +283,7 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
                 }
 
                 if (k < k_end)
-                    assert (embeddings_buffer.precision != Precision::INT4 && "grouped INT4 embeddings must have hidden_dim that is a multiple of 32");
+                    assert(false && "grouped INT8 embeddings must have hidden_dim that is a multiple of 16");
                 for (; k < k_end; k++) {
                     size_t k_group = k / 4;
                     size_t k_within = k % 4;

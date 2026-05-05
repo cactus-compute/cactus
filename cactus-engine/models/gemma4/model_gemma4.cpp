@@ -1,5 +1,5 @@
 #include "model_gemma4.h"
-#include "../../graph/graph.h"
+#include "cactus_graph.h"
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -50,22 +50,29 @@ std::vector<size_t> Gemma4Model::get_kv_layer_heads() const {
     return heads;
 }
 
-void Gemma4Model::compact_kv_cache() {
+std::vector<size_t> Gemma4Model::get_kv_layer_windows() const {
     uint32_t n = config_.num_layers;
-
-    std::vector<size_t> target_windows(n, 0);
+    std::vector<size_t> windows(n, 0);
     for (uint32_t i = 0; i < n; i++) {
-        if (i >= first_shared_layer_) continue;
-        if (!is_global_layer(i))
-            target_windows[i] = config_.sliding_window;
+        if (i >= first_shared_layer_) {
+            windows[i] = 0;  // shared layers don't have own cache
+        } else if (!is_global_layer(i)) {
+            windows[i] = config_.sliding_window;  // local layers use sliding window
+        }
     }
-    kv_cache_.compact_to_windows(target_windows);
+    return windows;
+}
+
+void Gemma4Model::compact_kv_cache() {
 }
 
 void Gemma4Model::post_init() {
     uint32_t n = config_.num_layers;
 
-    kv_cache_.set_window_size(0, 0);
+    cache_window_size_ = 0;  // disable uniform window; per-layer windows via get_kv_layer_windows()
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    init_graph_cache(gb);
 
     kv_share_map_.resize(n, -1);
     shared_k_nodes_.resize(n, 0);
@@ -287,18 +294,14 @@ size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t laye
         shared_v_nodes_[layer_idx] = v4;
     }
 
-    if (use_cache && share_src < 0) {
-        cache_k_output_nodes_[layer_idx] = k4;
-        cache_v_output_nodes_[layer_idx] = v4;
-    }
-
     size_t cache_src = (share_src >= 0) ? static_cast<size_t>(share_src) : layer_idx;
     size_t attn;
-    if (use_cache && !kv_cache_.is_empty()) {
-        attn = gb->attention_int8_hybrid(q4, k4, v4, attention_scale_, position_offset,
-            kv_cache_.get_keys_int8(cache_src), kv_cache_.get_values_int8(cache_src),
-            kv_cache_.get_key_scales(cache_src), kv_cache_.get_value_scales(cache_src),
-            kv_cache_.current_seq_len, kv_heads, head_dim, window);
+    if (use_cache && graph_cache_k_nodes_[cache_src] != 0) {
+        gb->kv_cache_append(k4, graph_cache_k_nodes_[cache_src], window, cache_sink_size_);
+        gb->kv_cache_append(v4, graph_cache_v_nodes_[cache_src], window, cache_sink_size_);
+        attn = gb->attention_cached(q4, k4, v4,
+            graph_cache_k_nodes_[cache_src], graph_cache_v_nodes_[cache_src],
+            attention_scale_, position_offset, window);
     } else {
         attn = gb->attention(q4, k4, v4, attention_scale_, position_offset, window);
     }
@@ -437,7 +440,7 @@ size_t Gemma4Model::build_pli_combined_from_tokens(CactusGraph* gb, size_t hidde
 size_t Gemma4Model::forward_from_embeddings(CactusGraph* gb, size_t hidden, size_t pli_hidden_source,
                                                 const std::vector<uint32_t>& pli_tokens, size_t seq_len,
                                                 ComputeBackend backend, bool use_cache) {
-    size_t pos_offset = use_cache ? kv_cache_.get_total_seq_len() : 0;
+    size_t pos_offset = use_cache ? cache_total_seq_len_ : 0;
 
     std::fill(shared_k_nodes_.begin(), shared_k_nodes_.end(), 0);
     std::fill(shared_v_nodes_.begin(), shared_v_nodes_.end(), 0);
@@ -468,7 +471,7 @@ size_t Gemma4Model::forward(const std::vector<uint32_t>& tokens, bool use_cache)
     std::fill(shared_k_nodes_.begin(), shared_k_nodes_.end(), 0);
     std::fill(shared_v_nodes_.begin(), shared_v_nodes_.end(), 0);
 
-    size_t pos_offset = use_cache ? kv_cache_.get_total_seq_len() : 0;
+    size_t pos_offset = use_cache ? cache_total_seq_len_ : 0;
     auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
 
     if (config_.hidden_size_per_layer_input == 0) {
@@ -505,7 +508,7 @@ size_t Gemma4Model::forward_split(const std::vector<uint32_t>& tokens, bool use_
     std::fill(shared_v_nodes_.begin(), shared_v_nodes_.end(), 0);
 
     size_t seq_len = tokens.size();
-    size_t pos_offset = use_cache ? kv_cache_.get_total_seq_len() : 0;
+    size_t pos_offset = use_cache ? cache_total_seq_len_ : 0;
     auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
 
     if (config_.hidden_size_per_layer_input == 0) {
@@ -577,7 +580,7 @@ void Gemma4Model::prefill(const std::vector<uint32_t>& tokens, size_t chunk_size
     auto process_chunk = [&](const std::vector<uint32_t>& chunk) {
         forward_split(chunk, true);
         gb->execute(profile_file);
-        update_kv_cache(gb, chunk.size());
+        cache_total_seq_len_ += chunk.size();
     };
 
     if (tokens.size() <= chunk_size) {

@@ -1,5 +1,5 @@
 #include "model_gemma4.h"
-#include "../../graph/graph.h"
+#include "cactus_graph.h"
 #include <cmath>
 #include <stdexcept>
 #include <algorithm>
@@ -273,7 +273,7 @@ uint32_t Gemma4MmModel::decode_multimodal(
     gb->soft_reset();
     auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
 
-    size_t cached_len = language_model_.kv_cache_.current_seq_len;
+    size_t cached_len = language_model_.cache_total_seq_len_;
     if (cached_len >= tokens.size()) {
         reset_cache();
         cached_len = 0;
@@ -323,7 +323,7 @@ uint32_t Gemma4MmModel::decode_multimodal(
     compute_entropy(gb, logits_node, out_entropy);
 
     language_model_.post_execute_updates(gb, seq_len_for_updates);
-    language_model_.update_kv_cache(gb, seq_len_for_updates);
+    language_model_.cache_total_seq_len_ += seq_len_for_updates;
 
     auto* output_ptr = gb->get_output(sampled_token);
     uint32_t result_token = *static_cast<uint32_t*>(output_ptr);
@@ -374,7 +374,7 @@ void Gemma4MmModel::prefill_with_images(const std::vector<uint32_t>& tokens,
         gb->execute();
 
     language_model_.post_execute_updates(gb, result.seq_len);
-    language_model_.update_kv_cache(gb, result.seq_len);
+    language_model_.cache_total_seq_len_ += result.seq_len;
 }
 
 uint32_t Gemma4MmModel::decode_with_images(

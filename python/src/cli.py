@@ -132,7 +132,7 @@ def _is_stale_binary(binary_path, dependency_paths):
 
 
 def _ensure_chat_binary(project_root, lib_path):
-    tests_dir = project_root / "tests"
+    tests_dir = project_root / "cactus-engine" / "tests"
     build_dir = tests_dir / "build"
     chat_binary = build_dir / "chat"
     chat_cpp = tests_dir / "chat.cpp"
@@ -745,7 +745,7 @@ def cmd_build(args):
 
     cactus_dir = PROJECT_ROOT / "cactus"
     lib_path = cactus_dir / "build" / "libcactus.a"
-    vendored_curl = PROJECT_ROOT / "libs" / "curl" / "macos" / "libcurl.a"
+    vendored_curl = PROJECT_ROOT / "cactus-engine" / "libs" / "curl" / "macos" / "libcurl.a"
 
     print_color(YELLOW, "Building Cactus library...")
     build_script = cactus_dir / "build.sh"
@@ -757,7 +757,7 @@ def cmd_build(args):
         print_color(RED, "Failed to build cactus library")
         return 1
 
-    tests_dir = PROJECT_ROOT / "tests"
+    tests_dir = PROJECT_ROOT / "cactus-engine" / "tests"
     build_dir = tests_dir / "build"
     build_dir.mkdir(parents=True, exist_ok=True)
 
@@ -809,6 +809,9 @@ def cmd_build(args):
             compiler, "-std=c++20", "-O3",
             "-DACCELERATE_NEW_LAPACK",
             f"-I{PROJECT_ROOT}",
+            f"-I{PROJECT_ROOT / 'cactus-engine'}",
+            f"-I{PROJECT_ROOT / 'cactus-graph'}",
+            f"-I{PROJECT_ROOT / 'cactus-kernels'}",
             *sdl2_flags,
             str(chat_cpp),
             str(lib_path),
@@ -827,6 +830,9 @@ def cmd_build(args):
         cmd = [
             compiler, "-std=c++20", "-O3",
             f"-I{PROJECT_ROOT}",
+            f"-I{PROJECT_ROOT / 'cactus-engine'}",
+            f"-I{PROJECT_ROOT / 'cactus-graph'}",
+            f"-I{PROJECT_ROOT / 'cactus-kernels'}",
             *sdl2_flags,
             str(chat_cpp),
             str(lib_path),

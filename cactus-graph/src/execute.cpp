@@ -70,11 +70,21 @@ DECLARE_COMPUTE(compute_topk_node);
 DECLARE_COMPUTE(compute_scatter_topk_node);
 DECLARE_COMPUTE(compute_moe_layer_node);
 DECLARE_COMPUTE(compute_persistent_node);
-DECLARE_COMPUTE(compute_quantize_activations_node);
+DECLARE_COMPUTE(compute_kv_cache_state_node);
+DECLARE_COMPUTE(compute_kv_cache_append_node);
+DECLARE_COMPUTE(compute_attention_cached_node);
+DECLARE_COMPUTE(compute_conv_cache_state_node);
+DECLARE_COMPUTE(compute_conv_cache_append_node);
+DECLARE_COMPUTE(compute_image_preprocess_node);
+DECLARE_COMPUTE(compute_rfft_node);
+DECLARE_COMPUTE(compute_irfft_node);
+DECLARE_COMPUTE(compute_mel_filter_bank_node);
+DECLARE_COMPUTE(compute_spectrogram_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::WEIGHTED_STATS_POOL) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::CLAMP) + 1;
+static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
 static bool init_dispatch() {
@@ -101,6 +111,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::SIGMOID)] = compute_activation_node;
     dispatch_flat[static_cast<int>(OpType::TANH)] = compute_activation_node;
     dispatch_flat[static_cast<int>(OpType::LEAKY_RELU)] = compute_activation_node;
+    dispatch_flat[static_cast<int>(OpType::CLAMP)] = compute_activation_node;
     dispatch_flat[static_cast<int>(OpType::SUM)] = compute_reduce_node;
     dispatch_flat[static_cast<int>(OpType::MEAN)] = compute_reduce_node;
     dispatch_flat[static_cast<int>(OpType::VARIANCE)] = compute_reduce_node;
@@ -145,7 +156,6 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::SCATTER_TOPK)] = compute_scatter_topk_node;
     dispatch_flat[static_cast<int>(OpType::MOE_LAYER)] = compute_moe_layer_node;
     dispatch_flat[static_cast<int>(OpType::PERSISTENT)] = compute_persistent_node;
-    dispatch_flat[static_cast<int>(OpType::QUANTIZE_ACTIVATIONS)] = compute_quantize_activations_node;
     dispatch_flat[static_cast<int>(OpType::LSTM_CELL)] = compute_lstm_cell_node;
     dispatch_flat[static_cast<int>(OpType::GATED_DELTANET_DECODE)] = compute_gated_deltanet_decode_node;
     dispatch_flat[static_cast<int>(OpType::GATED_DELTANET_PREFILL)] = compute_gated_deltanet_prefill_node;
@@ -157,6 +167,16 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::BILSTM_SEQUENCE)] = compute_bilstm_sequence_node;
     dispatch_flat[static_cast<int>(OpType::STATS_POOL)] = compute_stats_pool_node;
     dispatch_flat[static_cast<int>(OpType::WEIGHTED_STATS_POOL)] = compute_weighted_stats_pool_node;
+    dispatch_flat[static_cast<int>(OpType::KV_CACHE_STATE)] = compute_kv_cache_state_node;
+    dispatch_flat[static_cast<int>(OpType::KV_CACHE_APPEND)] = compute_kv_cache_append_node;
+    dispatch_flat[static_cast<int>(OpType::ATTENTION_CACHED)] = compute_attention_cached_node;
+    dispatch_flat[static_cast<int>(OpType::CONV_CACHE_STATE)] = compute_conv_cache_state_node;
+    dispatch_flat[static_cast<int>(OpType::CONV_CACHE_APPEND)] = compute_conv_cache_append_node;
+    dispatch_flat[static_cast<int>(OpType::IMAGE_PREPROCESS)] = compute_image_preprocess_node;
+    dispatch_flat[static_cast<int>(OpType::RFFT)] = compute_rfft_node;
+    dispatch_flat[static_cast<int>(OpType::IRFFT)] = compute_irfft_node;
+    dispatch_flat[static_cast<int>(OpType::MEL_FILTER_BANK)] = compute_mel_filter_bank_node;
+    dispatch_flat[static_cast<int>(OpType::SPECTROGRAM)] = compute_spectrogram_node;
     return true;
 }
 
@@ -189,7 +209,6 @@ static const char* op_type_names[] = {
     "MOE_LAYER",
     "INDEX",
     "PERSISTENT",
-    "QUANTIZE_ACTIVATIONS",
     "LSTM_CELL",
     "GATED_DELTANET_DECODE",
     "GATED_DELTANET_PREFILL",
@@ -226,6 +245,11 @@ void CactusGraph::set_input(size_t node_id, const void* data, Precision) {
     }
 
     if (!node.output_buffer.data && !node.output_buffer.external_data) {
+        node.output_buffer.allocate();
+    }
+
+    if (node.output_buffer.external_data) {
+        node.output_buffer.external_data = nullptr;
         node.output_buffer.allocate();
     }
 
@@ -284,6 +308,11 @@ void CactusGraph::execute(const std::string& profile_file) {
         for (size_t i = 0; i < n; ++i) {
             auto& node = nodes_[i];
             if (node->op_type == OpType::INPUT) continue;
+            if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::CONV_CACHE_STATE) {
+                dispatch_node(*node, nodes_, node_index_map_);
+                populated_node_ids_.insert(node->id);
+                continue;
+            }
             node->output_buffer.allocate_from_pool(pool);
             dispatch_node(*node, nodes_, node_index_map_);
             if (node->op_type == OpType::PERSISTENT) {
@@ -552,23 +581,6 @@ void CactusGraph::execute(const std::string& profile_file) {
                         const int8_t* typed = reinterpret_cast<const int8_t*>(data_ptr);
                         for (size_t i = 0; i < elements_to_process; ++i) {
                             accumulate(static_cast<float>(typed[i]), i);
-                        }
-                    } else if (buffer.precision == Precision::INT4) {
-                        assert(elements_to_process % 32 == 0 && "INT4 precision capture requires element count to be multiple of 32");
-                        const uint8_t* packed_ptr = reinterpret_cast<const uint8_t*>(data_ptr);
-                        for (size_t i = 0; i < elements_to_process; i+=32) {
-                            int8x16_t high, low;
-                            unpack_int4_as_int8x16x2(packed_ptr + i / 2, high, low);
-                            int8_t high_lanes[16], low_lanes[16];
-                            vst1q_s8(high_lanes, high);
-                            vst1q_s8(low_lanes, low);
-
-                            for (size_t j = 0; j < 16; ++j) {
-                                accumulate(static_cast<float>(low_lanes[j]), i + j);
-                            }
-                            for (size_t j = 0; j < 16; ++j) {
-                                accumulate(static_cast<float>(high_lanes[j]), i + 16 + j);
-                            }
                         }
                     } else {
                         has_data = false;

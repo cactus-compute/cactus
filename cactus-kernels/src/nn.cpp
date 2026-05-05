@@ -22,6 +22,28 @@ void cactus_leaky_relu_f16(const __fp16* input, __fp16* output, size_t num_eleme
     }
 }
 
+void cactus_clamp_f16(const __fp16* input, __fp16* output, size_t num_elements, float lo, float hi) {
+    const float16x8_t lo_vec = vdupq_n_f16(static_cast<__fp16>(lo));
+    const float16x8_t hi_vec = vdupq_n_f16(static_cast<__fp16>(hi));
+    constexpr size_t SIMD_WIDTH = 8;
+    const size_t vectorized_end = (num_elements / SIMD_WIDTH) * SIMD_WIDTH;
+
+    for (size_t i = 0; i < vectorized_end; i += SIMD_WIDTH) {
+        float16x8_t x = vld1q_f16(&input[i]);
+        x = vmaxq_f16(x, lo_vec);
+        x = vminq_f16(x, hi_vec);
+        vst1q_f16(&output[i], x);
+    }
+    const __fp16 lo_h = static_cast<__fp16>(lo);
+    const __fp16 hi_h = static_cast<__fp16>(hi);
+    for (size_t i = vectorized_end; i < num_elements; ++i) {
+        __fp16 x = input[i];
+        if (x < lo_h) x = lo_h;
+        if (x > hi_h) x = hi_h;
+        output[i] = x;
+    }
+}
+
 void cactus_silu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
     CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
         [&](size_t start_idx, size_t end_idx) {

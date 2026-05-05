@@ -11,7 +11,10 @@ enum class Precision {
     INT8,
     FP16,
     FP32,
-    INT4
+    CQ1,
+    CQ2,
+    CQ3,
+    CQ4
 };
 
 enum class ScalarOpType {
@@ -195,12 +198,12 @@ void cactus_matmul_f16(
     size_t K,
     size_t N);
 
-enum CactusTQFlags : uint32_t {
-    CACTUS_TQ_FLAG_PANEL_MAJOR = 1u << 0,
-    CACTUS_TQ_FLAG_CODE_ORDERED_INDICES = 1u << 1
+enum CactusQuantFlags : uint32_t {
+    CACTUS_QUANT_FLAG_PANEL_MAJOR = 1u << 0,
+    CACTUS_QUANT_FLAG_CODE_ORDERED_INDICES = 1u << 1
 };
 
-struct CactusTQMatrix {
+struct CactusQuantMatrix {
     uint32_t bits;
     uint32_t K;
     uint32_t N;
@@ -215,128 +218,61 @@ struct CactusTQMatrix {
     const int8_t* left_signs;
     const int8_t* right_signs;
     const uint32_t* permutation;
+    const int8_t* expanded; 
+    const float* norm_f32; 
 };
 
-uint32_t cactus_tq_packed_group_bytes(uint32_t bits, uint32_t group_size);
+uint32_t cactus_quant_packed_group_bytes(uint32_t bits, uint32_t group_size);
 
-void cactus_tq4_gemv(
-    const CactusTQMatrix* W,
+void cactus_quant_4bit_gemv(
+    const CactusQuantMatrix* W,
     const __fp16* x,
     __fp16* y);
 
-void cactus_tq4_gemm(
-    const CactusTQMatrix* W,
+void cactus_quant_4bit_gemm(
+    const CactusQuantMatrix* W,
     const __fp16* A,
     uint32_t M,
     __fp16* C);
 
-void cactus_tq2_gemv(
-    const CactusTQMatrix* W,
+void cactus_quant_2bit_gemv(
+    const CactusQuantMatrix* W,
     const __fp16* x,
     __fp16* y);
 
-void cactus_tq2_gemm(
-    const CactusTQMatrix* W,
+void cactus_quant_2bit_gemm(
+    const CactusQuantMatrix* W,
     const __fp16* A,
     uint32_t M,
     __fp16* C);
 
-void cactus_gemv_int8(
-    const int8_t* A,
-    float A_scale,
-    const int8_t* B,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t K,
-    size_t N,
-    size_t group_size);
+void cactus_quant_1bit_gemv(
+    const CactusQuantMatrix* W,
+    const __fp16* x,
+    __fp16* y);
 
-void cactus_gemm_int8(
-    const int8_t* A,
-    const float* A_scales,
-    const int8_t* B,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size);
+void cactus_quant_1bit_gemm(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
 
-void cactus_matmul_int8(
-    const int8_t* A,
-    const float* A_scales,
-    const int8_t* B,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size);
+void cactus_quant_3bit_gemv(
+    const CactusQuantMatrix* W,
+    const __fp16* x,
+    __fp16* y);
 
-void cactus_gemv_int8_i8mm(
-    const int8_t* A,
-    float A_scale,
-    const int8_t* B,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t K,
-    size_t N,
-    size_t group_size);
+void cactus_quant_3bit_gemm(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
 
-void cactus_gemm_int8_i8mm(
-    const int8_t* A,
-    const float* A_scales,
-    const int8_t* B,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size);
-
-void cactus_gemv_int4(
-    const int8_t* A,
-    float A_scale,
-    const int8_t* B_packed,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t K,
-    size_t N,
-    size_t group_size);
-
-void cactus_gemm_int4(
-    const int8_t* A,
-    const float* A_scales,
-    const int8_t* B_packed,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size);
-
-void cactus_matmul_int4(
-    const int8_t* A,
-    const float* A_scales,
-    const int8_t* B_packed,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size);
-
-void cactus_matmul_integer(
-    Precision precision,
-    const int8_t* A,
-    const float* A_scales,
-    const int8_t* B,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size);
+void cactus_quant_matmul(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
 
 void cactus_rms_norm_f16(
     const __fp16* input,
@@ -410,6 +346,7 @@ void cactus_gpt_j_rope_f16(
 
 void cactus_relu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 void cactus_leaky_relu_f16(const __fp16* input, __fp16* output, size_t num_elements, float negative_slope);
+void cactus_clamp_f16(const __fp16* input, __fp16* output, size_t num_elements, float lo, float hi);
 void cactus_silu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 void cactus_gelu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 void cactus_gelu_f16_erf(const __fp16* input, __fp16* output, size_t num_elements);
@@ -760,11 +697,6 @@ void cactus_int8_to_fp16(const int8_t* src, __fp16* dst, size_t count, float sca
 void cactus_fp16_to_int8(const __fp16* src, int8_t* dst, size_t count, float scale = 1.0f);
 float cactus_fp16_max_abs(const __fp16* src, size_t count);
 
-void cactus_unpack_int4_to_int8(
-    const uint8_t* packed,
-    int8_t* unpacked,
-    size_t unpacked_count);
-
 void cactus_quantize_kv_fp16_to_int8(
     const __fp16* src,
     int8_t* dst,
@@ -773,6 +705,57 @@ void cactus_quantize_kv_fp16_to_int8(
     size_t kv_heads,
     size_t head_dim,
     size_t group_size = KV_QUANT_GROUP_SIZE);
+
+void cactus_rfft_f32_1d(const float* input, float* output, size_t n, const char* norm);
+void cactus_irfft_f32_1d(const float* input, float* output, size_t n, const char* norm);
+float cactus_hertz_to_mel(float freq, const char* mel_scale);
+float cactus_mel_to_hertz(float mels, const char* mel_scale);
+
+void cactus_generate_mel_filter_bank(
+    float* mel_filters, int num_frequency_bins, int num_mel_filters,
+    float min_frequency, float max_frequency, int sampling_rate,
+    const char* norm, const char* mel_scale, bool triangularize_in_mel_space);
+
+void cactus_spectrogram_to_db(
+    float* spectrogram, size_t size, float reference, float min_value,
+    const float* db_range, float multiplier);
+
+void cactus_compute_spectrogram_f32(
+    const float* waveform, size_t waveform_length,
+    const float* window, size_t window_length,
+    size_t frame_length, size_t hop_length, const size_t* fft_length,
+    float* spectrogram, float power,
+    bool center, const char* pad_mode, bool onesided,
+    float dither, const float* preemphasis,
+    const float* mel_filters, size_t mel_filters_size,
+    float mel_floor, const char* log_mel,
+    float reference, float min_value, const float* db_range,
+    bool remove_dc_offset);
+
+unsigned char* cactus_image_load(const char* path, int* width, int* height, int* channels, int desired_channels);
+void cactus_image_free(unsigned char* data);
+const char* cactus_image_failure_reason();
+
+void cactus_image_resize_uint8(
+    const unsigned char* input, int src_w, int src_h,
+    unsigned char* output, int dst_w, int dst_h, int channels);
+
+void cactus_image_resize_float(
+    const float* input, int src_w, int src_h,
+    float* output, int dst_w, int dst_h, int channels);
+
+void cactus_image_normalize(
+    const float* input, float* output,
+    int width, int height, int channels,
+    float rescale_factor, const float* mean, const float* std_dev);
+
+void cactus_image_to_patches(
+    const float* image, float* patches,
+    int width, int height, int channels, int patch_size);
+
+void cactus_image_convert_to_rgb(
+    const unsigned char* input, unsigned char* output,
+    int width, int height, int channels);
 
 inline size_t kv_scales_count(
     size_t seq_len,

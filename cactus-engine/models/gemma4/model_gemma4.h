@@ -34,6 +34,7 @@ protected:
     void post_init() override;
     std::vector<size_t> get_kv_layer_dims() const override;
     std::vector<size_t> get_kv_layer_heads() const override;
+    std::vector<size_t> get_kv_layer_windows() const override;
     void compact_kv_cache() override;
 
     size_t forward_from_embeddings(CactusGraph* gb, size_t hidden, const std::vector<uint32_t>& pli_tokens,

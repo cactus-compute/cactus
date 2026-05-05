@@ -1477,18 +1477,6 @@ size_t CactusGraph::precision_cast(size_t input, Precision target_precision) {
     return add_node(OpType::PRECISION_CAST, {input}, {}, params);
 }
 
-size_t CactusGraph::quantize_activations(size_t input) {
-    const auto& input_buffer = get_output_buffer(input);
-
-    if (input_buffer.precision != Precision::FP16) {
-        throw std::invalid_argument("quantize_activations requires FP16 input");
-    }
-    
-    OpParams params{};
-    params.output_precision = Precision::INT8;
-    return add_node(OpType::QUANTIZE_ACTIVATIONS, {input}, input_buffer.shape, params);
-}
-
 size_t CactusGraph::add_node(OpType op_type, const std::vector<size_t>& inputs, const std::vector<size_t>& output_shape, const OpParams& params) {
     auto node = std::make_unique<GraphNode>(next_node_id_, op_type);
     node->input_ids = inputs;
@@ -1502,7 +1490,7 @@ size_t CactusGraph::add_node(OpType op_type, const std::vector<size_t>& inputs, 
     Precision result_precision = params.output_precision;
     if (op_type == OpType::PRECISION_CAST) {
         result_precision = params.output_precision;
-    } else if (result_precision == Precision::INT8 && !inputs.empty()) {
+    } else if (!inputs.empty()) {
         result_precision = nodes_[node_index_map_[inputs[0]]]->output_buffer.precision;
     }
 
@@ -1579,6 +1567,14 @@ size_t CactusGraph::leaky_relu(size_t input, float negative_slope) {
     OpParams params;
     params.scalar = negative_slope;
     return add_node(OpType::LEAKY_RELU, {input}, in_buf.shape, params);
+}
+
+size_t CactusGraph::clamp(size_t input, float lo, float hi) {
+    const auto& in_buf = get_output_buffer(input);
+    OpParams params;
+    params.scalar = lo;
+    params.scale = hi;
+    return add_node(OpType::CLAMP, {input}, in_buf.shape, params);
 }
 
 size_t CactusGraph::bilstm_sequence(size_t input, size_t w_ih_fwd, size_t w_hh_fwd, size_t b_ih_fwd, size_t b_hh_fwd,
@@ -1679,4 +1675,182 @@ size_t CactusGraph::weighted_stats_pool(size_t input, size_t weights) {
     size_t features = 1;
     for (size_t i = 1; i < xin.shape.size() - 1; ++i) features *= xin.shape[i];
     return add_node(OpType::WEIGHTED_STATS_POOL, {input, weights}, {batch, features * 2});
+}
+
+size_t CactusGraph::kv_cache_state(size_t max_seq_len, size_t num_kv_heads, size_t head_dim,
+                                    size_t window_size, size_t sink_size) {
+    size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+    size_t total_bytes = 64 + max_seq_len * num_kv_heads * head_dim +
+                         max_seq_len * num_kv_heads * num_groups * sizeof(float);
+    OpParams params{};
+    params.max_cache_seq_len = max_seq_len;
+    params.num_kv_heads = num_kv_heads;
+    params.head_dim = head_dim;
+    params.window_size = window_size;
+    params.cache_sink_size = sink_size;
+    params.output_precision = Precision::INT8;
+    size_t node_id = add_node(OpType::KV_CACHE_STATE, {}, {total_bytes}, params);
+    persistent_node_ids_.insert(node_id);
+    return node_id;
+}
+
+size_t CactusGraph::kv_cache_append(size_t new_kv, size_t cache_state_node,
+                                     size_t window_size, size_t sink_size) {
+    OpParams params{};
+    params.window_size = window_size;
+    params.cache_sink_size = sink_size;
+    params.output_precision = Precision::FP32;
+    return add_node(OpType::KV_CACHE_APPEND, {new_kv, cache_state_node}, {1}, params);
+}
+
+size_t CactusGraph::conv_cache_state(size_t ws, size_t hidden_dim) {
+    size_t total_bytes = sizeof(uint64_t) * 8 + ws * hidden_dim * sizeof(__fp16);
+    OpParams params{};
+    params.window_size = ws;
+    params.head_dim = hidden_dim;
+    params.output_precision = Precision::INT8;
+    size_t node_id = add_node(OpType::CONV_CACHE_STATE, {}, {total_bytes}, params);
+    persistent_node_ids_.insert(node_id);
+    return node_id;
+}
+
+size_t CactusGraph::conv_cache_append(size_t new_data, size_t cache_state_node) {
+    const auto& cache_buf = get_output_buffer(cache_state_node);
+    auto* raw = static_cast<const uint8_t*>(cache_buf.get_data());
+    size_t ws, hd;
+    if (raw) {
+        ws = *reinterpret_cast<const uint64_t*>(raw + 16);
+        hd = *reinterpret_cast<const uint64_t*>(raw + 24);
+    } else {
+        auto it = node_index_map_.find(cache_state_node);
+        ws = nodes_[it->second]->params.window_size;
+        hd = nodes_[it->second]->params.head_dim;
+    }
+    OpParams params{};
+    params.output_precision = Precision::FP16;
+    return add_node(OpType::CONV_CACHE_APPEND, {new_data, cache_state_node}, {ws, hd}, params);
+}
+
+size_t CactusGraph::image_preprocess(
+    size_t pixel_input,
+    int src_width, int src_height,
+    int target_width, int target_height,
+    int patch_size, int channels,
+    float rescale_factor,
+    const float* mean, const float* std_dev) {
+
+    int tw = target_width > 0 ? target_width : src_width;
+    int th = target_height > 0 ? target_height : src_height;
+    int ph = th / patch_size;
+    int pw = tw / patch_size;
+    size_t num_patches = static_cast<size_t>(ph) * pw;
+    size_t patch_dim = static_cast<size_t>(patch_size) * patch_size * channels;
+
+    OpParams params{};
+    params.patch_size = patch_size;
+    params.rescale_factor = rescale_factor;
+    params.target_width = tw;
+    params.target_height = th;
+    params.image_channels = channels;
+    params.dst_width = static_cast<size_t>(src_width);
+    params.dst_height = static_cast<size_t>(src_height);
+    float default_mean[3] = {0.5f, 0.5f, 0.5f};
+    float default_std[3] = {0.5f, 0.5f, 0.5f};
+    const float* m = mean ? mean : default_mean;
+    const float* s = std_dev ? std_dev : default_std;
+    for (int i = 0; i < 3; i++) {
+        params.image_mean[i] = m[i];
+        params.image_std[i] = s[i];
+    }
+    params.output_precision = Precision::FP32;
+
+    return add_node(OpType::IMAGE_PREPROCESS, {pixel_input}, {num_patches, patch_dim}, params);
+}
+
+size_t CactusGraph::rfft(size_t input) {
+    const auto& in_buf = get_output_buffer(input);
+    size_t n = in_buf.total_size;
+    size_t out_len = (n / 2 + 1) * 2;
+    OpParams params{};
+    params.output_precision = in_buf.precision;
+    return add_node(OpType::RFFT, {input}, {out_len}, params);
+}
+
+size_t CactusGraph::irfft(size_t input, size_t output_length) {
+    const auto& in_buf = get_output_buffer(input);
+    OpParams params{};
+    params.output_precision = in_buf.precision;
+    return add_node(OpType::IRFFT, {input}, {output_length}, params);
+}
+
+size_t CactusGraph::mel_filter_bank(
+    size_t num_frequency_bins, size_t num_mel_filters,
+    float min_frequency, float max_frequency, size_t sampling_rate,
+    int norm_type, int scale_type) {
+    OpParams params{};
+    params.num_mel_filters = num_mel_filters;
+    params.min_frequency = min_frequency;
+    params.max_frequency = max_frequency;
+    params.sampling_rate = sampling_rate;
+    params.mel_norm_type = norm_type;
+    params.mel_scale_type = scale_type;
+    params.output_precision = Precision::FP32;
+    return add_node(OpType::MEL_FILTER_BANK, {}, {num_frequency_bins, num_mel_filters}, params);
+}
+
+size_t CactusGraph::spectrogram(
+    size_t waveform, size_t mel_filters_node,
+    size_t frame_length, size_t hop_length, size_t fft_length,
+    float power, bool center, int pad_mode,
+    float mel_floor, int log_mel_mode,
+    float dither_val, float preemphasis,
+    bool remove_dc_offset) {
+
+    const auto& wav_buf = get_output_buffer(waveform);
+    const auto& mel_buf = get_output_buffer(mel_filters_node);
+
+    size_t waveform_length = wav_buf.total_size;
+    size_t num_frequency_bins = fft_length / 2 + 1;
+    size_t num_mel_bins = mel_buf.total_size / num_frequency_bins;
+    size_t pad_len = center ? frame_length / 2 : 0;
+    size_t padded_len = waveform_length + 2 * pad_len;
+    size_t num_frames = 1 + (padded_len - frame_length) / hop_length;
+
+    OpParams params{};
+    params.num_fft_bins = frame_length;
+    params.hop_length = hop_length;
+    params.stride = fft_length;
+    params.power = power;
+    params.center = center;
+    params.pad_mode_type = pad_mode;
+    params.mel_floor = mel_floor;
+    params.log_mel_mode = log_mel_mode;
+    params.dither = dither_val;
+    params.preemphasis_coef = preemphasis;
+    params.remove_dc_offset = remove_dc_offset;
+    params.output_precision = Precision::FP32;
+
+    return add_node(OpType::SPECTROGRAM, {waveform, mel_filters_node}, {num_mel_bins, num_frames}, params);
+}
+
+size_t CactusGraph::attention_cached(size_t query, size_t key_new, size_t value_new,
+                                      size_t k_cache_state, size_t v_cache_state,
+                                      float scale, size_t position_offset,
+                                      size_t window_size, size_t v_head_dim) {
+    const auto& q_shape = get_output_buffer(query).shape;
+    size_t batch = q_shape[0];
+    size_t seq_len = q_shape[1];
+    size_t num_q_heads = q_shape[2];
+    size_t head_dim = q_shape[3];
+    size_t out_v_dim = v_head_dim > 0 ? v_head_dim : head_dim;
+
+    OpParams params{};
+    params.scale = scale;
+    params.position_offset = position_offset;
+    params.window_size = window_size;
+    params.v_head_dim = v_head_dim;
+    params.output_precision = Precision::FP16;
+    return add_node(OpType::ATTENTION_CACHED,
+                    {query, key_new, value_new, k_cache_state, v_cache_state},
+                    {batch, seq_len, num_q_heads, out_v_dim}, params);
 }

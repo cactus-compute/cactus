@@ -18,7 +18,6 @@ if(APPLE)
         __ARM_FEATURE_MATMUL_INT8=1
         ACCELERATE_NEW_LAPACK
     )
-    enable_language(OBJCXX)
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-field-initializers")
     add_compile_definitions(
@@ -44,13 +43,10 @@ set(GRAPH_SOURCES
     src/ops_nn.cpp
     src/ops_tensor.cpp
     src/ops_sample.cpp
-    src/npu.cpp
+    src/ops_cache.cpp
+    src/ops_dsp.cpp
+    src/ops_image.cpp
 )
-
-if(APPLE)
-    list(APPEND GRAPH_SOURCES src/npu_ane.mm)
-    set_source_files_properties(src/npu_ane.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-endif()
 
 add_library(cactus_graph STATIC ${GRAPH_SOURCES})
 target_include_directories(cactus_graph
@@ -59,12 +55,6 @@ target_include_directories(cactus_graph
 )
 target_link_libraries(cactus_graph PUBLIC cactus_kernels)
 set_target_properties(cactus_graph PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-if(APPLE)
-    find_library(COREML_FRAMEWORK CoreML REQUIRED)
-    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
-    target_link_libraries(cactus_graph PRIVATE ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
-endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_compile_options(cactus_graph PRIVATE -Wno-c99-extensions)

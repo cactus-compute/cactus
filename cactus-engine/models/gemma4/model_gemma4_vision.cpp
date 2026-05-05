@@ -1,16 +1,12 @@
 #include "model_gemma4.h"
-#include "../../graph/graph.h"
+#include "cactus_graph.h"
+#include "cactus_kernels.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <stdexcept>
-
-extern "C" {
-    #include "../../../libs/stb/stb_image.h"
-    #include "../../../libs/stb/stb_image_resize2.h"
-}
 
 namespace cactus {
 namespace engine {
@@ -137,7 +133,7 @@ void Gemma4VisionModel::load_weights_to_graph(CactusGraph* gb) {
 
 Gemma4VisionModel::PreprocessedImage Gemma4VisionModel::preprocess_image(const std::string& image_path) {
     int w, h, channels;
-    unsigned char* data = stbi_load(image_path.c_str(), &w, &h, &channels, 3);
+    unsigned char* data = cactus_image_load(image_path.c_str(), &w, &h, &channels, 3);
     if (!data)
         throw std::runtime_error("Failed to load image: " + image_path);
 
@@ -160,8 +156,7 @@ Gemma4VisionModel::PreprocessedImage Gemma4VisionModel::preprocess_image(const s
     unsigned char* src = data;
     if (target_h != h || target_w != w) {
         resized_data.resize(target_h * target_w * 3);
-        stbir_resize_uint8_linear(data, w, h, 0, resized_data.data(), target_w, target_h, 0,
-                                   static_cast<stbir_pixel_layout>(3));
+        cactus_image_resize_uint8(data, w, h, resized_data.data(), target_w, target_h, 3);
         src = resized_data.data();
     }
 
@@ -169,18 +164,22 @@ Gemma4VisionModel::PreprocessedImage Gemma4VisionModel::preprocess_image(const s
     size_t pw = target_w / patch_size;
     size_t num_patches = ph * pw;
 
+    float mean = config_.image_mean;
+    float inv_std = 1.0f / config_.image_std;
+    float rescale = config_.rescale_factor;
+
     std::vector<float> pixels(3 * target_h * target_w);
     for (int y = 0; y < target_h; y++) {
         for (int x = 0; x < target_w; x++) {
             size_t src_idx = (y * target_w + x) * 3;
             for (int c = 0; c < 3; c++) {
                 pixels[c * target_h * target_w + y * target_w + x] =
-                    static_cast<float>(src[src_idx + c]) * config_.rescale_factor;
+                    (static_cast<float>(src[src_idx + c]) * rescale - mean) * inv_std;
             }
         }
     }
 
-    stbi_image_free(data);
+    cactus_image_free(data);
 
     return PreprocessedImage{
         std::move(pixels),
@@ -205,10 +204,6 @@ size_t Gemma4VisionModel::build_vision_patch_embedding(CactusGraph* gb, const Pr
     size_t reshaped = gb->reshape(pixel_fp16, {3, img.patch_height, patch_size, img.patch_width, patch_size});
     size_t permuted = gb->transposeN(reshaped, {1, 3, 2, 4, 0});
     size_t patches = gb->reshape(permuted, {num_patches, patch_dim});
-
-    float mean = config_.image_mean;
-    float norm_std = config_.image_std;
-    patches = gb->scalar_multiply(gb->scalar_add(patches, -mean), 1.0f / norm_std);
 
     size_t projected = gb->matmul(patches, vision_weights_.patch_input_proj, true, backend);
 

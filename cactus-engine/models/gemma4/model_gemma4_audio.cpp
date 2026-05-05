@@ -1,5 +1,5 @@
 #include "model_gemma4.h"
-#include "../../graph/graph.h"
+#include "cactus_graph.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -260,23 +260,14 @@ static bool materialize_npu_audio_time_major(const __fp16* src,
     return true;
 }
 
-static size_t graph_clamp(CactusGraph* gb, size_t x, float lo, float hi) {
-    if (lo >= hi || std::isinf(lo) || std::isinf(hi)) return x;
-    x = gb->scalar_add(x, -lo);
-    x = gb->relu(x);
-    x = gb->scalar_add(x, lo);
-    x = gb->scalar_multiply(gb->scalar_add(x, -hi), -1.0f);
-    x = gb->relu(x);
-    x = gb->scalar_add(gb->scalar_multiply(x, -1.0f), hi);
-    return x;
-}
-
 static size_t clipped_matmul(CactusGraph* gb, size_t input, size_t weight,
                               float in_min, float in_max, float out_min, float out_max,
                               ComputeBackend backend) {
-    size_t clamped_in = graph_clamp(gb, input, in_min, in_max);
+    size_t clamped_in = (in_min < in_max && !std::isinf(in_min) && !std::isinf(in_max))
+        ? gb->clamp(input, in_min, in_max) : input;
     size_t result = gb->matmul(clamped_in, weight, true, backend);
-    return graph_clamp(gb, result, out_min, out_max);
+    return (out_min < out_max && !std::isinf(out_min) && !std::isinf(out_max))
+        ? gb->clamp(result, out_min, out_max) : result;
 }
 
 static float read_scalar_weight(CactusGraph* gb, const std::string& path) {
