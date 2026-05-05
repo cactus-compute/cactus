@@ -190,3 +190,320 @@ Maintaining a parallel C++ rewrite of a 343-line Jinja file across model upgrade
 - `/workspace/cactus/python/src/tokenizer.py` — Patch 4 cleanup, lines 261-303 and 345-353.
 - `/workspace/model/.../chat_template.jinja` — ground truth.
 - `/workspace/cactus/diagnose_tool_call.py` — regression harness (created by this investigation).
+
+## Decode-time collapse — diagnosis (round 2)
+
+### Recap
+
+After Patch 1 (the `<escape>` -> `<|"|>` fix) shipped, Karen's TQH4-quantised
+`google/gemma-4-E2B-it` running on Cactus branch `karen/tq-v2-debugging`
+(HEAD `171d27db v2 latest`) still produces collapsed / repetitive output
+on **non-tool prompts** as well. Symptoms (from Karen's harness):
+
+- streaming: `Turn 1: I am doing well. I am doing well. I am doing well. ...` (6× exact phrase repetition, then partial recovery on Turn 2)
+- prefill (warm): `It refers to a state of content that describes.` (truncated but coherent)
+- prefill (cold): `Obsessive: Obsessive: Obsessive: ... online online online fixation.` (single-token loop that escapes once)
+- tool_calls (output side): `<|tool_call>call:<|tool_call>call:getWeather:getWeather:...`
+
+Default sampling on Gemma-4 mm in this branch is `T=1.0, top_p=0.95, top_k=64,
+min_p=0.15, repetition_penalty=1.1` (`cactus-engine/src/model.cpp:695-697`,
+`cactus-engine/models/gemma4/model_gemma4.h:319`). These defaults are healthy
+enough that 6× exact-token loops do not happen on a numerically intact
+forward pass — repetition_penalty=1.1 alone subtracts `log(1.1)≈0.095` per
+already-seen token, which is enough to break a tie unless the top logit
+is dominating by a lot. So: **the symptom is consistent with the logit
+distribution being genuinely degenerate — single-token mass — not with a
+sampler bug.**
+
+### Things that turned out NOT to be the bug
+
+#### F1. The fused INT4 dense-MLP commit (`a53f0ce4`). NOT ACTIVE.
+
+Karen's `171d27db v2 latest` already reverted the fused-MLP call site:
+`cactus-engine/models/gemma4/model_gemma4.cpp:312-319` is now the unfused
+`gate = gelu(matmul); up = matmul; multiply; matmul(down)` chain. The
+`compute_dense_mlp_int4_fused_node` op definition was also removed from
+`cactus-graph/src/ops_nn.cpp` and the `dense_mlp_int4_fused` builder API
+was removed from `cactus-graph/src/builder.cpp`. Searching for any remaining
+reference to `dense_mlp_fused`, `cactus_dense_mlp_fused`, or
+`DENSE_MLP_INT4_FUSED` returns nothing. Dead code, not on the decode path.
+
+#### F2. The "inner 1 fast path" commit (`d917981f`). Not exercised on this codepath.
+
+That commit added `cactus/kernel/kernel_reduce.cpp` in the now-deleted layout
+(the cactus-graph / cactus-kernels / cactus-engine refactor in `b8527fe0
+Aggressive Refactor!` blew away the `cactus/kernel` directory). On
+`171d27db`, `cactus-kernels/src/reduce.cpp` has no `inner == 1` fast path;
+all axis_reduce paths go through `axis_reduce_*_impl`. So the inner-1
+optimisation is not in this branch.
+
+#### F3. The new `cactus_quant_orthogonal_matmul`. CORRECT.
+
+This is the kernel that runs on the LM head every decode step (Gemma-4
+has tied embeddings — `cactus-engine/models/gemma4/model_gemma4.cpp:99-101`
+maps `output_weight` to `embedding_node_id_`, and `embed_tokens` is the
+sole orthogonal-rotation layer in TQH4 — `metadata.json` shows
+`{'hadamard': 526, 'orthogonal': 1}` and the orthogonal one is
+`embed_tokens` with `rotation_group_dim=1536, rotation_family=orthogonal`).
+
+I verified the kernel against the trusted QDQ reference
+(`/workspace/turboquant/research/tqh_runtime.py`) using the actual packed
+weights at `/workspace/turboquant/artifacts/packed_av/PROD_v2_a2_L4_pli2_emb4`.
+For `M=4, N_slice=1024, K=1536` random fp16 activations:
+
+```
+=== orthogonal matmul vs reference (fp32) ===
+max abs diff: 2.533e-07     mean abs diff: 5.514e-08
+--- with fp16-cast intermediates (mimicking the kernel) ---
+max abs diff: 2.414e-04     mean abs diff: 3.833e-05
+```
+
+The 2.4e-4 max abs error is well inside the 3.9e-3 packed-vs-QDQ tolerance
+that Karen verified globally. The math at
+`cactus-kernels/src/matmul.cpp:1428-1496` is correct: it computes
+`A_rot[m,i] = sum_k (A[m,k] * isr[k]) * R[k,i]` then
+`C[m,n] = norm[n] * sum_i cb[idx[n,i]] * A_rot[m,i]`, which expands
+algebraically to `y = A @ W^T` with `W[n,k] = norm[n] * (cb[idx[n,:]] @ R^T)[k] * isr[k]`
+exactly matching `tqh_runtime.dehydrate_layer`'s
+`(dq_g @ R.T) * norms ; recon /= input_scale`.
+
+Index unpacking (LSB, 4-bit nibble: low for even k, high for odd k) matches
+the convert's `pack_indices_lsb` packing.
+
+#### F4. `dequantize_orthogonal_embedding_row`. CORRECT.
+
+Same algebra as F3, used for the input embedding lookup. Matches reference.
+`ops_tensor.cpp:241-267`.
+
+#### F5. The `gemma4_scale_factor` baking 1/16 into `embed_tokens` norms. INTENTIONAL.
+
+`tqh_prod_convert.py:49-58` applies `1/16` to `token_embeddings`,
+`output_weight`, `embed_vision_proj`, `embed_vision_embedding` and `*16`
+to `ffn_gate`, `ffn_up`, `per_layer_gate`, `moe_gate_proj`, `moe_up_proj`.
+This matches the existing Cactus convention in
+`python/src/tensor_io.py:154-172`, and Cactus's Gemma-4 forward graph is
+designed against pre-divided embeddings (the embed lookup is multiplied
+by `sqrt(hidden_dim)` at `model_gemma4.cpp:394-395`, a layout choice that
+assumes `embed_tokens` is stored already divided by 16). Not a regression.
+
+#### F6. Sampler ignoring `repetition_penalty` parameter. RED HERRING.
+
+`cactus-kernels/src/nn.cpp:585` does `(void)repetition_penalty;` inside
+`cactus_sample_f32_ex` / `cactus_sample_f16_ex`. This looks alarming but
+is intentional: `Model::sample_token` at `cactus-engine/src/model.cpp:265-269`
+applies repetition penalty as an additive logit bias against the token
+history *before* invoking `gb->sample_with_options`, which feeds the bias
+into the kernel via the `bias_indices/bias_values` arrays at
+`ops_sample.cpp:18-20` and `nn.cpp:564-571`. The penalty IS applied.
+
+#### F7. `OpType::EMBEDDING` precision-cast bug (FIXED in this branch).
+
+Karen's `v2 latest` adds `OpType::EMBEDDING` to the list of ops whose
+output precision is taken from `params.output_precision` rather than
+inherited from `inputs[0]`
+(`cactus-graph/src/builder.cpp:1488-1493`). Before this fix, an embedding
+op consuming a CQ4 weight would have allocated its output buffer at CQ4
+precision (i.e. 4-bit packed = ½ byte per element) but
+`compute_embedding_node` writes fp16 (2 bytes per element), guaranteeing
+heap corruption in the output node. With the fix, the output is allocated
+correctly as FP16. Confirmed correct in current HEAD.
+
+### Top remaining hypotheses (in priority order)
+
+I cannot run the engine end-to-end here, but the symptoms point at a
+small number of remaining sites. Listed by likelihood given the evidence.
+
+#### H6 (most likely). The Hadamard `cactus_quant_matmul` activation transform on M=1 decode.
+
+Every transformer matmul on the decode step (q, k, v, o, gate, up, down,
+per_layer_*) goes through `cactus_quant_matmul` at
+`cactus-kernels/src/matmul.cpp:1126-…`. Two things I observed without
+being able to execute:
+
+1. The "M=1 thread-local scratch" branch at `1157-1163` reuses
+   `tl_code_basis`/`tl_act_i8`/`tl_act_scales` across calls. The same
+   thread-local buffers are used by the sparse-activation
+   matmul kernels at lines 785/800/922/1036 and by 64+ other call sites
+   that all also call `cactus_quant_transform_hadamard_activations`. If
+   any caller during a single `gb->execute()` resets `M` between the
+   M=1 fast path and a later M>1 batched path *on the same thread*,
+   the thread-local size check is `if (size < act_size) resize`, so
+   it's a one-way grow — that's fine. But all these paths are taken
+   per-layer per-step. A subtle race between the per-layer thread pool
+   and the M=1 thread-local scratch is plausible if the M=1 path is
+   ever entered re-entrantly from worker threads (it normally is not,
+   but the new `parallel_for` in the orthogonal matmul does enqueue
+   work to the same pool from the master thread).
+
+2. Karen's `v2 latest` explicitly removed the precomputed `cq_expanded`
+   and `cq_norm_f32` block from `cactus-graph/src/io.cpp` (the
+   `tq_expand_i8_16` precompute previously in `mmap_weights`). The
+   matmul kernel has a fallback at lines 1188-1224 that re-builds those
+   structures inside the kernel call, so correctness is preserved, but
+   it is dramatically slower and runs on every matmul on every step.
+   That fallback path is now hot. Worth verifying that `w_il_buf` /
+   `n_f32_buf` are sized correctly for non-aligned `W->N` (the
+   `(W->N + 3) / 4` rounding at line 1183 plus the `valid_n` masking
+   at 1195/1199 should be correct, but this code is now exercised on
+   every layer instead of being precompute-and-cached, so any bug here
+   hits every forward).
+
+   **Concrete risk**: line 1220 stores
+   `nd[ni] = (n_start+ni < W->N) ? float(W->norms[(n_start+ni)*num_groups+g]) * cb_scale : 0.f;`
+   but the deleted precompute at the equivalent site previously
+   applied this exact transform too. If `cb_scale` here is computed
+   from `tq_quantize_codebook_i8(W->codebook, cb_i8, 1u << bits)` per
+   call (line 1139) and the codebook in fp16 is read from mmap, fp16
+   rounding of the codebook can perturb `cb_scale`, and the thread that
+   loses the race could see a slightly different `n_f32` than the one
+   the dot product was scaled against. **Recommend**: rebuild the
+   precompute block — it was both faster and provided a single,
+   stable cb_scale per layer.
+
+#### H5. `cactus_quant_matmul` M=1 fast path with permutation when `cq_permutation` is null vs non-null.
+
+`cactus_quant_transform_hadamard_group` at `matmul.cpp:259-305` writes
+into `tmp[256]` (a 256-element stack array) when permutation is enabled.
+For `gs > 256` (which TQH never uses but the audio tower has matmuls of
+varying sizes), `tmp` would overflow. TQH4 weights all have gs=128 so
+this is presumably safe in practice, but the assertion is missing.
+
+#### H4. KV cache append on cached decode.
+
+`gb->kv_cache_append` is called twice per layer at decode
+(`model_gemma4.cpp:300-301`). I cannot inspect the kernel here without
+chasing further, but the pathological symptom of `Turn 2: Hello, I am
+doing well.` repeating from Turn 1 is consistent with **cache contents
+leaking across turns** (specifically, a scenario where the cache from
+turn 1 is not reset and turn-2 attention also reads those positions,
+biasing the model toward repeating the previous turn's tokens).
+Worth a quick audit of `compact_kv_cache()` at `model_gemma4.cpp:66`
+and the cache-reset path in the user-facing API.
+
+#### H3. Re-quantising activations to int8 at every group with codebook range collapse.
+
+`tq_quantize_group_i8` at the matmul (line 1177) computes per-group
+scale `max(abs)/127`. For the **decode step** with M=1, activations
+arriving at the down-projection input are produced by `gate*up` after
+gelu, and then quantised group-by-group. If gelu produces a single
+huge spike (one group dominates the abs-max), the rest of the group
+gets clipped to ±0 in int8 → information collapse. With the deleted
+fused-MLP path that did per-tile rescaling, this would have been less
+catastrophic. Now every layer's down-proj input goes through global
+group-wise int8 quantisation. Not sure this is the bug, but it is
+at minimum a quantisation-noise floor that gets exercised hard.
+
+#### H2. The new orthogonal-rotation layout in `mmap_embeddings` overwriting `cq_left_signs/right_signs/permutation` with `cq_rotation`.
+
+`io.cpp:301-311` sets `buffer.cq_rotation` and `buffer.cq_flags = ORTHOGONAL`
+in the orthogonal branch, but does not zero out
+`cq_left_signs/cq_right_signs/cq_permutation`. They default-init to
+`nullptr` in `BufferDesc` so this is fine for a fresh buffer. Defensive
+zeroing is recommended for safety against future refactors but not the
+bug.
+
+### Smoking-gun candidate
+
+I could not run the engine, so I cannot point at a single line and say
+"this is wrong." The strongest signal is **H6**: the deletion of the
+`cq_expanded` / `cq_norm_f32` precompute from `io.cpp` puts the kernel
+on the slow per-call rebuild path that previously was only a fallback,
+and that path applies a per-call `cb_scale` rounding which can drift
+between calls. The unit tests for `cactus_quant_matmul` in
+`cactus-kernels/tests/test_matmul.cpp` mostly run with the precompute
+populated by hand from the test, so they would not catch this regression.
+
+The repetition-then-recovery patterns ("Obsessive: Obsessive: ...
+online online online fixation") are characteristic of greedy-ish decoding
+on a forward pass that is producing logits within a few tens of millivolts
+of each other but slightly off the true distribution — exactly what you
+get from a kernel that is computing the right thing in expectation but
+drifting by ~1e-3 per matmul, compounding over 30+ transformer layers.
+
+### Recommended fixes & test recipes
+
+#### R1. Restore the precomputed `cq_expanded` / `cq_norm_f32` in `io.cpp::mmap_weights`.
+
+The block deleted in `171d27db` (the `~120` lines starting "for (size_t nb = 0;
+nb < N_blocks; ++nb)" inside the `is_cq && group_size > 0` branch of the
+old `mmap_weights`) needs to come back. It populated
+`buffer.cq_expanded` and `buffer.cq_norm_f32` once per layer at load time
+using a single global `cb_scale = max(|cb|)/127`. Reinstate it, run the
+existing test, and confirm `W->expanded != nullptr` at every matmul call
+site by adding a one-line assertion.
+
+If perf was the reason it was removed, do the work in a worker pool:
+
+```cpp
+// in mmap_weights, after parsing scales blob:
+if (PrecisionTraits::is_cq(precision) && group_size > 0 && !is_orthogonal) {
+    populate_cq_expanded_and_norm_f32(buffer);   // the old precompute, lifted into a helper
+}
+```
+
+#### R2. Add a pure-Python kernel-equivalence test for the Hadamard `cactus_quant_matmul`.
+
+We already have one for the orthogonal kernel (this conversation produced
+it; the script is in the prior shell history). Mirror it for Hadamard
+weights using `tqh_runtime.dehydrate_layer` with `rotation_family=hadamard`,
+group_size=128, sign tables matching `make_hadamard_components`. Do it for
+*every* layer shape that the model uses (q_proj, k_proj, ffn_gate, etc.)
+so that any drift between the C++ kernel and the reference math is caught
+at unit-test time, not at end-to-end token time.
+
+#### R3. Replace decode-time greedy with `T=0.0` exact greedy and a logit dump.
+
+To unambiguously locate the decode bug:
+
+```python
+# In the test harness, run:
+#   1. cactus.complete(prompt, T=0.0)  -> dump first 16 logits-argmax tokens
+#   2. transformers.AutoModelForCausalLM.from_pretrained(dehydrated_dir).generate(..., do_sample=False, max_new_tokens=16)
+# Compare token ids step by step. The first divergence is where the bug lives.
+```
+
+Karen's QDQ reference produces "The capital of France is **Paris**." which
+matches HF transformers. So the dehydrated bf16 path is bit-equivalent at
+the token level. Cactus must match the same trajectory at T=0; any
+divergence at step N localises the bug to the layer/op active at that step.
+
+#### R4. Sanity-check the LM-head logits scale and softcap interaction.
+
+`final_logit_softcapping` at `model_gemma4_mm.cpp:308-313` does
+`logits = softcap * tanh(logits / softcap)`. If `embed_tokens` norms are
+divided by 16 (per F5) and the LM-head matmul does NOT undo that 1/16,
+logits exit the matmul at 1/16 of their natural magnitude. With the
+softcap value the config likely uses (30), the post-softcap range is
+identical (since tanh saturates at ±1 regardless), but the *relative*
+ordering of logits inside the linear region of tanh is preserved. So
+this is **NOT** a functional bug — but it IS odd that the same physical
+tensor `embed_tokens` is used both as an input embedding (where the
+1/16 is undone by `*sqrt(hidden_dim)≈48` giving a ×3 net) and as the
+LM head (where there is no compensating multiplier).
+
+Recommend: dump cactus's logits for a fixed prompt, dump HF's logits for
+the same prompt against the dehydrated checkpoint, and compare. If the
+ratio is 1/16 across the board, you have your missing factor; if it is
+random per-token, the bug is upstream of the LM head.
+
+#### R5. KV-cache state inspection between turns.
+
+For the `streaming` failure pattern (Turn 1 6× repeats, Turn 2 succeeds
+with a residual hello), instrument `compact_kv_cache()` and the cache
+reset between turns. Confirm `cache_total_seq_len_` is reset at turn
+boundary and that `graph_cache_k_nodes_` are zeroed (or that the KV
+slots beyond `cache_total_seq_len_` are masked out by attention).
+
+### Files referenced (round 2)
+
+- `/workspace/cactus/cactus-engine/models/gemma4/model_gemma4.cpp:312-319` — fused-MLP call site already reverted
+- `/workspace/cactus/cactus-graph/src/io.cpp:279-380` — new mmap_weights / mmap_embeddings layout (precompute deleted, see R1)
+- `/workspace/cactus/cactus-graph/src/ops_nn.cpp:117-150,180-196` — orthogonal-vs-Hadamard matmul dispatch
+- `/workspace/cactus/cactus-graph/src/ops_tensor.cpp:241-309` — orthogonal & Hadamard embedding row dequant (verified correct)
+- `/workspace/cactus/cactus-graph/src/builder.cpp:1488-1493` — EMBEDDING op output-precision fix (already in v2 latest)
+- `/workspace/cactus/cactus-kernels/src/matmul.cpp:1126-1300` — Hadamard `cactus_quant_matmul` (slow path now hot, see H6 / R1)
+- `/workspace/cactus/cactus-kernels/src/matmul.cpp:1428-1496` — `cactus_quant_orthogonal_matmul` (verified correct)
+- `/workspace/cactus/cactus-kernels/src/nn.cpp:549-739` — sampler kernels (verified bias-based rep_pen path)
+- `/workspace/cactus/python/src/tqh_prod_convert.py` — TQH packed -> cactus weights converter (verified scale_factor convention matches `tensor_io.py`)
+- `/workspace/turboquant/research/tqh_runtime.py:200-253` — reference dehydrator
+- `/workspace/turboquant/research/verify_packed_av.py` — Karen's bit-equality verification (passes globally)
