@@ -1,0 +1,69 @@
+diff --git a/cactus-graph/cactus_graph.h b/cactus-graph/cactus_graph.h
+index 4dfb6192..3b9eb53f 100644
+--- a/cactus-graph/cactus_graph.h
++++ b/cactus-graph/cactus_graph.h
+@@ -9,6 +9,7 @@
+ #include <functional>
+ #include <cassert>
+ #include <cstring>
++#include <cstdlib>
+ #include <stdexcept>
+ #include <string>
+ #include <mutex>
+@@ -111,7 +112,8 @@ enum class OpType {
+     CONV_CACHE_STATE, CONV_CACHE_APPEND,
+     RFFT, IRFFT, MEL_FILTER_BANK, SPECTROGRAM,
+     IMAGE_PREPROCESS,
+-    CLAMP
++    CLAMP,
++    DENSE_MLP_TQ_FUSED
+ };
+ 
+ struct PrecisionTraits {
+@@ -265,11 +267,9 @@ struct BufferDesc {
+     const int8_t* cq_left_signs = nullptr;
+     const int8_t* cq_right_signs = nullptr;
+     const uint32_t* cq_permutation = nullptr;
++    const __fp16* cq_rotation = nullptr; // [K×K] row-major, orthogonal only
+     uint32_t cq_flags = 0;
+ 
+-    std::unique_ptr<int8_t[]> cq_expanded;
+-    std::unique_ptr<float[]> cq_norm_f32;
+-
+     CactusQuantMatrix to_cq_matrix() const {
+         return CactusQuantMatrix{
+             .bits = PrecisionTraits::cq_bits(precision),
+@@ -286,8 +286,7 @@ struct BufferDesc {
+             .left_signs = cq_left_signs,
+             .right_signs = cq_right_signs,
+             .permutation = cq_permutation,
+-            .expanded = cq_expanded.get(),
+-            .norm_f32 = cq_norm_f32.get(),
++            .rotation = cq_rotation,
+         };
+     }
+ 
+@@ -664,6 +663,7 @@ public:
+         size_t num_experts, size_t num_experts_per_tok,
+         bool normalize_routing, float epsilon, float routed_scaling_factor,
+         Activation activation);
++    size_t dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight);
+     size_t stats_pool(size_t input);
+     size_t weighted_stats_pool(size_t input, size_t weights);
+ 
+@@ -767,6 +767,7 @@ namespace GraphFile {
+         size_t num_groups() const { return num_groups_; }
+         const void* scales_data() const;
+         bool is_interleaved() const { return is_interleaved_; }
++        bool is_orthogonal_rotation() const { return is_orthogonal_rotation_; }
+         size_t original_N() const { return original_N_; }
+         void* data();
+         const void* data() const;
+@@ -787,6 +788,7 @@ namespace GraphFile {
+         size_t scales_bytes_ = 0;
+         uint32_t alignment_ = 32;
+         bool is_interleaved_ = false;
++        bool is_orthogonal_rotation_ = false;
+         size_t original_N_ = 0;
+ 
+         void parse_header();

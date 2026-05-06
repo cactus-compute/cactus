@@ -1,0 +1,468 @@
+diff --git a/python/src/tqh_prod_convert.py b/python/src/tqh_prod_convert.py
+new file mode 100644
+index 00000000..951a988a
+--- /dev/null
++++ b/python/src/tqh_prod_convert.py
+@@ -0,0 +1,462 @@
++"""Convert the Gemma-4 TQH prod bundle into v2 cactus weights.
++
++The prod bundle ships a compact safetensors file with MSB-first packed
++codebook indices. v2 cactus expects one `.weights` file per tensor with CQ
++precision ids, LSB-first packed indices, and a metadata blob laid out as:
++
++    codebook fp16, input_scale fp16, input_scale_recip fp16, norms fp16,
++    left_signs int8, right_signs int8, permutation uint32
++
++This converter copies an existing cactus Gemma-4 weights directory for all
++non-quantized tensors, then overwrites every hadamard TQH layer from the prod
++bundle. If the base directory contains a FP16 token_embeddings.weights, it is
++re-quantized to CQ4 using hadamard TQH with group_size=128.
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import math
++import shutil
++import struct
++from pathlib import Path
++
++import numpy as np
++import torch
++from scipy.special import gammaln
++from safetensors.torch import safe_open
++
++from .tensor_io import CACTUS_ALIGNMENT, CACTUS_MAGIC, align_offset, compute_padding
++
++
++PRECISION_CQ = {1: 3, 2: 4, 3: 5, 4: 6}
++HEADER_SIZE = 84
++GROUP_SIZE = 128
++GEMMA4_WEIGHT_SCALE = 16.0
++
++GEMMA4_MULT_BASENAMES = {"ffn_gate", "ffn_up", "per_layer_gate", "moe_gate_proj", "moe_up_proj"}
++GEMMA4_DIV_BASENAMES = {
++    "token_embeddings",
++    "output_weight",
++    "embed_vision_proj",
++    "embed_vision_embedding",
++}
++
++_CODEBOOK_CACHE: dict[tuple[int, int], np.ndarray] = {}
++_HADAMARD_CACHE: dict[tuple[int, int], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
++
++
++def gemma4_scale_factor(out_name: str) -> float:
++    base = out_name[:-len(".weights")] if out_name.endswith(".weights") else out_name
++    parts = base.split("_", 2)
++    if len(parts) == 3 and parts[0] == "layer" and parts[1].isdigit():
++        base = parts[2]
++    if base in GEMMA4_MULT_BASENAMES:
++        return GEMMA4_WEIGHT_SCALE
++    if base in GEMMA4_DIV_BASENAMES:
++        return 1.0 / GEMMA4_WEIGHT_SCALE
++    return 1.0
++
++
++def make_codebook(group_dim: int, bits: int, grid_size: int = 200_001) -> np.ndarray:
++    n_centroids = 1 << bits
++    if n_centroids <= 1:
++        return np.array([0.0], dtype=np.float32)
++
++    grid = np.linspace(-1.0, 1.0, grid_size, dtype=np.float64)
++    log_c = gammaln(group_dim / 2.0) - 0.5 * math.log(math.pi) - gammaln((group_dim - 1.0) / 2.0)
++    weights = math.exp(log_c) * np.power(np.clip(1.0 - grid * grid, 0.0, None), (group_dim - 3.0) / 2.0)
++    quantiles = np.linspace(0.0, 1.0, n_centroids + 2, dtype=np.float64)[1:-1]
++    cum = np.cumsum(weights)
++    cum /= cum[-1]
++    centroids = np.sort(np.clip(np.interp(quantiles, cum, grid), -1.0, 1.0))
++
++    for _ in range(200):
++        boundaries = np.concatenate(([-1.0], (centroids[:-1] + centroids[1:]) / 2.0, [1.0]))
++        updated = centroids.copy()
++        for i in range(n_centroids):
++            lo, hi = boundaries[i], boundaries[i + 1]
++            mask = ((grid >= lo) & (grid <= hi)) if i == n_centroids - 1 else ((grid >= lo) & (grid < hi))
++            ws = weights[mask]
++            if ws.sum() > 0:
++                updated[i] = float((grid[mask] * ws).sum() / ws.sum())
++        updated = np.sort(np.clip(updated, -1.0, 1.0))
++        if np.max(np.abs(updated - centroids)) < 1e-8:
++            centroids = updated
++            break
++        centroids = updated
++    return centroids.astype(np.float32)
++
++
++def make_hadamard_components(group_dim: int, seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
++    g = torch.Generator(device="cpu").manual_seed(seed + 17 * group_dim)
++    left = (2 * torch.randint(0, 2, (group_dim,), generator=g, dtype=torch.int64) - 1).to(torch.int8).numpy()
++    right = (2 * torch.randint(0, 2, (group_dim,), generator=g, dtype=torch.int64) - 1).to(torch.int8).numpy()
++    perm = torch.randperm(group_dim, generator=g).to(torch.int64).numpy().astype(np.uint32)
++    return left, right, perm
++
++
++def unpack_bits_msb(packed: np.ndarray, bits: int, total_count: int) -> np.ndarray:
++    if bits == 8:
++        return packed[:total_count].astype(np.uint8)
++    flat = np.unpackbits(packed.astype(np.uint8))[:total_count * bits]
++    bit_array = flat.reshape(total_count, bits)
++    out = np.zeros(total_count, dtype=np.uint8)
++    for i in range(bits):
++        out |= (bit_array[:, i] << (bits - 1 - i))
++    return out
++
++
++FLAG_ORTHOGONAL_ROTATION = 1 << 1   # matches io.cpp FLAG_ORTHOGONAL_ROTATION
++
++
++def make_orthogonal_rotation(group_dim: int, seed: int) -> np.ndarray:
++    """Deterministic random orthogonal matrix [group_dim, group_dim], matches tqh_runtime."""
++    g = torch.Generator(device="cpu").manual_seed(seed + 17 * group_dim)
++    a = torch.randn(group_dim, group_dim, generator=g)
++    q, r = torch.linalg.qr(a, mode="reduced")
++    d = torch.sign(torch.diagonal(r))
++    d[d == 0] = 1
++    return (q * d).numpy().astype(np.float32)
++
++
++def write_cq_orthogonal_weight(
++    out_path: Path,
++    shape: tuple[int, int],
++    bits: int,
++    indices_packed_msb: np.ndarray,
++    norms: np.ndarray,
++    input_scale: np.ndarray | None,
++    seed: int,
++    scale_factor: float,
++) -> None:
++    """Write an orthogonal TQH weight in cactus format.
++    scales_blob: codebook | input_scale | input_scale_recip | norms | rotation[K×K]
++    File flags: FLAG_ORTHOGONAL_ROTATION set so io.cpp parses rotation correctly.
++    """
++    n, k = shape
++    # G=1 for orthogonal (one group = entire row)
++    indices = unpack_bits_msb(indices_packed_msb, bits, n * k).reshape(n, k)
++    packed = pack_indices_lsb(indices, k, bits)
++
++    codebook_key = (k, bits)
++    if codebook_key not in _CODEBOOK_CACHE:
++        _CODEBOOK_CACHE[codebook_key] = make_codebook(k, bits).astype(np.float16)
++    codebook = _CODEBOOK_CACHE[codebook_key]
++
++    if input_scale is None:
++        input_scale_arr = np.ones(k, dtype=np.float16)
++    else:
++        input_scale_arr = input_scale.astype(np.float16, copy=False)
++    input_scale_recip = (1.0 / input_scale_arr.astype(np.float32)).astype(np.float16)
++
++    # norms shape [N, 1] from prod bundle
++    norms_arr = (norms.astype(np.float32) * float(scale_factor)).astype(np.float16).reshape(n)
++
++    R = make_orthogonal_rotation(k, seed).astype(np.float16)
++
++    scales_blob = b"".join([
++        codebook.tobytes(),
++        input_scale_arr.tobytes(),
++        input_scale_recip.tobytes(),
++        norms_arr.tobytes(),
++        R.tobytes(),          # [K × K] row-major fp16
++    ])
++
++    data_bytes = packed.size
++    scales_bytes = len(scales_blob)
++    aligned_header = align_offset(HEADER_SIZE, CACTUS_ALIGNMENT)
++    scales_end = aligned_header + scales_bytes
++    data_offset = align_offset(scales_end, CACTUS_ALIGNMENT)
++
++    with out_path.open("wb") as f:
++        f.write(CACTUS_MAGIC)
++        f.write(struct.pack("<I", FLAG_ORTHOGONAL_ROTATION))
++        f.write(struct.pack("<I", CACTUS_ALIGNMENT))
++        f.write(struct.pack("<I", 2))
++        f.write(struct.pack("<Q", n))
++        f.write(struct.pack("<Q", k))
++        f.write(struct.pack("<Q", 0))
++        f.write(struct.pack("<Q", 0))
++        f.write(struct.pack("<I", PRECISION_CQ[bits]))
++        f.write(struct.pack("<Q", data_bytes))
++        f.write(struct.pack("<Q", scales_bytes))
++        f.write(struct.pack("<I", k))          # group_size = K (one group)
++        f.write(struct.pack("<I", 1))          # num_groups = 1
++        f.write(struct.pack("<Q", n))
++        f.write(compute_padding(HEADER_SIZE, CACTUS_ALIGNMENT))
++        f.write(scales_blob)
++        f.write(compute_padding(scales_end, CACTUS_ALIGNMENT))
++        f.write(packed.tobytes())
++
++    expected_size = data_offset + data_bytes
++    actual_size = out_path.stat().st_size
++    if actual_size != expected_size:
++        raise RuntimeError(f"{out_path}: wrote {actual_size} bytes, expected {expected_size}")
++
++
++def pack_indices_lsb(indices: np.ndarray, group_size: int, bits: int) -> np.ndarray:
++    n, k = indices.shape
++    if k % group_size != 0:
++        raise ValueError(f"K={k} is not divisible by group_size={group_size}")
++    groups = k // group_size
++    if bits == 8:
++        return indices.astype(np.uint8)
++
++    chunk = 8
++    bytes_per_chunk = chunk * bits // 8
++    chunks_per_group = group_size // chunk
++    grouped = indices.reshape(n, groups, chunks_per_group, chunk).astype(np.uint64)
++    word = np.zeros((n, groups, chunks_per_group), dtype=np.uint64)
++    for i in range(chunk):
++        word |= grouped[..., i] << (i * bits)
++
++    out = np.zeros((n, groups, chunks_per_group, bytes_per_chunk), dtype=np.uint8)
++    for byte in range(bytes_per_chunk):
++        out[..., byte] = ((word >> (8 * byte)) & 0xFF).astype(np.uint8)
++    return out.reshape(n, groups * group_size * bits // 8)
++
++
++def language_out_name(name: str) -> str | None:
++    prefix = "model.language_model.layers."
++    if name.startswith(prefix):
++        rest = name[len(prefix):]
++        layer_s, suffix = rest.split(".", 1)
++        mapping = {
++            "self_attn.q_proj": "attn_q",
++            "self_attn.k_proj": "attn_k",
++            "self_attn.v_proj": "attn_v",
++            "self_attn.o_proj": "attn_output",
++            "mlp.gate_proj": "ffn_gate",
++            "mlp.up_proj": "ffn_up",
++            "mlp.down_proj": "ffn_down",
++            "per_layer_input_gate": "per_layer_gate",
++            "per_layer_projection": "per_layer_proj",
++        }
++        mapped = mapping.get(suffix)
++        return f"layer_{layer_s}_{mapped}.weights" if mapped else None
++
++    mapping = {
++        "model.language_model.embed_tokens": "token_embeddings.weights",
++        "model.language_model.per_layer_model_projection": "per_layer_model_proj.weights",
++        "model.language_model.embed_tokens_per_layer": "embed_tokens_per_layer.weights",
++    }
++    return mapping.get(name)
++
++
++def tower_out_name(name: str, strip_prefix: str, add_prefix: str) -> str:
++    out = name[len(strip_prefix):]
++    if out.endswith(".linear"):
++        out = out[:-len(".linear")]
++    elif out.endswith("_linear"):
++        out = out[:-len("_linear")]
++    return add_prefix + out.replace(".", "_") + ".weights"
++
++
++def audio_out_name(name: str) -> str | None:
++    prefix = "model.audio_tower."
++    if not name.startswith(prefix):
++        return None
++    rest = name[len(prefix):]
++    if rest == "subsample_conv_projection.input_proj_linear":
++        return "audio_subsample_conv_projection_input_proj.weights"
++    if rest == "output_proj":
++        return "audio_output_proj.weights"
++    if not rest.startswith("layers."):
++        return tower_out_name(name, prefix, "audio_")
++
++    layer_s, suffix = rest[len("layers."):].split(".", 1)
++    mapping = {
++        "feed_forward1.ffw_layer_1.linear": "ffw_layer_start_ffw_layer_1",
++        "feed_forward1.ffw_layer_2.linear": "ffw_layer_start_ffw_layer_2",
++        "feed_forward2.ffw_layer_1.linear": "ffw_layer_end_ffw_layer_1",
++        "feed_forward2.ffw_layer_2.linear": "ffw_layer_end_ffw_layer_2",
++        "self_attn.q_proj.linear": "attention_attn_q_proj",
++        "self_attn.k_proj.linear": "attention_attn_k_proj",
++        "self_attn.v_proj.linear": "attention_attn_v_proj",
++        "self_attn.post.linear": "attention_post",
++        "self_attn.relative_k_proj": "attention_attn_relative_position_embedding_pos_proj",
++        "lconv1d.linear_start.linear": "lconv1d_linear_start",
++        "lconv1d.linear_end.linear": "lconv1d_linear_end",
++    }
++    mapped = mapping.get(suffix)
++    return f"audio_conformer_{layer_s}_{mapped}.weights" if mapped else None
++
++
++def cactus_out_name(name: str) -> str | None:
++    if name == "model.embed_vision.embedding_projection":
++        return "embed_vision_proj.weights"
++    if name == "model.embed_audio.embedding_projection":
++        return "embed_audio_proj.weights"
++    if name.startswith("model.language_model."):
++        return language_out_name(name)
++    if name.startswith("model.vision_tower."):
++        return tower_out_name(name, "model.vision_tower.", "vision_")
++    if name.startswith("model.audio_tower."):
++        return audio_out_name(name)
++    return None
++
++
++def write_cq_weight(
++    out_path: Path,
++    shape: tuple[int, int],
++    bits: int,
++    indices_packed_msb: np.ndarray,
++    norms: np.ndarray,
++    input_scale: np.ndarray | None,
++    seed: int,
++    scale_factor: float,
++) -> None:
++    n, k = shape
++    if k % GROUP_SIZE != 0:
++        raise ValueError(f"{out_path.name}: K={k} not divisible by {GROUP_SIZE}")
++    groups = k // GROUP_SIZE
++    indices = unpack_bits_msb(indices_packed_msb, bits, n * k).reshape(n, k)
++    packed = pack_indices_lsb(indices, GROUP_SIZE, bits)
++
++    codebook_key = (GROUP_SIZE, bits)
++    if codebook_key not in _CODEBOOK_CACHE:
++        _CODEBOOK_CACHE[codebook_key] = make_codebook(GROUP_SIZE, bits).astype(np.float16)
++    codebook = _CODEBOOK_CACHE[codebook_key]
++    if input_scale is None:
++        input_scale = np.ones(k, dtype=np.float16)
++    else:
++        input_scale = input_scale.astype(np.float16, copy=False)
++    input_scale_recip = (1.0 / input_scale.astype(np.float32)).astype(np.float16)
++    norms = (norms.astype(np.float32) * float(scale_factor)).astype(np.float16)
++    hadamard_key = (GROUP_SIZE, seed)
++    if hadamard_key not in _HADAMARD_CACHE:
++        _HADAMARD_CACHE[hadamard_key] = make_hadamard_components(GROUP_SIZE, seed)
++    left, right, perm = _HADAMARD_CACHE[hadamard_key]
++
++    scales_blob = b"".join([
++        codebook.tobytes(),
++        input_scale.tobytes(),
++        input_scale_recip.tobytes(),
++        norms.tobytes(),
++        left.tobytes(),
++        right.tobytes(),
++        perm.astype("<u4", copy=False).tobytes(),
++    ])
++
++    data_bytes = packed.size
++    scales_bytes = len(scales_blob)
++    aligned_header = align_offset(HEADER_SIZE, CACTUS_ALIGNMENT)
++    scales_end = aligned_header + scales_bytes
++    data_offset = align_offset(scales_end, CACTUS_ALIGNMENT)
++
++    with out_path.open("wb") as f:
++        f.write(CACTUS_MAGIC)
++        f.write(struct.pack("<I", 0))
++        f.write(struct.pack("<I", CACTUS_ALIGNMENT))
++        f.write(struct.pack("<I", 2))
++        f.write(struct.pack("<Q", n))
++        f.write(struct.pack("<Q", k))
++        f.write(struct.pack("<Q", 0))
++        f.write(struct.pack("<Q", 0))
++        f.write(struct.pack("<I", PRECISION_CQ[bits]))
++        f.write(struct.pack("<Q", data_bytes))
++        f.write(struct.pack("<Q", scales_bytes))
++        f.write(struct.pack("<I", GROUP_SIZE))
++        f.write(struct.pack("<I", groups))
++        f.write(struct.pack("<Q", n))
++        f.write(compute_padding(HEADER_SIZE, CACTUS_ALIGNMENT))
++        f.write(scales_blob)
++        f.write(compute_padding(scales_end, CACTUS_ALIGNMENT))
++        f.write(packed.tobytes())
++
++    expected_size = data_offset + data_bytes
++    actual_size = out_path.stat().st_size
++    if actual_size != expected_size:
++        raise RuntimeError(f"{out_path}: wrote {actual_size} bytes, expected {expected_size}")
++
++
++def copy_tree(base_dir: Path, out_dir: Path) -> None:
++    if out_dir.exists():
++        shutil.rmtree(out_dir)
++    shutil.copytree(base_dir, out_dir)
++
++
++def convert(bundle_dir: Path, base_dir: Path, out_dir: Path) -> None:
++    packed_dir = bundle_dir / "packed"
++    metadata = json.loads((packed_dir / "metadata.json").read_text())
++    seed = int(metadata.get("seed", 1234))
++    copy_tree(base_dir, out_dir)
++
++    copied_meta = ["config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json", "processor_config.json", "chat_template.jinja"]
++    for name in copied_meta:
++        src = packed_dir / name
++        if src.exists():
++            shutil.copy2(src, out_dir / name)
++
++    written = []
++    skipped = []
++    with safe_open(packed_dir / "packed.safetensors", framework="pt", device="cpu") as sf:
++        for layer_name, info in metadata["layers"].items():
++            rotation_family = info.get("rotation_family", "hadamard")
++            out_name = cactus_out_name(layer_name)
++            if out_name is None:
++                skipped.append((layer_name, "no cactus mapping"))
++                continue
++
++            bits = int(info["index_bits"])
++            shape = tuple(int(x) for x in info["shape"])
++            indices = sf.get_tensor(layer_name + ".indices").cpu().numpy()
++            norms = sf.get_tensor(layer_name + ".norms").cpu().numpy()
++            input_scale = None
++            if bool(info.get("has_input_scale", False)):
++                input_scale = sf.get_tensor(layer_name + ".input_scale").cpu().numpy()
++
++            if rotation_family == "orthogonal":
++                write_cq_orthogonal_weight(
++                    out_dir / out_name,
++                    shape=shape,
++                    bits=bits,
++                    indices_packed_msb=indices,
++                    norms=norms,
++                    input_scale=input_scale,
++                    seed=seed,
++                    scale_factor=gemma4_scale_factor(out_name),
++                )
++            elif rotation_family == "hadamard":
++                write_cq_weight(
++                    out_dir / out_name,
++                    shape=shape,
++                    bits=bits,
++                    indices_packed_msb=indices,
++                    norms=norms,
++                    input_scale=input_scale,
++                    seed=seed,
++                    scale_factor=gemma4_scale_factor(out_name),
++                )
++            else:
++                skipped.append((layer_name, f"unknown rotation_family: {rotation_family}"))
++                continue
++            written.append(out_name)
++
++    (out_dir / "tqh_conversion_report.json").write_text(json.dumps({
++        "bundle": str(bundle_dir),
++        "base": str(base_dir),
++        "written_count": len(written),
++        "written": sorted(written),
++        "skipped": skipped,
++    }, indent=2))
++
++    print(f"wrote {len(written)} CQ weights to {out_dir}")
++    if skipped:
++        print("skipped:")
++        for name, reason in skipped:
++            print(f"  {name}: {reason}")
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--bundle", type=Path, required=True)
++    parser.add_argument("--base", type=Path, required=True)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    convert(args.bundle, args.base, args.out)
++
++
++if __name__ == "__main__":
++    main()

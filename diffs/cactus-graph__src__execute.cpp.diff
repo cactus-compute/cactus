@@ -1,0 +1,82 @@
+diff --git a/cactus-graph/src/execute.cpp b/cactus-graph/src/execute.cpp
+index e1a6fd09..f2f7bc47 100644
+--- a/cactus-graph/src/execute.cpp
++++ b/cactus-graph/src/execute.cpp
+@@ -69,6 +69,7 @@ DECLARE_COMPUTE(compute_sample_node);
+ DECLARE_COMPUTE(compute_topk_node);
+ DECLARE_COMPUTE(compute_scatter_topk_node);
+ DECLARE_COMPUTE(compute_moe_layer_node);
++DECLARE_COMPUTE(compute_dense_mlp_tq_fused_node);
+ DECLARE_COMPUTE(compute_persistent_node);
+ DECLARE_COMPUTE(compute_kv_cache_state_node);
+ DECLARE_COMPUTE(compute_kv_cache_append_node);
+@@ -83,7 +84,7 @@ DECLARE_COMPUTE(compute_spectrogram_node);
+ extern void shrink_thread_local_buffers();
+ #undef DECLARE_COMPUTE
+ 
+-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::CLAMP) + 1;
++static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::DENSE_MLP_TQ_FUSED) + 1;
+ static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
+ static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
+ 
+@@ -155,6 +156,7 @@ static bool init_dispatch() {
+     dispatch_flat[static_cast<int>(OpType::TOPK)] = compute_topk_node;
+     dispatch_flat[static_cast<int>(OpType::SCATTER_TOPK)] = compute_scatter_topk_node;
+     dispatch_flat[static_cast<int>(OpType::MOE_LAYER)] = compute_moe_layer_node;
++    dispatch_flat[static_cast<int>(OpType::DENSE_MLP_TQ_FUSED)] = compute_dense_mlp_tq_fused_node;
+     dispatch_flat[static_cast<int>(OpType::PERSISTENT)] = compute_persistent_node;
+     dispatch_flat[static_cast<int>(OpType::LSTM_CELL)] = compute_lstm_cell_node;
+     dispatch_flat[static_cast<int>(OpType::GATED_DELTANET_DECODE)] = compute_gated_deltanet_decode_node;
+@@ -195,33 +197,30 @@ static inline void dispatch_node(GraphNode& node, const nodes_vector& nodes, con
+ static const char* op_type_names[] = {
+     "INPUT", "PRECISION_CAST",
+     "ADD", "ADD_CLIPPED", "SUBTRACT", "MULTIPLY", "DIVIDE",
+-    "MATMUL", "TRANSPOSE", "RESHAPE", "SLICE", "GATHER", "EMBEDDING", "VIEW", "FLATTEN",
++    "ABS", "POW", "FLATTEN", "VIEW",
++    "MATMUL", "TRANSPOSE", "RESHAPE", "SLICE", "GATHER", "EMBEDDING",
+     "BILINEAR_INTERPOLATION",
+     "SUM", "MEAN", "VARIANCE", "MIN", "MAX",
+-    "RMS_NORM", "ROPE", "ROPE_GPTJ", "SOFTMAX", "ATTENTION", "ATTENTION_INT8_HYBRID", "REL_POS_BIAS", "CONV1D_CAUSAL", "CONV1D_K3", "CONV1D_K7S3", "CONV1D", "CONV1D_SAME_DEPTHWISE_K9", "CONV1D_POINTWISE", "CONV2D_K3S2P1", "CONV2D_DEPTHWISE_K3S2P1", "CONV2D_POINTWISE_1X1", "GLU", "BATCHNORM",
++    "RMS_NORM", "ROPE", "ROPE_GPTJ", "SOFTMAX",
++    "ATTENTION", "ATTENTION_INT8_HYBRID", "REL_POS_BIAS",
++    "CONV1D_CAUSAL", "CONV1D_K3", "CONV1D_K7S3", "CONV1D",
++    "CONV1D_SAME_DEPTHWISE_K9", "CONV1D_POINTWISE",
++    "CONV2D_K3S2P1", "CONV2D_DEPTHWISE_K3S2P1", "CONV2D_POINTWISE_1X1",
++    "GLU", "BATCHNORM",
+     "SCALAR_ADD", "SCALAR_SUBTRACT", "SCALAR_MULTIPLY", "SCALAR_DIVIDE",
+     "SCALAR_EXP", "SCALAR_SQRT", "SCALAR_COS", "SCALAR_SIN", "SCALAR_LOG",
+-    "ABS", "POW", 
+     "RELU", "SILU", "GELU", "GELU_ERF", "SIGMOID", "TANH",
+-    "SAMPLE", "CONCAT",
+-    "SCATTER_TOPK",
+-    "TOPK", "LAYERNORM", "GROUPNORM",
+-    "MOE_LAYER",
+-    "INDEX",
+-    "PERSISTENT",
+-    "LSTM_CELL",
+-    "GATED_DELTANET_DECODE",
+-    "GATED_DELTANET_PREFILL",
+-    "STFT",
+-    "ALTUP_PREDICT",
+-    "ALTUP_CORRECT",
+-    "GAUSSIAN_TOPK",
+-    "MAXPOOL1D",
+-    "BILSTM_SEQUENCE",
+-    "LEAKY_RELU",
+-    "CONV2D_K3S1P1",
+-    "STATS_POOL",
+-    "WEIGHTED_STATS_POOL"
++    "SAMPLE", "CONCAT", "CAT",
++    "SCATTER_TOPK", "TOPK", "LAYERNORM", "GROUPNORM",
++    "MOE_LAYER", "INDEX", "PERSISTENT",
++    "LSTM_CELL", "GATED_DELTANET_DECODE", "GATED_DELTANET_PREFILL",
++    "STFT", "ALTUP_PREDICT", "ALTUP_CORRECT", "GAUSSIAN_TOPK",
++    "MAXPOOL1D", "BILSTM_SEQUENCE", "LEAKY_RELU",
++    "CONV2D_K3S1P1", "STATS_POOL", "WEIGHTED_STATS_POOL",
++    "KV_CACHE_STATE", "KV_CACHE_APPEND", "ATTENTION_CACHED",
++    "CONV_CACHE_STATE", "CONV_CACHE_APPEND",
++    "RFFT", "IRFFT", "MEL_FILTER_BANK", "SPECTROGRAM",
++    "IMAGE_PREPROCESS", "CLAMP", "DENSE_MLP_TQ_FUSED"
+ };
+ 
+ static const char* get_op_name(OpType op) {
