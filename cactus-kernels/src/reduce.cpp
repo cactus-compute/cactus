@@ -239,13 +239,13 @@ void cactus_variance_axis_f16(const __fp16* input, __fp16* output, size_t outer_
                     float sum = vaddvq_f32(vaddq_f32(sum_lo, sum_hi));
                     float sum_sq = vaddvq_f32(vaddq_f32(sq_lo, sq_hi));
                     for (size_t a = vec_axis; a < axis_size; ++a) {
-                        float x = static_cast<float>(row[a]);
+                        const float x = static_cast<float>(row[a]);
                         sum += x;
                         sum_sq += x * x;
                     }
 
-                    float mean = sum / static_cast<float>(axis_size);
-                    float mean_sq = sum_sq / static_cast<float>(axis_size);
+                    const float mean = sum / static_cast<float>(axis_size);
+                    const float mean_sq = sum_sq / static_cast<float>(axis_size);
                     output[outer] = static_cast<__fp16>(mean_sq - mean * mean);
                 }
             });

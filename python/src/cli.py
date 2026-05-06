@@ -48,8 +48,12 @@ DEFAULT_MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_TEST_MODEL_ID = "google/gemma-4-E2B-it"
 WEIGHTS_VARIANT_CHOICES = ["auto", "apple", "standard"]
 
-with open(PROJECT_ROOT / "models.json") as _f:
-    MODELS_REGISTRY = json.load(_f)
+# dont fail if models.json is missing or malformed - just have an empty registry and rely on HF download_args
+try:
+    with open(PROJECT_ROOT / "models.json", "r", encoding="utf-8") as f:
+        MODEL_REGISTRY = json.load(f)
+except Exception:
+    MODEL_REGISTRY = {}
 
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
@@ -718,7 +722,7 @@ def check_libcurl():
 
 
 def cmd_build(args):
-    """Build the Cactus library and chat binary."""
+    """Build the Cactus library."""
     if getattr(args, 'apple', False):
         return cmd_build_apple(args)
     if getattr(args, 'android', False):
@@ -728,8 +732,8 @@ def cmd_build(args):
     if getattr(args, 'python', False):
         return cmd_build_python(args)
 
-    print_color(BLUE, "Building Cactus chat...")
-    print("=" * 23)
+    print_color(BLUE, "Building Cactus library...")
+    print("=" * 24)
 
     if not check_command('cmake'):
         print_color(RED, "Error: CMake is not installed")
@@ -745,7 +749,6 @@ def cmd_build(args):
 
     cactus_dir = PROJECT_ROOT / "cactus"
     lib_path = cactus_dir / "build" / "libcactus.a"
-    vendored_curl = PROJECT_ROOT / "cactus-engine" / "libs" / "curl" / "macos" / "libcurl.a"
 
     print_color(YELLOW, "Building Cactus library...")
     build_script = cactus_dir / "build.sh"
@@ -756,7 +759,6 @@ def cmd_build(args):
     if result.returncode != 0:
         print_color(RED, "Failed to build cactus library")
         return 1
-
     tests_dir = PROJECT_ROOT / "cactus-engine" / "tests"
     build_dir = tests_dir / "build"
     build_dir.mkdir(parents=True, exist_ok=True)
@@ -892,6 +894,9 @@ def cmd_build(args):
             return 1
 
         print_color(GREEN, f"Build complete: {build_dir / 'asr'}")
+
+    print_color(GREEN, "Cactus library built successfully!")
+    print(f"Library location: {lib_path}")
 
     return 0
 
@@ -1248,7 +1253,7 @@ def _cmd_transcribe_ios(weights_dir, audio_file, args):
         print_color(RED, f"Error: audio file not found: {audio_path}")
         return 1
 
-    ios_script = PROJECT_ROOT / "tests" / "ios" / "run.sh"
+    ios_script = PROJECT_ROOT / "tests" / "ios" / "test.sh"
     if not ios_script.exists():
         print_color(RED, f"Error: iOS runner not found at {ios_script}")
         return 1
@@ -1502,7 +1507,21 @@ def cmd_test(args):
         if cmd_download(dl_args) != 0:
             return 1
 
-    test_script = PROJECT_ROOT / "tests" / "run.sh"
+    test_filter = args.only
+    for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance']:
+        if getattr(args, _test_name, False):
+            test_filter = _test_name
+            break
+
+    if test_filter == "kernel":
+        test_script = PROJECT_ROOT / "cactus-kernels" / "test.sh"
+        test_cwd = PROJECT_ROOT / "cactus-kernels"
+    elif test_filter in ("graph", "kv_cache"):
+        test_script = PROJECT_ROOT / "cactus-graph" / "test.sh"
+        test_cwd = PROJECT_ROOT / "cactus-graph"
+    else:
+        test_script = PROJECT_ROOT / "cactus-engine" / "test.sh"
+        test_cwd = PROJECT_ROOT / "cactus-engine"
 
     if not test_script.exists():
         print_color(RED, f"Error: Test script not found at {test_script}")
@@ -1520,11 +1539,6 @@ def cmd_test(args):
         cmd.append("--android")
     if args.ios:
         cmd.append("--ios")
-    test_filter = args.only
-    for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance']:
-        if getattr(args, _test_name, False):
-            test_filter = _test_name
-            break
     if test_filter:
         cmd.extend(["--only", test_filter])
     env = os.environ.copy()
@@ -1533,7 +1547,7 @@ def cmd_test(args):
     else:
         env["CACTUS_NO_CLOUD_TELE"] = "1"
 
-    result = subprocess.run(cmd, cwd=PROJECT_ROOT / "tests", env=env)
+    result = subprocess.run(cmd, cwd=test_cwd, env=env)
     return result.returncode
 
 
