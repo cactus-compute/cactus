@@ -1,0 +1,12 @@
+diff --git a/cactus-engine/src/engine.h b/cactus-engine/src/engine.h
+index 17a919de..de1e7db1 100644
+--- a/cactus-engine/src/engine.h
++++ b/cactus-engine/src/engine.h
+@@ -518,6 +518,7 @@ private:
+     std::vector<std::string> function_names_;
+     std::string generated_text_;
+     int brace_depth_ = 0;
++    bool in_argument_string_ = false;
+ 
+     std::string call_start_tag_;
+     std::string call_end_tag_;

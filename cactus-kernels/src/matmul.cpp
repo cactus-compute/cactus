@@ -305,13 +305,11 @@ static void cactus_quant_parallel_ranges(size_t total_work, size_t work_per_thre
     pool.wait_all();
 }
 
-// Accumulates one weight group's contribution into a float32 buffer (M x TILE_N_MAX).
-// Using float32 across groups matches GEMV precision: FP16 within-group, FP32 cross-group.
 static void cactus_quant_matmul_f32_segment_accum(
     const __fp16* __restrict__ A,
     size_t a_stride,
     const __fp16* __restrict__ B_tile,
-    float* __restrict__ C_f32,   // M x TILE_N_MAX row-major, indexed [m * TILE_N_MAX + ni]
+    float* __restrict__ C_f32,
     size_t M,
     size_t Kseg,
     size_t actual_n) {
@@ -1325,7 +1323,6 @@ void cactus_quant_matmul(
     }
     if (!cactus_quant_valid_common(W, A, C) || M == 0) return;
 
-    // Fast NEON GEMV dispatch for decode (M=1)
     if (M == 1) {
         if (W->bits == 4 && (W->group_size % 16) == 0) {
             cactus_quant_4bit_gemv(W, A, C);
@@ -1366,8 +1363,6 @@ void cactus_quant_matmul(
     const size_t N_blocks = (W->N + 3) / 4;
 
     if (M == 1) {
-        // fp16 GEMV: use codebook and activations at full fp16/float precision,
-        // no int8 quantization of either weights or activations.
         const uint32_t n_cb = 1u << bits;
         float cb_f32[16] = {};
         for (uint32_t c = 0; c < n_cb; c++)
@@ -1408,7 +1403,6 @@ void cactus_quant_matmul(
         }
 
     } else {
-        // int8 GEMM path for M>1 (prefill).
         const size_t scales_size = static_cast<size_t>(M) * num_groups;
         std::vector<int8_t> heap_act_i8(act_size);
         std::vector<float> heap_act_scales(scales_size);
@@ -1654,11 +1648,6 @@ void cactus_quant_dequantize_orthogonal_embedding_row(
     }
 }
 
-// Orthogonal TQH matmul.
-// W->rotation is [K×K] fp16 row-major: R[k, i] = rotation[k*K + i].
-// Math:
-//   A_rot[m, i] = sum_k (A[m,k] * input_scale_recip[k]) * R[k, i]    (one gemv per m)
-//   C[m, n]     = norm[n] * dot(cb[idx[n,:]], A_rot[m])               (quant dot per (m,n))
 void cactus_quant_orthogonal_matmul(
     const CactusQuantMatrix* W,
     const __fp16* A,
@@ -1670,18 +1659,14 @@ void cactus_quant_orthogonal_matmul(
     const uint32_t K    = W->K;
     const uint32_t N    = W->N;
     const uint32_t bits = W->bits;
-    const uint32_t pgb  = cactus_quant_packed_group_bytes(bits, K); // bytes per row of indices
+    const uint32_t pgb  = cactus_quant_packed_group_bytes(bits, K);
 
     const uint32_t n_cb = 1u << bits;
 
-    // Build codebook in float32 and float16 for arithmetic
     std::vector<float> cb_f32(n_cb);
     for (uint32_t c = 0; c < n_cb; ++c)
         cb_f32[c] = static_cast<float>(W->codebook[c]);
 
-    // Per-row activation transform: A_rot[m, i] = sum_k A_scaled[m,k] * R[k,i]
-    // R stored row-major: R[k, i] = rotation[k*K + i]
-    // NEON-vectorized: process 8 columns of R per inner-loop iteration
     std::vector<float> A_rot(static_cast<size_t>(M) * K, 0.0f);
     for (uint32_t m = 0; m < M; ++m) {
         const __fp16* a_row = A + static_cast<size_t>(m) * K;
@@ -1705,11 +1690,7 @@ void cactus_quant_orthogonal_matmul(
         }
     }
 
-    // For each (m, n): C[m,n] = norm[n] * dot(cb[idx[n,:]], A_rot[m])
-    // NEON-vectorized for bits==4: process 16 elements per iteration via vqtbl1q_u8
     if (bits == 4 && (K % 16) == 0) {
-        // Build split codebook tables: cb_lo_tbl[i] = low byte of FP16 codebook[i]
-        //                              cb_hi_tbl[i] = high byte of FP16 codebook[i]
         __fp16 cb_f16[16];
         uint8_t cb_lo_arr[16], cb_hi_arr[16];
         for (uint32_t c = 0; c < 16; ++c) {
@@ -1749,20 +1730,15 @@ void cactus_quant_orthogonal_matmul(
                         float32x4_t acc3 = vdupq_n_f32(0.f);
 
                         for (uint32_t i = 0; i < K; i += 16) {
-                            // Load 8 bytes = 16 nibbles
                             uint8x8_t raw8 = vld1_u8(packed + i / 2);
-                            // Unpack nibbles: lo=even indices, hi=odd indices
                             uint8x8_t lo_nibs = vand_u8(raw8, vdup_n_u8(0x0F));
                             uint8x8_t hi_nibs = vshr_n_u8(raw8, 4);
-                            // Interleave: [lo0,hi0,lo1,hi1,...] = element order
                             uint8x8x2_t zipped = vzip_u8(lo_nibs, hi_nibs);
                             uint8x16_t indices16 = vcombine_u8(zipped.val[0], zipped.val[1]);
 
-                            // Gather FP16 codebook bytes via table lookup
                             uint8x16_t lo_bytes = vqtbl1q_u8(cb_lo_tbl, indices16);
                             uint8x16_t hi_bytes = vqtbl1q_u8(cb_hi_tbl, indices16);
 
-                            // Reconstruct 16 FP16 values from interleaved lo/hi bytes
                             uint8x16x2_t fp16_bytes = vzipq_u8(lo_bytes, hi_bytes);
                             float16x8_t cb_lo = vreinterpretq_f16_u8(fp16_bytes.val[0]);
                             float16x8_t cb_hi = vreinterpretq_f16_u8(fp16_bytes.val[1]);
@@ -1789,7 +1765,6 @@ void cactus_quant_orthogonal_matmul(
         return;
     }
 
-    // Fallback: scalar path for non-CQ4 or K not divisible by 16
     CactusThreading::parallel_for(
         static_cast<size_t>(N),
         CactusThreading::ParallelConfig{64, 1},

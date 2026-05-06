@@ -183,8 +183,6 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                     }
                 }
             } else if (decoded_text == "}") {
-                // If the model somehow emits a closing brace while we believe it is in a
-                // string, treat it as structure rather than getting stuck forever.
                 in_argument_string_ = false;
                 if (brace_depth_ > 0) {
                     brace_depth_--;

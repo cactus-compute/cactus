@@ -267,7 +267,7 @@ struct BufferDesc {
     const int8_t* cq_left_signs = nullptr;
     const int8_t* cq_right_signs = nullptr;
     const uint32_t* cq_permutation = nullptr;
-    const __fp16* cq_rotation = nullptr; // [K×K] row-major, orthogonal only
+    const __fp16* cq_rotation = nullptr;
     uint32_t cq_flags = 0;
 
     CactusQuantMatrix to_cq_matrix() const {
