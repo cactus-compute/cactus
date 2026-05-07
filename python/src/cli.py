@@ -771,6 +771,7 @@ def cmd_build(args):
         return 1
 
     is_darwin = platform.system() == "Darwin"
+    vendored_curl = PROJECT_ROOT / "cactus-engine" / "libs" / "curl" / "lib" / "libcurl.a"
 
     sdl2_available = False
     sdl2_flags = []
