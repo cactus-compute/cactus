@@ -282,6 +282,20 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/attn_bench.cpp")
     message(STATUS "Added benchmark: attn_bench")
 endif()
 
+# ── Sparse Activation GEMV Benchmark (requires GGML) ─────────────────────────
+if(WITH_GGML AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/bench_sparse_actsparse.cpp")
+    add_executable(bench_sparse_actsparse bench/bench_sparse_actsparse.cpp)
+    target_include_directories(bench_sparse_actsparse PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${GGML_DIR}/include
+    )
+    target_link_libraries(bench_sparse_actsparse PRIVATE ggml)
+    if(MMAN_LIB)
+        target_link_libraries(bench_sparse_actsparse PRIVATE ${MMAN_LIB})
+    endif()
+    message(STATUS "Added benchmark: bench_sparse_actsparse (GGML Q4_0 sparse GEMV + PowerInfer scatter)")
+endif()
+
 # ── E2E Generation Benchmark ──────────────────────────────────────────────────
 set(E2E_BENCH_SOURCES
     bench/e2e_bench.cpp
