@@ -135,7 +135,7 @@ struct SyntheticCQ {
         return CactusQuantMatrix{
             .bits = bits, .K = K, .N = N,
             .group_size = group_size, .num_groups = num_groups,
-            .flags = CACTUS_QUANT_FLAG_CODE_ORDERED_INDICES,
+            .flags = 0,
             .codebook = codebook.data(),
             .input_scale = input_scale.data(),
             .input_scale_recip = input_scale_recip.data(),
@@ -144,6 +144,7 @@ struct SyntheticCQ {
             .left_signs = left_signs.data(),
             .right_signs = right_signs.data(),
             .permutation = permutation.data(),
+            .rotation = nullptr,
             .expanded = expanded_buf.empty() ? nullptr : expanded_buf.data(),
             .norm_f32 = norm_f32_buf.empty() ? nullptr : norm_f32_buf.data(),
         };
@@ -169,8 +170,11 @@ static uint8_t unpack_index(const uint8_t* base, uint32_t bits, uint32_t k) {
             uint32_t bit_offset = k * 3;
             uint32_t byte_idx = bit_offset / 8;
             uint32_t bit_idx = bit_offset % 8;
-            uint32_t word = base[byte_idx] | (base[byte_idx + 1] << 8);
-            return (word >> bit_idx) & 0x7u;
+            uint32_t word = static_cast<uint32_t>(base[byte_idx]) >> bit_idx;
+            if (bit_idx > 5) {
+                word |= static_cast<uint32_t>(base[byte_idx + 1]) << (8 - bit_idx);
+            }
+            return word & 0x7u;
         }
         case 4: return (k & 1u) ? (base[k / 2] >> 4) : (base[k / 2] & 0x0Fu);
         default: return 0;

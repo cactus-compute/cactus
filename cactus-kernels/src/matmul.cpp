@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <cstdlib>
 
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -75,17 +76,6 @@ static inline __fp16 hsum_f16x8(float16x8_t v) {
 
 namespace {
 
-constexpr uint32_t kTQPanelN = 4;
-constexpr uint32_t kTQPanelKChunk = 16;
-
-static inline bool cactus_quant_panel_major(const CactusQuantMatrix& W) {
-    return (W.flags & CACTUS_QUANT_FLAG_PANEL_MAJOR) != 0;
-}
-
-static inline bool cactus_quant_code_ordered(const CactusQuantMatrix& W) {
-    return (W.flags & CACTUS_QUANT_FLAG_CODE_ORDERED_INDICES) != 0;
-}
-
 static inline float16x8_t cactus_quant_signs_to_f16(const int8_t* signs, uint32_t offset) {
     if (signs == nullptr) return vdupq_n_f16(1);
     return vcvtq_f16_s16(vmovl_s8(vld1_s8(signs + offset)));
@@ -107,22 +97,8 @@ static inline __fp16 cactus_quant_input_scale_recip1(const CactusQuantMatrix& W,
     return static_cast<__fp16>(1);
 }
 
-static inline uint32_t cactus_quant_panel_chunks(const CactusQuantMatrix& W) {
-    return W.group_size / kTQPanelKChunk;
-}
-
-static inline uint32_t cactus_quant_panel_chunk_bytes(uint32_t bits) {
-    return (kTQPanelKChunk * bits) / 8;
-}
-
 static inline const __fp16* cactus_quant_scale_ptr(const CactusQuantMatrix& W, uint32_t row, uint32_t group) {
-    if (!cactus_quant_panel_major(W)) {
-        return W.norms + static_cast<size_t>(row) * W.num_groups + group;
-    }
-
-    const uint32_t lane = row & (kTQPanelN - 1);
-    const uint32_t block = row / kTQPanelN;
-    return W.norms + (((static_cast<size_t>(block) * W.num_groups + group) * kTQPanelN) + lane);
+    return W.norms + static_cast<size_t>(row) * W.num_groups + group;
 }
 
 static inline const uint8_t* cactus_quant_packed_chunk_ptr(
@@ -130,24 +106,23 @@ static inline const uint8_t* cactus_quant_packed_chunk_ptr(
     uint32_t row,
     uint32_t group,
     uint32_t k) {
-    if (!cactus_quant_panel_major(W)) {
-        return W.packed_indices
-            + (((static_cast<size_t>(row) * W.num_groups + group)
-                * cactus_quant_packed_group_bytes(W.bits, W.group_size))
-               + (static_cast<size_t>(k) * W.bits) / 8);
-    }
-
-    const uint32_t lane = row & (kTQPanelN - 1);
-    const uint32_t block = row / kTQPanelN;
-    const uint32_t chunk = k / kTQPanelKChunk;
-    const uint32_t intra = ((k % kTQPanelKChunk) * W.bits) / 8;
-    const uint32_t chunk_bytes = cactus_quant_panel_chunk_bytes(W.bits);
     return W.packed_indices
-        + ((((static_cast<size_t>(block) * W.num_groups + group)
-             * cactus_quant_panel_chunks(W) + chunk)
-            * kTQPanelN + lane)
-           * chunk_bytes)
-        + intra;
+        + (((static_cast<size_t>(row) * W.num_groups + group)
+            * cactus_quant_packed_group_bytes(W.bits, W.group_size))
+           + (static_cast<size_t>(k) * W.bits) / 8);
+}
+
+static inline void tq_interleave_4x_s8(const int8x16_t row0, const int8x16_t row1,
+                                       const int8x16_t row2, const int8x16_t row3,
+                                       int8_t* dst) {
+    int32x4_t r0 = vreinterpretq_s32_s8(row0), r1 = vreinterpretq_s32_s8(row1);
+    int32x4_t r2 = vreinterpretq_s32_s8(row2), r3 = vreinterpretq_s32_s8(row3);
+    int32x4_t t01l = vzip1q_s32(r0, r1), t01h = vzip2q_s32(r0, r1);
+    int32x4_t t23l = vzip1q_s32(r2, r3), t23h = vzip2q_s32(r2, r3);
+    vst1q_s8(dst,      vreinterpretq_s8_s64(vzip1q_s64(vreinterpretq_s64_s32(t01l), vreinterpretq_s64_s32(t23l))));
+    vst1q_s8(dst + 16, vreinterpretq_s8_s64(vzip2q_s64(vreinterpretq_s64_s32(t01l), vreinterpretq_s64_s32(t23l))));
+    vst1q_s8(dst + 32, vreinterpretq_s8_s64(vzip1q_s64(vreinterpretq_s64_s32(t01h), vreinterpretq_s64_s32(t23h))));
+    vst1q_s8(dst + 48, vreinterpretq_s8_s64(vzip2q_s64(vreinterpretq_s64_s32(t01h), vreinterpretq_s64_s32(t23h))));
 }
 
 static inline float16x8_t cactus_tq4_lookup_codebook8(uint8x8_t nibbles, uint8x16x2_t cb_bytes) {
@@ -263,7 +238,7 @@ static void cactus_quant_transform_hadamard_group(
     __fp16* code_basis) {
     const uint32_t gs = W.group_size;
     __fp16 tmp[256];
-    __fp16* work = (cactus_quant_code_ordered(W) || W.permutation == nullptr) ? code_basis : tmp;
+    __fp16* work = (W.permutation == nullptr) ? code_basis : tmp;
 
     uint32_t k = 0;
     for (; k + 8 <= gs; k += 8) {
@@ -343,27 +318,24 @@ static void cactus_quant_parallel_ranges(size_t total_work, size_t work_per_thre
     pool.wait_all();
 }
 
-static void cactus_quant_matmul_f16_segment_accum(
+static void cactus_quant_matmul_f32_segment_accum(
     const __fp16* __restrict__ A,
     size_t a_stride,
     const __fp16* __restrict__ B_tile,
-    __fp16* __restrict__ C,
+    float* __restrict__ C_f32,
     size_t M,
     size_t Kseg,
-    size_t N,
-    size_t n_start,
     size_t actual_n) {
     constexpr size_t TILE_M = 4;
+    constexpr size_t TILE_N_MAX = 16;
 
     for (size_t m_start = 0; m_start < M; m_start += TILE_M) {
         const size_t actual_m = std::min(TILE_M, M - m_start);
 
-        float16x8_t acc[TILE_M][16];
-        for (size_t mi = 0; mi < actual_m; ++mi) {
-            for (size_t ni = 0; ni < actual_n; ++ni) {
+        float16x8_t acc[TILE_M][TILE_N_MAX];
+        for (size_t mi = 0; mi < actual_m; ++mi)
+            for (size_t ni = 0; ni < actual_n; ++ni)
                 acc[mi][ni] = vdupq_n_f16(0);
-            }
-        }
 
         for (size_t k = 0; k < Kseg; k += 16) {
             float16x8_t a_lo[TILE_M], a_hi[TILE_M];
@@ -383,12 +355,9 @@ static void cactus_quant_matmul_f16_segment_accum(
             }
         }
 
-        for (size_t mi = 0; mi < actual_m; ++mi) {
-            for (size_t ni = 0; ni < actual_n; ++ni) {
-                __fp16* dst = C + (m_start + mi) * N + n_start + ni;
-                *dst = static_cast<__fp16>(static_cast<float>(*dst) + static_cast<float>(hsum_f16x8(acc[mi][ni])));
-            }
-        }
+        for (size_t mi = 0; mi < actual_m; ++mi)
+            for (size_t ni = 0; ni < actual_n; ++ni)
+                C_f32[(m_start + mi) * TILE_N_MAX + ni] += static_cast<float>(hsum_f16x8(acc[mi][ni]));
     }
 }
 
@@ -451,36 +420,36 @@ static void cactus_quant_group_gemm(
     CactusThreading::parallel_gemm_tiles(M, n_blocks,
         [&, decode_group](size_t block_start, size_t block_end) {
             thread_local std::vector<__fp16> b_tile;
-            if (b_tile.size() < TILE_N * W.group_size) {
+            thread_local std::vector<float> c_accum;
+            if (b_tile.size() < TILE_N * W.group_size)
                 b_tile.resize(TILE_N * W.group_size);
-            }
+            if (c_accum.size() < M * TILE_N)
+                c_accum.resize(M * TILE_N);
 
             for (size_t block = block_start; block < block_end; ++block) {
                 const size_t n_start = block * TILE_N;
                 const size_t actual_n = std::min(TILE_N, static_cast<size_t>(W.N) - n_start);
 
-                for (size_t m = 0; m < M; ++m) {
-                    for (size_t ni = 0; ni < actual_n; ++ni) {
-                        C[m * W.N + n_start + ni] = 0;
-                    }
-                }
+                std::fill(c_accum.begin(), c_accum.begin() + M * TILE_N, 0.0f);
 
                 for (uint32_t g = 0; g < W.num_groups; ++g) {
                     for (size_t ni = 0; ni < actual_n; ++ni) {
                         decode_group(W, static_cast<uint32_t>(n_start + ni), g,
                                      b_tile.data() + ni * W.group_size);
                     }
-                    cactus_quant_matmul_f16_segment_accum(
+                    cactus_quant_matmul_f32_segment_accum(
                         A + static_cast<size_t>(g) * W.group_size,
                         W.K,
                         b_tile.data(),
-                        C,
+                        c_accum.data(),
                         M,
                         W.group_size,
-                        W.N,
-                        n_start,
                         actual_n);
                 }
+
+                for (size_t m = 0; m < M; ++m)
+                    for (size_t ni = 0; ni < actual_n; ++ni)
+                        C[m * W.N + n_start + ni] = static_cast<__fp16>(c_accum[m * TILE_N + ni]);
             }
         });
 }
@@ -496,6 +465,20 @@ static bool cactus_quant_valid_common(const CactusQuantMatrix* W, const void* A,
 }
 
 }  // namespace
+
+static void cactus_quant_dispatch_group_gemm(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C) {
+    switch (W->bits) {
+        case 1: cactus_quant_1bit_gemm(W, A, M, C); return;
+        case 2: cactus_quant_2bit_gemm(W, A, M, C); return;
+        case 3: cactus_quant_3bit_gemm(W, A, M, C); return;
+        case 4: cactus_quant_4bit_gemm(W, A, M, C); return;
+        default: return;
+    }
+}
 
 static void cactus_matmul_f16_worker(
     const __fp16* a,
@@ -644,6 +627,10 @@ uint32_t cactus_quant_packed_group_bytes(uint32_t bits, uint32_t group_size) {
     return (group_size * bits + 7) / 8;
 }
 
+static inline float tq_quantize_group_i8(const __fp16* src, int8_t* dst, uint32_t gs);
+static inline float tq_quantize_codebook_i8(const __fp16* codebook, int8_t* cb_i8, uint32_t cb_size);
+static inline int8x16_t tq_expand_i8_16(const uint8_t* packed, uint32_t bits, int8x16_t cb_lut);
+
 void cactus_quant_4bit_gemv(
     const CactusQuantMatrix* W,
     const __fp16* x,
@@ -660,19 +647,207 @@ void cactus_quant_4bit_gemv(
     cb_bytes.val[1] = vld1q_u8(reinterpret_cast<const uint8_t*>(W->codebook) + 16);
 
     const uint32_t pgb = cactus_quant_packed_group_bytes(4, gs);
+    thread_local std::vector<__fp16> code_basis_buf;
+    if (code_basis_buf.size() < W->K) code_basis_buf.resize(W->K);
+    cactus_quant_transform_hadamard_activations(*W, x, 1, code_basis_buf.data());
+    const __fp16* code_basis = code_basis_buf.data();
+
+    if ((gs % 32) == 0 && gs <= 256) {
+        constexpr size_t INT8_TILE_N = 16;
+        const size_t int8_n_blocks = (W->N + INT8_TILE_N - 1) / INT8_TILE_N;
+
+        thread_local std::vector<int8_t> act_i8_buf;
+        thread_local std::vector<float> act_scales_buf;
+        if (act_i8_buf.size() < W->K) act_i8_buf.resize(W->K);
+        if (act_scales_buf.size() < W->num_groups) act_scales_buf.resize(W->num_groups);
+
+        for (uint32_t g = 0; g < W->num_groups; ++g) {
+            const __fp16* src = code_basis + static_cast<size_t>(g) * gs;
+            int8_t* dst = act_i8_buf.data() + static_cast<size_t>(g) * gs;
+            act_scales_buf[g] = tq_quantize_group_i8(src, dst, gs);
+        }
+        const int8_t* act_i8 = act_i8_buf.data();
+        const float* act_scales = act_scales_buf.data();
+
+        int8_t cb_i8[16] = {};
+        const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 16);
+        const int8x16_t cb_lut = vld1q_s8(cb_i8);
+
+        auto expand_group4 = [&](size_t cache_block, uint32_t g, int8_t* dst, float* norm_scale) {
+            int8x16_t exp4[4][16];
+            const uint32_t n_vecs = gs / 16;
+            const size_t n_start4 = cache_block * 4;
+            for (size_t ni = 0; ni < 4; ++ni) {
+                const size_t n_abs = n_start4 + ni;
+                if (n_abs < W->N) {
+                    const uint8_t* p = W->packed_indices
+                        + (n_abs * W->num_groups + g) * pgb;
+                    for (uint32_t v = 0; v < n_vecs; ++v) {
+                        exp4[ni][v] = tq_expand_i8_16(p + (v * 16 * 4) / 8, 4, cb_lut);
+                    }
+                    norm_scale[ni] = static_cast<float>(W->norms[n_abs * W->num_groups + g]) * cb_scale;
+                } else {
+                    for (uint32_t v = 0; v < n_vecs; ++v) exp4[ni][v] = vdupq_n_s8(0);
+                    norm_scale[ni] = 0.0f;
+                }
+            }
+
+            for (uint32_t v = 0; v < n_vecs; ++v)
+                tq_interleave_4x_s8(exp4[0][v], exp4[1][v], exp4[2][v], exp4[3][v], dst + v * 64);
+        };
+
+        cactus_quant_parallel_ranges(int8_n_blocks, 16, [&](size_t block_start, size_t block_end) {
+            for (size_t block = block_start; block < block_end; ++block) {
+                const size_t n_start = block * INT8_TILE_N;
+                const size_t actual_n = std::min(INT8_TILE_N, static_cast<size_t>(W->N) - n_start);
+                float acc[INT8_TILE_N] = {};
+
+                for (uint32_t g = 0; g < W->num_groups; ++g) {
+                    const int8_t* a_group = act_i8 + static_cast<size_t>(g) * gs;
+                    const float act_scale = act_scales[g];
+
+                    if (actual_n == INT8_TILE_N) {
+                        int32x4_t dot0 = vdupq_n_s32(0);
+                        int32x4_t dot1 = vdupq_n_s32(0);
+                        int32x4_t dot2 = vdupq_n_s32(0);
+                        int32x4_t dot3 = vdupq_n_s32(0);
+
+                        const size_t cache_block0 = n_start / 4;
+                        alignas(16) int8_t b_stack0[256 * 4];
+                        alignas(16) int8_t b_stack1[256 * 4];
+                        alignas(16) int8_t b_stack2[256 * 4];
+                        alignas(16) int8_t b_stack3[256 * 4];
+                        float norm_stack0[4], norm_stack1[4], norm_stack2[4], norm_stack3[4];
+
+                        const int8_t* b_base0;
+                        const int8_t* b_base1;
+                        const int8_t* b_base2;
+                        const int8_t* b_base3;
+                        const float* norm_base0;
+                        const float* norm_base1;
+                        const float* norm_base2;
+                        const float* norm_base3;
+                        expand_group4(cache_block0 + 0, g, b_stack0, norm_stack0);
+                        expand_group4(cache_block0 + 1, g, b_stack1, norm_stack1);
+                        expand_group4(cache_block0 + 2, g, b_stack2, norm_stack2);
+                        expand_group4(cache_block0 + 3, g, b_stack3, norm_stack3);
+                        b_base0 = b_stack0;
+                        b_base1 = b_stack1;
+                        b_base2 = b_stack2;
+                        b_base3 = b_stack3;
+                        norm_base0 = norm_stack0;
+                        norm_base1 = norm_stack1;
+                        norm_base2 = norm_stack2;
+                        norm_base3 = norm_stack3;
+
+                        for (uint32_t k = 0; k < gs; k += 32) {
+                            int8x16_t a_lo = vld1q_s8(a_group + k);
+                            int8x16_t a_hi = vld1q_s8(a_group + k + 16);
+
+                            #define TQ_SDOT_PANEL(DOT, BASE) do { \
+                                const int8_t* bk = (BASE) + k * 4; \
+                                int8x16_t b00 = vld1q_s8(bk); \
+                                int8x16_t b01 = vld1q_s8(bk + 16); \
+                                int8x16_t b02 = vld1q_s8(bk + 32); \
+                                int8x16_t b03 = vld1q_s8(bk + 48); \
+                                int8x16_t b10 = vld1q_s8(bk + 64); \
+                                int8x16_t b11 = vld1q_s8(bk + 80); \
+                                int8x16_t b12 = vld1q_s8(bk + 96); \
+                                int8x16_t b13 = vld1q_s8(bk + 112); \
+                                DOT = CACTUS_DOTQ_LANE(DOT, b00, a_lo, 0); \
+                                DOT = CACTUS_DOTQ_LANE(DOT, b01, a_lo, 1); \
+                                DOT = CACTUS_DOTQ_LANE(DOT, b02, a_lo, 2); \
+                                DOT = CACTUS_DOTQ_LANE(DOT, b03, a_lo, 3); \
+                                DOT = CACTUS_DOTQ_LANE(DOT, b10, a_hi, 0); \
+                                DOT = CACTUS_DOTQ_LANE(DOT, b11, a_hi, 1); \
+                                DOT = CACTUS_DOTQ_LANE(DOT, b12, a_hi, 2); \
+                                DOT = CACTUS_DOTQ_LANE(DOT, b13, a_hi, 3); \
+                            } while (0)
+
+                            TQ_SDOT_PANEL(dot0, b_base0);
+                            TQ_SDOT_PANEL(dot1, b_base1);
+                            TQ_SDOT_PANEL(dot2, b_base2);
+                            TQ_SDOT_PANEL(dot3, b_base3);
+                            #undef TQ_SDOT_PANEL
+                        }
+
+                        const float32x4_t scale0 = vmulq_n_f32(vld1q_f32(norm_base0), act_scale);
+                        const float32x4_t scale1 = vmulq_n_f32(vld1q_f32(norm_base1), act_scale);
+                        const float32x4_t scale2 = vmulq_n_f32(vld1q_f32(norm_base2), act_scale);
+                        const float32x4_t scale3 = vmulq_n_f32(vld1q_f32(norm_base3), act_scale);
+
+                        float tmp[16];
+                        vst1q_f32(tmp,      vmulq_f32(vcvtq_f32_s32(dot0), scale0));
+                        vst1q_f32(tmp + 4,  vmulq_f32(vcvtq_f32_s32(dot1), scale1));
+                        vst1q_f32(tmp + 8,  vmulq_f32(vcvtq_f32_s32(dot2), scale2));
+                        vst1q_f32(tmp + 12, vmulq_f32(vcvtq_f32_s32(dot3), scale3));
+                        for (size_t ni = 0; ni < INT8_TILE_N; ++ni) acc[ni] += tmp[ni];
+                        continue;
+                    }
+
+                    for (size_t ni4 = 0; ni4 < actual_n; ni4 += 4) {
+                        const size_t n_abs = n_start + ni4;
+                        const size_t cache_block = n_abs / 4;
+                        alignas(16) int8_t b_stack[256 * 4];
+                        float norm_stack[4];
+                        const int8_t* b_base;
+                        const float* norm_base;
+                        expand_group4(cache_block, g, b_stack, norm_stack);
+                        b_base = b_stack;
+                        norm_base = norm_stack;
+                        const float32x4_t scale_v = vmulq_n_f32(vld1q_f32(norm_base), act_scale);
+
+                        int32x4_t dot = vdupq_n_s32(0);
+                        for (uint32_t k = 0; k < gs; k += 32) {
+                            const int8_t* bk = b_base + k * 4;
+                            int8x16_t b00 = vld1q_s8(bk);
+                            int8x16_t b01 = vld1q_s8(bk + 16);
+                            int8x16_t b02 = vld1q_s8(bk + 32);
+                            int8x16_t b03 = vld1q_s8(bk + 48);
+                            int8x16_t b10 = vld1q_s8(bk + 64);
+                            int8x16_t b11 = vld1q_s8(bk + 80);
+                            int8x16_t b12 = vld1q_s8(bk + 96);
+                            int8x16_t b13 = vld1q_s8(bk + 112);
+
+                            int8x16_t a_lo = vld1q_s8(a_group + k);
+                            dot = CACTUS_DOTQ_LANE(dot, b00, a_lo, 0);
+                            dot = CACTUS_DOTQ_LANE(dot, b01, a_lo, 1);
+                            dot = CACTUS_DOTQ_LANE(dot, b02, a_lo, 2);
+                            dot = CACTUS_DOTQ_LANE(dot, b03, a_lo, 3);
+
+                            int8x16_t a_hi = vld1q_s8(a_group + k + 16);
+                            dot = CACTUS_DOTQ_LANE(dot, b10, a_hi, 0);
+                            dot = CACTUS_DOTQ_LANE(dot, b11, a_hi, 1);
+                            dot = CACTUS_DOTQ_LANE(dot, b12, a_hi, 2);
+                            dot = CACTUS_DOTQ_LANE(dot, b13, a_hi, 3);
+                        }
+
+                        float32x4_t contrib = vmulq_f32(vcvtq_f32_s32(dot), scale_v);
+                        float tmp[4];
+                        vst1q_f32(tmp, contrib);
+                        const size_t lane_count = std::min<size_t>(4, actual_n - ni4);
+                        for (size_t lane = 0; lane < lane_count; ++lane) {
+                            acc[ni4 + lane] += tmp[lane];
+                        }
+                    }
+                }
+
+                for (size_t ni = 0; ni < actual_n; ++ni) {
+                    y[n_start + ni] = static_cast<__fp16>(acc[ni]);
+                }
+            }
+        });
+        return;
+    }
 
     cactus_quant_parallel_ranges(n_blocks, 16, [&](size_t block_start, size_t block_end) {
-        __fp16 z_buf[256];
-
         for (size_t block = block_start; block < block_end; ++block) {
             const size_t n_start = block * TILE_N;
             const size_t actual_n = std::min(TILE_N, static_cast<size_t>(W->N) - n_start);
             float acc[TILE_N] = {};
 
             for (uint32_t g = 0; g < W->num_groups; ++g) {
-
-                cactus_quant_transform_hadamard_group(*W, x + g * gs, g, z_buf);
-                const __fp16* z = z_buf;
+                const __fp16* z = code_basis + static_cast<size_t>(g) * gs;
 
                 float16x8_t acc0[TILE_N];
                 float16x8_t acc1[TILE_N];
@@ -721,25 +896,26 @@ void cactus_quant_2bit_gemv(
     if (!cactus_quant_valid_common(W, x, y)) return;
     if (W->bits != 2 || (W->group_size % 8) != 0) return;
 
-    constexpr size_t TILE_N = 12;
+    constexpr size_t TILE_N = 16;
     const size_t n_blocks = (W->N + TILE_N - 1) / TILE_N;
     const uint32_t gs = W->group_size;
 
     uint8x8_t cb_bytes = vld1_u8(reinterpret_cast<const uint8_t*>(W->codebook));
 
     const uint32_t pgb = cactus_quant_packed_group_bytes(2, gs);
+    thread_local std::vector<__fp16> code_basis_buf;
+    if (code_basis_buf.size() < W->K) code_basis_buf.resize(W->K);
+    cactus_quant_transform_hadamard_activations(*W, x, 1, code_basis_buf.data());
+    const __fp16* code_basis = code_basis_buf.data();
 
     cactus_quant_parallel_ranges(n_blocks, 16, [&](size_t block_start, size_t block_end) {
-        __fp16 z_buf[256];
-
         for (size_t block = block_start; block < block_end; ++block) {
             const size_t n_start = block * TILE_N;
             const size_t actual_n = std::min(TILE_N, static_cast<size_t>(W->N) - n_start);
             float acc[TILE_N] = {};
 
             for (uint32_t g = 0; g < W->num_groups; ++g) {
-                cactus_quant_transform_hadamard_group(*W, x + g * gs, g, z_buf);
-                const __fp16* z = z_buf;
+                const __fp16* z = code_basis + static_cast<size_t>(g) * gs;
 
                 float16x8_t accv[TILE_N];
                 for (size_t ni = 0; ni < TILE_N; ++ni) {
@@ -1080,6 +1256,20 @@ static inline float tq_quantize_group_i8(const __fp16* src, int8_t* dst, uint32_
 }
 
 
+static inline uint32_t tq_extract_idx(const uint8_t* packed, uint32_t k, uint32_t bits) {
+    if (bits == 4) return (packed[k / 2] >> ((k & 1) * 4)) & 0xF;
+    if (bits == 2) return (packed[k / 4] >> ((k & 3) * 2)) & 0x3;
+    if (bits == 1) return (packed[k / 8] >> (k & 7)) & 0x1;
+    const uint32_t bit_pos = k * 3;
+    const uint32_t byte_idx = bit_pos / 8;
+    const uint32_t bit_idx = bit_pos & 7;
+    uint32_t val = static_cast<uint32_t>(packed[byte_idx]) >> bit_idx;
+    if (bit_idx > 5) {
+        val |= static_cast<uint32_t>(packed[byte_idx + 1]) << (8 - bit_idx);
+    }
+    return val & 0x7;
+}
+
 static inline int8x16_t tq_expand_i8_16(const uint8_t* packed, uint32_t bits, int8x16_t cb_lut) {
     if (bits == 4) {
         uint8x8_t bytes = vld1_u8(packed);
@@ -1123,11 +1313,45 @@ static inline int8x16_t tq_expand_i8_16(const uint8_t* packed, uint32_t bits, in
     }
 }
 
+static void tq_preexpand_weights(
+    const CactusQuantMatrix* W,
+    uint32_t bits, uint32_t num_groups, uint32_t gs, uint32_t pgb,
+    const int8x16_t& cb_lut, float cb_scale,
+    size_t N_blocks,
+    int8_t* w_il, float* n_f32) {
+    const uint32_t n_vecs = gs / 16;
+    for (size_t nb = 0; nb < N_blocks; ++nb) {
+        size_t n_start = nb * 4;
+        size_t valid_n = std::min(size_t(4), static_cast<size_t>(W->N) - n_start);
+        for (uint32_t g = 0; g < num_groups; ++g) {
+            int8x16_t exp4[4][16];
+            for (size_t ni = 0; ni < valid_n; ++ni) {
+                const uint8_t* p = W->packed_indices + (static_cast<size_t>(n_start+ni)*num_groups+g)*pgb;
+                for (uint32_t v = 0; v < n_vecs; ++v)
+                    exp4[ni][v] = tq_expand_i8_16(p + (v*16*bits)/8, bits, cb_lut);
+            }
+            for (size_t ni = valid_n; ni < 4; ++ni)
+                for (uint32_t v = 0; v < n_vecs; ++v) exp4[ni][v] = vdupq_n_s8(0);
+
+            int8_t* dst = w_il + (nb*num_groups+g)*gs*4;
+            for (uint32_t v = 0; v < n_vecs; ++v)
+                tq_interleave_4x_s8(exp4[0][v], exp4[1][v], exp4[2][v], exp4[3][v], dst + v*64);
+            float* nd = n_f32 + (nb*num_groups+g)*4;
+            for (size_t ni = 0; ni < 4; ++ni)
+                nd[ni] = (n_start+ni < W->N) ? static_cast<float>(W->norms[(n_start+ni)*num_groups+g]) * cb_scale : 0.f;
+        }
+    }
+}
+
 void cactus_quant_matmul(
     const CactusQuantMatrix* W,
     const __fp16* A,
     uint32_t M,
     __fp16* C) {
+    if (W != nullptr && (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0) {
+        cactus_quant_orthogonal_matmul(W, A, M, C);
+        return;
+    }
     if (!cactus_quant_valid_common(W, A, C) || M == 0) return;
 
     const uint32_t gs = W->group_size;
@@ -1135,98 +1359,69 @@ void cactus_quant_matmul(
     const uint32_t num_groups = W->num_groups;
     const uint32_t pgb = cactus_quant_packed_group_bytes(bits, gs);
 
-    int8_t cb_i8[16] = {};
-    float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 1u << bits);
-    int8x16_t cb_lut = vld1q_s8(cb_i8);
+    if ((gs % 32) != 0) {
+        if (M == 1) {
+            if (bits == 4 && (gs % 16) == 0) { cactus_quant_4bit_gemv(W, A, C); return; }
+            if (bits == 2 && (gs % 8) == 0) { cactus_quant_2bit_gemv(W, A, C); return; }
+            if (bits == 1 && (gs % 8) == 0) { cactus_quant_1bit_gemv(W, A, C); return; }
+            if (bits == 3 && (gs % 8) == 0) { cactus_quant_3bit_gemv(W, A, C); return; }
+        }
+        cactus_quant_dispatch_group_gemm(W, A, M, C);
+        return;
+    }
 
     const size_t act_size = static_cast<size_t>(M) * W->K;
-    const size_t scales_size = static_cast<size_t>(M) * num_groups;
 
     static thread_local std::vector<__fp16> tl_code_basis;
-    static thread_local std::vector<int8_t> tl_act_i8;
-    static thread_local std::vector<float> tl_act_scales;
-
     __fp16* code_basis_ptr;
-    int8_t* act_i8_ptr;
-    float* act_scales_ptr;
-
     std::vector<__fp16> heap_code_basis;
-    std::vector<int8_t> heap_act_i8;
-    std::vector<float> heap_act_scales;
 
     if (M == 1) {
         if (tl_code_basis.size() < act_size) tl_code_basis.resize(act_size);
-        if (tl_act_i8.size() < act_size) tl_act_i8.resize(act_size);
-        if (tl_act_scales.size() < scales_size) tl_act_scales.resize(scales_size);
         code_basis_ptr = tl_code_basis.data();
-        act_i8_ptr = tl_act_i8.data();
-        act_scales_ptr = tl_act_scales.data();
     } else {
         heap_code_basis.resize(act_size);
-        heap_act_i8.resize(act_size);
-        heap_act_scales.resize(scales_size);
         code_basis_ptr = heap_code_basis.data();
-        act_i8_ptr = heap_act_i8.data();
-        act_scales_ptr = heap_act_scales.data();
     }
 
     cactus_quant_transform_hadamard_activations(*W, A, M, code_basis_ptr);
 
-    for (uint32_t m = 0; m < M; m++) {
-        for (uint32_t g = 0; g < num_groups; g++) {
-            act_scales_ptr[m * num_groups + g] = tq_quantize_group_i8(
-                code_basis_ptr + m * W->K + g * gs,
-                act_i8_ptr + m * W->K + g * gs, gs);
-        }
-    }
-
     const size_t N_blocks = (W->N + 3) / 4;
 
-    const int8_t* w_il = W->expanded;
-    const float* n_f32 = W->norm_f32;
-
-    std::vector<int8_t> w_il_buf;
-    std::vector<float> n_f32_buf;
-    if (!w_il) {
-        w_il_buf.resize(N_blocks * num_groups * gs * 4);
-        n_f32_buf.resize(N_blocks * num_groups * 4);
-        for (size_t nb = 0; nb < N_blocks; ++nb) {
-            size_t n_start = nb * 4;
-            size_t valid_n = std::min(size_t(4), static_cast<size_t>(W->N) - n_start);
-            for (uint32_t g = 0; g < num_groups; ++g) {
-                int8x16_t exp4[4][16];
-                uint32_t n_vecs = gs / 16;
-                for (size_t ni = 0; ni < valid_n; ++ni) {
-                    const uint8_t* p = W->packed_indices + (static_cast<size_t>(n_start+ni)*num_groups+g)*pgb;
-                    for (uint32_t v = 0; v < n_vecs; ++v)
-                        exp4[ni][v] = tq_expand_i8_16(p + (v*16*bits)/8, bits, cb_lut);
-                }
-                for (size_t ni = valid_n; ni < 4; ++ni)
-                    for (uint32_t v = 0; v < n_vecs; ++v) exp4[ni][v] = vdupq_n_s8(0);
-
-                int8_t* dst = w_il_buf.data() + (nb*num_groups+g)*gs*4;
-                for (uint32_t v = 0; v < n_vecs; ++v) {
-                    int32x4_t r0=vreinterpretq_s32_s8(exp4[0][v]), r1=vreinterpretq_s32_s8(exp4[1][v]);
-                    int32x4_t r2=vreinterpretq_s32_s8(exp4[2][v]), r3=vreinterpretq_s32_s8(exp4[3][v]);
-                    int32x4_t t01l=vzip1q_s32(r0,r1), t01h=vzip2q_s32(r0,r1);
-                    int32x4_t t23l=vzip1q_s32(r2,r3), t23h=vzip2q_s32(r2,r3);
-                    vst1q_s8(dst+v*64,    vreinterpretq_s8_s64(vzip1q_s64(vreinterpretq_s64_s32(t01l),vreinterpretq_s64_s32(t23l))));
-                    vst1q_s8(dst+v*64+16, vreinterpretq_s8_s64(vzip2q_s64(vreinterpretq_s64_s32(t01l),vreinterpretq_s64_s32(t23l))));
-                    vst1q_s8(dst+v*64+32, vreinterpretq_s8_s64(vzip1q_s64(vreinterpretq_s64_s32(t01h),vreinterpretq_s64_s32(t23h))));
-                    vst1q_s8(dst+v*64+48, vreinterpretq_s8_s64(vzip2q_s64(vreinterpretq_s64_s32(t01h),vreinterpretq_s64_s32(t23h))));
-                }
-                float* nd = n_f32_buf.data() + (nb*num_groups+g)*4;
-                for (size_t ni = 0; ni < 4; ++ni)
-                    nd[ni] = (n_start+ni < W->N) ? static_cast<float>(W->norms[(n_start+ni)*num_groups+g]) * cb_scale : 0.f;
-            }
-        }
-        w_il = w_il_buf.data();
-        n_f32 = n_f32_buf.data();
-    }
-
     if (M == 1) {
-        const int8_t* a_ptr = act_i8_ptr;
-        const float* a_sc_ptr = act_scales_ptr;
+        // INT8 SDOT GEMV
+        thread_local std::vector<int8_t> tl_act_i8;
+        thread_local std::vector<float> tl_act_scales;
+        if (tl_act_i8.size() < act_size) tl_act_i8.resize(act_size);
+        if (tl_act_scales.size() < num_groups) tl_act_scales.resize(num_groups);
+
+        for (uint32_t g = 0; g < num_groups; g++) {
+            tl_act_scales[g] = tq_quantize_group_i8(
+                code_basis_ptr + g * gs,
+                tl_act_i8.data() + g * gs, gs);
+        }
+
+        const int8_t* act_i8 = tl_act_i8.data();
+        const float* act_scales = tl_act_scales.data();
+
+        // Use pre-cached expanded weights if available, otherwise build inline
+        const int8_t* w_il = W->expanded;
+        const float* n_f32 = W->norm_f32;
+
+        int8_t cb_i8[16] = {};
+        const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 1u << bits);
+        const int8x16_t cb_lut = vld1q_s8(cb_i8);
+
+        std::vector<int8_t> w_il_buf;
+        std::vector<float> n_f32_buf;
+        if (!w_il) {
+            w_il_buf.resize(N_blocks * num_groups * gs * 4);
+            n_f32_buf.resize(N_blocks * num_groups * 4);
+            tq_preexpand_weights(W, bits, num_groups, gs, pgb, cb_lut, cb_scale,
+                                 N_blocks, w_il_buf.data(), n_f32_buf.data());
+            w_il = w_il_buf.data();
+            n_f32 = n_f32_buf.data();
+        }
 
         auto& pool = CactusThreading::get_thread_pool();
         size_t num_threads = CactusThreading::GemmThreading::get_gemv_threads(N_blocks, pool.num_workers());
@@ -1239,8 +1434,8 @@ void cactus_quant_matmul(
 
                 uint32_t g = 0;
                 for (; g + 1 < num_groups; g += 2) {
-                    const int8_t* a0 = a_ptr + g * gs;
-                    const int8_t* a1 = a_ptr + (g + 1) * gs;
+                    const int8_t* a0 = act_i8 + g * gs;
+                    const int8_t* a1 = act_i8 + (g + 1) * gs;
                     const int8_t* b0 = w_il + (nb_off + g) * gs * 4;
                     const int8_t* b1 = w_il + (nb_off + g + 1) * gs * 4;
 
@@ -1262,7 +1457,6 @@ void cactus_quant_matmul(
                         acc0 = CACTUS_DOTQ_LANE(acc0, vld1q_s8(b0 + k*4 + 112),av, 3);
                     }
 
-
                     for (uint32_t k = 0; k < gs; k += 32) {
                         int8x16_t av = vld1q_s8(a1 + k);
                         acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + k*4),      av, 0);
@@ -1276,14 +1470,14 @@ void cactus_quant_matmul(
                         acc1 = CACTUS_DOTQ_LANE(acc1, vld1q_s8(b1 + k*4 + 112),av, 3);
                     }
 
-                    float32x4_t s0 = vmulq_n_f32(vld1q_f32(n_f32 + (nb_off + g) * 4), a_sc_ptr[g]);
-                    float32x4_t s1 = vmulq_n_f32(vld1q_f32(n_f32 + (nb_off + g + 1) * 4), a_sc_ptr[g + 1]);
+                    float32x4_t s0 = vmulq_n_f32(vld1q_f32(n_f32 + (nb_off + g) * 4), act_scales[g]);
+                    float32x4_t s1 = vmulq_n_f32(vld1q_f32(n_f32 + (nb_off + g + 1) * 4), act_scales[g + 1]);
                     running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc0), s0);
                     running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc1), s1);
                 }
 
                 for (; g < num_groups; ++g) {
-                    const int8_t* a_group = a_ptr + g * gs;
+                    const int8_t* a_group = act_i8 + g * gs;
                     const int8_t* b_base = w_il + (nb_off + g) * gs * 4;
 
                     int32x4_t acc = vdupq_n_s32(0);
@@ -1300,7 +1494,7 @@ void cactus_quant_matmul(
                         acc = CACTUS_DOTQ_LANE(acc, vld1q_s8(b_base + k*4 + 112),av, 3);
                     }
 
-                    float32x4_t scale = vmulq_n_f32(vld1q_f32(n_f32 + (nb_off + g) * 4), a_sc_ptr[g]);
+                    float32x4_t scale = vmulq_n_f32(vld1q_f32(n_f32 + (nb_off + g) * 4), act_scales[g]);
                     running_sum = vmlaq_f32(running_sum, vcvtq_f32_s32(acc), scale);
                 }
 
@@ -1326,8 +1520,36 @@ void cactus_quant_matmul(
         }
 
     } else {
+        // M > 1: full pre-expansion amortized over M rows
+        const size_t scales_size = static_cast<size_t>(M) * num_groups;
+        std::vector<int8_t> heap_act_i8(act_size);
+        std::vector<float> heap_act_scales(scales_size);
+        int8_t* act_i8_ptr = heap_act_i8.data();
+        float* act_scales_ptr = heap_act_scales.data();
+
+        for (uint32_t m = 0; m < M; m++) {
+            for (uint32_t g = 0; g < num_groups; g++) {
+                act_scales_ptr[m * num_groups + g] = tq_quantize_group_i8(
+                    code_basis_ptr + m * W->K + g * gs,
+                    act_i8_ptr + m * W->K + g * gs, gs);
+            }
+        }
+
+        int8_t cb_i8[16] = {};
+        float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 1u << bits);
+        int8x16_t cb_lut = vld1q_s8(cb_i8);
 
         constexpr size_t TILE_M = 8;
+
+        std::vector<int8_t> w_il_buf;
+        std::vector<float> n_f32_buf;
+        w_il_buf.resize(N_blocks * num_groups * gs * 4);
+        n_f32_buf.resize(N_blocks * num_groups * 4);
+        tq_preexpand_weights(W, bits, num_groups, gs, pgb, cb_lut, cb_scale,
+                             N_blocks, w_il_buf.data(), n_f32_buf.data());
+        const int8_t* w_il = w_il_buf.data();
+        const float* n_f32 = n_f32_buf.data();
+
         const size_t M_blocks = (M + TILE_M - 1) / TILE_M;
         const size_t total_tiles = M_blocks * N_blocks;
 
@@ -1420,3 +1642,235 @@ void cactus_quant_matmul(
     }
 }
 
+static void tq_fwht_normalized_f32(std::vector<float>& x) {
+    const uint32_t n = static_cast<uint32_t>(x.size());
+    for (uint32_t h = 1; h < n; h <<= 1) {
+        for (uint32_t i = 0; i < n; i += (h << 1)) {
+            for (uint32_t j = i; j < i + h; ++j) {
+                float a = x[j];
+                float b = x[j + h];
+                x[j] = a + b;
+                x[j + h] = a - b;
+            }
+        }
+    }
+    const float inv = 1.0f / std::sqrt(static_cast<float>(n));
+    for (float& v : x) v *= inv;
+}
+
+void cactus_quant_dequantize_hadamard_embedding_row(
+    uint32_t bits,
+    uint32_t hidden_dim,
+    uint32_t group_size,
+    uint32_t num_groups,
+    size_t row,
+    const uint8_t* packed_base,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const int8_t* left_signs,
+    const int8_t* right_signs,
+    const uint32_t* permutation,
+    __fp16* out_row) {
+    if (!packed_base || !codebook || !norms || !out_row || bits == 0 || bits > 4) return;
+    if (hidden_dim == 0 || group_size == 0 || num_groups == 0) return;
+    if ((group_size & (group_size - 1)) != 0) return;
+    if (group_size > 256) return;
+
+    const uint32_t packed_group_bytes = cactus_quant_packed_group_bytes(bits, group_size);
+    std::vector<float> rotated(group_size);
+    for (uint32_t g = 0; g < num_groups; ++g) {
+        std::fill(rotated.begin(), rotated.end(), 0.0f);
+        const uint8_t* packed = packed_base + (static_cast<size_t>(row) * num_groups + g) * packed_group_bytes;
+
+        for (uint32_t k = 0; k < group_size; ++k) {
+            uint8_t idx = static_cast<uint8_t>(tq_extract_idx(packed, k, bits));
+            uint32_t dst = permutation ? permutation[k] : k;
+            float rs = right_signs ? static_cast<float>(right_signs[dst]) : 1.0f;
+            rotated[dst] = static_cast<float>(codebook[idx]) * rs;
+        }
+
+        tq_fwht_normalized_f32(rotated);
+
+        const float norm = static_cast<float>(norms[static_cast<size_t>(row) * num_groups + g]);
+        for (uint32_t k = 0; k < group_size; ++k) {
+            uint32_t col = g * group_size + k;
+            float ls = left_signs ? static_cast<float>(left_signs[k]) : 1.0f;
+            float scale = input_scale_recip ? static_cast<float>(input_scale_recip[col]) : 1.0f;
+            out_row[col] = static_cast<__fp16>(rotated[k] * ls * norm * scale);
+        }
+    }
+
+    for (uint32_t col = num_groups * group_size; col < hidden_dim; ++col) {
+        out_row[col] = static_cast<__fp16>(0);
+    }
+}
+
+void cactus_quant_dequantize_orthogonal_embedding_row(
+    uint32_t bits,
+    uint32_t K,
+    size_t row,
+    const uint8_t* packed_base,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const __fp16* rotation,
+    __fp16* out_row) {
+    if (!packed_base || !codebook || !norms || !rotation || !out_row || bits == 0 || bits > 4) return;
+    if (K == 0) return;
+
+    const uint32_t packed_group_bytes = cactus_quant_packed_group_bytes(bits, K);
+    const uint8_t* packed = packed_base + static_cast<size_t>(row) * packed_group_bytes;
+    const float norm = static_cast<float>(norms[row]);
+
+    std::vector<float> dq(K);
+    for (uint32_t i = 0; i < K; ++i) {
+        dq[i] = static_cast<float>(codebook[tq_extract_idx(packed, i, bits)]);
+    }
+
+    for (uint32_t j = 0; j < K; ++j) {
+        float acc = 0.0f;
+        for (uint32_t i = 0; i < K; ++i) {
+            acc += dq[i] * static_cast<float>(rotation[static_cast<size_t>(j) * K + i]);
+        }
+        float scale = input_scale_recip ? static_cast<float>(input_scale_recip[j]) : 1.0f;
+        out_row[j] = static_cast<__fp16>(acc * norm * scale);
+    }
+}
+
+void cactus_quant_orthogonal_matmul(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C) {
+    if (!W || !A || !C || M == 0) return;
+    if (!W->rotation || !W->packed_indices || !W->codebook || !W->norms) return;
+
+    const uint32_t K    = W->K;
+    const uint32_t N    = W->N;
+    const uint32_t bits = W->bits;
+    const uint32_t pgb  = cactus_quant_packed_group_bytes(bits, K);
+
+    const uint32_t n_cb = 1u << bits;
+
+    std::vector<float> cb_f32(n_cb);
+    for (uint32_t c = 0; c < n_cb; ++c)
+        cb_f32[c] = static_cast<float>(W->codebook[c]);
+
+    std::vector<float> A_rot(static_cast<size_t>(M) * K, 0.0f);
+    for (uint32_t m = 0; m < M; ++m) {
+        const __fp16* a_row = A + static_cast<size_t>(m) * K;
+        float* ar_row = A_rot.data() + static_cast<size_t>(m) * K;
+        for (uint32_t k = 0; k < K; ++k) {
+            float a_val = static_cast<float>(a_row[k]);
+            if (W->input_scale_recip) a_val *= static_cast<float>(W->input_scale_recip[k]);
+            if (a_val == 0.0f) continue;
+            const __fp16* R_row_k = W->rotation + static_cast<size_t>(k) * K;
+            float32x4_t av = vdupq_n_f32(a_val);
+            uint32_t i = 0;
+            for (; i + 8 <= K; i += 8) {
+                float16x8_t rv = vld1q_f16(R_row_k + i);
+                float32x4_t r_lo = vcvt_f32_f16(vget_low_f16(rv));
+                float32x4_t r_hi = vcvt_f32_f16(vget_high_f16(rv));
+                vst1q_f32(ar_row + i,     vfmaq_f32(vld1q_f32(ar_row + i),     av, r_lo));
+                vst1q_f32(ar_row + i + 4, vfmaq_f32(vld1q_f32(ar_row + i + 4), av, r_hi));
+            }
+            for (; i < K; ++i)
+                ar_row[i] += a_val * static_cast<float>(R_row_k[i]);
+        }
+    }
+
+    if (bits == 4 && (K % 16) == 0) {
+        __fp16 cb_f16[16];
+        uint8_t cb_lo_arr[16], cb_hi_arr[16];
+        for (uint32_t c = 0; c < 16; ++c) {
+            cb_f16[c] = static_cast<__fp16>(cb_f32[c]);
+            cb_lo_arr[c] = reinterpret_cast<const uint8_t*>(&cb_f16[c])[0];
+            cb_hi_arr[c] = reinterpret_cast<const uint8_t*>(&cb_f16[c])[1];
+        }
+        uint8x16_t cb_lo_tbl = vld1q_u8(cb_lo_arr);
+        uint8x16_t cb_hi_tbl = vld1q_u8(cb_hi_arr);
+
+        std::vector<__fp16> A_rot_f16;
+        A_rot_f16.resize(static_cast<size_t>(M) * K);
+        for (uint32_t m = 0; m < M; ++m) {
+            const float* ar = A_rot.data() + static_cast<size_t>(m) * K;
+            __fp16* arf = A_rot_f16.data() + static_cast<size_t>(m) * K;
+            uint32_t i = 0;
+            for (; i + 8 <= K; i += 8) {
+                float32x4_t lo = vld1q_f32(ar + i);
+                float32x4_t hi = vld1q_f32(ar + i + 4);
+                vst1q_f16(arf + i, vcombine_f16(vcvt_f16_f32(lo), vcvt_f16_f32(hi)));
+            }
+            for (; i < K; ++i) arf[i] = static_cast<__fp16>(ar[i]);
+        }
+
+        CactusThreading::parallel_for(
+            static_cast<size_t>(N),
+            CactusThreading::ParallelConfig{64, 1},
+            [&](size_t n_start, size_t n_end) {
+                for (size_t n = n_start; n < n_end; ++n) {
+                    const uint8_t* packed = W->packed_indices + n * pgb;
+                    float norm_n = static_cast<float>(W->norms[n]);
+                    for (uint32_t m = 0; m < M; ++m) {
+                        const __fp16* arf = A_rot_f16.data() + static_cast<size_t>(m) * K;
+                        float32x4_t acc0 = vdupq_n_f32(0.f);
+                        float32x4_t acc1 = vdupq_n_f32(0.f);
+                        float32x4_t acc2 = vdupq_n_f32(0.f);
+                        float32x4_t acc3 = vdupq_n_f32(0.f);
+
+                        for (uint32_t i = 0; i < K; i += 16) {
+                            uint8x8_t raw8 = vld1_u8(packed + i / 2);
+                            uint8x8_t lo_nibs = vand_u8(raw8, vdup_n_u8(0x0F));
+                            uint8x8_t hi_nibs = vshr_n_u8(raw8, 4);
+                            uint8x8x2_t zipped = vzip_u8(lo_nibs, hi_nibs);
+                            uint8x16_t indices16 = vcombine_u8(zipped.val[0], zipped.val[1]);
+
+                            uint8x16_t lo_bytes = vqtbl1q_u8(cb_lo_tbl, indices16);
+                            uint8x16_t hi_bytes = vqtbl1q_u8(cb_hi_tbl, indices16);
+
+                            uint8x16x2_t fp16_bytes = vzipq_u8(lo_bytes, hi_bytes);
+                            float16x8_t cb_lo = vreinterpretq_f16_u8(fp16_bytes.val[0]);
+                            float16x8_t cb_hi = vreinterpretq_f16_u8(fp16_bytes.val[1]);
+
+                            float16x8_t ar_lo = vld1q_f16(arf + i);
+                            float16x8_t ar_hi = vld1q_f16(arf + i + 8);
+
+                            acc0 = vfmaq_f32(acc0, vcvt_f32_f16(vget_low_f16(cb_lo)),
+                                                   vcvt_f32_f16(vget_low_f16(ar_lo)));
+                            acc1 = vfmaq_f32(acc1, vcvt_f32_f16(vget_high_f16(cb_lo)),
+                                                   vcvt_f32_f16(vget_high_f16(ar_lo)));
+                            acc2 = vfmaq_f32(acc2, vcvt_f32_f16(vget_low_f16(cb_hi)),
+                                                   vcvt_f32_f16(vget_low_f16(ar_hi)));
+                            acc3 = vfmaq_f32(acc3, vcvt_f32_f16(vget_high_f16(cb_hi)),
+                                                   vcvt_f32_f16(vget_high_f16(ar_hi)));
+                        }
+
+                        float acc = vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1),
+                                                          vaddq_f32(acc2, acc3)));
+                        C[static_cast<size_t>(m) * N + n] = static_cast<__fp16>(acc * norm_n);
+                    }
+                }
+            });
+        return;
+    }
+
+    CactusThreading::parallel_for(
+        static_cast<size_t>(N),
+        CactusThreading::ParallelConfig{64, 1},
+        [&](size_t n_start, size_t n_end) {
+            for (size_t n = n_start; n < n_end; ++n) {
+                const uint8_t* packed = W->packed_indices + n * pgb;
+                float norm_n = static_cast<float>(W->norms[n]);
+                for (uint32_t m = 0; m < M; ++m) {
+                    const float* ar = A_rot.data() + static_cast<size_t>(m) * K;
+                    float acc = 0.0f;
+                    for (uint32_t i = 0; i < K; ++i) {
+                        uint8_t idx = static_cast<uint8_t>(tq_extract_idx(packed, i, bits));
+                        acc += cb_f32[idx] * ar[i];
+                    }
+                    C[static_cast<size_t>(m) * N + n] = static_cast<__fp16>(acc * norm_n);
+                }
+            }
+        });
+}

@@ -199,8 +199,7 @@ void cactus_matmul_f16(
     size_t N);
 
 enum CactusQuantFlags : uint32_t {
-    CACTUS_QUANT_FLAG_PANEL_MAJOR = 1u << 0,
-    CACTUS_QUANT_FLAG_CODE_ORDERED_INDICES = 1u << 1
+    CACTUS_QUANT_FLAG_ORTHOGONAL = 1u << 2,
 };
 
 struct CactusQuantMatrix {
@@ -218,8 +217,9 @@ struct CactusQuantMatrix {
     const int8_t* left_signs;
     const int8_t* right_signs;
     const uint32_t* permutation;
-    const int8_t* expanded; 
-    const float* norm_f32; 
+    const __fp16* rotation;
+    const int8_t* expanded;
+    const float* norm_f32;
 };
 
 uint32_t cactus_quant_packed_group_bytes(uint32_t bits, uint32_t group_size);
@@ -273,6 +273,38 @@ void cactus_quant_matmul(
     const __fp16* A,
     uint32_t M,
     __fp16* C);
+
+void cactus_quant_orthogonal_matmul(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
+
+void cactus_quant_dequantize_hadamard_embedding_row(
+    uint32_t bits,
+    uint32_t hidden_dim,
+    uint32_t group_size,
+    uint32_t num_groups,
+    size_t row,
+    const uint8_t* packed_base,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const int8_t* left_signs,
+    const int8_t* right_signs,
+    const uint32_t* permutation,
+    __fp16* out_row);
+
+void cactus_quant_dequantize_orthogonal_embedding_row(
+    uint32_t bits,
+    uint32_t K,
+    size_t row,
+    const uint8_t* packed_base,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const __fp16* rotation,
+    __fp16* out_row);
 
 void cactus_rms_norm_f16(
     const __fp16* input,

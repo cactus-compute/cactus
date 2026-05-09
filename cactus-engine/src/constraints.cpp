@@ -6,6 +6,18 @@ namespace engine {
 constexpr float FORCE_BIAS = 500.0f;
 constexpr float BLOCK_BIAS = -500.0f;
 
+static bool contains_odd_quote_tags(const std::string& text) {
+    static constexpr const char* kQuoteTag = "<|\"|>";
+    static constexpr size_t kQuoteTagLen = 5;
+    bool odd = false;
+    size_t pos = 0;
+    while ((pos = text.find(kQuoteTag, pos)) != std::string::npos) {
+        odd = !odd;
+        pos += kQuoteTagLen;
+    }
+    return odd;
+}
+
 void ToolCallConstrainer::add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set) {
     if (!tokenizer_) return;
     auto tokens = tokenizer_->encode(str);
@@ -99,6 +111,7 @@ void ToolCallConstrainer::init(Config::ModelType model_type,
     tokenizer_ = tokenizer;
     generated_text_.clear();
     brace_depth_ = 0;
+    in_argument_string_ = false;
     active_ = !function_names_.empty() && tokenizer != nullptr;
 
     state_ = State::GEMMA_START;
@@ -147,19 +160,34 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
             if (generated_text_.find("{") != std::string::npos) {
                 state_ = State::GEMMA_IN_ARGUMENTS;
                 brace_depth_ = 1;
+                in_argument_string_ = false;
                 generated_text_.clear();
             }
             break;
 
         case State::GEMMA_IN_ARGUMENTS:
             generated_text_.clear();
-            for (char c : decoded_text) {
-                if (c == '{') brace_depth_++;
-                else if (c == '}') {
+            if (contains_odd_quote_tags(decoded_text)) {
+                in_argument_string_ = !in_argument_string_;
+            }
+            if (!in_argument_string_) {
+                for (char c : decoded_text) {
+                    if (c == '{') brace_depth_++;
+                    else if (c == '}') {
+                        brace_depth_--;
+                        if (brace_depth_ == 0) {
+                            state_ = State::GEMMA_EXPECT_END;
+                            in_argument_string_ = false;
+                            break;
+                        }
+                    }
+                }
+            } else if (decoded_text == "}") {
+                in_argument_string_ = false;
+                if (brace_depth_ > 0) {
                     brace_depth_--;
                     if (brace_depth_ == 0) {
                         state_ = State::GEMMA_EXPECT_END;
-                        break;
                     }
                 }
             }
@@ -239,22 +267,27 @@ void ToolCallConstrainer::compute_bias() {
             break;
 
         case State::GEMMA_IN_ARGUMENTS:
-            for (uint32_t t : colon_tokens_) {
-                current_bias_[t] = 10.0f;
-            }
-            for (uint32_t t : comma_tokens_) {
-                current_bias_[t] = 8.0f;
-            }
-            for (uint32_t t : escape_tokens_) {
-                current_bias_[t] = 5.0f;
-            }
-            for (uint32_t t : close_brace_tokens_) {
-                current_bias_[t] = 3.0f;
-            }
-            for (uint32_t t : open_brace_tokens_) {
-                current_bias_[t] = 3.0f;
+            if (!in_argument_string_) {
+                for (uint32_t t : colon_tokens_) {
+                    current_bias_[t] = 10.0f;
+                }
+                for (uint32_t t : comma_tokens_) {
+                    current_bias_[t] = 8.0f;
+                }
+                for (uint32_t t : escape_tokens_) {
+                    current_bias_[t] = 5.0f;
+                }
+                for (uint32_t t : close_brace_tokens_) {
+                    current_bias_[t] = 3.0f;
+                }
+                for (uint32_t t : open_brace_tokens_) {
+                    current_bias_[t] = 3.0f;
+                }
             }
             for (uint32_t t : gemma_call_end_tokens_) {
+                current_bias_[t] = BLOCK_BIAS;
+            }
+            for (uint32_t t : gemma_call_start_tokens_) {
                 current_bias_[t] = BLOCK_BIAS;
             }
             break;
@@ -280,6 +313,7 @@ void ToolCallConstrainer::reset() {
     generated_text_.clear();
     current_bias_.clear();
     brace_depth_ = 0;
+    in_argument_string_ = false;
 
     state_ = State::GEMMA_START;
 

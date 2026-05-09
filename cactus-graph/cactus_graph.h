@@ -9,6 +9,7 @@
 #include <functional>
 #include <cassert>
 #include <cstring>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <mutex>
@@ -112,7 +113,8 @@ enum class OpType {
     CONV_CACHE_STATE, CONV_CACHE_APPEND,
     RFFT, IRFFT, MEL_FILTER_BANK, SPECTROGRAM,
     IMAGE_PREPROCESS,
-    CLAMP
+    CLAMP,
+    DENSE_MLP_TQ_FUSED
 };
 
 struct PrecisionTraits {
@@ -158,10 +160,6 @@ struct PrecisionTraits {
             return (element_offset * bits) / 8;
         }
         return element_offset * size_of(prec);
-    }
-
-    static constexpr bool is_integer(Precision prec) {
-        return prec == Precision::INT8;
     }
 
     static constexpr bool is_quantized(Precision prec) {
@@ -232,11 +230,6 @@ struct BufferDesc {
 
     size_t group_size = 0;
     size_t num_groups = 0;
-    void* scales_data = nullptr;
-    std::unique_ptr<char[]> owned_scales;
-
-    bool is_interleaved = false;
-    size_t original_N = 0;
 
     void* activation_scales_data = nullptr;
     std::unique_ptr<char[]> owned_activation_scales;
@@ -256,7 +249,6 @@ struct BufferDesc {
     template<typename T> T* data_as() { return static_cast<T*>(get_data()); }
     template<typename T> const T* data_as() const { return static_cast<const T*>(get_data()); }
 
-    const __fp16* scales_as_fp16() const { return reinterpret_cast<const __fp16*>(scales_data); }
     bool is_cq() const { return PrecisionTraits::is_cq(precision) && group_size > 0; }
 
     const __fp16* cq_codebook = nullptr;
@@ -266,10 +258,8 @@ struct BufferDesc {
     const int8_t* cq_left_signs = nullptr;
     const int8_t* cq_right_signs = nullptr;
     const uint32_t* cq_permutation = nullptr;
+    const __fp16* cq_rotation = nullptr;
     uint32_t cq_flags = 0;
-
-    std::unique_ptr<int8_t[]> cq_expanded;
-    std::unique_ptr<float[]> cq_norm_f32;
 
     CactusQuantMatrix to_cq_matrix() const {
         return CactusQuantMatrix{
@@ -287,16 +277,10 @@ struct BufferDesc {
             .left_signs = cq_left_signs,
             .right_signs = cq_right_signs,
             .permutation = cq_permutation,
-            .expanded = cq_expanded.get(),
-            .norm_f32 = cq_norm_f32.get(),
+            .rotation = cq_rotation,
+            .expanded = nullptr,
+            .norm_f32 = nullptr,
         };
-    }
-
-    void set_grouped_scales(size_t gs, size_t ng, void* scales_ptr) {
-        group_size = gs; num_groups = ng; scales_data = scales_ptr;
-    }
-    void set_interleaved(bool interleaved, size_t orig_n) {
-        is_interleaved = interleaved; original_N = orig_n;
     }
 
     bool has_activation_scales() const { return activation_scales_data != nullptr && num_rows_for_activation_scales > 0; }
@@ -694,6 +678,7 @@ public:
         size_t num_experts, size_t num_experts_per_tok,
         bool normalize_routing, float epsilon, float routed_scaling_factor,
         Activation activation);
+    size_t dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight);
     size_t stats_pool(size_t input);
     size_t weighted_stats_pool(size_t input, size_t weights);
 
@@ -710,8 +695,6 @@ public:
     size_t embedding(size_t embedding_tensor, size_t indices);
     size_t mmap_embeddings(const std::string& filename);
     size_t mmap_weights(const std::string& filename);
-    void set_grouped_scales(size_t node_id, size_t group_size, size_t num_groups, void* scales_ptr);
-    void set_interleaved(size_t node_id, bool interleaved, size_t original_N);
     void release_weight_pages(size_t node_id);
     void prefetch_weight_pages(size_t node_id);
     void release_all_weight_pages();
@@ -741,6 +724,8 @@ public:
     std::unordered_map<size_t, size_t> node_index_map_;
 
 private:
+    size_t binary_broadcast_op(OpType op, size_t input1, size_t input2);
+    size_t reduction_op(OpType op, size_t input, int axis);
     static CactusGraph from_serialized(const GraphFile::SerializedGraph& serialized);
     size_t next_node_id_;
     std::vector<std::unique_ptr<GraphFile::MappedFile>> mapped_files_;
@@ -797,6 +782,7 @@ namespace GraphFile {
         size_t num_groups() const { return num_groups_; }
         const void* scales_data() const;
         bool is_interleaved() const { return is_interleaved_; }
+        bool is_orthogonal_rotation() const { return is_orthogonal_rotation_; }
         size_t original_N() const { return original_N_; }
         void* data();
         const void* data() const;
@@ -817,6 +803,7 @@ namespace GraphFile {
         size_t scales_bytes_ = 0;
         uint32_t alignment_ = 32;
         bool is_interleaved_ = false;
+        bool is_orthogonal_rotation_ = false;
         size_t original_N_ = 0;
 
         void parse_header();

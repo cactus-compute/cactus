@@ -161,25 +161,12 @@ void Gemma4Model::load_weights_to_graph(CactusGraph* gb) {
                                      size_t out_dim, size_t in_dim) {
                 auto* base = static_cast<char*>(const_cast<void*>(buf.get_data()));
                 Precision prec = buf.precision;
-                bool is_quantized = PrecisionTraits::is_integer(prec) && buf.group_size > 0;
                 size_t K = in_dim;
-                if (is_quantized && K % buf.group_size != 0)
-                    K = ((K + buf.group_size - 1) / buf.group_size) * buf.group_size;
                 size_t expert_data_bytes = PrecisionTraits::packed_size_of(prec, out_dim * K);
-                size_t groups_per_expert = is_quantized ? (out_dim * K + buf.group_size - 1) / buf.group_size : 0;
-                size_t expert_scales_bytes = groups_per_expert * sizeof(__fp16);
-
-                char* scales_base = is_quantized ? static_cast<char*>(const_cast<void*>(buf.scales_data)) : nullptr;
 
                 for (uint32_t e = 0; e < num_experts; e++) {
                     expert_nodes[e] = gb->input({out_dim, K}, prec);
                     gb->set_external_input(expert_nodes[e], base + e * expert_data_bytes, prec);
-                    if (is_quantized) {
-                        gb->set_grouped_scales(expert_nodes[e], buf.group_size, groups_per_expert,
-                                               scales_base + e * expert_scales_bytes);
-                        if (buf.is_interleaved)
-                            gb->set_interleaved(expert_nodes[e], true, out_dim);
-                    }
                 }
             };
 
@@ -298,9 +285,8 @@ size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t laye
     size_t cache_src = (share_src >= 0) ? static_cast<size_t>(share_src) : layer_idx;
     size_t attn;
     if (use_cache && graph_cache_k_nodes_[cache_src] != 0) {
-        bool is_shared_layer = (share_src >= 0);
         if (cache_tq_angle_bits_ > 0) {
-            if (!is_shared_layer) {
+            if (share_src < 0) {
                 gb->kv_cache_append_tq(k4, graph_cache_k_nodes_[cache_src], window, cache_sink_size_);
                 gb->kv_cache_append_tq(v4, graph_cache_v_nodes_[cache_src], window, cache_sink_size_);
             }
@@ -308,7 +294,7 @@ size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t laye
                 graph_cache_k_nodes_[cache_src], graph_cache_v_nodes_[cache_src],
                 attention_scale_, position_offset, window);
         } else {
-            if (!is_shared_layer) {
+            if (share_src < 0) {
                 gb->kv_cache_append(k4, graph_cache_k_nodes_[cache_src], window, cache_sink_size_);
                 gb->kv_cache_append(v4, graph_cache_v_nodes_[cache_src], window, cache_sink_size_);
             }
@@ -326,6 +312,20 @@ size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t laye
 size_t Gemma4Model::build_mlp(CactusGraph* gb, size_t input, uint32_t layer_idx,
                                   ComputeBackend backend) const {
     const auto& layer = weight_nodes_.layers[layer_idx];
+    static const bool dense_mlp_fused_disabled = []() {
+        const char* env = std::getenv("CACTUS_DISABLE_DENSE_MLP_FUSED");
+        return env && env[0] && env[0] != '0';
+    }();
+    if (!dense_mlp_fused_disabled) {
+        const auto& gate_buf = gb->get_output_buffer(layer.ffn_gate_weight);
+        const auto& up_buf = gb->get_output_buffer(layer.ffn_up_weight);
+        const auto& down_buf = gb->get_output_buffer(layer.ffn_down_weight);
+        if (gate_buf.precision == Precision::CQ4 && up_buf.precision == Precision::CQ4 &&
+            down_buf.precision == Precision::CQ4 &&
+            gate_buf.group_size > 0 && up_buf.group_size > 0 && down_buf.group_size > 0) {
+            return gb->dense_mlp_tq_fused(input, layer.ffn_gate_weight, layer.ffn_up_weight, layer.ffn_down_weight);
+        }
+    }
     auto gate = gb->gelu(gb->matmul(input, layer.ffn_gate_weight, true, backend));
     auto up = gb->matmul(input, layer.ffn_up_weight, true, backend);
     return gb->matmul(gb->multiply(gate, up), layer.ffn_down_weight, true, backend);

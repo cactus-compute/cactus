@@ -173,12 +173,6 @@ inline float16x8_t apply_f32_op_on_f16x8(float16x8_t v, F32x4Op op) {
     return f32_merge_f16(op(lo), op(hi));
 }
 
-inline void unpack_int4_as_int8x16x2(const uint8_t* ptr, int8x16_t& high_decoded, int8x16_t& low_decoded) {
-    int8x16_t packed = vreinterpretq_s8_u8(vld1q_u8(ptr));
-    high_decoded = vshrq_n_s8(packed, 4);
-    low_decoded = vshrq_n_s8(vshlq_n_s8(packed, 4), 4);
-}
-
 namespace CactusThreading {
 
 #if defined(__ANDROID__)

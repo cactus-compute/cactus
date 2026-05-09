@@ -1,4 +1,4 @@
-build
+build*
 .claude
 .vscode
 .DS_Store
@@ -42,3 +42,4 @@ gemma-4-eap-extras/
 .githooks/
 # Research-only TurboQuant instrumentation; preserved locally, not built
 cactus-kernels/src/turboquant_research.cpp
+*.cg

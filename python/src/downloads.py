@@ -23,7 +23,7 @@ def get_weights_dir(model_id: str) -> Path:
     return _PROJECT_ROOT / "weights" / get_model_dir_name(model_id)
 
 
-def download_from_hf(model_id: str, weights_dir: Path, precision: str = "INT4") -> bool:
+def download_from_hf(model_id: str, weights_dir: Path, precision: str = "FP16") -> bool:
     """Download pre-converted weights from Cactus-Compute HuggingFace.
 
     Returns True on success, False if the model is unavailable or download fails.
@@ -90,7 +90,7 @@ def download_from_hf(model_id: str, weights_dir: Path, precision: str = "INT4") 
         return False
 
 
-def ensure_model(model_id: str, precision: str = "INT4") -> Path:
+def ensure_model(model_id: str, precision: str = "FP16") -> Path:
     """Return the weights directory, downloading if necessary.
 
     Raises ``RuntimeError`` if the model cannot be obtained.

@@ -64,7 +64,7 @@ bool test_matmul_cq() {
     CactusQuantMatrix mat{
         .bits = bits, .K = static_cast<uint32_t>(K), .N = static_cast<uint32_t>(N),
         .group_size = static_cast<uint32_t>(gs), .num_groups = static_cast<uint32_t>(ng),
-        .flags = CACTUS_QUANT_FLAG_CODE_ORDERED_INDICES,
+        .flags = 0,
         .codebook = codebook.data(),
         .input_scale = input_scale.data(),
         .input_scale_recip = input_scale_recip.data(),
@@ -73,6 +73,7 @@ bool test_matmul_cq() {
         .left_signs = left_signs.data(),
         .right_signs = right_signs.data(),
         .permutation = permutation.data(),
+        .rotation = nullptr,
         .expanded = nullptr,
         .norm_f32 = nullptr,
     };
@@ -504,9 +505,9 @@ bool run_benchmarks() {
         for (auto& v : packed) v = static_cast<uint8_t>(bgen() & 0xFF);
 
         CactusQuantMatrix mat{bits, (uint32_t)K, (uint32_t)N, (uint32_t)gs, (uint32_t)ng,
-            CACTUS_QUANT_FLAG_CODE_ORDERED_INDICES,
+            0,
             codebook.data(), input_sc.data(), input_sc_r.data(), norms_v.data(),
-            packed.data(), lsigns.data(), rsigns.data(), perm.data(), nullptr, nullptr};
+            packed.data(), lsigns.data(), rsigns.data(), perm.data(), nullptr, nullptr, nullptr};
 
         std::vector<__fp16> C(M * N);
         bench("matmul_cq4 1024^3", []{}, [&]{ cactus_quant_matmul(&mat, A.data(), M, C.data()); });

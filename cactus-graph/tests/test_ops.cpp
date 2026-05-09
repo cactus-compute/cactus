@@ -421,55 +421,16 @@ bool test_embedding_operation() {
 
     const size_t vocab_size = 4;
     const size_t hidden_dim = 8;
-    const size_t group_size = 8;
-    const size_t num_groups = hidden_dim / group_size;
-    const size_t BLOCK_SIZE = 4;
 
-    std::vector<int8_t> emb_rowmajor(vocab_size * hidden_dim);
+    std::vector<__fp16> emb_data(vocab_size * hidden_dim);
     for (size_t row = 0; row < vocab_size; ++row) {
         for (size_t k = 0; k < hidden_dim; ++k) {
-            emb_rowmajor[row * hidden_dim + k] = static_cast<int8_t>((row + 1) * 10 + k);
+            emb_data[row * hidden_dim + k] = static_cast<__fp16>((row + 1) * 10 + k);
         }
     }
 
-    std::vector<int8_t> emb_interleaved(vocab_size * hidden_dim);
-    size_t N_blocks = vocab_size / BLOCK_SIZE;
-    size_t K_groups = hidden_dim / BLOCK_SIZE;
-
-    for (size_t n_blk = 0; n_blk < N_blocks; ++n_blk) {
-        for (size_t k_grp = 0; k_grp < K_groups; ++k_grp) {
-            for (size_t lane = 0; lane < BLOCK_SIZE; ++lane) {
-                for (size_t k_within = 0; k_within < BLOCK_SIZE; ++k_within) {
-                    size_t src_row = n_blk * BLOCK_SIZE + lane;
-                    size_t src_k = k_grp * BLOCK_SIZE + k_within;
-                    size_t dst_idx = (n_blk * K_groups + k_grp) * 16 + lane * 4 + k_within;
-                    emb_interleaved[dst_idx] = emb_rowmajor[src_row * hidden_dim + src_k];
-                }
-            }
-        }
-    }
-
-    std::vector<__fp16> scales_rowmajor(vocab_size * num_groups);
-    for (size_t i = 0; i < scales_rowmajor.size(); ++i) {
-        scales_rowmajor[i] = static_cast<__fp16>(1.0f);
-    }
-
-    std::vector<__fp16> scales_interleaved(vocab_size * num_groups);
-    for (size_t n_blk = 0; n_blk < N_blocks; ++n_blk) {
-        for (size_t g = 0; g < num_groups; ++g) {
-            for (size_t lane = 0; lane < BLOCK_SIZE; ++lane) {
-                size_t src_row = n_blk * BLOCK_SIZE + lane;
-                size_t dst_idx = (n_blk * num_groups + g) * BLOCK_SIZE + lane;
-                scales_interleaved[dst_idx] = scales_rowmajor[src_row * num_groups + g];
-            }
-        }
-    }
-
-    size_t embeddings = graph.input({vocab_size, hidden_dim}, Precision::INT8);
-    graph.set_input(embeddings, emb_interleaved.data(), Precision::INT8);
-
-    graph.set_grouped_scales(embeddings, group_size, num_groups, scales_interleaved.data());
-    graph.set_interleaved(embeddings, true, vocab_size);
+    size_t embeddings = graph.input({vocab_size, hidden_dim}, Precision::FP16);
+    graph.set_input(embeddings, emb_data.data(), Precision::FP16);
 
     size_t indices = graph.input({4}, Precision::INT8);
     size_t embedded = graph.embedding(embeddings, indices);
@@ -493,6 +454,98 @@ bool test_embedding_operation() {
             std::cerr << "Embedding mismatch at " << i << ": got " << out_val
                       << ", expected " << expected[i] << std::endl;
             return false;
+        }
+    }
+
+    return true;
+}
+
+bool test_cq_embedding_operation() {
+    const uint32_t bits = 2;
+    const uint32_t vocab_size = 4;
+    const uint32_t hidden_dim = 16;
+    const uint32_t group_size = 16;  
+    const uint32_t num_groups = hidden_dim / group_size;
+    const uint32_t cb_size = 1u << bits; 
+
+    std::vector<__fp16> codebook(cb_size);
+    codebook[0] = static_cast<__fp16>(-1.0f);
+    codebook[1] = static_cast<__fp16>(-0.5f);
+    codebook[2] = static_cast<__fp16>(0.5f);
+    codebook[3] = static_cast<__fp16>(1.0f);
+
+    std::vector<__fp16> input_scale_recip(hidden_dim, static_cast<__fp16>(1.0f));
+
+    std::vector<__fp16> norms(vocab_size * num_groups);
+    for (uint32_t r = 0; r < vocab_size; r++)
+        for (uint32_t g = 0; g < num_groups; g++)
+            norms[r * num_groups + g] = static_cast<__fp16>(1.0f);
+
+    std::vector<int8_t> left_signs(group_size, 1);
+    std::vector<int8_t> right_signs(group_size, 1);
+
+    std::vector<uint32_t> permutation(group_size);
+    for (uint32_t i = 0; i < group_size; i++) permutation[i] = i;
+    uint32_t pgb = cactus_quant_packed_group_bytes(bits, group_size);
+    std::vector<uint8_t> packed(vocab_size * num_groups * pgb, 0);
+    for (uint32_t row = 0; row < vocab_size; row++) {
+        uint8_t idx = static_cast<uint8_t>(row % cb_size);
+        for (uint32_t g = 0; g < num_groups; g++) {
+            uint8_t* p = packed.data() + (row * num_groups + g) * pgb;
+            // Pack: each byte holds 4 x 2-bit indices
+            for (uint32_t byte_i = 0; byte_i < pgb; byte_i++) {
+                p[byte_i] = static_cast<uint8_t>(idx | (idx << 2) | (idx << 4) | (idx << 6));
+            }
+        }
+    }
+
+    std::vector<__fp16> expected(vocab_size * hidden_dim);
+    for (uint32_t row = 0; row < vocab_size; row++) {
+        cactus_quant_dequantize_hadamard_embedding_row(
+            bits, hidden_dim, group_size, num_groups, row,
+            packed.data(), codebook.data(), norms.data(),
+            input_scale_recip.data(), left_signs.data(), right_signs.data(),
+            permutation.data(), expected.data() + row * hidden_dim);
+    }
+
+    CactusGraph graph;
+
+    size_t emb_node = graph.input({vocab_size, hidden_dim}, Precision::CQ2);
+    graph.set_input(emb_node, packed.data(), Precision::CQ2);
+
+    auto& buffer = graph.nodes_[graph.node_index_map_[emb_node]]->output_buffer;
+    buffer.group_size = group_size;
+    buffer.num_groups = num_groups;
+    buffer.cq_codebook = codebook.data();
+    buffer.cq_input_scale = nullptr;
+    buffer.cq_input_scale_recip = input_scale_recip.data();
+    buffer.cq_norms = norms.data();
+    buffer.cq_left_signs = left_signs.data();
+    buffer.cq_right_signs = right_signs.data();
+    buffer.cq_permutation = permutation.data();
+    buffer.cq_rotation = nullptr;
+    buffer.cq_flags = 0;
+
+    size_t indices = graph.input({3}, Precision::INT8);
+    size_t embedded = graph.embedding(emb_node, indices);
+
+    std::vector<int8_t> idx_data = {0, 2, 3};
+    graph.set_input(indices, idx_data.data(), Precision::INT8);
+    graph.execute();
+
+    __fp16* output = static_cast<__fp16*>(graph.get_output(embedded));
+
+    size_t lookup[] = {0, 2, 3};
+    for (size_t i = 0; i < 3; i++) {
+        const __fp16* exp_row = expected.data() + lookup[i] * hidden_dim;
+        for (size_t k = 0; k < hidden_dim; k++) {
+            float out_val = static_cast<float>(output[i * hidden_dim + k]);
+            float exp_val = static_cast<float>(exp_row[k]);
+            if (std::abs(out_val - exp_val) > 0.01f) {
+                std::cerr << "CQ Embedding mismatch at [" << i << "," << k << "]: got "
+                          << out_val << ", expected " << exp_val << std::endl;
+                return false;
+            }
         }
     }
 
@@ -603,6 +656,7 @@ int main() {
     runner.run_test("Gather FP16", test_gather_fp16());
     runner.run_test("Memory-Mapped Gather", test_mmap_gather());
     runner.run_test("Embedding Operation", test_embedding_operation());
+    runner.run_test("CQ Embedding Operation", test_cq_embedding_operation());
     runner.run_test("Embedding from File", test_embedding_from_file());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());

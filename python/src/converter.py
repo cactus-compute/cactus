@@ -74,7 +74,7 @@ def _gemma_tower_output_name(hf_key, strip_prefix, add_prefix):
     return add_prefix + name + ext
 
 
-def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
+def convert_hf_model_weights(model, output_dir, precision='FP16', args=None):
     """Convert HuggingFace model weights to Cactus binary format."""
     import gc
     quantization_stats = create_quantization_stats()
@@ -1340,7 +1340,7 @@ def _build_needle_config(model_cfg, params, precision):
     hidden_dim = int(model_cfg["d_model"])
     heads = int(model_cfg["num_heads"])
     decoder_layers = int(model_cfg["num_decoder_layers"])
-    compute_precision = "FP16" if precision in ("INT4", "INT8") else precision
+    compute_precision = "FP16"
     return {
         "model_type": "needle",
         "precision": compute_precision,

@@ -8,7 +8,10 @@ class Graph:
     INT8 = 0
     FP16 = 1
     FP32 = 2
-    INT4 = 3
+    CQ1 = 3
+    CQ2 = 4
+    CQ3 = 5
+    CQ4 = 6
     CPU = 0
     NPU = 1
     ACT_SILU = 0
@@ -133,13 +136,6 @@ class Graph:
             raise RuntimeError("graph_precision_cast failed")
         return self._tensor_from_node(out.value)
 
-    def quantize_activations(self, x):
-        x = self._ensure_tensor(x)
-        out = cactus_node_t()
-        rc = _lib.cactus_graph_quantize_activations(self.h, cactus_node_t(x.id), ctypes.byref(out))
-        if rc != 0:
-            raise RuntimeError("graph_quantize_activations failed")
-        return self._tensor_from_node(out.value)
 
     def _scalar(self, fn_name, x, value=None):
         x = self._ensure_tensor(x)
@@ -340,27 +336,6 @@ class Graph:
         if rc != 0:
             raise RuntimeError("graph_bilinear_interpolation failed")
         return self._tensor_from_node(out.value)
-
-    def set_grouped_scales(self, tensor, group_size, num_groups, scales):
-        tensor = self._ensure_tensor(tensor)
-        arr = np.ascontiguousarray(scales, dtype=np.float16)
-        rc = _lib.cactus_graph_set_grouped_scales(
-            self.h,
-            cactus_node_t(tensor.id),
-            ctypes.c_size_t(int(group_size)),
-            ctypes.c_size_t(int(num_groups)),
-            arr.ctypes.data_as(ctypes.c_void_p),
-        )
-        if rc != 0:
-            raise RuntimeError("graph_set_grouped_scales failed")
-
-    def set_interleaved(self, tensor, interleaved=True, original_n=0):
-        tensor = self._ensure_tensor(tensor)
-        rc = _lib.cactus_graph_set_interleaved(
-            self.h, cactus_node_t(tensor.id), ctypes.c_bool(bool(interleaved)), ctypes.c_size_t(int(original_n))
-        )
-        if rc != 0:
-            raise RuntimeError("graph_set_interleaved failed")
 
     def release_weight_pages(self, tensor):
         tensor = self._ensure_tensor(tensor)
@@ -959,8 +934,6 @@ class Graph:
             arr = np.ascontiguousarray(arr, dtype=np.float16)
         elif precision == self.FP32:
             arr = np.ascontiguousarray(arr, dtype=np.float32)
-        elif precision == self.INT4:
-            arr = np.ascontiguousarray(arr, dtype=np.uint8)
         else:
             raise RuntimeError("unsupported precision")
         return arr
@@ -994,8 +967,6 @@ class Tensor:
     def precision_cast(self, dtype):
         return self.g.precision_cast(self, dtype)
 
-    def quantize_activations(self):
-        return self.g.quantize_activations(self)
 
     def scalar_add(self, value):
         return self.g.scalar_add(self, value)
@@ -1136,9 +1107,6 @@ class Tensor:
             arr = np.ctypeslib.as_array((ctypes.c_float * num_elements).from_address(out_ptr.value))
         elif precision == Graph.INT8:
             arr = np.ctypeslib.as_array((ctypes.c_int8 * num_elements).from_address(out_ptr.value))
-        elif precision == Graph.INT4:
-            arr = np.ctypeslib.as_array((ctypes.c_uint8 * int(info.byte_size)).from_address(out_ptr.value))
-            return arr.copy()
         else:
             raise RuntimeError("unsupported precision")
 

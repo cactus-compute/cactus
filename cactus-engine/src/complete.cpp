@@ -250,7 +250,6 @@ std::vector<std::vector<uint32_t>> build_stop_sequences(
     if (model_type == Config::ModelType::GEMMA4) {
         stop_token_sequences.push_back(tokenizer->encode("<turn|>"));
         if (has_tools) {
-            stop_token_sequences.push_back(tokenizer->encode("<tool_call|>"));
             stop_token_sequences.push_back(tokenizer->encode("<|tool_response>"));
         }
     }
@@ -726,7 +725,9 @@ int cactus_complete(
         std::string cloud_error;
         std::future<CloudCompletionResult> cloud_future;
         bool cloud_future_started = false;
-        const bool cloud_eligible = prompt.options.auto_handoff && (!has_images || prompt.options.handoff_with_images);
+        const bool cloud_disabled = env_flag_enabled("CACTUS_DISABLE_CLOUD_HANDOFF");
+        const bool cloud_eligible = !cloud_disabled &&
+            prompt.options.auto_handoff && (!has_images || prompt.options.handoff_with_images);
 
         auto maybe_start_cloud_handoff = [&](const std::string& local_output_hint,
                                              const std::vector<std::string>& local_calls_hint) {
