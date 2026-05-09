@@ -194,9 +194,9 @@ def ensure_vad_weights(model_id, weights_dir, precision='INT8'):
         print("Transcription may fail without VAD. Try: cactus download snakers4/silero-vad")
 
 
-def download_from_hf(model_id, weights_dir, precision):
+def download_from_hf(model_id, weights_dir, precision, cq=False):
     """Download pre-converted model from Cactus-Compute HuggingFace."""
-    return _download_from_hf_impl(model_id, weights_dir, precision)
+    return _download_from_hf_impl(model_id, weights_dir, precision, cq=cq)
 
 
 def cmd_download(args):
@@ -206,6 +206,7 @@ def cmd_download(args):
     weights_dir = get_effective_weights_dir(model_id, args)
     reconvert = getattr(args, 'reconvert', False)
     precision = getattr(args, 'precision', 'INT4')
+    cq = getattr(args, 'cq', False)
 
     if reconvert and weights_dir.exists():
         print_color(YELLOW, f"Removing cached weights for reconversion...")
@@ -245,7 +246,7 @@ def cmd_download(args):
             return 1
 
     if not reconvert and not is_local:
-        if download_from_hf(model_id, weights_dir, precision):
+        if download_from_hf(model_id, weights_dir, precision, cq=cq):
             ensure_vad_weights(model_id, weights_dir, precision)
             return 0
 
@@ -1387,6 +1388,7 @@ def cmd_eval(args):
     dlargs.cache_dir = getattr(args, 'cache_dir', None)
     dlargs.token = getattr(args, 'token', None)
     dlargs.reconvert = getattr(args, 'reconvert', False)
+    dlargs.cq = getattr(args, 'cq', False)
 
     download_result = cmd_download(dlargs)
     if download_result != 0:
@@ -2053,6 +2055,8 @@ def create_parser():
 
     download_parser.add_argument('--weights-variant', choices=WEIGHTS_VARIANT_CHOICES, default='auto',
                                  help='Weights package preference: auto (default), apple, or standard')
+    download_parser.add_argument('--cq', action='store_true',
+                                 help='Download CQ weights when available')
     download_parser.add_argument('--reconvert', action='store_true',
                                  help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
 
@@ -2075,6 +2079,8 @@ def create_parser():
     run_parser.add_argument('--token', help='HuggingFace API token')
     run_parser.add_argument('--weights-variant', choices=WEIGHTS_VARIANT_CHOICES, default='auto',
                             help='Weights package preference for auto-download: auto, apple, or standard')
+    run_parser.add_argument('--cq', action='store_true',
+                            help='Download CQ weights when available')
     run_parser.add_argument('--no-cloud-tele', action='store_true',
                             help='Disable cloud telemetry (write to cache only)')
     run_parser.add_argument('--reconvert', action='store_true',
@@ -2123,6 +2129,8 @@ def create_parser():
     eval_parser.add_argument('--token', help='HuggingFace API token')
     eval_parser.add_argument('--weights-variant', choices=WEIGHTS_VARIANT_CHOICES, default='auto',
                              help='Weights package preference for auto-download: auto, apple, or standard')
+    eval_parser.add_argument('--cq', action='store_true',
+                             help='Download CQ weights when available')
     eval_parser.add_argument('--tools', action='store_true', help='Run tools evals (default)')
     eval_parser.add_argument('--vlm', action='store_true', help='Run VLM-specific evals')
     eval_parser.add_argument('--stt', action='store_true', help='Run speech-to-text evals')
