@@ -152,7 +152,6 @@ bool test_perplexity_comparison() {
     bool have_ref = false;
     if (std::getenv("CACTUS_PPL_SKIP_FP16") == nullptr) {
         std::cout << "\n  [No KV cache - full-precision reference]" << std::endl;
-        unsetenv("CACTUS_KV_TQ_BITS");
         try {
             ref = score_corpus_window(g_model_path, tokens, context);
             have_ref = true;
@@ -166,17 +165,11 @@ bool test_perplexity_comparison() {
     std::cout << "\n  [Cache-aware scoring]" << std::endl;
 
     const char* only_mode = std::getenv("CACTUS_PPL_ONLY");
-    Result int8_r{}, tq4_r{}, tq6_r{}, tq8_r{};
-    bool run_int8 = !only_mode || std::string(only_mode) == "int8";
+    Result tq4_r{}, tq6_r{}, tq8_r{};
     bool run_k4 = !only_mode || std::string(only_mode) == "k4";
     bool run_k6 = !only_mode || std::string(only_mode) == "k6";
     bool run_k8 = !only_mode || std::string(only_mode) == "k8";
 
-    if (run_int8) {
-        unsetenv("CACTUS_KV_TQ_BITS");
-        int8_r = score_corpus_cached(g_model_path, tokens, context);
-        print_result("INT8 group (default)", int8_r);
-    }
     if (run_k4) {
         setenv("CACTUS_KV_TQ_BITS", "4", 1);
         tq4_r = score_corpus_cached(g_model_path, tokens, context);
@@ -199,16 +192,8 @@ bool test_perplexity_comparison() {
 
     if (only_mode) return true;
 
-    std::cout << std::fixed << std::setprecision(4);
-    std::cout << "  TQ-K4/INT8 ppl ratio:   "
-              << (tq4_r.perplexity / std::max(1e-9, int8_r.perplexity)) << std::endl;
-    std::cout << "  TQ-K6/INT8 ppl ratio:   "
-              << (tq6_r.perplexity / std::max(1e-9, int8_r.perplexity)) << std::endl;
-    std::cout << "  TQ-K8/INT8 ppl ratio:   "
-              << (tq8_r.perplexity / std::max(1e-9, int8_r.perplexity)) << std::endl;
     if (have_ref) {
-        std::cout << "  INT8/FP16 ppl ratio:    "
-                  << (int8_r.perplexity / std::max(1e-9, ref.perplexity)) << std::endl;
+        std::cout << std::fixed << std::setprecision(4);
         std::cout << "  TQ-K4/FP16 ppl ratio:   "
                   << (tq4_r.perplexity / std::max(1e-9, ref.perplexity)) << std::endl;
         std::cout << "  TQ-K6/FP16 ppl ratio:   "
@@ -217,16 +202,15 @@ bool test_perplexity_comparison() {
                   << (tq8_r.perplexity / std::max(1e-9, ref.perplexity)) << std::endl;
     }
 
-    bool ok = std::isfinite(int8_r.perplexity) && int8_r.perplexity > 0.0
-           && std::isfinite(tq4_r.perplexity)  && tq4_r.perplexity  > 0.0
-           && std::isfinite(tq6_r.perplexity)  && tq6_r.perplexity  > 0.0
-           && std::isfinite(tq8_r.perplexity)  && tq8_r.perplexity  > 0.0;
+    bool ok = std::isfinite(tq4_r.perplexity) && tq4_r.perplexity > 0.0
+           && std::isfinite(tq6_r.perplexity) && tq6_r.perplexity > 0.0
+           && std::isfinite(tq8_r.perplexity) && tq8_r.perplexity > 0.0;
     return ok;
 }
 
 int main() {
     TestUtils::TestRunner runner("Perplexity");
-    runner.run_test("KV-quant perplexity (FP16 vs INT8 vs TQ-K4 vs TQ-K6 vs TQ-K8)",
+    runner.run_test("KV-quant perplexity (FP16 vs TQ-K4 vs TQ-K6 vs TQ-K8)",
                     test_perplexity_comparison());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

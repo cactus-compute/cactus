@@ -371,19 +371,14 @@ void Model::init_graph_cache(CactusGraph* gb) {
         if (layer_dims[i] == 0) continue;  // shared layers have dim=0
         size_t window = (i < layer_windows.size()) ? layer_windows[i] : cache_window_size_;
         size_t max_seq = (window > 0) ? window : cache_max_seq_len_;
-        if (cache_tq_angle_bits_ > 0) {
-            size_t k_bits = cache_tq_k_bits_ > 0 ? cache_tq_k_bits_ : cache_tq_angle_bits_;
-            size_t v_bits = cache_tq_v_bits_ > 0 ? cache_tq_v_bits_ : cache_tq_angle_bits_;
-            graph_cache_k_nodes_[i] = gb->kv_cache_state_tq(max_seq, layer_heads[i], layer_dims[i],
-                                                            k_bits, window, cache_sink_size_,
-                                                            cache_tq_seed_);
-            graph_cache_v_nodes_[i] = gb->kv_cache_state_tq(max_seq, layer_heads[i], layer_dims[i],
-                                                            v_bits, window, cache_sink_size_,
-                                                            cache_tq_seed_);
-        } else {
-            graph_cache_k_nodes_[i] = gb->kv_cache_state(max_seq, layer_heads[i], layer_dims[i], window, cache_sink_size_);
-            graph_cache_v_nodes_[i] = gb->kv_cache_state(max_seq, layer_heads[i], layer_dims[i], window, cache_sink_size_);
-        }
+        size_t k_bits = cache_tq_k_bits_ > 0 ? cache_tq_k_bits_ : cache_tq_angle_bits_;
+        size_t v_bits = cache_tq_v_bits_ > 0 ? cache_tq_v_bits_ : cache_tq_angle_bits_;
+        graph_cache_k_nodes_[i] = gb->kv_cache_state_tq(max_seq, layer_heads[i], layer_dims[i],
+                                                        k_bits, window, cache_sink_size_,
+                                                        cache_tq_seed_);
+        graph_cache_v_nodes_[i] = gb->kv_cache_state_tq(max_seq, layer_heads[i], layer_dims[i],
+                                                        v_bits, window, cache_sink_size_,
+                                                        cache_tq_seed_);
     }
     cache_total_seq_len_ = 0;
 }
@@ -948,13 +943,8 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
                     gb->set_external_input(v_input, const_cast<__fp16*>(v_ref.data), Precision::FP16);
 
                     size_t layer_window = get_kv_layer_windows()[layer_idx];
-                    if (cache_tq_angle_bits_ > 0) {
-                        gb->kv_cache_append_tq(k_input, graph_cache_k_nodes_[layer_idx], layer_window, cache_sink_size_);
-                        gb->kv_cache_append_tq(v_input, graph_cache_v_nodes_[layer_idx], layer_window, cache_sink_size_);
-                    } else {
-                        gb->kv_cache_append(k_input, graph_cache_k_nodes_[layer_idx], layer_window, cache_sink_size_);
-                        gb->kv_cache_append(v_input, graph_cache_v_nodes_[layer_idx], layer_window, cache_sink_size_);
-                    }
+                    gb->kv_cache_append_tq(k_input, graph_cache_k_nodes_[layer_idx], layer_window, cache_sink_size_);
+                    gb->kv_cache_append_tq(v_input, graph_cache_v_nodes_[layer_idx], layer_window, cache_sink_size_);
                 }
             }
             gb->execute();

@@ -802,7 +802,7 @@ inline size_t turboquant_angles_bytes_per_head(size_t head_dim, size_t angle_bit
     return (head_dim * angle_bits + 7) / 8;
 }
 
-constexpr size_t TURBOQUANT_ROTATION_LAYERS = 3;
+constexpr size_t TURBOQUANT_ROTATION_LAYERS = 1;
 
 inline size_t turboquant_rotation_signs_bytes(size_t head_dim) {
     return ((head_dim + 7) / 8) * TURBOQUANT_ROTATION_LAYERS;
