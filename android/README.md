@@ -10,6 +10,51 @@ Run AI models on-device with a simple Kotlin API.
 
 > **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
 
+## Google Tensor NPU Stack
+
+**Internal source of truth:** before changing or evaluating the Google Tensor path, read
+`/Users/noahcylich/Documents/Desert/google-npu`. That directory contains the private
+Google Tensor ML SDK v2.18.0 docs, notebooks, compiler archive, deployment guide, release
+notes, and troubleshooting notes. Treat it as more authoritative than public Android NNAPI
+or generic LiteRT docs for this work.
+
+Pixel / Google Tensor NPU work must use the LiteRT Google Tensor stack end to end:
+
+```text
+Gemma 4 encoder source
+  -> litert_torch / AI Edge export to static TFLite
+  -> ai_edge_quantizer plus FlatBuffer patching when needed
+  -> Google Tensor SDK / LiteRT AOT compile for TENSOR_G4 or TENSOR_G5
+  -> Pixel validation through the Google Tensor / EdgeTPU runtime
+     (SDK profile on userdebug Pixel, or production-style LiteRT AI Pack/PODAI deployment)
+  -> Cactus Android LiteRT NPU backend
+  -> Gemma 4 vision/audio integration
+```
+
+Do not treat Apple CoreML `.mlpackage` artifacts or the non-Apple Cactus NPU stub as Google Tensor SDK integration. A Pixel validation only counts when the LiteRT Google Tensor / EdgeTPU runtime is actually executing the model on the NPU.
+
+NNAPI is not the target runtime for this stack. It may be useful as a diagnostic comparison
+for old app-loadable `.tflite` artifacts, but it must not be used to claim Google Tensor SDK
+success. SDK-compiled models contain Google Tensor custom ops and must be run through the
+SDK profiler/runtime or packaged for Android using the LiteRT deployment guide's AI Pack path.
+Direct `adb shell` runs of the SDK profiler binary are also diagnostic only: the internal docs
+state local profiling requires a userdebug Pixel, and production builds can fail on privileged
+EdgeTPU/IIF device access even after the compiled model loads.
+
+Current implementation implication:
+
+1. Keep using the SDK compiler to produce `*_Google_Tensor_G4.tflite` /
+   `*_Google_Tensor_G5.tflite` artifacts, but do not expect Cactus' plain LiteRT loader to
+   execute them directly. They contain Google Tensor custom ops.
+2. For local latency validation, use `google-tensor-ml-sdk profile --processor tpu` on a
+   userdebug Pixel 10-class device, or use Google-managed Pixel device access from the SDK.
+3. For production Android integration, follow the deployment guide's LiteRT AI Pack/PODAI
+   path: include `:litert_npu_runtime_libraries:google_tensor_runtime`, package compiled
+   models as an AI Pack, and select them with `NpuCompatibilityChecker.GoogleTensor`.
+4. If a production Pixel reports `IIF fence requested but IIF device is not available`, do
+   not treat it as a model/custom-op failure. It means the process context cannot access the
+   privileged Google Tensor runtime path needed by the SDK runner.
+
 ## Building
 
 <!-- --8<-- [start:install] -->
