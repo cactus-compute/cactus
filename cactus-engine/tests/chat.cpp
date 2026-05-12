@@ -206,7 +206,8 @@ struct TokenPrinter {
         auto end = std::chrono::steady_clock::now();
         double total_s = std::chrono::duration<double>(end - start).count();
         double ttft_s = saw_first ? std::chrono::duration<double>(first - start).count() : 0.0;
-        double tps = total_s > 0.0 ? count / total_s : 0.0;
+        double decode_s = saw_first ? std::chrono::duration<double>(end - first).count() : total_s;
+        double tps = (count > 1 && decode_s > 0.0) ? (count - 1) / decode_s : (total_s > 0.0 ? count / total_s : 0.0);
         std::cout << "\n[" << count << " tokens | latency: "
                   << std::fixed << std::setprecision(3) << ttft_s
                   << "s | total: " << total_s
