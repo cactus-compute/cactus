@@ -520,6 +520,16 @@ std::vector<uint32_t> BPETokenizer::encode(const std::string& text) const {
 }
 
 std::string BPETokenizer::decode(const std::vector<uint32_t>& tokens) const {
+    if (runtime_config_.byte_fallback && tokens.size() == 1) {
+        uint32_t token_id = tokens[0];
+        if (token_id < id_to_token_.size()) {
+            uint8_t byte_value;
+            if (parse_byte_fallback_piece(id_to_token_[token_id], &byte_value)) {
+                return std::string(1, static_cast<char>(byte_value));
+            }
+        }
+    }
+
     if (runtime_config_.decoder == TokenizerRuntimeConfig::Decoder::REPLACE_METASPACE) {
         std::string result;
         result.reserve(tokens.size() * 4);
@@ -533,6 +543,9 @@ std::string BPETokenizer::decode(const std::vector<uint32_t>& tokens) const {
         while ((pos = result.find(kMetaspace, pos)) != std::string::npos) {
             result.replace(pos, 3, " ");
             pos += 1;
+        }
+        if (runtime_config_.byte_fallback) {
+            result = reassemble_byte_fallback(result);
         }
         return result;
     }
@@ -558,7 +571,11 @@ std::string BPETokenizer::decode(const std::vector<uint32_t>& tokens) const {
         }
     }
 
-    return unicode_to_bytes(unicode_result);
+    std::string result = unicode_to_bytes(unicode_result);
+    if (runtime_config_.byte_fallback) {
+        result = reassemble_byte_fallback(result);
+    }
+    return result;
 }
 
 
