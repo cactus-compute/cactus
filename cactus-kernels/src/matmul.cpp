@@ -1359,13 +1359,6 @@ void cactus_quant_matmul(
     const uint32_t num_groups = W->num_groups;
     const uint32_t pgb = cactus_quant_packed_group_bytes(bits, gs);
 
-    if (M == 1 && W->expanded == nullptr) {
-        if (bits == 4 && (gs % 16) == 0) { cactus_quant_4bit_gemv(W, A, C); return; }
-        if (bits == 2 && (gs % 8) == 0) { cactus_quant_2bit_gemv(W, A, C); return; }
-        if (bits == 1 && (gs % 8) == 0) { cactus_quant_1bit_gemv(W, A, C); return; }
-        if (bits == 3 && (gs % 8) == 0) { cactus_quant_3bit_gemv(W, A, C); return; }
-    }
-
     if ((gs % 32) != 0) {
         if (M == 1) {
             if (bits == 4 && (gs % 16) == 0) { cactus_quant_4bit_gemv(W, A, C); return; }

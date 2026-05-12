@@ -389,7 +389,7 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
             return nullptr;
         }
 
-        if (!handle->model->init(model_path, DEFAULT_CONTEXT_SIZE, "", false)) {
+        if (!handle->model->init(model_path, DEFAULT_CONTEXT_SIZE)) {
             last_error_message = "Failed to initialize model - check weight files at: " + model_path_str;
             CACTUS_LOG_ERROR("init", last_error_message);
             {

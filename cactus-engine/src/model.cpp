@@ -141,7 +141,6 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
         forward(warmup_tokens);
         auto* gb = static_cast<CactusGraph*>(graph_handle_);
         gb->execute();
-        gb->release_all_weight_pages();
     }
 
     reset_cache();
