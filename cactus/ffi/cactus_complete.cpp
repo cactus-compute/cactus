@@ -1,6 +1,7 @@
 #include "cactus_ffi.h"
 #include "cactus_cloud.h"
 #include "cactus_utils.h"
+#include "needle_tools.h"
 #include "telemetry/telemetry.h"
 #include "../../libs/audio/wav.h"
 #include <chrono>
@@ -8,6 +9,7 @@
 #include <cstring>
 #include <future>
 #include <memory>
+#include <unordered_set>
 #include <vector>
 
 using namespace cactus::engine;
@@ -101,10 +103,20 @@ void strip_thinking_from_cache(CactusModelHandle* handle,
 }
 
 void setup_tool_constraints(CactusModelHandle* handle, const std::vector<ToolFunction>& tools,
-                           bool force_tools, float& temperature) {
+                           bool force_tools, float& temperature,
+                           const std::unordered_map<std::string, std::string>& needle_name_map = {}) {
     if (!force_tools || tools.empty()) return;
 
-    handle->model->set_tool_constraints(build_tool_constraint_specs(tools));
+    auto specs = build_tool_constraint_specs(tools);
+
+    if (!needle_name_map.empty()) {
+        for (auto& spec : specs) {
+            std::string snake = needle::to_snake_case(spec.name);
+            spec.name = snake;
+        }
+    }
+
+    handle->model->set_tool_constraints(specs);
 
     if (temperature == 0.0f) {
         temperature = 0.01f;
@@ -237,9 +249,114 @@ std::vector<std::string> extract_schema_required(const std::string& schema) {
     return required;
 }
 
-std::string serialize_needle_tools_json(const std::vector<ToolFunction>& tools, const char* raw_tools_json) {
+std::string serialize_needle_tools(const std::vector<ToolFunction>& tools,
+                                   const char* raw_tools_json,
+                                   std::unordered_map<std::string, std::string>& name_map) {
+    name_map.clear();
+
+    if (raw_tools_json && std::strlen(raw_tools_json) > 2) {
+        std::string raw(raw_tools_json);
+
+        bool is_needle_format = (raw.find("\"parameters\"") != std::string::npos &&
+                                 raw.find("\"schema\"") == std::string::npos &&
+                                 raw.find("\"type\":\"function\"") == std::string::npos);
+
+        if (is_needle_format) {
+            std::string result;
+            result.reserve(raw.size());
+            const std::string name_key = "\"name\":";
+            size_t pos = 0;
+
+            while (pos < raw.size()) {
+                size_t found = raw.find(name_key, pos);
+                if (found == std::string::npos) {
+                    result.append(raw, pos, raw.size() - pos);
+                    break;
+                }
+                result.append(raw, pos, found + name_key.size() - pos);
+                pos = found + name_key.size();
+
+                while (pos < raw.size() && (raw[pos] == ' ' || raw[pos] == '\t' ||
+                       raw[pos] == '\n' || raw[pos] == '\r')) {
+                    result += raw[pos];
+                    pos++;
+                }
+                if (pos >= raw.size() || raw[pos] != '"') continue;
+                result += '"';
+                pos++;
+
+                size_t name_start = pos;
+                bool escaped = false;
+                while (pos < raw.size()) {
+                    if (escaped) { escaped = false; pos++; continue; }
+                    if (raw[pos] == '\\') { escaped = true; pos++; continue; }
+                    if (raw[pos] == '"') break;
+                    pos++;
+                }
+                std::string orig_name = raw.substr(name_start, pos - name_start);
+                std::string snake_name = needle::to_snake_case(orig_name);
+                name_map[snake_name] = orig_name;
+
+                result += snake_name;
+            }
+
+            std::string compact;
+            compact.reserve(result.size());
+            bool in_str = false;
+            bool esc = false;
+            size_t ri = 0;
+            while (ri < result.size()) {
+                unsigned char ch = static_cast<unsigned char>(result[ri]);
+                if (in_str) {
+                    if (esc) {
+                        compact += static_cast<char>(ch);
+                        esc = false;
+                    } else if (ch == '\\') {
+                        compact += '\\';
+                        esc = true;
+                    } else if (ch == '"') {
+                        compact += '"';
+                        in_str = false;
+                    } else if (ch >= 0x80) {
+                        uint32_t cp = 0;
+                        int extra = 0;
+                        if ((ch & 0xE0) == 0xC0) { cp = ch & 0x1F; extra = 1; }
+                        else if ((ch & 0xF0) == 0xE0) { cp = ch & 0x0F; extra = 2; }
+                        else if ((ch & 0xF8) == 0xF0) { cp = ch & 0x07; extra = 3; }
+                        else { compact += static_cast<char>(ch); ri++; continue; }
+                        for (int e = 0; e < extra && ri + 1 < result.size(); e++) {
+                            ri++;
+                            cp = (cp << 6) | (static_cast<unsigned char>(result[ri]) & 0x3F);
+                        }
+                        if (cp <= 0xFFFF) {
+                            char buf[8];
+                            std::snprintf(buf, sizeof(buf), "\\u%04x", cp);
+                            compact += buf;
+                        } else {
+                            cp -= 0x10000;
+                            char buf[14];
+                            std::snprintf(buf, sizeof(buf), "\\u%04x\\u%04x",
+                                          0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF));
+                            compact += buf;
+                        }
+                    } else {
+                        compact += static_cast<char>(ch);
+                    }
+                } else {
+                    if (ch == '"') { in_str = true; compact += '"'; }
+                    else if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
+                        compact += static_cast<char>(ch);
+                    }
+                }
+                ri++;
+            }
+
+            return compact;
+        }
+    }
+
     if (tools.empty()) {
-        return (raw_tools_json && std::strlen(raw_tools_json) > 0) ? raw_tools_json : "[]";
+        return "[]";
     }
 
     std::ostringstream oss;
@@ -249,7 +366,10 @@ std::string serialize_needle_tools_json(const std::vector<ToolFunction>& tools, 
             oss << ",";
         }
 
-        oss << "{\"name\":\"" << escape_json_string(tools[i].name) << "\"";
+        std::string snake_name = needle::to_snake_case(tools[i].name);
+        name_map[snake_name] = tools[i].name;
+
+        oss << "{\"name\":\"" << escape_json_string(snake_name) << "\"";
         if (!tools[i].description.empty()) {
             oss << ",\"description\":\"" << escape_json_string(tools[i].description) << "\"";
         }
@@ -260,16 +380,49 @@ std::string serialize_needle_tools_json(const std::vector<ToolFunction>& tools, 
             oss << "{}";
         } else {
             auto properties = extract_schema_property_types(schema_it->second);
+            auto required = extract_schema_required(schema_it->second);
+            std::unordered_set<std::string> required_set(required.begin(), required.end());
+
             if (properties.empty()) {
-                oss << schema_it->second;
+                oss << "{}";
             } else {
+                std::string properties_object = extract_json_object_field(schema_it->second, "properties");
+
                 oss << "{";
                 for (size_t p = 0; p < properties.size(); ++p) {
                     if (p > 0) {
                         oss << ",";
                     }
-                    oss << "\"" << escape_json_string(properties[p].first) << "\":"
-                        << "\"" << escape_json_string(properties[p].second) << "\"";
+                    const std::string& param_name = properties[p].first;
+                    const std::string& param_type = properties[p].second;
+                    bool is_required = required_set.count(param_name) > 0;
+
+                    std::string description;
+                    std::string prop_obj = extract_json_object_field(properties_object, param_name);
+                    if (!prop_obj.empty()) {
+                        std::string desc_pattern = "\"description\":\"";
+                        size_t desc_pos = prop_obj.find(desc_pattern);
+                        if (desc_pos != std::string::npos) {
+                            size_t desc_start = desc_pos + desc_pattern.size();
+                            size_t desc_end = desc_start;
+                            bool escaped = false;
+                            while (desc_end < prop_obj.size()) {
+                                if (escaped) { escaped = false; desc_end++; continue; }
+                                if (prop_obj[desc_end] == '\\') { escaped = true; desc_end++; continue; }
+                                if (prop_obj[desc_end] == '"') break;
+                                desc_end++;
+                            }
+                            description = prop_obj.substr(desc_start, desc_end - desc_start);
+                        }
+                    }
+
+                    oss << "\"" << escape_json_string(param_name) << "\":{";
+                    oss << "\"type\":\"" << escape_json_string(param_type) << "\"";
+                    if (!description.empty()) {
+                        oss << ",\"description\":\"" << description << "\"";
+                    }
+                    oss << ",\"required\":" << (is_required ? "true" : "false");
+                    oss << "}";
                 }
                 oss << "}";
             }
@@ -387,6 +540,8 @@ struct PreparedPrompt {
 
     std::vector<float> audio_features;
     size_t audio_num_frames = 0;
+
+    std::unordered_map<std::string, std::string> needle_name_map;
 
     bool has_images() const {
         return std::any_of(images.begin(), images.end(),
@@ -509,7 +664,7 @@ PreparedPrompt prepare_prompt(
         prompt.options.force_tools = true;
     }
 
-    if (apply_tool_constraints) {
+    if (apply_tool_constraints && prompt.model_type != Config::ModelType::NEEDLE) {
         setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools, prompt.options.temperature);
     }
 
@@ -565,7 +720,7 @@ PreparedPrompt prepare_prompt(
     if (Config::is_gemma_family(prompt.model_type)) {
         formatted_tools = gemma::format_tools(prompt.tools, prompt.model_type == Config::ModelType::GEMMA4);
     } else if (prompt.model_type == Config::ModelType::NEEDLE) {
-        formatted_tools = serialize_needle_tools_json(prompt.tools, tools_json);
+        formatted_tools = serialize_needle_tools(prompt.tools, tools_json, prompt.needle_name_map);
     } else if (prompt.model_type == Config::ModelType::QWEN || prompt.model_type == Config::ModelType::QWEN3P5) {
         formatted_tools = serialize_tools_for_template(prompt.tools);
     } else {
@@ -573,6 +728,11 @@ PreparedPrompt prepare_prompt(
     }
 
     if (prompt.model_type == Config::ModelType::NEEDLE) {
+        if (apply_tool_constraints) {
+            setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools,
+                                   prompt.options.temperature, prompt.needle_name_map);
+        }
+
         std::string query_text = cactus::engine::format_needle_query_text(prompt.messages);
         prompt.tokens = tokenizer->encode(query_text);
         auto suffix_tokens = encode_needle_tools_suffix(tokenizer, formatted_tools);
@@ -927,6 +1087,10 @@ int cactus_complete(
         std::string regular_response;
         std::vector<std::string> function_calls;
         parse_function_calls_from_response(response_text, regular_response, function_calls);
+
+        if (prompt.model_type == Config::ModelType::NEEDLE) {
+            needle::restore_tool_names(function_calls, prompt.needle_name_map);
+        }
 
         std::string thinking_text;
         if (prompt.model_type == Config::ModelType::GEMMA4 || prompt.options.enable_thinking_if_supported) {

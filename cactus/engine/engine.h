@@ -665,15 +665,11 @@ private:
     int needle_arguments_depth_ = 0;
     int needle_nesting_depth_ = 0;
     bool needle_in_string_value_ = false;
-    bool needle_between_pairs_ = false;
     bool needle_prev_char_escape_ = false;
     std::unique_ptr<NeedleTrieNode> needle_name_trie_;
     std::unordered_map<std::string, std::unique_ptr<NeedleTrieNode>> needle_param_tries_;
-    std::unordered_map<std::string, std::vector<std::string>> needle_required_params_;
-    std::unordered_set<std::string> needle_seen_arg_keys_;
     std::vector<std::string> needle_token_strings_;
     std::unordered_map<char, std::vector<uint32_t>> needle_token_index_;
-    std::unordered_set<uint32_t> needle_arg_close_tokens_;
 
     std::unordered_set<uint32_t> tool_start_tokens_;
     std::unordered_set<uint32_t> tool_end_tokens_;
@@ -713,7 +709,6 @@ private:
     void needle_insert_word(NeedleTrieNode* root, const std::string& word);
     const NeedleTrieNode* needle_get_trie_node(const NeedleTrieNode* root, const std::string& prefix) const;
     bool needle_check_token_valid(const std::string& token_text, const NeedleTrieNode* trie_node) const;
-    bool needle_has_unseen_completion(const NeedleTrieNode* node, std::string& partial) const;
 };
 
 class Model {
