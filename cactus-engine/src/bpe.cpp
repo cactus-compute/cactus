@@ -189,6 +189,8 @@ bool BPETokenizer::load_vocabulary_mmap(const std::string& vocab_file, const std
               [](const MergeRule& a, const MergeRule& b) {
                   return a.priority < b.priority;
               });
+    merge_rules_.clear();
+    merge_rules_.shrink_to_fit();
 
     return true;
 }
