@@ -68,6 +68,13 @@ def print_color(color, message):
 
 
 from .downloads import get_model_dir_name, get_weights_dir, download_from_hf as _download_from_hf_impl
+from .cq_download import (
+    combo_label,
+    download_cq_archive,
+    list_hf_cq_archives,
+    resolve_archive,
+    resolve_cq_repo,
+)
 
 
 NEEDLE_CHECKPOINT_REPO = "Cactus-Compute/needle"
@@ -694,6 +701,54 @@ def cmd_download(args):
 
     except Exception as e:
         print_color(RED, f"Error: {e}")
+        return 1
+
+
+def cmd_download_cq(args):
+    """Download native CQ weights from a Cactus-Compute HuggingFace repo."""
+    try:
+        requested = {
+            "L": getattr(args, "language_bits", None),
+            "V": getattr(args, "vision_bits", None),
+            "A": getattr(args, "audio_bits", None),
+        }
+        requested = {k: v for k, v in requested.items() if v is not None}
+        if "L" not in requested:
+            requested["L"] = 4
+
+        repo_id, local_name = resolve_cq_repo(args.model_id)
+        output_dir = Path(getattr(args, "output_dir", None) or (PROJECT_ROOT / "weights" / local_name)).resolve()
+        token = getattr(args, "token", None)
+        revision = getattr(args, "revision", None)
+
+        print_color(YELLOW, f"Resolving CQ weights from {repo_id}...")
+        archives = list_hf_cq_archives(repo_id, token=token, revision=revision)
+        resolution = resolve_archive(repo_id, local_name, archives, requested)
+
+        for warning in resolution.warnings:
+            print_color(YELLOW, f"Warning: {warning}")
+
+        selected = resolution.archive
+        size_text = f" ({selected.size / (1024 * 1024):.1f} MiB)" if selected.size else ""
+        print(f"Selected {selected.filename} [{combo_label(selected.combo)}]{size_text}")
+
+        if getattr(args, "dry_run", False):
+            print("Dry run only; not downloading.")
+            return 0
+
+        download_cq_archive(
+            resolution,
+            output_dir,
+            token=token,
+            cache_dir=getattr(args, "cache_dir", None),
+            revision=revision,
+            force=getattr(args, "force", False),
+            dry_run=False,
+        )
+        print_color(GREEN, f"CQ model ready at {output_dir}")
+        return 0
+    except Exception as exc:
+        print_color(RED, f"Error: {exc}")
         return 1
 
 
@@ -2060,6 +2115,25 @@ def create_parser():
     download_parser.add_argument('--reconvert', action='store_true',
                                  help='Download original model and convert (instead of using pre-converted from Cactus-Compute)')
 
+    download_cq_parser = subparsers.add_parser('download-cq', help='Download native CQ model weights')
+    download_cq_parser.add_argument('--model', dest='model_id', required=True,
+                                    help='Cactus-Compute CQ repo, for example Cactus-Compute/lfm2p5-350m-cq')
+    download_cq_parser.add_argument('--L', dest='language_bits', type=int, choices=[1, 2, 3, 4], default=4,
+                                    help='Language CQ bits (default: 4)')
+    download_cq_parser.add_argument('--V', dest='vision_bits', type=int, choices=[1, 2, 3, 4],
+                                    help='Vision CQ bits')
+    download_cq_parser.add_argument('--A', dest='audio_bits', type=int, choices=[1, 2, 3, 4],
+                                    help='Audio CQ bits')
+    download_cq_parser.add_argument('--output-dir',
+                                    help='Output directory (default: ./weights/<model-name>)')
+    download_cq_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace downloads')
+    download_cq_parser.add_argument('--token', help='HuggingFace API token')
+    download_cq_parser.add_argument('--revision', help='HuggingFace revision/branch/tag')
+    download_cq_parser.add_argument('--force', action='store_true',
+                                    help='Replace an existing output directory')
+    download_cq_parser.add_argument('--dry-run', action='store_true',
+                                    help='Resolve the archive without downloading')
+
     build_parser = subparsers.add_parser('build', help='Build the chat application')
     build_parser.add_argument('--apple', action='store_true',
                               help='Build for Apple platforms (iOS/macOS)')
@@ -2209,6 +2283,8 @@ def main():
 
     if args.command == 'download':
         sys.exit(cmd_download(args))
+    elif args.command == 'download-cq':
+        sys.exit(cmd_download_cq(args))
     elif args.command == 'build':
         sys.exit(cmd_build(args))
     elif args.command == 'run':

@@ -168,7 +168,7 @@ struct Config {
     float rope_scaling_factor = 1.0f;
     float rope_mscale_all_dim = 0.0f;
 
-    enum class ModelType {GEMMA4 = 15};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, SILERO_VAD = 9, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, PYANNOTE = 16, WESPEAKER = 17, NEEDLE = 18};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
@@ -249,7 +249,7 @@ struct Config {
     uint32_t channel_close_token_id = 101;
 
     static bool is_gemma_family(ModelType t) {
-        return t == ModelType::GEMMA4;
+        return t == ModelType::GEMMA || t == ModelType::GEMMA3N || t == ModelType::GEMMA4;
     }
 
     bool from_json(const std::string& json_path);
@@ -352,7 +352,7 @@ public:
     uint32_t get_global_img_token_id() const { return global_img_token_id_; }
 
 protected:
-    enum class ModelType { UNKNOWN, GEMMA4 };
+    enum class ModelType { UNKNOWN, GEMMA4, QWEN, LFM2 };
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -373,6 +373,8 @@ protected:
     void detect_model_type(const std::string& config_path);
     void load_chat_template(const std::string& template_file);
     std::string format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
+    std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
 };
 
 class BPETokenizer : public Tokenizer {
@@ -709,6 +711,120 @@ protected:
 
 private:
     std::unordered_map<uint32_t, float> vocab_bias_;
+};
+
+class ConvCache {
+public:
+    struct CircularView {
+        const void* ptr1;
+        size_t len1;
+        const void* ptr2;
+        size_t len2;
+        size_t total_len;
+    };
+
+    void init(size_t layers, size_t hidden_dim, size_t window_len, Precision model_precision);
+    CircularView get_window(size_t layer) const;
+    void update(CactusGraph* gb, size_t layer, const size_t latest_token);
+    void reset();
+
+    bool is_empty() const { return num_layers == 0; }
+
+    size_t num_layers = 0;
+    size_t hidden_size = 0;
+    size_t window_size = 0;
+    Precision precision = Precision::FP32;
+    size_t element_size = 4;
+
+private:
+    struct LayerState {
+        std::vector<uint8_t> data;
+        size_t head = 0;
+        size_t count = 0;
+    };
+
+    std::vector<LayerState> layer_states;
+};
+
+class Siglip2Preprocessor {
+public:
+    struct Config {
+        int patch_size = 16;
+        int downsample_factor = 2;
+        int min_tiles = 2;
+        int max_tiles = 10;
+        bool use_thumbnail = true;
+        int min_image_tokens = 64;
+        int max_image_tokens = 256;
+        int max_num_patches = 1024;
+        int tile_size = 512;
+        float max_pixels_tolerance = 2.0f;
+        bool do_resize = true;
+        bool do_rescale = true;
+        bool do_normalize = true;
+        bool do_convert_rgb = true;
+        bool do_image_splitting = true;
+        float rescale_factor = 1.0f / 255.0f;
+        float image_mean[3] = {0.5f, 0.5f, 0.5f};
+        float image_std[3] = {0.5f, 0.5f, 0.5f};
+    };
+
+    struct PreprocessedImage {
+        std::vector<float> pixel_values;
+        std::vector<int> pixel_attention_mask;
+        std::vector<std::pair<int, int>> spatial_shapes;
+        std::vector<size_t> pixel_values_shape;
+        std::vector<size_t> pixel_attention_mask_shape;
+        std::vector<size_t> spatial_shapes_shape;
+        int num_patches_height;
+        int num_patches_width;
+        int actual_num_patches;
+        int num_tiles;
+        int patch_dim;
+        int max_patches_per_tile;
+        int image_rows;
+        int image_cols;
+        int image_height;
+        int image_width;
+        int tokens_per_tile;
+        int thumbnail_tokens;
+
+        ~PreprocessedImage();
+    };
+
+    struct SpatialShapeResult {
+        std::vector<std::pair<int, int>> shapes;
+        int grid_rows;
+        int grid_cols;
+    };
+
+    explicit Siglip2Preprocessor(const Config& config);
+    Siglip2Preprocessor();
+    ~Siglip2Preprocessor();
+
+    PreprocessedImage preprocess_from_file(const std::string& image_path);
+    PreprocessedImage preprocess_from_memory(const unsigned char* img_data, int width, int height, int channels);
+    SpatialShapeResult compute_spatial_shapes(int height, int width);
+
+private:
+    Config config_;
+
+    std::pair<int64_t, int64_t> compute_pixel_limits() const;
+    std::vector<unsigned char> convert_to_rgb(const unsigned char* img_data, int width, int height, int channels);
+    std::pair<int, int> smart_resize(int height, int width);
+    bool is_image_too_large(int height, int width);
+    std::pair<int, int> get_grid_layout(int height, int width);
+    std::pair<int, int> find_closest_aspect_ratio(float aspect_ratio, int width, int height);
+    std::vector<float> resize_image(const unsigned char* img_data, int src_width, int src_height,
+                                    int dst_width, int dst_height, int channels);
+    std::vector<float> normalize_image(const float* img_data, int width, int height, int channels);
+    std::vector<std::vector<float>> convert_image_to_patches(
+        const std::vector<float>& image, int width, int height, int channels, int patch_size);
+    PreprocessedImage pad_patches(const std::vector<std::vector<float>>& tile_patches,
+                                  const std::vector<std::pair<int, int>>& spatial_shapes,
+                                  int patch_dim,
+                                  int max_patches_per_tile);
+    int round_by_factor(int number, int factor);
 };
 
 std::unique_ptr<Model> create_model(const std::string& model_folder);

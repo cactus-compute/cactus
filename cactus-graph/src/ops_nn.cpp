@@ -850,10 +850,13 @@ void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_p
 
         std::vector<__fp16> W_fp16(W_size);
 
-        if (W.is_cq()) {
+        if (W.group_size > 0 && W.scales_as_fp16() != nullptr) {
             const __fp16* scales = W.scales_as_fp16();
             const size_t K_total = W1 * K;
             const size_t group_size = W.group_size;
+            if (group_size == 0 || (K_total % group_size) != 0) {
+                throw std::runtime_error("Grouped INT8 causal depthwise conv requires valid per-group scales");
+            }
             const size_t num_groups = K_total / group_size;
 
             for (size_t row = 0; row < W0; ++row) {

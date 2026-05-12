@@ -57,6 +57,7 @@ set(ENGINE_SOURCES
     src/sp.cpp
     src/constraints.cpp
     src/model.cpp
+    src/engine_image.cpp
     src/index.cpp
     src/index_ffi.cpp
     src/log.cpp
@@ -74,6 +75,10 @@ set(ENGINE_SOURCES
 )
 
 set(MODEL_SOURCES
+    models/model_lfm2.cpp
+    models/model_lfm2vl.cpp
+    models/model_qwen.cpp
+    models/model_siglip2.cpp
     models/gemma4/model_gemma4.cpp
     models/gemma4/model_gemma4_mm.cpp
     models/gemma4/model_gemma4_audio.cpp
@@ -93,6 +98,7 @@ target_include_directories(cactus_engine
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
             ${CMAKE_CURRENT_SOURCE_DIR}/models
             ${CACTUS_KERNELS_DIR}/src
+            ${CACTUS_KERNELS_DIR}/libs
 )
 target_link_libraries(cactus_engine PUBLIC cactus_graph)
 set_target_properties(cactus_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)

@@ -335,12 +335,21 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
 
     std::string line;
     while (std::getline(file, line)) {
-        size_t pos = line.find("model_variant");
-        if (pos != std::string::npos) {
-            std::transform(line.begin(), line.end(), line.begin(), ::tolower);
-            if (line.find("vlm") != std::string::npos) { model_variant_ = ModelVariant::VLM; break; }
-            else if (line.find("extract") != std::string::npos) { model_variant_ = ModelVariant::EXTRACT; break; }
-            else if (line.find("rag") != std::string::npos) { model_variant_ = ModelVariant::RAG; break; }
+        std::string lower_line = line;
+        std::transform(lower_line.begin(), lower_line.end(), lower_line.begin(), ::tolower);
+
+        if (lower_line.find("model_type") != std::string::npos) {
+            if (lower_line.find("qwen") != std::string::npos) {
+                model_type_ = ModelType::QWEN;
+            } else if (lower_line.find("lfm2") != std::string::npos) {
+                model_type_ = ModelType::LFM2;
+            } else if (lower_line.find("gemma") != std::string::npos) {
+                model_type_ = ModelType::GEMMA4;
+            }
+        } else if (lower_line.find("model_variant") != std::string::npos) {
+            if (lower_line.find("vlm") != std::string::npos) { model_variant_ = ModelVariant::VLM; }
+            else if (lower_line.find("extract") != std::string::npos) { model_variant_ = ModelVariant::EXTRACT; }
+            else if (lower_line.find("rag") != std::string::npos) { model_variant_ = ModelVariant::RAG; }
         }
     }
 
@@ -361,6 +370,9 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
 }
 
 std::string Tokenizer::get_default_stop_sequence() const {
+    if (model_type_ == ModelType::QWEN || model_type_ == ModelType::LFM2) {
+        return "<|im_end|>";
+    }
     return "<turn|>";
 }
 
@@ -370,7 +382,59 @@ std::vector<uint32_t> Tokenizer::apply_chat_template(const std::vector<ChatMessa
 
 std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
                                           const std::string& tools_json, bool enable_thinking_if_supported) const {
+    if (model_type_ == ModelType::QWEN) {
+        return format_qwen_style(messages, add_generation_prompt, tools_json);
+    }
+    if (model_type_ == ModelType::LFM2) {
+        return format_lfm2_style(messages, add_generation_prompt, tools_json);
+    }
     return format_gemma4_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
+}
+
+std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
+                                         const std::string& tools_json) const {
+    std::string result;
+
+    if (!tools_json.empty()) {
+        result += "<|im_start|>system\n";
+        result += tools_json;
+        result += "<|im_end|>\n";
+    }
+
+    for (const auto& msg : messages) {
+        std::string role = msg.role;
+        if (role == "developer") {
+            role = "system";
+        } else if (role != "system" && role != "assistant" && role != "tool") {
+            role = "user";
+        }
+
+        result += "<|im_start|>" + role + "\n";
+        if (role == "user") {
+            for (const auto& image_path : msg.images) {
+                (void)image_path;
+                result += "<|vision_start|><|image_pad|><|vision_end|>";
+            }
+        }
+        result += msg.content;
+        if (role == "assistant" && !msg.tool_calls.empty()) {
+            for (const auto& tc : msg.tool_calls) {
+                result += format_tool_call_for_prompt(tc.name, tc.arguments, false);
+            }
+        }
+        result += "<|im_end|>\n";
+    }
+
+    if (add_generation_prompt) {
+        result += "<|im_start|>assistant\n";
+    }
+
+    return result;
+}
+
+std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
+                                         const std::string& tools_json) const {
+    return "<|startoftext|>" + format_qwen_style(messages, add_generation_prompt, tools_json);
 }
 
 std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
