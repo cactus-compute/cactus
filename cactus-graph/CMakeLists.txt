@@ -41,6 +41,8 @@ set(GRAPH_SOURCES
     src/param_io.cpp
     src/ops_math.cpp
     src/ops_nn.cpp
+    src/ops_conv.cpp
+    src/ops_recurrent.cpp
     src/ops_tensor.cpp
     src/ops_sample.cpp
     src/ops_cache.cpp

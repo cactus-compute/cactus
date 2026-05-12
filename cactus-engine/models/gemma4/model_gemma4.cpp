@@ -160,25 +160,12 @@ void Gemma4Model::load_weights_to_graph(CactusGraph* gb) {
                                      size_t out_dim, size_t in_dim) {
                 auto* base = static_cast<char*>(const_cast<void*>(buf.get_data()));
                 Precision prec = buf.precision;
-                bool is_quantized = PrecisionTraits::is_integer(prec) && buf.group_size > 0;
                 size_t K = in_dim;
-                if (is_quantized && K % buf.group_size != 0)
-                    K = ((K + buf.group_size - 1) / buf.group_size) * buf.group_size;
                 size_t expert_data_bytes = PrecisionTraits::packed_size_of(prec, out_dim * K);
-                size_t groups_per_expert = is_quantized ? (out_dim * K + buf.group_size - 1) / buf.group_size : 0;
-                size_t expert_scales_bytes = groups_per_expert * sizeof(__fp16);
-
-                char* scales_base = is_quantized ? static_cast<char*>(const_cast<void*>(buf.scales_data)) : nullptr;
 
                 for (uint32_t e = 0; e < num_experts; e++) {
                     expert_nodes[e] = gb->input({out_dim, K}, prec);
                     gb->set_external_input(expert_nodes[e], base + e * expert_data_bytes, prec);
-                    if (is_quantized) {
-                        gb->set_grouped_scales(expert_nodes[e], buf.group_size, groups_per_expert,
-                                               scales_base + e * expert_scales_bytes);
-                        if (buf.is_interleaved)
-                            gb->set_interleaved(expert_nodes[e], true, out_dim);
-                    }
                 }
             };
 

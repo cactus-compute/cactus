@@ -276,8 +276,8 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
     size_t node_id = input(shape, precision);
     set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
 
+    auto& buffer = nodes_[node_index_map_.at(node_id)]->output_buffer;
     if (PrecisionTraits::is_cq(precision) && mapped_file->group_size() > 0) {
-        auto& buffer = nodes_[node_index_map_.at(node_id)]->output_buffer;
         buffer.group_size = mapped_file->group_size();
         buffer.num_groups = mapped_file->num_groups();
 
@@ -309,14 +309,10 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
             buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
             buffer.cq_flags = 0;
         }
-    } else if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
-        set_grouped_scales(node_id, mapped_file->group_size(), mapped_file->num_groups(),
-                          const_cast<void*>(mapped_file->scales_data()));
-
-        if (mapped_file->is_interleaved()) {
-            auto& buffer = nodes_[node_index_map_.at(node_id)]->output_buffer;
-            buffer.set_interleaved(true, mapped_file->original_N());
-        }
+    } else if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
+        buffer.group_size = mapped_file->group_size();
+        buffer.num_groups = mapped_file->num_groups();
+        buffer.set_activation_scales(const_cast<void*>(mapped_file->scales_data()), shape.empty() ? 0 : shape[0]);
     }
 
     size_t file_idx = mapped_files_.size();
@@ -374,15 +370,6 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
             buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
             buffer.cq_flags = 0;
         }
-
-    } else if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
-        set_grouped_scales(node_id, mapped_file->group_size(), mapped_file->num_groups(),
-                          const_cast<void*>(mapped_file->scales_data()));
-
-        if (mapped_file->is_interleaved()) {
-            auto& buffer = nodes_[node_index_map_.at(node_id)]->output_buffer;
-            buffer.set_interleaved(true, mapped_file->original_N());
-        }
     }
 
     size_t file_idx = mapped_files_.size();
@@ -412,20 +399,6 @@ void CactusGraph::release_all_weight_pages() {
     }
 }
 
-void CactusGraph::set_grouped_scales(size_t node_id, size_t group_size, size_t num_groups, void* scales_ptr) {
-    auto it = node_index_map_.find(node_id);
-    if (it != node_index_map_.end()) {
-        nodes_[it->second]->output_buffer.set_grouped_scales(group_size, num_groups, scales_ptr);
-    }
-}
-
-void CactusGraph::set_interleaved(size_t node_id, bool interleaved, size_t original_N) {
-    auto it = node_index_map_.find(node_id);
-    if (it != node_index_map_.end()) {
-        nodes_[it->second]->output_buffer.set_interleaved(interleaved, original_N);
-    }
-}
-
 size_t CactusGraph::embedding(const std::string& filename, size_t indices) {
     auto mapped_file = std::make_unique<GraphFile::MappedFile>(filename);
 
@@ -437,16 +410,6 @@ size_t CactusGraph::embedding(const std::string& filename, size_t indices) {
     Precision precision = mapped_file->precision();
     size_t embeddings_node = input(shape, precision);
     set_external_input(embeddings_node, const_cast<void*>(mapped_file->data()), precision);
-
-    if (PrecisionTraits::is_integer(precision) && mapped_file->group_size() > 0) {
-        set_grouped_scales(embeddings_node, mapped_file->group_size(), mapped_file->num_groups(),
-                          const_cast<void*>(mapped_file->scales_data()));
-
-        if (mapped_file->is_interleaved()) {
-            auto& buffer = nodes_[node_index_map_.at(embeddings_node)]->output_buffer;
-            buffer.set_interleaved(true, mapped_file->original_N());
-        }
-    }
 
     mapped_files_.push_back(std::move(mapped_file));
 
@@ -587,15 +550,10 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
 
     size_t byte_size = PrecisionTraits::packed_size_of(precision, total_elements);
 
-    bool has_scales = PrecisionTraits::is_integer(precision) && buffer.group_size > 0 && buffer.scales_data;
     size_t N = shape.size() >= 1 ? shape[0] : 1;
-    size_t scales_bytes = has_scales ? (N * buffer.num_groups * sizeof(__fp16)) : 0;
 
     uint32_t ndim = static_cast<uint32_t>(shape.size());
-    uint32_t flags = has_scales ? FLAG_HAS_SCALES : 0;
-    if (buffer.is_interleaved) {
-        flags |= FLAG_INTERLEAVED;
-    }
+    uint32_t flags = 0;
     uint32_t alignment = 32;
 
     uint32_t magic = CACTUS_MAGIC;
@@ -613,17 +571,14 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
     file.write(reinterpret_cast<const char*>(&prec_val), sizeof(prec_val));
 
     uint64_t data_bytes = static_cast<uint64_t>(byte_size);
-    uint64_t scales_bytes_val = static_cast<uint64_t>(scales_bytes);
+    uint64_t zero64 = 0;
+    uint32_t zero32 = 0;
     file.write(reinterpret_cast<const char*>(&data_bytes), sizeof(data_bytes));
-    file.write(reinterpret_cast<const char*>(&scales_bytes_val), sizeof(scales_bytes_val));
-
-    uint32_t group_size = has_scales ? static_cast<uint32_t>(buffer.group_size) : 0;
-    uint32_t num_groups = has_scales ? static_cast<uint32_t>(buffer.num_groups) : 0;
-    file.write(reinterpret_cast<const char*>(&group_size), sizeof(group_size));
-    file.write(reinterpret_cast<const char*>(&num_groups), sizeof(num_groups));
-
-    uint64_t original_N = buffer.is_interleaved ? buffer.original_N : N;
-    file.write(reinterpret_cast<const char*>(&original_N), sizeof(original_N));
+    file.write(reinterpret_cast<const char*>(&zero64), sizeof(zero64));   // scales_bytes = 0
+    file.write(reinterpret_cast<const char*>(&zero32), sizeof(zero32));   // group_size = 0
+    file.write(reinterpret_cast<const char*>(&zero32), sizeof(zero32));   // num_groups = 0
+    uint64_t original_N_val = static_cast<uint64_t>(N);
+    file.write(reinterpret_cast<const char*>(&original_N_val), sizeof(original_N_val));
 
     size_t header_end = HEADER_SIZE;
     size_t aligned_header = align_offset(header_end, alignment);
@@ -631,18 +586,6 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
     for (size_t i = 0; i < header_padding; i++) {
         char zero = 0;
         file.write(&zero, 1);
-    }
-
-    if (has_scales) {
-        file.write(static_cast<const char*>(buffer.scales_data), scales_bytes);
-
-        size_t scales_end = aligned_header + scales_bytes;
-        size_t data_start = align_offset(scales_end, alignment);
-        size_t scales_padding = data_start - scales_end;
-        for (size_t i = 0; i < scales_padding; i++) {
-            char zero = 0;
-            file.write(&zero, 1);
-        }
     }
 
     file.write(static_cast<const char*>(data), byte_size);

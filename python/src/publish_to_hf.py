@@ -154,10 +154,6 @@ def export_and_publish_model(args, api):
     repo_id = f"{args.org}/{model_name}"
 
     precisions = []
-    if args.int4:
-        precisions.append(("int4", "4"))
-    if args.int8:
-        precisions.append(("int8", "8"))
     if args.fp16:
         precisions.append(("fp16", "16"))
 
@@ -271,8 +267,6 @@ def main():
     parser.add_argument("--version")
     parser.add_argument("--org")
     parser.add_argument("--model")
-    parser.add_argument("--int4", action="store_true")
-    parser.add_argument("--int8", action="store_true")
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--apple", action="store_true")
     parser.add_argument("--pipeline-tag", dest="pipeline_tag")
@@ -290,7 +284,7 @@ def main():
         if not all([args.version, args.org, args.model]):
             print("Error: export_model requires --version, --org, and --model")
             return 1
-        if not any([args.int4, args.int8, args.fp16]):
+        if not args.fp16:
             print("Error: At least one precision flag must be set")
             return 1
         return export_and_publish_model(args, api)

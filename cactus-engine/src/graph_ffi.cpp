@@ -625,27 +625,7 @@ int cactus_graph_bilinear_interpolation(cactus_graph_t graph, cactus_node_t pos_
     }
 }
 
-int cactus_graph_set_grouped_scales(cactus_graph_t graph, cactus_node_t node, size_t group_size, size_t num_groups, void* scales_ptr) {
-    if (!graph || !scales_ptr) return fail_invalid("Invalid args to cactus_graph_set_grouped_scales");
-    try {
-        as_graph(graph)->graph.set_grouped_scales(static_cast<size_t>(node), group_size, num_groups, scales_ptr);
-        return 0;
-    } catch (const std::exception& e) {
-        last_error_message = e.what();
-        return -1;
-    }
-}
 
-int cactus_graph_set_interleaved(cactus_graph_t graph, cactus_node_t node, bool interleaved, size_t original_n) {
-    if (!graph) return fail_invalid("Invalid args to cactus_graph_set_interleaved");
-    try {
-        as_graph(graph)->graph.set_interleaved(static_cast<size_t>(node), interleaved, original_n);
-        return 0;
-    } catch (const std::exception& e) {
-        last_error_message = e.what();
-        return -1;
-    }
-}
 
 int cactus_graph_release_weight_pages(cactus_graph_t graph, cactus_node_t node) {
     if (!graph) return fail_invalid("Invalid args to cactus_graph_release_weight_pages");

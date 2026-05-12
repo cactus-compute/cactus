@@ -32,6 +32,9 @@ set(KERNEL_SOURCES
     src/attention.cpp
     src/blas.cpp
     src/conv.cpp
+    src/conv2d.cpp
+    src/attention_hybrid.cpp
+    src/norms_rope.cpp
     src/dsp.cpp
     src/fused.cpp
     src/image.cpp

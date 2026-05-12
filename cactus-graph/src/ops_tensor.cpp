@@ -37,90 +37,27 @@ void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     size_t num_indices = indices_buffer.total_size;
     size_t bytes_per_element = PrecisionTraits::packed_size_of(tensor_buffer.precision, element_size);
 
-    if (PrecisionTraits::is_integer(tensor_buffer.precision)) {
+    {
         const char* tensor_data = static_cast<const char*>(tensor_buffer.get_data());
         char* output = static_cast<char*>(node.output_buffer.get_data());
-        Precision prec = tensor_buffer.precision;
 
-        const bool is_grouped = tensor_buffer.group_size > 0;
-        __fp16* gathered_scales = nullptr;
-        const __fp16* src_scales = nullptr;
-        size_t num_groups = 0;
-
-        if (is_grouped) {
-            num_groups = tensor_buffer.num_groups;
-            src_scales = tensor_buffer.scales_as_fp16();
-            size_t scales_bytes = num_indices * num_groups * sizeof(__fp16);
-            node.output_buffer.owned_scales = std::make_unique<char[]>(scales_bytes);
-            gathered_scales = reinterpret_cast<__fp16*>(node.output_buffer.owned_scales.get());
-        }
-
-        const int8_t* indices = indices_buffer.data_as<int8_t>();
-        for (size_t i = 0; i < num_indices; i++) {
-            size_t idx = static_cast<size_t>(indices[i]);
-            if (idx >= first_dim) {
-                throw std::runtime_error("Gather index " + std::to_string(idx) + " out of bounds for dimension " + std::to_string(first_dim));
+        auto gather_loop = [&](auto get_idx) {
+            for (size_t i = 0; i < num_indices; i++) {
+                size_t idx = get_idx(i);
+                if (idx >= first_dim)
+                    throw std::runtime_error("Gather index " + std::to_string(idx) + " out of bounds for dimension " + std::to_string(first_dim));
+                std::memcpy(output + PrecisionTraits::byte_offset_of(tensor_buffer.precision, i * element_size),
+                            tensor_data + PrecisionTraits::byte_offset_of(tensor_buffer.precision, idx * element_size),
+                            bytes_per_element);
             }
-            std::memcpy(output + PrecisionTraits::byte_offset_of(prec, i * element_size),
-                        tensor_data + PrecisionTraits::byte_offset_of(prec, idx * element_size),
-                        bytes_per_element);
-            if (is_grouped) {
-                for (size_t g = 0; g < num_groups; g++) {
-                    gathered_scales[i * num_groups + g] = src_scales[idx * num_groups + g];
-                }
-            }
-        }
-
-        if (is_grouped) {
-            node.output_buffer.group_size = tensor_buffer.group_size;
-            node.output_buffer.num_groups = num_groups;
-            node.output_buffer.scales_data = gathered_scales;
-        }
-    } else if (tensor_buffer.precision == Precision::FP16) {
-        const __fp16* tensor_data = tensor_buffer.data_as<__fp16>();
-        __fp16* output = node.output_buffer.data_as<__fp16>();
+        };
 
         if (indices_buffer.precision == Precision::INT8) {
             const int8_t* indices = indices_buffer.data_as<int8_t>();
-            for (size_t i = 0; i < num_indices; i++) {
-                size_t idx = static_cast<size_t>(indices[i]);
-                if (idx >= first_dim) {
-                    throw std::runtime_error("Gather index " + std::to_string(idx) + " out of bounds for dimension " + std::to_string(first_dim));
-                }
-                std::memcpy(output + i * element_size, tensor_data + idx * element_size, bytes_per_element);
-            }
+            gather_loop([&](size_t i) { return static_cast<size_t>(indices[i]); });
         } else {
             const float* indices = indices_buffer.data_as<float>();
-            for (size_t i = 0; i < num_indices; i++) {
-                size_t idx = static_cast<size_t>(indices[i]);
-                if (idx >= first_dim) {
-                    throw std::runtime_error("Gather index " + std::to_string(idx) + " out of bounds for dimension " + std::to_string(first_dim));
-                }
-                std::memcpy(output + i * element_size, tensor_data + idx * element_size, bytes_per_element);
-            }
-        }
-    } else {
-        const float* tensor_data = tensor_buffer.data_as<float>();
-        float* output = node.output_buffer.data_as<float>();
-
-        if (indices_buffer.precision == Precision::INT8) {
-            const int8_t* indices = indices_buffer.data_as<int8_t>();
-            for (size_t i = 0; i < num_indices; i++) {
-                size_t idx = static_cast<size_t>(indices[i]);
-                if (idx >= first_dim) {
-                    throw std::runtime_error("Gather index " + std::to_string(idx) + " out of bounds for dimension " + std::to_string(first_dim));
-                }
-                std::memcpy(output + i * element_size, tensor_data + idx * element_size, bytes_per_element);
-            }
-        } else {
-            const float* indices = indices_buffer.data_as<float>();
-            for (size_t i = 0; i < num_indices; i++) {
-                size_t idx = static_cast<size_t>(indices[i]);
-                if (idx >= first_dim) {
-                    throw std::runtime_error("Gather index " + std::to_string(idx) + " out of bounds for dimension " + std::to_string(first_dim));
-                }
-                std::memcpy(output + i * element_size, tensor_data + idx * element_size, bytes_per_element);
-            }
+            gather_loop([&](size_t i) { return static_cast<size_t>(indices[i]); });
         }
     }
 }
@@ -153,21 +90,8 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
         node.output_buffer.precision = input_buffer.precision;
 
         if (input_buffer.is_cq()) {
-            size_t num_groups = input_buffer.num_groups;
-            size_t scales_bytes = slice_length * num_groups * sizeof(__fp16);
-            node.output_buffer.owned_scales = std::make_unique<char[]>(scales_bytes);
-            __fp16* sliced_scales = reinterpret_cast<__fp16*>(node.output_buffer.owned_scales.get());
-            const __fp16* input_scales = input_buffer.scales_as_fp16();
-
-            for (size_t i = 0; i < slice_length; i++) {
-                for (size_t g = 0; g < num_groups; g++) {
-                    sliced_scales[i * num_groups + g] = input_scales[(slice_start + i) * num_groups + g];
-                }
-            }
-
             node.output_buffer.group_size = input_buffer.group_size;
-            node.output_buffer.num_groups = num_groups;
-            node.output_buffer.scales_data = sliced_scales;
+            node.output_buffer.num_groups = input_buffer.num_groups;
         }
         return;
     }
@@ -206,9 +130,7 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
     size_t hidden_dim = embeddings_buffer.shape[1];
     size_t num_indices = indices_buffer.total_size;
-    size_t vocab_size = embeddings_buffer.original_N > 0
-                      ? embeddings_buffer.original_N
-                      : embeddings_buffer.shape[0];
+    size_t vocab_size = embeddings_buffer.shape[0];
 
     std::vector<float> indices_float;
     const float* indices_ptr;
@@ -280,73 +202,6 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
                 cached_rows.insert(cached_rows.end(), output + i * hidden_dim, output + (i + 1) * hidden_dim);
             }
         }
-    } else if (PrecisionTraits::is_integer(emb_prec) && embeddings_buffer.group_size > 0) {
-        const int8_t* embeddings = embeddings_buffer.data_as<int8_t>();
-        const __fp16* scales = embeddings_buffer.scales_as_fp16();
-        size_t group_size = embeddings_buffer.group_size;
-        size_t num_groups = embeddings_buffer.num_groups;
-
-        static const uint8_t gather_indices[4][16] = {
-            {0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 49, 50, 51},  // lane 0
-            {4, 5, 6, 7, 20, 21, 22, 23, 36, 37, 38, 39, 52, 53, 54, 55},  // lane 1
-            {8, 9, 10, 11, 24, 25, 26, 27, 40, 41, 42, 43, 56, 57, 58, 59}, // lane 2
-            {12, 13, 14, 15, 28, 29, 30, 31, 44, 45, 46, 47, 60, 61, 62, 63} // lane 3
-        };
-
-        auto load_table = [](const int8_t* base) -> int8x16x4_t {
-            return vld1q_s8_x4(base);
-        };
-
-        for (size_t i = 0; i < num_indices; i++) {
-            size_t idx = static_cast<size_t>(indices_ptr[i]);
-            if (idx >= vocab_size) {
-                throw std::runtime_error("Embedding index out of bounds: " + std::to_string(idx) + " >= " + std::to_string(vocab_size));
-            }
-
-            size_t block = idx / 4;
-            size_t lane = idx % 4;
-            __fp16* out_row = output + i * hidden_dim;
-
-            uint8x16_t indices_vec = vld1q_u8(gather_indices[lane]);
-
-            for (size_t g = 0; g < num_groups; g++) {
-                float scale = (float)scales[(block * num_groups + g) * 4 + lane];
-                float32x4_t scale_vec = vdupq_n_f32(scale);
-
-                size_t k_start = g * group_size;
-                size_t k_end = std::min(k_start + group_size, hidden_dim);
-
-                const int8_t* group_base = embeddings + PrecisionTraits::byte_offset_of(emb_prec, (block * hidden_dim + k_start) * 4);
-
-                size_t k = k_start;
-                for (; k + 16 <= k_end; k += 16) {
-                    const int8_t* chunk_base = group_base + PrecisionTraits::byte_offset_of(emb_prec, (k - k_start) * 4);
-                    int8x16x4_t table = load_table(chunk_base);
-
-                    int8x16_t values = vqtbl4q_s8(table, indices_vec);
-
-                    int16x8_t lo16 = vmovl_s8(vget_low_s8(values));
-                    int16x8_t hi16 = vmovl_s8(vget_high_s8(values));
-
-                    float32x4_t f0 = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo16))), scale_vec);
-                    float32x4_t f1 = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo16))), scale_vec);
-                    float32x4_t f2 = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi16))), scale_vec);
-                    float32x4_t f3 = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi16))), scale_vec);
-
-                    vst1q_f16(out_row + k, vcombine_f16(vcvt_f16_f32(f0), vcvt_f16_f32(f1)));
-                    vst1q_f16(out_row + k + 8, vcombine_f16(vcvt_f16_f32(f2), vcvt_f16_f32(f3)));
-                }
-
-                if (k < k_end)
-                    assert(false && "grouped INT8 embeddings must have hidden_dim that is a multiple of 16");
-                for (; k < k_end; k++) {
-                    size_t k_group = k / 4;
-                    size_t k_within = k % 4;
-                    int8_t val = embeddings[(block * (hidden_dim / 4) + k_group) * 16 + lane * 4 + k_within];
-                    out_row[k] = static_cast<__fp16>(val * scale);
-                }
-            }
-        }
     } else if (embeddings_buffer.precision == Precision::FP16) {
         const __fp16* embeddings = embeddings_buffer.data_as<__fp16>();
         for (size_t i = 0; i < num_indices; i++) {
@@ -357,7 +212,7 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
             std::memcpy(output + i * hidden_dim, embeddings + idx * hidden_dim, hidden_dim * sizeof(__fp16));
         }
     } else {
-        throw std::runtime_error("Embedding requires interleaved grouped INT4/INT8 or FP16");
+        throw std::runtime_error("Embedding requires CQ quantized or FP16 data");
     }
 }
 

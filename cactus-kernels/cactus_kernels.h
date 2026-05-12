@@ -218,6 +218,8 @@ struct CactusQuantMatrix {
     const int8_t* right_signs;
     const uint32_t* permutation;
     const __fp16* rotation;
+    const int8_t* expanded;
+    const float* norm_f32;
 };
 
 uint32_t cactus_quant_packed_group_bytes(uint32_t bits, uint32_t group_size);

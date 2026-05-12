@@ -8,54 +8,17 @@ size_t CactusGraph::input(const std::vector<size_t>& shape, Precision precision)
     return add_node(OpType::INPUT, {}, shape, {.output_precision = precision});
 }
 
-size_t CactusGraph::add(size_t input1, size_t input2) {
-    const auto& lhs_buffer = get_output_buffer(input1);
-    const auto& rhs_buffer = get_output_buffer(input2);
-    BroadcastInfo broadcast_info = BroadcastInfo::compute(lhs_buffer.shape, rhs_buffer.shape);
-    OpParams params{.broadcast_info = broadcast_info};
-
-    return add_node(OpType::ADD, {input1, input2}, broadcast_info.output_shape, params);
+size_t CactusGraph::binary_broadcast_op(OpType op, size_t input1, size_t input2) {
+    BroadcastInfo bi = BroadcastInfo::compute(
+        get_output_buffer(input1).shape, get_output_buffer(input2).shape);
+    return add_node(op, {input1, input2}, bi.output_shape, {.broadcast_info = bi});
 }
 
-size_t CactusGraph::add_clipped(size_t input1, size_t input2) {
-    const auto& lhs_buffer = get_output_buffer(input1);
-    const auto& rhs_buffer = get_output_buffer(input2);
-
-    BroadcastInfo broadcast_info = BroadcastInfo::compute(lhs_buffer.shape, rhs_buffer.shape);
-    OpParams params{.broadcast_info = broadcast_info};
-
-    return add_node(OpType::ADD_CLIPPED, {input1, input2}, broadcast_info.output_shape, params);
-}
-
-size_t CactusGraph::subtract(size_t input1, size_t input2) {
-    const auto& lhs_buffer = get_output_buffer(input1);
-    const auto& rhs_buffer = get_output_buffer(input2);
-
-    BroadcastInfo broadcast_info = BroadcastInfo::compute(lhs_buffer.shape, rhs_buffer.shape);
-    OpParams params{.broadcast_info = broadcast_info};
-
-    return add_node(OpType::SUBTRACT, {input1, input2}, broadcast_info.output_shape, params);
-}
-
-size_t CactusGraph::multiply(size_t input1, size_t input2) {
-    const auto& lhs_buffer = get_output_buffer(input1);
-    const auto& rhs_buffer = get_output_buffer(input2);
-
-    BroadcastInfo broadcast_info = BroadcastInfo::compute(lhs_buffer.shape, rhs_buffer.shape);
-    OpParams params{.broadcast_info = broadcast_info};
-
-    return add_node(OpType::MULTIPLY, {input1, input2}, broadcast_info.output_shape, params);
-}
-
-size_t CactusGraph::divide(size_t input1, size_t input2) {
-    const auto& lhs_buffer = get_output_buffer(input1);
-    const auto& rhs_buffer = get_output_buffer(input2);
-
-    BroadcastInfo broadcast_info = BroadcastInfo::compute(lhs_buffer.shape, rhs_buffer.shape);
-    OpParams params{.broadcast_info = broadcast_info};
-
-    return add_node(OpType::DIVIDE, {input1, input2}, broadcast_info.output_shape, params);
-}
+size_t CactusGraph::add(size_t a, size_t b) { return binary_broadcast_op(OpType::ADD, a, b); }
+size_t CactusGraph::add_clipped(size_t a, size_t b) { return binary_broadcast_op(OpType::ADD_CLIPPED, a, b); }
+size_t CactusGraph::subtract(size_t a, size_t b) { return binary_broadcast_op(OpType::SUBTRACT, a, b); }
+size_t CactusGraph::multiply(size_t a, size_t b) { return binary_broadcast_op(OpType::MULTIPLY, a, b); }
+size_t CactusGraph::divide(size_t a, size_t b) { return binary_broadcast_op(OpType::DIVIDE, a, b); }
 
 size_t CactusGraph::abs(size_t input) {
     const auto& input_buffer = get_output_buffer(input);
@@ -136,13 +99,7 @@ size_t CactusGraph::matmul(size_t input1, size_t input2, bool pretransposed_rhs,
     size_t K = lhs_buffer.shape[1];
     size_t rhs_K = pretransposed_rhs ? rhs_buffer.shape[1] : rhs_buffer.shape[0];
 
-    // For interleaved weights, use original_N (shape stores padded N)
-    size_t N;
-    if (rhs_buffer.is_interleaved && rhs_buffer.original_N > 0) {
-        N = rhs_buffer.original_N;
-    } else {
-        N = pretransposed_rhs ? rhs_buffer.shape[0] : rhs_buffer.shape[1];
-    }
+    size_t N = pretransposed_rhs ? rhs_buffer.shape[0] : rhs_buffer.shape[1];
 
     if (K != rhs_K) {
         std::cout << "Matrix dimensions incompatible for multiplication: "
@@ -237,95 +194,24 @@ size_t CactusGraph::index(size_t input, size_t index_value, int dim) {
     return add_node(OpType::INDEX, {input}, output_shape, params);
 }
 
-size_t CactusGraph::sum(size_t input, int axis) {
-    const auto& input_buffer = get_output_buffer(input);
-    std::vector<size_t> output_shape;
-
+size_t CactusGraph::reduction_op(OpType op, size_t input, int axis) {
+    const auto& buf = get_output_buffer(input);
+    std::vector<size_t> out;
     if (axis == -1) {
-        output_shape = {1};
+        out = {1};
     } else {
-        output_shape = input_buffer.shape;
-        output_shape.erase(output_shape.begin() + axis);
-        if (output_shape.empty()) {
-            output_shape = {1};
-        }
+        out = buf.shape;
+        out.erase(out.begin() + axis);
+        if (out.empty()) out = {1};
     }
-
-    OpParams params{.axis = axis, .output_precision = input_buffer.precision};
-    return add_node(OpType::SUM, {input}, output_shape, params);
+    return add_node(op, {input}, out, {.axis = axis, .output_precision = buf.precision});
 }
 
-size_t CactusGraph::mean(size_t input, int axis) {
-    const auto& input_buffer = get_output_buffer(input);
-    std::vector<size_t> output_shape;
-
-    if (axis == -1) {
-        output_shape = {1};
-    } else {
-        output_shape = input_buffer.shape;
-        output_shape.erase(output_shape.begin() + axis);
-        if (output_shape.empty()) {
-            output_shape = {1};
-        }
-    }
-
-    OpParams params{.axis = axis, .output_precision = input_buffer.precision};
-    return add_node(OpType::MEAN, {input}, output_shape, params);
-}
-
-size_t CactusGraph::variance(size_t input, int axis) {
-    const auto& input_buffer = get_output_buffer(input);
-    std::vector<size_t> output_shape;
-
-    if (axis == -1) {
-        output_shape = {1};
-    } else {
-        output_shape = input_buffer.shape;
-        output_shape.erase(output_shape.begin() + axis);
-        if (output_shape.empty()) {
-            output_shape = {1};
-        }
-    }
-
-    OpParams params{.axis = axis, .output_precision = input_buffer.precision};
-    return add_node(OpType::VARIANCE, {input}, output_shape, params);
-}
-
-size_t CactusGraph::min(size_t input, int axis) {
-    const auto& input_buffer = get_output_buffer(input);
-    std::vector<size_t> output_shape;
-
-    if (axis == -1) {
-        output_shape = {1};
-    } else {
-        output_shape = input_buffer.shape;
-        output_shape.erase(output_shape.begin() + axis);
-        if (output_shape.empty()) {
-            output_shape = {1};
-        }
-    }
-
-    OpParams params{.axis = axis, .output_precision = input_buffer.precision};
-    return add_node(OpType::MIN, {input}, output_shape, params);
-}
-
-size_t CactusGraph::max(size_t input, int axis) {
-    const auto& input_buffer = get_output_buffer(input);
-    std::vector<size_t> output_shape;
-
-    if (axis == -1) {
-        output_shape = {1};
-    } else {
-        output_shape = input_buffer.shape;
-        output_shape.erase(output_shape.begin() + axis);
-        if (output_shape.empty()) {
-            output_shape = {1};
-        }
-    }
-
-    OpParams params{.axis = axis, .output_precision = input_buffer.precision};
-    return add_node(OpType::MAX, {input}, output_shape, params);
-}
+size_t CactusGraph::sum(size_t input, int axis) { return reduction_op(OpType::SUM, input, axis); }
+size_t CactusGraph::mean(size_t input, int axis) { return reduction_op(OpType::MEAN, input, axis); }
+size_t CactusGraph::variance(size_t input, int axis) { return reduction_op(OpType::VARIANCE, input, axis); }
+size_t CactusGraph::min(size_t input, int axis) { return reduction_op(OpType::MIN, input, axis); }
+size_t CactusGraph::max(size_t input, int axis) { return reduction_op(OpType::MAX, input, axis); }
 
 size_t CactusGraph::rms_norm(size_t input, size_t weight, float epsilon) {
     OpParams params{.epsilon = epsilon};
@@ -676,167 +562,79 @@ size_t CactusGraph::conv1d_k7s3(size_t input, size_t weight, size_t bias) {
 size_t CactusGraph::conv1d(size_t input, size_t weight, size_t stride) {
     const auto& xin = get_output_buffer(input);
     const auto& w   = get_output_buffer(weight);
-    
     if (xin.shape.size() != 3) throw std::runtime_error("conv1d expects N,C,L");
     if (w.shape.size() != 3) throw std::runtime_error("conv1d weight expects [C_out, C_in, K]");
-    
-    size_t N = xin.shape[0];
-    size_t C_out = w.shape[0];
-    size_t L = xin.shape[2];
-    size_t K = w.shape[2];
-    size_t L_out = (L - K) / stride + 1;
-    
+    size_t L_out = (xin.shape[2] - w.shape[2]) / stride + 1;
     OpParams params{.stride = stride};
-    return add_node(OpType::CONV1D, {input, weight}, {N, C_out, L_out}, params);
+    return add_node(OpType::CONV1D, {input, weight}, {xin.shape[0], w.shape[0], L_out}, params);
 }
 
 size_t CactusGraph::conv1d(size_t input, size_t weight, size_t bias, size_t stride) {
+    const auto& b = get_output_buffer(bias);
+    const auto& w = get_output_buffer(weight);
+    if (b.total_size != w.shape[0]) throw std::runtime_error("conv1d bias size mismatch");
+    // Reuse without-bias validation via conv1d(input, weight, stride), but need bias in inputs
     const auto& xin = get_output_buffer(input);
-    const auto& w   = get_output_buffer(weight);
-    const auto& b   = get_output_buffer(bias);
-    
     if (xin.shape.size() != 3) throw std::runtime_error("conv1d expects N,C,L");
     if (w.shape.size() != 3) throw std::runtime_error("conv1d weight expects [C_out, C_in, K]");
-    
-    size_t N = xin.shape[0];
-    size_t C_out = w.shape[0];
-    size_t L = xin.shape[2];
-    size_t K = w.shape[2];
-    size_t L_out = (L - K) / stride + 1;
-    if (b.total_size != C_out) throw std::runtime_error("conv1d bias size mismatch");
-    
+    size_t L_out = (xin.shape[2] - w.shape[2]) / stride + 1;
     OpParams params{.output_precision = xin.precision, .stride = stride};
-    return add_node(OpType::CONV1D, {input, weight, bias}, {N, C_out, L_out}, params);
+    return add_node(OpType::CONV1D, {input, weight, bias}, {xin.shape[0], w.shape[0], L_out}, params);
 }
 
 size_t CactusGraph::conv1d_same_depthwise_k9(size_t input, size_t weight) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);
-
-    if (xin.shape.size() != 3) {
-        throw std::runtime_error("conv1d_same_depthwise_k9 expects input [N, L, C]");
-    }
-
-    const size_t N = xin.shape[0];
-    const size_t L = xin.shape[1];
+    if (xin.shape.size() != 3) throw std::runtime_error("conv1d_same_depthwise_k9 expects input [N, L, C]");
     const size_t C = xin.shape[2];
-
     if (w.shape.size() == 2) {
-        if (w.shape[0] != C || w.shape[1] != 9) {
-            throw std::runtime_error("conv1d_same_depthwise_k9 weight must be [C, 9]");
-        }
+        if (w.shape[0] != C || w.shape[1] != 9) throw std::runtime_error("conv1d_same_depthwise_k9 weight must be [C, 9]");
     } else if (w.shape.size() == 3) {
-        if (w.shape[0] != C || w.shape[1] != 1 || w.shape[2] != 9) {
-            throw std::runtime_error("conv1d_same_depthwise_k9 weight must be [C, 1, 9]");
-        }
+        if (w.shape[0] != C || w.shape[1] != 1 || w.shape[2] != 9) throw std::runtime_error("conv1d_same_depthwise_k9 weight must be [C, 1, 9]");
     } else {
         throw std::runtime_error("conv1d_same_depthwise_k9 weight must be rank 2 or 3");
     }
-
     OpParams params{};
     params.output_precision = xin.precision;
-    return add_node(OpType::CONV1D_SAME_DEPTHWISE_K9, {input, weight}, {N, L, C}, params);
+    return add_node(OpType::CONV1D_SAME_DEPTHWISE_K9, {input, weight}, {xin.shape[0], xin.shape[1], C}, params);
 }
 
 size_t CactusGraph::conv1d_same_depthwise_k9(size_t input, size_t weight, size_t bias) {
-    const auto& xin = get_output_buffer(input);
-    const auto& w = get_output_buffer(weight);
+    size_t node = conv1d_same_depthwise_k9(input, weight);
     const auto& b = get_output_buffer(bias);
-
-    if (xin.shape.size() != 3) {
-        throw std::runtime_error("conv1d_same_depthwise_k9 expects input [N, L, C]");
-    }
-
-    const size_t N = xin.shape[0];
-    const size_t L = xin.shape[1];
-    const size_t C = xin.shape[2];
-
-    if (w.shape.size() == 2) {
-        if (w.shape[0] != C || w.shape[1] != 9) {
-            throw std::runtime_error("conv1d_same_depthwise_k9 weight must be [C, 9]");
-        }
-    } else if (w.shape.size() == 3) {
-        if (w.shape[0] != C || w.shape[1] != 1 || w.shape[2] != 9) {
-            throw std::runtime_error("conv1d_same_depthwise_k9 weight must be [C, 1, 9]");
-        }
-    } else {
-        throw std::runtime_error("conv1d_same_depthwise_k9 weight must be rank 2 or 3");
-    }
-
-    if (b.total_size != C) {
+    if (b.total_size != get_output_buffer(input).shape[2])
         throw std::runtime_error("conv1d_same_depthwise_k9 bias size mismatch");
-    }
-
-    OpParams params{};
-    params.output_precision = xin.precision;
-    return add_node(OpType::CONV1D_SAME_DEPTHWISE_K9, {input, weight, bias}, {N, L, C}, params);
+    auto& n = *nodes_[node_index_map_[node]];
+    n.input_ids.push_back(bias);
+    return node;
 }
 
 size_t CactusGraph::conv1d_pointwise(size_t input, size_t weight) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);
-
-    if (xin.shape.size() != 3) {
-        throw std::runtime_error("conv1d_pointwise expects input [N, L, C_in]");
-    }
-
-    const size_t N = xin.shape[0];
-    const size_t L = xin.shape[1];
+    if (xin.shape.size() != 3) throw std::runtime_error("conv1d_pointwise expects input [N, L, C_in]");
     const size_t C_in = xin.shape[2];
-    size_t C_out = 0;
-
+    size_t C_out = w.shape[0];
     if (w.shape.size() == 2) {
-        C_out = w.shape[0];
-        if (w.shape[1] != C_in) {
-            throw std::runtime_error("conv1d_pointwise weight must be [C_out, C_in]");
-        }
+        if (w.shape[1] != C_in) throw std::runtime_error("conv1d_pointwise weight must be [C_out, C_in]");
     } else if (w.shape.size() == 3) {
-        C_out = w.shape[0];
-        if (w.shape[1] != C_in || w.shape[2] != 1) {
-            throw std::runtime_error("conv1d_pointwise weight must be [C_out, C_in, 1]");
-        }
+        if (w.shape[1] != C_in || w.shape[2] != 1) throw std::runtime_error("conv1d_pointwise weight must be [C_out, C_in, 1]");
     } else {
         throw std::runtime_error("conv1d_pointwise weight must be rank 2 or 3");
     }
-
     OpParams params{};
     params.output_precision = xin.precision;
-    return add_node(OpType::CONV1D_POINTWISE, {input, weight}, {N, L, C_out}, params);
+    return add_node(OpType::CONV1D_POINTWISE, {input, weight}, {xin.shape[0], xin.shape[1], C_out}, params);
 }
 
 size_t CactusGraph::conv1d_pointwise(size_t input, size_t weight, size_t bias) {
-    const auto& xin = get_output_buffer(input);
-    const auto& w = get_output_buffer(weight);
+    size_t node = conv1d_pointwise(input, weight);
     const auto& b = get_output_buffer(bias);
-
-    if (xin.shape.size() != 3) {
-        throw std::runtime_error("conv1d_pointwise expects input [N, L, C_in]");
-    }
-
-    const size_t C_in = xin.shape[2];
-    size_t C_out = 0;
-
-    if (w.shape.size() == 2) {
-        C_out = w.shape[0];
-        if (w.shape[1] != C_in) {
-            throw std::runtime_error("conv1d_pointwise weight must be [C_out, C_in]");
-        }
-    } else if (w.shape.size() == 3) {
-        C_out = w.shape[0];
-        if (w.shape[1] != C_in || w.shape[2] != 1) {
-            throw std::runtime_error("conv1d_pointwise weight must be [C_out, C_in, 1]");
-        }
-    } else {
-        throw std::runtime_error("conv1d_pointwise weight must be rank 2 or 3");
-    }
-
-    if (b.total_size != C_out) {
+    if (b.total_size != get_output_buffer(node).shape[2])
         throw std::runtime_error("conv1d_pointwise bias size mismatch");
-    }
-
-    OpParams params{};
-    params.output_precision = xin.precision;
-    return add_node(OpType::CONV1D_POINTWISE, {input, weight, bias}, {xin.shape[0], xin.shape[1], C_out}, params);
+    auto& n = *nodes_[node_index_map_[node]];
+    n.input_ids.push_back(bias);
+    return node;
 }
 
 size_t CactusGraph::conv2d_k3s2p1(size_t input, size_t weight) {
@@ -872,36 +670,12 @@ size_t CactusGraph::conv2d_k3s2p1(size_t input, size_t weight) {
 }
 
 size_t CactusGraph::conv2d_k3s2p1(size_t input, size_t weight, size_t bias) {
-    const auto& xin = get_output_buffer(input);
-    const auto& w = get_output_buffer(weight);
+    size_t node = conv2d_k3s2p1(input, weight);
     const auto& b = get_output_buffer(bias);
-
-    if (xin.shape.size() != 4) {
-        throw std::runtime_error("conv2d_k3s2p1 expects input [N, C_in, H, W]");
-    }
-
-    const size_t C_in = xin.shape[1];
-    const size_t H = xin.shape[2];
-    const size_t W = xin.shape[3];
-    const size_t C_out = w.shape[0];
-
-    if (w.shape.size() != 4 || w.shape[1] != C_in || w.shape[2] != 3 || w.shape[3] != 3) {
-        throw std::runtime_error("conv2d_k3s2p1 weight must be [C_out, C_in, 3, 3]");
-    }
-    if (b.total_size != C_out) {
+    if (b.total_size != get_output_buffer(node).shape[1])
         throw std::runtime_error("conv2d_k3s2p1 bias size mismatch");
-    }
-    if (H == 0 || W == 0) {
-        throw std::runtime_error("conv2d_k3s2p1 input spatial dimensions must be > 0");
-    }
-
-    const size_t N = xin.shape[0];
-    const size_t H_out = (H - 1) / 2 + 1;
-    const size_t W_out = (W - 1) / 2 + 1;
-
-    OpParams params{};
-    params.output_precision = xin.precision;
-    return add_node(OpType::CONV2D_K3S2P1, {input, weight, bias}, {N, C_out, H_out, W_out}, params);
+    nodes_[node_index_map_[node]]->input_ids.push_back(bias);
+    return node;
 }
 
 size_t CactusGraph::conv2d_depthwise_k3s2p1(size_t input, size_t weight) {
@@ -941,44 +715,12 @@ size_t CactusGraph::conv2d_depthwise_k3s2p1(size_t input, size_t weight) {
 }
 
 size_t CactusGraph::conv2d_depthwise_k3s2p1(size_t input, size_t weight, size_t bias) {
-    const auto& xin = get_output_buffer(input);
-    const auto& w = get_output_buffer(weight);
+    size_t node = conv2d_depthwise_k3s2p1(input, weight);
     const auto& b = get_output_buffer(bias);
-
-    if (xin.shape.size() != 4) {
-        throw std::runtime_error("conv2d_depthwise_k3s2p1 expects input [N, C, H, W]");
-    }
-
-    const size_t C = xin.shape[1];
-    const size_t H = xin.shape[2];
-    const size_t W = xin.shape[3];
-
-    if (w.shape.size() == 3) {
-        if (w.shape[0] != C || w.shape[1] != 3 || w.shape[2] != 3) {
-            throw std::runtime_error("conv2d_depthwise_k3s2p1 weight must be [C, 3, 3]");
-        }
-    } else if (w.shape.size() == 4) {
-        if (w.shape[0] != C || w.shape[1] != 1 || w.shape[2] != 3 || w.shape[3] != 3) {
-            throw std::runtime_error("conv2d_depthwise_k3s2p1 weight must be [C, 1, 3, 3]");
-        }
-    } else {
-        throw std::runtime_error("conv2d_depthwise_k3s2p1 weight must be rank 3 or 4");
-    }
-
-    if (b.total_size != C) {
+    if (b.total_size != get_output_buffer(node).shape[1])
         throw std::runtime_error("conv2d_depthwise_k3s2p1 bias size mismatch");
-    }
-    if (H == 0 || W == 0) {
-        throw std::runtime_error("conv2d_depthwise_k3s2p1 input spatial dimensions must be > 0");
-    }
-
-    const size_t N = xin.shape[0];
-    const size_t H_out = (H - 1) / 2 + 1;
-    const size_t W_out = (W - 1) / 2 + 1;
-
-    OpParams params{};
-    params.output_precision = xin.precision;
-    return add_node(OpType::CONV2D_DEPTHWISE_K3S2P1, {input, weight, bias}, {N, C, H_out, W_out}, params);
+    nodes_[node_index_map_[node]]->input_ids.push_back(bias);
+    return node;
 }
 
 size_t CactusGraph::conv2d_pointwise_1x1(size_t input, size_t weight) {
@@ -1019,43 +761,12 @@ size_t CactusGraph::conv2d_pointwise_1x1(size_t input, size_t weight) {
 }
 
 size_t CactusGraph::conv2d_pointwise_1x1(size_t input, size_t weight, size_t bias) {
-    const auto& xin = get_output_buffer(input);
-    const auto& w = get_output_buffer(weight);
+    size_t node = conv2d_pointwise_1x1(input, weight);
     const auto& b = get_output_buffer(bias);
-
-    if (xin.shape.size() != 4) {
-        throw std::runtime_error("conv2d_pointwise_1x1 expects input [N, C_in, H, W]");
-    }
-
-    const size_t C_in = xin.shape[1];
-    const size_t H = xin.shape[2];
-    const size_t W = xin.shape[3];
-    size_t C_out = 0;
-
-    if (w.shape.size() == 2) {
-        C_out = w.shape[0];
-        if (w.shape[1] != C_in) {
-            throw std::runtime_error("conv2d_pointwise_1x1 weight must be [C_out, C_in]");
-        }
-    } else if (w.shape.size() == 4) {
-        C_out = w.shape[0];
-        if (w.shape[1] != C_in || w.shape[2] != 1 || w.shape[3] != 1) {
-            throw std::runtime_error("conv2d_pointwise_1x1 weight must be [C_out, C_in, 1, 1]");
-        }
-    } else {
-        throw std::runtime_error("conv2d_pointwise_1x1 weight must be rank 2 or 4");
-    }
-
-    if (b.total_size != C_out) {
+    if (b.total_size != get_output_buffer(node).shape[1])
         throw std::runtime_error("conv2d_pointwise_1x1 bias size mismatch");
-    }
-    if (H == 0 || W == 0) {
-        throw std::runtime_error("conv2d_pointwise_1x1 input spatial dimensions must be > 0");
-    }
-
-    OpParams params{};
-    params.output_precision = xin.precision;
-    return add_node(OpType::CONV2D_POINTWISE_1X1, {input, weight, bias}, {xin.shape[0], C_out, H, W}, params);
+    nodes_[node_index_map_[node]]->input_ids.push_back(bias);
+    return node;
 }
 
 size_t CactusGraph::lstm_cell(size_t input, size_t h_prev, size_t c_prev, size_t weight_ih, size_t weight_hh, size_t bias_ih, size_t bias_hh) {
@@ -1305,33 +1016,17 @@ size_t CactusGraph::sample_with_options(size_t logits, float temperature, float 
     return add_node(OpType::SAMPLE, {logits}, output_shape, params);
 }
 
-size_t CactusGraph::scalar_add(size_t input, float value) {
+static size_t scalar_val_op(CactusGraph& g, OpType op, size_t input, float value) {
     OpParams params{};
     params.scalar = value;
-    params.output_precision = get_output_buffer(input).precision;
-    return add_node(OpType::SCALAR_ADD, {input}, {}, params);
+    params.output_precision = g.get_output_buffer(input).precision;
+    return g.add_node(op, {input}, {}, params);
 }
 
-size_t CactusGraph::scalar_subtract(size_t input, float value) {
-    OpParams params{};
-    params.scalar = value;
-    params.output_precision = get_output_buffer(input).precision;
-    return add_node(OpType::SCALAR_SUBTRACT, {input}, {}, params);
-}
-
-size_t CactusGraph::scalar_multiply(size_t input, float value) {
-    OpParams params{};
-    params.scalar = value;
-    params.output_precision = get_output_buffer(input).precision;
-    return add_node(OpType::SCALAR_MULTIPLY, {input}, {}, params);
-}
-
-size_t CactusGraph::scalar_divide(size_t input, float value) {
-    OpParams params{};
-    params.scalar = value;
-    params.output_precision = get_output_buffer(input).precision;
-    return add_node(OpType::SCALAR_DIVIDE, {input}, {}, params);
-}
+size_t CactusGraph::scalar_add(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_ADD, input, value); }
+size_t CactusGraph::scalar_subtract(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_SUBTRACT, input, value); }
+size_t CactusGraph::scalar_multiply(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_MULTIPLY, input, value); }
+size_t CactusGraph::scalar_divide(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_DIVIDE, input, value); }
 
 size_t CactusGraph::scalar_exp(size_t input) {
     return add_node(OpType::SCALAR_EXP, {input}, {});
@@ -1652,33 +1347,12 @@ size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight) {
 }
 
 size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight, size_t bias) {
-    const auto& xin = get_output_buffer(input);
-    const auto& w = get_output_buffer(weight);
+    size_t node = conv2d_k3s1p1(input, weight);
     const auto& b = get_output_buffer(bias);
-
-    if (xin.shape.size() != 4) {
-        throw std::runtime_error("conv2d_k3s1p1 expects input [N, C_in, H, W]");
-    }
-
-    const size_t N = xin.shape[0];
-    const size_t C_in = xin.shape[1];
-    const size_t H = xin.shape[2];
-    const size_t W = xin.shape[3];
-
-    if (w.shape.size() != 4 || w.shape[1] != C_in || w.shape[2] != 3 || w.shape[3] != 3) {
-        throw std::runtime_error("conv2d_k3s1p1 weight must be [C_out, C_in, 3, 3]");
-    }
-    const size_t C_out = w.shape[0];
-    if (b.total_size != C_out) {
+    if (b.total_size != get_output_buffer(node).shape[1])
         throw std::runtime_error("conv2d_k3s1p1 bias size mismatch");
-    }
-    if (H == 0 || W == 0) {
-        throw std::runtime_error("conv2d_k3s1p1 input spatial dimensions must be > 0");
-    }
-
-    OpParams params{};
-    params.output_precision = xin.precision;
-    return add_node(OpType::CONV2D_K3S1P1, {input, weight, bias}, {N, C_out, H, W}, params);
+    nodes_[node_index_map_[node]]->input_ids.push_back(bias);
+    return node;
 }
 
 size_t CactusGraph::stats_pool(size_t input) {

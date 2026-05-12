@@ -93,11 +93,6 @@ _lib.cactus_graph_precision_cast.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_precision_cast.restype = ctypes.c_int
-_lib.cactus_graph_quantize_activations.argtypes = [
-    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
-]
-_lib.cactus_graph_quantize_activations.restype = ctypes.c_int
-
 _lib.cactus_graph_scalar_add.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)
 ]
@@ -214,14 +209,6 @@ _lib.cactus_graph_bilinear_interpolation.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_bilinear_interpolation.restype = ctypes.c_int
-_lib.cactus_graph_set_grouped_scales.argtypes = [
-    cactus_graph_t, cactus_node_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_void_p
-]
-_lib.cactus_graph_set_grouped_scales.restype = ctypes.c_int
-_lib.cactus_graph_set_interleaved.argtypes = [
-    cactus_graph_t, cactus_node_t, ctypes.c_bool, ctypes.c_size_t
-]
-_lib.cactus_graph_set_interleaved.restype = ctypes.c_int
 _lib.cactus_graph_release_weight_pages.argtypes = [cactus_graph_t, cactus_node_t]
 _lib.cactus_graph_release_weight_pages.restype = ctypes.c_int
 _lib.cactus_graph_prefetch_weight_pages.argtypes = [cactus_graph_t, cactus_node_t]
