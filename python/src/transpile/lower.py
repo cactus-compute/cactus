@@ -634,19 +634,19 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [out]
 
     if op == "relu":
-        return [g.relu(_tensor(env, node.inputs[0]))]
+        return [g.relu(_ensure_runtime_activation_tensor(g, _tensor(env, node.inputs[0])))]
 
     if op == "silu":
-        return [g.silu(_tensor(env, node.inputs[0]))]
+        return [g.silu(_ensure_runtime_activation_tensor(g, _tensor(env, node.inputs[0])))]
 
     if op == "gelu":
-        return [g.gelu(_tensor(env, node.inputs[0]))]
+        return [g.gelu(_ensure_runtime_activation_tensor(g, _tensor(env, node.inputs[0])))]
 
     if op == "gelu_erf":
-        return [g.gelu_erf(_tensor(env, node.inputs[0]))]
+        return [g.gelu_erf(_ensure_runtime_activation_tensor(g, _tensor(env, node.inputs[0])))]
 
     if op == "sigmoid":
-        return [g.sigmoid(_tensor(env, node.inputs[0]))]
+        return [g.sigmoid(_ensure_runtime_activation_tensor(g, _tensor(env, node.inputs[0])))]
 
     if op == "glu":
         return [g.glu(_tensor(env, node.inputs[0]), axis=int(node.attrs.get("axis", -1)))]
@@ -656,7 +656,7 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [_lower_softplus(g, x)]
 
     if op == "tanh":
-        return [g.tanh(_tensor(env, node.inputs[0]))]
+        return [g.tanh(_ensure_runtime_activation_tensor(g, _tensor(env, node.inputs[0])))]
 
     if op == "softmax":
         return [g.softmax(_tensor(env, node.inputs[0]), axis=int(node.attrs.get("axis", -1)))]
@@ -1430,14 +1430,14 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [g.conv2d(x, weight, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups)]
 
     if op == "layer_norm":
-        x = _tensor(env, node.inputs[0])
-        weight = _tensor(env, node.inputs[1])
-        bias = _tensor(env, node.inputs[2]) if len(node.inputs) > 2 else None
+        x = _ensure_runtime_norm_tensor(g, _tensor(env, node.inputs[0]))
+        weight = _ensure_runtime_norm_tensor(g, _tensor(env, node.inputs[1]))
+        bias = _ensure_runtime_norm_tensor(g, _tensor(env, node.inputs[2])) if len(node.inputs) > 2 else None
         return [g.layer_norm(x, weight, bias=bias, eps=float(node.attrs["eps"]))]
 
     if op == "rms_norm":
-        x = _tensor(env, node.inputs[0])
-        weight = _tensor(env, node.inputs[1])
+        x = _ensure_runtime_norm_tensor(g, _tensor(env, node.inputs[0]))
+        weight = _ensure_runtime_norm_tensor(g, _tensor(env, node.inputs[1]))
         reshape_back: tuple[int, ...] | None = None
         if len(x.shape) > 2:
             reshape_back = tuple(int(dim) for dim in x.shape)
@@ -1606,7 +1606,14 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
                 pretransposed_rhs=True,
             )
             z_proj = g.reshape(z_proj, (seq_len * num_v_heads, value_dim))
-            y_2d = g.multiply(g.rms_norm(y_2d, norm_weight, eps=eps), g.silu(z_proj))
+            y_2d = g.multiply(
+                g.rms_norm(
+                    _ensure_runtime_norm_tensor(g, y_2d),
+                    _ensure_runtime_norm_tensor(g, norm_weight),
+                    eps=eps,
+                ),
+                g.silu(_ensure_runtime_activation_tensor(g, z_proj)),
+            )
 
         return [g.reshape(y_2d, (batch_size, seq_len, num_v_heads * value_dim))]
 
@@ -2121,6 +2128,32 @@ def _reshape_for_trailing_broadcast(g: Graph, tensor: Tensor, target_shape: tupl
 def _ensure_fp16_tensor(g: Graph, tensor: Tensor) -> Tensor:
     if tensor.dtype == Graph.FP16:
         return tensor
+    return g.precision_cast(tensor, Graph.FP16)
+
+
+def _ensure_runtime_activation_tensor(g: Graph, tensor: Tensor) -> Tensor:
+    if tensor.dtype == Graph.FP16:
+        return tensor
+    if os.environ.get("CACTUS_TRANSPILER_DEBUG_ACTIVATION_CASTS") == "1":
+        print(
+            "[transpile:activation-cast] "
+            f"from_dtype={int(tensor.dtype)} "
+            f"to_dtype={int(Graph.FP16)} "
+            f"node_id={int(tensor.id)}"
+        )
+    return g.precision_cast(tensor, Graph.FP16)
+
+
+def _ensure_runtime_norm_tensor(g: Graph, tensor: Tensor) -> Tensor:
+    if tensor.dtype == Graph.FP16:
+        return tensor
+    if os.environ.get("CACTUS_TRANSPILER_DEBUG_NORM_CASTS") == "1":
+        print(
+            "[transpile:norm-cast] "
+            f"from_dtype={int(tensor.dtype)} "
+            f"to_dtype={int(Graph.FP16)} "
+            f"node_id={int(tensor.id)}"
+        )
     return g.precision_cast(tensor, Graph.FP16)
 
 
