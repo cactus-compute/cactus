@@ -109,6 +109,7 @@ enum class OpType {
     MAXPOOL1D, BILSTM_SEQUENCE, LEAKY_RELU,
     CONV2D_K3S1P1, STATS_POOL, WEIGHTED_STATS_POOL,
     KV_CACHE_STATE, KV_CACHE_APPEND, ATTENTION_CACHED,
+    KV_CACHE_STATE_TQ, KV_CACHE_APPEND_TQ, ATTENTION_CACHED_TQ,
     CONV_CACHE_STATE, CONV_CACHE_APPEND,
     RFFT, IRFFT, MEL_FILTER_BANK, SPECTROGRAM,
     IMAGE_PREPROCESS,
@@ -358,6 +359,9 @@ struct OpParams {
     size_t kernel_size = 0;
     size_t max_cache_seq_len = 0;
     size_t cache_sink_size = 0;
+    size_t angle_bits = 0;
+    size_t value_angle_bits = 0;
+    size_t cache_seed = 7;
 
     size_t hop_length = 0;
     float power = 2.0f;
@@ -560,6 +564,32 @@ public:
         size_t sink_size = 4);
 
     size_t attention_cached(
+        size_t query,
+        size_t key_new,
+        size_t value_new,
+        size_t k_cache_state,
+        size_t v_cache_state,
+        float scale,
+        size_t position_offset = 0,
+        size_t window_size = 0,
+        size_t v_head_dim = 0);
+
+    size_t kv_cache_state_tq(
+        size_t max_seq_len,
+        size_t num_kv_heads,
+        size_t head_dim,
+        size_t angle_bits,
+        size_t window_size = 0,
+        size_t sink_size = 4,
+        size_t seed = 7);
+
+    size_t kv_cache_append_tq(
+        size_t new_kv,
+        size_t cache_state_node,
+        size_t window_size = 0,
+        size_t sink_size = 4);
+
+    size_t attention_cached_tq(
         size_t query,
         size_t key_new,
         size_t value_new,

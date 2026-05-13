@@ -44,6 +44,8 @@ set(KERNEL_SOURCES
     src/quants.cpp
     src/reduce.cpp
     src/scalar.cpp
+    src/turboquant.cpp
+    src/turboquant_attention.cpp
 )
 
 add_library(cactus_kernels STATIC ${KERNEL_SOURCES})
@@ -78,6 +80,7 @@ if(BUILD_TESTING OR CACTUS_BUILD_TESTS)
         tests/test_conv.cpp
         tests/test_quant.cpp
         tests/test_dsp.cpp
+        tests/test_turboquant_smoke.cpp
     )
 
     foreach(TEST_SRC ${TEST_SOURCES})

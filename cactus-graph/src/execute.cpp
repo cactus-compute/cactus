@@ -74,6 +74,9 @@ DECLARE_COMPUTE(compute_persistent_node);
 DECLARE_COMPUTE(compute_kv_cache_state_node);
 DECLARE_COMPUTE(compute_kv_cache_append_node);
 DECLARE_COMPUTE(compute_attention_cached_node);
+DECLARE_COMPUTE(compute_kv_cache_state_tq_node);
+DECLARE_COMPUTE(compute_kv_cache_append_tq_node);
+DECLARE_COMPUTE(compute_attention_cached_tq_node);
 DECLARE_COMPUTE(compute_conv_cache_state_node);
 DECLARE_COMPUTE(compute_conv_cache_append_node);
 DECLARE_COMPUTE(compute_image_preprocess_node);
@@ -172,6 +175,9 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::KV_CACHE_STATE)] = compute_kv_cache_state_node;
     dispatch_flat[static_cast<int>(OpType::KV_CACHE_APPEND)] = compute_kv_cache_append_node;
     dispatch_flat[static_cast<int>(OpType::ATTENTION_CACHED)] = compute_attention_cached_node;
+    dispatch_flat[static_cast<int>(OpType::KV_CACHE_STATE_TQ)] = compute_kv_cache_state_tq_node;
+    dispatch_flat[static_cast<int>(OpType::KV_CACHE_APPEND_TQ)] = compute_kv_cache_append_tq_node;
+    dispatch_flat[static_cast<int>(OpType::ATTENTION_CACHED_TQ)] = compute_attention_cached_tq_node;
     dispatch_flat[static_cast<int>(OpType::CONV_CACHE_STATE)] = compute_conv_cache_state_node;
     dispatch_flat[static_cast<int>(OpType::CONV_CACHE_APPEND)] = compute_conv_cache_append_node;
     dispatch_flat[static_cast<int>(OpType::IMAGE_PREPROCESS)] = compute_image_preprocess_node;
@@ -307,7 +313,7 @@ void CactusGraph::execute(const std::string& profile_file) {
         for (size_t i = 0; i < n; ++i) {
             auto& node = nodes_[i];
             if (node->op_type == OpType::INPUT) continue;
-            if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::CONV_CACHE_STATE) {
+            if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::KV_CACHE_STATE_TQ || node->op_type == OpType::CONV_CACHE_STATE) {
                 dispatch_node(*node, nodes_, node_index_map_);
                 populated_node_ids_.insert(node->id);
                 continue;

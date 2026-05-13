@@ -40,4 +40,6 @@ tests/assets/test_wav_info.txt
 vision_activations.json
 gemma-4-eap-extras/
 .githooks/
+# Research-only TurboQuant instrumentation; preserved locally, not built
+cactus-kernels/src/turboquant_research.cpp
 *.cg

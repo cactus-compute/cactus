@@ -255,6 +255,10 @@ namespace CactusThreading {
 
         std::vector<std::thread> workers;
         std::deque<std::function<void()>> tasks;
+        // Per-worker static dispatch queues (used by enqueue_static_batch for
+        // deterministic chunk-to-worker assignment — needed by TurboQuant KV cache
+        // where Hadamard rotation amplifies ULP-level FP variance from shared-queue races).
+        std::vector<std::deque<std::function<void()>>> worker_queues_;
 
         std::mutex mutex;
         std::condition_variable work_available;
@@ -264,21 +268,26 @@ namespace CactusThreading {
         std::atomic<size_t> pending_tasks{0};
         size_t num_workers_;
 
-        void worker_thread() {
+        void worker_thread(size_t my_tid) {
             while (true) {
                 std::function<void()> task;
                 {
                     std::unique_lock<std::mutex> lock(mutex);
-                    work_available.wait(lock, [this] {
-                        return stop || !tasks.empty();
+                    work_available.wait(lock, [this, my_tid] {
+                        return stop || !tasks.empty() || !worker_queues_[my_tid].empty();
                     });
 
-                    if (stop && tasks.empty()) {
+                    if (stop && tasks.empty() && worker_queues_[my_tid].empty()) {
                         return;
                     }
 
-                    task = std::move(tasks.front());
-                    tasks.pop_front();
+                    if (!worker_queues_[my_tid].empty()) {
+                        task = std::move(worker_queues_[my_tid].front());
+                        worker_queues_[my_tid].pop_front();
+                    } else {
+                        task = std::move(tasks.front());
+                        tasks.pop_front();
+                    }
                 }
 
                 task();
@@ -303,16 +312,18 @@ namespace CactusThreading {
             }
 #endif
 
+            worker_queues_.resize(num_workers_);
+
             workers.reserve(num_workers_);
             for (size_t i = 0; i < num_workers_; ++i) {
-                workers.emplace_back([this]() {
+                workers.emplace_back([this, i]() {
 #if defined(__ANDROID__)
                     auto& perf = CoreTopology::get().performance_cores;
                     if (!perf.empty()) {
                         pin_current_thread_to_cores(perf);
                     }
 #endif
-                    worker_thread();
+                    worker_thread(i);
                 });
             }
         }
@@ -394,6 +405,30 @@ namespace CactusThreading {
                     size_t start = t * per_thread + std::min(t, remainder);
                     size_t end = start + per_thread + (t < remainder ? 1 : 0);
                     tasks.emplace_back([=]() { task_func(start, end); });
+                }
+            }
+            work_available.notify_all();
+        }
+
+        // Deterministic static dispatch — chunk t always runs on worker t.
+        // Used by TurboQuant kernels to avoid shared-queue race that causes
+        // gemma-4 family to give different perplexity across runs.
+        template<typename F>
+        void enqueue_static_batch(size_t total_work, size_t num_threads, F task_func) {
+            if (total_work == 0 || num_threads == 0) return;
+
+            num_threads = std::min(num_threads, std::min(num_workers_, total_work));
+            const size_t per_thread = total_work / num_threads;
+            const size_t remainder = total_work % num_threads;
+
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                pending_tasks.fetch_add(num_threads, std::memory_order_relaxed);
+
+                for (size_t t = 0; t < num_threads; ++t) {
+                    size_t start = t * per_thread + std::min(t, remainder);
+                    size_t end = start + per_thread + (t < remainder ? 1 : 0);
+                    worker_queues_[t].emplace_back([=]() { task_func(start, end); });
                 }
             }
             work_available.notify_all();
@@ -563,6 +598,22 @@ namespace CactusThreading {
             handle.wait();
         }
         return handle;
+    }
+
+    // Deterministic variant of parallel_for: chunk t always runs on worker thread t.
+    // Use for kernels where bit-identical results across runs are required (TurboQuant).
+    template<typename WorkFunc>
+    void parallel_for_static(size_t total_work, ParallelConfig config, WorkFunc work_func) {
+        const size_t num_threads = get_optimal_thread_count(total_work, config);
+
+        if (num_threads == 1) {
+            work_func(0, total_work);
+            return;
+        }
+
+        auto& pool = get_thread_pool();
+        pool.enqueue_static_batch(total_work, num_threads, work_func);
+        pool.wait_all();
     }
 
     template<typename WorkFunc>

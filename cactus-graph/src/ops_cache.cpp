@@ -1,4 +1,5 @@
 #include "../cactus_graph.h"
+#include <cstdio>
 #include "cactus_kernels.h"
 #include <cstring>
 #include <algorithm>
@@ -205,6 +206,226 @@ void compute_attention_cached_node(
         node.params.window_size,
         KV_QUANT_GROUP_SIZE,
         v_hdim);
+}
+
+namespace {
+
+struct TQCacheMetadata {
+    uint64_t current_seq_len;
+    uint64_t max_seq_len;
+    uint64_t num_kv_heads;
+    uint64_t head_dim;
+    uint64_t sink_size;
+    uint64_t angle_bits;
+    uint64_t seed;
+    uint64_t reserved;
+};
+
+static_assert(sizeof(TQCacheMetadata) == 64, "TQCacheMetadata must be 64 bytes");
+
+inline TQCacheMetadata* get_tq_meta(BufferDesc& buf) {
+    return static_cast<TQCacheMetadata*>(buf.get_data());
+}
+inline const TQCacheMetadata* get_tq_meta(const BufferDesc& buf) {
+    return static_cast<const TQCacheMetadata*>(buf.get_data());
+}
+
+inline size_t tq_angles_bytes_total(size_t max_seq, size_t kv_heads, size_t head_dim, size_t angle_bits) {
+    return max_seq * kv_heads * turboquant_angles_bytes_per_head(head_dim, angle_bits);
+}
+
+inline uint8_t* get_tq_angles(BufferDesc& buf) {
+    return reinterpret_cast<uint8_t*>(static_cast<char*>(buf.get_data()) + sizeof(TQCacheMetadata));
+}
+inline const uint8_t* get_tq_angles(const BufferDesc& buf) {
+    return reinterpret_cast<const uint8_t*>(static_cast<const char*>(buf.get_data()) + sizeof(TQCacheMetadata));
+}
+
+inline float* get_tq_radii(BufferDesc& buf, size_t max_seq, size_t kv_heads, size_t head_dim, size_t angle_bits) {
+    size_t off = sizeof(TQCacheMetadata) + tq_angles_bytes_total(max_seq, kv_heads, head_dim, angle_bits);
+    return reinterpret_cast<float*>(static_cast<char*>(buf.get_data()) + off);
+}
+inline const float* get_tq_radii(const BufferDesc& buf, size_t max_seq, size_t kv_heads, size_t head_dim, size_t angle_bits) {
+    size_t off = sizeof(TQCacheMetadata) + tq_angles_bytes_total(max_seq, kv_heads, head_dim, angle_bits);
+    return reinterpret_cast<const float*>(static_cast<const char*>(buf.get_data()) + off);
+}
+
+inline uint8_t* get_tq_rot_signs(BufferDesc& buf, size_t max_seq, size_t kv_heads, size_t head_dim, size_t angle_bits) {
+    size_t off = sizeof(TQCacheMetadata)
+               + tq_angles_bytes_total(max_seq, kv_heads, head_dim, angle_bits)
+               + max_seq * kv_heads * sizeof(float);
+    return reinterpret_cast<uint8_t*>(static_cast<char*>(buf.get_data()) + off);
+}
+inline const uint8_t* get_tq_rot_signs(const BufferDesc& buf, size_t max_seq, size_t kv_heads, size_t head_dim, size_t angle_bits) {
+    size_t off = sizeof(TQCacheMetadata)
+               + tq_angles_bytes_total(max_seq, kv_heads, head_dim, angle_bits)
+               + max_seq * kv_heads * sizeof(float);
+    return reinterpret_cast<const uint8_t*>(static_cast<const char*>(buf.get_data()) + off);
+}
+
+inline size_t tq_cache_buffer_size(size_t max_seq, size_t kv_heads, size_t head_dim, size_t angle_bits) {
+    return sizeof(TQCacheMetadata)
+         + tq_angles_bytes_total(max_seq, kv_heads, head_dim, angle_bits)
+         + max_seq * kv_heads * sizeof(float)
+         + turboquant_rotation_signs_bytes(head_dim);
+}
+
+} // namespace
+
+void compute_kv_cache_state_tq_node(
+    GraphNode& node,
+    const nodes_vector&,
+    const node_index_map_t&) {
+
+    if (node.output_buffer.get_data()) return;
+
+    size_t max_seq = node.params.max_cache_seq_len;
+    size_t kv_heads = node.params.num_kv_heads;
+    size_t hdim = node.params.head_dim;
+    size_t angle_bits = node.params.angle_bits;
+    size_t total = tq_cache_buffer_size(max_seq, kv_heads, hdim, angle_bits);
+
+    node.output_buffer = BufferDesc({total}, Precision::INT8);
+    node.output_buffer.allocate();
+    std::memset(node.output_buffer.get_data(), 0, total);
+
+    auto* meta = get_tq_meta(node.output_buffer);
+    meta->current_seq_len = 0;
+    meta->max_seq_len = max_seq;
+    meta->num_kv_heads = kv_heads;
+    meta->head_dim = hdim;
+    meta->sink_size = node.params.cache_sink_size;
+    meta->angle_bits = angle_bits;
+    meta->seed = node.params.cache_seed;
+
+    uint8_t* rot_signs = get_tq_rot_signs(node.output_buffer, max_seq, kv_heads, hdim, angle_bits);
+    cactus_turboquant_init(rot_signs, hdim, meta->seed);
+}
+
+void compute_kv_cache_append_tq_node(
+    GraphNode& node,
+    const nodes_vector& nodes,
+    const node_index_map_t& node_index_map) {
+
+    const auto& new_kv = get_input(node, 0, nodes, node_index_map);
+    auto& cache_buf = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    auto* meta = get_tq_meta(cache_buf);
+
+    size_t current_len = meta->current_seq_len;
+    size_t max_len = meta->max_seq_len;
+    size_t kv_heads = meta->num_kv_heads;
+    size_t hdim = meta->head_dim;
+    size_t sink = meta->sink_size;
+    size_t angle_bits = meta->angle_bits;
+
+    size_t new_seq_len = new_kv.total_size / (kv_heads * hdim);
+    size_t angle_stride = kv_heads * turboquant_angles_bytes_per_head(hdim, angle_bits);
+    size_t radius_stride = kv_heads;
+
+    uint8_t* angle_base = get_tq_angles(cache_buf);
+    float* radii_base = get_tq_radii(cache_buf, max_len, kv_heads, hdim, angle_bits);
+    const uint8_t* rot_signs = get_tq_rot_signs(cache_buf, max_len, kv_heads, hdim, angle_bits);
+
+    size_t window = node.params.window_size;
+    if (window == 0) window = max_len;
+
+    size_t new_total = current_len + new_seq_len;
+    bool needs_eviction = new_total > window;
+
+    if (needs_eviction) {
+        size_t remaining = window - sink - new_seq_len;
+        size_t shift_src = current_len - remaining;
+
+        if (remaining > 0 && shift_src > sink) {
+            std::memmove(angle_base + sink * angle_stride,
+                         angle_base + shift_src * angle_stride,
+                         remaining * angle_stride);
+            std::memmove(radii_base + sink * radius_stride,
+                         radii_base + shift_src * radius_stride,
+                         remaining * radius_stride * sizeof(float));
+        }
+
+        size_t append_offset = window - new_seq_len;
+        cactus_turboquant_encode_kv_fp16(
+            new_kv.data_as<__fp16>(),
+            radii_base + append_offset * radius_stride,
+            angle_base + append_offset * angle_stride,
+            rot_signs,
+            new_seq_len, kv_heads, hdim, angle_bits);
+
+        meta->current_seq_len = window;
+    } else {
+        cactus_turboquant_encode_kv_fp16(
+            new_kv.data_as<__fp16>(),
+            radii_base + current_len * radius_stride,
+            angle_base + current_len * angle_stride,
+            rot_signs,
+            new_seq_len, kv_heads, hdim, angle_bits);
+
+        meta->current_seq_len = new_total;
+    }
+
+    *node.output_buffer.data_as<float>() = static_cast<float>(meta->current_seq_len);
+}
+
+void compute_attention_cached_tq_node(
+    GraphNode& node,
+    const nodes_vector& nodes,
+    const node_index_map_t& node_index_map) {
+
+    const auto& query_buf = get_input(node, 0, nodes, node_index_map);
+    const auto& key_new_buf = get_input(node, 1, nodes, node_index_map);
+    const auto& val_new_buf = get_input(node, 2, nodes, node_index_map);
+    const auto& k_cache_buf = get_input(node, 3, nodes, node_index_map);
+    const auto& v_cache_buf = get_input(node, 4, nodes, node_index_map);
+
+    const auto* k_meta = get_tq_meta(k_cache_buf);
+    size_t cache_len = k_meta->current_seq_len;
+    size_t k_max = k_meta->max_seq_len;
+    size_t kv_heads = k_meta->num_kv_heads;
+    size_t hdim = k_meta->head_dim;
+    size_t k_angle_bits = k_meta->angle_bits;
+
+    const auto* v_meta = get_tq_meta(v_cache_buf);
+    size_t v_hdim = node.params.v_head_dim > 0 ? node.params.v_head_dim : hdim;
+    size_t v_max = v_meta->max_seq_len;
+    size_t v_angle_bits = v_meta->angle_bits;
+
+    const float* k_radii = get_tq_radii(k_cache_buf, k_max, kv_heads, hdim, k_angle_bits);
+    const uint8_t* k_angles = get_tq_angles(k_cache_buf);
+    const float* v_radii = get_tq_radii(v_cache_buf, v_max, kv_heads, v_hdim, v_angle_bits);
+    const uint8_t* v_angles = get_tq_angles(v_cache_buf);
+    const uint8_t* rot_signs = get_tq_rot_signs(k_cache_buf, k_max, kv_heads, hdim, k_angle_bits);
+
+    const auto& q_shape = query_buf.shape;
+    size_t batch_size = q_shape[0];
+    size_t seq_len = q_shape[1];
+    size_t num_q_heads = q_shape[2];
+
+    size_t new_seq_len = key_new_buf.total_size / (kv_heads * hdim);
+    size_t history_len = (cache_len >= new_seq_len) ? cache_len - new_seq_len : 0;
+
+    size_t kernel_window = node.params.window_size;
+    size_t kv_total_len = history_len + new_seq_len;
+    if (kernel_window > 0 && kernel_window >= kv_total_len) {
+        kernel_window = 0;
+    }
+
+    cactus_attention_hybrid_turboquant_fp16(
+        query_buf.data_as<__fp16>(),
+        k_radii, k_angles,
+        v_radii, v_angles,
+        rot_signs,
+        key_new_buf.data_as<__fp16>(),
+        val_new_buf.data_as<__fp16>(),
+        node.output_buffer.data_as<__fp16>(),
+        batch_size, seq_len, history_len, new_seq_len,
+        num_q_heads, kv_heads, hdim,
+        node.params.scale,
+        k_angle_bits, v_angle_bits,
+        node.params.position_offset,
+        true,
+        kernel_window);
 }
 
 void compute_conv_cache_state_node(

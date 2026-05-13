@@ -1,4 +1,5 @@
 #include "engine.h"
+#include <cstdio>
 #include "../models/model.h"
 #include "cactus_graph.h"
 #include <fstream>
@@ -227,11 +228,35 @@ bool Model::init_internal(CactusGraph* gb, const std::string& model_folder, size
     cache_sink_size_ = 4;
     const char* env_window = std::getenv("CACTUS_KV_WINDOW_SIZE");
     const char* env_sink = std::getenv("CACTUS_KV_SINK_SIZE");
+    const char* env_tq_bits = std::getenv("CACTUS_KV_TQ_BITS");
     if (env_window) {
         cache_window_size_ = std::stoul(env_window);
     }
     if (env_sink) {
         cache_sink_size_ = std::stoul(env_sink);
+    }
+    if (env_tq_bits) {
+        size_t b = std::stoul(env_tq_bits);
+        if (b == 2 || b == 4 || b == 6 || b == 8) cache_tq_angle_bits_ = b;
+    }
+    cache_tq_k_bits_ = cache_tq_angle_bits_;
+    cache_tq_v_bits_ = cache_tq_angle_bits_;
+    if (const char* env_kbits = std::getenv("CACTUS_KV_TQ_K_BITS")) {
+        size_t b = std::stoul(env_kbits);
+        if (b == 2 || b == 4 || b == 6 || b == 8) {
+            cache_tq_k_bits_ = b;
+            if (cache_tq_angle_bits_ == 0) cache_tq_angle_bits_ = b;
+        }
+    }
+    if (const char* env_vbits = std::getenv("CACTUS_KV_TQ_V_BITS")) {
+        size_t b = std::stoul(env_vbits);
+        if (b == 2 || b == 4 || b == 6 || b == 8) {
+            cache_tq_v_bits_ = b;
+            if (cache_tq_angle_bits_ == 0) cache_tq_angle_bits_ = b;
+        }
+    }
+    if (const char* env_seed = std::getenv("CACTUS_KV_TQ_SEED")) {
+        cache_tq_seed_ = std::stoul(env_seed);
     }
 
     post_init();
@@ -448,8 +473,14 @@ void Model::init_graph_cache(CactusGraph* gb) {
         if (layer_dims[i] == 0) continue;  // shared layers have dim=0
         size_t window = (i < layer_windows.size()) ? layer_windows[i] : cache_window_size_;
         size_t max_seq = (window > 0) ? window : cache_max_seq_len_;
-        graph_cache_k_nodes_[i] = gb->kv_cache_state(max_seq, layer_heads[i], layer_dims[i], window, cache_sink_size_);
-        graph_cache_v_nodes_[i] = gb->kv_cache_state(max_seq, layer_heads[i], layer_dims[i], window, cache_sink_size_);
+        size_t k_bits = cache_tq_k_bits_ > 0 ? cache_tq_k_bits_ : cache_tq_angle_bits_;
+        size_t v_bits = cache_tq_v_bits_ > 0 ? cache_tq_v_bits_ : cache_tq_angle_bits_;
+        graph_cache_k_nodes_[i] = gb->kv_cache_state_tq(max_seq, layer_heads[i], layer_dims[i],
+                                                        k_bits, window, cache_sink_size_,
+                                                        cache_tq_seed_);
+        graph_cache_v_nodes_[i] = gb->kv_cache_state_tq(max_seq, layer_heads[i], layer_dims[i],
+                                                        v_bits, window, cache_sink_size_,
+                                                        cache_tq_seed_);
     }
     cache_total_seq_len_ = 0;
 }
@@ -1052,8 +1083,8 @@ void Model::prefill_npu(const std::vector<uint32_t>& tokens) {
                     gb->set_external_input(v_input, const_cast<__fp16*>(v_ref.data), Precision::FP16);
 
                     size_t layer_window = get_kv_layer_windows()[layer_idx];
-                    gb->kv_cache_append(k_input, graph_cache_k_nodes_[layer_idx], layer_window, cache_sink_size_);
-                    gb->kv_cache_append(v_input, graph_cache_v_nodes_[layer_idx], layer_window, cache_sink_size_);
+                    gb->kv_cache_append_tq(k_input, graph_cache_k_nodes_[layer_idx], layer_window, cache_sink_size_);
+                    gb->kv_cache_append_tq(v_input, graph_cache_v_nodes_[layer_idx], layer_window, cache_sink_size_);
                 }
             }
             gb->execute();
@@ -1117,7 +1148,17 @@ double Model::score_tokens_window_logprob(
     const size_t first_pos = start - ctx_begin - 1;
     const size_t hidden_slice = gb->slice(hidden_node, /*axis=*/0, first_pos, target_len);
     bool transpose_w = true;
-    const size_t logits_node = gb->matmul(hidden_slice, output_weight_node_id_, transpose_w, backend);
+    size_t logits_node = gb->matmul(hidden_slice, output_weight_node_id_, transpose_w, backend);
+    if (config_.final_logit_softcapping > 0.0f) {
+        const auto& lp = gb->get_output_buffer(logits_node);
+        if (lp.precision != Precision::FP16) {
+            logits_node = gb->precision_cast(logits_node, Precision::FP16);
+        }
+        float inv_cap = 1.0f / config_.final_logit_softcapping;
+        logits_node = gb->scalar_multiply(logits_node, inv_cap);
+        logits_node = gb->tanh(logits_node);
+        logits_node = gb->scalar_multiply(logits_node, config_.final_logit_softcapping);
+    }
     gb->execute();
 
     const auto& logits_buf = gb->get_output_buffer(logits_node);
@@ -1162,6 +1203,121 @@ double Model::score_tokens_window_logprob(
         total_logprob += double(row[y]) - lse;
     }
 
+    return total_logprob;
+}
+
+double Model::score_tokens_cached_logprob(
+    const std::vector<uint32_t>& tokens,
+    size_t start,
+    size_t end,
+    size_t context,
+    size_t* tokens_scored,
+    std::vector<float>* per_pos_logprob,
+    std::vector<uint32_t>* per_pos_argmax
+) {
+    if (tokens_scored) *tokens_scored = 0;
+    if (per_pos_logprob) per_pos_logprob->clear();
+    if (per_pos_argmax) per_pos_argmax->clear();
+    if (tokens.empty()) return 0.0;
+    if (end > tokens.size()) end = tokens.size();
+    if (start < 1) start = 1;
+    if (start >= end) return 0.0;
+
+    const size_t ctx_begin = (start > context) ? (start - context) : 0;
+
+    reset_cache();
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    const auto backend = (config_.default_backend == Config::Backend::CPU) ? ComputeBackend::CPU : ComputeBackend::NPU;
+
+    const size_t prefill_end = start - 1;
+    if (prefill_end > ctx_begin) {
+        std::vector<uint32_t> prefill_toks(tokens.begin() + ctx_begin, tokens.begin() + prefill_end);
+        prefill(prefill_toks);
+    }
+
+    double total_logprob = 0.0;
+    size_t count = 0;
+
+    for (size_t i = start; i < end; ++i) {
+        if (i > start) gb->soft_reset_keep_pool();
+        std::vector<uint32_t> single = { tokens[i - 1] };
+        size_t hidden_node = forward(single, true);
+
+        const auto& hidden_buf = gb->get_output_buffer(hidden_node);
+        size_t hidden_dim = hidden_buf.shape.back();
+
+        size_t last_hidden = hidden_node;
+        if (hidden_buf.shape.size() >= 2) {
+            size_t seq_len_h = hidden_buf.shape[hidden_buf.shape.size() - 2];
+            if (seq_len_h > 1) {
+                last_hidden = gb->index(hidden_node, seq_len_h - 1, 0);
+                last_hidden = gb->reshape(last_hidden, {1, hidden_dim});
+            }
+        }
+
+        size_t logits_node = gb->matmul(last_hidden, output_weight_node_id_, true, backend);
+        if (config_.final_logit_softcapping > 0.0f) {
+            const auto& lp = gb->get_output_buffer(logits_node);
+            if (lp.precision != Precision::FP16) {
+                logits_node = gb->precision_cast(logits_node, Precision::FP16);
+            }
+            float inv_cap = 1.0f / config_.final_logit_softcapping;
+            logits_node = gb->scalar_multiply(logits_node, inv_cap);
+            logits_node = gb->tanh(logits_node);
+            logits_node = gb->scalar_multiply(logits_node, config_.final_logit_softcapping);
+        }
+        gb->execute();
+
+        const auto& logits_buf = gb->get_output_buffer(logits_node);
+        size_t vocab_size = logits_buf.shape.back();
+        void* logits_ptr = gb->get_output(logits_node);
+        size_t seq_rows = 1;
+        if (logits_buf.shape.size() >= 2) {
+            seq_rows = logits_buf.shape[logits_buf.shape.size() - 2];
+        }
+        size_t row_offset = (seq_rows > 0 ? (seq_rows - 1) * vocab_size : 0);
+
+        std::vector<float> row(vocab_size);
+        if (logits_buf.precision == Precision::FP32) {
+            const float* src = static_cast<const float*>(logits_ptr) + row_offset;
+            std::memcpy(row.data(), src, vocab_size * sizeof(float));
+        } else if (logits_buf.precision == Precision::FP16) {
+            const __fp16* src = static_cast<const __fp16*>(logits_ptr) + row_offset;
+            Quantization::fp16_to_fp32(const_cast<__fp16*>(src), row.data(), vocab_size);
+        } else {
+            const int8_t* src = static_cast<const int8_t*>(logits_ptr) + row_offset;
+            Quantization::int8_to_fp32(const_cast<int8_t*>(src), row.data(), vocab_size, 1.0f);
+        }
+
+        post_execute_updates(gb, 1);
+        cache_total_seq_len_ += 1;
+
+        const uint32_t y = tokens[i];
+        if (y >= vocab_size) throw std::runtime_error("Target token out of vocab range");
+
+        auto max_it = std::max_element(row.begin(), row.end());
+        float max_logit = *max_it;
+        uint32_t argmax_tok = static_cast<uint32_t>(std::distance(row.begin(), max_it));
+        if (const char* d = std::getenv("CACTUS_NAN_DETECT")) {
+            if (d[0] != '0' && !std::isfinite(max_logit)) {
+                std::fprintf(stderr, "[NaN] iter i=%zu first non-finite max_logit=%g cache_total=%zu\n",
+                             i, max_logit, cache_total_seq_len_);
+                if (tokens_scored) *tokens_scored = count;
+                return total_logprob;
+            }
+        }
+        double sum = 0.0;
+        for (size_t j = 0; j < vocab_size; ++j) sum += std::exp(double(row[j] - max_logit));
+        const double lse = double(max_logit) + std::log(sum);
+        const double lp = double(row[y]) - lse;
+        total_logprob += lp;
+        if (per_pos_logprob) per_pos_logprob->push_back(static_cast<float>(lp));
+        if (per_pos_argmax) per_pos_argmax->push_back(argmax_tok);
+        ++count;
+    }
+
+    if (tokens_scored) *tokens_scored = count;
     return total_logprob;
 }
 }

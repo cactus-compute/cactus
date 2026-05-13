@@ -400,6 +400,168 @@ bool test_conv_cache_persistent() {
     return true;
 }
 
+bool test_kv_cache_state_tq_init() {
+    CactusGraph g;
+
+    const size_t max_seq = 64, kv_heads = 2, head_dim = 64, angle_bits = 4;
+    size_t cache_node = g.kv_cache_state_tq(max_seq, kv_heads, head_dim, angle_bits);
+    g.execute();
+
+    auto* raw = static_cast<uint8_t*>(g.get_output(cache_node));
+    if (!raw) return false;
+
+    uint64_t current_seq = *reinterpret_cast<uint64_t*>(raw + 0);
+    uint64_t stored_max  = *reinterpret_cast<uint64_t*>(raw + 8);
+    uint64_t stored_kv   = *reinterpret_cast<uint64_t*>(raw + 16);
+    uint64_t stored_hdim = *reinterpret_cast<uint64_t*>(raw + 24);
+    uint64_t stored_ab   = *reinterpret_cast<uint64_t*>(raw + 40);
+
+    if (current_seq != 0) return false;
+    if (stored_max != max_seq) return false;
+    if (stored_kv != kv_heads) return false;
+    if (stored_hdim != head_dim) return false;
+    if (stored_ab != angle_bits) return false;
+
+    return true;
+}
+
+bool test_kv_cache_append_tq_basic() {
+    CactusGraph g;
+
+    const size_t max_seq = 64, kv_heads = 2, head_dim = 64, angle_bits = 4;
+    const size_t new_tokens = 3;
+    const size_t kv_elements = new_tokens * kv_heads * head_dim;
+
+    size_t cache_node = g.kv_cache_state_tq(max_seq, kv_heads, head_dim, angle_bits);
+
+    size_t kv_input = g.input({kv_elements}, Precision::FP16);
+    std::vector<__fp16> kv_data(kv_elements);
+    fill_random_fp16(kv_data);
+    g.set_input(kv_input, kv_data.data(), Precision::FP16);
+
+    size_t append_result = g.kv_cache_append_tq(kv_input, cache_node);
+    g.execute();
+
+    float* result = static_cast<float*>(g.get_output(append_result));
+    if (!result) return false;
+    if (static_cast<size_t>(*result) != new_tokens) return false;
+
+    auto* raw = static_cast<uint8_t*>(g.get_output(cache_node));
+    uint64_t current_seq = *reinterpret_cast<uint64_t*>(raw + 0);
+    if (current_seq != new_tokens) return false;
+
+    return true;
+}
+
+bool test_attention_cached_tq_basic() {
+    const size_t b = 1, s = 1, h = 2, kv = 2, d = 64, angle_bits = 4;
+    const size_t max_seq = 64;
+
+    CactusGraph g;
+
+    size_t k_cache = g.kv_cache_state_tq(max_seq, kv, d, angle_bits);
+    size_t v_cache = g.kv_cache_state_tq(max_seq, kv, d, angle_bits);
+
+    size_t iq = g.input({b, s, h, d}, Precision::FP16);
+    size_t ik = g.input({b, s, kv, d}, Precision::FP16);
+    size_t iv = g.input({b, s, kv, d}, Precision::FP16);
+
+    std::vector<__fp16> q(b * s * h * d), k_new(b * s * kv * d), v_new(b * s * kv * d);
+    fill_random_fp16(q);
+    fill_random_fp16(k_new);
+    fill_random_fp16(v_new);
+
+    g.set_input(iq, q.data(), Precision::FP16);
+    g.set_input(ik, k_new.data(), Precision::FP16);
+    g.set_input(iv, v_new.data(), Precision::FP16);
+
+    g.kv_cache_append_tq(ik, k_cache);
+    g.kv_cache_append_tq(iv, v_cache);
+
+    float scale = 1.0f / std::sqrt(static_cast<float>(d));
+    size_t attn = g.attention_cached_tq(iq, ik, iv, k_cache, v_cache, scale, 0);
+
+    g.execute();
+
+    __fp16* result = static_cast<__fp16*>(g.get_output(attn));
+    size_t out_size = b * s * h * d;
+
+    bool has_nonzero = false;
+    for (size_t i = 0; i < out_size; i++) {
+        if (!std::isfinite(static_cast<float>(result[i]))) return false;
+        if (std::abs(static_cast<float>(result[i])) > 1e-6f) has_nonzero = true;
+    }
+    return has_nonzero;
+}
+
+bool test_attention_cached_tq_multistep() {
+    const size_t b = 1, h = 2, kv = 2, d = 64, angle_bits = 6;
+    const size_t max_seq = 64;
+
+    CactusGraph g;
+
+    size_t k_cache = g.kv_cache_state_tq(max_seq, kv, d, angle_bits);
+    size_t v_cache = g.kv_cache_state_tq(max_seq, kv, d, angle_bits);
+
+    {
+        const size_t s = 4;
+        size_t iq = g.input({b, s, h, d}, Precision::FP16);
+        size_t ik = g.input({b, s, kv, d}, Precision::FP16);
+        size_t iv = g.input({b, s, kv, d}, Precision::FP16);
+
+        std::vector<__fp16> q(b*s*h*d), k(b*s*kv*d), v(b*s*kv*d);
+        fill_random_fp16(q);
+        fill_random_fp16(k);
+        fill_random_fp16(v);
+
+        g.set_input(iq, q.data(), Precision::FP16);
+        g.set_input(ik, k.data(), Precision::FP16);
+        g.set_input(iv, v.data(), Precision::FP16);
+
+        g.kv_cache_append_tq(ik, k_cache);
+        g.kv_cache_append_tq(iv, v_cache);
+        g.attention_cached_tq(iq, ik, iv, k_cache, v_cache,
+                              1.0f / std::sqrt(static_cast<float>(d)), 0);
+        g.execute();
+    }
+
+    auto* raw = static_cast<uint8_t*>(g.get_output(k_cache));
+    if (*reinterpret_cast<uint64_t*>(raw) != 4) return false;
+
+    g.soft_reset();
+    {
+        const size_t s = 1;
+        size_t iq = g.input({b, s, h, d}, Precision::FP16);
+        size_t ik = g.input({b, s, kv, d}, Precision::FP16);
+        size_t iv = g.input({b, s, kv, d}, Precision::FP16);
+
+        std::vector<__fp16> q(b*s*h*d), k(b*s*kv*d), v(b*s*kv*d);
+        fill_random_fp16(q);
+        fill_random_fp16(k);
+        fill_random_fp16(v);
+
+        g.set_input(iq, q.data(), Precision::FP16);
+        g.set_input(ik, k.data(), Precision::FP16);
+        g.set_input(iv, v.data(), Precision::FP16);
+
+        g.kv_cache_append_tq(ik, k_cache);
+        g.kv_cache_append_tq(iv, v_cache);
+        size_t attn = g.attention_cached_tq(iq, ik, iv, k_cache, v_cache,
+                                             1.0f / std::sqrt(static_cast<float>(d)), 4);
+        g.execute();
+
+        __fp16* result = static_cast<__fp16*>(g.get_output(attn));
+        for (size_t i = 0; i < b*s*h*d; i++) {
+            if (!std::isfinite(static_cast<float>(result[i]))) return false;
+        }
+    }
+
+    raw = static_cast<uint8_t*>(g.get_output(k_cache));
+    if (*reinterpret_cast<uint64_t*>(raw) != 5) return false;
+
+    return true;
+}
+
 bool run_benchmarks() {
     auto bench = [](const char* label, auto setup, auto run) {
         setup();
@@ -492,6 +654,10 @@ int main() {
     runner.run_test("Attention Cached Basic", test_attention_cached_basic());
     runner.run_test("Attention Cached Multistep", test_attention_cached_multistep());
     runner.run_test("KV Cache Invalidate", test_kv_cache_invalidate());
+    runner.run_test("KV Cache TQ State Init", test_kv_cache_state_tq_init());
+    runner.run_test("KV Cache TQ Append Basic", test_kv_cache_append_tq_basic());
+    runner.run_test("Attention Cached TQ Basic (K=4)", test_attention_cached_tq_basic());
+    runner.run_test("Attention Cached TQ Multistep (K=6)", test_attention_cached_tq_multistep());
     runner.run_test("Conv Cache State Init", test_conv_cache_state_init());
     runner.run_test("Conv Cache Append Basic", test_conv_cache_append_basic());
     runner.run_test("Conv Cache Circular", test_conv_cache_append_circular());

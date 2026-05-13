@@ -798,4 +798,61 @@ inline size_t kv_scales_count(
     return seq_len * kv_heads * num_groups;
 }
 
+inline size_t turboquant_angles_bytes_per_head(size_t head_dim, size_t angle_bits) {
+    return (head_dim * angle_bits + 7) / 8;
+}
+
+constexpr size_t TURBOQUANT_ROTATION_LAYERS = 1;
+
+inline size_t turboquant_rotation_signs_bytes(size_t head_dim) {
+    return ((head_dim + 7) / 8) * TURBOQUANT_ROTATION_LAYERS;
+}
+
+void cactus_turboquant_init(uint8_t* rotation_signs, size_t head_dim, uint64_t seed);
+
+void cactus_turboquant_encode_kv_fp16(
+    const __fp16* src, float* dst_radii, uint8_t* dst_angles,
+    const uint8_t* rotation_signs,
+    size_t seq_len, size_t kv_heads, size_t head_dim, size_t angle_bits);
+
+void cactus_turboquant_decode_kv_fp16(
+    const float* radii, const uint8_t* angles, const uint8_t* rotation_signs,
+    __fp16* dst, size_t seq_len, size_t kv_heads, size_t head_dim, size_t angle_bits);
+
+void hadamard_inplace(float* __restrict data, size_t dim);
+void apply_signs(float* __restrict data, const uint8_t* __restrict signs_packed, size_t dim);
+void rotate_forward(float* data, const uint8_t* signs_packed, size_t dim);
+void rotate_inverse(float* data, const uint8_t* signs_packed, size_t dim);
+void dequantize_2bit(const uint8_t* src, float* dst, size_t dim);
+void dequantize_4bit(const uint8_t* src, float* dst, size_t dim);
+void dequantize_6bit(const uint8_t* src, float* dst, size_t dim);
+float dot_2bit_f32(const float* __restrict q, float q_sum,
+                   const uint8_t* __restrict packed, size_t dim);
+void accumulate_2bit_f32(const uint8_t* __restrict packed, float weight_radius,
+                         float* __restrict accum, size_t dim);
+float dot_4bit_f32(const float* __restrict q,
+                   const uint8_t* __restrict packed, size_t dim);
+void accumulate_4bit_f32(const uint8_t* packed, float weight_radius,
+                         float* accum, size_t dim);
+float dot_6bit_f32(const float* __restrict q,
+                   const uint8_t* __restrict packed, size_t dim);
+void accumulate_6bit_f32(const uint8_t* __restrict packed, float weight_radius,
+                         float* __restrict accum, size_t dim);
+float dot_8bit_f32(const float* __restrict q,
+                   const uint8_t* __restrict packed, size_t dim);
+void accumulate_8bit_f32(const uint8_t* __restrict packed, float weight_radius,
+                         float* __restrict accum, size_t dim);
+
+void cactus_attention_hybrid_turboquant_fp16(
+    const __fp16* queries,
+    const float* cached_key_radii, const uint8_t* cached_key_angles,
+    const float* cached_value_radii, const uint8_t* cached_value_angles,
+    const uint8_t* rotation_signs,
+    const __fp16* keys_new, const __fp16* values_new, __fp16* output,
+    size_t batch_size, size_t seq_len, size_t cache_len, size_t new_len,
+    size_t num_q_heads, size_t num_kv_heads, size_t head_dim, float scale,
+    size_t angle_bits, size_t value_angle_bits,
+    size_t position_offset = 0, bool is_causal = true,
+    size_t window_size = 0);
+
 #endif

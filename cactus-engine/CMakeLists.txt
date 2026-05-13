@@ -144,3 +144,55 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(cactus_engine PRIVATE -Wno-pedantic)
 endif()
+
+if(BUILD_TESTING OR CACTUS_BUILD_TESTS)
+    add_executable(test_perplexity tests/test_perplexity.cpp tests/test_utils.cpp)
+    target_link_libraries(test_perplexity PRIVATE cactus_engine)
+    target_include_directories(test_perplexity PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    if(NOT CACTUS_HAS_CURL)
+        target_link_libraries(test_perplexity PRIVATE curl)
+    endif()
+
+    add_executable(test_seed_sweep tests/test_seed_sweep.cpp tests/test_utils.cpp)
+    target_link_libraries(test_seed_sweep PRIVATE cactus_engine)
+    target_include_directories(test_seed_sweep PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    if(NOT CACTUS_HAS_CURL)
+        target_link_libraries(test_seed_sweep PRIVATE curl)
+    endif()
+
+    add_executable(test_bfcl_eval tests/test_bfcl_eval.cpp tests/test_utils.cpp)
+    target_link_libraries(test_bfcl_eval PRIVATE cactus_engine)
+    target_include_directories(test_bfcl_eval PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    if(NOT CACTUS_HAS_CURL)
+        target_link_libraries(test_bfcl_eval PRIVATE curl)
+    endif()
+
+    add_executable(test_perplexity_context_sweep tests/test_perplexity_context_sweep.cpp tests/test_utils.cpp)
+    target_link_libraries(test_perplexity_context_sweep PRIVATE cactus_engine)
+    target_include_directories(test_perplexity_context_sweep PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    if(NOT CACTUS_HAS_CURL)
+        target_link_libraries(test_perplexity_context_sweep PRIVATE curl)
+    endif()
+
+    add_executable(test_decode_latency tests/test_decode_latency.cpp)
+    target_link_libraries(test_decode_latency PRIVATE cactus_engine)
+    target_include_directories(test_decode_latency PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    if(NOT CACTUS_HAS_CURL)
+        target_link_libraries(test_decode_latency PRIVATE curl)
+    endif()
+endif()

@@ -1,4 +1,5 @@
 #include "model_gemma4.h"
+#include <cstdio>
 #include "cactus_graph.h"
 #include <cmath>
 #include <cstdlib>
@@ -285,10 +286,10 @@ size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t laye
     size_t attn;
     if (use_cache && graph_cache_k_nodes_[cache_src] != 0) {
         if (share_src < 0) {
-            gb->kv_cache_append(k4, graph_cache_k_nodes_[cache_src], window, cache_sink_size_);
-            gb->kv_cache_append(v4, graph_cache_v_nodes_[cache_src], window, cache_sink_size_);
+            gb->kv_cache_append_tq(k4, graph_cache_k_nodes_[cache_src], window, cache_sink_size_);
+            gb->kv_cache_append_tq(v4, graph_cache_v_nodes_[cache_src], window, cache_sink_size_);
         }
-        attn = gb->attention_cached(q4, k4, v4,
+        attn = gb->attention_cached_tq(q4, k4, v4,
             graph_cache_k_nodes_[cache_src], graph_cache_v_nodes_[cache_src],
             attention_scale_, position_offset, window);
     } else {

@@ -1203,7 +1203,7 @@ size_t CactusGraph::add_node(OpType op_type, const std::vector<size_t>& inputs, 
     }
 
     Precision result_precision = params.output_precision;
-    if (op_type == OpType::PRECISION_CAST || op_type == OpType::EMBEDDING) {
+    if (op_type == OpType::PRECISION_CAST || op_type == OpType::EMBEDDING || op_type == OpType::GATHER) {
         result_precision = params.output_precision;
     } else if (!inputs.empty()) {
         result_precision = nodes_[node_index_map_[inputs[0]]]->output_buffer.precision;
@@ -1395,6 +1395,60 @@ size_t CactusGraph::kv_cache_append(size_t new_kv, size_t cache_state_node,
     params.cache_sink_size = sink_size;
     params.output_precision = Precision::FP32;
     return add_node(OpType::KV_CACHE_APPEND, {new_kv, cache_state_node}, {1}, params);
+}
+
+size_t CactusGraph::kv_cache_state_tq(size_t max_seq_len, size_t num_kv_heads, size_t head_dim,
+                                       size_t angle_bits, size_t window_size, size_t sink_size,
+                                       size_t seed) {
+    size_t angle_bytes_per_head = (head_dim * angle_bits + 7) / 8;
+    size_t angles_total = max_seq_len * num_kv_heads * angle_bytes_per_head;
+    size_t radii_total = max_seq_len * num_kv_heads * sizeof(float);
+    size_t signs_total = ((head_dim + 7) / 8) * 3;
+    size_t total_bytes = 64 + angles_total + radii_total + signs_total;
+
+    OpParams params{};
+    params.max_cache_seq_len = max_seq_len;
+    params.num_kv_heads = num_kv_heads;
+    params.head_dim = head_dim;
+    params.angle_bits = angle_bits;
+    params.window_size = window_size;
+    params.cache_sink_size = sink_size;
+    params.cache_seed = seed;
+    params.output_precision = Precision::INT8;
+    size_t node_id = add_node(OpType::KV_CACHE_STATE_TQ, {}, {total_bytes}, params);
+    persistent_node_ids_.insert(node_id);
+    return node_id;
+}
+
+size_t CactusGraph::kv_cache_append_tq(size_t new_kv, size_t cache_state_node,
+                                        size_t window_size, size_t sink_size) {
+    OpParams params{};
+    params.window_size = window_size;
+    params.cache_sink_size = sink_size;
+    params.output_precision = Precision::FP32;
+    return add_node(OpType::KV_CACHE_APPEND_TQ, {new_kv, cache_state_node}, {1}, params);
+}
+
+size_t CactusGraph::attention_cached_tq(size_t query, size_t key_new, size_t value_new,
+                                         size_t k_cache_state, size_t v_cache_state,
+                                         float scale, size_t position_offset,
+                                         size_t window_size, size_t v_head_dim) {
+    const auto& q_shape = get_output_buffer(query).shape;
+    size_t batch = q_shape[0];
+    size_t seq_len = q_shape[1];
+    size_t num_q_heads = q_shape[2];
+    size_t head_dim = q_shape[3];
+    size_t out_v_dim = v_head_dim > 0 ? v_head_dim : head_dim;
+
+    OpParams params{};
+    params.scale = scale;
+    params.position_offset = position_offset;
+    params.window_size = window_size;
+    params.v_head_dim = v_head_dim;
+    params.output_precision = Precision::FP16;
+    return add_node(OpType::ATTENTION_CACHED_TQ,
+                    {query, key_new, value_new, k_cache_state, v_cache_state},
+                    {batch, seq_len, num_q_heads, out_v_dim}, params);
 }
 
 size_t CactusGraph::conv_cache_state(size_t ws, size_t hidden_dim) {

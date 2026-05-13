@@ -604,7 +604,10 @@ public:
         token_history_.push_back(token);
     }
 
-    double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored);
+    virtual double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored);
+    virtual double score_tokens_cached_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored,
+                                                std::vector<float>* per_pos_logprob = nullptr,
+                                                std::vector<uint32_t>* per_pos_argmax = nullptr);
 
 
 
@@ -684,6 +687,10 @@ protected:
     size_t cache_window_size_ = 0;
     size_t cache_sink_size_ = 4;
     size_t cache_max_seq_len_ = 2048;
+    size_t cache_tq_angle_bits_ = 8;
+    size_t cache_tq_k_bits_ = 8;
+    size_t cache_tq_v_bits_ = 8;
+    size_t cache_tq_seed_ = 42;
     void init_graph_cache(CactusGraph* gb);
     void invalidate_graph_cache(CactusGraph* gb);
 

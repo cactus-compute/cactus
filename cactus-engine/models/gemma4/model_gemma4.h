@@ -313,6 +313,13 @@ public:
 
     size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
 
+    double score_tokens_cached_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end,
+                                        size_t context, size_t* tokens_scored,
+                                        std::vector<float>* per_pos_logprob = nullptr,
+                                        std::vector<uint32_t>* per_pos_argmax = nullptr) override;
+    double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end,
+                                        size_t context, size_t* tokens_scored) override;
+
     uint32_t decode(const std::vector<uint32_t>& tokens,
                     float temperature = -1.0f, float top_p = -1.0f, size_t top_k = 0,
                     const std::string& profile_file = "", float* out_entropy = nullptr,
