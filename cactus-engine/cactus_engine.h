@@ -31,6 +31,11 @@ CACTUS_FFI_EXPORT void cactus_destroy(cactus_model_t model);
 CACTUS_FFI_EXPORT void cactus_reset(cactus_model_t model);
 CACTUS_FFI_EXPORT void cactus_stop(cactus_model_t model);
 
+CACTUS_FFI_EXPORT void cactus_npu_set_enabled(bool enabled);
+CACTUS_FFI_EXPORT bool cactus_npu_enabled(void);
+CACTUS_FFI_EXPORT void cactus_mps_set_enabled(bool enabled);
+CACTUS_FFI_EXPORT bool cactus_mps_enabled(void);
+
 CACTUS_FFI_EXPORT int cactus_complete(
     cactus_model_t model,
     const char* messages_json,

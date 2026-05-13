@@ -940,8 +940,13 @@ bool Model::load_npu_prefill(const std::string& model_path) {
     return loaded;
 }
 
+static bool g_npu_enabled = true;
+
+extern "C" void cactus_npu_set_enabled(bool enabled) { g_npu_enabled = enabled; }
+extern "C" bool cactus_npu_enabled(void) { return g_npu_enabled; }
+
 bool Model::has_npu_prefill() const {
-    return npu_prefill_ && npu_prefill_->is_available();
+    return g_npu_enabled && npu_prefill_ && npu_prefill_->is_available();
 }
 
 size_t Model::get_prefill_chunk_size() const {

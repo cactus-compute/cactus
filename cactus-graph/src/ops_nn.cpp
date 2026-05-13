@@ -24,6 +24,16 @@ void shrink_thread_local_buffers() {
     std::vector<__fp16>().swap(transpose_buffer_fp16);
 }
 
+#ifdef __APPLE__
+#include "cactus_kernels.h"
+static constexpr size_t MPS_F16_M_THRESHOLD = 128;
+static constexpr size_t MPS_F16_K_THRESHOLD = 1024;
+static constexpr size_t MPS_F16_N_THRESHOLD = 1024;
+static constexpr size_t MPS_CQ4_M_THRESHOLD = 128;
+static constexpr size_t MPS_CQ4_K_THRESHOLD = 1024;
+static constexpr size_t MPS_CQ4_N_THRESHOLD = 256;
+#endif
+
 void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& lhs_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& rhs_buffer = get_input(node, 1, nodes, node_index_map);
@@ -53,6 +63,17 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         __fp16* output = node.output_buffer.data_as<__fp16>();
 
         CactusQuantMatrix mat = rhs_buffer.to_cq_matrix();
+
+#ifdef __APPLE__
+        if (cactus_mps_enabled() && cactus_mps_available() &&
+            rhs_buffer.precision == Precision::CQ4 &&
+            !(rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) &&
+            M >= MPS_CQ4_M_THRESHOLD && K >= MPS_CQ4_K_THRESHOLD && N >= MPS_CQ4_N_THRESHOLD) {
+            cactus_quant_4bit_matmul_mps(&mat, lhs, static_cast<uint32_t>(M), output);
+            return;
+        }
+#endif
+
         if (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
             cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
         else
@@ -67,6 +88,13 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         __fp16* output = node.output_buffer.data_as<__fp16>();
 
         if (pretransposed_rhs) {
+#ifdef __APPLE__
+            if (cactus_mps_enabled() && cactus_mps_available() &&
+                M >= MPS_F16_M_THRESHOLD && K >= MPS_F16_K_THRESHOLD && N >= MPS_F16_N_THRESHOLD) {
+                cactus_matmul_f16_mps(lhs, rhs, output, M, K, N);
+                return;
+            }
+#endif
             cactus_matmul_f16(lhs, rhs, output, M, K, N);
         } else {
             size_t transpose_size = rhs_shape[0] * rhs_shape[1];

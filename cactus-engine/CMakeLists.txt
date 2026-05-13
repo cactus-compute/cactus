@@ -39,7 +39,11 @@ set(CACTUS_CURL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/libs/curl" CACHE PATH "Path to
 
 if(APPLE)
     set(CACTUS_CURL_INCLUDE_DIR "${CACTUS_CURL_ROOT}/include")
-    set(CACTUS_CURL_LIBRARY_MACOS "${CACTUS_CURL_ROOT}/macos/libcurl.a")
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(CACTUS_CURL_LIBRARY_MACOS "${CACTUS_CURL_ROOT}/ios/device/libcurl.a")
+    else()
+        set(CACTUS_CURL_LIBRARY_MACOS "${CACTUS_CURL_ROOT}/macos/libcurl.a")
+    endif()
     if(EXISTS "${CACTUS_CURL_INCLUDE_DIR}/curl/curl.h" AND EXISTS "${CACTUS_CURL_LIBRARY_MACOS}")
         set(CACTUS_HAS_CURL TRUE)
     else()

@@ -38,6 +38,8 @@ else()
     find_library(SECURITY_FRAMEWORK Security REQUIRED)
     find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
     find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
+    find_library(METAL_FRAMEWORK Metal REQUIRED)
+    find_library(MPS_FRAMEWORK MetalPerformanceShaders REQUIRED)
 endif()
 
 # --- Test executables ---
@@ -67,6 +69,8 @@ foreach(TEST_FILE ${TEST_SOURCES})
             ${SECURITY_FRAMEWORK}
             ${SYSTEMCONFIGURATION_FRAMEWORK}
             ${CFNETWORK_FRAMEWORK}
+            ${METAL_FRAMEWORK}
+            ${MPS_FRAMEWORK}
         )
         if(CACTUS_CURL_LIBRARY_MACOS)
             target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})

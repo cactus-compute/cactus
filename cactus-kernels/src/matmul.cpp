@@ -7,6 +7,8 @@
 #include <cmath>
 #include <vector>
 #include <cstdlib>
+#include <chrono>
+#include <cstdio>
 
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -961,6 +963,54 @@ void cactus_quant_4bit_gemm(
     cactus_quant_transform_hadamard_activations(*W, A, M, code_basis_buf.data());
     cactus_quant_group_gemm<4>(*W, code_basis_buf.data(), M, C, CactusTQ4ScaledDecoder(*W));
 }
+
+#ifdef __APPLE__
+#include "../cactus_kernels.h"
+
+void cactus_quant_4bit_matmul_mps(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C) {
+    if (!cactus_quant_valid_common(W, A, C) || M == 0) return;
+    if (W->bits != 4 || (W->group_size % 2) != 0) return;
+    if ((W->K & 7) != 0) return;
+
+    static std::vector<__fp16> code_basis_buf;
+    if (code_basis_buf.size() < static_cast<size_t>(M) * W->K) {
+        code_basis_buf.resize(static_cast<size_t>(M) * W->K);
+    }
+
+#ifdef CACTUS_MPS_PROFILE
+    static thread_local double t_had = 0, t_gpu = 0;
+    static thread_local int call_count = 0;
+    auto t0 = std::chrono::high_resolution_clock::now();
+#endif
+
+    cactus_quant_transform_hadamard_activations(*W, A, M, code_basis_buf.data());
+
+#ifdef CACTUS_MPS_PROFILE
+    auto t1 = std::chrono::high_resolution_clock::now();
+    t_had += std::chrono::duration<double, std::milli>(t1 - t0).count();
+#endif
+
+    cactus_cq4_matmul_mps_gpu_dequant(
+        W->packed_indices, W->codebook, W->norms,
+        code_basis_buf.data(), C,
+        M, W->K, W->N, W->group_size, W->num_groups);
+
+#ifdef CACTUS_MPS_PROFILE
+    auto t2 = std::chrono::high_resolution_clock::now();
+    t_gpu += std::chrono::duration<double, std::milli>(t2 - t1).count();
+    if (++call_count % 100 == 0) {
+        fprintf(stderr, "[MPS profile] hadamard=%.1fms gpu=%.1fms (over %d calls)\n",
+                t_had, t_gpu, call_count);
+        fflush(stderr);
+        t_had = 0; t_gpu = 0; call_count = 0;
+    }
+#endif
+}
+#endif
 
 void cactus_quant_2bit_gemm(
     const CactusQuantMatrix* W,

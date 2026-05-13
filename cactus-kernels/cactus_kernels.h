@@ -798,4 +798,44 @@ inline size_t kv_scales_count(
     return seq_len * kv_heads * num_groups;
 }
 
+#ifdef __APPLE__
+#ifdef __cplusplus
+extern "C" {
+#endif
+bool cactus_mps_available(void);
+void cactus_mps_set_enabled(bool enabled);
+bool cactus_mps_enabled(void);
+#ifdef __cplusplus
+}
+#endif
+
+void cactus_matmul_f16_mps(
+    const __fp16* A, const __fp16* B_T, __fp16* C,
+    size_t M, size_t K, size_t N);
+
+void cactus_quant_4bit_matmul_mps(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+void cactus_cq4_matmul_mps_gpu_dequant(
+    const void* packed_indices, const void* codebook, const void* norms,
+    const __fp16* hadamard_A, __fp16* C,
+    uint32_t M, uint32_t K, uint32_t N,
+    uint32_t group_size, uint32_t num_groups);
+
+bool cactus_cq4_matmul_fused_mps(
+    const void* packed_indices, const void* codebook, const void* norms,
+    const __fp16* hadamard_A, __fp16* C,
+    uint32_t M, uint32_t K, uint32_t N,
+    uint32_t group_size, uint32_t num_groups);
+#ifdef __cplusplus
+}
+#endif
+#endif
+
 #endif

@@ -9,6 +9,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 if(APPLE)
+    enable_language(OBJCXX)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-field-initializers")
     add_compile_definitions(
@@ -46,6 +47,11 @@ set(KERNEL_SOURCES
     src/scalar.cpp
 )
 
+if(APPLE)
+    list(APPEND KERNEL_SOURCES src/matmul.mm)
+    set_source_files_properties(src/matmul.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+endif()
+
 add_library(cactus_kernels STATIC ${KERNEL_SOURCES})
 target_include_directories(cactus_kernels
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
@@ -55,7 +61,15 @@ set_target_properties(cactus_kernels PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(APPLE)
     find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
-    target_link_libraries(cactus_kernels PUBLIC ${ACCELERATE_FRAMEWORK})
+    find_library(METAL_FRAMEWORK Metal REQUIRED)
+    find_library(MPS_FRAMEWORK MetalPerformanceShaders REQUIRED)
+    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    target_link_libraries(cactus_kernels PUBLIC
+        ${ACCELERATE_FRAMEWORK}
+        ${METAL_FRAMEWORK}
+        ${MPS_FRAMEWORK}
+        ${FOUNDATION_FRAMEWORK}
+    )
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -79,6 +93,10 @@ if(BUILD_TESTING OR CACTUS_BUILD_TESTS)
         tests/test_quant.cpp
         tests/test_dsp.cpp
     )
+
+    if(APPLE)
+        list(APPEND TEST_SOURCES tests/test_mps.cpp)
+    endif()
 
     foreach(TEST_SRC ${TEST_SOURCES})
         get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)

@@ -184,10 +184,19 @@ static bool init_dispatch() {
 
 static const bool dispatch_initialized = init_dispatch();
 
+#ifdef __APPLE__
+extern "C" void cactus_mps_flush(void);
+#endif
+
 static inline void dispatch_node(GraphNode& node, const nodes_vector& nodes, const node_index_map_t& node_index_map) {
     int op = static_cast<int>(node.op_type);
     ComputeFn fn = dispatch_flat[op];
     if (fn) {
+#ifdef __APPLE__
+        // Sync any pending MPS writebacks before any non-MATMUL op reads its inputs.
+        // (MATMUL flushes internally if it goes to MPS.)
+        if (node.op_type != OpType::MATMUL) cactus_mps_flush();
+#endif
         fn(node, nodes, node_index_map);
     } else {
         throw std::runtime_error("Unknown operation type: " + std::to_string(op));
@@ -304,6 +313,67 @@ void CactusGraph::execute(const std::string& profile_file) {
     }
 
     if (!need_debug) {
+#ifdef __APPLE__
+        // Reordering pass: hoist independent MATMULs forward so consecutive MPS
+        // matmuls can submit back-to-back without intervening flushes. Improves
+        // GPU/CPU overlap with deferred-sync MPS dispatch.
+        std::vector<size_t> exec_order(n);
+        for (size_t i = 0; i < n; ++i) exec_order[i] = i;
+
+        auto depends_on = [&](size_t consumer_idx, size_t producer_idx) -> bool {
+            if (consumer_idx == producer_idx) return false;
+            size_t producer_id = nodes_[producer_idx]->id;
+            for (size_t in_id : nodes_[consumer_idx]->input_ids) {
+                if (in_id == producer_id) return true;
+            }
+            return false;
+        };
+
+        // Window-based bubble: when MATMUL at i is followed by op at i+1 that
+        // depends on it, look ahead in the next ~3 slots for an independent
+        // MATMUL and swap it forward.
+        constexpr size_t LOOKAHEAD = 4;
+        for (size_t i = 0; i + 2 < n; ++i) {
+            if (nodes_[exec_order[i]]->op_type != OpType::MATMUL) continue;
+            if (!depends_on(exec_order[i + 1], exec_order[i])) continue;
+
+            for (size_t k = i + 2; k < std::min(n, i + 1 + LOOKAHEAD); ++k) {
+                if (nodes_[exec_order[k]]->op_type != OpType::MATMUL) continue;
+                // Check that swapping exec_order[k] with exec_order[i+1]
+                // preserves topological correctness:
+                //   - exec_order[k] must not depend on any of exec_order[i+1..k-1]
+                //   - exec_order[i+1..k-1] must not be dependents of nothing-yet,
+                //     but since they were after exec_order[i+1] originally, they
+                //     don't depend on exec_order[k] (which was originally after them).
+                bool safe = true;
+                for (size_t j = i + 1; j < k; ++j) {
+                    if (depends_on(exec_order[k], exec_order[j])) { safe = false; break; }
+                }
+                if (safe) {
+                    size_t mat = exec_order[k];
+                    for (size_t j = k; j > i + 1; --j) exec_order[j] = exec_order[j - 1];
+                    exec_order[i + 1] = mat;
+                    break;
+                }
+            }
+        }
+
+        for (size_t idx = 0; idx < n; ++idx) {
+            auto& node = nodes_[exec_order[idx]];
+            if (node->op_type == OpType::INPUT) continue;
+            if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::CONV_CACHE_STATE) {
+                dispatch_node(*node, nodes_, node_index_map_);
+                populated_node_ids_.insert(node->id);
+                continue;
+            }
+            node->output_buffer.allocate_from_pool(pool);
+            dispatch_node(*node, nodes_, node_index_map_);
+            if (node->op_type == OpType::PERSISTENT) {
+                populated_node_ids_.insert(node->id);
+            }
+        }
+        return;
+#else
         for (size_t i = 0; i < n; ++i) {
             auto& node = nodes_[i];
             if (node->op_type == OpType::INPUT) continue;
@@ -319,6 +389,7 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
         }
         return;
+#endif
     }
 
     std::vector<size_t> last_use(n, 0);
