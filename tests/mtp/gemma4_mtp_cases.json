@@ -1,0 +1,41 @@
+{
+  "max_runtime_seconds": 180,
+  "model_env": {
+    "target": "CACTUS_TEST_GEMMA4_TARGET",
+    "assistant": "CACTUS_TEST_GEMMA4_ASSISTANT"
+  },
+  "cases": [
+    {
+      "name": "greedy_parity",
+      "temperature": 0.0,
+      "max_tokens": 24,
+      "prompt": "Write one short sentence about desert rain.",
+      "assertions": [
+        "mtp token ids equal standard greedy token ids",
+        "mtp metrics are present"
+      ]
+    },
+    {
+      "name": "seeded_sampling_smoke",
+      "temperature": 0.7,
+      "top_k": 64,
+      "top_p": 0.95,
+      "seed": 1234,
+      "max_tokens": 16,
+      "prompt": "Write one creative sentence about desert rain.",
+      "assertions": [
+        "fixed seed produces deterministic token ids",
+        "mtp metrics are present"
+      ]
+    },
+    {
+      "name": "missing_required_assistant",
+      "temperature": 0.0,
+      "max_tokens": 8,
+      "prompt": "Say hello in three words.",
+      "assertions": [
+        "mtp_required with a missing assistant does not silently fall back"
+      ]
+    }
+  ]
+}

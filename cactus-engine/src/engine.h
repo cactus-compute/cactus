@@ -566,6 +566,7 @@ public:
 
     const Config& get_config() const { return config_; }
     Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
+    const std::string& get_model_folder_path() const { return model_folder_path_; }
     const std::vector<DebugNode>& get_debug_nodes() const;
 
     virtual bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true);
@@ -611,7 +612,7 @@ public:
 
 
     void set_cache_window(size_t window_size, size_t sink_size = 4);
-    size_t get_cache_size() const;
+    virtual size_t get_cache_size() const;
 
     bool load_npu_prefill(const std::string& model_path);
     bool has_npu_prefill() const;

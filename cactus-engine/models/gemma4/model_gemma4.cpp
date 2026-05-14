@@ -1,8 +1,12 @@
 #include "model_gemma4.h"
 #include "cactus_graph.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
+#include <numeric>
+#include <queue>
 #include <stdexcept>
 
 namespace cactus {
@@ -12,6 +16,728 @@ Gemma4Model::Gemma4Model() : Model() {}
 
 Gemma4Model::Gemma4Model(const Config& config) : Model(config) {
     weight_nodes_.layers.resize(config.num_layers);
+}
+
+static uint32_t gemma4_argmax_logits(CactusGraph* gb, size_t logits_node) {
+    const auto& logits_buf = gb->get_output_buffer(logits_node);
+    if (logits_buf.shape.empty()) {
+        throw std::runtime_error("Expected logits tensor");
+    }
+
+    const size_t vocab_size = logits_buf.shape.back();
+    const size_t row_offset = (logits_buf.total_size / vocab_size - 1) * vocab_size;
+    void* logits_ptr = gb->get_output(logits_node);
+
+    uint32_t best = 0;
+    float best_value = -std::numeric_limits<float>::infinity();
+    if (logits_buf.precision == Precision::FP32) {
+        const float* src = static_cast<const float*>(logits_ptr) + row_offset;
+        for (size_t i = 0; i < vocab_size; ++i) {
+            if (src[i] > best_value) {
+                best_value = src[i];
+                best = static_cast<uint32_t>(i);
+            }
+        }
+    } else if (logits_buf.precision == Precision::FP16) {
+        const __fp16* src = static_cast<const __fp16*>(logits_ptr) + row_offset;
+        for (size_t i = 0; i < vocab_size; ++i) {
+            float value = static_cast<float>(src[i]);
+            if (value > best_value) {
+                best_value = value;
+                best = static_cast<uint32_t>(i);
+            }
+        }
+    } else {
+        const int8_t* src = static_cast<const int8_t*>(logits_ptr) + row_offset;
+        for (size_t i = 0; i < vocab_size; ++i) {
+            float value = static_cast<float>(src[i]);
+            if (value > best_value) {
+                best_value = value;
+                best = static_cast<uint32_t>(i);
+            }
+        }
+    }
+    return best;
+}
+
+static std::vector<uint32_t> gemma4_argmax_logits_rows(CactusGraph* gb, size_t logits_node) {
+    const auto& logits_buf = gb->get_output_buffer(logits_node);
+    if (logits_buf.shape.size() != 2) {
+        throw std::runtime_error("Expected logits tensor [T, vocab]");
+    }
+
+    const size_t rows = logits_buf.shape[0];
+    const size_t vocab_size = logits_buf.shape[1];
+    void* logits_ptr = gb->get_output(logits_node);
+    std::vector<uint32_t> result(rows, 0);
+
+    for (size_t row = 0; row < rows; ++row) {
+        uint32_t best = 0;
+        float best_value = -std::numeric_limits<float>::infinity();
+        if (logits_buf.precision == Precision::FP32) {
+            const float* src = static_cast<const float*>(logits_ptr) + row * vocab_size;
+            for (size_t i = 0; i < vocab_size; ++i) {
+                if (src[i] > best_value) {
+                    best_value = src[i];
+                    best = static_cast<uint32_t>(i);
+                }
+            }
+        } else if (logits_buf.precision == Precision::FP16) {
+            const __fp16* src = static_cast<const __fp16*>(logits_ptr) + row * vocab_size;
+            for (size_t i = 0; i < vocab_size; ++i) {
+                float value = static_cast<float>(src[i]);
+                if (value > best_value) {
+                    best_value = value;
+                    best = static_cast<uint32_t>(i);
+                }
+            }
+        } else {
+            const int8_t* src = static_cast<const int8_t*>(logits_ptr) + row * vocab_size;
+            for (size_t i = 0; i < vocab_size; ++i) {
+                float value = static_cast<float>(src[i]);
+                if (value > best_value) {
+                    best_value = value;
+                    best = static_cast<uint32_t>(i);
+                }
+            }
+        }
+        result[row] = best;
+    }
+    return result;
+}
+
+static bool gemma4_can_argmax_output_projection_rows(CactusGraph* gb, size_t hidden_node, size_t output_weight_node) {
+    (void)gb;
+    (void)hidden_node;
+    (void)output_weight_node;
+    return false;
+}
+
+static bool gemma4_argmax_output_projection_rows(CactusGraph* gb, size_t hidden_node,
+                                                 size_t output_weight_node,
+                                                 std::vector<uint32_t>& result) {
+    (void)gb;
+    (void)hidden_node;
+    (void)output_weight_node;
+    result.clear();
+    return false;
+}
+
+static std::vector<float> gemma4_probs_from_logits(std::vector<float> logits, float temperature,
+                                                   float top_p, size_t top_k, float min_p) {
+    if (logits.empty()) return {};
+    if (temperature == 0.0f) {
+        std::vector<float> probs(logits.size(), 0.0f);
+        auto it = std::max_element(logits.begin(), logits.end());
+        probs[std::distance(logits.begin(), it)] = 1.0f;
+        return probs;
+    }
+    if (temperature > 0.0f) {
+        for (float& value : logits) value /= temperature;
+    }
+    if (top_k > 0 && top_k < logits.size()) {
+        std::vector<float> sorted = logits;
+        std::nth_element(sorted.begin(), sorted.begin() + top_k - 1, sorted.end(), std::greater<float>());
+        float kth = sorted[top_k - 1];
+        for (float& value : logits) {
+            if (value < kth) value = -std::numeric_limits<float>::infinity();
+        }
+    }
+    auto normalize = [](const std::vector<float>& values) {
+        std::vector<float> probs(values.size(), 0.0f);
+        float max_value = -std::numeric_limits<float>::infinity();
+        for (float value : values) max_value = std::max(max_value, value);
+        if (!std::isfinite(max_value)) return probs;
+        double sum = 0.0;
+        for (size_t i = 0; i < values.size(); ++i) {
+            if (std::isfinite(values[i])) {
+                probs[i] = std::exp(static_cast<double>(values[i] - max_value));
+                sum += probs[i];
+            }
+        }
+        if (sum <= 0.0 || !std::isfinite(sum)) return probs;
+        for (float& prob : probs) prob = static_cast<float>(prob / sum);
+        return probs;
+    };
+    if (min_p > 0.0f) {
+        auto probs = normalize(logits);
+        float max_prob = *std::max_element(probs.begin(), probs.end());
+        float threshold = max_prob * min_p;
+        for (size_t i = 0; i < logits.size(); ++i) {
+            if (probs[i] < threshold) logits[i] = -std::numeric_limits<float>::infinity();
+        }
+    }
+    if (top_p > 0.0f && top_p < 1.0f) {
+        std::vector<std::pair<float, size_t>> sorted;
+        sorted.reserve(logits.size());
+        for (size_t i = 0; i < logits.size(); ++i) {
+            if (std::isfinite(logits[i])) sorted.emplace_back(logits[i], i);
+        }
+        std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::vector<float> sorted_logits;
+        sorted_logits.reserve(sorted.size());
+        for (const auto& item : sorted) sorted_logits.push_back(item.first);
+        auto sorted_probs = normalize(sorted_logits);
+        float cumulative = 0.0f;
+        bool remove = false;
+        for (size_t i = 0; i < sorted.size(); ++i) {
+            cumulative += sorted_probs[i];
+            if (remove) {
+                logits[sorted[i].second] = -std::numeric_limits<float>::infinity();
+            }
+            if (cumulative > top_p) remove = true;
+        }
+    }
+    auto probs = normalize(logits);
+    float sum = std::accumulate(probs.begin(), probs.end(), 0.0f);
+    if (sum <= 0.0f || !std::isfinite(sum)) {
+        std::fill(probs.begin(), probs.end(), 1.0f / static_cast<float>(probs.size()));
+    }
+    return probs;
+}
+
+static std::vector<std::pair<uint32_t, float>> gemma4_sparse_probs_from_top_logits(
+    std::vector<std::pair<uint32_t, float>> logits, float temperature, float top_p, float min_p) {
+    if (logits.empty()) return {};
+    if (temperature > 0.0f) {
+        for (auto& item : logits) item.second /= temperature;
+    }
+    std::sort(logits.begin(), logits.end(), [](const auto& a, const auto& b) {
+        return a.second > b.second;
+    });
+
+    auto normalize = [](const std::vector<std::pair<uint32_t, float>>& values) {
+        std::vector<std::pair<uint32_t, float>> probs;
+        probs.reserve(values.size());
+        float max_value = -std::numeric_limits<float>::infinity();
+        for (const auto& item : values) max_value = std::max(max_value, item.second);
+        if (!std::isfinite(max_value)) return probs;
+        double sum = 0.0;
+        for (const auto& item : values) {
+            float prob = std::exp(static_cast<double>(item.second - max_value));
+            probs.emplace_back(item.first, prob);
+            sum += prob;
+        }
+        if (sum <= 0.0 || !std::isfinite(sum)) return std::vector<std::pair<uint32_t, float>>{};
+        for (auto& item : probs) item.second = static_cast<float>(item.second / sum);
+        return probs;
+    };
+
+    if (min_p > 0.0f) {
+        auto probs = normalize(logits);
+        if (!probs.empty()) {
+            float max_prob = 0.0f;
+            for (const auto& item : probs) max_prob = std::max(max_prob, item.second);
+            float threshold = max_prob * min_p;
+            std::vector<std::pair<uint32_t, float>> filtered;
+            filtered.reserve(logits.size());
+            for (size_t i = 0; i < logits.size(); ++i) {
+                if (probs[i].second >= threshold) filtered.push_back(logits[i]);
+            }
+            logits = std::move(filtered);
+        }
+    }
+
+    if (top_p > 0.0f && top_p < 1.0f) {
+        auto probs = normalize(logits);
+        std::vector<std::pair<uint32_t, float>> filtered;
+        filtered.reserve(logits.size());
+        float cumulative = 0.0f;
+        bool remove = false;
+        for (size_t i = 0; i < logits.size(); ++i) {
+            cumulative += i < probs.size() ? probs[i].second : 0.0f;
+            if (!remove) filtered.push_back(logits[i]);
+            if (cumulative > top_p) remove = true;
+        }
+        logits = std::move(filtered);
+    }
+
+    auto probs = normalize(logits);
+    float sum = 0.0f;
+    for (const auto& item : probs) sum += item.second;
+    if (sum <= 0.0f || !std::isfinite(sum)) {
+        float uniform = probs.empty() ? 0.0f : 1.0f / static_cast<float>(probs.size());
+        for (auto& item : probs) item.second = uniform;
+    }
+    return probs;
+}
+
+static std::vector<std::pair<uint32_t, float>> gemma4_sparse_probs_from_logits_row(
+    const void* logits_ptr, Precision precision, size_t row_offset, size_t vocab_size,
+    float temperature, float top_p, size_t top_k, float min_p) {
+    using Entry = std::pair<float, uint32_t>;
+    std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> top;
+    size_t k = std::min(top_k, vocab_size);
+    auto push_value = [&](float value, uint32_t token) {
+        if (top.size() < k) {
+            top.emplace(value, token);
+        } else if (value > top.top().first) {
+            top.pop();
+            top.emplace(value, token);
+        }
+    };
+
+    if (precision == Precision::FP32) {
+        const float* src = static_cast<const float*>(logits_ptr) + row_offset;
+        for (size_t i = 0; i < vocab_size; ++i) push_value(src[i], static_cast<uint32_t>(i));
+    } else if (precision == Precision::FP16) {
+        const __fp16* src = static_cast<const __fp16*>(logits_ptr) + row_offset;
+        for (size_t i = 0; i < vocab_size; ++i) push_value(static_cast<float>(src[i]), static_cast<uint32_t>(i));
+    } else {
+        const int8_t* src = static_cast<const int8_t*>(logits_ptr) + row_offset;
+        for (size_t i = 0; i < vocab_size; ++i) push_value(static_cast<float>(src[i]), static_cast<uint32_t>(i));
+    }
+
+    std::vector<std::pair<uint32_t, float>> logits;
+    logits.reserve(top.size());
+    while (!top.empty()) {
+        logits.emplace_back(top.top().second, top.top().first);
+        top.pop();
+    }
+    return gemma4_sparse_probs_from_top_logits(std::move(logits), temperature, top_p, min_p);
+}
+
+static std::vector<std::vector<float>> gemma4_prob_rows(CactusGraph* gb, size_t logits_node,
+                                                        float temperature, float top_p,
+                                                        size_t top_k, float min_p) {
+    const auto& logits_buf = gb->get_output_buffer(logits_node);
+    if (logits_buf.shape.size() != 2) {
+        throw std::runtime_error("Expected logits tensor [T, vocab]");
+    }
+    const size_t rows = logits_buf.shape[0];
+    const size_t vocab_size = logits_buf.shape[1];
+    void* logits_ptr = gb->get_output(logits_node);
+    std::vector<std::vector<float>> result;
+    result.reserve(rows);
+    for (size_t row = 0; row < rows; ++row) {
+        std::vector<float> logits(vocab_size);
+        if (logits_buf.precision == Precision::FP32) {
+            const float* src = static_cast<const float*>(logits_ptr) + row * vocab_size;
+            std::copy(src, src + vocab_size, logits.begin());
+        } else if (logits_buf.precision == Precision::FP16) {
+            const __fp16* src = static_cast<const __fp16*>(logits_ptr) + row * vocab_size;
+            for (size_t i = 0; i < vocab_size; ++i) logits[i] = static_cast<float>(src[i]);
+        } else {
+            const int8_t* src = static_cast<const int8_t*>(logits_ptr) + row * vocab_size;
+            for (size_t i = 0; i < vocab_size; ++i) logits[i] = static_cast<float>(src[i]);
+        }
+        result.push_back(gemma4_probs_from_logits(std::move(logits), temperature, top_p, top_k, min_p));
+    }
+    return result;
+}
+
+static std::vector<std::vector<std::pair<uint32_t, float>>> gemma4_sparse_prob_rows(
+    CactusGraph* gb, size_t logits_node, float temperature, float top_p, size_t top_k, float min_p) {
+    const auto& logits_buf = gb->get_output_buffer(logits_node);
+    if (logits_buf.shape.size() != 2) {
+        throw std::runtime_error("Expected logits tensor [T, vocab]");
+    }
+    const size_t rows = logits_buf.shape[0];
+    const size_t vocab_size = logits_buf.shape[1];
+    void* logits_ptr = gb->get_output(logits_node);
+    std::vector<std::vector<std::pair<uint32_t, float>>> result;
+    result.reserve(rows);
+    for (size_t row = 0; row < rows; ++row) {
+        result.push_back(gemma4_sparse_probs_from_logits_row(
+            logits_ptr, logits_buf.precision, row * vocab_size, vocab_size,
+            temperature, top_p, top_k, min_p));
+    }
+    return result;
+}
+
+Gemma4Model::GreedyStepWithHidden Gemma4Model::decode_greedy_with_hidden(const std::vector<uint32_t>& tokens) {
+    if (!initialized_ || !graph_handle_)
+        throw std::runtime_error("Model not initialized - call init() first");
+    if (tokens.empty())
+        throw std::runtime_error("Token sequence cannot be empty");
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+
+    auto final_hidden = forward(tokens, true);
+    auto last_hidden = gb->index(final_hidden, tokens.size() - 1, 0);
+    const auto& last_hidden_buf = gb->get_output_buffer(last_hidden);
+    size_t hidden_dim = last_hidden_buf.shape[0];
+    auto hidden_row = gb->reshape(last_hidden, {1, hidden_dim});
+
+    auto logits = gb->matmul(hidden_row, output_weight_node_id_, true, backend);
+    if (config_.final_logit_softcapping > 0.0f) {
+        float inv_cap = 1.0f / config_.final_logit_softcapping;
+        logits = gb->scalar_multiply(logits, inv_cap);
+        logits = gb->tanh(logits);
+        logits = gb->scalar_multiply(logits, config_.final_logit_softcapping);
+    }
+
+    gb->execute();
+
+    GreedyStepWithHidden result;
+    result.token = gemma4_argmax_logits(gb, logits);
+    result.hidden.resize(hidden_dim);
+    const auto& hidden_buf = gb->get_output_buffer(hidden_row);
+    void* hidden_ptr = gb->get_output(hidden_row);
+    if (hidden_buf.precision == Precision::FP16) {
+        const __fp16* src = static_cast<const __fp16*>(hidden_ptr);
+        std::copy(src, src + hidden_dim, result.hidden.begin());
+    } else if (hidden_buf.precision == Precision::FP32) {
+        const float* src = static_cast<const float*>(hidden_ptr);
+        for (size_t i = 0; i < hidden_dim; ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+    } else {
+        const int8_t* src = static_cast<const int8_t*>(hidden_ptr);
+        for (size_t i = 0; i < hidden_dim; ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+    }
+
+    post_execute_updates(gb, tokens.size());
+    cache_total_seq_len_ += tokens.size();
+    record_sampled_token(result.token);
+    return result;
+}
+
+std::vector<uint32_t> Gemma4Model::decode_greedy_tokens(const std::vector<uint32_t>& tokens) {
+    if (!initialized_ || !graph_handle_)
+        throw std::runtime_error("Model not initialized - call init() first");
+    if (tokens.empty())
+        throw std::runtime_error("Token sequence cannot be empty");
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+
+    auto final_hidden = forward(tokens, true);
+    auto logits = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
+    if (config_.final_logit_softcapping > 0.0f) {
+        float inv_cap = 1.0f / config_.final_logit_softcapping;
+        logits = gb->scalar_multiply(logits, inv_cap);
+        logits = gb->tanh(logits);
+        logits = gb->scalar_multiply(logits, config_.final_logit_softcapping);
+    }
+
+    gb->execute();
+    std::vector<uint32_t> result = gemma4_argmax_logits_rows(gb, logits);
+    post_execute_updates(gb, tokens.size());
+    cache_total_seq_len_ += tokens.size();
+    for (uint32_t token : result) record_sampled_token(token);
+    return result;
+}
+
+Gemma4Model::GreedyBatchWithHidden Gemma4Model::decode_greedy_tokens_with_hidden(const std::vector<uint32_t>& tokens) {
+    if (!initialized_ || !graph_handle_)
+        throw std::runtime_error("Model not initialized - call init() first");
+    if (tokens.empty())
+        throw std::runtime_error("Token sequence cannot be empty");
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+
+    auto final_hidden = forward(tokens, true);
+    const auto& final_hidden_buf = gb->get_output_buffer(final_hidden);
+    if (final_hidden_buf.shape.size() != 2) {
+        throw std::runtime_error("Expected Gemma 4 hidden tensor [T, hidden]");
+    }
+    size_t hidden_dim = final_hidden_buf.shape[1];
+
+    GreedyBatchWithHidden result;
+    result.hidden_dim = hidden_dim;
+    result.hidden.resize(tokens.size() * hidden_dim);
+
+    if (gemma4_can_argmax_output_projection_rows(gb, final_hidden, output_weight_node_id_)) {
+        gb->execute();
+        if (!gemma4_argmax_output_projection_rows(gb, final_hidden, output_weight_node_id_, result.tokens)) {
+            throw std::runtime_error("Gemma 4 output projection argmax failed");
+        }
+    } else {
+        auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+        auto logits = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
+        if (config_.final_logit_softcapping > 0.0f) {
+            float inv_cap = 1.0f / config_.final_logit_softcapping;
+            logits = gb->scalar_multiply(logits, inv_cap);
+            logits = gb->tanh(logits);
+            logits = gb->scalar_multiply(logits, config_.final_logit_softcapping);
+        }
+
+        gb->execute();
+        result.tokens = gemma4_argmax_logits_rows(gb, logits);
+    }
+
+    const auto& hidden_buf = gb->get_output_buffer(final_hidden);
+    void* hidden_ptr = gb->get_output(final_hidden);
+    if (hidden_buf.precision == Precision::FP16) {
+        const __fp16* src = static_cast<const __fp16*>(hidden_ptr);
+        std::copy(src, src + result.hidden.size(), result.hidden.begin());
+    } else if (hidden_buf.precision == Precision::FP32) {
+        const float* src = static_cast<const float*>(hidden_ptr);
+        for (size_t i = 0; i < result.hidden.size(); ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+    } else {
+        const int8_t* src = static_cast<const int8_t*>(hidden_ptr);
+        for (size_t i = 0; i < result.hidden.size(); ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+    }
+
+    post_execute_updates(gb, tokens.size());
+    cache_total_seq_len_ += tokens.size();
+    for (uint32_t token : result.tokens) record_sampled_token(token);
+    return result;
+}
+
+Gemma4Model::GreedyBatchWithHidden Gemma4Model::decode_greedy_tokens_with_hidden_early_stop(
+    const std::vector<uint32_t>& tokens,
+    const std::vector<uint32_t>& expected_drafts) {
+    if (!initialized_ || !graph_handle_)
+        throw std::runtime_error("Model not initialized - call init() first");
+    if (tokens.empty())
+        throw std::runtime_error("Token sequence cannot be empty");
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+
+    auto final_hidden = forward(tokens, true);
+    const auto& final_hidden_buf = gb->get_output_buffer(final_hidden);
+    if (final_hidden_buf.shape.size() != 2) {
+        throw std::runtime_error("Expected Gemma 4 hidden tensor [T, hidden]");
+    }
+    size_t hidden_dim = final_hidden_buf.shape[1];
+
+    GreedyBatchWithHidden result;
+    result.hidden_dim = hidden_dim;
+    result.hidden.resize(tokens.size() * hidden_dim);
+
+    if (!gemma4_can_argmax_output_projection_rows(gb, final_hidden, output_weight_node_id_)) {
+        auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+        auto logits = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
+        if (config_.final_logit_softcapping > 0.0f) {
+            float inv_cap = 1.0f / config_.final_logit_softcapping;
+            logits = gb->scalar_multiply(logits, inv_cap);
+            logits = gb->tanh(logits);
+            logits = gb->scalar_multiply(logits, config_.final_logit_softcapping);
+        }
+        gb->execute();
+        result.tokens = gemma4_argmax_logits_rows(gb, logits);
+    } else {
+        gb->execute();
+        size_t max_rows = tokens.size();
+        std::vector<uint32_t> row_tokens;
+        if (!gemma4_argmax_output_projection_rows(gb, final_hidden, output_weight_node_id_, row_tokens)) {
+            throw std::runtime_error("Gemma 4 output projection argmax failed");
+        }
+        result.tokens.reserve(row_tokens.size());
+        for (size_t row = 0; row < max_rows; ++row) {
+            uint32_t token = row_tokens[row];
+            result.tokens.push_back(token);
+            if (row < expected_drafts.size() && token != expected_drafts[row]) {
+                break;
+            }
+        }
+    }
+
+    const auto& hidden_buf = gb->get_output_buffer(final_hidden);
+    void* hidden_ptr = gb->get_output(final_hidden);
+    if (hidden_buf.precision == Precision::FP16) {
+        const __fp16* src = static_cast<const __fp16*>(hidden_ptr);
+        std::copy(src, src + result.hidden.size(), result.hidden.begin());
+    } else if (hidden_buf.precision == Precision::FP32) {
+        const float* src = static_cast<const float*>(hidden_ptr);
+        for (size_t i = 0; i < result.hidden.size(); ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+    } else {
+        const int8_t* src = static_cast<const int8_t*>(hidden_ptr);
+        for (size_t i = 0; i < result.hidden.size(); ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+    }
+
+    post_execute_updates(gb, tokens.size());
+    cache_total_seq_len_ += tokens.size();
+    for (uint32_t token : result.tokens) record_sampled_token(token);
+    return result;
+}
+
+Gemma4Model::GreedyBatchWithHidden Gemma4Model::decode_greedy_tokens_with_hidden_tree(
+    const std::vector<uint32_t>& tokens,
+    const std::vector<__fp16>& new_token_attention_mask) {
+    if (!initialized_ || !graph_handle_)
+        throw std::runtime_error("Model not initialized - call init() first");
+    if (tokens.empty())
+        throw std::runtime_error("Token sequence cannot be empty");
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    auto final_hidden = forward_with_attention_mask(tokens, true, &new_token_attention_mask);
+    const auto& final_hidden_buf = gb->get_output_buffer(final_hidden);
+    if (final_hidden_buf.shape.size() != 2) {
+        throw std::runtime_error("Expected Gemma 4 hidden tensor [T, hidden]");
+    }
+    size_t hidden_dim = final_hidden_buf.shape[1];
+
+    GreedyBatchWithHidden result;
+    result.hidden_dim = hidden_dim;
+    result.hidden.resize(tokens.size() * hidden_dim);
+
+    if (gemma4_can_argmax_output_projection_rows(gb, final_hidden, output_weight_node_id_)) {
+        gb->execute();
+        if (!gemma4_argmax_output_projection_rows(gb, final_hidden, output_weight_node_id_, result.tokens)) {
+            throw std::runtime_error("Gemma 4 output projection argmax failed");
+        }
+    } else {
+        auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+        auto logits = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
+        if (config_.final_logit_softcapping > 0.0f) {
+            float inv_cap = 1.0f / config_.final_logit_softcapping;
+            logits = gb->scalar_multiply(logits, inv_cap);
+            logits = gb->tanh(logits);
+            logits = gb->scalar_multiply(logits, config_.final_logit_softcapping);
+        }
+        gb->execute();
+        result.tokens = gemma4_argmax_logits_rows(gb, logits);
+    }
+
+    const auto& hidden_buf = gb->get_output_buffer(final_hidden);
+    void* hidden_ptr = gb->get_output(final_hidden);
+    if (hidden_buf.precision == Precision::FP16) {
+        const __fp16* src = static_cast<const __fp16*>(hidden_ptr);
+        std::copy(src, src + result.hidden.size(), result.hidden.begin());
+    } else if (hidden_buf.precision == Precision::FP32) {
+        const float* src = static_cast<const float*>(hidden_ptr);
+        for (size_t i = 0; i < result.hidden.size(); ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+    } else {
+        const int8_t* src = static_cast<const int8_t*>(hidden_ptr);
+        for (size_t i = 0; i < result.hidden.size(); ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+    }
+
+    post_execute_updates(gb, tokens.size());
+    cache_total_seq_len_ += tokens.size();
+    return result;
+}
+
+Gemma4Model::GreedyBatchWithHidden Gemma4Model::decode_tokens_with_hidden_and_probs(
+    const std::vector<uint32_t>& tokens, float temperature, float top_p, size_t top_k, float min_p) {
+    if (!initialized_ || !graph_handle_)
+        throw std::runtime_error("Model not initialized - call init() first");
+    if (tokens.empty())
+        throw std::runtime_error("Token sequence cannot be empty");
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+
+    auto final_hidden = forward(tokens, true);
+    const auto& final_hidden_buf = gb->get_output_buffer(final_hidden);
+    if (final_hidden_buf.shape.size() != 2) {
+        throw std::runtime_error("Expected Gemma 4 hidden tensor [T, hidden]");
+    }
+    size_t hidden_dim = final_hidden_buf.shape[1];
+
+    auto logits = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
+    if (config_.final_logit_softcapping > 0.0f) {
+        float inv_cap = 1.0f / config_.final_logit_softcapping;
+        logits = gb->scalar_multiply(logits, inv_cap);
+        logits = gb->tanh(logits);
+        logits = gb->scalar_multiply(logits, config_.final_logit_softcapping);
+    }
+
+    gb->execute();
+
+    GreedyBatchWithHidden result;
+    result.tokens = gemma4_argmax_logits_rows(gb, logits);
+    result.probabilities = gemma4_prob_rows(gb, logits, temperature, top_p, top_k, min_p);
+    result.hidden_dim = hidden_dim;
+    result.hidden.resize(tokens.size() * hidden_dim);
+
+    const auto& hidden_buf = gb->get_output_buffer(final_hidden);
+    void* hidden_ptr = gb->get_output(final_hidden);
+    if (hidden_buf.precision == Precision::FP16) {
+        const __fp16* src = static_cast<const __fp16*>(hidden_ptr);
+        std::copy(src, src + result.hidden.size(), result.hidden.begin());
+    } else if (hidden_buf.precision == Precision::FP32) {
+        const float* src = static_cast<const float*>(hidden_ptr);
+        for (size_t i = 0; i < result.hidden.size(); ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+    } else {
+        const int8_t* src = static_cast<const int8_t*>(hidden_ptr);
+        for (size_t i = 0; i < result.hidden.size(); ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+    }
+
+    post_execute_updates(gb, tokens.size());
+    cache_total_seq_len_ += tokens.size();
+    return result;
+}
+
+Gemma4Model::GreedyBatchWithHidden Gemma4Model::decode_tokens_with_hidden_and_sparse_probs(
+    const std::vector<uint32_t>& tokens, float temperature, float top_p, size_t top_k, float min_p) {
+    if (!initialized_ || !graph_handle_)
+        throw std::runtime_error("Model not initialized - call init() first");
+    if (tokens.empty())
+        throw std::runtime_error("Token sequence cannot be empty");
+    if (top_k == 0)
+        throw std::runtime_error("Sparse sampled Gemma 4 decode requires top_k > 0");
+
+    auto* gb = static_cast<CactusGraph*>(graph_handle_);
+    auto backend = config_.default_backend == Config::Backend::CPU ? ComputeBackend::CPU : ComputeBackend::NPU;
+
+    auto final_hidden = forward(tokens, true);
+    const auto& final_hidden_buf = gb->get_output_buffer(final_hidden);
+    if (final_hidden_buf.shape.size() != 2) {
+        throw std::runtime_error("Expected Gemma 4 hidden tensor [T, hidden]");
+    }
+    size_t hidden_dim = final_hidden_buf.shape[1];
+
+    auto logits = gb->matmul(final_hidden, output_weight_node_id_, true, backend);
+    if (config_.final_logit_softcapping > 0.0f) {
+        float inv_cap = 1.0f / config_.final_logit_softcapping;
+        logits = gb->scalar_multiply(logits, inv_cap);
+        logits = gb->tanh(logits);
+        logits = gb->scalar_multiply(logits, config_.final_logit_softcapping);
+    }
+
+    gb->execute();
+
+    GreedyBatchWithHidden result;
+    result.tokens = gemma4_argmax_logits_rows(gb, logits);
+    result.sparse_probabilities = gemma4_sparse_prob_rows(gb, logits, temperature, top_p, top_k, min_p);
+    result.hidden_dim = hidden_dim;
+    result.hidden.resize(tokens.size() * hidden_dim);
+
+    const auto& hidden_buf = gb->get_output_buffer(final_hidden);
+    void* hidden_ptr = gb->get_output(final_hidden);
+    if (hidden_buf.precision == Precision::FP16) {
+        const __fp16* src = static_cast<const __fp16*>(hidden_ptr);
+        std::copy(src, src + result.hidden.size(), result.hidden.begin());
+    } else if (hidden_buf.precision == Precision::FP32) {
+        const float* src = static_cast<const float*>(hidden_ptr);
+        for (size_t i = 0; i < result.hidden.size(); ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+    } else {
+        const int8_t* src = static_cast<const int8_t*>(hidden_ptr);
+        for (size_t i = 0; i < result.hidden.size(); ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+    }
+
+    post_execute_updates(gb, tokens.size());
+    cache_total_seq_len_ += tokens.size();
+    return result;
+}
+
+std::vector<__fp16> Gemma4Model::token_embedding(uint32_t token) {
+    auto embedding = get_token_embeddings({token});
+    const float scale = std::sqrt(static_cast<float>(config_.hidden_dim));
+    for (__fp16& value : embedding) {
+        value = static_cast<__fp16>(static_cast<float>(value) * scale);
+    }
+    return embedding;
+}
+
+Gemma4Model::SharedCacheNodes Gemma4Model::shared_cache_nodes_for_mtp() const {
+    SharedCacheNodes nodes;
+    for (uint32_t i = 0; i < first_shared_layer_ && i < config_.layer_types.size(); ++i) {
+        if (config_.layer_types[i] == "global") {
+            nodes.full_k = graph_cache_k_nodes_[i];
+            nodes.full_v = graph_cache_v_nodes_[i];
+        } else {
+            nodes.sliding_k = graph_cache_k_nodes_[i];
+            nodes.sliding_v = graph_cache_v_nodes_[i];
+        }
+    }
+    return nodes;
+}
+
+std::vector<size_t> Gemma4Model::cache_state_nodes_for_mtp() const {
+    std::vector<size_t> nodes;
+    for (uint32_t i = 0; i < first_shared_layer_ && i < graph_cache_k_nodes_.size(); ++i) {
+        if (graph_cache_k_nodes_[i] != 0) nodes.push_back(graph_cache_k_nodes_[i]);
+        if (i < graph_cache_v_nodes_.size() && graph_cache_v_nodes_[i] != 0) nodes.push_back(graph_cache_v_nodes_[i]);
+    }
+    return nodes;
+}
+
+bool Gemma4Model::can_use_mtp_tree_attention(size_t token_count) const {
+    if (config_.sliding_window == 0 || token_count == 0) return true;
+    return cache_total_seq_len_ + token_count <= config_.sliding_window;
 }
 
 bool Gemma4Model::is_global_layer(uint32_t idx) const {
@@ -217,26 +943,44 @@ size_t Gemma4Model::build_per_layer_input(CactusGraph* gb, size_t hidden, size_t
 
 size_t Gemma4Model::apply_partial_rope(CactusGraph* gb, size_t tensor, size_t head_dim, size_t rot_dim,
                                            float rope_freq, size_t position_offset) {
-    if (rot_dim < head_dim) {
-        size_t half_dim = head_dim / 2;
-        size_t half_rot = rot_dim / 2;
-        size_t pass_len = half_dim - half_rot;
-        float adjusted_theta = std::pow(rope_freq, static_cast<float>(rot_dim) / static_cast<float>(head_dim));
+    auto apply_uniform = [&](size_t input, size_t offset) {
+        if (rot_dim < head_dim) {
+            size_t half_dim = head_dim / 2;
+            size_t half_rot = rot_dim / 2;
+            size_t pass_len = half_dim - half_rot;
+            float adjusted_theta = std::pow(rope_freq, static_cast<float>(rot_dim) / static_cast<float>(head_dim));
 
-        auto left_rot   = gb->slice(tensor, 3, 0,                   half_rot);
-        auto left_pass  = gb->slice(tensor, 3, half_rot,            pass_len);
-        auto right_rot  = gb->slice(tensor, 3, half_dim,            half_rot);
-        auto right_pass = gb->slice(tensor, 3, half_dim + half_rot, pass_len);
+            auto left_rot   = gb->slice(input, 3, 0,                   half_rot);
+            auto left_pass  = gb->slice(input, 3, half_rot,            pass_len);
+            auto right_rot  = gb->slice(input, 3, half_dim,            half_rot);
+            auto right_pass = gb->slice(input, 3, half_dim + half_rot, pass_len);
 
-        auto rotated = gb->rope(gb->concat(left_rot, right_rot, 3), adjusted_theta, position_offset);
-        auto rotated_left  = gb->slice(rotated, 3, 0,        half_rot);
-        auto rotated_right = gb->slice(rotated, 3, half_rot, half_rot);
+            auto rotated = gb->rope(gb->concat(left_rot, right_rot, 3), adjusted_theta, offset);
+            auto rotated_left  = gb->slice(rotated, 3, 0,        half_rot);
+            auto rotated_right = gb->slice(rotated, 3, half_rot, half_rot);
 
-        auto new_left  = gb->concat(rotated_left,  left_pass,  3);
-        auto new_right = gb->concat(rotated_right, right_pass, 3);
-        return gb->concat(new_left, new_right, 3);
+            auto new_left  = gb->concat(rotated_left,  left_pass,  3);
+            auto new_right = gb->concat(rotated_right, right_pass, 3);
+            return gb->concat(new_left, new_right, 3);
+        }
+        return gb->rope(input, rope_freq, offset);
+    };
+
+    const auto& tensor_shape = gb->get_output_buffer(tensor).shape;
+    if (tensor_shape.size() == 4
+        && active_position_deltas_.size() == tensor_shape[1]
+        && tensor_shape[1] > 1) {
+        std::vector<size_t> rows;
+        rows.reserve(tensor_shape[1]);
+        for (size_t i = 0; i < tensor_shape[1]; ++i) {
+            rows.push_back(apply_uniform(
+                gb->slice(tensor, 1, i, 1),
+                position_offset + active_position_deltas_[i]));
+        }
+        return gb->cat(rows, 1);
     }
-    return gb->rope(tensor, rope_freq, position_offset);
+
+    return apply_uniform(tensor, position_offset);
 }
 
 size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t layer_idx,
@@ -289,11 +1033,22 @@ size_t Gemma4Model::build_attention(CactusGraph* gb, size_t input, uint32_t laye
             gb->kv_cache_append(k4, graph_cache_k_nodes_[cache_src], window, cache_sink_size_);
             gb->kv_cache_append(v4, graph_cache_v_nodes_[cache_src], window, cache_sink_size_);
         }
-        attn = gb->attention_cached(q4, k4, v4,
-            graph_cache_k_nodes_[cache_src], graph_cache_v_nodes_[cache_src],
-            attention_scale_, position_offset, window);
+        if (active_attention_mask_node_ != 0) {
+            attn = gb->attention_cached_masked(q4, k4, v4,
+                graph_cache_k_nodes_[cache_src], graph_cache_v_nodes_[cache_src],
+                active_attention_mask_node_, attention_scale_, position_offset, window);
+        } else {
+            attn = gb->attention_cached(q4, k4, v4,
+                graph_cache_k_nodes_[cache_src], graph_cache_v_nodes_[cache_src],
+                attention_scale_, position_offset, window);
+        }
     } else {
-        attn = gb->attention(q4, k4, v4, attention_scale_, position_offset, window);
+        if (active_attention_mask_node_ != 0) {
+            attn = gb->attention_masked(q4, k4, v4, active_attention_mask_node_,
+                attention_scale_, true, backend, false, position_offset, window);
+        } else {
+            attn = gb->attention(q4, k4, v4, attention_scale_, position_offset, window);
+        }
     }
 
     return gb->matmul(gb->reshape(attn, {seq_len, num_heads * head_dim}), layer.attn_output_weight, true, backend);
@@ -464,6 +1219,13 @@ size_t Gemma4Model::forward_from_embeddings(CactusGraph* gb, size_t hidden, size
 }
 
 size_t Gemma4Model::forward(const std::vector<uint32_t>& tokens, bool use_cache) {
+    return forward_with_attention_mask(tokens, use_cache, nullptr);
+}
+
+size_t Gemma4Model::forward_with_attention_mask(
+    const std::vector<uint32_t>& tokens,
+    bool use_cache,
+    const std::vector<__fp16>* new_token_attention_mask) {
     if (!initialized_ || !graph_handle_)
         throw std::runtime_error("Model not initialized - call init() first");
     if (tokens.empty())
@@ -471,6 +1233,28 @@ size_t Gemma4Model::forward(const std::vector<uint32_t>& tokens, bool use_cache)
 
     auto* gb = static_cast<CactusGraph*>(graph_handle_);
     gb->soft_reset();
+    size_t previous_attention_mask_node = active_attention_mask_node_;
+    std::vector<size_t> previous_position_deltas = std::move(active_position_deltas_);
+    if (new_token_attention_mask) {
+        if (new_token_attention_mask->size() != tokens.size() * tokens.size()) {
+            throw std::runtime_error("Gemma 4 attention mask must be [tokens, tokens]");
+        }
+        active_attention_mask_node_ = gb->input({1, tokens.size(), tokens.size()}, Precision::FP16);
+        gb->set_input(active_attention_mask_node_, new_token_attention_mask->data(), Precision::FP16);
+        if (tokens.size() == 3) {
+            active_position_deltas_ = {0, 1, 1};
+        } else if (tokens.size() == 4) {
+            active_position_deltas_ = {0, 1, 1, 2};
+        } else if (tokens.size() == 5) {
+            active_position_deltas_ = {0, 1, 1, 2, 3};
+        } else {
+            active_position_deltas_.resize(tokens.size());
+            for (size_t i = 0; i < tokens.size(); ++i) active_position_deltas_[i] = i;
+        }
+    } else {
+        active_attention_mask_node_ = 0;
+        active_position_deltas_.clear();
+    }
 
     std::fill(shared_k_nodes_.begin(), shared_k_nodes_.end(), 0);
     std::fill(shared_v_nodes_.begin(), shared_v_nodes_.end(), 0);
@@ -490,7 +1274,10 @@ size_t Gemma4Model::forward(const std::vector<uint32_t>& tokens, bool use_cache)
         for (size_t i = 0; i < tokens.size(); i++)
             input_data[i] = static_cast<float>(tokens[i]);
         gb->set_input(token_input, input_data.data(), Precision::FP32);
-        return gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
+        auto result = gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
+        active_attention_mask_node_ = previous_attention_mask_node;
+        active_position_deltas_ = std::move(previous_position_deltas);
+        return result;
     }
 
     size_t token_input, pli_input;
@@ -501,7 +1288,10 @@ size_t Gemma4Model::forward(const std::vector<uint32_t>& tokens, bool use_cache)
         hidden = apply_transformer_layer(gb, hidden, pli, i, backend, use_cache, pos_offset);
 
     set_token_inputs(gb, token_input, pli_input, tokens);
-    return gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
+    auto result = gb->rms_norm(hidden, weight_nodes_.output_norm_weight, config_.layer_norm_eps);
+    active_attention_mask_node_ = previous_attention_mask_node;
+    active_position_deltas_ = std::move(previous_position_deltas);
+    return result;
 }
 
 size_t Gemma4Model::forward_split(const std::vector<uint32_t>& tokens, bool use_cache) {

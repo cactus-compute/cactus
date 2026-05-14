@@ -443,7 +443,7 @@ struct InferenceOptions {
     float temperature = 0.0f;
     float top_p = 0.0f;
     float min_p = 0.15f;
-    float repetition_penalty = 1.1f;
+    float repetition_penalty = 1.0f;
     float confidence_threshold = -1.0f;
     size_t top_k = 0;
     size_t max_tokens = 100;
@@ -457,6 +457,12 @@ struct InferenceOptions {
     bool auto_handoff = true;
     bool handoff_with_images = true;
     bool enable_thinking_if_supported = false;
+    bool mtp = false;
+    bool mtp_required = false;
+    bool mtp_cache_invariant_check = false;
+    size_t mtp_max_draft_tokens = 0;
+    size_t seed = 0;
+    std::string mtp_assistant_path;
 };
 
 } // namespace ffi
@@ -1421,6 +1427,48 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
         options.enable_thinking_if_supported = (json.substr(pos, 4) == "true");
     }
 
+    pos = json.find("\"mtp\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.mtp = (json.substr(pos, 4) == "true");
+    }
+
+    pos = json.find("\"mtp_required\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.mtp_required = (json.substr(pos, 4) == "true");
+    }
+
+    pos = json.find("\"mtp_cache_invariant_check\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.mtp_cache_invariant_check = (json.substr(pos, 4) == "true");
+    }
+
+    pos = json.find("\"mtp_max_draft_tokens\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        options.mtp_max_draft_tokens = std::stoul(json.substr(pos));
+    }
+
+    pos = json.find("\"seed\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        options.seed = std::stoul(json.substr(pos));
+    }
+
+    options.mtp_assistant_path = json_string_field(json, "mtp_assistant_path");
+    if (!options.mtp_assistant_path.empty() || options.mtp_required) {
+        options.mtp = true;
+    }
+    if (options.mtp_max_draft_tokens == 0) {
+        options.mtp = false;
+        options.mtp_required = false;
+    }
+
     pos = json.find("\"stop_sequences\"");
     if (pos != std::string::npos) {
         pos = json.find('[', pos);
@@ -1581,7 +1629,8 @@ inline std::string construct_response_json(const std::string& regular_response,
                                            float confidence = 0.0f,
                                            bool cloud_handoff = false,
                                            const std::string& thinking = "",
-                                           const std::vector<TranscriptSegment>& segments = {}) {
+                                           const std::vector<TranscriptSegment>& segments = {},
+                                           const std::string& mtp_json = "") {
     std::ostringstream json;
     json << "{";
     json << "\"success\":true,";
@@ -1613,6 +1662,9 @@ inline std::string construct_response_json(const std::string& regular_response,
     json << "\"ram_usage_mb\":" << std::fixed << std::setprecision(2) << get_ram_usage_mb() << ",";
     json << "\"prefill_tokens\":" << prompt_tokens << ",";
     json << "\"decode_tokens\":" << completion_tokens << ",";
+    if (!mtp_json.empty()) {
+        json << "\"mtp\":" << mtp_json << ",";
+    }
     json << "\"total_tokens\":" << (prompt_tokens + completion_tokens);
     json << "}";
     return json.str();

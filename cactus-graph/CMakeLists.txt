@@ -46,6 +46,7 @@ set(GRAPH_SOURCES
     src/ops_tensor.cpp
     src/ops_sample.cpp
     src/ops_cache.cpp
+    src/cache_transaction.cpp
     src/ops_dsp.cpp
     src/ops_image.cpp
 )

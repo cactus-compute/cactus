@@ -57,6 +57,10 @@ void Gemma4MmModel::reset_cache() {
     language_model_.reset_cache();
 }
 
+size_t Gemma4MmModel::get_cache_size() const {
+    return language_model_.get_cache_size();
+}
+
 void Gemma4MmModel::compact_kv_cache() {
     language_model_.compact_kv_cache();
 }

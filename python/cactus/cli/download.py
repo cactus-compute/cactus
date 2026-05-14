@@ -423,6 +423,52 @@ def get_weights_dir(model_id: str) -> Path:
     return _PROJECT_ROOT / "weights" / get_model_dir_name(model_id)
 
 
+_PACKAGED_ASSISTANTS = {
+    "gemma-4-e2b-it": {
+        "repo_id": "Cactus-Compute/gemma-4-e2b-it-cq",
+        "assistant_zip": "assistant-L4.zip",
+        "assistant_dir": "assistant",
+    },
+}
+
+
+def ensure_packaged_artifacts(model_id: str, weights_dir: Path) -> bool:
+    """Download companion artifacts (e.g. MTP assistant weights) for known packaged models.
+
+    Returns True if no extra artifacts are required or the download succeeds.
+    """
+    package = _PACKAGED_ASSISTANTS.get(get_model_dir_name(model_id))
+    if not package:
+        return True
+
+    assistant_path = weights_dir / package["assistant_dir"]
+    if (assistant_path / "assistant_cactus_manifest.json").exists():
+        return True
+
+    try:
+        from huggingface_hub import hf_hub_download, list_repo_files
+    except ImportError:
+        print("huggingface_hub not installed - run: pip install huggingface_hub")
+        return False
+
+    repo_id = package["repo_id"]
+    assistant_zip = package["assistant_zip"]
+    try:
+        if assistant_zip not in list_repo_files(repo_id, repo_type="model"):
+            print(f"Assistant weights not found in {repo_id}")
+            return False
+
+        assistant_path.mkdir(parents=True, exist_ok=True)
+        print(f"Downloading {repo_id}/{assistant_zip} ...")
+        assistant_zip_path = Path(hf_hub_download(repo_id=repo_id, filename=assistant_zip, repo_type="model"))
+        print("Extracting assistant weights...")
+        _safe_zip_extract(assistant_zip_path, assistant_path)
+        return True
+    except Exception as exc:
+        print(f"Assistant download failed: {exc}")
+        return False
+
+
 def download_legacy_fp16_zip(model_id: str, weights_dir: Path) -> bool:
     """Download pre-converted FP16 weights zip from Cactus-Compute (legacy fallback).
 
@@ -509,6 +555,8 @@ def cmd_download(args):
         shutil.rmtree(weights_dir)
 
     if weights_dir.exists() and (weights_dir / "config.txt").exists():
+        if not ensure_packaged_artifacts(model_id, weights_dir):
+            return 1
         print_color(GREEN, f"Model weights found at {weights_dir}")
         return 0
 
@@ -534,6 +582,8 @@ def cmd_download(args):
                 size_text = f" ({resolution.archive.size / (1024 * 1024):.1f} MiB)" if resolution.archive.size else ""
                 print(f"  Downloading {resolution.archive.filename} [{combo_label(resolution.archive.combo)}]{size_text}")
                 download_cq_archive(resolution, weights_dir, token=token, cache_dir=cache_dir)
+                if not ensure_packaged_artifacts(model_id, weights_dir):
+                    return 1
                 print_color(GREEN, f"CQ model ready at {weights_dir}")
                 return 0
         except Exception as cq_exc:

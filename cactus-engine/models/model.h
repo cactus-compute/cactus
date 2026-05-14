@@ -217,6 +217,7 @@ public:
     void prefill_with_images(const std::vector<uint32_t>& tokens,
                              const std::vector<std::string>& image_paths,
                              const std::string& profile_file = "") override;
+    size_t get_cache_size() const override;
     uint32_t decode_with_images(const std::vector<uint32_t>& tokens,
                                 const std::vector<std::string>& image_paths,
                                 float temperature = -1.0f,

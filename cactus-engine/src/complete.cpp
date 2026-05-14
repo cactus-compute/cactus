@@ -1,14 +1,25 @@
 #include "../cactus_engine.h"
 #include "cloud.h"
+#include "gemma4_mtp_decode.h"
 #include "utils.h"
 #include "telemetry.h"
 #include "cactus_kernels.h"
 #include "wav.h"
+#include "../models/gemma4/gemma4_mtp_assistant.h"
+#include "../models/gemma4/model_gemma4.h"
 #include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <future>
+#include <iomanip>
 #include <memory>
+#include <random>
+#include <sstream>
+#include <string>
 #include <vector>
 
 using namespace cactus::engine;
@@ -20,6 +31,197 @@ namespace {
 
 std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema);
 std::vector<std::string> extract_schema_required(const std::string& schema);
+
+Gemma4Model* gemma4_language_model(Model* model) {
+    if (auto* gemma4 = dynamic_cast<Gemma4Model*>(model)) {
+        return gemma4;
+    }
+    if (auto* mm = dynamic_cast<Gemma4MmModel*>(model)) {
+        return &mm->language_model();
+    }
+    return nullptr;
+}
+
+std::string default_gemma4_mtp_assistant_path(Model* model) {
+    if (!model) {
+        return {};
+    }
+    std::filesystem::path assistant_path = std::filesystem::path(model->get_model_folder_path()) / "assistant";
+    return assistant_path.string();
+}
+
+std::string token_list_for_trace(const std::vector<uint32_t>& tokens) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (i > 0) out << ",";
+        out << tokens[i];
+    }
+    out << "]";
+    return out.str();
+}
+
+std::string env_string(const char* key, const std::string& fallback = "") {
+    const char* value = std::getenv(key);
+    return value && value[0] ? std::string(value) : fallback;
+}
+
+std::string csv_escape_field(const std::string& value) {
+    if (value.find_first_of(",\"\n\r") == std::string::npos) return value;
+    std::string out = "\"";
+    for (char c : value) {
+        if (c == '"') out += "\"\"";
+        else out += c;
+    }
+    out += "\"";
+    return out;
+}
+
+std::string bool_field(bool value) {
+    return value ? "true" : "false";
+}
+
+std::string double_field(double value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(3) << value;
+    return out.str();
+}
+
+std::string join_ms(const std::vector<double>& values) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(3);
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) out << ";";
+        out << values[i];
+    }
+    return out.str();
+}
+
+void append_csv_line(const std::filesystem::path& path,
+                     const std::string& header,
+                     const std::vector<std::string>& fields) {
+    bool write_header = !std::filesystem::exists(path) || std::filesystem::file_size(path) == 0;
+    std::ofstream out(path, std::ios::app);
+    if (!out) {
+        throw std::runtime_error("Unable to open diagnostic trace CSV: " + path.string());
+    }
+    if (write_header) out << header << "\n";
+    for (size_t i = 0; i < fields.size(); ++i) {
+        if (i > 0) out << ",";
+        out << csv_escape_field(fields[i]);
+    }
+    out << "\n";
+}
+
+struct DiagnosticTraceContext {
+    bool enabled = false;
+    std::filesystem::path dir;
+    std::string run_id;
+    std::string model;
+    std::string prompt_name;
+    std::string shape;
+    std::string rep;
+
+    static DiagnosticTraceContext from_env() {
+        DiagnosticTraceContext ctx;
+        std::string dir = env_string("CACTUS_GEMMA4_MTP_TRACE_CSV_DIR");
+        if (dir.empty()) return ctx;
+        ctx.run_id = env_string("CACTUS_MTP_DIAG_RUN_ID");
+        if (ctx.run_id.empty()) return ctx;
+        ctx.enabled = true;
+        ctx.dir = dir;
+        std::filesystem::create_directories(ctx.dir);
+        ctx.model = env_string("CACTUS_MTP_DIAG_MODEL", "model");
+        ctx.prompt_name = env_string("CACTUS_MTP_DIAG_PROMPT", "prompt");
+        ctx.shape = env_string("CACTUS_MTP_DIAG_SHAPE", "unknown");
+        ctx.rep = env_string("CACTUS_MTP_DIAG_REP", "0");
+        return ctx;
+    }
+
+    void write_round(size_t round_index,
+                     size_t generated_start,
+                     size_t generated_end,
+                     size_t target_batch_m,
+                     size_t assistant_pass_count,
+                     size_t drafted_tokens,
+                     size_t accepted_drafts,
+                     bool rejected,
+                     bool alt_branch_accepted,
+                     bool emitted_extra_target_token,
+                     double target_forward_ms,
+                     double assistant_total_ms,
+                     const std::vector<double>& assistant_step_ms,
+                     double sampling_or_argmax_ms,
+                     double kv_transaction_ms,
+                     double callback_stream_ms,
+                     double loop_overhead_ms,
+                     double round_total_ms) const {
+        if (!enabled || generated_end <= generated_start) return;
+        static const std::string header =
+            "run_id,model,prompt_name,shape,rep,round_index,generated_token_start,generated_token_end,"
+            "generated_tokens_emitted,target_batch_m,assistant_pass_count,drafted_tokens,accepted_drafts,"
+            "rejected,alt_branch_accepted,emitted_extra_target_token,target_forward_ms,assistant_total_ms,"
+            "assistant_step_ms,sampling_or_argmax_ms,kv_transaction_ms,callback_stream_ms,loop_overhead_ms,round_total_ms";
+        append_csv_line(dir / "round_trace.csv", header, {
+            run_id, model, prompt_name, shape, rep,
+            std::to_string(round_index),
+            std::to_string(generated_start),
+            std::to_string(generated_end),
+            std::to_string(generated_end - generated_start),
+            std::to_string(target_batch_m),
+            std::to_string(assistant_pass_count),
+            std::to_string(drafted_tokens),
+            std::to_string(accepted_drafts),
+            bool_field(rejected),
+            bool_field(alt_branch_accepted),
+            bool_field(emitted_extra_target_token),
+            double_field(target_forward_ms),
+            double_field(assistant_total_ms),
+            join_ms(assistant_step_ms),
+            double_field(sampling_or_argmax_ms),
+            double_field(kv_transaction_ms),
+            double_field(callback_stream_ms),
+            double_field(loop_overhead_ms),
+            double_field(round_total_ms),
+        });
+    }
+
+    void write_token(size_t token_position,
+                     uint32_t token_id,
+                     size_t round_index,
+                     size_t token_index_in_round,
+                     const std::string& source,
+                     size_t round_emitted,
+                     double target_forward_ms,
+                     double assistant_total_ms,
+                     double other_ms,
+                     double round_total_ms) const {
+        if (!enabled || round_emitted == 0) return;
+        static const std::string header =
+            "run_id,model,prompt_name,shape,rep,token_position,token_id,round_index,token_index_in_round,"
+            "source,round_generated_tokens_emitted,round_target_forward_ms,round_assistant_total_ms,"
+            "round_other_ms,round_total_ms,allocated_target_forward_ms,allocated_assistant_ms,"
+            "allocated_other_ms,allocated_total_ms";
+        double denom = static_cast<double>(round_emitted);
+        append_csv_line(dir / "token_trace.csv", header, {
+            run_id, model, prompt_name, shape, rep,
+            std::to_string(token_position),
+            std::to_string(token_id),
+            std::to_string(round_index),
+            std::to_string(token_index_in_round),
+            source,
+            std::to_string(round_emitted),
+            double_field(target_forward_ms),
+            double_field(assistant_total_ms),
+            double_field(other_ms),
+            double_field(round_total_ms),
+            double_field(target_forward_ms / denom),
+            double_field(assistant_total_ms / denom),
+            double_field(other_ms / denom),
+            double_field(round_total_ms / denom),
+        });
+    }
+};
 
 std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
     for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
@@ -397,6 +599,11 @@ bool prompt_context_matches(
     if (prompt.context_token_count < handle->processed_tokens.size()) {
         return false;
     }
+    size_t cache_size = handle->model->get_cache_size();
+    size_t desired_cache_size = prompt.context_token_count > 0 ? prompt.context_token_count - 1 : 0;
+    if (cache_size > handle->processed_tokens.size() || cache_size > desired_cache_size) {
+        return false;
+    }
     if (!std::equal(handle->processed_tokens.begin(), handle->processed_tokens.end(), prompt.tokens.begin())) {
         return false;
     }
@@ -518,10 +725,13 @@ PrefillResult do_prefill(
 ) {
     PrefillResult result = {};
     bool has_images = prompt.has_images();
+    size_t cache_size = handle->model->get_cache_size();
+    size_t desired_cache_size = target_tokens.empty() ? 0 : target_tokens.size() - 1;
 
     result.was_prefix = prompt_context_matches(handle, prompt);
     result.was_exact_match = result.was_prefix &&
-        target_tokens.size() == handle->processed_tokens.size();
+        target_tokens.size() == handle->processed_tokens.size() &&
+        cache_size == desired_cache_size;
 
     if (result.was_exact_match) {
         return result;
@@ -532,8 +742,9 @@ PrefillResult do_prefill(
         reset_cache(handle);
         tokens_to_process = target_tokens;
     } else {
+        size_t cached_tokens = std::min(cache_size, handle->processed_tokens.size());
         tokens_to_process.assign(
-            target_tokens.begin() + handle->processed_tokens.size(),
+            target_tokens.begin() + cached_tokens,
             target_tokens.end()
         );
     }
@@ -652,12 +863,62 @@ int cactus_complete(
         handle->should_stop = false;
         auto* tokenizer = handle->model->get_tokenizer();
         auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, true, true, pcm_buffer, pcm_buffer_size);
+        if (prompt.options.mtp && prompt.options.mtp_assistant_path.empty()) {
+            prompt.options.mtp_assistant_path = default_gemma4_mtp_assistant_path(handle->model.get());
+        }
+
+        bool mtp_assistant_available = false;
+        if (prompt.options.mtp) {
+            mtp_assistant_available = !prompt.options.mtp_assistant_path.empty()
+                && std::filesystem::exists(prompt.options.mtp_assistant_path);
+            if (prompt.options.mtp_required && !mtp_assistant_available) {
+                throw std::runtime_error("Gemma 4 MTP assistant is unavailable: " + prompt.options.mtp_assistant_path);
+            }
+        }
 
         CACTUS_LOG_DEBUG("complete", "Prompt tokens: " << prompt.tokens.size()
             << ", max_tokens: " << prompt.options.max_tokens);
 
         bool has_images = prompt.has_images();
         bool has_audio = prompt.has_audio();
+        Gemma4Model* mtp_target = gemma4_language_model(handle->model.get());
+        Gemma4MtpAssistant mtp_assistant;
+        bool mtp_enabled = false;
+        size_t mtp_drafted_tokens = 0;
+        size_t mtp_accepted_tokens = 0;
+        size_t mtp_rejected_tokens = 0;
+        size_t mtp_rounds = 0;
+        double mtp_assistant_draft_ms = 0.0;
+        double mtp_target_verify_ms = 0.0;
+        double mtp_sampling_or_argmax_ms = 0.0;
+        double mtp_kv_transaction_ms = 0.0;
+        double mtp_callback_stream_ms = 0.0;
+        std::string mtp_fallback_reason;
+        if (prompt.options.mtp) {
+            const bool text_only = !has_images && !has_audio && prompt.tools.empty();
+            const bool short_completion_gate = !prompt.options.mtp_required
+                && prompt.options.temperature == 0.0f
+                && prompt.options.mtp_max_draft_tokens >= 2
+                && prompt.options.max_tokens <= 32;
+            if (short_completion_gate) {
+                mtp_fallback_reason = "short_completion";
+            } else if (!mtp_target) {
+                mtp_fallback_reason = "target_not_gemma4_text";
+            } else if (!text_only) {
+                mtp_fallback_reason = "only_text_supported";
+            } else if (!mtp_assistant_available) {
+                mtp_fallback_reason = "assistant_unavailable";
+            } else {
+                auto* graph = static_cast<CactusGraph*>(mtp_target->graph_handle_);
+                mtp_enabled = mtp_assistant.init(graph, prompt.options.mtp_assistant_path);
+                if (!mtp_enabled) {
+                    mtp_fallback_reason = "assistant_load_failed";
+                }
+            }
+            if (prompt.options.mtp_required && !mtp_enabled) {
+                throw std::runtime_error("Gemma 4 native MTP unavailable: " + mtp_fallback_reason);
+            }
+        }
         const bool has_gemma4_mixed_media = prompt.model_type == Config::ModelType::GEMMA4 && has_images && has_audio;
         auto decode_gemma4_mixed_media = [&](const std::vector<uint32_t>& tokens, float* out_entropy) -> uint32_t {
             auto* gemma4_mm = dynamic_cast<Gemma4MmModel*>(handle->model.get());
@@ -680,6 +941,12 @@ int cactus_complete(
         double time_to_first_token = 0.0;
         float first_token_entropy = 0.0f;
         uint32_t next_token;
+        std::vector<__fp16> mtp_prev_hidden;
+        std::mt19937 mtp_rng(prompt.options.seed == 0 ? std::random_device{}() : static_cast<uint32_t>(prompt.options.seed));
+        const bool mtp_sparse_sampled = prompt.options.temperature > 0.0f && prompt.options.top_k > 0;
+        const bool mtp_trace = env_flag_enabled("CACTUS_GEMMA4_MTP_TRACE");
+        const DiagnosticTraceContext diag_trace = DiagnosticTraceContext::from_env();
+        size_t diagnostic_round_index = 0;
         size_t prompt_tokens;
 
         if ((has_gemma4_mixed_media || has_audio) && !handle->processed_tokens.empty()) {
@@ -711,7 +978,47 @@ int cactus_complete(
         } else {
             auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
             prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
-            next_token = generate_first_token(handle, prefill_result, prompt, &first_token_entropy);
+            if (mtp_enabled && prompt.options.temperature == 0.0f) {
+                std::vector<uint32_t> first_input;
+                if (prefill_result.was_exact_match || prefill_result.remaining_tokens.empty()) {
+                    if (handle->processed_tokens.empty()) {
+                        throw std::runtime_error("Cannot generate from empty prompt");
+                    }
+                    first_input = {handle->processed_tokens.back()};
+                } else {
+                    first_input = prefill_result.remaining_tokens;
+                }
+                auto first = mtp_target->decode_greedy_with_hidden(first_input);
+                next_token = first.token;
+                mtp_prev_hidden = std::move(first.hidden);
+            } else if (mtp_enabled) {
+                std::vector<uint32_t> first_input;
+                if (prefill_result.was_exact_match || prefill_result.remaining_tokens.empty()) {
+                    if (handle->processed_tokens.empty()) {
+                        throw std::runtime_error("Cannot generate from empty prompt");
+                    }
+                    first_input = {handle->processed_tokens.back()};
+                } else {
+                    first_input = prefill_result.remaining_tokens;
+                }
+                auto first = mtp_sparse_sampled
+                    ? mtp_target->decode_tokens_with_hidden_and_sparse_probs(
+                        first_input, prompt.options.temperature, prompt.options.top_p,
+                        prompt.options.top_k, prompt.options.min_p)
+                    : mtp_target->decode_tokens_with_hidden_and_probs(
+                        first_input, prompt.options.temperature, prompt.options.top_p,
+                        prompt.options.top_k, prompt.options.min_p);
+                next_token = mtp_sparse_sampled
+                    ? gemma4_mtp_sample_sparse_distribution(first.sparse_probabilities.back(), mtp_rng)
+                    : gemma4_mtp_sample_distribution(first.probabilities.back(), mtp_rng);
+                size_t hidden_row = first.hidden_dim == 0 ? 0 : first.hidden.size() / first.hidden_dim - 1;
+                mtp_prev_hidden.assign(
+                    first.hidden.begin() + hidden_row * first.hidden_dim,
+                    first.hidden.begin() + (hidden_row + 1) * first.hidden_dim);
+                mtp_target->record_sampled_token(next_token);
+            } else {
+                next_token = generate_first_token(handle, prefill_result, prompt, &first_token_entropy);
+            }
         }
 
         handle->processed_tokens = prompt.tokens;
@@ -776,44 +1083,349 @@ int cactus_complete(
                 callback(new_text.c_str(), next_token, user_data);
             }
 
-            for (size_t i = 1; i < prompt.options.max_tokens; i++) {
-                if (handle->should_stop) break;
-
-                float token_entropy = 0.0f;
-                if (has_gemma4_mixed_media) {
-                    next_token = decode_gemma4_mixed_media(handle->processed_tokens, &token_entropy);
-                } else if (has_audio) {
-                    next_token = handle->model->decode_with_audio(
-                        handle->processed_tokens, prompt.audio_features,
-                        prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
-                        "", &token_entropy,
-                        prompt.options.min_p, prompt.options.repetition_penalty);
-                } else {
-                    next_token = decode(handle->model, {next_token}, prompt.options, &token_entropy);
-                }
-                handle->processed_tokens.push_back(next_token);
-                generated_tokens.push_back(next_token);
-
-                entropy.add(token_entropy);
-
-                if (entropy.rolling_confidence() < prompt.options.confidence_threshold) {
-                    entropy.spike_handoff = true;
-                    maybe_start_cloud_handoff("", {});
-                }
+            auto consume_token = [&](uint32_t token) {
+                handle->processed_tokens.push_back(token);
+                generated_tokens.push_back(token);
+                entropy.add(0.0f);
 
                 if (prompt.options.force_tools && !prompt.tools.empty()) {
-                    handle->model->update_tool_constraints(next_token);
+                    handle->model->update_tool_constraints(token);
                 }
 
                 if (matches_stop_sequence(generated_tokens, stop_token_sequences)) {
                     trim_stop_suffix(generated_tokens, stop_token_sequences, prompt.options.include_stop_sequences);
-                    break;
+                    return true;
                 }
 
                 if (callback) {
-                    std::string new_text = tokenizer->decode({next_token});
-                    callback(new_text.c_str(), next_token, user_data);
+                    std::string new_text = tokenizer->decode({token});
+                    callback(new_text.c_str(), token, user_data);
                 }
+                return false;
+            };
+
+            auto run_standard_decode = [&](size_t produced) {
+                for (size_t i = produced; i < prompt.options.max_tokens; i++) {
+                    if (handle->should_stop) break;
+
+                    float token_entropy = 0.0f;
+                    size_t generated_start = generated_tokens.size();
+                    auto round_start = std::chrono::steady_clock::now();
+                    auto target_start = round_start;
+                    if (has_gemma4_mixed_media) {
+                        next_token = decode_gemma4_mixed_media(handle->processed_tokens, &token_entropy);
+                    } else if (has_audio) {
+                        next_token = handle->model->decode_with_audio(
+                            handle->processed_tokens, prompt.audio_features,
+                            prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
+                            "", &token_entropy,
+                            prompt.options.min_p, prompt.options.repetition_penalty);
+                    } else {
+                        next_token = decode(handle->model, {next_token}, prompt.options, &token_entropy);
+                    }
+                    auto target_end = std::chrono::steady_clock::now();
+                    handle->processed_tokens.push_back(next_token);
+                    generated_tokens.push_back(next_token);
+
+                    entropy.add(token_entropy);
+
+                    if (entropy.rolling_confidence() < prompt.options.confidence_threshold) {
+                        entropy.spike_handoff = true;
+                        maybe_start_cloud_handoff("", {});
+                    }
+
+                    if (prompt.options.force_tools && !prompt.tools.empty()) {
+                        handle->model->update_tool_constraints(next_token);
+                    }
+
+                    if (matches_stop_sequence(generated_tokens, stop_token_sequences)) {
+                        trim_stop_suffix(generated_tokens, stop_token_sequences, prompt.options.include_stop_sequences);
+                        break;
+                    }
+
+                    double callback_ms = 0.0;
+                    if (callback) {
+                        auto callback_start = std::chrono::steady_clock::now();
+                        std::string new_text = tokenizer->decode({next_token});
+                        callback(new_text.c_str(), next_token, user_data);
+                        auto callback_end = std::chrono::steady_clock::now();
+                        callback_ms = std::chrono::duration<double, std::milli>(callback_end - callback_start).count();
+                    }
+                    auto round_end = std::chrono::steady_clock::now();
+                    double target_ms = std::chrono::duration<double, std::milli>(target_end - target_start).count();
+                    double round_total_ms = std::chrono::duration<double, std::milli>(round_end - round_start).count();
+                    double loop_overhead_ms = round_total_ms - target_ms - callback_ms;
+                    if (loop_overhead_ms < 0.0) loop_overhead_ms = 0.0;
+                    size_t generated_end = generated_tokens.size();
+                    size_t round_index = diagnostic_round_index++;
+                    diag_trace.write_round(
+                        round_index,
+                        generated_start,
+                        generated_end,
+                        1,
+                        0,
+                        0,
+                        0,
+                        false,
+                        false,
+                        true,
+                        target_ms,
+                        0.0,
+                        {},
+                        0.0,
+                        0.0,
+                        callback_ms,
+                        loop_overhead_ms,
+                        round_total_ms);
+                    if (generated_end > generated_start) {
+                        double other_ms = callback_ms + loop_overhead_ms;
+                        diag_trace.write_token(
+                            generated_end - 1,
+                            next_token,
+                            round_index,
+                            0,
+                            "baseline_target",
+                            generated_end - generated_start,
+                            target_ms,
+                            0.0,
+                            other_ms,
+                            round_total_ms);
+                    }
+                }
+            };
+
+            auto rebuild_mtp_cache_for_invariant_check = [&]() {
+                if (!mtp_target || prompt.tokens.empty() || generated_tokens.empty()) return;
+                mtp_target->reset_cache();
+                if (prompt.tokens.size() > 1) {
+                    std::vector<uint32_t> prompt_prefix(prompt.tokens.begin(), prompt.tokens.end() - 1);
+                    mtp_target->prefill_for_mtp(prompt_prefix, mtp_target->get_prefill_chunk_size());
+                }
+
+                std::vector<uint32_t> committed;
+                committed.reserve(prompt.tokens.size() + generated_tokens.size());
+                committed.insert(committed.end(), prompt.tokens.begin(), prompt.tokens.end());
+                committed.insert(committed.end(), generated_tokens.begin(), generated_tokens.end());
+                for (size_t i = prompt.tokens.size() - 1; i + 1 < committed.size(); ++i) {
+                    mtp_target->prefill_for_mtp({committed[i]}, 1);
+                    mtp_target->record_sampled_token(committed[i + 1]);
+                }
+            };
+
+            auto check_mtp_cache_position_invariant = [&]() {
+                if (!mtp_target || prompt.tokens.empty() || generated_tokens.empty()) return;
+                size_t expected_position = prompt.tokens.size() + generated_tokens.size() - 1;
+                size_t actual_position = mtp_target->cache_position();
+                if (actual_position != expected_position) {
+                    throw std::runtime_error(
+                        "Gemma 4 MTP cache position invariant failed: position "
+                        + std::to_string(actual_position)
+                        + " != committed prefix "
+                        + std::to_string(expected_position));
+                }
+            };
+
+            auto check_mtp_cache_invariant = [&](uint32_t last_token) {
+                if (!prompt.options.mtp_cache_invariant_check
+                    || !mtp_target
+                    || prompt.options.temperature != 0.0f
+                    || prompt.tokens.empty()
+                    || generated_tokens.empty()) {
+                    return;
+                }
+                CactusGraph* mtp_graph = static_cast<CactusGraph*>(mtp_target->graph_handle_);
+                auto cache_state_nodes = mtp_target->cache_state_nodes_for_mtp();
+                if (cache_state_nodes.empty()) return;
+
+                size_t current_position = mtp_target->cache_position();
+                auto current_txn = mtp_graph->begin_kv_cache_transaction(cache_state_nodes);
+                uint32_t current_next = mtp_target->decode_greedy_with_hidden({last_token}).token;
+                current_txn.rollback();
+                mtp_graph->apply_pending_kv_cache_sequence_lengths();
+                mtp_target->set_cache_position_for_mtp(current_position);
+
+                rebuild_mtp_cache_for_invariant_check();
+                size_t replay_position = mtp_target->cache_position();
+                auto replay_cache_state_nodes = mtp_target->cache_state_nodes_for_mtp();
+                auto replay_txn = mtp_graph->begin_kv_cache_transaction(replay_cache_state_nodes);
+                uint32_t replay_next = mtp_target->decode_greedy_with_hidden({last_token}).token;
+                replay_txn.rollback();
+                mtp_graph->apply_pending_kv_cache_sequence_lengths();
+                mtp_target->set_cache_position_for_mtp(replay_position);
+
+                if (current_next != replay_next) {
+                    throw std::runtime_error(
+                        "Gemma 4 MTP cache invariant failed: live next token "
+                        + std::to_string(current_next)
+                        + " != replayed next token "
+                        + std::to_string(replay_next));
+                }
+            };
+
+            if (mtp_enabled) {
+                size_t produced = 1;
+                bool stopped = false;
+                size_t mtp_previous_n_matches = 0;
+                Gemma4MtpSamplingOptions mtp_sampling_options{
+                    .temperature = prompt.options.temperature,
+                    .top_p = prompt.options.top_p,
+                    .top_k = prompt.options.top_k,
+                    .min_p = prompt.options.min_p,
+                };
+                Gemma4MtpDecodeStrategy mtp_strategy(*mtp_target, mtp_assistant);
+                while (produced < prompt.options.max_tokens && !handle->should_stop) {
+                    size_t remaining = prompt.options.max_tokens - produced;
+                    if (remaining == 0) break;
+                    size_t generated_start = generated_tokens.size();
+                    auto round_start = std::chrono::steady_clock::now();
+
+                    size_t draft_limit = std::min<size_t>(
+                        prompt.options.mtp_max_draft_tokens,
+                        remaining > 1 ? remaining - 1 : 1);
+                    auto cache_nodes = mtp_target->shared_cache_nodes_for_mtp();
+                    const size_t assistant_position = handle->processed_tokens.empty() ? 0 : handle->processed_tokens.size() - 1;
+
+                    auto round = mtp_strategy.decode_round(
+                        next_token,
+                        mtp_prev_hidden,
+                        cache_nodes,
+                        assistant_position,
+                        draft_limit,
+                        remaining,
+                        mtp_sampling_options,
+                        mtp_sparse_sampled,
+                        mtp_rng);
+                    mtp_rounds++;
+                    auto& draft = round.draft;
+                    auto& verified = round.verification;
+                    mtp_drafted_tokens += draft.tokens.size();
+                    mtp_accepted_tokens += verified.accepted;
+                    mtp_assistant_draft_ms += draft.assistant_draft_ms;
+                    mtp_target_verify_ms += verified.target_verify_ms;
+                    mtp_sampling_or_argmax_ms += draft.sampling_or_argmax_ms + verified.sampling_or_argmax_ms;
+                    mtp_kv_transaction_ms += verified.kv_transaction_ms;
+
+                    if (mtp_trace) {
+                        std::cerr
+                            << "[mtp_trace] round=" << mtp_rounds
+                            << " input_len=" << handle->processed_tokens.size()
+                            << " previous_n_matches=" << mtp_previous_n_matches
+                            << " assistant_position_id=" << assistant_position
+                            << " assistant_input_token=" << next_token
+                            << " assistant_draft_tokens=" << token_list_for_trace(draft.tokens)
+                            << " target_verify_input_tokens=" << token_list_for_trace(verified.verify_tokens)
+                            << " target_argmax_tokens=" << token_list_for_trace(verified.target_tokens)
+                            << " accepted_count=" << verified.accepted
+                            << " valid_committed_tokens=" << token_list_for_trace(verified.output_tokens)
+                            << " target_cache_crop_length=" << verified.target_cache_crop_length
+                            << " assistant_draft_ms=" << draft.assistant_draft_ms
+                            << " target_verify_ms=" << verified.target_verify_ms
+                            << " sampling_or_argmax_ms=" << (draft.sampling_or_argmax_ms + verified.sampling_or_argmax_ms)
+                            << " kv_transaction_ms=" << verified.kv_transaction_ms
+                            << "\n";
+                    }
+                    mtp_previous_n_matches = verified.accepted;
+
+                    if (!verified.next_hidden.empty()) {
+                        mtp_prev_hidden = std::move(verified.next_hidden);
+                    }
+
+                    if (verified.rejected) {
+                        mtp_rejected_tokens++;
+                    }
+
+                    double round_callback_ms = 0.0;
+                    for (uint32_t token : verified.output_tokens) {
+                        next_token = token;
+                        produced++;
+                        if (prompt.options.temperature > 0.0f) {
+                            mtp_target->record_sampled_token(token);
+                        }
+                        auto callback_start = std::chrono::steady_clock::now();
+                        stopped = consume_token(token);
+                        auto callback_end = std::chrono::steady_clock::now();
+                        double callback_ms = std::chrono::duration<double, std::milli>(callback_end - callback_start).count();
+                        round_callback_ms += callback_ms;
+                        mtp_callback_stream_ms += callback_ms;
+                        if (stopped || produced >= prompt.options.max_tokens) break;
+                    }
+                    auto round_end = std::chrono::steady_clock::now();
+                    size_t generated_end = generated_tokens.size();
+                    size_t emitted_count = generated_end > generated_start ? generated_end - generated_start : 0;
+                    double round_total_ms = std::chrono::duration<double, std::milli>(round_end - round_start).count();
+                    double round_sampling_ms = draft.sampling_or_argmax_ms + verified.sampling_or_argmax_ms;
+                    double named_ms = draft.assistant_draft_ms + verified.target_verify_ms
+                        + round_sampling_ms + verified.kv_transaction_ms + round_callback_ms;
+                    double loop_overhead_ms = round_total_ms - named_ms;
+                    if (loop_overhead_ms < 0.0) loop_overhead_ms = 0.0;
+                    bool alt_branch_accepted = draft.has_alt_first_token
+                        && !verified.output_tokens.empty()
+                        && verified.output_tokens[0] == draft.alt_first_token
+                        && (draft.tokens.empty() || draft.tokens[0] != draft.alt_first_token);
+                    size_t round_index = diagnostic_round_index++;
+                    diag_trace.write_round(
+                        round_index,
+                        generated_start,
+                        generated_end,
+                        verified.verify_tokens.size(),
+                        draft.assistant_step_ms.size(),
+                        draft.tokens.size() + (draft.has_alt_first_token ? 1 : 0),
+                        verified.accepted,
+                        verified.rejected,
+                        alt_branch_accepted,
+                        verified.emitted_extra_target_token,
+                        verified.target_verify_ms,
+                        draft.assistant_draft_ms,
+                        draft.assistant_step_ms,
+                        round_sampling_ms,
+                        verified.kv_transaction_ms,
+                        round_callback_ms,
+                        loop_overhead_ms,
+                        round_total_ms);
+                    if (emitted_count > 0) {
+                        std::vector<std::string> sources;
+                        sources.reserve(emitted_count);
+                        if (alt_branch_accepted) {
+                            sources.push_back("accepted_alt_draft");
+                            while (sources.size() < emitted_count) {
+                                sources.push_back(prompt.options.temperature > 0.0f ? "sampled_target" : "free_target");
+                            }
+                        } else {
+                            for (size_t i = 0; i < emitted_count; ++i) {
+                                if (i < verified.accepted) {
+                                    sources.push_back("accepted_main_draft");
+                                } else if (verified.rejected) {
+                                    sources.push_back("rejection_target");
+                                } else {
+                                    sources.push_back(prompt.options.temperature > 0.0f ? "sampled_target" : "free_target");
+                                }
+                            }
+                        }
+                        double other_ms = round_sampling_ms + verified.kv_transaction_ms + round_callback_ms + loop_overhead_ms;
+                        for (size_t i = 0; i < emitted_count; ++i) {
+                            diag_trace.write_token(
+                                generated_start + i,
+                                verified.output_tokens[i],
+                                round_index,
+                                i,
+                                sources[i],
+                                emitted_count,
+                                verified.target_verify_ms,
+                                draft.assistant_draft_ms,
+                                other_ms,
+                                round_total_ms);
+                        }
+                    }
+
+                    if (!stopped && produced < prompt.options.max_tokens && !generated_tokens.empty()) {
+                        check_mtp_cache_position_invariant();
+                        check_mtp_cache_invariant(next_token);
+                    }
+
+                    if (stopped) break;
+                }
+            } else {
+                run_standard_decode(1);
             }
         } else {
             trim_stop_suffix(generated_tokens, stop_token_sequences, prompt.options.include_stop_sequences);
@@ -891,10 +1503,32 @@ int cactus_complete(
         }
 
         const bool handoff_succeeded = cloud_used;
+        std::string mtp_json;
+        if (prompt.options.mtp) {
+            std::ostringstream mtp;
+            mtp << "{";
+            mtp << "\"requested\":true,";
+            mtp << "\"enabled\":" << (mtp_enabled ? "true" : "false") << ",";
+            mtp << "\"assistant_available\":" << (mtp_assistant_available ? "true" : "false") << ",";
+            mtp << "\"max_draft_tokens\":" << prompt.options.mtp_max_draft_tokens << ",";
+            mtp << "\"drafted_tokens\":" << mtp_drafted_tokens << ",";
+            mtp << "\"accepted_tokens\":" << mtp_accepted_tokens << ",";
+            mtp << "\"rejected_tokens\":" << mtp_rejected_tokens << ",";
+            mtp << "\"rounds\":" << mtp_rounds << ",";
+            mtp << std::fixed << std::setprecision(3);
+            mtp << "\"assistant_draft_ms\":" << mtp_assistant_draft_ms << ",";
+            mtp << "\"target_verify_ms\":" << mtp_target_verify_ms << ",";
+            mtp << "\"sampling_or_argmax_ms\":" << mtp_sampling_or_argmax_ms << ",";
+            mtp << "\"kv_transaction_ms\":" << mtp_kv_transaction_ms << ",";
+            mtp << "\"callback_stream_ms\":" << mtp_callback_stream_ms << ",";
+            mtp << "\"fallback_reason\":\"" << escape_json_string(mtp_enabled ? "" : mtp_fallback_reason) << "\"";
+            mtp << "}";
+            mtp_json = mtp.str();
+        }
         std::string result = construct_response_json(primary_response, primary_function_calls, time_to_first_token,
                                                      total_time_ms, prefill_tps, decode_tps, prompt_tokens,
                                                      completion_tokens, confidence, handoff_succeeded,
-                                                     thinking_text);
+                                                     thinking_text, {}, mtp_json);
 
         if (result.length() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);

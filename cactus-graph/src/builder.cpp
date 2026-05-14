@@ -1548,3 +1548,50 @@ size_t CactusGraph::attention_cached(size_t query, size_t key_new, size_t value_
                     {query, key_new, value_new, k_cache_state, v_cache_state},
                     {batch, seq_len, num_q_heads, out_v_dim}, params);
 }
+
+size_t CactusGraph::attention_cached_masked(size_t query, size_t key_new, size_t value_new,
+                                            size_t k_cache_state, size_t v_cache_state,
+                                            size_t new_token_mask, float scale, size_t position_offset,
+                                            size_t window_size, size_t v_head_dim) {
+    const auto& q_shape = get_output_buffer(query).shape;
+    size_t batch = q_shape[0];
+    size_t seq_len = q_shape[1];
+    size_t num_q_heads = q_shape[2];
+    size_t head_dim = q_shape[3];
+    size_t out_v_dim = v_head_dim > 0 ? v_head_dim : head_dim;
+
+    OpParams params{};
+    params.scale = scale;
+    params.position_offset = position_offset;
+    params.window_size = window_size;
+    params.v_head_dim = v_head_dim;
+    params.output_precision = Precision::FP16;
+    return add_node(OpType::ATTENTION_CACHED,
+                    {query, key_new, value_new, k_cache_state, v_cache_state, new_token_mask},
+                    {batch, seq_len, num_q_heads, out_v_dim}, params);
+}
+
+size_t CactusGraph::attention_cache_only(size_t query,
+                                         size_t k_cache_state,
+                                         size_t v_cache_state,
+                                         float scale,
+                                         size_t position_offset,
+                                         size_t window_size,
+                                         size_t v_head_dim) {
+    const auto& q_shape = get_output_buffer(query).shape;
+    size_t batch = q_shape[0];
+    size_t seq_len = q_shape[1];
+    size_t num_q_heads = q_shape[2];
+    size_t head_dim = q_shape[3];
+    size_t out_v_dim = v_head_dim > 0 ? v_head_dim : head_dim;
+
+    OpParams params{};
+    params.scale = scale;
+    params.position_offset = position_offset;
+    params.window_size = window_size;
+    params.v_head_dim = v_head_dim;
+    params.output_precision = Precision::FP16;
+    return add_node(OpType::ATTENTION_CACHE_ONLY,
+                    {query, k_cache_state, v_cache_state},
+                    {batch, seq_len, num_q_heads, out_v_dim}, params);
+}

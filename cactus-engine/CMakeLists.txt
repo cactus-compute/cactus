@@ -69,6 +69,7 @@ set(ENGINE_SOURCES
     src/init.cpp
     src/embed.cpp
     src/complete.cpp
+    src/gemma4_mtp_decode.cpp
     src/transcribe.cpp
     src/tokenizer.cpp
     src/npu.cpp
@@ -80,6 +81,7 @@ set(MODEL_SOURCES
     models/model_qwen.cpp
     models/model_siglip2.cpp
     models/gemma4/model_gemma4.cpp
+    models/gemma4/gemma4_mtp_assistant.cpp
     models/gemma4/model_gemma4_mm.cpp
     models/gemma4/model_gemma4_audio.cpp
     models/gemma4/model_gemma4_vision.cpp

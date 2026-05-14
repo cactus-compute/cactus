@@ -459,6 +459,10 @@ void Lfm2VlModel::prefill_with_images(const std::vector<uint32_t>& tokens, const
     last_token_count_ = tokens.size();
 }
 
+size_t Lfm2VlModel::get_cache_size() const {
+    return language_model_.get_cache_size();
+}
+
 Lfm2VlModel::ForwardImageResult Lfm2VlModel::forward_images(
     CactusGraph* gb,
     const std::vector<uint32_t>& tokens,
