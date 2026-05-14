@@ -632,7 +632,7 @@ static inline float tq_quantize_codebook_i8(const __fp16* codebook, int8_t* cb_i
 static inline int8x16_t tq_expand_i8_16(const uint8_t* packed, uint32_t bits, int8x16_t cb_lut);
 
 template<uint32_t Bits>
-static void cactus_quant_sdot_gemv_int8(
+__attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
     const CactusQuantMatrix* W,
     const __fp16* code_basis,
     __fp16* y) {
