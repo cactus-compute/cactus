@@ -263,6 +263,36 @@ bool test_cq_correctness(uint32_t bits) {
     return true;
 }
 
+bool test_cq_small_m5_correctness(uint32_t bits) {
+    const uint32_t M = 5, K = 1024, N = 64, gs = 128;
+    SyntheticCQ cq(bits, K, N, gs, 321);
+    CactusQuantMatrix mat = cq.matrix();
+
+    std::mt19937 gen(88 + bits);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    std::vector<float> x_f32(static_cast<size_t>(M) * K);
+    for (auto& v : x_f32) v = dist(gen);
+
+    std::vector<float> ref(static_cast<size_t>(M) * N, 0.f);
+    for (uint32_t m = 0; m < M; ++m) {
+        cq_reference_gemv_f32(cq, x_f32.data() + static_cast<size_t>(m) * K,
+                              ref.data() + static_cast<size_t>(m) * N);
+    }
+
+    std::vector<__fp16> x_f16(static_cast<size_t>(M) * K);
+    std::vector<__fp16> y_f16(static_cast<size_t>(M) * N, static_cast<__fp16>(0));
+    for (size_t i = 0; i < x_f32.size(); i++) x_f16[i] = static_cast<__fp16>(x_f32[i]);
+    cactus_quant_matmul(&mat, x_f16.data(), M, y_f16.data());
+
+    double mse = compute_mse(ref.data(), y_f16.data(), y_f16.size());
+    double threshold = 0.1;
+    if (mse > threshold) {
+        std::cerr << "  cq" << bits << " M5 MSE=" << mse << " > " << threshold << "\n";
+        return false;
+    }
+    return true;
+}
+
 bool run_benchmarks() {
     auto bench = [](const char* label, size_t M, size_t K, size_t N, auto fn) {
         fn();
@@ -508,6 +538,10 @@ int main() {
     runner.run_test("matmul_cq2", test_cq_correctness(2));
     runner.run_test("matmul_cq3", test_cq_correctness(3));
     runner.run_test("matmul_cq4", test_cq_correctness(4));
+    runner.run_test("matmul_cq1_m5", test_cq_small_m5_correctness(1));
+    runner.run_test("matmul_cq2_m5", test_cq_small_m5_correctness(2));
+    runner.run_test("matmul_cq3_m5", test_cq_small_m5_correctness(3));
+    runner.run_test("matmul_cq4_m5", test_cq_small_m5_correctness(4));
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     print_mse_report();

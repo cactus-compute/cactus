@@ -280,6 +280,27 @@ void cactus_quant_orthogonal_matmul(
     uint32_t M,
     __fp16* C);
 
+bool cactus_quant_orthogonal_argmax(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    uint32_t* indices);
+
+bool cactus_quant_orthogonal_argmax_candidates(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    const uint32_t* candidates,
+    uint32_t candidate_count,
+    uint32_t* index);
+
+bool cactus_quant_orthogonal_top2_candidates(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    const uint32_t* candidates,
+    uint32_t candidate_count,
+    uint32_t* first,
+    uint32_t* second);
+
 void cactus_quant_dequantize_hadamard_embedding_row(
     uint32_t bits,
     uint32_t hidden_dim,
