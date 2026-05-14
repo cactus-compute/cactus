@@ -1493,6 +1493,146 @@ static void cactus_quant_small_m_sdot_gemm_no_preexpand(
     const uint32_t n_vecs = gs / 16;
     constexpr uint32_t MAX_M = 5;
 
+    if (M == 2 && (W->N % 8) == 0) {
+        const size_t N_blocks8 = W->N / 8;
+        CactusThreading::parallel_gemm_tiles(M, N_blocks8,
+            [&](size_t block_start, size_t block_end) {
+                for (size_t n_block = block_start; n_block < block_end; ++n_block) {
+                    const size_t n_start = n_block * 8;
+                    float32x4_t running_sum00 = vdupq_n_f32(0.f);
+                    float32x4_t running_sum01 = vdupq_n_f32(0.f);
+                    float32x4_t running_sum10 = vdupq_n_f32(0.f);
+                    float32x4_t running_sum11 = vdupq_n_f32(0.f);
+
+                    for (uint32_t g = 0; g < num_groups; ++g) {
+                        const uint8_t* p0 = W->packed_indices
+                            + ((static_cast<size_t>(n_start) * num_groups + g) * pgb);
+                        const uint8_t* p1 = W->packed_indices
+                            + ((static_cast<size_t>(n_start + 1) * num_groups + g) * pgb);
+                        const uint8_t* p2 = W->packed_indices
+                            + ((static_cast<size_t>(n_start + 2) * num_groups + g) * pgb);
+                        const uint8_t* p3 = W->packed_indices
+                            + ((static_cast<size_t>(n_start + 3) * num_groups + g) * pgb);
+                        const uint8_t* p4 = W->packed_indices
+                            + ((static_cast<size_t>(n_start + 4) * num_groups + g) * pgb);
+                        const uint8_t* p5 = W->packed_indices
+                            + ((static_cast<size_t>(n_start + 5) * num_groups + g) * pgb);
+                        const uint8_t* p6 = W->packed_indices
+                            + ((static_cast<size_t>(n_start + 6) * num_groups + g) * pgb);
+                        const uint8_t* p7 = W->packed_indices
+                            + ((static_cast<size_t>(n_start + 7) * num_groups + g) * pgb);
+                        float norms_arr0[4] = {
+                            static_cast<float>(W->norms[(n_start + 0) * num_groups + g]) * cb_scale,
+                            static_cast<float>(W->norms[(n_start + 1) * num_groups + g]) * cb_scale,
+                            static_cast<float>(W->norms[(n_start + 2) * num_groups + g]) * cb_scale,
+                            static_cast<float>(W->norms[(n_start + 3) * num_groups + g]) * cb_scale,
+                        };
+                        float norms_arr1[4] = {
+                            static_cast<float>(W->norms[(n_start + 4) * num_groups + g]) * cb_scale,
+                            static_cast<float>(W->norms[(n_start + 5) * num_groups + g]) * cb_scale,
+                            static_cast<float>(W->norms[(n_start + 6) * num_groups + g]) * cb_scale,
+                            static_cast<float>(W->norms[(n_start + 7) * num_groups + g]) * cb_scale,
+                        };
+                        const float32x4_t norms0_v = vld1q_f32(norms_arr0);
+                        const float32x4_t norms1_v = vld1q_f32(norms_arr1);
+                        const int8_t* a_group0 = act_i8 + static_cast<size_t>(g) * gs;
+                        const int8_t* a_group1 = act_i8 + W->K + static_cast<size_t>(g) * gs;
+                        int32x4_t acc00 = vdupq_n_s32(0);
+                        int32x4_t acc01 = vdupq_n_s32(0);
+                        int32x4_t acc10 = vdupq_n_s32(0);
+                        int32x4_t acc11 = vdupq_n_s32(0);
+
+                        for (uint32_t v = 0; v < n_vecs; v += 2) {
+                            const size_t p_offset0 = (static_cast<size_t>(v) * 16 * bits) / 8;
+                            const size_t p_offset1 = (static_cast<size_t>(v + 1) * 16 * bits) / 8;
+                            int8x16_t b0, b1, b2, b3, b4, b5, b6, b7;
+                            int8x16_t c0, c1, c2, c3, c4, c5, c6, c7;
+                            tq_interleave_4x_s8_vecs(
+                                tq_expand_i8_16(p0 + p_offset0, bits, cb_lut),
+                                tq_expand_i8_16(p1 + p_offset0, bits, cb_lut),
+                                tq_expand_i8_16(p2 + p_offset0, bits, cb_lut),
+                                tq_expand_i8_16(p3 + p_offset0, bits, cb_lut),
+                                b0, b1, b2, b3);
+                            tq_interleave_4x_s8_vecs(
+                                tq_expand_i8_16(p0 + p_offset1, bits, cb_lut),
+                                tq_expand_i8_16(p1 + p_offset1, bits, cb_lut),
+                                tq_expand_i8_16(p2 + p_offset1, bits, cb_lut),
+                                tq_expand_i8_16(p3 + p_offset1, bits, cb_lut),
+                                b4, b5, b6, b7);
+                            tq_interleave_4x_s8_vecs(
+                                tq_expand_i8_16(p4 + p_offset0, bits, cb_lut),
+                                tq_expand_i8_16(p5 + p_offset0, bits, cb_lut),
+                                tq_expand_i8_16(p6 + p_offset0, bits, cb_lut),
+                                tq_expand_i8_16(p7 + p_offset0, bits, cb_lut),
+                                c0, c1, c2, c3);
+                            tq_interleave_4x_s8_vecs(
+                                tq_expand_i8_16(p4 + p_offset1, bits, cb_lut),
+                                tq_expand_i8_16(p5 + p_offset1, bits, cb_lut),
+                                tq_expand_i8_16(p6 + p_offset1, bits, cb_lut),
+                                tq_expand_i8_16(p7 + p_offset1, bits, cb_lut),
+                                c4, c5, c6, c7);
+
+                            const uint32_t k = v * 16;
+                            int8x16_t av = vld1q_s8(a_group0 + k);
+                            acc00 = CACTUS_DOTQ_LANE(acc00, b0, av, 0);
+                            acc00 = CACTUS_DOTQ_LANE(acc00, b1, av, 1);
+                            acc00 = CACTUS_DOTQ_LANE(acc00, b2, av, 2);
+                            acc00 = CACTUS_DOTQ_LANE(acc00, b3, av, 3);
+                            acc01 = CACTUS_DOTQ_LANE(acc01, c0, av, 0);
+                            acc01 = CACTUS_DOTQ_LANE(acc01, c1, av, 1);
+                            acc01 = CACTUS_DOTQ_LANE(acc01, c2, av, 2);
+                            acc01 = CACTUS_DOTQ_LANE(acc01, c3, av, 3);
+                            av = vld1q_s8(a_group0 + k + 16);
+                            acc00 = CACTUS_DOTQ_LANE(acc00, b4, av, 0);
+                            acc00 = CACTUS_DOTQ_LANE(acc00, b5, av, 1);
+                            acc00 = CACTUS_DOTQ_LANE(acc00, b6, av, 2);
+                            acc00 = CACTUS_DOTQ_LANE(acc00, b7, av, 3);
+                            acc01 = CACTUS_DOTQ_LANE(acc01, c4, av, 0);
+                            acc01 = CACTUS_DOTQ_LANE(acc01, c5, av, 1);
+                            acc01 = CACTUS_DOTQ_LANE(acc01, c6, av, 2);
+                            acc01 = CACTUS_DOTQ_LANE(acc01, c7, av, 3);
+
+                            av = vld1q_s8(a_group1 + k);
+                            acc10 = CACTUS_DOTQ_LANE(acc10, b0, av, 0);
+                            acc10 = CACTUS_DOTQ_LANE(acc10, b1, av, 1);
+                            acc10 = CACTUS_DOTQ_LANE(acc10, b2, av, 2);
+                            acc10 = CACTUS_DOTQ_LANE(acc10, b3, av, 3);
+                            acc11 = CACTUS_DOTQ_LANE(acc11, c0, av, 0);
+                            acc11 = CACTUS_DOTQ_LANE(acc11, c1, av, 1);
+                            acc11 = CACTUS_DOTQ_LANE(acc11, c2, av, 2);
+                            acc11 = CACTUS_DOTQ_LANE(acc11, c3, av, 3);
+                            av = vld1q_s8(a_group1 + k + 16);
+                            acc10 = CACTUS_DOTQ_LANE(acc10, b4, av, 0);
+                            acc10 = CACTUS_DOTQ_LANE(acc10, b5, av, 1);
+                            acc10 = CACTUS_DOTQ_LANE(acc10, b6, av, 2);
+                            acc10 = CACTUS_DOTQ_LANE(acc10, b7, av, 3);
+                            acc11 = CACTUS_DOTQ_LANE(acc11, c4, av, 0);
+                            acc11 = CACTUS_DOTQ_LANE(acc11, c5, av, 1);
+                            acc11 = CACTUS_DOTQ_LANE(acc11, c6, av, 2);
+                            acc11 = CACTUS_DOTQ_LANE(acc11, c7, av, 3);
+                        }
+
+                        const float scale0 = act_scales[g];
+                        const float scale1 = act_scales[num_groups + g];
+                        running_sum00 = vmlaq_f32(running_sum00,
+                            vcvtq_f32_s32(acc00), vmulq_n_f32(norms0_v, scale0));
+                        running_sum01 = vmlaq_f32(running_sum01,
+                            vcvtq_f32_s32(acc01), vmulq_n_f32(norms1_v, scale0));
+                        running_sum10 = vmlaq_f32(running_sum10,
+                            vcvtq_f32_s32(acc10), vmulq_n_f32(norms0_v, scale1));
+                        running_sum11 = vmlaq_f32(running_sum11,
+                            vcvtq_f32_s32(acc11), vmulq_n_f32(norms1_v, scale1));
+                    }
+
+                    vst1_f16(C + n_start, vcvt_f16_f32(running_sum00));
+                    vst1_f16(C + n_start + 4, vcvt_f16_f32(running_sum01));
+                    vst1_f16(C + W->N + n_start, vcvt_f16_f32(running_sum10));
+                    vst1_f16(C + W->N + n_start + 4, vcvt_f16_f32(running_sum11));
+                }
+            });
+        return;
+    }
+
     CactusThreading::parallel_gemm_tiles(M, N_blocks,
         [&](size_t block_start, size_t block_end) {
             thread_local std::vector<int8_t> b_interleaved;
@@ -2364,7 +2504,158 @@ bool cactus_quant_orthogonal_argmax(
     auto process_range = [&](size_t n_start, size_t n_end) {
         const size_t slot = next_slot.fetch_add(1, std::memory_order_relaxed);
         if (bits == 4 && (K % 16) == 0) {
-            if (M == 2 || M == 3) {
+            if (M == 2) {
+                const __fp16* arf0 = a_rot_f16;
+                const __fp16* arf1 = a_rot_f16 + K;
+                size_t n = n_start;
+                for (; n + 1 < n_end; n += 2) {
+                    const uint8_t* packed0 = W->packed_indices + n * pgb;
+                    const uint8_t* packed1 = W->packed_indices + (n + 1) * pgb;
+                    float norm0 = static_cast<float>(W->norms[n]);
+                    float norm1 = static_cast<float>(W->norms[n + 1]);
+                    float32x4_t acc00 = vdupq_n_f32(0.f);
+                    float32x4_t acc01 = vdupq_n_f32(0.f);
+                    float32x4_t acc02 = vdupq_n_f32(0.f);
+                    float32x4_t acc03 = vdupq_n_f32(0.f);
+                    float32x4_t acc04 = vdupq_n_f32(0.f);
+                    float32x4_t acc05 = vdupq_n_f32(0.f);
+                    float32x4_t acc06 = vdupq_n_f32(0.f);
+                    float32x4_t acc07 = vdupq_n_f32(0.f);
+                    float32x4_t acc10 = vdupq_n_f32(0.f);
+                    float32x4_t acc11 = vdupq_n_f32(0.f);
+                    float32x4_t acc12 = vdupq_n_f32(0.f);
+                    float32x4_t acc13 = vdupq_n_f32(0.f);
+                    float32x4_t acc14 = vdupq_n_f32(0.f);
+                    float32x4_t acc15 = vdupq_n_f32(0.f);
+                    float32x4_t acc16 = vdupq_n_f32(0.f);
+                    float32x4_t acc17 = vdupq_n_f32(0.f);
+
+                    for (uint32_t i = 0; i < K; i += 16) {
+                        uint8x8_t raw0 = vld1_u8(packed0 + i / 2);
+                        uint8x8_t raw1 = vld1_u8(packed1 + i / 2);
+                        uint8x8_t lo0_nibs = vand_u8(raw0, vdup_n_u8(0x0F));
+                        uint8x8_t hi0_nibs = vshr_n_u8(raw0, 4);
+                        uint8x8_t lo1_nibs = vand_u8(raw1, vdup_n_u8(0x0F));
+                        uint8x8_t hi1_nibs = vshr_n_u8(raw1, 4);
+                        uint8x8x2_t zipped0 = vzip_u8(lo0_nibs, hi0_nibs);
+                        uint8x8x2_t zipped1 = vzip_u8(lo1_nibs, hi1_nibs);
+                        uint8x16_t indices0 = vcombine_u8(zipped0.val[0], zipped0.val[1]);
+                        uint8x16_t indices1 = vcombine_u8(zipped1.val[0], zipped1.val[1]);
+
+                        uint8x16_t lo0_bytes = vqtbl1q_u8(cb_lo_tbl, indices0);
+                        uint8x16_t hi0_bytes = vqtbl1q_u8(cb_hi_tbl, indices0);
+                        uint8x16_t lo1_bytes = vqtbl1q_u8(cb_lo_tbl, indices1);
+                        uint8x16_t hi1_bytes = vqtbl1q_u8(cb_hi_tbl, indices1);
+
+                        uint8x16x2_t fp160_bytes = vzipq_u8(lo0_bytes, hi0_bytes);
+                        uint8x16x2_t fp161_bytes = vzipq_u8(lo1_bytes, hi1_bytes);
+                        float16x8_t cb0_lo = vreinterpretq_f16_u8(fp160_bytes.val[0]);
+                        float16x8_t cb0_hi = vreinterpretq_f16_u8(fp160_bytes.val[1]);
+                        float16x8_t cb1_lo = vreinterpretq_f16_u8(fp161_bytes.val[0]);
+                        float16x8_t cb1_hi = vreinterpretq_f16_u8(fp161_bytes.val[1]);
+
+                        float16x8_t ar0_lo = vld1q_f16(arf0 + i);
+                        float16x8_t ar0_hi = vld1q_f16(arf0 + i + 8);
+                        float16x8_t ar1_lo = vld1q_f16(arf1 + i);
+                        float16x8_t ar1_hi = vld1q_f16(arf1 + i + 8);
+
+                        float32x4_t ar0_lo0 = vcvt_f32_f16(vget_low_f16(ar0_lo));
+                        float32x4_t ar0_lo1 = vcvt_f32_f16(vget_high_f16(ar0_lo));
+                        float32x4_t ar0_hi0 = vcvt_f32_f16(vget_low_f16(ar0_hi));
+                        float32x4_t ar0_hi1 = vcvt_f32_f16(vget_high_f16(ar0_hi));
+                        float32x4_t ar1_lo0 = vcvt_f32_f16(vget_low_f16(ar1_lo));
+                        float32x4_t ar1_lo1 = vcvt_f32_f16(vget_high_f16(ar1_lo));
+                        float32x4_t ar1_hi0 = vcvt_f32_f16(vget_low_f16(ar1_hi));
+                        float32x4_t ar1_hi1 = vcvt_f32_f16(vget_high_f16(ar1_hi));
+                        float32x4_t cb0_lo0 = vcvt_f32_f16(vget_low_f16(cb0_lo));
+                        float32x4_t cb0_lo1 = vcvt_f32_f16(vget_high_f16(cb0_lo));
+                        float32x4_t cb0_hi0 = vcvt_f32_f16(vget_low_f16(cb0_hi));
+                        float32x4_t cb0_hi1 = vcvt_f32_f16(vget_high_f16(cb0_hi));
+                        float32x4_t cb1_lo0 = vcvt_f32_f16(vget_low_f16(cb1_lo));
+                        float32x4_t cb1_lo1 = vcvt_f32_f16(vget_high_f16(cb1_lo));
+                        float32x4_t cb1_hi0 = vcvt_f32_f16(vget_low_f16(cb1_hi));
+                        float32x4_t cb1_hi1 = vcvt_f32_f16(vget_high_f16(cb1_hi));
+
+                        acc00 = vfmaq_f32(acc00, cb0_lo0, ar0_lo0);
+                        acc01 = vfmaq_f32(acc01, cb0_lo1, ar0_lo1);
+                        acc02 = vfmaq_f32(acc02, cb0_hi0, ar0_hi0);
+                        acc03 = vfmaq_f32(acc03, cb0_hi1, ar0_hi1);
+                        acc04 = vfmaq_f32(acc04, cb1_lo0, ar0_lo0);
+                        acc05 = vfmaq_f32(acc05, cb1_lo1, ar0_lo1);
+                        acc06 = vfmaq_f32(acc06, cb1_hi0, ar0_hi0);
+                        acc07 = vfmaq_f32(acc07, cb1_hi1, ar0_hi1);
+                        acc10 = vfmaq_f32(acc10, cb0_lo0, ar1_lo0);
+                        acc11 = vfmaq_f32(acc11, cb0_lo1, ar1_lo1);
+                        acc12 = vfmaq_f32(acc12, cb0_hi0, ar1_hi0);
+                        acc13 = vfmaq_f32(acc13, cb0_hi1, ar1_hi1);
+                        acc14 = vfmaq_f32(acc14, cb1_lo0, ar1_lo0);
+                        acc15 = vfmaq_f32(acc15, cb1_lo1, ar1_lo1);
+                        acc16 = vfmaq_f32(acc16, cb1_hi0, ar1_hi0);
+                        acc17 = vfmaq_f32(acc17, cb1_hi1, ar1_hi1);
+                    }
+
+                    float acc0 = vaddvq_f32(vaddq_f32(vaddq_f32(acc00, acc01),
+                                                       vaddq_f32(acc02, acc03)));
+                    float acc1 = vaddvq_f32(vaddq_f32(vaddq_f32(acc10, acc11),
+                                                       vaddq_f32(acc12, acc13)));
+                    float acc2 = vaddvq_f32(vaddq_f32(vaddq_f32(acc04, acc05),
+                                                       vaddq_f32(acc06, acc07)));
+                    float acc3 = vaddvq_f32(vaddq_f32(vaddq_f32(acc14, acc15),
+                                                       vaddq_f32(acc16, acc17)));
+                    update_best(slot, 0, static_cast<float>(static_cast<__fp16>(acc0 * norm0)), static_cast<uint32_t>(n));
+                    update_best(slot, 1, static_cast<float>(static_cast<__fp16>(acc1 * norm0)), static_cast<uint32_t>(n));
+                    update_best(slot, 0, static_cast<float>(static_cast<__fp16>(acc2 * norm1)), static_cast<uint32_t>(n + 1));
+                    update_best(slot, 1, static_cast<float>(static_cast<__fp16>(acc3 * norm1)), static_cast<uint32_t>(n + 1));
+                }
+                for (; n < n_end; ++n) {
+                    const uint8_t* packed = W->packed_indices + n * pgb;
+                    float norm_n = static_cast<float>(W->norms[n]);
+                    float32x4_t acc00 = vdupq_n_f32(0.f);
+                    float32x4_t acc01 = vdupq_n_f32(0.f);
+                    float32x4_t acc02 = vdupq_n_f32(0.f);
+                    float32x4_t acc03 = vdupq_n_f32(0.f);
+                    float32x4_t acc10 = vdupq_n_f32(0.f);
+                    float32x4_t acc11 = vdupq_n_f32(0.f);
+                    float32x4_t acc12 = vdupq_n_f32(0.f);
+                    float32x4_t acc13 = vdupq_n_f32(0.f);
+                    for (uint32_t i = 0; i < K; i += 16) {
+                        uint8x8_t raw8 = vld1_u8(packed + i / 2);
+                        uint8x8_t lo_nibs = vand_u8(raw8, vdup_n_u8(0x0F));
+                        uint8x8_t hi_nibs = vshr_n_u8(raw8, 4);
+                        uint8x8x2_t zipped = vzip_u8(lo_nibs, hi_nibs);
+                        uint8x16_t indices16 = vcombine_u8(zipped.val[0], zipped.val[1]);
+                        uint8x16_t lo_bytes = vqtbl1q_u8(cb_lo_tbl, indices16);
+                        uint8x16_t hi_bytes = vqtbl1q_u8(cb_hi_tbl, indices16);
+                        uint8x16x2_t fp16_bytes = vzipq_u8(lo_bytes, hi_bytes);
+                        float16x8_t cb_lo = vreinterpretq_f16_u8(fp16_bytes.val[0]);
+                        float16x8_t cb_hi = vreinterpretq_f16_u8(fp16_bytes.val[1]);
+                        float16x8_t ar0_lo = vld1q_f16(arf0 + i);
+                        float16x8_t ar0_hi = vld1q_f16(arf0 + i + 8);
+                        float16x8_t ar1_lo = vld1q_f16(arf1 + i);
+                        float16x8_t ar1_hi = vld1q_f16(arf1 + i + 8);
+                        float32x4_t cb_lo_lo = vcvt_f32_f16(vget_low_f16(cb_lo));
+                        float32x4_t cb_lo_hi = vcvt_f32_f16(vget_high_f16(cb_lo));
+                        float32x4_t cb_hi_lo = vcvt_f32_f16(vget_low_f16(cb_hi));
+                        float32x4_t cb_hi_hi = vcvt_f32_f16(vget_high_f16(cb_hi));
+                        acc00 = vfmaq_f32(acc00, cb_lo_lo, vcvt_f32_f16(vget_low_f16(ar0_lo)));
+                        acc01 = vfmaq_f32(acc01, cb_lo_hi, vcvt_f32_f16(vget_high_f16(ar0_lo)));
+                        acc02 = vfmaq_f32(acc02, cb_hi_lo, vcvt_f32_f16(vget_low_f16(ar0_hi)));
+                        acc03 = vfmaq_f32(acc03, cb_hi_hi, vcvt_f32_f16(vget_high_f16(ar0_hi)));
+                        acc10 = vfmaq_f32(acc10, cb_lo_lo, vcvt_f32_f16(vget_low_f16(ar1_lo)));
+                        acc11 = vfmaq_f32(acc11, cb_lo_hi, vcvt_f32_f16(vget_high_f16(ar1_lo)));
+                        acc12 = vfmaq_f32(acc12, cb_hi_lo, vcvt_f32_f16(vget_low_f16(ar1_hi)));
+                        acc13 = vfmaq_f32(acc13, cb_hi_hi, vcvt_f32_f16(vget_high_f16(ar1_hi)));
+                    }
+                    float acc0 = vaddvq_f32(vaddq_f32(vaddq_f32(acc00, acc01),
+                                                       vaddq_f32(acc02, acc03)));
+                    float acc1 = vaddvq_f32(vaddq_f32(vaddq_f32(acc10, acc11),
+                                                       vaddq_f32(acc12, acc13)));
+                    update_best(slot, 0, static_cast<float>(static_cast<__fp16>(acc0 * norm_n)), static_cast<uint32_t>(n));
+                    update_best(slot, 1, static_cast<float>(static_cast<__fp16>(acc1 * norm_n)), static_cast<uint32_t>(n));
+                }
+                return;
+            }
+            if (M == 3) {
                 const __fp16* arf0 = a_rot_f16;
                 const __fp16* arf1 = a_rot_f16 + K;
                 const __fp16* arf2 = a_rot_f16 + static_cast<size_t>(2) * K;
@@ -2379,10 +2670,16 @@ bool cactus_quant_orthogonal_argmax(
                     float32x4_t acc11 = vdupq_n_f32(0.f);
                     float32x4_t acc12 = vdupq_n_f32(0.f);
                     float32x4_t acc13 = vdupq_n_f32(0.f);
-                    float32x4_t acc20 = vdupq_n_f32(0.f);
-                    float32x4_t acc21 = vdupq_n_f32(0.f);
-                    float32x4_t acc22 = vdupq_n_f32(0.f);
-                    float32x4_t acc23 = vdupq_n_f32(0.f);
+                    float32x4_t acc20;
+                    float32x4_t acc21;
+                    float32x4_t acc22;
+                    float32x4_t acc23;
+                    if (M == 3) {
+                        acc20 = vdupq_n_f32(0.f);
+                        acc21 = vdupq_n_f32(0.f);
+                        acc22 = vdupq_n_f32(0.f);
+                        acc23 = vdupq_n_f32(0.f);
+                    }
 
                     for (uint32_t i = 0; i < K; i += 16) {
                         uint8x8_t raw8 = vld1_u8(packed + i / 2);
