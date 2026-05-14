@@ -24,6 +24,7 @@ CACTUS_MAGIC = b"CACT"
 HEADER_SIZE = 84
 ALIGNMENT_DEFAULT = 32
 FLAG_ORTHOGONAL_ROTATION = 1 << 1
+FLAG_INTERLEAVED_4ROW = 1 << 2
 FLAG_INTERLEAVED = 1 << 3
 
 PRECISION_INT8 = 0
@@ -341,6 +342,68 @@ def dequantize_cq_file(path: Path, header: CactusHeader, out_dtype: torch.dtype,
     rt = rotation.T.contiguous()
     scale = input_scale.float().unsqueeze(0)
     codebook = codebook.float()
+
+    interleaved = bool(header.flags & FLAG_INTERLEAVED_4ROW)
+    if interleaved:
+        if bits not in (1, 2, 3, 4):
+            raise ValueError(f"{path}: INTERLEAVED_4ROW only valid for 1..4-bit CQ, got {bits}")
+        if n % 4 != 0:
+            raise ValueError(f"{path}: INTERLEAVED_4ROW requires N % 4 == 0")
+        if header.group_size % 32 != 0:
+            raise ValueError(f"{path}: INTERLEAVED_4ROW requires group_size % 32 == 0")
+        norms = norms.reshape(n // 4, header.num_groups, 4).permute(0, 2, 1).reshape(n, header.num_groups).contiguous()
+        nb = n // 4
+        view_packed = np.asarray(packed)
+
+        if bits == 4:
+            chunks = header.group_size // 8
+            view = view_packed.reshape(nb, header.num_groups, chunks, 4, 4)
+            lo = (view & 0x0F).astype(np.uint8)
+            hi = ((view >> 4) & 0x0F).astype(np.uint8)
+            per_chunk = np.concatenate([lo, hi], axis=4)
+        elif bits == 2:
+            chunks = header.group_size // 16
+            view = view_packed.reshape(nb, header.num_groups, chunks, 4, 4)
+            view = view.transpose(0, 1, 2, 4, 3)
+            extracts = []
+            for b in range(4):
+                extracts.append(((view >> (b * 2)) & 0x3).astype(np.uint8))
+            stacked = np.stack(extracts, axis=-1)
+            per_chunk = stacked.reshape(nb, header.num_groups, chunks, 4, 16)
+        elif bits == 3:
+            chunks_per_group = header.group_size // 4
+            panel_bytes = header.group_size * 3 // 2
+            assert view_packed.size == nb * header.num_groups * panel_bytes, \
+                f"expected {nb*header.num_groups*panel_bytes} bytes, got {view_packed.size}"
+            chunk_view = view_packed.reshape(nb, header.num_groups, chunks_per_group, 6)
+            word = np.zeros((nb, header.num_groups, chunks_per_group), dtype=np.uint64)
+            for b in range(6):
+                word |= chunk_view[..., b].astype(np.uint64) << (b * 8)
+            chunk_idx = np.empty((nb, header.num_groups, chunks_per_group, 16), dtype=np.uint8)
+            for i in range(16):
+                chunk_idx[..., i] = ((word >> (i * 3)) & 0x7).astype(np.uint8)
+            chunk_idx = chunk_idx.reshape(nb, header.num_groups, chunks_per_group, 4, 4)
+            per_chunk = chunk_idx
+        else:
+            chunks = header.group_size // 32
+            view = view_packed.reshape(nb, header.num_groups, chunks, 4, 4)
+            view = view.transpose(0, 1, 2, 4, 3)
+            extracts = []
+            for b in range(8):
+                extracts.append(((view >> b) & 0x1).astype(np.uint8))
+            stacked = np.stack(extracts, axis=-1)
+            per_chunk = stacked.reshape(nb, header.num_groups, chunks, 4, 32)
+
+        per_chunk = per_chunk.transpose(0, 3, 1, 2, 4)
+        idx_full = per_chunk.reshape(n, header.num_groups, header.group_size)
+        out = torch.empty(n, k, dtype=out_dtype)
+        for start in range(0, n, row_batch_size):
+            end = min(start + row_batch_size, n)
+            idx = torch.from_numpy(idx_full[start:end].astype(np.int64, copy=False))
+            recon = (codebook[idx] @ rt) * norms[start:end].float().unsqueeze(-1)
+            out[start:end] = (recon.reshape(end - start, k) / scale).to(out_dtype)
+        return out
+
     out = torch.empty(n, k, dtype=out_dtype)
     packed_groups = packed.reshape(n, header.num_groups, packed_group_bytes)
     for start in range(0, n, row_batch_size):

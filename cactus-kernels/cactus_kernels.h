@@ -200,6 +200,7 @@ void cactus_matmul_f16(
 
 enum CactusQuantFlags : uint32_t {
     CACTUS_QUANT_FLAG_ORTHOGONAL = 1u << 2,
+    CACTUS_QUANT_FLAG_INTERLEAVED_4ROW = 1u << 3,
 };
 
 struct CactusQuantMatrix {
@@ -279,6 +280,39 @@ void cactus_quant_orthogonal_matmul(
     const __fp16* A,
     uint32_t M,
     __fp16* C);
+
+void cactus_quant_4bit_pack_to_interleaved(
+    const CactusQuantMatrix* W,
+    uint8_t* packed_out,
+    __fp16* norms_out);
+
+void cactus_quant_4bit_gemv_interleaved(
+    const CactusQuantMatrix* W,
+    const uint8_t* packed_interleaved,
+    const __fp16* norms_interleaved,
+    const __fp16* x,
+    __fp16* y);
+
+void cactus_quant_2bit_gemv_interleaved(
+    const CactusQuantMatrix* W,
+    const uint8_t* packed_interleaved,
+    const __fp16* norms_interleaved,
+    const __fp16* x,
+    __fp16* y);
+
+void cactus_quant_3bit_gemv_interleaved(
+    const CactusQuantMatrix* W,
+    const uint8_t* packed_interleaved,
+    const __fp16* norms_interleaved,
+    const __fp16* x,
+    __fp16* y);
+
+void cactus_quant_1bit_gemv_interleaved(
+    const CactusQuantMatrix* W,
+    const uint8_t* packed_interleaved,
+    const __fp16* norms_interleaved,
+    const __fp16* x,
+    __fp16* y);
 
 void cactus_quant_dequantize_hadamard_embedding_row(
     uint32_t bits,

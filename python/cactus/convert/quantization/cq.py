@@ -23,6 +23,7 @@ HEADER_SIZE = 84
 GROUP_SIZE = 128
 PRECISION_CQ = {1: 3, 2: 4, 3: 5, 4: 6}
 FLAG_ORTHOGONAL_ROTATION = 1 << 1
+FLAG_INTERLEAVED_4ROW = 1 << 2
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,83 @@ def pack_indices_lsb(indices: np.ndarray, group_size: int, bits: int) -> np.ndar
     return out.reshape(n, k * bits // 8)
 
 
+def pack_indices_interleaved_4row_4bit(indices: np.ndarray, group_size: int) -> np.ndarray:
+    n, k = indices.shape
+    if n % 4 != 0 or group_size % 8 != 0 or k % group_size != 0:
+        raise ValueError(f"interleaved-4row-4bit constraints not met: n={n}, gs={group_size}, k={k}")
+    nb = n // 4
+    ng = k // group_size
+    chunks = group_size // 8
+    g = indices.reshape(nb, 4, ng, chunks, 8).astype(np.uint8)
+    lo = g[..., 0:4]
+    hi = g[..., 4:8]
+    bytes_arr = ((lo & 0x0F) | ((hi & 0x0F) << 4)).astype(np.uint8)
+    bytes_arr = np.transpose(bytes_arr, (0, 2, 3, 1, 4)).copy()
+    return bytes_arr.reshape(-1)
+
+
+def pack_indices_interleaved_4row_2bit(indices: np.ndarray, group_size: int) -> np.ndarray:
+    n, k = indices.shape
+    if n % 4 != 0 or group_size % 16 != 0 or k % group_size != 0:
+        raise ValueError(f"interleaved-4row-2bit constraints not met: n={n}, gs={group_size}, k={k}")
+    nb = n // 4
+    ng = k // group_size
+    chunks = group_size // 16
+    g = indices.reshape(nb, 4, ng, chunks, 4, 4).astype(np.uint8)
+    packed = ((g[..., 0] & 0x3)
+              | ((g[..., 1] & 0x3) << 2)
+              | ((g[..., 2] & 0x3) << 4)
+              | ((g[..., 3] & 0x3) << 6)).astype(np.uint8)
+    packed = np.transpose(packed, (0, 2, 3, 4, 1)).copy()
+    return packed.reshape(-1)
+
+
+def pack_indices_interleaved_4row_1bit(indices: np.ndarray, group_size: int) -> np.ndarray:
+    n, k = indices.shape
+    if n % 4 != 0 or group_size % 32 != 0 or k % group_size != 0:
+        raise ValueError(f"interleaved-4row-1bit constraints not met: n={n}, gs={group_size}, k={k}")
+    nb = n // 4
+    ng = k // group_size
+    chunks = group_size // 32
+    g = indices.reshape(nb, 4, ng, chunks, 4, 8).astype(np.uint8)
+    packed = np.zeros((nb, 4, ng, chunks, 4), dtype=np.uint8)
+    for bit in range(8):
+        packed |= ((g[..., bit] & 0x1) << bit).astype(np.uint8)
+    packed = np.transpose(packed, (0, 2, 3, 4, 1)).copy()
+    return packed.reshape(-1)
+
+
+def pack_indices_interleaved_4row_3bit(indices: np.ndarray, group_size: int) -> np.ndarray:
+    n, k = indices.shape
+    if n % 4 != 0 or group_size % 4 != 0 or k % group_size != 0:
+        raise ValueError(f"interleaved-4row-3bit constraints not met: n={n}, gs={group_size}, k={k}")
+    nb = n // 4
+    ng = k // group_size
+    chunks_per_group = group_size // 4
+    g = indices.reshape(nb, 4, ng, chunks_per_group, 4).astype(np.uint64) & 0x7
+    g = np.transpose(g, (0, 2, 3, 1, 4))
+    g = g.reshape(nb, ng, chunks_per_group, 16)
+    word = np.zeros((nb, ng, chunks_per_group), dtype=np.uint64)
+    for i in range(16):
+        word |= (g[..., i] & 0x7) << (i * 3)
+    out = np.zeros((nb, ng, chunks_per_group, 6), dtype=np.uint8)
+    for b in range(6):
+        out[..., b] = ((word >> (b * 8)) & 0xFF).astype(np.uint8)
+    return out.reshape(-1)
+
+
+def pack_indices_interleaved_4row(indices: np.ndarray, group_size: int, bits: int) -> np.ndarray:
+    if bits == 4:
+        return pack_indices_interleaved_4row_4bit(indices, group_size)
+    if bits == 3:
+        return pack_indices_interleaved_4row_3bit(indices, group_size)
+    if bits == 2:
+        return pack_indices_interleaved_4row_2bit(indices, group_size)
+    if bits == 1:
+        return pack_indices_interleaved_4row_1bit(indices, group_size)
+    raise ValueError(f"interleaved-4row not supported for {bits}-bit quantization")
+
+
 def _as_numpy_fp32(weight) -> np.ndarray:
     if torch is not None and isinstance(weight, torch.Tensor):
         return weight.detach().float().cpu().numpy()
@@ -237,12 +315,38 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
     n, k = cq.indices.shape
     group_size = int(cq.group_size)
     groups = k // group_size
-    packed = pack_indices_lsb(cq.indices, group_size, cq.bits)
-    codebook = make_codebook(group_size, cq.bits).astype(np.float16)
+
+    interleaved = (
+        cq.bits in (1, 2, 3, 4)
+        and cq.rotation_family != "orthogonal"
+        and n % 4 == 0
+        and group_size % 32 == 0
+        and group_size <= 256
+    )
+
+    codebook_f32 = make_codebook(group_size, cq.bits).astype(np.float32)
+    norms_f32 = cq.norms.astype(np.float32, copy=True)
+    if interleaved:
+        cb_max = float(np.max(np.abs(codebook_f32)))
+        cb_factor = cb_max / 127.0 if cb_max > 1e-12 else 1.0 / 127.0
+        codebook_f32 = codebook_f32 / cb_factor
+        norms_f32 = norms_f32 * cb_factor
+
+    codebook = codebook_f32.astype(np.float16)
     input_scale = cq.input_scale.astype(np.float16, copy=False).reshape(k)
     recip = np.minimum(1.0 / np.maximum(input_scale.astype(np.float32), 1e-8), 65504.0).astype(np.float16)
-    parts = [codebook.tobytes(), input_scale.tobytes(), recip.tobytes(), cq.norms.astype(np.float16, copy=False).tobytes()]
+
+    if interleaved:
+        norms_blob = norms_f32.reshape(n // 4, 4, groups).transpose(0, 2, 1).astype(np.float16).copy().tobytes()
+        packed = pack_indices_interleaved_4row(cq.indices, group_size, cq.bits)
+    else:
+        norms_blob = norms_f32.astype(np.float16).tobytes()
+        packed = pack_indices_lsb(cq.indices, group_size, cq.bits)
+
+    parts = [codebook.tobytes(), input_scale.tobytes(), recip.tobytes(), norms_blob]
     flags = 0
+    if interleaved:
+        flags |= FLAG_INTERLEAVED_4ROW
     if cq.rotation_family == "orthogonal":
         flags |= FLAG_ORTHOGONAL_ROTATION
         parts.append(make_orthogonal_rotation(group_size, cq.seed).astype(np.float16).tobytes())
