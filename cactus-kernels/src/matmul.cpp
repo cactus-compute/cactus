@@ -632,6 +632,22 @@ static inline float tq_quantize_codebook_i8(const __fp16* codebook, int8_t* cb_i
 static inline int8x16_t tq_expand_i8_16(const uint8_t* packed, uint32_t bits, int8x16_t cb_lut);
 
 template<uint32_t Bits>
+__attribute__((always_inline)) static inline void tq_expand_i8_32(
+    const uint8_t* packed, int8x16_t cb_lut,
+    int8x16_t& out0, int8x16_t& out1) {
+    if constexpr (Bits == 4) {
+        uint8x16_t bytes = vld1q_u8(packed);
+        uint8x16_t lo = vandq_u8(bytes, vdupq_n_u8(0x0F));
+        uint8x16_t hi = vshrq_n_u8(bytes, 4);
+        out0 = vqtbl1q_s8(cb_lut, vzip1q_u8(lo, hi));
+        out1 = vqtbl1q_s8(cb_lut, vzip2q_u8(lo, hi));
+    } else {
+        out0 = tq_expand_i8_16(packed, Bits, cb_lut);
+        out1 = tq_expand_i8_16(packed + (16 * Bits) / 8, Bits, cb_lut);
+    }
+}
+
+template<uint32_t Bits>
 __attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
     const CactusQuantMatrix* W,
     const __fp16* code_basis,
@@ -669,7 +685,12 @@ __attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
             if (n_abs < W->N) {
                 const uint8_t* p = W->packed_indices
                     + (n_abs * W->num_groups + g) * pgb;
-                for (uint32_t v = 0; v < n_vecs; ++v) {
+                uint32_t v = 0;
+                for (; v + 1 < n_vecs; v += 2) {
+                    tq_expand_i8_32<Bits>(p + (v * 16 * Bits) / 8, cb_lut,
+                                          exp4[ni][v], exp4[ni][v + 1]);
+                }
+                for (; v < n_vecs; ++v) {
                     exp4[ni][v] = tq_expand_i8_16(p + (v * 16 * Bits) / 8, Bits, cb_lut);
                 }
                 norm_scale[ni] = static_cast<float>(W->norms[n_abs * W->num_groups + g]) * cb_scale;
