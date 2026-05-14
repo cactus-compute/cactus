@@ -677,30 +677,51 @@ __attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
     const int8x16_t cb_lut = vld1q_s8(cb_i8);
 
     auto expand_group4 = [&](size_t cache_block, uint32_t g, int8_t* dst, float* norm_scale) {
-        int8x16_t exp4[4][16];
         const uint32_t n_vecs = gs / 16;
         const size_t n_start4 = cache_block * 4;
+
+        // Set up per-row state once. Avoids the 1KB exp4 stack temporary that
+        // the previous structure forced.
+        const uint8_t* row_ptrs[4];
+        bool row_valid[4];
         for (size_t ni = 0; ni < 4; ++ni) {
             const size_t n_abs = n_start4 + ni;
-            if (n_abs < W->N) {
-                const uint8_t* p = W->packed_indices
-                    + (n_abs * W->num_groups + g) * pgb;
-                uint32_t v = 0;
-                for (; v + 1 < n_vecs; v += 2) {
-                    tq_expand_i8_32<Bits>(p + (v * 16 * Bits) / 8, cb_lut,
-                                          exp4[ni][v], exp4[ni][v + 1]);
-                }
-                for (; v < n_vecs; ++v) {
-                    exp4[ni][v] = tq_expand_i8_16(p + (v * 16 * Bits) / 8, Bits, cb_lut);
-                }
+            row_valid[ni] = n_abs < W->N;
+            if (row_valid[ni]) {
+                row_ptrs[ni] = W->packed_indices + (n_abs * W->num_groups + g) * pgb;
                 norm_scale[ni] = static_cast<float>(W->norms[n_abs * W->num_groups + g]) * cb_scale;
             } else {
-                for (uint32_t v = 0; v < n_vecs; ++v) exp4[ni][v] = vdupq_n_s8(0);
+                row_ptrs[ni] = nullptr;
                 norm_scale[ni] = 0.0f;
             }
         }
-        for (uint32_t v = 0; v < n_vecs; ++v)
-            tq_interleave_4x_s8(exp4[0][v], exp4[1][v], exp4[2][v], exp4[3][v], dst + v * 64);
+
+        // Stream: unpack 4 rows' chunks and interleave + store in lockstep.
+        // Each iteration keeps 4 (or 8 with wider) int8x16_t in registers, no stack temp.
+        uint32_t v = 0;
+        for (; v + 1 < n_vecs; v += 2) {
+            int8x16_t r0a, r0b, r1a, r1b, r2a, r2b, r3a, r3b;
+            const size_t off = (v * 16 * Bits) / 8;
+            if (row_valid[0]) tq_expand_i8_32<Bits>(row_ptrs[0] + off, cb_lut, r0a, r0b);
+            else              { r0a = vdupq_n_s8(0); r0b = vdupq_n_s8(0); }
+            if (row_valid[1]) tq_expand_i8_32<Bits>(row_ptrs[1] + off, cb_lut, r1a, r1b);
+            else              { r1a = vdupq_n_s8(0); r1b = vdupq_n_s8(0); }
+            if (row_valid[2]) tq_expand_i8_32<Bits>(row_ptrs[2] + off, cb_lut, r2a, r2b);
+            else              { r2a = vdupq_n_s8(0); r2b = vdupq_n_s8(0); }
+            if (row_valid[3]) tq_expand_i8_32<Bits>(row_ptrs[3] + off, cb_lut, r3a, r3b);
+            else              { r3a = vdupq_n_s8(0); r3b = vdupq_n_s8(0); }
+            tq_interleave_4x_s8(r0a, r1a, r2a, r3a, dst + v * 64);
+            tq_interleave_4x_s8(r0b, r1b, r2b, r3b, dst + (v + 1) * 64);
+        }
+        for (; v < n_vecs; ++v) {
+            int8x16_t r0, r1, r2, r3;
+            const size_t off = (v * 16 * Bits) / 8;
+            r0 = row_valid[0] ? tq_expand_i8_16(row_ptrs[0] + off, Bits, cb_lut) : vdupq_n_s8(0);
+            r1 = row_valid[1] ? tq_expand_i8_16(row_ptrs[1] + off, Bits, cb_lut) : vdupq_n_s8(0);
+            r2 = row_valid[2] ? tq_expand_i8_16(row_ptrs[2] + off, Bits, cb_lut) : vdupq_n_s8(0);
+            r3 = row_valid[3] ? tq_expand_i8_16(row_ptrs[3] + off, Bits, cb_lut) : vdupq_n_s8(0);
+            tq_interleave_4x_s8(r0, r1, r2, r3, dst + v * 64);
+        }
     };
 
     cactus_quant_parallel_ranges(int8_n_blocks, 16, [&](size_t block_start, size_t block_end) {
@@ -731,40 +752,55 @@ __attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
                     expand_group4(cache_block0 + 2, g, b_stack2, norm_stack2);
                     expand_group4(cache_block0 + 3, g, b_stack3, norm_stack3);
 
+                    // Dual-accumulator panels break the 8-deep SDOT dependency chain
+                    // into two 4-deep chains running in parallel. Critical for SDOT
+                    // throughput on Apple Silicon (4 sdot/cycle, ~3 cycle latency).
+                    // Tested quad-accum: tied with dual (OoO already extracts ILP).
+                    int32x4_t dot0b = vdupq_n_s32(0);
+                    int32x4_t dot1b = vdupq_n_s32(0);
+                    int32x4_t dot2b = vdupq_n_s32(0);
+                    int32x4_t dot3b = vdupq_n_s32(0);
+
                     for (uint32_t k = 0; k < gs; k += 32) {
                         int8x16_t a_lo = vld1q_s8(a_group + k);
                         int8x16_t a_hi = vld1q_s8(a_group + k + 16);
 
-                        #define TQ_SDOT_PANEL_T(DOT, BASE) do { \
+                        #define TQ_SDOT_PANEL_T(DOT_A, DOT_B, BASE) do { \
                             const int8_t* bk = (BASE) + k * 4; \
-                            DOT = CACTUS_DOTQ_LANE(DOT, vld1q_s8(bk),       a_lo, 0); \
-                            DOT = CACTUS_DOTQ_LANE(DOT, vld1q_s8(bk + 16),  a_lo, 1); \
-                            DOT = CACTUS_DOTQ_LANE(DOT, vld1q_s8(bk + 32),  a_lo, 2); \
-                            DOT = CACTUS_DOTQ_LANE(DOT, vld1q_s8(bk + 48),  a_lo, 3); \
-                            DOT = CACTUS_DOTQ_LANE(DOT, vld1q_s8(bk + 64),  a_hi, 0); \
-                            DOT = CACTUS_DOTQ_LANE(DOT, vld1q_s8(bk + 80),  a_hi, 1); \
-                            DOT = CACTUS_DOTQ_LANE(DOT, vld1q_s8(bk + 96),  a_hi, 2); \
-                            DOT = CACTUS_DOTQ_LANE(DOT, vld1q_s8(bk + 112), a_hi, 3); \
+                            DOT_A = CACTUS_DOTQ_LANE(DOT_A, vld1q_s8(bk),       a_lo, 0); \
+                            DOT_B = CACTUS_DOTQ_LANE(DOT_B, vld1q_s8(bk + 16),  a_lo, 1); \
+                            DOT_A = CACTUS_DOTQ_LANE(DOT_A, vld1q_s8(bk + 32),  a_lo, 2); \
+                            DOT_B = CACTUS_DOTQ_LANE(DOT_B, vld1q_s8(bk + 48),  a_lo, 3); \
+                            DOT_A = CACTUS_DOTQ_LANE(DOT_A, vld1q_s8(bk + 64),  a_hi, 0); \
+                            DOT_B = CACTUS_DOTQ_LANE(DOT_B, vld1q_s8(bk + 80),  a_hi, 1); \
+                            DOT_A = CACTUS_DOTQ_LANE(DOT_A, vld1q_s8(bk + 96),  a_hi, 2); \
+                            DOT_B = CACTUS_DOTQ_LANE(DOT_B, vld1q_s8(bk + 112), a_hi, 3); \
                         } while (0)
 
-                        TQ_SDOT_PANEL_T(dot0, b_stack0);
-                        TQ_SDOT_PANEL_T(dot1, b_stack1);
-                        TQ_SDOT_PANEL_T(dot2, b_stack2);
-                        TQ_SDOT_PANEL_T(dot3, b_stack3);
+                        TQ_SDOT_PANEL_T(dot0, dot0b, b_stack0);
+                        TQ_SDOT_PANEL_T(dot1, dot1b, b_stack1);
+                        TQ_SDOT_PANEL_T(dot2, dot2b, b_stack2);
+                        TQ_SDOT_PANEL_T(dot3, dot3b, b_stack3);
                         #undef TQ_SDOT_PANEL_T
                     }
+
+                    dot0 = vaddq_s32(dot0, dot0b);
+                    dot1 = vaddq_s32(dot1, dot1b);
+                    dot2 = vaddq_s32(dot2, dot2b);
+                    dot3 = vaddq_s32(dot3, dot3b);
 
                     const float32x4_t scale0 = vmulq_n_f32(vld1q_f32(norm_stack0), act_scale);
                     const float32x4_t scale1 = vmulq_n_f32(vld1q_f32(norm_stack1), act_scale);
                     const float32x4_t scale2 = vmulq_n_f32(vld1q_f32(norm_stack2), act_scale);
                     const float32x4_t scale3 = vmulq_n_f32(vld1q_f32(norm_stack3), act_scale);
 
-                    float tmp[16];
-                    vst1q_f32(tmp,      vmulq_f32(vcvtq_f32_s32(dot0), scale0));
-                    vst1q_f32(tmp + 4,  vmulq_f32(vcvtq_f32_s32(dot1), scale1));
-                    vst1q_f32(tmp + 8,  vmulq_f32(vcvtq_f32_s32(dot2), scale2));
-                    vst1q_f32(tmp + 12, vmulq_f32(vcvtq_f32_s32(dot3), scale3));
-                    for (size_t ni = 0; ni < INT8_TILE_N; ++ni) acc[ni] += tmp[ni];
+                    // Fuse the int32->fp32 convert, scale multiply, and acc accumulation
+                    // into a single vfma per output quad. Saves the tmp[16] roundtrip and
+                    // the 16-element scalar add loop the compiler couldn't vectorize.
+                    vst1q_f32(acc + 0,  vfmaq_f32(vld1q_f32(acc + 0),  vcvtq_f32_s32(dot0), scale0));
+                    vst1q_f32(acc + 4,  vfmaq_f32(vld1q_f32(acc + 4),  vcvtq_f32_s32(dot1), scale1));
+                    vst1q_f32(acc + 8,  vfmaq_f32(vld1q_f32(acc + 8),  vcvtq_f32_s32(dot2), scale2));
+                    vst1q_f32(acc + 12, vfmaq_f32(vld1q_f32(acc + 12), vcvtq_f32_s32(dot3), scale3));
                     continue;
                 }
 
