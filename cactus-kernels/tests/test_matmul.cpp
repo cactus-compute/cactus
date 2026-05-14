@@ -291,6 +291,37 @@ bool run_benchmarks() {
         bench("matmul_f16 1024^3", M_batch, K, N, [&]{ cactus_matmul_f16(a.data(), b.data(), c.data(), M_batch, K, N); });
     }
 
+    std::cout << "  -- no-preexpand GEMV (per-width fast paths) --\n";
+    {
+        SyntheticCQ cq(1, K, N, gs);
+        CactusQuantMatrix mat = cq.matrix();
+        std::vector<__fp16> x(K), y(N);
+        fill_random_fp16(x, -1.f, 1.f);
+        bench("cq1 nopre 1x1024x1024", 1, K, N, [&]{ cactus_quant_matmul(&mat, x.data(), 1, y.data()); });
+    }
+    {
+        SyntheticCQ cq(2, K, N, gs);
+        CactusQuantMatrix mat = cq.matrix();
+        std::vector<__fp16> x(K), y(N);
+        fill_random_fp16(x, -1.f, 1.f);
+        bench("cq2 nopre 1x1024x1024", 1, K, N, [&]{ cactus_quant_matmul(&mat, x.data(), 1, y.data()); });
+    }
+    {
+        SyntheticCQ cq(3, K, N, gs);
+        CactusQuantMatrix mat = cq.matrix();
+        std::vector<__fp16> x(K), y(N);
+        fill_random_fp16(x, -1.f, 1.f);
+        bench("cq3 nopre 1x1024x1024", 1, K, N, [&]{ cactus_quant_matmul(&mat, x.data(), 1, y.data()); });
+    }
+    {
+        SyntheticCQ cq(4, K, N, gs);
+        CactusQuantMatrix mat = cq.matrix();
+        std::vector<__fp16> x(K), y(N);
+        fill_random_fp16(x, -1.f, 1.f);
+        bench("cq4 nopre 1x1024x1024", 1, K, N, [&]{ cactus_quant_matmul(&mat, x.data(), 1, y.data()); });
+    }
+    std::cout << "  -- preexpanded path (unified SDOT) --\n";
+
     // TQ1
     {
         SyntheticCQ cq(1, K, N, gs);
@@ -460,6 +491,29 @@ bool run_benchmarks() {
         std::vector<__fp16> x(Km), y(Nm);
         fill_random_fp16(x, -1.f, 1.f);
         bench_model("cq4 1x2304x9216", 1, Km, Nm, [&]{ cactus_quant_matmul(&mat, x.data(), 1, y.data()); });
+    }
+
+    std::cout << "  -- no-preexpand GEMV at 4096x16384 (memory-bound check) --\n";
+    for (uint32_t b : {1u, 2u, 3u, 4u}) {
+        const size_t Kx = 4096, Nx = 16384;
+        SyntheticCQ cq(b, Kx, Nx, gsm);
+        CactusQuantMatrix mat = cq.matrix();
+        std::vector<__fp16> x(Kx), y(Nx);
+        fill_random_fp16(x, -1.f, 1.f);
+        char label[40];
+        std::snprintf(label, sizeof(label), "cq%u nopre 1x4096x16384", b);
+        bench_model(label, 1, Kx, Nx, [&]{ cactus_quant_matmul(&mat, x.data(), 1, y.data()); });
+    }
+
+    std::cout << "  -- no-preexpand GEMV at 2304x9216 --\n";
+    for (uint32_t b : {1u, 2u, 3u, 4u}) {
+        SyntheticCQ cq(b, Km, Nm, gsm);
+        CactusQuantMatrix mat = cq.matrix();
+        std::vector<__fp16> x(Km), y(Nm);
+        fill_random_fp16(x, -1.f, 1.f);
+        char label[32];
+        std::snprintf(label, sizeof(label), "cq%u nopre 1x2304x9216", b);
+        bench_model(label, 1, Km, Nm, [&]{ cactus_quant_matmul(&mat, x.data(), 1, y.data()); });
     }
 
     return true;
