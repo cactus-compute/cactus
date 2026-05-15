@@ -93,6 +93,30 @@ CactusGraph::KvCacheTransaction CactusGraph::begin_kv_cache_transaction(const st
     return KvCacheTransaction(this, std::move(snapshots));
 }
 
+CactusGraph::KvCacheTransaction::~KvCacheTransaction() {
+    rollback();
+}
+
+CactusGraph::KvCacheTransaction::KvCacheTransaction(KvCacheTransaction&& other) noexcept
+    : graph_(other.graph_),
+      snapshots_(std::move(other.snapshots_)),
+      closed_(other.closed_) {
+    other.graph_ = nullptr;
+    other.closed_ = true;
+}
+
+CactusGraph::KvCacheTransaction& CactusGraph::KvCacheTransaction::operator=(KvCacheTransaction&& other) noexcept {
+    if (this != &other) {
+        rollback();
+        graph_ = other.graph_;
+        snapshots_ = std::move(other.snapshots_);
+        closed_ = other.closed_;
+        other.graph_ = nullptr;
+        other.closed_ = true;
+    }
+    return *this;
+}
+
 void CactusGraph::KvCacheTransaction::rollback() {
     if (!graph_ || closed_) return;
     for (const auto& [node, length] : snapshots_) {

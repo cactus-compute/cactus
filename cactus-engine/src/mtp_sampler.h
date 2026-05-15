@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <initializer_list>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <utility>
@@ -13,31 +13,11 @@ struct MtpDistribution {
     std::vector<float> probabilities;
 };
 
-struct MtpDraftBatch {
-    std::vector<uint32_t> tokens;
-    std::vector<MtpDistribution> probabilities;
-};
-
-struct MtpVerificationResult {
-    std::vector<uint32_t> output_tokens;
-    size_t accepted_draft_tokens = 0;
-    bool rejected = false;
-};
-
-class MtpDeterministicRng {
-public:
-    explicit MtpDeterministicRng(std::initializer_list<float> values) : values_(values) {}
-
-    float uniform() {
-        if (values_.empty()) return 0.0f;
-        float value = values_[index_ % values_.size()];
-        index_++;
-        return std::clamp(value, 0.0f, 1.0f);
-    }
-
-private:
-    std::vector<float> values_;
-    size_t index_ = 0;
+struct MtpSamplingOptions {
+    float temperature = 0.0f;
+    float top_p = 0.0f;
+    size_t top_k = 0;
+    float min_p = 0.0f;
 };
 
 inline uint32_t mtp_argmax(const MtpDistribution& dist) {
@@ -83,6 +63,161 @@ inline float mtp_sparse_probability_at(const std::vector<std::pair<uint32_t, flo
         if (item.first == token) return item.second;
     }
     return 0.0f;
+}
+
+inline std::vector<float> mtp_normalize_logits(const std::vector<float>& logits) {
+    std::vector<float> probs(logits.size(), 0.0f);
+    float max_value = -std::numeric_limits<float>::infinity();
+    for (float value : logits) max_value = std::max(max_value, value);
+    if (!std::isfinite(max_value)) return probs;
+
+    double sum = 0.0;
+    for (size_t i = 0; i < logits.size(); ++i) {
+        if (std::isfinite(logits[i])) {
+            probs[i] = static_cast<float>(std::exp(static_cast<double>(logits[i] - max_value)));
+            sum += probs[i];
+        }
+    }
+    if (sum <= 0.0 || !std::isfinite(sum)) return probs;
+
+    for (float& prob : probs) prob = static_cast<float>(prob / sum);
+    return probs;
+}
+
+inline MtpDistribution mtp_distribution_from_logits(std::vector<float> logits,
+                                                    const MtpSamplingOptions& options) {
+    MtpDistribution result;
+    if (logits.empty()) return result;
+
+    if (options.temperature == 0.0f) {
+        result.probabilities.assign(logits.size(), 0.0f);
+        auto it = std::max_element(logits.begin(), logits.end());
+        result.probabilities[std::distance(logits.begin(), it)] = 1.0f;
+        return result;
+    }
+
+    if (options.temperature > 0.0f) {
+        for (float& value : logits) value /= options.temperature;
+    }
+
+    if (options.top_k > 0 && options.top_k < logits.size()) {
+        std::vector<float> sorted = logits;
+        std::nth_element(sorted.begin(), sorted.begin() + options.top_k - 1, sorted.end(), std::greater<float>());
+        float kth = sorted[options.top_k - 1];
+        for (float& value : logits) {
+            if (value < kth) value = -std::numeric_limits<float>::infinity();
+        }
+    }
+
+    if (options.min_p > 0.0f) {
+        auto probs = mtp_normalize_logits(logits);
+        if (!probs.empty()) {
+            float threshold = (*std::max_element(probs.begin(), probs.end())) * options.min_p;
+            for (size_t i = 0; i < logits.size(); ++i) {
+                if (probs[i] < threshold) logits[i] = -std::numeric_limits<float>::infinity();
+            }
+        }
+    }
+
+    if (options.top_p > 0.0f && options.top_p < 1.0f) {
+        std::vector<std::pair<float, size_t>> sorted;
+        sorted.reserve(logits.size());
+        for (size_t i = 0; i < logits.size(); ++i) {
+            if (std::isfinite(logits[i])) sorted.emplace_back(logits[i], i);
+        }
+        std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+            return a.first > b.first;
+        });
+
+        std::vector<float> sorted_logits;
+        sorted_logits.reserve(sorted.size());
+        for (const auto& item : sorted) sorted_logits.push_back(item.first);
+        auto sorted_probs = mtp_normalize_logits(sorted_logits);
+
+        float cumulative = 0.0f;
+        bool remove = false;
+        for (size_t i = 0; i < sorted.size(); ++i) {
+            cumulative += sorted_probs[i];
+            if (remove) logits[sorted[i].second] = -std::numeric_limits<float>::infinity();
+            if (cumulative > options.top_p) remove = true;
+        }
+    }
+
+    result.probabilities = mtp_normalize_logits(logits);
+    float sum = std::accumulate(result.probabilities.begin(), result.probabilities.end(), 0.0f);
+    if (sum <= 0.0f || !std::isfinite(sum)) {
+        float uniform = result.probabilities.empty() ? 0.0f : 1.0f / static_cast<float>(result.probabilities.size());
+        std::fill(result.probabilities.begin(), result.probabilities.end(), uniform);
+    }
+    return result;
+}
+
+inline std::vector<std::pair<uint32_t, float>> mtp_sparse_distribution_from_logits(
+    std::vector<std::pair<uint32_t, float>> logits,
+    const MtpSamplingOptions& options) {
+    if (logits.empty()) return {};
+
+    if (options.temperature > 0.0f) {
+        for (auto& item : logits) item.second /= options.temperature;
+    }
+    std::sort(logits.begin(), logits.end(), [](const auto& a, const auto& b) {
+        return a.second > b.second;
+    });
+
+    auto normalize = [](const std::vector<std::pair<uint32_t, float>>& values) {
+        std::vector<std::pair<uint32_t, float>> probs;
+        probs.reserve(values.size());
+        float max_value = -std::numeric_limits<float>::infinity();
+        for (const auto& item : values) max_value = std::max(max_value, item.second);
+        if (!std::isfinite(max_value)) return probs;
+        double sum = 0.0;
+        for (const auto& item : values) {
+            float prob = static_cast<float>(std::exp(static_cast<double>(item.second - max_value)));
+            probs.emplace_back(item.first, prob);
+            sum += prob;
+        }
+        if (sum <= 0.0 || !std::isfinite(sum)) return std::vector<std::pair<uint32_t, float>>{};
+        for (auto& item : probs) item.second = static_cast<float>(item.second / sum);
+        return probs;
+    };
+
+    if (options.min_p > 0.0f) {
+        auto probs = normalize(logits);
+        if (!probs.empty()) {
+            float max_prob = 0.0f;
+            for (const auto& item : probs) max_prob = std::max(max_prob, item.second);
+            float threshold = max_prob * options.min_p;
+            std::vector<std::pair<uint32_t, float>> filtered;
+            filtered.reserve(logits.size());
+            for (size_t i = 0; i < logits.size(); ++i) {
+                if (probs[i].second >= threshold) filtered.push_back(logits[i]);
+            }
+            logits = std::move(filtered);
+        }
+    }
+
+    if (options.top_p > 0.0f && options.top_p < 1.0f) {
+        auto probs = normalize(logits);
+        std::vector<std::pair<uint32_t, float>> filtered;
+        filtered.reserve(logits.size());
+        float cumulative = 0.0f;
+        bool remove = false;
+        for (size_t i = 0; i < logits.size(); ++i) {
+            cumulative += i < probs.size() ? probs[i].second : 0.0f;
+            if (!remove) filtered.push_back(logits[i]);
+            if (cumulative > options.top_p) remove = true;
+        }
+        logits = std::move(filtered);
+    }
+
+    auto probs = normalize(logits);
+    float sum = 0.0f;
+    for (const auto& item : probs) sum += item.second;
+    if (sum <= 0.0f || !std::isfinite(sum)) {
+        float uniform = probs.empty() ? 0.0f : 1.0f / static_cast<float>(probs.size());
+        for (auto& item : probs) item.second = uniform;
+    }
+    return probs;
 }
 
 inline MtpDistribution rejection_adjusted_distribution(const MtpDistribution& target,
@@ -135,65 +270,4 @@ inline std::vector<std::pair<uint32_t, float>> mtp_rejection_adjusted_sparse_dis
     }
     for (auto& item : adjusted) item.second /= sum;
     return adjusted;
-}
-
-inline MtpVerificationResult verify_greedy_mtp_draft(const MtpDraftBatch& draft,
-                                                     const std::vector<MtpDistribution>& target) {
-    if (target.size() < draft.tokens.size() + 1) {
-        throw std::invalid_argument("MTP target distributions must include one extra next-token distribution");
-    }
-
-    MtpVerificationResult result;
-    for (size_t i = 0; i < draft.tokens.size(); ++i) {
-        uint32_t target_token = mtp_argmax(target[i]);
-        if (draft.tokens[i] != target_token) {
-            result.output_tokens.push_back(target_token);
-            result.rejected = true;
-            return result;
-        }
-        result.output_tokens.push_back(draft.tokens[i]);
-        result.accepted_draft_tokens++;
-    }
-
-    result.output_tokens.push_back(mtp_argmax(target[draft.tokens.size()]));
-    return result;
-}
-
-inline MtpVerificationResult verify_sampled_mtp_draft(const MtpDraftBatch& draft,
-                                                      const std::vector<MtpDistribution>& target,
-                                                      MtpDeterministicRng& rng) {
-    if (target.size() < draft.tokens.size() + 1) {
-        throw std::invalid_argument("MTP target distributions must include one extra next-token distribution");
-    }
-    if (draft.probabilities.size() < draft.tokens.size()) {
-        throw std::invalid_argument("MTP draft must include assistant probabilities for each token");
-    }
-
-    MtpVerificationResult result;
-    for (size_t i = 0; i < draft.tokens.size(); ++i) {
-        uint32_t y = draft.tokens[i];
-        const auto& q = draft.probabilities[i];
-        const auto& p = target[i];
-        if (y >= q.probabilities.size() || y >= p.probabilities.size()) {
-            throw std::out_of_range("MTP draft token outside distribution vocabulary");
-        }
-
-        float q_y = q.probabilities[y];
-        float p_y = p.probabilities[y];
-        float accept_probability = q_y <= 0.0f ? 1.0f : std::min(1.0f, p_y / q_y);
-
-        if (rng.uniform() <= accept_probability) {
-            result.output_tokens.push_back(y);
-            result.accepted_draft_tokens++;
-            continue;
-        }
-
-        MtpDistribution adjusted = rejection_adjusted_distribution(p, q);
-        result.output_tokens.push_back(mtp_sample(adjusted, rng.uniform()));
-        result.rejected = true;
-        return result;
-    }
-
-    result.output_tokens.push_back(mtp_sample(target[draft.tokens.size()], rng.uniform()));
-    return result;
 }

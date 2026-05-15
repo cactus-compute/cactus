@@ -92,6 +92,20 @@ bool test_missing_assistant_records_fallback_reason() {
         && accumulator.metrics().fallback_reason == "assistant_unavailable";
 }
 
+bool test_non_gemma_target_reports_generic_unsupported_reason() {
+    MtpFallbackDecision decision = decide_mtp_fallback(MtpAvailability{
+        .requested = true,
+        .required = false,
+        .assistant_loaded = false,
+        .supports_prompt = false,
+        .supports_target = false,
+    });
+
+    return decision.use_standard_decode
+        && !decision.error
+        && decision.reason == "unsupported_target";
+}
+
 int main() {
     TestRunner runner("MTP Completion Semantics Tests");
 
@@ -100,6 +114,7 @@ int main() {
     runner.run_test("rejected_not_history", test_rejected_draft_tokens_do_not_enter_history());
     runner.run_test("history_once", test_token_history_updates_once_per_accepted_token());
     runner.run_test("fallback_reason", test_missing_assistant_records_fallback_reason());
+    runner.run_test("unsupported_target", test_non_gemma_target_reports_generic_unsupported_reason());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

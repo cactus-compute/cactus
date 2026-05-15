@@ -69,7 +69,6 @@ set(ENGINE_SOURCES
     src/init.cpp
     src/embed.cpp
     src/complete.cpp
-    src/gemma4_mtp_decode.cpp
     src/transcribe.cpp
     src/tokenizer.cpp
     src/npu.cpp

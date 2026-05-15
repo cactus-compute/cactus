@@ -1,6 +1,6 @@
 #include "../cactus_engine.h"
 #include "cloud.h"
-#include "gemma4_mtp_decode.h"
+#include "mtp_completion.h"
 #include "utils.h"
 #include "telemetry.h"
 #include "cactus_kernels.h"
@@ -13,7 +13,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <future>
 #include <iomanip>
 #include <memory>
@@ -32,24 +31,6 @@ namespace {
 std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema);
 std::vector<std::string> extract_schema_required(const std::string& schema);
 
-Gemma4Model* gemma4_language_model(Model* model) {
-    if (auto* gemma4 = dynamic_cast<Gemma4Model*>(model)) {
-        return gemma4;
-    }
-    if (auto* mm = dynamic_cast<Gemma4MmModel*>(model)) {
-        return &mm->language_model();
-    }
-    return nullptr;
-}
-
-std::string default_gemma4_mtp_assistant_path(Model* model) {
-    if (!model) {
-        return {};
-    }
-    std::filesystem::path assistant_path = std::filesystem::path(model->get_model_folder_path()) / "assistant";
-    return assistant_path.string();
-}
-
 std::string token_list_for_trace(const std::vector<uint32_t>& tokens) {
     std::ostringstream out;
     out << "[";
@@ -60,168 +41,6 @@ std::string token_list_for_trace(const std::vector<uint32_t>& tokens) {
     out << "]";
     return out.str();
 }
-
-std::string env_string(const char* key, const std::string& fallback = "") {
-    const char* value = std::getenv(key);
-    return value && value[0] ? std::string(value) : fallback;
-}
-
-std::string csv_escape_field(const std::string& value) {
-    if (value.find_first_of(",\"\n\r") == std::string::npos) return value;
-    std::string out = "\"";
-    for (char c : value) {
-        if (c == '"') out += "\"\"";
-        else out += c;
-    }
-    out += "\"";
-    return out;
-}
-
-std::string bool_field(bool value) {
-    return value ? "true" : "false";
-}
-
-std::string double_field(double value) {
-    std::ostringstream out;
-    out << std::fixed << std::setprecision(3) << value;
-    return out.str();
-}
-
-std::string join_ms(const std::vector<double>& values) {
-    std::ostringstream out;
-    out << std::fixed << std::setprecision(3);
-    for (size_t i = 0; i < values.size(); ++i) {
-        if (i > 0) out << ";";
-        out << values[i];
-    }
-    return out.str();
-}
-
-void append_csv_line(const std::filesystem::path& path,
-                     const std::string& header,
-                     const std::vector<std::string>& fields) {
-    bool write_header = !std::filesystem::exists(path) || std::filesystem::file_size(path) == 0;
-    std::ofstream out(path, std::ios::app);
-    if (!out) {
-        throw std::runtime_error("Unable to open diagnostic trace CSV: " + path.string());
-    }
-    if (write_header) out << header << "\n";
-    for (size_t i = 0; i < fields.size(); ++i) {
-        if (i > 0) out << ",";
-        out << csv_escape_field(fields[i]);
-    }
-    out << "\n";
-}
-
-struct DiagnosticTraceContext {
-    bool enabled = false;
-    std::filesystem::path dir;
-    std::string run_id;
-    std::string model;
-    std::string prompt_name;
-    std::string shape;
-    std::string rep;
-
-    static DiagnosticTraceContext from_env() {
-        DiagnosticTraceContext ctx;
-        std::string dir = env_string("CACTUS_GEMMA4_MTP_TRACE_CSV_DIR");
-        if (dir.empty()) return ctx;
-        ctx.run_id = env_string("CACTUS_MTP_DIAG_RUN_ID");
-        if (ctx.run_id.empty()) return ctx;
-        ctx.enabled = true;
-        ctx.dir = dir;
-        std::filesystem::create_directories(ctx.dir);
-        ctx.model = env_string("CACTUS_MTP_DIAG_MODEL", "model");
-        ctx.prompt_name = env_string("CACTUS_MTP_DIAG_PROMPT", "prompt");
-        ctx.shape = env_string("CACTUS_MTP_DIAG_SHAPE", "unknown");
-        ctx.rep = env_string("CACTUS_MTP_DIAG_REP", "0");
-        return ctx;
-    }
-
-    void write_round(size_t round_index,
-                     size_t generated_start,
-                     size_t generated_end,
-                     size_t target_batch_m,
-                     size_t assistant_pass_count,
-                     size_t drafted_tokens,
-                     size_t accepted_drafts,
-                     bool rejected,
-                     bool alt_branch_accepted,
-                     bool emitted_extra_target_token,
-                     double target_forward_ms,
-                     double assistant_total_ms,
-                     const std::vector<double>& assistant_step_ms,
-                     double sampling_or_argmax_ms,
-                     double kv_transaction_ms,
-                     double callback_stream_ms,
-                     double loop_overhead_ms,
-                     double round_total_ms) const {
-        if (!enabled || generated_end <= generated_start) return;
-        static const std::string header =
-            "run_id,model,prompt_name,shape,rep,round_index,generated_token_start,generated_token_end,"
-            "generated_tokens_emitted,target_batch_m,assistant_pass_count,drafted_tokens,accepted_drafts,"
-            "rejected,alt_branch_accepted,emitted_extra_target_token,target_forward_ms,assistant_total_ms,"
-            "assistant_step_ms,sampling_or_argmax_ms,kv_transaction_ms,callback_stream_ms,loop_overhead_ms,round_total_ms";
-        append_csv_line(dir / "round_trace.csv", header, {
-            run_id, model, prompt_name, shape, rep,
-            std::to_string(round_index),
-            std::to_string(generated_start),
-            std::to_string(generated_end),
-            std::to_string(generated_end - generated_start),
-            std::to_string(target_batch_m),
-            std::to_string(assistant_pass_count),
-            std::to_string(drafted_tokens),
-            std::to_string(accepted_drafts),
-            bool_field(rejected),
-            bool_field(alt_branch_accepted),
-            bool_field(emitted_extra_target_token),
-            double_field(target_forward_ms),
-            double_field(assistant_total_ms),
-            join_ms(assistant_step_ms),
-            double_field(sampling_or_argmax_ms),
-            double_field(kv_transaction_ms),
-            double_field(callback_stream_ms),
-            double_field(loop_overhead_ms),
-            double_field(round_total_ms),
-        });
-    }
-
-    void write_token(size_t token_position,
-                     uint32_t token_id,
-                     size_t round_index,
-                     size_t token_index_in_round,
-                     const std::string& source,
-                     size_t round_emitted,
-                     double target_forward_ms,
-                     double assistant_total_ms,
-                     double other_ms,
-                     double round_total_ms) const {
-        if (!enabled || round_emitted == 0) return;
-        static const std::string header =
-            "run_id,model,prompt_name,shape,rep,token_position,token_id,round_index,token_index_in_round,"
-            "source,round_generated_tokens_emitted,round_target_forward_ms,round_assistant_total_ms,"
-            "round_other_ms,round_total_ms,allocated_target_forward_ms,allocated_assistant_ms,"
-            "allocated_other_ms,allocated_total_ms";
-        double denom = static_cast<double>(round_emitted);
-        append_csv_line(dir / "token_trace.csv", header, {
-            run_id, model, prompt_name, shape, rep,
-            std::to_string(token_position),
-            std::to_string(token_id),
-            std::to_string(round_index),
-            std::to_string(token_index_in_round),
-            source,
-            std::to_string(round_emitted),
-            double_field(target_forward_ms),
-            double_field(assistant_total_ms),
-            double_field(other_ms),
-            double_field(round_total_ms),
-            double_field(target_forward_ms / denom),
-            double_field(assistant_total_ms / denom),
-            double_field(other_ms / denom),
-            double_field(round_total_ms / denom),
-        });
-    }
-};
 
 std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
     for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
@@ -863,8 +682,9 @@ int cactus_complete(
         handle->should_stop = false;
         auto* tokenizer = handle->model->get_tokenizer();
         auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, true, true, pcm_buffer, pcm_buffer_size);
-        if (prompt.options.mtp && prompt.options.mtp_assistant_path.empty()) {
-            prompt.options.mtp_assistant_path = default_gemma4_mtp_assistant_path(handle->model.get());
+        SpeculativeDecodeCapability* mtp_capability = handle->model->speculative_decode_capability();
+        if (prompt.options.mtp && prompt.options.mtp_assistant_path.empty() && mtp_capability) {
+            prompt.options.mtp_assistant_path = mtp_capability->default_assistant_path();
         }
 
         bool mtp_assistant_available = false;
@@ -881,7 +701,9 @@ int cactus_complete(
 
         bool has_images = prompt.has_images();
         bool has_audio = prompt.has_audio();
-        Gemma4Model* mtp_target = gemma4_language_model(handle->model.get());
+        Gemma4Model* mtp_target = mtp_capability
+            ? dynamic_cast<Gemma4Model*>(mtp_capability->target_model())
+            : nullptr;
         Gemma4MtpAssistant mtp_assistant;
         bool mtp_enabled = false;
         size_t mtp_drafted_tokens = 0;
@@ -902,9 +724,9 @@ int cactus_complete(
                 && prompt.options.max_tokens <= 32;
             if (short_completion_gate) {
                 mtp_fallback_reason = "short_completion";
-            } else if (!mtp_target) {
-                mtp_fallback_reason = "target_not_gemma4_text";
-            } else if (!text_only) {
+            } else if (!mtp_capability || !mtp_target) {
+                mtp_fallback_reason = "unsupported_target";
+            } else if (!text_only || !mtp_capability->supports_prompt(has_images, has_audio, !prompt.tools.empty())) {
                 mtp_fallback_reason = "only_text_supported";
             } else if (!mtp_assistant_available) {
                 mtp_fallback_reason = "assistant_unavailable";
@@ -1009,8 +831,8 @@ int cactus_complete(
                         first_input, prompt.options.temperature, prompt.options.top_p,
                         prompt.options.top_k, prompt.options.min_p);
                 next_token = mtp_sparse_sampled
-                    ? gemma4_mtp_sample_sparse_distribution(first.sparse_probabilities.back(), mtp_rng)
-                    : gemma4_mtp_sample_distribution(first.probabilities.back(), mtp_rng);
+                    ? mtp_sample_sparse_distribution(first.sparse_probabilities.back(), mtp_rng)
+                    : mtp_sample_distribution(first.probabilities.back(), mtp_rng);
                 size_t hidden_row = first.hidden_dim == 0 ? 0 : first.hidden.size() / first.hidden_dim - 1;
                 mtp_prev_hidden.assign(
                     first.hidden.begin() + hidden_row * first.hidden_dim,
@@ -1266,13 +1088,12 @@ int cactus_complete(
                 size_t produced = 1;
                 bool stopped = false;
                 size_t mtp_previous_n_matches = 0;
-                Gemma4MtpSamplingOptions mtp_sampling_options{
+                MtpSamplingOptions mtp_sampling_options{
                     .temperature = prompt.options.temperature,
                     .top_p = prompt.options.top_p,
                     .top_k = prompt.options.top_k,
                     .min_p = prompt.options.min_p,
                 };
-                Gemma4MtpDecodeStrategy mtp_strategy(*mtp_target, mtp_assistant);
                 while (produced < prompt.options.max_tokens && !handle->should_stop) {
                     size_t remaining = prompt.options.max_tokens - produced;
                     if (remaining == 0) break;
@@ -1285,7 +1106,8 @@ int cactus_complete(
                     auto cache_nodes = mtp_target->shared_cache_nodes_for_mtp();
                     const size_t assistant_position = handle->processed_tokens.empty() ? 0 : handle->processed_tokens.size() - 1;
 
-                    auto round = mtp_strategy.decode_round(
+                    auto round = mtp_target->decode_mtp_round(
+                        mtp_assistant,
                         next_token,
                         mtp_prev_hidden,
                         cache_nodes,
@@ -1299,7 +1121,7 @@ int cactus_complete(
                     auto& draft = round.draft;
                     auto& verified = round.verification;
                     mtp_drafted_tokens += draft.tokens.size();
-                    mtp_accepted_tokens += verified.accepted;
+                    mtp_accepted_tokens += verified.accepted_draft_tokens;
                     mtp_assistant_draft_ms += draft.assistant_draft_ms;
                     mtp_target_verify_ms += verified.target_verify_ms;
                     mtp_sampling_or_argmax_ms += draft.sampling_or_argmax_ms + verified.sampling_or_argmax_ms;
@@ -1315,7 +1137,7 @@ int cactus_complete(
                             << " assistant_draft_tokens=" << token_list_for_trace(draft.tokens)
                             << " target_verify_input_tokens=" << token_list_for_trace(verified.verify_tokens)
                             << " target_argmax_tokens=" << token_list_for_trace(verified.target_tokens)
-                            << " accepted_count=" << verified.accepted
+                            << " accepted_count=" << verified.accepted_draft_tokens
                             << " valid_committed_tokens=" << token_list_for_trace(verified.output_tokens)
                             << " target_cache_crop_length=" << verified.target_cache_crop_length
                             << " assistant_draft_ms=" << draft.assistant_draft_ms
@@ -1324,7 +1146,7 @@ int cactus_complete(
                             << " kv_transaction_ms=" << verified.kv_transaction_ms
                             << "\n";
                     }
-                    mtp_previous_n_matches = verified.accepted;
+                    mtp_previous_n_matches = verified.accepted_draft_tokens;
 
                     if (!verified.next_hidden.empty()) {
                         mtp_prev_hidden = std::move(verified.next_hidden);
@@ -1370,7 +1192,7 @@ int cactus_complete(
                         verified.verify_tokens.size(),
                         draft.assistant_step_ms.size(),
                         draft.tokens.size() + (draft.has_alt_first_token ? 1 : 0),
-                        verified.accepted,
+                        verified.accepted_draft_tokens,
                         verified.rejected,
                         alt_branch_accepted,
                         verified.emitted_extra_target_token,
@@ -1392,7 +1214,7 @@ int cactus_complete(
                             }
                         } else {
                             for (size_t i = 0; i < emitted_count; ++i) {
-                                if (i < verified.accepted) {
+                                if (i < verified.accepted_draft_tokens) {
                                     sources.push_back("accepted_main_draft");
                                 } else if (verified.rejected) {
                                     sources.push_back("rejection_target");
@@ -1652,12 +1474,12 @@ int cactus_prefill(
         handle->processed_images = prompt.images;
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        double elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
-        double prefill_tps = (prefill_result.prefilled_count > 0 && elapsed_ms > 0.0)
-            ? (static_cast<double>(prefill_result.prefilled_count) * 1000.0) / elapsed_ms
+        double mtp_elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
+        double prefill_tps = (prefill_result.prefilled_count > 0 && mtp_elapsed_ms > 0.0)
+            ? (static_cast<double>(prefill_result.prefilled_count) * 1000.0) / mtp_elapsed_ms
             : 0.0;
 
-        std::string result = construct_prefill_response_json(true, nullptr, prefill_result.prefilled_count, prefill_tps, elapsed_ms);
+        std::string result = construct_prefill_response_json(true, nullptr, prefill_result.prefilled_count, prefill_tps, mtp_elapsed_ms);
         if (result.size() >= buffer_size) {
             std::string error_msg = "Response buffer too small";
             std::string error_json = construct_prefill_response_json(false, &error_msg, 0, 0.0, 0.0);

@@ -459,6 +459,11 @@ public:
         KvCacheTransaction() = default;
         KvCacheTransaction(CactusGraph* graph, std::vector<std::pair<size_t, uint64_t>> snapshots)
             : graph_(graph), snapshots_(std::move(snapshots)) {}
+        ~KvCacheTransaction();
+        KvCacheTransaction(const KvCacheTransaction&) = delete;
+        KvCacheTransaction& operator=(const KvCacheTransaction&) = delete;
+        KvCacheTransaction(KvCacheTransaction&& other) noexcept;
+        KvCacheTransaction& operator=(KvCacheTransaction&& other) noexcept;
 
         void rollback();
         void commit_all();

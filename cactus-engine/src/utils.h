@@ -443,7 +443,7 @@ struct InferenceOptions {
     float temperature = 0.0f;
     float top_p = 0.0f;
     float min_p = 0.15f;
-    float repetition_penalty = 1.0f;
+    float repetition_penalty = 1.1f;
     float confidence_threshold = -1.0f;
     size_t top_k = 0;
     size_t max_tokens = 100;

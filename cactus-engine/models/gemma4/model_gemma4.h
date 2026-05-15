@@ -1,7 +1,10 @@
 #pragma once
 
 #include "../model.h"
+#include "src/mtp_decode.h"
 
+#include <memory>
+#include <random>
 #include <utility>
 
 bool test_gemma4_vision(bool expect_npu);
@@ -10,12 +13,15 @@ bool test_gemma4_audio(bool expect_npu);
 namespace cactus {
 namespace engine {
 
+class Gemma4MtpAssistant;
+
 class Gemma4Model : public Model {
     friend class Gemma4MmModel;
 public:
     Gemma4Model();
     explicit Gemma4Model(const Config& config);
     ~Gemma4Model() override = default;
+    SpeculativeDecodeCapability* speculative_decode_capability() override;
 
     struct GreedyStepWithHidden {
         uint32_t token = 0;
@@ -60,6 +66,16 @@ public:
     void set_cache_position_for_mtp(size_t position) { cache_total_seq_len_ = position; }
     std::vector<size_t> cache_state_nodes_for_mtp() const;
     bool can_use_mtp_tree_attention(size_t token_count) const;
+    MtpRoundResult decode_mtp_round(Gemma4MtpAssistant& assistant,
+                                    uint32_t input_token,
+                                    const std::vector<__fp16>& previous_hidden,
+                                    const SharedCacheNodes& cache_nodes,
+                                    size_t assistant_position,
+                                    size_t draft_limit,
+                                    size_t remaining_tokens,
+                                    const MtpSamplingOptions& options,
+                                    bool sparse_sampled,
+                                    std::mt19937& rng);
 
 protected:
     size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
@@ -162,6 +178,7 @@ private:
     std::vector<size_t> shared_v_nodes_;
     size_t active_attention_mask_node_ = 0;
     std::vector<size_t> active_position_deltas_;
+    std::unique_ptr<SpeculativeDecodeCapability> speculative_capability_;
 
     std::vector<__fp16> v_norm_ones_weight_;
     size_t v_norm_ones_node_ = 0;
@@ -400,6 +417,7 @@ public:
 
     void reset_cache() override;
     size_t get_cache_size() const override;
+    SpeculativeDecodeCapability* speculative_decode_capability() override;
     std::vector<float> get_image_embeddings(const std::string& image_path) override;
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
     void compact_kv_cache() override;

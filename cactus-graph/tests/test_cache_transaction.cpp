@@ -42,6 +42,28 @@ bool test_cache_transaction_rollback_restores_sequence_length() {
     return current_seq(graph, cache) == 4;
 }
 
+bool test_cache_transaction_auto_rolls_back_when_abandoned() {
+    CactusGraph graph;
+    const size_t kv_heads = 2;
+    const size_t head_dim = 16;
+    size_t cache = graph.kv_cache_state(64, kv_heads, head_dim);
+    graph.execute();
+
+    if (!append_tokens(graph, cache, 4, kv_heads, head_dim, 1.0f)) return false;
+
+    {
+        auto txn = graph.begin_kv_cache_transaction({cache});
+        (void)txn;
+
+        graph.soft_reset();
+        if (!append_tokens(graph, cache, 5, kv_heads, head_dim, 2.0f)) return false;
+        if (current_seq(graph, cache) != 9) return false;
+    }
+    graph.execute();
+
+    return current_seq(graph, cache) == 4;
+}
+
 bool test_cache_transaction_commit_all_keeps_draft_tokens() {
     CactusGraph graph;
     const size_t kv_heads = 2;
@@ -138,6 +160,7 @@ int main() {
     TestRunner runner("KV Cache Transaction Tests");
 
     runner.run_test("rollback_restores_length", test_cache_transaction_rollback_restores_sequence_length());
+    runner.run_test("auto_rollback", test_cache_transaction_auto_rolls_back_when_abandoned());
     runner.run_test("commit_all_keeps_tokens", test_cache_transaction_commit_all_keeps_draft_tokens());
     runner.run_test("commit_prefix_crops_suffix", test_cache_transaction_commit_prefix_crops_rejected_suffix());
     runner.run_test("multiple_layer_caches", test_cache_transaction_tracks_multiple_layer_caches());

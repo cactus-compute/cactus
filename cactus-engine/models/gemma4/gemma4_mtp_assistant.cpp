@@ -1,4 +1,5 @@
 #include "gemma4_mtp_assistant.h"
+#include "src/mtp_sampler.h"
 
 #include <algorithm>
 #include <cctype>
@@ -15,81 +16,6 @@ namespace cactus {
 namespace engine {
 
 namespace {
-
-constexpr size_t kTargetHiddenDim = 1536;
-constexpr size_t kCentroidCount = 2048;
-constexpr size_t kTopCentroidCount = 32;
-constexpr size_t kTokensPerCentroid = 128;
-constexpr size_t kTokenOrderingSize = kCentroidCount * kTokensPerCentroid;
-
-std::vector<float> probs_from_logits(std::vector<float> logits, float temperature, float top_p, size_t top_k, float min_p) {
-    if (logits.empty()) return {};
-    if (temperature == 0.0f) {
-        std::vector<float> probs(logits.size(), 0.0f);
-        auto it = std::max_element(logits.begin(), logits.end());
-        probs[std::distance(logits.begin(), it)] = 1.0f;
-        return probs;
-    }
-    if (temperature > 0.0f) {
-        for (float& value : logits) value /= temperature;
-    }
-    if (top_k > 0 && top_k < logits.size()) {
-        std::vector<float> sorted = logits;
-        std::nth_element(sorted.begin(), sorted.begin() + top_k - 1, sorted.end(), std::greater<float>());
-        float kth = sorted[top_k - 1];
-        for (float& value : logits) {
-            if (value < kth) value = -std::numeric_limits<float>::infinity();
-        }
-    }
-    auto normalize = [](const std::vector<float>& values) {
-        std::vector<float> probs(values.size(), 0.0f);
-        float max_value = -std::numeric_limits<float>::infinity();
-        for (float value : values) max_value = std::max(max_value, value);
-        if (!std::isfinite(max_value)) return probs;
-        double sum = 0.0;
-        for (size_t i = 0; i < values.size(); ++i) {
-            if (std::isfinite(values[i])) {
-                probs[i] = std::exp(static_cast<double>(values[i] - max_value));
-                sum += probs[i];
-            }
-        }
-        if (sum <= 0.0 || !std::isfinite(sum)) return probs;
-        for (float& prob : probs) prob = static_cast<float>(prob / sum);
-        return probs;
-    };
-    if (min_p > 0.0f) {
-        auto probs = normalize(logits);
-        float threshold = (*std::max_element(probs.begin(), probs.end())) * min_p;
-        for (size_t i = 0; i < logits.size(); ++i) {
-            if (probs[i] < threshold) logits[i] = -std::numeric_limits<float>::infinity();
-        }
-    }
-    if (top_p > 0.0f && top_p < 1.0f) {
-        std::vector<std::pair<float, size_t>> sorted;
-        sorted.reserve(logits.size());
-        for (size_t i = 0; i < logits.size(); ++i) {
-            if (std::isfinite(logits[i])) sorted.emplace_back(logits[i], i);
-        }
-        std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-        std::vector<float> sorted_logits;
-        sorted_logits.reserve(sorted.size());
-        for (const auto& item : sorted) sorted_logits.push_back(item.first);
-        auto sorted_probs = normalize(sorted_logits);
-        float cumulative = 0.0f;
-        bool remove = false;
-        for (size_t i = 0; i < sorted.size(); ++i) {
-            cumulative += sorted_probs[i];
-            if (remove) logits[sorted[i].second] = -std::numeric_limits<float>::infinity();
-            if (cumulative > top_p) remove = true;
-        }
-    }
-    auto probs = normalize(logits);
-    float sum = std::accumulate(probs.begin(), probs.end(), 0.0f);
-    if (sum <= 0.0f || !std::isfinite(sum)) {
-        std::fill(probs.begin(), probs.end(), 1.0f / static_cast<float>(probs.size()));
-    }
-    return probs;
-}
 
 std::vector<std::pair<uint32_t, float>> sparse_probs_from_logits_row(
     const void* logits_ptr, Precision precision, size_t row_offset, size_t vocab_size,
@@ -123,68 +49,118 @@ std::vector<std::pair<uint32_t, float>> sparse_probs_from_logits_row(
         logits.emplace_back(top.top().second, top.top().first);
         top.pop();
     }
-    if (temperature > 0.0f) {
-        for (auto& item : logits) item.second /= temperature;
-    }
-    std::sort(logits.begin(), logits.end(), [](const auto& a, const auto& b) {
-        return a.second > b.second;
+    return mtp_sparse_distribution_from_logits(std::move(logits), MtpSamplingOptions{
+        .temperature = temperature,
+        .top_p = top_p,
+        .top_k = top_k,
+        .min_p = min_p,
     });
-
-    auto normalize = [](const std::vector<std::pair<uint32_t, float>>& values) {
-        std::vector<std::pair<uint32_t, float>> probs;
-        probs.reserve(values.size());
-        float max_value = -std::numeric_limits<float>::infinity();
-        for (const auto& item : values) max_value = std::max(max_value, item.second);
-        if (!std::isfinite(max_value)) return probs;
-        double sum = 0.0;
-        for (const auto& item : values) {
-            float prob = std::exp(static_cast<double>(item.second - max_value));
-            probs.emplace_back(item.first, prob);
-            sum += prob;
-        }
-        if (sum <= 0.0 || !std::isfinite(sum)) return std::vector<std::pair<uint32_t, float>>{};
-        for (auto& item : probs) item.second = static_cast<float>(item.second / sum);
-        return probs;
-    };
-
-    if (min_p > 0.0f) {
-        auto probs = normalize(logits);
-        if (!probs.empty()) {
-            float max_prob = 0.0f;
-            for (const auto& item : probs) max_prob = std::max(max_prob, item.second);
-            float threshold = max_prob * min_p;
-            std::vector<std::pair<uint32_t, float>> filtered;
-            filtered.reserve(logits.size());
-            for (size_t i = 0; i < logits.size(); ++i) {
-                if (probs[i].second >= threshold) filtered.push_back(logits[i]);
-            }
-            logits = std::move(filtered);
-        }
-    }
-    if (top_p > 0.0f && top_p < 1.0f) {
-        auto probs = normalize(logits);
-        std::vector<std::pair<uint32_t, float>> filtered;
-        filtered.reserve(logits.size());
-        float cumulative = 0.0f;
-        bool remove = false;
-        for (size_t i = 0; i < logits.size(); ++i) {
-            cumulative += i < probs.size() ? probs[i].second : 0.0f;
-            if (!remove) filtered.push_back(logits[i]);
-            if (cumulative > top_p) remove = true;
-        }
-        logits = std::move(filtered);
-    }
-
-    auto probs = normalize(logits);
-    float sum = 0.0f;
-    for (const auto& item : probs) sum += item.second;
-    if (sum <= 0.0f || !std::isfinite(sum)) {
-        float uniform = probs.empty() ? 0.0f : 1.0f / static_cast<float>(probs.size());
-        for (auto& item : probs) item.second = uniform;
-    }
-    return probs;
 }
 
+size_t json_size_field(const std::string& json, const std::string& key, size_t fallback) {
+    size_t pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return fallback;
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return fallback;
+    char* end = nullptr;
+    unsigned long value = std::strtoul(json.c_str() + pos + 1, &end, 10);
+    return end == json.c_str() + pos + 1 ? fallback : static_cast<size_t>(value);
+}
+
+float json_float_field(const std::string& json, const std::string& key, float fallback) {
+    size_t pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return fallback;
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return fallback;
+    char* end = nullptr;
+    float value = std::strtof(json.c_str() + pos + 1, &end);
+    return end == json.c_str() + pos + 1 ? fallback : value;
+}
+
+bool json_bool_field(const std::string& json, const std::string& key, bool fallback) {
+    size_t pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return fallback;
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return fallback;
+    while (++pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) {}
+    if (json.compare(pos, 4, "true") == 0) return true;
+    if (json.compare(pos, 5, "false") == 0) return false;
+    return fallback;
+}
+
+std::vector<std::string> json_object_array(const std::string& json, const std::string& key) {
+    std::vector<std::string> objects;
+    size_t pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return objects;
+    size_t array_start = json.find('[', pos);
+    if (array_start == std::string::npos) return objects;
+    int depth = 0;
+    size_t object_start = std::string::npos;
+    for (size_t i = array_start + 1; i < json.size(); ++i) {
+        if (json[i] == '{') {
+            if (depth == 0) object_start = i;
+            depth++;
+        } else if (json[i] == '}') {
+            depth--;
+            if (depth == 0 && object_start != std::string::npos) {
+                objects.push_back(json.substr(object_start, i - object_start + 1));
+                object_start = std::string::npos;
+            }
+        } else if (json[i] == ']' && depth == 0) {
+            break;
+        }
+    }
+    return objects;
+}
+
+}
+
+Gemma4MtpAssistantConfig default_gemma4_mtp_assistant_config() {
+    Gemma4MtpAssistantConfig config;
+    config.layers = {
+        Gemma4MtpAssistantLayerConfig{},
+        Gemma4MtpAssistantLayerConfig{},
+        Gemma4MtpAssistantLayerConfig{},
+        Gemma4MtpAssistantLayerConfig{
+            .head_dim = 512,
+            .num_heads = 4,
+            .rot_dim = 128,
+            .rope_freq = 1000000.0f,
+            .window = 0,
+            .full_attention = true,
+        },
+    };
+    return config;
+}
+
+Gemma4MtpAssistantConfig parse_gemma4_mtp_assistant_config(const std::string& manifest_json) {
+    Gemma4MtpAssistantConfig config = default_gemma4_mtp_assistant_config();
+    config.target_hidden_dim = json_size_field(manifest_json, "target_hidden_dim", config.target_hidden_dim);
+    config.centroid_count = json_size_field(manifest_json, "centroid_count", config.centroid_count);
+    config.top_centroid_count = json_size_field(manifest_json, "top_centroid_count", config.top_centroid_count);
+    config.tokens_per_centroid = json_size_field(manifest_json, "tokens_per_centroid", config.tokens_per_centroid);
+
+    auto layer_objects = json_object_array(manifest_json, "layers");
+    if (!layer_objects.empty()) {
+        auto defaults = default_gemma4_mtp_assistant_config().layers;
+        config.layers.clear();
+        config.layers.reserve(layer_objects.size());
+        for (size_t i = 0; i < layer_objects.size(); ++i) {
+            Gemma4MtpAssistantLayerConfig layer = i < defaults.size()
+                ? defaults[i]
+                : Gemma4MtpAssistantLayerConfig{};
+            const auto& object = layer_objects[i];
+            layer.head_dim = json_size_field(object, "head_dim", layer.head_dim);
+            layer.num_heads = json_size_field(object, "num_heads", layer.num_heads);
+            layer.rot_dim = json_size_field(object, "rot_dim", layer.rot_dim);
+            layer.rope_freq = json_float_field(object, "rope_freq", layer.rope_freq);
+            layer.window = json_size_field(object, "window", layer.window);
+            layer.full_attention = json_bool_field(object, "full_attention", layer.full_attention);
+            config.layers.push_back(layer);
+        }
+    }
+
+    return config;
 }
 
 bool Gemma4MtpAssistant::init(CactusGraph* graph, const std::string& assistant_path) {
@@ -209,13 +185,17 @@ bool Gemma4MtpAssistant::init(CactusGraph* graph, const std::string& assistant_p
 
     graph_ = graph;
     path_ = resolved_path.string();
+    std::ifstream manifest_file(path_ + "/assistant_cactus_manifest.json");
+    std::string manifest_json((std::istreambuf_iterator<char>(manifest_file)), std::istreambuf_iterator<char>());
+    config_ = parse_gemma4_mtp_assistant_config(manifest_json);
+
     token_embeddings_ = graph_->mmap_embeddings(path_ + "/token_embeddings.weights");
     masked_centroids_ = graph_->mmap_weights(path_ + "/masked_embedding_centroids.weights");
     pre_projection_ = graph_->mmap_weights(path_ + "/pre_projection.weights");
     post_projection_ = graph_->mmap_weights(path_ + "/post_projection.weights");
     output_norm_ = graph_->mmap_weights(path_ + "/output_norm.weights");
 
-    layers_.resize(4);
+    layers_.resize(config_.layers.size());
     for (uint32_t i = 0; i < layers_.size(); ++i) {
         auto& layer = layers_[i];
         std::string prefix = path_ + "/layer_" + std::to_string(i) + "_";
@@ -241,7 +221,8 @@ bool Gemma4MtpAssistant::init(CactusGraph* graph, const std::string& assistant_p
         throw std::runtime_error("Invalid masked_embedding_token_ordering.json");
     }
     token_ordering_.clear();
-    token_ordering_.reserve(kTokenOrderingSize);
+    const size_t expected_ordering_size = config_.centroid_count * config_.tokens_per_centroid;
+    token_ordering_.reserve(expected_ordering_size);
     size_t pos = array_start + 1;
     while (pos < array_end) {
         while (pos < array_end
@@ -257,7 +238,7 @@ bool Gemma4MtpAssistant::init(CactusGraph* graph, const std::string& assistant_p
         token_ordering_.push_back(static_cast<uint32_t>(value));
         pos = static_cast<size_t>(end_ptr - ordering_json.c_str());
     }
-    if (token_ordering_.size() != kTokenOrderingSize) {
+    if (token_ordering_.size() != expected_ordering_size) {
         throw std::runtime_error("Unexpected Gemma 4 assistant token ordering size");
     }
 
@@ -292,14 +273,14 @@ size_t Gemma4MtpAssistant::apply_rope(CactusGraph* gb, size_t tensor, size_t hea
 size_t Gemma4MtpAssistant::build_layer(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
                                        const Gemma4Model::SharedCacheNodes& cache_nodes, size_t position) {
     const auto& layer = layers_.at(layer_idx);
-    const bool is_full = layer_idx == 3;
-    const size_t head_dim = is_full ? 512 : 256;
-    const size_t num_heads = 4;
-    const size_t rot_dim = is_full ? 128 : head_dim;
-    const float rope_freq = is_full ? 1000000.0f : 10000.0f;
-    const size_t window = is_full ? 0 : 512;
-    const size_t cache_k = is_full ? cache_nodes.full_k : cache_nodes.sliding_k;
-    const size_t cache_v = is_full ? cache_nodes.full_v : cache_nodes.sliding_v;
+    const auto& layer_config = config_.layers.at(layer_idx);
+    const size_t head_dim = layer_config.head_dim;
+    const size_t num_heads = layer_config.num_heads;
+    const size_t rot_dim = layer_config.rot_dim;
+    const float rope_freq = layer_config.rope_freq;
+    const size_t window = layer_config.window;
+    const size_t cache_k = layer_config.full_attention ? cache_nodes.full_k : cache_nodes.sliding_k;
+    const size_t cache_v = layer_config.full_attention ? cache_nodes.full_v : cache_nodes.sliding_v;
     if (cache_k == 0 || cache_v == 0) {
         throw std::runtime_error("Gemma 4 MTP target shared KV cache is unavailable");
     }
@@ -330,7 +311,7 @@ std::vector<uint32_t> Gemma4MtpAssistant::candidate_tokens_from_centroids(Cactus
     const auto& centroid_buf = gb->get_output_buffer(centroid_logits_node);
     void* centroid_ptr = gb->get_output(centroid_logits_node);
     const size_t centroid_count = centroid_buf.total_size;
-    if (centroid_count == 0 || centroid_count * kTokensPerCentroid > token_ordering_.size()) {
+    if (centroid_count == 0 || centroid_count * config_.tokens_per_centroid > token_ordering_.size()) {
         throw std::runtime_error("Gemma 4 MTP assistant centroid/token ordering shape mismatch");
     }
 
@@ -347,15 +328,15 @@ std::vector<uint32_t> Gemma4MtpAssistant::candidate_tokens_from_centroids(Cactus
         }
         centroids.emplace_back(value, i);
     }
-    const size_t top_count = std::min(kTopCentroidCount, centroids.size());
+    const size_t top_count = std::min(config_.top_centroid_count, centroids.size());
     std::partial_sort(centroids.begin(), centroids.begin() + top_count, centroids.end(),
                       [](const auto& a, const auto& b) { return a.first > b.first; });
 
     std::vector<uint32_t> candidates;
-    candidates.reserve(top_count * kTokensPerCentroid);
+    candidates.reserve(top_count * config_.tokens_per_centroid);
     for (size_t c = 0; c < top_count; ++c) {
-        size_t offset = static_cast<size_t>(centroids[c].second) * kTokensPerCentroid;
-        for (size_t i = 0; i < kTokensPerCentroid; ++i) {
+        size_t offset = static_cast<size_t>(centroids[c].second) * config_.tokens_per_centroid;
+        for (size_t i = 0; i < config_.tokens_per_centroid; ++i) {
             candidates.push_back(token_ordering_[offset + i]);
         }
     }
@@ -464,13 +445,13 @@ Gemma4MtpAssistant::StepResult Gemma4MtpAssistant::draft_one(
     if (!initialized_ || !graph_) {
         throw std::runtime_error("Gemma4MtpAssistant is not initialized");
     }
-    if (target_hidden.size() != kTargetHiddenDim) {
-        throw std::runtime_error("Gemma4MtpAssistant expects 1536-wide target hidden vectors");
+    if (target_hidden.size() != config_.target_hidden_dim) {
+        throw std::runtime_error("Gemma4MtpAssistant target hidden vector width mismatch");
     }
 
     auto* gb = graph_;
     gb->soft_reset_keep_pool();
-    float embedding_scale = std::sqrt(static_cast<float>(kTargetHiddenDim)) * 16.0f;
+    float embedding_scale = std::sqrt(static_cast<float>(config_.target_hidden_dim)) * 16.0f;
     if (const char* value = std::getenv("CACTUS_GEMMA4_MTP_EMBED_SCALE")) {
         embedding_scale *= std::strtof(value, nullptr);
     }
@@ -482,7 +463,7 @@ Gemma4MtpAssistant::StepResult Gemma4MtpAssistant::draft_one(
     gb->set_input(token_input, &token_value, Precision::FP32);
     auto target_embedding = gb->scalar_multiply(gb->embedding(target_embedding_node, token_input), embedding_scale);
 
-    auto hidden_input = gb->input({1, kTargetHiddenDim}, Precision::FP16);
+    auto hidden_input = gb->input({1, config_.target_hidden_dim}, Precision::FP16);
     gb->set_input(hidden_input, target_hidden.data(), Precision::FP16);
     if (hidden_scale != 1.0f) {
         hidden_input = gb->scalar_multiply(hidden_input, hidden_scale);
@@ -546,22 +527,27 @@ Gemma4MtpAssistant::StepResult Gemma4MtpAssistant::draft_one(
                 const int8_t* src = static_cast<const int8_t*>(logits_ptr) + row_offset;
                 for (size_t i = 0; i < vocab_size; ++i) logits_values[i] = static_cast<float>(src[i]);
             }
-            result.probabilities = probs_from_logits(std::move(logits_values), temperature, top_p, top_k, min_p);
+            result.probabilities = mtp_distribution_from_logits(std::move(logits_values), MtpSamplingOptions{
+                .temperature = temperature,
+                .top_p = top_p,
+                .top_k = top_k,
+                .min_p = min_p,
+            }).probabilities;
         }
     }
     if (return_hidden) {
-        result.hidden.resize(kTargetHiddenDim);
+        result.hidden.resize(config_.target_hidden_dim);
         const auto& projected_buf = gb->get_output_buffer(projected);
         void* projected_ptr = gb->get_output(projected);
         if (projected_buf.precision == Precision::FP16) {
             const __fp16* src = static_cast<const __fp16*>(projected_ptr);
-            std::copy(src, src + kTargetHiddenDim, result.hidden.begin());
+            std::copy(src, src + config_.target_hidden_dim, result.hidden.begin());
         } else if (projected_buf.precision == Precision::FP32) {
             const float* src = static_cast<const float*>(projected_ptr);
-            for (size_t i = 0; i < kTargetHiddenDim; ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+            for (size_t i = 0; i < config_.target_hidden_dim; ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
         } else {
             const int8_t* src = static_cast<const int8_t*>(projected_ptr);
-            for (size_t i = 0; i < kTargetHiddenDim; ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
+            for (size_t i = 0; i < config_.target_hidden_dim; ++i) result.hidden[i] = static_cast<__fp16>(src[i]);
         }
     }
     return result;

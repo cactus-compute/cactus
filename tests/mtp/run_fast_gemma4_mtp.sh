@@ -79,6 +79,5 @@ echo "Running Gemma 4 MTP fast test suite with max_tokens=$MAX_TOKENS"
 
 run_with_timeout "$ENGINE_BUILD/test_mtp_sampler"
 run_with_timeout "$GRAPH_BUILD/test_cache_transaction"
-run_with_timeout "$ENGINE_BUILD/test_decode_strategy"
 run_with_timeout "$ENGINE_BUILD/test_mtp_completion"
 run_with_timeout "$ENGINE_BUILD/test_gemma4_mtp_fast"

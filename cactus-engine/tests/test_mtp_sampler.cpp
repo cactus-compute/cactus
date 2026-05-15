@@ -1,8 +1,9 @@
 #include "test_utils.h"
-#include "src/mtp_sampler.h"
+#include "src/mtp_decode.h"
 
 #include <cmath>
 #include <cstdint>
+#include <random>
 #include <vector>
 
 using namespace TestUtils;
@@ -115,6 +116,40 @@ bool test_sparse_rejection_adjustment_uses_target_support() {
         && mtp_sample_sparse(adjusted, 0.5f) == 12;
 }
 
+bool test_dense_logits_to_probs_applies_temperature_top_k_top_p_min_p() {
+    MtpSamplingOptions options{
+        .temperature = 1.0f,
+        .top_p = 0.80f,
+        .top_k = 3,
+        .min_p = 0.0f,
+    };
+
+    MtpDistribution probs = mtp_distribution_from_logits({1.0f, 4.0f, 3.0f, 2.0f}, options);
+
+    return probs.probabilities.size() == 4
+        && probs.probabilities[0] == 0.0f
+        && probs.probabilities[3] == 0.0f
+        && probs.probabilities[1] > probs.probabilities[2]
+        && approx_eq(probs.probabilities[1] + probs.probabilities[2], 1.0f);
+}
+
+bool test_sparse_logits_to_probs_matches_dense_on_selected_support() {
+    MtpSamplingOptions options{
+        .temperature = 1.0f,
+        .top_p = 1.0f,
+        .top_k = 2,
+        .min_p = 0.0f,
+    };
+
+    auto sparse = mtp_sparse_distribution_from_logits({{10, 4.0f}, {11, 2.0f}}, options);
+
+    return sparse.size() == 2
+        && sparse[0].first == 10
+        && sparse[1].first == 11
+        && sparse[0].second > sparse[1].second
+        && approx_eq(sparse[0].second + sparse[1].second, 1.0f);
+}
+
 bool test_sampled_accepts_when_target_probability_exceeds_assistant_probability() {
     MtpDraftBatch draft{
         .tokens = {1},
@@ -169,6 +204,37 @@ bool test_zero_assistant_probability_does_not_create_nan() {
         && tokens_eq(result.output_tokens, {1, 2});
 }
 
+bool test_draft_loop_advances_token_and_hidden_state() {
+    MtpSamplingOptions options;
+    std::mt19937 rng(7);
+    std::vector<uint32_t> inputs;
+    std::vector<size_t> hidden_sizes;
+    std::vector<bool> needs_hidden_values;
+
+    MtpDraftBatch batch = mtp_draft_tokens(
+        5,
+        {static_cast<__fp16>(1)},
+        3,
+        options,
+        false,
+        rng,
+        [&](uint32_t input_token, const std::vector<__fp16>& hidden, size_t i, bool needs_hidden) {
+            inputs.push_back(input_token);
+            hidden_sizes.push_back(hidden.size());
+            needs_hidden_values.push_back(needs_hidden);
+            MtpDraftStep step;
+            step.token = input_token + 1;
+            step.hidden = {static_cast<__fp16>(10 + i)};
+            return step;
+        });
+
+    return tokens_eq(batch.tokens, {6, 7, 8})
+        && tokens_eq(inputs, {5, 6, 7})
+        && hidden_sizes == std::vector<size_t>({1, 1, 1})
+        && needs_hidden_values == std::vector<bool>({true, true, false})
+        && batch.assistant_step_ms.size() == 3;
+}
+
 int main() {
     TestRunner runner("MTP Sampler Tests");
 
@@ -177,9 +243,12 @@ int main() {
     runner.run_test("greedy_rejects_after_prefix", test_greedy_accepts_prefix_then_replaces_mismatch());
     runner.run_test("rejection_adjustment", test_rejection_adjusted_distribution_clamps_and_normalizes());
     runner.run_test("sparse_rejection_adjustment", test_sparse_rejection_adjustment_uses_target_support());
+    runner.run_test("dense_logits_to_probs", test_dense_logits_to_probs_applies_temperature_top_k_top_p_min_p());
+    runner.run_test("sparse_logits_to_probs", test_sparse_logits_to_probs_matches_dense_on_selected_support());
     runner.run_test("sampled_accepts_p_ge_q", test_sampled_accepts_when_target_probability_exceeds_assistant_probability());
     runner.run_test("sampled_rejects_adjusted", test_sampled_rejects_and_samples_adjusted_replacement());
     runner.run_test("zero_q_no_nan", test_zero_assistant_probability_does_not_create_nan());
+    runner.run_test("draft_loop_state", test_draft_loop_advances_token_and_hidden_state());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

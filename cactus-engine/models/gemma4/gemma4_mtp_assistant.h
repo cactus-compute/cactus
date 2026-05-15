@@ -10,6 +10,26 @@
 namespace cactus {
 namespace engine {
 
+struct Gemma4MtpAssistantLayerConfig {
+    size_t head_dim = 256;
+    size_t num_heads = 4;
+    size_t rot_dim = 256;
+    float rope_freq = 10000.0f;
+    size_t window = 512;
+    bool full_attention = false;
+};
+
+struct Gemma4MtpAssistantConfig {
+    size_t target_hidden_dim = 1536;
+    size_t centroid_count = 2048;
+    size_t top_centroid_count = 32;
+    size_t tokens_per_centroid = 128;
+    std::vector<Gemma4MtpAssistantLayerConfig> layers;
+};
+
+Gemma4MtpAssistantConfig default_gemma4_mtp_assistant_config();
+Gemma4MtpAssistantConfig parse_gemma4_mtp_assistant_config(const std::string& manifest_json);
+
 class Gemma4MtpAssistant {
 public:
     struct StepResult {
@@ -23,6 +43,7 @@ public:
 
     bool init(CactusGraph* graph, const std::string& assistant_path);
     bool initialized() const { return initialized_; }
+    const Gemma4MtpAssistantConfig& config() const { return config_; }
 
     StepResult draft_one(uint32_t target_token,
                          size_t target_embedding_node,
@@ -70,6 +91,7 @@ private:
     size_t pre_projection_ = 0;
     size_t post_projection_ = 0;
     size_t output_norm_ = 0;
+    Gemma4MtpAssistantConfig config_;
     std::vector<LayerWeights> layers_;
     std::vector<uint32_t> token_ordering_;
 };

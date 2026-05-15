@@ -1,6 +1,9 @@
 #include "model_gemma4.h"
+#include "gemma4_mtp_assistant.h"
 #include "cactus_graph.h"
+#include "src/mtp_sampler.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -16,6 +19,360 @@ Gemma4Model::Gemma4Model() : Model() {}
 
 Gemma4Model::Gemma4Model(const Config& config) : Model(config) {
     weight_nodes_.layers.resize(config.num_layers);
+}
+
+class Gemma4MtpCapability final : public SpeculativeDecodeCapability {
+public:
+    Gemma4MtpCapability(Model& owner, Gemma4Model& target)
+        : owner_(owner), target_(target) {}
+
+    std::string strategy_name() const override { return "gemma4_mtp"; }
+
+    std::string default_assistant_path() const override {
+        return (std::filesystem::path(owner_.get_model_folder_path()) / "assistant").string();
+    }
+
+    Model* target_model() override { return &target_; }
+
+private:
+    Model& owner_;
+    Gemma4Model& target_;
+};
+
+SpeculativeDecodeCapability* Gemma4Model::speculative_decode_capability() {
+    if (!speculative_capability_) {
+        speculative_capability_ = std::make_unique<Gemma4MtpCapability>(*this, *this);
+    }
+    return speculative_capability_.get();
+}
+
+namespace {
+
+std::vector<__fp16> gemma4_mtp_hidden_row(const Gemma4Model::GreedyBatchWithHidden& batch, size_t row) {
+    if (batch.hidden_dim == 0 || row >= batch.hidden.size() / batch.hidden_dim) {
+        return {};
+    }
+    return std::vector<__fp16>(
+        batch.hidden.begin() + row * batch.hidden_dim,
+        batch.hidden.begin() + (row + 1) * batch.hidden_dim);
+}
+
+std::vector<__fp16> gemma4_mtp_tree_mask(size_t token_count) {
+    std::vector<__fp16> mask(token_count * token_count, static_cast<__fp16>(0));
+    for (size_t row = 0; row < token_count; ++row) {
+        mask[row * token_count] = static_cast<__fp16>(1);
+        if (row == 1 || row >= 3) mask[row * token_count + 1] = static_cast<__fp16>(1);
+        if (row == 2) mask[row * token_count + 2] = static_cast<__fp16>(1);
+        for (size_t col = 3; col <= row; ++col) {
+            mask[row * token_count + col] = static_cast<__fp16>(1);
+        }
+    }
+    return mask;
+}
+
+size_t gemma4_mtp_tree_main_tokens_for_draft_limit(size_t draft_limit) {
+    const char* env = std::getenv("CACTUS_GEMMA4_MTP_TREE_MAIN_TOKENS");
+    if (env && env[0] != '\0') {
+        char* end = nullptr;
+        unsigned long value = std::strtoul(env, &end, 10);
+        if (end != env && *end == '\0' && value >= 1 && value <= 3 && draft_limit == value + 1) {
+            return static_cast<size_t>(value);
+        }
+        return 0;
+    }
+    return 0;
+}
+
+MtpDraftBatch gemma4_mtp_draft_tokens(
+    Gemma4Model& target,
+    Gemma4MtpAssistant& assistant,
+    uint32_t input_token,
+    const std::vector<__fp16>& previous_hidden,
+    const Gemma4Model::SharedCacheNodes& cache_nodes,
+    size_t assistant_position,
+    size_t draft_limit,
+    const MtpSamplingOptions& options,
+    bool sparse_sampled,
+    std::mt19937& rng) {
+    const size_t tree_main_tokens = gemma4_mtp_tree_main_tokens_for_draft_limit(draft_limit);
+    const bool use_tree = options.temperature == 0.0f
+        && tree_main_tokens > 0
+        && target.can_use_mtp_tree_attention(tree_main_tokens + 2);
+    const size_t main_draft_limit = use_tree ? tree_main_tokens : draft_limit;
+
+    return mtp_draft_tokens(
+        input_token,
+        previous_hidden,
+        main_draft_limit,
+        options,
+        sparse_sampled,
+        rng,
+        [&](uint32_t assistant_input_token,
+            const std::vector<__fp16>& assistant_hidden,
+            size_t i,
+            bool needs_hidden) {
+            auto step = assistant.draft_one(
+                assistant_input_token,
+                target.token_embedding_node_for_mtp(),
+                assistant_hidden,
+                cache_nodes,
+                assistant_position,
+                i == 0 ? (1.0f / 16.0f) : 1.0f,
+                options.temperature,
+                options.top_p,
+                options.top_k,
+                options.min_p,
+                needs_hidden,
+                use_tree && i == 0);
+
+            MtpDraftStep result;
+            result.token = step.token;
+            if (use_tree && i == 0 && step.has_second_token) {
+                result.alt_first_token = step.second_token;
+                result.has_alt_first_token = true;
+            }
+            if (options.temperature > 0.0f) {
+                if (sparse_sampled) {
+                    result.sparse_probabilities = std::move(step.sparse_probabilities);
+                } else {
+                    result.probabilities = std::move(step.probabilities);
+                }
+            }
+            result.hidden = std::move(step.hidden);
+            return result;
+        });
+}
+
+MtpVerificationResult gemma4_mtp_verify_and_commit(
+    Gemma4Model& target,
+    uint32_t input_token,
+    const MtpDraftBatch& draft,
+    size_t remaining_tokens,
+    const MtpSamplingOptions& options,
+    bool sparse_sampled,
+    std::mt19937& rng) {
+    MtpVerificationResult result;
+    result.verify_tokens.reserve(draft.tokens.size() + 1);
+    result.verify_tokens.push_back(input_token);
+    const bool use_tree = options.temperature == 0.0f
+        && draft.has_alt_first_token
+        && !draft.tokens.empty()
+        && draft.tokens.size() <= 3
+        && target.can_use_mtp_tree_attention(draft.tokens.size() + 2);
+    if (use_tree) {
+        result.verify_tokens.push_back(draft.tokens[0]);
+        result.verify_tokens.push_back(draft.alt_first_token);
+        result.verify_tokens.insert(result.verify_tokens.end(), draft.tokens.begin() + 1, draft.tokens.end());
+    } else {
+        result.verify_tokens.insert(result.verify_tokens.end(), draft.tokens.begin(), draft.tokens.end());
+    }
+
+    auto* graph = static_cast<CactusGraph*>(target.graph_handle_);
+    size_t verifier_cache_start = target.cache_position();
+    auto kv_start = std::chrono::steady_clock::now();
+    auto cache_txn = graph->begin_kv_cache_transaction(target.cache_state_nodes_for_mtp());
+    auto kv_end = std::chrono::steady_clock::now();
+    result.kv_transaction_ms += mtp_elapsed_ms(kv_start, kv_end);
+
+    Gemma4Model::GreedyBatchWithHidden target_batch;
+    auto verify_start = std::chrono::steady_clock::now();
+    if (use_tree) {
+        target_batch = target.decode_greedy_tokens_with_hidden_tree(
+            result.verify_tokens, gemma4_mtp_tree_mask(result.verify_tokens.size()));
+    } else if (options.temperature == 0.0f) {
+        target_batch = target.decode_greedy_tokens_with_hidden_early_stop(
+            result.verify_tokens, draft.tokens);
+    } else if (sparse_sampled) {
+        target_batch = target.decode_tokens_with_hidden_and_sparse_probs(
+            result.verify_tokens, options.temperature, options.top_p, options.top_k, options.min_p);
+    } else {
+        target_batch = target.decode_tokens_with_hidden_and_probs(
+            result.verify_tokens, options.temperature, options.top_p, options.top_k, options.min_p);
+    }
+    auto verify_end = std::chrono::steady_clock::now();
+    result.target_verify_ms += mtp_elapsed_ms(verify_start, verify_end);
+    result.target_tokens = target_batch.tokens;
+
+    auto sample_start = std::chrono::steady_clock::now();
+    if (options.temperature == 0.0f) {
+        if (use_tree) {
+            if (target_batch.tokens.size() != result.verify_tokens.size()) {
+                throw std::runtime_error("Gemma 4 tree verifier target row count mismatch");
+            }
+            auto main_row = [](size_t draft_index) {
+                return draft_index == 0 ? size_t{1} : draft_index + 2;
+            };
+            auto prediction_row = [&](size_t draft_index) {
+                return draft_index == 0 ? size_t{0} : main_row(draft_index - 1);
+            };
+            result.committed_verify_indices.push_back(0);
+            result.next_hidden_row = 0;
+
+            for (size_t i = 0; i < draft.tokens.size(); ++i) {
+                const size_t pred_row = prediction_row(i);
+                if (target_batch.tokens[pred_row] != draft.tokens[i]) {
+                    if (i == 0 && target_batch.tokens[0] == draft.alt_first_token) {
+                        result.output_tokens.push_back(draft.alt_first_token);
+                        result.accepted_draft_tokens = 1;
+                        result.next_hidden_row = 2;
+                        if (result.output_tokens.size() < remaining_tokens) {
+                            result.output_tokens.push_back(target_batch.tokens[2]);
+                            result.emitted_extra_target_token = true;
+                        }
+                        result.committed_verify_indices = {0, 2};
+                    } else {
+                        result.output_tokens.push_back(target_batch.tokens[pred_row]);
+                        result.rejected = true;
+                    }
+                    break;
+                }
+                result.output_tokens.push_back(draft.tokens[i]);
+                result.accepted_draft_tokens = i + 1;
+                result.next_hidden_row = main_row(i);
+                result.committed_verify_indices.push_back(result.next_hidden_row);
+            }
+
+            if (!result.rejected
+                && !result.emitted_extra_target_token
+                && result.accepted_draft_tokens == draft.tokens.size()
+                && result.output_tokens.size() < remaining_tokens) {
+                result.output_tokens.push_back(target_batch.tokens[result.next_hidden_row]);
+                result.emitted_extra_target_token = true;
+            }
+        } else {
+            const size_t produced = target_batch.tokens.size();
+            const size_t draft_size = draft.tokens.size();
+            for (; result.accepted_draft_tokens < draft_size && result.accepted_draft_tokens < produced; ++result.accepted_draft_tokens) {
+                if (draft.tokens[result.accepted_draft_tokens] != target_batch.tokens[result.accepted_draft_tokens]) {
+                    result.output_tokens.push_back(target_batch.tokens[result.accepted_draft_tokens]);
+                    result.rejected = true;
+                    break;
+                }
+                result.output_tokens.push_back(draft.tokens[result.accepted_draft_tokens]);
+            }
+            if (!result.rejected && result.output_tokens.size() < remaining_tokens
+                && produced > draft_size) {
+                result.output_tokens.push_back(target_batch.tokens[draft_size]);
+                result.emitted_extra_target_token = true;
+            }
+        }
+    } else {
+        for (; result.accepted_draft_tokens < draft.tokens.size(); ++result.accepted_draft_tokens) {
+            uint32_t y = draft.tokens[result.accepted_draft_tokens];
+            float p_y = 0.0f;
+            float q_y = 0.0f;
+            if (sparse_sampled) {
+                p_y = mtp_sparse_probability_at(target_batch.sparse_probabilities[result.accepted_draft_tokens], y);
+                q_y = mtp_sparse_probability_at(draft.sparse_probabilities[result.accepted_draft_tokens], y);
+            } else {
+                const auto& p = target_batch.probabilities[result.accepted_draft_tokens];
+                const auto& q = draft.probabilities[result.accepted_draft_tokens].probabilities;
+                p_y = y < p.size() ? p[y] : 0.0f;
+                q_y = y < q.size() ? q[y] : 0.0f;
+            }
+
+            float accept_probability = q_y <= 0.0f ? 1.0f : std::min(1.0f, p_y / q_y);
+            std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+            if (dist(rng) <= accept_probability) {
+                result.output_tokens.push_back(y);
+                continue;
+            }
+
+            if (sparse_sampled) {
+                auto adjusted = mtp_rejection_adjusted_sparse_distribution(
+                    target_batch.sparse_probabilities[result.accepted_draft_tokens],
+                    draft.sparse_probabilities[result.accepted_draft_tokens]);
+                result.output_tokens.push_back(mtp_sample_sparse_distribution(adjusted, rng));
+            } else {
+                auto adjusted = rejection_adjusted_distribution(
+                    MtpDistribution{target_batch.probabilities[result.accepted_draft_tokens]},
+                    draft.probabilities[result.accepted_draft_tokens]);
+                result.output_tokens.push_back(mtp_sample_distribution(adjusted.probabilities, rng));
+            }
+            result.rejected = true;
+            break;
+        }
+        if (!result.rejected && result.output_tokens.size() < remaining_tokens) {
+            if (sparse_sampled) {
+                result.output_tokens.push_back(mtp_sample_sparse_distribution(
+                    target_batch.sparse_probabilities[draft.tokens.size()], rng));
+            } else {
+                result.output_tokens.push_back(mtp_sample_distribution(
+                    target_batch.probabilities[draft.tokens.size()], rng));
+            }
+            result.emitted_extra_target_token = true;
+        }
+    }
+    auto sample_end = std::chrono::steady_clock::now();
+    result.sampling_or_argmax_ms += mtp_elapsed_ms(sample_start, sample_end);
+
+    if (use_tree) {
+        for (uint32_t token : result.output_tokens) {
+            target.record_sampled_token(token);
+        }
+    }
+
+    if (!result.output_tokens.empty()) {
+        size_t row = use_tree
+            ? result.next_hidden_row
+            : (options.temperature == 0.0f ? result.accepted_draft_tokens : result.output_tokens.size() - 1);
+        result.next_hidden = gemma4_mtp_hidden_row(target_batch, row);
+    }
+
+    size_t committed_cache_tokens = result.output_tokens.size();
+    result.target_cache_crop_length = verifier_cache_start + committed_cache_tokens;
+    kv_start = std::chrono::steady_clock::now();
+    if (use_tree) {
+        cache_txn.commit_selected(result.committed_verify_indices);
+        graph->apply_pending_kv_cache_sequence_lengths();
+        target.set_cache_position_for_mtp(result.target_cache_crop_length);
+    } else if (committed_cache_tokens < result.verify_tokens.size()) {
+        cache_txn.commit_prefix(committed_cache_tokens);
+        graph->apply_pending_kv_cache_sequence_lengths();
+        target.set_cache_position_for_mtp(result.target_cache_crop_length);
+    } else {
+        cache_txn.commit_all();
+        graph->apply_pending_kv_cache_sequence_lengths();
+    }
+    kv_end = std::chrono::steady_clock::now();
+    result.kv_transaction_ms += mtp_elapsed_ms(kv_start, kv_end);
+
+    return result;
+}
+
+}
+
+MtpRoundResult Gemma4Model::decode_mtp_round(Gemma4MtpAssistant& assistant,
+                                             uint32_t input_token,
+                                             const std::vector<__fp16>& previous_hidden,
+                                             const SharedCacheNodes& cache_nodes,
+                                             size_t assistant_position,
+                                             size_t draft_limit,
+                                             size_t remaining_tokens,
+                                             const MtpSamplingOptions& options,
+                                             bool sparse_sampled,
+                                             std::mt19937& rng) {
+    MtpRoundResult round;
+    round.draft = gemma4_mtp_draft_tokens(
+        *this,
+        assistant,
+        input_token,
+        previous_hidden,
+        cache_nodes,
+        assistant_position,
+        draft_limit,
+        options,
+        sparse_sampled,
+        rng);
+    round.verification = gemma4_mtp_verify_and_commit(
+        *this,
+        input_token,
+        round.draft,
+        remaining_tokens,
+        options,
+        sparse_sampled,
+        rng);
+    return round;
 }
 
 static uint32_t gemma4_argmax_logits(CactusGraph* gb, size_t logits_node) {
@@ -123,145 +480,6 @@ static bool gemma4_argmax_output_projection_rows(CactusGraph* gb, size_t hidden_
     return false;
 }
 
-static std::vector<float> gemma4_probs_from_logits(std::vector<float> logits, float temperature,
-                                                   float top_p, size_t top_k, float min_p) {
-    if (logits.empty()) return {};
-    if (temperature == 0.0f) {
-        std::vector<float> probs(logits.size(), 0.0f);
-        auto it = std::max_element(logits.begin(), logits.end());
-        probs[std::distance(logits.begin(), it)] = 1.0f;
-        return probs;
-    }
-    if (temperature > 0.0f) {
-        for (float& value : logits) value /= temperature;
-    }
-    if (top_k > 0 && top_k < logits.size()) {
-        std::vector<float> sorted = logits;
-        std::nth_element(sorted.begin(), sorted.begin() + top_k - 1, sorted.end(), std::greater<float>());
-        float kth = sorted[top_k - 1];
-        for (float& value : logits) {
-            if (value < kth) value = -std::numeric_limits<float>::infinity();
-        }
-    }
-    auto normalize = [](const std::vector<float>& values) {
-        std::vector<float> probs(values.size(), 0.0f);
-        float max_value = -std::numeric_limits<float>::infinity();
-        for (float value : values) max_value = std::max(max_value, value);
-        if (!std::isfinite(max_value)) return probs;
-        double sum = 0.0;
-        for (size_t i = 0; i < values.size(); ++i) {
-            if (std::isfinite(values[i])) {
-                probs[i] = std::exp(static_cast<double>(values[i] - max_value));
-                sum += probs[i];
-            }
-        }
-        if (sum <= 0.0 || !std::isfinite(sum)) return probs;
-        for (float& prob : probs) prob = static_cast<float>(prob / sum);
-        return probs;
-    };
-    if (min_p > 0.0f) {
-        auto probs = normalize(logits);
-        float max_prob = *std::max_element(probs.begin(), probs.end());
-        float threshold = max_prob * min_p;
-        for (size_t i = 0; i < logits.size(); ++i) {
-            if (probs[i] < threshold) logits[i] = -std::numeric_limits<float>::infinity();
-        }
-    }
-    if (top_p > 0.0f && top_p < 1.0f) {
-        std::vector<std::pair<float, size_t>> sorted;
-        sorted.reserve(logits.size());
-        for (size_t i = 0; i < logits.size(); ++i) {
-            if (std::isfinite(logits[i])) sorted.emplace_back(logits[i], i);
-        }
-        std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-        std::vector<float> sorted_logits;
-        sorted_logits.reserve(sorted.size());
-        for (const auto& item : sorted) sorted_logits.push_back(item.first);
-        auto sorted_probs = normalize(sorted_logits);
-        float cumulative = 0.0f;
-        bool remove = false;
-        for (size_t i = 0; i < sorted.size(); ++i) {
-            cumulative += sorted_probs[i];
-            if (remove) {
-                logits[sorted[i].second] = -std::numeric_limits<float>::infinity();
-            }
-            if (cumulative > top_p) remove = true;
-        }
-    }
-    auto probs = normalize(logits);
-    float sum = std::accumulate(probs.begin(), probs.end(), 0.0f);
-    if (sum <= 0.0f || !std::isfinite(sum)) {
-        std::fill(probs.begin(), probs.end(), 1.0f / static_cast<float>(probs.size()));
-    }
-    return probs;
-}
-
-static std::vector<std::pair<uint32_t, float>> gemma4_sparse_probs_from_top_logits(
-    std::vector<std::pair<uint32_t, float>> logits, float temperature, float top_p, float min_p) {
-    if (logits.empty()) return {};
-    if (temperature > 0.0f) {
-        for (auto& item : logits) item.second /= temperature;
-    }
-    std::sort(logits.begin(), logits.end(), [](const auto& a, const auto& b) {
-        return a.second > b.second;
-    });
-
-    auto normalize = [](const std::vector<std::pair<uint32_t, float>>& values) {
-        std::vector<std::pair<uint32_t, float>> probs;
-        probs.reserve(values.size());
-        float max_value = -std::numeric_limits<float>::infinity();
-        for (const auto& item : values) max_value = std::max(max_value, item.second);
-        if (!std::isfinite(max_value)) return probs;
-        double sum = 0.0;
-        for (const auto& item : values) {
-            float prob = std::exp(static_cast<double>(item.second - max_value));
-            probs.emplace_back(item.first, prob);
-            sum += prob;
-        }
-        if (sum <= 0.0 || !std::isfinite(sum)) return std::vector<std::pair<uint32_t, float>>{};
-        for (auto& item : probs) item.second = static_cast<float>(item.second / sum);
-        return probs;
-    };
-
-    if (min_p > 0.0f) {
-        auto probs = normalize(logits);
-        if (!probs.empty()) {
-            float max_prob = 0.0f;
-            for (const auto& item : probs) max_prob = std::max(max_prob, item.second);
-            float threshold = max_prob * min_p;
-            std::vector<std::pair<uint32_t, float>> filtered;
-            filtered.reserve(logits.size());
-            for (size_t i = 0; i < logits.size(); ++i) {
-                if (probs[i].second >= threshold) filtered.push_back(logits[i]);
-            }
-            logits = std::move(filtered);
-        }
-    }
-
-    if (top_p > 0.0f && top_p < 1.0f) {
-        auto probs = normalize(logits);
-        std::vector<std::pair<uint32_t, float>> filtered;
-        filtered.reserve(logits.size());
-        float cumulative = 0.0f;
-        bool remove = false;
-        for (size_t i = 0; i < logits.size(); ++i) {
-            cumulative += i < probs.size() ? probs[i].second : 0.0f;
-            if (!remove) filtered.push_back(logits[i]);
-            if (cumulative > top_p) remove = true;
-        }
-        logits = std::move(filtered);
-    }
-
-    auto probs = normalize(logits);
-    float sum = 0.0f;
-    for (const auto& item : probs) sum += item.second;
-    if (sum <= 0.0f || !std::isfinite(sum)) {
-        float uniform = probs.empty() ? 0.0f : 1.0f / static_cast<float>(probs.size());
-        for (auto& item : probs) item.second = uniform;
-    }
-    return probs;
-}
-
 static std::vector<std::pair<uint32_t, float>> gemma4_sparse_probs_from_logits_row(
     const void* logits_ptr, Precision precision, size_t row_offset, size_t vocab_size,
     float temperature, float top_p, size_t top_k, float min_p) {
@@ -294,7 +512,12 @@ static std::vector<std::pair<uint32_t, float>> gemma4_sparse_probs_from_logits_r
         logits.emplace_back(top.top().second, top.top().first);
         top.pop();
     }
-    return gemma4_sparse_probs_from_top_logits(std::move(logits), temperature, top_p, min_p);
+    return mtp_sparse_distribution_from_logits(std::move(logits), MtpSamplingOptions{
+        .temperature = temperature,
+        .top_p = top_p,
+        .top_k = top_k,
+        .min_p = min_p,
+    });
 }
 
 static std::vector<std::vector<float>> gemma4_prob_rows(CactusGraph* gb, size_t logits_node,
@@ -321,7 +544,12 @@ static std::vector<std::vector<float>> gemma4_prob_rows(CactusGraph* gb, size_t 
             const int8_t* src = static_cast<const int8_t*>(logits_ptr) + row * vocab_size;
             for (size_t i = 0; i < vocab_size; ++i) logits[i] = static_cast<float>(src[i]);
         }
-        result.push_back(gemma4_probs_from_logits(std::move(logits), temperature, top_p, top_k, min_p));
+        result.push_back(mtp_distribution_from_logits(std::move(logits), MtpSamplingOptions{
+            .temperature = temperature,
+            .top_p = top_p,
+            .top_k = top_k,
+            .min_p = min_p,
+        }).probabilities);
     }
     return result;
 }
