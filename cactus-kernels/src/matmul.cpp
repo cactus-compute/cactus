@@ -1944,44 +1944,6 @@ void cactus_quant_orthogonal_matmul(
         });
 }
 
-void cactus_quant_4bit_pack_to_interleaved(
-    const CactusQuantMatrix* W,
-    uint8_t* packed_out,
-    __fp16* norms_out) {
-    if (!W || W->bits != 4 || W->N % 4 != 0 || (W->group_size % 8) != 0) return;
-    const uint32_t gs = W->group_size;
-    const uint32_t pgb = cactus_quant_packed_group_bytes(4, gs);
-    const uint32_t num_groups = W->num_groups;
-    const uint32_t N_blocks = W->N / 4;
-
-    auto get_idx = [&](size_t row, uint32_t g, uint32_t k) -> uint8_t {
-        const uint8_t* row_bytes = W->packed_indices + (row * num_groups + g) * pgb;
-        return (row_bytes[k / 2] >> ((k & 1) * 4)) & 0xF;
-    };
-
-    const size_t panel_bytes = 4 * pgb;
-    for (uint32_t nb = 0; nb < N_blocks; ++nb) {
-        for (uint32_t g = 0; g < num_groups; ++g) {
-            uint8_t* out = packed_out + (nb * num_groups + g) * panel_bytes;
-            std::memset(out, 0, panel_bytes);
-            const uint32_t chunks = gs / 8;
-            for (uint32_t c = 0; c < chunks; ++c) {
-                uint8_t* chunk = out + c * 16;
-                for (uint32_t r = 0; r < 4; ++r) {
-                    for (uint32_t kq = 0; kq < 4; ++kq) {
-                        uint8_t lo = get_idx(nb * 4 + r, g, c * 8 + kq);
-                        uint8_t hi = get_idx(nb * 4 + r, g, c * 8 + 4 + kq);
-                        chunk[r * 4 + kq] = lo | (hi << 4);
-                    }
-                }
-            }
-            for (uint32_t r = 0; r < 4; ++r) {
-                norms_out[(nb * num_groups + g) * 4 + r] = W->norms[(nb * 4 + r) * num_groups + g];
-            }
-        }
-    }
-}
-
 void cactus_quant_4bit_gemv_interleaved(
     const CactusQuantMatrix* W,
     const uint8_t* packed_interleaved,

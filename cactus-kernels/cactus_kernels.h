@@ -281,11 +281,6 @@ void cactus_quant_orthogonal_matmul(
     uint32_t M,
     __fp16* C);
 
-void cactus_quant_4bit_pack_to_interleaved(
-    const CactusQuantMatrix* W,
-    uint8_t* packed_out,
-    __fp16* norms_out);
-
 void cactus_quant_4bit_gemv_interleaved(
     const CactusQuantMatrix* W,
     const uint8_t* packed_interleaved,
