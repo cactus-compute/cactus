@@ -5,7 +5,72 @@
 #include <algorithm>
 #include <limits>
 #include <cstring>
+#include <chrono>
+#include <fstream>
+#include <iomanip>
+#include <mutex>
 #include <vector>
+
+struct CactusAttentionTrace {
+    const char* path = "generic";
+    size_t batch_size = 0;
+    size_t seq_len = 0;
+    size_t cache_len = 0;
+    size_t new_len = 0;
+    size_t num_q_heads = 0;
+    size_t num_kv_heads = 0;
+    size_t head_dim = 0;
+    size_t v_head_dim = 0;
+    bool masked = false;
+    bool enabled = false;
+    std::chrono::steady_clock::time_point start;
+
+    CactusAttentionTrace(
+        size_t batch, size_t seq, size_t cache, size_t new_tokens,
+        size_t q_heads, size_t kv_heads, size_t hdim, size_t vdim,
+        bool has_mask)
+        : batch_size(batch), seq_len(seq), cache_len(cache), new_len(new_tokens),
+          num_q_heads(q_heads), num_kv_heads(kv_heads), head_dim(hdim),
+          v_head_dim(vdim), masked(has_mask) {
+        static const bool trace_enabled = [] {
+            const char* file = std::getenv("CACTUS_ATTENTION_TRACE_FILE");
+            return file && file[0];
+        }();
+        enabled = trace_enabled;
+        if (enabled) start = std::chrono::steady_clock::now();
+    }
+
+    ~CactusAttentionTrace() {
+        if (!enabled) return;
+        const char* file = std::getenv("CACTUS_ATTENTION_TRACE_FILE");
+        if (!file || !file[0]) return;
+        static std::mutex mutex;
+        std::lock_guard<std::mutex> lock(mutex);
+        bool write_header = false;
+        {
+            std::ifstream in(file, std::ios::binary | std::ios::ate);
+            write_header = !in.good() || in.tellg() == 0;
+        }
+        std::ofstream out(file, std::ios::app);
+        if (!out) return;
+        if (write_header) {
+            out << "path,batch_size,seq_len,cache_len,new_len,num_q_heads,num_kv_heads,head_dim,v_head_dim,masked,ms\n";
+        }
+        auto end = std::chrono::steady_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(end - start).count();
+        out << path << ","
+            << batch_size << ","
+            << seq_len << ","
+            << cache_len << ","
+            << new_len << ","
+            << num_q_heads << ","
+            << num_kv_heads << ","
+            << head_dim << ","
+            << v_head_dim << ","
+            << (masked ? "true" : "false") << ","
+            << std::fixed << std::setprecision(3) << ms << "\n";
+    }
+};
 
 static void cactus_attention_hybrid_int8_fp16_decode_dot(
     const __fp16* queries,
@@ -347,18 +412,25 @@ void cactus_attention_hybrid_int8_fp16(
     bool is_causal,
     size_t window_size,
     size_t quant_group_size,
-    size_t v_head_dim
+    size_t v_head_dim,
+    const __fp16* new_token_mask
 ) {
     if (v_head_dim == 0) v_head_dim = head_dim;
     if (scale == 0.0f) {
         scale = 1.0f / sqrtf(static_cast<float>(head_dim));
     }
+    CactusAttentionTrace trace(
+        batch_size, seq_len, cache_len, new_len,
+        num_q_heads, num_kv_heads, head_dim, v_head_dim,
+        new_token_mask != nullptr);
 
     if (seq_len == 1 &&
+        new_token_mask == nullptr &&
         head_dim == v_head_dim &&
         head_dim <= 512 &&
         head_dim % 32 == 0 &&
         quant_group_size == 32) {
+        trace.path = "decode_dot";
         cactus_attention_hybrid_int8_fp16_decode_dot(
             queries, keys_cached, values_cached, k_scales, v_scales,
             keys_new, values_new, output,
@@ -390,6 +462,7 @@ void cactus_attention_hybrid_int8_fp16(
     const size_t k_seq_stride = num_kv_heads * head_dim;
     const size_t v_seq_stride = num_kv_heads * v_head_dim;
     const size_t o_seq_stride = num_q_heads * v_head_dim;
+    const size_t mask_batch_stride = seq_len * new_len;
 
     CactusThreading::parallel_for(batch_size * num_q_heads * seq_len, CactusThreading::Thresholds::ATTENTION,
         [=](size_t start_idx, size_t end_idx) {
@@ -411,6 +484,7 @@ void cactus_attention_hybrid_int8_fp16(
                 const int8_t* V_cached_base = values_cached + batch_idx * v_cached_batch_stride;
                 const __fp16* K_new_base = keys_new + batch_idx * k_new_batch_stride;
                 const __fp16* V_new_base = values_new + batch_idx * v_new_batch_stride;
+                const __fp16* mask_base = new_token_mask ? new_token_mask + batch_idx * mask_batch_stride : nullptr;
                 __fp16* O_base = output + batch_idx * o_batch_stride;
 
                 const __fp16* q_vec = Q_base + q_pos * q_seq_stride + q_head_idx * head_dim;
@@ -458,7 +532,13 @@ void cactus_attention_hybrid_int8_fp16(
                             }
                         }
 
-                        if ((is_causal && kv_pos > absolute_q_pos) || window_masked) {
+                        bool tree_masked = false;
+                        if (mask_base && kv_pos >= cache_len) {
+                            const size_t new_pos = kv_pos - cache_len;
+                            tree_masked = static_cast<float>(mask_base[q_pos * new_len + new_pos]) == 0.0f;
+                        }
+
+                        if ((is_causal && kv_pos > absolute_q_pos) || window_masked || tree_masked) {
                             block_scores[kv_idx] = -std::numeric_limits<float>::infinity();
                             continue;
                         }

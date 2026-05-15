@@ -5,7 +5,8 @@ description = "Cactus Python tools"
 requires-python = ">=3.10"
 dependencies = [
     "torch",
-    "transformers",
+    "transformers>=5.8.0",
+    "accelerate",
     "numpy",
     "huggingface-hub",
 ]
@@ -16,6 +17,8 @@ lora = ["peft"]
 
 [project.scripts]
 cactus = "cactus.cli:main"
+cactus-hf-gemma-assistant = "cactus.hf_gemma_assistant:main"
+cactus-hf-gemma-mtp-check = "cactus.hf_gemma_mtp_check:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]

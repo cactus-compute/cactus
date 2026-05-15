@@ -74,6 +74,7 @@ DECLARE_COMPUTE(compute_persistent_node);
 DECLARE_COMPUTE(compute_kv_cache_state_node);
 DECLARE_COMPUTE(compute_kv_cache_append_node);
 DECLARE_COMPUTE(compute_attention_cached_node);
+DECLARE_COMPUTE(compute_attention_cache_only_node);
 DECLARE_COMPUTE(compute_conv_cache_state_node);
 DECLARE_COMPUTE(compute_conv_cache_append_node);
 DECLARE_COMPUTE(compute_image_preprocess_node);
@@ -172,6 +173,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::KV_CACHE_STATE)] = compute_kv_cache_state_node;
     dispatch_flat[static_cast<int>(OpType::KV_CACHE_APPEND)] = compute_kv_cache_append_node;
     dispatch_flat[static_cast<int>(OpType::ATTENTION_CACHED)] = compute_attention_cached_node;
+    dispatch_flat[static_cast<int>(OpType::ATTENTION_CACHE_ONLY)] = compute_attention_cache_only_node;
     dispatch_flat[static_cast<int>(OpType::CONV_CACHE_STATE)] = compute_conv_cache_state_node;
     dispatch_flat[static_cast<int>(OpType::CONV_CACHE_APPEND)] = compute_conv_cache_append_node;
     dispatch_flat[static_cast<int>(OpType::IMAGE_PREPROCESS)] = compute_image_preprocess_node;
@@ -217,7 +219,7 @@ static const char* op_type_names[] = {
     "STFT", "ALTUP_PREDICT", "ALTUP_CORRECT", "GAUSSIAN_TOPK",
     "MAXPOOL1D", "BILSTM_SEQUENCE", "LEAKY_RELU",
     "CONV2D_K3S1P1", "STATS_POOL", "WEIGHTED_STATS_POOL",
-    "KV_CACHE_STATE", "KV_CACHE_APPEND", "ATTENTION_CACHED",
+    "KV_CACHE_STATE", "KV_CACHE_APPEND", "ATTENTION_CACHED", "ATTENTION_CACHE_ONLY",
     "CONV_CACHE_STATE", "CONV_CACHE_APPEND",
     "RFFT", "IRFFT", "MEL_FILTER_BANK", "SPECTROGRAM",
     "IMAGE_PREPROCESS", "CLAMP", "DENSE_MLP_TQ_FUSED"
@@ -318,6 +320,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                 populated_node_ids_.insert(node->id);
             }
         }
+        apply_pending_kv_cache_sequence_lengths();
         return;
     }
 
@@ -389,6 +392,8 @@ void CactusGraph::execute(const std::string& profile_file) {
 
     for (size_t node_idx = 0; node_idx < n; ++node_idx) {
         auto& node = nodes_[node_idx];
+
+        if (node->op_type == OpType::INPUT) continue;
 
         if (node->op_type != OpType::INPUT) {
             node->output_buffer.allocate_from_pool(pool);
@@ -671,6 +676,8 @@ void CactusGraph::execute(const std::string& profile_file) {
             profile_out.close();
         }
     }
+
+    apply_pending_kv_cache_sequence_lengths();
 }
 
 void CactusGraph::hard_reset() {
@@ -681,6 +688,7 @@ void CactusGraph::hard_reset() {
     next_node_id_ = 1;
     debug_nodes_.clear();
     buffer_pool_.clear();
+    pending_kv_cache_sequence_lengths_.clear();
 }
 
 void CactusGraph::soft_reset() {

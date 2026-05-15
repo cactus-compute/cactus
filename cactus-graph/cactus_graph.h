@@ -4,10 +4,12 @@
 #include "cactus_kernels.h"
 #include <vector>
 #include <memory>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <cstdlib>
 #include <stdexcept>
@@ -108,7 +110,7 @@ enum class OpType {
     STFT, ALTUP_PREDICT, ALTUP_CORRECT, GAUSSIAN_TOPK,
     MAXPOOL1D, BILSTM_SEQUENCE, LEAKY_RELU,
     CONV2D_K3S1P1, STATS_POOL, WEIGHTED_STATS_POOL,
-    KV_CACHE_STATE, KV_CACHE_APPEND, ATTENTION_CACHED,
+    KV_CACHE_STATE, KV_CACHE_APPEND, ATTENTION_CACHED, ATTENTION_CACHE_ONLY,
     CONV_CACHE_STATE, CONV_CACHE_APPEND,
     RFFT, IRFFT, MEL_FILTER_BANK, SPECTROGRAM,
     IMAGE_PREPROCESS,
@@ -452,6 +454,28 @@ public:
         size_t node_id;
     };
 
+    class KvCacheTransaction {
+    public:
+        KvCacheTransaction() = default;
+        KvCacheTransaction(CactusGraph* graph, std::vector<std::pair<size_t, uint64_t>> snapshots)
+            : graph_(graph), snapshots_(std::move(snapshots)) {}
+        ~KvCacheTransaction();
+        KvCacheTransaction(const KvCacheTransaction&) = delete;
+        KvCacheTransaction& operator=(const KvCacheTransaction&) = delete;
+        KvCacheTransaction(KvCacheTransaction&& other) noexcept;
+        KvCacheTransaction& operator=(KvCacheTransaction&& other) noexcept;
+
+        void rollback();
+        void commit_all();
+        void commit_prefix(size_t accepted_tokens);
+        void commit_selected(const std::vector<size_t>& token_indices);
+
+    private:
+        CactusGraph* graph_ = nullptr;
+        std::vector<std::pair<size_t, uint64_t>> snapshots_;
+        bool closed_ = false;
+    };
+
     void save(const std::string& path);
     static CactusGraph load(const std::string& path);
 
@@ -559,10 +583,33 @@ public:
         size_t window_size = 0,
         size_t sink_size = 4);
 
+    KvCacheTransaction begin_kv_cache_transaction(const std::vector<size_t>& cache_state_nodes);
+    void apply_pending_kv_cache_sequence_lengths();
+
     size_t attention_cached(
         size_t query,
         size_t key_new,
         size_t value_new,
+        size_t k_cache_state,
+        size_t v_cache_state,
+        float scale,
+        size_t position_offset = 0,
+        size_t window_size = 0,
+        size_t v_head_dim = 0);
+    size_t attention_cached_masked(
+        size_t query,
+        size_t key_new,
+        size_t value_new,
+        size_t k_cache_state,
+        size_t v_cache_state,
+        size_t new_token_mask,
+        float scale,
+        size_t position_offset = 0,
+        size_t window_size = 0,
+        size_t v_head_dim = 0);
+
+    size_t attention_cache_only(
+        size_t query,
         size_t k_cache_state,
         size_t v_cache_state,
         float scale,
@@ -692,11 +739,14 @@ public:
 
     std::vector<std::unique_ptr<GraphNode>> nodes_;
     std::unordered_map<size_t, size_t> node_index_map_;
+    std::vector<std::pair<size_t, uint64_t>> pending_kv_cache_sequence_lengths_;
 
 private:
     size_t binary_broadcast_op(OpType op, size_t input1, size_t input2);
     size_t reduction_op(OpType op, size_t input, int axis);
     static CactusGraph from_serialized(const GraphFile::SerializedGraph& serialized);
+    uint64_t kv_cache_sequence_length(size_t cache_state_node) const;
+    void set_kv_cache_sequence_length(size_t cache_state_node, uint64_t sequence_length);
     size_t next_node_id_;
     std::vector<std::unique_ptr<GraphFile::MappedFile>> mapped_files_;
     std::unordered_map<std::string, size_t> weight_cache_;

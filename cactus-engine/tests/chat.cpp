@@ -338,7 +338,8 @@ std::string build_messages(const std::string& system_prompt,
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
               << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>]"
-              << " [--prompt <text>] [--thinking]\n";
+              << " [--prompt <text>] [--thinking]"
+              << " [--temperature <value>] [--top-k <n>] [--mtp-max-draft <n>]\n";
 }
 
 } // namespace
@@ -355,6 +356,9 @@ int main(int argc, char** argv) {
     std::string current_audio;
     std::string initial_prompt;
     bool thinking = false;
+    float temperature = 0.7f;
+    int top_k = 40;
+    int mtp_max_draft_tokens = 0;
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -368,6 +372,15 @@ int main(int argc, char** argv) {
             initial_prompt = argv[++i];
         } else if (arg == "--thinking") {
             thinking = true;
+        } else if (arg == "--temperature" && i + 1 < argc) {
+            temperature = std::stof(argv[++i]);
+        } else if (arg == "--top-k" && i + 1 < argc) {
+            top_k = std::stoi(argv[++i]);
+        } else if (arg == "--mtp-max-draft" && i + 1 < argc) {
+            mtp_max_draft_tokens = std::stoi(argv[++i]);
+        } else {
+            print_usage(argv[0]);
+            return 1;
         }
     }
 
@@ -377,6 +390,18 @@ int main(int argc, char** argv) {
     }
     if (!current_audio.empty() && !file_exists(current_audio)) {
         std::cerr << "Audio file not found: " << current_audio << "\n";
+        return 1;
+    }
+    if (temperature < 0.0f) {
+        std::cerr << "--temperature must be non-negative\n";
+        return 1;
+    }
+    if (top_k < 0) {
+        std::cerr << "--top-k must be non-negative\n";
+        return 1;
+    }
+    if (mtp_max_draft_tokens < 0) {
+        std::cerr << "--mtp-max-draft must be non-negative\n";
         return 1;
     }
 
@@ -484,11 +509,19 @@ int main(int argc, char** argv) {
         }
         history.push_back({"user", input});
         std::string messages = build_messages(system_prompt, history, current_image, current_audio, attach_media);
-        std::string options = "{\"temperature\":0.7,\"top_p\":0.95,\"top_k\":40,\"max_tokens\":"
-            + std::to_string(kMaxTokens)
-            + ",\"enable_thinking_if_supported\":" + (thinking ? "true" : "false")
-            + ",\"auto_handoff\":false,\"confidence_threshold\":0.0"
-            + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
+        bool mtp_requested = mtp_max_draft_tokens > 0;
+        std::ostringstream options_stream;
+        options_stream << "{\"temperature\":" << temperature
+            << ",\"top_p\":0.95,\"top_k\":" << top_k
+            << ",\"max_tokens\":" << kMaxTokens
+            << ",\"enable_thinking_if_supported\":" << (thinking ? "true" : "false")
+            << ",\"auto_handoff\":false,\"confidence_threshold\":0.0";
+        std::string options = options_stream.str();
+        if (mtp_requested) {
+            options += ",\"mtp\":true";
+            options += ",\"mtp_max_draft_tokens\":" + std::to_string(mtp_max_draft_tokens);
+        }
+        options += ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
 
         if (!current_image.empty()) std::cout << "[image: " << current_image << "]\n";
         if (!current_audio.empty()) std::cout << "[audio: " << current_audio << "]\n";

@@ -442,7 +442,8 @@ void cactus_attention_hybrid_int8_fp16(
     bool is_causal = true,
     size_t window_size = 0,
     size_t group_size = KV_QUANT_GROUP_SIZE,
-    size_t v_head_dim = 0);
+    size_t v_head_dim = 0,
+    const __fp16* new_token_mask = nullptr);
 
 
 void cactus_conv1d_causal_depthwise_f16(

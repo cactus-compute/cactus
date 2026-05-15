@@ -2,6 +2,7 @@
 #include "cactus_kernels.h"
 #include <cstring>
 #include <algorithm>
+#include <stdexcept>
 
 namespace {
 
@@ -158,12 +159,18 @@ void compute_attention_cached_node(
     GraphNode& node,
     const nodes_vector& nodes,
     const node_index_map_t& node_index_map) {
+    if (node.input_ids.size() != 5 && node.input_ids.size() != 6) {
+        throw std::runtime_error("ATTENTION_CACHED expects 5 or 6 inputs");
+    }
 
     const auto& query_buf = get_input(node, 0, nodes, node_index_map);
     const auto& key_new_buf = get_input(node, 1, nodes, node_index_map);
     const auto& val_new_buf = get_input(node, 2, nodes, node_index_map);
     const auto& k_cache_buf = get_input(node, 3, nodes, node_index_map);
     const auto& v_cache_buf = get_input(node, 4, nodes, node_index_map);
+    const BufferDesc* mask_buf = node.input_ids.size() == 6
+        ? &get_input(node, 5, nodes, node_index_map)
+        : nullptr;
 
     const auto* k_meta = get_meta(k_cache_buf);
     size_t cache_len = k_meta->current_seq_len;
@@ -187,6 +194,17 @@ void compute_attention_cached_node(
 
     size_t new_seq_len = key_new_buf.total_size / (kv_heads * hdim);
     size_t history_len = (cache_len >= new_seq_len) ? cache_len - new_seq_len : 0;
+    const __fp16* mask_ptr = nullptr;
+    if (mask_buf) {
+        if (mask_buf->precision != Precision::FP16
+            || mask_buf->shape.size() != 3
+            || mask_buf->shape[0] != batch_size
+            || mask_buf->shape[1] != seq_len
+            || mask_buf->shape[2] != new_seq_len) {
+            throw std::runtime_error("ATTENTION_CACHED mask must be FP16 [B, T, new_T]");
+        }
+        mask_ptr = mask_buf->data_as<__fp16>();
+    }
 
     cactus_attention_hybrid_int8_fp16(
         query_buf.data_as<__fp16>(),
@@ -198,6 +216,56 @@ void compute_attention_cached_node(
         val_new_buf.data_as<__fp16>(),
         node.output_buffer.data_as<__fp16>(),
         batch_size, seq_len, history_len, seq_len,
+        num_q_heads, kv_heads, hdim,
+        node.params.scale,
+        node.params.position_offset,
+        true,
+        node.params.window_size,
+        KV_QUANT_GROUP_SIZE,
+        v_hdim,
+        mask_ptr);
+}
+
+void compute_attention_cache_only_node(
+    GraphNode& node,
+    const nodes_vector& nodes,
+    const node_index_map_t& node_index_map) {
+
+    const auto& query_buf = get_input(node, 0, nodes, node_index_map);
+    const auto& k_cache_buf = get_input(node, 1, nodes, node_index_map);
+    const auto& v_cache_buf = get_input(node, 2, nodes, node_index_map);
+
+    const auto* k_meta = get_meta(k_cache_buf);
+    size_t cache_len = k_meta->current_seq_len;
+    size_t k_max = k_meta->max_seq_len;
+    size_t kv_heads = k_meta->num_kv_heads;
+    size_t hdim = k_meta->head_dim;
+
+    const auto* v_meta = get_meta(v_cache_buf);
+    size_t v_hdim = node.params.v_head_dim > 0 ? node.params.v_head_dim : hdim;
+    size_t v_max = v_meta->max_seq_len;
+
+    const int8_t* cached_keys = get_int8_data(k_cache_buf);
+    const float* k_scales = get_scales(k_cache_buf, k_max, kv_heads, hdim);
+    const int8_t* cached_values = get_int8_data(v_cache_buf);
+    const float* v_scales = get_scales(v_cache_buf, v_max, kv_heads, v_hdim);
+
+    const auto& q_shape = query_buf.shape;
+    size_t batch_size = q_shape[0];
+    size_t seq_len = q_shape[1];
+    size_t num_q_heads = q_shape[2];
+
+    static const __fp16 empty_kv[1] = {static_cast<__fp16>(0.0f)};
+    cactus_attention_hybrid_int8_fp16(
+        query_buf.data_as<__fp16>(),
+        cached_keys,
+        cached_values,
+        k_scales,
+        v_scales,
+        empty_kv,
+        empty_kv,
+        node.output_buffer.data_as<__fp16>(),
+        batch_size, seq_len, cache_len, 0,
         num_q_heads, kv_heads, hdim,
         node.params.scale,
         node.params.position_offset,

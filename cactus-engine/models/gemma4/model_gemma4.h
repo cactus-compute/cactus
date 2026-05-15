@@ -1,6 +1,11 @@
 #pragma once
 
 #include "../model.h"
+#include "src/mtp_decode.h"
+
+#include <memory>
+#include <random>
+#include <utility>
 
 bool test_gemma4_vision(bool expect_npu);
 bool test_gemma4_audio(bool expect_npu);
@@ -8,12 +13,69 @@ bool test_gemma4_audio(bool expect_npu);
 namespace cactus {
 namespace engine {
 
+class Gemma4MtpAssistant;
+
 class Gemma4Model : public Model {
     friend class Gemma4MmModel;
 public:
     Gemma4Model();
     explicit Gemma4Model(const Config& config);
     ~Gemma4Model() override = default;
+    SpeculativeDecodeCapability* speculative_decode_capability() override;
+
+    struct GreedyStepWithHidden {
+        uint32_t token = 0;
+        std::vector<__fp16> hidden;
+    };
+
+    struct GreedyBatchWithHidden {
+        std::vector<uint32_t> tokens;
+        std::vector<__fp16> hidden;
+        std::vector<std::vector<float>> probabilities;
+        std::vector<std::vector<std::pair<uint32_t, float>>> sparse_probabilities;
+        size_t hidden_dim = 0;
+    };
+
+    struct SharedCacheNodes {
+        size_t sliding_k = 0;
+        size_t sliding_v = 0;
+        size_t full_k = 0;
+        size_t full_v = 0;
+    };
+
+    GreedyStepWithHidden decode_greedy_with_hidden(const std::vector<uint32_t>& tokens);
+    std::vector<uint32_t> decode_greedy_tokens(const std::vector<uint32_t>& tokens);
+    GreedyBatchWithHidden decode_greedy_tokens_with_hidden(const std::vector<uint32_t>& tokens);
+    GreedyBatchWithHidden decode_greedy_tokens_with_hidden_early_stop(
+        const std::vector<uint32_t>& tokens,
+        const std::vector<uint32_t>& expected_drafts);
+    GreedyBatchWithHidden decode_greedy_tokens_with_hidden_tree(
+        const std::vector<uint32_t>& tokens,
+        const std::vector<__fp16>& new_token_attention_mask);
+    GreedyBatchWithHidden decode_tokens_with_hidden_and_probs(const std::vector<uint32_t>& tokens,
+                                                              float temperature, float top_p,
+                                                              size_t top_k, float min_p);
+    GreedyBatchWithHidden decode_tokens_with_hidden_and_sparse_probs(const std::vector<uint32_t>& tokens,
+                                                                     float temperature, float top_p,
+                                                                     size_t top_k, float min_p);
+    std::vector<__fp16> token_embedding(uint32_t token);
+    void prefill_for_mtp(const std::vector<uint32_t>& tokens, size_t chunk_size) { prefill(tokens, chunk_size); }
+    size_t token_embedding_node_for_mtp() const { return embedding_node_id_; }
+    SharedCacheNodes shared_cache_nodes_for_mtp() const;
+    size_t cache_position() const { return cache_total_seq_len_; }
+    void set_cache_position_for_mtp(size_t position) { cache_total_seq_len_ = position; }
+    std::vector<size_t> cache_state_nodes_for_mtp() const;
+    bool can_use_mtp_tree_attention(size_t token_count) const;
+    MtpRoundResult decode_mtp_round(Gemma4MtpAssistant& assistant,
+                                    uint32_t input_token,
+                                    const std::vector<__fp16>& previous_hidden,
+                                    const SharedCacheNodes& cache_nodes,
+                                    size_t assistant_position,
+                                    size_t draft_limit,
+                                    size_t remaining_tokens,
+                                    const MtpSamplingOptions& options,
+                                    bool sparse_sampled,
+                                    std::mt19937& rng);
 
 protected:
     size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
@@ -48,6 +110,8 @@ protected:
 
 private:
     size_t forward_split(const std::vector<uint32_t>& tokens, bool use_cache);
+    size_t forward_with_attention_mask(const std::vector<uint32_t>& tokens, bool use_cache,
+                                       const std::vector<__fp16>* new_token_attention_mask);
 
     std::pair<size_t, size_t> build_preamble_and_embed(CactusGraph* gb, size_t seq_len, ComputeBackend backend,
                                                        size_t& token_input, size_t& pli_input);
@@ -112,6 +176,9 @@ private:
     std::vector<int> kv_share_map_;
     std::vector<size_t> shared_k_nodes_;
     std::vector<size_t> shared_v_nodes_;
+    size_t active_attention_mask_node_ = 0;
+    std::vector<size_t> active_position_deltas_;
+    std::unique_ptr<SpeculativeDecodeCapability> speculative_capability_;
 
     std::vector<__fp16> v_norm_ones_weight_;
     size_t v_norm_ones_node_ = 0;
@@ -349,6 +416,8 @@ public:
         float min_p = 0.15f, float repetition_penalty = 1.1f);
 
     void reset_cache() override;
+    size_t get_cache_size() const override;
+    SpeculativeDecodeCapability* speculative_decode_capability() override;
     std::vector<float> get_image_embeddings(const std::string& image_path) override;
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features) override;
     void compact_kv_cache() override;

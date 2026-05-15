@@ -38,7 +38,7 @@ mkdir -p build
 cd build
 
 cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF > /dev/null 2>&1
-make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+cmake --build . --parallel ${CACTUS_BUILD_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}
 
 echo "Cactus library built successfully!"
 echo "Library location: $(pwd)/libcactus.a"
