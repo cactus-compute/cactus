@@ -38,8 +38,24 @@ export CACTUS_TEST_ASSETS="$ASSETS_DIR"
 export CACTUS_INDEX_PATH="$ASSETS_DIR"
 
 FAILED=0
+NATIVE_MODELS_AVAILABLE=1
+if grep -q "Native model subclasses are not present in this build" "$PROJECT_ROOT/cactus-engine/src/model.cpp"; then
+    NATIVE_MODELS_AVAILABLE=0
+fi
+
 for test_bin in test_*; do
-    [ -x "$test_bin" ] && ./"$test_bin" || FAILED=1
+    if [ ! -x "$test_bin" ]; then
+        continue
+    fi
+    if [ "$NATIVE_MODELS_AVAILABLE" -eq 0 ]; then
+        case "$test_bin" in
+            test_embed|test_llm|test_rag|test_stt|test_vlm)
+                echo "SKIP: $test_bin - native model subclasses are not present in this build"
+                continue
+                ;;
+        esac
+    fi
+    ./"$test_bin" || FAILED=1
 done
 
 exit $FAILED

@@ -451,7 +451,8 @@ public:
         : manifest_path_(std::move(manifest_path)) {}
 
     bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true) override {
-        return Model::init(model_folder, context_size, system_prompt, do_warmup);
+        (void)do_warmup;
+        return Model::init(model_folder, context_size, system_prompt, false);
     }
 
     uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,

@@ -216,6 +216,11 @@ def _component_graphs_to_payload(component_graphs: dict[str, IRGraph]) -> dict[s
         for component, graph in component_graphs.items()
     }
 
+def _stamp_transpile_graph_metadata(graph: IRGraph, *, task: str, family: str) -> None:
+    graph.meta.setdefault("task", task)
+    graph.meta.setdefault("family", family)
+    graph.meta.setdefault("adapter_family", family)
+
 
 def _binding_entries_by_node_id(
     bindings: list[dict[str, object]],
@@ -450,6 +455,9 @@ def _write_component_bundle(
                     continue
                 if any(binding.get("value_id") == value_id for binding in materialized_constant_bindings):
                     continue
+                node_id = value_to_node_id.get(value_id)
+                if node_id is None:
+                    continue
                 if isinstance(constant_value, torch.Tensor):
                     constant_array = constant_value.detach().cpu().numpy().copy()
                 elif isinstance(constant_value, np.ndarray):
@@ -470,7 +478,7 @@ def _write_component_bundle(
                 )
                 materialized_constant_bindings.append(
                     {
-                        "node_id": int(value_to_node_id.get(value_id, -1)),
+                        "node_id": int(node_id),
                         "value_id": str(value_id),
                         "path": str((bundle_dir / constant_relpath).relative_to(artifact_dir)),
                         "kind": "saved_constant",
@@ -3045,8 +3053,7 @@ def main() -> int:
         if callable(restore_cpu_float32_capture):
             restore_cpu_float32_capture()
     print("capture_done=true", flush=True)
-    captured.ir_graph.meta.setdefault("task", task)
-    captured.ir_graph.meta.setdefault("adapter_family", canonical.family)
+    _stamp_transpile_graph_metadata(captured.ir_graph, task=task, family=canonical.family)
     raw_ir_graph = copy.deepcopy(captured.ir_graph)
 
     fusion_config = FusionConfig(
