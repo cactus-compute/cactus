@@ -1357,12 +1357,134 @@ static inline int8x16_t tq_expand_i8_16(const uint8_t* packed, uint32_t bits, in
     }
 }
 
+static void tq_preexpand_weights_interleaved(
+    const CactusQuantMatrix* W,
+    uint32_t bits, uint32_t num_groups, uint32_t gs, uint32_t pgb,
+    const int8x16_t& cb_lut, float cb_scale,
+    size_t N_blocks,
+    int8_t* w_il, float* n_f32) {
+    const uint32_t n_vecs = gs / 16;
+    const size_t panel_bytes = static_cast<size_t>(4) * pgb;
+
+    alignas(16) static const uint8_t reorder4_tbl[16] = {0,1,2,3, 8,9,10,11, 4,5,6,7, 12,13,14,15};
+    const uint8x16_t reorder4 = vld1q_u8(reorder4_tbl);
+    alignas(16) static const uint8_t spread2_tbl[16] = {0,0,0,0, 4,4,4,4, 8,8,8,8, 12,12,12,12};
+    alignas(16) static const int8_t  shifts2_tbl[16] = {0,-2,-4,-6, 0,-2,-4,-6, 0,-2,-4,-6, 0,-2,-4,-6};
+    const uint8x16_t spread2 = vld1q_u8(spread2_tbl);
+    const int8x16_t  shifts2 = vld1q_s8(shifts2_tbl);
+    const uint8x16_t mask2   = vdupq_n_u8(0x03);
+
+    for (size_t nb = 0; nb < N_blocks; ++nb) {
+        size_t n_start = nb * 4;
+        size_t valid_n = std::min(size_t(4), static_cast<size_t>(W->N) - n_start);
+        for (uint32_t g = 0; g < num_groups; ++g) {
+            const uint8_t* panel = W->packed_indices + (nb * num_groups + g) * panel_bytes;
+            int8x16_t exp4[4][16];
+
+            if (bits == 4) {
+                for (uint32_t v = 0; v < n_vecs; ++v) {
+                    const uint8_t* c0 = panel + (2 * v + 0) * 16;
+                    const uint8_t* c1 = panel + (2 * v + 1) * 16;
+                    uint32_t b0[4], b1[4];
+                    std::memcpy(b0, c0, 16);
+                    std::memcpy(b1, c1, 16);
+                    for (size_t r = 0; r < 4; ++r) {
+                        uint8x8_t bytes_r = vcreate_u8(
+                            static_cast<uint64_t>(b0[r]) |
+                            (static_cast<uint64_t>(b1[r]) << 32));
+                        uint8x8_t lo = vand_u8(bytes_r, vdup_n_u8(0x0F));
+                        uint8x8_t hi = vshr_n_u8(bytes_r, 4);
+                        uint8x16_t combined = vcombine_u8(lo, hi);
+                        uint8x16_t reordered = vqtbl1q_u8(combined, reorder4);
+                        exp4[r][v] = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(reordered));
+                    }
+                }
+            } else if (bits == 2) {
+                const uint32_t chunks = gs / 16;
+                for (uint32_t c = 0; c < chunks; ++c) {
+                    uint8x16_t bytes = vld1q_u8(panel + c * 16);
+                    for (size_t r = 0; r < 4; ++r) {
+                        uint8x16_t pick_r = vaddq_u8(spread2, vdupq_n_u8(static_cast<uint8_t>(r)));
+                        uint8x16_t row_bytes = vqtbl1q_u8(bytes, pick_r);
+                        uint8x16_t shifted = vshlq_u8(row_bytes, shifts2);
+                        uint8x16_t idx = vandq_u8(shifted, mask2);
+                        exp4[r][c] = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(idx));
+                    }
+                }
+            } else if (bits == 1) {
+                const uint32_t chunks = gs / 32;
+                alignas(16) uint8_t row_idx[4][256];
+                for (uint32_t c = 0; c < chunks; ++c) {
+                    const uint8_t* ch = panel + c * 16;
+                    for (size_t r = 0; r < 4; ++r) {
+                        for (uint32_t p = 0; p < 4; ++p) {
+                            uint8_t byte = ch[p * 4 + r];
+                            uint8_t* dst_p = row_idx[r] + c * 32 + p * 8;
+                            dst_p[0] = (byte >> 0) & 0x1;
+                            dst_p[1] = (byte >> 1) & 0x1;
+                            dst_p[2] = (byte >> 2) & 0x1;
+                            dst_p[3] = (byte >> 3) & 0x1;
+                            dst_p[4] = (byte >> 4) & 0x1;
+                            dst_p[5] = (byte >> 5) & 0x1;
+                            dst_p[6] = (byte >> 6) & 0x1;
+                            dst_p[7] = (byte >> 7) & 0x1;
+                        }
+                    }
+                }
+                for (size_t r = 0; r < 4; ++r)
+                    for (uint32_t v = 0; v < n_vecs; ++v)
+                        exp4[r][v] = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(vld1q_u8(row_idx[r] + v * 16)));
+            } else if (bits == 3) {
+                const uint32_t chunks = gs / 4;
+                alignas(16) uint8_t row_idx[4][256];
+                for (uint32_t c = 0; c < chunks; ++c) {
+                    const uint8_t* ch = panel + c * 6;
+                    uint64_t word = 0;
+                    std::memcpy(&word, ch, 6);
+                    for (size_t r = 0; r < 4; ++r) {
+                        uint32_t bit_pos = static_cast<uint32_t>(r) * 12;
+                        row_idx[r][c * 4 + 0] = static_cast<uint8_t>((word >> (bit_pos + 0)) & 0x7);
+                        row_idx[r][c * 4 + 1] = static_cast<uint8_t>((word >> (bit_pos + 3)) & 0x7);
+                        row_idx[r][c * 4 + 2] = static_cast<uint8_t>((word >> (bit_pos + 6)) & 0x7);
+                        row_idx[r][c * 4 + 3] = static_cast<uint8_t>((word >> (bit_pos + 9)) & 0x7);
+                    }
+                }
+                for (size_t r = 0; r < 4; ++r)
+                    for (uint32_t v = 0; v < n_vecs; ++v)
+                        exp4[r][v] = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(vld1q_u8(row_idx[r] + v * 16)));
+            }
+
+            for (size_t ni = valid_n; ni < 4; ++ni)
+                for (uint32_t v = 0; v < n_vecs; ++v) exp4[ni][v] = vdupq_n_s8(0);
+
+            int8_t* dst = w_il + (nb * num_groups + g) * gs * 4;
+            for (uint32_t v = 0; v < n_vecs; ++v)
+                tq_interleave_4x_s8(exp4[0][v], exp4[1][v], exp4[2][v], exp4[3][v], dst + v * 64);
+
+            float* nd = n_f32 + (nb * num_groups + g) * 4;
+            for (size_t ni = 0; ni < 4; ++ni)
+                nd[ni] = (n_start + ni < W->N)
+                    ? static_cast<float>(W->norms[(nb * num_groups + g) * 4 + ni]) * cb_scale
+                    : 0.f;
+        }
+    }
+}
+
 static void tq_preexpand_weights(
     const CactusQuantMatrix* W,
     uint32_t bits, uint32_t num_groups, uint32_t gs, uint32_t pgb,
     const int8x16_t& cb_lut, float cb_scale,
     size_t N_blocks,
     int8_t* w_il, float* n_f32) {
+    if (W != nullptr
+        && (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0
+        && bits >= 1 && bits <= 4
+        && (W->N % 4) == 0
+        && (gs % 32) == 0
+        && gs <= 256) {
+        tq_preexpand_weights_interleaved(W, bits, num_groups, gs, pgb, cb_lut, cb_scale, N_blocks, w_il, n_f32);
+        return;
+    }
     const uint32_t n_vecs = gs / 16;
     for (size_t nb = 0; nb < N_blocks; ++nb) {
         size_t n_start = nb * 4;

@@ -310,11 +310,20 @@ def quantize_orthogonal(weight, bits: int = 4, seed: int = 1234, input_scale: np
     return CQTensor(indices=indices, norms=norms.astype(np.float16).reshape(n, 1), input_scale=input_scale.astype(np.float16), bits=bits, group_size=k, rotation_family="orthogonal")
 
 
+_EMBEDDING_TENSOR_STEMS = frozenset({
+    "token_embeddings",
+    "embed_tokens",
+    "embed_tokens_per_layer",
+})
+
+
 def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     n, k = cq.indices.shape
     group_size = int(cq.group_size)
     groups = k // group_size
+
+    is_embedding = out_path.stem in _EMBEDDING_TENSOR_STEMS
 
     interleaved = (
         cq.bits in (1, 2, 3, 4)
@@ -322,6 +331,7 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
         and n % 4 == 0
         and group_size % 32 == 0
         and group_size <= 256
+        and not is_embedding
     )
 
     codebook_f32 = make_codebook(group_size, cq.bits).astype(np.float32)
