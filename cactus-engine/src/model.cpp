@@ -113,6 +113,31 @@ std::vector<size_t> json_integer_array_field(const std::string& json, const std:
     return values;
 }
 
+int json_integer_field(const std::string& json, const std::string& key, size_t start = 0, int fallback = 0) {
+    std::string pattern = "\"" + key + "\"";
+    size_t key_pos = json.find(pattern, start);
+    if (key_pos == std::string::npos) {
+        return fallback;
+    }
+    size_t colon = json.find(':', key_pos + pattern.size());
+    if (colon == std::string::npos) {
+        return fallback;
+    }
+    size_t pos = colon + 1;
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) {
+        ++pos;
+    }
+    bool negative = pos < json.size() && json[pos] == '-';
+    if (negative) {
+        ++pos;
+    }
+    if (pos >= json.size() || !std::isdigit(static_cast<unsigned char>(json[pos]))) {
+        return fallback;
+    }
+    int value = std::stoi(json.substr(pos));
+    return negative ? -value : value;
+}
+
 std::vector<std::string> json_string_array_field(const std::string& json, const std::string& key, size_t start = 0) {
     std::vector<std::string> values;
     std::string pattern = "\"" + key + "\"";
@@ -141,6 +166,65 @@ std::vector<std::string> json_string_array_field(const std::string& json, const 
     return values;
 }
 
+size_t find_json_matching_brace(const std::string& json, size_t open) {
+    if (open >= json.size() || json[open] != '{') {
+        return std::string::npos;
+    }
+    int depth = 1;
+    bool in_string = false;
+    bool escaped = false;
+    for (size_t pos = open + 1; pos < json.size(); ++pos) {
+        char c = json[pos];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+        } else if (c == '"') {
+            in_string = true;
+        } else if (c == '{') {
+            depth++;
+        } else if (c == '}') {
+            depth--;
+            if (depth == 0) {
+                return pos;
+            }
+        }
+    }
+    return std::string::npos;
+}
+
+std::vector<std::string> json_object_array_field(const std::string& json, const std::string& key, size_t start = 0) {
+    std::vector<std::string> objects;
+    std::string pattern = "\"" + key + "\"";
+    size_t key_pos = json.find(pattern, start);
+    if (key_pos == std::string::npos) {
+        return objects;
+    }
+    size_t open = json.find('[', key_pos + pattern.size());
+    size_t close = json.find(']', open == std::string::npos ? key_pos : open);
+    if (open == std::string::npos || close == std::string::npos) {
+        return objects;
+    }
+    size_t pos = open + 1;
+    while (pos < close) {
+        size_t object_start = json.find('{', pos);
+        if (object_start == std::string::npos || object_start >= close) {
+            break;
+        }
+        size_t object_end = find_json_matching_brace(json, object_start);
+        if (object_end == std::string::npos || object_end > close) {
+            break;
+        }
+        objects.push_back(json.substr(object_start, object_end - object_start + 1));
+        pos = object_end + 1;
+    }
+    return objects;
+}
+
 std::string dirname_of(const std::string& path) {
     size_t slash = path.find_last_of("/\\");
     return slash == std::string::npos ? "." : path.substr(0, slash);
@@ -157,6 +241,13 @@ std::string join_path(const std::string& base, const std::string& rel) {
         return rel;
     }
     return base + "/" + rel;
+}
+
+std::string bundle_root_for_manifest(const std::string& manifest_path) {
+    std::string manifest_dir = dirname_of(manifest_path);
+    size_t slash = manifest_dir.find_last_of("/\\");
+    std::string dir_name = slash == std::string::npos ? manifest_dir : manifest_dir.substr(slash + 1);
+    return dir_name == "components" ? dirname_of(manifest_dir) : manifest_dir;
 }
 
 size_t find_component_object(const std::string& manifest, const std::string& component_name) {
@@ -243,6 +334,115 @@ std::vector<float> logits_row_to_fp32(CactusGraph* gb, size_t logits_node, size_
         Quantization::int8_to_fp32(const_cast<int8_t*>(src), logits.data(), vocab_size, 1.0f);
     }
     return logits;
+}
+
+struct LoadedNpyArray {
+    std::vector<size_t> shape;
+    Precision precision = Precision::FP32;
+    std::vector<uint8_t> bytes;
+};
+
+LoadedNpyArray load_npy_array(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("unable to open npy constant: " + path);
+    }
+    char magic[6];
+    file.read(magic, 6);
+    if (file.gcount() != 6 || std::string(magic, 6) != std::string("\x93NUMPY", 6)) {
+        throw std::runtime_error("invalid npy constant header: " + path);
+    }
+    char version[2];
+    file.read(version, 2);
+    uint32_t header_len = 0;
+    if (version[0] == 1) {
+        uint16_t header16 = 0;
+        file.read(reinterpret_cast<char*>(&header16), sizeof(header16));
+        header_len = header16;
+    } else {
+        file.read(reinterpret_cast<char*>(&header_len), sizeof(header_len));
+    }
+    std::string header(header_len, '\0');
+    file.read(header.data(), static_cast<std::streamsize>(header.size()));
+    if (file.gcount() != static_cast<std::streamsize>(header.size())) {
+        throw std::runtime_error("truncated npy constant header: " + path);
+    }
+
+    LoadedNpyArray result;
+    if (header.find("'fortran_order': True") != std::string::npos ||
+        header.find("\"fortran_order\": True") != std::string::npos) {
+        throw std::runtime_error("Fortran-order npy constants are not supported: " + path);
+    }
+    if (header.find("<f2") != std::string::npos || header.find("|f2") != std::string::npos) {
+        result.precision = Precision::FP16;
+    } else if (header.find("<f4") != std::string::npos || header.find("|f4") != std::string::npos) {
+        result.precision = Precision::FP32;
+    } else if (header.find("|i1") != std::string::npos || header.find("<i1") != std::string::npos) {
+        result.precision = Precision::INT8;
+    } else {
+        throw std::runtime_error("unsupported npy constant dtype: " + path);
+    }
+
+    size_t shape_key = header.find("shape");
+    size_t open = header.find('(', shape_key);
+    size_t close = header.find(')', open);
+    if (shape_key == std::string::npos || open == std::string::npos || close == std::string::npos) {
+        throw std::runtime_error("npy constant is missing shape: " + path);
+    }
+    size_t pos = open + 1;
+    while (pos < close) {
+        while (pos < close && !std::isdigit(static_cast<unsigned char>(header[pos]))) {
+            ++pos;
+        }
+        if (pos >= close) {
+            break;
+        }
+        size_t end = pos;
+        while (end < close && std::isdigit(static_cast<unsigned char>(header[end]))) {
+            ++end;
+        }
+        result.shape.push_back(static_cast<size_t>(std::stoull(header.substr(pos, end - pos))));
+        pos = end;
+    }
+    if (result.shape.empty()) {
+        throw std::runtime_error("npy constant has empty shape: " + path);
+    }
+
+    size_t element_count = 1;
+    for (size_t dim : result.shape) {
+        element_count *= dim;
+    }
+    size_t bytes = element_count * PrecisionTraits::size_of(result.precision);
+    result.bytes.resize(bytes);
+    file.read(reinterpret_cast<char*>(result.bytes.data()), static_cast<std::streamsize>(bytes));
+    if (file.gcount() != static_cast<std::streamsize>(bytes)) {
+        throw std::runtime_error("truncated npy constant data: " + path);
+    }
+    return result;
+}
+
+Precision precision_from_manifest_value(int value, const std::string& path) {
+    switch (value) {
+        case 0: return Precision::INT8;
+        case 1: return Precision::FP16;
+        case 2: return Precision::FP32;
+        default:
+            throw std::runtime_error("unsupported bound constant precision " + std::to_string(value) + ": " + path);
+    }
+}
+
+std::string resolve_manifest_path(const std::string& bundle_root,
+                                  const std::string& manifest_dir,
+                                  const std::string& rel) {
+    std::string path = join_path(bundle_root, rel);
+    if (file_exists(path)) {
+        return path;
+    }
+    path = join_path(manifest_dir, rel);
+    if (file_exists(path)) {
+        return path;
+    }
+    return join_path(bundle_root, rel);
 }
 
 class TranspiledCausalLmModel final : public Model {
@@ -414,14 +614,21 @@ protected:
             throw std::runtime_error("transpiled causal LM bundle decoder graph has no output node ids");
         }
 
-        std::string graph_path = join_path(dirname_of(dirname_of(manifest_path_)), graph_rel);
+        const std::string bundle_root = bundle_root_for_manifest(manifest_path_);
+        const std::string manifest_dir = dirname_of(manifest_path_);
+        std::string graph_path = join_path(bundle_root, graph_rel);
         if (!file_exists(graph_path)) {
-            graph_path = join_path(dirname_of(manifest_path_), graph_rel);
+            graph_path = join_path(manifest_dir, graph_rel);
         }
         if (!file_exists(graph_path)) {
             throw std::runtime_error("transpiled causal LM bundle decoder graph not found: " + graph_rel);
         }
         *gb = CactusGraph::load(graph_path);
+        bind_saved_constants(manifest.substr(decoder_pos, find_json_matching_brace(manifest, decoder_pos) - decoder_pos + 1),
+                             gb,
+                             bound_constant_storage_,
+                             bundle_root,
+                             manifest_dir);
 
         if (manifest.find("\"spec_decode\"") == std::string::npos) {
             speculative_status_ = "unsupported_target";
@@ -440,15 +647,20 @@ protected:
             speculative_status_ = "assistant_unavailable";
             return;
         }
-        std::string assistant_graph_path = join_path(dirname_of(dirname_of(manifest_path_)), assistant_graph_rel);
+        std::string assistant_graph_path = join_path(bundle_root, assistant_graph_rel);
         if (!file_exists(assistant_graph_path)) {
-            assistant_graph_path = join_path(dirname_of(manifest_path_), assistant_graph_rel);
+            assistant_graph_path = join_path(manifest_dir, assistant_graph_rel);
         }
         if (!file_exists(assistant_graph_path)) {
             speculative_status_ = "assistant_unavailable";
             return;
         }
         assistant_graph_ = std::make_unique<CactusGraph>(CactusGraph::load(assistant_graph_path));
+        bind_saved_constants(manifest.substr(assistant_pos, find_json_matching_brace(manifest, assistant_pos) - assistant_pos + 1),
+                             assistant_graph_.get(),
+                             assistant_bound_constant_storage_,
+                             bundle_root,
+                             manifest_dir);
         speculative_status_.clear();
     }
 
@@ -465,6 +677,50 @@ protected:
     }
 
 private:
+    void bind_saved_constants(const std::string& component_json,
+                              CactusGraph* graph,
+                              std::vector<std::vector<uint8_t>>& storage,
+                              const std::string& bundle_root,
+                              const std::string& manifest_dir) {
+        for (const std::string& binding : json_object_array_field(component_json, "bound_constant_bindings")) {
+            std::string kind = json_string_field(binding, "kind");
+            if (!kind.empty() && kind != "saved_constant") {
+                continue;
+            }
+            std::string format = json_string_field(binding, "format");
+            std::string rel_path = json_string_field(binding, "path");
+            int node_id = json_integer_field(binding, "node_id", 0, -1);
+            if (node_id < 0 || rel_path.empty()) {
+                throw std::runtime_error("transpiled bound constant binding is missing node_id or path");
+            }
+            if (!format.empty() && format != "npy") {
+                throw std::runtime_error("unsupported transpiled bound constant format: " + format);
+            }
+
+            std::string path = resolve_manifest_path(bundle_root, manifest_dir, rel_path);
+            LoadedNpyArray array = load_npy_array(path);
+            int manifest_precision = json_integer_field(binding, "precision", 0, static_cast<int>(array.precision));
+            Precision expected_precision = precision_from_manifest_value(manifest_precision, path);
+            if (expected_precision != array.precision) {
+                throw std::runtime_error("bound constant precision does not match npy dtype: " + path);
+            }
+
+            const auto& buffer = graph->get_output_buffer(static_cast<size_t>(node_id));
+            if (buffer.precision != array.precision) {
+                throw std::runtime_error("bound constant graph input precision does not match manifest: " + path);
+            }
+            if (buffer.total_size * PrecisionTraits::size_of(buffer.precision) != array.bytes.size()) {
+                throw std::runtime_error("bound constant byte size does not match graph input: " + path);
+            }
+            if (!array.shape.empty() && buffer.shape != array.shape) {
+                throw std::runtime_error("bound constant shape does not match graph input: " + path);
+            }
+
+            storage.push_back(std::move(array.bytes));
+            graph->set_external_input(static_cast<size_t>(node_id), storage.back().data(), expected_precision);
+        }
+    }
+
     size_t run_decoder(CactusGraph* gb, const std::vector<uint32_t>& tokens) {
         return run_component_graph(gb, runtime_input_node_ids_, output_node_ids_, tokens);
     }
@@ -532,6 +788,8 @@ private:
     std::unique_ptr<CactusGraph> assistant_graph_;
     std::vector<size_t> assistant_runtime_input_node_ids_;
     std::vector<size_t> assistant_output_node_ids_;
+    std::vector<std::vector<uint8_t>> bound_constant_storage_;
+    std::vector<std::vector<uint8_t>> assistant_bound_constant_storage_;
     std::vector<uint32_t> context_tokens_;
 };
 

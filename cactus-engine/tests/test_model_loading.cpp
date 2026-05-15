@@ -269,6 +269,88 @@ static bool test_transpiled_mtp_completion_works() {
     return metrics.success && metrics.completion_tokens == 2.0;
 }
 
+static void write_npy_f16_bits(const std::string& path, const std::vector<size_t>& shape, const std::vector<uint16_t>& values) {
+    std::ostringstream shape_ss;
+    shape_ss << "(";
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (i > 0) shape_ss << ", ";
+        shape_ss << shape[i];
+    }
+    if (shape.size() == 1) shape_ss << ",";
+    shape_ss << ")";
+    std::string header = "{'descr': '<f2', 'fortran_order': False, 'shape': " + shape_ss.str() + ", }";
+    size_t prefix = 10;
+    size_t padding = 16 - ((prefix + header.size() + 1) % 16);
+    header.append(padding, ' ');
+    header.push_back('\n');
+
+    std::ofstream out(path, std::ios::binary);
+    out.write("\x93NUMPY", 6);
+    char version[2] = {1, 0};
+    out.write(version, 2);
+    uint16_t header_len = static_cast<uint16_t>(header.size());
+    out.write(reinterpret_cast<const char*>(&header_len), sizeof(header_len));
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    out.write(reinterpret_cast<const char*>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(uint16_t)));
+}
+
+static bool test_transpiled_bundle_rebinds_saved_constant() {
+    std::string dir = make_temp_dir("transpiled_saved_constant");
+    fs::create_directories(dir + "/components/decoder/bound_constants");
+    write_file(dir + "/config.txt",
+        "model_type=qwen\nmodel_variant=default\nprecision=FP32\nnum_layers=1\nhidden_dim=8\n"
+        "ffn_intermediate_dim=16\nattention_heads=1\nattention_kv_heads=1\nattention_head_dim=8\n"
+        "vocab_size=3\nbos_token_id=0\neos_token_id=999\n");
+    write_file(dir + "/vocab.txt", "0\tA\n1\t<unused>\n2\tB\n");
+    write_file(dir + "/merges.txt", "");
+    write_file(dir + "/tokenizer_config.txt", R"({"tokenizer_type":"bpe","vocab_format":"id_tab_token"})");
+
+    CactusGraph graph;
+    size_t runtime = graph.input({1, 512, 3}, Precision::FP16);
+    size_t constant = graph.input({1, 512, 3}, Precision::FP16);
+    size_t logits = graph.add(runtime, constant);
+    graph.save(dir + "/components/decoder/graph.cactus");
+
+    std::vector<uint16_t> constant_values(1 * 512 * 3, 0);
+    for (size_t i = 0; i < 512; ++i) {
+        constant_values[i * 3 + 2] = 0x4900;
+    }
+    write_npy_f16_bits(dir + "/components/decoder/bound_constants/logit_bias.npy", {1, 512, 3}, constant_values);
+
+    write_file(dir + "/components/manifest.json",
+        "{"
+        "\"task\":\"causal_lm_logits\","
+        "\"family\":\"test\","
+        "\"component_order\":[\"decoder\"],"
+        "\"components\":[{\"component\":\"decoder\",\"graph\":\"components/decoder/graph.cactus\","
+        "\"logical_inputs\":[\"input_ids\"],\"logical_outputs\":[\"logits\"],"
+        "\"runtime_input_node_ids\":[" + std::to_string(runtime) + "],"
+        "\"output_node_ids\":[" + std::to_string(logits) + "],"
+        "\"bound_constant_bindings\":[{\"node_id\":" + std::to_string(constant) + ","
+        "\"value_id\":\"logit_bias\",\"path\":\"components/decoder/bound_constants/logit_bias.npy\","
+        "\"kind\":\"saved_constant\",\"format\":\"npy\",\"precision\":1}]"
+        "}]"
+        "}");
+
+    cactus_model_t model = cactus_init(dir.c_str(), nullptr, false);
+    if (!model) {
+        fs::remove_all(dir);
+        return false;
+    }
+    char response[1024];
+    const char* messages = R"([{"role":"user","content":"A"}])";
+    const char* options = R"({"max_tokens":1,"temperature":0.0,"top_k":1,"auto_handoff":false,"confidence_threshold":-1.0})";
+    int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr, nullptr, nullptr, nullptr, 0);
+    cactus_destroy(model);
+    fs::remove_all(dir);
+    if (result <= 0) {
+        return false;
+    }
+    EngineTestUtils::Metrics metrics;
+    metrics.parse(response);
+    return metrics.success && metrics.response == "B";
+}
+
 int main() {
     TestUtils::TestRunner runner("Model Loading Failure Tests");
     runner.run_test("missing_directory", test_missing_directory());
@@ -280,6 +362,7 @@ int main() {
     runner.run_test("transpiled_causal_lm_completion_works", test_transpiled_causal_lm_completion_works());
     runner.run_test("transpiled_mtp_unavailable_fails_explicitly", test_transpiled_mtp_unavailable_fails_explicitly());
     runner.run_test("transpiled_mtp_completion_works", test_transpiled_mtp_completion_works());
+    runner.run_test("transpiled_bundle_rebinds_saved_constant", test_transpiled_bundle_rebinds_saved_constant());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
