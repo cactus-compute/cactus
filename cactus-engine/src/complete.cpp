@@ -669,7 +669,7 @@ int cactus_complete(
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());
 
-        if (prompt.options.mtp_enabled && !has_images && !has_audio && !has_gemma4_mixed_media) {
+        if (prompt.options.mtp_enabled && !has_images && !has_audio) {
             std::string mtp_status = handle->model->speculative_decode_status();
             if (!mtp_status.empty()) {
                 throw std::runtime_error("MTP requested but unavailable: " + mtp_status);
