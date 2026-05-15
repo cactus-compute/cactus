@@ -456,6 +456,9 @@ struct InferenceOptions {
     bool auto_handoff = true;
     bool handoff_with_images = true;
     bool enable_thinking_if_supported = false;
+    bool mtp_enabled = false;
+    bool mtp_required = false;
+    size_t mtp_draft_tokens = 4;
 };
 
 } // namespace ffi
@@ -1418,6 +1421,29 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
         pos = json.find(':', pos) + 1;
         while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
         options.enable_thinking_if_supported = (json.substr(pos, 4) == "true");
+    }
+
+    pos = json.find("\"mtp_enabled\"");
+    if (pos == std::string::npos) {
+        pos = json.find("\"speculative_decoding\"");
+    }
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.mtp_enabled = (json.substr(pos, 4) == "true");
+    }
+
+    pos = json.find("\"mtp_required\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.mtp_required = (json.substr(pos, 4) == "true");
+    }
+
+    pos = json.find("\"mtp_draft_tokens\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        options.mtp_draft_tokens = std::max<size_t>(1, std::stoul(json.substr(pos)));
     }
 
     pos = json.find("\"stop_sequences\"");

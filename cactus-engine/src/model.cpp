@@ -1,5 +1,8 @@
 #include "engine.h"
 #include "cactus_graph.h"
+#include "mtp_sampler.h"
+#include "mtp_decode.h"
+#include "spec_decode.h"
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -14,6 +17,533 @@
 
 namespace cactus {
 namespace engine {
+
+namespace {
+
+bool file_exists(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    return file.good();
+}
+
+std::string read_text_file(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("unable to open file: " + path);
+    }
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    return buffer.str();
+}
+
+std::string find_transpiled_manifest_path(const std::string& model_folder) {
+    std::string components_manifest = model_folder + "/components/manifest.json";
+    if (file_exists(components_manifest)) {
+        return components_manifest;
+    }
+    std::string root_manifest = model_folder + "/manifest.json";
+    if (file_exists(root_manifest)) {
+        return root_manifest;
+    }
+    return "";
+}
+
+size_t find_json_string_end(const std::string& json, size_t start) {
+    bool escaped = false;
+    for (size_t pos = start; pos < json.size(); ++pos) {
+        char c = json[pos];
+        if (escaped) {
+            escaped = false;
+        } else if (c == '\\') {
+            escaped = true;
+        } else if (c == '"') {
+            return pos;
+        }
+    }
+    return std::string::npos;
+}
+
+std::string json_string_field(const std::string& json, const std::string& key, size_t start = 0) {
+    std::string pattern = "\"" + key + "\"";
+    size_t key_pos = json.find(pattern, start);
+    if (key_pos == std::string::npos) {
+        return "";
+    }
+    size_t colon = json.find(':', key_pos + pattern.size());
+    if (colon == std::string::npos) {
+        return "";
+    }
+    size_t quote = json.find('"', colon + 1);
+    if (quote == std::string::npos) {
+        return "";
+    }
+    size_t end = find_json_string_end(json, quote + 1);
+    if (end == std::string::npos) {
+        return "";
+    }
+    return json.substr(quote + 1, end - quote - 1);
+}
+
+std::vector<size_t> json_integer_array_field(const std::string& json, const std::string& key, size_t start = 0) {
+    std::vector<size_t> values;
+    std::string pattern = "\"" + key + "\"";
+    size_t key_pos = json.find(pattern, start);
+    if (key_pos == std::string::npos) {
+        return values;
+    }
+    size_t open = json.find('[', key_pos + pattern.size());
+    size_t close = json.find(']', open == std::string::npos ? key_pos : open);
+    if (open == std::string::npos || close == std::string::npos) {
+        return values;
+    }
+    size_t pos = open + 1;
+    while (pos < close) {
+        while (pos < close && !std::isdigit(static_cast<unsigned char>(json[pos]))) {
+            ++pos;
+        }
+        if (pos >= close) {
+            break;
+        }
+        size_t end = pos;
+        while (end < close && std::isdigit(static_cast<unsigned char>(json[end]))) {
+            ++end;
+        }
+        values.push_back(static_cast<size_t>(std::stoull(json.substr(pos, end - pos))));
+        pos = end;
+    }
+    return values;
+}
+
+std::vector<std::string> json_string_array_field(const std::string& json, const std::string& key, size_t start = 0) {
+    std::vector<std::string> values;
+    std::string pattern = "\"" + key + "\"";
+    size_t key_pos = json.find(pattern, start);
+    if (key_pos == std::string::npos) {
+        return values;
+    }
+    size_t open = json.find('[', key_pos + pattern.size());
+    size_t close = json.find(']', open == std::string::npos ? key_pos : open);
+    if (open == std::string::npos || close == std::string::npos) {
+        return values;
+    }
+    size_t pos = open + 1;
+    while (pos < close) {
+        size_t quote = json.find('"', pos);
+        if (quote == std::string::npos || quote >= close) {
+            break;
+        }
+        size_t end = find_json_string_end(json, quote + 1);
+        if (end == std::string::npos || end > close) {
+            break;
+        }
+        values.push_back(json.substr(quote + 1, end - quote - 1));
+        pos = end + 1;
+    }
+    return values;
+}
+
+std::string dirname_of(const std::string& path) {
+    size_t slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? "." : path.substr(0, slash);
+}
+
+std::string join_path(const std::string& base, const std::string& rel) {
+    if (rel.empty()) {
+        return base;
+    }
+    if (!rel.empty() && rel[0] == '/') {
+        return rel;
+    }
+    if (base.empty() || base == ".") {
+        return rel;
+    }
+    return base + "/" + rel;
+}
+
+size_t find_component_object(const std::string& manifest, const std::string& component_name) {
+    size_t search = 0;
+    while (true) {
+        size_t component_pos = manifest.find("\"component\"", search);
+        if (component_pos == std::string::npos) {
+            return std::string::npos;
+        }
+        if (json_string_field(manifest, "component", component_pos) == component_name) {
+            size_t object_start = manifest.rfind('{', component_pos);
+            return object_start == std::string::npos ? component_pos : object_start;
+        }
+        search = component_pos + 1;
+    }
+}
+
+size_t find_json_object_field(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\"";
+    size_t key_pos = json.find(pattern);
+    if (key_pos == std::string::npos) {
+        return std::string::npos;
+    }
+    return json.find('{', key_pos + pattern.size());
+}
+
+SpecDecodeManifest parse_spec_decode_manifest_from_json(const std::string& manifest) {
+    size_t spec_pos = find_json_object_field(manifest, "spec_decode");
+    if (spec_pos == std::string::npos) {
+        return {};
+    }
+    SpecDecodeManifest spec;
+    size_t version_key = manifest.find("\"version\"", spec_pos);
+    if (version_key != std::string::npos) {
+        size_t colon = manifest.find(':', version_key);
+        if (colon != std::string::npos) {
+            size_t pos = colon + 1;
+            while (pos < manifest.size() && std::isspace(static_cast<unsigned char>(manifest[pos]))) {
+                ++pos;
+            }
+            if (pos < manifest.size() && std::isdigit(static_cast<unsigned char>(manifest[pos]))) {
+                spec.version = std::stoi(manifest.substr(pos));
+            }
+        }
+    }
+    spec.method = json_string_field(manifest, "method", spec_pos);
+    spec.target.verifier_logits = json_string_field(manifest, "verifier_logits", spec_pos);
+    spec.target.target_hidden_state = json_string_field(manifest, "target_hidden_state", spec_pos);
+    spec.target.assistant_shared_state_tensors = json_string_array_field(manifest, "assistant_shared_state_tensors", spec_pos);
+    spec.assistant.current_token = json_string_field(manifest, "current_token", spec_pos);
+    spec.assistant.previous_target_hidden = json_string_field(manifest, "previous_target_hidden", spec_pos);
+    spec.assistant.target_shared_state_inputs = json_string_array_field(manifest, "target_shared_state_inputs", spec_pos);
+    spec.assistant.position = json_string_field(manifest, "position", spec_pos);
+    spec.assistant.logits_output = json_string_field(manifest, "logits_output", spec_pos);
+    spec.assistant.next_hidden_output = json_string_field(manifest, "next_hidden_output", spec_pos);
+    validate_spec_decode_manifest(spec);
+    return spec;
+}
+
+std::vector<float> logits_row_to_fp32(CactusGraph* gb, size_t logits_node, size_t row) {
+    const auto& logits_buf = gb->get_output_buffer(logits_node);
+    if (logits_buf.shape.empty()) {
+        throw std::runtime_error("transpiled decoder logits output is empty");
+    }
+    const size_t vocab_size = logits_buf.shape.back();
+    size_t row_count = 1;
+    if (logits_buf.shape.size() >= 2) {
+        row_count = logits_buf.shape[logits_buf.shape.size() - 2];
+    }
+    if (row >= row_count) {
+        row = row_count - 1;
+    }
+    const size_t row_offset = row * vocab_size;
+    void* logits_ptr = gb->get_output(logits_node);
+    std::vector<float> logits(vocab_size);
+    if (logits_buf.precision == Precision::FP32) {
+        const float* src = static_cast<const float*>(logits_ptr) + row_offset;
+        std::copy(src, src + vocab_size, logits.begin());
+    } else if (logits_buf.precision == Precision::FP16) {
+        const __fp16* src = static_cast<const __fp16*>(logits_ptr) + row_offset;
+        Quantization::fp16_to_fp32(const_cast<__fp16*>(src), logits.data(), vocab_size);
+    } else {
+        const int8_t* src = static_cast<const int8_t*>(logits_ptr) + row_offset;
+        Quantization::int8_to_fp32(const_cast<int8_t*>(src), logits.data(), vocab_size, 1.0f);
+    }
+    return logits;
+}
+
+class TranspiledCausalLmModel final : public Model {
+public:
+    explicit TranspiledCausalLmModel(std::string manifest_path)
+        : manifest_path_(std::move(manifest_path)) {}
+
+    bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true) override {
+        return Model::init(model_folder, context_size, system_prompt, do_warmup);
+    }
+
+    uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
+                    size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                    float min_p = 0.15f, float repetition_penalty = 1.1f) override {
+        (void)profile_file;
+        (void)repetition_penalty;
+        if (tokens.empty()) {
+            throw std::runtime_error("transpiled causal LM decode requires at least one token");
+        }
+        context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
+        auto* gb = static_cast<CactusGraph*>(graph_handle_);
+        size_t logits_node = run_decoder(gb, context_tokens_);
+        std::vector<float> logits = logits_row_to_fp32(gb, logits_node, context_tokens_.empty() ? 0 : context_tokens_.size() - 1);
+
+        MtpSamplingOptions options;
+        options.temperature = temperature < 0.0f ? config_.default_temperature : temperature;
+        options.top_p = top_p < 0.0f ? config_.default_top_p : top_p;
+        options.top_k = top_k == 0 ? config_.default_top_k : top_k;
+        options.min_p = min_p;
+        if (options.temperature < 0.0f) {
+            options.temperature = 0.0f;
+        }
+        MtpDistribution dist = mtp_distribution_from_logits(std::move(logits), options);
+        uint32_t next_token = mtp_argmax(dist);
+        if (out_entropy) {
+            double entropy = 0.0;
+            for (float p : dist.probabilities) {
+                if (p > 0.0f) {
+                    entropy -= static_cast<double>(p) * std::log(static_cast<double>(p));
+                }
+            }
+            *out_entropy = static_cast<float>(entropy);
+        }
+        record_sampled_token(next_token);
+        return next_token;
+    }
+
+    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "") override {
+        (void)chunk_size;
+        (void)profile_file;
+        context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
+    }
+
+    void reset_cache() override {
+        context_tokens_.clear();
+    }
+
+    std::string speculative_decode_status() const override {
+        return speculative_status_;
+    }
+
+    SpeculativeDecodeResult speculative_decode(
+        const std::vector<uint32_t>& tokens,
+        size_t max_tokens,
+        size_t draft_tokens,
+        float temperature = -1.0f,
+        float top_p = -1.0f,
+        size_t top_k = 0,
+        float min_p = 0.15f,
+        float repetition_penalty = 1.1f) override {
+        (void)repetition_penalty;
+        if (!speculative_status_.empty()) {
+            throw std::runtime_error("MTP requested but unavailable: " + speculative_status_);
+        }
+        if (tokens.empty() || max_tokens == 0) {
+            return {};
+        }
+        context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
+
+        MtpSamplingOptions options;
+        options.temperature = temperature < 0.0f ? config_.default_temperature : temperature;
+        options.top_p = top_p < 0.0f ? config_.default_top_p : top_p;
+        options.top_k = top_k == 0 ? config_.default_top_k : top_k;
+        options.min_p = min_p;
+
+        SpeculativeDecodeResult result;
+        const size_t limit = std::max<size_t>(1, draft_tokens);
+        while (result.tokens.size() < max_tokens) {
+            std::vector<uint32_t> base_context = context_tokens_;
+            MtpDraftBatch draft;
+            draft.tokens.reserve(limit);
+            draft.probabilities.reserve(limit);
+
+            std::vector<uint32_t> assistant_context = base_context;
+            for (size_t i = 0; i < limit && result.tokens.size() + draft.tokens.size() < max_tokens; ++i) {
+                size_t logits_node = run_component_graph(
+                    assistant_graph_.get(),
+                    assistant_runtime_input_node_ids_,
+                    assistant_output_node_ids_,
+                    assistant_context);
+                std::vector<float> logits = logits_row_to_fp32(
+                    assistant_graph_.get(),
+                    logits_node,
+                    assistant_context.empty() ? 0 : assistant_context.size() - 1);
+                MtpDistribution dist = mtp_distribution_from_logits(std::move(logits), options);
+                uint32_t token = mtp_argmax(dist);
+                draft.tokens.push_back(token);
+                draft.probabilities.push_back(std::move(dist));
+                assistant_context.push_back(token);
+            }
+            if (draft.tokens.empty()) {
+                break;
+            }
+
+            std::vector<uint32_t> verify_context = base_context;
+            verify_context.insert(verify_context.end(), draft.tokens.begin(), draft.tokens.end());
+            size_t target_logits_node = run_decoder(static_cast<CactusGraph*>(graph_handle_), verify_context);
+            std::vector<MtpDistribution> target_distributions;
+            target_distributions.reserve(draft.tokens.size() + 1);
+            size_t first_row = base_context.empty() ? 0 : base_context.size() - 1;
+            for (size_t i = 0; i <= draft.tokens.size(); ++i) {
+                auto logits = logits_row_to_fp32(static_cast<CactusGraph*>(graph_handle_), target_logits_node, first_row + i);
+                target_distributions.push_back(mtp_distribution_from_logits(std::move(logits), options));
+            }
+
+            MtpVerificationResult verified = verify_greedy_mtp_draft(draft, target_distributions);
+            result.drafted_tokens += draft.tokens.size();
+            result.accepted_draft_tokens += verified.accepted_draft_tokens;
+            result.rejected_tokens += verified.rejected ? 1 : 0;
+
+            for (uint32_t token : verified.output_tokens) {
+                if (result.tokens.size() >= max_tokens) {
+                    break;
+                }
+                result.tokens.push_back(token);
+                context_tokens_.push_back(token);
+                record_sampled_token(token);
+            }
+        }
+        return result;
+    }
+
+protected:
+    size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override {
+        (void)use_cache;
+        auto* gb = static_cast<CactusGraph*>(graph_handle_);
+        return run_decoder(gb, tokens);
+    }
+
+    void load_weights_to_graph(CactusGraph* gb) override {
+        const std::string manifest = read_text_file(manifest_path_);
+        if (json_string_field(manifest, "task") != "causal_lm_logits") {
+            throw std::runtime_error("transpiled C++ model only supports causal_lm_logits bundles");
+        }
+        const size_t decoder_pos = find_component_object(manifest, "decoder");
+        if (decoder_pos == std::string::npos) {
+            throw std::runtime_error("transpiled causal LM bundle missing decoder component");
+        }
+        const std::string graph_rel = json_string_field(manifest, "graph", decoder_pos);
+        if (graph_rel.empty()) {
+            throw std::runtime_error("transpiled causal LM bundle missing decoder graph");
+        }
+        runtime_input_node_ids_ = json_integer_array_field(manifest, "runtime_input_node_ids", decoder_pos);
+        output_node_ids_ = json_integer_array_field(manifest, "output_node_ids", decoder_pos);
+        if (runtime_input_node_ids_.empty()) {
+            throw std::runtime_error("transpiled causal LM bundle decoder graph has no runtime input node ids");
+        }
+        if (output_node_ids_.empty()) {
+            throw std::runtime_error("transpiled causal LM bundle decoder graph has no output node ids");
+        }
+
+        std::string graph_path = join_path(dirname_of(dirname_of(manifest_path_)), graph_rel);
+        if (!file_exists(graph_path)) {
+            graph_path = join_path(dirname_of(manifest_path_), graph_rel);
+        }
+        if (!file_exists(graph_path)) {
+            throw std::runtime_error("transpiled causal LM bundle decoder graph not found: " + graph_rel);
+        }
+        *gb = CactusGraph::load(graph_path);
+
+        if (manifest.find("\"spec_decode\"") == std::string::npos) {
+            speculative_status_ = "unsupported_target";
+            return;
+        }
+        spec_decode_manifest_ = parse_spec_decode_manifest_from_json(manifest);
+        const size_t assistant_pos = find_component_object(manifest, "assistant");
+        if (assistant_pos == std::string::npos) {
+            speculative_status_ = "assistant_unavailable";
+            return;
+        }
+        const std::string assistant_graph_rel = json_string_field(manifest, "graph", assistant_pos);
+        assistant_runtime_input_node_ids_ = json_integer_array_field(manifest, "runtime_input_node_ids", assistant_pos);
+        assistant_output_node_ids_ = json_integer_array_field(manifest, "output_node_ids", assistant_pos);
+        if (assistant_graph_rel.empty() || assistant_runtime_input_node_ids_.empty() || assistant_output_node_ids_.empty()) {
+            speculative_status_ = "assistant_unavailable";
+            return;
+        }
+        std::string assistant_graph_path = join_path(dirname_of(dirname_of(manifest_path_)), assistant_graph_rel);
+        if (!file_exists(assistant_graph_path)) {
+            assistant_graph_path = join_path(dirname_of(manifest_path_), assistant_graph_rel);
+        }
+        if (!file_exists(assistant_graph_path)) {
+            speculative_status_ = "assistant_unavailable";
+            return;
+        }
+        assistant_graph_ = std::make_unique<CactusGraph>(CactusGraph::load(assistant_graph_path));
+        speculative_status_.clear();
+    }
+
+    size_t build_attention(CactusGraph*, size_t, uint32_t, ComputeBackend, bool = false, size_t = 0) override {
+        throw std::runtime_error("transpiled causal LM model does not expose native attention construction");
+    }
+
+    size_t build_mlp(CactusGraph*, size_t, uint32_t, ComputeBackend) const override {
+        throw std::runtime_error("transpiled causal LM model does not expose native MLP construction");
+    }
+
+    size_t build_transformer_block(CactusGraph*, size_t, uint32_t, ComputeBackend, bool = false, size_t = 0) override {
+        throw std::runtime_error("transpiled causal LM model does not expose native transformer block construction");
+    }
+
+private:
+    size_t run_decoder(CactusGraph* gb, const std::vector<uint32_t>& tokens) {
+        return run_component_graph(gb, runtime_input_node_ids_, output_node_ids_, tokens);
+    }
+
+    size_t run_component_graph(CactusGraph* gb,
+                               const std::vector<size_t>& runtime_input_node_ids,
+                               const std::vector<size_t>& output_node_ids,
+                               const std::vector<uint32_t>& tokens) {
+        if (!gb) {
+            throw std::runtime_error("transpiled causal LM graph is not initialized");
+        }
+        if (runtime_input_node_ids.empty() || output_node_ids.empty()) {
+            throw std::runtime_error("transpiled causal LM decoder manifest is incomplete");
+        }
+        if (tokens.empty()) {
+            throw std::runtime_error("transpiled causal LM decoder requires non-empty input tokens");
+        }
+
+        size_t input_node = runtime_input_node_ids[0];
+        const auto& input_buf = gb->get_output_buffer(input_node);
+        size_t capacity = input_buf.total_size;
+        if (capacity == 0) {
+            for (size_t dim : input_buf.shape) {
+                capacity = capacity == 0 ? dim : capacity * dim;
+            }
+        }
+        if (capacity == 0) {
+            throw std::runtime_error("transpiled causal LM decoder input has empty shape");
+        }
+        if (tokens.size() > capacity) {
+            throw std::runtime_error("transpiled causal LM prompt exceeds decoder graph context");
+        }
+
+        if (input_buf.precision == Precision::FP32) {
+            std::vector<float> data(capacity, 0.0f);
+            for (size_t i = 0; i < tokens.size(); ++i) {
+                data[i] = static_cast<float>(tokens[i]);
+            }
+            gb->set_input(input_node, data.data(), Precision::FP32);
+        } else if (input_buf.precision == Precision::FP16) {
+            std::vector<__fp16> data(capacity, __fp16(0));
+            for (size_t i = 0; i < tokens.size(); ++i) {
+                data[i] = __fp16(static_cast<float>(tokens[i]));
+            }
+            gb->set_input(input_node, data.data(), Precision::FP16);
+        } else {
+            std::vector<int8_t> data(capacity, 0);
+            for (size_t i = 0; i < tokens.size(); ++i) {
+                if (tokens[i] > 127) {
+                    throw std::runtime_error("transpiled causal LM INT8 token input cannot represent token id " + std::to_string(tokens[i]));
+                }
+                data[i] = static_cast<int8_t>(tokens[i]);
+            }
+            gb->set_input(input_node, data.data(), Precision::INT8);
+        }
+        gb->execute();
+        return output_node_ids[0];
+    }
+
+    std::string manifest_path_;
+    SpecDecodeManifest spec_decode_manifest_;
+    std::string speculative_status_ = "unsupported_target";
+    std::vector<size_t> runtime_input_node_ids_;
+    std::vector<size_t> output_node_ids_;
+    std::unique_ptr<CactusGraph> assistant_graph_;
+    std::vector<size_t> assistant_runtime_input_node_ids_;
+    std::vector<size_t> assistant_output_node_ids_;
+    std::vector<uint32_t> context_tokens_;
+};
+
+bool manifest_is_transpiled_causal_lm(const std::string& manifest_path) {
+    if (manifest_path.empty()) {
+        return false;
+    }
+    std::string manifest = read_text_file(manifest_path);
+    return json_string_field(manifest, "task") == "causal_lm_logits";
+}
+
+} // namespace
 
 void ConvCache::init(size_t layers, size_t hidden_dim, size_t window_len, Precision model_precision) {
     num_layers = layers;
@@ -351,6 +881,18 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     uint32_t result_token = *static_cast<uint32_t*>(output_ptr);
     record_sampled_token(result_token);
     return result_token;
+}
+
+Model::SpeculativeDecodeResult Model::speculative_decode(
+    const std::vector<uint32_t>&,
+    size_t,
+    size_t,
+    float,
+    float,
+    size_t,
+    float,
+    float) {
+    throw std::runtime_error("speculative decoding is not available for this model");
 }
 
 size_t Model::sample_token(CactusGraph* gb, size_t logits_node_id, float temperature, float top_p, size_t top_k,
@@ -855,6 +1397,11 @@ std::string Config::to_json() const {
 
 std::unique_ptr<Model> create_model(const std::string& model_folder) {
     CACTUS_LOG_DEBUG("model", "Creating model from: " << model_folder);
+    const std::string transpiled_manifest = find_transpiled_manifest_path(model_folder);
+    if (!transpiled_manifest.empty() && manifest_is_transpiled_causal_lm(transpiled_manifest)) {
+        return std::make_unique<TranspiledCausalLmModel>(transpiled_manifest);
+    }
+
     Config config;
     std::string config_path = model_folder + "/config.txt";
 

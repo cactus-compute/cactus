@@ -338,7 +338,7 @@ std::string build_messages(const std::string& system_prompt,
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
               << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>]"
-              << " [--prompt <text>] [--thinking]\n";
+              << " [--prompt <text>] [--thinking] [--mtp] [--mtp-draft-tokens <n>] [--max-tokens <n>]\n";
 }
 
 } // namespace
@@ -355,6 +355,9 @@ int main(int argc, char** argv) {
     std::string current_audio;
     std::string initial_prompt;
     bool thinking = false;
+    bool mtp = false;
+    int max_tokens = kMaxTokens;
+    int mtp_draft_tokens = 4;
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -368,6 +371,12 @@ int main(int argc, char** argv) {
             initial_prompt = argv[++i];
         } else if (arg == "--thinking") {
             thinking = true;
+        } else if (arg == "--mtp") {
+            mtp = true;
+        } else if (arg == "--mtp-draft-tokens" && i + 1 < argc) {
+            mtp_draft_tokens = std::max(1, std::atoi(argv[++i]));
+        } else if (arg == "--max-tokens" && i + 1 < argc) {
+            max_tokens = std::max(1, std::atoi(argv[++i]));
         }
     }
 
@@ -381,6 +390,9 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "Loading model from " << model_path << "...\n";
+    if (mtp) {
+        cactus_log_set_level(1);
+    }
     cactus_model_t model = cactus_init(model_path.c_str(), nullptr, false);
     if (!model) {
         std::cerr << "Failed to initialize model\n";
@@ -485,8 +497,10 @@ int main(int argc, char** argv) {
         history.push_back({"user", input});
         std::string messages = build_messages(system_prompt, history, current_image, current_audio, attach_media);
         std::string options = "{\"temperature\":0.7,\"top_p\":0.95,\"top_k\":40,\"max_tokens\":"
-            + std::to_string(kMaxTokens)
+            + std::to_string(max_tokens)
             + ",\"enable_thinking_if_supported\":" + (thinking ? "true" : "false")
+            + ",\"mtp_enabled\":" + (mtp ? "true" : "false")
+            + ",\"mtp_draft_tokens\":" + std::to_string(mtp_draft_tokens)
             + ",\"auto_handoff\":false,\"confidence_threshold\":0.0"
             + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
 

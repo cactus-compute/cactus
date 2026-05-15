@@ -669,6 +669,104 @@ int cactus_complete(
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());
 
+        if (prompt.options.mtp_enabled && !has_images && !has_audio && !has_gemma4_mixed_media) {
+            std::string mtp_status = handle->model->speculative_decode_status();
+            if (!mtp_status.empty()) {
+                throw std::runtime_error("MTP requested but unavailable: " + mtp_status);
+            }
+
+            auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
+            size_t prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
+            auto spec_start = std::chrono::high_resolution_clock::now();
+            auto spec = handle->model->speculative_decode(
+                prefill_result.remaining_tokens,
+                prompt.options.max_tokens,
+                prompt.options.mtp_draft_tokens,
+                prompt.options.temperature,
+                prompt.options.top_p,
+                prompt.options.top_k,
+                prompt.options.min_p,
+                prompt.options.repetition_penalty);
+            auto spec_end = std::chrono::high_resolution_clock::now();
+
+            std::vector<uint32_t> generated_tokens = std::move(spec.tokens);
+            for (size_t i = 1; i <= generated_tokens.size(); ++i) {
+                std::vector<uint32_t> prefix(generated_tokens.begin(), generated_tokens.begin() + i);
+                if (matches_stop_sequence(prefix, stop_token_sequences)) {
+                    generated_tokens = std::move(prefix);
+                    trim_stop_suffix(generated_tokens, stop_token_sequences, prompt.options.include_stop_sequences);
+                    break;
+                }
+            }
+
+            handle->processed_tokens = prompt.tokens;
+            handle->processed_tokens.insert(handle->processed_tokens.end(), generated_tokens.begin(), generated_tokens.end());
+            handle->processed_images = prompt.images;
+
+            if (callback) {
+                for (uint32_t token : generated_tokens) {
+                    std::string token_text = tokenizer->decode({token});
+                    callback(token_text.c_str(), token, user_data);
+                }
+            }
+
+            double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(spec_end - start_time).count() / 1000.0;
+            double time_to_first_token = generated_tokens.empty()
+                ? total_time_ms
+                : std::chrono::duration_cast<std::chrono::microseconds>(spec_end - spec_start).count() / 1000.0;
+            double decode_time_ms = std::max(0.0, total_time_ms - time_to_first_token);
+            double prefill_tps = time_to_first_token > 0 ? (prompt_tokens * 1000.0) / time_to_first_token : 0.0;
+            double decode_tps = (generated_tokens.size() > 1 && decode_time_ms > 0)
+                ? ((generated_tokens.size() - 1) * 1000.0) / decode_time_ms
+                : 0.0;
+
+            CACTUS_LOG_INFO("mtp", "drafted=" << spec.drafted_tokens
+                << " accepted=" << spec.accepted_draft_tokens
+                << " rejected=" << spec.rejected_tokens);
+
+            std::string response_text = tokenizer->decode(generated_tokens);
+            std::string regular_response;
+            std::vector<std::string> function_calls;
+            parse_function_calls_from_response(response_text, regular_response, function_calls);
+            if (regular_response.empty() && function_calls.empty()) {
+                regular_response = response_text;
+            }
+
+            std::string result = construct_response_json(
+                regular_response,
+                function_calls,
+                time_to_first_token,
+                total_time_ms,
+                prefill_tps,
+                decode_tps,
+                prompt_tokens,
+                generated_tokens.size(),
+                1.0f,
+                false);
+
+            if (result.length() >= buffer_size) {
+                handle_error_response("Response buffer too small", response_buffer, buffer_size);
+                return -1;
+            }
+
+            std::strcpy(response_buffer, result.c_str());
+            cactus::telemetry::CompletionMetrics metrics{};
+            metrics.success = true;
+            metrics.cloud_handoff = false;
+            metrics.ttft_ms = time_to_first_token;
+            metrics.prefill_tps = prefill_tps;
+            metrics.decode_tps = decode_tps;
+            metrics.response_time_ms = total_time_ms;
+            metrics.confidence = 1.0f;
+            metrics.ram_usage_mb = get_ram_usage_mb();
+            metrics.prefill_tokens = prompt_tokens;
+            metrics.decode_tokens = generated_tokens.size();
+            metrics.error_message = nullptr;
+            metrics.function_calls_json = nullptr;
+            cactus::telemetry::recordCompletion(handle->model_name.c_str(), metrics);
+            return static_cast<int>(result.length());
+        }
+
         std::vector<uint32_t> generated_tokens;
         double time_to_first_token = 0.0;
         float first_token_entropy = 0.0f;

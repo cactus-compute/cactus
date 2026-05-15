@@ -577,6 +577,25 @@ public:
                       size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                       float min_p = 0.15f, float repetition_penalty = 1.1f);
 
+    struct SpeculativeDecodeResult {
+        std::vector<uint32_t> tokens;
+        size_t drafted_tokens = 0;
+        size_t accepted_draft_tokens = 0;
+        size_t rejected_tokens = 0;
+    };
+
+    virtual std::string speculative_decode_status() const { return "unsupported_target"; }
+
+    virtual SpeculativeDecodeResult speculative_decode(
+        const std::vector<uint32_t>& tokens,
+        size_t max_tokens,
+        size_t draft_tokens,
+        float temperature = -1.0f,
+        float top_p = -1.0f,
+        size_t top_k = 0,
+        float min_p = 0.15f,
+        float repetition_penalty = 1.1f);
+
     virtual void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "");
 
     virtual void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
