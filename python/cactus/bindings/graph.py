@@ -431,7 +431,7 @@ class Graph:
             raise RuntimeError("graph_bilinear_interpolation failed")
         return self._tensor_from_node(out.value)
 
-    def set_grouped_scales(self, tensor, group_size, num_groups, scales):
+    def set_grouped_scales(self, tensor, group_size, num_groups, scales, flags=0):
         tensor = self._ensure_tensor(tensor)
         arr = np.ascontiguousarray(scales, dtype=np.float16)
         rc = _lib.cactus_graph_set_grouped_scales(
@@ -439,6 +439,7 @@ class Graph:
             cactus_node_t(tensor.id),
             ctypes.c_size_t(int(group_size)),
             ctypes.c_size_t(int(num_groups)),
+            ctypes.c_uint32(int(flags)),
             arr.ctypes.data_as(ctypes.c_void_p),
         )
         if rc != 0:

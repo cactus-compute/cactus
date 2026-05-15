@@ -667,6 +667,7 @@ public:
     size_t mmap_embeddings(const std::string& filename);
     size_t mmap_weights(const std::string& filename);
     void bind_mmap_weights(size_t node_id, const std::string& filename);
+    void set_grouped_scales(size_t node_id, size_t group_size, size_t num_groups, uint32_t flags, const void* scales);
     void release_weight_pages(size_t node_id);
     void prefetch_weight_pages(size_t node_id);
     void release_all_weight_pages();

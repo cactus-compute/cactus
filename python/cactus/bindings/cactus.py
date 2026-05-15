@@ -266,7 +266,7 @@ _lib.cactus_graph_bilinear_interpolation.argtypes = [
 _lib.cactus_graph_bilinear_interpolation.restype = ctypes.c_int
 _bind_optional(
     "cactus_graph_set_grouped_scales",
-    [cactus_graph_t, cactus_node_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_void_p],
+    [cactus_graph_t, cactus_node_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_void_p],
     ctypes.c_int,
 )
 _bind_optional(

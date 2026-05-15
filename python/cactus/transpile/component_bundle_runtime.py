@@ -69,6 +69,7 @@ class LoadedTensorFile:
     scales: np.memmap | None
     group_size: int
     num_groups: int
+    flags: int
     is_interleaved: bool
     original_n: int
 
@@ -2421,6 +2422,7 @@ def _rebind_bound_constants(
                 cactus_node_t(tensor.id),
                 int(tensor_file.group_size),
                 int(tensor_file.num_groups),
+                int(tensor_file.flags),
                 tensor_file.scales.ctypes.data_as(ctypes.c_void_p),
             )
             if rc != 0:
@@ -2515,6 +2517,7 @@ def _open_cactus_tensor_file(path: str | Path) -> LoadedTensorFile:
         scales=scales,
         group_size=group_size,
         num_groups=num_groups,
+        flags=flags,
         is_interleaved=bool(flags & FLAG_INTERLEAVED),
         original_n=original_n,
     )
