@@ -72,15 +72,23 @@ class FamilyAdapter:
             return AutoModel
         return AutoModelForCausalLM
 
-    def load_processor(self, model_id_or_path: str):
+    def load_processor(self, model_id_or_path: str, *, local_files_only: bool = False):
         patch_transformers_import_compat()
         from transformers import AutoProcessor, AutoTokenizer
 
         try:
-            return AutoProcessor.from_pretrained(model_id_or_path, trust_remote_code=True, local_files_only=Path(model_id_or_path).exists())
+            return AutoProcessor.from_pretrained(
+                model_id_or_path,
+                trust_remote_code=True,
+                local_files_only=local_files_only or Path(model_id_or_path).exists(),
+            )
         except Exception:
             try:
-                return AutoTokenizer.from_pretrained(model_id_or_path, trust_remote_code=True, local_files_only=Path(model_id_or_path).exists())
+                return AutoTokenizer.from_pretrained(
+                    model_id_or_path,
+                    trust_remote_code=True,
+                    local_files_only=local_files_only or Path(model_id_or_path).exists(),
+                )
             except Exception:
                 return None
 
@@ -427,8 +435,8 @@ class Lfm2Adapter(FamilyAdapter):
                 pass
         return AutoModelForCausalLM
 
-    def load_processor(self, model_id_or_path: str):
-        processor = super().load_processor(model_id_or_path)
+    def load_processor(self, model_id_or_path: str, *, local_files_only: bool = False):
+        processor = super().load_processor(model_id_or_path, local_files_only=local_files_only)
         if processor is not None and hasattr(processor, "tokenizer"):
             return processor
         root = Path(model_id_or_path)

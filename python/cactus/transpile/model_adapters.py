@@ -196,17 +196,27 @@ def _select_last_non_pad_token(
     return _select_last_active_token(hidden_or_logits, attention_mask)
 
 
+def _coerce_token_id(value: object) -> int | None:
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        return _coerce_token_id(value[0])
+    if value is None:
+        return None
+    return int(value)
+
+
 def _resolve_model_pad_token_id(model: torch.nn.Module) -> int | None:
     config = getattr(model, "config", None)
     for attr_name in ("pad_token_id", "eos_token_id", "bos_token_id"):
-        value = getattr(config, attr_name, None)
-        if value is not None:
-            return int(value)
+        token_id = _coerce_token_id(getattr(config, attr_name, None))
+        if token_id is not None:
+            return token_id
     generation_config = getattr(model, "generation_config", None)
     for attr_name in ("pad_token_id", "eos_token_id", "bos_token_id"):
-        value = getattr(generation_config, attr_name, None)
-        if value is not None:
-            return int(value)
+        token_id = _coerce_token_id(getattr(generation_config, attr_name, None))
+        if token_id is not None:
+            return token_id
     return None
 
 
@@ -1865,6 +1875,13 @@ class Gemma4CausalLMLogitsAdapter(torch.nn.Module):
         return self.debug_forward(input_ids)[0]
 
     def debug_forward(self, input_ids: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        logits, checkpoints, _ = self.debug_forward_with_shared_kv(input_ids)
+        return logits, checkpoints
+
+    def debug_forward_with_shared_kv(
+        self,
+        input_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, list[torch.Tensor], dict[str, tuple[torch.Tensor, torch.Tensor]]]:
         inputs_embeds = self.backbone.embed_tokens(input_ids)
         per_layer_inputs = None
         if self.backbone.hidden_size_per_layer_input:
@@ -1907,7 +1924,7 @@ class Gemma4CausalLMLogitsAdapter(torch.nn.Module):
 
         hidden_states = self.backbone.norm(hidden_states)
         checkpoints.append(hidden_states)
-        return self.model.lm_head(hidden_states), checkpoints
+        return self.model.lm_head(hidden_states), checkpoints, shared_kv_states
 
     def debug_first_block(self, input_ids: torch.Tensor) -> dict[str, torch.Tensor]:
         inputs_embeds = self.backbone.embed_tokens(input_ids)
@@ -2007,6 +2024,131 @@ class Gemma4CausalLMLogitsAdapter(torch.nn.Module):
                 "sliding_window": None if sliding_window is None else int(sliding_window),
             }
         }
+
+
+class Gemma4SpecDecodeDecoderAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module, *, pad_token_id: int | None = None):
+        super().__init__()
+        self.model = model
+        self.pad_token_id = pad_token_id
+
+    def forward(self, input_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        decoder = Gemma4CausalLMLogitsAdapter(self.model, pad_token_id=self.pad_token_id)
+        logits, checkpoints, shared_kv_states = decoder.debug_forward_with_shared_kv(input_ids)
+        hidden = checkpoints[-1]
+        if hidden.ndim == 2:
+            hidden = hidden.unsqueeze(1)
+        if "full_attention" not in shared_kv_states:
+            raise RuntimeError("Gemma4 spec-decode target missing full_attention shared KV states")
+        if "sliding_attention" not in shared_kv_states:
+            raise RuntimeError("Gemma4 spec-decode target missing sliding_attention shared KV states")
+        full_key, full_value = shared_kv_states["full_attention"]
+        sliding_key, sliding_value = shared_kv_states["sliding_attention"]
+        return logits, hidden, full_key, full_value, sliding_key, sliding_value
+
+
+class Gemma4TargetEmbeddingAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module):
+        super().__init__()
+        model_backbone = getattr(model, "model", model)
+        self.backbone = getattr(model_backbone, "language_model", model_backbone)
+
+    def forward(self, current_token_ids: torch.Tensor) -> torch.Tensor:
+        embed_tokens = getattr(self.backbone, "embed_tokens", None)
+        if not isinstance(embed_tokens, torch.nn.Module):
+            raise TypeError("Gemma4 target embedding component requires backbone.embed_tokens")
+        return embed_tokens(current_token_ids)
+
+
+class Gemma4AssistantMTPAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module):
+        super().__init__()
+        self.model = model
+
+    @staticmethod
+    def _masked_embedding_logits(hidden_states: torch.Tensor, module: torch.nn.Module, lm_head_weight: torch.Tensor) -> torch.Tensor:
+        centroids = getattr(module, "centroids", None)
+        token_ordering = getattr(module, "token_ordering", None)
+        num_centroids = int(getattr(module, "num_centroids"))
+        vocab_size_per_centroid = int(getattr(module, "vocab_size_per_centroid"))
+        centroid_intermediate_top_k = int(getattr(module, "centroid_intermediate_top_k"))
+        hidden_size = int(getattr(module, "hidden_size"))
+        vocab_size = int(getattr(module, "vocab_size"))
+        if not isinstance(centroids, torch.nn.Module) or not isinstance(token_ordering, torch.Tensor):
+            raise TypeError("Gemma4 assistant ordered embedding head requires centroids and token_ordering")
+
+        batch, seq_len, _ = hidden_states.shape
+        centroid_logits = centroids(hidden_states)
+        _, top_k_indices = torch.topk(centroid_logits, k=centroid_intermediate_top_k, dim=-1)
+        canonical_positions_per_cluster = token_ordering.long().view(num_centroids, vocab_size_per_centroid)
+        selected_canonical = canonical_positions_per_cluster[top_k_indices]
+        selected_flat = selected_canonical.reshape(-1)
+        selected_embeddings = lm_head_weight[selected_flat].view(
+            batch,
+            seq_len,
+            centroid_intermediate_top_k * vocab_size_per_centroid,
+            hidden_size,
+        )
+        selected_logits = (hidden_states.unsqueeze(-2) @ selected_embeddings.transpose(-1, -2)).squeeze(-2)
+        mask_value = selected_logits.min() - selected_logits.new_tensor(1.0)
+        output = selected_logits.new_ones((batch, seq_len, vocab_size)) * mask_value
+        scatter_idx = selected_canonical.view(batch, seq_len, -1)
+        return output.scatter(dim=-1, index=scatter_idx, src=selected_logits)
+
+    def forward(
+        self,
+        current_token_embedding: torch.Tensor,
+        previous_target_hidden: torch.Tensor,
+        position: torch.Tensor,
+        full_attention_key: torch.Tensor,
+        full_attention_value: torch.Tensor,
+        sliding_attention_key: torch.Tensor,
+        sliding_attention_value: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        inputs_embeds = torch.cat([current_token_embedding, previous_target_hidden], dim=-1)
+        shared_kv_states = {
+            "full_attention": (full_attention_key, full_attention_value),
+            "sliding_attention": (sliding_attention_key, sliding_attention_value),
+        }
+        pre_projection = getattr(self.model, "pre_projection", None)
+        create_attention_masks = getattr(self.model, "create_attention_masks", None)
+        assistant_backbone = getattr(self.model, "model", None)
+        post_projection = getattr(self.model, "post_projection", None)
+        lm_head = getattr(self.model, "lm_head", None)
+        if (
+            isinstance(pre_projection, torch.nn.Module)
+            and callable(create_attention_masks)
+            and isinstance(assistant_backbone, torch.nn.Module)
+            and isinstance(post_projection, torch.nn.Module)
+            and isinstance(lm_head, torch.nn.Module)
+        ):
+            projected_inputs = pre_projection(inputs_embeds)
+            attention_masks = create_attention_masks(projected_inputs, None, shared_kv_states)
+            outputs = assistant_backbone(
+                input_ids=None,
+                inputs_embeds=projected_inputs,
+                attention_mask=attention_masks,
+                position_ids=position,
+                shared_kv_states=shared_kv_states,
+                use_cache=False,
+            )
+            last_hidden_state = _extract_tensor_output(outputs, preferred_field="last_hidden_state")
+            next_hidden = post_projection(last_hidden_state)
+            logits = lm_head(last_hidden_state)
+            return logits, next_hidden
+
+        outputs = self.model(
+            input_ids=None,
+            inputs_embeds=inputs_embeds,
+            attention_mask=None,
+            position_ids=position,
+            shared_kv_states=shared_kv_states,
+            use_cache=False,
+        )
+        return (
+            _extract_tensor_output(outputs, preferred_field="logits"),
+            _extract_tensor_output(outputs, preferred_field="last_hidden_state"),
+        )
 
 
 def _gemma4_apply_final_logit_softcapping(model: torch.nn.Module, logits: torch.Tensor) -> torch.Tensor:
@@ -3457,7 +3599,7 @@ def _family_key(model: torch.nn.Module) -> str:
     module_name = type(model).__module__
     if module_name.startswith("transformers.models.whisper."):
         return "whisper"
-    if module_name.startswith("transformers.models.gemma4."):
+    if module_name.startswith("transformers.models.gemma4.") or module_name.startswith("transformers.models.gemma4_assistant."):
         return "gemma4"
     if module_name.startswith("transformers.models.gemma3."):
         return "gemma3"
@@ -3664,6 +3806,121 @@ def _build_lfm2_vl_multimodal_component_specs(
     return specs
 
 
+def _named_or_default(
+    named_tensors: dict[str, torch.Tensor],
+    key: str,
+    fallback: torch.Tensor,
+) -> torch.Tensor:
+    value = named_tensors.get(key)
+    return value if value is not None else fallback
+
+
+def _gemma4_assistant_default_dims(model: torch.nn.Module) -> tuple[int, int, int]:
+    config = getattr(model, "config", None)
+    hidden_dim = getattr(config, "backbone_hidden_size", None)
+    if hidden_dim is None:
+        pre_projection = getattr(model, "pre_projection", None)
+        in_features = getattr(pre_projection, "in_features", None)
+        if isinstance(in_features, int) and in_features > 0:
+            hidden_dim = in_features // 2
+    if hidden_dim is None:
+        text_config = getattr(config, "text_config", None)
+        hidden_dim = getattr(text_config, "hidden_size", None)
+    hidden_dim = int(hidden_dim or 1)
+
+    text_config = getattr(config, "text_config", None)
+    full_head_dim = int(getattr(text_config, "global_head_dim", None) or hidden_dim)
+    sliding_head_dim = int(getattr(text_config, "head_dim", None) or full_head_dim)
+    return hidden_dim, full_head_dim, sliding_head_dim
+
+
+def _build_gemma4_spec_decode_component_specs(
+    model: torch.nn.Module,
+    *,
+    named_tensors: dict[str, torch.Tensor],
+    weights_dir: str | None = None,
+    components: tuple[str, ...] | None = None,
+) -> list[ComponentModuleSpec]:
+    input_ids = named_tensors.get("input_ids")
+    if input_ids is None:
+        input_ids = torch.zeros((1, 1), dtype=torch.long)
+    current_token_ids = named_tensors.get("current_token_ids")
+    if current_token_ids is None:
+        current_token_ids = input_ids[:, -1:].to(dtype=torch.long)
+
+    default_hidden_dim, default_full_head_dim, default_sliding_head_dim = _gemma4_assistant_default_dims(model)
+    hidden_dim = int(named_tensors.get("current_token_embedding", torch.zeros((1, 1, default_hidden_dim))).shape[-1])
+    default_embedding = torch.zeros((1, 1, hidden_dim), dtype=torch.float32)
+    default_position = torch.zeros((1, 1), dtype=torch.long)
+    default_full_shared = torch.zeros((1, 1, 1, default_full_head_dim), dtype=torch.float32)
+    default_sliding_shared = torch.zeros((1, 1, 1, default_sliding_head_dim), dtype=torch.float32)
+
+    requested = tuple(components or ("decoder", "target_embedding"))
+    specs: list[ComponentModuleSpec] = []
+    common_graph_meta = {
+        "task": "causal_lm_logits",
+        "adapter_family": "gemma4",
+        "spec_decode_method": "single_position_mtp",
+    }
+    if weights_dir:
+        common_graph_meta["weights_dir"] = weights_dir
+    if "decoder" in requested:
+        specs.append(ComponentModuleSpec(
+            component="decoder",
+            module=Gemma4SpecDecodeDecoderAdapter(model).eval(),
+            example_inputs=(input_ids,),
+            input_keys=("input_ids",),
+            output_keys=(
+                "verifier_logits",
+                "target_hidden_state",
+                "shared_kv.full_attention.key",
+                "shared_kv.full_attention.value",
+                "shared_kv.sliding_attention.key",
+                "shared_kv.sliding_attention.value",
+            ),
+            graph_meta={**common_graph_meta, "component": "decoder"},
+            metadata={"family": "gemma4", "task": "causal_lm_logits"},
+        ))
+    if "target_embedding" in requested:
+        specs.append(ComponentModuleSpec(
+            component="target_embedding",
+            module=Gemma4TargetEmbeddingAdapter(model).eval(),
+            example_inputs=(current_token_ids,),
+            input_keys=("current_token_ids",),
+            output_keys=("target_token_embedding",),
+            graph_meta={**common_graph_meta, "component": "target_embedding"},
+            metadata={"family": "gemma4", "task": "causal_lm_logits"},
+        ))
+    if "assistant" in requested:
+        assistant_inputs = (
+            _named_or_default(named_tensors, "current_token_embedding", default_embedding),
+            _named_or_default(named_tensors, "previous_target_hidden", default_embedding),
+            _named_or_default(named_tensors, "position", default_position),
+            _named_or_default(named_tensors, "shared_kv.full_attention.key", default_full_shared),
+            _named_or_default(named_tensors, "shared_kv.full_attention.value", default_full_shared),
+            _named_or_default(named_tensors, "shared_kv.sliding_attention.key", default_sliding_shared),
+            _named_or_default(named_tensors, "shared_kv.sliding_attention.value", default_sliding_shared),
+        )
+        specs.append(ComponentModuleSpec(
+            component="assistant",
+            module=Gemma4AssistantMTPAdapter(model).eval(),
+            example_inputs=assistant_inputs,
+            input_keys=(
+                "current_token_embedding",
+                "previous_target_hidden",
+                "position",
+                "shared_kv.full_attention.key",
+                "shared_kv.full_attention.value",
+                "shared_kv.sliding_attention.key",
+                "shared_kv.sliding_attention.value",
+            ),
+            output_keys=("logits_output", "next_hidden_output"),
+            graph_meta={**common_graph_meta, "component": "assistant"},
+            metadata={"family": "gemma4", "task": "causal_lm_logits"},
+        ))
+    return specs
+
+
 def build_component_module_specs(
     model: torch.nn.Module,
     *,
@@ -3674,6 +3931,13 @@ def build_component_module_specs(
     components: tuple[str, ...] | None = None,
 ) -> list[ComponentModuleSpec] | None:
     family = _family_key(model)
+    if family == "gemma4" and task == "causal_lm_logits":
+        return _build_gemma4_spec_decode_component_specs(
+            model,
+            named_tensors=named_tensors,
+            weights_dir=weights_dir,
+            components=components,
+        )
     if family == "gemma4" and task == "multimodal_causal_lm_logits":
         return _build_gemma4_multimodal_component_specs(
             model,

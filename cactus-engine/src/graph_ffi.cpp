@@ -389,6 +389,21 @@ int cactus_graph_view(cactus_graph_t graph, cactus_node_t x, const size_t* shape
     }
 }
 
+int cactus_graph_expand(cactus_graph_t graph, cactus_node_t x, const size_t* shape, size_t rank, cactus_node_t* out) {
+    if (!graph || !shape || rank == 0 || !out) {
+        last_error_message = "Invalid args to cactus_graph_expand";
+        return -1;
+    }
+    try {
+        std::vector<size_t> s(shape, shape + rank);
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.expand(static_cast<size_t>(x), s));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_flatten(cactus_graph_t graph, cactus_node_t x, int32_t start_dim, int32_t end_dim, cactus_node_t* out) {
     if (!graph || !out) {
         last_error_message = "Invalid args to cactus_graph_flatten";

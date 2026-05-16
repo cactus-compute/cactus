@@ -23,6 +23,7 @@ DECLARE_COMPUTE(compute_unary_op_node);
 DECLARE_COMPUTE(compute_activation_node);
 DECLARE_COMPUTE(compute_reduce_node);
 DECLARE_COMPUTE(compute_reshape_node);
+DECLARE_COMPUTE(compute_expand_node);
 DECLARE_COMPUTE(compute_precision_cast_node);
 DECLARE_COMPUTE(compute_matmul_node);
 DECLARE_COMPUTE(compute_rms_norm_node);
@@ -84,7 +85,7 @@ DECLARE_COMPUTE(compute_spectrogram_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::DENSE_MLP_TQ_FUSED) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::EXPAND) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -122,6 +123,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::FLATTEN)] = compute_reshape_node;
     dispatch_flat[static_cast<int>(OpType::VIEW)] = compute_reshape_node;
     dispatch_flat[static_cast<int>(OpType::RESHAPE)] = compute_reshape_node;
+    dispatch_flat[static_cast<int>(OpType::EXPAND)] = compute_expand_node;
     dispatch_flat[static_cast<int>(OpType::PRECISION_CAST)] = compute_precision_cast_node;
     dispatch_flat[static_cast<int>(OpType::MATMUL)] = compute_matmul_node;
     dispatch_flat[static_cast<int>(OpType::RMS_NORM)] = compute_rms_norm_node;
@@ -221,7 +223,7 @@ static const char* op_type_names[] = {
     "KV_CACHE_STATE", "KV_CACHE_APPEND", "ATTENTION_CACHED",
     "CONV_CACHE_STATE", "CONV_CACHE_APPEND",
     "RFFT", "IRFFT", "MEL_FILTER_BANK", "SPECTROGRAM",
-    "IMAGE_PREPROCESS", "CLAMP", "DENSE_MLP_TQ_FUSED"
+    "IMAGE_PREPROCESS", "CLAMP", "DENSE_MLP_TQ_FUSED", "EXPAND"
 };
 
 static const char* get_op_name(OpType op) {

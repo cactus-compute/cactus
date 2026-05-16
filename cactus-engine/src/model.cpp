@@ -259,7 +259,17 @@ size_t find_component_object(const std::string& manifest, const std::string& com
         }
         if (json_string_field(manifest, "component", component_pos) == component_name) {
             size_t object_start = manifest.rfind('{', component_pos);
-            return object_start == std::string::npos ? component_pos : object_start;
+            while (object_start != std::string::npos) {
+                size_t object_end = find_json_matching_brace(manifest, object_start);
+                if (object_end != std::string::npos && object_end > component_pos) {
+                    return object_start;
+                }
+                if (object_start == 0) {
+                    break;
+                }
+                object_start = manifest.rfind('{', object_start - 1);
+            }
+            return component_pos;
         }
         search = component_pos + 1;
     }
@@ -274,35 +284,81 @@ size_t find_json_object_field(const std::string& json, const std::string& key) {
     return json.find('{', key_pos + pattern.size());
 }
 
+std::string json_object_field(const std::string& json, const std::string& key, size_t start = 0) {
+    std::string pattern = "\"" + key + "\"";
+    size_t key_pos = json.find(pattern, start);
+    if (key_pos == std::string::npos) {
+        return "";
+    }
+    size_t open = json.find('{', key_pos + pattern.size());
+    if (open == std::string::npos) {
+        return "";
+    }
+    size_t close = find_json_matching_brace(json, open);
+    if (close == std::string::npos) {
+        return "";
+    }
+    return json.substr(open, close - open + 1);
+}
+
+bool has_string_value(const std::vector<std::string>& values, const std::string& expected) {
+    return std::find(values.begin(), values.end(), expected) != values.end();
+}
+
+bool has_all_string_values(const std::vector<std::string>& values, std::initializer_list<const char*> expected) {
+    for (const char* value : expected) {
+        if (!has_string_value(values, value)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 SpecDecodeManifest parse_spec_decode_manifest_from_json(const std::string& manifest) {
     size_t spec_pos = find_json_object_field(manifest, "spec_decode");
     if (spec_pos == std::string::npos) {
         return {};
     }
+    const std::string spec_json = json_object_field(manifest, "spec_decode");
+    const std::string target_json = json_object_field(spec_json, "target");
+    const std::string target_shared_kv = json_object_field(target_json, "shared_kv");
+    const std::string target_full_attention = json_object_field(target_shared_kv, "full_attention");
+    const std::string target_sliding_attention = json_object_field(target_shared_kv, "sliding_attention");
+    const std::string assistant_json = json_object_field(spec_json, "assistant");
+    const std::string assistant_shared_kv = json_object_field(assistant_json, "shared_kv");
+    const std::string assistant_full_attention = json_object_field(assistant_shared_kv, "full_attention");
+    const std::string assistant_sliding_attention = json_object_field(assistant_shared_kv, "sliding_attention");
     SpecDecodeManifest spec;
-    size_t version_key = manifest.find("\"version\"", spec_pos);
+    size_t version_key = spec_json.find("\"version\"");
     if (version_key != std::string::npos) {
-        size_t colon = manifest.find(':', version_key);
+        size_t colon = spec_json.find(':', version_key);
         if (colon != std::string::npos) {
             size_t pos = colon + 1;
-            while (pos < manifest.size() && std::isspace(static_cast<unsigned char>(manifest[pos]))) {
+            while (pos < spec_json.size() && std::isspace(static_cast<unsigned char>(spec_json[pos]))) {
                 ++pos;
             }
-            if (pos < manifest.size() && std::isdigit(static_cast<unsigned char>(manifest[pos]))) {
-                spec.version = std::stoi(manifest.substr(pos));
+            if (pos < spec_json.size() && std::isdigit(static_cast<unsigned char>(spec_json[pos]))) {
+                spec.version = std::stoi(spec_json.substr(pos));
             }
         }
     }
-    spec.method = json_string_field(manifest, "method", spec_pos);
-    spec.target.verifier_logits = json_string_field(manifest, "verifier_logits", spec_pos);
-    spec.target.target_hidden_state = json_string_field(manifest, "target_hidden_state", spec_pos);
-    spec.target.assistant_shared_state_tensors = json_string_array_field(manifest, "assistant_shared_state_tensors", spec_pos);
-    spec.assistant.current_token = json_string_field(manifest, "current_token", spec_pos);
-    spec.assistant.previous_target_hidden = json_string_field(manifest, "previous_target_hidden", spec_pos);
-    spec.assistant.target_shared_state_inputs = json_string_array_field(manifest, "target_shared_state_inputs", spec_pos);
-    spec.assistant.position = json_string_field(manifest, "position", spec_pos);
-    spec.assistant.logits_output = json_string_field(manifest, "logits_output", spec_pos);
-    spec.assistant.next_hidden_output = json_string_field(manifest, "next_hidden_output", spec_pos);
+    spec.method = json_string_field(spec_json, "method");
+    spec.target.verifier_logits = json_string_field(target_json, "verifier_logits");
+    spec.target.target_hidden_state = json_string_field(target_json, "target_hidden_state");
+    spec.target.target_token_embedding = json_string_field(target_json, "target_token_embedding");
+    spec.target.shared_kv_full_key = json_string_field(target_full_attention, "key");
+    spec.target.shared_kv_full_value = json_string_field(target_full_attention, "value");
+    spec.target.shared_kv_sliding_key = json_string_field(target_sliding_attention, "key");
+    spec.target.shared_kv_sliding_value = json_string_field(target_sliding_attention, "value");
+    spec.assistant.current_token_embedding = json_string_field(assistant_json, "current_token_embedding");
+    spec.assistant.previous_target_hidden = json_string_field(assistant_json, "previous_target_hidden");
+    spec.assistant.position = json_string_field(assistant_json, "position");
+    spec.assistant.shared_kv_full_key = json_string_field(assistant_full_attention, "key");
+    spec.assistant.shared_kv_full_value = json_string_field(assistant_full_attention, "value");
+    spec.assistant.shared_kv_sliding_key = json_string_field(assistant_sliding_attention, "key");
+    spec.assistant.shared_kv_sliding_value = json_string_field(assistant_sliding_attention, "value");
+    spec.assistant.logits_output = json_string_field(assistant_json, "logits_output");
+    spec.assistant.next_hidden_output = json_string_field(assistant_json, "next_hidden_output");
     validate_spec_decode_manifest(spec);
     return spec;
 }
@@ -533,26 +589,50 @@ public:
         const size_t limit = std::max<size_t>(1, draft_tokens);
         while (result.tokens.size() < max_tokens) {
             std::vector<uint32_t> base_context = context_tokens_;
+            CactusGraph* target_graph = static_cast<CactusGraph*>(graph_handle_);
+            run_decoder(target_graph, base_context);
+            std::vector<float> current_embedding = run_target_embedding(base_context.back());
+            std::vector<float> previous_hidden = output_row_to_fp32(
+                target_graph,
+                output_node_for_role(decoder_logical_outputs_, output_node_ids_, "target_hidden_state"),
+                base_context.empty() ? 0 : base_context.size() - 1);
+            std::vector<float> full_key = output_tensor_to_fp32(
+                target_graph,
+                output_node_for_role(decoder_logical_outputs_, output_node_ids_, "shared_kv.full_attention.key"));
+            std::vector<float> full_value = output_tensor_to_fp32(
+                target_graph,
+                output_node_for_role(decoder_logical_outputs_, output_node_ids_, "shared_kv.full_attention.value"));
+            std::vector<float> sliding_key = output_tensor_to_fp32(
+                target_graph,
+                output_node_for_role(decoder_logical_outputs_, output_node_ids_, "shared_kv.sliding_attention.key"));
+            std::vector<float> sliding_value = output_tensor_to_fp32(
+                target_graph,
+                output_node_for_role(decoder_logical_outputs_, output_node_ids_, "shared_kv.sliding_attention.value"));
             MtpDraftBatch draft;
             draft.tokens.reserve(limit);
             draft.probabilities.reserve(limit);
 
-            std::vector<uint32_t> assistant_context = base_context;
             for (size_t i = 0; i < limit && result.tokens.size() + draft.tokens.size() < max_tokens; ++i) {
-                size_t logits_node = run_component_graph(
-                    assistant_graph_.get(),
-                    assistant_runtime_input_node_ids_,
-                    assistant_output_node_ids_,
-                    assistant_context);
+                size_t logits_node = run_assistant_graph(
+                    current_embedding,
+                    previous_hidden,
+                    full_key,
+                    full_value,
+                    sliding_key,
+                    sliding_value,
+                    base_context.size() + i);
                 std::vector<float> logits = logits_row_to_fp32(
                     assistant_graph_.get(),
                     logits_node,
-                    assistant_context.empty() ? 0 : assistant_context.size() - 1);
+                    0);
                 MtpDistribution dist = mtp_distribution_from_logits(std::move(logits), options);
                 uint32_t token = mtp_argmax(dist);
                 draft.tokens.push_back(token);
                 draft.probabilities.push_back(std::move(dist));
-                assistant_context.push_back(token);
+                previous_hidden = output_tensor_to_fp32(
+                    assistant_graph_.get(),
+                    output_node_for_role(assistant_logical_outputs_, assistant_output_node_ids_, "next_hidden_output"));
+                current_embedding = run_target_embedding(token);
             }
             if (draft.tokens.empty()) {
                 break;
@@ -602,12 +682,13 @@ protected:
         if (decoder_pos == std::string::npos) {
             throw std::runtime_error("transpiled causal LM bundle missing decoder component");
         }
-        const std::string graph_rel = json_string_field(manifest, "graph", decoder_pos);
+        const std::string decoder_json = manifest.substr(decoder_pos, find_json_matching_brace(manifest, decoder_pos) - decoder_pos + 1);
+        const std::string graph_rel = json_string_field(decoder_json, "graph");
         if (graph_rel.empty()) {
             throw std::runtime_error("transpiled causal LM bundle missing decoder graph");
         }
-        runtime_input_node_ids_ = json_integer_array_field(manifest, "runtime_input_node_ids", decoder_pos);
-        output_node_ids_ = json_integer_array_field(manifest, "output_node_ids", decoder_pos);
+        runtime_input_node_ids_ = json_integer_array_field(decoder_json, "runtime_input_node_ids");
+        output_node_ids_ = json_integer_array_field(decoder_json, "output_node_ids");
         if (runtime_input_node_ids_.empty()) {
             throw std::runtime_error("transpiled causal LM bundle decoder graph has no runtime input node ids");
         }
@@ -625,7 +706,7 @@ protected:
             throw std::runtime_error("transpiled causal LM bundle decoder graph not found: " + graph_rel);
         }
         *gb = CactusGraph::load(graph_path);
-        bind_saved_constants(manifest.substr(decoder_pos, find_json_matching_brace(manifest, decoder_pos) - decoder_pos + 1),
+        bind_saved_constants(decoder_json,
                              gb,
                              bound_constant_storage_,
                              bundle_root,
@@ -636,16 +717,95 @@ protected:
             return;
         }
         spec_decode_manifest_ = parse_spec_decode_manifest_from_json(manifest);
+        decoder_logical_outputs_ = json_string_array_field(decoder_json, "logical_outputs");
+        if (!has_all_string_values(decoder_logical_outputs_, {
+                "verifier_logits",
+                "target_hidden_state",
+                "shared_kv.full_attention.key",
+                "shared_kv.full_attention.value",
+                "shared_kv.sliding_attention.key",
+                "shared_kv.sliding_attention.value",
+            })) {
+            speculative_status_ = "target_roles_unavailable";
+            return;
+        }
+        if (output_node_ids_.size() < decoder_logical_outputs_.size()) {
+            speculative_status_ = "target_roles_unavailable";
+            return;
+        }
+        const size_t target_embedding_pos = find_component_object(manifest, "target_embedding");
+        if (target_embedding_pos == std::string::npos) {
+            speculative_status_ = "target_embedding_unavailable";
+            return;
+        }
+        const std::string target_embedding_json = manifest.substr(target_embedding_pos, find_json_matching_brace(manifest, target_embedding_pos) - target_embedding_pos + 1);
+        const std::string target_embedding_graph_rel = json_string_field(target_embedding_json, "graph");
+        target_embedding_runtime_input_node_ids_ = json_integer_array_field(target_embedding_json, "runtime_input_node_ids");
+        target_embedding_output_node_ids_ = json_integer_array_field(target_embedding_json, "output_node_ids");
+        if (target_embedding_graph_rel.empty() ||
+            target_embedding_runtime_input_node_ids_.empty() ||
+            target_embedding_output_node_ids_.empty()) {
+            speculative_status_ = "target_embedding_unavailable";
+            return;
+        }
+        target_embedding_logical_inputs_ = json_string_array_field(target_embedding_json, "logical_inputs");
+        target_embedding_logical_outputs_ = json_string_array_field(target_embedding_json, "logical_outputs");
+        if (!has_string_value(target_embedding_logical_inputs_, "current_token_ids") ||
+            !has_string_value(target_embedding_logical_outputs_, "target_token_embedding")) {
+            speculative_status_ = "target_embedding_unavailable";
+            return;
+        }
+        if (target_embedding_runtime_input_node_ids_.size() < target_embedding_logical_inputs_.size() ||
+            target_embedding_output_node_ids_.size() < target_embedding_logical_outputs_.size()) {
+            speculative_status_ = "target_embedding_unavailable";
+            return;
+        }
+        std::string target_embedding_graph_path = join_path(bundle_root, target_embedding_graph_rel);
+        if (!file_exists(target_embedding_graph_path)) {
+            target_embedding_graph_path = join_path(manifest_dir, target_embedding_graph_rel);
+        }
+        if (!file_exists(target_embedding_graph_path)) {
+            speculative_status_ = "target_embedding_unavailable";
+            return;
+        }
+        target_embedding_graph_ = std::make_unique<CactusGraph>(CactusGraph::load(target_embedding_graph_path));
+        bind_saved_constants(target_embedding_json,
+                             target_embedding_graph_.get(),
+                             target_embedding_bound_constant_storage_,
+                             bundle_root,
+                             manifest_dir);
+
         const size_t assistant_pos = find_component_object(manifest, "assistant");
         if (assistant_pos == std::string::npos) {
             speculative_status_ = "assistant_unavailable";
             return;
         }
-        const std::string assistant_graph_rel = json_string_field(manifest, "graph", assistant_pos);
-        assistant_runtime_input_node_ids_ = json_integer_array_field(manifest, "runtime_input_node_ids", assistant_pos);
-        assistant_output_node_ids_ = json_integer_array_field(manifest, "output_node_ids", assistant_pos);
+        const std::string assistant_json = manifest.substr(assistant_pos, find_json_matching_brace(manifest, assistant_pos) - assistant_pos + 1);
+        const std::string assistant_graph_rel = json_string_field(assistant_json, "graph");
+        assistant_runtime_input_node_ids_ = json_integer_array_field(assistant_json, "runtime_input_node_ids");
+        assistant_output_node_ids_ = json_integer_array_field(assistant_json, "output_node_ids");
         if (assistant_graph_rel.empty() || assistant_runtime_input_node_ids_.empty() || assistant_output_node_ids_.empty()) {
             speculative_status_ = "assistant_unavailable";
+            return;
+        }
+        assistant_logical_inputs_ = json_string_array_field(assistant_json, "logical_inputs");
+        assistant_logical_outputs_ = json_string_array_field(assistant_json, "logical_outputs");
+        if (!has_all_string_values(assistant_logical_inputs_, {
+                "current_token_embedding",
+                "previous_target_hidden",
+                "position",
+                "shared_kv.full_attention.key",
+                "shared_kv.full_attention.value",
+                "shared_kv.sliding_attention.key",
+                "shared_kv.sliding_attention.value",
+            }) ||
+            !has_all_string_values(assistant_logical_outputs_, {"logits_output", "next_hidden_output"})) {
+            speculative_status_ = "assistant_roles_unavailable";
+            return;
+        }
+        if (assistant_runtime_input_node_ids_.size() < assistant_logical_inputs_.size() ||
+            assistant_output_node_ids_.size() < assistant_logical_outputs_.size()) {
+            speculative_status_ = "assistant_roles_unavailable";
             return;
         }
         std::string assistant_graph_path = join_path(bundle_root, assistant_graph_rel);
@@ -657,7 +817,7 @@ protected:
             return;
         }
         assistant_graph_ = std::make_unique<CactusGraph>(CactusGraph::load(assistant_graph_path));
-        bind_saved_constants(manifest.substr(assistant_pos, find_json_matching_brace(manifest, assistant_pos) - assistant_pos + 1),
+        bind_saved_constants(assistant_json,
                              assistant_graph_.get(),
                              assistant_bound_constant_storage_,
                              bundle_root,
@@ -685,20 +845,27 @@ private:
                               const std::string& manifest_dir) {
         for (const std::string& binding : json_object_array_field(component_json, "bound_constant_bindings")) {
             std::string kind = json_string_field(binding, "kind");
-            if (!kind.empty() && kind != "saved_constant") {
-                continue;
-            }
             std::string format = json_string_field(binding, "format");
             std::string rel_path = json_string_field(binding, "path");
             int node_id = json_integer_field(binding, "node_id", 0, -1);
             if (node_id < 0 || rel_path.empty()) {
                 throw std::runtime_error("transpiled bound constant binding is missing node_id or path");
             }
+            std::string path = resolve_manifest_path(bundle_root, manifest_dir, rel_path);
+            if (kind == "weight" || kind == "embedding") {
+                if (std::getenv("CACTUS_TRACE_BINDINGS")) {
+                    std::cerr << "[binding] " << kind << " node=" << node_id << " path=" << path << "\n";
+                }
+                graph->bind_mmap_weights(static_cast<size_t>(node_id), path);
+                continue;
+            }
+            if (!kind.empty() && kind != "saved_constant") {
+                continue;
+            }
             if (!format.empty() && format != "npy") {
                 throw std::runtime_error("unsupported transpiled bound constant format: " + format);
             }
 
-            std::string path = resolve_manifest_path(bundle_root, manifest_dir, rel_path);
             LoadedNpyArray array = load_npy_array(path);
             int manifest_precision = json_integer_field(binding, "precision", 0, static_cast<int>(array.precision));
             Precision expected_precision = precision_from_manifest_value(manifest_precision, path);
@@ -720,6 +887,131 @@ private:
             storage.push_back(std::move(array.bytes));
             graph->set_external_input(static_cast<size_t>(node_id), storage.back().data(), expected_precision);
         }
+    }
+
+    size_t output_node_for_role(const std::vector<std::string>& roles,
+                                const std::vector<size_t>& node_ids,
+                                const std::string& role) const {
+        auto it = std::find(roles.begin(), roles.end(), role);
+        if (it == roles.end()) {
+            throw std::runtime_error("transpiled MTP component missing role: " + role);
+        }
+        size_t index = static_cast<size_t>(std::distance(roles.begin(), it));
+        if (index >= node_ids.size()) {
+            throw std::runtime_error("transpiled MTP component role has no node id: " + role);
+        }
+        return node_ids[index];
+    }
+
+    size_t input_node_for_role(const std::vector<std::string>& roles,
+                               const std::vector<size_t>& node_ids,
+                               const std::string& role) const {
+        return output_node_for_role(roles, node_ids, role);
+    }
+
+    std::vector<float> output_tensor_to_fp32(CactusGraph* gb, size_t node_id) {
+        const auto& buffer = gb->get_output_buffer(node_id);
+        void* output = gb->get_output(node_id);
+        std::vector<float> values(buffer.total_size, 0.0f);
+        if (buffer.precision == Precision::FP32) {
+            const float* src = static_cast<const float*>(output);
+            std::copy(src, src + buffer.total_size, values.begin());
+        } else if (buffer.precision == Precision::FP16) {
+            const __fp16* src = static_cast<const __fp16*>(output);
+            for (size_t i = 0; i < buffer.total_size; ++i) {
+                values[i] = static_cast<float>(src[i]);
+            }
+        } else if (buffer.precision == Precision::INT8) {
+            const int8_t* src = static_cast<const int8_t*>(output);
+            for (size_t i = 0; i < buffer.total_size; ++i) {
+                values[i] = static_cast<float>(src[i]);
+            }
+        } else {
+            throw std::runtime_error("transpiled MTP role output uses unsupported precision");
+        }
+        return values;
+    }
+
+    std::vector<float> output_row_to_fp32(CactusGraph* gb, size_t node_id, size_t row) {
+        const auto& buffer = gb->get_output_buffer(node_id);
+        std::vector<float> tensor = output_tensor_to_fp32(gb, node_id);
+        if (buffer.shape.empty()) {
+            return tensor;
+        }
+        size_t width = buffer.shape.back();
+        if (width == 0 || tensor.size() <= width) {
+            return tensor;
+        }
+        size_t row_count = tensor.size() / width;
+        if (row >= row_count) {
+            row = row_count - 1;
+        }
+        std::vector<float> row_values(width);
+        std::copy(tensor.begin() + static_cast<std::ptrdiff_t>(row * width),
+                  tensor.begin() + static_cast<std::ptrdiff_t>((row + 1) * width),
+                  row_values.begin());
+        return row_values;
+    }
+
+    void set_fp32_input(CactusGraph* gb, size_t node_id, const std::vector<float>& values) {
+        const auto& input_buf = gb->get_output_buffer(node_id);
+        size_t capacity = input_buf.total_size;
+        if (capacity == 0) {
+            throw std::runtime_error("transpiled MTP input has empty shape");
+        }
+        if (input_buf.precision == Precision::FP32) {
+            std::vector<float> data(capacity, 0.0f);
+            std::copy(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(std::min(values.size(), capacity)), data.begin());
+            gb->set_input(node_id, data.data(), Precision::FP32);
+        } else if (input_buf.precision == Precision::FP16) {
+            std::vector<__fp16> data(capacity, __fp16(0));
+            for (size_t i = 0; i < std::min(values.size(), capacity); ++i) {
+                data[i] = __fp16(values[i]);
+            }
+            gb->set_input(node_id, data.data(), Precision::FP16);
+        } else if (input_buf.precision == Precision::INT8) {
+            std::vector<int8_t> data(capacity, 0);
+            for (size_t i = 0; i < std::min(values.size(), capacity); ++i) {
+                data[i] = static_cast<int8_t>(values[i]);
+            }
+            gb->set_input(node_id, data.data(), Precision::INT8);
+        } else {
+            throw std::runtime_error("transpiled MTP input uses unsupported precision");
+        }
+    }
+
+    std::vector<float> run_target_embedding(uint32_t token) {
+        size_t output_node = run_component_graph(
+            target_embedding_graph_.get(),
+            target_embedding_runtime_input_node_ids_,
+            target_embedding_output_node_ids_,
+            std::vector<uint32_t>{token});
+        (void)output_node;
+        return output_tensor_to_fp32(
+            target_embedding_graph_.get(),
+            output_node_for_role(target_embedding_logical_outputs_, target_embedding_output_node_ids_, "target_token_embedding"));
+    }
+
+    size_t run_assistant_graph(const std::vector<float>& current_embedding,
+                               const std::vector<float>& previous_hidden,
+                               const std::vector<float>& full_key,
+                               const std::vector<float>& full_value,
+                               const std::vector<float>& sliding_key,
+                               const std::vector<float>& sliding_value,
+                               size_t position) {
+        CactusGraph* gb = assistant_graph_.get();
+        if (!gb) {
+            throw std::runtime_error("transpiled assistant graph is not initialized");
+        }
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "current_token_embedding"), current_embedding);
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "previous_target_hidden"), previous_hidden);
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "position"), {static_cast<float>(position)});
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "shared_kv.full_attention.key"), full_key);
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "shared_kv.full_attention.value"), full_value);
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "shared_kv.sliding_attention.key"), sliding_key);
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "shared_kv.sliding_attention.value"), sliding_value);
+        gb->execute();
+        return output_node_for_role(assistant_logical_outputs_, assistant_output_node_ids_, "logits_output");
     }
 
     size_t run_decoder(CactusGraph* gb, const std::vector<uint32_t>& tokens) {
@@ -786,10 +1078,19 @@ private:
     std::string speculative_status_ = "unsupported_target";
     std::vector<size_t> runtime_input_node_ids_;
     std::vector<size_t> output_node_ids_;
+    std::vector<std::string> decoder_logical_outputs_;
+    std::unique_ptr<CactusGraph> target_embedding_graph_;
+    std::vector<size_t> target_embedding_runtime_input_node_ids_;
+    std::vector<size_t> target_embedding_output_node_ids_;
+    std::vector<std::string> target_embedding_logical_inputs_;
+    std::vector<std::string> target_embedding_logical_outputs_;
     std::unique_ptr<CactusGraph> assistant_graph_;
     std::vector<size_t> assistant_runtime_input_node_ids_;
     std::vector<size_t> assistant_output_node_ids_;
+    std::vector<std::string> assistant_logical_inputs_;
+    std::vector<std::string> assistant_logical_outputs_;
     std::vector<std::vector<uint8_t>> bound_constant_storage_;
+    std::vector<std::vector<uint8_t>> target_embedding_bound_constant_storage_;
     std::vector<std::vector<uint8_t>> assistant_bound_constant_storage_;
     std::vector<uint32_t> context_tokens_;
 };

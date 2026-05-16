@@ -156,6 +156,24 @@ size_t CactusGraph::reshape(size_t input, const std::vector<size_t>& new_shape) 
     return add_node(OpType::RESHAPE, {input}, new_shape, params);
 }
 
+size_t CactusGraph::expand(size_t input, const std::vector<size_t>& new_shape) {
+    const auto& input_shape = get_output_buffer(input).shape;
+    if (new_shape.size() < input_shape.size()) {
+        throw std::runtime_error("Expand operation cannot reduce tensor rank");
+    }
+    size_t offset = new_shape.size() - input_shape.size();
+    for (size_t i = 0; i < input_shape.size(); ++i) {
+        size_t in_dim = input_shape[i];
+        size_t out_dim = new_shape[offset + i];
+        if (in_dim != out_dim && in_dim != 1) {
+            throw std::runtime_error("Expand operation requires each source dimension to match or be 1");
+        }
+    }
+    OpParams params{.new_shape = new_shape};
+    params.output_precision = get_output_buffer(input).precision;
+    return add_node(OpType::EXPAND, {input}, new_shape, params);
+}
+
 size_t CactusGraph::index(size_t input, size_t index_value, int dim) {
     const auto& input_buffer = get_output_buffer(input);
     const auto& shape = input_buffer.shape;

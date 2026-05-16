@@ -322,6 +322,8 @@ def create_parser():
                                 help='Output directory (default: weights/<model_name>)')
     convert_parser.add_argument('--bits', type=int, choices=[1, 2, 3, 4], default=4,
                                 help='CQ quantization bits (default: 4)')
+    convert_parser.add_argument('--device', default='cpu',
+                                help='Device used by CQ conversion/calibration (default: cpu)')
     convert_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     convert_parser.add_argument('--token', help='HuggingFace API token')
     convert_parser.add_argument('--task', default='auto',
@@ -339,10 +341,17 @@ def create_parser():
                                 help='Representative audio file for audio/multimodal transpile')
     convert_parser.add_argument('--max-new-tokens', type=int, default=32,
                                 help='Generation room to preallocate for causal decode graphs')
+    convert_parser.add_argument('--torch-dtype', default='bfloat16',
+                                choices=['float16', 'float32', 'bfloat16'],
+                                help='Torch dtype for transpile model loading')
     convert_parser.add_argument('--component-pipeline', default='auto', choices=['auto', 'on', 'off'],
                                 help='Use split component graph transpilation when supported')
     convert_parser.add_argument('--components',
                                 help='Comma-separated component subset for component-pipeline models')
+    convert_parser.add_argument('--assistant-model',
+                                help='Optional causal-LM assistant model to transpile and package into this bundle')
+    convert_parser.add_argument('--assistant-bits', type=int, choices=[1, 2, 3, 4],
+                                help='Assistant CQ quantization bits (default: same as --bits)')
     convert_parser.add_argument('--trust-remote-code', action='store_true',
                                 help='Allow HF remote code during the transpile phase')
     convert_parser.add_argument('--local-files-only', action='store_true',

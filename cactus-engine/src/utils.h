@@ -1606,7 +1606,11 @@ inline std::string construct_response_json(const std::string& regular_response,
                                            float confidence = 0.0f,
                                            bool cloud_handoff = false,
                                            const std::string& thinking = "",
-                                           const std::vector<TranscriptSegment>& segments = {}) {
+                                           const std::vector<TranscriptSegment>& segments = {},
+                                           bool include_mtp_metrics = false,
+                                           size_t mtp_drafted_tokens = 0,
+                                           size_t mtp_accepted_tokens = 0,
+                                           size_t mtp_rejected_tokens = 0) {
     std::ostringstream json;
     json << "{";
     json << "\"success\":true,";
@@ -1638,6 +1642,11 @@ inline std::string construct_response_json(const std::string& regular_response,
     json << "\"ram_usage_mb\":" << std::fixed << std::setprecision(2) << get_ram_usage_mb() << ",";
     json << "\"prefill_tokens\":" << prompt_tokens << ",";
     json << "\"decode_tokens\":" << completion_tokens << ",";
+    if (include_mtp_metrics) {
+        json << "\"mtp_drafted_tokens\":" << mtp_drafted_tokens << ",";
+        json << "\"mtp_accepted_tokens\":" << mtp_accepted_tokens << ",";
+        json << "\"mtp_rejected_tokens\":" << mtp_rejected_tokens << ",";
+    }
     json << "\"total_tokens\":" << (prompt_tokens + completion_tokens);
     json << "}";
     return json.str();

@@ -95,6 +95,52 @@ bool test_broadcast_fp16_precision() {
     return fixture.verify_output(result_id, expected);
 }
 
+bool test_broadcast_5d_expand_shape() {
+    TestUtils::FP16TestFixture fixture("Broadcast 5D Expand Shape");
+
+    size_t a_id = fixture.create_input({1, 1, 1, 1, 256});
+    size_t b_id = fixture.create_input({1, 1, 4, 1, 256});
+
+    std::vector<__fp16> data_a(256);
+    std::vector<__fp16> data_b(4 * 256);
+    std::vector<__fp16> expected(4 * 256);
+    for (size_t i = 0; i < data_a.size(); ++i) {
+        data_a[i] = static_cast<__fp16>(i % 17);
+    }
+    for (size_t i = 0; i < data_b.size(); ++i) {
+        data_b[i] = static_cast<__fp16>(1);
+        expected[i] = static_cast<__fp16>(static_cast<float>(data_a[i % 256]) + 1.0f);
+    }
+    fixture.set_input_data(a_id, data_a);
+    fixture.set_input_data(b_id, data_b);
+
+    size_t result_id = fixture.graph().add(a_id, b_id);
+    fixture.execute();
+
+    return fixture.verify_output(result_id, expected);
+}
+
+bool test_expand_5d_shape() {
+    TestUtils::FP16TestFixture fixture("Expand 5D Shape");
+
+    size_t input_id = fixture.create_input({1, 1, 1, 1, 256});
+
+    std::vector<__fp16> data(256);
+    std::vector<__fp16> expected(4 * 256);
+    for (size_t i = 0; i < data.size(); ++i) {
+        data[i] = static_cast<__fp16>(i % 13);
+    }
+    for (size_t i = 0; i < expected.size(); ++i) {
+        expected[i] = data[i % 256];
+    }
+    fixture.set_input_data(input_id, data);
+
+    size_t result_id = fixture.graph().expand(input_id, {1, 1, 4, 1, 256});
+    fixture.execute();
+
+    return fixture.verify_output(result_id, expected);
+}
+
 bool test_precision_traits() {
     assert(PrecisionTraits::size_of(Precision::INT8) == 1);
     assert(PrecisionTraits::size_of(Precision::FP32) == 4);
@@ -184,6 +230,8 @@ int main() {
     runner.run_test("Broadcast Scalar Tensor", test_broadcast_scalar_tensor());
     runner.run_test("Broadcast Different Ranks", test_broadcast_different_ranks());
     runner.run_test("Broadcast FP16 Precision", test_broadcast_fp16_precision());
+    runner.run_test("Broadcast 5D Expand Shape", test_broadcast_5d_expand_shape());
+    runner.run_test("Expand 5D Shape", test_expand_5d_shape());
     runner.run_test("Precision Traits", test_precision_traits());
     runner.run_test("Graph Precision Construction", test_graph_precision_construction());
     runner.run_test("Precision Conversion", test_precision_conversion());

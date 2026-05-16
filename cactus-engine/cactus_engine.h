@@ -274,6 +274,9 @@ float exponent, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_view(
     cactus_graph_t graph, cactus_node_t x, const size_t* shape, size_t rank,
 cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_expand(
+    cactus_graph_t graph, cactus_node_t x, const size_t* shape, size_t rank,
+cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_flatten(
     cactus_graph_t graph, cactus_node_t x, int32_t start_dim, int32_t end_dim,
 cactus_node_t* out);

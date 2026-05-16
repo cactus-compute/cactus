@@ -2358,6 +2358,7 @@ def _load_transformers_bundle(
     token: str | None,
     trust_remote_code: bool,
     local_files_only: bool,
+    tokenizer_source: str | None = None,
 ):
     config = _load_config_json(model_id)
     config_model_type = str(config.get("model_type", "") or "").lower()
@@ -2403,7 +2404,11 @@ def _load_transformers_bundle(
     if task == "causal_lm_logits":
         tokenizer = None
         tokenizer_errors: list[str] = []
-        for source in source_candidates:
+        tokenizer_candidates = []
+        for candidate in (tokenizer_source, *source_candidates):
+            if candidate and candidate not in tokenizer_candidates:
+                tokenizer_candidates.append(candidate)
+        for source in tokenizer_candidates:
             try:
                 tokenizer = AutoTokenizer.from_pretrained(source, **common_kwargs)
                 break
@@ -2767,6 +2772,11 @@ def main() -> int:
         help="Require the model/processor to already exist locally.",
     )
     parser.add_argument(
+        "--tokenizer-source",
+        default="",
+        help="Optional tokenizer source for causal_lm_logits when model weights share another tokenizer.",
+    )
+    parser.add_argument(
         "--weights-dir",
         default="",
         help="Converted Cactus CQ weights directory for mmap weight binding.",
@@ -2858,6 +2868,7 @@ def main() -> int:
         token=args.token,
         trust_remote_code=args.trust_remote_code,
         local_files_only=args.local_files_only,
+        tokenizer_source=args.tokenizer_source.strip() or None,
     )
     preprocessor_config = _load_optional_json(model_source, "preprocessor_config.json")
     if not preprocessor_config:

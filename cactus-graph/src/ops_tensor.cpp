@@ -6,6 +6,44 @@
 #include <vector>
 #include <unordered_map>
 
+void compute_expand_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
+    if (PrecisionTraits::is_cq(input_buffer.precision)) {
+        throw std::runtime_error("Expand does not support compressed quantized tensors");
+    }
+    const auto& input_shape = input_buffer.shape;
+    const auto& output_shape = node.output_buffer.shape;
+    if (output_shape.size() < input_shape.size()) {
+        throw std::runtime_error("Expand output rank cannot be smaller than input rank");
+    }
+
+    std::vector<size_t> input_strides(input_shape.size(), 1);
+    for (int i = static_cast<int>(input_shape.size()) - 2; i >= 0; --i) {
+        input_strides[static_cast<size_t>(i)] = input_strides[static_cast<size_t>(i + 1)] * input_shape[static_cast<size_t>(i + 1)];
+    }
+
+    const size_t rank_offset = output_shape.size() - input_shape.size();
+    const size_t element_size = PrecisionTraits::size_of(input_buffer.precision);
+    const char* input = static_cast<const char*>(input_buffer.get_data());
+    char* output = static_cast<char*>(node.output_buffer.get_data());
+
+    for (size_t out_index = 0; out_index < node.output_buffer.total_size; ++out_index) {
+        size_t tmp = out_index;
+        size_t input_index = 0;
+        for (int dim = static_cast<int>(output_shape.size()) - 1; dim >= 0; --dim) {
+            const size_t dim_index = static_cast<size_t>(dim);
+            size_t coord = tmp % output_shape[dim_index];
+            tmp /= output_shape[dim_index];
+            if (dim_index >= rank_offset) {
+                size_t input_dim = dim_index - rank_offset;
+                size_t input_coord = input_shape[input_dim] == 1 ? 0 : coord;
+                input_index += input_coord * input_strides[input_dim];
+            }
+        }
+        std::memcpy(output + out_index * element_size, input + input_index * element_size, element_size);
+    }
+}
+
 void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     if (node.params.backend == ComputeBackend::NPU) {
         throw std::runtime_error("NPU transpose operation not yet implemented");

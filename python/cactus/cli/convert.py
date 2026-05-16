@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .assistant_bundle import package_assistant_for_convert
 from .common import (
     GREEN,
     PROJECT_ROOT,
@@ -22,6 +26,15 @@ _DEFAULT_MULTIMODAL_PROMPT = (
     "and the second should be a transcription of the audio"
 )
 _DEFAULT_TEXT_PROMPT = "Hello"
+_ASSISTANT_TARGET_COMPONENTS = (
+    "decoder",
+    "target_embedding",
+    "decoder_prefill_chunk",
+    "decoder_step",
+    "decoder_verify_m2",
+    "decoder_verify_m3",
+    "decoder_verify_m4",
+)
 
 
 @dataclass(frozen=True)
@@ -99,6 +112,19 @@ def _remove_stale_transpile_artifacts(output_dir: str | Path) -> None:
                 path.unlink()
 
 
+def run_cq_convert(command: list[str]) -> None:
+    env = os.environ.copy()
+    python_root = str(PROJECT_ROOT / "python")
+    env["PYTHONPATH"] = python_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    result = subprocess.run(
+        [sys.executable, "-c", "from cactus.convert.cli import main; main()", *command],
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"CQ conversion failed with exit code {result.returncode}")
+
+
 def cmd_convert(args):
     """Convert a HuggingFace model to CQ format and transpile it in place."""
     model_id = resolve_model_id_alias(args.model_name)
@@ -111,7 +137,7 @@ def cmd_convert(args):
     cache_dir = getattr(args, "cache_dir", None)
 
     try:
-        from ..convert.cli import main as cq_main
+        device = getattr(args, "device", "cpu") or "cpu"
 
         cq_args = [
             "convert",
@@ -121,17 +147,22 @@ def cmd_convert(args):
             str(output_dir),
             "--bits",
             str(bits),
+            "--device",
+            str(device),
         ]
         if token:
             cq_args.extend(["--token", token])
         if cache_dir:
             cq_args.extend(["--cache-dir", cache_dir])
+        if getattr(args, "local_files_only", False):
+            cq_args.append("--local-files-only")
         cq_args.append("--force")
 
-        cq_main(cq_args)
+        run_cq_convert(cq_args)
 
         task = getattr(args, "task", "auto") or "auto"
         prompt = getattr(args, "prompt", None)
+        torch_dtype = getattr(args, "torch_dtype", "bfloat16") or "bfloat16"
         image_files = [str(path) for path in (getattr(args, "image_file", None) or []) if str(path).strip()]
         audio_file = getattr(args, "audio_file", None)
 
@@ -203,6 +234,15 @@ def cmd_convert(args):
 
         artifact_dir = Path(output_dir)
 
+        assistant_model = getattr(args, "assistant_model", None)
+        if assistant_model and spec.task != "causal_lm_logits":
+            print_color(RED, "--assistant-model is currently supported only for causal_lm_logits bundles.")
+            return 1
+        if assistant_model and component_pipeline == "auto":
+            component_pipeline = "on"
+        if assistant_model and components is None:
+            components = ",".join(_ASSISTANT_TARGET_COMPONENTS)
+
         extra_args = [
             "--weights-dir",
             str(output_dir),
@@ -212,6 +252,8 @@ def cmd_convert(args):
             spec.task,
             "--max-new-tokens",
             str(getattr(args, "max_new_tokens", 32) or 32),
+            "--torch-dtype",
+            str(torch_dtype),
             "--component-pipeline",
             component_pipeline,
         ]
@@ -227,6 +269,8 @@ def cmd_convert(args):
             extra_args.extend(["--system-prompt", str(args.system_prompt)])
         if token:
             extra_args.extend(["--token", token])
+        if cache_dir:
+            extra_args.extend(["--cache-dir", cache_dir])
         if getattr(args, "trust_remote_code", False) or spec.task == "multimodal_causal_lm_logits":
             extra_args.append("--trust-remote-code")
         if getattr(args, "local_files_only", False):
@@ -241,6 +285,26 @@ def cmd_convert(args):
         rc = cmd_transpile(transpile_args)
         if rc != 0:
             return rc
+
+        if assistant_model:
+            assistant_model_id = resolve_model_id_alias(str(assistant_model))
+            assistant_bits = getattr(args, "assistant_bits", None) or bits
+            manifest_path = package_assistant_for_convert(
+                cq_main=run_cq_convert,
+                cmd_transpile=cmd_transpile,
+                main_output_dir=output_dir,
+                assistant_model_id=assistant_model_id,
+                assistant_bits=int(assistant_bits),
+                device=str(device),
+                prompt=spec_prompt,
+                max_new_tokens=int(getattr(args, "max_new_tokens", 32) or 32),
+                torch_dtype=str(torch_dtype),
+                token=token,
+                cache_dir=cache_dir,
+                trust_remote_code=bool(getattr(args, "trust_remote_code", False)),
+                local_files_only=bool(getattr(args, "local_files_only", False)),
+            )
+            print_color(GREEN, f"Assistant model integrated into {manifest_path}")
 
         print_color(GREEN, f"Model converted and transpiled to {output_dir}")
         return 0

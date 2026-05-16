@@ -742,7 +742,13 @@ int cactus_complete(
                 prompt_tokens,
                 generated_tokens.size(),
                 1.0f,
-                false);
+                false,
+                "",
+                {},
+                true,
+                spec.drafted_tokens,
+                spec.accepted_draft_tokens,
+                spec.rejected_tokens);
 
             if (result.length() >= buffer_size) {
                 handle_error_response("Response buffer too small", response_buffer, buffer_size);

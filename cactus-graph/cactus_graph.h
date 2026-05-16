@@ -113,7 +113,8 @@ enum class OpType {
     RFFT, IRFFT, MEL_FILTER_BANK, SPECTROGRAM,
     IMAGE_PREPROCESS,
     CLAMP,
-    DENSE_MLP_TQ_FUSED
+    DENSE_MLP_TQ_FUSED,
+    EXPAND
 };
 
 struct PrecisionTraits {
@@ -503,6 +504,7 @@ public:
 
     size_t reshape(size_t input, const std::vector<size_t>& new_shape);
     size_t view(size_t input, const std::vector<size_t>& new_shape);
+    size_t expand(size_t input, const std::vector<size_t>& new_shape);
     size_t flatten(size_t input, int start_dim = 0, int end_dim = -1);
     size_t transpose(size_t input, ComputeBackend backend = ComputeBackend::CPU);
     size_t transposeN(size_t input, const std::vector<size_t>& permutation, ComputeBackend backend = ComputeBackend::CPU);

@@ -417,6 +417,8 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
 
     if op == "add_clipped":
         lhs, rhs = _legalize_elementwise_binary_inputs(g, _tensor(env, node.inputs[0]), _tensor(env, node.inputs[1]))
+        lhs = _ensure_fp16_tensor(g, lhs)
+        rhs = _ensure_fp16_tensor(g, rhs)
         return [g.add_clipped(lhs, rhs)]
 
     if op == "subtract":
@@ -502,23 +504,38 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [g.scalar_not_equal(x, float(node.attrs["value"]))]
 
     if op == "scalar_equal":
+        value = env[node.inputs[0]]
+        if _is_scalar_like(value):
+            return [_lower_compare_op(g, value, float(node.attrs["value"]), "equal")]
         x = _ensure_scalar_math_tensor(g, _tensor(env, node.inputs[0]))
         not_equal = g.scalar_not_equal(x, float(node.attrs["value"]))
         return [g.scalar_not_equal(not_equal, 1.0)]
 
     if op == "scalar_greater":
+        value = env[node.inputs[0]]
+        if _is_scalar_like(value):
+            return [_lower_compare_op(g, value, float(node.attrs["value"]), "greater")]
         x = _ensure_scalar_math_tensor(g, _tensor(env, node.inputs[0]))
         return [_lower_compare_op(g, x, float(node.attrs["value"]), "greater")]
 
     if op == "scalar_greater_equal":
+        value = env[node.inputs[0]]
+        if _is_scalar_like(value):
+            return [_lower_compare_op(g, value, float(node.attrs["value"]), "greater_equal")]
         x = _ensure_scalar_math_tensor(g, _tensor(env, node.inputs[0]))
         return [_lower_compare_op(g, x, float(node.attrs["value"]), "greater_equal")]
 
     if op == "scalar_less":
+        value = env[node.inputs[0]]
+        if _is_scalar_like(value):
+            return [_lower_compare_op(g, value, float(node.attrs["value"]), "less")]
         x = _ensure_scalar_math_tensor(g, _tensor(env, node.inputs[0]))
         return [_lower_compare_op(g, x, float(node.attrs["value"]), "less")]
 
     if op == "scalar_less_equal":
+        value = env[node.inputs[0]]
+        if _is_scalar_like(value):
+            return [_lower_compare_op(g, value, float(node.attrs["value"]), "less_equal")]
         x = _ensure_scalar_math_tensor(g, _tensor(env, node.inputs[0]))
         return [_lower_compare_op(g, x, float(node.attrs["value"]), "less_equal")]
 
@@ -537,6 +554,9 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [g.precision_cast(source, target.dtype)]
 
     if op == "abs":
+        value = env[node.inputs[0]]
+        if _is_scalar_like(value):
+            return [abs(float(value))]
         return [g.abs(_tensor(env, node.inputs[0]))]
 
     if op == "clamp":
@@ -788,19 +808,19 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [out]
 
     if op == "relu":
-        return [g.relu(_tensor(env, node.inputs[0]))]
+        return [g.relu(_ensure_fp16_tensor(g, _tensor(env, node.inputs[0])))]
 
     if op == "silu":
-        return [g.silu(_tensor(env, node.inputs[0]))]
+        return [g.silu(_ensure_fp16_tensor(g, _tensor(env, node.inputs[0])))]
 
     if op == "gelu":
-        return [g.gelu(_tensor(env, node.inputs[0]))]
+        return [g.gelu(_ensure_fp16_tensor(g, _tensor(env, node.inputs[0])))]
 
     if op == "gelu_erf":
-        return [g.gelu_erf(_tensor(env, node.inputs[0]))]
+        return [g.gelu_erf(_ensure_fp16_tensor(g, _tensor(env, node.inputs[0])))]
 
     if op == "sigmoid":
-        return [g.sigmoid(_tensor(env, node.inputs[0]))]
+        return [g.sigmoid(_ensure_fp16_tensor(g, _tensor(env, node.inputs[0])))]
 
     if op == "glu":
         return [g.glu(_tensor(env, node.inputs[0]), axis=int(node.attrs.get("axis", -1)))]
@@ -810,7 +830,7 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [_lower_softplus(g, x)]
 
     if op == "tanh":
-        return [g.tanh(_tensor(env, node.inputs[0]))]
+        return [g.tanh(_ensure_fp16_tensor(g, _tensor(env, node.inputs[0])))]
 
     if op == "softmax":
         return [g.softmax(_tensor(env, node.inputs[0]), axis=int(node.attrs.get("axis", -1)))]
@@ -850,7 +870,9 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         mask_tensor: Tensor | None = None
         additive_mask = bool(node.attrs.get("additive_mask", False))
         if len(node.inputs) > 3:
-            mask_tensor = _tensor(env, node.inputs[3])
+            raw_mask = env[node.inputs[3]]
+            if not _is_scalar_like(raw_mask):
+                mask_tensor = _tensor(env, node.inputs[3])
         elif mask is not None:
             raise NotImplementedError(f"{op} with literal mask is not supported yet")
         if op == "scaled_dot_product_attention":
@@ -1183,6 +1205,9 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [g.cat(reshaped, axis=axis)]
 
     if op == "slice":
+        value = env[node.inputs[0]]
+        if _is_scalar_like(value):
+            return [value]
         x = _tensor(env, node.inputs[0])
         axis = _normalize_dim(int(node.attrs["axis"]), len(x.shape))
         start = int(node.attrs["start"])
@@ -1211,6 +1236,53 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         end = _normalize_slice_end(end, dim_size)
         length = max(0, end - start)
         return [g.slice(x, axis=axis, start=start, length=length)]
+
+    if op == "aten.flip.default":
+        value = env[node.inputs[0]]
+        if _is_scalar_like(value):
+            return [value]
+        x = _tensor(env, node.inputs[0])
+        raw_dims = node.attrs.get("dims")
+        if raw_dims is None:
+            args = node.attrs.get("args", ())
+            if isinstance(args, (list, tuple)) and len(args) > 1:
+                raw_dims = args[1]
+        if isinstance(raw_dims, int):
+            dims = (raw_dims,)
+        elif isinstance(raw_dims, (list, tuple)):
+            dims = tuple(int(dim) for dim in raw_dims)
+        else:
+            raise NotImplementedError("flip requires static dims")
+        out = x
+        for raw_axis in dims:
+            axis = _normalize_dim(int(raw_axis), len(out.shape))
+            indices = list(range(int(out.shape[axis]) - 1, -1, -1))
+            out = _lower_static_strided_slice_via_gather(g, out, axis=axis, indices=indices)
+        return [out]
+
+    if op == "aten.topk.default":
+        x = _tensor(env, node.inputs[0])
+        args = node.attrs.get("args", ())
+        kwargs = node.attrs.get("kwargs", {})
+        raw_k = kwargs.get("k") if isinstance(kwargs, dict) else None
+        raw_dim = kwargs.get("dim") if isinstance(kwargs, dict) else None
+        if raw_k is None and isinstance(args, (list, tuple)) and len(args) > 1:
+            raw_k = args[1]
+        if raw_dim is None and isinstance(args, (list, tuple)) and len(args) > 2:
+            raw_dim = args[2]
+        k = int(raw_k)
+        axis = _normalize_dim(int(raw_dim if raw_dim is not None else -1), len(x.shape))
+        if axis != len(x.shape) - 1:
+            raise NotImplementedError("topk lowering only supports the last dimension")
+        leading = tuple(int(dim) for dim in x.shape[:-1])
+        features = int(x.shape[-1])
+        batch = math.prod(leading) if leading else 1
+        flattened = g.reshape(x, (batch, features))
+        packed = g.topk(flattened, k)
+        indices = g.reshape(g.slice(packed, axis=0, start=0, length=1), (batch, k))
+        values = g.reshape(g.slice(packed, axis=0, start=1, length=1), (batch, k))
+        output_shape = (*leading, k)
+        return [(g.reshape(values, output_shape), g.reshape(indices, output_shape))]
 
     if op == "split_with_sizes":
         x = _tensor(env, node.inputs[0])
@@ -1637,8 +1709,8 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [g.layer_norm(x, weight, bias=bias, eps=float(node.attrs["eps"]))]
 
     if op == "rms_norm":
-        x = _tensor(env, node.inputs[0])
-        weight = _tensor(env, node.inputs[1])
+        x = _ensure_fp16_tensor(g, _tensor(env, node.inputs[0]))
+        weight = _ensure_fp16_tensor(g, _tensor(env, node.inputs[1]))
         reshape_back: tuple[int, ...] | None = None
         if len(x.shape) > 2:
             reshape_back = tuple(int(dim) for dim in x.shape)
@@ -2243,12 +2315,24 @@ def _is_scalar_like(value: Any) -> bool:
     return isinstance(value, (int, float, bool))
 
 
-def _lower_binary_op(g: Graph, lhs_value: Any, rhs_value: Any, op: str) -> Tensor:
+def _lower_binary_op(g: Graph, lhs_value: Any, rhs_value: Any, op: str) -> Any:
+    if _is_scalar_like(lhs_value) and _is_scalar_like(rhs_value):
+        lhs = float(lhs_value)
+        rhs = float(rhs_value)
+        if op == "add":
+            return lhs + rhs
+        if op == "subtract":
+            return lhs - rhs
+        if op == "multiply":
+            return lhs * rhs
+        if op == "divide":
+            return lhs / rhs
+        raise NotImplementedError(f"unsupported binary op: {op}")
+
     if isinstance(lhs_value, Tensor) and isinstance(rhs_value, Tensor):
         lhs, rhs = _legalize_elementwise_binary_inputs(g, lhs_value, rhs_value)
-        target_dtype = Graph.FP16 if lhs.dtype == Graph.FP16 and rhs.dtype == Graph.FP16 else Graph.FP32
-        lhs = _ensure_tensor_dtype(g, lhs, target_dtype)
-        rhs = _ensure_tensor_dtype(g, rhs, target_dtype)
+        lhs = _ensure_fp16_tensor(g, lhs)
+        rhs = _ensure_fp16_tensor(g, rhs)
         if op == "add":
             return g.add(lhs, rhs)
         if op == "subtract":
@@ -2291,7 +2375,24 @@ def _lower_binary_op(g: Graph, lhs_value: Any, rhs_value: Any, op: str) -> Tenso
     )
 
 
-def _lower_compare_op(g: Graph, lhs_value: Any, rhs_value: Any, op: str) -> Tensor:
+def _lower_compare_op(g: Graph, lhs_value: Any, rhs_value: Any, op: str) -> Any:
+    if _is_scalar_like(lhs_value) and _is_scalar_like(rhs_value):
+        lhs = float(lhs_value)
+        rhs = float(rhs_value)
+        if op == "equal":
+            return 1.0 if lhs == rhs else 0.0
+        if op == "not_equal":
+            return 1.0 if lhs != rhs else 0.0
+        if op == "greater":
+            return 1.0 if lhs > rhs else 0.0
+        if op == "less":
+            return 1.0 if lhs < rhs else 0.0
+        if op == "greater_equal":
+            return 1.0 if lhs >= rhs else 0.0
+        if op == "less_equal":
+            return 1.0 if lhs <= rhs else 0.0
+        raise NotImplementedError(f"unsupported compare op: {op}")
+
     if op == "equal":
         not_equal = _lower_compare_op(g, lhs_value, rhs_value, "not_equal")
         return g.scalar_not_equal(not_equal, 1.0)

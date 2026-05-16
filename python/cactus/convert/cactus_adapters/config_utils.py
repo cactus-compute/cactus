@@ -439,18 +439,21 @@ def extract_parakeet_tdt_config(config):
 
 def extract_complex_gemma_config(cfg, root_config):
     """Extract configuration parameters for Gemma3n and Gemma4 models."""
+    def _cfg_value(key, default):
+        value = cfg_get(cfg, key, None)
+        if value is None:
+            value = cfg_get(root_config, key, None)
+        return default if value is None else value
+
     altup_num_inputs = int(cfg_get(cfg, 'altup_num_inputs', cfg_get(root_config, 'altup_num_inputs', 4)))
     laurel_rank = int(cfg_get(cfg, 'laurel_rank', cfg_get(root_config, 'laurel_rank', 64)))
     hidden_size_per_layer_input_raw = cfg_get(cfg, 'hidden_size_per_layer_input',
         cfg_get(root_config, 'hidden_size_per_layer_input', None))
     hidden_size_per_layer_input = int(hidden_size_per_layer_input_raw) if hidden_size_per_layer_input_raw is not None else 0
-    rope_local_base_freq = float(cfg_get(cfg, 'rope_local_base_freq',
-        cfg_get(root_config, 'rope_local_base_freq', 10000.0)))
+    rope_local_base_freq = float(_cfg_value('rope_local_base_freq', 10000.0))
 
-    num_kv_shared_layers = int(cfg_get(cfg, 'num_kv_shared_layers',
-        cfg_get(root_config, 'num_kv_shared_layers', 0)))
-    sliding_window = int(cfg_get(cfg, 'sliding_window',
-        cfg_get(root_config, 'sliding_window', 512)))
+    num_kv_shared_layers = int(_cfg_value('num_kv_shared_layers', 0))
+    sliding_window = int(_cfg_value('sliding_window', 512))
 
     rope_theta = cfg_get(root_config, 'rope_theta', None)
     if rope_theta is None:
@@ -476,11 +479,9 @@ def extract_complex_gemma_config(cfg, root_config):
             else:
                 layer_types.append('sliding')
 
-    final_logit_softcapping = float(cfg_get(cfg, 'final_logit_softcapping',
-        cfg_get(root_config, 'final_logit_softcapping', 30.0)))
+    final_logit_softcapping = float(_cfg_value('final_logit_softcapping', 30.0))
 
-    query_pre_attn_scalar = int(cfg_get(cfg, 'query_pre_attn_scalar',
-        cfg_get(root_config, 'query_pre_attn_scalar', 0)))
+    query_pre_attn_scalar = int(_cfg_value('query_pre_attn_scalar', 0))
 
     rope_params = cfg_get(cfg, 'rope_parameters', cfg_get(root_config, 'rope_parameters', {}))
     global_rope = rope_params.get('full_attention', {}) if isinstance(rope_params, dict) else {}
@@ -510,8 +511,7 @@ def extract_complex_gemma_config(cfg, root_config):
             else:
                 activation_sparsity_ppf.append(0.0)
 
-    query_pre_attn_scalar = int(cfg_get(cfg, 'query_pre_attn_scalar',
-        cfg_get(root_config, 'query_pre_attn_scalar', 0)))
+    query_pre_attn_scalar = int(_cfg_value('query_pre_attn_scalar', 0))
 
     rope_params = cfg_get(cfg, 'rope_parameters', cfg_get(root_config, 'rope_parameters', {}))
     global_rope = rope_params.get('full_attention', {}) if isinstance(rope_params, dict) else {}

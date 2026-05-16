@@ -4,6 +4,7 @@ import copy
 from dataclasses import dataclass
 from dataclasses import field
 import re
+from typing import TYPE_CHECKING
 from typing import Any
 
 import numpy as np
@@ -12,10 +13,11 @@ import torch
 from cactus.transpile.capture_pytorch import capture_model
 from cactus.transpile.canonicalize.cleanup import canonicalize_exported_graph
 from cactus.transpile.graph_ir import IRGraph
-from cactus.transpile.lower import TranspiledGraph
-from cactus.transpile.lower import transpile_preoptimized_ir
 from cactus.transpile.optimize_graph import FusionConfig
 from cactus.transpile.optimize_graph import optimize_graph
+
+if TYPE_CHECKING:
+    from cactus.transpile.lower import TranspiledGraph
 
 
 @dataclass
@@ -97,6 +99,8 @@ def capture_component_spec(
     optimized_ir_graph = copy.deepcopy(captured.ir_graph)
     canonicalize_exported_graph(optimized_ir_graph)
     optimize_graph(optimized_ir_graph, config=fusion_config)
+    from cactus.transpile.lower import transpile_preoptimized_ir
+
     transpiled_graph = transpile_preoptimized_ir(copy.deepcopy(optimized_ir_graph))
     if len(spec.output_keys) != len(transpiled_graph.outputs):
         raise ValueError(

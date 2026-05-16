@@ -99,8 +99,11 @@ void compute_binary_op_node(GraphNode& node, const std::vector<std::unique_ptr<G
     const auto& lhs = get_input(node, 0, nodes, node_index_map);
     const auto& rhs = get_input(node, 1, nodes, node_index_map);
 
-    if (lhs.precision != Precision::FP16) {
-        throw std::runtime_error("Binary operations only support FP16 precision (got " + std::to_string(static_cast<int>(lhs.precision)) + ")");
+    if (lhs.precision != Precision::FP16 || rhs.precision != Precision::FP16) {
+        throw std::runtime_error(
+            "Binary operations only support FP16 precision (got lhs=" +
+            std::to_string(static_cast<int>(lhs.precision)) +
+            " rhs=" + std::to_string(static_cast<int>(rhs.precision)) + ")");
     }
 
     if (node.params.broadcast_info.needs_broadcasting) {

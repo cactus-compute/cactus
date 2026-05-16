@@ -74,6 +74,16 @@ namespace {
       }
     }
 
+    std::string shape_to_string(const std::vector<size_t>& shape) {
+      std::string result = "[";
+      for (size_t i = 0; i < shape.size(); ++i) {
+        if (i > 0) result += ",";
+        result += std::to_string(shape[i]);
+      }
+      result += "]";
+      return result;
+    }
+
     std::vector<uint32_t> compute_leaf_outputs(const GraphFile::SerializedGraph& sg) {
       std::unordered_set<uint32_t> node_ids;
       std::unordered_set<uint32_t> referenced;
@@ -216,7 +226,7 @@ namespace {
         GraphFile::NodeEntry node;
         node.index = read_u32(in);
         uint32_t op_type_val = read_u32(in);
-        if (op_type_val > static_cast<uint32_t>(OpType::DENSE_MLP_TQ_FUSED)) {
+        if (op_type_val > static_cast<uint32_t>(OpType::EXPAND)) {
             throw std::runtime_error("Graph file corrupted: invalid op type");
         }
         node.op_type = static_cast<OpType>(op_type_val);
@@ -453,13 +463,16 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
     Precision precision = mapped_file->precision();
     auto& buffer = node.output_buffer;
     if (buffer.shape != shape) {
-        throw std::runtime_error("mmap weight shape mismatch for node " + std::to_string(node_id));
+        throw std::runtime_error(
+            "mmap weight shape mismatch for node " + std::to_string(node_id) +
+            ": " + resolved_filename +
+            " expected=" + shape_to_string(buffer.shape) +
+            " actual=" + shape_to_string(shape));
     }
     if (buffer.precision != precision) {
         throw std::runtime_error("mmap weight precision mismatch for node " + std::to_string(node_id));
     }
 
-    set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
     buffer.group_size = 0;
     buffer.num_groups = 0;
     buffer.activation_scales_data = nullptr;
@@ -474,6 +487,7 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
     buffer.cq_permutation = nullptr;
     buffer.cq_rotation = nullptr;
     buffer.cq_flags = 0;
+    buffer.set_external(const_cast<void*>(mapped_file->data()));
 
     if (PrecisionTraits::is_cq(precision) && mapped_file->group_size() > 0) {
         buffer.group_size = mapped_file->group_size();

@@ -5,6 +5,8 @@ import importlib
 import sys
 from typing import Any
 
+import numpy as np
+
 
 class _MissingFFIFunction:
     _cactus_missing_symbol = True
@@ -108,6 +110,7 @@ def _patch_graph_runtime(graph_module, cactus_module) -> None:
     orig_cat = Graph.cat
     orig_abs = Graph.abs
     orig_pow = Graph.pow
+    orig_expand = Graph.expand
 
     def matmul(self, a, b, pretransposed_rhs=False, backend=Graph.CPU, output_dtype=None):
         a = _ensure_fp16_activation(self, a)
@@ -286,6 +289,19 @@ def _patch_graph_runtime(graph_module, cactus_module) -> None:
     def pow(self, x, exponent):
         return orig_pow(self, _ensure_scalar_tensor(self, x), exponent)
 
+    def expand(self, x, shape):
+        x = self._ensure_tensor(x)
+        shape = tuple(int(v) for v in shape)
+        if _has_symbol("cactus_graph_expand"):
+            return orig_expand(self, x, shape)
+        if tuple(int(dim) for dim in x.shape) == shape:
+            return x
+        dtype = int(x.dtype)
+        zero_dtype = np.float16 if dtype == int(Graph.FP16) else np.float32
+        zero = self.input(shape, dtype=dtype)
+        self.set_input(zero, np.zeros(shape, dtype=zero_dtype), dtype=dtype)
+        return self.add(x, zero)
+
     Graph.matmul = matmul
     Graph.gather = gather
     Graph.conv2d = conv2d
@@ -311,6 +327,7 @@ def _patch_graph_runtime(graph_module, cactus_module) -> None:
     Graph.cat = cat
     Graph.abs = abs
     Graph.pow = pow
+    Graph.expand = expand
     Graph._transpile_runtime_compat_patched = True
 
 
