@@ -33,14 +33,24 @@ inline uint32_t mtp_sample(const MtpDistribution& dist, float u) {
     if (dist.probabilities.empty()) {
         throw std::invalid_argument("MTP distribution must not be empty");
     }
+    float threshold = std::clamp(u, 0.0f, std::nextafter(1.0f, 0.0f));
     float cumulative = 0.0f;
     for (size_t i = 0; i < dist.probabilities.size(); ++i) {
         cumulative += std::max(0.0f, dist.probabilities[i]);
-        if (u <= cumulative) {
+        if (threshold < cumulative) {
             return static_cast<uint32_t>(i);
         }
     }
     return static_cast<uint32_t>(dist.probabilities.size() - 1);
+}
+
+inline uint32_t mtp_sample_or_argmax(const MtpDistribution& dist,
+                                     const MtpSamplingOptions& options,
+                                     float u) {
+    if (options.temperature == 0.0f) {
+        return mtp_argmax(dist);
+    }
+    return mtp_sample(dist, u);
 }
 
 inline std::vector<float> mtp_normalize_logits(const std::vector<float>& logits) {

@@ -469,7 +469,15 @@ def convert(args: argparse.Namespace) -> None:
 
         tokenizer = getattr(processor, "tokenizer", processor)
         if tokenizer is not None:
-            convert_hf_tokenizer(tokenizer, out_dir, model_id=args.model, model_type=family)
+            convert_hf_tokenizer(
+                tokenizer,
+                out_dir,
+                token=args.token,
+                model_id=args.model,
+                model_type=family,
+                cache_dir=args.cache_dir,
+                local_files_only=bool(args.local_files_only),
+            )
     except Exception as exc:
         if args.strict:
             raise RuntimeError(f"failed to write Cactus tokenizer files: {exc}") from exc

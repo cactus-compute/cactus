@@ -14,6 +14,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <cstring>
+#include <random>
 
 namespace cactus {
 namespace engine {
@@ -45,6 +46,51 @@ std::string find_transpiled_manifest_path(const std::string& model_folder) {
         return root_manifest;
     }
     return "";
+}
+
+float random_unit_float() {
+    static thread_local std::mt19937 rng(std::random_device{}());
+    static thread_local std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    return dist(rng);
+}
+
+class MtpThreadLocalRng {
+public:
+    float uniform() {
+        return random_unit_float();
+    }
+};
+
+MtpSamplingOptions normalized_transpiled_sampling_options(
+    const Config& config,
+    float temperature,
+    float top_p,
+    size_t top_k,
+    float min_p) {
+    MtpSamplingOptions options;
+    options.temperature = temperature < 0.0f ? config.default_temperature : temperature;
+    options.top_p = top_p < 0.0f ? config.default_top_p : top_p;
+    options.top_k = top_k == 0 ? config.default_top_k : top_k;
+    options.min_p = min_p;
+    if (options.temperature < 0.0f) {
+        options.temperature = 0.0f;
+    }
+    return options;
+}
+
+void apply_repetition_penalty_to_logits(
+    std::vector<float>& logits,
+    const std::vector<uint32_t>& token_history,
+    float repetition_penalty) {
+    if (repetition_penalty <= 1.0f || !std::isfinite(repetition_penalty)) {
+        return;
+    }
+    float log_penalty = std::log(repetition_penalty);
+    for (uint32_t token : token_history) {
+        if (token < logits.size()) {
+            logits[token] -= log_penalty;
+        }
+    }
 }
 
 size_t find_json_string_end(const std::string& json, size_t start) {
@@ -515,7 +561,6 @@ public:
                     size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                     float min_p = 0.15f, float repetition_penalty = 1.1f) override {
         (void)profile_file;
-        (void)repetition_penalty;
         if (tokens.empty()) {
             throw std::runtime_error("transpiled causal LM decode requires at least one token");
         }
@@ -524,16 +569,10 @@ public:
         size_t logits_node = run_decoder(gb, context_tokens_);
         std::vector<float> logits = logits_row_to_fp32(gb, logits_node, context_tokens_.empty() ? 0 : context_tokens_.size() - 1);
 
-        MtpSamplingOptions options;
-        options.temperature = temperature < 0.0f ? config_.default_temperature : temperature;
-        options.top_p = top_p < 0.0f ? config_.default_top_p : top_p;
-        options.top_k = top_k == 0 ? config_.default_top_k : top_k;
-        options.min_p = min_p;
-        if (options.temperature < 0.0f) {
-            options.temperature = 0.0f;
-        }
+        apply_repetition_penalty_to_logits(logits, token_history_, repetition_penalty);
+        MtpSamplingOptions options = normalized_transpiled_sampling_options(config_, temperature, top_p, top_k, min_p);
         MtpDistribution dist = mtp_distribution_from_logits(std::move(logits), options);
-        uint32_t next_token = mtp_argmax(dist);
+        uint32_t next_token = mtp_sample_or_argmax(dist, options, random_unit_float());
         if (out_entropy) {
             double entropy = 0.0;
             for (float p : dist.probabilities) {
@@ -555,6 +594,7 @@ public:
 
     void reset_cache() override {
         context_tokens_.clear();
+        token_history_.clear();
     }
 
     std::string speculative_decode_status() const override {
@@ -570,7 +610,6 @@ public:
         size_t top_k = 0,
         float min_p = 0.15f,
         float repetition_penalty = 1.1f) override {
-        (void)repetition_penalty;
         if (!speculative_status_.empty()) {
             throw std::runtime_error("MTP requested but unavailable: " + speculative_status_);
         }
@@ -579,11 +618,8 @@ public:
         }
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
 
-        MtpSamplingOptions options;
-        options.temperature = temperature < 0.0f ? config_.default_temperature : temperature;
-        options.top_p = top_p < 0.0f ? config_.default_top_p : top_p;
-        options.top_k = top_k == 0 ? config_.default_top_k : top_k;
-        options.min_p = min_p;
+        MtpSamplingOptions options = normalized_transpiled_sampling_options(config_, temperature, top_p, top_k, min_p);
+        MtpThreadLocalRng rng;
 
         SpeculativeDecodeResult result;
         const size_t limit = std::max<size_t>(1, draft_tokens);
@@ -611,6 +647,7 @@ public:
             MtpDraftBatch draft;
             draft.tokens.reserve(limit);
             draft.probabilities.reserve(limit);
+            std::vector<uint32_t> draft_history = token_history_;
 
             for (size_t i = 0; i < limit && result.tokens.size() + draft.tokens.size() < max_tokens; ++i) {
                 size_t logits_node = run_assistant_graph(
@@ -625,10 +662,12 @@ public:
                     assistant_graph_.get(),
                     logits_node,
                     0);
+                apply_repetition_penalty_to_logits(logits, draft_history, repetition_penalty);
                 MtpDistribution dist = mtp_distribution_from_logits(std::move(logits), options);
-                uint32_t token = mtp_argmax(dist);
+                uint32_t token = mtp_sample_or_argmax(dist, options, rng.uniform());
                 draft.tokens.push_back(token);
                 draft.probabilities.push_back(std::move(dist));
+                draft_history.push_back(token);
                 previous_hidden = output_tensor_to_fp32(
                     assistant_graph_.get(),
                     output_node_for_role(assistant_logical_outputs_, assistant_output_node_ids_, "next_hidden_output"));
@@ -644,12 +683,19 @@ public:
             std::vector<MtpDistribution> target_distributions;
             target_distributions.reserve(draft.tokens.size() + 1);
             size_t first_row = base_context.empty() ? 0 : base_context.size() - 1;
+            std::vector<uint32_t> target_history = token_history_;
             for (size_t i = 0; i <= draft.tokens.size(); ++i) {
                 auto logits = logits_row_to_fp32(static_cast<CactusGraph*>(graph_handle_), target_logits_node, first_row + i);
+                apply_repetition_penalty_to_logits(logits, target_history, repetition_penalty);
                 target_distributions.push_back(mtp_distribution_from_logits(std::move(logits), options));
+                if (i < draft.tokens.size()) {
+                    target_history.push_back(draft.tokens[i]);
+                }
             }
 
-            MtpVerificationResult verified = verify_greedy_mtp_draft(draft, target_distributions);
+            MtpVerificationResult verified = options.temperature == 0.0f
+                ? verify_greedy_mtp_draft(draft, target_distributions)
+                : verify_sampled_mtp_draft(draft, target_distributions, rng);
             result.drafted_tokens += draft.tokens.size();
             result.accepted_draft_tokens += verified.accepted_draft_tokens;
             result.rejected_tokens += verified.rejected ? 1 : 0;

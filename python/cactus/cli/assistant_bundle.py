@@ -7,7 +7,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 
-TOKENIZER_COMPAT_FILES = ("vocab.txt", "merges.txt", "tokenizer.model")
+TOKENIZER_COMPAT_FILES = (
+    "vocab.txt",
+    "merges.txt",
+    "tokenizer.model",
+    "tokenizer.json",
+    "special_tokens.json",
+    "tokenizer_config.txt",
+    "chat_template.jinja2",
+)
 CACTUS_WEIGHT_MAGIC = 0x54434143
 
 
@@ -404,6 +412,8 @@ def package_assistant_for_convert(
         ]
         if token:
             extra_args.extend(["--token", token])
+        if cache_dir:
+            extra_args.extend(["--cache-dir", cache_dir])
         if trust_remote_code:
             extra_args.append("--trust-remote-code")
         if local_files_only:

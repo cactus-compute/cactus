@@ -11,6 +11,7 @@ from cactus.transpile.model_adapters import Gemma4CausalLMLogitsAdapter
 from cactus.transpile.model_adapters import Gemma4SpecDecodeDecoderAdapter
 from cactus.transpile.model_adapters import build_component_module_specs
 from cactus.transpile.model_adapters import _resolve_model_pad_token_id
+from cactus.transpile import hf_model
 from cactus.transpile.spec_decode import AssistantSpecDecodeAdapter
 from cactus.transpile.spec_decode import TargetSpecDecodeAdapter
 from cactus.transpile.spec_decode import validate_spec_decode_manifest
@@ -399,3 +400,18 @@ def test_component_io_roles_are_logical_not_output_order_dependent() -> None:
     assistant = specs[0]
     assert assistant.output_keys[0] == "logits_output"
     assert assistant.output_keys[1] == "next_hidden_output"
+
+
+def test_gemma4_causal_component_pipeline_auto_requires_explicit_components() -> None:
+    assert not hf_model._should_use_component_pipeline(
+        mode="auto",
+        task="causal_lm_logits",
+        has_component_specs=True,
+        requested_components=None,
+    )
+    assert hf_model._should_use_component_pipeline(
+        mode="auto",
+        task="causal_lm_logits",
+        has_component_specs=True,
+        requested_components=("decoder", "target_embedding"),
+    )

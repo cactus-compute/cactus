@@ -44,11 +44,39 @@ static bool test_sampler_is_deterministic_under_greedy_settings() {
            dist.probabilities == std::vector<float>({0.0f, 1.0f, 0.0f});
 }
 
+static bool test_sampler_uses_distribution_when_temperature_is_nonzero() {
+    MtpSamplingOptions options;
+    options.temperature = 1.0f;
+
+    MtpDistribution dist{{0.1f, 0.2f, 0.7f}};
+    return mtp_sample_or_argmax(dist, options, 0.05f) == 0 &&
+           mtp_sample_or_argmax(dist, options, 0.25f) == 1 &&
+           mtp_sample_or_argmax(dist, options, 0.95f) == 2;
+}
+
+static bool test_sampled_verifier_can_reject_with_adjusted_distribution() {
+    MtpDraftBatch draft;
+    draft.tokens = {1};
+    draft.probabilities = {MtpDistribution{{0.1f, 0.8f, 0.1f}}};
+    std::vector<MtpDistribution> target = {
+        MtpDistribution{{0.6f, 0.2f, 0.2f}},
+        MtpDistribution{{0.0f, 0.0f, 1.0f}},
+    };
+    MtpDeterministicRng rng({0.9f, 0.1f});
+
+    auto result = verify_sampled_mtp_draft(draft, target, rng);
+    return result.accepted_draft_tokens == 0 &&
+           result.rejected &&
+           result.output_tokens == std::vector<uint32_t>({0});
+}
+
 int main() {
     TestUtils::TestRunner runner("Generic MTP Decode Tests");
     runner.run_test("assistant_proposal_accepted_when_verifier_agrees", test_assistant_proposal_accepted_when_verifier_agrees());
     runner.run_test("assistant_proposal_rejected_when_verifier_disagrees", test_assistant_proposal_rejected_when_verifier_disagrees());
     runner.run_test("sampler_is_deterministic_under_greedy_settings", test_sampler_is_deterministic_under_greedy_settings());
+    runner.run_test("sampler_uses_distribution_when_temperature_is_nonzero", test_sampler_uses_distribution_when_temperature_is_nonzero());
+    runner.run_test("sampled_verifier_can_reject_with_adjusted_distribution", test_sampled_verifier_can_reject_with_adjusted_distribution());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

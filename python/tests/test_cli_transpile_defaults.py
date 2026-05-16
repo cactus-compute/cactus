@@ -232,6 +232,35 @@ def test_cmd_convert_infers_text_tasks_for_qwen_and_lfm(monkeypatch, tmp_path: P
         assert "--audio-file" not in extra_args
 
 
+def test_cmd_convert_keeps_gemma4_causal_component_pipeline_auto_without_assistant(monkeypatch, tmp_path: Path) -> None:
+    parser = cli.create_parser()
+    output_dir = tmp_path / "gemma4"
+    args = parser.parse_args(["convert", "google/gemma-4-E2B-it", str(output_dir)])
+    transpile_calls: list[Namespace] = []
+
+    def _fake_cq_main(command):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "hf_config.json").write_text(
+            '{"model_type":"gemma4","architectures":["Gemma4ForCausalLM"]}',
+            encoding="utf-8",
+        )
+        return 0
+
+    def _fake_cmd_transpile(transpile_args):
+        transpile_calls.append(transpile_args)
+        return 0
+
+    monkeypatch.setattr(convert_cli, "cmd_transpile", _fake_cmd_transpile)
+    monkeypatch.setattr(convert_cli, "run_cq_convert", _fake_cq_main)
+
+    rc = convert_cli.cmd_convert(args)
+
+    assert rc == 0
+    extra_args = transpile_calls[0].extra_args
+    assert extra_args[extra_args.index("--task") + 1] == "causal_lm_logits"
+    assert extra_args[extra_args.index("--component-pipeline") + 1] == "auto"
+
+
 def test_cmd_convert_infers_multimodal_components_from_vision_config(monkeypatch, tmp_path: Path) -> None:
     parser = cli.create_parser()
     output_dir = tmp_path / "lfm2-vl"
@@ -284,6 +313,10 @@ def test_cmd_convert_transpiles_and_merges_assistant(monkeypatch, tmp_path: Path
         "2",
         "--torch-dtype",
         "bfloat16",
+        "--token",
+        "hf_token",
+        "--cache-dir",
+        str(tmp_path / "hf-cache"),
     ])
 
     cq_calls: list[list[str]] = []
@@ -384,10 +417,15 @@ def test_cmd_convert_transpiles_and_merges_assistant(monkeypatch, tmp_path: Path
     assert cq_calls[0][cq_calls[0].index("--model") + 1] == "main/model"
     assert cq_calls[1][cq_calls[1].index("--model") + 1] == "assistant/model"
     assert cq_calls[1][cq_calls[1].index("--bits") + 1] == "2"
+    assert cq_calls[0][cq_calls[0].index("--cache-dir") + 1] == str(tmp_path / "hf-cache")
+    assert cq_calls[1][cq_calls[1].index("--cache-dir") + 1] == str(tmp_path / "hf-cache")
     assert transpile_calls[0].model_id == "main/model"
     assert transpile_calls[1].model_id == "assistant/model"
     assert transpile_calls[0].extra_args[transpile_calls[0].extra_args.index("--torch-dtype") + 1] == "bfloat16"
     assert transpile_calls[1].extra_args[transpile_calls[1].extra_args.index("--torch-dtype") + 1] == "bfloat16"
+    assert transpile_calls[0].extra_args[transpile_calls[0].extra_args.index("--cache-dir") + 1] == str(tmp_path / "hf-cache")
+    assert transpile_calls[1].extra_args[transpile_calls[1].extra_args.index("--cache-dir") + 1] == str(tmp_path / "hf-cache")
+    assert transpile_calls[0].extra_args[transpile_calls[0].extra_args.index("--component-pipeline") + 1] == "on"
     assert transpile_calls[1].extra_args[transpile_calls[1].extra_args.index("--component-pipeline") + 1] == "on"
     assert transpile_calls[1].extra_args[transpile_calls[1].extra_args.index("--components") + 1] == "assistant"
 
@@ -754,6 +792,22 @@ def test_merge_assistant_bundle_allows_assistant_without_tokenizer_files(tmp_pat
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["component_order"] == ["decoder", "target_embedding", "assistant"]
+
+
+def test_assistant_tokenizer_compatibility_checks_json_sidecars(tmp_path: Path) -> None:
+    main_dir = tmp_path / "main"
+    assistant_dir = tmp_path / "assistant"
+    main_dir.mkdir()
+    assistant_dir.mkdir()
+    (main_dir / "tokenizer.json").write_text('{"model":"main"}', encoding="utf-8")
+    (assistant_dir / "tokenizer.json").write_text('{"model":"assistant"}', encoding="utf-8")
+
+    try:
+        assistant_bundle._validate_assistant_tokenizer_compatibility(main_dir, assistant_dir)
+    except RuntimeError as exc:
+        assert "tokenizer.json differs" in str(exc)
+    else:
+        raise AssertionError("tokenizer.json mismatch should fail assistant packaging")
 
 
 def test_cli_no_longer_registers_transpile_command() -> None:

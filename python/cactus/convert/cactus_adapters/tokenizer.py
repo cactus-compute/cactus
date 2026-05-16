@@ -53,7 +53,16 @@ def _is_replace_metaspace_decoder(decoder):
     return False
 
 
-def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, labels=None, model_type=None):
+def convert_hf_tokenizer(
+    tokenizer,
+    output_dir,
+    token=None,
+    model_id=None,
+    labels=None,
+    model_type=None,
+    cache_dir=None,
+    local_files_only=False,
+):
     """Convert a HuggingFace tokenizer to Cactus format."""
     model_name_l = (model_id or getattr(tokenizer, 'name_or_path', '') or '').lower()
 
@@ -180,7 +189,13 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
     if not merges_written and hf_hub_download:
         try:
             import shutil
-            merges_file = hf_hub_download(repo_id=tokenizer.name_or_path, filename="merges.txt", token=token)
+            merges_file = hf_hub_download(
+                repo_id=tokenizer.name_or_path,
+                filename="merges.txt",
+                token=token,
+                cache_dir=cache_dir,
+                local_files_only=local_files_only,
+            )
             shutil.copy2(merges_file, merges_output)
             merges_written = True
         except Exception:
@@ -324,7 +339,13 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
                 if Path(tokenizer.name_or_path).is_dir() and local_candidate.exists():
                     config_path = str(local_candidate)
                 else:
-                    config_path = hf_hub_download(repo_id=tokenizer.name_or_path, filename="tokenizer_config.json", token=token)
+                    config_path = hf_hub_download(
+                        repo_id=tokenizer.name_or_path,
+                        filename="tokenizer_config.json",
+                        token=token,
+                        cache_dir=cache_dir,
+                        local_files_only=local_files_only,
+                    )
                 with open(config_path, 'r') as f:
                     tokenizer_full_config = json.load(f)
 

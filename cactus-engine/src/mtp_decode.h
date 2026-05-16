@@ -62,9 +62,10 @@ inline MtpVerificationResult verify_greedy_mtp_draft(const MtpDraftBatch& draft,
     return result;
 }
 
+template <typename Rng>
 inline MtpVerificationResult verify_sampled_mtp_draft(const MtpDraftBatch& draft,
                                                       const std::vector<MtpDistribution>& target,
-                                                      MtpDeterministicRng& rng) {
+                                                      Rng& rng) {
     if (target.size() < draft.tokens.size() + 1) {
         throw std::invalid_argument("MTP target distributions must include one extra next-token distribution");
     }

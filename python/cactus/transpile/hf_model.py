@@ -961,6 +961,26 @@ def _parse_dtype(name: str) -> torch.dtype:
     return mapping[normalized]
 
 
+def _should_use_component_pipeline(
+    *,
+    mode: str,
+    task: str,
+    has_component_specs: bool,
+    requested_components: tuple[str, ...] | None,
+) -> bool:
+    if mode == "on":
+        if not has_component_specs:
+            raise RuntimeError(
+                f"--component-pipeline=on was requested, but this model does not expose component specs for task={task}"
+            )
+        return True
+    if mode != "auto" or not has_component_specs:
+        return False
+    if task == "causal_lm_logits" and requested_components is None:
+        return False
+    return True
+
+
 class TranspileWrapper(torch.nn.Module):
     def __init__(self, adapter_module: torch.nn.Module, *, weights_dir: str | None = None):
         super().__init__()
@@ -2369,6 +2389,7 @@ def _load_transformers_bundle(
     task: str,
     torch_dtype: torch.dtype,
     token: str | None,
+    cache_dir: str | None,
     trust_remote_code: bool,
     local_files_only: bool,
     tokenizer_source: str | None = None,
@@ -2409,6 +2430,8 @@ def _load_transformers_bundle(
     }
     if token:
         common_kwargs["token"] = token
+    if cache_dir:
+        common_kwargs["cache_dir"] = cache_dir
 
     if task == "tdt_transcription":
         model = load_tdt_local_model(model_source, torch_dtype=torch_dtype).eval()
@@ -2569,6 +2592,7 @@ def _load_optional_tokenizer(
     model_id: str,
     model_source: str,
     token: str | None,
+    cache_dir: str | None,
     trust_remote_code: bool,
     local_files_only: bool,
 ):
@@ -2588,6 +2612,8 @@ def _load_optional_tokenizer(
     }
     if token:
         common_kwargs["token"] = token
+    if cache_dir:
+        common_kwargs["cache_dir"] = cache_dir
 
     for source in source_candidates:
         try:
@@ -2775,6 +2801,11 @@ def main() -> int:
         help="Optional Hugging Face token. Defaults to HF_TOKEN.",
     )
     parser.add_argument(
+        "--cache-dir",
+        default="",
+        help="Optional Hugging Face cache directory for model, tokenizer, and processor loading.",
+    )
+    parser.add_argument(
         "--trust-remote-code",
         action="store_true",
         help="Pass trust_remote_code=True to transformers loaders.",
@@ -2879,6 +2910,7 @@ def main() -> int:
         task=task,
         torch_dtype=torch_dtype,
         token=args.token,
+        cache_dir=args.cache_dir.strip() or None,
         trust_remote_code=args.trust_remote_code,
         local_files_only=args.local_files_only,
         tokenizer_source=args.tokenizer_source.strip() or None,
@@ -2892,6 +2924,7 @@ def main() -> int:
             model_id=args.model_id,
             model_source=model_source,
             token=args.token,
+            cache_dir=args.cache_dir.strip() or None,
             trust_remote_code=args.trust_remote_code,
             local_files_only=args.local_files_only,
         )
@@ -3017,15 +3050,12 @@ def main() -> int:
         inputs_metadata=prepared.metadata,
         components=requested_components,
     )
-    use_component_pipeline = False
-    if args.component_pipeline == "on":
-        if component_specs is None:
-            raise RuntimeError(
-                f"--component-pipeline=on was requested, but {type(model).__name__} does not expose component specs for task={task}"
-            )
-        use_component_pipeline = True
-    elif args.component_pipeline == "auto" and component_specs is not None:
-        use_component_pipeline = True
+    use_component_pipeline = _should_use_component_pipeline(
+        mode=args.component_pipeline,
+        task=task,
+        has_component_specs=component_specs is not None,
+        requested_components=requested_components,
+    )
 
     if use_component_pipeline:
         family = canonical.family if canonical is not None else getattr(model, "family", type(model).__name__)
