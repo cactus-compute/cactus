@@ -88,8 +88,8 @@ bool test_graph_save_load() {
             return false;
         }
 
-        if (sg.graph_inputs.size() != 2 || sg.graph_inputs[0] != 0 ||
-  sg.graph_inputs[1] != 1) {
+        if (sg.graph_inputs.size() != 2 || sg.graph_inputs[0] != 1 ||
+  sg.graph_inputs[1] != 2) {
             std::cout << "[graph_save_load] unexpected graph_inputs:";
             for (uint32_t idx : sg.graph_inputs) {
                 std::cout << " " << idx;
@@ -99,7 +99,7 @@ bool test_graph_save_load() {
             return false;
         }
 
-        if (sg.graph_outputs.size() != 1 || sg.graph_outputs[0] != 3) {
+        if (sg.graph_outputs.size() != 1 || sg.graph_outputs[0] != 4) {
             std::cout << "[graph_save_load] unexpected graph_outputs:";
             for (uint32_t idx : sg.graph_outputs) {
                 std::cout << " " << idx;

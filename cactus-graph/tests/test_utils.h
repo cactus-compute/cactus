@@ -135,7 +135,7 @@ inline void fill_random_fp16(std::vector<__fp16>& data) {
 }
 
 inline size_t runtime_id_from_serialized_index(uint32_t serialized_index) {
-    return static_cast<size_t>(serialized_index) + 1;
+    return static_cast<size_t>(serialized_index);
 }
 
 inline bool test_basic_operation(const std::string& op_name,
