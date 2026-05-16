@@ -7,8 +7,8 @@ Reads:
 
 Writes one PNG per graph + a combined "all_graphs.png" with all five panels.
 
-Layout matches the deck spec: X = time (ms), Y = swept dim, one bar per
-backend per row, log X-axis.
+Plots use the monotonic latency envelope for each backend so the rendered
+curves show scaling shape while the CSV keeps the raw per-call timings.
 """
 
 from __future__ import annotations
@@ -39,14 +39,15 @@ GRAPHS = [
 # palette. Unknown backends fall back to matplotlib's default cycle.
 BACKEND_COLORS = {
     "cactus_int8":                       "#1b9e77",
-    "cactus_cq4":                        "#004d40",
+    "cactus_cq4":                        "#1b9e77",
     "cactus_prefill":                    "#1b9e77",
     "cactus_decode":                     "#1b9e77",
+    "ggml_q4_0":                         "#377eb8",
     "ggml_q8_0":                         "#377eb8",
     "ggml_fa_q8_prefill":                "#377eb8",
     "ggml_fa_q8_decode":                 "#377eb8",
-    "ggml_mm_q8_prefill":                "#80b1d3",
-    "ggml_mm_q8_decode":                 "#80b1d3",
+    "ggml_mm_q8_prefill":                "#377eb8",
+    "ggml_mm_q8_decode":                 "#377eb8",
     "litert_neon":                       "#ff7f00",
     "litert_ruy":                        "#fdbf6f",
     "litert_ruy_prefill":                "#fdbf6f",
@@ -54,8 +55,8 @@ BACKEND_COLORS = {
     "litert_neon_decode":                "#ff7f00",
     "onnxrt_int8":                       "#e41a1c",
     "onnxrt_gqa_prefill":                "#e41a1c",
-    "onnxrt_gqa_decode_fp16kv":          "#fb9a99",
-    "executorch_int8":                   "#999999",
+    "onnxrt_gqa_decode_fp16kv":          "#e41a1c",
+    "executorch_int8":                   "#666666",
     "executorch_sdpa_prefill_fp32":      "#666666",
     "executorch_qsdpa_decode_int8pc":    "#666666",
 }
@@ -75,13 +76,14 @@ BACKEND_ASTERISKS = {
     "executorch_qsdpa_decode_int8pc":    "*",
     "executorch_sdpa_prefill_fp32":      "†",
     "onnxrt_gqa_decode_fp16kv":          "‡",
+    "ggml_q4_0":                         "§",
     "cactus_cq4":                        "§",
 }
 ASTERISK_LEGEND = {
     "*": "per-channel INT8 quant (vs cactus's group=32)",
     "†": "FP32 (vs FP16)",
     "‡": "FP16 KV (vs INT8 KV)",
-    "§": "CQ4 / INT4 Cactus Quant weights",
+    "§": "4-bit weight path",
 }
 
 
@@ -96,7 +98,7 @@ def order_backends(backends: list[str]) -> list[str]:
 
 
 def plot_graph(ax, df: pd.DataFrame, graph_filter: str, title: str, x_label: str) -> bool:
-    """Line plot: X = swept dim (log), Y = time ms (log), one line per backend."""
+    """Line plot: X = swept dim (log), Y = monotonic latency envelope."""
     sub = df[df["graph"] == graph_filter].copy()
     if sub.empty:
         ax.text(0.5, 0.5, f"(no rows for graph={graph_filter})",
@@ -121,12 +123,13 @@ def plot_graph(ax, df: pd.DataFrame, graph_filter: str, title: str, x_label: str
         label = backend + (" " + mark if mark else "")
         if mark:
             asterisks_used.add(mark)
-        ax.plot(b_data["sweep_dim"], b_data["time_ms"],
+        b_data = b_data.assign(plot_time_ms=np.maximum.accumulate(b_data["time_ms"].to_numpy()))
+        ax.plot(b_data["sweep_dim"], b_data["plot_time_ms"],
                 marker="o", markersize=5, linewidth=1.8,
                 label=label, color=color_for(backend))
 
     ax.set_xlabel(x_label)
-    ax.set_ylabel("time (ms)")
+    ax.set_ylabel("monotonic latency envelope (ms)")
     ax.set_title(title, fontsize=11)
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
@@ -141,6 +144,7 @@ def plot_graph(ax, df: pd.DataFrame, graph_filter: str, title: str, x_label: str
     if asterisks_used:
         notes = [f"{k} {ASTERISK_LEGEND[k]}" for k in sorted(asterisks_used,
                                                               key=lambda x: list(ASTERISK_LEGEND).index(x))]
+        notes.append("CSV contains raw per-call timings; plotted lines use cumulative max by backend")
         ax.text(0.0, -0.16, "\n".join(notes),
                 transform=ax.transAxes, fontsize=7, color="#555",
                 ha="left", va="top")
@@ -189,7 +193,7 @@ def main() -> int:
             plot_graph(ax, dfs[source], gfilter, title, ylabel)
         # Hide the unused 6th subplot.
         axes_flat[-1].set_axis_off()
-        fig.suptitle("cactus vs llama.cpp vs litert vs executorch vs onnx — int8 kernels",
+        fig.suptitle("cactus vs llama.cpp vs litert vs executorch vs onnx — quantized kernels",
                      fontsize=13, y=0.995)
         fig.tight_layout(rect=(0, 0, 1, 0.985))
         out_path = out_dir / "all_graphs.png"

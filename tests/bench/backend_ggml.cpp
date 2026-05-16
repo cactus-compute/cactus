@@ -24,9 +24,9 @@ struct Weights {
     std::vector<float> output;
 };
 
-void* prepare_q8(const float* fp32, size_t N, size_t K) {
+void* prepare_quantized(const float* fp32, size_t N, size_t K, ggml_type type) {
     auto* w = new Weights();
-    w->K = K; w->N = N; w->type = GGML_TYPE_Q8_0;
+    w->K = K; w->N = N; w->type = type;
     w->row_stride = ggml_row_size(w->type, K);
     w->quantized.resize(w->row_stride * N);
 
@@ -37,6 +37,10 @@ void* prepare_q8(const float* fp32, size_t N, size_t K) {
     for (size_t n = 0; n < N; n++)
         from_float(fp32 + n * K, w->quantized.data() + n * w->row_stride, static_cast<int64_t>(K));
     return w;
+}
+
+void* prepare_q4_0(const float* fp32, size_t N, size_t K) {
+    return prepare_quantized(fp32, N, K, GGML_TYPE_Q4_0);
 }
 
 struct Activations {
@@ -328,8 +332,8 @@ void cleanup(void* state) {
 
 static int reg = [] {
     bench::register_matmul_backend({
-        "ggml_q8_0", "ggml",
-        matmul::prepare_q8, matmul::prepare_act, matmul::run_kernel, matmul::cleanup
+        "ggml_q4_0", "ggml",
+        matmul::prepare_q4_0, matmul::prepare_act, matmul::run_kernel, matmul::cleanup
     });
     bench::register_attn_backend({
         "ggml_fa_q8_prefill", "ggml", bench::AttnMode::PREFILL,

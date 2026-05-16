@@ -98,6 +98,11 @@ larger than any plausible Apple Silicon SLC. This forces every iteration's
 weight load to miss to RAM, matching real inference where every layer has
 unique weights. NM is reported next to each shape in the output.
 
+The plotter renders a monotonic latency envelope per backend (`cummax` over
+the raw latency points). The CSVs remain raw per-call timings; the PNGs use
+the envelope so the visible scaling shape does not dip when a larger shape
+lands on a more efficient backend kernel regime.
+
 ### Threading
 
 Default is to honor `--threads`. We recommend `--threads 4` for these
@@ -117,7 +122,9 @@ We've fixed warm-cache reads (NM scales to exceed SLC) and ORT's per-call
 session-creation overhead (sessions cached per (M,K,N)). Three known
 asymmetries remain:
 
-1. **Mixed precision plotted on the same axis.** ExecuTorch SDPA prefill
+1. **Mixed precision plotted on the same axis.** Cactus and ggml matmul use
+   4-bit weight paths; LiteRT, ExecuTorch, and ONNX Runtime matmul remain
+   INT8 because those benchmarked APIs are INT8-only here. ExecuTorch SDPA prefill
    is FP32-only (no FP16 path exists in `op_sdpa.cpp`); ORT GQA decode is
    FP16-KV (no INT8-KV op exists in ORT). Both flagged with † / ‡ in plot
    legends. ExecuTorch is doing 2× the floating-point work cactus is;
@@ -177,7 +184,7 @@ The five user-facing graphs map onto these CSVs as:
 | Backend | Matmul (graphs 1–3) | Attention prefill (graph 4) | Hybrid decode (graph 5) | Kernel kind |
 |---------|---------------------|------------------------------|--------------------------|-------------|
 | **cactus**     | `cactus_cq4` (CQ4 / INT4 weights) | `cactus_prefill` (FP16) | `cactus_decode` (FP16 Q + INT8 KV group=32) | fused |
-| **ggml**       | `ggml_q8_0` (INT8 group=32) | `ggml_fa_q8_prefill` (Q8_0 KV) / `ggml_mm_q8_prefill` (composed) | `ggml_fa_q8_decode` (Q8_0 KV) | fa_*: fused / mm_*: graph |
+| **ggml**       | `ggml_q4_0` (Q4_0 weights) | `ggml_fa_q8_prefill` (Q8_0 KV) / `ggml_mm_q8_prefill` (composed) | `ggml_fa_q8_decode` (Q8_0 KV) | fa_*: fused / mm_*: graph |
 | **LiteRT**     | `litert_neon`, `litert_ruy` (INT8 per-channel) | `litert_ruy_prefill` (composed) | `litert_ruy_decode`, `litert_neon_decode` (composed) | matmul-composed (no fused op) |
 | **ONNX RT**    | `onnxrt_int8` (INT8 group=32 via `MatMulNBits`) | `onnxrt_gqa_prefill` (**FP16**, GQA) | `onnxrt_gqa_decode_fp16kv` (**FP16 KV**) | fused (MlasFlashAttention) |
 | **ExecuTorch** | `executorch_int8` (INT8 per-channel via XNNPACK `qc8w`) | `executorch_sdpa_prefill_fp32` (**FP32**) | `executorch_qsdpa_decode_int8pc` (**INT8 per-channel**) | fused |
@@ -187,7 +194,7 @@ The five user-facing graphs map onto these CSVs as:
 | Backend | INT4 / CQ4 path |
 |---------|-----------------|
 | **cactus** | Yes — `cactus_cq4` uses `cactus_quant_matmul` with CQ4 / INT4 weights. |
-| **ggml** | No INT4 variant registered here; only `ggml_q8_0` is benchmarked. |
+| **ggml** | Yes for matmul — `ggml_q4_0` uses ggml Q4_0 weights with Q8_0 activations. Attention remains Q8_0 KV in this bench. |
 | **LiteRT** | No INT4 variant registered here; Ruy/NEON paths are INT8. |
 | **ONNX RT** | No INT4 variant registered here; `MatMulNBits` is configured for 8-bit. |
 | **ExecuTorch** | No INT4 variant registered here; XNNPACK path is INT8 `qc8w`. |
@@ -255,5 +262,5 @@ what's being compared:
   but commented out — it produces wrong output (nrmse=1.24). The flash-
   attention path (`fa_q8_decode`) is the canonical comparator.
 
-All 12 attention backends and 6 matmul backends have been smoke-tested at
+All 11 attention backends and 6 matmul backends have been smoke-tested at
 S=cache=512 with passing accuracy. Plot ready.
