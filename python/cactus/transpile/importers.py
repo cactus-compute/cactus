@@ -1013,14 +1013,21 @@ def import_clamp(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int
     min_value = extract_literals(node.args[1]) if len(node.args) > 1 else None
     max_value = extract_literals(node.args[2]) if len(node.args) > 2 else None
     attrs: dict[str, object] = {}
+    inputs = [value_id(node.args[0], ctx)]
     if isinstance(min_value, (int, float)):
         attrs["min"] = float(min_value)
+    elif len(node.args) > 1 and is_fx_node(node.args[1]):
+        attrs["has_min_tensor"] = True
+        inputs.append(value_id(node.args[1], ctx))
     if isinstance(max_value, (int, float)):
         attrs["max"] = float(max_value)
+    elif len(node.args) > 2 and is_fx_node(node.args[2]):
+        attrs["has_max_tensor"] = True
+        inputs.append(value_id(node.args[2], ctx))
     ir_node = IRNode(
         id=node_id(node),
         op="clamp",
-        inputs=[value_id(node.args[0], ctx)],
+        inputs=inputs,
         outputs=[value_id(node, ctx)],
         attrs=attrs,
         meta=_base_meta(shape, dtype, torch_op, node),

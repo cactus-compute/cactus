@@ -536,9 +536,14 @@ def _gemma4_text_backbone_forward(
 
 def _gemma4_strip_audio_padding(audio_output: object) -> torch.Tensor:
     audio_features = getattr(audio_output, "pooler_output", None)
-    audio_mask_from_encoder = getattr(audio_output, "audio_mel_mask", None)
     if not isinstance(audio_features, torch.Tensor):
         raise TypeError("Gemma4 audio output did not expose tensor pooler_output")
+
+    audio_mask_from_encoder = getattr(audio_output, "attention_mask", None)
+    if isinstance(audio_mask_from_encoder, torch.Tensor):
+        return audio_features[audio_mask_from_encoder].unsqueeze(0)
+
+    audio_mask_from_encoder = getattr(audio_output, "audio_mel_mask", None)
     if not isinstance(audio_mask_from_encoder, torch.Tensor):
         return audio_features
     all_real_tokens: list[torch.Tensor] = []
@@ -930,16 +935,9 @@ def _gemma4_compute_native_like_audio_features(
             raise TypeError("Gemma4 audio tower is missing output_proj")
         audio_encodings = output_proj(hidden_states)
 
-    projection = getattr(embed_audio, "embedding_projection", None)
-    if not isinstance(projection, torch.nn.Linear):
-        raise TypeError("Gemma4 audio embedder is missing embedding_projection")
-    normed = _gemma4_rms_norm_no_scale(audio_encodings, eps=float(getattr(embed_audio, "eps", 1e-6)))
-    projected = F.linear(
-        normed,
-        projection.weight.float(),
-        None if projection.bias is None else projection.bias.float(),
-    )
-    projected = projected * (1.0 / 16.0)
+    if not callable(getattr(embed_audio, "forward", None)):
+        raise TypeError("Gemma4 audio embedder is not callable")
+    projected = embed_audio(inputs_embeds=audio_encodings)
     # The transpiled bundle is shape-specialized from representative media.
     # Native Gemma4 audio preprocessing emits an unpadded feature tensor for
     # that media, so the post-subsampling sequence is already the real token
@@ -2905,6 +2903,37 @@ class Gemma4LMEncoderStepAdapter(_Gemma4MultimodalComponentBase):
         }
 
 
+class Gemma4LMEncoderMediaStepAdapter(_Gemma4MultimodalComponentBase):
+    def __init__(self, model: torch.nn.Module, *, weights_dir: str | None = None):
+        super().__init__(
+            model,
+            input_names=("inputs_embeds", "input_ids", "position_ids"),
+            weights_dir=weights_dir,
+        )
+
+    def forward(
+        self,
+        inputs_embeds: torch.Tensor,
+        input_ids: torch.Tensor,
+        position_ids: torch.LongTensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.LongTensor]:
+        text_config = _gemma4_text_config(self.multimodal_backbone)
+        if getattr(text_config, "hidden_size_per_layer_input", None):
+            per_layer_inputs = _gemma4_get_per_layer_inputs(self.backbone, input_ids, inputs_embeds)
+            per_layer_inputs = self.backbone.project_per_layer_inputs(inputs_embeds, per_layer_inputs)
+        else:
+            per_layer_inputs = inputs_embeds.new_empty((inputs_embeds.shape[0], inputs_embeds.shape[1], 0, 0))
+        return inputs_embeds, per_layer_inputs, position_ids
+
+    def get_transpile_metadata(self):
+        return {
+            "graph": self._base_graph_meta(
+                adapter_type=type(self).__name__,
+                input_names=("inputs_embeds", "input_ids", "position_ids"),
+            ),
+        }
+
+
 class Gemma4DecoderAdapter(_Gemma4MultimodalComponentBase):
     def __init__(self, model: torch.nn.Module, *, weights_dir: str | None = None):
         super().__init__(model, input_names=_GEMMA4_DECODER_PIPELINE_IO_KEYS, weights_dir=weights_dir)
@@ -2986,6 +3015,7 @@ def _build_gemma4_multimodal_component_specs(
         _require("lm_encoder")
         _require("decoder_prefill_chunk")
         _require("lm_encoder_step")
+        _require("lm_encoder_media_step")
         _require("decoder_step")
     if "decoder_prefill_chunk" in requested_set:
         _require("vision_encoder")
@@ -3003,8 +3033,11 @@ def _build_gemma4_multimodal_component_specs(
             _require("audio_encoder")
         if "lm_encoder_step" in requested_set:
             _require("lm_encoder_step")
+        if "lm_encoder_media_step" in requested_set:
+            _require("lm_encoder_media_step")
         if "decoder_step" in requested_set:
             _require("lm_encoder_step")
+            _require("lm_encoder_media_step")
             _require("decoder_step")
 
     vision_tower = getattr(getattr(model, "model", model), "vision_tower", None)
@@ -3032,6 +3065,7 @@ def _build_gemma4_multimodal_component_specs(
     decoder_step_inputs: tuple[torch.Tensor, ...] | None = None
     step_input_ids: torch.Tensor | None = None
     step_position_ids: torch.Tensor | None = None
+    media_step_embeds: torch.Tensor | None = None
     native_merge_plan: _Gemma4NativeMergePlan | None = None
 
     with torch.no_grad():
@@ -3064,6 +3098,7 @@ def _build_gemma4_multimodal_component_specs(
         native_merge_plan=native_merge_plan,
     ).eval()
     lm_encoder_step = Gemma4LMEncoderStepAdapter(model, weights_dir=weights_dir).eval()
+    lm_encoder_media_step = Gemma4LMEncoderMediaStepAdapter(model, weights_dir=weights_dir).eval()
     decoder = Gemma4DecoderAdapter(model, weights_dir=weights_dir).eval()
     decoder_step = Gemma4DecoderStepAdapter(model, weights_dir=weights_dir).eval()
 
@@ -3085,6 +3120,22 @@ def _build_gemma4_multimodal_component_specs(
                 device=input_ids.device,
             )
             decoder_step_inputs = lm_encoder_step(step_input_ids, step_position_ids)
+        if "lm_encoder_media_step" in expanded_components:
+            if audio_features is not None and int(audio_features.shape[1]) > 0:
+                media_step_embeds = audio_features[:, :1, :].contiguous()
+            elif image_features is not None and int(image_features.shape[1]) > 0:
+                media_step_embeds = image_features[:, :1, :].contiguous()
+            else:
+                text_config = _gemma4_text_config(getattr(model, "model", model))
+                hidden_size = int(getattr(text_config, "hidden_size", 0) or 0)
+                if hidden_size <= 0:
+                    raise RuntimeError("Gemma4 lm_encoder_media_step spec could not infer hidden size")
+                dtype = _module_floating_dtype(model) or torch.float16
+                media_step_embeds = torch.zeros(
+                    (int(input_ids.shape[0]), 1, hidden_size),
+                    dtype=dtype,
+                    device=input_ids.device,
+                )
 
     common_graph_meta = {
         "weights_dir": weights_dir,
@@ -3174,6 +3225,18 @@ def _build_gemma4_multimodal_component_specs(
             input_keys=("input_ids", "position_ids"),
             output_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
             graph_meta={**common_graph_meta, "component": "lm_encoder_step"},
+            metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
+        ))
+    if "lm_encoder_media_step" in expanded_components:
+        if media_step_embeds is None or step_input_ids is None or step_position_ids is None:
+            raise RuntimeError("Gemma4 lm_encoder_media_step spec requires step token inputs")
+        specs.append(ComponentModuleSpec(
+            component="lm_encoder_media_step",
+            module=lm_encoder_media_step,
+            example_inputs=(media_step_embeds, torch.zeros_like(step_input_ids), step_position_ids),
+            input_keys=("inputs_embeds", "input_ids", "position_ids"),
+            output_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
+            graph_meta={**common_graph_meta, "component": "lm_encoder_media_step"},
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
         ))
     if "decoder_step" in expanded_components:

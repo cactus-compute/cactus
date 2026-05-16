@@ -151,17 +151,23 @@ def _serialize_json_compatible(value: Any) -> Any:
     if isinstance(value, torch.dtype):
         return str(value)
     if isinstance(value, torch.Tensor):
-        return {
+        payload = {
             "type": "torch.Tensor",
             "dtype": str(value.dtype),
             "shape": list(value.shape),
         }
+        if value.numel() == 1:
+            payload["data"] = value.detach().cpu().reshape(-1)[0].item()
+        return payload
     if isinstance(value, np.ndarray):
-        return {
+        payload = {
             "type": "numpy.ndarray",
             "dtype": str(value.dtype),
             "shape": list(value.shape),
         }
+        if value.size == 1:
+            payload["data"] = np.asarray(value).reshape(-1)[0].item()
+        return payload
     if hasattr(value, "__dataclass_fields__"):
         return {
             field.name: _serialize_json_compatible(getattr(value, field.name))
@@ -358,6 +364,7 @@ def _write_component_bundle(
             "decoder_prefill_chunk",
             "decoder",
             "lm_encoder_step",
+            "lm_encoder_media_step",
             "decoder_step",
             "unspecified",
         )

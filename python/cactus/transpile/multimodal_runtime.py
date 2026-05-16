@@ -370,6 +370,9 @@ def prepare_gemma4_multimodal_inputs(
     system_prompt: str = "",
     enable_thinking_if_supported: bool = False,
     use_gemma4_chat_template: bool = False,
+    static_image_soft_token_counts: tuple[int, ...] | None = None,
+    static_audio_soft_token_count: int | None = None,
+    force_static_multimodal_placeholders: bool = False,
 ) -> PreparedInputs:
     if processor is None:
         raise RuntimeError("multimodal Gemma4 transpile requires an AutoProcessor with image and audio support")
@@ -421,16 +424,50 @@ def prepare_gemma4_multimodal_inputs(
                 native_audio_mask = None
                 native_audio_frames = None
 
-        if native_image_tensors is not None and (not audio_file or native_audio is not None):
-            pixel_values, pixel_position_ids = native_image_tensors
-            pooling_kernel_size = int(_get_processor_image_attr(processor, "pooling_kernel_size", 3))
-            image_soft_counts = tuple(
-                _gemma4_image_soft_token_counts(
-                    pixel_position_ids,
-                    pooling_kernel_size=pooling_kernel_size,
+        has_native_media = (
+            native_image_tensors is not None
+            or native_audio is not None
+            or (
+                force_static_multimodal_placeholders
+                and (
+                    bool(static_image_soft_token_counts)
+                    or (static_audio_soft_token_count is not None and int(static_audio_soft_token_count) > 0)
                 )
             )
-            audio_soft_count = _gemma4_audio_soft_token_count(native_audio_frames or 0) if audio_file else 0
+        )
+        if has_native_media and (not audio_file or native_audio is not None):
+            image_soft_counts: tuple[int, ...] = ()
+            if native_image_tensors is not None:
+                pixel_values, pixel_position_ids = native_image_tensors
+                pooling_kernel_size = int(_get_processor_image_attr(processor, "pooling_kernel_size", 3))
+                computed_image_counts = tuple(
+                    _gemma4_image_soft_token_counts(
+                        pixel_position_ids,
+                        pooling_kernel_size=pooling_kernel_size,
+                    )
+                )
+                if (
+                    static_image_soft_token_counts is not None
+                    and len(static_image_soft_token_counts) == len(computed_image_counts)
+                ):
+                    image_soft_counts = tuple(int(count) for count in static_image_soft_token_counts)
+                else:
+                    image_soft_counts = computed_image_counts
+            elif force_static_multimodal_placeholders and static_image_soft_token_counts is not None:
+                image_soft_counts = tuple(int(count) for count in static_image_soft_token_counts)
+            audio_soft_count = 0
+            if audio_file:
+                audio_soft_count = (
+                    int(static_audio_soft_token_count)
+                    if static_audio_soft_token_count is not None and int(static_audio_soft_token_count) > 0
+                    else _gemma4_audio_soft_token_count(native_audio_frames or 0)
+                )
+            elif (
+                force_static_multimodal_placeholders
+                and static_audio_soft_token_count is not None
+                and int(static_audio_soft_token_count) > 0
+            ):
+                audio_soft_count = int(static_audio_soft_token_count)
             processor_prompt = _build_gemma4_native_chat_prompt(
                 prompt=normalized_prompt,
                 image_soft_token_counts=image_soft_counts,
@@ -444,8 +481,9 @@ def prepare_gemma4_multimodal_inputs(
                 image_token=image_token if isinstance(image_token, str) else None,
                 audio_token=audio_token if isinstance(audio_token, str) else None,
             )
-            batch["pixel_values"] = pixel_values
-            batch["pixel_position_ids"] = pixel_position_ids
+            if native_image_tensors is not None:
+                batch["pixel_values"] = pixel_values
+                batch["pixel_position_ids"] = pixel_position_ids
             if native_audio is not None and native_audio_mask is not None:
                 batch["input_features"] = native_audio
                 batch["input_features_mask"] = native_audio_mask

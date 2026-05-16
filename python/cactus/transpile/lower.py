@@ -543,6 +543,16 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         x = _ensure_fp16_tensor(g, _tensor(env, node.inputs[0]))
         min_value = node.attrs.get("min")
         max_value = node.attrs.get("max")
+        input_index = 1
+        if min_value is None and (
+            bool(node.attrs.get("has_min_tensor", False)) or len(node.inputs) > input_index
+        ):
+            min_value = _constant_scalar_from_ir(ir, node.inputs[input_index])
+            input_index += 1
+        if max_value is None and (
+            bool(node.attrs.get("has_max_tensor", False)) or len(node.inputs) > input_index
+        ):
+            max_value = _constant_scalar_from_ir(ir, node.inputs[input_index])
         lo = float(min_value) if min_value is not None and math.isfinite(float(min_value)) else -65504.0
         hi = float(max_value) if max_value is not None and math.isfinite(float(max_value)) else 65504.0
         return [g.clamp(x, lo, hi)]
@@ -2090,6 +2100,17 @@ def _constant_tensor_from_ir(ir: IRGraph, value_id: str) -> torch.Tensor | None:
     return None
 
 
+def _constant_scalar_from_ir(ir: IRGraph, value_id: str) -> float | None:
+    const = _constant_tensor_from_ir(ir, value_id)
+    if const is None:
+        return None
+    if const.numel() != 1:
+        raise NotImplementedError(
+            f"clamp bound {value_id!r} must be a scalar constant, got shape={tuple(const.shape)}"
+        )
+    return float(const.reshape(()).item())
+
+
 def _try_lower_identity_broadcast_advanced_index(
     g: Graph,
     node: IRNode,
@@ -2111,6 +2132,25 @@ def _try_lower_identity_broadcast_advanced_index(
     batch_index = _constant_tensor_from_ir(ir, node.inputs[1])
     token_index = _constant_tensor_from_ir(ir, node.inputs[2])
     if batch_index is None or token_index is None:
+        index_values = [env.get(value_id) for value_id in node.inputs[1:]]
+        index_shapes = [
+            tuple(int(dim) for dim in value.shape)
+            for value in index_values
+            if isinstance(value, Tensor)
+        ]
+        source_elems = 1
+        for dim in source_shape:
+            source_elems *= int(dim)
+        output_elems = 1
+        for dim in output_shape:
+            output_elems *= int(dim)
+        if (
+            int(source_shape[0]) == 1
+            and output_elems == source_elems
+            and index_shapes
+            and all(shape and all(int(dim) in {1, int(source_shape[1])} for dim in shape) for shape in index_shapes)
+        ):
+            return g.reshape(source, output_shape)
         return None
 
     try:

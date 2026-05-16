@@ -174,6 +174,30 @@ def load_saved_component_graph(
     has_graph = isinstance(graph_relpath, str) and bool(graph_relpath)
     graph_path = (root / str(graph_relpath)).resolve() if has_graph else None
     prefer_saved_graph = os.environ.get("CACTUS_TRANSPILER_PREFER_SAVED_GRAPH", "1") != "0"
+    family = str(component_entry.get("family", "") or component_entry.get("adapter_family", "") or "").strip().lower()
+    component_name = str(component_entry.get("component", "") or "").strip().lower()
+    if not family:
+        ir_relpath = component_entry.get("optimized_ir") or component_entry.get("raw_ir")
+        if isinstance(ir_relpath, str) and ir_relpath:
+            try:
+                ir_payload = json.loads((root / ir_relpath).read_text())
+                family = str(ir_payload.get("family", "") or "").strip().lower()
+            except Exception:
+                family = ""
+    if family == "gemma4" and component_name in {
+        "vision_encoder",
+        "audio_encoder",
+        "decoder_prefill_chunk",
+        "decoder_step",
+    }:
+        # Older Gemma4 media bundles can deserialize successfully while returning
+        # stale media features from graph.cactus. Replaying the op IR preserves the
+        # same Cactus ops and picks up runtime fixes for native media preprocessing
+        # and Gemma4's tensor-valued clippable-linear bounds / split-decoder
+        # sliding-attention metadata.
+        prefer_saved_graph = False
+        if component_name in {"decoder_prefill_chunk", "decoder_step"}:
+            os.environ.setdefault("CACTUS_KV_CACHE_FP16", "1")
     if prefer_saved_graph and graph_path is not None and graph_path.exists():
         try:
             graph = Graph.load(graph_path)
@@ -287,7 +311,7 @@ def _load_component_graph_from_ir(
     else:
         family = str(ir_graph.meta.get("adapter_family") or ir_graph.meta.get("family") or "").strip().lower()
         component = str(ir_graph.meta.get("component", "") or component_entry.get("component", "") or "").strip().lower()
-        if family == "gemma4" and component in {"decoder", "decoder_step"}:
+        if family == "gemma4" and component in {"decoder", "decoder_step", "decoder_prefill_chunk"}:
             optimize_graph(ir_graph)
     transpiled = transpile_preoptimized_ir(ir_graph)
     return LoadedComponentGraph(
@@ -747,10 +771,28 @@ def _deserialize_saved_ir_constant(
         value_type = str(serialized.get("type", ""))
         if value_type in {"torch.Tensor", "numpy.ndarray"}:
             shape = tuple(int(dim) for dim in serialized.get("shape", []) or [])
+            dtype = _torch_dtype_from_name(str(serialized.get("dtype", ""))) or torch.float32
+            if "data" in serialized:
+                tensor = torch.as_tensor(serialized.get("data"), dtype=dtype)
+                return tensor.reshape(shape) if shape else tensor.reshape(())
+            zero_scalar = False if dtype is torch.bool else 0
             if not shape:
-                dtype = _torch_dtype_from_name(str(serialized.get("dtype", ""))) or torch.float32
-                zero_scalar = False if dtype is torch.bool else 0
+                repaired = _repair_missing_saved_ir_scalar_constant(
+                    value=value,
+                    dtype=dtype,
+                    bundle_root=bundle_root,
+                    weights_dir=weights_dir,
+                )
+                if repaired is not None:
+                    return repaired
                 return torch.tensor(zero_scalar, dtype=dtype)
+            # Older bundles can contain tiny folded tensor constants whose payload
+            # was intentionally omitted because they came from shape/index helper
+            # ops instead of model weights. Only zero-fill anonymous helpers; named
+            # model/config constants must be materialized or explicitly repaired.
+            source_name = str((value.meta or {}).get("source_name", "") or "")
+            if not source_name and int(np.prod(shape, dtype=np.int64)) <= 16:
+                return torch.full(shape, zero_scalar, dtype=dtype)
             raise ValueError(
                 "saved optimized IR is missing a materialized constant payload for "
                 f"{value.id} with shape={shape}; expected a bound_constants entry"
@@ -758,6 +800,48 @@ def _deserialize_saved_ir_constant(
         return dict(serialized)
 
     return serialized
+
+
+def _repair_missing_saved_ir_scalar_constant(
+    *,
+    value: IRValue,
+    dtype: torch.dtype,
+    bundle_root: Path,
+    weights_dir: str | Path | None,
+) -> torch.Tensor | None:
+    """Repair scalar config constants omitted by older IR JSON writers."""
+
+    source_name = str((value.meta or {}).get("source_name", "") or "")
+    if source_name.endswith(".self_attn.softcap"):
+        cap = _resolve_gemma4_audio_attention_logit_cap(bundle_root=bundle_root, weights_dir=weights_dir)
+        return torch.tensor(cap, dtype=dtype)
+    return None
+
+
+def _resolve_gemma4_audio_attention_logit_cap(
+    *,
+    bundle_root: Path,
+    weights_dir: str | Path | None,
+) -> float:
+    candidates: list[Path] = []
+    if weights_dir is not None:
+        candidates.append(Path(weights_dir).expanduser().resolve() / "config.json")
+    candidates.append(bundle_root / "config.json")
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        audio_config = payload.get("audio_config")
+        if not isinstance(audio_config, Mapping):
+            continue
+        for key in ("attention_logit_cap", "conf_attention_logit_cap", "audio_logit_cap"):
+            raw = audio_config.get(key)
+            if isinstance(raw, (int, float)):
+                return float(raw)
+    return 50.0
 
 
 def execute_loaded_component_pipeline(
@@ -1120,6 +1204,12 @@ def _execute_multimodal_component_pipeline_for_generation(
                 prompt_token_count=prompt_token_count,
             )
         outputs = execute_loaded_component(component, store)
+        if (
+            family == "gemma4"
+            and component_name == "audio_encoder"
+            and os.environ.get("CACTUS_GEMMA4_ENABLE_STALE_AUDIO_SCALE_SHIM") == "1"
+        ):
+            _normalize_gemma4_audio_encoder_outputs(store, output_names)
         outputs_by_component[component_name] = outputs
 
         if component_name in {"vision_encoder", "audio_encoder"}:
@@ -1129,6 +1219,32 @@ def _execute_multimodal_component_pipeline_for_generation(
                     feature_payload[output_name] = np.asarray(store[output_name]).copy()
 
     return store, outputs_by_component
+
+
+def _normalize_gemma4_audio_encoder_outputs(
+    store: dict[str, np.ndarray],
+    output_names: tuple[str, ...],
+) -> None:
+    """Undo stale Gemma4 audio projection scaling in older transpiled bundles.
+
+    Current HuggingFace Gemma4 returns audio embeddings directly from
+    `embed_audio`. Some earlier Cactus bundles divided those embeddings by 16
+    inside the audio_encoder graph, which makes the model behave as if audio was
+    absent. Keep this as a runtime compatibility shim: regenerated bundles that
+    already have the correct scale have stddev well above this threshold and are
+    left untouched.
+    """
+
+    for output_name in output_names:
+        value = store.get(output_name)
+        if not isinstance(value, np.ndarray) or value.size == 0:
+            continue
+        if value.ndim < 3 or int(value.shape[-1]) < 256:
+            continue
+        std = float(np.nanstd(value.astype(np.float32, copy=False)))
+        if not np.isfinite(std) or std <= 0.0 or std >= 1.0:
+            continue
+        store[output_name] = np.ascontiguousarray(value.astype(np.float32, copy=False) * 16.0).astype(value.dtype)
 
 
 def _right_align_decoder_inputs_to_static_tail(
@@ -1182,6 +1298,11 @@ def _run_multimodal_causal_lm_bundle(
         and os.environ.get("CACTUS_TRANSPILER_DISABLE_CACHED_STEP_DECODE") != "1"
     )
     use_chunk_prefill = use_cached_step_decode and "decoder_prefill_chunk" in component_graphs
+    use_dynamic_gemma4_media_encoder = (
+        family == "gemma4"
+        and use_cached_step_decode
+        and "lm_encoder_media_step" in component_graphs
+    )
     inputs_meta = manifest.get("inputs") if isinstance(manifest.get("inputs"), dict) else {}
     resolved_prompt = prompt if prompt is not None else str(inputs_meta.get("prompt", "") or "")
     if not resolved_prompt:
@@ -1250,7 +1371,9 @@ def _run_multimodal_causal_lm_bundle(
         encoder_components.append("audio_encoder")
     elif "audio_encoder" in component_graphs:
         skipped_encoder_components.append("audio_encoder")
-    if use_cached_step_decode:
+    if use_dynamic_gemma4_media_encoder:
+        required_components = tuple(encoder_components)
+    elif use_cached_step_decode:
         required_components = tuple(encoder_components) + (
             ("lm_encoder", "decoder_prefill_chunk") if use_chunk_prefill else ("lm_encoder",)
         )
@@ -1306,6 +1429,7 @@ def _run_multimodal_causal_lm_bundle(
             enable_thinking_if_supported=enable_thinking,
         )
     else:
+        static_image_counts, static_audio_count = _gemma4_static_lm_encoder_media_counts(manifest)
         prepared = prepare_gemma4_multimodal_inputs(
             processor,
             prompt=resolved_prompt,
@@ -1315,6 +1439,14 @@ def _run_multimodal_causal_lm_bundle(
             system_prompt=system_prompt or "",
             enable_thinking_if_supported=enable_thinking,
             use_gemma4_chat_template=True,
+            static_image_soft_token_counts=static_image_counts,
+            static_audio_soft_token_count=static_audio_count,
+            force_static_multimodal_placeholders=(
+                family == "gemma4"
+                and bool(has_image or has_audio)
+                and not use_dynamic_gemma4_media_encoder
+                and (static_image_counts is not None or static_audio_count is not None)
+            ),
         )
 
     _attach_component_io_names(manifest, component_graphs)
@@ -1346,9 +1478,13 @@ def _run_multimodal_causal_lm_bundle(
         component_names=tuple(skipped_encoder_components),
     )
     initial_components = (
-        tuple(encoder_components) + ("lm_encoder",)
-        if use_cached_step_decode
-        else required_components
+        tuple(encoder_components)
+        if use_dynamic_gemma4_media_encoder
+        else (
+            tuple(encoder_components) + ("lm_encoder",)
+            if use_cached_step_decode
+            else required_components
+        )
     )
 
     start = time.perf_counter()
@@ -1374,6 +1510,14 @@ def _run_multimodal_causal_lm_bundle(
         fallback=unpadded_token_count,
     )
     if use_cached_step_decode:
+        if use_dynamic_gemma4_media_encoder:
+            store = _build_gemma4_dynamic_multimodal_encoder_store(
+                component_graphs=component_graphs,
+                manifest=manifest,
+                store=store,
+                tokenizer=tokenizer,
+                current_length=current_length,
+            )
         return _run_gemma4_cached_step_multimodal_decode(
             component_graphs=component_graphs,
             manifest=manifest,
@@ -1488,6 +1632,7 @@ def _run_gemma4_text_only_cached_bundle(
 ) -> dict[str, object]:
     if "lm_encoder_step" not in component_graphs or "decoder_step" not in component_graphs:
         raise ValueError("Gemma4 text-only multimodal bundle requires lm_encoder_step and decoder_step")
+    os.environ.setdefault("CACTUS_KV_CACHE_FP16", "1")
 
     prompt_token_ids, tokenizer = _resolve_causal_lm_input_ids(
         manifest=manifest,
@@ -1769,6 +1914,143 @@ def _run_lfm2_vl_text_bundle(
     }
 
 
+def _as_gemma4_feature_sequence(
+    value: np.ndarray,
+    *,
+    feature_name: str,
+) -> np.ndarray:
+    array = np.asarray(value)
+    if array.ndim == 2:
+        array = array[None, :, :]
+    if array.ndim != 3:
+        raise RuntimeError(f"Gemma4 {feature_name} must be rank 2 or 3, got shape {list(array.shape)}")
+    if int(array.shape[0]) != 1:
+        raise RuntimeError(f"Gemma4 {feature_name} currently expects batch=1, got shape {list(array.shape)}")
+    return np.ascontiguousarray(array)
+
+
+def _build_gemma4_dynamic_multimodal_encoder_store(
+    *,
+    component_graphs: dict[str, LoadedComponentGraph],
+    manifest: dict[str, object],
+    store: dict[str, np.ndarray],
+    tokenizer: object | None,
+    current_length: int,
+) -> dict[str, np.ndarray]:
+    """Build Gemma4 prompt embeddings for the media actually present this turn.
+
+    Static `lm_encoder` graphs are tied to the representative prompt used when
+    the bundle was created. The step encoder is shape-stable, so using it here
+    lets one Gemma4 bundle support text, image+text, audio+text, and
+    image+audio+text without compiling separate entrypoints.
+    """
+
+    if "lm_encoder_step" not in component_graphs:
+        raise ValueError("Gemma4 dynamic multimodal execution requires lm_encoder_step")
+    lm_encoder_step = component_graphs["lm_encoder_step"]
+    lm_encoder_media_step = component_graphs.get("lm_encoder_media_step")
+    inputs_meta = manifest.get("inputs") if isinstance(manifest.get("inputs"), dict) else {}
+    pad_token_id = _resolve_bundle_padding_token_id(inputs_meta, tokenizer)
+
+    input_ids = np.asarray(store.get("input_ids"))
+    token_type_ids = np.asarray(store.get("token_type_ids"))
+    if input_ids.ndim != 2 or int(input_ids.shape[0]) != 1:
+        raise RuntimeError(f"Gemma4 dynamic encoder requires input_ids shape [1, N], got {list(input_ids.shape)}")
+    if token_type_ids.ndim != 2 or token_type_ids.shape != input_ids.shape:
+        token_type_ids = np.zeros_like(input_ids, dtype=np.int64)
+
+    token_count = max(0, min(int(current_length), int(input_ids.shape[1])))
+    if token_count <= 0:
+        raise RuntimeError("Gemma4 dynamic encoder received an empty prompt")
+
+    image_features_raw = store.get("image_features")
+    audio_features_raw = store.get("audio_features")
+    image_features = (
+        _as_gemma4_feature_sequence(image_features_raw, feature_name="image_features")
+        if isinstance(image_features_raw, np.ndarray)
+        else None
+    )
+    audio_features = (
+        _as_gemma4_feature_sequence(audio_features_raw, feature_name="audio_features")
+        if isinstance(audio_features_raw, np.ndarray)
+        else None
+    )
+
+    image_needed = int(np.count_nonzero(token_type_ids[0, :token_count] == 1))
+    audio_needed = int(np.count_nonzero(token_type_ids[0, :token_count] == 2))
+    if image_needed and (image_features is None or int(image_features.shape[1]) < image_needed):
+        got = 0 if image_features is None else int(image_features.shape[1])
+        raise RuntimeError(f"Gemma4 image feature count mismatch: need {image_needed}, got {got}")
+    if audio_needed and (audio_features is None or int(audio_features.shape[1]) < audio_needed):
+        got = 0 if audio_features is None else int(audio_features.shape[1])
+        raise RuntimeError(f"Gemma4 audio feature count mismatch: need {audio_needed}, got {got}")
+
+    input_buffers = _bind_zero_input_buffers(
+        lm_encoder_step,
+        {"input_ids": np.int64, "position_ids": np.int64},
+    )
+    media_input_buffers: dict[str, np.ndarray] | None = None
+    if lm_encoder_media_step is not None:
+        media_dtype = np.float16
+        for candidate in (image_features, audio_features):
+            if isinstance(candidate, np.ndarray):
+                media_dtype = np.asarray(candidate).dtype
+                break
+        media_input_buffers = _bind_zero_input_buffers(
+            lm_encoder_media_step,
+            {"inputs_embeds": media_dtype, "input_ids": np.int64, "position_ids": np.int64},
+        )
+
+    input_embed_parts: list[np.ndarray] = []
+    per_layer_parts: list[np.ndarray] = []
+    position_parts: list[np.ndarray] = []
+    image_index = 0
+    audio_index = 0
+
+    for position in range(token_count):
+        token_type = int(token_type_ids[0, position])
+        token_id = int(input_ids[0, position])
+        media_slice: np.ndarray | None = None
+        if token_type == 1 and image_features is not None:
+            media_slice = image_features[:, image_index : image_index + 1, :]
+            image_index += 1
+        elif token_type == 2 and audio_features is not None:
+            media_slice = audio_features[:, audio_index : audio_index + 1, :]
+            audio_index += 1
+
+        if media_slice is not None and lm_encoder_media_step is not None and media_input_buffers is not None:
+            media_input_buffers["inputs_embeds"][...] = media_slice.astype(
+                media_input_buffers["inputs_embeds"].dtype,
+                copy=False,
+            )
+            media_input_buffers["input_ids"].fill(0)
+            media_input_buffers["position_ids"].fill(position)
+            lm_encoder_media_step.graph.execute()
+            step_inputs_embeds = np.asarray(lm_encoder_media_step.outputs[0].numpy()).copy()
+            step_per_layer_inputs = np.asarray(lm_encoder_media_step.outputs[1].numpy()).copy()
+            step_position_ids = np.asarray(lm_encoder_media_step.outputs[2].numpy()).copy()
+        else:
+            step_token_id = int(pad_token_id) if token_type in {1, 2} else token_id
+            input_buffers["input_ids"].fill(step_token_id)
+            input_buffers["position_ids"].fill(position)
+            lm_encoder_step.graph.execute()
+            step_inputs_embeds = np.asarray(lm_encoder_step.outputs[0].numpy()).copy()
+            step_per_layer_inputs = np.asarray(lm_encoder_step.outputs[1].numpy()).copy()
+            step_position_ids = np.asarray(lm_encoder_step.outputs[2].numpy()).copy()
+            if media_slice is not None:
+                step_inputs_embeds = media_slice.astype(step_inputs_embeds.dtype, copy=False)
+
+        input_embed_parts.append(np.ascontiguousarray(step_inputs_embeds))
+        per_layer_parts.append(np.ascontiguousarray(step_per_layer_inputs))
+        position_parts.append(np.ascontiguousarray(step_position_ids))
+
+    dynamic_store = dict(store)
+    dynamic_store["inputs_embeds"] = np.ascontiguousarray(np.concatenate(input_embed_parts, axis=1))
+    dynamic_store["per_layer_inputs"] = np.ascontiguousarray(np.concatenate(per_layer_parts, axis=1))
+    dynamic_store["position_ids"] = np.ascontiguousarray(np.concatenate(position_parts, axis=1))
+    return dynamic_store
+
+
 def _run_gemma4_cached_step_multimodal_decode(
     *,
     component_graphs: dict[str, LoadedComponentGraph],
@@ -1791,6 +2073,7 @@ def _run_gemma4_cached_step_multimodal_decode(
     token at a time through the cached attention kernel.
     """
 
+    os.environ.setdefault("CACTUS_KV_CACHE_FP16", "1")
     lm_encoder_step = component_graphs["lm_encoder_step"]
     decoder_step = component_graphs["decoder_step"]
     decoder_prefill_chunk = component_graphs.get("decoder_prefill_chunk")
@@ -2991,6 +3274,63 @@ def _attach_component_io_names(
             )
         component._input_names = logical_inputs
         component._output_names = logical_outputs
+
+
+def _gemma4_static_lm_encoder_media_counts(
+    manifest: Mapping[str, object],
+) -> tuple[tuple[int, ...] | None, int | None]:
+    """Return placeholder counts baked into a static Gemma4 lm_encoder graph."""
+
+    bundle_root_raw = manifest.get("_bundle_root")
+    bundle_root = Path(str(bundle_root_raw)).expanduser().resolve() if bundle_root_raw else None
+    if bundle_root is None:
+        return None, None
+    for component_entry in manifest.get("components", []):
+        if not isinstance(component_entry, Mapping):
+            continue
+        if str(component_entry.get("component", "")).strip() != "lm_encoder":
+            continue
+        ir_relpath = component_entry.get("optimized_ir") or component_entry.get("raw_ir")
+        if not isinstance(ir_relpath, str) or not ir_relpath:
+            return None, None
+        try:
+            payload = json.loads((bundle_root / ir_relpath).read_text())
+            graph_payload = payload.get("graph") if isinstance(payload, Mapping) else None
+            values = graph_payload.get("values") if isinstance(graph_payload, Mapping) else None
+            nodes = graph_payload.get("nodes") if isinstance(graph_payload, Mapping) else None
+        except Exception:
+            return None, None
+        if not isinstance(values, Mapping) or not isinstance(nodes, list):
+            return None, None
+
+        image_counts: list[int] = []
+        audio_count: int | None = None
+        for node in nodes:
+            if not isinstance(node, Mapping):
+                continue
+            if node.get("op") == "view":
+                inputs = node.get("inputs")
+                outputs = node.get("outputs")
+                if (
+                    isinstance(inputs, list)
+                    and inputs == ["v_args_3"]
+                    and isinstance(outputs, list)
+                    and outputs
+                ):
+                    value = values.get(str(outputs[0]))
+                    shape = value.get("shape") if isinstance(value, Mapping) else None
+                    if isinstance(shape, list) and len(shape) >= 2:
+                        image_counts.append(int(shape[1]))
+            elif node.get("op") == "slice":
+                inputs = node.get("inputs")
+                attrs = node.get("attrs")
+                if isinstance(inputs, list) and inputs == ["v_args_4"] and isinstance(attrs, Mapping):
+                    start = int(attrs.get("start", 0) or 0)
+                    end = int(attrs.get("end", 0) or 0)
+                    if end > start:
+                        audio_count = end - start
+        return (tuple(image_counts) if image_counts else None), audio_count
+    return None, None
 
 
 def _rebind_bound_constants(

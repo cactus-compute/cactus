@@ -615,7 +615,7 @@ def normalize_gemma4_decoder_attention_semantics(graph: IRGraph) -> bool:
             if "additive_mask" in node.attrs and not bool(node.attrs.get("additive_mask", False)):
                 node.attrs.pop("additive_mask", None)
                 changed = True
-            if int(node.attrs.get("window_size", 0)) == 0:
+            if int(node.attrs.get("window_size", 0)) == 0 and not bool(graph.meta.get("use_internal_kv_cache", False)):
                 seq_len = 0
                 attention_output_shape = node.attrs.get("attention_output_shape")
                 if isinstance(attention_output_shape, (list, tuple)) and len(attention_output_shape) >= 2:
@@ -688,7 +688,7 @@ def normalize_gemma4_decoder_attention_semantics(graph: IRGraph) -> bool:
 
 def _assign_gemma4_decoder_attention_hints_from_graph_meta(graph: IRGraph) -> bool:
     component = str(graph.meta.get("component", "") or "").strip().lower()
-    if component != "decoder":
+    if component not in {"decoder", "decoder_step", "decoder_prefill_chunk"}:
         return False
 
     layer_types = _graph_layer_types(graph)
