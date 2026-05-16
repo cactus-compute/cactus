@@ -338,7 +338,8 @@ std::string build_messages(const std::string& system_prompt,
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
               << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>]"
-              << " [--prompt <text>] [--thinking] [--mtp] [--mtp-draft-tokens <n>] [--max-tokens <n>]\n";
+              << " [--prompt <text>] [--thinking] [--mtp] [--mtp-draft-tokens <n>] [--max-tokens <n>]"
+              << " [--temperature <f>] [--top-p <f>] [--top-k <n>] [--confidence-threshold <f>] [--json]\n";
 }
 
 } // namespace
@@ -356,8 +357,13 @@ int main(int argc, char** argv) {
     std::string initial_prompt;
     bool thinking = false;
     bool mtp = false;
+    bool print_json = false;
     int max_tokens = kMaxTokens;
     int mtp_draft_tokens = 4;
+    float temperature = 0.7f;
+    float top_p = 0.95f;
+    int top_k = 40;
+    float confidence_threshold = 0.0f;
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -377,6 +383,16 @@ int main(int argc, char** argv) {
             mtp_draft_tokens = std::max(1, std::atoi(argv[++i]));
         } else if (arg == "--max-tokens" && i + 1 < argc) {
             max_tokens = std::max(1, std::atoi(argv[++i]));
+        } else if (arg == "--temperature" && i + 1 < argc) {
+            temperature = std::stof(argv[++i]);
+        } else if (arg == "--top-p" && i + 1 < argc) {
+            top_p = std::stof(argv[++i]);
+        } else if (arg == "--top-k" && i + 1 < argc) {
+            top_k = std::max(1, std::atoi(argv[++i]));
+        } else if (arg == "--confidence-threshold" && i + 1 < argc) {
+            confidence_threshold = std::stof(argv[++i]);
+        } else if (arg == "--json") {
+            print_json = true;
         }
     }
 
@@ -496,12 +512,15 @@ int main(int argc, char** argv) {
         }
         history.push_back({"user", input});
         std::string messages = build_messages(system_prompt, history, current_image, current_audio, attach_media);
-        std::string options = "{\"temperature\":0.7,\"top_p\":0.95,\"top_k\":40,\"max_tokens\":"
+        std::string options = "{\"temperature\":" + std::to_string(temperature)
+            + ",\"top_p\":" + std::to_string(top_p)
+            + ",\"top_k\":" + std::to_string(top_k)
+            + ",\"max_tokens\":"
             + std::to_string(max_tokens)
             + ",\"enable_thinking_if_supported\":" + (thinking ? "true" : "false")
             + ",\"mtp_enabled\":" + (mtp ? "true" : "false")
             + ",\"mtp_draft_tokens\":" + std::to_string(mtp_draft_tokens)
-            + ",\"auto_handoff\":false,\"confidence_threshold\":0.0"
+            + ",\"auto_handoff\":false,\"confidence_threshold\":" + std::to_string(confidence_threshold)
             + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
 
         if (!current_image.empty()) std::cout << "[image: " << current_image << "]\n";
@@ -528,6 +547,9 @@ int main(int argc, char** argv) {
         std::string response_json(response.data());
         double ram_mb = json_number_value(response_json, "ram_usage_mb");
         printer.print_stats(ram_mb);
+        if (print_json) {
+            std::cout << response_json << "\n";
+        }
         std::cout << "\n";
 
         if (rc < 0) {

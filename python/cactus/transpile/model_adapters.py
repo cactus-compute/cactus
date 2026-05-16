@@ -2047,6 +2047,56 @@ class Gemma4SpecDecodeDecoderAdapter(torch.nn.Module):
         return logits, hidden, full_key, full_value, sliding_key, sliding_value
 
 
+class Gemma4SpecDecodeCachedDecoderAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module):
+        super().__init__()
+        self.model = model
+
+    def forward(self, input_ids: torch.Tensor, position_ids: torch.LongTensor) -> torch.Tensor:
+        decoder = Gemma4CausalLMLogitsAdapter(self.model)
+        inputs_embeds = decoder.backbone.embed_tokens(input_ids)
+        per_layer_inputs = None
+        if decoder.backbone.hidden_size_per_layer_input:
+            per_layer_inputs = _gemma4_get_per_layer_inputs(decoder.backbone, input_ids, inputs_embeds)
+            per_layer_inputs = decoder.backbone.project_per_layer_inputs(inputs_embeds, per_layer_inputs)
+
+        mask_kwargs = {
+            "config": decoder.backbone.config,
+            "inputs_embeds": inputs_embeds,
+            "attention_mask": None,
+            "past_key_values": None,
+            "position_ids": position_ids,
+        }
+        causal_mask_mapping = {
+            "full_attention": decoder._create_causal_mask(**mask_kwargs),
+            "sliding_attention": decoder._create_sliding_window_causal_mask(**mask_kwargs),
+        }
+
+        hidden_states = inputs_embeds
+        layer_types = tuple(dict.fromkeys(getattr(decoder.backbone.config, "layer_types", ())))
+        position_embeddings = {
+            layer_type: decoder.backbone.rotary_emb(hidden_states, position_ids, layer_type)
+            for layer_type in layer_types
+        }
+        shared_kv_states: dict[str, torch.Tensor] = {}
+
+        for i, decoder_layer in enumerate(decoder.backbone.layers[: decoder.backbone.config.num_hidden_layers]):
+            per_layer_input = per_layer_inputs[:, :, i, :] if per_layer_inputs is not None else None
+            layer_type = decoder.backbone.config.layer_types[i]
+            hidden_states = decoder_layer(
+                hidden_states,
+                per_layer_input,
+                shared_kv_states=shared_kv_states,
+                position_embeddings=position_embeddings[layer_type],
+                attention_mask=causal_mask_mapping[layer_type],
+                position_ids=position_ids,
+                past_key_values=None,
+            )
+
+        hidden_states = decoder.backbone.norm(hidden_states)
+        return decoder.model.lm_head(hidden_states)
+
+
 class Gemma4TargetEmbeddingAdapter(torch.nn.Module):
     def __init__(self, model: torch.nn.Module):
         super().__init__()
@@ -3864,6 +3914,9 @@ def _build_gemma4_spec_decode_component_specs(
     input_ids = input_ids.to(device=model_device, dtype=torch.long)
     current_token_ids = current_token_ids.to(device=model_device, dtype=torch.long)
     default_kv_seq_len = max(1, int(input_ids.shape[1]))
+    cache_seq_len = max(1024, default_kv_seq_len + 256)
+    prefill_chunk_size = max(1, int(os.environ.get("CACTUS_GEMMA4_PREFILL_CHUNK", "32") or "32"))
+    prefill_chunk_size = min(prefill_chunk_size, default_kv_seq_len)
     default_embedding = torch.zeros((1, 1, hidden_dim), dtype=model_dtype, device=model_device)
     default_previous_hidden = default_embedding
     default_position = torch.zeros((1, 1), dtype=torch.long, device=model_device)
@@ -3922,6 +3975,88 @@ def _build_gemma4_spec_decode_component_specs(
                 "shared_kv.sliding_attention.value",
             ),
             graph_meta={**common_graph_meta, "component": "decoder"},
+            metadata={"family": "gemma4", "task": "causal_lm_logits"},
+        ))
+    cached_decoder = Gemma4SpecDecodeCachedDecoderAdapter(model).eval()
+    if "decoder_prefill_chunk" in requested:
+        prefill_input_ids = input_ids[:, :prefill_chunk_size].contiguous()
+        prefill_position_ids = torch.arange(
+            prefill_chunk_size,
+            dtype=torch.long,
+            device=model_device,
+        ).unsqueeze(0)
+        specs.append(ComponentModuleSpec(
+            component="decoder_prefill_chunk",
+            module=cached_decoder,
+            example_inputs=(prefill_input_ids, prefill_position_ids),
+            input_keys=("input_ids", "position_ids"),
+            output_keys=("verifier_logits",),
+            graph_meta={
+                **common_graph_meta,
+                "component": "decoder_prefill_chunk",
+                "use_internal_kv_cache": True,
+                "max_cache_seq_len": cache_seq_len,
+                "cache_sink_size": 4,
+                "prefill_chunk_size": prefill_chunk_size,
+            },
+            metadata={"family": "gemma4", "task": "causal_lm_logits"},
+        ))
+    if "decoder_step" in requested:
+        step_input_ids = input_ids[:, -1:].contiguous()
+        step_position_ids = torch.full(
+            (int(input_ids.shape[0]), 1),
+            max(0, default_kv_seq_len - 1),
+            dtype=torch.long,
+            device=model_device,
+        )
+        specs.append(ComponentModuleSpec(
+            component="decoder_step",
+            module=cached_decoder,
+            example_inputs=(step_input_ids, step_position_ids),
+            input_keys=("input_ids", "position_ids"),
+            output_keys=("verifier_logits",),
+            graph_meta={
+                **common_graph_meta,
+                "component": "decoder_step",
+                "use_internal_kv_cache": True,
+                "max_cache_seq_len": cache_seq_len,
+                "cache_sink_size": 4,
+                "verifier_width": 1,
+            },
+            metadata={"family": "gemma4", "task": "causal_lm_logits"},
+        ))
+    for verifier_width in (2, 3, 4):
+        component_name = f"decoder_verify_m{verifier_width}"
+        if component_name not in requested:
+            continue
+        if input_ids.shape[1] >= verifier_width:
+            verifier_input_ids = input_ids[:, -verifier_width:].contiguous()
+        else:
+            pad_count = verifier_width - int(input_ids.shape[1])
+            pad_token = input_ids[:, -1:] if input_ids.shape[1] > 0 else torch.zeros((1, 1), dtype=torch.long, device=model_device)
+            verifier_input_ids = torch.cat(
+                [pad_token.expand(-1, pad_count), input_ids],
+                dim=1,
+            ).contiguous()
+        verifier_position_ids = torch.arange(
+            verifier_width,
+            dtype=torch.long,
+            device=model_device,
+        ).unsqueeze(0)
+        specs.append(ComponentModuleSpec(
+            component=component_name,
+            module=cached_decoder,
+            example_inputs=(verifier_input_ids, verifier_position_ids),
+            input_keys=("input_ids", "position_ids"),
+            output_keys=("verifier_logits",),
+            graph_meta={
+                **common_graph_meta,
+                "component": component_name,
+                "use_internal_kv_cache": True,
+                "max_cache_seq_len": cache_seq_len,
+                "cache_sink_size": 4,
+                "verifier_width": verifier_width,
+            },
             metadata={"family": "gemma4", "task": "causal_lm_logits"},
         ))
     if "target_embedding" in requested:

@@ -386,7 +386,14 @@ static bool test_transpiled_mtp_completion_works() {
     return metrics.success && metrics.completion_tokens == 2.0 &&
            json.find("\"mtp_drafted_tokens\":1") != std::string::npos &&
            json.find("\"mtp_accepted_tokens\":1") != std::string::npos &&
-           json.find("\"mtp_rejected_tokens\":0") != std::string::npos;
+           json.find("\"mtp_rejected_tokens\":0") != std::string::npos &&
+           EngineTestUtils::json_number(json, "mtp_verifier_width", -1.0) == 2.0 &&
+           EngineTestUtils::json_number(json, "target_forward_time_ms", -1.0) >= 0.0 &&
+           EngineTestUtils::json_number(json, "avg_target_forward_ms_per_token", -1.0) >= 0.0 &&
+           EngineTestUtils::json_number(json, "target_context_forward_time_ms", -1.0) >= 0.0 &&
+           EngineTestUtils::json_number(json, "avg_target_context_forward_ms_per_token", -1.0) >= 0.0 &&
+           EngineTestUtils::json_number(json, "assistant_forward_time_ms", -1.0) >= 0.0 &&
+           EngineTestUtils::json_number(json, "misc_completion_time_ms", -1.0) >= 0.0;
 }
 
 static bool test_transpiled_mtp_missing_target_embedding_fails_explicitly() {
@@ -518,6 +525,159 @@ static void write_tensor_io_f16_bits(const std::string& path, const std::vector<
     out.write(reinterpret_cast<const char*>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(uint16_t)));
 }
 
+static bool test_transpiled_mtp_uses_cached_target_verifier() {
+    std::string dir = make_temp_dir("transpiled_mtp_cached_verifier");
+    fs::create_directories(dir + "/components/decoder/bound_constants");
+    fs::create_directories(dir + "/components/target_embedding/bound_constants");
+    fs::create_directories(dir + "/components/assistant/bound_constants");
+    for (const std::string& component : {"decoder_step", "decoder_verify_m2"}) {
+        fs::create_directories(dir + "/components/" + component + "/bound_constants");
+    }
+    write_file(dir + "/config.txt",
+        "model_type=qwen\nmodel_variant=default\nprecision=FP32\nnum_layers=1\nhidden_dim=8\n"
+        "ffn_intermediate_dim=16\nattention_heads=1\nattention_kv_heads=1\nattention_head_dim=8\n"
+        "vocab_size=2\nbos_token_id=0\neos_token_id=999\n");
+    write_file(dir + "/vocab.txt", "0\tA\n1\tB\n");
+    write_file(dir + "/merges.txt", "");
+    write_file(dir + "/tokenizer_config.txt", R"({"tokenizer_type":"bpe","vocab_format":"id_tab_token"})");
+
+    CactusGraph target_graph;
+    size_t target_input = target_graph.input({1, 512}, Precision::FP32);
+    size_t target_logits_const = target_graph.input({1, 512, 2}, Precision::FP16);
+    target_graph.save(dir + "/components/decoder/graph.cactus");
+    std::vector<uint16_t> target_logits(1 * 512 * 2, 0);
+    for (size_t i = 0; i < 512; ++i) {
+        target_logits[i * 2] = 0x4900;
+    }
+    write_npy_f16_bits(dir + "/components/decoder/bound_constants/logits.npy", {1, 512, 2}, target_logits);
+
+    CactusGraph target_embedding_graph;
+    size_t target_embedding_input = target_embedding_graph.input({1}, Precision::FP32);
+    size_t target_embedding_const = target_embedding_graph.input({2}, Precision::FP16);
+    target_embedding_graph.save(dir + "/components/target_embedding/graph.cactus");
+    write_npy_f16_bits(dir + "/components/target_embedding/bound_constants/embedding.npy", {2}, {0, 0x4900});
+
+    CactusGraph assistant_graph;
+    size_t assistant_input = assistant_graph.input({2}, Precision::FP16);
+    size_t assistant_prev_hidden = assistant_graph.input({2}, Precision::FP16);
+    size_t assistant_position = assistant_graph.input({1}, Precision::FP32);
+    size_t assistant_full_key = assistant_graph.input({1, 512, 2}, Precision::FP16);
+    size_t assistant_full_value = assistant_graph.input({1, 512, 2}, Precision::FP16);
+    size_t assistant_sliding_key = assistant_graph.input({1, 512, 2}, Precision::FP16);
+    size_t assistant_sliding_value = assistant_graph.input({1, 512, 2}, Precision::FP16);
+    size_t assistant_logits_const = assistant_graph.input({1, 1, 2}, Precision::FP16);
+    assistant_graph.save(dir + "/components/assistant/graph.cactus");
+    write_npy_f16_bits(dir + "/components/assistant/bound_constants/logits.npy", {1, 1, 2}, {0, 0x4900});
+
+    CactusGraph decoder_step_graph;
+    size_t step_ids = decoder_step_graph.input({1, 1}, Precision::FP32);
+    size_t step_positions = decoder_step_graph.input({1, 1}, Precision::FP32);
+    size_t step_logits_const = decoder_step_graph.input({1, 1, 2}, Precision::FP16);
+    size_t step_key = decoder_step_graph.kv_cache_state(32, 1, 1);
+    size_t step_value = decoder_step_graph.kv_cache_state(32, 1, 1);
+    decoder_step_graph.save(dir + "/components/decoder_step/graph.cactus");
+    write_npy_f16_bits(dir + "/components/decoder_step/bound_constants/logits.npy", {1, 1, 2}, {0, 0x4900});
+
+    CactusGraph verifier_graph;
+    size_t verifier_ids = verifier_graph.input({1, 2}, Precision::FP32);
+    size_t verifier_positions = verifier_graph.input({1, 2}, Precision::FP32);
+    size_t verifier_logits_const = verifier_graph.input({1, 2, 2}, Precision::FP16);
+    size_t verifier_key = verifier_graph.kv_cache_state(32, 1, 1);
+    size_t verifier_value = verifier_graph.kv_cache_state(32, 1, 1);
+    verifier_graph.save(dir + "/components/decoder_verify_m2/graph.cactus");
+    write_npy_f16_bits(dir + "/components/decoder_verify_m2/bound_constants/logits.npy", {1, 2, 2}, {0, 0x4900, 0, 0x4900});
+
+    auto saved_binding = [](size_t node_id, const std::string& path) {
+        return "{\"node_id\":" + std::to_string(node_id) +
+               ",\"value_id\":\"const\",\"path\":\"" + path +
+               "\",\"kind\":\"saved_constant\",\"format\":\"npy\",\"precision\":1}";
+    };
+    auto cache_states = [](size_t key, size_t value) {
+        return "\"cache_state_node_ids\":[{\"layer_key\":\"layer0\",\"key\":" +
+               std::to_string(key) + ",\"value\":" + std::to_string(value) + "}]";
+    };
+
+    write_file(dir + "/components/manifest.json",
+        "{"
+        "\"task\":\"causal_lm_logits\","
+        "\"family\":\"test\","
+        "\"component_order\":[\"decoder\",\"target_embedding\",\"assistant\",\"decoder_step\",\"decoder_verify_m2\"],"
+        "\"spec_decode\":{"
+        "\"version\":1,"
+        "\"method\":\"single_position_mtp\","
+        "\"target\":{\"verifier_logits\":\"decoder:logits\",\"target_hidden_state\":\"decoder:hidden\","
+        "\"target_token_embedding\":\"target_embedding:embedding\","
+        "\"shared_kv\":{\"full_attention\":{\"key\":\"decoder:full_key\",\"value\":\"decoder:full_value\"},"
+        "\"sliding_attention\":{\"key\":\"decoder:sliding_key\",\"value\":\"decoder:sliding_value\"}}},"
+        "\"assistant\":{\"current_token_embedding\":\"assistant:current_token_embedding\","
+        "\"previous_target_hidden\":\"assistant:previous_target_hidden\","
+        "\"position\":\"assistant:position\","
+        "\"shared_kv\":{\"full_attention\":{\"key\":\"assistant:full_key\",\"value\":\"assistant:full_value\"},"
+        "\"sliding_attention\":{\"key\":\"assistant:sliding_key\",\"value\":\"assistant:sliding_value\"}},"
+        "\"logits_output\":\"assistant:logits\","
+        "\"next_hidden_output\":\"assistant:next_hidden\"}},"
+        "\"components\":["
+        "{\"component\":\"decoder\",\"graph\":\"components/decoder/graph.cactus\","
+        "\"logical_inputs\":[\"input_ids\"],"
+        "\"logical_outputs\":[\"logits\",\"hidden\",\"full_key\",\"full_value\",\"sliding_key\",\"sliding_value\"],"
+        "\"runtime_input_node_ids\":[" + std::to_string(target_input) + "],"
+        "\"output_node_ids\":[" + std::to_string(target_logits_const) + "," + std::to_string(target_logits_const) + "," +
+        std::to_string(target_logits_const) + "," + std::to_string(target_logits_const) + "," +
+        std::to_string(target_logits_const) + "," + std::to_string(target_logits_const) + "],"
+        "\"bound_constant_bindings\":[" + saved_binding(target_logits_const, "components/decoder/bound_constants/logits.npy") + "]},"
+        "{\"component\":\"target_embedding\",\"graph\":\"components/target_embedding/graph.cactus\","
+        "\"logical_inputs\":[\"current_token_ids\"],\"logical_outputs\":[\"embedding\"],"
+        "\"runtime_input_node_ids\":[" + std::to_string(target_embedding_input) + "],"
+        "\"output_node_ids\":[" + std::to_string(target_embedding_const) + "],"
+        "\"bound_constant_bindings\":[" + saved_binding(target_embedding_const, "components/target_embedding/bound_constants/embedding.npy") + "]},"
+        "{\"component\":\"assistant\",\"graph\":\"components/assistant/graph.cactus\","
+        "\"logical_inputs\":[\"current_token_embedding\",\"previous_target_hidden\",\"position\","
+        "\"full_key\",\"full_value\",\"sliding_key\",\"sliding_value\"],"
+        "\"logical_outputs\":[\"logits\",\"next_hidden\"],"
+        "\"runtime_input_node_ids\":[" + std::to_string(assistant_input) + "," + std::to_string(assistant_prev_hidden) + "," +
+        std::to_string(assistant_position) + "," + std::to_string(assistant_full_key) + "," +
+        std::to_string(assistant_full_value) + "," + std::to_string(assistant_sliding_key) + "," +
+        std::to_string(assistant_sliding_value) + "],"
+        "\"output_node_ids\":[" + std::to_string(assistant_logits_const) + "," + std::to_string(assistant_logits_const) + "],"
+        "\"bound_constant_bindings\":[" + saved_binding(assistant_logits_const, "components/assistant/bound_constants/logits.npy") + "]},"
+        "{\"component\":\"decoder_step\",\"graph\":\"components/decoder_step/graph.cactus\","
+        "\"logical_inputs\":[\"input_ids\",\"position_ids\"],\"logical_outputs\":[\"verifier_logits\"],"
+        "\"runtime_input_node_ids\":[" + std::to_string(step_ids) + "," + std::to_string(step_positions) + "],"
+        "\"output_node_ids\":[" + std::to_string(step_logits_const) + "],"
+        + cache_states(step_key, step_value) + ","
+        "\"bound_constant_bindings\":[" + saved_binding(step_logits_const, "components/decoder_step/bound_constants/logits.npy") + "]},"
+        "{\"component\":\"decoder_verify_m2\",\"graph\":\"components/decoder_verify_m2/graph.cactus\","
+        "\"logical_inputs\":[\"input_ids\",\"position_ids\"],\"logical_outputs\":[\"verifier_logits\"],"
+        "\"runtime_input_node_ids\":[" + std::to_string(verifier_ids) + "," + std::to_string(verifier_positions) + "],"
+        "\"output_node_ids\":[" + std::to_string(verifier_logits_const) + "],"
+        + cache_states(verifier_key, verifier_value) + ","
+        "\"bound_constant_bindings\":[" + saved_binding(verifier_logits_const, "components/decoder_verify_m2/bound_constants/logits.npy") + "]}"
+        "]"
+        "}");
+
+    cactus_model_t model = cactus_init(dir.c_str(), nullptr, false);
+    if (!model) {
+        fs::remove_all(dir);
+        return false;
+    }
+    char response[2048];
+    const char* messages = R"([{"role":"user","content":"A"}])";
+    const char* options = R"({"max_tokens":2,"mtp_enabled":true,"mtp_draft_tokens":1,"temperature":0.0,"top_k":1,"auto_handoff":false,"confidence_threshold":-1.0})";
+    int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr, nullptr, nullptr, nullptr, 0);
+    cactus_destroy(model);
+    fs::remove_all(dir);
+    if (result <= 0) {
+        return false;
+    }
+    std::string json(response);
+    EngineTestUtils::Metrics metrics;
+    metrics.parse(response);
+    return metrics.success &&
+           json.find("\"mtp_accepted_tokens\":1") != std::string::npos &&
+           json.find("\"mtp_rejected_tokens\":0") != std::string::npos &&
+           EngineTestUtils::json_number(json, "mtp_verifier_width", -1.0) == 2.0;
+}
+
 static bool test_transpiled_bundle_rebinds_saved_constant() {
     std::string dir = make_temp_dir("transpiled_saved_constant");
     fs::create_directories(dir + "/components/decoder/bound_constants");
@@ -646,6 +806,7 @@ int main() {
     runner.run_test("transpiled_mtp_required_without_enabled_fails_explicitly", test_transpiled_mtp_required_without_enabled_fails_explicitly());
     runner.run_test("transpiled_mtp_completion_works", test_transpiled_mtp_completion_works());
     runner.run_test("transpiled_mtp_missing_target_embedding_fails_explicitly", test_transpiled_mtp_missing_target_embedding_fails_explicitly());
+    runner.run_test("transpiled_mtp_uses_cached_target_verifier", test_transpiled_mtp_uses_cached_target_verifier());
     runner.run_test("transpiled_bundle_rebinds_saved_constant", test_transpiled_bundle_rebinds_saved_constant());
     runner.run_test("transpiled_bundle_rebinds_tensor_io_saved_constant", test_transpiled_bundle_rebinds_tensor_io_saved_constant());
     runner.print_summary();

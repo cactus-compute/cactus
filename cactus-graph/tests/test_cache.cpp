@@ -304,6 +304,115 @@ bool test_kv_cache_invalidate() {
     return true;
 }
 
+bool test_kv_cache_snapshot_restore() {
+    CactusGraph g;
+
+    const size_t max_seq = 32, kv_heads = 2, head_dim = 16;
+    size_t cache_node = g.kv_cache_state(max_seq, kv_heads, head_dim);
+
+    {
+        const size_t tokens = 2;
+        const size_t elements = tokens * kv_heads * head_dim;
+        size_t kv_input = g.input({elements}, Precision::FP16);
+        std::vector<__fp16> data(elements, static_cast<__fp16>(1.0f));
+        g.set_input(kv_input, data.data(), Precision::FP16);
+        g.kv_cache_append(kv_input, cache_node);
+        g.execute();
+    }
+
+    std::vector<uint8_t> snapshot = g.snapshot_output_buffer(cache_node);
+
+    g.soft_reset();
+    {
+        const size_t tokens = 3;
+        const size_t elements = tokens * kv_heads * head_dim;
+        size_t kv_input = g.input({elements}, Precision::FP16);
+        std::vector<__fp16> data(elements, static_cast<__fp16>(2.0f));
+        g.set_input(kv_input, data.data(), Precision::FP16);
+        g.kv_cache_append(kv_input, cache_node);
+        g.execute();
+    }
+
+    auto* raw = static_cast<uint8_t*>(g.get_output(cache_node));
+    if (*reinterpret_cast<uint64_t*>(raw) != 5) return false;
+
+    g.restore_output_buffer(cache_node, snapshot.data(), snapshot.size());
+    raw = static_cast<uint8_t*>(g.get_output(cache_node));
+    if (*reinterpret_cast<uint64_t*>(raw) != 2) return false;
+
+    g.soft_reset();
+    if (!g.is_populated(cache_node)) return false;
+    raw = static_cast<uint8_t*>(g.get_output(cache_node));
+    if (*reinterpret_cast<uint64_t*>(raw) != 2) return false;
+
+    return true;
+}
+
+bool test_kv_cache_copy_between_graphs() {
+    const size_t max_seq = 32, kv_heads = 2, head_dim = 16;
+
+    CactusGraph source;
+    size_t source_cache = source.kv_cache_state(max_seq, kv_heads, head_dim);
+    {
+        const size_t tokens = 4;
+        const size_t elements = tokens * kv_heads * head_dim;
+        size_t kv_input = source.input({elements}, Precision::FP16);
+        std::vector<__fp16> data(elements, static_cast<__fp16>(3.0f));
+        source.set_input(kv_input, data.data(), Precision::FP16);
+        source.kv_cache_append(kv_input, source_cache);
+        source.execute();
+    }
+
+    CactusGraph target;
+    size_t target_cache = target.kv_cache_state(max_seq, kv_heads, head_dim);
+    target.execute();
+
+    target.copy_output_buffer_from(source, source_cache, target_cache);
+    auto* raw = static_cast<uint8_t*>(target.get_output(target_cache));
+    if (*reinterpret_cast<uint64_t*>(raw) != 4) return false;
+
+    target.soft_reset();
+    if (!target.is_populated(target_cache)) return false;
+    raw = static_cast<uint8_t*>(target.get_output(target_cache));
+    if (*reinterpret_cast<uint64_t*>(raw) != 4) return false;
+
+    return true;
+}
+
+bool test_kv_cache_reset_state() {
+    CactusGraph g;
+
+    const size_t max_seq = 32, kv_heads = 2, head_dim = 16;
+    size_t cache_node = g.kv_cache_state(max_seq, kv_heads, head_dim);
+
+    {
+        const size_t tokens = 5;
+        const size_t elements = tokens * kv_heads * head_dim;
+        size_t kv_input = g.input({elements}, Precision::FP16);
+        std::vector<__fp16> data(elements, static_cast<__fp16>(4.0f));
+        g.set_input(kv_input, data.data(), Precision::FP16);
+        g.kv_cache_append(kv_input, cache_node);
+        g.execute();
+    }
+
+    auto* raw = static_cast<uint8_t*>(g.get_output(cache_node));
+    if (*reinterpret_cast<uint64_t*>(raw) != 5) return false;
+
+    g.reset_cache_state(cache_node);
+    raw = static_cast<uint8_t*>(g.get_output(cache_node));
+    if (*reinterpret_cast<uint64_t*>(raw + 0) != 0) return false;
+    if (*reinterpret_cast<uint64_t*>(raw + 8) != max_seq) return false;
+    if (*reinterpret_cast<uint64_t*>(raw + 16) != kv_heads) return false;
+    if (*reinterpret_cast<uint64_t*>(raw + 24) != head_dim) return false;
+
+    g.soft_reset();
+    if (!g.is_populated(cache_node)) return false;
+    raw = static_cast<uint8_t*>(g.get_output(cache_node));
+    if (*reinterpret_cast<uint64_t*>(raw) != 0) return false;
+
+    return true;
+}
+
 bool test_conv_cache_state_init() {
     CactusGraph g;
 
@@ -400,6 +509,31 @@ bool test_conv_cache_persistent() {
     return true;
 }
 
+bool test_conv_cache_reset_state() {
+    CactusGraph g;
+
+    const size_t ws = 4, hd = 8;
+    size_t cache = g.conv_cache_state(ws, hd);
+
+    size_t inp = g.input({3, hd}, Precision::FP16);
+    std::vector<__fp16> data(3 * hd, static_cast<__fp16>(7.0f));
+    g.set_input(inp, data.data(), Precision::FP16);
+    g.conv_cache_append(inp, cache);
+    g.execute();
+
+    auto* raw = static_cast<uint8_t*>(g.get_output(cache));
+    if (*reinterpret_cast<uint64_t*>(raw + 8) != 3) return false;
+
+    g.reset_cache_state(cache);
+    raw = static_cast<uint8_t*>(g.get_output(cache));
+    if (*reinterpret_cast<uint64_t*>(raw + 0) != 0) return false;
+    if (*reinterpret_cast<uint64_t*>(raw + 8) != 0) return false;
+    if (*reinterpret_cast<uint64_t*>(raw + 16) != ws) return false;
+    if (*reinterpret_cast<uint64_t*>(raw + 24) != hd) return false;
+
+    return true;
+}
+
 bool run_benchmarks() {
     auto bench = [](const char* label, auto setup, auto run) {
         setup();
@@ -492,10 +626,14 @@ int main() {
     runner.run_test("Attention Cached Basic", test_attention_cached_basic());
     runner.run_test("Attention Cached Multistep", test_attention_cached_multistep());
     runner.run_test("KV Cache Invalidate", test_kv_cache_invalidate());
+    runner.run_test("KV Cache Snapshot Restore", test_kv_cache_snapshot_restore());
+    runner.run_test("KV Cache Copy Between Graphs", test_kv_cache_copy_between_graphs());
+    runner.run_test("KV Cache Reset State", test_kv_cache_reset_state());
     runner.run_test("Conv Cache State Init", test_conv_cache_state_init());
     runner.run_test("Conv Cache Append Basic", test_conv_cache_append_basic());
     runner.run_test("Conv Cache Circular", test_conv_cache_append_circular());
     runner.run_test("Conv Cache Persistent", test_conv_cache_persistent());
+    runner.run_test("Conv Cache Reset State", test_conv_cache_reset_state());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

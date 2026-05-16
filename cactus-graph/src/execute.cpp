@@ -285,6 +285,97 @@ void* CactusGraph::get_output(size_t node_id) {
     return buffer.get_data();
 }
 
+std::vector<uint8_t> CactusGraph::snapshot_output_buffer(size_t node_id) const {
+    const auto& buffer = get_output_buffer(node_id);
+    const void* data = buffer.get_data();
+    if (buffer.byte_size > 0 && !data) {
+        throw std::runtime_error("Cannot snapshot unallocated output buffer for node " + std::to_string(node_id));
+    }
+    std::vector<uint8_t> snapshot(buffer.byte_size);
+    if (buffer.byte_size > 0) {
+        std::memcpy(snapshot.data(), data, buffer.byte_size);
+    }
+    return snapshot;
+}
+
+void CactusGraph::restore_output_buffer(size_t node_id, const void* data, size_t byte_size) {
+    if (byte_size > 0 && !data) {
+        throw std::invalid_argument("Cannot restore output buffer from null data");
+    }
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end()) {
+        throw std::out_of_range("Unknown output node id: " + std::to_string(node_id));
+    }
+
+    auto& buffer = nodes_[it->second]->output_buffer;
+    if (buffer.byte_size != byte_size) {
+        throw std::runtime_error(
+            "Output buffer restore byte-size mismatch for node " + std::to_string(node_id) +
+            ": graph expects " + std::to_string(buffer.byte_size) +
+            " bytes, source has " + std::to_string(byte_size));
+    }
+    if (!buffer.get_data()) {
+        buffer.allocate();
+    }
+    if (byte_size > 0) {
+        std::memcpy(buffer.get_data(), data, byte_size);
+    }
+    const OpType op_type = nodes_[it->second]->op_type;
+    if (op_type == OpType::KV_CACHE_STATE ||
+        op_type == OpType::CONV_CACHE_STATE ||
+        op_type == OpType::PERSISTENT ||
+        persistent_node_ids_.count(node_id) != 0) {
+        populated_node_ids_.insert(node_id);
+    }
+}
+
+void CactusGraph::copy_output_buffer_from(const CactusGraph& source, size_t source_node_id, size_t target_node_id) {
+    const auto& source_buffer = source.get_output_buffer(source_node_id);
+    const auto& target_buffer = get_output_buffer(target_node_id);
+    if (source_buffer.precision != target_buffer.precision || source_buffer.shape != target_buffer.shape) {
+        throw std::runtime_error(
+            "Output buffer copy shape or precision mismatch from node " + std::to_string(source_node_id) +
+            " to node " + std::to_string(target_node_id));
+    }
+    const void* source_data = source_buffer.get_data();
+    if (source_buffer.byte_size > 0 && !source_data) {
+        throw std::runtime_error("Cannot copy unallocated output buffer for node " + std::to_string(source_node_id));
+    }
+    restore_output_buffer(target_node_id, source_data, source_buffer.byte_size);
+}
+
+void CactusGraph::reset_cache_state(size_t node_id) {
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end()) {
+        throw std::out_of_range("Unknown output node id: " + std::to_string(node_id));
+    }
+
+    auto& node = *nodes_[it->second];
+    if (node.op_type != OpType::KV_CACHE_STATE && node.op_type != OpType::CONV_CACHE_STATE) {
+        throw std::invalid_argument("Can only reset cache state nodes");
+    }
+    auto& buffer = node.output_buffer;
+    if (!buffer.get_data()) {
+        buffer.allocate();
+    }
+    std::memset(buffer.get_data(), 0, buffer.byte_size);
+
+    uint64_t* meta = reinterpret_cast<uint64_t*>(buffer.get_data());
+    if (node.op_type == OpType::KV_CACHE_STATE) {
+        meta[0] = 0;
+        meta[1] = static_cast<uint64_t>(node.params.max_cache_seq_len);
+        meta[2] = static_cast<uint64_t>(node.params.num_kv_heads);
+        meta[3] = static_cast<uint64_t>(node.params.head_dim);
+        meta[4] = static_cast<uint64_t>(node.params.cache_sink_size);
+    } else {
+        meta[0] = 0;
+        meta[1] = 0;
+        meta[2] = static_cast<uint64_t>(node.params.window_size);
+        meta[3] = static_cast<uint64_t>(node.params.head_dim);
+    }
+    populated_node_ids_.insert(node_id);
+}
+
 static bool check_debug_env() {
     const char* v1 = std::getenv("CACTUS_CAPTURE_ENABLE");
     const char* v2 = std::getenv("CACTUS_CAPTURE_STDOUT");

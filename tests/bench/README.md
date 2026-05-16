@@ -1,6 +1,6 @@
 # E2E Decode Benchmark
 
-Minimal Cactus-only decode speed comparison copied forward from the `int4-benchmark` branch.
+Minimal Cactus-only decode speed comparison copied forward from the `gemma-assistant-speed-fix` branch.
 
 ```bash
 ./tests/bench_e2e_decode.sh
@@ -39,5 +39,5 @@ Useful overrides:
 CSV columns:
 
 ```text
-backend,model,prompt,mtp_max_draft,rep,prefill_tokens,decode_tokens,prefill_tps,decode_tps,ttft_ms,total_ms,mtp_requested,mtp_enabled,mtp_drafted_tokens,mtp_accepted_tokens,mtp_rejected_tokens,mtp_rounds,mtp_fallback_reason,assistant_draft_ms,target_verify_ms,sampling_or_argmax_ms,kv_transaction_ms,callback_stream_ms
+backend,model,prompt,shape,mtp_max_draft,rep,prefill_tokens,decode_tokens,prefill_tps,decode_tps,ttft_ms,total_ms,mtp_requested,mtp_enabled,mtp_drafted_tokens,mtp_accepted_tokens,mtp_rejected_tokens,mtp_rounds,mtp_fallback_reason,assistant_draft_ms,target_verify_ms,sampling_or_argmax_ms,kv_transaction_ms,callback_stream_ms
 ```

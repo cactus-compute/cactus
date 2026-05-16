@@ -2,6 +2,7 @@
 #include <vector>
 #include <cmath>
 #include <random>
+#include <algorithm>
 
 using namespace TestUtils;
 
@@ -263,6 +264,135 @@ bool test_cq_correctness(uint32_t bits) {
     return true;
 }
 
+static bool compare_cq4_batched_to_gemv(uint32_t M, uint32_t K, uint32_t N, uint32_t gs, uint32_t seed) {
+    SyntheticCQ cq(4, K, N, gs, seed);
+    CactusQuantMatrix mat = cq.matrix();
+
+    std::mt19937 gen(90 + seed + M + gs);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    std::vector<__fp16> A(static_cast<size_t>(M) * K);
+    for (auto& v : A) v = static_cast<__fp16>(dist(gen));
+
+    std::vector<__fp16> C(static_cast<size_t>(M) * N, static_cast<__fp16>(0));
+    cactus_quant_matmul(&mat, A.data(), M, C.data());
+
+    for (uint32_t m = 0; m < M; ++m) {
+        std::vector<__fp16> y(N, static_cast<__fp16>(0));
+        cactus_quant_matmul(&mat, A.data() + static_cast<size_t>(m) * K, 1, y.data());
+        for (uint32_t n = 0; n < N; ++n) {
+            float got = static_cast<float>(C[static_cast<size_t>(m) * N + n]);
+            float ref = static_cast<float>(y[n]);
+            if (std::abs(got - ref) > 1.0f) {
+                std::cerr << "  cq4 M=" << M << " K=" << K << " N=" << N
+                          << " gs=" << gs << " mismatch at (" << m << "," << n
+                          << "): got=" << got << " ref=" << ref << "\n";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool test_cq4_small_m_correctness() {
+    return compare_cq4_batched_to_gemv(2, 512, 67, 64, 201) &&
+           compare_cq4_batched_to_gemv(3, 1024, 65, 128, 202) &&
+           compare_cq4_batched_to_gemv(4, 1024, 70, 256, 203);
+}
+
+bool test_cq4_small_m_fallback() {
+    return compare_cq4_batched_to_gemv(3, 256, 67, 16, 204);
+}
+
+struct SmallMBenchStats {
+    std::vector<double> totals_ms;
+    std::vector<double> per_token_ms;
+    double median = 0.0;
+    double min = 0.0;
+    double max = 0.0;
+    double stddev = 0.0;
+};
+
+static SmallMBenchStats summarize_ms(std::vector<double> totals_ms, size_t M) {
+    SmallMBenchStats stats;
+    stats.totals_ms = std::move(totals_ms);
+    stats.per_token_ms.reserve(stats.totals_ms.size());
+    for (double total : stats.totals_ms) {
+        stats.per_token_ms.push_back(total / static_cast<double>(M));
+    }
+
+    std::vector<double> sorted = stats.per_token_ms;
+    std::sort(sorted.begin(), sorted.end());
+    stats.min = sorted.front();
+    stats.max = sorted.back();
+    stats.median = sorted[sorted.size() / 2];
+
+    double mean = 0.0;
+    for (double v : stats.per_token_ms) mean += v;
+    mean /= static_cast<double>(stats.per_token_ms.size());
+    double var = 0.0;
+    for (double v : stats.per_token_ms) {
+        const double d = v - mean;
+        var += d * d;
+    }
+    stats.stddev = std::sqrt(var / static_cast<double>(stats.per_token_ms.size()));
+    return stats;
+}
+
+static void print_cq4_small_m_target_summary() {
+    constexpr size_t K = 2304;
+    constexpr size_t N = 9216;
+    constexpr uint32_t gs = 128;
+    constexpr int runs = 5;
+    constexpr int inner = 5;
+
+    std::cout << "── CQ4 packed small-M target summary ─────────────────────────────────────────────\n";
+    std::cout << "  shape=K2304xN9216 group_size=128 runs=5 inner=5 weights=packed\n";
+
+    SmallMBenchStats stats_by_m[5];
+    for (size_t M : {1ul, 2ul, 3ul, 4ul}) {
+        SyntheticCQ cq(4, K, N, gs, static_cast<uint32_t>(700 + M));
+        CactusQuantMatrix mat = cq.matrix();
+        std::vector<__fp16> A(M * K), C(M * N);
+        fill_random_fp16(A, -1.f, 1.f);
+
+        std::vector<double> totals;
+        totals.reserve(runs);
+        for (int r = 0; r < runs; ++r) {
+            cactus_quant_matmul(&mat, A.data(), static_cast<uint32_t>(M), C.data());
+            Timer t;
+            for (int i = 0; i < inner; ++i) {
+                cactus_quant_matmul(&mat, A.data(), static_cast<uint32_t>(M), C.data());
+            }
+            totals.push_back(t.elapsed_ms() / static_cast<double>(inner));
+        }
+        stats_by_m[M] = summarize_ms(std::move(totals), M);
+
+        std::cout << "  raw M=" << M << " total_ms=[";
+        for (size_t i = 0; i < stats_by_m[M].totals_ms.size(); ++i) {
+            if (i > 0) std::cout << ",";
+            std::cout << std::fixed << std::setprecision(3) << stats_by_m[M].totals_ms[i];
+        }
+        std::cout << "] per_token_ms=[";
+        for (size_t i = 0; i < stats_by_m[M].per_token_ms.size(); ++i) {
+            if (i > 0) std::cout << ",";
+            std::cout << std::fixed << std::setprecision(4) << stats_by_m[M].per_token_ms[i];
+        }
+        std::cout << "]\n";
+    }
+
+    const double baseline = stats_by_m[1].median;
+    std::cout << "  mode       M  median_ms/token  min    max    stddev  slowdown\n";
+    for (size_t M : {1ul, 2ul, 3ul, 4ul}) {
+        const double slowdown = (stats_by_m[M].median / baseline - 1.0) * 100.0;
+        std::cout << "  cq4_packed " << M << "  "
+                  << std::fixed << std::setprecision(4) << stats_by_m[M].median << "           "
+                  << std::setprecision(4) << stats_by_m[M].min << " "
+                  << std::setprecision(4) << stats_by_m[M].max << " "
+                  << std::setprecision(4) << stats_by_m[M].stddev << " "
+                  << std::setprecision(1) << slowdown << "%\n";
+    }
+}
+
 bool run_benchmarks() {
     auto bench = [](const char* label, size_t M, size_t K, size_t N, auto fn) {
         fn();
@@ -358,6 +488,14 @@ bool run_benchmarks() {
         std::vector<__fp16> A(M_batch * K), C(M_batch * N);
         fill_random_fp16(A, -1.f, 1.f);
         bench("matmul_cq4 1024^3", M_batch, K, N, [&]{ cactus_quant_matmul(&mat, A.data(), M_batch, C.data()); });
+    }
+    for (size_t small_m : {2ul, 3ul, 4ul}) {
+        SyntheticCQ cq(4, K, N, gs);
+        CactusQuantMatrix mat = cq.matrix();
+        std::vector<__fp16> A(small_m * K), C(small_m * N);
+        fill_random_fp16(A, -1.f, 1.f);
+        std::string label = "matmul_cq4 " + std::to_string(small_m) + "x1024x1024";
+        bench(label.c_str(), small_m, K, N, [&]{ cactus_quant_matmul(&mat, A.data(), static_cast<uint32_t>(small_m), C.data()); });
     }
 
     auto bench2k = [](const char* label, size_t M, size_t K, size_t N, auto fn) {
@@ -461,6 +599,15 @@ bool run_benchmarks() {
         fill_random_fp16(x, -1.f, 1.f);
         bench_model("cq4 1x2304x9216", 1, Km, Nm, [&]{ cactus_quant_matmul(&mat, x.data(), 1, y.data()); });
     }
+    for (size_t small_m : {2ul, 3ul, 4ul}) {
+        SyntheticCQ cq(4, Km, Nm, gsm);
+        CactusQuantMatrix mat = cq.matrix();
+        std::vector<__fp16> A(small_m * Km), C(small_m * Nm);
+        fill_random_fp16(A, -1.f, 1.f);
+        std::string label = "cq4 " + std::to_string(small_m) + "x2304x9216";
+        bench_model(label.c_str(), small_m, Km, Nm, [&]{ cactus_quant_matmul(&mat, A.data(), static_cast<uint32_t>(small_m), C.data()); });
+    }
+    print_cq4_small_m_target_summary();
 
     return true;
 }
@@ -508,6 +655,8 @@ int main() {
     runner.run_test("matmul_cq2", test_cq_correctness(2));
     runner.run_test("matmul_cq3", test_cq_correctness(3));
     runner.run_test("matmul_cq4", test_cq_correctness(4));
+    runner.run_test("matmul_cq4_small_m", test_cq4_small_m_correctness());
+    runner.run_test("matmul_cq4_small_m_fallback", test_cq4_small_m_fallback());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     print_mse_report();

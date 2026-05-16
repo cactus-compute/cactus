@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <random>
+#include <array>
 
 namespace cactus {
 namespace engine {
@@ -429,6 +430,24 @@ std::vector<float> logits_row_to_fp32(CactusGraph* gb, size_t logits_node, size_
     return logits;
 }
 
+struct CacheStateNodeIds {
+    std::string layer_key;
+    size_t key = 0;
+    size_t value = 0;
+};
+
+struct CachedTargetComponent {
+    std::string component;
+    std::unique_ptr<CactusGraph> graph;
+    std::vector<size_t> runtime_input_node_ids;
+    std::vector<size_t> output_node_ids;
+    std::vector<std::string> logical_inputs;
+    std::vector<std::string> logical_outputs;
+    std::vector<CacheStateNodeIds> cache_states;
+    std::vector<std::vector<uint8_t>> bound_constant_storage;
+    size_t verifier_width = 0;
+};
+
 struct LoadedNpyArray {
     std::vector<size_t> shape;
     Precision precision = Precision::FP32;
@@ -623,11 +642,15 @@ public:
         MtpThreadLocalRng rng;
 
         SpeculativeDecodeResult result;
+        auto spec_total_start = std::chrono::high_resolution_clock::now();
         const size_t limit = std::max<size_t>(1, draft_tokens);
         while (result.tokens.size() < max_tokens) {
             std::vector<uint32_t> base_context = context_tokens_;
             CactusGraph* target_graph = static_cast<CactusGraph*>(graph_handle_);
+            auto target_start = std::chrono::high_resolution_clock::now();
             run_decoder(target_graph, base_context);
+            auto target_end = std::chrono::high_resolution_clock::now();
+            result.target_context_forward_time_ms += std::chrono::duration_cast<std::chrono::microseconds>(target_end - target_start).count() / 1000.0;
             std::vector<float> current_embedding = run_target_embedding(base_context.back());
             std::vector<float> previous_hidden = output_row_to_fp32(
                 target_graph,
@@ -651,6 +674,7 @@ public:
             std::vector<uint32_t> draft_history = token_history_;
 
             for (size_t i = 0; i < limit && result.tokens.size() + draft.tokens.size() < max_tokens; ++i) {
+                auto assistant_start = std::chrono::high_resolution_clock::now();
                 size_t logits_node = run_assistant_graph(
                     current_embedding,
                     previous_hidden,
@@ -659,6 +683,8 @@ public:
                     sliding_key,
                     sliding_value,
                     base_context.size() + i);
+                auto assistant_end = std::chrono::high_resolution_clock::now();
+                result.assistant_forward_time_ms += std::chrono::duration_cast<std::chrono::microseconds>(assistant_end - assistant_start).count() / 1000.0;
                 std::vector<float> logits = logits_row_to_fp32(
                     assistant_graph_.get(),
                     logits_node,
@@ -680,14 +706,24 @@ public:
 
             std::vector<uint32_t> verify_context = base_context;
             verify_context.insert(verify_context.end(), draft.tokens.begin(), draft.tokens.end());
-            run_decoder(static_cast<CactusGraph*>(graph_handle_), verify_context);
-            size_t target_logits_node = output_node_for_role(decoder_logical_outputs_, output_node_ids_, decoder_verifier_logits_role_);
+            CactusGraph* verifier_graph = nullptr;
+            size_t target_logits_node = 0;
+            size_t first_row = 0;
+            if (!try_run_cached_target_verifier(base_context, draft.tokens, result, verifier_graph, target_logits_node, first_row)) {
+                target_start = std::chrono::high_resolution_clock::now();
+                run_decoder(static_cast<CactusGraph*>(graph_handle_), verify_context);
+                target_end = std::chrono::high_resolution_clock::now();
+                result.target_forward_time_ms += std::chrono::duration_cast<std::chrono::microseconds>(target_end - target_start).count() / 1000.0;
+                result.verifier_width = std::max(result.verifier_width, draft.tokens.size() + 1);
+                verifier_graph = static_cast<CactusGraph*>(graph_handle_);
+                target_logits_node = output_node_for_role(decoder_logical_outputs_, output_node_ids_, decoder_verifier_logits_role_);
+                first_row = base_context.empty() ? 0 : base_context.size() - 1;
+            }
             std::vector<MtpDistribution> target_distributions;
             target_distributions.reserve(draft.tokens.size() + 1);
-            size_t first_row = base_context.empty() ? 0 : base_context.size() - 1;
             std::vector<uint32_t> target_history = token_history_;
             for (size_t i = 0; i <= draft.tokens.size(); ++i) {
-                auto logits = logits_row_to_fp32(static_cast<CactusGraph*>(graph_handle_), target_logits_node, first_row + i);
+                auto logits = logits_row_to_fp32(verifier_graph, target_logits_node, first_row + i);
                 apply_runtime_bias_to_logits(logits, target_history, repetition_penalty);
                 target_distributions.push_back(mtp_distribution_from_logits(std::move(logits), options));
                 if (i < draft.tokens.size()) {
@@ -706,12 +742,24 @@ public:
                 if (result.tokens.size() >= max_tokens) {
                     break;
                 }
+                if (result.tokens.empty()) {
+                    auto first_token_end = std::chrono::high_resolution_clock::now();
+                    result.first_token_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(first_token_end - spec_total_start).count() / 1000.0;
+                }
                 result.tokens.push_back(token);
                 context_tokens_.push_back(token);
                 record_sampled_token(token);
                 update_tool_constraints(token);
             }
         }
+        auto spec_total_end = std::chrono::high_resolution_clock::now();
+        const double spec_total_ms = std::chrono::duration_cast<std::chrono::microseconds>(spec_total_end - spec_total_start).count() / 1000.0;
+        result.misc_time_ms = std::max(
+            0.0,
+            spec_total_ms -
+                result.target_context_forward_time_ms -
+                result.target_forward_time_ms -
+                result.assistant_forward_time_ms);
         return result;
     }
 
@@ -903,6 +951,26 @@ protected:
                              assistant_bound_constant_storage_,
                              bundle_root,
                              manifest_dir);
+        cached_target_prefill_ = load_optional_cached_target_component(
+            manifest,
+            bundle_root,
+            manifest_dir,
+            "decoder_prefill_chunk",
+            0);
+        cached_target_step_ = load_optional_cached_target_component(
+            manifest,
+            bundle_root,
+            manifest_dir,
+            "decoder_step",
+            1);
+        for (size_t width = 2; width <= 4; ++width) {
+            cached_target_verifiers_[width] = load_optional_cached_target_component(
+                manifest,
+                bundle_root,
+                manifest_dir,
+                "decoder_verify_m" + std::to_string(width),
+                width);
+        }
         speculative_status_.clear();
     }
 
@@ -1008,6 +1076,76 @@ private:
         return output_node_for_role(roles, node_ids, role);
     }
 
+    std::vector<CacheStateNodeIds> parse_cache_state_node_ids(const std::string& component_json) const {
+        std::vector<CacheStateNodeIds> states;
+        for (const std::string& entry : json_object_array_field(component_json, "cache_state_node_ids")) {
+            CacheStateNodeIds state;
+            state.layer_key = json_string_field(entry, "layer_key");
+            int key = json_integer_field(entry, "key", 0, -1);
+            int value = json_integer_field(entry, "value", 0, -1);
+            if (!state.layer_key.empty() && key >= 0 && value >= 0) {
+                state.key = static_cast<size_t>(key);
+                state.value = static_cast<size_t>(value);
+                states.push_back(std::move(state));
+            }
+        }
+        return states;
+    }
+
+    bool cached_target_component_is_usable(const CachedTargetComponent& component) const {
+        return component.graph &&
+               component.runtime_input_node_ids.size() >= component.logical_inputs.size() &&
+               component.output_node_ids.size() >= component.logical_outputs.size() &&
+               has_string_value(component.logical_inputs, "input_ids") &&
+               has_string_value(component.logical_inputs, "position_ids") &&
+               has_string_value(component.logical_outputs, "verifier_logits") &&
+               !component.cache_states.empty();
+    }
+
+    CachedTargetComponent load_optional_cached_target_component(
+        const std::string& manifest,
+        const std::string& bundle_root,
+        const std::string& manifest_dir,
+        const std::string& component_name,
+        size_t verifier_width) {
+        CachedTargetComponent component;
+        component.component = component_name;
+        component.verifier_width = verifier_width;
+
+        const size_t component_pos = find_component_object(manifest, component_name);
+        if (component_pos == std::string::npos) {
+            return component;
+        }
+        const std::string component_json = manifest.substr(
+            component_pos,
+            find_json_matching_brace(manifest, component_pos) - component_pos + 1);
+        const std::string graph_rel = json_string_field(component_json, "graph");
+        component.runtime_input_node_ids = json_integer_array_field(component_json, "runtime_input_node_ids");
+        component.output_node_ids = json_integer_array_field(component_json, "output_node_ids");
+        component.logical_inputs = json_string_array_field(component_json, "logical_inputs");
+        component.logical_outputs = json_string_array_field(component_json, "logical_outputs");
+        component.cache_states = parse_cache_state_node_ids(component_json);
+        if (graph_rel.empty() ||
+            component.runtime_input_node_ids.empty() ||
+            component.output_node_ids.empty()) {
+            return component;
+        }
+        std::string graph_path = join_path(bundle_root, graph_rel);
+        if (!file_exists(graph_path)) {
+            graph_path = join_path(manifest_dir, graph_rel);
+        }
+        if (!file_exists(graph_path)) {
+            return component;
+        }
+        component.graph = std::make_unique<CactusGraph>(CactusGraph::load(graph_path));
+        bind_saved_constants(component_json,
+                             component.graph.get(),
+                             component.bound_constant_storage,
+                             bundle_root,
+                             manifest_dir);
+        return component;
+    }
+
     std::vector<float> output_tensor_to_fp32(CactusGraph* gb, size_t node_id) {
         const auto& buffer = gb->get_output_buffer(node_id);
         void* output = gb->get_output(node_id);
@@ -1082,6 +1220,213 @@ private:
         } else {
             throw std::runtime_error("transpiled MTP input uses unsupported precision");
         }
+    }
+
+    void set_u32_input(CactusGraph* gb,
+                       size_t node_id,
+                       const std::vector<uint32_t>& values,
+                       const std::string& role) {
+        const auto& input_buf = gb->get_output_buffer(node_id);
+        size_t capacity = input_buf.total_size;
+        if (capacity == 0) {
+            throw std::runtime_error("transpiled cached target input has empty shape: " + role);
+        }
+        if (values.size() != capacity) {
+            throw std::runtime_error(
+                "transpiled cached target input shape mismatch for " + role +
+                ": graph expects " + std::to_string(capacity) +
+                " values, runtime provided " + std::to_string(values.size()));
+        }
+        if (input_buf.precision == Precision::FP32) {
+            std::vector<float> data(capacity);
+            for (size_t i = 0; i < values.size(); ++i) {
+                data[i] = static_cast<float>(values[i]);
+            }
+            gb->set_input(node_id, data.data(), Precision::FP32);
+        } else if (input_buf.precision == Precision::FP16) {
+            std::vector<__fp16> data(capacity);
+            for (size_t i = 0; i < values.size(); ++i) {
+                data[i] = __fp16(static_cast<float>(values[i]));
+            }
+            gb->set_input(node_id, data.data(), Precision::FP16);
+        } else if (input_buf.precision == Precision::INT8) {
+            std::vector<int8_t> data(capacity);
+            for (size_t i = 0; i < values.size(); ++i) {
+                if (values[i] > 127) {
+                    throw std::runtime_error(
+                        "transpiled cached target INT8 input cannot represent " + role +
+                        " value " + std::to_string(values[i]));
+                }
+                data[i] = static_cast<int8_t>(values[i]);
+            }
+            gb->set_input(node_id, data.data(), Precision::INT8);
+        } else {
+            throw std::runtime_error("transpiled cached target input uses unsupported precision: " + role);
+        }
+    }
+
+    void reset_component_cache_states(CachedTargetComponent& component) {
+        if (!cached_target_component_is_usable(component)) {
+            throw std::runtime_error("cached target component is missing cache metadata: " + component.component);
+        }
+        for (const CacheStateNodeIds& state : component.cache_states) {
+            component.graph->reset_cache_state(state.key);
+            component.graph->reset_cache_state(state.value);
+        }
+    }
+
+    void copy_component_cache_states(const CachedTargetComponent& source,
+                                     CachedTargetComponent& target) {
+        if (!cached_target_component_is_usable(source) ||
+            !cached_target_component_is_usable(target)) {
+            throw std::runtime_error(
+                "cannot transfer target KV cache between incomplete cached components");
+        }
+        if (source.cache_states.size() != target.cache_states.size()) {
+            throw std::runtime_error(
+                "target cache state count mismatch from " + source.component +
+                " to " + target.component);
+        }
+        for (size_t i = 0; i < source.cache_states.size(); ++i) {
+            const CacheStateNodeIds& source_state = source.cache_states[i];
+            const CacheStateNodeIds& target_state = target.cache_states[i];
+            if (source_state.layer_key != target_state.layer_key) {
+                throw std::runtime_error(
+                    "target cache layer mismatch from " + source.component +
+                    " to " + target.component);
+            }
+            target.graph->copy_output_buffer_from(*source.graph, source_state.key, target_state.key);
+            target.graph->copy_output_buffer_from(*source.graph, source_state.value, target_state.value);
+        }
+    }
+
+    size_t run_cached_target_component(CachedTargetComponent& component,
+                                       const std::vector<uint32_t>& input_ids,
+                                       const std::vector<uint32_t>& position_ids) {
+        if (!cached_target_component_is_usable(component)) {
+            throw std::runtime_error("cached target component is unavailable: " + component.component);
+        }
+        if (input_ids.empty() || input_ids.size() != position_ids.size()) {
+            throw std::runtime_error("cached target component requires matching non-empty token and position inputs");
+        }
+        CactusGraph* gb = component.graph.get();
+        set_u32_input(
+            gb,
+            input_node_for_role(component.logical_inputs, component.runtime_input_node_ids, "input_ids"),
+            input_ids,
+            "input_ids");
+        set_u32_input(
+            gb,
+            input_node_for_role(component.logical_inputs, component.runtime_input_node_ids, "position_ids"),
+            position_ids,
+            "position_ids");
+        gb->execute();
+        return output_node_for_role(component.logical_outputs, component.output_node_ids, "verifier_logits");
+    }
+
+    std::vector<uint32_t> positions_for_span(size_t start, size_t count) const {
+        std::vector<uint32_t> positions(count);
+        for (size_t i = 0; i < count; ++i) {
+            positions[i] = static_cast<uint32_t>(start + i);
+        }
+        return positions;
+    }
+
+    bool prepare_cached_target_prefix(const std::vector<uint32_t>& prefix,
+                                      CachedTargetComponent& verifier) {
+        if (!cached_target_component_is_usable(verifier)) {
+            return false;
+        }
+        if (prefix.empty()) {
+            reset_component_cache_states(verifier);
+            return true;
+        }
+        if (!cached_target_component_is_usable(cached_target_step_)) {
+            return false;
+        }
+
+        size_t token_index = 0;
+        if (cached_target_component_is_usable(cached_target_prefill_)) {
+            const size_t input_node = input_node_for_role(
+                cached_target_prefill_.logical_inputs,
+                cached_target_prefill_.runtime_input_node_ids,
+                "input_ids");
+            const size_t chunk_size = cached_target_prefill_.graph->get_output_buffer(input_node).total_size;
+            if (chunk_size > 1 && prefix.size() >= chunk_size) {
+                reset_component_cache_states(cached_target_prefill_);
+                const size_t chunked_tokens = (prefix.size() / chunk_size) * chunk_size;
+                for (size_t chunk_start = 0; chunk_start < chunked_tokens; chunk_start += chunk_size) {
+                    std::vector<uint32_t> chunk(
+                        prefix.begin() + static_cast<std::ptrdiff_t>(chunk_start),
+                        prefix.begin() + static_cast<std::ptrdiff_t>(chunk_start + chunk_size));
+                    run_cached_target_component(
+                        cached_target_prefill_,
+                        chunk,
+                        positions_for_span(chunk_start, chunk_size));
+                }
+                copy_component_cache_states(cached_target_prefill_, cached_target_step_);
+                token_index = chunked_tokens;
+            }
+        }
+
+        if (token_index == 0) {
+            reset_component_cache_states(cached_target_step_);
+        }
+        while (token_index < prefix.size()) {
+            run_cached_target_component(
+                cached_target_step_,
+                {prefix[token_index]},
+                {static_cast<uint32_t>(token_index)});
+            ++token_index;
+        }
+        copy_component_cache_states(cached_target_step_, verifier);
+        return true;
+    }
+
+    bool try_run_cached_target_verifier(const std::vector<uint32_t>& base_context,
+                                        const std::vector<uint32_t>& draft_tokens,
+                                        SpeculativeDecodeResult& result,
+                                        CactusGraph*& verifier_graph,
+                                        size_t& verifier_logits_node,
+                                        size_t& first_row) {
+        const size_t verifier_width = draft_tokens.size() + 1;
+        if (verifier_width < 2 || verifier_width >= cached_target_verifiers_.size()) {
+            return false;
+        }
+        CachedTargetComponent& verifier = cached_target_verifiers_[verifier_width];
+        if (!cached_target_component_is_usable(verifier) || verifier.verifier_width != verifier_width) {
+            return false;
+        }
+        if (base_context.empty()) {
+            return false;
+        }
+
+        std::vector<uint32_t> prefix(
+            base_context.begin(),
+            base_context.end() - 1);
+        auto prep_start = std::chrono::high_resolution_clock::now();
+        if (!prepare_cached_target_prefix(prefix, verifier)) {
+            return false;
+        }
+        auto prep_end = std::chrono::high_resolution_clock::now();
+        result.target_context_forward_time_ms += std::chrono::duration_cast<std::chrono::microseconds>(prep_end - prep_start).count() / 1000.0;
+
+        std::vector<uint32_t> verify_tokens;
+        verify_tokens.reserve(verifier_width);
+        verify_tokens.push_back(base_context.back());
+        verify_tokens.insert(verify_tokens.end(), draft_tokens.begin(), draft_tokens.end());
+
+        auto verify_start = std::chrono::high_resolution_clock::now();
+        verifier_logits_node = run_cached_target_component(
+            verifier,
+            verify_tokens,
+            positions_for_span(base_context.size() - 1, verifier_width));
+        auto verify_end = std::chrono::high_resolution_clock::now();
+        result.target_forward_time_ms += std::chrono::duration_cast<std::chrono::microseconds>(verify_end - verify_start).count() / 1000.0;
+        result.verifier_width = std::max(result.verifier_width, verifier_width);
+        verifier_graph = verifier.graph.get();
+        first_row = 0;
+        return true;
     }
 
     std::vector<float> run_target_embedding(uint32_t token) {
@@ -1212,6 +1557,9 @@ private:
     std::string assistant_position_role_;
     std::string assistant_logits_output_role_;
     std::string assistant_next_hidden_output_role_;
+    CachedTargetComponent cached_target_prefill_;
+    CachedTargetComponent cached_target_step_;
+    std::array<CachedTargetComponent, 5> cached_target_verifiers_;
     std::vector<std::vector<uint8_t>> bound_constant_storage_;
     std::vector<std::vector<uint8_t>> target_embedding_bound_constant_storage_;
     std::vector<std::vector<uint8_t>> assistant_bound_constant_storage_;

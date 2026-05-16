@@ -732,9 +732,10 @@ int cactus_complete(
             }
 
             double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(spec_end - start_time).count() / 1000.0;
+            double pre_spec_ms = std::chrono::duration_cast<std::chrono::microseconds>(spec_start - start_time).count() / 1000.0;
             double time_to_first_token = generated_tokens.empty()
                 ? total_time_ms
-                : std::chrono::duration_cast<std::chrono::microseconds>(spec_end - spec_start).count() / 1000.0;
+                : pre_spec_ms + std::max(0.0, spec.first_token_time_ms);
             double decode_time_ms = std::max(0.0, total_time_ms - time_to_first_token);
             double prefill_tps = time_to_first_token > 0 ? (prompt_tokens * 1000.0) / time_to_first_token : 0.0;
             double decode_tps = (generated_tokens.size() > 1 && decode_time_ms > 0)
@@ -769,7 +770,12 @@ int cactus_complete(
                 true,
                 spec.drafted_tokens,
                 spec.accepted_draft_tokens,
-                spec.rejected_tokens);
+                spec.rejected_tokens,
+                spec.verifier_width,
+                spec.target_forward_time_ms,
+                spec.target_context_forward_time_ms,
+                spec.assistant_forward_time_ms,
+                spec.misc_time_ms);
 
             if (result.length() >= buffer_size) {
                 if (prompt.options.force_tools && !prompt.tools.empty()) {
@@ -802,6 +808,7 @@ int cactus_complete(
 
         std::vector<uint32_t> generated_tokens;
         double time_to_first_token = 0.0;
+        double target_forward_time_ms = 0.0;
         float first_token_entropy = 0.0f;
         uint32_t next_token;
         size_t prompt_tokens;
@@ -824,18 +831,27 @@ int cactus_complete(
 
         if (has_gemma4_mixed_media) {
             prompt_tokens = prompt.tokens.size();
+            auto target_start = std::chrono::high_resolution_clock::now();
             next_token = decode_gemma4_mixed_media(prompt.tokens, &first_token_entropy);
+            auto target_end = std::chrono::high_resolution_clock::now();
+            target_forward_time_ms += std::chrono::duration_cast<std::chrono::microseconds>(target_end - target_start).count() / 1000.0;
         } else if (has_audio) {
             prompt_tokens = prompt.tokens.size();
+            auto target_start = std::chrono::high_resolution_clock::now();
             next_token = handle->model->decode_with_audio(
                 prompt.tokens, prompt.audio_features,
                 prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
                 "", &first_token_entropy,
                 prompt.options.min_p, prompt.options.repetition_penalty);
+            auto target_end = std::chrono::high_resolution_clock::now();
+            target_forward_time_ms += std::chrono::duration_cast<std::chrono::microseconds>(target_end - target_start).count() / 1000.0;
         } else {
             auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
             prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
+            auto target_start = std::chrono::high_resolution_clock::now();
             next_token = generate_first_token(handle, prefill_result, prompt, &first_token_entropy);
+            auto target_end = std::chrono::high_resolution_clock::now();
+            target_forward_time_ms += std::chrono::duration_cast<std::chrono::microseconds>(target_end - target_start).count() / 1000.0;
         }
 
         handle->processed_tokens = prompt.tokens;
@@ -905,15 +921,24 @@ int cactus_complete(
 
                 float token_entropy = 0.0f;
                 if (has_gemma4_mixed_media) {
+                    auto target_start = std::chrono::high_resolution_clock::now();
                     next_token = decode_gemma4_mixed_media(handle->processed_tokens, &token_entropy);
+                    auto target_end = std::chrono::high_resolution_clock::now();
+                    target_forward_time_ms += std::chrono::duration_cast<std::chrono::microseconds>(target_end - target_start).count() / 1000.0;
                 } else if (has_audio) {
+                    auto target_start = std::chrono::high_resolution_clock::now();
                     next_token = handle->model->decode_with_audio(
                         handle->processed_tokens, prompt.audio_features,
                         prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
                         "", &token_entropy,
                         prompt.options.min_p, prompt.options.repetition_penalty);
+                    auto target_end = std::chrono::high_resolution_clock::now();
+                    target_forward_time_ms += std::chrono::duration_cast<std::chrono::microseconds>(target_end - target_start).count() / 1000.0;
                 } else {
+                    auto target_start = std::chrono::high_resolution_clock::now();
                     next_token = decode(handle->model, {next_token}, prompt.options, &token_entropy);
+                    auto target_end = std::chrono::high_resolution_clock::now();
+                    target_forward_time_ms += std::chrono::duration_cast<std::chrono::microseconds>(target_end - target_start).count() / 1000.0;
                 }
                 handle->processed_tokens.push_back(next_token);
                 generated_tokens.push_back(next_token);
@@ -1015,10 +1040,12 @@ int cactus_complete(
         }
 
         const bool handoff_succeeded = cloud_used;
+        double misc_completion_time_ms = std::max(0.0, total_time_ms - target_forward_time_ms);
         std::string result = construct_response_json(primary_response, primary_function_calls, time_to_first_token,
                                                      total_time_ms, prefill_tps, decode_tps, prompt_tokens,
                                                      completion_tokens, confidence, handoff_succeeded,
-                                                     thinking_text);
+                                                     thinking_text, {}, false, 0, 0, 0, 0,
+                                                     target_forward_time_ms, -1.0, -1.0, misc_completion_time_ms);
 
         if (result.length() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);

@@ -1610,7 +1610,12 @@ inline std::string construct_response_json(const std::string& regular_response,
                                            bool include_mtp_metrics = false,
                                            size_t mtp_drafted_tokens = 0,
                                            size_t mtp_accepted_tokens = 0,
-                                           size_t mtp_rejected_tokens = 0) {
+                                           size_t mtp_rejected_tokens = 0,
+                                           size_t mtp_verifier_width = 0,
+                                           double target_forward_time_ms = -1.0,
+                                           double target_context_forward_time_ms = -1.0,
+                                           double assistant_forward_time_ms = -1.0,
+                                           double misc_completion_time_ms = -1.0) {
     std::ostringstream json;
     json << "{";
     json << "\"success\":true,";
@@ -1646,6 +1651,35 @@ inline std::string construct_response_json(const std::string& regular_response,
         json << "\"mtp_drafted_tokens\":" << mtp_drafted_tokens << ",";
         json << "\"mtp_accepted_tokens\":" << mtp_accepted_tokens << ",";
         json << "\"mtp_rejected_tokens\":" << mtp_rejected_tokens << ",";
+        json << "\"mtp_verifier_width\":" << mtp_verifier_width << ",";
+    }
+    if (target_forward_time_ms >= 0.0) {
+        double avg_target = completion_tokens > 0
+            ? target_forward_time_ms / static_cast<double>(completion_tokens)
+            : 0.0;
+        json << "\"target_forward_time_ms\":" << std::fixed << std::setprecision(3) << target_forward_time_ms << ",";
+        json << "\"avg_target_forward_ms_per_token\":" << std::fixed << std::setprecision(6) << avg_target << ",";
+    }
+    if (target_context_forward_time_ms >= 0.0) {
+        double avg_target_context = completion_tokens > 0
+            ? target_context_forward_time_ms / static_cast<double>(completion_tokens)
+            : 0.0;
+        json << "\"target_context_forward_time_ms\":" << std::fixed << std::setprecision(3) << target_context_forward_time_ms << ",";
+        json << "\"avg_target_context_forward_ms_per_token\":" << std::fixed << std::setprecision(6) << avg_target_context << ",";
+    }
+    if (assistant_forward_time_ms >= 0.0) {
+        double avg_assistant = completion_tokens > 0
+            ? assistant_forward_time_ms / static_cast<double>(completion_tokens)
+            : 0.0;
+        json << "\"assistant_forward_time_ms\":" << std::fixed << std::setprecision(3) << assistant_forward_time_ms << ",";
+        json << "\"avg_assistant_forward_ms_per_token\":" << std::fixed << std::setprecision(6) << avg_assistant << ",";
+    }
+    if (misc_completion_time_ms >= 0.0) {
+        double avg_misc = completion_tokens > 0
+            ? misc_completion_time_ms / static_cast<double>(completion_tokens)
+            : 0.0;
+        json << "\"misc_completion_time_ms\":" << std::fixed << std::setprecision(3) << misc_completion_time_ms << ",";
+        json << "\"avg_misc_completion_ms_per_token\":" << std::fixed << std::setprecision(6) << avg_misc << ",";
     }
     json << "\"total_tokens\":" << (prompt_tokens + completion_tokens);
     json << "}";

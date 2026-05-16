@@ -15,6 +15,7 @@
 #include <mutex>
 #include <sstream>
 #include <iostream>
+#include <cstdint>
 #include <arm_neon.h>
 
 namespace cactus {
@@ -460,6 +461,10 @@ public:
     void set_input(size_t node_id, const void* data, Precision precision);
     void set_external_input(size_t node_id, void* data, Precision precision);
     void* get_output(size_t node_id);
+    std::vector<uint8_t> snapshot_output_buffer(size_t node_id) const;
+    void restore_output_buffer(size_t node_id, const void* data, size_t byte_size);
+    void copy_output_buffer_from(const CactusGraph& source, size_t source_node_id, size_t target_node_id);
+    void reset_cache_state(size_t node_id);
 
     size_t add(size_t input1, size_t input2);
     size_t add_clipped(size_t input1, size_t input2);

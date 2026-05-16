@@ -346,15 +346,17 @@ def test_cmd_convert_transpiles_and_merges_assistant(monkeypatch, tmp_path: Path
     def _fake_cmd_transpile(transpile_args):
         transpile_calls.append(transpile_args)
         artifact_dir = Path(transpile_args.extra_args[transpile_args.extra_args.index("--artifact-dir") + 1])
-        component_name = "assistant" if "--components" in transpile_args.extra_args else "decoder"
+        is_assistant = transpile_args.model_id == "assistant/model"
+        component_name = "assistant" if is_assistant else "decoder"
         decoder_dir = artifact_dir / "components" / component_name
         decoder_dir.mkdir(parents=True, exist_ok=True)
         (decoder_dir / "graph.cactus").write_bytes(b"graph")
         (decoder_dir / "bound_constants").mkdir()
         (decoder_dir / "bound_constants" / "node_1.npy").write_bytes(b"npy")
         target_embedding_component = []
+        cached_verifier_components = []
         component_order = [component_name]
-        if component_name == "decoder":
+        if not is_assistant:
             target_embedding_dir = artifact_dir / "components" / "target_embedding"
             target_embedding_dir.mkdir(parents=True, exist_ok=True)
             (target_embedding_dir / "graph.cactus").write_bytes(b"embedding")
@@ -377,6 +379,30 @@ def test_cmd_convert_transpiles_and_merges_assistant(monkeypatch, tmp_path: Path
                     "bound_constant_bindings": [],
                 }
             )
+            for verifier_component in ("decoder_prefill_chunk", "decoder_step", "decoder_verify_m2", "decoder_verify_m3", "decoder_verify_m4"):
+                verifier_dir = artifact_dir / "components" / verifier_component
+                verifier_dir.mkdir(parents=True, exist_ok=True)
+                (verifier_dir / "graph.cactus").write_bytes(b"verifier")
+                component_order.append(verifier_component)
+                cached_verifier_components.append(
+                    {
+                        "component": verifier_component,
+                        "directory": f"components/{verifier_component}",
+                        "raw_ir": None,
+                        "optimized_ir": None,
+                        "graph": f"components/{verifier_component}/graph.cactus",
+                        "inputs": ["input_ids", "position_ids"],
+                        "outputs": ["verifier_logits"],
+                        "logical_inputs": ["input_ids", "position_ids"],
+                        "logical_outputs": ["verifier_logits"],
+                        "node_count": 1,
+                        "weight_binding_count": 0,
+                        "runtime_input_node_ids": [5, 6],
+                        "output_node_ids": [7],
+                        "cache_state_node_ids": [],
+                        "bound_constant_bindings": [],
+                    }
+                )
         (artifact_dir / "components" / "manifest.json").write_text(
             json.dumps(
                 {
@@ -412,7 +438,7 @@ def test_cmd_convert_transpiles_and_merges_assistant(monkeypatch, tmp_path: Path
                                 }
                             ],
                         }
-                    ] + target_embedding_component,
+                    ] + target_embedding_component + cached_verifier_components,
                 }
             ),
             encoding="utf-8",
@@ -439,10 +465,22 @@ def test_cmd_convert_transpiles_and_merges_assistant(monkeypatch, tmp_path: Path
     assert transpile_calls[1].extra_args[transpile_calls[1].extra_args.index("--cache-dir") + 1] == str(tmp_path / "hf-cache")
     assert transpile_calls[0].extra_args[transpile_calls[0].extra_args.index("--component-pipeline") + 1] == "on"
     assert transpile_calls[1].extra_args[transpile_calls[1].extra_args.index("--component-pipeline") + 1] == "on"
+    assert transpile_calls[0].extra_args[transpile_calls[0].extra_args.index("--components") + 1] == (
+        "decoder,target_embedding,decoder_prefill_chunk,decoder_step,decoder_verify_m2,decoder_verify_m3,decoder_verify_m4"
+    )
     assert transpile_calls[1].extra_args[transpile_calls[1].extra_args.index("--components") + 1] == "assistant"
 
     manifest = json.loads((output_dir / "components" / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["component_order"] == ["decoder", "target_embedding", "assistant"]
+    assert manifest["component_order"] == [
+        "decoder",
+        "target_embedding",
+        "assistant",
+        "decoder_prefill_chunk",
+        "decoder_step",
+        "decoder_verify_m2",
+        "decoder_verify_m3",
+        "decoder_verify_m4",
+    ]
     assert manifest["spec_decode"]["method"] == "single_position_mtp"
     assert manifest["spec_decode"]["target"]["verifier_logits"] == "verifier_logits"
     assert manifest["spec_decode"]["target"]["target_hidden_state"] == "target_hidden_state"

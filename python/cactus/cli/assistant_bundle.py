@@ -56,6 +56,21 @@ def _manifest_path(bundle_dir: Path) -> Path:
     return manifest_path
 
 
+def _main_prompt_token_ids(bundle_dir: Path) -> list[int]:
+    manifest = _read_json(_manifest_path(bundle_dir))
+    inputs = manifest.get("inputs")
+    if not isinstance(inputs, dict):
+        return []
+    prompt_input_ids = inputs.get("prompt_input_ids")
+    if (
+        isinstance(prompt_input_ids, list)
+        and len(prompt_input_ids) == 1
+        and isinstance(prompt_input_ids[0], list)
+    ):
+        return [int(value) for value in prompt_input_ids[0]]
+    return []
+
+
 def _validate_assistant_tokenizer_compatibility(main_dir: Path, assistant_dir: Path) -> None:
     for filename in TOKENIZER_COMPAT_FILES:
         main_path = main_dir / filename
@@ -391,6 +406,7 @@ def package_assistant_for_convert(
             local_files_only=local_files_only,
         )
         prompt_text = prompt or "Hello"
+        main_prompt_ids = _main_prompt_token_ids(main_dir)
         extra_args = [
             "--weights-dir",
             str(weights_dir),
@@ -398,8 +414,6 @@ def package_assistant_for_convert(
             str(assistant_dir),
             "--task",
             "causal_lm_logits",
-            "--prompt",
-            prompt_text,
             "--max-new-tokens",
             str(max_new_tokens),
             "--torch-dtype",
@@ -411,6 +425,10 @@ def package_assistant_for_convert(
             "--tokenizer-source",
             str(main_dir),
         ]
+        if main_prompt_ids:
+            extra_args.extend(["--input-ids", ",".join(str(token_id) for token_id in main_prompt_ids)])
+        else:
+            extra_args.extend(["--prompt", prompt_text])
         if token:
             extra_args.extend(["--token", token])
         if cache_dir:

@@ -173,7 +173,7 @@ def _should_lower_attention_with_internal_kv_cache(ir: IRGraph, node: IRNode) ->
     if node.op not in {"attention", "scaled_dot_product_attention"}:
         return False
     component = str(ir.meta.get("component", "") or "").strip().lower()
-    return component in {"decoder_step", "decoder_prefill_chunk"}
+    return component in {"decoder_step", "decoder_prefill_chunk"} or component.startswith("decoder_verify_m")
 
 
 def _lower_attention_with_internal_kv_cache(

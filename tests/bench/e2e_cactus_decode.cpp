@@ -272,16 +272,13 @@ Result run_once(cactus_model_t model, const Args& args, int rep, bool trace_acti
         + ",\"min_p\":" + std::to_string(args.min_p)
         + ",\"max_tokens\":"
         + std::to_string(args.max_tokens)
-        + ",\"auto_handoff\":false,\"confidence_threshold\":0.0";
+        + ",\"auto_handoff\":false,\"confidence_threshold\":-1.0";
     if (args.seed > 0) {
         options += ",\"seed\":" + std::to_string(args.seed);
     }
     if (args.mtp_max_draft_tokens > 0) {
-        options += ",\"mtp\":true";
-        options += ",\"mtp_max_draft_tokens\":" + std::to_string(args.mtp_max_draft_tokens);
-        if (args.mtp_fixed_draft) {
-            options += ",\"mtp_fixed_draft\":true";
-        }
+        options += ",\"mtp_enabled\":true";
+        options += ",\"mtp_draft_tokens\":" + std::to_string(args.mtp_max_draft_tokens);
     }
     options += ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
 
@@ -304,14 +301,13 @@ Result run_once(cactus_model_t model, const Args& args, int rep, bool trace_acti
     result.decode_tps = json_number(response.data(), "decode_tps");
     result.ttft_ms = json_number(response.data(), "time_to_first_token_ms");
     result.total_ms = json_number(response.data(), "total_time_ms");
-    result.mtp_requested = json_bool(response.data(), "requested");
-    result.mtp_enabled = json_bool(response.data(), "enabled");
-    result.mtp_drafted_tokens = static_cast<int>(json_number(response.data(), "drafted_tokens"));
-    result.mtp_accepted_tokens = static_cast<int>(json_number(response.data(), "accepted_tokens"));
-    result.mtp_rejected_tokens = static_cast<int>(json_number(response.data(), "rejected_tokens"));
-    result.mtp_rounds = static_cast<int>(json_number(response.data(), "rounds"));
-    result.mtp_assistant_draft_ms = json_number(response.data(), "assistant_draft_ms");
-    result.mtp_target_verify_ms = json_number(response.data(), "target_verify_ms");
+    result.mtp_requested = args.mtp_max_draft_tokens > 0;
+    result.mtp_enabled = result.mtp_requested && json_number(response.data(), "mtp_verifier_width") > 0.0;
+    result.mtp_drafted_tokens = static_cast<int>(json_number(response.data(), "mtp_drafted_tokens"));
+    result.mtp_accepted_tokens = static_cast<int>(json_number(response.data(), "mtp_accepted_tokens"));
+    result.mtp_rejected_tokens = static_cast<int>(json_number(response.data(), "mtp_rejected_tokens"));
+    result.mtp_assistant_draft_ms = json_number(response.data(), "assistant_forward_time_ms");
+    result.mtp_target_verify_ms = json_number(response.data(), "target_forward_time_ms");
     result.mtp_sampling_or_argmax_ms = json_number(response.data(), "sampling_or_argmax_ms");
     result.mtp_kv_transaction_ms = json_number(response.data(), "kv_transaction_ms");
     result.mtp_callback_stream_ms = json_number(response.data(), "callback_stream_ms");

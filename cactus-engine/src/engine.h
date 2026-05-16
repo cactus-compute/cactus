@@ -582,6 +582,12 @@ public:
         size_t drafted_tokens = 0;
         size_t accepted_draft_tokens = 0;
         size_t rejected_tokens = 0;
+        size_t verifier_width = 0;
+        double first_token_time_ms = -1.0;
+        double target_forward_time_ms = 0.0;
+        double target_context_forward_time_ms = 0.0;
+        double assistant_forward_time_ms = 0.0;
+        double misc_time_ms = 0.0;
     };
 
     virtual std::string speculative_decode_status() const { return "unsupported_target"; }
