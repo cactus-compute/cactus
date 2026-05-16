@@ -304,6 +304,29 @@ def _run_transpiled_once(args, run_transpiled_bundle, *, bundle_dir: str | os.Pa
 def _run_transpiled_interactive_chat(args, run_transpiled_bundle) -> int:
     bundle_dir = getattr(args, "bundle_dir", None) or getattr(args, "model_id", None)
     print(f"Loading model from {bundle_dir}...")
+    try:
+        from cactus.transpile.component_bundle_runtime import _default_weights_dir_for_manifest
+        from cactus.transpile.component_bundle_runtime import load_component_bundle_manifest
+        from cactus.transpile.component_bundle_runtime import load_saved_component_graphs
+        from cactus.transpile.component_bundle_runtime import runtime_include_components_for_manifest
+
+        _, manifest = load_component_bundle_manifest(bundle_dir)
+        resolved_weights_dir = _default_weights_dir_for_manifest(
+            manifest,
+            explicit=getattr(args, "weights_dir", None),
+        )
+        include_components = runtime_include_components_for_manifest(
+            family=str(manifest.get("family", "") or ""),
+            task=str(manifest.get("task", "") or ""),
+            manifest=manifest,
+        )
+        load_saved_component_graphs(
+            bundle_dir,
+            weights_dir=resolved_weights_dir,
+            include_components=include_components,
+        )
+    except Exception as exc:
+        print(f"Warning: deferred graph load until first turn ({exc})", file=sys.stderr)
     print("Model loaded.")
     print("Commands: /image <path> [prompt], /audio <path> [prompt], /clear, reset, exit\n")
 

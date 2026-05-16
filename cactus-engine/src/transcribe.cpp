@@ -71,12 +71,12 @@ int cactus_preprocess_audio_features(
             auto cfg = cactus::audio::get_whisper_spectrogram_config();
             const bool is_whisper_v3 = bins > 80;
             if (is_whisper_v3) cactus::audio::apply_whisper_v3_overrides(cfg);
-            int norm_type = is_whisper_v3 ? 1 : 0;
-            int scale_type = is_whisper_v3 ? 1 : 0;
+            int norm_type = 1;  // Whisper HF feature extractor uses Slaney-normalized mel filters.
+            int scale_type = 2; // Whisper HF feature extractor uses the Slaney mel scale.
             std::vector<float> mel = cactus::audio::compute_spectrogram_graph(
                 audio_samples, cfg, bins, 0.0f, 8000.0f,
                 cactus::audio::WHISPER_SAMPLE_RATE, norm_type, scale_type);
-            features = cactus::audio::normalize_whisper_mel(mel, bins, is_whisper_v3);
+            features = cactus::audio::normalize_whisper_mel(mel, bins, true);
             frames = features.size() / bins;
         }
 
@@ -205,12 +205,12 @@ int cactus_transcribe(
             auto cfg = cactus::audio::get_whisper_spectrogram_config();
             const bool is_whisper_v3 = mel_bins > 80;
             if (is_whisper_v3) cactus::audio::apply_whisper_v3_overrides(cfg);
-            int norm_type = is_whisper_v3 ? 1 : 0;
-            int scale_type = is_whisper_v3 ? 1 : 0;
+            int norm_type = 1;  // Whisper HF feature extractor uses Slaney-normalized mel filters.
+            int scale_type = 2; // Whisper HF feature extractor uses the Slaney mel scale.
             std::vector<float> mel = cactus::audio::compute_spectrogram_graph(
                 audio_samples, cfg, mel_bins, 0.0f, 8000.0f,
                 cactus::audio::WHISPER_SAMPLE_RATE, norm_type, scale_type);
-            audio_features = cactus::audio::normalize_whisper_mel(mel, mel_bins, is_whisper_v3);
+            audio_features = cactus::audio::normalize_whisper_mel(mel, mel_bins, true);
         }
         if (audio_features.empty()) {
             handle_error_response("Computed audio features are empty", response_buffer, buffer_size);

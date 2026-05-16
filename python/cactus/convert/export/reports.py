@@ -11,7 +11,8 @@ def write_reports(out_dir: Path, rows: list[dict[str, Any]]) -> dict[str, Any]:
     (out_dir / "conversion_manifest.json").write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
     weights = []
     for row in rows:
-        if row.get("output_file") and str(row.get("output_file")).endswith(".weights"):
+        output_file = str(row.get("output_file") or "")
+        if output_file.endswith((".weights", ".bias")):
             weights.append({
                 "source_name": row.get("source_name"),
                 "hf_name": row.get("hf_name") or row.get("source_name"),

@@ -113,7 +113,18 @@ OPS: tuple[OpSchema, ...] = (
     OpSchema(
         "attention",
         num_inputs=3,
-        attrs=("scale", "is_causal", "window_size", "mask", "additive_mask"),
+        attrs=(
+            "scale",
+            "is_causal",
+            "window_size",
+            "mask",
+            "additive_mask",
+            "qkv_layout",
+            "q_layout",
+            "k_layout",
+            "v_layout",
+            "output_layout",
+        ),
         backend_op="attention",
     ),
     OpSchema(
@@ -128,6 +139,7 @@ OPS: tuple[OpSchema, ...] = (
             "has_gate",
             "has_bias",
             "attention_output_shape",
+            "qkv_layout",
         ),
         is_fusible=True,
     ),

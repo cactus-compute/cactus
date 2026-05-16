@@ -2,6 +2,7 @@
 #include "cactus_kernels.h"
 #include <cstring>
 #include <algorithm>
+#include <limits>
 
 namespace {
 
@@ -187,6 +188,10 @@ void compute_attention_cached_node(
 
     size_t new_seq_len = key_new_buf.total_size / (kv_heads * hdim);
     size_t history_len = (cache_len >= new_seq_len) ? cache_len - new_seq_len : 0;
+    size_t position_offset = node.params.position_offset;
+    if (position_offset == std::numeric_limits<size_t>::max()) {
+        position_offset = history_len;
+    }
 
     cactus_attention_hybrid_int8_fp16(
         query_buf.data_as<__fp16>(),
@@ -200,7 +205,7 @@ void compute_attention_cached_node(
         batch_size, seq_len, history_len, seq_len,
         num_q_heads, kv_heads, hdim,
         node.params.scale,
-        node.params.position_offset,
+        position_offset,
         true,
         node.params.window_size,
         KV_QUANT_GROUP_SIZE,

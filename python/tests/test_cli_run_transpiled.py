@@ -69,7 +69,7 @@ def test_run_transpiled_human_result_prints_response(capsys) -> None:
     assert capsys.readouterr().out == "generated text\n"
 
 
-def test_gemma4_multimodal_decoder_inputs_right_align_to_static_tail() -> None:
+def test_multimodal_decoder_inputs_right_align_to_static_tail() -> None:
     class FakeComponent:
         _input_names = ("inputs_embeds", "per_layer_inputs", "position_ids")
 
@@ -80,7 +80,7 @@ def test_gemma4_multimodal_decoder_inputs_right_align_to_static_tail() -> None:
     }
     original = {key: value.copy() for key, value in store.items()}
 
-    component_bundle_runtime._right_align_gemma4_decoder_inputs_to_static_tail(
+    component_bundle_runtime._right_align_decoder_inputs_to_static_tail(
         store,
         component=FakeComponent(),  # type: ignore[arg-type]
         prompt_token_count=4,
@@ -109,3 +109,51 @@ def test_materialized_transpile_constants_are_cactus_tensor_files(tmp_path: Path
     assert loaded.precision == int(hf_model.Graph.FP16)
     assert tuple(loaded.shape) == (2, 3)
     np.testing.assert_array_equal(loaded.data.reshape(loaded.shape), expected)
+
+
+def test_stateful_decode_graphs_are_reloaded_when_bundle_cache_hits(monkeypatch, tmp_path: Path) -> None:
+    manifest = {
+        "components": [
+            {
+                "component": "vision_encoder",
+                "logical_inputs": ["pixel_values"],
+                "logical_outputs": ["image_features"],
+            },
+            {
+                "component": "decoder_prefill_chunk",
+                "logical_inputs": ["inputs_embeds"],
+                "logical_outputs": ["logits"],
+            },
+            {
+                "component": "decoder_step",
+                "logical_inputs": ["inputs_embeds"],
+                "logical_outputs": ["logits"],
+            },
+        ],
+    }
+    calls: list[str] = []
+
+    class FakeComponent:
+        def __init__(self, component: str):
+            self.component = component
+
+    def fake_manifest(_bundle_dir_or_manifest):
+        return tmp_path, manifest
+
+    def fake_load_saved_component_graph(*, component_entry, **_kwargs):
+        component = str(component_entry["component"])
+        calls.append(component)
+        return FakeComponent(component)
+
+    component_bundle_runtime._COMPONENT_GRAPH_CACHE.clear()
+    monkeypatch.setattr(component_bundle_runtime, "load_component_bundle_manifest", fake_manifest)
+    monkeypatch.setattr(component_bundle_runtime, "load_saved_component_graph", fake_load_saved_component_graph)
+
+    loaded, _ = component_bundle_runtime.load_saved_component_graphs(tmp_path)
+    assert set(loaded) == {"vision_encoder", "decoder_prefill_chunk", "decoder_step"}
+    assert calls == ["vision_encoder", "decoder_prefill_chunk", "decoder_step"]
+
+    calls.clear()
+    loaded, _ = component_bundle_runtime.load_saved_component_graphs(tmp_path)
+    assert set(loaded) == {"vision_encoder", "decoder_prefill_chunk", "decoder_step"}
+    assert calls == ["decoder_prefill_chunk", "decoder_step"]

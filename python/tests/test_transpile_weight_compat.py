@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import numpy as np
 
@@ -100,96 +101,179 @@ def test_decoder_binding_prefers_existing_cq4_companion(tmp_path: Path) -> None:
     assert compat.path == str(companion)
 
 
-def test_resolve_weight_binding_maps_lfm_decoder_weights(tmp_path: Path) -> None:
-    for filename in (
-        "output_norm.weights",
-        "layer_0_input_norm.weights",
-        "layer_0_conv_in_proj.weights",
-        "layer_0_conv_depthwise.weights",
-        "layer_0_conv_out_proj.weights",
-        "layer_0_post_attn_norm.weights",
-        "layer_0_ffn_gate.weights",
-        "layer_0_ffn_up.weights",
-        "layer_0_ffn_down.weights",
-        "layer_2_attn_q.weights",
-        "layer_2_attn_k.weights",
-        "layer_2_attn_v.weights",
-        "layer_2_attn_output.weights",
-        "layer_2_attn_q_norm.weights",
-        "layer_2_attn_k_norm.weights",
-    ):
-        (tmp_path / filename).write_bytes(b"")
+def test_resolve_weight_binding_does_not_guess_legacy_filenames(tmp_path: Path) -> None:
+    (tmp_path / "token_embeddings.weights").write_bytes(b"")
+    (tmp_path / "layer_0_attn_q.weights").write_bytes(b"")
 
-    output_norm = resolve_weight_binding(
-        weights_dir=str(tmp_path),
-        source_name="adapter.model.model.norm.weight",
+    assert (
+        resolve_weight_binding(
+            weights_dir=str(tmp_path),
+            source_name="model.embed_tokens.weight",
+        )
+        is None
     )
-    assert output_norm is not None
-    assert output_norm.path.endswith("output_norm.weights")
-
-    conv_in_proj = resolve_weight_binding(
-        weights_dir=str(tmp_path),
-        source_name="adapter.model.model.language_model.layers.0.conv.in_proj.weight",
+    assert (
+        resolve_weight_binding(
+            weights_dir=str(tmp_path),
+            source_name="model.layers.0.self_attn.q_proj.weight",
+        )
+        is None
     )
-    assert conv_in_proj is not None
-    assert conv_in_proj.path.endswith("layer_0_conv_in_proj.weights")
 
-    ffn_gate = resolve_weight_binding(
-        weights_dir=str(tmp_path),
-        source_name="adapter.model.model.language_model.layers.0.feed_forward.w1.weight",
+
+def test_resolve_weight_binding_prefers_exact_manifest_without_name_guessing(tmp_path: Path) -> None:
+    (tmp_path / "exact.weights").write_bytes(b"")
+    (tmp_path / "token_embeddings.weights").write_bytes(b"")
+    (tmp_path / "weights_manifest.json").write_text(
+        json.dumps(
+            {
+                "v_adapter_named_anything": {
+                    "filename": "exact.weights",
+                    "kind": "weight",
+                }
+            }
+        )
     )
-    assert ffn_gate is not None
-    assert ffn_gate.path.endswith("layer_0_ffn_gate.weights")
 
-    attn_q_norm = resolve_weight_binding(
+    exact = resolve_weight_binding(
         weights_dir=str(tmp_path),
-        source_name="adapter.model.model.language_model.layers.2.self_attn.q_layernorm.weight",
+        source_name="v_adapter_named_anything",
     )
-    assert attn_q_norm is not None
-    assert attn_q_norm.path.endswith("layer_2_attn_q_norm.weights")
+    assert exact is not None
+    assert exact.path.endswith("exact.weights")
 
-
-def test_resolve_weight_binding_maps_flattened_whisper_names(tmp_path: Path) -> None:
-    for filename in (
-        "encoder_conv1_weight.weights",
-        "encoder_conv1_bias.bias",
-        "encoder_position_embeddings.weights",
-        "decoder_token_embeddings.weights",
-        "decoder.layer_0_self_attn_q.weights",
-        "decoder.layer_0_self_attn_q.bias",
-        "decoder.layer_0_encoder_attn_output.weights",
-        "decoder.layer_0_encoder_attn_output.bias",
-        "decoder.layer_0_final_norm.weights",
-        "decoder.layer_0_final_norm.bias",
-        "decoder.layer_0_mlp_fc1.weights",
-        "decoder.layer_0_mlp_fc1.bias",
-    ):
-        (tmp_path / filename).write_bytes(b"")
-
-    conv1 = resolve_weight_binding(
+    guessed = resolve_weight_binding(
         weights_dir=str(tmp_path),
-        source_name="v_module_encoder_conv1_weight",
+        source_name="model.embed_tokens.weight",
     )
-    assert conv1 is not None
-    assert conv1.path.endswith("encoder_conv1_weight.weights")
+    assert guessed is None
 
-    decoder_embed = resolve_weight_binding(
-        weights_dir=str(tmp_path),
-        source_name="v_module_decoder_embed_tokens_weight",
-    )
-    assert decoder_embed is not None
-    assert decoder_embed.path.endswith("decoder_token_embeddings.weights")
 
-    self_attn_q = resolve_weight_binding(
-        weights_dir=str(tmp_path),
-        source_name="v_module_decoder_layers_0_self_attn_q_proj_weight",
+def test_resolve_weight_binding_reads_convert_manifest_aliases(tmp_path: Path) -> None:
+    (tmp_path / "decoder_attn_q.cq4.weights").write_bytes(b"")
+    (tmp_path / "weights_manifest.json").write_text(
+        json.dumps(
+            {
+                "weights": [
+                    {
+                        "source_name": "model.layers.0.self_attn.q_proj.weight",
+                        "hf_name": "model.layers.0.self_attn.q_proj.weight",
+                        "adapter_name": "backbone.layers.0.self_attn.q_proj.weight",
+                        "source_names": ["adapter.backbone.layers.0.self_attn.q_proj.weight"],
+                        "output_name": "decoder_attn_q.cq4.weights",
+                        "component": "language",
+                    }
+                ]
+            }
+        )
     )
-    assert self_attn_q is not None
-    assert self_attn_q.path.endswith("decoder.layer_0_self_attn_q.weights")
 
-    encoder_attn_out_bias = resolve_weight_binding(
+    binding = resolve_weight_binding(
         weights_dir=str(tmp_path),
-        source_name="v_module_decoder_layers_0_encoder_attn_out_proj_bias",
+        source_name="adapter.backbone.layers.0.self_attn.q_proj.weight",
     )
-    assert encoder_attn_out_bias is not None
-    assert encoder_attn_out_bias.path.endswith("decoder.layer_0_encoder_attn_output.bias")
+
+    assert binding is not None
+    assert binding.path.endswith("decoder_attn_q.cq4.weights")
+
+
+def test_resolve_weight_binding_expands_manifest_wrapper_prefixes(tmp_path: Path) -> None:
+    (tmp_path / "layer_0_q.cq4.weights").write_bytes(b"")
+    (tmp_path / "weights_manifest.json").write_text(
+        json.dumps(
+            {
+                "model.layers.0.self_attn.q_proj.weight": {
+                    "filename": "layer_0_q.cq4.weights",
+                    "kind": "weight",
+                }
+            }
+        )
+    )
+
+    binding = resolve_weight_binding(
+        weights_dir=str(tmp_path),
+        source_name="adapter.model.model.layers.0.self_attn.q_proj.weight",
+    )
+
+    assert binding is not None
+    assert binding.path.endswith("layer_0_q.cq4.weights")
+
+
+def test_resolve_weight_binding_expands_component_local_manifest_aliases(tmp_path: Path) -> None:
+    (tmp_path / "encoder_layer_0_q.cq4.weights").write_bytes(b"")
+    (tmp_path / "weights_manifest.json").write_text(
+        json.dumps(
+            {
+                "encoder.layers.0.self_attn.q_proj.weight": {
+                    "filename": "encoder_layer_0_q.cq4.weights",
+                    "kind": "weight",
+                }
+            }
+        )
+    )
+
+    binding = resolve_weight_binding(
+        weights_dir=str(tmp_path),
+        source_name="module.layers.0.self_attn.q_proj.weight",
+    )
+
+    assert binding is not None
+    assert binding.path.endswith("encoder_layer_0_q.cq4.weights")
+
+
+def test_resolve_weight_binding_expands_language_model_backbone_aliases(tmp_path: Path) -> None:
+    (tmp_path / "layer_0_scalar.weights").write_bytes(b"")
+    (tmp_path / "weights_manifest.json").write_text(
+        json.dumps(
+            {
+                "model.language_model.layers.0.layer_scalar": {
+                    "filename": "layer_0_scalar.weights",
+                    "kind": "weight",
+                }
+            }
+        )
+    )
+
+    binding = resolve_weight_binding(
+        weights_dir=str(tmp_path),
+        source_name="module.backbone.layers.0.layer_scalar",
+    )
+
+    assert binding is not None
+    assert binding.path.endswith("layer_0_scalar.weights")
+
+
+def test_resolve_weight_binding_expands_nested_model_tower_aliases(tmp_path: Path) -> None:
+    (tmp_path / "vision_q.weights").write_bytes(b"")
+    (tmp_path / "weights_manifest.json").write_text(
+        json.dumps(
+            {
+                "model.vision_tower.encoder.layers.0.self_attn.q_proj.weight": {
+                    "filename": "vision_q.weights",
+                    "kind": "weight",
+                }
+            }
+        )
+    )
+
+    binding = resolve_weight_binding(
+        weights_dir=str(tmp_path),
+        source_name="module.model.model.vision_tower.encoder.layers.0.self_attn.q_proj.weight",
+    )
+
+    assert binding is not None
+    assert binding.path.endswith("vision_q.weights")
+
+
+def test_rank5_materialized_constant_uses_cactus_tensor_file(tmp_path: Path) -> None:
+    from cactus.transpile.hf_model import _write_cactus_constant_tensor
+    from cactus.transpile.runtime_compat import Graph
+
+    tensor = np.zeros((1, 2, 3, 4, 5), dtype=np.float16)
+    path = tmp_path / "rank5.weights"
+
+    _write_cactus_constant_tensor(output_path=path, value=tensor, precision=int(Graph.FP16))
+
+    opened = _open_cactus_tensor_file(path)
+    assert opened.shape == tensor.shape
+    assert opened.precision == int(Graph.FP16)

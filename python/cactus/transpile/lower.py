@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 import math
 import os
 from typing import Any
@@ -21,6 +22,9 @@ from cactus.transpile.weight_compat import ensure_binding_compatible
 from cactus.transpile.weight_binding import WeightBinding
 
 
+_DYNAMIC_KV_POSITION_OFFSET = (1 << 64) - 1
+
+
 @dataclass
 class TranspiledGraph:
     graph: Graph
@@ -29,6 +33,7 @@ class TranspiledGraph:
     bound_constant_bindings: list[dict[str, object]]
     bound_constant_value_ids: dict[int, str]
     outputs: list[Tensor]
+    cache_state_tensors: list[tuple[str, Tensor, Tensor]] = field(default_factory=list)
 
     def set_input(self, index: int, data: Any, *, dtype: int | None = None) -> None:
         if index < 0 or index >= len(self.runtime_inputs):
@@ -144,6 +149,7 @@ def transpile_preoptimized_ir(ir: IRGraph) -> TranspiledGraph:
             continue
         bound_constants.append(tensor)
         seen_bound_constant_ids.add(tensor_id)
+    cache_state_tensors = list(env.get("__internal_kv_cache_state_entries", []))
     return TranspiledGraph(
         graph=g,
         runtime_inputs=runtime_inputs,
@@ -151,6 +157,7 @@ def transpile_preoptimized_ir(ir: IRGraph) -> TranspiledGraph:
         bound_constant_bindings=bound_constant_bindings,
         bound_constant_value_ids=bound_constant_value_ids,
         outputs=outputs,
+        cache_state_tensors=cache_state_tensors,
     )
 
 
@@ -158,6 +165,85 @@ def _lower_input_value(g: Graph, value: IRValue) -> Tensor:
     if value.shape is None or value.dtype is None:
         raise ValueError(f"IR input missing shape or dtype: {value.id}")
     return g.input(shape=value.shape, dtype=_map_ir_dtype(value.dtype))
+
+
+def _should_lower_attention_with_internal_kv_cache(ir: IRGraph, node: IRNode) -> bool:
+    if not bool(ir.meta.get("use_internal_kv_cache", False)):
+        return False
+    if node.op not in {"attention", "scaled_dot_product_attention"}:
+        return False
+    component = str(ir.meta.get("component", "") or "").strip().lower()
+    return component in {"decoder_step", "decoder_prefill_chunk"}
+
+
+def _lower_attention_with_internal_kv_cache(
+    g: Graph,
+    ir: IRGraph,
+    env: dict[str, Any],
+    node: IRNode,
+    *,
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    output_layout: str,
+) -> list[Tensor]:
+    key_shape = tuple(int(dim) for dim in key.shape)
+    value_shape = tuple(int(dim) for dim in value.shape)
+    if len(key_shape) != 4 or len(value_shape) != 4:
+        raise NotImplementedError(
+            f"cached attention expects key/value as [batch, seq, heads, dim], got {key_shape} and {value_shape}"
+        )
+    if int(key_shape[0]) != 1:
+        raise NotImplementedError("cached attention currently expects batch size 1")
+
+    cache_states: dict[str, tuple[Tensor, Tensor]] = env.setdefault("__internal_kv_cache_states", {})  # type: ignore[assignment]
+    layer_key = str(
+        node.meta.get("attention_layer_index")
+        or node.meta.get("layer_index")
+        or node.id
+    )
+    if layer_key not in cache_states:
+        default_cache_len = max(512, int(key_shape[1]))
+        max_cache_seq_len = int(ir.meta.get("max_cache_seq_len", default_cache_len) or default_cache_len)
+        sink_size = int(ir.meta.get("cache_sink_size", 4) or 4)
+        window_size = int(node.attrs.get("window_size", 0) or 0)
+        k_cache = g.kv_cache_state(
+            max_cache_seq_len,
+            int(key_shape[2]),
+            int(key_shape[3]),
+            window_size=window_size,
+            sink_size=sink_size,
+        )
+        v_cache = g.kv_cache_state(
+            max_cache_seq_len,
+            int(value_shape[2]),
+            int(value_shape[3]),
+            window_size=window_size,
+            sink_size=sink_size,
+        )
+        cache_states[layer_key] = (k_cache, v_cache)
+        cache_entries: list[tuple[str, Tensor, Tensor]] = env.setdefault("__internal_kv_cache_state_entries", [])  # type: ignore[assignment]
+        cache_entries.append((layer_key, k_cache, v_cache))
+
+    k_cache, v_cache = cache_states[layer_key]
+    window_size = int(node.attrs.get("window_size", 0) or 0)
+    sink_size = int(ir.meta.get("cache_sink_size", 4) or 4)
+    g.kv_cache_append(key, k_cache, window_size=window_size, sink_size=sink_size)
+    g.kv_cache_append(value, v_cache, window_size=window_size, sink_size=sink_size)
+    out = g.attention_cached(
+        query,
+        key,
+        value,
+        k_cache,
+        v_cache,
+        scale=_resolve_attention_scale(node, query),
+        position_offset=_DYNAMIC_KV_POSITION_OFFSET,
+        window_size=window_size,
+        v_head_dim=int(value_shape[3]),
+    )
+    if output_layout == "bthd":
+        return [out]
+    return [g.permute(out, (0, 2, 1, 3))]
 
 def _lower_constant_value(
     g: Graph,
@@ -170,8 +256,6 @@ def _lower_constant_value(
         binding = _lookup_weight_binding(value)
     if binding is not None:
         _debug_mmap_binding(value.id, binding)
-        if binding.kind == "embedding":
-            return g.mmap_embeddings(binding.path)
         return g.mmap_weights(binding.path)
 
     _debug_constant_fallback(value, const)
@@ -775,14 +859,36 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
                 raise NotImplementedError("scaled_dot_product_attention with dropout is not supported yet")
 
         # PyTorch SDPA exports tensors as [batch, heads, seq, dim], while Cactus attention
-        # expects [batch, seq, heads, dim]. Convert into Cactus layout, call attention, then
-        # convert back so downstream exported ops still see PyTorch layout.
-        query = g.permute(_attention_tensor(env, node.inputs[0]), (0, 2, 1, 3))
-        key = g.permute(_attention_tensor(env, node.inputs[1]), (0, 2, 1, 3))
-        value = g.permute(_attention_tensor(env, node.inputs[2]), (0, 2, 1, 3))
+        # expects [batch, seq, heads, dim]. The optimizer may strip surrounding layout
+        # permutes and mark the node as already-native to avoid large round-trip copies.
+        qkv_layout = str(node.attrs.get("qkv_layout", "bhsd") or "bhsd").lower()
+        q_layout = str(node.attrs.get("q_layout", qkv_layout) or qkv_layout).lower()
+        k_layout = str(node.attrs.get("k_layout", qkv_layout) or qkv_layout).lower()
+        v_layout = str(node.attrs.get("v_layout", qkv_layout) or qkv_layout).lower()
+        output_layout = str(node.attrs.get("output_layout", "bhsd") or "bhsd").lower()
+        query = _attention_tensor(env, node.inputs[0])
+        key = _attention_tensor(env, node.inputs[1])
+        value = _attention_tensor(env, node.inputs[2])
+        if q_layout != "bthd":
+            query = g.permute(query, (0, 2, 1, 3))
+        if k_layout != "bthd":
+            key = g.permute(key, (0, 2, 1, 3))
+        if v_layout != "bthd":
+            value = g.permute(value, (0, 2, 1, 3))
         if mask_tensor is not None:
             mask_tensor = _ensure_fp16_tensor(g, mask_tensor)
             mask_tensor = _normalize_attention_mask_for_cactus(g, mask_tensor, query)
+        if _should_lower_attention_with_internal_kv_cache(ir, node):
+            return _lower_attention_with_internal_kv_cache(
+                g,
+                ir,
+                env,
+                node,
+                query=query,
+                key=key,
+                value=value,
+                output_layout=output_layout,
+            )
         out = g.attention(
             query,
             key,
@@ -793,18 +899,27 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
             mask=mask_tensor,
             additive_mask=additive_mask,
         )
+        if output_layout == "bthd":
+            return [out]
         return [g.permute(out, (0, 2, 1, 3))]
 
     if op == "attention_block":
         has_mask = bool(node.attrs.get("has_mask", False))
         has_gate = bool(node.attrs.get("has_gate", False))
         has_bias = bool(node.attrs.get("has_bias", False))
+        qkv_layout = str(node.attrs.get("qkv_layout", "bhsd") or "bhsd").lower()
         input_index = 0
-        query = g.permute(_attention_tensor(env, node.inputs[input_index]), (0, 2, 1, 3))
+        query = _attention_tensor(env, node.inputs[input_index])
+        if qkv_layout != "bthd":
+            query = g.permute(query, (0, 2, 1, 3))
         input_index += 1
-        key = g.permute(_attention_tensor(env, node.inputs[input_index]), (0, 2, 1, 3))
+        key = _attention_tensor(env, node.inputs[input_index])
+        if qkv_layout != "bthd":
+            key = g.permute(key, (0, 2, 1, 3))
         input_index += 1
-        value = g.permute(_attention_tensor(env, node.inputs[input_index]), (0, 2, 1, 3))
+        value = _attention_tensor(env, node.inputs[input_index])
+        if qkv_layout != "bthd":
+            value = g.permute(value, (0, 2, 1, 3))
         input_index += 1
         mask_tensor: Tensor | None = None
         if has_mask:
@@ -2222,6 +2337,10 @@ def _lower_compare_op(g: Graph, lhs_value: Any, rhs_value: Any, op: str) -> Tens
             Graph.FP16 if rhs_value.dtype == Graph.FP16 else Graph.FP32,
         )
         return g.scalar_not_equal(rhs_value, float(lhs_value))
+
+    if _is_scalar_like(lhs_value) and _is_scalar_like(rhs_value):
+        result = 1.0 if float(lhs_value) != float(rhs_value) else 0.0
+        return _materialize_constant_tensor(g, torch.tensor([result], dtype=torch.float32))
 
     raise TypeError(
         f"unsupported lowered operand types for {op}: "

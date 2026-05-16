@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 
+from cactus.transpile.aten_ops import canonical_torch_op
 from cactus.transpile.graph_ir import IRGraph
 from cactus.transpile.graph_ir import IRNode
 from cactus.transpile.graph_ir import IRValue
@@ -61,73 +62,6 @@ class ImportContext:
     def pop_node(self) -> None:
         if self.node_stack:
             self.node_stack.pop()
-
-    def _node_module_paths(self, node: Any) -> tuple[str, ...]:
-        meta = getattr(node, "meta", {}) or {}
-        raw_stack = meta.get("nn_module_stack")
-        if not isinstance(raw_stack, dict):
-            return ()
-        paths: list[str] = []
-        for entry in raw_stack.values():
-            if not isinstance(entry, (tuple, list)) or not entry:
-                continue
-            module_path = entry[0]
-            if isinstance(module_path, str) and module_path:
-                paths.append(module_path)
-        # Prefer the deepest module path first.
-        paths.reverse()
-        deduped: list[str] = []
-        for path in paths:
-            if path not in deduped:
-                deduped.append(path)
-        return tuple(deduped)
-
-    def lookup_import_hint(self, node: Any, *, torch_op: str, op_name: str) -> dict[str, object]:
-        hints = self.transpile_metadata.get("import_hints", ())
-        if not isinstance(hints, list):
-            return {}
-
-        module_paths = self._node_module_paths(node)
-        matched_attrs: dict[str, object] = {}
-        matched_meta: dict[str, object] = {}
-        matched_provider: list[str] = []
-
-        for hint in hints:
-            if not isinstance(hint, dict):
-                continue
-            hint_op = hint.get("op")
-            if hint_op is not None and hint_op != op_name:
-                continue
-            hint_torch_op = hint.get("torch_op")
-            if hint_torch_op is not None and hint_torch_op != torch_op:
-                continue
-
-            module_path = hint.get("module_path")
-            if module_path is not None and module_path not in module_paths:
-                continue
-            module_path_suffix = hint.get("module_path_suffix")
-            if module_path_suffix is not None and not any(
-                path == module_path_suffix or path.endswith(f".{module_path_suffix}") for path in module_paths
-            ):
-                continue
-
-            attrs = hint.get("attrs", {})
-            if isinstance(attrs, dict):
-                matched_attrs.update(attrs)
-            meta = hint.get("meta", {})
-            if isinstance(meta, dict):
-                matched_meta.update(meta)
-            provider = hint.get("provider")
-            if isinstance(provider, str) and provider not in matched_provider:
-                matched_provider.append(provider)
-
-        if not matched_attrs and not matched_meta and not matched_provider:
-            return {}
-
-        if matched_provider:
-            matched_meta.setdefault("import_hint_providers", tuple(matched_provider))
-            matched_meta.setdefault("import_hint_source", "capture_metadata")
-        return {"attrs": matched_attrs, "meta": matched_meta}
 
 
 def value_id(node: Any, ctx: ImportContext) -> str:
@@ -295,25 +229,14 @@ def _extract_fx_tensor_shape(value: Any) -> tuple[Any, ...] | None:
 
 
 def _base_meta(shape: tuple[int, ...] | None, dtype: str | None, torch_op: str, node: Any) -> dict[str, object]:
-    meta = {
+    aten_op = canonical_torch_op(torch_op)
+    return {
         "shape": shape,
         "dtype": dtype,
-        "torch_op": torch_op,
+        "torch_op": aten_op,
+        "aten_op": aten_op,
         "torch_name": node.name,
     }
-    raw_meta = getattr(node, "meta", {}) or {}
-    raw_stack = raw_meta.get("nn_module_stack")
-    if isinstance(raw_stack, dict):
-        module_paths: list[str] = []
-        for entry in raw_stack.values():
-            if not isinstance(entry, (tuple, list)) or not entry:
-                continue
-            module_path = entry[0]
-            if isinstance(module_path, str) and module_path and module_path not in module_paths:
-                module_paths.append(module_path)
-        if module_paths:
-            meta["module_paths"] = tuple(module_paths)
-    return meta
 
 
 def _extract_fx_torch_dtype(node: Any) -> torch.dtype | None:
@@ -464,27 +387,11 @@ def import_call_function(
     torch_op: str,
 ) -> None:
     op = normalize_target(torch_op)
-    import_hint = ctx.lookup_import_hint(node, torch_op=torch_op, op_name=op)
     importer = OP_IMPORTERS.get(op)
     if importer is None:
         import_opaque_call_function(ir, node, ctx, shape=shape, dtype=dtype, torch_op=torch_op, op_name=op)
     else:
         importer(ir, node, ctx, shape=shape, dtype=dtype, torch_op=torch_op)
-    _apply_import_hint(ir, node, import_hint)
-
-
-def _apply_import_hint(ir: IRGraph, node: Any, hint: dict[str, object]) -> None:
-    if not hint:
-        return
-    ir_node = ir.nodes.get(node_id(node))
-    if ir_node is None:
-        return
-    attrs = hint.get("attrs", {})
-    if isinstance(attrs, dict):
-        ir_node.attrs.update(attrs)
-    meta = hint.get("meta", {})
-    if isinstance(meta, dict):
-        ir_node.meta.update(meta)
 
 
 def import_opaque_call_function(

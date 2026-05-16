@@ -54,17 +54,13 @@ class FusionConfig:
     enable_dense_mlp_tq_fused: bool = True
 
 
-_DECODER_SELF_ATTN_OUTPUT_WEIGHT_RE = re.compile(r"(?:^|.*\.)layers\.(\d+)\.self_attn\.(?:o_proj|out_proj)\.weight$")
-_CAPTURED_LAYER_SLICE_WEIGHT_RE = re.compile(
-    r"(?:^|.*)backbone_layers_slice_none__\d+__none____modules__(\d+)___self_attn_(?:o_proj|out_proj)_weight$"
-)
-
-
 def optimize_graph(graph: IRGraph, *, max_passes: int = 8, config: FusionConfig | None = None) -> IRGraph:
     config = config or FusionConfig()
     verify_ir(graph)
     canonicalize_exported_graph(graph)
-    enable_gemma4_attention_block_fusions = not _is_gemma4_graph(graph)
+    enable_attention_block_fusions = not (
+        _is_gemma4_graph(graph) or _is_whisper_seq2seq_decoder_graph(graph)
+    )
 
     for _ in range(max_passes):
         changed = False
@@ -83,21 +79,23 @@ def optimize_graph(graph: IRGraph, *, max_passes: int = 8, config: FusionConfig 
             changed = True
         if config.enable_attention and fuse_attention(graph):
             changed = True
+        if normalize_attention_layouts(graph):
+            changed = True
         if (
-            enable_gemma4_attention_block_fusions
+            enable_attention_block_fusions
             and config.enable_self_attention_block
             and fuse_self_attention_blocks(graph)
         ):
             changed = True
         if (
-            enable_gemma4_attention_block_fusions
+            enable_attention_block_fusions
             and config.enable_attention_block
             and fuse_attention_blocks(graph)
         ):
             changed = True
         if normalize_gemma4_decoder_attention_semantics(graph):
             changed = True
-        if config.enable_dense_mlp_tq_fused and fuse_gemma4_dense_mlps(graph):
+        if config.enable_dense_mlp_tq_fused and fuse_dense_mlp_tq(graph):
             changed = True
         if config.enable_conv_module and fuse_conv_modules(graph):
             changed = True
@@ -455,7 +453,17 @@ def fuse_attention_blocks(graph: IRGraph) -> bool:
         if match is None:
             continue
 
-        inputs = [match.query_value_id, match.key_value_id, match.value_value_id]
+        qkv_inputs = [match.query_value_id, match.key_value_id, match.value_value_id]
+        qkv_layout = "bhsd"
+        native_qkv_inputs = [
+            _strip_bhsd_to_bthd_permute_input(graph, value_id)
+            for value_id in qkv_inputs
+        ]
+        if all(value_id is not None for value_id in native_qkv_inputs):
+            qkv_inputs = [str(value_id) for value_id in native_qkv_inputs]
+            qkv_layout = "bthd"
+
+        inputs = qkv_inputs
         if match.mask_value_id is not None:
             inputs.append(match.mask_value_id)
         if match.gate_value_id is not None:
@@ -475,14 +483,94 @@ def fuse_attention_blocks(graph: IRGraph) -> bool:
             "has_gate": bool(match.gate_value_id is not None),
             "has_bias": bool(match.output_projection_bias_value_id is not None),
             "attention_output_shape": tuple(int(dim) for dim in match.attention_output_shape),
+            "qkv_layout": qkv_layout,
         }
         node.kind = "semantic"
         node.meta["attention_block_source"] = match.attention_node_id
-        _apply_decoder_attention_layer_hints(
-            graph,
-            node,
-            output_projection_weight_value_id=match.output_projection_weight_value_id,
-        )
+        changed = True
+
+    if changed:
+        rebuild_graph(graph)
+    return changed
+
+
+def _strip_bhsd_to_bthd_permute_input(graph: IRGraph, value_id: str) -> str | None:
+    value = graph.values.get(value_id)
+    if value is None or value.producer is None:
+        return None
+    node = graph.nodes.get(value.producer)
+    if node is None or node.op != "permute" or len(node.inputs) != 1:
+        return None
+    permutation = tuple(int(dim) for dim in node.attrs.get("permutation", ()))
+    if permutation != (0, 2, 1, 3):
+        return None
+    source_id = strip_passthrough(graph, node.inputs[0])
+    source_value = graph.values.get(source_id)
+    if source_value is None or source_value.shape is None or value.shape is None:
+        return None
+    source_shape = tuple(int(dim) for dim in source_value.shape)
+    output_shape = tuple(int(dim) for dim in value.shape)
+    if len(source_shape) != 4 or len(output_shape) != 4:
+        return None
+    if (
+        output_shape[0] == source_shape[0]
+        and output_shape[1] == source_shape[2]
+        and output_shape[2] == source_shape[1]
+        and output_shape[3] == source_shape[3]
+    ):
+        return source_id
+    return None
+
+
+def normalize_attention_layouts(graph: IRGraph) -> bool:
+    """Erase PyTorch BHSD<->BTHD layout round-trips around attention ops."""
+
+    changed = False
+    for node_id in list(graph.order):
+        node = graph.nodes.get(node_id)
+        if node is None or node.op not in {"attention", "scaled_dot_product_attention"}:
+            continue
+        if len(node.inputs) < 3 or len(node.outputs) != 1:
+            continue
+
+        node_changed = False
+        layouts = ["bhsd", "bhsd", "bhsd"]
+        for index, value_id in enumerate(node.inputs[:3]):
+            native_value_id = _strip_bhsd_to_bthd_permute_input(graph, value_id)
+            if native_value_id is None:
+                continue
+            node.inputs[index] = str(native_value_id)
+            layouts[index] = "bthd"
+            node_changed = True
+        if node_changed:
+            node.attrs["q_layout"] = layouts[0]
+            node.attrs["k_layout"] = layouts[1]
+            node.attrs["v_layout"] = layouts[2]
+            changed = True
+
+        output_id = node.outputs[0]
+        output_value = graph.values.get(output_id)
+        output_users = list(output_value.users) if output_value is not None else []
+        if len(output_users) != 1:
+            continue
+        output_user = graph.nodes.get(output_users[0])
+        if output_user is None or output_user.op != "permute" or len(output_user.inputs) != 1 or len(output_user.outputs) != 1:
+            continue
+        permutation = tuple(int(dim) for dim in output_user.attrs.get("permutation", ()))
+        if permutation != (0, 2, 1, 3):
+            continue
+
+        replacement_id = output_user.outputs[0]
+        replacement_value = graph.values.get(replacement_id)
+        if replacement_value is not None:
+            old_value = graph.values.get(output_id)
+            if old_value is not None:
+                old_value.shape = replacement_value.shape
+                old_value.dtype = replacement_value.dtype
+                old_value.meta.update(replacement_value.meta)
+        node.outputs = [replacement_id]
+        node.attrs["output_layout"] = "bthd"
+        remove_node(graph, output_user.id)
         changed = True
 
     if changed:
@@ -733,11 +821,6 @@ def fuse_self_attention_blocks(graph: IRGraph) -> bool:
         }
         node.kind = "semantic"
         node.meta["self_attention_block_source"] = match.attention_node_id
-        _apply_decoder_attention_layer_hints(
-            graph,
-            node,
-            output_projection_weight_value_id=match.output_projection_weight_value_id,
-        )
         changed = True
 
     if changed:
@@ -766,17 +849,14 @@ def fuse_add_clipped(graph: IRGraph) -> bool:
     return changed
 
 
-def fuse_gemma4_dense_mlps(graph: IRGraph) -> bool:
-    if not _is_gemma4_graph(graph):
-        return False
-
+def fuse_dense_mlp_tq(graph: IRGraph) -> bool:
     changed = False
     for node_id in list(graph.order):
         node = graph.nodes.get(node_id)
         if node is None:
             continue
 
-        match = _match_gemma4_dense_mlp(graph, node)
+        match = _match_dense_mlp_tq(graph, node)
         if match is None:
             continue
 
@@ -793,8 +873,8 @@ def fuse_gemma4_dense_mlps(graph: IRGraph) -> bool:
         ]
         node.attrs = {"product_scale": float(match.get("product_scale") or 1.0)}
         node.kind = "semantic"
-        node.meta["gemma4_dense_mlp_fused"] = True
-        node.meta["gemma4_dense_mlp_nodes"] = tuple(sorted(matched_node_ids))
+        node.meta["dense_mlp_tq_fused"] = True
+        node.meta["dense_mlp_tq_nodes"] = tuple(sorted(matched_node_ids))
         if match.get("product_scale") is not None:
             node.meta["product_scale_from_export"] = float(match["product_scale"])
 
@@ -809,11 +889,11 @@ def fuse_gemma4_dense_mlps(graph: IRGraph) -> bool:
     return changed
 
 
-def _match_gemma4_dense_mlp(graph: IRGraph, node: IRNode) -> dict[str, object] | None:
+def _match_dense_mlp_tq(graph: IRGraph, node: IRNode) -> dict[str, object] | None:
     down = match_linear(graph, node)
     if down is None or down.bias_value_id is not None:
         return None
-    if not _is_gemma4_dense_mlp_weight(graph, down.weight_value_id, "down"):
+    if not _is_cq_weight_value(graph, down.weight_value_id):
         return None
 
     mul_node = producer(graph, down.input_value_id)
@@ -838,16 +918,11 @@ def _match_gemma4_dense_mlp(graph: IRGraph, node: IRNode) -> dict[str, object] |
             continue
         if strip_passthrough(graph, gate.input_value_id) != strip_passthrough(graph, up.input_value_id):
             continue
-        if not _is_gemma4_dense_mlp_weight(graph, gate.weight_value_id, "gate"):
+        if not _is_cq_weight_value(graph, gate.weight_value_id):
             continue
-        if not _is_gemma4_dense_mlp_weight(graph, up.weight_value_id, "up"):
+        if not _is_cq_weight_value(graph, up.weight_value_id):
             continue
-        layer_idx = _gemma4_mlp_layer_index(graph, gate.weight_value_id)
-        if layer_idx is None:
-            continue
-        if layer_idx != _gemma4_mlp_layer_index(graph, up.weight_value_id):
-            continue
-        if layer_idx != _gemma4_mlp_layer_index(graph, down.weight_value_id):
+        if not _dense_mlp_weight_shapes_match(graph, gate.weight_value_id, up.weight_value_id, down.weight_value_id):
             continue
 
         node_ids = {
@@ -883,26 +958,36 @@ def _unwrap_gemma4_scaled_activation(graph: IRGraph, value_id: str) -> tuple[IRN
     return node, None, None
 
 
-def _is_gemma4_dense_mlp_weight(graph: IRGraph, value_id: str, role: str) -> bool:
+def _is_cq_weight_value(graph: IRGraph, value_id: str) -> bool:
     value = graph.values.get(value_id)
     if value is None:
         return False
-    source_name = str(value.meta.get("source_name") or value_id)
+    path = value.meta.get("path") if isinstance(value.meta, dict) else None
+    if isinstance(path, str) and ".cq" in path:
+        return True
+    return False
+
+
+def _dense_mlp_weight_shapes_match(
+    graph: IRGraph,
+    gate_weight_value_id: str,
+    up_weight_value_id: str,
+    down_weight_value_id: str,
+) -> bool:
+    gate = graph.values.get(gate_weight_value_id)
+    up = graph.values.get(up_weight_value_id)
+    down = graph.values.get(down_weight_value_id)
+    if gate is None or up is None or down is None:
+        return False
+    if gate.shape is None or up.shape is None or down.shape is None:
+        return False
+    if len(gate.shape) != 2 or len(up.shape) != 2 or len(down.shape) != 2:
+        return False
     return (
-        "language_model.layers." in source_name
-        and f"mlp.{role}_proj.weight" in source_name
+        int(gate.shape[0]) == int(up.shape[0])
+        and int(gate.shape[1]) == int(up.shape[1])
+        and int(down.shape[1]) == int(gate.shape[0])
     )
-
-
-def _gemma4_mlp_layer_index(graph: IRGraph, value_id: str) -> int | None:
-    value = graph.values.get(value_id)
-    if value is None:
-        return None
-    source_name = str(value.meta.get("source_name") or value_id)
-    match = re.search(r"language_model\.layers\.(\d+)\.mlp\.", source_name)
-    if match is None:
-        return None
-    return int(match.group(1))
 
 
 def _matched_nodes_are_private(graph: IRGraph, matched_node_ids: set[str], *, keep_node_id: str) -> bool:
@@ -1073,6 +1158,13 @@ def _materialize_ones_constant(graph: IRGraph, size: int, *, dtype: str | None, 
 
 def _is_gemma4_graph(graph: IRGraph) -> bool:
     return str(graph.meta.get("adapter_family") or graph.meta.get("family") or "").lower() == "gemma4"
+
+
+def _is_whisper_seq2seq_decoder_graph(graph: IRGraph) -> bool:
+    family = str(graph.meta.get("adapter_family") or graph.meta.get("family") or "").lower()
+    task = str(graph.meta.get("task") or "").lower()
+    component = str(graph.meta.get("component") or "").lower()
+    return family == "whisper" and task == "seq2seq_transcription" and component == "decoder"
 
 
 def _prune_unused_inputs(graph: IRGraph) -> bool:
@@ -1324,69 +1416,6 @@ def _extract_sliding_window_mask(graph: IRGraph, value_id: str) -> dict[str, obj
         "window_size": max((candidate for candidate in window_candidates if candidate > 1), default=0),
         "node_ids": tuple(sorted(node_ids)),
     }
-
-
-def _apply_decoder_attention_layer_hints(
-    graph: IRGraph,
-    node: IRNode,
-    *,
-    output_projection_weight_value_id: str,
-) -> None:
-    layer_config = _decoder_attention_layer_config(
-        graph,
-        output_projection_weight_value_id=output_projection_weight_value_id,
-    )
-    if layer_config is None:
-        return
-
-    layer_index, layer_type, sliding_window = layer_config
-    node.meta.setdefault("attention_layer_index", layer_index)
-    node.meta.setdefault("attention_layer_type", layer_type)
-    node.meta.setdefault("attention_layer_source", "weight_source_name")
-
-    if (
-        layer_type == "sliding_attention"
-        and int(node.attrs.get("window_size", 0)) == 0
-        and sliding_window is not None
-        and sliding_window > 0
-    ):
-        node.attrs["window_size"] = int(sliding_window)
-        node.meta.setdefault("window_size_source", "layer_type_config")
-
-
-def _decoder_attention_layer_config(
-    graph: IRGraph,
-    *,
-    output_projection_weight_value_id: str,
-) -> tuple[int, str, int | None] | None:
-    layer_types = _graph_layer_types(graph)
-    if not layer_types:
-        return None
-
-    layer_index = _decoder_attention_layer_index(graph, output_projection_weight_value_id)
-    if layer_index is None or layer_index < 0 or layer_index >= len(layer_types):
-        return None
-
-    sliding_window = _graph_sliding_window(graph)
-    return (layer_index, layer_types[layer_index], sliding_window)
-
-
-def _decoder_attention_layer_index(graph: IRGraph, output_projection_weight_value_id: str) -> int | None:
-    weight_value = graph.values.get(output_projection_weight_value_id)
-    candidates: list[str] = [output_projection_weight_value_id]
-    if weight_value is not None and isinstance(weight_value.meta, dict):
-        source_name = weight_value.meta.get("source_name")
-        if isinstance(source_name, str) and source_name:
-            candidates.insert(0, source_name)
-
-    for candidate in candidates:
-        match = _DECODER_SELF_ATTN_OUTPUT_WEIGHT_RE.match(candidate)
-        if match is not None:
-            return int(match.group(1))
-        match = _CAPTURED_LAYER_SLICE_WEIGHT_RE.match(candidate)
-        if match is not None:
-            return int(match.group(1))
-    return None
 
 
 def _graph_layer_types(graph: IRGraph) -> tuple[str, ...]:

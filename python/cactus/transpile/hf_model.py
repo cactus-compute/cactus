@@ -59,6 +59,9 @@ from cactus.transpile.weight_compat import ensure_binding_compatible
 
 _TORCHVISION_COMPAT_LIBRARIES: list[object] = []
 _DEFAULT_CAUSAL_PROMPT = "The capital of France is"
+_CACTUS_FLAG_EXTENDED_SHAPE = 1 << 4
+_CACTUS_BASE_HEADER_SIZE = 84
+_CACTUS_EXTENDED_SHAPE_DIMS = 8
 
 
 @dataclass
@@ -164,17 +167,14 @@ def _validate_weights_dir(weights_dir: str | None, *, model_id: str) -> Path | N
 
     manifest_path = root / "weights_manifest.json"
     if not manifest_path.exists():
-        has_weight_files = any(root.glob("*.weights"))
-        if not has_weight_files:
-            raise RuntimeError(
-                f"weights_dir is missing weights_manifest.json: {manifest_path}\n"
-                "\n"
-                f"Re-convert with the current converter:\n"
-                f"  cactus convert {model_id} {root}\n"
-            )
-        print(
-            "note=weights_manifest_missing using filename-based weight binding fallback "
-            f"for {root}"
+        raise RuntimeError(
+            f"weights_dir is missing weights_manifest.json: {manifest_path}\n"
+            "\n"
+            "The transpiler binds weights only through the converted CQ/Cactus "
+            "manifest; it no longer guesses filenames from model-specific layer names.\n"
+            "\n"
+            f"Re-convert with the current converter:\n"
+            f"  cactus convert {model_id} {root}\n"
         )
 
     return root
@@ -307,15 +307,19 @@ def _write_cactus_constant_tensor(
     dtype = _constant_precision_to_numpy_dtype(int(precision))
     array = np.ascontiguousarray(array.astype(dtype, copy=False))
     shape = list(array.shape)
-    if len(shape) > 4:
-        raise ValueError(f"Cactus tensor files support at most rank 4 constants, got shape={shape}")
+    if len(shape) > _CACTUS_EXTENDED_SHAPE_DIMS:
+        raise ValueError(
+            f"Cactus tensor files support at most rank {_CACTUS_EXTENDED_SHAPE_DIMS} constants, got shape={shape}"
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("wb") as handle:
         data = array.reshape(-1)
         data_bytes = int(data.nbytes)
+        flags = _CACTUS_FLAG_EXTENDED_SHAPE if len(shape) > 4 else 0
+        header_size = _CACTUS_BASE_HEADER_SIZE + (32 if flags else 0)
         handle.write(CACTUS_MAGIC)
-        handle.write(struct.pack("<I", 0))  # flags
+        handle.write(struct.pack("<I", flags))
         handle.write(struct.pack("<I", CACTUS_ALIGNMENT))
         handle.write(struct.pack("<I", len(shape)))
         for index in range(4):
@@ -326,7 +330,10 @@ def _write_cactus_constant_tensor(
         handle.write(struct.pack("<I", 0))  # group_size
         handle.write(struct.pack("<I", 0))  # num_groups
         handle.write(struct.pack("<Q", int(shape[0]) if shape else 0))
-        handle.write(compute_padding(84, CACTUS_ALIGNMENT))
+        if flags:
+            for index in range(4, _CACTUS_EXTENDED_SHAPE_DIMS):
+                handle.write(struct.pack("<Q", int(shape[index]) if index < len(shape) else 0))
+        handle.write(compute_padding(header_size, CACTUS_ALIGNMENT))
         handle.write(data.tobytes())
 
 
@@ -389,7 +396,10 @@ def _write_component_bundle(
             "audio_encoder",
             "vision_encoder",
             "lm_encoder",
+            "decoder_prefill_chunk",
             "decoder",
+            "lm_encoder_step",
+            "decoder_step",
             "unspecified",
         )
         if component in raw_component_graphs or component in optimized_component_graphs
@@ -529,6 +539,14 @@ def _write_component_bundle(
                 "weight_binding_count": _count_weight_bindings(graph_for_signature),
                 "runtime_input_node_ids": [] if transpiled_graph is None else [int(tensor.id) for tensor in transpiled_graph.runtime_inputs],
                 "output_node_ids": [] if transpiled_graph is None else [int(tensor.id) for tensor in transpiled_graph.outputs],
+                "cache_state_node_ids": [] if transpiled_graph is None else [
+                    {
+                        "layer_key": str(layer_key),
+                        "key": int(key_tensor.id),
+                        "value": int(value_tensor.id),
+                    }
+                    for layer_key, key_tensor, value_tensor in getattr(transpiled_graph, "cache_state_tensors", [])
+                ],
                 "bound_constant_bindings": [] if transpiled_graph is None else (
                     list(_serialize_json_compatible(transpiled_graph.bound_constant_bindings))
                     + materialized_constant_bindings
@@ -1917,6 +1935,61 @@ def _prepare_text_inputs(
     )
 
 
+def _add_multimodal_generation_headroom(
+    prepared: PreparedInputs,
+    *,
+    tokenizer: object | None,
+    max_new_tokens: int,
+) -> PreparedInputs:
+    requested = max(0, int(max_new_tokens))
+    if requested <= 0 or "input_ids" not in prepared.names:
+        return prepared
+
+    tensor_by_name = dict(zip(prepared.names, prepared.tensors, strict=True))
+    input_ids = tensor_by_name.get("input_ids")
+    if not isinstance(input_ids, torch.Tensor) or input_ids.ndim != 2:
+        return prepared
+
+    prompt_token_count = int(input_ids.shape[1])
+    target_token_count = prompt_token_count + requested
+    padding_token_id = _resolve_graph_safe_text_padding_token_id(tokenizer, input_ids)
+
+    padded_tensors: list[torch.Tensor] = []
+    for name, tensor in zip(prepared.names, prepared.tensors, strict=True):
+        if (
+            name not in {"input_ids", "attention_mask", "token_type_ids"}
+            or tensor.ndim != 2
+            or int(tensor.shape[0]) != 1
+            or int(tensor.shape[1]) != prompt_token_count
+        ):
+            padded_tensors.append(tensor)
+            continue
+        pad_value = int(padding_token_id) if name == "input_ids" else 0
+        padded = torch.full(
+            (1, target_token_count),
+            pad_value,
+            dtype=tensor.dtype,
+            device=tensor.device,
+        )
+        padded[:, :prompt_token_count] = tensor
+        padded_tensors.append(padded)
+
+    metadata = dict(prepared.metadata)
+    metadata["prompt_token_count"] = prompt_token_count
+    metadata["target_token_count"] = target_token_count
+    metadata["max_new_tokens"] = requested
+    metadata["padding_token_id"] = int(padding_token_id)
+    input_shapes = dict(metadata.get("input_shapes") or {})
+    for name, tensor in zip(prepared.names, padded_tensors, strict=True):
+        input_shapes[name] = [int(dim) for dim in tensor.shape]
+    metadata["input_shapes"] = input_shapes
+    return PreparedInputs(
+        names=prepared.names,
+        tensors=tuple(padded_tensors),
+        metadata=metadata,
+    )
+
+
 _GEMMA4_MULTIMODAL_INPUT_ORDER = (
     "input_ids",
     "attention_mask",
@@ -2965,6 +3038,11 @@ def main() -> int:
                 enable_thinking_if_supported=args.enable_thinking,
                 use_gemma4_chat_template=True,
             )
+        prepared = _add_multimodal_generation_headroom(
+            prepared,
+            tokenizer=getattr(processor_or_tokenizer, "tokenizer", processor_or_tokenizer),
+            max_new_tokens=int(args.max_new_tokens),
+        )
         canonical = canonicalize_model_interface(
             model,
             task=task,

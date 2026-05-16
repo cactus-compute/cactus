@@ -28,6 +28,7 @@ from cactus.convert.quantization.cq import write_cq_tensor
 
 
 _HEADER_SIZE = 84
+_FLAG_EXTENDED_SHAPE = 1 << 4
 _INT8 = int(Graph.INT8)
 _INT4 = int(Graph.INT4)
 
@@ -218,14 +219,23 @@ def _open_cactus_tensor_file(path: str | Path) -> _OpenedTensor:
     flags = struct.unpack_from("<I", header, 4)[0]
     alignment = max(1, int(struct.unpack_from("<I", header, 8)[0]))
     ndim = int(struct.unpack_from("<I", header, 12)[0])
-    dims = struct.unpack_from("<QQQQ", header, 16)
-    shape = tuple(int(dim) for dim in dims[:ndim] if int(dim) > 0)
+    dims = list(struct.unpack_from("<QQQQ", header, 16))
     precision = int(struct.unpack_from("<I", header, 48)[0])
     byte_size = int(struct.unpack_from("<Q", header, 52)[0])
     scales_bytes = int(struct.unpack_from("<Q", header, 60)[0])
     group_size = int(struct.unpack_from("<I", header, 68)[0])
     num_groups = int(struct.unpack_from("<I", header, 72)[0])
     original_n = int(struct.unpack_from("<Q", header, 76)[0])
+    header_size = _HEADER_SIZE
+    if flags & _FLAG_EXTENDED_SHAPE:
+        with tensor_path.open("rb") as handle:
+            handle.seek(_HEADER_SIZE)
+            extended = handle.read(32)
+        if len(extended) < 32:
+            raise RuntimeError(f"tensor file is too small for extended Cactus shape header: {tensor_path}")
+        dims.extend(struct.unpack("<QQQQ", extended))
+        header_size += 32
+    shape = tuple(int(dim) for dim in dims[:ndim] if int(dim) > 0)
 
     dtype_map = {
         int(Graph.INT8): np.int8,
@@ -241,7 +251,7 @@ def _open_cactus_tensor_file(path: str | Path) -> _OpenedTensor:
     if dtype is None:
         raise RuntimeError(f"unsupported tensor precision {precision} in {tensor_path}")
 
-    aligned_header = align_offset(_HEADER_SIZE, alignment)
+    aligned_header = align_offset(header_size, alignment)
     scales_offset = aligned_header if scales_bytes > 0 else 0
     data_offset = align_offset(scales_offset + scales_bytes, alignment) if scales_bytes > 0 else aligned_header
 

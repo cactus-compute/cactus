@@ -25,6 +25,7 @@ from cactus.transpile.canonicalize.cleanup import canonicalize_exported_graph
 from cactus.transpile.gemma4_runtime import ensure_transformers_supports_gemma4
 from cactus.transpile.gemma4_runtime import patch_torch_flex_attention_compat
 from cactus.transpile.gemma4_runtime import patch_transformers_torchvision_probe
+from cactus.transpile.gemma4_runtime import PreparedInputs
 from cactus.transpile.gemma4_runtime import prepare_gemma4_multimodal_inputs
 from cactus.transpile.graph_ir import IRGraph
 from cactus.transpile.graph_ir import IRNode
@@ -41,6 +42,7 @@ from cactus.transpile.runtime_compat import Tensor
 
 
 _HEADER_SIZE = 84
+_FLAG_EXTENDED_SHAPE = 1 << 4
 _PRECISION_TO_DTYPE = {
     Graph.INT8: np.int8,
     Graph.FP16: np.float16,
@@ -51,6 +53,7 @@ _PRECISION_TO_DTYPE = {
     getattr(Graph, "CQ4", 6): np.uint8,
 }
 
+_STATEFUL_DECODE_COMPONENTS = frozenset({"decoder_prefill_chunk", "decoder_step"})
 _COMPONENT_GRAPH_CACHE: dict[tuple[str, str | None, str], tuple[dict[str, "LoadedComponentGraph"], dict[str, object]]] = {}
 _MULTIMODAL_ENCODER_FEATURE_CACHE: dict[tuple[str, str, tuple[str, ...], str | None], dict[str, np.ndarray]] = {}
 
@@ -81,6 +84,7 @@ class LoadedComponentGraph:
     outputs: list[Tensor]
     bound_constant_bindings: list[dict[str, object]]
     bound_tensor_files: list[object]
+    cache_state_tensors: list[tuple[str, Tensor, Tensor]] = field(default_factory=list)
     external_input_refs: dict[int, np.ndarray] = field(default_factory=dict)
 
     def set_input(self, index: int, data: Any, *, dtype: int | None = None) -> None:
@@ -139,6 +143,23 @@ def load_component_bundle_manifest(bundle_dir_or_manifest: str | Path) -> tuple[
     return bundle_root, manifest
 
 
+def _component_cache_state_tensors(
+    graph: Graph,
+    component_entry: Mapping[str, object],
+) -> list[tuple[str, Tensor, Tensor]]:
+    result: list[tuple[str, Tensor, Tensor]] = []
+    for entry in component_entry.get("cache_state_node_ids", []) or []:
+        if not isinstance(entry, Mapping):
+            continue
+        layer_key = str(entry.get("layer_key", ""))
+        key_id = entry.get("key")
+        value_id = entry.get("value")
+        if not isinstance(key_id, int) or not isinstance(value_id, int):
+            continue
+        result.append((layer_key, graph._tensor_from_node(int(key_id)), graph._tensor_from_node(int(value_id))))
+    return result
+
+
 def load_saved_component_graph(
     *,
     bundle_root: str | Path,
@@ -176,6 +197,7 @@ def load_saved_component_graph(
                 outputs=outputs,
                 bound_constant_bindings=bound_constant_bindings,
                 bound_tensor_files=bound_tensor_files,
+                cache_state_tensors=_component_cache_state_tensors(graph, component_entry),
             )
         except Exception as exc:
             if not (
@@ -228,6 +250,7 @@ def load_saved_component_graph(
         outputs=outputs,
         bound_constant_bindings=bound_constant_bindings,
         bound_tensor_files=bound_tensor_files,
+        cache_state_tensors=_component_cache_state_tensors(graph, component_entry),
     )
 
 
@@ -261,7 +284,7 @@ def _load_component_graph_from_ir(
     else:
         family = str(ir_graph.meta.get("adapter_family") or ir_graph.meta.get("family") or "").strip().lower()
         component = str(ir_graph.meta.get("component", "") or component_entry.get("component", "") or "").strip().lower()
-        if family == "gemma4" and component == "decoder":
+        if family == "gemma4" and component in {"decoder", "decoder_step"}:
             optimize_graph(ir_graph)
     transpiled = transpile_preoptimized_ir(ir_graph)
     return LoadedComponentGraph(
@@ -271,6 +294,7 @@ def _load_component_graph_from_ir(
         outputs=list(transpiled.outputs),
         bound_constant_bindings=list(component_entry.get("bound_constant_bindings") or []),
         bound_tensor_files=[],
+        cache_state_tensors=list(getattr(transpiled, "cache_state_tensors", [])),
     )
 
 
@@ -278,17 +302,52 @@ def load_saved_component_graphs(
     bundle_dir_or_manifest: str | Path,
     *,
     weights_dir: str | Path | None = None,
+    include_components: set[str] | frozenset[str] | tuple[str, ...] | list[str] | None = None,
 ) -> tuple[dict[str, LoadedComponentGraph], dict[str, object]]:
     bundle_root, manifest = load_component_bundle_manifest(bundle_dir_or_manifest)
+    include_component_names = (
+        frozenset(str(name) for name in include_components)
+        if include_components is not None
+        else None
+    )
     cache_key = (
         str(bundle_root),
         None if weights_dir is None else str(Path(weights_dir).expanduser().resolve()),
         os.environ.get("CACTUS_TRANSPILER_PREFER_SAVED_GRAPH", ""),
+        None if include_component_names is None else tuple(sorted(include_component_names)),
     )
-    if os.environ.get("CACTUS_TRANSPILER_DISABLE_GRAPH_CACHE") != "1":
+    has_stateful_decode_graph = any(
+        isinstance(component_entry, dict)
+        and str(component_entry.get("component", "")).strip() in _STATEFUL_DECODE_COMPONENTS
+        and (
+            include_component_names is None
+            or str(component_entry.get("component", "")).strip() in include_component_names
+        )
+        for component_entry in manifest.get("components", [])
+    )
+    cache_components = os.environ.get("CACTUS_TRANSPILER_DISABLE_GRAPH_CACHE") != "1"
+    if cache_components:
         cached = _COMPONENT_GRAPH_CACHE.get(cache_key)
         if cached is not None:
-            return cached
+            if not has_stateful_decode_graph:
+                _attach_component_io_names(manifest, cached[0])
+                return cached
+            loaded = dict(cached[0])
+            for component_entry in manifest.get("components", []):
+                if not isinstance(component_entry, dict):
+                    continue
+                component_name = str(component_entry.get("component", "")).strip()
+                if component_name not in _STATEFUL_DECODE_COMPONENTS:
+                    continue
+                if include_component_names is not None and component_name not in include_component_names:
+                    continue
+                loaded[component_name] = load_saved_component_graph(
+                    bundle_root=bundle_root,
+                    component_entry=component_entry,
+                    weights_dir=weights_dir,
+                )
+            _attach_component_io_names(manifest, loaded)
+            return loaded, manifest
 
     loaded: dict[str, LoadedComponentGraph] = {}
     for component_entry in manifest.get("components", []):
@@ -297,14 +356,23 @@ def load_saved_component_graphs(
         component_name = str(component_entry.get("component", "")).strip()
         if not component_name:
             continue
+        if include_component_names is not None and component_name not in include_component_names:
+            continue
         loaded[component_name] = load_saved_component_graph(
             bundle_root=bundle_root,
             component_entry=component_entry,
             weights_dir=weights_dir,
         )
+    _attach_component_io_names(manifest, loaded)
     result = (loaded, manifest)
-    if os.environ.get("CACTUS_TRANSPILER_DISABLE_GRAPH_CACHE") != "1":
-        _COMPONENT_GRAPH_CACHE[cache_key] = result
+    if cache_components:
+        if has_stateful_decode_graph:
+            _COMPONENT_GRAPH_CACHE[cache_key] = (
+                {name: graph for name, graph in loaded.items() if name not in _STATEFUL_DECODE_COMPONENTS},
+                manifest,
+            )
+        else:
+            _COMPONENT_GRAPH_CACHE[cache_key] = result
     return result
 
 
@@ -326,59 +394,16 @@ def run_transpiled_bundle(
     resolved_weights_dir = _default_weights_dir_for_manifest(manifest, explicit=weights_dir)
     family = str(manifest.get("family", "") or "")
     task = str(manifest.get("task", "") or "")
-    native_weights_dir = _resolve_native_stateful_weights_dir(
-        bundle_root=bundle_root,
-        manifest=manifest,
-        weights_dir=resolved_weights_dir,
-    )
-    if (
-        task == "causal_lm_logits"
-        and input_ids is None
-        and native_weights_dir is not None
-        and _should_use_native_stateful_causal_runner(family=family, task=task, manifest=manifest)
-    ):
-        return _run_native_stateful_causal_lm_bundle(
-            bundle_root=bundle_root,
-            manifest=manifest,
-            prompt=prompt,
-            weights_dir=native_weights_dir,
-            enable_thinking=enable_thinking,
-            max_new_tokens=max_new_tokens,
-            stop_sequences=stop_sequences,
-        )
-    if (
-        audio_file is not None
-        and native_weights_dir is not None
-        and _should_use_native_stateful_audio_runner(family=family, task=task, manifest=manifest)
-    ):
-        return _run_native_stateful_audio_bundle(
-            bundle_root=bundle_root,
-            manifest=manifest,
-            audio_file=audio_file,
-            prompt=prompt,
-            weights_dir=native_weights_dir,
-            max_new_tokens=max_new_tokens,
-        )
-    if (
-        native_weights_dir is not None
-        and _should_use_native_stateful_multimodal_runner(family=family, task=task, manifest=manifest)
-    ):
-        return _run_native_stateful_multimodal_bundle(
-            bundle_root=bundle_root,
-            manifest=manifest,
-            prompt=prompt,
-            image_files=image_files,
-            audio_file=audio_file,
-            weights_dir=native_weights_dir,
-            system_prompt=system_prompt,
-            enable_thinking=enable_thinking,
-            max_new_tokens=max_new_tokens,
-            stop_sequences=stop_sequences,
-        )
 
+    include_components = runtime_include_components_for_manifest(
+        family=family,
+        task=task,
+        manifest=manifest,
+    )
     component_graphs, manifest = load_saved_component_graphs(
         bundle_dir_or_manifest,
         weights_dir=resolved_weights_dir,
+        include_components=include_components,
     )
     if family == "parakeet_tdt" and task == "tdt_transcription":
         if audio_file is None:
@@ -399,6 +424,8 @@ def run_transpiled_bundle(
             torch_dtype=torch_dtype,
             system_prompt=system_prompt,
             enable_thinking=enable_thinking,
+            max_new_tokens=max_new_tokens,
+            stop_sequences=stop_sequences,
         )
     if task == "causal_lm_logits":
         return _run_causal_lm_logits_bundle(
@@ -448,6 +475,31 @@ def run_transpiled_bundle(
     )
 
 
+def runtime_include_components_for_manifest(
+    *,
+    family: str,
+    task: str,
+    manifest: Mapping[str, object],
+) -> set[str] | None:
+    manifest_components = {
+        str(component_entry.get("component", "")).strip()
+        for component_entry in manifest.get("components", [])
+        if isinstance(component_entry, dict)
+    }
+    if (
+        family == "gemma4"
+        and task == "multimodal_causal_lm_logits"
+        and {"lm_encoder_step", "decoder_step"}.issubset(manifest_components)
+        and os.environ.get("CACTUS_TRANSPILER_DISABLE_CACHED_STEP_DECODE") != "1"
+    ):
+        # Older Gemma bundles may include a full static decoder. Cached decode
+        # should not pay to load it when step graphs are available.
+        include_components = set(manifest_components)
+        include_components.discard("decoder")
+        return include_components
+    return None
+
+
 def _default_weights_dir_for_manifest(
     manifest: Mapping[str, object],
     *,
@@ -465,480 +517,6 @@ def _default_weights_dir_for_manifest(
     except Exception:
         return None
     return candidate if candidate.exists() else None
-
-
-def _should_use_native_stateful_causal_runner(
-    *,
-    family: str,
-    task: str,
-    manifest: Mapping[str, object],
-) -> bool:
-    if os.environ.get("CACTUS_TRANSPILER_DISABLE_NATIVE_STATEFUL_RUNNER") == "1":
-        return False
-    if os.environ.get("CACTUS_TRANSPILER_ENABLE_NATIVE_STATEFUL_RUNNER") != "1":
-        return False
-    return task.strip().lower() == "causal_lm_logits"
-
-
-def _should_use_native_stateful_audio_runner(
-    *,
-    family: str,
-    task: str,
-    manifest: Mapping[str, object],
-) -> bool:
-    if os.environ.get("CACTUS_TRANSPILER_DISABLE_NATIVE_AUDIO_RUNNER") == "1":
-        return False
-    if os.environ.get("CACTUS_TRANSPILER_ENABLE_NATIVE_AUDIO_RUNNER") != "1":
-        return False
-    return task.strip().lower() in {"tdt_transcription", "seq2seq_transcription", "ctc_logits"}
-
-
-def _should_use_native_stateful_multimodal_runner(
-    *,
-    family: str,
-    task: str,
-    manifest: Mapping[str, object],
-) -> bool:
-    if os.environ.get("CACTUS_TRANSPILER_DISABLE_NATIVE_MULTIMODAL_RUNNER") == "1":
-        return False
-    if os.environ.get("CACTUS_TRANSPILER_ENABLE_NATIVE_MULTIMODAL_RUNNER") != "1":
-        return False
-    return task.strip().lower() == "multimodal_causal_lm_logits"
-
-
-def _run_native_stateful_audio_bundle(
-    *,
-    bundle_root: Path,
-    manifest: Mapping[str, object],
-    audio_file: str | Path,
-    prompt: str | None,
-    weights_dir: str | Path | None,
-    max_new_tokens: int | None,
-) -> dict[str, object]:
-    native_weights_dir = _resolve_native_stateful_weights_dir(
-        bundle_root=bundle_root,
-        manifest=manifest,
-        weights_dir=weights_dir,
-    )
-    if native_weights_dir is None:
-        raise FileNotFoundError("could not resolve a Cactus-native weights directory for stateful audio execution")
-
-    from cactus.bindings.cactus import cactus_destroy
-    from cactus.bindings.cactus import cactus_init
-    from cactus.bindings.cactus import cactus_transcribe
-
-    inputs_meta = manifest.get("inputs") if isinstance(manifest.get("inputs"), dict) else {}
-    if not isinstance(inputs_meta, Mapping):
-        inputs_meta = {}
-    stored_target = int(inputs_meta.get("target_token_count", 0) or 0)
-    if max_new_tokens is None:
-        token_budget = stored_target if stored_target > 0 else 512
-    else:
-        token_budget = max(0, int(max_new_tokens))
-
-    resolved_prompt = prompt
-    if resolved_prompt is None:
-        stored_prompt = inputs_meta.get("prompt")
-        if isinstance(stored_prompt, str) and stored_prompt:
-            resolved_prompt = stored_prompt
-    if resolved_prompt is None:
-        resolved_prompt = ""
-
-    options = {
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "top_k": 1,
-        "min_p": 0.0,
-        "repetition_penalty": 1.0,
-        "max_tokens": token_budget,
-        "auto_handoff": False,
-        "confidence_threshold": -1.0,
-        "telemetry_enabled": False,
-    }
-
-    generated_token_ids: list[int] = []
-    token_pieces: list[str] = []
-
-    def _token_callback(token: str, token_id: int) -> None:
-        token_pieces.append(str(token))
-        generated_token_ids.append(int(token_id))
-
-    start = time.perf_counter()
-    model_handle = cactus_init(str(native_weights_dir), None, False)
-    try:
-        response_text = cactus_transcribe(
-            model_handle,
-            str(audio_file),
-            resolved_prompt,
-            json.dumps(options),
-            _token_callback,
-            None,
-        )
-    finally:
-        cactus_destroy(model_handle)
-    end = time.perf_counter()
-
-    try:
-        payload = json.loads(response_text)
-    except Exception:
-        payload = {"success": True, "response": response_text}
-
-    transcript = str(payload.get("response", response_text) or "")
-    total_ms = float(payload.get("total_time_ms", (end - start) * 1000.0) or 0.0)
-    decode_tokens = int(payload.get("decode_tokens", len(generated_token_ids)) or 0)
-    return {
-        "bundle_model_id": str(manifest.get("model_id", "") or ""),
-        "family": str(manifest.get("family", "") or ""),
-        "task": str(manifest.get("task", "") or ""),
-        "component_order": list(manifest.get("component_order", [])),
-        "runtime_strategy": "native_cactus_stateful_audio",
-        "native_weights_dir": str(native_weights_dir),
-        "audio_file": str(Path(audio_file).expanduser().resolve()),
-        "prompt": resolved_prompt,
-        "response": transcript,
-        "transcript": transcript,
-        "token_ids": generated_token_ids,
-        "generated_token_ids": generated_token_ids,
-        "token_pieces": token_pieces,
-        "decode_tokens": decode_tokens,
-        "prefill_tokens": int(payload.get("prefill_tokens", 0) or 0),
-        "total_tokens": int(payload.get("total_tokens", 0) or 0),
-        "time_to_first_token_ms": float(payload.get("time_to_first_token_ms", 0.0) or 0.0),
-        "prefill_tps": float(payload.get("prefill_tps", 0.0) or 0.0),
-        "decode_tps": float(payload.get("decode_tps", 0.0) or 0.0),
-        "decoder_ms": total_ms,
-        "total_ms": total_ms,
-        "wall_ms": (end - start) * 1000.0,
-        "native_response": payload,
-    }
-
-
-def _run_native_stateful_multimodal_bundle(
-    *,
-    bundle_root: Path,
-    manifest: Mapping[str, object],
-    prompt: str | None,
-    image_files: tuple[str, ...],
-    audio_file: str | Path | None,
-    weights_dir: str | Path | None,
-    system_prompt: str | None,
-    enable_thinking: bool,
-    max_new_tokens: int | None,
-    stop_sequences: tuple[str, ...],
-) -> dict[str, object]:
-    inputs_meta = manifest.get("inputs") if isinstance(manifest.get("inputs"), dict) else {}
-    if not isinstance(inputs_meta, Mapping):
-        inputs_meta = {}
-
-    resolved_prompt = prompt
-    if resolved_prompt is None:
-        stored_prompt = inputs_meta.get("prompt")
-        if isinstance(stored_prompt, str) and stored_prompt:
-            resolved_prompt = stored_prompt
-    if not resolved_prompt:
-        raise ValueError("provide --prompt for native Gemma4 multimodal bundle execution")
-
-    resolved_image_files: tuple[str, ...]
-    if image_files:
-        resolved_image_files = tuple(str(Path(path).expanduser().resolve()) for path in image_files)
-    else:
-        stored_images = inputs_meta.get("image_files")
-        if isinstance(stored_images, list):
-            resolved_image_files = tuple(
-                str(Path(path).expanduser().resolve())
-                for path in stored_images
-                if isinstance(path, str) and path
-            )
-        else:
-            resolved_image_files = ()
-
-    resolved_audio: str | None = None
-    if audio_file is not None:
-        resolved_audio = str(Path(audio_file).expanduser().resolve())
-    else:
-        stored_audio = inputs_meta.get("audio_file")
-        if isinstance(stored_audio, str) and stored_audio:
-            resolved_audio = str(Path(stored_audio).expanduser().resolve())
-
-    native_weights_dir = _resolve_native_stateful_weights_dir(
-        bundle_root=bundle_root,
-        manifest=manifest,
-        weights_dir=weights_dir,
-    )
-    if native_weights_dir is None:
-        raise FileNotFoundError("could not resolve a Cactus-native weights directory for Gemma4 multimodal execution")
-
-    from cactus.bindings.cactus import cactus_complete
-    from cactus.bindings.cactus import cactus_destroy
-    from cactus.bindings.cactus import cactus_init
-
-    if max_new_tokens is None:
-        token_budget = int(inputs_meta.get("max_new_tokens", 0) or 0)
-        if token_budget <= 0:
-            token_budget = 96
-    else:
-        token_budget = max(0, int(max_new_tokens))
-
-    messages: list[dict[str, object]] = []
-    resolved_system = system_prompt
-    if resolved_system is None:
-        stored_system = inputs_meta.get("system_prompt")
-        if isinstance(stored_system, str):
-            resolved_system = stored_system
-    if resolved_system:
-        messages.append({"role": "system", "content": resolved_system})
-    user_message: dict[str, object] = {"role": "user", "content": resolved_prompt}
-    if resolved_image_files:
-        user_message["images"] = list(resolved_image_files)
-    if resolved_audio:
-        user_message["audio"] = [resolved_audio]
-    messages.append(user_message)
-
-    options: dict[str, object] = {
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "top_k": 1,
-        "min_p": 0.0,
-        "repetition_penalty": 1.0,
-        "max_tokens": token_budget,
-        "auto_handoff": False,
-        "confidence_threshold": -1.0,
-        "telemetry_enabled": False,
-        "enable_thinking_if_supported": bool(enable_thinking),
-    }
-    if stop_sequences:
-        options["stop_sequences"] = list(stop_sequences)
-
-    generated_token_ids: list[int] = []
-    token_pieces: list[str] = []
-
-    def _token_callback(token: str, token_id: int) -> None:
-        token_pieces.append(str(token))
-        generated_token_ids.append(int(token_id))
-
-    start = time.perf_counter()
-    model_handle = cactus_init(str(native_weights_dir), None, False)
-    try:
-        response_json = cactus_complete(
-            model_handle,
-            json.dumps(messages),
-            json.dumps(options),
-            "",
-            _token_callback,
-            None,
-        )
-    finally:
-        cactus_destroy(model_handle)
-    end = time.perf_counter()
-
-    try:
-        payload = json.loads(response_json)
-    except Exception:
-        payload = {"success": True, "response": response_json}
-
-    total_ms = float(payload.get("total_time_ms", (end - start) * 1000.0) or 0.0)
-    return {
-        "bundle_model_id": str(manifest.get("model_id", "") or ""),
-        "family": str(manifest.get("family", "") or ""),
-        "task": str(manifest.get("task", "") or ""),
-        "component_order": list(manifest.get("component_order", [])),
-        "runtime_strategy": "native_cactus_stateful_multimodal",
-        "native_weights_dir": str(native_weights_dir),
-        "prompt": resolved_prompt,
-        "image_files": list(resolved_image_files),
-        "audio_file": resolved_audio,
-        "response": str(payload.get("response", "") or ""),
-        "generated_token_ids": generated_token_ids,
-        "token_pieces": token_pieces,
-        "decode_tokens": int(payload.get("decode_tokens", len(generated_token_ids)) or 0),
-        "prefill_tokens": int(payload.get("prefill_tokens", 0) or 0),
-        "total_tokens": int(payload.get("total_tokens", 0) or 0),
-        "time_to_first_token_ms": float(payload.get("time_to_first_token_ms", 0.0) or 0.0),
-        "prefill_tps": float(payload.get("prefill_tps", 0.0) or 0.0),
-        "decode_tps": float(payload.get("decode_tps", 0.0) or 0.0),
-        "decoder_ms": total_ms,
-        "total_ms": total_ms,
-        "wall_ms": (end - start) * 1000.0,
-        "native_response": payload,
-    }
-
-
-def _run_native_stateful_causal_lm_bundle(
-    *,
-    bundle_root: Path,
-    manifest: dict[str, object],
-    prompt: str | None,
-    weights_dir: str | Path | None,
-    enable_thinking: bool,
-    max_new_tokens: int | None,
-    stop_sequences: tuple[str, ...],
-) -> dict[str, object]:
-    resolved_prompt = prompt
-    if resolved_prompt is None:
-        inputs_meta = manifest.get("inputs")
-        if isinstance(inputs_meta, dict):
-            stored_prompt = inputs_meta.get("prompt")
-            if isinstance(stored_prompt, str) and stored_prompt:
-                resolved_prompt = stored_prompt
-    if not resolved_prompt:
-        raise ValueError("provide --prompt for native stateful causal-LM bundle execution")
-
-    native_weights_dir = _resolve_native_stateful_weights_dir(
-        bundle_root=bundle_root,
-        manifest=manifest,
-        weights_dir=weights_dir,
-    )
-    if native_weights_dir is None:
-        raise FileNotFoundError("could not resolve a Cactus-native weights directory for stateful causal-LM execution")
-
-    from cactus.bindings.cactus import cactus_complete
-    from cactus.bindings.cactus import cactus_destroy
-    from cactus.bindings.cactus import cactus_init
-
-    inputs_meta = manifest.get("inputs") if isinstance(manifest.get("inputs"), dict) else {}
-    target_token_count = int(inputs_meta.get("target_token_count", 0) or 0)
-    prompt_token_count = len(_parse_nested_manifest_input_ids(inputs_meta.get("prompt_input_ids")) or [])
-    if max_new_tokens is None:
-        token_budget = max(1, target_token_count - prompt_token_count) if target_token_count > 0 else 8
-    else:
-        token_budget = max(0, int(max_new_tokens))
-
-    messages = []
-    system_prompt = str(inputs_meta.get("system_prompt", "") or "")
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": resolved_prompt})
-
-    options = {
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "top_k": 1,
-        "min_p": 0.0,
-        "repetition_penalty": 1.0,
-        "max_tokens": token_budget,
-        "auto_handoff": False,
-        "confidence_threshold": -1.0,
-        "telemetry_enabled": False,
-        "enable_thinking_if_supported": bool(enable_thinking),
-    }
-    if stop_sequences:
-        options["stop_sequences"] = list(stop_sequences)
-
-    generated_token_ids: list[int] = []
-    token_pieces: list[str] = []
-
-    def _token_callback(token: str, token_id: int) -> None:
-        token_pieces.append(str(token))
-        generated_token_ids.append(int(token_id))
-
-    start = time.perf_counter()
-    model_handle = cactus_init(str(native_weights_dir), None, False)
-    try:
-        response_json = cactus_complete(
-            model_handle,
-            json.dumps(messages),
-            json.dumps(options),
-            "",
-            _token_callback,
-            None,
-        )
-    finally:
-        cactus_destroy(model_handle)
-    end = time.perf_counter()
-
-    try:
-        payload = json.loads(response_json)
-    except Exception:
-        payload = {"success": True, "response": response_json}
-
-    total_ms = float(payload.get("total_time_ms", (end - start) * 1000.0) or 0.0)
-    return {
-        "bundle_model_id": str(manifest.get("model_id", "") or ""),
-        "family": str(manifest.get("family", "") or ""),
-        "task": str(manifest.get("task", "") or ""),
-        "component_order": list(manifest.get("component_order", [])),
-        "runtime_strategy": "native_cactus_stateful",
-        "native_weights_dir": str(native_weights_dir),
-        "prompt": resolved_prompt,
-        "response": str(payload.get("response", "") or ""),
-        "generated_token_ids": generated_token_ids,
-        "token_pieces": token_pieces,
-        "decode_tokens": int(payload.get("decode_tokens", len(generated_token_ids)) or 0),
-        "prefill_tokens": int(payload.get("prefill_tokens", 0) or 0),
-        "total_tokens": int(payload.get("total_tokens", 0) or 0),
-        "time_to_first_token_ms": float(payload.get("time_to_first_token_ms", 0.0) or 0.0),
-        "prefill_tps": float(payload.get("prefill_tps", 0.0) or 0.0),
-        "decode_tps": float(payload.get("decode_tps", 0.0) or 0.0),
-        "decoder_ms": total_ms,
-        "total_ms": total_ms,
-        "wall_ms": (end - start) * 1000.0,
-        "native_response": payload,
-    }
-
-
-def _resolve_native_stateful_weights_dir(
-    *,
-    bundle_root: Path,
-    manifest: Mapping[str, object],
-    weights_dir: str | Path | None,
-) -> Path | None:
-    candidates: list[Path] = []
-    if weights_dir is not None:
-        candidates.append(Path(weights_dir).expanduser().resolve())
-    for component in manifest.get("components", []):
-        if not isinstance(component, Mapping):
-            continue
-        for binding in component.get("bound_constant_bindings", []) or []:
-            if not isinstance(binding, Mapping):
-                continue
-            path = binding.get("path")
-            if isinstance(path, str) and path:
-                candidate = Path(path).expanduser()
-                if candidate.exists():
-                    candidates.append(candidate.resolve().parent)
-
-    seen: set[Path] = set()
-    for candidate in candidates:
-        if candidate in seen or not candidate.exists():
-            continue
-        seen.add(candidate)
-        if (candidate / "config.txt").exists():
-            if any(candidate.glob("*.cq4.weights")):
-                return _prepare_native_cq_weight_view(candidate, bundle_root)
-            return candidate
-    return None
-
-
-def _prepare_native_cq_weight_view(source_dir: Path, bundle_root: Path) -> Path:
-    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", source_dir.name)
-    view_dir = bundle_root / ".native_cq_view" / safe_name
-    view_dir.mkdir(parents=True, exist_ok=True)
-    for child in view_dir.iterdir():
-        if child.is_symlink() or child.is_file():
-            child.unlink()
-
-    for source in source_dir.iterdir():
-        if not source.is_file():
-            continue
-        target_name: str | None = None
-        if source.name.endswith(".cq4.weights"):
-            target_name = source.name.replace(".cq4.weights", ".weights")
-        elif source.name.endswith(".cq2.weights"):
-            target_name = source.name.replace(".cq2.weights", ".weights")
-        elif source.name.endswith(".weights"):
-            cq4_sibling = source_dir / f"{source.name[:-len('.weights')]}.cq4.weights"
-            cq2_sibling = source_dir / f"{source.name[:-len('.weights')]}.cq2.weights"
-            if not cq4_sibling.exists() and not cq2_sibling.exists():
-                target_name = source.name
-        elif source.suffix in {".txt", ".json", ".model", ".jinja2", ".tiktoken", ".bias"}:
-            target_name = source.name
-        if target_name is None:
-            continue
-        target = view_dir / target_name
-        if target.exists() or target.is_symlink():
-            target.unlink()
-        target.symlink_to(source)
-    return view_dir
 
 
 def _deserialize_saved_ir_graph(
@@ -1184,6 +762,85 @@ def component_output_names(component: LoadedComponentGraph) -> tuple[str, ...]:
     return tuple(str(value) for value in getattr(component, "_output_names", ()))
 
 
+def _bind_zero_input_buffers(
+    component: LoadedComponentGraph,
+    dtype_by_name: Mapping[str, np.dtype | type],
+) -> dict[str, np.ndarray]:
+    input_names = component_input_names(component)
+    buffers: dict[str, np.ndarray] = {}
+    for name, tensor in zip(input_names, component.runtime_inputs, strict=True):
+        if name not in dtype_by_name:
+            raise RuntimeError(f"missing dtype for {component.component} input {name!r}")
+        shape = tuple(int(dim) for dim in tensor.shape)
+        buffers[name] = np.zeros(shape, dtype=dtype_by_name[name])
+    bound = component.set_external_inputs([buffers[name] for name in input_names])
+    return {name: bound[index] for index, name in enumerate(input_names)}
+
+
+def _tensor_data_ptr(tensor: Tensor) -> int:
+    out_ptr = ctypes.c_void_p()
+    rc = _lib.cactus_graph_get_output_ptr(tensor.g.h, cactus_node_t(tensor.id), ctypes.byref(out_ptr))
+    if rc != 0 or not out_ptr.value:
+        raise RuntimeError(f"graph_get_output_ptr failed for node {tensor.id}")
+    return int(out_ptr.value)
+
+
+def _tensor_byte_size(tensor: Tensor) -> int:
+    info = tensor.g._get_output_info(tensor.id)
+    return int(info["byte_size"])
+
+
+def _copy_component_cache_states(
+    source: LoadedComponentGraph,
+    target: LoadedComponentGraph,
+) -> None:
+    source_states = list(source.cache_state_tensors)
+    target_states = list(target.cache_state_tensors)
+    if not source_states or not target_states:
+        raise RuntimeError(
+            f"cannot transfer KV cache from {source.component} to {target.component}: "
+            "cache state metadata is missing"
+        )
+    if len(source_states) != len(target_states):
+        raise RuntimeError(
+            f"cache state count mismatch: {source.component} has {len(source_states)}, "
+            f"{target.component} has {len(target_states)}"
+        )
+    for (source_layer, source_k, source_v), (target_layer, target_k, target_v) in zip(source_states, target_states, strict=True):
+        if source_layer != target_layer:
+            raise RuntimeError(f"cache layer mismatch: {source_layer!r} != {target_layer!r}")
+        for source_tensor, target_tensor in ((source_k, target_k), (source_v, target_v)):
+            byte_size = _tensor_byte_size(source_tensor)
+            target_byte_size = _tensor_byte_size(target_tensor)
+            if byte_size != target_byte_size:
+                raise RuntimeError(
+                    f"cache byte-size mismatch for layer {source_layer}: "
+                    f"{byte_size} != {target_byte_size}"
+                )
+            ctypes.memmove(_tensor_data_ptr(target_tensor), _tensor_data_ptr(source_tensor), byte_size)
+
+
+def _copy_gemma4_decoder_inputs(
+    buffers: Mapping[str, np.ndarray],
+    *,
+    inputs_embeds: np.ndarray,
+    per_layer_inputs: np.ndarray,
+    position_ids: np.ndarray,
+) -> None:
+    np.copyto(
+        buffers["inputs_embeds"],
+        np.asarray(inputs_embeds, dtype=buffers["inputs_embeds"].dtype),
+    )
+    np.copyto(
+        buffers["per_layer_inputs"],
+        np.asarray(per_layer_inputs, dtype=buffers["per_layer_inputs"].dtype),
+    )
+    np.copyto(
+        buffers["position_ids"],
+        np.asarray(position_ids, dtype=buffers["position_ids"].dtype),
+    )
+
+
 def _run_parakeet_tdt_bundle(
     *,
     component_graphs: dict[str, LoadedComponentGraph],
@@ -1339,8 +996,8 @@ def _execute_multimodal_component_pipeline_for_generation(
             for output_name in output_names:
                 store[output_name] = np.ascontiguousarray(cached_features[output_name])
             continue
-        if family == "gemma4" and component_name == "decoder":
-            _right_align_gemma4_decoder_inputs_to_static_tail(
+        if component_name == "decoder":
+            _right_align_decoder_inputs_to_static_tail(
                 store,
                 component=component,
                 prompt_token_count=prompt_token_count,
@@ -1357,7 +1014,7 @@ def _execute_multimodal_component_pipeline_for_generation(
     return store, outputs_by_component
 
 
-def _right_align_gemma4_decoder_inputs_to_static_tail(
+def _right_align_decoder_inputs_to_static_tail(
     store: dict[str, np.ndarray],
     *,
     component: LoadedComponentGraph,
@@ -1397,13 +1054,29 @@ def _run_multimodal_causal_lm_bundle(
     torch_dtype: torch.dtype,
     system_prompt: str | None,
     enable_thinking: bool,
+    max_new_tokens: int | None,
+    stop_sequences: tuple[str, ...],
 ) -> dict[str, object]:
     family = str(manifest.get("family", "") or "").strip().lower()
-    required_components = (
-        ("vision_encoder", "lm_encoder", "decoder")
-        if family == "lfm2_vl"
-        else ("vision_encoder", "audio_encoder", "lm_encoder", "decoder")
+    use_cached_step_decode = (
+        family == "gemma4"
+        and "lm_encoder_step" in component_graphs
+        and "decoder_step" in component_graphs
+        and os.environ.get("CACTUS_TRANSPILER_DISABLE_CACHED_STEP_DECODE") != "1"
     )
+    use_chunk_prefill = use_cached_step_decode and "decoder_prefill_chunk" in component_graphs
+    if use_cached_step_decode:
+        required_components = (
+            ("vision_encoder", "audio_encoder", "lm_encoder", "decoder_prefill_chunk")
+            if use_chunk_prefill
+            else ("vision_encoder", "audio_encoder", "lm_encoder")
+        )
+    else:
+        required_components = (
+            ("vision_encoder", "lm_encoder", "decoder")
+            if family == "lfm2_vl"
+            else ("vision_encoder", "audio_encoder", "lm_encoder", "decoder")
+        )
     missing = [name for name in required_components if name not in component_graphs]
     if missing:
         raise ValueError(
@@ -1458,9 +1131,7 @@ def _run_multimodal_causal_lm_bundle(
         trust_remote_code=True,
     )
     if family == "lfm2_vl":
-        from cactus.transpile.hf_model import _prepare_lfm2_vl_multimodal_inputs
-
-        prepared = _prepare_lfm2_vl_multimodal_inputs(
+        prepared = _prepare_lfm2_vl_multimodal_inputs_for_runtime(
             processor,
             prompt=resolved_prompt,
             image_files=resolved_image_files,
@@ -1497,26 +1168,107 @@ def _run_multimodal_causal_lm_bundle(
         inputs_meta=inputs_meta,
         tokenizer=tokenizer,
     )
+    initial_components = (
+        ("vision_encoder", "audio_encoder", "lm_encoder")
+        if use_cached_step_decode
+        else required_components
+    )
+
     start = time.perf_counter()
     store, _ = _execute_multimodal_component_pipeline_for_generation(
         component_graphs=component_graphs,
         manifest=manifest,
-        required_components=required_components,
+        required_components=initial_components,
         initial_store=prepared_store,
         prompt_token_count=unpadded_token_count,
         image_files=resolved_image_files,
         audio_file=resolved_audio,
     )
-    end = time.perf_counter()
-    logits = np.asarray(store["logits"], dtype=np.float32)
-    if logits.ndim != 3:
-        raise RuntimeError(f"expected logits with shape [batch, seq, vocab], got {list(logits.shape)}")
-
-    next_token_id = int(np.argmax(logits[0, -1]))
     tokenizer = getattr(processor, "tokenizer", processor)
-    next_token = None
-    if hasattr(tokenizer, "decode"):
-        next_token = tokenizer.decode([next_token_id])
+    generated_ids: list[int] = []
+    logits_shape: list[int] | None = None
+    first_token_ms = 0.0
+    stop_reason = "max_new_tokens"
+
+    current_length = _infer_multimodal_token_count(
+        prepared_store,
+        tokenizer=tokenizer,
+        inputs_meta=inputs_meta,
+        fallback=unpadded_token_count,
+    )
+    if use_cached_step_decode:
+        return _run_gemma4_cached_step_multimodal_decode(
+            component_graphs=component_graphs,
+            manifest=manifest,
+            store=store,
+            prepared_store=prepared_store,
+            tokenizer=tokenizer,
+            prompt=resolved_prompt,
+            image_files=resolved_image_files,
+            audio_file=resolved_audio,
+            current_length=current_length,
+            start=start,
+            max_new_tokens=max_new_tokens,
+            stop_sequences=stop_sequences,
+        )
+
+    static_token_count = _static_multimodal_token_count(prepared_store)
+    available_headroom = max(0, static_token_count - current_length)
+    requested_tokens = 1 if max_new_tokens is None else max(0, int(max_new_tokens))
+    token_budget = max(0, min(requested_tokens, max(1, available_headroom + 1)))
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    encoded_stop_sequences = _encode_stop_sequences(tokenizer, stop_sequences)
+
+    for step_index in range(token_budget):
+        logits = np.asarray(store["logits"], dtype=np.float32)
+        logits_shape = list(logits.shape)
+        if logits.ndim != 3:
+            raise RuntimeError(f"expected logits with shape [batch, seq, vocab], got {list(logits.shape)}")
+        next_token_id = int(np.argmax(logits[0, -1]))
+        generated_ids.append(next_token_id)
+        if step_index == 0:
+            first_token_ms = (time.perf_counter() - start) * 1000.0
+
+        if eos_token_id is not None and next_token_id == int(eos_token_id):
+            stop_reason = "eos_token"
+            break
+        if _trim_stop_suffix(generated_ids, encoded_stop_sequences):
+            stop_reason = "stop_sequence"
+            break
+        if step_index + 1 >= token_budget:
+            break
+        if current_length >= static_token_count:
+            stop_reason = "context_limit"
+            break
+
+        _append_multimodal_token_in_place(store, current_length=current_length, token_id=next_token_id)
+        current_length += 1
+        store, _ = _execute_multimodal_component_pipeline_for_generation(
+            component_graphs=component_graphs,
+            manifest=manifest,
+            required_components=("lm_encoder", "decoder"),
+            initial_store=store,
+            prompt_token_count=current_length,
+            image_files=resolved_image_files,
+            audio_file=resolved_audio,
+        )
+
+    end = time.perf_counter()
+    response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=True).strip()
+    if not response:
+        response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=False).strip()
+    decode_time_ms = max(0.0, (end - start) * 1000.0 - first_token_ms)
+    decode_tps = (
+        ((len(generated_ids) - 1) * 1000.0) / decode_time_ms
+        if len(generated_ids) > 1 and decode_time_ms > 0.0
+        else 0.0
+    )
+    first_generated_token_id = generated_ids[0] if generated_ids else None
+    first_generated_token = (
+        _decode_generated_text(tokenizer, [first_generated_token_id], skip_special_tokens=False)
+        if first_generated_token_id is not None
+        else None
+    )
 
     return {
         "bundle_model_id": str(manifest.get("model_id", "") or ""),
@@ -1530,14 +1282,334 @@ def _run_multimodal_causal_lm_bundle(
             name: list(np.asarray(value).shape)
             for name, value in prepared_store.items()
         },
-        "output_shape": list(logits.shape),
+        "output_shape": logits_shape or [],
         "total_ms": (end - start) * 1000.0,
-        "decode_tokens": 1,
-        "generated_token_ids": [next_token_id],
-        "response": "" if next_token is None else str(next_token),
-        "next_token_id": next_token_id,
-        "next_token": next_token,
+        "time_to_first_token_ms": first_token_ms,
+        "decode_tps": decode_tps,
+        "decode_tokens": len(generated_ids),
+        "generated_token_ids": generated_ids,
+        "response": response,
+        "stop_reason": stop_reason,
+        "next_token_id": first_generated_token_id,
+        "next_token": first_generated_token,
     }
+
+
+def _run_gemma4_cached_step_multimodal_decode(
+    *,
+    component_graphs: dict[str, LoadedComponentGraph],
+    manifest: dict[str, object],
+    store: dict[str, np.ndarray],
+    prepared_store: dict[str, np.ndarray],
+    tokenizer: object,
+    prompt: str,
+    image_files: tuple[str, ...],
+    audio_file: str | None,
+    current_length: int,
+    start: float,
+    max_new_tokens: int | None,
+    stop_sequences: tuple[str, ...],
+) -> dict[str, object]:
+    """Run Gemma4 generation through a one-token decoder graph with internal KV state.
+
+    The full-context decoder recomputes the entire text stack for every token.
+    The chunk graph primes K/V in fixed windows, then the step graph appends one
+    token at a time through the cached attention kernel.
+    """
+
+    lm_encoder_step = component_graphs["lm_encoder_step"]
+    decoder_step = component_graphs["decoder_step"]
+    decoder_prefill_chunk = component_graphs.get("decoder_prefill_chunk")
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    encoded_stop_sequences = _encode_stop_sequences(tokenizer, stop_sequences)
+    requested_tokens = 1 if max_new_tokens is None else max(0, int(max_new_tokens))
+
+    inputs_embeds = np.asarray(store["inputs_embeds"])
+    per_layer_inputs = np.asarray(store["per_layer_inputs"])
+    position_ids = np.asarray(store["position_ids"])
+    prompt_tokens = max(0, min(int(current_length), int(inputs_embeds.shape[1])))
+    if prompt_tokens <= 0:
+        raise RuntimeError("Gemma4 cached decode requires at least one prompt token")
+
+    generated_ids: list[int] = []
+    logits_shape: list[int] | None = None
+    first_token_ms = 0.0
+    stop_reason = "max_new_tokens"
+
+    decoder_dtypes = {
+        "inputs_embeds": inputs_embeds.dtype,
+        "per_layer_inputs": per_layer_inputs.dtype,
+        "position_ids": position_ids.dtype,
+    }
+    decoder_input_buffers = _bind_zero_input_buffers(decoder_step, decoder_dtypes)
+
+    def _run_decoder_step(
+        *,
+        step_inputs_embeds: np.ndarray,
+        step_per_layer_inputs: np.ndarray,
+        step_position_ids: np.ndarray,
+        read_logits: bool,
+    ) -> np.ndarray | None:
+        _copy_gemma4_decoder_inputs(
+            decoder_input_buffers,
+            inputs_embeds=step_inputs_embeds,
+            per_layer_inputs=step_per_layer_inputs,
+            position_ids=step_position_ids,
+        )
+        decoder_step.graph.execute()
+        if not read_logits:
+            return None
+        return np.asarray(decoder_step.outputs[0].numpy())
+
+    lm_encoder_input_buffers = _bind_zero_input_buffers(
+        lm_encoder_step,
+        {"input_ids": np.int64, "position_ids": np.int64},
+    )
+
+    prefill_input_buffers: dict[str, np.ndarray] | None = None
+    prefill_chunk_tokens = 0
+    if decoder_prefill_chunk is not None:
+        prefill_input_buffers = _bind_zero_input_buffers(decoder_prefill_chunk, decoder_dtypes)
+        prefill_chunk_tokens = int(prefill_input_buffers["inputs_embeds"].shape[1])
+
+    logits: np.ndarray | None = None
+    prime_start = time.perf_counter()
+    token_index = 0
+    if (
+        decoder_prefill_chunk is not None
+        and prefill_input_buffers is not None
+        and prefill_chunk_tokens > 1
+        and prompt_tokens >= prefill_chunk_tokens
+    ):
+        chunked_tokens = (prompt_tokens // prefill_chunk_tokens) * prefill_chunk_tokens
+        for chunk_start in range(0, chunked_tokens, prefill_chunk_tokens):
+            chunk_end = chunk_start + prefill_chunk_tokens
+            _copy_gemma4_decoder_inputs(
+                prefill_input_buffers,
+                inputs_embeds=inputs_embeds[:, chunk_start:chunk_end, :],
+                per_layer_inputs=per_layer_inputs[:, chunk_start:chunk_end, ...],
+                position_ids=position_ids[:, chunk_start:chunk_end],
+            )
+            decoder_prefill_chunk.graph.execute()
+            if chunk_end == prompt_tokens:
+                logits = np.asarray(decoder_prefill_chunk.outputs[0].numpy())
+        _copy_component_cache_states(decoder_prefill_chunk, decoder_step)
+        token_index = chunked_tokens
+
+    while token_index < prompt_tokens:
+        logits = _run_decoder_step(
+            step_inputs_embeds=inputs_embeds[:, token_index : token_index + 1, :],
+            step_per_layer_inputs=per_layer_inputs[:, token_index : token_index + 1, ...],
+            step_position_ids=position_ids[:, token_index : token_index + 1],
+            read_logits=token_index + 1 == prompt_tokens,
+        )
+        token_index += 1
+    prime_end = time.perf_counter()
+
+    if logits is None:
+        raise RuntimeError("Gemma4 cached decoder did not produce logits")
+
+    token_position = prompt_tokens
+    for step_index in range(requested_tokens):
+        logits_shape = list(logits.shape)
+        if logits.ndim != 3:
+            raise RuntimeError(f"expected logits with shape [batch, seq, vocab], got {list(logits.shape)}")
+        next_token_id = int(np.argmax(logits[0, -1]))
+        generated_ids.append(next_token_id)
+        if step_index == 0:
+            first_token_ms = (time.perf_counter() - start) * 1000.0
+
+        if eos_token_id is not None and next_token_id == int(eos_token_id):
+            stop_reason = "eos_token"
+            break
+        if _trim_stop_suffix(generated_ids, encoded_stop_sequences):
+            stop_reason = "stop_sequence"
+            break
+        if step_index + 1 >= requested_tokens:
+            break
+
+        lm_encoder_input_buffers["input_ids"].fill(int(next_token_id))
+        lm_encoder_input_buffers["position_ids"].fill(int(token_position))
+        lm_encoder_step.graph.execute()
+        logits = _run_decoder_step(
+            step_inputs_embeds=lm_encoder_step.outputs[0].numpy(),
+            step_per_layer_inputs=lm_encoder_step.outputs[1].numpy(),
+            step_position_ids=lm_encoder_step.outputs[2].numpy(),
+            read_logits=True,
+        )
+        if logits is None:
+            raise RuntimeError("Gemma4 cached decoder did not produce logits during decode")
+        token_position += 1
+
+    end = time.perf_counter()
+    response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=True).strip()
+    if not response:
+        response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=False).strip()
+    decode_time_ms = max(0.0, (end - start) * 1000.0 - first_token_ms)
+    decode_tps = (
+        ((len(generated_ids) - 1) * 1000.0) / decode_time_ms
+        if len(generated_ids) > 1 and decode_time_ms > 0.0
+        else 0.0
+    )
+    first_generated_token_id = generated_ids[0] if generated_ids else None
+    first_generated_token = (
+        _decode_generated_text(tokenizer, [first_generated_token_id], skip_special_tokens=False)
+        if first_generated_token_id is not None
+        else None
+    )
+
+    return {
+        "bundle_model_id": str(manifest.get("model_id", "") or ""),
+        "family": str(manifest.get("family", "") or ""),
+        "task": str(manifest.get("task", "") or ""),
+        "component_order": list(manifest.get("component_order", [])),
+        "prompt": prompt,
+        "image_files": list(image_files),
+        "audio_file": audio_file,
+        "input_shapes": {
+            name: list(np.asarray(value).shape)
+            for name, value in prepared_store.items()
+        },
+        "output_shape": logits_shape or [],
+        "total_ms": (end - start) * 1000.0,
+        "time_to_first_token_ms": first_token_ms,
+        "cache_prime_ms": (prime_end - prime_start) * 1000.0,
+        "cache_prime_tokens": prompt_tokens,
+        "cache_prime_chunk_tokens": prefill_chunk_tokens,
+        "decode_tps": decode_tps,
+        "decode_tokens": len(generated_ids),
+        "generated_token_ids": generated_ids,
+        "response": response,
+        "stop_reason": stop_reason,
+        "next_token_id": first_generated_token_id,
+        "next_token": first_generated_token,
+        "decode_mode": "cached_step",
+    }
+
+
+def _static_multimodal_token_count(store: Mapping[str, np.ndarray]) -> int:
+    for key in ("input_ids", "attention_mask", "token_type_ids", "inputs_embeds"):
+        value = store.get(key)
+        if isinstance(value, np.ndarray) and value.ndim >= 2:
+            return int(value.shape[1])
+    return 0
+
+
+def _infer_multimodal_token_count(
+    store: Mapping[str, np.ndarray],
+    *,
+    tokenizer: object | None,
+    inputs_meta: Mapping[str, object],
+    fallback: int,
+) -> int:
+    attention_mask = store.get("attention_mask")
+    if isinstance(attention_mask, np.ndarray) and attention_mask.ndim >= 2:
+        return int(np.count_nonzero(attention_mask[0]))
+    input_ids = store.get("input_ids")
+    if isinstance(input_ids, np.ndarray) and input_ids.ndim >= 2:
+        padding_token_id = _resolve_bundle_padding_token_id(inputs_meta, tokenizer)
+        return int(np.count_nonzero(input_ids[0] != int(padding_token_id)))
+    return max(0, int(fallback))
+
+
+def _append_multimodal_token_in_place(
+    store: dict[str, np.ndarray],
+    *,
+    current_length: int,
+    token_id: int,
+) -> None:
+    input_ids = store.get("input_ids")
+    if isinstance(input_ids, np.ndarray) and input_ids.ndim >= 2 and current_length < input_ids.shape[1]:
+        input_ids[0, current_length] = int(token_id)
+    attention_mask = store.get("attention_mask")
+    if isinstance(attention_mask, np.ndarray) and attention_mask.ndim >= 2 and current_length < attention_mask.shape[1]:
+        attention_mask[0, current_length] = 1
+    token_type_ids = store.get("token_type_ids")
+    if isinstance(token_type_ids, np.ndarray) and token_type_ids.ndim >= 2 and current_length < token_type_ids.shape[1]:
+        token_type_ids[0, current_length] = 0
+
+
+def _load_image_inputs_for_runtime(image_files: tuple[str, ...]) -> list[object]:
+    if not image_files:
+        return []
+    try:
+        from PIL import Image  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(f"Pillow is required for --image: {exc}") from exc
+
+    images: list[object] = []
+    for image_file in image_files:
+        path = Path(image_file).resolve()
+        if not path.exists():
+            raise RuntimeError(f"image file does not exist: {path}")
+        with Image.open(path) as image:
+            images.append(image.convert("RGB").copy())
+    return images
+
+
+def _prepare_lfm2_vl_multimodal_inputs_for_runtime(
+    processor: object | None,
+    *,
+    prompt: str,
+    image_files: tuple[str, ...],
+    torch_dtype: torch.dtype,
+    system_prompt: str = "",
+    enable_thinking_if_supported: bool = False,
+):
+    if processor is None:
+        raise RuntimeError("LFM2-VL multimodal bundle execution requires an AutoProcessor with image support")
+    images = _load_image_inputs_for_runtime(image_files)
+    if not images:
+        raise RuntimeError("LFM2-VL multimodal bundle execution requires at least one --image")
+
+    user_content: list[dict[str, object]] = [{"type": "image", "image": image} for image in images]
+    user_content.append({"type": "text", "text": prompt.strip()})
+
+    messages: list[dict[str, object]] = []
+    normalized_system = system_prompt.strip()
+    if normalized_system:
+        messages.append({"role": "system", "content": normalized_system})
+    messages.append({"role": "user", "content": user_content})
+
+    apply_chat_template = getattr(processor, "apply_chat_template", None)
+    if callable(apply_chat_template):
+        batch = apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+    else:
+        batch = processor(text=prompt, images=images, return_tensors="pt")
+
+    names = ("input_ids", "attention_mask", "pixel_values", "spatial_shapes", "pixel_attention_mask")
+    tensors: list[torch.Tensor] = []
+    input_shapes: dict[str, list[int]] = {}
+    for key in names:
+        value = batch.get(key) if hasattr(batch, "get") else None
+        if not isinstance(value, torch.Tensor):
+            raise RuntimeError(f"LFM2-VL processor did not return required tensor input: {key}")
+        if torch.is_floating_point(value):
+            value = value.to(dtype=torch_dtype)
+        elif key == "pixel_attention_mask":
+            value = value.to(dtype=torch.int64)
+        else:
+            value = value.to(dtype=torch.long)
+        tensors.append(value)
+        input_shapes[key] = [int(dim) for dim in value.shape]
+
+    return PreparedInputs(
+        names=names,
+        tensors=tuple(tensors),
+        metadata={
+            "prompt": prompt,
+            "system_prompt": system_prompt,
+            "image_files": [str(Path(path).resolve()) for path in image_files],
+            "input_shapes": input_shapes,
+            "enable_thinking": bool(enable_thinking_if_supported),
+        },
+    )
 
 
 def _run_causal_lm_logits_bundle(
@@ -2317,12 +2389,6 @@ def _attach_component_io_names(
     manifest: dict[str, object],
     component_graphs: dict[str, LoadedComponentGraph],
 ) -> None:
-    family = str(manifest.get("family", "") or "")
-    task = str(manifest.get("task", "") or "")
-    config = None
-    if family == "parakeet_tdt" and task == "tdt_transcription":
-        config = load_parakeet_tdt_config(str(manifest.get("model_source", "") or ""))
-
     for component_entry in manifest.get("components", []):
         if not isinstance(component_entry, dict):
             continue
@@ -2333,49 +2399,11 @@ def _attach_component_io_names(
         logical_inputs = tuple(str(value) for value in component_entry.get("logical_inputs", []))
         logical_outputs = tuple(str(value) for value in component_entry.get("logical_outputs", []))
         if not logical_inputs or not logical_outputs:
-            logical_inputs, logical_outputs = _infer_legacy_component_io_names(
-                family=family,
-                task=task,
-                component_name=name,
-                config=config,
+            raise ValueError(
+                f"component bundle manifest is missing logical IO names for component={name!r}"
             )
         component._input_names = logical_inputs
         component._output_names = logical_outputs
-
-
-def _infer_legacy_component_io_names(
-    *,
-    family: str,
-    task: str,
-    component_name: str,
-    config,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    if task in {"causal_lm_logits", "multimodal_causal_lm_logits"} and component_name == "decoder":
-        return ("input_ids",), ("logits",)
-    if task == "seq2seq_transcription":
-        if component_name in {"audio_encoder", "encoder"}:
-            return ("input_features",), ("encoder_hidden_states",)
-        if component_name == "decoder":
-            return ("decoder_input_ids", "encoder_hidden_states"), ("logits",)
-    if task == "encoder_hidden_states" and component_name in {"audio_encoder", "encoder"}:
-        return ("input_features",), ("encoder_hidden_states",)
-    if family == "parakeet_tdt" and task == "tdt_transcription":
-        if component_name == "audio_encoder":
-            return ("input_features",), ("encoder_hidden_states",)
-        if component_name == "decoder":
-            predictor_layers = 0 if config is None else int(config.predictor_num_layers)
-            state_inputs: list[str] = []
-            state_outputs: list[str] = []
-            for index in range(predictor_layers):
-                state_inputs.extend((f"state_h_{index}", f"state_c_{index}"))
-                state_outputs.extend((f"state_h_{index}", f"state_c_{index}"))
-            return (
-                ("encoder_frame", "token_ids", *state_inputs),
-                ("step_logits", *state_outputs),
-            )
-    raise ValueError(
-        f"component bundle manifest is missing logical IO names for family={family!r} task={task!r} component={component_name!r}"
-    )
 
 
 def _rebind_bound_constants(
@@ -2402,6 +2430,14 @@ def _rebind_bound_constants(
             raise RuntimeError(
                 f"unsupported bound constant format {binding_format!r}; re-run cactus convert to rebuild the bundle"
             )
+        try:
+            tensor_info = graph._get_output_info(tensor.id)
+        except Exception:
+            tensor_info = {}
+        if int(tensor_info.get("num_elements", 1) or 0) == 0:
+            # Empty constants carry only shape information. There is no data
+            # payload to bind, and mmap rebinding rejects zero-byte weights.
+            continue
         if _has_runtime_symbol("cactus_graph_bind_mmap_weights"):
             rc = _lib.cactus_graph_bind_mmap_weights(
                 graph.h,
@@ -2475,20 +2511,29 @@ def _open_cactus_tensor_file(path: str | Path) -> LoadedTensorFile:
     flags = struct.unpack_from("<I", header, 4)[0]
     alignment = max(1, int(struct.unpack_from("<I", header, 8)[0]))
     ndim = int(struct.unpack_from("<I", header, 12)[0])
-    dims = struct.unpack_from("<QQQQ", header, 16)
-    shape = tuple(int(dim) for dim in dims[:ndim] if int(dim) > 0)
+    dims = list(struct.unpack_from("<QQQQ", header, 16))
     precision = int(struct.unpack_from("<I", header, 48)[0])
     byte_size = int(struct.unpack_from("<Q", header, 52)[0])
     scales_bytes = int(struct.unpack_from("<Q", header, 60)[0])
     group_size = int(struct.unpack_from("<I", header, 68)[0])
     num_groups = int(struct.unpack_from("<I", header, 72)[0])
     original_n = int(struct.unpack_from("<Q", header, 76)[0])
+    header_size = _HEADER_SIZE
+    if flags & _FLAG_EXTENDED_SHAPE:
+        with tensor_path.open("rb") as handle:
+            handle.seek(_HEADER_SIZE)
+            extended = handle.read(32)
+        if len(extended) < 32:
+            raise RuntimeError(f"tensor file is too small for extended Cactus shape header: {tensor_path}")
+        dims.extend(struct.unpack("<QQQQ", extended))
+        header_size += 32
+    shape = tuple(int(dim) for dim in dims[:ndim] if int(dim) > 0)
 
     dtype = _PRECISION_TO_DTYPE.get(precision)
     if dtype is None:
         raise RuntimeError(f"unsupported tensor precision {precision} in {tensor_path}")
 
-    aligned_header = align_offset(_HEADER_SIZE, alignment)
+    aligned_header = align_offset(header_size, alignment)
     scales_offset = aligned_header if scales_bytes > 0 else 0
     data_offset = (
         align_offset(scales_offset + scales_bytes, alignment)

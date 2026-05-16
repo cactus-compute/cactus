@@ -18,6 +18,13 @@ from cactus.convert.cactus_adapters.tensor_io import align_offset
 
 
 _GEMMA4_SAFE_TEXT_MLP_PRODUCT_SCALE = 1.0 / 64.0
+try:
+    from transformers.models.gemma4.modeling_gemma4 import create_bidirectional_mask as _GEMMA4_CREATE_BIDIRECTIONAL_MASK  # type: ignore
+except Exception:
+    try:
+        from transformers.masking_utils import create_bidirectional_mask as _GEMMA4_CREATE_BIDIRECTIONAL_MASK  # type: ignore
+    except Exception:
+        _GEMMA4_CREATE_BIDIRECTIONAL_MASK = None
 
 
 @dataclass
@@ -703,19 +710,38 @@ def _gemma4_vision_encoder_hidden_states(
     attention_mask: torch.Tensor,
     pixel_position_ids: torch.Tensor | None,
 ) -> torch.Tensor:
-    from transformers.models.gemma4.modeling_gemma4 import create_bidirectional_mask  # type: ignore
-
     config = getattr(vision_encoder, "config", None)
-    attention_mask = create_bidirectional_mask(
+    hidden_states = inputs_embeds
+    rotary_emb = getattr(vision_encoder, "rotary_emb")
+    layers = getattr(vision_encoder, "layers")
+    num_layers = int(getattr(config, "num_hidden_layers", len(layers)))
+    layer_types = tuple(str(value) for value in (getattr(config, "layer_types", ()) or ()))
+    if layer_types and all(hasattr(rotary_emb, f"{layer_type}_inv_freq") for layer_type in layer_types):
+        # Newer Gemma4 builds use per-layer vision RoPE tables keyed by the
+        # layer attention type instead of a single vision RoPE table.
+        attention_mask_4d = (attention_mask.unsqueeze(-1) * attention_mask.unsqueeze(1)).unsqueeze(1)
+        position_embeddings_by_type = {
+            layer_type: rotary_emb(hidden_states, pixel_position_ids, layer_type)
+            for layer_type in layer_types
+        }
+        for decoder_layer in layers[:num_layers]:
+            layer_type = str(getattr(decoder_layer, "attention_type", layer_types[0]))
+            hidden_states = decoder_layer(
+                hidden_states,
+                attention_mask=attention_mask_4d,
+                position_embeddings=position_embeddings_by_type[layer_type],
+                position_ids=pixel_position_ids,
+            )
+        return hidden_states
+
+    if _GEMMA4_CREATE_BIDIRECTIONAL_MASK is None:
+        raise RuntimeError("Gemma4 bidirectional mask helper is unavailable in this transformers install")
+    attention_mask = _GEMMA4_CREATE_BIDIRECTIONAL_MASK(
         config=config,
         inputs_embeds=inputs_embeds,
         attention_mask=attention_mask,
     )
-    hidden_states = inputs_embeds
-    rotary_emb = getattr(vision_encoder, "rotary_emb")
     position_embeddings = rotary_emb(hidden_states, pixel_position_ids)
-    layers = getattr(vision_encoder, "layers")
-    num_layers = int(getattr(config, "num_hidden_layers", len(layers)))
     for decoder_layer in layers[:num_layers]:
         hidden_states = decoder_layer(
             hidden_states,
@@ -824,46 +850,85 @@ def _gemma4_compute_native_like_audio_features(
     if not isinstance(audio_tower, torch.nn.Module) or not isinstance(embed_audio, torch.nn.Module):
         raise TypeError("Gemma4 multimodal backbone is missing native-like audio modules")
 
-    hidden_states, output_mask = audio_tower.subsample_conv_projection(input_features, input_features_mask)
-    position_embeddings = audio_tower.rel_pos_enc(hidden_states)
-
     config = getattr(audio_tower, "config", None)
     if config is None:
         raise TypeError("Gemma4 audio tower is missing config")
-    seq_len = hidden_states.shape[1]
-    query_positions = torch.arange(seq_len, device=hidden_states.device)[:, None]
-    key_positions = torch.arange(seq_len, device=hidden_states.device)[None, :]
-    distance = query_positions - key_positions
-    left_context = int(getattr(config, "attention_context_left", 13)) - 1
-    right_context = int(getattr(config, "attention_context_right", 0))
-    local_mask = ((distance >= 0) & (distance < left_context)) | ((distance < 0) & ((-distance) < right_context))
-    attention_mask = local_mask.unsqueeze(0).unsqueeze(0)
-    if output_mask is not None:
-        attention_mask = attention_mask & output_mask[:, None, None, :].to(dtype=torch.bool)
-    attention_mask = _gemma4_convert_audio_mask_to_blocked_static(
-        attention_mask,
-        chunk_size=int(getattr(config, "attention_chunk_size", 12)),
-        left_context=left_context,
-        right_context=right_context,
-    )
+    hidden_states, output_mask = audio_tower.subsample_conv_projection(input_features, input_features_mask)
 
-    layers = getattr(audio_tower, "layers", None)
-    if not isinstance(layers, torch.nn.ModuleList):
-        layers = getattr(audio_tower, "conformer", None)
-    if not isinstance(layers, torch.nn.ModuleList):
-        raise TypeError("Gemma4 audio tower is missing layers/conformer")
-    num_layers = int(getattr(config, "num_hidden_layers", len(layers)))
-    for encoder_layer in layers[:num_layers]:
-        hidden_states = encoder_layer(
-            hidden_states,
-            attention_mask=attention_mask,
-            position_embeddings=position_embeddings,
+    if not hasattr(audio_tower, "rel_pos_enc"):
+        # Newer Gemma4 audio towers keep relative-position handling inside each
+        # conformer block. Follow that native path with fixed-shape masks.
+        chunk_size = int(getattr(config, "conf_attention_chunk_size", getattr(config, "attention_chunk_size", 12)))
+        right_context = int(getattr(config, "conf_attention_context_right", getattr(config, "attention_context_right", 0)))
+        left_context = int(getattr(config, "conf_attention_context_left", getattr(config, "attention_context_left", 13)))
+        max_past_horizon = max(0, left_context - 1)
+        upper_diagonal = max_past_horizon + right_context
+        context_size = chunk_size + max_past_horizon + right_context
+        lower_causal_mask = torch.tril(
+            torch.ones((context_size, chunk_size), dtype=torch.bool, device=hidden_states.device),
+            diagonal=0,
+        ).T
+        upper_causal_mask = torch.tril(
+            torch.ones((chunk_size, context_size), dtype=torch.bool, device=hidden_states.device),
+            diagonal=upper_diagonal,
+        )
+        causal_valid_mask = (
+            torch.ones((chunk_size, context_size), dtype=torch.bool, device=hidden_states.device)
+            * lower_causal_mask
+            * upper_causal_mask
         )
 
-    output_proj = getattr(audio_tower, "output_proj", None)
-    if not isinstance(output_proj, torch.nn.Linear):
-        raise TypeError("Gemma4 audio tower is missing output_proj")
-    audio_encodings = output_proj(hidden_states)
+        layers = getattr(audio_tower, "conformer", None)
+        if not isinstance(layers, torch.nn.ModuleList):
+            raise TypeError("Gemma4 audio tower is missing conformer layers")
+        num_layers = int(getattr(config, "num_hidden_layers", len(layers)))
+        for encoder_layer in layers[:num_layers]:
+            hidden_states = encoder_layer(hidden_states, output_mask, causal_valid_mask)
+
+        reduction_factor = int(getattr(config, "conf_reduction_factor", 1) or 1)
+        if reduction_factor > 1:
+            hidden_states = hidden_states[:, ::reduction_factor]
+            if output_mask is not None:
+                output_mask = output_mask[:, ::reduction_factor]
+
+        output_proj = getattr(audio_tower, "output_proj", None)
+        audio_encodings = output_proj(hidden_states) if isinstance(output_proj, torch.nn.Linear) else hidden_states
+    else:
+        position_embeddings = audio_tower.rel_pos_enc(hidden_states)
+        seq_len = hidden_states.shape[1]
+        query_positions = torch.arange(seq_len, device=hidden_states.device)[:, None]
+        key_positions = torch.arange(seq_len, device=hidden_states.device)[None, :]
+        distance = query_positions - key_positions
+        left_context = int(getattr(config, "attention_context_left", 13)) - 1
+        right_context = int(getattr(config, "attention_context_right", 0))
+        local_mask = ((distance >= 0) & (distance < left_context)) | ((distance < 0) & ((-distance) < right_context))
+        attention_mask = local_mask.unsqueeze(0).unsqueeze(0)
+        if output_mask is not None:
+            attention_mask = attention_mask & output_mask[:, None, None, :].to(dtype=torch.bool)
+        attention_mask = _gemma4_convert_audio_mask_to_blocked_static(
+            attention_mask,
+            chunk_size=int(getattr(config, "attention_chunk_size", 12)),
+            left_context=left_context,
+            right_context=right_context,
+        )
+
+        layers = getattr(audio_tower, "layers", None)
+        if not isinstance(layers, torch.nn.ModuleList):
+            layers = getattr(audio_tower, "conformer", None)
+        if not isinstance(layers, torch.nn.ModuleList):
+            raise TypeError("Gemma4 audio tower is missing layers/conformer")
+        num_layers = int(getattr(config, "num_hidden_layers", len(layers)))
+        for encoder_layer in layers[:num_layers]:
+            hidden_states = encoder_layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                position_embeddings=position_embeddings,
+            )
+
+        output_proj = getattr(audio_tower, "output_proj", None)
+        if not isinstance(output_proj, torch.nn.Linear):
+            raise TypeError("Gemma4 audio tower is missing output_proj")
+        audio_encodings = output_proj(hidden_states)
 
     projection = getattr(embed_audio, "embedding_projection", None)
     if not isinstance(projection, torch.nn.Linear):
@@ -1241,28 +1306,6 @@ class BoundInputAdapter(torch.nn.Module):
                 "task": self.metadata_task,
             }
         }
-
-
-def _gemma4_import_hints(backbone: torch.nn.Module, *, module_path_suffix_prefix: str) -> list[dict[str, object]]:
-    sliding_window = getattr(backbone.config, "sliding_window", None)
-    layer_types = list(getattr(backbone.config, "layer_types", []))
-    import_hints: list[dict[str, object]] = []
-    for layer_index, layer_type in enumerate(layer_types):
-        attrs: dict[str, object] = {}
-        if layer_type == "sliding_attention" and sliding_window is not None:
-            attrs["window_size"] = int(sliding_window)
-        import_hints.append(
-            {
-                "module_path_suffix": f"{module_path_suffix_prefix}.layers.{layer_index}.self_attn",
-                "op": "scaled_dot_product_attention",
-                "attrs": attrs,
-                "meta": {
-                    "attention_layer_type": layer_type,
-                    "attention_layer_index": layer_index,
-                },
-            }
-        )
-    return import_hints
 
 
 class CausalLMLogitsAdapter(torch.nn.Module):
@@ -1801,8 +1844,7 @@ class Gemma3CausalLMLogitsAdapter(torch.nn.Module):
                 "num_hidden_layers": int(self.backbone.config.num_hidden_layers),
                 "layer_types": tuple(layer_types),
                 "sliding_window": None if sliding_window is None else int(sliding_window),
-            },
-            "import_hints": _gemma4_import_hints(self.backbone, module_path_suffix_prefix="backbone"),
+            }
         }
 
 
@@ -1963,8 +2005,7 @@ class Gemma4CausalLMLogitsAdapter(torch.nn.Module):
                 "num_hidden_layers": int(self.backbone.config.num_hidden_layers),
                 "layer_types": tuple(layer_types),
                 "sliding_window": None if sliding_window is None else int(sliding_window),
-            },
-            "import_hints": _gemma4_import_hints(self.backbone, module_path_suffix_prefix="backbone"),
+            }
         }
 
 
@@ -2445,11 +2486,7 @@ class Gemma4MultimodalCausalLMLogitsAdapter(BoundInputAdapter):
                 "layer_types": tuple(layer_types),
                 "sliding_window": None if sliding_window is None else int(sliding_window),
                 "last_token_logits_only": bool(self.last_token_logits_only),
-            },
-            "import_hints": _gemma4_import_hints(
-                self.backbone,
-                module_path_suffix_prefix="backbone",
-            ),
+            }
         }
 
 
@@ -2693,6 +2730,36 @@ class _Gemma4MultimodalComponentBase(torch.nn.Module):
             position_ids,
         )
 
+    def _prepare_text_decoder_step_inputs(
+        self,
+        *,
+        input_ids: torch.Tensor,
+        position_ids: torch.LongTensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.LongTensor]:
+        embedding = self.model.get_input_embeddings()
+        if not isinstance(embedding, torch.nn.Module):
+            raise TypeError("Gemma4 model is missing input embeddings")
+        inputs_embeds = embedding(input_ids)
+
+        model_config = getattr(self.model, "config", None)
+        text_config = getattr(model_config, "text_config", None)
+        hidden_scale = float(getattr(model_config, "hidden_size", 0) or 0)
+        if hidden_scale <= 0.0:
+            hidden_scale = float(getattr(text_config, "hidden_size", 0) or 0)
+        if hidden_scale <= 0.0:
+            hidden_scale = float(inputs_embeds.shape[-1])
+        text_extra_scale = _gemma4_text_embedding_scale(embedding, hidden_scale ** 0.5)
+        if text_extra_scale != 1.0:
+            inputs_embeds = inputs_embeds * text_extra_scale
+
+        text_config = _gemma4_text_config(self.multimodal_backbone)
+        if getattr(text_config, "hidden_size_per_layer_input", None):
+            per_layer_inputs = _gemma4_get_per_layer_inputs(self.backbone, input_ids, inputs_embeds)
+            per_layer_inputs = self.backbone.project_per_layer_inputs(inputs_embeds, per_layer_inputs)
+        else:
+            per_layer_inputs = inputs_embeds.new_empty((inputs_embeds.shape[0], inputs_embeds.shape[1], 0, 0))
+        return inputs_embeds, per_layer_inputs, position_ids
+
 
 class Gemma4VisionEncoderAdapter(_Gemma4MultimodalComponentBase):
     def __init__(
@@ -2785,6 +2852,29 @@ class Gemma4LMEncoderAdapter(_Gemma4MultimodalComponentBase):
         }
 
 
+class Gemma4LMEncoderStepAdapter(_Gemma4MultimodalComponentBase):
+    def __init__(self, model: torch.nn.Module, *, weights_dir: str | None = None):
+        super().__init__(model, input_names=("input_ids", "position_ids"), weights_dir=weights_dir)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.LongTensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.LongTensor]:
+        return self._prepare_text_decoder_step_inputs(
+            input_ids=input_ids,
+            position_ids=position_ids,
+        )
+
+    def get_transpile_metadata(self):
+        return {
+            "graph": self._base_graph_meta(
+                adapter_type=type(self).__name__,
+                input_names=("input_ids", "position_ids"),
+            ),
+        }
+
+
 class Gemma4DecoderAdapter(_Gemma4MultimodalComponentBase):
     def __init__(self, model: torch.nn.Module, *, weights_dir: str | None = None):
         super().__init__(model, input_names=_GEMMA4_DECODER_PIPELINE_IO_KEYS, weights_dir=weights_dir)
@@ -2826,12 +2916,12 @@ class Gemma4DecoderAdapter(_Gemma4MultimodalComponentBase):
             "graph": self._base_graph_meta(
                 adapter_type=type(self).__name__,
                 input_names=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
-            ),
-            "import_hints": _gemma4_import_hints(
-                self.backbone,
-                module_path_suffix_prefix="backbone",
-            ),
+            )
         }
+
+
+class Gemma4DecoderStepAdapter(Gemma4DecoderAdapter):
+    pass
 
 
 def _build_gemma4_multimodal_component_specs(
@@ -2864,7 +2954,14 @@ def _build_gemma4_multimodal_component_specs(
         _require("vision_encoder")
         _require("audio_encoder")
         _require("lm_encoder")
-        _require("decoder")
+        _require("decoder_prefill_chunk")
+        _require("lm_encoder_step")
+        _require("decoder_step")
+    if "decoder_prefill_chunk" in requested_set:
+        _require("vision_encoder")
+        _require("audio_encoder")
+        _require("lm_encoder")
+        _require("decoder_prefill_chunk")
     elif "lm_encoder" in requested_set:
         _require("vision_encoder")
         _require("audio_encoder")
@@ -2874,6 +2971,11 @@ def _build_gemma4_multimodal_component_specs(
             _require("vision_encoder")
         if "audio_encoder" in requested_set:
             _require("audio_encoder")
+        if "lm_encoder_step" in requested_set:
+            _require("lm_encoder_step")
+        if "decoder_step" in requested_set:
+            _require("lm_encoder_step")
+            _require("decoder_step")
 
     vision_tower = getattr(getattr(model, "model", model), "vision_tower", None)
     pooling_kernel_size = int(_module_or_config_attr(vision_tower, "pooling_kernel_size", 3) or 3)
@@ -2897,14 +2999,25 @@ def _build_gemma4_multimodal_component_specs(
     image_features: torch.Tensor | None = None
     audio_features: torch.Tensor | None = None
     decoder_inputs: tuple[torch.Tensor, ...] | None = None
+    decoder_step_inputs: tuple[torch.Tensor, ...] | None = None
+    step_input_ids: torch.Tensor | None = None
+    step_position_ids: torch.Tensor | None = None
     native_merge_plan: _Gemma4NativeMergePlan | None = None
 
     with torch.no_grad():
-        if "vision_encoder" in expanded_components and ("lm_encoder" in expanded_components or "decoder" in expanded_components):
+        if "vision_encoder" in expanded_components and (
+            "lm_encoder" in expanded_components
+            or "decoder" in expanded_components
+            or "decoder_prefill_chunk" in expanded_components
+        ):
             image_features = vision_encoder(pixel_values, pixel_position_ids)
-        if "audio_encoder" in expanded_components and ("lm_encoder" in expanded_components or "decoder" in expanded_components):
+        if "audio_encoder" in expanded_components and (
+            "lm_encoder" in expanded_components
+            or "decoder" in expanded_components
+            or "decoder_prefill_chunk" in expanded_components
+        ):
             audio_features = audio_encoder(input_features, input_features_mask)
-        if "lm_encoder" in expanded_components or "decoder" in expanded_components:
+        if "lm_encoder" in expanded_components or "decoder" in expanded_components or "decoder_prefill_chunk" in expanded_components:
             if image_features is None:
                 image_features = vision_encoder(pixel_values, pixel_position_ids)
             if audio_features is None:
@@ -2920,10 +3033,12 @@ def _build_gemma4_multimodal_component_specs(
         weights_dir=weights_dir,
         native_merge_plan=native_merge_plan,
     ).eval()
+    lm_encoder_step = Gemma4LMEncoderStepAdapter(model, weights_dir=weights_dir).eval()
     decoder = Gemma4DecoderAdapter(model, weights_dir=weights_dir).eval()
+    decoder_step = Gemma4DecoderStepAdapter(model, weights_dir=weights_dir).eval()
 
     with torch.no_grad():
-        if "decoder" in expanded_components:
+        if "decoder" in expanded_components or "decoder_prefill_chunk" in expanded_components:
             decoder_inputs = lm_encoder(
                 input_ids,
                 attention_mask,
@@ -2931,6 +3046,15 @@ def _build_gemma4_multimodal_component_specs(
                 image_features,
                 audio_features,
             )
+        if "lm_encoder_step" in expanded_components or "decoder_step" in expanded_components:
+            step_input_ids = input_ids[:, -1:].contiguous()
+            step_position_ids = torch.full(
+                (int(input_ids.shape[0]), 1),
+                max(0, int(input_ids.shape[1]) - 1),
+                dtype=torch.long,
+                device=input_ids.device,
+            )
+            decoder_step_inputs = lm_encoder_step(step_input_ids, step_position_ids)
 
     common_graph_meta = {
         "weights_dir": weights_dir,
@@ -2970,6 +3094,9 @@ def _build_gemma4_multimodal_component_specs(
             graph_meta={**common_graph_meta, "component": "lm_encoder"},
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
         ))
+    cache_seq_len = max(1024, int(input_ids.shape[1]) + 256)
+    prefill_chunk_size = max(1, int(os.environ.get("CACTUS_GEMMA4_PREFILL_CHUNK", "32") or "32"))
+    prefill_chunk_size = min(prefill_chunk_size, int(input_ids.shape[1]))
     if "decoder" in expanded_components:
         if decoder_inputs is None:
             raise RuntimeError("Gemma4 decoder spec requires precomputed decoder inputs")
@@ -2980,6 +3107,61 @@ def _build_gemma4_multimodal_component_specs(
             input_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
             output_keys=("logits",),
             graph_meta={**common_graph_meta, "component": "decoder"},
+            metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
+        ))
+    if "decoder_prefill_chunk" in expanded_components:
+        if decoder_inputs is None:
+            raise RuntimeError("Gemma4 decoder_prefill_chunk spec requires precomputed decoder inputs")
+        chunk_inputs = tuple(
+            value[:, :prefill_chunk_size, ...].contiguous()
+            if value.ndim >= 2
+            else value
+            for value in decoder_inputs
+        )
+        specs.append(ComponentModuleSpec(
+            component="decoder_prefill_chunk",
+            module=decoder,
+            example_inputs=chunk_inputs,
+            input_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
+            output_keys=("logits",),
+            graph_meta={
+                **common_graph_meta,
+                "component": "decoder_prefill_chunk",
+                "use_internal_kv_cache": True,
+                "max_cache_seq_len": cache_seq_len,
+                "cache_sink_size": 4,
+                "prefill_chunk_size": prefill_chunk_size,
+            },
+            metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
+        ))
+    if "lm_encoder_step" in expanded_components:
+        if step_input_ids is None or step_position_ids is None:
+            raise RuntimeError("Gemma4 lm_encoder_step spec requires step token inputs")
+        specs.append(ComponentModuleSpec(
+            component="lm_encoder_step",
+            module=lm_encoder_step,
+            example_inputs=(step_input_ids, step_position_ids),
+            input_keys=("input_ids", "position_ids"),
+            output_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
+            graph_meta={**common_graph_meta, "component": "lm_encoder_step"},
+            metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
+        ))
+    if "decoder_step" in expanded_components:
+        if decoder_step_inputs is None:
+            raise RuntimeError("Gemma4 decoder_step spec requires precomputed step decoder inputs")
+        specs.append(ComponentModuleSpec(
+            component="decoder_step",
+            module=decoder_step,
+            example_inputs=tuple(decoder_step_inputs),
+            input_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
+            output_keys=("logits",),
+            graph_meta={
+                **common_graph_meta,
+                "component": "decoder_step",
+                "use_internal_kv_cache": True,
+                "max_cache_seq_len": cache_seq_len,
+                "cache_sink_size": 4,
+            },
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
         ))
     return specs
@@ -3046,17 +3228,6 @@ class Qwen35CausalLMLogitsAdapter(torch.nn.Module):
 
     def get_transpile_metadata(self):
         layer_types = tuple(getattr(self.backbone.config, "layer_types", ()))
-        import_hints: list[dict[str, object]] = []
-        for layer_index, layer_type in enumerate(layer_types):
-            import_hints.append(
-                {
-                    "module_path_suffix": f"backbone.layers.{layer_index}.self_attn",
-                    "meta": {
-                        "attention_layer_type": layer_type,
-                        "attention_layer_index": layer_index,
-                    },
-                }
-            )
         return {
             "graph": {
                 **_transpile_graph_meta(
@@ -3067,8 +3238,7 @@ class Qwen35CausalLMLogitsAdapter(torch.nn.Module):
                 ),
                 "num_hidden_layers": int(self.backbone.config.num_hidden_layers),
                 "layer_types": layer_types,
-            },
-            "import_hints": import_hints,
+            }
         }
 
 
@@ -3146,8 +3316,7 @@ class Qwen3CausalLMLogitsAdapter(torch.nn.Module):
                 "num_hidden_layers": int(self.backbone.config.num_hidden_layers),
                 "layer_types": tuple(layer_types),
                 "sliding_window": None if sliding_window is None else int(sliding_window),
-            },
-            "import_hints": _gemma4_import_hints(self.backbone, module_path_suffix_prefix="backbone"),
+            }
         }
 
 

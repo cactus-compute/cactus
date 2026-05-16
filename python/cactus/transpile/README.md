@@ -196,6 +196,27 @@ This step is where family-specific knowledge lives:
 
 The adapter is also where graph metadata and import hints get attached.
 
+## 3b. Import PyTorch Ops, Not Model Layer Names
+
+The compiler boundary is the `torch.export` graph. After capture, Cactus imports
+`call_function` nodes by their canonical ATen operation name, not by Hugging Face
+module names. For example, `torch.ops.aten.linear.default`, `aten.linear.default`,
+and equivalent exported spellings normalize through `aten_ops.py` to the same
+canonical IR op:
+
+```python
+aten.linear.default -> linear
+aten.silu.default   -> silu
+aten.conv1d.default -> conv1d
+aten.rms_norm.default -> rms_norm
+```
+
+This is the main generality boundary: model wrappers may still prepare inputs or
+split components, but actual compute lowering is ATen op / pattern based. Layer
+names are allowed as structural hints for component boundaries and exact
+converted-weight manifest aliases; they should not be required to decide how a
+PyTorch op maps to a Cactus op.
+
 ## 4. Decide Between Monolithic Capture And Component Capture
 
 After input prep, the script asks `build_component_module_specs()` whether the
@@ -350,8 +371,13 @@ ir.values[value_id_str].meta.update(
 )
 ```
 
-That metadata is what later lets lowering use `g.mmap_weights()` or
-`g.mmap_embeddings()` instead of embedding the constant payload into the graph.
+That metadata is what later lets lowering use `g.mmap_weights()` instead of
+embedding the constant payload into the graph. Embedding lookups still lower to
+`embedding_from_tensor()`, but the backing table is represented as a normal mmap
+weight tensor so tied output heads can reuse the same constant safely.
+By default this resolver only trusts explicit `weights_manifest.json` entries
+written by `cactus convert` plus wrapper-local aliases derived from those entries.
+It does not guess old model-specific filenames from layer names.
 
 ## 8. Importers: FX Target To Canonical IR Node
 
@@ -363,14 +389,16 @@ The dispatch point is:
 ```python
 def import_call_function(ir, node, ctx, *, shape, dtype, torch_op):
     op = normalize_target(torch_op)
-    import_hint = ctx.lookup_import_hint(node, torch_op=torch_op, op_name=op)
     importer = OP_IMPORTERS.get(op)
     if importer is None:
         import_opaque_call_function(...)
     else:
         importer(...)
-    _apply_import_hint(ir, node, import_hint)
 ```
+
+Import is intentionally ATen/op based. It does not apply module-path hints such
+as `model.layers.N.self_attn`; model-specific behavior should live in explicit
+preprocessing/component boundaries or in topology-based fusion passes.
 
 Some notable importer behaviors:
 
@@ -455,6 +483,7 @@ def optimize_graph(graph: IRGraph, *, max_passes: int = 8, config: FusionConfig 
         fuse_attention(graph)
     ...
     normalize_gemma4_decoder_attention_semantics(graph)
+    fuse_dense_mlp_tq(graph)
     ...
     annotate_gold_patterns(graph)
     _prune_unused_inputs(graph)
@@ -514,8 +543,6 @@ This is the critical constant binding behavior:
 ```python
 def _lower_constant_value(g, value, const, *, binding=None):
     if binding is not None:
-        if binding.kind == "embedding":
-            return g.mmap_embeddings(binding.path)
         return g.mmap_weights(binding.path)
 
     if tensor_value.numel() == 1:
@@ -527,7 +554,6 @@ def _lower_constant_value(g, value, const, *, binding=None):
 So constants can become:
 
 - `g.mmap_weights(path)`
-- `g.mmap_embeddings(path)`
 - an inline scalar
 - a materialized tensor node baked into the graph
 
@@ -666,7 +692,7 @@ if use_raw_ir:
     canonicalize_exported_graph(ir_graph)
     optimize_graph(ir_graph)
 else:
-    if family == "gemma4" and component == "decoder":
+    if family == "gemma4" and component in {"decoder", "decoder_step"}:
         optimize_graph(ir_graph)
 transpiled = transpile_preoptimized_ir(ir_graph)
 ```
@@ -702,15 +728,15 @@ This keeps the capture boundary tensor-only.
 
 ### Weights directory exists but has no manifest
 
-`hf_model.py` allows a filename-based fallback:
+`hf_model.py` fails fast:
 
 ```python
 if not manifest_path.exists():
-    has_weight_files = any(root.glob("*.weights"))
-    if not has_weight_files:
-        raise RuntimeError(...)
-    print("note=weights_manifest_missing using filename-based weight binding fallback ...")
+    raise RuntimeError("weights_dir is missing weights_manifest.json")
 ```
+
+This is intentional. Converted CQ/Cactus weights are the source of truth for
+transpiled bundles; raw filename guessing is not part of the runtime contract.
 
 ### Weights directory resolves, but no bindings match
 
@@ -834,7 +860,7 @@ Notes:
 | `optimize_graph.py` | Main fusion/optimization pass driver, pattern fusion, Gemma4 attention normalization, and gold-pattern annotation. |
 | `parakeet_tdt_local.py` | Local Parakeet TDT model reconstruction, config loader, decoder loop, and component-spec generation. |
 | `runtime_compat.py` | Runtime wrapper patches that make the current Python `Graph` API usable for transpiled graphs even when some C symbols are absent. |
-| `weight_binding.py` | Resolves IR constants to converted `.weights` files by manifest or filename heuristics; also resolves default weights dirs. |
+| `weight_binding.py` | Resolves IR constants to converted `.weights` files through `weights_manifest.json`; also resolves default weights dirs. |
 | `weight_compat.py` | Makes bound weights executable with the current runtime by materializing compatibility companion files when needed. |
 
 ### Canonicalization subdirectory
@@ -1058,7 +1084,7 @@ As of the current code:
 - `CACTUS_TRANSPILER_WEIGHTS_DIR_<FAMILY>`:
   family-specific weights directory override
 - `CACTUS_TRANSPILER_DEBUG_MMAP=1`:
-  log constant binding and fallback behavior during lowering
+  log constant binding behavior during lowering
 - `CACTUS_GEMMA4_CAPTURE_FP32=1`:
   temporarily promote some Gemma4 text modules to FP32 during capture on CPU
 

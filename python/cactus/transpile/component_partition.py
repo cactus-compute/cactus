@@ -44,11 +44,6 @@ def _normalized_name_candidates(
         _add(source_name)
     if isinstance(meta, dict):
         _add(meta.get("torch_name"))
-        for key in ("module_paths", "import_hint_providers"):
-            raw_paths = meta.get(key)
-            if isinstance(raw_paths, (tuple, list)):
-                for path in raw_paths:
-                    _add(path)
     return tuple(names)
 
 
@@ -71,14 +66,8 @@ def classify_component_name_candidates(
             (
                 "pixel_values",
                 "image_features",
-                "vision_tower",
-                "vision_model",
                 "vision_encoder",
-                "vision_backbone",
-                "embed_vision",
-                "image_tower",
-                "visual_encoder",
-                "visual.",
+                "image_encoder",
             ),
         ):
             return COMPONENT_VISION_ENCODER
@@ -91,18 +80,10 @@ def classify_component_name_candidates(
                 "audio_features",
                 "speech_features",
                 "mel_features",
-                "audio_tower",
                 "audio_encoder",
                 "speech_encoder",
-                "speech_model.encoder",
                 "acoustic_encoder",
                 "feature_encoder",
-                "encoder.pre_encode",
-                "encoder.subsampling",
-                "encoder.layers",
-                "encoder.conformer",
-                "conformer.",
-                "subsample_conv_projection",
             ),
         ):
             return COMPONENT_AUDIO_ENCODER
@@ -112,21 +93,6 @@ def classify_component_name_candidates(
             name,
             (
                 "lm_head",
-                "transformer.h",
-                "decoder.layers",
-                "decoder.layer",
-                "decoder.block",
-                "language_model.layers",
-                "language_model.model.layers",
-                "model.language_model.layers",
-                "text_model.layers",
-                "model.layers",
-                "backbone.layers",
-                "adapter_backbone_layers_slice",
-                "decoder.prediction",
-                "dec_rnn",
-                "joint.",
-                "jointnet",
                 "ctc_head",
                 "classifier",
                 "output_projection",
@@ -143,64 +109,20 @@ def classify_component_name_candidates(
                 "inputs_embeds",
                 "text_embeds",
                 "position_ids",
-                "get_input_embeddings",
                 "embed_tokens",
                 "embed_text",
-                "embed_tokens_per_layer",
-                "per_layer_model_projection",
-                "per_layer_input",
                 "placeholder",
                 "multimodal_projector",
                 "multi_modal_projector",
                 "connector",
                 "merge",
                 "masked_scatter",
-                "create_causal_mask",
-                "create_masks_for_generate",
                 "token_type",
                 "attention_mask",
                 "pixel_position",
-                "multimodal_backbone",
-                "adapter_model_model_language_model_embed_tokens",
-                "adapter_backbone_embed_tokens_per_layer",
-                "adapter_backbone_per_layer_model_projection",
             ),
         ):
             return COMPONENT_LM_ENCODER
-
-    for name in candidates:
-        if task in {"ctc_logits", "encoder_hidden_states"} and name.startswith("encoder."):
-            return COMPONENT_AUDIO_ENCODER
-
-    if family == "gemma4" and task == "multimodal_causal_lm_logits":
-        for name in candidates:
-            if _contains_any(
-                name,
-                (
-                    "input_ids",
-                    "token_type_ids",
-                    "attention_mask",
-                    "input_features_mask",
-                ),
-            ):
-                return COMPONENT_LM_ENCODER
-
-    if family == "parakeet_tdt":
-        for name in candidates:
-            if _contains_any(
-                name,
-                (
-                    "decoder.prediction",
-                    "dec_rnn",
-                    "joint.",
-                    "jointnet",
-                    "predictor_",
-                    "tdt_joint",
-                ),
-            ):
-                return COMPONENT_DECODER
-            if name.startswith("encoder."):
-                return COMPONENT_AUDIO_ENCODER
 
     return None
 
@@ -255,6 +177,18 @@ def _rebuild_users(graph: IRGraph) -> None:
 def annotate_ir_components(graph: IRGraph) -> None:
     family = str(graph.meta.get("adapter_family", "") or "").lower()
     task = str(graph.meta.get("task", "") or "").lower()
+    graph_component = str(graph.meta.get("component", "") or "").strip()
+    if graph_component in COMPONENT_ORDER:
+        for value in graph.values.values():
+            value.meta["component"] = graph_component
+        for node_id in graph.order:
+            node = graph.nodes[node_id]
+            node.meta["component"] = graph_component
+            for output_id in node.outputs:
+                graph.values[output_id].meta["component"] = graph_component
+        graph.meta["component_counts"] = {graph_component: len(graph.order)}
+        return
+
     default_component = _task_default_component(family=family, task=task)
 
     for value_id, value in graph.values.items():

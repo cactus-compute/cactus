@@ -8,6 +8,7 @@ import torch
 from torch.export import export
 from torch.fx.passes.shape_prop import ShapeProp
 
+from cactus.transpile.aten_ops import canonical_torch_op
 from cactus.transpile.graph_ir import IRGraph
 
 
@@ -130,7 +131,6 @@ def _call_transpile_metadata_provider(module: torch.nn.Module, args: tuple[Any, 
 def _collect_transpile_metadata(model: torch.nn.Module, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
     graph_meta: dict[str, Any] = {}
     provider_graph_meta: dict[str, dict[str, Any]] = {}
-    import_hints: list[dict[str, Any]] = []
     seen_modules: set[int] = set()
 
     for module_path, module in model.named_modules():
@@ -150,25 +150,12 @@ def _collect_transpile_metadata(model: torch.nn.Module, args: tuple[Any, ...], k
             if not module_path:
                 graph_meta.update(provider_meta)
 
-        raw_hints = metadata.get("import_hints", ())
-        for raw_hint in raw_hints:
-            if not isinstance(raw_hint, dict):
-                raise TypeError(f"{type(module).__name__} import hints must be dictionaries")
-            hint = dict(raw_hint)
-            hint.setdefault("provider", provider_key)
-            import_hints.append(hint)
-
     if provider_graph_meta:
         graph_meta.setdefault("transpile_metadata_providers", provider_graph_meta)
-    if import_hints:
-        graph_meta["import_hint_count"] = len(import_hints)
 
-    if not graph_meta and not import_hints:
+    if not graph_meta:
         return {}
-    return {
-        "graph": graph_meta,
-        "import_hints": import_hints,
-    }
+    return {"graph": graph_meta}
 
 
 def _prepare_import_graph_module(ep: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
@@ -292,7 +279,7 @@ def resolve_attr(root: Any, target: str) -> Any:
 
 
 def format_target(node: Any) -> str:
-    return str(node.target)
+    return canonical_torch_op(node.target)
 
 
 def _try_materialize_int_tuple(values: Iterable[Any]) -> tuple[int, ...] | None:
