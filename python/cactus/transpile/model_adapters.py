@@ -1620,6 +1620,36 @@ class Lfm2VlLMEncoderAdapter(torch.nn.Module):
         }
 
 
+class Lfm2VlTextLMEncoderAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module, *, weights_dir: str | None = None):
+        super().__init__()
+        self.model = model
+        self.weights_dir = weights_dir
+        self.backbone = _lfm2_language_backbone(model)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        inputs_embeds = self.backbone.embed_tokens(input_ids)
+        position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
+        return inputs_embeds, attention_mask.to(dtype=torch.int64), position_ids
+
+    def get_transpile_metadata(self):
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.model,
+                    adapter_family="lfm2_vl",
+                    adapter_type=type(self).__name__,
+                    input_names=("input_ids", "attention_mask"),
+                ),
+                "weights_dir": self.weights_dir,
+            }
+        }
+
+
 class Lfm2VlDecoderAdapter(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, *, weights_dir: str | None = None):
         super().__init__()
@@ -3581,7 +3611,7 @@ def _build_lfm2_vl_multimodal_component_specs(
     spatial_shapes = named_tensors["spatial_shapes"]
     pixel_attention_mask = named_tensors["pixel_attention_mask"]
 
-    requested_components = tuple(components or ("vision_encoder", "lm_encoder", "decoder"))
+    requested_components = tuple(components or ("vision_encoder", "lm_encoder", "text_lm_encoder", "decoder"))
     requested_set = set(requested_components)
     if not requested_set:
         return []
@@ -3595,10 +3625,13 @@ def _build_lfm2_vl_multimodal_component_specs(
     if "decoder" in requested_set:
         _require("vision_encoder")
         _require("lm_encoder")
+        _require("text_lm_encoder")
         _require("decoder")
     elif "lm_encoder" in requested_set:
         _require("vision_encoder")
         _require("lm_encoder")
+    elif "text_lm_encoder" in requested_set:
+        _require("text_lm_encoder")
     elif "vision_encoder" in requested_set:
         _require("vision_encoder")
 
@@ -3609,10 +3642,12 @@ def _build_lfm2_vl_multimodal_component_specs(
         weights_dir=weights_dir,
     ).eval()
     lm_encoder = Lfm2VlLMEncoderAdapter(model, input_ids=input_ids, weights_dir=weights_dir).eval()
+    text_lm_encoder = Lfm2VlTextLMEncoderAdapter(model, weights_dir=weights_dir).eval()
     decoder = Lfm2VlDecoderAdapter(model, weights_dir=weights_dir).eval()
 
     image_features: torch.Tensor | None = None
     decoder_inputs: tuple[torch.Tensor, ...] | None = None
+    text_decoder_inputs: tuple[torch.Tensor, ...] | None = None
     with torch.no_grad():
         if "vision_encoder" in expanded_components and ("lm_encoder" in expanded_components or "decoder" in expanded_components):
             image_features = vision_encoder(pixel_values, spatial_shapes, pixel_attention_mask)
@@ -3620,6 +3655,8 @@ def _build_lfm2_vl_multimodal_component_specs(
             if image_features is None:
                 image_features = vision_encoder(pixel_values, spatial_shapes, pixel_attention_mask)
             decoder_inputs = lm_encoder(input_ids, attention_mask, image_features)
+        if "text_lm_encoder" in expanded_components:
+            text_decoder_inputs = text_lm_encoder(input_ids, attention_mask)
 
     common_graph_meta = {
         "weights_dir": weights_dir,
@@ -3649,7 +3686,21 @@ def _build_lfm2_vl_multimodal_component_specs(
             graph_meta={**common_graph_meta, "component": "lm_encoder"},
             metadata={"family": "lfm2_vl", "task": "multimodal_causal_lm_logits"},
         ))
+    if "text_lm_encoder" in expanded_components:
+        if text_decoder_inputs is None:
+            raise RuntimeError("LFM2-VL text_lm_encoder spec requires precomputed text decoder inputs")
+        specs.append(ComponentModuleSpec(
+            component="text_lm_encoder",
+            module=text_lm_encoder,
+            example_inputs=(input_ids, attention_mask),
+            input_keys=("input_ids", "attention_mask"),
+            output_keys=("inputs_embeds", "attention_mask", "position_ids"),
+            graph_meta={**common_graph_meta, "component": "text_lm_encoder"},
+            metadata={"family": "lfm2_vl", "task": "multimodal_causal_lm_logits"},
+        ))
     if "decoder" in expanded_components:
+        if decoder_inputs is None:
+            decoder_inputs = text_decoder_inputs
         if decoder_inputs is None:
             raise RuntimeError("LFM2-VL decoder spec requires precomputed decoder inputs")
         specs.append(ComponentModuleSpec(

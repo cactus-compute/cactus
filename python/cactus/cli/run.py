@@ -1,6 +1,7 @@
 import os
 import platform
 import sys
+import json
 from pathlib import Path
 
 from .common import (
@@ -43,6 +44,38 @@ def _validate_audio_path(audio_path: str) -> str | None:
         print_color(RED, f"Error: Audio file not found: {resolved}")
         return None
     return resolved
+
+
+def _model_type_from_weights_dir(weights_dir: Path) -> str:
+    config_json = weights_dir / "config.json"
+    if config_json.exists():
+        try:
+            payload = json.loads(config_json.read_text())
+            model_type = str(payload.get("model_type", "") or "").strip().lower()
+            if model_type:
+                return model_type
+        except Exception:
+            pass
+    config_txt = weights_dir / "config.txt"
+    if config_txt.exists():
+        for line in config_txt.read_text(errors="ignore").splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == "model_type":
+                return value.strip().lower()
+    return ""
+
+
+def _should_avoid_native_loader(weights_dir: Path) -> bool:
+    model_type = _model_type_from_weights_dir(weights_dir)
+    return model_type in {
+        "gemma4",
+        "lfm2_vl",
+        "parakeet_tdt",
+        "whisper",
+        "qwen3",
+        "qwen2",
+        "qwen",
+    }
 
 
 def _prepare_transpiled_run_args(args, *, manifest_path: Path) -> int:
@@ -120,6 +153,29 @@ def cmd_run(args):
         if download_result != 0:
             return download_result
         weights_dir = get_effective_weights_dir(model_id, args)
+        manifest_path = _resolve_transpiled_manifest(weights_dir)
+        if manifest_path is not None:
+            if _prepare_transpiled_run_args(args, manifest_path=manifest_path) != 0:
+                return 1
+            _clear_terminal_for_chat()
+            print_color(GREEN, f"Starting Cactus Chat with model: {model_id}")
+            print()
+            return cmd_run_transpiled(args)
+
+    weights_path = Path(weights_dir)
+    if _should_avoid_native_loader(weights_path):
+        print_color(
+            RED,
+            "This weights folder contains CQ weights but no transpiled Cactus component bundle.",
+        )
+        print_color(
+            YELLOW,
+            "Native C++ model subclasses are not available in this build, so this model must run through "
+            "the transpiled graph path. Build the bundle first, then rerun:\n"
+            f"  cactus convert {model_id} {weights_path} --bits 4\n"
+            f"  cactus run {weights_path}",
+        )
+        return 1
 
     image_path = getattr(args, 'image', None)
     if image_path:

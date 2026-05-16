@@ -1225,6 +1225,20 @@ def _run_multimodal_causal_lm_bundle(
             max_new_tokens=max_new_tokens,
             stop_sequences=stop_sequences,
         )
+    if family == "lfm2_vl" and not has_image:
+        if "text_lm_encoder" not in component_graphs:
+            raise ValueError(
+                "LFM2-VL text-only execution requires a text_lm_encoder route; "
+                "re-run cactus convert to rebuild this bundle."
+            )
+        return _run_lfm2_vl_text_bundle(
+            component_graphs=component_graphs,
+            manifest=manifest,
+            prompt=resolved_prompt,
+            enable_thinking=enable_thinking,
+            max_new_tokens=max_new_tokens,
+            stop_sequences=stop_sequences,
+        )
 
     encoder_components: list[str] = []
     skipped_encoder_components: list[str] = []
@@ -1236,9 +1250,6 @@ def _run_multimodal_causal_lm_bundle(
         encoder_components.append("audio_encoder")
     elif "audio_encoder" in component_graphs:
         skipped_encoder_components.append("audio_encoder")
-    if family == "lfm2_vl" and not has_image:
-        raise ValueError("provide --image or --image-file for LFM2-VL multimodal bundles")
-
     if use_cached_step_decode:
         required_components = tuple(encoder_components) + (
             ("lm_encoder", "decoder_prefill_chunk") if use_chunk_prefill else ("lm_encoder",)
@@ -1614,6 +1625,147 @@ def _run_gemma4_text_only_cached_bundle(
         "next_token_id": first_generated_token_id,
         "next_token": first_generated_token,
         "decode_mode": "cached_step_text",
+    }
+
+
+def _run_lfm2_vl_text_bundle(
+    *,
+    component_graphs: dict[str, LoadedComponentGraph],
+    manifest: dict[str, object],
+    prompt: str,
+    enable_thinking: bool,
+    max_new_tokens: int | None,
+    stop_sequences: tuple[str, ...],
+) -> dict[str, object]:
+    if "decoder" not in component_graphs or "text_lm_encoder" not in component_graphs:
+        raise ValueError("LFM2-VL text route requires text_lm_encoder and decoder components")
+
+    tokenizer = _load_bundle_tokenizer(manifest)
+    prompt_token_ids = _tokenize_bundle_prompt_for_manifest(
+        manifest,
+        tokenizer,
+        prompt,
+        enable_thinking_if_supported=enable_thinking,
+    )
+    if not prompt_token_ids:
+        raise ValueError("LFM2-VL text prompt produced no token ids")
+
+    _attach_component_io_names(manifest, component_graphs)
+    text_lm_encoder = component_graphs["text_lm_encoder"]
+    input_names = component_input_names(text_lm_encoder)
+    if input_names != ("input_ids", "attention_mask"):
+        raise ValueError(
+            "LFM2-VL text_lm_encoder must use logical inputs ('input_ids', 'attention_mask'), "
+            f"got {input_names!r}"
+        )
+    target_token_count = int(text_lm_encoder.runtime_inputs[0].shape[1])
+    if len(prompt_token_ids) > target_token_count:
+        raise ValueError(
+            f"prompt token length {len(prompt_token_ids)} exceeds transpiled text context {target_token_count}; "
+            "re-run cactus convert with a larger profile context or use a shorter prompt."
+        )
+
+    inputs_meta = manifest.get("inputs") if isinstance(manifest.get("inputs"), dict) else {}
+    padding_token_id = _resolve_bundle_padding_token_id(inputs_meta, tokenizer)
+    input_ids = np.full((1, target_token_count), padding_token_id, dtype=np.int64)
+    attention_mask = np.zeros((1, target_token_count), dtype=np.int64)
+    input_ids[0, : len(prompt_token_ids)] = np.asarray(prompt_token_ids, dtype=np.int64)
+    attention_mask[0, : len(prompt_token_ids)] = 1
+    store: dict[str, np.ndarray] = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+    }
+
+    start = time.perf_counter()
+    store, _ = _execute_multimodal_component_pipeline_for_generation(
+        component_graphs=component_graphs,
+        manifest=manifest,
+        required_components=("text_lm_encoder", "decoder"),
+        initial_store=store,
+        prompt_token_count=len(prompt_token_ids),
+        image_files=(),
+        audio_file=None,
+    )
+
+    generated_ids: list[int] = []
+    logits_shape: list[int] | None = None
+    first_token_ms = 0.0
+    current_length = len(prompt_token_ids)
+    available_headroom = max(0, target_token_count - current_length)
+    requested_tokens = (
+        _UNBOUNDED_GENERATION_GUARD_TOKENS
+        if max_new_tokens is None
+        else max(0, int(max_new_tokens))
+    )
+    token_budget = max(0, min(requested_tokens, max(1, available_headroom + 1)))
+    stop_reason = "max_new_tokens"
+    stop_token_ids = _bundle_stop_token_ids(manifest=manifest, tokenizer=tokenizer)
+    encoded_stop_sequences = _encode_stop_sequences(tokenizer, stop_sequences)
+
+    for step_index in range(token_budget):
+        logits = np.asarray(store["logits"], dtype=np.float32)
+        logits_shape = list(logits.shape)
+        if logits.ndim != 3:
+            raise RuntimeError(f"expected logits with shape [batch, seq, vocab], got {list(logits.shape)}")
+        next_token_id = int(np.argmax(logits[0, -1]))
+        generated_ids.append(next_token_id)
+        if step_index == 0:
+            first_token_ms = (time.perf_counter() - start) * 1000.0
+
+        if next_token_id in stop_token_ids:
+            stop_reason = "stop_token"
+            break
+        if _trim_stop_suffix(generated_ids, encoded_stop_sequences):
+            stop_reason = "stop_sequence"
+            break
+        if step_index + 1 >= token_budget:
+            break
+        if current_length >= target_token_count:
+            stop_reason = "context_limit"
+            break
+
+        _append_multimodal_token_in_place(store, current_length=current_length, token_id=next_token_id)
+        current_length += 1
+        store, _ = _execute_multimodal_component_pipeline_for_generation(
+            component_graphs=component_graphs,
+            manifest=manifest,
+            required_components=("text_lm_encoder", "decoder"),
+            initial_store=store,
+            prompt_token_count=current_length,
+            image_files=(),
+            audio_file=None,
+        )
+
+    end = time.perf_counter()
+    response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=True).strip()
+    if not response:
+        response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=False).strip()
+    decode_time_ms = max(0.0, (end - start) * 1000.0 - first_token_ms)
+    decode_tps = (
+        ((len(generated_ids) - 1) * 1000.0) / decode_time_ms
+        if len(generated_ids) > 1 and decode_time_ms > 0.0
+        else 0.0
+    )
+    return {
+        "bundle_model_id": str(manifest.get("model_id", "") or ""),
+        "family": str(manifest.get("family", "") or ""),
+        "task": str(manifest.get("task", "") or ""),
+        "component_order": list(manifest.get("component_order", [])),
+        "route": "text",
+        "decode_mode": "text_lm_encoder",
+        "prompt": prompt,
+        "input_shapes": {
+            "input_ids": list(input_ids.shape),
+            "attention_mask": list(attention_mask.shape),
+        },
+        "output_shape": logits_shape or [],
+        "total_ms": (end - start) * 1000.0,
+        "time_to_first_token_ms": first_token_ms,
+        "decode_tps": decode_tps,
+        "decode_tokens": len(generated_ids),
+        "generated_token_ids": generated_ids,
+        "response": response,
+        "stop_reason": stop_reason,
     }
 
 

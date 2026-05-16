@@ -13,6 +13,7 @@ class ModelProfile:
     model_types: tuple[str, ...] = ()
     transformer_module: str | None = None
     multimodal_context_tokens: int | None = None
+    input_combinations: tuple[tuple[str, ...], ...] = ()
     aliases: tuple[tuple[str, str], ...] = ()
     regex_aliases: tuple[tuple[str, str], ...] = ()
 
@@ -22,6 +23,7 @@ GEMMA4_PROFILE = ModelProfile(
     model_types=("gemma4",),
     transformer_module="transformers.models.gemma4.modeling_gemma4",
     multimodal_context_tokens=2048,
+    input_combinations=((), ("image",), ("audio",), ("image", "audio")),
 )
 
 
@@ -29,6 +31,7 @@ LFM2_VL_PROFILE = ModelProfile(
     family="lfm2_vl",
     model_types=("lfm2_vl",),
     multimodal_context_tokens=512,
+    input_combinations=((), ("image",)),
 )
 
 
