@@ -400,6 +400,38 @@ static void write_npy_f16_bits(const std::string& path, const std::vector<size_t
     out.write(reinterpret_cast<const char*>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(uint16_t)));
 }
 
+static void write_tensor_io_f16_bits(const std::string& path, const std::vector<size_t>& shape, const std::vector<uint16_t>& values) {
+    constexpr uint32_t CACTUS_MAGIC = 0x54434143;
+    constexpr size_t HEADER_SIZE = 84;
+    constexpr uint32_t ALIGNMENT = 64;
+
+    std::ofstream out(path, std::ios::binary);
+    auto write_u32 = [&](uint32_t value) {
+        out.write(reinterpret_cast<const char*>(&value), sizeof(value));
+    };
+    auto write_u64 = [&](uint64_t value) {
+        out.write(reinterpret_cast<const char*>(&value), sizeof(value));
+    };
+
+    write_u32(CACTUS_MAGIC);
+    write_u32(0);
+    write_u32(ALIGNMENT);
+    write_u32(static_cast<uint32_t>(shape.size()));
+    for (size_t i = 0; i < 4; ++i) {
+        write_u64(i < shape.size() ? static_cast<uint64_t>(shape[i]) : 0);
+    }
+    write_u32(static_cast<uint32_t>(Precision::FP16));
+    write_u64(static_cast<uint64_t>(values.size() * sizeof(uint16_t)));
+    write_u64(0);
+    write_u32(0);
+    write_u32(0);
+    write_u64(0);
+    size_t padding = ((HEADER_SIZE + ALIGNMENT - 1) / ALIGNMENT) * ALIGNMENT - HEADER_SIZE;
+    std::string zeros(padding, '\0');
+    out.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+    out.write(reinterpret_cast<const char*>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(uint16_t)));
+}
+
 static bool test_transpiled_bundle_rebinds_saved_constant() {
     std::string dir = make_temp_dir("transpiled_saved_constant");
     fs::create_directories(dir + "/components/decoder/bound_constants");
@@ -457,6 +489,63 @@ static bool test_transpiled_bundle_rebinds_saved_constant() {
     return metrics.success && metrics.response == "B";
 }
 
+static bool test_transpiled_bundle_rebinds_tensor_io_saved_constant() {
+    std::string dir = make_temp_dir("transpiled_tensor_io_saved_constant");
+    fs::create_directories(dir + "/components/decoder/bound_constants");
+    write_file(dir + "/config.txt",
+        "model_type=qwen\nmodel_variant=default\nprecision=FP32\nnum_layers=1\nhidden_dim=8\n"
+        "ffn_intermediate_dim=16\nattention_heads=1\nattention_kv_heads=1\nattention_head_dim=8\n"
+        "vocab_size=3\nbos_token_id=0\neos_token_id=999\n");
+    write_file(dir + "/vocab.txt", "0\tA\n1\t<unused>\n2\tB\n");
+    write_file(dir + "/merges.txt", "");
+    write_file(dir + "/tokenizer_config.txt", R"({"tokenizer_type":"bpe","vocab_format":"id_tab_token"})");
+
+    CactusGraph graph;
+    size_t runtime = graph.input({1, 512, 3}, Precision::FP16);
+    size_t constant = graph.input({1, 512, 3}, Precision::FP16);
+    size_t logits = graph.add(runtime, constant);
+    graph.save(dir + "/components/decoder/graph.cactus");
+
+    std::vector<uint16_t> constant_values(1 * 512 * 3, 0);
+    for (size_t i = 0; i < 512; ++i) {
+        constant_values[i * 3 + 2] = 0x4900;
+    }
+    write_tensor_io_f16_bits(dir + "/components/decoder/bound_constants/logit_bias.weights", {1, 512, 3}, constant_values);
+
+    write_file(dir + "/components/manifest.json",
+        "{"
+        "\"task\":\"causal_lm_logits\","
+        "\"family\":\"test\","
+        "\"component_order\":[\"decoder\"],"
+        "\"components\":[{\"component\":\"decoder\",\"graph\":\"components/decoder/graph.cactus\","
+        "\"logical_inputs\":[\"input_ids\"],\"logical_outputs\":[\"logits\"],"
+        "\"runtime_input_node_ids\":[" + std::to_string(runtime) + "],"
+        "\"output_node_ids\":[" + std::to_string(logits) + "],"
+        "\"bound_constant_bindings\":[{\"node_id\":" + std::to_string(constant) + ","
+        "\"value_id\":\"logit_bias\",\"path\":\"components/decoder/bound_constants/logit_bias.weights\","
+        "\"kind\":\"saved_constant\",\"format\":\"tensor_io\",\"precision\":1}]"
+        "}]"
+        "}");
+
+    cactus_model_t model = cactus_init(dir.c_str(), nullptr, false);
+    if (!model) {
+        fs::remove_all(dir);
+        return false;
+    }
+    char response[1024];
+    const char* messages = R"([{"role":"user","content":"A"}])";
+    const char* options = R"({"max_tokens":1,"temperature":0.0,"top_k":1,"auto_handoff":false,"confidence_threshold":-1.0})";
+    int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr, nullptr, nullptr, nullptr, 0);
+    cactus_destroy(model);
+    fs::remove_all(dir);
+    if (result <= 0) {
+        return false;
+    }
+    EngineTestUtils::Metrics metrics;
+    metrics.parse(response);
+    return metrics.success && metrics.response == "B";
+}
+
 int main() {
     TestUtils::TestRunner runner("Model Loading Failure Tests");
     runner.run_test("missing_directory", test_missing_directory());
@@ -470,6 +559,7 @@ int main() {
     runner.run_test("transpiled_mtp_completion_works", test_transpiled_mtp_completion_works());
     runner.run_test("transpiled_mtp_missing_target_embedding_fails_explicitly", test_transpiled_mtp_missing_target_embedding_fails_explicitly());
     runner.run_test("transpiled_bundle_rebinds_saved_constant", test_transpiled_bundle_rebinds_saved_constant());
+    runner.run_test("transpiled_bundle_rebinds_tensor_io_saved_constant", test_transpiled_bundle_rebinds_tensor_io_saved_constant());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

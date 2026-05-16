@@ -862,6 +862,10 @@ private:
             if (!kind.empty() && kind != "saved_constant") {
                 continue;
             }
+            if (format == "tensor_io") {
+                graph->bind_mmap_weights(static_cast<size_t>(node_id), path);
+                continue;
+            }
             if (!format.empty() && format != "npy") {
                 throw std::runtime_error("unsupported transpiled bound constant format: " + format);
             }
