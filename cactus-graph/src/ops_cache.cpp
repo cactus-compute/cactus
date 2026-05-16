@@ -3,7 +3,10 @@
 #include <cstring>
 #include <algorithm>
 #include <limits>
+<<<<<<< HEAD
 #include <cstdlib>
+=======
+>>>>>>> origin/v2
 
 namespace {
 
@@ -243,6 +246,7 @@ void compute_attention_cached_node(
     if (position_offset == std::numeric_limits<size_t>::max()) {
         position_offset = history_len;
     }
+<<<<<<< HEAD
 
     if (k_cache_buf.precision == Precision::FP16 || v_cache_buf.precision == Precision::FP16) {
         cactus_attention_f16(
@@ -262,6 +266,8 @@ void compute_attention_cached_node(
             v_hdim);
         return;
     }
+=======
+>>>>>>> origin/v2
 
     cactus_attention_hybrid_int8_fp16(
         query_buf.data_as<__fp16>(),

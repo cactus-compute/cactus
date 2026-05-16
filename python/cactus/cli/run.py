@@ -1,7 +1,10 @@
 import os
 import platform
 import sys
+<<<<<<< HEAD
 import json
+=======
+>>>>>>> origin/v2
 from pathlib import Path
 
 from .common import (
@@ -46,6 +49,7 @@ def _validate_audio_path(audio_path: str) -> str | None:
     return resolved
 
 
+<<<<<<< HEAD
 def _model_type_from_weights_dir(weights_dir: Path) -> str:
     config_json = weights_dir / "config.json"
     if config_json.exists():
@@ -78,6 +82,8 @@ def _should_avoid_native_loader(weights_dir: Path) -> bool:
     }
 
 
+=======
+>>>>>>> origin/v2
 def _prepare_transpiled_run_args(args, *, manifest_path: Path) -> int:
     args.bundle_dir = str(_transpiled_bundle_root_from_manifest(manifest_path))
     args._transpiled_from_run = True
