@@ -3689,7 +3689,7 @@ def build_component_module_specs(
             components=components,
         )
     if family == "parakeet_tdt" and task == "tdt_transcription":
-        from cactus.transpile.parakeet_tdt_local import build_parakeet_tdt_component_specs
+        from cactus.transpile.tdt_runtime import build_parakeet_tdt_component_specs
 
         return build_parakeet_tdt_component_specs(
             model,

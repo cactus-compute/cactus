@@ -14,6 +14,8 @@ import torch.nn.functional as F
 
 from cactus.transpile.component_pipeline import ComponentModuleSpec
 from cactus.transpile.audio_preprocess import prepare_native_parakeet_audio_features
+from cactus.transpile.model_profiles import add_tensor_aliases
+from cactus.transpile.model_profiles import PARAKEET_TDT_PROFILE
 
 
 def _cfg_get(config: dict[str, Any], key: str, default: Any = None) -> Any:
@@ -27,18 +29,57 @@ def _load_tensor_state_dict(model_source: str) -> dict[str, torch.Tensor]:
     if safetensors_path.exists():
         from safetensors.torch import load_file
 
-        return dict(load_file(str(safetensors_path)))
+        return _with_parakeet_tdt_aliases(dict(load_file(str(safetensors_path))))
 
     bin_path = root / "pytorch_model.bin"
     if bin_path.exists():
         loaded = torch.load(bin_path, map_location="cpu")
         if isinstance(loaded, dict):
-            return {
+            return _with_parakeet_tdt_aliases({
                 str(key): value
                 for key, value in loaded.items()
                 if isinstance(value, torch.Tensor)
-            }
+            })
     raise RuntimeError(f"unsupported Parakeet TDT checkpoint format in {model_source}")
+
+
+def _add_tdt_derived_aliases(state_dict: dict[str, torch.Tensor]) -> None:
+    def alias(target: str, source: str) -> None:
+        if target not in state_dict and source in state_dict:
+            state_dict[target] = state_dict[source]
+
+    for index in range(4):
+        alias(f"decoder.prediction.dec_rnn.lstm.{index}.Wx", f"decoder.lstm.weight_ih_l{index}")
+        alias(f"decoder.prediction.dec_rnn.lstm.{index}.Wh", f"decoder.lstm.weight_hh_l{index}")
+        bias_key = f"decoder.prediction.dec_rnn.lstm.{index}.bias"
+        bias_ih = state_dict.get(f"decoder.lstm.bias_ih_l{index}")
+        bias_hh = state_dict.get(f"decoder.lstm.bias_hh_l{index}")
+        if bias_key not in state_dict and bias_ih is not None and bias_hh is not None:
+            state_dict[bias_key] = bias_ih + bias_hh
+
+    for source_index, target_index in ((0, 0), (2, 2), (3, 3), (5, 5), (6, 6)):
+        alias(
+            f"encoder.pre_encode.conv.{target_index}.weight",
+            f"encoder.subsampling.layers.{source_index}.weight",
+        )
+        alias(
+            f"encoder.pre_encode.conv.{target_index}.bias",
+            f"encoder.subsampling.layers.{source_index}.bias",
+        )
+    alias("encoder.pre_encode.out.weight", "encoder.subsampling.linear.weight")
+    alias("encoder.pre_encode.out.bias", "encoder.subsampling.linear.bias")
+
+
+
+def _with_parakeet_tdt_aliases(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Apply profile-declared aliases needed by the local TDT fallback runtime."""
+
+    add_tensor_aliases(
+        state_dict,
+        PARAKEET_TDT_PROFILE,
+        derived_aliases=_add_tdt_derived_aliases,
+    )
+    return state_dict
 
 
 @dataclass
@@ -181,11 +222,12 @@ def _effective_parakeet_tdt_blank_id(
 
 
 def load_parakeet_tdt_config(model_source: str) -> ParakeetTDTConfig:
-    config_path = Path(model_source) / "config.json"
+    root_path = Path(model_source)
+    config_path = root_path / "config.json"
     if not config_path.exists():
         raise FileNotFoundError(f"missing config.json for Parakeet TDT: {config_path}")
     root = json.loads(config_path.read_text())
-    encoder = root.get("encoder") or {}
+    encoder = root.get("encoder") or root.get("encoder_config") or {}
     decoder = root.get("decoder") or {}
     prediction = decoder.get("prediction") or decoder.get("prednet") or {}
     joint = root.get("joint") or {}
@@ -193,14 +235,23 @@ def load_parakeet_tdt_config(model_source: str) -> ParakeetTDTConfig:
     model_defaults = root.get("model_defaults") or {}
     preprocessor = root.get("preprocessor") or {}
 
-    hidden_dim = int(_cfg_get(encoder, "d_model", _cfg_get(encoder, "hidden_size", 0)))
+    hidden_dim = int(_cfg_get(root, "hidden_dim", _cfg_get(encoder, "d_model", _cfg_get(encoder, "hidden_size", 0))))
     attention_heads = int(_cfg_get(encoder, "n_heads", _cfg_get(encoder, "num_attention_heads", 0)))
     attention_head_dim = hidden_dim // max(attention_heads, 1)
-    tdt_durations = tuple(int(value) for value in _cfg_get(model_defaults, "tdt_durations", (0, 1, 2, 3, 4)))
+    tdt_durations = tuple(
+        int(value)
+        for value in _cfg_get(root, "tdt_durations", _cfg_get(root, "durations", _cfg_get(model_defaults, "tdt_durations", (0, 1, 2, 3, 4))))
+    )
     vocabulary = tuple(str(value) for value in _cfg_get(joint, "vocabulary", ()))
-    decoder_vocab_size = int(_cfg_get(decoder, "vocab_size", len(vocabulary)))
+    if not vocabulary:
+        vocabulary = _load_parakeet_vocabulary(root_path)
+    decoder_vocab_size = int(_cfg_get(root, "vocab_size", _cfg_get(decoder, "vocab_size", len(vocabulary))))
     decoding = root.get("decoding") or {}
-    blank_id_raw = _cfg_get(decoding, "blank_id", _cfg_get(decoder, "blank_id", None))
+    blank_id_raw = _cfg_get(
+        root,
+        "tdt_blank_id",
+        _cfg_get(root, "blank_token_id", _cfg_get(decoding, "blank_id", _cfg_get(decoder, "blank_id", None))),
+    )
     if blank_id_raw is None:
         blank_id = decoder_vocab_size
     else:
@@ -214,31 +265,71 @@ def load_parakeet_tdt_config(model_source: str) -> ParakeetTDTConfig:
     return ParakeetTDTConfig(
         model_source=model_source,
         sample_rate=int(_cfg_get(preprocessor, "sample_rate", 16000)),
-        num_mel_bins=int(_cfg_get(preprocessor, "features", _cfg_get(encoder, "feat_in", 128))),
+        num_mel_bins=int(_cfg_get(root, "num_mel_bins", _cfg_get(preprocessor, "features", _cfg_get(encoder, "feat_in", _cfg_get(encoder, "num_mel_bins", 128))))),
         hidden_dim=hidden_dim,
-        num_layers=int(_cfg_get(encoder, "n_layers", _cfg_get(encoder, "num_hidden_layers", 0))),
+        num_layers=int(_cfg_get(root, "num_layers", _cfg_get(encoder, "n_layers", _cfg_get(encoder, "num_hidden_layers", 0)))),
         attention_heads=attention_heads,
         attention_head_dim=attention_head_dim,
         attention_scale=float(attention_head_dim ** -0.5 if attention_head_dim > 0 else 1.0),
         ff_intermediate_dim=int(
             _cfg_get(
-                encoder,
-                "ffn_hidden_size",
-                round(hidden_dim * float(_cfg_get(encoder, "ff_expansion_factor", 4.0))),
+                root,
+                "ffn_intermediate_dim",
+                _cfg_get(
+                    encoder,
+                    "ffn_hidden_size",
+                    _cfg_get(encoder, "intermediate_size", round(hidden_dim * float(_cfg_get(encoder, "ff_expansion_factor", 4.0)))),
+                ),
             )
         ),
-        conv_kernel_size=int(_cfg_get(encoder, "conv_kernel_size", 9)),
-        subsampling_factor=int(_cfg_get(encoder, "subsampling_factor", 8)),
-        subsampling_conv_channels=int(_cfg_get(encoder, "subsampling_conv_channels", 256)),
-        predictor_hidden_dim=int(_cfg_get(prediction, "pred_hidden", _cfg_get(model_defaults, "pred_hidden", 640))),
-        predictor_num_layers=int(_cfg_get(prediction, "pred_rnn_layers", 1)),
-        joint_dim=int(_cfg_get(jointnet, "joint_hidden", _cfg_get(model_defaults, "joint_hidden", 640))),
-        num_tdt_durations=int(_cfg_get(model_defaults, "num_tdt_durations", len(tdt_durations))),
+        conv_kernel_size=int(_cfg_get(root, "conv_kernel_size", _cfg_get(encoder, "conv_kernel_size", 9))),
+        subsampling_factor=int(_cfg_get(root, "subsampling_factor", _cfg_get(encoder, "subsampling_factor", 8))),
+        subsampling_conv_channels=int(
+            _cfg_get(root, "subsampling_conv_channels", _cfg_get(encoder, "subsampling_conv_channels", 256))
+        ),
+        predictor_hidden_dim=int(
+            _cfg_get(root, "predictor_hidden_dim", _cfg_get(root, "decoder_hidden_size", _cfg_get(prediction, "pred_hidden", _cfg_get(model_defaults, "pred_hidden", 640))))
+        ),
+        predictor_num_layers=int(
+            _cfg_get(root, "predictor_num_layers", _cfg_get(root, "num_decoder_layers", _cfg_get(prediction, "pred_rnn_layers", 1)))
+        ),
+        joint_dim=int(_cfg_get(root, "tdt_joint_dim", _cfg_get(jointnet, "joint_hidden", _cfg_get(model_defaults, "joint_hidden", 640)))),
+        num_tdt_durations=int(_cfg_get(root, "tdt_num_durations", _cfg_get(model_defaults, "num_tdt_durations", len(tdt_durations)))),
         tdt_durations=tdt_durations,
         blank_id=blank_id,
         vocabulary=vocabulary,
-        encoder_hidden_act=str(_cfg_get(encoder, "activation", "silu")).lower(),
+        encoder_hidden_act=str(_cfg_get(root, "encoder_hidden_act", _cfg_get(encoder, "activation", _cfg_get(encoder, "hidden_act", "silu")))).lower(),
     )
+
+
+def _load_parakeet_vocabulary(root: Path) -> tuple[str, ...]:
+    vocab_txt = root / "vocab.txt"
+    if vocab_txt.exists():
+        pieces: list[str] = []
+        for line in vocab_txt.read_text(encoding="utf-8").splitlines():
+            if "\t" in line:
+                _, token = line.split("\t", 1)
+                pieces.append(token)
+            elif line:
+                pieces.append(line)
+        if pieces:
+            return tuple(pieces)
+
+    tokenizer_json = root / "tokenizer.json"
+    if tokenizer_json.exists():
+        try:
+            loaded = json.loads(tokenizer_json.read_text(encoding="utf-8"))
+        except Exception:
+            return ()
+        model = loaded.get("model") if isinstance(loaded, dict) else None
+        vocab = model.get("vocab") if isinstance(model, dict) else None
+        if isinstance(vocab, dict):
+            ordered = sorted(
+                ((int(index), str(token)) for token, index in vocab.items()),
+                key=lambda item: item[0],
+            )
+            return tuple(token for _, token in ordered)
+    return ()
 
 
 def _copy_linear_weight(linear: nn.Linear, weight: torch.Tensor, *, bias: torch.Tensor | None = None) -> None:
@@ -251,7 +342,10 @@ def _copy_linear_weight(linear: nn.Linear, weight: torch.Tensor, *, bias: torch.
 
 
 def _copy_conv2d_weight(conv: nn.Conv2d, weight: torch.Tensor, *, bias: torch.Tensor | None = None) -> None:
-    conv.weight.data.copy_(weight.permute(0, 3, 1, 2).contiguous().to(dtype=conv.weight.dtype, device=conv.weight.device))
+    tensor = weight
+    if tuple(tensor.shape) != tuple(conv.weight.shape):
+        tensor = tensor.permute(0, 3, 1, 2).contiguous()
+    conv.weight.data.copy_(tensor.to(dtype=conv.weight.dtype, device=conv.weight.device))
     if conv.bias is not None:
         if bias is None:
             conv.bias.data.zero_()
@@ -688,7 +782,7 @@ class ParakeetTDTLocalModel(nn.Module):
         return re.sub(r"\s+", " ", text).strip()
 
 
-def load_parakeet_tdt_local_model(model_source: str, *, torch_dtype: torch.dtype) -> ParakeetTDTLocalModel:
+def load_tdt_local_model(model_source: str, *, torch_dtype: torch.dtype) -> ParakeetTDTLocalModel:
     config = load_parakeet_tdt_config(model_source)
     state_dict = _load_tensor_state_dict(model_source)
     predictor_vocab_size = int(state_dict["decoder.prediction.embed.weight"].shape[0])

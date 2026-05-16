@@ -382,7 +382,7 @@ def convert(args: argparse.Namespace) -> None:
     model_config = adapter.runtime_config(cfg)
     model_config["model_type"] = adapter.runtime_model_type()
     write_config_txt({**_config_dict(cfg), **model_config}, out_dir)
-    copy_runtime_files(args.model, out_dir)
+    copy_runtime_files(args.model, out_dir, token=getattr(args, "token", None), cache_dir=_hf_cache_dir())
     try:
         from .cactus_adapters.tokenizer import convert_hf_tokenizer
 

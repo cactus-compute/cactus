@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
 
 from .common import (
     GREEN,
@@ -18,6 +21,16 @@ _DEFAULT_MULTIMODAL_PROMPT = (
     "Respond with 2 lines. The first should be a description of the image, "
     "and the second should be a transcription of the audio"
 )
+_DEFAULT_TEXT_PROMPT = "Hello"
+
+
+@dataclass(frozen=True)
+class _ConvertTranspileSpec:
+    task: str
+    components: tuple[str, ...] = ()
+    needs_image: bool = False
+    needs_audio: bool = False
+    force_component_pipeline: bool = False
 
 
 def _default_multimodal_asset_args() -> tuple[list[str], str | None]:
@@ -32,6 +45,58 @@ def _default_multimodal_asset_args() -> tuple[list[str], str | None]:
 def _default_audio_asset_arg() -> str | None:
     _, audio_file = _default_multimodal_asset_args()
     return audio_file
+
+
+def _transpile_spec_for_convert(*, task: str, plan) -> _ConvertTranspileSpec:
+    if task != "auto":
+        if plan is not None and task == plan.task:
+            return _ConvertTranspileSpec(
+                task=task,
+                components=tuple(plan.components or ()),
+                needs_image=bool(plan.needs_image),
+                needs_audio=bool(plan.needs_audio),
+                force_component_pipeline=bool(plan.force_component_pipeline),
+            )
+        return _ConvertTranspileSpec(
+            task=task,
+            needs_image=task == "multimodal_causal_lm_logits",
+            needs_audio=task
+            in {"tdt_transcription", "seq2seq_transcription", "ctc_logits", "encoder_hidden_states", "multimodal_causal_lm_logits"},
+            force_component_pipeline=task in {"tdt_transcription", "seq2seq_transcription", "multimodal_causal_lm_logits"},
+        )
+
+    if plan is None:
+        return _ConvertTranspileSpec(task="causal_lm_logits")
+
+    return _ConvertTranspileSpec(
+        task=plan.task,
+        components=tuple(plan.components or ()),
+        needs_image=bool(plan.needs_image),
+        needs_audio=bool(plan.needs_audio),
+        force_component_pipeline=bool(plan.force_component_pipeline),
+    )
+
+
+def _remove_stale_transpile_artifacts(output_dir: str | Path) -> None:
+    root = Path(output_dir)
+    for relative in (
+        "components",
+        "transpile_entrypoints.json",
+        "raw_ir.json",
+        "optimized_ir.json",
+        "graph.cactus",
+        "graph_bindings.json",
+        "result.json",
+    ):
+        path = root / relative
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+    for pattern in ("raw_ir_*.json", "optimized_ir_*.json"):
+        for path in root.glob(pattern):
+            if path.is_file():
+                path.unlink()
 
 
 def cmd_convert(args):
@@ -69,85 +134,100 @@ def cmd_convert(args):
         prompt = getattr(args, "prompt", None)
         image_files = [str(path) for path in (getattr(args, "image_file", None) or []) if str(path).strip()]
         audio_file = getattr(args, "audio_file", None)
+
+        plan = infer_component_plan_from_output(str(output_dir), model_id=model_id)
+        spec = _transpile_spec_for_convert(task=task, plan=plan)
+
+        _remove_stale_transpile_artifacts(output_dir)
+
+        spec_prompt = prompt
+        spec_image_files = list(image_files)
+        spec_audio_file = audio_file
         component_pipeline = getattr(args, "component_pipeline", "auto") or "auto"
         components = getattr(args, "components", None)
 
-        plan = infer_component_plan_from_output(str(output_dir), model_id=model_id)
+        if spec_prompt is None and spec.task == "multimodal_causal_lm_logits":
+            spec_prompt = _DEFAULT_MULTIMODAL_PROMPT
+        elif spec_prompt is None and spec.task == "causal_lm_logits":
+            spec_prompt = _DEFAULT_TEXT_PROMPT
 
-        if task == "auto":
-            task = plan.task if plan is not None else "auto"
-
-        if prompt is None and task in {"causal_lm_logits", "multimodal_causal_lm_logits"}:
-            prompt = _DEFAULT_MULTIMODAL_PROMPT
-
-        if task == "multimodal_causal_lm_logits":
-            needs_image = bool(plan.needs_image) if plan is not None else bool(image_files)
-            needs_audio = bool(plan.needs_audio) if plan is not None else bool(audio_file)
-            if (needs_image and not image_files) or (needs_audio and not audio_file):
+        needs_image = False
+        needs_audio = False
+        if spec.task == "multimodal_causal_lm_logits":
+            needs_image = bool(spec.needs_image)
+            needs_audio = bool(spec.needs_audio)
+            if not needs_image and not needs_audio:
+                needs_image = bool(spec_image_files)
+                needs_audio = bool(spec_audio_file)
+            if (needs_image and not spec_image_files) or (needs_audio and not spec_audio_file):
                 default_images, default_audio = _default_multimodal_asset_args()
-                if needs_image and not image_files:
-                    image_files = default_images
-                if needs_audio and not audio_file:
-                    audio_file = default_audio
+                if needs_image and not spec_image_files:
+                    spec_image_files = default_images
+                if needs_audio and not spec_audio_file:
+                    spec_audio_file = default_audio
                 print_color(
                     YELLOW,
                     "Multimodal transpile needs representative media shapes; "
                     "using bundled tiny test assets.",
                 )
-            if needs_image and not image_files:
+            if needs_image and not spec_image_files:
                 print_color(
                     RED,
                     "Multimodal transpile requires --image-file for this model.",
                 )
                 return 1
-            if needs_audio and not audio_file:
+            if needs_audio and not spec_audio_file:
                 print_color(
                     RED,
                     "Multimodal transpile requires --audio-file for this model.",
                 )
                 return 1
-            if component_pipeline == "auto" and (plan is None or plan.force_component_pipeline):
-                component_pipeline = "on"
-            if components is None and plan is not None and plan.components:
-                components = ",".join(plan.components)
+        if component_pipeline == "auto" and spec.force_component_pipeline:
+            component_pipeline = "on"
+        if components is None and spec.components:
+            components = ",".join(spec.components)
 
-        if task in {"tdt_transcription", "seq2seq_transcription", "ctc_logits"} and not audio_file:
-            audio_file = _default_audio_asset_arg()
-            if audio_file:
-                print_color(
-                    YELLOW,
-                    f"{task} transpile needs a representative audio shape; "
-                    "using bundled tiny test audio asset.",
-                )
-            else:
-                print_color(RED, f"{task} transpile requires --audio-file.")
-                return 1
+        used_default_audio = False
+        if spec.task in {"tdt_transcription", "seq2seq_transcription", "ctc_logits", "encoder_hidden_states"} and not spec_audio_file:
+            spec_audio_file = _default_audio_asset_arg()
+            used_default_audio = spec_audio_file is not None
+        if spec.task in {"tdt_transcription", "seq2seq_transcription", "ctc_logits", "encoder_hidden_states"} and used_default_audio:
+            print_color(
+                YELLOW,
+                f"{spec.task} transpile needs a representative audio shape; "
+                "using bundled tiny test audio asset.",
+            )
+        elif spec.task in {"tdt_transcription", "seq2seq_transcription", "ctc_logits", "encoder_hidden_states"} and not spec_audio_file:
+            print_color(RED, f"{spec.task} transpile requires --audio-file.")
+            return 1
+
+        artifact_dir = Path(output_dir)
 
         extra_args = [
             "--weights-dir",
             str(output_dir),
             "--artifact-dir",
-            str(output_dir),
+            str(artifact_dir),
             "--task",
-            task,
+            spec.task,
             "--max-new-tokens",
             str(getattr(args, "max_new_tokens", 32) or 32),
             "--component-pipeline",
             component_pipeline,
         ]
-        if prompt is not None:
-            extra_args.extend(["--prompt", prompt])
+        if spec_prompt is not None:
+            extra_args.extend(["--prompt", spec_prompt])
         if components:
             extra_args.extend(["--components", str(components)])
-        for image_file in image_files:
+        for image_file in spec_image_files:
             extra_args.extend(["--image-file", image_file])
-        if audio_file:
-            extra_args.extend(["--audio-file", str(audio_file)])
+        if spec_audio_file:
+            extra_args.extend(["--audio-file", str(spec_audio_file)])
         if getattr(args, "system_prompt", None):
             extra_args.extend(["--system-prompt", str(args.system_prompt)])
         if token:
             extra_args.extend(["--token", token])
-        if getattr(args, "trust_remote_code", False) or task == "multimodal_causal_lm_logits":
+        if getattr(args, "trust_remote_code", False) or spec.task == "multimodal_causal_lm_logits":
             extra_args.append("--trust-remote-code")
         if getattr(args, "local_files_only", False):
             extra_args.append("--local-files-only")

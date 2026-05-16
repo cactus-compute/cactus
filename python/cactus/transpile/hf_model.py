@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import builtins
 import copy
 import gc
-import importlib.util
 import json
 import os
 import re
@@ -14,7 +12,6 @@ from collections.abc import Mapping
 from collections import Counter
 from dataclasses import dataclass
 from dataclasses import fields
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +37,7 @@ from cactus.transpile.component_partition import summarize_ir_components
 from cactus.transpile.component_plan import infer_component_plan_from_config
 from cactus.transpile.component_pipeline import capture_component_spec
 from cactus.transpile.component_pipeline import execute_component_pipeline
-from cactus.transpile.gemma4_runtime import prepare_gemma4_multimodal_inputs as _shared_prepare_gemma4_multimodal_inputs
+from cactus.transpile.multimodal_runtime import prepare_gemma4_multimodal_inputs as _shared_prepare_gemma4_multimodal_inputs
 from cactus.transpile.graph_ir import IRGraph
 from cactus.transpile.graph_ir import verify_ir
 from cactus.transpile.lower import TranspiledGraph
@@ -48,17 +45,22 @@ from cactus.transpile.lower import _lower_constant_value
 from cactus.transpile.lower import _lower_input_value
 from cactus.transpile.lower import _lower_ir_node
 from cactus.transpile.lower import _lookup_weight_binding
+from cactus.transpile.media_limits import resize_static_image
 from cactus.transpile.model_adapters import build_component_module_specs
 from cactus.transpile.model_adapters import canonicalize_model_interface
+from cactus.transpile.model_profiles import multimodal_context_tokens_for_model_type
 from cactus.transpile.optimize_graph import FusionConfig
 from cactus.transpile.optimize_graph import optimize_graph
-from cactus.transpile.parakeet_tdt_local import greedy_decode_parakeet_tdt_token_ids
-from cactus.transpile.parakeet_tdt_local import load_parakeet_tdt_local_model
-from cactus.transpile.parakeet_tdt_local import prepare_parakeet_tdt_audio_features
+from cactus.transpile.runtime_support import ensure_transformers_supports_model_type as _ensure_transformers_supports_profiled_model_type
+from cactus.transpile.runtime_support import patch_torch_flex_attention_compat as _patch_torch_flex_attention_compat
+from cactus.transpile.runtime_support import patch_transformers_torchvision_probe as _patch_transformers_torchvision_probe
+from cactus.transpile.tdt_runtime import greedy_decode_parakeet_tdt_token_ids
+from cactus.transpile.tdt_runtime import load_tdt_local_model
+from cactus.transpile.tdt_runtime import prepare_parakeet_tdt_audio_features
 from cactus.transpile.weight_compat import ensure_binding_compatible
 
-_TORCHVISION_COMPAT_LIBRARIES: list[object] = []
 _DEFAULT_CAUSAL_PROMPT = "The capital of France is"
+_DEFAULT_MULTIMODAL_CONTEXT_TOKENS = 2048
 _CACTUS_FLAG_EXTENDED_SHAPE = 1 << 4
 _CACTUS_BASE_HEADER_SIZE = 84
 _CACTUS_EXTENDED_SHAPE_DIMS = 8
@@ -71,51 +73,8 @@ class PreparedInputs:
     metadata: dict[str, object]
 
 
-def _transformers_supports_model_module(module_name: str) -> bool:
-    try:
-        return importlib.util.find_spec(module_name) is not None
-    except Exception:
-        return False
-
-
-def _candidate_external_site_packages() -> list[Path]:
-    candidates: list[Path] = []
-    major_minor = f"python{sys.version_info.major}.{sys.version_info.minor}"
-    pyenv_versions = Path.home() / ".pyenv" / "versions"
-    if pyenv_versions.exists():
-        for version_dir in sorted(pyenv_versions.iterdir(), reverse=True):
-            site_packages = version_dir / "lib" / major_minor / "site-packages"
-            if site_packages.exists():
-                candidates.append(site_packages)
-    return candidates
-
-
 def _ensure_transformers_supports_model_type(model_type: str) -> str | None:
-    normalized = str(model_type or "").strip().lower()
-    target_module = {
-        "gemma4": "transformers.models.gemma4.modeling_gemma4",
-    }.get(normalized)
-    if not target_module:
-        return None
-    if _transformers_supports_model_module(target_module):
-        return None
-
-    for site_packages in _candidate_external_site_packages():
-        candidate = site_packages / Path(*target_module.split("."))
-        if not candidate.with_suffix(".py").exists() and not candidate.is_dir():
-            continue
-        sys.path.insert(0, str(site_packages))
-        for module_name in list(sys.modules):
-            root_name = module_name.split(".", 1)[0]
-            if root_name in {"transformers", "huggingface_hub", "tokenizers"}:
-                del sys.modules[module_name]
-        if _transformers_supports_model_module(target_module):
-            return str(site_packages)
-        try:
-            sys.path.remove(str(site_packages))
-        except ValueError:
-            pass
-    return None
+    return _ensure_transformers_supports_profiled_model_type(model_type)
 
 
 def _resolve_local_snapshot(model_id_or_path: str) -> str | None:
@@ -1007,120 +966,6 @@ class TranspileWrapper(torch.nn.Module):
         return metadata
 
 
-def _patch_transformers_torchvision_probe() -> str | None:
-    has_torchvision = importlib.util.find_spec("torchvision") is not None
-    has_lzma = importlib.util.find_spec("_lzma") is not None
-
-    if not has_torchvision:
-        return None
-
-    if has_lzma:
-        nms_patch_note = _patch_torchvision_missing_nms_op()
-        return nms_patch_note
-
-    base_note: str | None = None
-    try:
-        import backports.lzma as backports_lzma  # type: ignore
-
-        sys.modules.setdefault("lzma", backports_lzma)
-        base_note = "using backports.lzma because this Python build is missing _lzma"
-        nms_patch_note = _patch_torchvision_missing_nms_op()
-        if nms_patch_note:
-            return f"{base_note}; {nms_patch_note}"
-        return base_note
-    except Exception:
-        pass
-
-    class _InterpolationModeStub:
-        NEAREST = "nearest"
-        BILINEAR = "bilinear"
-        BICUBIC = "bicubic"
-        LANCZOS = "lanczos"
-
-    class _TorchvisionFunctionalStub:
-        InterpolationMode = _InterpolationModeStub
-
-        def __getattr__(self, name: str):
-            raise RuntimeError(
-                "torchvision functionality is unavailable because this Python build is missing _lzma; "
-                f"attempted to access torchvision.transforms.functional.{name}"
-            )
-
-    # Some Transformers multimodal image/video modules reference `F.InterpolationMode`
-    # or `tvF.InterpolationMode` in annotations even when torchvision probing is disabled.
-    # Installing a tiny builtins-level stub lets those modules import so the PIL fallback
-    # classes can be selected instead.
-    builtins.F = _TorchvisionFunctionalStub()
-    builtins.tvF = builtins.F
-
-    import transformers.utils as tf_utils  # type: ignore
-    import transformers.utils.import_utils as tf_import_utils  # type: ignore
-
-    @lru_cache
-    def _disabled() -> bool:
-        return False
-
-    tf_import_utils.is_torchvision_available = _disabled
-    tf_import_utils.is_torchvision_v2_available = _disabled
-    tf_utils.is_torchvision_available = _disabled
-    tf_utils.is_torchvision_v2_available = _disabled
-    return "disabled torchvision import checks because this Python build is missing _lzma"
-
-
-def _patch_torchvision_missing_nms_op() -> str | None:
-    """Keep mismatched torch/torchvision installs importable for processors.
-
-    Some local environments have torchvision installed but built without the
-    custom operator registrations matching the active torch wheel. Transformers
-    imports torchvision just to access image interpolation enums, and that import
-    can fail before we ever touch model code because `torchvision::nms` is
-    missing. Defining the operator schema is enough for torchvision's fake/meta
-    registration path to complete; the transpiler never calls NMS.
-    """
-
-    try:
-        import torchvision  # type: ignore  # noqa: F401
-        return None
-    except RuntimeError as exc:
-        if "operator torchvision::nms does not exist" not in str(exc):
-            return None
-    except Exception:
-        return None
-
-    try:
-        import torchvision.extension as tv_extension  # type: ignore
-        if bool(getattr(tv_extension, "_HAS_OPS", False)):
-            return None
-    except Exception:
-        pass
-
-    try:
-        library = torch.library.Library("torchvision", "DEF")
-        library.define("nms(Tensor dets, Tensor scores, float iou_threshold) -> Tensor")
-        _TORCHVISION_COMPAT_LIBRARIES.append(library)
-        return "defined missing torchvision::nms operator for torchvision import compatibility"
-    except Exception:
-        return None
-
-
-def _patch_torch_flex_attention_compat() -> str | None:
-    try:
-        import torch.nn.attention.flex_attention as flex_attention  # type: ignore
-    except Exception:
-        return None
-
-    if hasattr(flex_attention, "AuxRequest"):
-        return None
-
-    class _AuxRequest:
-        def __init__(self, **kwargs):
-            for key, value in kwargs.items():
-                setattr(self, key, value)
-
-    flex_attention.AuxRequest = _AuxRequest  # type: ignore[attr-defined]
-    return "installed torch flex_attention AuxRequest compatibility stub"
-
-
 def _tie_lfm2_vl_lm_head_if_needed(model: torch.nn.Module) -> str | None:
     if str(getattr(getattr(model, "config", None), "model_type", "") or "").lower() != "lfm2_vl":
         return None
@@ -1940,9 +1785,10 @@ def _add_multimodal_generation_headroom(
     *,
     tokenizer: object | None,
     max_new_tokens: int,
+    min_context_tokens: int | None = None,
 ) -> PreparedInputs:
     requested = max(0, int(max_new_tokens))
-    if requested <= 0 or "input_ids" not in prepared.names:
+    if "input_ids" not in prepared.names:
         return prepared
 
     tensor_by_name = dict(zip(prepared.names, prepared.tensors, strict=True))
@@ -1951,7 +1797,10 @@ def _add_multimodal_generation_headroom(
         return prepared
 
     prompt_token_count = int(input_ids.shape[1])
-    target_token_count = prompt_token_count + requested
+    min_context = max(0, int(min_context_tokens or 0))
+    target_token_count = max(prompt_token_count + requested, min_context)
+    if target_token_count <= prompt_token_count:
+        return prepared
     padding_token_id = _resolve_graph_safe_text_padding_token_id(tokenizer, input_ids)
 
     padded_tensors: list[torch.Tensor] = []
@@ -1977,7 +1826,7 @@ def _add_multimodal_generation_headroom(
     metadata = dict(prepared.metadata)
     metadata["prompt_token_count"] = prompt_token_count
     metadata["target_token_count"] = target_token_count
-    metadata["max_new_tokens"] = requested
+    metadata["max_new_tokens"] = max(requested, target_token_count - prompt_token_count)
     metadata["padding_token_id"] = int(padding_token_id)
     input_shapes = dict(metadata.get("input_shapes") or {})
     for name, tensor in zip(prepared.names, padded_tensors, strict=True):
@@ -1988,6 +1837,21 @@ def _add_multimodal_generation_headroom(
         tensors=tuple(padded_tensors),
         metadata=metadata,
     )
+
+
+def _multimodal_context_token_floor(model_type: str = "") -> int:
+    default_context = multimodal_context_tokens_for_model_type(
+        model_type,
+        _DEFAULT_MULTIMODAL_CONTEXT_TOKENS,
+    )
+    raw = os.environ.get(
+        "CACTUS_TRANSPILER_MULTIMODAL_CONTEXT_TOKENS",
+        str(default_context),
+    )
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return default_context
 
 
 _GEMMA4_MULTIMODAL_INPUT_ORDER = (
@@ -2164,7 +2028,7 @@ def _load_image_inputs(image_files: tuple[str, ...]) -> list[object]:
         if not path.exists():
             raise RuntimeError(f"image_file does not exist: {path}")
         with Image.open(path) as image:
-            images.append(image.convert("RGB").copy())
+            images.append(resize_static_image(image.convert("RGB")).copy())
     return images
 
 
@@ -2525,7 +2389,7 @@ def _load_transformers_bundle(
         common_kwargs["token"] = token
 
     if task == "tdt_transcription":
-        model = load_parakeet_tdt_local_model(model_source, torch_dtype=torch_dtype).eval()
+        model = load_tdt_local_model(model_source, torch_dtype=torch_dtype).eval()
         return model_source, None, model, config
 
     if task == "causal_lm_logits":
@@ -3042,6 +2906,7 @@ def main() -> int:
             prepared,
             tokenizer=getattr(processor_or_tokenizer, "tokenizer", processor_or_tokenizer),
             max_new_tokens=int(args.max_new_tokens),
+            min_context_tokens=_multimodal_context_token_floor(config_model_type),
         )
         canonical = canonicalize_model_interface(
             model,
@@ -3180,6 +3045,8 @@ def main() -> int:
         if callable(restore_cpu_float32_capture):
             restore_cpu_float32_capture()
     print("capture_done=true", flush=True)
+    captured.ir_graph.meta.setdefault("task", task)
+    captured.ir_graph.meta.setdefault("adapter_family", canonical.family)
     raw_ir_graph = copy.deepcopy(captured.ir_graph)
 
     fusion_config = FusionConfig(

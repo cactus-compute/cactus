@@ -26,7 +26,6 @@ COMPONENT_ORDER = (
 def _normalized_name_candidates(
     *,
     value_id: str | None = None,
-    source_name: str | None = None,
     meta: dict[str, object] | None = None,
 ) -> tuple[str, ...]:
     names: list[str] = []
@@ -40,10 +39,9 @@ def _normalized_name_candidates(
 
     if value_id is not None:
         _add(value_id)
-    if source_name is not None:
-        _add(source_name)
     if isinstance(meta, dict):
-        _add(meta.get("torch_name"))
+        for key in ("logical_name", "input_name", "output_name", "component_role"):
+            _add(meta.get(key))
     return tuple(names)
 
 
@@ -51,10 +49,9 @@ def _contains_any(name: str, needles: tuple[str, ...]) -> bool:
     return any(needle in name for needle in needles)
 
 
-def classify_component_name_candidates(
+def classify_component_semantic_candidates(
     candidates: tuple[str, ...],
     *,
-    family: str,
     task: str,
 ) -> str | None:
     if not candidates:
@@ -66,8 +63,6 @@ def classify_component_name_candidates(
             (
                 "pixel_values",
                 "image_features",
-                "vision_encoder",
-                "image_encoder",
             ),
         ):
             return COMPONENT_VISION_ENCODER
@@ -80,10 +75,6 @@ def classify_component_name_candidates(
                 "audio_features",
                 "speech_features",
                 "mel_features",
-                "audio_encoder",
-                "speech_encoder",
-                "acoustic_encoder",
-                "feature_encoder",
             ),
         ):
             return COMPONENT_AUDIO_ENCODER
@@ -92,11 +83,11 @@ def classify_component_name_candidates(
         if _contains_any(
             name,
             (
-                "lm_head",
+                "logits",
+                "next_token",
                 "ctc_head",
-                "classifier",
-                "output_projection",
-                "output_layer",
+                "ctc_logits",
+                "decoder_output",
             ),
         ):
             return COMPONENT_DECODER
@@ -109,12 +100,7 @@ def classify_component_name_candidates(
                 "inputs_embeds",
                 "text_embeds",
                 "position_ids",
-                "embed_tokens",
-                "embed_text",
                 "placeholder",
-                "multimodal_projector",
-                "multi_modal_projector",
-                "connector",
                 "merge",
                 "masked_scatter",
                 "token_type",
@@ -128,21 +114,20 @@ def classify_component_name_candidates(
 
 
 def classify_value_component(value_id: str, value: IRValue, *, family: str, task: str) -> str | None:
-    return classify_component_name_candidates(
+    return classify_component_semantic_candidates(
         _normalized_name_candidates(
             value_id=value_id,
-            source_name=value.meta.get("source_name") if isinstance(value.meta, dict) else None,
             meta=value.meta,
         ),
-        family=family,
         task=task,
     )
 
 
 def classify_node_component(node: IRNode, *, family: str, task: str) -> str | None:
-    return classify_component_name_candidates(
+    if task == "multimodal_causal_lm_logits" and node.op in {"embedding", "masked_scatter", "advanced_index"}:
+        return COMPONENT_LM_ENCODER
+    return classify_component_semantic_candidates(
         _normalized_name_candidates(meta=node.meta),
-        family=family,
         task=task,
     )
 

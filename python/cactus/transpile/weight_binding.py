@@ -219,48 +219,6 @@ def _binding_from_manifest_entry(root: Path, source_name: str, entry: object) ->
     return WeightBinding(path=str(candidate), kind=kind, source_name=source_name)
 
 
-def _preferred_existing_file(root: Path, filenames: tuple[str, ...]) -> Path | None:
-    for filename in filenames:
-        candidate = root / filename
-        if candidate.exists():
-            return candidate
-    return None
-
-
-def _fallback_binding_from_known_cactus_weight(root: Path, source_name: str) -> WeightBinding | None:
-    normalized_aliases = tuple(alias.lower() for alias in _manifest_source_aliases(source_name))
-
-    def _matches(*suffixes: str) -> bool:
-        return any(
-            alias.endswith(suffix.lower())
-            for alias in normalized_aliases
-            for suffix in suffixes
-        )
-
-    if _matches("embed_tokens_per_layer.weight", "language_model.embed_tokens_per_layer.weight"):
-        candidate = _preferred_existing_file(
-            root,
-            ("embed_tokens_per_layer.cq2.weights", "embed_tokens_per_layer.weights"),
-        )
-        if candidate is not None:
-            return WeightBinding(path=str(candidate), kind="embedding", source_name=source_name)
-
-    if _matches("per_layer_model_projection.weight", "language_model.per_layer_model_projection.weight"):
-        candidate = _preferred_existing_file(
-            root,
-            ("per_layer_model_proj.cq4.weights", "per_layer_model_proj.weights"),
-        )
-        if candidate is not None:
-            return WeightBinding(path=str(candidate), kind="weight", source_name=source_name)
-
-    if _matches("per_layer_projection_norm.weight", "language_model.per_layer_projection_norm.weight"):
-        candidate = _preferred_existing_file(root, ("per_layer_proj_norm.weights",))
-        if candidate is not None:
-            return WeightBinding(path=str(candidate), kind="weight", source_name=source_name)
-
-    return None
-
-
 def resolve_weight_binding(*, weights_dir: str | None, source_name: str) -> WeightBinding | None:
     """Resolve an exported parameter to a converted Cactus tensor file.
 
@@ -278,4 +236,4 @@ def resolve_weight_binding(*, weights_dir: str | None, source_name: str) -> Weig
     binding = _binding_from_manifest_entry(root, source_name, manifest.get(source_name))
     if binding is not None:
         return binding
-    return _fallback_binding_from_known_cactus_weight(root, source_name)
+    return None

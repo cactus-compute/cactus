@@ -12,7 +12,7 @@ def patch_transformers_import_compat() -> list[str]:
 
     notes: list[str] = []
     try:
-        from cactus.transpile.gemma4_runtime import (
+        from cactus.transpile.runtime_support import (
             ensure_transformers_supports_gemma4,
             patch_torch_flex_attention_compat,
             patch_transformers_torchvision_probe,

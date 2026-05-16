@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
@@ -16,6 +20,16 @@ _PARAKEET_FRAME_LENGTH = 400
 _PARAKEET_HOP_LENGTH = 160
 _PARAKEET_PREEMPHASIS = 0.97
 _PARAKEET_LOG_FLOOR = np.float32(2**-24)
+_DEFAULT_MAX_AUDIO_SECONDS = 30.0
+
+
+def audio_duration_limit_seconds() -> float:
+    raw = os.environ.get("CACTUS_TRANSPILER_MAX_AUDIO_SECONDS", str(_DEFAULT_MAX_AUDIO_SECONDS))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_AUDIO_SECONDS
+    return max(0.0, value)
 
 
 def normalize_audio_samples(samples: np.ndarray) -> np.ndarray:
@@ -30,7 +44,28 @@ def normalize_audio_samples(samples: np.ndarray) -> np.ndarray:
     return samples.astype(np.float32)
 
 
-def load_audio_waveform(audio_file: str | Path, *, target_sample_rate: int) -> np.ndarray:
+def _limit_waveform_duration(
+    waveform: np.ndarray,
+    *,
+    sample_rate: int,
+    max_seconds: float | None,
+) -> np.ndarray:
+    if max_seconds is None or max_seconds <= 0.0:
+        return waveform
+    max_samples = int(round(float(sample_rate) * float(max_seconds)))
+    if max_samples <= 0 or int(waveform.shape[0]) <= max_samples:
+        return waveform
+    return np.ascontiguousarray(waveform[:max_samples])
+
+
+def load_audio_waveform(
+    audio_file: str | Path,
+    *,
+    target_sample_rate: int,
+    max_seconds: float | None = None,
+) -> np.ndarray:
+    if max_seconds is None:
+        max_seconds = audio_duration_limit_seconds()
     sample_rate, waveform = wavfile.read(str(audio_file))
     if waveform.ndim > 1:
         waveform = waveform.mean(axis=1)
@@ -42,7 +77,49 @@ def load_audio_waveform(audio_file: str | Path, *, target_sample_rate: int) -> n
             int(target_sample_rate) // gcd,
             int(sample_rate) // gcd,
         ).astype(np.float32)
+        sample_rate = int(target_sample_rate)
+    waveform = _limit_waveform_duration(
+        waveform.astype(np.float32),
+        sample_rate=int(target_sample_rate),
+        max_seconds=max_seconds,
+    )
     return waveform.astype(np.float32)
+
+
+@contextmanager
+def limited_audio_file(
+    audio_file: str | Path,
+    *,
+    target_sample_rate: int = _PARAKEET_SAMPLE_RATE,
+    max_seconds: float | None = None,
+) -> Iterator[Path]:
+    if max_seconds is None:
+        max_seconds = audio_duration_limit_seconds()
+    if max_seconds <= 0.0:
+        yield Path(audio_file).expanduser().resolve()
+        return
+
+    waveform = load_audio_waveform(
+        audio_file,
+        target_sample_rate=target_sample_rate,
+        max_seconds=max_seconds,
+    )
+    temp_audio_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            temp_audio_path = Path(temp_file.name)
+        wavfile.write(
+            str(temp_audio_path),
+            int(target_sample_rate),
+            (np.clip(waveform, -1.0, 1.0) * np.float32(32767.0)).astype(np.int16),
+        )
+        yield temp_audio_path
+    finally:
+        if temp_audio_path is not None:
+            try:
+                temp_audio_path.unlink()
+            except OSError:
+                pass
 
 
 def _hz_to_mel(hz: np.ndarray) -> np.ndarray:
@@ -186,12 +263,13 @@ def prepare_cactus_audio_features(
     if "whisper" in model_type.lower():
         capacity_frames = max(capacity_frames, 3000)
     capacity = max(1, capacity_frames * int(expected_mels))
-    values, mel_bins, frames = cactus_preprocess_audio_features(
-        str(Path(audio_file).expanduser().resolve()),
-        model_type,
-        int(expected_mels),
-        capacity,
-    )
+    with limited_audio_file(audio_file, target_sample_rate=_PARAKEET_SAMPLE_RATE) as frontend_audio_file:
+        values, mel_bins, frames = cactus_preprocess_audio_features(
+            str(frontend_audio_file),
+            model_type,
+            int(expected_mels),
+            capacity,
+        )
     if int(mel_bins) != int(expected_mels):
         raise ValueError(f"Cactus audio frontend returned {mel_bins} mel bins, expected {expected_mels}")
     feature_array = np.asarray(values, dtype=np.float32).reshape(int(mel_bins), int(frames))
@@ -261,8 +339,16 @@ def prepare_native_gemma4_audio_features(
     *,
     expected_mels: int,
     torch_dtype: torch.dtype,
+    max_seconds: float | None = None,
+    pad_to_max_seconds: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
-    waveform = load_audio_waveform(audio_file, target_sample_rate=_PARAKEET_SAMPLE_RATE)
+    if max_seconds is None:
+        max_seconds = audio_duration_limit_seconds()
+    waveform = load_audio_waveform(
+        audio_file,
+        target_sample_rate=_PARAKEET_SAMPLE_RATE,
+        max_seconds=max_seconds,
+    )
     # Native Gemma4 pads to the nearest 320 samples, adds 160 samples of
     # semicausal left padding, and then runs a 321-point analysis frame.
     estimated_frames = int(np.ceil((len(waveform) + 640) / 160.0)) + 8
@@ -272,13 +358,23 @@ def prepare_native_gemma4_audio_features(
         model_type="gemma4",
         mel_bins=int(expected_mels),
         capacity=capacity,
+        max_seconds=max_seconds,
     )
     if int(mel_bins) != int(expected_mels):
         raise ValueError(f"Cactus Gemma4 audio frontend returned {mel_bins} mel bins, expected {expected_mels}")
-    features = np.asarray(values, dtype=np.float32).reshape(int(frames), int(mel_bins))
+    max_frames = estimated_frames
+    if max_seconds is not None and max_seconds > 0.0:
+        max_samples = int(round(float(_PARAKEET_SAMPLE_RATE) * float(max_seconds)))
+        max_frames = int(np.ceil((max_samples + 640) / 160.0)) + 8
+    active_frames = min(int(frames), int(max_frames))
+    features = np.asarray(values, dtype=np.float32).reshape(int(frames), int(mel_bins))[:active_frames, :]
+    output_frames = max(active_frames, int(max_frames)) if pad_to_max_seconds else active_frames
+    if output_frames > active_frames:
+        features = np.pad(features, ((0, output_frames - active_frames), (0, 0)), mode="constant")
     feature_tensor = torch.from_numpy(np.ascontiguousarray(features)).unsqueeze(0).to(dtype=torch_dtype)
-    mask = torch.ones((1, int(frames)), dtype=torch.bool)
-    return feature_tensor, mask, int(frames)
+    mask = torch.zeros((1, int(output_frames)), dtype=torch.bool)
+    mask[:, :active_frames] = True
+    return feature_tensor, mask, int(active_frames)
 
 
 def prepare_cactus_audio_features_raw(
@@ -287,12 +383,18 @@ def prepare_cactus_audio_features_raw(
     model_type: str,
     mel_bins: int,
     capacity: int,
+    max_seconds: float | None = None,
 ) -> tuple[list[float], int, int]:
     from cactus.bindings.cactus import cactus_preprocess_audio_features
 
-    return cactus_preprocess_audio_features(
-        str(Path(audio_file).expanduser().resolve()),
-        model_type,
-        int(mel_bins),
-        int(capacity),
-    )
+    with limited_audio_file(
+        audio_file,
+        target_sample_rate=_PARAKEET_SAMPLE_RATE,
+        max_seconds=max_seconds,
+    ) as frontend_audio_file:
+        return cactus_preprocess_audio_features(
+            str(frontend_audio_file),
+            model_type,
+            int(mel_bins),
+            int(capacity),
+        )

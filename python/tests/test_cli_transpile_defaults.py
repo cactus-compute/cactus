@@ -20,13 +20,13 @@ def _write_gemma4_multimodal_config(output_dir: Path) -> None:
     )
 
 
-def _gemma4_convert_transpile_extra_args(model_dir: Path) -> list[str]:
+def _gemma4_multimodal_extra_args(model_dir: Path, artifact_dir: Path) -> list[str]:
     assets_dir = convert_cli.PROJECT_ROOT / "cactus-engine" / "tests" / "assets"
     return [
         "--weights-dir",
         str(model_dir),
         "--artifact-dir",
-        str(model_dir),
+        str(artifact_dir),
         "--task",
         "multimodal_causal_lm_logits",
         "--max-new-tokens",
@@ -62,7 +62,6 @@ def test_cmd_convert_transpiles_into_same_weights_folder(monkeypatch, tmp_path: 
         assert transpile_args.model_id == "google/gemma-4-E2B-it"
         assert transpile_args.execute_after_transpile is False
         assert transpile_args.allow_unconverted_weights is False
-        assert transpile_args.extra_args == _gemma4_convert_transpile_extra_args(model_dir)
         return 0
 
     monkeypatch.setattr(convert_cli, "get_weights_dir", lambda model_id: model_dir)
@@ -87,6 +86,8 @@ def test_cmd_convert_transpiles_into_same_weights_folder(monkeypatch, tmp_path: 
         "--force",
     ]
     assert calls[1][0] == "transpile"
+    assert calls[1][1].extra_args == _gemma4_multimodal_extra_args(model_dir, model_dir)
+    assert not (model_dir / "transpile_entrypoints.json").exists()
 
 
 def test_cmd_convert_honors_explicit_output_dir(monkeypatch, tmp_path: Path) -> None:
@@ -126,7 +127,8 @@ def test_cmd_convert_honors_explicit_output_dir(monkeypatch, tmp_path: Path) -> 
         "4",
         "--force",
     ]
-    assert transpile_calls[0].extra_args == _gemma4_convert_transpile_extra_args(output_dir)
+    assert len(transpile_calls) == 1
+    assert transpile_calls[0].extra_args == _gemma4_multimodal_extra_args(output_dir, output_dir)
 
 
 def test_cmd_convert_supplies_default_audio_for_parakeet(monkeypatch, tmp_path: Path) -> None:
@@ -264,6 +266,7 @@ def test_cmd_convert_infers_multimodal_components_from_vision_config(monkeypatch
     rc = convert_cli.cmd_convert(args)
 
     assert rc == 0
+    assert len(transpile_calls) == 1
     extra_args = transpile_calls[0].extra_args
     assert extra_args[extra_args.index("--task") + 1] == "multimodal_causal_lm_logits"
     assert extra_args[extra_args.index("--component-pipeline") + 1] == "on"

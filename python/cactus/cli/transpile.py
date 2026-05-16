@@ -189,7 +189,10 @@ def _resolve_transpiled_manifest(path_value: str | os.PathLike[str] | None) -> P
         return None
     if candidate.is_file() and candidate.name == "manifest.json":
         return candidate
-    for manifest in (candidate / "components" / "manifest.json", candidate / "manifest.json"):
+    for manifest in (
+        candidate / "components" / "manifest.json",
+        candidate / "manifest.json",
+    ):
         if manifest.exists():
             return manifest
     return None
@@ -277,15 +280,27 @@ def cmd_run_transpiled(args) -> int:
 
 def _run_transpiled_once(args, run_transpiled_bundle, *, bundle_dir: str | os.PathLike[str] | None) -> dict[str, object]:
     image_values: list[str] = []
+    seen_images: set[str] = set()
+
+    def add_image(value: object) -> None:
+        if not isinstance(value, str) or not value.strip():
+            return
+        normalized = str(Path(value.strip()).expanduser().resolve())
+        if normalized in seen_images:
+            return
+        seen_images.add(normalized)
+        image_values.append(normalized)
+
     for attr_name in ("image_file", "image_files"):
         value = getattr(args, attr_name, None)
         if isinstance(value, str) and value.strip():
-            image_values.append(value.strip())
+            add_image(value)
         elif isinstance(value, (list, tuple)):
-            image_values.extend(str(item).strip() for item in value if str(item).strip())
+            for item in value:
+                add_image(str(item))
     image_arg = getattr(args, "image", None)
     if isinstance(image_arg, str) and image_arg.strip():
-        image_values.append(image_arg.strip())
+        add_image(image_arg)
 
     return run_transpiled_bundle(
         bundle_dir,
@@ -320,6 +335,20 @@ def _run_transpiled_interactive_chat(args, run_transpiled_bundle) -> int:
             task=str(manifest.get("task", "") or ""),
             manifest=manifest,
         )
+        if (
+            str(manifest.get("family", "") or "").strip().lower() == "gemma4"
+            and str(manifest.get("task", "") or "") == "multimodal_causal_lm_logits"
+            and not getattr(args, "image", None)
+            and not (getattr(args, "image_file", None) or [])
+            and not (getattr(args, "audio_file", None) or getattr(args, "audio", None))
+        ):
+            manifest_components = {
+                str(component_entry.get("component", "")).strip()
+                for component_entry in manifest.get("components", [])
+                if isinstance(component_entry, dict)
+            }
+            if {"lm_encoder_step", "decoder_step"}.issubset(manifest_components):
+                include_components = {"lm_encoder_step", "decoder_step"}
         load_saved_component_graphs(
             bundle_dir,
             weights_dir=resolved_weights_dir,
@@ -398,9 +427,16 @@ def _run_transpiled_interactive_chat(args, run_transpiled_bundle) -> int:
             print(f"[audio: {current_audio}]")
         print("Assistant: ", end="", flush=True)
 
+        # Text-only turns use the full chat history through the cached decode path.
+        # Multimodal graphs are statically shaped, so keep media turns focused on
+        # the current attachment instead of replaying a long text transcript.
+        prompt_history = _history_for_transpiled_turn(
+            history,
+            has_media=bool(current_image or current_audio),
+        )
         prompt = _build_transpiled_interactive_prompt(
             system_prompt=getattr(args, "system", None),
-            history=history,
+            history=prompt_history,
             user_input=user_input,
         )
         turn_args = _copy_namespace_for_transpiled_turn(
@@ -460,6 +496,14 @@ def _parse_transpiled_attachment_command(text: str, prefix: str) -> tuple[str, s
     if split < 0:
         return rest, ""
     return rest[:split], rest[split + 1 :].strip()
+
+
+def _history_for_transpiled_turn(
+    history: list[tuple[str, str]],
+    *,
+    has_media: bool,
+) -> list[tuple[str, str]]:
+    return [] if has_media else history
 
 
 def _build_transpiled_interactive_prompt(

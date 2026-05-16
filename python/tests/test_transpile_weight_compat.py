@@ -104,6 +104,8 @@ def test_decoder_binding_prefers_existing_cq4_companion(tmp_path: Path) -> None:
 def test_resolve_weight_binding_does_not_guess_legacy_filenames(tmp_path: Path) -> None:
     (tmp_path / "token_embeddings.weights").write_bytes(b"")
     (tmp_path / "layer_0_attn_q.weights").write_bytes(b"")
+    (tmp_path / "embed_tokens_per_layer.weights").write_bytes(b"")
+    (tmp_path / "per_layer_model_proj.weights").write_bytes(b"")
 
     assert (
         resolve_weight_binding(
@@ -116,6 +118,20 @@ def test_resolve_weight_binding_does_not_guess_legacy_filenames(tmp_path: Path) 
         resolve_weight_binding(
             weights_dir=str(tmp_path),
             source_name="model.layers.0.self_attn.q_proj.weight",
+        )
+        is None
+    )
+    assert (
+        resolve_weight_binding(
+            weights_dir=str(tmp_path),
+            source_name="model.language_model.embed_tokens_per_layer.weight",
+        )
+        is None
+    )
+    assert (
+        resolve_weight_binding(
+            weights_dir=str(tmp_path),
+            source_name="model.language_model.per_layer_model_projection.weight",
         )
         is None
     )

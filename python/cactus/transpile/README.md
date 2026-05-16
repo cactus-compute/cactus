@@ -752,7 +752,7 @@ The transpile script fails hard and suggests re-running conversion:
 
 ### Gemma4 transformers support is missing locally
 
-`hf_model.py` and `gemma4_runtime.py` search alternate site-packages and
+`runtime_support.py` and `hf_model.py` search alternate site-packages and
 patch import compatibility for:
 
 - missing `transformers.models.gemma4`
@@ -778,7 +778,7 @@ The transpiler normalizes prompt and tokenization details to match native Cactus
 
 ### Parakeet TDT does not run as a single generic forward
 
-`parakeet_tdt_local.py` provides:
+`tdt_runtime.py` provides:
 
 - a local PyTorch reconstruction of the model
 - audio preprocessing
@@ -847,18 +847,20 @@ Notes:
 | `component_bundle_runtime.py` | Loader and executor for saved transpiled bundles; reloads `.cactus` graphs or re-lowers saved IR, then runs task-specific bundle executors. |
 | `component_partition.py` | Heuristic component labeling of IR nodes/values and subgraph extraction into `audio_encoder` / `vision_encoder` / `lm_encoder` / `decoder`. |
 | `component_pipeline.py` | Capture/optimize/lower loop for one component spec, plus runtime execution of a staged pipeline of components. |
-| `gemma4_runtime.py` | Shared Gemma4 runtime helpers used by bundle execution: processor compatibility, prompt normalization, native-like multimodal preprocessing. |
 | `graph_ir.py` | Definitions for `IRValue`, `IRNode`, `IRGraph`, deep-copy behavior, and IR consistency verification. |
 | `import_ir.py` | Top-level importer from exported FX graph into `IRGraph`; resolves lifted constants, weight binding metadata, and inlined subgraphs. |
 | `import_semantics.py` | Early semantic rewrites done immediately after import, especially attention and RoPE recognition. |
 | `importers.py` | Large target-to-IR importer registry; converts normalized PyTorch ops into canonical `IRNode`s. |
 | `lower.py` | Final lowering from optimized IR into runtime `Graph`, including op lowering, constant binding, fused op handling, and execution wrapper. |
 | `model_adapters.py` | Family- and task-specific forward adapters, Gemma4 multimodal pipeline adapters, task canonicalization, and component spec builders. |
-| `model_patterns.py` | Catalog of "gold patterns" used to annotate recognizable transformer structures after optimization. |
+| `model_patterns.py` | Topology/op catalog used to annotate recognizable transformer structures after optimization. |
+| `model_profiles.py` | Compact model-family profile constants, including compatibility modules, graph context defaults, and weight-name aliases used by fallback runtimes. |
+| `multimodal_runtime.py` | Shared multimodal runtime helpers used by bundle execution: prompt normalization, image/audio limiting, and native-like multimodal preprocessing. |
 | `normalize.py` | Target-name normalization (`aten.*` to canonical names) and dtype-name normalization into IR spellings. |
 | `ops.py` | Canonical op registry and alias table for IR ops, including backend op names and attr schemas. |
 | `optimize_graph.py` | Main fusion/optimization pass driver, pattern fusion, Gemma4 attention normalization, and gold-pattern annotation. |
-| `parakeet_tdt_local.py` | Local Parakeet TDT model reconstruction, config loader, decoder loop, and component-spec generation. |
+| `runtime_support.py` | Shared import/runtime compatibility helpers for optional Transformers modules, torchvision probes, and flex-attention shims. |
+| `tdt_runtime.py` | TDT fallback runtime: local recurrent decoder loop, config loader, and encoder/decoder component-spec generation. |
 | `runtime_compat.py` | Runtime wrapper patches that make the current Python `Graph` API usable for transpiled graphs even when some C symbols are absent. |
 | `weight_binding.py` | Resolves IR constants to converted `.weights` files through `weights_manifest.json`; also resolves default weights dirs. |
 | `weight_compat.py` | Makes bound weights executable with the current runtime by materializing compatibility companion files when needed. |

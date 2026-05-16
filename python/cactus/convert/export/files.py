@@ -24,10 +24,28 @@ TOKENIZER_FILES = [
 ]
 
 
-def copy_runtime_files(model_path: str | Path, out_dir: Path) -> None:
+def copy_runtime_files(
+    model_path: str | Path,
+    out_dir: Path,
+    *,
+    token: str | None = None,
+    cache_dir: str | None = None,
+) -> None:
     src_dir = Path(model_path)
     if not src_dir.exists() or not src_dir.is_dir():
-        return
+        try:
+            from huggingface_hub import snapshot_download
+
+            src_dir = Path(
+                snapshot_download(
+                    repo_id=str(model_path),
+                    allow_patterns=TOKENIZER_FILES,
+                    token=token,
+                    cache_dir=cache_dir,
+                )
+            )
+        except Exception:
+            return
     for name in TOKENIZER_FILES:
         src = src_dir / name
         if src.exists():
