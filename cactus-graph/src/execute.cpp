@@ -69,8 +69,8 @@ DECLARE_COMPUTE(compute_sample_node);
 DECLARE_COMPUTE(compute_topk_node);
 DECLARE_COMPUTE(compute_scatter_topk_node);
 DECLARE_COMPUTE(compute_moe_layer_node);
+DECLARE_COMPUTE(compute_dense_mlp_tq_fused_node);
 DECLARE_COMPUTE(compute_persistent_node);
-DECLARE_COMPUTE(compute_quantize_activations_node);
 DECLARE_COMPUTE(compute_kv_cache_state_node);
 DECLARE_COMPUTE(compute_kv_cache_append_node);
 DECLARE_COMPUTE(compute_attention_cached_node);
@@ -84,7 +84,7 @@ DECLARE_COMPUTE(compute_spectrogram_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::CLAMP) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::DENSE_MLP_TQ_FUSED) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -118,6 +118,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::VARIANCE)] = compute_reduce_node;
     dispatch_flat[static_cast<int>(OpType::MIN)] = compute_reduce_node;
     dispatch_flat[static_cast<int>(OpType::MAX)] = compute_reduce_node;
+    dispatch_flat[static_cast<int>(OpType::CUMSUM)] = compute_reduce_node;
     dispatch_flat[static_cast<int>(OpType::FLATTEN)] = compute_reshape_node;
     dispatch_flat[static_cast<int>(OpType::VIEW)] = compute_reshape_node;
     dispatch_flat[static_cast<int>(OpType::RESHAPE)] = compute_reshape_node;
@@ -156,8 +157,8 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::TOPK)] = compute_topk_node;
     dispatch_flat[static_cast<int>(OpType::SCATTER_TOPK)] = compute_scatter_topk_node;
     dispatch_flat[static_cast<int>(OpType::MOE_LAYER)] = compute_moe_layer_node;
+    dispatch_flat[static_cast<int>(OpType::DENSE_MLP_TQ_FUSED)] = compute_dense_mlp_tq_fused_node;
     dispatch_flat[static_cast<int>(OpType::PERSISTENT)] = compute_persistent_node;
-    dispatch_flat[static_cast<int>(OpType::QUANTIZE_ACTIVATIONS)] = compute_quantize_activations_node;
     dispatch_flat[static_cast<int>(OpType::LSTM_CELL)] = compute_lstm_cell_node;
     dispatch_flat[static_cast<int>(OpType::GATED_DELTANET_DECODE)] = compute_gated_deltanet_decode_node;
     dispatch_flat[static_cast<int>(OpType::GATED_DELTANET_PREFILL)] = compute_gated_deltanet_prefill_node;
@@ -197,34 +198,30 @@ static inline void dispatch_node(GraphNode& node, const nodes_vector& nodes, con
 static const char* op_type_names[] = {
     "INPUT", "PRECISION_CAST",
     "ADD", "ADD_CLIPPED", "SUBTRACT", "MULTIPLY", "DIVIDE",
-    "MATMUL", "TRANSPOSE", "RESHAPE", "SLICE", "GATHER", "EMBEDDING", "VIEW", "FLATTEN",
+    "ABS", "POW", "FLATTEN", "VIEW",
+    "MATMUL", "TRANSPOSE", "RESHAPE", "SLICE", "GATHER", "EMBEDDING",
     "BILINEAR_INTERPOLATION",
-    "SUM", "MEAN", "VARIANCE", "MIN", "MAX",
-    "RMS_NORM", "ROPE", "ROPE_GPTJ", "SOFTMAX", "ATTENTION", "ATTENTION_INT8_HYBRID", "REL_POS_BIAS", "CONV1D_CAUSAL", "CONV1D_K3", "CONV1D_K7S3", "CONV1D", "CONV1D_SAME_DEPTHWISE_K9", "CONV1D_POINTWISE", "CONV2D_K3S2P1", "CONV2D_DEPTHWISE_K3S2P1", "CONV2D_POINTWISE_1X1", "GLU", "BATCHNORM",
+    "SUM", "MEAN", "VARIANCE", "MIN", "MAX", "CUMSUM",
+    "RMS_NORM", "ROPE", "ROPE_GPTJ", "SOFTMAX",
+    "ATTENTION", "ATTENTION_INT8_HYBRID", "REL_POS_BIAS",
+    "CONV1D_CAUSAL", "CONV1D_K3", "CONV1D_K7S3", "CONV1D",
+    "CONV1D_SAME_DEPTHWISE_K9", "CONV1D_POINTWISE",
+    "CONV2D_K3S2P1", "CONV2D_DEPTHWISE_K3S2P1", "CONV2D_POINTWISE_1X1",
+    "GLU", "BATCHNORM",
     "SCALAR_ADD", "SCALAR_SUBTRACT", "SCALAR_MULTIPLY", "SCALAR_DIVIDE",
     "SCALAR_EXP", "SCALAR_SQRT", "SCALAR_COS", "SCALAR_SIN", "SCALAR_LOG",
-    "ABS", "POW", 
     "RELU", "SILU", "GELU", "GELU_ERF", "SIGMOID", "TANH",
-    "SAMPLE", "CONCAT",
-    "SCATTER_TOPK",
-    "TOPK", "LAYERNORM", "GROUPNORM",
-    "MOE_LAYER",
-    "INDEX",
-    "PERSISTENT",
-    "QUANTIZE_ACTIVATIONS",
-    "LSTM_CELL",
-    "GATED_DELTANET_DECODE",
-    "GATED_DELTANET_PREFILL",
-    "STFT",
-    "ALTUP_PREDICT",
-    "ALTUP_CORRECT",
-    "GAUSSIAN_TOPK",
-    "MAXPOOL1D",
-    "BILSTM_SEQUENCE",
-    "LEAKY_RELU",
-    "CONV2D_K3S1P1",
-    "STATS_POOL",
-    "WEIGHTED_STATS_POOL"
+    "SAMPLE", "CONCAT", "CAT",
+    "SCATTER_TOPK", "TOPK", "LAYERNORM", "GROUPNORM",
+    "MOE_LAYER", "INDEX", "PERSISTENT",
+    "LSTM_CELL", "GATED_DELTANET_DECODE", "GATED_DELTANET_PREFILL",
+    "STFT", "ALTUP_PREDICT", "ALTUP_CORRECT", "GAUSSIAN_TOPK",
+    "MAXPOOL1D", "BILSTM_SEQUENCE", "LEAKY_RELU",
+    "CONV2D_K3S1P1", "STATS_POOL", "WEIGHTED_STATS_POOL",
+    "KV_CACHE_STATE", "KV_CACHE_APPEND", "ATTENTION_CACHED",
+    "CONV_CACHE_STATE", "CONV_CACHE_APPEND",
+    "RFFT", "IRFFT", "MEL_FILTER_BANK", "SPECTROGRAM",
+    "IMAGE_PREPROCESS", "CLAMP", "DENSE_MLP_TQ_FUSED"
 };
 
 static const char* get_op_name(OpType op) {
@@ -301,11 +298,62 @@ void CactusGraph::execute(const std::string& profile_file) {
     BufferPool& pool = buffer_pool_;
     const size_t n = nodes_.size();
 
+    auto get_env_int = [](const char* name, int fallback) -> int {
+        const char* val = std::getenv(name);
+        return val ? std::atoi(val) : fallback;
+    };
+
+    bool trace_execution = get_env_int("CACTUS_TRACE_EXECUTE", 0) != 0;
+    bool trace_nan = get_env_int("CACTUS_TRACE_NAN", 0) != 0;
     bool need_debug = !profile_file.empty();
     if (!need_debug) {
         static const bool env_debug = check_debug_env();
         need_debug = env_debug;
     }
+    if (trace_execution) {
+        need_debug = true;
+    }
+
+    auto trace_nonfinite = [&](size_t node_idx, const GraphNode& node) {
+        if (!trace_nan) return;
+        const BufferDesc& buffer = node.output_buffer;
+        const void* data = buffer.get_data();
+        if (!data || buffer.total_size == 0) return;
+
+        auto report = [&](size_t elem_idx, float value) {
+            std::cerr << "[cactus:nan] idx=" << node_idx
+                      << " id=" << node.id
+                      << " op=" << get_op_name(node.op_type)
+                      << " elem=" << elem_idx
+                      << " value=" << value
+                      << " shape=[";
+            for (size_t dim_idx = 0; dim_idx < buffer.shape.size(); ++dim_idx) {
+                if (dim_idx > 0) std::cerr << ",";
+                std::cerr << buffer.shape[dim_idx];
+            }
+            std::cerr << "]" << std::endl;
+        };
+
+        if (buffer.precision == Precision::FP16) {
+            const __fp16* values = buffer.data_as<__fp16>();
+            for (size_t i = 0; i < buffer.total_size; ++i) {
+                float value = static_cast<float>(values[i]);
+                if (!std::isfinite(value)) {
+                    report(i, value);
+                    return;
+                }
+            }
+        } else if (buffer.precision == Precision::FP32) {
+            const float* values = buffer.data_as<float>();
+            for (size_t i = 0; i < buffer.total_size; ++i) {
+                float value = values[i];
+                if (!std::isfinite(value)) {
+                    report(i, value);
+                    return;
+                }
+            }
+        }
+    };
 
     if (!need_debug) {
         for (size_t i = 0; i < n; ++i) {
@@ -318,6 +366,7 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
             node->output_buffer.allocate_from_pool(pool);
             dispatch_node(*node, nodes_, node_index_map_);
+            trace_nonfinite(i, *node);
             if (node->op_type == OpType::PERSISTENT) {
                 populated_node_ids_.insert(node->id);
             }
@@ -334,11 +383,6 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
         }
     }
-
-    auto get_env_int = [](const char* name, int fallback) -> int {
-        const char* val = std::getenv(name);
-        return val ? std::atoi(val) : fallback;
-    };
 
     auto get_env_str = [](const char* name) -> std::string {
         const char* val = std::getenv(name);
@@ -394,13 +438,32 @@ void CactusGraph::execute(const std::string& profile_file) {
     for (size_t node_idx = 0; node_idx < n; ++node_idx) {
         auto& node = nodes_[node_idx];
 
-        if (node->op_type != OpType::INPUT) {
-            node->output_buffer.allocate_from_pool(pool);
+        if (node->op_type == OpType::INPUT) {
+            continue;
         }
 
-        if (enable_profiling && node->op_type != OpType::INPUT) {
+        node->output_buffer.allocate_from_pool(pool);
+
+        if (trace_execution) {
+            std::cerr << "[cactus:execute] begin idx=" << node_idx
+                      << " id=" << node->id
+                      << " op=" << get_op_name(node->op_type)
+                      << " shape=[";
+            for (size_t dim_idx = 0; dim_idx < node->output_buffer.shape.size(); ++dim_idx) {
+                if (dim_idx > 0) std::cerr << ",";
+                std::cerr << node->output_buffer.shape[dim_idx];
+            }
+            std::cerr << "]" << std::endl;
+        }
+
+        if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::CONV_CACHE_STATE) {
+            dispatch_node(*node, nodes_, node_index_map_);
+            trace_nonfinite(node_idx, *node);
+            populated_node_ids_.insert(node->id);
+        } else if (enable_profiling) {
             auto start = std::chrono::high_resolution_clock::now();
             dispatch_node(*node, nodes_, node_index_map_);
+            trace_nonfinite(node_idx, *node);
             if (node->op_type == OpType::PERSISTENT) {
                 populated_node_ids_.insert(node->id);
             }
@@ -419,9 +482,17 @@ void CactusGraph::execute(const std::string& profile_file) {
                  << std::setw(20) << shape_str << std::endl;
         } else {
             dispatch_node(*node, nodes_, node_index_map_);
+            trace_nonfinite(node_idx, *node);
             if (node->op_type == OpType::PERSISTENT) {
                 populated_node_ids_.insert(node->id);
             }
+        }
+
+        if (trace_execution) {
+            std::cerr << "[cactus:execute] done idx=" << node_idx
+                      << " id=" << node->id
+                      << " op=" << get_op_name(node->op_type)
+                      << std::endl;
         }
     }
 
@@ -584,23 +655,6 @@ void CactusGraph::execute(const std::string& profile_file) {
                         const int8_t* typed = reinterpret_cast<const int8_t*>(data_ptr);
                         for (size_t i = 0; i < elements_to_process; ++i) {
                             accumulate(static_cast<float>(typed[i]), i);
-                        }
-                    } else if (buffer.precision == Precision::INT4) {
-                        assert(elements_to_process % 32 == 0 && "INT4 precision capture requires element count to be multiple of 32");
-                        const uint8_t* packed_ptr = reinterpret_cast<const uint8_t*>(data_ptr);
-                        for (size_t i = 0; i < elements_to_process; i+=32) {
-                            int8x16_t high, low;
-                            unpack_int4_as_int8x16x2(packed_ptr + i / 2, high, low);
-                            int8_t high_lanes[16], low_lanes[16];
-                            vst1q_s8(high_lanes, high);
-                            vst1q_s8(low_lanes, low);
-
-                            for (size_t j = 0; j < 16; ++j) {
-                                accumulate(static_cast<float>(low_lanes[j]), i + j);
-                            }
-                            for (size_t j = 0; j < 16; ++j) {
-                                accumulate(static_cast<float>(high_lanes[j]), i + 16 + j);
-                            }
                         }
                     } else {
                         has_data = false;

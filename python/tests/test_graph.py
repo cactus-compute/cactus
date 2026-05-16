@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.graph import Graph, Tensor
+from cactus import Graph, Tensor
 
 
 class TestGraphElementwise(unittest.TestCase):
@@ -451,6 +451,46 @@ class TestGraphSoftmax(unittest.TestCase):
         e = np.exp(f - f.max(axis=-1, keepdims=True))
         expected = (e / e.sum(axis=-1, keepdims=True)).astype(np.float16)
         np.testing.assert_allclose(out, expected, atol=5e-2)
+
+
+class TestGraphCumsum(unittest.TestCase):
+
+    def test_cumsum_last_axis(self):
+        g = Graph()
+        a = g.input((2, 4))
+        y = a.cumsum(axis=-1)
+
+        data = np.array([[1, 2, 3, 4], [0.5, 1.5, 2.5, 3.5]], dtype=np.float16)
+        g.set_input(a, data)
+        g.execute()
+
+        out = y.numpy()
+        expected = np.cumsum(data.astype(np.float32), axis=-1).astype(np.float16)
+        np.testing.assert_allclose(out, expected, atol=5e-2)
+
+    def test_save_load_roundtrip_cumsum(self):
+        g = Graph()
+        a = g.input((3, 2))
+        y = a.cumsum(axis=0)
+
+        data = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float16)
+        g.set_input(a, data)
+        g.execute()
+        expected = y.numpy()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "cumsum_graph.cg"
+            g.save(path)
+
+            loaded = Graph.load(path)
+            loaded_a = Tensor(loaded, a.id, a.shape, a.dtype)
+            loaded_y = Tensor(loaded, y.id, y.shape, y.dtype)
+
+            loaded.set_input(loaded_a, data)
+            loaded.execute()
+
+            out = loaded_y.numpy()
+            np.testing.assert_allclose(out, expected, atol=1e-2)
 
 
 class TestGraphSaveLoad(unittest.TestCase):

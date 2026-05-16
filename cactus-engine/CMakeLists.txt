@@ -57,6 +57,7 @@ set(ENGINE_SOURCES
     src/sp.cpp
     src/constraints.cpp
     src/model.cpp
+    src/engine_image.cpp
     src/index.cpp
     src/index_ffi.cpp
     src/log.cpp
@@ -73,26 +74,19 @@ set(ENGINE_SOURCES
     src/npu.cpp
 )
 
-set(MODEL_SOURCES
-    models/gemma4/model_gemma4.cpp
-    models/gemma4/model_gemma4_mm.cpp
-    models/gemma4/model_gemma4_audio.cpp
-    models/gemma4/model_gemma4_vision.cpp
-)
-
 if(APPLE)
     enable_language(OBJCXX)
     list(APPEND ENGINE_SOURCES src/npu_ane.mm)
     set_source_files_properties(src/npu_ane.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 endif()
 
-add_library(cactus_engine STATIC ${ENGINE_SOURCES} ${MODEL_SOURCES})
+add_library(cactus_engine STATIC ${ENGINE_SOURCES})
 set(CACTUS_KERNELS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../cactus-kernels")
 target_include_directories(cactus_engine
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-            ${CMAKE_CURRENT_SOURCE_DIR}/models
             ${CACTUS_KERNELS_DIR}/src
+            ${CACTUS_KERNELS_DIR}/libs
 )
 target_link_libraries(cactus_engine PUBLIC cactus_graph)
 set_target_properties(cactus_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)

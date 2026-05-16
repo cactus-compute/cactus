@@ -11,7 +11,10 @@ enum class Precision {
     INT8,
     FP16,
     FP32,
-    INT4
+    CQ1,
+    CQ2,
+    CQ3,
+    CQ4
 };
 
 enum class ScalarOpType {
@@ -195,102 +198,142 @@ void cactus_matmul_f16(
     size_t K,
     size_t N);
 
-void cactus_gemv_int8(
-    const int8_t* A,
-    float A_scale,
-    const int8_t* B,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t K,
-    size_t N,
-    size_t group_size);
+enum CactusQuantFlags : uint32_t {
+    CACTUS_QUANT_FLAG_ORTHOGONAL = 1u << 2,
+    CACTUS_QUANT_FLAG_INTERLEAVED_4ROW = 1u << 3,
+};
 
-void cactus_gemm_int8(
-    const int8_t* A,
-    const float* A_scales,
-    const int8_t* B,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size);
+struct CactusQuantMatrix {
+    uint32_t bits;
+    uint32_t K;
+    uint32_t N;
+    uint32_t group_size;
+    uint32_t num_groups;
+    uint32_t flags;
+    const __fp16* codebook;
+    const __fp16* input_scale;
+    const __fp16* input_scale_recip;
+    const __fp16* norms;
+    const uint8_t* packed_indices;
+    const int8_t* left_signs;
+    const int8_t* right_signs;
+    const uint32_t* permutation;
+    const __fp16* rotation;
+    const int8_t* expanded;
+    const float* norm_f32;
+};
 
-void cactus_matmul_int8(
-    const int8_t* A,
-    const float* A_scales,
-    const int8_t* B,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size);
+uint32_t cactus_quant_packed_group_bytes(uint32_t bits, uint32_t group_size);
 
-void cactus_gemv_int8_i8mm(
-    const int8_t* A,
-    float A_scale,
-    const int8_t* B,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t K,
-    size_t N,
-    size_t group_size);
+void cactus_quant_4bit_gemv(
+    const CactusQuantMatrix* W,
+    const __fp16* x,
+    __fp16* y);
 
-void cactus_gemm_int8_i8mm(
-    const int8_t* A,
-    const float* A_scales,
-    const int8_t* B,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size);
+void cactus_quant_4bit_gemm(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
 
-void cactus_gemv_int4(
-    const int8_t* A,
-    float A_scale,
-    const int8_t* B_packed,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t K,
-    size_t N,
-    size_t group_size);
+void cactus_quant_2bit_gemv(
+    const CactusQuantMatrix* W,
+    const __fp16* x,
+    __fp16* y);
 
-void cactus_gemm_int4(
-    const int8_t* A,
-    const float* A_scales,
-    const int8_t* B_packed,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size);
+void cactus_quant_2bit_gemm(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
 
-void cactus_matmul_int4(
-    const int8_t* A,
-    const float* A_scales,
-    const int8_t* B_packed,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size);
+void cactus_quant_1bit_gemv(
+    const CactusQuantMatrix* W,
+    const __fp16* x,
+    __fp16* y);
 
-void cactus_matmul_integer(
-    Precision precision,
-    const int8_t* A,
-    const float* A_scales,
-    const int8_t* B,
-    const __fp16* B_scales,
-    __fp16* C,
-    size_t M,
-    size_t K,
-    size_t N,
-    size_t group_size);
+void cactus_quant_1bit_gemm(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
+
+void cactus_quant_3bit_gemv(
+    const CactusQuantMatrix* W,
+    const __fp16* x,
+    __fp16* y);
+
+void cactus_quant_3bit_gemm(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
+
+void cactus_quant_matmul(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
+
+void cactus_quant_orthogonal_matmul(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C);
+
+void cactus_quant_4bit_gemv_interleaved(
+    const CactusQuantMatrix* W,
+    const uint8_t* packed_interleaved,
+    const __fp16* norms_interleaved,
+    const __fp16* x,
+    __fp16* y);
+
+void cactus_quant_2bit_gemv_interleaved(
+    const CactusQuantMatrix* W,
+    const uint8_t* packed_interleaved,
+    const __fp16* norms_interleaved,
+    const __fp16* x,
+    __fp16* y);
+
+void cactus_quant_3bit_gemv_interleaved(
+    const CactusQuantMatrix* W,
+    const uint8_t* packed_interleaved,
+    const __fp16* norms_interleaved,
+    const __fp16* x,
+    __fp16* y);
+
+void cactus_quant_1bit_gemv_interleaved(
+    const CactusQuantMatrix* W,
+    const uint8_t* packed_interleaved,
+    const __fp16* norms_interleaved,
+    const __fp16* x,
+    __fp16* y);
+
+void cactus_quant_dequantize_hadamard_embedding_row(
+    uint32_t bits,
+    uint32_t hidden_dim,
+    uint32_t group_size,
+    uint32_t num_groups,
+    size_t row,
+    const uint8_t* packed_base,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const int8_t* left_signs,
+    const int8_t* right_signs,
+    const uint32_t* permutation,
+    __fp16* out_row);
+
+void cactus_quant_dequantize_orthogonal_embedding_row(
+    uint32_t bits,
+    uint32_t K,
+    size_t row,
+    const uint8_t* packed_base,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const __fp16* rotation,
+    __fp16* out_row);
 
 void cactus_rms_norm_f16(
     const __fp16* input,
@@ -714,11 +757,6 @@ void cactus_fp32_to_fp16(const float* src, __fp16* dst, size_t count);
 void cactus_int8_to_fp16(const int8_t* src, __fp16* dst, size_t count, float scale = 1.0f);
 void cactus_fp16_to_int8(const __fp16* src, int8_t* dst, size_t count, float scale = 1.0f);
 float cactus_fp16_max_abs(const __fp16* src, size_t count);
-
-void cactus_unpack_int4_to_int8(
-    const uint8_t* packed,
-    int8_t* unpacked,
-    size_t unpacked_count);
 
 void cactus_quantize_kv_fp16_to_int8(
     const __fp16* src,

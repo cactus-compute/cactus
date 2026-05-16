@@ -1,6 +1,8 @@
 #include "test_utils.h"
 #include <cassert>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <random>
 
@@ -23,89 +25,170 @@ bool test_matrix_multiplication() {
     return fixture.verify_output(matmul_result, expected);
 }
 
-bool test_matmul_int8() {
-    const size_t M = 2, K = 64, N = 4;
-    const size_t gs = 32;
-    const size_t ng = K / gs;
-
-    std::mt19937 gen(42);
-    std::uniform_int_distribution<int> id(-30, 30);
-    std::uniform_real_distribution<float> sd(0.005f, 0.02f);
-
-    std::vector<__fp16> A(M * K);
-    std::vector<int8_t> B(N * K);
-    std::vector<__fp16> B_scales(N * ng);
-
-    for (auto& v : A) v = static_cast<__fp16>(id(gen) * 0.01f);
-    for (auto& v : B) v = static_cast<int8_t>(id(gen));
-    for (auto& v : B_scales) v = static_cast<__fp16>(sd(gen));
-
-    CactusGraph g;
-    size_t ia = g.input({M, K}, Precision::FP16);
-    size_t ib = g.input({N, K}, Precision::INT8);
-    g.set_grouped_scales(ib, gs, ng, const_cast<void*>(static_cast<const void*>(B_scales.data())));
-    size_t out = g.matmul(ia, ib, true);
-    g.set_input(ia, A.data(), Precision::FP16);
-    g.set_input(ib, B.data(), Precision::INT8);
-    g.execute();
-
-    __fp16* result = static_cast<__fp16*>(g.get_output(out));
-    for (size_t i = 0; i < M * N; i++) {
-        if (!std::isfinite(static_cast<float>(result[i]))) return false;
-    }
-
-    bool has_nonzero = false;
-    for (size_t i = 0; i < M * N; i++) {
-        if (std::abs(static_cast<float>(result[i])) > 1e-6f) has_nonzero = true;
-    }
-    if (!has_nonzero) return false;
-
-    float ref00 = 0.0f;
-    for (size_t k = 0; k < K; k++) {
-        size_t group = k / gs;
-        float a_val = static_cast<float>(A[0 * K + k]);
-        float b_val = static_cast<float>(B[0 * K + k]) * static_cast<float>(B_scales[0 * ng + group]);
-        ref00 += a_val * b_val;
-    }
-    float actual00 = static_cast<float>(result[0]);
-    float tol = std::abs(ref00) * 0.15f + 0.5f;
-    if (std::abs(actual00 - ref00) > tol) return false;
-
-    return true;
+static size_t align_offset_test(size_t offset, size_t alignment) {
+    size_t remainder = offset % alignment;
+    return remainder == 0 ? offset : offset + (alignment - remainder);
 }
 
-bool test_matmul_int4() {
-    const size_t M = 2, K = 64, N = 4;
-    const size_t gs = 32;
+static Precision cq_precision_for_bits(uint32_t bits) {
+    switch (bits) {
+        case 1: return Precision::CQ1;
+        case 2: return Precision::CQ2;
+        case 3: return Precision::CQ3;
+        case 4: return Precision::CQ4;
+        default: throw std::runtime_error("unsupported CQ bits");
+    }
+}
+
+static void write_test_cq_weights(
+    const std::filesystem::path& path,
+    uint32_t bits,
+    size_t K,
+    size_t N,
+    size_t gs,
+    const std::vector<uint8_t>& packed,
+    const std::vector<__fp16>& codebook,
+    const std::vector<__fp16>& input_scale,
+    const std::vector<__fp16>& input_scale_recip,
+    const std::vector<__fp16>& norms,
+    const std::vector<int8_t>& left_signs,
+    const std::vector<int8_t>& right_signs,
+    const std::vector<uint32_t>& permutation) {
+    constexpr uint32_t CACTUS_MAGIC = 0x54434143;
+    constexpr uint32_t FLAG_HAS_SCALES = 1 << 0;
+    constexpr size_t HEADER_SIZE = 84;
+    constexpr uint32_t alignment = 32;
+
+    const size_t ng = K / gs;
+    const size_t scales_bytes =
+        codebook.size() * sizeof(__fp16) +
+        input_scale.size() * sizeof(__fp16) +
+        input_scale_recip.size() * sizeof(__fp16) +
+        norms.size() * sizeof(__fp16) +
+        left_signs.size() +
+        right_signs.size() +
+        permutation.size() * sizeof(uint32_t);
+
+    std::ofstream file(path, std::ios::binary);
+    if (!file) throw std::runtime_error("cannot open test CQ weights");
+
+    auto write_u32 = [&](uint32_t v) { file.write(reinterpret_cast<const char*>(&v), sizeof(v)); };
+    auto write_u64 = [&](uint64_t v) { file.write(reinterpret_cast<const char*>(&v), sizeof(v)); };
+    auto write_padding = [&](size_t bytes) {
+        char zero = 0;
+        for (size_t i = 0; i < bytes; ++i) file.write(&zero, 1);
+    };
+
+    write_u32(CACTUS_MAGIC);
+    write_u32(FLAG_HAS_SCALES);
+    write_u32(alignment);
+    write_u32(2);
+    write_u64(N);
+    write_u64(K);
+    write_u64(0);
+    write_u64(0);
+    write_u32(static_cast<uint32_t>(cq_precision_for_bits(bits)));
+    write_u64(packed.size());
+    write_u64(scales_bytes);
+    write_u32(static_cast<uint32_t>(gs));
+    write_u32(static_cast<uint32_t>(ng));
+    write_u64(N);
+
+    size_t aligned_header = align_offset_test(HEADER_SIZE, alignment);
+    write_padding(aligned_header - HEADER_SIZE);
+
+    file.write(reinterpret_cast<const char*>(codebook.data()), codebook.size() * sizeof(__fp16));
+    file.write(reinterpret_cast<const char*>(input_scale.data()), input_scale.size() * sizeof(__fp16));
+    file.write(reinterpret_cast<const char*>(input_scale_recip.data()), input_scale_recip.size() * sizeof(__fp16));
+    file.write(reinterpret_cast<const char*>(norms.data()), norms.size() * sizeof(__fp16));
+    file.write(reinterpret_cast<const char*>(left_signs.data()), left_signs.size());
+    file.write(reinterpret_cast<const char*>(right_signs.data()), right_signs.size());
+    file.write(reinterpret_cast<const char*>(permutation.data()), permutation.size() * sizeof(uint32_t));
+
+    size_t data_start = align_offset_test(aligned_header + scales_bytes, alignment);
+    write_padding(data_start - (aligned_header + scales_bytes));
+    file.write(reinterpret_cast<const char*>(packed.data()), packed.size());
+    if (!file) throw std::runtime_error("failed writing test CQ weights");
+}
+
+bool test_matmul_cq() {
+    // Test graph-level CQ matmul dispatch for every supported bit width.
+    const size_t M = 2, K = 128, N = 8;
+    const size_t gs = 128;
     const size_t ng = K / gs;
 
-    std::mt19937 gen(123);
-    std::uniform_int_distribution<int> id(-5, 5);
-    std::uniform_real_distribution<float> sd(0.01f, 0.05f);
+    for (uint32_t bits : {1u, 2u, 3u, 4u}) {
+        const uint32_t cb_size = 1u << bits;
+        std::mt19937 gen(42 + bits);
+        std::uniform_real_distribution<float> dist(-1.f, 1.f);
 
-    std::vector<__fp16> A(M * K);
-    std::vector<int8_t> B_full(N * K);
-    std::vector<int8_t> B_packed(N * K / 2);
-    std::vector<__fp16> B_scales(N * ng);
+        std::vector<__fp16> A(M * K);
+        for (auto& v : A) v = static_cast<__fp16>(dist(gen));
 
-    for (auto& v : A) v = static_cast<__fp16>(id(gen) * 0.1f);
-    for (auto& v : B_full) v = static_cast<int8_t>(std::max(-7, std::min(7, id(gen))));
-    for (auto& v : B_scales) v = static_cast<__fp16>(sd(gen));
-    for (size_t i = 0; i < N * K / 2; i++)
-        B_packed[i] = static_cast<int8_t>((B_full[i * 2 + 1] << 4) | (B_full[i * 2] & 0x0F));
+        uint32_t pgb = cactus_quant_packed_group_bytes(bits, gs);
+        std::vector<uint8_t> packed(N * ng * pgb);
+        for (auto& v : packed) v = static_cast<uint8_t>(gen() & 0xFF);
 
-    CactusGraph g;
-    size_t ia = g.input({M, K}, Precision::FP16);
-    size_t ib = g.input({N, K}, Precision::INT4);
-    g.set_grouped_scales(ib, gs, ng, const_cast<void*>(static_cast<const void*>(B_scales.data())));
-    size_t out = g.matmul(ia, ib, true);
-    g.set_input(ia, A.data(), Precision::FP16);
-    g.set_input(ib, B_packed.data(), Precision::INT4);
-    g.execute();
+        std::vector<__fp16> codebook(cb_size), input_scale(K), input_scale_recip(K), norms(N * ng);
+        std::vector<int8_t> left_signs(gs), right_signs(gs);
+        std::vector<uint32_t> permutation(gs);
 
-    __fp16* result = static_cast<__fp16*>(g.get_output(out));
-    for (size_t i = 0; i < M * N; i++) {
-        if (!std::isfinite(static_cast<float>(result[i]))) return false;
+        for (auto& v : codebook) v = static_cast<__fp16>(dist(gen));
+        for (size_t i = 0; i < K; i++) {
+            float s = 0.5f + std::abs(dist(gen));
+            input_scale[i] = static_cast<__fp16>(s);
+            input_scale_recip[i] = static_cast<__fp16>(1.f / s);
+        }
+        for (auto& v : norms) v = static_cast<__fp16>(dist(gen) * 0.1f);
+        for (auto& v : left_signs) v = (gen() & 1) ? 1 : -1;
+        for (auto& v : right_signs) v = (gen() & 1) ? 1 : -1;
+        for (uint32_t i = 0; i < gs; i++) permutation[i] = i;
+
+        CactusQuantMatrix mat{
+            .bits = bits, .K = static_cast<uint32_t>(K), .N = static_cast<uint32_t>(N),
+            .group_size = static_cast<uint32_t>(gs), .num_groups = static_cast<uint32_t>(ng),
+            .flags = 0,
+            .codebook = codebook.data(),
+            .input_scale = input_scale.data(),
+            .input_scale_recip = input_scale_recip.data(),
+            .norms = norms.data(),
+            .packed_indices = packed.data(),
+            .left_signs = left_signs.data(),
+            .right_signs = right_signs.data(),
+            .permutation = permutation.data(),
+            .rotation = nullptr,
+            .expanded = nullptr,
+            .norm_f32 = nullptr,
+        };
+
+        std::vector<__fp16> direct(M * N, static_cast<__fp16>(0));
+        cactus_quant_matmul(&mat, A.data(), static_cast<uint32_t>(M), direct.data());
+
+        auto path = std::filesystem::temp_directory_path() /
+            ("cactus_graph_cq" + std::to_string(bits) + "_matmul.weights");
+        write_test_cq_weights(path, bits, K, N, gs, packed, codebook, input_scale,
+                              input_scale_recip, norms, left_signs, right_signs, permutation);
+
+        CactusGraph g;
+        size_t ia = g.input({M, K}, Precision::FP16);
+        size_t iw = g.mmap_weights(path.string());
+        size_t out = g.matmul(ia, iw, true);
+        g.set_input(ia, A.data(), Precision::FP16);
+        g.execute();
+        __fp16* graph_out = static_cast<__fp16*>(g.get_output(out));
+
+        bool ok = true;
+        for (size_t i = 0; i < M * N; i++) {
+            float actual = static_cast<float>(graph_out[i]);
+            float expected = static_cast<float>(direct[i]);
+            if (!std::isfinite(actual) || std::abs(actual - expected) > 1e-3f) {
+                ok = false;
+                break;
+            }
+        }
+        g.hard_reset();
+        std::filesystem::remove(path);
+        if (!ok) return false;
     }
     return true;
 }
@@ -501,36 +584,34 @@ bool run_benchmarks() {
         bench("matmul_f16 1024^3", []{}, [&]{ g.execute(); });
     }
     {
-        const size_t M = 1024, K = 1024, N = 1024, gs = 32;
+        // CQ4 matmul benchmark via cactus_quant_matmul (graph-level equivalent)
+        const size_t M = 1024, K = 1024, N = 1024, gs = 128;
         const size_t ng = K / gs;
-        std::vector<__fp16> A(M * K);
-        std::vector<int8_t> B(N * K, 1);
-        std::vector<__fp16> Bs(N * ng, static_cast<__fp16>(0.01f));
-        TestUtils::fill_random_fp16(A);
-        CactusGraph g;
-        size_t ia = g.input({M, K}, Precision::FP16);
-        size_t ib = g.input({N, K}, Precision::INT8);
-        g.set_grouped_scales(ib, gs, ng, const_cast<void*>(static_cast<const void*>(Bs.data())));
-        g.matmul(ia, ib, true);
-        g.set_input(ia, A.data(), Precision::FP16);
-        g.set_input(ib, B.data(), Precision::INT8);
-        bench("matmul_int8 1024^3", []{}, [&]{ g.execute(); });
-    }
-    {
-        const size_t M = 1024, K = 1024, N = 1024, gs = 32;
-        const size_t ng = K / gs;
-        std::vector<__fp16> A(M * K);
-        std::vector<int8_t> Bp(N * K / 2, 1);
-        std::vector<__fp16> Bs(N * ng, static_cast<__fp16>(0.01f));
-        TestUtils::fill_random_fp16(A);
-        CactusGraph g;
-        size_t ia = g.input({M, K}, Precision::FP16);
-        size_t ib = g.input({N, K}, Precision::INT4);
-        g.set_grouped_scales(ib, gs, ng, const_cast<void*>(static_cast<const void*>(Bs.data())));
-        g.matmul(ia, ib, true);
-        g.set_input(ia, A.data(), Precision::FP16);
-        g.set_input(ib, Bp.data(), Precision::INT4);
-        bench("matmul_int4 1024^3", []{}, [&]{ g.execute(); });
+        const uint32_t bits = 4, cb_size = 16;
+        std::mt19937 bgen(77);
+        std::uniform_real_distribution<float> bdist(-1.f, 1.f);
+
+        std::vector<__fp16> A(M * K), codebook(cb_size), input_sc(K), input_sc_r(K), norms_v(N * ng);
+        std::vector<int8_t> lsigns(gs), rsigns(gs);
+        std::vector<uint32_t> perm(gs);
+        for (auto& v : A) v = static_cast<__fp16>(bdist(bgen));
+        for (auto& v : codebook) v = static_cast<__fp16>(bdist(bgen));
+        for (size_t i = 0; i < K; i++) { float s = 0.5f+std::abs(bdist(bgen)); input_sc[i]=(__fp16)s; input_sc_r[i]=(__fp16)(1.f/s); }
+        for (auto& v : norms_v) v = static_cast<__fp16>(bdist(bgen) * 0.1f);
+        for (auto& v : lsigns) v = (bgen()&1)?1:-1;
+        for (auto& v : rsigns) v = (bgen()&1)?1:-1;
+        for (uint32_t i = 0; i < gs; i++) perm[i] = i;
+        uint32_t pgb = cactus_quant_packed_group_bytes(bits, gs);
+        std::vector<uint8_t> packed(N * ng * pgb);
+        for (auto& v : packed) v = static_cast<uint8_t>(bgen() & 0xFF);
+
+        CactusQuantMatrix mat{bits, (uint32_t)K, (uint32_t)N, (uint32_t)gs, (uint32_t)ng,
+            0,
+            codebook.data(), input_sc.data(), input_sc_r.data(), norms_v.data(),
+            packed.data(), lsigns.data(), rsigns.data(), perm.data(), nullptr, nullptr, nullptr};
+
+        std::vector<__fp16> C(M * N);
+        bench("matmul_cq4 1024^3", []{}, [&]{ cactus_quant_matmul(&mat, A.data(), M, C.data()); });
     }
     {
         const size_t b = 1, s = 256, h = 16, kv = 8, d = 128;
@@ -601,8 +682,7 @@ int main() {
     TestUtils::TestRunner runner("Neural Network Ops Tests");
 
     runner.run_test("Matrix Multiplication", test_matrix_multiplication());
-    runner.run_test("MatMul INT8 Grouped", test_matmul_int8());
-    runner.run_test("MatMul INT4", test_matmul_int4());
+    runner.run_test("MatMul CQ", test_matmul_cq());
     runner.run_test("Transpose", test_transpose());
     runner.run_test("Reshape", test_reshape());
     runner.run_test("RMS Norm", test_rms_norm());

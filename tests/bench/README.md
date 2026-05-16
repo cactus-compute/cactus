@@ -4,8 +4,8 @@ Compares `cactus` against `llama.cpp` (ggml), LiteRT (both Ruy and the TFLite
 NEON kernels), ONNX Runtime, and ExecuTorch (XNNPACK) on the four kernels we
 currently care about on this branch:
 
-- **GEMV** — INT8 grouped (1 × d) @ (d × N)
-- **GEMM** — INT8 grouped (M × d) @ (d × N)
+- **GEMV** — CQ4 / INT4 Cactus Quant and backend-specific quantized variants
+- **GEMM** — CQ4 / INT4 Cactus Quant and backend-specific quantized variants
 - **Attention prefill** — FP16 fused attention
 - **Hybrid attention decode** — INT8 KV-cache, FP16 query
 
@@ -176,11 +176,21 @@ The five user-facing graphs map onto these CSVs as:
 
 | Backend | Matmul (graphs 1–3) | Attention prefill (graph 4) | Hybrid decode (graph 5) | Kernel kind |
 |---------|---------------------|------------------------------|--------------------------|-------------|
-| **cactus**     | `cactus_int8` (INT8 group=32) | `cactus_prefill` (FP16) | `cactus_decode` (FP16 Q + INT8 KV group=32) | fused |
+| **cactus**     | `cactus_cq4` (CQ4 / INT4 weights) | `cactus_prefill` (FP16) | `cactus_decode` (FP16 Q + INT8 KV group=32) | fused |
 | **ggml**       | `ggml_q8_0` (INT8 group=32) | `ggml_fa_q8_prefill` (Q8_0 KV) / `ggml_mm_q8_prefill` (composed) | `ggml_fa_q8_decode` (Q8_0 KV) | fa_*: fused / mm_*: graph |
 | **LiteRT**     | `litert_neon`, `litert_ruy` (INT8 per-channel) | `litert_ruy_prefill` (composed) | `litert_ruy_decode`, `litert_neon_decode` (composed) | matmul-composed (no fused op) |
 | **ONNX RT**    | `onnxrt_int8` (INT8 group=32 via `MatMulNBits`) | `onnxrt_gqa_prefill` (**FP16**, GQA) | `onnxrt_gqa_decode_fp16kv` (**FP16 KV**) | fused (MlasFlashAttention) |
 | **ExecuTorch** | `executorch_int8` (INT8 per-channel via XNNPACK `qc8w`) | `executorch_sdpa_prefill_fp32` (**FP32**) | `executorch_qsdpa_decode_int8pc` (**INT8 per-channel**) | fused |
+
+### INT4 support in this bench
+
+| Backend | INT4 / CQ4 path |
+|---------|-----------------|
+| **cactus** | Yes — `cactus_cq4` uses `cactus_quant_matmul` with CQ4 / INT4 weights. |
+| **ggml** | No INT4 variant registered here; only `ggml_q8_0` is benchmarked. |
+| **LiteRT** | No INT4 variant registered here; Ruy/NEON paths are INT8. |
+| **ONNX RT** | No INT4 variant registered here; `MatMulNBits` is configured for 8-bit. |
+| **ExecuTorch** | No INT4 variant registered here; XNNPACK path is INT8 `qc8w`. |
 
 ### How attention is implemented per backend (read this before plotting)
 

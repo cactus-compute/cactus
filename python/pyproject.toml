@@ -5,9 +5,10 @@ description = "Cactus Python tools"
 requires-python = ">=3.10"
 dependencies = [
     "torch",
-    "transformers",
+    "transformers>=5.5.4,<6",
     "numpy",
-    "huggingface-hub",
+    "huggingface-hub>=1.5.0,<2.0",
+    "backports.lzma>=0.0.14",
 ]
 
 [project.optional-dependencies]
@@ -15,7 +16,7 @@ vlm = ["Pillow", "num2words", "torchvision"]
 lora = ["peft"]
 
 [project.scripts]
-cactus = "src.cli:main"
+cactus = "cactus.cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -23,4 +24,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["cactus*"]

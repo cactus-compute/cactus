@@ -9,6 +9,7 @@
 #include <functional>
 #include <cassert>
 #include <cstring>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <mutex>
@@ -90,7 +91,7 @@ enum class OpType {
     ABS, POW, FLATTEN, VIEW,
     MATMUL, TRANSPOSE, RESHAPE, SLICE, GATHER, EMBEDDING,
     BILINEAR_INTERPOLATION,
-    SUM, MEAN, VARIANCE, MIN, MAX,
+    SUM, MEAN, VARIANCE, MIN, MAX, CUMSUM,
     RMS_NORM, ROPE, ROPE_GPTJ, SOFTMAX,
     ATTENTION, ATTENTION_INT8_HYBRID, REL_POS_BIAS,
     CONV1D_CAUSAL, CONV1D_K3, CONV1D_K7S3, CONV1D,
@@ -102,7 +103,7 @@ enum class OpType {
     RELU, SILU, GELU, GELU_ERF, SIGMOID, TANH,
     SAMPLE, CONCAT, CAT,
     SCATTER_TOPK, TOPK, LAYERNORM, GROUPNORM,
-    MOE_LAYER, INDEX, PERSISTENT, QUANTIZE_ACTIVATIONS,
+    MOE_LAYER, INDEX, PERSISTENT,
     LSTM_CELL, GATED_DELTANET_DECODE, GATED_DELTANET_PREFILL,
     STFT, ALTUP_PREDICT, ALTUP_CORRECT, GAUSSIAN_TOPK,
     MAXPOOL1D, BILSTM_SEQUENCE, LEAKY_RELU,
@@ -111,7 +112,8 @@ enum class OpType {
     CONV_CACHE_STATE, CONV_CACHE_APPEND,
     RFFT, IRFFT, MEL_FILTER_BANK, SPECTROGRAM,
     IMAGE_PREPROCESS,
-    CLAMP
+    CLAMP,
+    DENSE_MLP_TQ_FUSED
 };
 
 struct PrecisionTraits {
@@ -120,29 +122,47 @@ struct PrecisionTraits {
             case Precision::INT8: return 1;
             case Precision::FP16: return 2;
             case Precision::FP32: return 4;
-            case Precision::INT4: return 1;
+            case Precision::CQ1:
+            case Precision::CQ2:
+            case Precision::CQ3:
+            case Precision::CQ4: return 1; // packed, not element-sized
         }
         return 1;
     }
 
-    static constexpr size_t packed_size_of(Precision prec, size_t count) {
+    static constexpr bool is_cq(Precision prec) {
+        return prec == Precision::CQ1 || prec == Precision::CQ2 ||
+               prec == Precision::CQ3 || prec == Precision::CQ4;
+    }
+
+    static constexpr uint32_t cq_bits(Precision prec) {
         switch (prec) {
-            case Precision::INT4: return (count + 1) / 2;
-            default: return count * size_of(prec);
+            case Precision::CQ1: return 1;
+            case Precision::CQ2: return 2;
+            case Precision::CQ3: return 3;
+            case Precision::CQ4: return 4;
+            default: return 0;
         }
+    }
+
+    static constexpr size_t packed_size_of(Precision prec, size_t count) {
+        if (is_cq(prec)) {
+            uint32_t bits = cq_bits(prec);
+            return (count * bits + 7) / 8;
+        }
+        return count * size_of(prec);
     }
 
     static size_t byte_offset_of(Precision prec, size_t element_offset) {
-        switch (prec) {
-            case Precision::INT4:
-                assert(element_offset % 32 == 0);
-                return element_offset / 2;
-            default: return element_offset * size_of(prec);
+        if (is_cq(prec)) {
+            uint32_t bits = cq_bits(prec);
+            return (element_offset * bits) / 8;
         }
+        return element_offset * size_of(prec);
     }
 
-    static constexpr bool is_integer(Precision prec) {
-        return prec == Precision::INT8 || prec == Precision::INT4;
+    static constexpr bool is_quantized(Precision prec) {
+        return is_cq(prec);
     }
 
     static constexpr bool is_floating_point(Precision prec) {
@@ -166,9 +186,9 @@ struct BroadcastInfo {
 };
 
 struct TensorConfig {
-    Precision default_precision = Precision::INT8;
-    Precision compute_precision = Precision::INT8;
-    Precision output_precision = Precision::INT8;
+    Precision default_precision = Precision::FP16;
+    Precision compute_precision = Precision::FP16;
+    Precision output_precision = Precision::FP16;
     bool auto_mixed_precision = false;
     static TensorConfig& global();
 };
@@ -209,18 +229,13 @@ struct BufferDesc {
 
     size_t group_size = 0;
     size_t num_groups = 0;
-    void* scales_data = nullptr;
-    std::unique_ptr<char[]> owned_scales;
-
-    bool is_interleaved = false;
-    size_t original_N = 0;
 
     void* activation_scales_data = nullptr;
     std::unique_ptr<char[]> owned_activation_scales;
     size_t num_rows_for_activation_scales = 0;
 
     BufferDesc();
-    BufferDesc(const std::vector<size_t>& s, Precision prec = Precision::INT8);
+    BufferDesc(const std::vector<size_t>& s, Precision prec = Precision::FP16);
     ~BufferDesc();
     BufferDesc(BufferDesc&& other) noexcept;
     BufferDesc& operator=(BufferDesc&& other) noexcept;
@@ -233,15 +248,38 @@ struct BufferDesc {
     template<typename T> T* data_as() { return static_cast<T*>(get_data()); }
     template<typename T> const T* data_as() const { return static_cast<const T*>(get_data()); }
 
-    const __fp16* scales_as_fp16() const { return reinterpret_cast<const __fp16*>(scales_data); }
-    bool is_grouped_int8() const { return precision == Precision::INT8 && group_size > 0; }
-    bool is_grouped_int4() const { return precision == Precision::INT4 && group_size > 0; }
+    bool is_cq() const { return PrecisionTraits::is_cq(precision) && group_size > 0; }
 
-    void set_grouped_scales(size_t gs, size_t ng, void* scales_ptr) {
-        group_size = gs; num_groups = ng; scales_data = scales_ptr;
-    }
-    void set_interleaved(bool interleaved, size_t orig_n) {
-        is_interleaved = interleaved; original_N = orig_n;
+    const __fp16* cq_codebook = nullptr;
+    const __fp16* cq_input_scale = nullptr;
+    const __fp16* cq_input_scale_recip = nullptr;
+    const __fp16* cq_norms = nullptr;
+    const int8_t* cq_left_signs = nullptr;
+    const int8_t* cq_right_signs = nullptr;
+    const uint32_t* cq_permutation = nullptr;
+    const __fp16* cq_rotation = nullptr;
+    uint32_t cq_flags = 0;
+
+    CactusQuantMatrix to_cq_matrix() const {
+        return CactusQuantMatrix{
+            .bits = PrecisionTraits::cq_bits(precision),
+            .K = static_cast<uint32_t>(shape.size() >= 2 ? shape[1] : shape[0]),
+            .N = static_cast<uint32_t>(shape.size() >= 2 ? shape[0] : 1),
+            .group_size = static_cast<uint32_t>(group_size),
+            .num_groups = static_cast<uint32_t>(num_groups),
+            .flags = cq_flags,
+            .codebook = cq_codebook,
+            .input_scale = cq_input_scale,
+            .input_scale_recip = cq_input_scale_recip,
+            .norms = cq_norms,
+            .packed_indices = static_cast<const uint8_t*>(get_data()),
+            .left_signs = cq_left_signs,
+            .right_signs = cq_right_signs,
+            .permutation = cq_permutation,
+            .rotation = cq_rotation,
+            .expanded = nullptr,
+            .norm_f32 = nullptr,
+        };
     }
 
     bool has_activation_scales() const { return activation_scales_data != nullptr && num_rows_for_activation_scales > 0; }
@@ -278,7 +316,7 @@ struct OpParams {
     float logit_cap = 0.0f;
     std::vector<size_t> new_shape;
     std::vector<size_t> permutation;
-    Precision output_precision = Precision::INT8;
+    Precision output_precision = Precision::FP16;
     BroadcastInfo broadcast_info;
     ComputeBackend backend = ComputeBackend::CPU;
 
@@ -417,7 +455,7 @@ public:
     void save(const std::string& path);
     static CactusGraph load(const std::string& path);
 
-    size_t input(const std::vector<size_t>& shape, Precision precision = Precision::INT8);
+    size_t input(const std::vector<size_t>& shape, Precision precision = Precision::FP16);
     void set_input(size_t node_id, const void* data, Precision precision);
     void set_external_input(size_t node_id, void* data, Precision precision);
     void* get_output(size_t node_id);
@@ -442,7 +480,6 @@ public:
     size_t abs(size_t input);
     size_t pow(size_t input, float exponent);
     size_t precision_cast(size_t input, Precision target_precision);
-    size_t quantize_activations(size_t input);
 
     size_t relu(size_t input);
     size_t leaky_relu(size_t input, float negative_slope = 0.01f);
@@ -460,6 +497,7 @@ public:
     size_t variance(size_t input, int axis);
     size_t min(size_t input, int axis);
     size_t max(size_t input, int axis);
+    size_t cumsum(size_t input, int axis);
     size_t softmax(size_t input, int axis = -1);
     size_t topk(size_t input, size_t k);
 
@@ -611,6 +649,7 @@ public:
         size_t num_experts, size_t num_experts_per_tok,
         bool normalize_routing, float epsilon, float routed_scaling_factor,
         Activation activation);
+    size_t dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale = 1.0f);
     size_t stats_pool(size_t input);
     size_t weighted_stats_pool(size_t input, size_t weights);
 
@@ -627,8 +666,7 @@ public:
     size_t embedding(size_t embedding_tensor, size_t indices);
     size_t mmap_embeddings(const std::string& filename);
     size_t mmap_weights(const std::string& filename);
-    void set_grouped_scales(size_t node_id, size_t group_size, size_t num_groups, void* scales_ptr);
-    void set_interleaved(size_t node_id, bool interleaved, size_t original_N);
+    void bind_mmap_weights(size_t node_id, const std::string& filename);
     void release_weight_pages(size_t node_id);
     void prefetch_weight_pages(size_t node_id);
     void release_all_weight_pages();
@@ -658,6 +696,8 @@ public:
     std::unordered_map<size_t, size_t> node_index_map_;
 
 private:
+    size_t binary_broadcast_op(OpType op, size_t input1, size_t input2);
+    size_t reduction_op(OpType op, size_t input, int axis);
     static CactusGraph from_serialized(const GraphFile::SerializedGraph& serialized);
     size_t next_node_id_;
     std::vector<std::unique_ptr<GraphFile::MappedFile>> mapped_files_;
@@ -713,7 +753,8 @@ namespace GraphFile {
         size_t group_size() const { return group_size_; }
         size_t num_groups() const { return num_groups_; }
         const void* scales_data() const;
-        bool is_interleaved() const { return is_interleaved_; }
+        bool is_orthogonal_rotation() const { return is_orthogonal_rotation_; }
+        bool is_interleaved_4row() const { return is_interleaved_4row_; }
         size_t original_N() const { return original_N_; }
         void* data();
         const void* data() const;
@@ -733,7 +774,8 @@ namespace GraphFile {
         size_t scales_offset_ = 0;
         size_t scales_bytes_ = 0;
         uint32_t alignment_ = 32;
-        bool is_interleaved_ = false;
+        bool is_orthogonal_rotation_ = false;
+        bool is_interleaved_4row_ = false;
         size_t original_N_ = 0;
 
         void parse_header();

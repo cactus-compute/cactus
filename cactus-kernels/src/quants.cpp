@@ -293,20 +293,3 @@ void cactus_quantize_kv_fp16_to_int8(
         });
 }
 
-void cactus_unpack_int4_to_int8(const uint8_t* packed, int8_t* unpacked, size_t unpacked_count) {
-    assert (unpacked_count % 32 == 0 && "Unpacked count must be a multiple of 32 for int4 unpacking");
-    const size_t num_groups = unpacked_count / 32;
-
-    CactusThreading::parallel_for(num_groups, CactusThreading::Thresholds::ELEMENT_WISE,
-        [packed, unpacked](size_t start, size_t end) {
-            for (size_t group = start; group < end; ++group) {
-                const uint8_t* src = &packed[group * 16];
-                int8_t* dst = &unpacked[group * 32];
-
-                int8x16_t high_signed, low_signed;
-                unpack_int4_as_int8x16x2(src, high_signed, low_signed);
-                vst1q_s8(dst, low_signed);
-                vst1q_s8(dst + 16, high_signed);
-            }
-        });
-}

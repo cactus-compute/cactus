@@ -3,6 +3,7 @@
 #include "../../cactus-kernels/cactus_kernels.h"
 #include "../../cactus-kernels/src/threading.h"
 
+#include <algorithm>
 #include <arm_neon.h>
 #include <cmath>
 #include <cstring>
@@ -11,58 +12,113 @@ namespace {
 
 namespace matmul {
 
-struct Weights {
+struct Cq4Weights {
     size_t K = 0, N = 0;
-    std::vector<int8_t> int8_weights;
-    std::vector<__fp16> scales;
+    uint32_t group_size = 128;
+    uint32_t num_groups = 0;
+    std::vector<__fp16> codebook;
+    std::vector<__fp16> input_scale;
+    std::vector<__fp16> input_scale_recip;
+    std::vector<__fp16> norms;
+    std::vector<uint8_t> packed_indices;
+    std::vector<int8_t> left_signs;
+    std::vector<int8_t> right_signs;
+    std::vector<uint32_t> permutation;
     std::vector<__fp16> output_buf;
+    CactusQuantMatrix matrix{};
 };
 
-void* prepare_int8(const float* fp32, size_t N, size_t K) {
-    auto* w = new Weights();
+struct Cq4Activations {
+    std::vector<__fp16> fp16;
+};
+
+void* prepare_cq4(const float* fp32, size_t N, size_t K) {
+    auto* w = new Cq4Weights();
     w->K = K;
     w->N = N;
+    w->group_size = static_cast<uint32_t>(std::min<size_t>(128, K));
+    w->num_groups = static_cast<uint32_t>((K + w->group_size - 1) / w->group_size);
 
-    std::vector<float> src(fp32, fp32 + N * K);
-    std::vector<int8_t> rowmajor;
-    std::vector<float> raw_scales;
+    constexpr uint32_t bits = 4;
+    constexpr uint32_t codebook_size = 16;
+    w->codebook.resize(codebook_size);
+    for (uint32_t i = 0; i < codebook_size; ++i) {
+        float v = (static_cast<float>(i) - 7.5f) / 7.5f;
+        w->codebook[i] = static_cast<__fp16>(v);
+    }
 
-    bench::quantize_int8_per_group(src, N, K, rowmajor, raw_scales);
-    w->int8_weights = bench::interleave_weights_nk4(rowmajor, N, K);
-    w->scales = bench::interleave_scales_n4(raw_scales, N, K / bench::kGroupSize);
+    w->input_scale.assign(K, static_cast<__fp16>(1.0f));
+    w->input_scale_recip.assign(K, static_cast<__fp16>(1.0f));
+    w->left_signs.assign(w->group_size, 1);
+    w->right_signs.assign(w->group_size, 1);
+    w->permutation.resize(w->group_size);
+    for (uint32_t i = 0; i < w->group_size; ++i) w->permutation[i] = i;
+
+    const uint32_t packed_group_bytes = cactus_quant_packed_group_bytes(bits, w->group_size);
+    w->norms.resize(N * w->num_groups);
+    w->packed_indices.assign(N * w->num_groups * packed_group_bytes, 0);
+
+    for (size_t n = 0; n < N; ++n) {
+        for (uint32_t g = 0; g < w->num_groups; ++g) {
+            const size_t base = n * K + static_cast<size_t>(g) * w->group_size;
+            const size_t end = std::min(base + w->group_size, (n + 1) * K);
+            float max_abs = 1e-6f;
+            for (size_t k = base; k < end; ++k)
+                max_abs = std::max(max_abs, std::abs(fp32[k]));
+            w->norms[n * w->num_groups + g] = static_cast<__fp16>(max_abs);
+
+            uint8_t* packed = w->packed_indices.data() +
+                (n * w->num_groups + g) * packed_group_bytes;
+            for (uint32_t k = 0; k < w->group_size; ++k) {
+                float v = 0.0f;
+                if (base + k < end) v = fp32[base + k] / max_abs;
+                int idx = static_cast<int>(std::round((std::max(-1.0f, std::min(1.0f, v)) + 1.0f) * 7.5f));
+                idx = std::max(0, std::min(15, idx));
+                if ((k & 1u) == 0)
+                    packed[k >> 1] = static_cast<uint8_t>(idx);
+                else
+                    packed[k >> 1] = static_cast<uint8_t>(packed[k >> 1] | (idx << 4));
+            }
+        }
+    }
+
+    w->matrix = CactusQuantMatrix{
+        bits, static_cast<uint32_t>(K), static_cast<uint32_t>(N),
+        w->group_size, w->num_groups, 0,
+        w->codebook.data(), w->input_scale.data(), w->input_scale_recip.data(),
+        w->norms.data(), w->packed_indices.data(), w->left_signs.data(),
+        w->right_signs.data(), w->permutation.data(), nullptr, nullptr, nullptr
+    };
     return w;
 }
 
-void run_kernel(size_t M, size_t K, size_t N,
-                void* weights, void*,
-                const int8_t* act_int8, const float* act_scales,
-                float* output, float*) {
-    auto* w = static_cast<Weights*>(weights);
+void* prepare_cq4_activations(const float* fp32, size_t M, size_t K, void*) {
+    auto* a = new Cq4Activations();
+    a->fp16.resize(M * K);
+    bench::fp32_to_fp16(fp32, a->fp16.data(), M * K);
+    return a;
+}
+
+void run_cq4_kernel(size_t M, size_t, size_t,
+                    void* weights, void* activations,
+                    const int8_t*, const float*,
+                    float* output, float* reference) {
+    auto* w = static_cast<Cq4Weights*>(weights);
+    auto* a = static_cast<Cq4Activations*>(activations);
     w->output_buf.assign(M * w->N, __fp16(0.0f));
 
     int thr = bench::get_thread_override();
     if (thr > 0) CactusThreading::set_gemm_threads(static_cast<size_t>(thr));
-
-    if (M == 1) {
-        cactus_gemv_int8(act_int8, act_scales[0],
-                         w->int8_weights.data(), w->scales.data(),
-                         w->output_buf.data(), K, N, bench::kGroupSize);
-    } else {
-        cactus_matmul_int8(act_int8, act_scales,
-                           w->int8_weights.data(), w->scales.data(),
-                           w->output_buf.data(), M, K, N, bench::kGroupSize);
-    }
-
+    cactus_quant_matmul(&w->matrix, a->fp16.data(), static_cast<uint32_t>(M), w->output_buf.data());
     if (thr > 0) CactusThreading::reset_gemm_threads();
 
-    if (output) {
-        size_t count = M * w->N;
-        bench::fp16_to_fp32(w->output_buf.data(), output, count);
-    }
+    if (output) bench::fp16_to_fp32(w->output_buf.data(), output, M * w->N);
+    if (reference) bench::fp16_to_fp32(w->output_buf.data(), reference, M * w->N);
 }
 
-void cleanup(void* weights, void*) {
-    delete static_cast<Weights*>(weights);
+void cleanup_cq4(void* weights, void* activations) {
+    delete static_cast<Cq4Weights*>(weights);
+    delete static_cast<Cq4Activations*>(activations);
 }
 
 } // namespace matmul
@@ -204,8 +260,9 @@ void cleanup(void* state) { delete static_cast<State*>(state); }
 
 static int reg = []{
     bench::register_matmul_backend({
-        "cactus_int8", "cactus",
-        matmul::prepare_int8, nullptr, matmul::run_kernel, matmul::cleanup
+        "cactus_cq4", "cactus",
+        matmul::prepare_cq4, matmul::prepare_cq4_activations,
+        matmul::run_cq4_kernel, matmul::cleanup_cq4
     });
     bench::register_attn_backend({
         "cactus_prefill", "cactus", bench::AttnMode::PREFILL,

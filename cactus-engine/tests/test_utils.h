@@ -1,35 +1,16 @@
 #ifndef TEST_UTILS_H
 #define TEST_UTILS_H
 
-#include "../../cactus-graph/cactus_graph.h"
 #include "../cactus_engine.h"
 #include <vector>
 #include <string>
-#include <fstream>
 #include <chrono>
 #include <iostream>
 #include <iomanip>
 #include <functional>
 #include <cmath>
-#include <atomic>
-#include <mutex>
-
 
 namespace TestUtils {
-
-size_t random_graph_input(CactusGraph& graph, const std::vector<size_t>& shape, Precision precision = Precision::INT8);
-bool verify_graph_outputs(CactusGraph& graph, size_t node_a, size_t node_b, float tolerance = 1e-6f);
-bool verify_graph_against_data(CactusGraph& graph, size_t node_id, const void* expected_data, size_t byte_size, float tolerance = 1e-6f);
-void fill_random_int8(std::vector<int8_t>& data);
-void fill_random_float(std::vector<float>& data);
-
-template<typename Func>
-double time_function(Func&& func, int iterations = 1) {
-    auto start = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < iterations; ++i) func();
-    auto end = std::chrono::high_resolution_clock::now();
-    return std::chrono::duration<double, std::milli>(end - start).count();
-}
 
 class TestRunner {
 public:
@@ -45,102 +26,6 @@ private:
     int passed_count_;
     int total_count_;
 };
-
-template<typename T>
-constexpr Precision default_precision() {
-    if constexpr (std::is_same_v<T, int8_t>) return Precision::INT8;
-    else if constexpr (std::is_same_v<T, __fp16>) return Precision::FP16;
-    else return Precision::FP32;
-}
-
-template<typename T>
-constexpr float default_tolerance() {
-    if constexpr (std::is_same_v<T, __fp16>) return 1e-2f;
-    else return 1e-6f;
-}
-
-template<typename T>
-bool compare_arrays(const T* actual, const T* expected, size_t count, float tolerance = default_tolerance<T>()) {
-    for (size_t i = 0; i < count; ++i) {
-        if constexpr (std::is_same_v<T, __fp16>) {
-            if (std::abs(static_cast<float>(actual[i]) - static_cast<float>(expected[i])) > tolerance) return false;
-        } else if constexpr (std::is_floating_point_v<T>) {
-            if (std::abs(actual[i] - expected[i]) > tolerance) return false;
-        } else {
-            if (actual[i] != expected[i]) return false;
-        }
-    }
-    return true;
-}
-
-template<typename T>
-class TestFixture {
-public:
-    TestFixture(const std::string& = "") {}
-    ~TestFixture() { graph_.hard_reset(); }
-
-    CactusGraph& graph() { return graph_; }
-
-    size_t create_input(const std::vector<size_t>& shape, Precision precision = default_precision<T>()) {
-        return graph_.input(shape, precision);
-    }
-
-    void set_input_data(size_t input_id, const std::vector<T>& data, Precision precision = default_precision<T>()) {
-        graph_.set_input(input_id, const_cast<void*>(static_cast<const void*>(data.data())), precision);
-    }
-
-    void execute() { graph_.execute(); }
-
-    T* get_output(size_t node_id) {
-        return static_cast<T*>(graph_.get_output(node_id));
-    }
-
-    bool verify_output(size_t node_id, const std::vector<T>& expected, float tolerance = default_tolerance<T>()) {
-        return compare_arrays(get_output(node_id), expected.data(), expected.size(), tolerance);
-    }
-
-private:
-    CactusGraph graph_;
-};
-
-using Int8TestFixture = TestFixture<int8_t>;
-using FP16TestFixture = TestFixture<__fp16>;
-
-void fill_random_fp16(std::vector<__fp16>& data);
-
-bool test_basic_operation(const std::string& op_name,
-                          std::function<size_t(CactusGraph&, size_t, size_t)> op_func,
-                          const std::vector<__fp16>& data_a,
-                          const std::vector<__fp16>& data_b,
-                          const std::vector<__fp16>& expected,
-                          const std::vector<size_t>& shape = {4});
-
-bool test_scalar_operation(const std::string& op_name,
-                           std::function<size_t(CactusGraph&, size_t, float)> op_func,
-                           const std::vector<__fp16>& data,
-                           float scalar,
-                           const std::vector<__fp16>& expected,
-                           const std::vector<size_t>& shape = {4});
-
-inline std::vector<float> load_bin(const std::string& path) {
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f.is_open()) return {};
-    size_t bytes = f.tellg();
-    f.seekg(0);
-    std::vector<float> data(bytes / sizeof(float));
-    f.read(reinterpret_cast<char*>(data.data()), bytes);
-    return data;
-}
-
-inline float cosine_sim(const std::vector<float>& a, const std::vector<float>& b) {
-    size_t n = std::min(a.size(), b.size());
-    if (n == 0 || a.size() != b.size()) return -1;
-    double dot = 0, na = 0, nb = 0;
-    for (size_t i = 0; i < n; i++) {
-        dot += (double)a[i]*b[i]; na += (double)a[i]*a[i]; nb += (double)b[i]*b[i];
-    }
-    return (na > 0 && nb > 0) ? (float)(dot / (std::sqrt(na) * std::sqrt(nb))) : 0;
-}
 
 }
 
@@ -243,41 +128,5 @@ bool run_test(const char* title, const char* model_path, const char* messages,
 }
 
 }
-
-#ifdef HAVE_SDL2
-
-#include <SDL.h>
-#include <SDL_audio.h>
-
-class AudioCapture {
-public:
-    AudioCapture(int len_ms = 10000);
-    ~AudioCapture();
-
-    bool init(int capture_id, int sample_rate);
-    void resume();
-    void pause();
-    void clear();
-    size_t get(int duration_ms, std::vector<float>& result);
-    size_t get_all(std::vector<float>& result);
-    bool is_running() const { return m_running; }
-    size_t get_total_samples_received() const { return m_total_samples_received; }
-    size_t get_buffer_length() const;
-
-private:
-    void callback(uint8_t* stream, int len);
-
-    int m_len_ms;
-    std::atomic<bool> m_running;
-    SDL_AudioDeviceID m_dev_id_in;
-    bool m_sdl_initialized;
-    std::vector<float> m_audio;
-    size_t m_audio_pos;
-    size_t m_audio_len;
-    std::atomic<size_t> m_total_samples_received;
-    mutable std::mutex m_mutex;
-};
-
-#endif
 
 #endif

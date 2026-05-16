@@ -250,7 +250,6 @@ std::vector<std::vector<uint32_t>> build_stop_sequences(
     if (model_type == Config::ModelType::GEMMA4) {
         stop_token_sequences.push_back(tokenizer->encode("<turn|>"));
         if (has_tools) {
-            stop_token_sequences.push_back(tokenizer->encode("<tool_call|>"));
             stop_token_sequences.push_back(tokenizer->encode("<|tool_response>"));
         }
     }
@@ -661,18 +660,11 @@ int cactus_complete(
         bool has_audio = prompt.has_audio();
         const bool has_gemma4_mixed_media = prompt.model_type == Config::ModelType::GEMMA4 && has_images && has_audio;
         auto decode_gemma4_mixed_media = [&](const std::vector<uint32_t>& tokens, float* out_entropy) -> uint32_t {
-            auto* gemma4_mm = dynamic_cast<Gemma4MmModel*>(handle->model.get());
-            if (!gemma4_mm) {
-                throw std::runtime_error("Gemma4 mixed-media decode requested on non-Gemma4 multimodal model");
-            }
-            return gemma4_mm->decode_with_media(
-                tokens,
-                prompt.image_paths,
-                prompt.audio_features,
-                prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
-                "", out_entropy,
-                prompt.options.min_p, prompt.options.repetition_penalty
-            );
+            (void)tokens;
+            (void)out_entropy;
+            throw std::runtime_error(
+                "Gemma4 mixed-media native decode is not present in this build. "
+                "Use cactus run-transpiled for transpiled graph bundles.");
         };
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());
@@ -726,7 +718,9 @@ int cactus_complete(
         std::string cloud_error;
         std::future<CloudCompletionResult> cloud_future;
         bool cloud_future_started = false;
-        const bool cloud_eligible = prompt.options.auto_handoff && (!has_images || prompt.options.handoff_with_images);
+        const bool cloud_disabled = env_flag_enabled("CACTUS_DISABLE_CLOUD_HANDOFF");
+        const bool cloud_eligible = !cloud_disabled &&
+            prompt.options.auto_handoff && (!has_images || prompt.options.handoff_with_images);
 
         auto maybe_start_cloud_handoff = [&](const std::string& local_output_hint,
                                              const std::vector<std::string>& local_calls_hint) {

@@ -15,6 +15,16 @@ jobs:
           fetch-depth: 0
 
       - name: Check DCO
-        uses: dco-action/check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          missing=0
+          while read -r commit; do
+            author="$(git show -s --format='%an <%ae>' "$commit")"
+            if ! git show -s --format='%B' "$commit" | grep -Fqi "Signed-off-by: $author"; then
+              echo "::error::Commit $commit is missing Signed-off-by: $author"
+              missing=1
+            fi
+          done < <(git rev-list --no-merges "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}")
+
+          exit "$missing"

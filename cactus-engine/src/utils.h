@@ -2,7 +2,6 @@
 #define CACTUS_UTILS_H
 
 #include "engine.h"
-#include "../models/model.h"
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -113,7 +112,7 @@ inline cactus::engine::SpectrogramConfig get_whisper_spectrogram_config() {
     cfg.log_mel      = "log10";
     cfg.reference    = 1.0f;
     cfg.min_value    = 1e-10f;
-    cfg.remove_dc_offset = true;
+    cfg.remove_dc_offset = false;
     return cfg;
 }
 
@@ -348,6 +347,16 @@ inline AudioPreprocessResult preprocess_audio_for_gemma4(
 ) {
     AudioPreprocessResult result;
     if (audio_samples.empty()) return result;
+
+    size_t max_soft = model_config.audio_soft_tokens;
+    if (max_soft > 0) {
+        size_t max_frames = (max_soft * 2 - 1) * 2 - 1;
+        size_t hop_length = 160;
+        size_t max_samples = max_frames * hop_length;
+        if (audio_samples.size() > max_samples) {
+            audio_samples.resize(max_samples);
+        }
+    }
 
     size_t pad_amt = 320 - (audio_samples.size() % 320);
     if (pad_amt < 320)

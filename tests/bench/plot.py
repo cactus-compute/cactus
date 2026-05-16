@@ -39,6 +39,7 @@ GRAPHS = [
 # palette. Unknown backends fall back to matplotlib's default cycle.
 BACKEND_COLORS = {
     "cactus_int8":                       "#1b9e77",
+    "cactus_cq4":                        "#004d40",
     "cactus_prefill":                    "#1b9e77",
     "cactus_decode":                     "#1b9e77",
     "ggml_q8_0":                         "#377eb8",
@@ -74,11 +75,13 @@ BACKEND_ASTERISKS = {
     "executorch_qsdpa_decode_int8pc":    "*",
     "executorch_sdpa_prefill_fp32":      "†",
     "onnxrt_gqa_decode_fp16kv":          "‡",
+    "cactus_cq4":                        "§",
 }
 ASTERISK_LEGEND = {
     "*": "per-channel INT8 quant (vs cactus's group=32)",
     "†": "FP32 (vs FP16)",
     "‡": "FP16 KV (vs INT8 KV)",
+    "§": "CQ4 / INT4 Cactus Quant weights",
 }
 
 

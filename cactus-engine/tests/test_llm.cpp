@@ -561,15 +561,19 @@ bool test_1k_context() {
 
 int main() {
     TestUtils::TestRunner runner("LLM Tests");
-    runner.run_test("1k_context", test_1k_context());
-    runner.run_test("streaming", test_streaming());
-    runner.run_test("prefill", test_prefill());
-    runner.run_test("prefill_idempotent_reuse", test_prefill_idempotent_reuse());
-    runner.run_test("prefill_prefix_extension_reuse", test_prefill_prefix_extension_reuse());
-    runner.run_test("prefill_invalidated_on_message_change", test_prefill_invalidated_on_message_change());
-    runner.run_test("tool_calls", test_tool_call());
-    runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
-    runner.run_test("tool_calls_with_three_tools", test_tool_call_with_three_tools());
+    const char* only = std::getenv("CACTUS_TEST_ONLY");
+    auto should_run = [&](const char* name) {
+        return only == nullptr || std::string(only) == name;
+    };
+    if (should_run("1k_context")) runner.run_test("1k_context", test_1k_context());
+    if (should_run("streaming")) runner.run_test("streaming", test_streaming());
+    if (should_run("prefill")) runner.run_test("prefill", test_prefill());
+    if (should_run("prefill_idempotent_reuse")) runner.run_test("prefill_idempotent_reuse", test_prefill_idempotent_reuse());
+    if (should_run("prefill_prefix_extension_reuse")) runner.run_test("prefill_prefix_extension_reuse", test_prefill_prefix_extension_reuse());
+    if (should_run("prefill_invalidated_on_message_change")) runner.run_test("prefill_invalidated_on_message_change", test_prefill_invalidated_on_message_change());
+    if (should_run("tool_calls")) runner.run_test("tool_calls", test_tool_call());
+    if (should_run("tool_multiple_tool_call_invocations")) runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
+    if (should_run("tool_calls_with_three_tools")) runner.run_test("tool_calls_with_three_tools", test_tool_call_with_three_tools());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

@@ -106,26 +106,26 @@ jobs:
         run: |
           source venv/bin/activate
           convert_if_missing() {
-            local model_id=$1 output_dir=$2 precision=$3
+            local model_id=$1 output_dir=$2 bits=$3
             if [ ! -f "weights/$output_dir/config.txt" ]; then
               echo "Converting $model_id -> weights/$output_dir"
-              python3 -m src.cli convert "$model_id" "weights/$output_dir" --precision "$precision" ${HF_TOKEN:+--token "$HF_TOKEN"} || echo "WARNING: conversion of $model_id failed (exit $?), checking fallback directory"
+              python3 -m cactus convert "$model_id" "weights/$output_dir" --bits "$bits" ${HF_TOKEN:+--token "$HF_TOKEN"} || echo "WARNING: conversion of $model_id failed (exit $?), checking fallback directory"
               local default_dir="weights/$(echo "$model_id" | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')"
               if [ ! -f "weights/$output_dir/config.txt" ] && [ -f "$default_dir/config.txt" ]; then
                 mv "$default_dir" "weights/$output_dir"
               fi
             fi
           }
-          convert_if_missing "Qwen/Qwen3-0.6B" "qwen3-0.6b" "INT8"
-          convert_if_missing "nomic-ai/nomic-embed-text-v2-moe" "nomic-embed-text-v2-moe" "INT8"
-          convert_if_missing "LiquidAI/LFM2.5-350M" "lfm2-350m" "INT8"
-          convert_if_missing "LiquidAI/LFM2-8B-A1B" "lfm2-8b-a1b" "INT8"
-          convert_if_missing "google/gemma-3-270m-it" "gemma-3-270m-it" "INT8"
-          convert_if_missing "openai/whisper-small" "whisper-small" "INT8"
-          convert_if_missing "UsefulSensors/moonshine-base" "moonshine-base" "INT8"
-          convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-int8" "INT8"
-          convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-int4" "INT4"
-          convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-fp16" "FP16"
+          convert_if_missing "Qwen/Qwen3-0.6B" "qwen3-0.6b" "4"
+          convert_if_missing "nomic-ai/nomic-embed-text-v2-moe" "nomic-embed-text-v2-moe" "4"
+          convert_if_missing "LiquidAI/LFM2.5-350M" "lfm2-350m" "4"
+          convert_if_missing "LiquidAI/LFM2-8B-A1B" "lfm2-8b-a1b" "4"
+          convert_if_missing "google/gemma-3-270m-it" "gemma-3-270m-it" "4"
+          convert_if_missing "openai/whisper-small" "whisper-small" "4"
+          convert_if_missing "UsefulSensors/moonshine-base" "moonshine-base" "4"
+          convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-int8" "4"
+          convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-int4" "4"
+          convert_if_missing "LiquidAI/LFM2-VL-450M" "lfm2-vl-450m-fp16" "4"
 
       - name: Build library
         run: bash cactus/build.sh

@@ -244,8 +244,6 @@ CACTUS_FFI_EXPORT int cactus_graph_set_external_input(
 
 CACTUS_FFI_EXPORT int cactus_graph_precision_cast(
     cactus_graph_t graph, cactus_node_t input, int32_t target_precision, cactus_node_t* out);
-CACTUS_FFI_EXPORT int cactus_graph_quantize_activations(
-    cactus_graph_t graph, cactus_node_t input, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_add(cactus_graph_t graph, cactus_node_t a,
 cactus_node_t b, cactus_node_t* out);
@@ -294,6 +292,7 @@ CACTUS_FFI_EXPORT int cactus_graph_mean(cactus_graph_t graph, cactus_node_t x, i
 CACTUS_FFI_EXPORT int cactus_graph_variance(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_min(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_max(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_cumsum(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_concat(
     cactus_graph_t graph, cactus_node_t a, cactus_node_t b, int32_t axis,
@@ -314,12 +313,10 @@ CACTUS_FFI_EXPORT int cactus_graph_mmap_embeddings(
     cactus_graph_t graph, const char* filename, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_mmap_weights(
     cactus_graph_t graph, const char* filename, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_bind_mmap_weights(
+    cactus_graph_t graph, cactus_node_t node, const char* filename);
 CACTUS_FFI_EXPORT int cactus_graph_bilinear_interpolation(
     cactus_graph_t graph, cactus_node_t pos_embeds, size_t dst_height, size_t dst_width, cactus_node_t* out);
-CACTUS_FFI_EXPORT int cactus_graph_set_grouped_scales(
-    cactus_graph_t graph, cactus_node_t node, size_t group_size, size_t num_groups, void* scales_ptr);
-CACTUS_FFI_EXPORT int cactus_graph_set_interleaved(
-    cactus_graph_t graph, cactus_node_t node, bool interleaved, size_t original_n);
 CACTUS_FFI_EXPORT int cactus_graph_release_weight_pages(cactus_graph_t graph, cactus_node_t node);
 CACTUS_FFI_EXPORT int cactus_graph_prefetch_weight_pages(cactus_graph_t graph, cactus_node_t node);
 CACTUS_FFI_EXPORT int cactus_graph_release_all_weight_pages(cactus_graph_t graph);

@@ -109,28 +109,6 @@ bool test_kv_quantize_int8() {
     return true;
 }
 
-bool test_unpack_int4() {
-    const size_t n = 64;
-    std::vector<uint8_t> packed(n / 2);
-    std::vector<int8_t> unpacked(n);
-
-    for (size_t i = 0; i < n / 2; i++) {
-        int8_t lo = static_cast<int8_t>((i % 8) - 4);
-        int8_t hi = static_cast<int8_t>(((i + 1) % 8) - 4);
-        packed[i] = static_cast<uint8_t>((hi << 4) | (lo & 0x0F));
-    }
-
-    cactus_unpack_int4_to_int8(packed.data(), unpacked.data(), n);
-
-    for (size_t i = 0; i < n; i++) {
-        if (unpacked[i] < -8 || unpacked[i] > 7) {
-            std::cerr << "  unpack_int4: out of range at " << i << ": " << static_cast<int>(unpacked[i]) << "\n";
-            return false;
-        }
-    }
-    return true;
-}
-
 bool run_benchmarks() {
     const size_t n = 1024 * 1024;
 
@@ -214,7 +192,6 @@ int main() {
     runner.run_test("int8_fp16_conversion", test_int8_fp16_conversion());
     runner.run_test("fp16_max_abs", test_fp16_max_abs());
     runner.run_test("kv_quantize_int8", test_kv_quantize_int8());
-    runner.run_test("unpack_int4", test_unpack_int4());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

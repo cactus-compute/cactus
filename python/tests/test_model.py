@@ -8,8 +8,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 ASSETS_DIR = PROJECT_ROOT / "tests" / "assets"
 
-from src.downloads import ensure_model
-from src.cactus import (
+from cactus import (
+    ensure_model,
     cactus_init,
     cactus_destroy,
     cactus_complete,

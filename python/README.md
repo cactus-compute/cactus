@@ -32,8 +32,8 @@ cactus auth
 
 <!-- --8<-- [start:example] -->
 ```python
-from src.downloads import ensure_model
-from src.cactus import cactus_init, cactus_complete, cactus_destroy
+from cactus import ensure_model
+from cactus import cactus_init, cactus_complete, cactus_destroy
 import json
 
 # Downloads weights from HuggingFace if not already present
@@ -56,14 +56,13 @@ All functions are module-level and mirror the C FFI directly. Handles are plain 
 Download pre-converted weights programmatically (no CLI needed):
 
 ```python
-from src.downloads import ensure_model, get_weights_dir, download_from_hf
+from cactus import ensure_model, get_weights_dir
 
 # ensure_model downloads if missing, returns Path to weights dir
 weights = ensure_model("openai/whisper-tiny")
 
 # Or check / download manually
 weights_dir = get_weights_dir("openai/whisper-tiny")  # -> Path("weights/whisper-tiny")
-download_from_hf("openai/whisper-tiny", weights_dir, precision="INT4")  # -> bool
 ```
 
 ### Init / Lifecycle
@@ -397,7 +396,7 @@ result = json.loads(cactus_complete(model, messages, None, None, None))
 The `Graph` API provides a tensor computation graph for building and executing dataflow pipelines on the Cactus kernel layer:
 
 ```python
-from src.graph import Graph
+from cactus.bindings.graph import Graph
 import numpy as np
 
 g = Graph()

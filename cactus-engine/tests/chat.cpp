@@ -1,508 +1,462 @@
 #include "../cactus_engine.h"
-#include "../src/telemetry.h"
-#include <iostream>
-#include <string>
-#include <vector>
-#include <sstream>
-#include <cstdlib>
-#include <iomanip>
-#include <chrono>
-#include <fstream>
+
+#include <algorithm>
 #include <atomic>
-#include <thread>
+#include <chrono>
+#include <cstring>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <mutex>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <vector>
 
 #ifdef HAVE_SDL2
 #include <SDL.h>
 #include <SDL_audio.h>
+#endif
 
 namespace {
 
-constexpr int RECORD_SAMPLE_RATE = 16000;
+constexpr int kMaxTokens = 1024;
+constexpr size_t kResponseBufferSize = kMaxTokens * 128;
+
+#ifdef HAVE_SDL2
+constexpr int kRecordSampleRate = 16000;
 
 struct RecordState {
     std::mutex mutex;
     std::vector<uint8_t> buffer;
     std::atomic<bool> recording{false};
-    int actual_sample_rate{RECORD_SAMPLE_RATE};
+    int actual_sample_rate = kRecordSampleRate;
+    SDL_AudioFormat actual_format = AUDIO_S16LSB;
+    int actual_channels = 1;
 };
 
 RecordState g_record;
 
-void record_callback(void* /*userdata*/, Uint8* stream, int len) {
+void record_callback(void*, Uint8* stream, int len) {
     if (!g_record.recording) return;
     std::lock_guard<std::mutex> lock(g_record.mutex);
     g_record.buffer.insert(g_record.buffer.end(), stream, stream + len);
 }
 
-std::vector<uint8_t> resample_s16(const std::vector<uint8_t>& input, int source_rate, int target_rate) {
-    if (source_rate == target_rate || input.empty()) return input;
-    size_t num_in = input.size() / 2;
-    if (num_in == 0) return input;
-    const int16_t* in = reinterpret_cast<const int16_t*>(input.data());
-    double ratio = static_cast<double>(target_rate) / source_rate;
-    size_t num_out = static_cast<size_t>(num_in * ratio);
-    if (num_out == 0) return {};
-    std::vector<int16_t> out(num_out);
-    for (size_t i = 0; i < num_out; i++) {
-        double src_idx = i / ratio;
-        size_t i0 = static_cast<size_t>(src_idx);
-        size_t i1 = std::min(i0 + 1, num_in - 1);
-        double frac = src_idx - i0;
-        double sample = in[i0] * (1.0 - frac) + in[i1] * frac;
-        if (sample > 32767.0) sample = 32767.0;
-        if (sample < -32768.0) sample = -32768.0;
-        out[i] = static_cast<int16_t>(sample);
+std::vector<float> decode_sdl_audio_to_mono_f32(const std::vector<uint8_t>& input,
+                                                SDL_AudioFormat format,
+                                                int channels) {
+    if (input.empty() || channels <= 0) return {};
+
+    size_t bytes_per_sample = SDL_AUDIO_BITSIZE(format) / 8;
+    if (bytes_per_sample == 0) return {};
+    size_t frame_count = input.size() / (bytes_per_sample * static_cast<size_t>(channels));
+    std::vector<float> mono(frame_count);
+
+    auto sample_at = [&](size_t sample_index) -> float {
+        const uint8_t* p = input.data() + sample_index * bytes_per_sample;
+        switch (format) {
+            case AUDIO_S16LSB: {
+                int16_t v;
+                std::memcpy(&v, p, sizeof(v));
+                return static_cast<float>(v) / 32768.0f;
+            }
+            case AUDIO_U16LSB: {
+                uint16_t v;
+                std::memcpy(&v, p, sizeof(v));
+                return (static_cast<float>(v) - 32768.0f) / 32768.0f;
+            }
+            case AUDIO_S16MSB: {
+                int16_t v = static_cast<int16_t>((p[0] << 8) | p[1]);
+                return static_cast<float>(v) / 32768.0f;
+            }
+            case AUDIO_U16MSB: {
+                uint16_t v = static_cast<uint16_t>((p[0] << 8) | p[1]);
+                return (static_cast<float>(v) - 32768.0f) / 32768.0f;
+            }
+            case AUDIO_S8:
+                return static_cast<float>(*reinterpret_cast<const int8_t*>(p)) / 128.0f;
+            case AUDIO_U8:
+                return (static_cast<float>(*p) - 128.0f) / 128.0f;
+            case AUDIO_F32LSB: {
+                float v;
+                std::memcpy(&v, p, sizeof(v));
+                return std::clamp(v, -1.0f, 1.0f);
+            }
+            default:
+                return 0.0f;
+        }
+    };
+
+    for (size_t frame = 0; frame < frame_count; ++frame) {
+        float sum = 0.0f;
+        for (int ch = 0; ch < channels; ++ch) {
+            sum += sample_at(frame * static_cast<size_t>(channels) + static_cast<size_t>(ch));
+        }
+        mono[frame] = sum / static_cast<float>(channels);
     }
-    std::vector<uint8_t> result(num_out * 2);
+    return mono;
+}
+
+std::vector<uint8_t> resample_f32_to_s16_pcm(const std::vector<float>& input, int source_rate, int target_rate) {
+    if (input.empty()) return {};
+    double ratio = static_cast<double>(target_rate) / static_cast<double>(source_rate);
+    size_t out_count = static_cast<size_t>(static_cast<double>(input.size()) * ratio);
+    if (out_count == 0) return {};
+
+    std::vector<int16_t> out(out_count);
+    for (size_t i = 0; i < out_count; ++i) {
+        double src_pos = static_cast<double>(i) / ratio;
+        size_t i0 = static_cast<size_t>(src_pos);
+        size_t i1 = std::min(i0 + 1, input.size() - 1);
+        double frac = src_pos - static_cast<double>(i0);
+        double sample = static_cast<double>(input[i0]) * (1.0 - frac) + static_cast<double>(input[i1]) * frac;
+        sample = std::clamp(sample, -1.0, 1.0);
+        out[i] = static_cast<int16_t>(std::lrint(sample * 32767.0));
+    }
+
+    std::vector<uint8_t> result(out.size() * sizeof(int16_t));
     std::memcpy(result.data(), out.data(), result.size());
     return result;
 }
 
 bool record_audio(std::vector<uint8_t>& pcm_out) {
     if (SDL_Init(SDL_INIT_AUDIO) < 0) {
-        std::cerr << "Failed to init SDL: " << SDL_GetError() << "\n";
+        std::cerr << "Failed to init SDL audio: " << SDL_GetError() << "\n";
         return false;
     }
 
-    int num_devices = SDL_GetNumAudioDevices(1);
-    if (num_devices == 0) {
-        std::cerr << "No audio capture devices found\n";
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
-        return false;
-    }
-
-    SDL_AudioSpec want, have;
+    SDL_AudioSpec want;
+    SDL_AudioSpec have;
     SDL_zero(want);
-    want.freq = RECORD_SAMPLE_RATE;
+    want.freq = kRecordSampleRate;
     want.format = AUDIO_S16LSB;
     want.channels = 1;
-    want.samples = (RECORD_SAMPLE_RATE * 100) / 1000;
+    want.samples = static_cast<Uint16>((kRecordSampleRate * 100) / 1000);
     want.callback = record_callback;
 
-    SDL_AudioDeviceID device = SDL_OpenAudioDevice(nullptr, 1, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+    SDL_AudioDeviceID device = SDL_OpenAudioDevice(nullptr, 1, &want, &have,
+                                                   SDL_AUDIO_ALLOW_FREQUENCY_CHANGE |
+                                                   SDL_AUDIO_ALLOW_FORMAT_CHANGE |
+                                                   SDL_AUDIO_ALLOW_CHANNELS_CHANGE);
     if (device == 0) {
-        std::cerr << "Failed to open mic: " << SDL_GetError() << "\n";
+        std::cerr << "Failed to open microphone: " << SDL_GetError() << "\n";
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return false;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(g_record.mutex);
+        g_record.buffer.clear();
+    }
     g_record.actual_sample_rate = have.freq;
-    g_record.buffer.clear();
+    g_record.actual_format = have.format;
+    g_record.actual_channels = have.channels;
     g_record.recording = true;
     SDL_PauseAudioDevice(device, 0);
 
     std::cout << "Recording... press Enter to stop.\n" << std::flush;
-
-    std::atomic<bool> stop{false};
-    std::thread input_thread([&stop]() {
-        std::string line;
-        std::getline(std::cin, line);
-        stop = true;
-    });
-
-    while (!stop) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
+    std::string line;
+    std::getline(std::cin, line);
 
     g_record.recording = false;
     SDL_PauseAudioDevice(device, 1);
 
     {
         std::lock_guard<std::mutex> lock(g_record.mutex);
-        pcm_out = resample_s16(g_record.buffer, g_record.actual_sample_rate, RECORD_SAMPLE_RATE);
+        auto mono = decode_sdl_audio_to_mono_f32(g_record.buffer,
+                                                 g_record.actual_format,
+                                                 g_record.actual_channels);
+        pcm_out = resample_f32_to_s16_pcm(mono, g_record.actual_sample_rate, kRecordSampleRate);
     }
 
-    double duration = (pcm_out.size() / 2) / static_cast<double>(RECORD_SAMPLE_RATE);
-    std::cout << "Recorded " << std::fixed << std::setprecision(1) << duration << "s of audio.\n";
-
-    input_thread.join();
     SDL_CloseAudioDevice(device);
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
+
+    double seconds = static_cast<double>(pcm_out.size() / sizeof(int16_t)) / kRecordSampleRate;
+    std::cout << "Recorded " << std::fixed << std::setprecision(1) << seconds << "s of audio.\n";
     return !pcm_out.empty();
 }
-
-} // anonymous namespace
-#endif // HAVE_SDL2
-
-constexpr int MAX_TOKENS = 1024;
-constexpr size_t MAX_BYTES_PER_TOKEN = 64;
-constexpr size_t RESPONSE_BUFFER_SIZE = MAX_TOKENS * MAX_BYTES_PER_TOKEN;
-
-namespace Color {
-    const std::string RESET   = "\033[0m";
-    const std::string BOLD    = "\033[1m";
-    const std::string DIM     = "\033[2m";
-    const std::string CYAN    = "\033[36m";
-    const std::string GREEN   = "\033[32m";
-    const std::string YELLOW  = "\033[33m";
-    const std::string BLUE    = "\033[34m";
-    const std::string MAGENTA = "\033[35m";
-    const std::string RED     = "\033[31m";
-    const std::string GRAY    = "\033[90m";
-}
-
-bool supports_color() {
-#ifdef _WIN32
-    return false;
-#else
-    const char* term = std::getenv("TERM");
-    return term && std::string(term) != "dumb";
 #endif
-}
-
-bool use_colors = supports_color();
-
-std::string colored(const std::string& text, const std::string& color) {
-    if (!use_colors) return text;
-    return color + text + Color::RESET;
-}
-
-void print_separator(char ch = '-', int width = 60) {
-    std::cout << colored(std::string(width, ch), Color::DIM) << "\n";
-}
-
-void print_header(const std::string& sys_prompt, const std::string& image, bool has_vision = true) {
-    std::cout << "\n";
-    print_separator('=');
-    std::cout << colored("           🌵 CACTUS CHAT INTERFACE 🌵", Color::GREEN + Color::BOLD) << "\n";
-    print_separator('=');
-    std::cout << colored("  Commands: ", Color::YELLOW);
-    if (has_vision) {
-        std::cout << colored("/image <path>", Color::CYAN) << colored(" | ", Color::DIM);
-    }
-    std::cout << colored("/audio <path>", Color::CYAN) << colored(" | ", Color::DIM)
-#ifdef HAVE_SDL2
-              << colored("/record [prompt]", Color::CYAN) << colored(" | ", Color::DIM)
-#endif
-              << colored("/clear", Color::CYAN) << colored(" | ", Color::DIM)
-              << colored("reset", Color::CYAN) << colored(" | ", Color::DIM)
-              << colored("exit", Color::CYAN) << "\n";
-    if (!sys_prompt.empty()) {
-        std::cout << colored("  System prompt active", Color::MAGENTA) << "\n";
-    }
-    if (!image.empty()) {
-        std::cout << colored("  Image: ", Color::MAGENTA) << colored(image, Color::CYAN) << "\n";
-    }
-    print_separator();
-    std::cout << "\n";
-}
 
 struct TokenPrinter {
-    bool first_token = true;
-    int token_count = 0;
-    std::chrono::steady_clock::time_point start_time;
-    std::chrono::steady_clock::time_point first_token_time;
-    double time_to_first_token = 0.0;
+    std::chrono::steady_clock::time_point start;
+    std::chrono::steady_clock::time_point first;
+    bool saw_first = false;
+    int count = 0;
 
     void reset() {
-        first_token = true;
-        token_count = 0;
-        time_to_first_token = 0.0;
-        start_time = std::chrono::steady_clock::now();
+        start = std::chrono::steady_clock::now();
+        saw_first = false;
+        count = 0;
     }
 
-    void print(const char* token) {
-        if (first_token) {
-            first_token = false;
-            first_token_time = std::chrono::steady_clock::now();
-            auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(first_token_time - start_time);
-            time_to_first_token = latency.count() / 1000.0;
+    void on_token(const char* text) {
+        if (!saw_first) {
+            first = std::chrono::steady_clock::now();
+            saw_first = true;
         }
-        std::cout << token << std::flush;
-        token_count++;
+        std::cout << (text ? text : "") << std::flush;
+        ++count;
     }
 
-    void print_stats(double ram_mb = 0.0) {
-        auto end_time = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        double total_seconds = duration.count() / 1000.0;
-        double tokens_per_second = token_count / total_seconds;
-
-        std::ostringstream stats;
-        stats << std::fixed << std::setprecision(3);
-        stats << "[" << token_count << " tokens | ";
-        stats << "latency: " << time_to_first_token << "s | ";
-        stats << "total: " << total_seconds << "s | ";
-        stats << std::setprecision(0) << static_cast<int>(tokens_per_second) << " tok/s";
+    void print_stats(double ram_mb) const {
+        auto end = std::chrono::steady_clock::now();
+        double total_s = std::chrono::duration<double>(end - start).count();
+        double ttft_s = saw_first ? std::chrono::duration<double>(first - start).count() : 0.0;
+        double decode_s = saw_first ? std::chrono::duration<double>(end - first).count() : total_s;
+        double tps = (count > 1 && decode_s > 0.0) ? (count - 1) / decode_s : (total_s > 0.0 ? count / total_s : 0.0);
+        std::cout << "\n[" << count << " tokens | latency: "
+                  << std::fixed << std::setprecision(3) << ttft_s
+                  << "s | total: " << total_s
+                  << "s | " << std::setprecision(1) << tps << " tok/s";
         if (ram_mb > 0.0) {
-            stats << std::fixed << std::setprecision(1) << " | RAM: " << ram_mb << " MB";
+            std::cout << " | RAM: " << ram_mb << " MB";
         }
-        stats << "]";
-
-        std::cout << "\n" << colored(stats.str(), Color::GRAY) << "\n";
+        std::cout << "]\n";
     }
 };
 
 TokenPrinter* g_printer = nullptr;
 
-void print_token(const char* token, uint32_t /*token_id*/, void* /*user_data*/) {
+void token_callback(const char* text, uint32_t, void*) {
     if (g_printer) {
-        g_printer->print(token);
+        g_printer->on_token(text);
     }
 }
 
 std::string escape_json(const std::string& s) {
-    std::ostringstream o;
+    std::ostringstream out;
     for (unsigned char c : s) {
         switch (c) {
-            case '"': o << "\\\""; break;
-            case '\\': o << "\\\\"; break;
-            case '\b': o << "\\b"; break;
-            case '\f': o << "\\f"; break;
-            case '\n': o << "\\n"; break;
-            case '\r': o << "\\r"; break;
-            case '\t': o << "\\t"; break;
+            case '"': out << "\\\""; break;
+            case '\\': out << "\\\\"; break;
+            case '\b': out << "\\b"; break;
+            case '\f': out << "\\f"; break;
+            case '\n': out << "\\n"; break;
+            case '\r': out << "\\r"; break;
+            case '\t': out << "\\t"; break;
             default:
                 if (c < 0x20) {
-                    o << "\\u" << std::hex << std::setw(4) << std::setfill('0') << (int)c;
+                    out << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(c);
                 } else {
-                    o << c;
+                    out << c;
                 }
-                break;
         }
     }
-    return o.str();
+    return out.str();
 }
 
 std::string unescape_json(const std::string& s) {
-    std::string result;
-    result.reserve(s.length());
-
-    for (size_t i = 0; i < s.length(); i++) {
-        if (s[i] == '\\' && i + 1 < s.length()) {
-            switch (s[i + 1]) {
-                case '"':  result += '"'; i++; break;
-                case '\\': result += '\\'; i++; break;
-                case 'b':  result += '\b'; i++; break;
-                case 'f':  result += '\f'; i++; break;
-                case 'n':  result += '\n'; i++; break;
-                case 'r':  result += '\r'; i++; break;
-                case 't':  result += '\t'; i++; break;
-                case 'u':
-                    if (i + 5 < s.length()) {
-                        std::string hex = s.substr(i + 2, 4);
-                        char* end;
-                        int codepoint = std::strtol(hex.c_str(), &end, 16);
-                        if (end == hex.c_str() + 4) {
-                            result += static_cast<char>(codepoint);
-                            i += 5;
-                        } else {
-                            result += s[i];
-                        }
-                    } else {
-                        result += s[i];
-                    }
-                    break;
-                default:   result += s[i]; break;
-            }
-        } else {
-            result += s[i];
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] != '\\' || i + 1 >= s.size()) {
+            out.push_back(s[i]);
+            continue;
+        }
+        char n = s[++i];
+        switch (n) {
+            case '"': out.push_back('"'); break;
+            case '\\': out.push_back('\\'); break;
+            case 'b': out.push_back('\b'); break;
+            case 'f': out.push_back('\f'); break;
+            case 'n': out.push_back('\n'); break;
+            case 'r': out.push_back('\r'); break;
+            case 't': out.push_back('\t'); break;
+            default: out.push_back(n); break;
         }
     }
-    return result;
+    return out;
 }
 
 std::string expand_tilde(const std::string& path) {
     if (path.size() < 2 || path[0] != '~' || path[1] != '/') return path;
     const char* home = std::getenv("HOME");
-    if (!home) return path;
-    return std::string(home) + path.substr(1);
+    return home ? std::string(home) + path.substr(1) : path;
 }
 
-int main(int argc, char* argv[]) {
+bool file_exists(const std::string& path) {
+    std::ifstream f(path);
+    return f.good();
+}
+
+std::string json_string_value(const std::string& json, const std::string& key) {
+    std::string needle = "\"" + key + "\":\"";
+    size_t start = json.find(needle);
+    if (start == std::string::npos) return {};
+    start += needle.size();
+    size_t end = start;
+    while ((end = json.find('"', end)) != std::string::npos) {
+        size_t slashes = 0;
+        for (size_t i = end; i > start && json[i - 1] == '\\'; --i) ++slashes;
+        if ((slashes % 2) == 0) break;
+        ++end;
+    }
+    if (end == std::string::npos) return {};
+    return unescape_json(json.substr(start, end - start));
+}
+
+double json_number_value(const std::string& json, const std::string& key) {
+    std::string needle = "\"" + key + "\":";
+    size_t start = json.find(needle);
+    if (start == std::string::npos) return 0.0;
+    start += needle.size();
+    char* end = nullptr;
+    return std::strtod(json.c_str() + start, &end);
+}
+
+std::string build_messages(const std::string& system_prompt,
+                           const std::vector<std::pair<std::string, std::string>>& history,
+                           const std::string& image,
+                           const std::string& audio,
+                           bool attach_media) {
+    std::ostringstream msg;
+    msg << "[";
+    bool need_comma = false;
+    if (!system_prompt.empty()) {
+        msg << "{\"role\":\"system\",\"content\":\"" << escape_json(system_prompt) << "\"}";
+        need_comma = true;
+    }
+    for (size_t i = 0; i < history.size(); ++i) {
+        if (need_comma) msg << ",";
+        need_comma = true;
+        msg << "{\"role\":\"" << history[i].first << "\",\"content\":\""
+            << escape_json(history[i].second) << "\"";
+        if (attach_media && i + 1 == history.size() && history[i].first == "user") {
+            if (!image.empty()) msg << ",\"images\":[\"" << escape_json(image) << "\"]";
+            if (!audio.empty()) msg << ",\"audio\":[\"" << escape_json(audio) << "\"]";
+        }
+        msg << "}";
+    }
+    msg << "]";
+    return msg.str();
+}
+
+void print_usage(const char* argv0) {
+    std::cerr << "Usage: " << argv0
+              << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>]"
+              << " [--prompt <text>] [--thinking]\n";
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
-        std::cerr << "Usage: " << argv[0] << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>] [--prompt <text>] [--thinking]\n";
+        print_usage(argv[0]);
         return 1;
     }
 
-    const char* model_path = argv[1];
+    std::string model_path = argv[1];
     std::string system_prompt;
     std::string current_image;
     std::string current_audio;
     std::string initial_prompt;
-    bool enable_thinking = false;
+    bool thinking = false;
 
     for (int i = 2; i < argc; ++i) {
-        if (std::string(argv[i]) == "--system" && i + 1 < argc) {
+        std::string arg = argv[i];
+        if (arg == "--system" && i + 1 < argc) {
             system_prompt = argv[++i];
-        } else if (std::string(argv[i]) == "--image" && i + 1 < argc) {
+        } else if (arg == "--image" && i + 1 < argc) {
             current_image = expand_tilde(argv[++i]);
-        } else if (std::string(argv[i]) == "--audio" && i + 1 < argc) {
+        } else if (arg == "--audio" && i + 1 < argc) {
             current_audio = expand_tilde(argv[++i]);
-        } else if (std::string(argv[i]) == "--prompt" && i + 1 < argc) {
+        } else if (arg == "--prompt" && i + 1 < argc) {
             initial_prompt = argv[++i];
-        } else if (std::string(argv[i]) == "--thinking") {
-            enable_thinking = true;
+        } else if (arg == "--thinking") {
+            thinking = true;
         }
     }
 
-    if (!current_image.empty()) {
-        std::ifstream f(current_image);
-        if (!f.good()) {
-            std::cerr << colored("Error: ", Color::RED + Color::BOLD)
-                      << "Image not found: " << current_image << "\n";
-            return 1;
-        }
+    if (!current_image.empty() && !file_exists(current_image)) {
+        std::cerr << "Image not found: " << current_image << "\n";
+        return 1;
     }
-
-    if (!current_audio.empty()) {
-        std::ifstream f(current_audio);
-        if (!f.good()) {
-            std::cerr << colored("Error: ", Color::RED + Color::BOLD)
-                      << "Audio file not found: " << current_audio << "\n";
-            return 1;
-        }
-    }
-
-    std::cout << "\n" << colored("Loading model from ", Color::YELLOW)
-              << colored(model_path, Color::CYAN) << colored("...", Color::YELLOW) << "\n";
-
-    cactus_model_t model = cactus_init(model_path, nullptr, false);
-
-    if (!model) {
-        std::cerr << colored("Failed to initialize model\n", Color::RED + Color::BOLD);
+    if (!current_audio.empty() && !file_exists(current_audio)) {
+        std::cerr << "Audio file not found: " << current_audio << "\n";
         return 1;
     }
 
-    std::cout << colored("Model loaded successfully!\n", Color::GREEN + Color::BOLD);
-
-    // Check if model supports vision/audio by reading config.txt
-    bool has_vision = false;
-    bool has_audio_cap = false;
-    {
-        std::ifstream cfg(std::string(model_path) + "/config.txt");
-        std::string line;
-        while (std::getline(cfg, line)) {
-            if (line.substr(0, 19) == "vision_hidden_size=" && std::stoi(line.substr(19)) > 0) {
-                has_vision = true;
-            }
-            if (line.substr(0, 17) == "audio_hidden_dim=" && std::stoi(line.substr(17)) > 0) {
-                has_audio_cap = true;
-            }
-        }
+    std::cout << "Loading model from " << model_path << "...\n";
+    cactus_model_t model = cactus_init(model_path.c_str(), nullptr, false);
+    if (!model) {
+        std::cerr << "Failed to initialize model\n";
+        return 1;
     }
 
-    if (!current_image.empty() && !has_vision) {
-        std::cerr << colored("Warning: ", Color::YELLOW + Color::BOLD)
-                  << "This model does not support vision — image will be ignored.\n";
-        current_image.clear();
-    }
+    std::cout << "Model loaded.\n";
+    std::cout << "Commands: /image <path> [prompt], /audio <path> [prompt], ";
+#ifdef HAVE_SDL2
+    std::cout << "/record [prompt], ";
+#endif
+    std::cout << "/clear, reset, exit\n\n";
 
-    if (!current_audio.empty() && !has_audio_cap) {
-        std::cerr << colored("Warning: ", Color::YELLOW + Color::BOLD)
-                  << "This model does not support audio — audio will be ignored.\n";
-        current_audio.clear();
-    }
-
-    print_header(system_prompt, current_image, has_vision);
-
-    std::vector<std::string> history;
-    std::vector<std::string> history_images;
-    std::vector<std::string> history_audio;
+    std::vector<std::pair<std::string, std::string>> history;
     std::vector<uint8_t> current_pcm;
-    bool image_committed = false;
     TokenPrinter printer;
     g_printer = &printer;
-
-    bool auto_send = !current_audio.empty() || !initial_prompt.empty();
+    bool auto_send = !initial_prompt.empty() || !current_audio.empty() || !current_image.empty();
 
     while (true) {
-        bool has_media = !current_image.empty() || !current_audio.empty();
         std::string input;
-
         if (auto_send) {
             auto_send = false;
-            input = initial_prompt;
-            initial_prompt.clear();
-            if (has_media && input.empty()) {
-                std::cout << colored("You \xf0\x9f\x8e\xa4: ", Color::BLUE + Color::BOLD)
-                          << colored("[audio input]", Color::DIM) << "\n";
-            } else {
-                std::string prompt_label = has_media ? "You \xf0\x9f\x93\x8e: " : "You: ";
-                std::cout << colored(prompt_label, Color::BLUE + Color::BOLD) << input << "\n";
-            }
+            input = initial_prompt.empty() ? "Describe the attached input." : initial_prompt;
+            std::cout << "You: " << input << "\n";
         } else {
-            std::string prompt = has_media ? "You \xf0\x9f\x93\x8e: " : "You: ";
-            std::cout << colored(prompt, Color::BLUE + Color::BOLD);
+            std::cout << "You: " << std::flush;
             if (!std::getline(std::cin, input)) break;
-
-            while (!input.empty() && (input.back() == ' ' || input.back() == '\t')) input.pop_back();
-            if (input.empty()) continue;
-            if (input == "exit" || input == "quit") break;
         }
 
+        while (!input.empty() && (input.back() == ' ' || input.back() == '\t')) input.pop_back();
+        if (input.empty()) continue;
+        if (input == "exit" || input == "quit") break;
         if (input == "reset") {
             history.clear();
-            history_images.clear();
-            history_audio.clear();
             current_image.clear();
             current_audio.clear();
-            image_committed = false;
+            current_pcm.clear();
             cactus_reset(model);
-            std::cout << colored("Conversation reset.\n", Color::YELLOW);
-            print_header(system_prompt, current_image, has_vision);
+            std::cout << "Conversation reset.\n";
             continue;
         }
-
         if (input == "/clear") {
             current_image.clear();
             current_audio.clear();
-            image_committed = false;
-            std::cout << colored("Image/audio cleared.\n", Color::YELLOW);
+            current_pcm.clear();
+            std::cout << "Attachments cleared.\n";
             continue;
         }
 
-        // Parse /image or /audio commands: extract file path and optional trailing message
-        auto parse_file_cmd = [](const std::string& in, size_t prefix_len, std::string& out_path, std::string& out_msg) -> bool {
-            std::string rest = in.substr(prefix_len);
-            size_t space = rest.find(' ');
-            out_path = (space != std::string::npos) ? rest.substr(0, space) : rest;
-            while (!out_path.empty() && (out_path.back() == ' ' || out_path.back() == '\t')) out_path.pop_back();
-            out_path = expand_tilde(out_path);
-            std::ifstream f(out_path);
-            if (!f.good()) return false;
-            out_msg.clear();
-            if (space != std::string::npos) {
-                out_msg = rest.substr(space + 1);
-                while (!out_msg.empty() && (out_msg.front() == ' ' || out_msg.front() == '\t')) out_msg.erase(out_msg.begin());
+        auto parse_attachment = [&](const std::string& prefix, std::string& target) -> bool {
+            if (input.rfind(prefix, 0) != 0) return false;
+            std::string rest = input.substr(prefix.size());
+            size_t split = rest.find(' ');
+            std::string path = expand_tilde(split == std::string::npos ? rest : rest.substr(0, split));
+            if (!file_exists(path)) {
+                std::cerr << "File not found: " << path << "\n";
+                input.clear();
+                return true;
             }
+            target = path;
+            input = split == std::string::npos ? "" : rest.substr(split + 1);
             return true;
         };
 
-        if (input.substr(0, 7) == "/image ") {
-            if (!has_vision) {
-                std::cerr << colored("  This model does not support vision.\n", Color::RED);
-                continue;
-            }
-            std::string path, msg;
-            if (!parse_file_cmd(input, 7, path, msg)) {
-                std::cerr << colored("  File not found: ", Color::RED) << path << "\n";
-                continue;
-            }
-            current_image = path;
-            image_committed = false;
-            if (msg.empty()) continue;
-            input = msg;
+        if (parse_attachment("/image ", current_image) && input.empty()) {
+            std::cout << "Image attached: " << current_image << "\n";
+            continue;
         }
-
-        if (input.substr(0, 7) == "/audio ") {
-            std::string path, msg;
-            if (!parse_file_cmd(input, 7, path, msg)) {
-                std::cerr << colored("  File not found: ", Color::RED) << path << "\n";
-                continue;
-            }
-            current_audio = path;
-            input = msg;
+        if (parse_attachment("/audio ", current_audio) && input.empty()) {
+            std::cout << "Audio attached: " << current_audio << "\n";
+            continue;
         }
 
         if (input == "/record" || input.rfind("/record ", 0) == 0) {
 #ifdef HAVE_SDL2
-            if (!has_audio_cap) {
-                std::cerr << colored("  This model does not support audio.\n", Color::RED);
-                continue;
-            }
             std::string record_prompt;
             if (input.size() > 8) {
                 record_prompt = input.substr(8);
@@ -511,141 +465,71 @@ int main(int argc, char* argv[]) {
                 }
             }
             current_pcm.clear();
+            current_audio.clear();
             if (!record_audio(current_pcm)) {
-                std::cerr << colored("  Recording failed.\n", Color::RED);
+                std::cerr << "Recording failed.\n";
                 continue;
             }
-            input = record_prompt;
+            input = record_prompt.empty() ? "Transcribe or respond to this audio." : record_prompt;
 #else
-            std::cerr << colored("  Recording requires SDL2 (not available in this build).\n", Color::RED);
+            std::cerr << "Recording requires SDL2, but this chat binary was built without SDL2.\n";
             continue;
 #endif
         }
+        if (input.empty()) continue;
 
-        history.push_back(input);
-        history_images.push_back(image_committed ? std::string() : current_image);
-        if (!current_image.empty()) image_committed = true;
-        history_audio.push_back(current_audio);
-
-        // Build messages JSON
-        std::ostringstream messages_json;
-        messages_json << "[";
-        if (!system_prompt.empty()) {
-            messages_json << "{\"role\":\"system\",\"content\":\""
-                         << escape_json(system_prompt) << "\"},";
+        bool attach_media = !current_image.empty() || !current_audio.empty() || !current_pcm.empty();
+        if (attach_media) {
+            cactus_reset(model);
         }
-        for (size_t i = 0; i < history.size(); i++) {
-            if (i > 0) messages_json << ",";
-            if (i % 2 == 0) {
-                messages_json << "{\"role\":\"user\",\"content\":\""
-                             << escape_json(history[i]) << "\"";
-                if (!history_images[i].empty()) {
-                    messages_json << ",\"images\":[\"" << escape_json(history_images[i]) << "\"]";
-                }
-                if (!history_audio[i].empty()) {
-                    messages_json << ",\"audio\":[\"" << escape_json(history_audio[i]) << "\"]";
-                }
-                messages_json << "}";
-            } else {
-                messages_json << "{\"role\":\"assistant\",\"content\":\""
-                             << escape_json(history[i]) << "\"}";
-            }
-        }
-        messages_json << "]";
-
+        history.push_back({"user", input});
+        std::string messages = build_messages(system_prompt, history, current_image, current_audio, attach_media);
         std::string options = "{\"temperature\":0.7,\"top_p\":0.95,\"top_k\":40,\"max_tokens\":"
-                    + std::to_string(MAX_TOKENS)
-                    + ",\"enable_thinking_if_supported\":" + (enable_thinking ? "true" : "false")
-                    + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
+            + std::to_string(kMaxTokens)
+            + ",\"enable_thinking_if_supported\":" + (thinking ? "true" : "false")
+            + ",\"auto_handoff\":false,\"confidence_threshold\":0.0"
+            + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
 
-        std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
-
-        if (!current_audio.empty()) {
-            std::cout << colored("  [audio: " + current_audio + "]\n", Color::MAGENTA);
-            current_audio.clear();
-        }
+        if (!current_image.empty()) std::cout << "[image: " << current_image << "]\n";
+        if (!current_audio.empty()) std::cout << "[audio: " << current_audio << "]\n";
         if (!current_pcm.empty()) {
-            double dur = static_cast<double>(current_pcm.size() / 2) / 16000.0;
-            std::cout << colored("  [mic recording: ", Color::MAGENTA)
-                      << std::fixed << std::setprecision(1) << dur << "s"
-                      << colored("]\n", Color::MAGENTA);
+            double seconds = static_cast<double>(current_pcm.size() / sizeof(int16_t)) / 16000.0;
+            std::cout << "[recorded audio: " << std::fixed << std::setprecision(1) << seconds << "s]\n";
         }
-        if (!current_image.empty()) {
-            std::cout << colored("  [" + current_image + "]\n", Color::MAGENTA);
-        }
-        std::cout << colored("Assistant: ", Color::GREEN + Color::BOLD);
+        std::cout << "Assistant: " << std::flush;
 
-        const uint8_t* pcm_ptr = current_pcm.empty() ? nullptr : current_pcm.data();
-        size_t pcm_size = current_pcm.size();
-
+        std::vector<char> response(kResponseBufferSize, 0);
         printer.reset();
-        int result = cactus_complete(
-            model,
-            messages_json.str().c_str(),
-            response_buffer.data(),
-            response_buffer.size(),
-            options.c_str(),
-            nullptr,
-            print_token,
-            nullptr,
-            pcm_ptr,
-            pcm_size
-        );
+        int rc = cactus_complete(model,
+                                 messages.c_str(),
+                                 response.data(),
+                                 response.size(),
+                                 options.c_str(),
+                                 nullptr,
+                                 token_callback,
+                                 nullptr,
+                                 current_pcm.empty() ? nullptr : current_pcm.data(),
+                                 current_pcm.size());
 
-        current_pcm.clear();
-
-        std::string json_str(response_buffer.data(), response_buffer.size());
-
-        double ram_mb = 0.0;
-        {
-            const std::string ram_key = "\"ram_usage_mb\":";
-            size_t ram_pos = json_str.find(ram_key);
-            if (ram_pos != std::string::npos) {
-                ram_mb = std::stod(json_str.substr(ram_pos + ram_key.length()));
-            }
-        }
-
-        if (result >= 0) {
-            printer.print_stats(ram_mb);
-        }
-
-        std::cout << "\n";
-        print_separator();
+        std::string response_json(response.data());
+        double ram_mb = json_number_value(response_json, "ram_usage_mb");
+        printer.print_stats(ram_mb);
         std::cout << "\n";
 
-        if (result < 0) {
-            std::cerr << colored("Error: ", Color::RED + Color::BOLD)
-                      << response_buffer.data() << "\n\n";
+        if (rc < 0) {
+            std::cerr << "Error: " << response.data() << "\n";
             history.pop_back();
-            history_images.pop_back();
-            history_audio.pop_back();
             continue;
         }
 
-        const std::string search_str = "\"response\":\"";
-        size_t response_start = json_str.find(search_str);
-        if (response_start != std::string::npos) {
-            response_start += search_str.length();
-            size_t response_end = json_str.find("\"", response_start);
-            while (response_end != std::string::npos) {
-                size_t prior_backslashes = 0;
-                for (size_t i = response_end; i > response_start && json_str[i - 1] == '\\'; i--) {
-                    prior_backslashes++;
-                }
-                if (prior_backslashes % 2 == 0) break;
-                response_end = json_str.find("\"", response_end + 1);
-            }
-            if (response_end != std::string::npos) {
-                std::string response = json_str.substr(response_start,
-                                                       response_end - response_start);
-                history.push_back(unescape_json(response));
-                history_images.push_back("");
-                history_audio.push_back("");
-            }
-        }
+        std::string assistant = json_string_value(response_json, "response");
+        history.push_back({"assistant", assistant});
+        current_image.clear();
+        current_audio.clear();
+        current_pcm.clear();
     }
 
-    std::cout << colored("\n👋 Goodbye!\n", Color::MAGENTA + Color::BOLD);
     cactus_destroy(model);
+    std::cout << "Goodbye.\n";
     return 0;
 }

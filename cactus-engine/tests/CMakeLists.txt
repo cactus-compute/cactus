@@ -8,46 +8,29 @@ set(CACTUS_ENGINE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(CACTUS_PROJECT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # --- libcurl ---
-function(cactus_require_vendored_curl include_dir library_path platform_label)
-    if(NOT EXISTS "${include_dir}/curl/curl.h" OR NOT EXISTS "${library_path}")
-        message(WARNING "==============================================================================")
-        message(WARNING " Vendored libcurl is required for ${platform_label} tests but is missing.")
-        message(WARNING " Expected header: ${include_dir}/curl/curl.h")
-        message(WARNING " Expected library: ${library_path}")
-        message(WARNING "==============================================================================")
-        message(FATAL_ERROR "Missing vendored libcurl artifacts for ${platform_label} tests")
-    endif()
-endfunction()
-
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -pthread -Wall -Wextra -pedantic -O3")
-    set(CACTUS_CURL_ROOT "${CACTUS_ENGINE_ROOT}/libs/curl" CACHE PATH "Path to vendored libcurl")
+    set(CACTUS_CURL_ROOT "${CACTUS_ENGINE_ROOT}/libs/curl")
     set(CACTUS_CURL_INCLUDE_DIR "${CACTUS_CURL_ROOT}/include")
     set(CACTUS_CURL_LIBRARY_MACOS "${CACTUS_CURL_ROOT}/macos/libcurl.a")
-    cactus_require_vendored_curl("${CACTUS_CURL_INCLUDE_DIR}" "${CACTUS_CURL_LIBRARY_MACOS}" "macOS")
+    if(NOT EXISTS "${CACTUS_CURL_LIBRARY_MACOS}")
+        unset(CACTUS_CURL_LIBRARY_MACOS)
+        find_library(CACTUS_CURL_LIBRARY_MACOS NAMES curl)
+    endif()
 else()
     find_package(CURL)
 endif()
 
 # --- Find the pre-built cactus library ---
-set(CACTUS_BUILD_DIR ${CACTUS_PROJECT_ROOT}/cactus/build)
-
-find_library(CACTUS_LIB
-    NAMES cactus
-    HINTS ${CACTUS_BUILD_DIR} ${CACTUS_BUILD_DIR}/lib
-    REQUIRED
-)
+set(CACTUS_LIB "${CACTUS_PROJECT_ROOT}/cactus/build/libcactus.a")
+if(NOT EXISTS "${CACTUS_LIB}")
+    message(FATAL_ERROR "Missing ${CACTUS_LIB}; build the top-level cactus target first")
+endif()
 
 # --- Platform libraries ---
-set(MMAN_LIB "")
 if(NOT APPLE)
     find_library(MMAN_LIB mman)
-    if(MMAN_LIB)
-        message(STATUS "Found libmman: ${MMAN_LIB}")
-    else()
-        message(STATUS "libmman not found; assuming mmap symbols are provided by the C runtime")
-    endif()
 else()
     find_library(COREML_FRAMEWORK CoreML REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
@@ -55,13 +38,6 @@ else()
     find_library(SECURITY_FRAMEWORK Security REQUIRED)
     find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
     find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
-endif()
-
-find_package(SDL2)
-if(SDL2_FOUND)
-    message(STATUS "Found SDL2: ${SDL2_LIBRARIES}")
-else()
-    message(STATUS "SDL2 not found; microphone tests will be skipped")
 endif()
 
 # --- Test executables ---
@@ -83,15 +59,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
         target_link_libraries(${TEST_NAME} PRIVATE ${MMAN_LIB})
     endif()
 
-    if(SDL2_FOUND)
-        target_link_libraries(${TEST_NAME} PRIVATE ${SDL2_LIBRARIES})
-        target_include_directories(${TEST_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
-        target_compile_definitions(${TEST_NAME} PRIVATE HAVE_SDL2)
-    endif()
-
     if(APPLE)
-        target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})
-        target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_CURL_INCLUDE_DIR})
         target_link_libraries(${TEST_NAME} PRIVATE
             ${ACCELERATE_FRAMEWORK}
             ${COREML_FRAMEWORK}
@@ -100,54 +68,12 @@ foreach(TEST_FILE ${TEST_SOURCES})
             ${SYSTEMCONFIGURATION_FRAMEWORK}
             ${CFNETWORK_FRAMEWORK}
         )
+        if(CACTUS_CURL_LIBRARY_MACOS)
+            target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})
+            target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_CURL_INCLUDE_DIR})
+        endif()
     elseif(CURL_FOUND)
         target_link_libraries(${TEST_NAME} PRIVATE ${CURL_LIBRARIES})
         target_include_directories(${TEST_NAME} PRIVATE ${CURL_INCLUDE_DIRS})
-    endif()
-
-    message(STATUS "Added test: ${TEST_NAME}")
-endforeach()
-
-# --- Demo apps ---
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-
-foreach(APP_NAME chat)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${APP_NAME}.cpp")
-        add_executable(${APP_NAME} ${APP_NAME}.cpp)
-        target_link_libraries(${APP_NAME} PRIVATE ${CACTUS_LIB})
-
-        target_include_directories(${APP_NAME} PRIVATE
-            ${CACTUS_ENGINE_ROOT}
-            ${CACTUS_PROJECT_ROOT}/cactus-graph
-            ${CACTUS_PROJECT_ROOT}/cactus-kernels
-        )
-
-        if(MMAN_LIB)
-            target_link_libraries(${APP_NAME} PRIVATE ${MMAN_LIB})
-        endif()
-
-        if(APPLE)
-            target_link_libraries(${APP_NAME} PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})
-            target_include_directories(${APP_NAME} PRIVATE ${CACTUS_CURL_INCLUDE_DIR})
-            target_link_libraries(${APP_NAME} PRIVATE
-                ${ACCELERATE_FRAMEWORK}
-                ${COREML_FRAMEWORK}
-                ${FOUNDATION_FRAMEWORK}
-                ${SECURITY_FRAMEWORK}
-                ${SYSTEMCONFIGURATION_FRAMEWORK}
-                ${CFNETWORK_FRAMEWORK}
-            )
-        elseif(CURL_FOUND)
-            target_link_libraries(${APP_NAME} PRIVATE ${CURL_LIBRARIES})
-            target_include_directories(${APP_NAME} PRIVATE ${CURL_INCLUDE_DIRS})
-        endif()
-
-        if(SDL2_FOUND)
-            target_link_libraries(${APP_NAME} PRIVATE ${SDL2_LIBRARIES})
-            target_include_directories(${APP_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
-            target_compile_definitions(${APP_NAME} PRIVATE HAVE_SDL2)
-        endif()
-
-        message(STATUS "Added executable: ${APP_NAME}")
     endif()
 endforeach()

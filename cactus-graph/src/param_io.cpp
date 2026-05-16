@@ -140,6 +140,8 @@ enum class ParamField : uint32_t {
     CachedValuesInt8Ptr,
     CachedKScalesPtr,
     CachedVScalesPtr,
+    MaxCacheSeqLen,
+    CacheSinkSize,
 };
 
 enum class FieldPersistence {
@@ -169,6 +171,7 @@ const Schema& op_schema(OpType op_type) {
         {OpType::VARIANCE, {{ParamField::Axis, FieldPersistence::Persistent}}},
         {OpType::MIN, {{ParamField::Axis, FieldPersistence::Persistent}}},
         {OpType::MAX, {{ParamField::Axis, FieldPersistence::Persistent}}},
+        {OpType::CUMSUM, {{ParamField::Axis, FieldPersistence::Persistent}}},
         {OpType::INDEX, {{ParamField::Axis, FieldPersistence::Persistent}, {ParamField::IndexValue, FieldPersistence::Persistent}}},
         {OpType::CONCAT, {{ParamField::Axis, FieldPersistence::Persistent}}},
         {OpType::CAT, {{ParamField::Axis, FieldPersistence::Persistent}}},
@@ -199,6 +202,27 @@ const Schema& op_schema(OpType op_type) {
             {ParamField::CachedValuesInt8Ptr, FieldPersistence::RuntimeOnly},
             {ParamField::CachedKScalesPtr, FieldPersistence::RuntimeOnly},
             {ParamField::CachedVScalesPtr, FieldPersistence::RuntimeOnly},
+        }},
+        {OpType::KV_CACHE_STATE, {
+            {ParamField::MaxCacheSeqLen, FieldPersistence::Persistent},
+            {ParamField::NumKvHeads, FieldPersistence::Persistent},
+            {ParamField::HeadDim, FieldPersistence::Persistent},
+            {ParamField::WindowSize, FieldPersistence::Persistent},
+            {ParamField::CacheSinkSize, FieldPersistence::Persistent},
+        }},
+        {OpType::KV_CACHE_APPEND, {
+            {ParamField::WindowSize, FieldPersistence::Persistent},
+            {ParamField::CacheSinkSize, FieldPersistence::Persistent},
+        }},
+        {OpType::ATTENTION_CACHED, {
+            {ParamField::Scale, FieldPersistence::Persistent},
+            {ParamField::PositionOffset, FieldPersistence::Persistent},
+            {ParamField::WindowSize, FieldPersistence::Persistent},
+            {ParamField::VHeadDim, FieldPersistence::Persistent},
+        }},
+        {OpType::CONV_CACHE_STATE, {
+            {ParamField::WindowSize, FieldPersistence::Persistent},
+            {ParamField::HeadDim, FieldPersistence::Persistent},
         }},
         {OpType::MOE_LAYER, {{ParamField::Scalar, FieldPersistence::Persistent}, {ParamField::Epsilon, FieldPersistence::Persistent}, {ParamField::NormalizeRouting, FieldPersistence::Persistent}, {ParamField::NumExperts, FieldPersistence::Persistent}, {ParamField::NumExpertsPerTok, FieldPersistence::Persistent}, {ParamField::MoeGated, FieldPersistence::Persistent}, {ParamField::Activation, FieldPersistence::Persistent}}},
         {OpType::GATED_DELTANET_DECODE, {{ParamField::Scale, FieldPersistence::Persistent}, {ParamField::NumKvHeads, FieldPersistence::Persistent}}},
@@ -272,6 +296,8 @@ void write_field(std::ostream& out, ParamField field, const OpParams& params) {
         case ParamField::CachedKScalesPtr:
         case ParamField::CachedVScalesPtr:
             throw std::runtime_error("Attempted to serialize runtime-only pointer field");
+        case ParamField::MaxCacheSeqLen: write_u64(out, static_cast<uint64_t>(params.max_cache_seq_len)); break;
+        case ParamField::CacheSinkSize: write_u64(out, static_cast<uint64_t>(params.cache_sink_size)); break;
     }
 }
 
@@ -334,6 +360,8 @@ void read_field(std::istream& in, ParamField field, OpParams& params) {
         case ParamField::CachedKScalesPtr:
         case ParamField::CachedVScalesPtr:
             throw std::runtime_error("Graph file corrupted: runtime-only field serialized");
+        case ParamField::MaxCacheSeqLen: params.max_cache_seq_len = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::CacheSinkSize: params.cache_sink_size = static_cast<size_t>(read_u64(in)); break;
     }
 }
 

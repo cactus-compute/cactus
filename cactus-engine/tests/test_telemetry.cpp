@@ -1,7 +1,7 @@
 #include "test_utils.h"
 #include "../src/cloud.h"
 #include "../src/telemetry.h"
-#include "../../cactus-kernels/cactus_kernels.h"
+#include "../../cactus-kernels/src/threading.h"
 
 #include <chrono>
 #include <cstdlib>
