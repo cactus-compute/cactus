@@ -20,6 +20,20 @@ from cactus import (
 )
 
 
+def _init_or_skip_native_model(weights_dir):
+    try:
+        return cactus_init(str(weights_dir), None, False)
+    except RuntimeError as exc:
+        model_source = PROJECT_ROOT / "cactus-engine" / "src" / "model.cpp"
+        native_models_absent = (
+            model_source.exists()
+            and "Native model subclasses are not present in this build" in model_source.read_text()
+        )
+        if native_models_absent and (Path(weights_dir) / "config.txt").exists():
+            raise unittest.SkipTest(str(exc))
+        raise
+
+
 def _has_asset(name):
     return (ASSETS_DIR / name).exists()
 
@@ -29,7 +43,7 @@ class TestVLMModel(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.weights_dir = ensure_model("LiquidAI/LFM2-VL-450M")
-        cls.model = cactus_init(str(cls.weights_dir), None, False)
+        cls.model = _init_or_skip_native_model(cls.weights_dir)
 
     @classmethod
     def tearDownClass(cls):
@@ -77,7 +91,7 @@ class TestWhisperModel(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.weights_dir = ensure_model("openai/whisper-small")
-        cls.model = cactus_init(str(cls.weights_dir), None, False)
+        cls.model = _init_or_skip_native_model(cls.weights_dir)
 
     @classmethod
     def tearDownClass(cls):

@@ -30,6 +30,87 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _tokenizer_json_is_compatible(main_path: Path, assistant_path: Path) -> bool:
+    main_tokenizer = _read_json(main_path)
+    assistant_tokenizer = _read_json(assistant_path)
+    main_added = main_tokenizer.pop("added_tokens", [])
+    assistant_added = assistant_tokenizer.pop("added_tokens", [])
+    if main_tokenizer != assistant_tokenizer:
+        return False
+    if not isinstance(main_added, list) or not isinstance(assistant_added, list):
+        return main_added == assistant_added
+    main_added_tokens = {
+        json.dumps(token, sort_keys=True)
+        for token in main_added
+        if isinstance(token, dict)
+    }
+    return all(
+        isinstance(token, dict) and json.dumps(token, sort_keys=True) in main_added_tokens
+        for token in assistant_added
+    )
+
+
+def _json_entries_are_subset(main_values: object, assistant_values: object) -> bool:
+    if not isinstance(main_values, list) or not isinstance(assistant_values, list):
+        return main_values == assistant_values
+    main_entries = {
+        json.dumps(value, sort_keys=True)
+        for value in main_values
+        if isinstance(value, dict)
+    }
+    return all(
+        isinstance(value, dict) and json.dumps(value, sort_keys=True) in main_entries
+        for value in assistant_values
+    )
+
+
+def _json_mapping_is_subset(main_values: object, assistant_values: object) -> bool:
+    if not isinstance(main_values, dict) or not isinstance(assistant_values, dict):
+        return main_values == assistant_values
+    return all(key in main_values and main_values[key] == value for key, value in assistant_values.items())
+
+
+def _special_tokens_json_is_compatible(main_path: Path, assistant_path: Path) -> bool:
+    main_tokens = _read_json(main_path)
+    assistant_tokens = _read_json(assistant_path)
+    if not _json_entries_are_subset(
+        main_tokens.pop("additional_special_tokens", []),
+        assistant_tokens.pop("additional_special_tokens", []),
+    ):
+        return False
+    if not _json_mapping_is_subset(
+        main_tokens.pop("special_tokens", {}),
+        assistant_tokens.pop("special_tokens", {}),
+    ):
+        return False
+    main_tokens.pop("chat_template", None)
+    assistant_chat_template = assistant_tokens.pop("chat_template", None)
+    if assistant_chat_template is not None:
+        return False
+    return main_tokens == assistant_tokens
+
+
+def _tokenizer_config_txt_is_compatible(main_path: Path, assistant_path: Path) -> bool:
+    def _parse(path: Path) -> dict[str, str]:
+        entries: dict[str, str] = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            entries[key] = value
+        return entries
+
+    main_config = _parse(main_path)
+    assistant_config = _parse(assistant_path)
+    main_has_chat_template = main_config.pop("has_chat_template", None)
+    assistant_has_chat_template = assistant_config.pop("has_chat_template", None)
+    if main_config != assistant_config:
+        return False
+    if assistant_has_chat_template == "true" and main_has_chat_template != "true":
+        return False
+    return True
+
+
 def _component_by_name(manifest: dict[str, object], component_name: str) -> dict[str, object]:
     components = manifest.get("components")
     if not isinstance(components, list):
@@ -79,8 +160,17 @@ def _validate_assistant_tokenizer_compatibility(main_dir: Path, assistant_dir: P
             raise RuntimeError(
                 f"assistant tokenizer is incompatible: {filename} exists only in assistant model"
             )
-        if main_path.exists() and assistant_path.exists() and main_path.read_bytes() != assistant_path.read_bytes():
-            raise RuntimeError(f"assistant tokenizer is incompatible: {filename} differs")
+        if main_path.exists() and assistant_path.exists():
+            if filename == "tokenizer.json":
+                compatible = _tokenizer_json_is_compatible(main_path, assistant_path)
+            elif filename == "special_tokens.json":
+                compatible = _special_tokens_json_is_compatible(main_path, assistant_path)
+            elif filename == "tokenizer_config.txt":
+                compatible = _tokenizer_config_txt_is_compatible(main_path, assistant_path)
+            else:
+                compatible = main_path.read_bytes() == assistant_path.read_bytes()
+            if not compatible:
+                raise RuntimeError(f"assistant tokenizer is incompatible: {filename} differs")
 
 
 def _resolve_assistant_path(path_value: str, assistant_bundle: Path, assistant_weights: Path) -> Path | None:

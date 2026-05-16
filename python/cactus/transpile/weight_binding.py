@@ -237,14 +237,6 @@ def _fallback_binding_from_known_cactus_weight(root: Path, source_name: str) -> 
             for suffix in suffixes
         )
 
-    if _matches("embed_tokens_per_layer.weight", "language_model.embed_tokens_per_layer.weight"):
-        candidate = _preferred_existing_file(
-            root,
-            ("embed_tokens_per_layer.cq2.weights", "embed_tokens_per_layer.weights"),
-        )
-        if candidate is not None:
-            return WeightBinding(path=str(candidate), kind="embedding", source_name=source_name)
-
     if _matches("lm_head.weight", "language_model.lm_head.weight"):
         candidate = _preferred_existing_file(
             root,
@@ -255,19 +247,6 @@ def _fallback_binding_from_known_cactus_weight(root: Path, source_name: str) -> 
                 "decoder_token_embeddings.weights",
             ),
         )
-        if candidate is not None:
-            return WeightBinding(path=str(candidate), kind="weight", source_name=source_name)
-
-    if _matches("per_layer_model_projection.weight", "language_model.per_layer_model_projection.weight"):
-        candidate = _preferred_existing_file(
-            root,
-            ("per_layer_model_proj.cq4.weights", "per_layer_model_proj.weights"),
-        )
-        if candidate is not None:
-            return WeightBinding(path=str(candidate), kind="weight", source_name=source_name)
-
-    if _matches("per_layer_projection_norm.weight", "language_model.per_layer_projection_norm.weight"):
-        candidate = _preferred_existing_file(root, ("per_layer_proj_norm.weights",))
         if candidate is not None:
             return WeightBinding(path=str(candidate), kind="weight", source_name=source_name)
 

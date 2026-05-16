@@ -1010,6 +1010,80 @@ def test_assistant_tokenizer_compatibility_checks_json_sidecars(tmp_path: Path) 
         raise AssertionError("tokenizer.json mismatch should fail assistant packaging")
 
 
+def test_assistant_tokenizer_allows_main_added_token_superset(tmp_path: Path) -> None:
+    main_dir = tmp_path / "main"
+    assistant_dir = tmp_path / "assistant"
+    main_dir.mkdir()
+    assistant_dir.mkdir()
+    tokenizer = {
+        "version": "1.0",
+        "normalizer": {"type": "Replace"},
+        "model": {"type": "BPE", "vocab": {"a": 0}, "merges": []},
+        "added_tokens": [
+            {"id": 1, "content": "<bos>", "special": True},
+            {"id": 2, "content": "<|video|>", "special": True},
+        ],
+    }
+    assistant_tokenizer = dict(tokenizer)
+    assistant_tokenizer["added_tokens"] = [tokenizer["added_tokens"][0]]
+    (main_dir / "tokenizer.json").write_text(json.dumps(tokenizer), encoding="utf-8")
+    (assistant_dir / "tokenizer.json").write_text(json.dumps(assistant_tokenizer), encoding="utf-8")
+
+    assistant_bundle._validate_assistant_tokenizer_compatibility(main_dir, assistant_dir)
+
+
+def test_assistant_special_tokens_allow_main_superset(tmp_path: Path) -> None:
+    main_dir = tmp_path / "main"
+    assistant_dir = tmp_path / "assistant"
+    main_dir.mkdir()
+    assistant_dir.mkdir()
+    special_tokens = {
+        "bos_token_id": 2,
+        "eos_token_id": 1,
+        "pad_token_id": 0,
+        "unk_token_id": 3,
+        "vocab_size": 262144,
+        "chat_template": "{{ bos_token }}",
+        "additional_special_tokens": [
+            {"id": 2, "token": "<bos>"},
+            {"id": 258884, "token": "<|video|>"},
+        ],
+        "special_tokens": {
+            "2": "<bos>",
+            "258884": "<|video|>",
+        },
+    }
+    assistant_special_tokens = dict(special_tokens)
+    assistant_special_tokens.pop("chat_template")
+    assistant_special_tokens["additional_special_tokens"] = [special_tokens["additional_special_tokens"][0]]
+    assistant_special_tokens["special_tokens"] = {"2": "<bos>"}
+    (main_dir / "special_tokens.json").write_text(json.dumps(special_tokens), encoding="utf-8")
+    (assistant_dir / "special_tokens.json").write_text(json.dumps(assistant_special_tokens), encoding="utf-8")
+
+    assistant_bundle._validate_assistant_tokenizer_compatibility(main_dir, assistant_dir)
+
+
+def test_assistant_tokenizer_config_allows_main_chat_template(tmp_path: Path) -> None:
+    main_dir = tmp_path / "main"
+    assistant_dir = tmp_path / "assistant"
+    main_dir.mkdir()
+    assistant_dir.mkdir()
+    common = "\n".join(
+        [
+            "vocab_size=262144",
+            "eos_token_id=1",
+            "tokenizer_type=bpe",
+            "has_chat_template=true",
+            "",
+        ]
+    )
+    assistant = common.replace("has_chat_template=true", "has_chat_template=false")
+    (main_dir / "tokenizer_config.txt").write_text(common, encoding="utf-8")
+    (assistant_dir / "tokenizer_config.txt").write_text(assistant, encoding="utf-8")
+
+    assistant_bundle._validate_assistant_tokenizer_compatibility(main_dir, assistant_dir)
+
+
 def test_transpile_config_detection_uses_custom_cache_dir(tmp_path: Path) -> None:
     cache_dir = tmp_path / "hf-cache"
     snapshot = cache_dir / "models--org--model" / "snapshots" / "abc"

@@ -239,8 +239,6 @@ def cmd_convert(args):
                 return 1
         if component_pipeline == "auto" and spec.force_component_pipeline:
             component_pipeline = "on"
-        if components is None and spec.components:
-            components = ",".join(spec.components)
 
         used_default_audio = False
         if spec.task in {"tdt_transcription", "seq2seq_transcription", "ctc_logits", "encoder_hidden_states"} and not spec_audio_file:
@@ -269,6 +267,8 @@ def cmd_convert(args):
             component_pipeline = "on"
         if assistant_model and components is None:
             components = ",".join(_ASSISTANT_TARGET_COMPONENTS)
+        elif components is None and spec.components:
+            components = ",".join(spec.components)
 
         extra_args = [
             "--weights-dir",
