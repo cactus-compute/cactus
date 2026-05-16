@@ -160,6 +160,52 @@ static bool test_transpiled_causal_lm_completion_works() {
     return metrics.success && metrics.completion_tokens == 1.0;
 }
 
+static bool test_transpiled_entropy_is_normalized() {
+    std::string dir = make_temp_dir("transpiled_entropy");
+    fs::create_directories(dir + "/components/decoder");
+    write_file(dir + "/config.txt",
+        "model_type=qwen\nmodel_variant=default\nprecision=FP32\nnum_layers=1\nhidden_dim=8\n"
+        "ffn_intermediate_dim=16\nattention_heads=1\nattention_kv_heads=1\nattention_head_dim=8\n"
+        "vocab_size=3\nbos_token_id=0\neos_token_id=999\n");
+    write_file(dir + "/vocab.txt", "0\tA\n1\tB\n2\tC\n");
+    write_file(dir + "/merges.txt", "");
+    write_file(dir + "/tokenizer_config.txt", R"({"tokenizer_type":"bpe","vocab_format":"id_tab_token"})");
+
+    CactusGraph graph;
+    size_t input = graph.input({1, 512, 3}, Precision::FP16);
+    size_t logits = graph.scalar_multiply(input, 0.0f);
+    graph.save(dir + "/components/decoder/graph.cactus");
+
+    write_file(dir + "/components/manifest.json",
+        "{"
+        "\"task\":\"causal_lm_logits\","
+        "\"family\":\"test\","
+        "\"component_order\":[\"decoder\"],"
+        "\"components\":[{\"component\":\"decoder\",\"graph\":\"components/decoder/graph.cactus\","
+        "\"logical_inputs\":[\"input_ids\"],\"logical_outputs\":[\"logits\"],"
+        "\"runtime_input_node_ids\":[" + std::to_string(input) + "],"
+        "\"output_node_ids\":[" + std::to_string(logits) + "]}]"
+        "}");
+
+    cactus_model_t model = cactus_init(dir.c_str(), nullptr, false);
+    if (!model) {
+        fs::remove_all(dir);
+        return false;
+    }
+    char response[1024];
+    const char* messages = R"([{"role":"user","content":"A"}])";
+    const char* options = R"({"max_tokens":1,"temperature":1.0,"top_p":0.0,"min_p":0.0,"auto_handoff":false,"confidence_threshold":-1.0})";
+    int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr, nullptr, nullptr, nullptr, 0);
+    cactus_destroy(model);
+    fs::remove_all(dir);
+    if (result <= 0) {
+        return false;
+    }
+    EngineTestUtils::Metrics metrics;
+    metrics.parse(response);
+    return metrics.success && metrics.confidence >= -0.01 && metrics.confidence <= 0.01;
+}
+
 static bool test_transpiled_mtp_unavailable_fails_explicitly() {
     std::string dir = make_temp_dir("transpiled_mtp_unavailable");
     fs::create_directories(dir + "/components/decoder");
@@ -595,6 +641,7 @@ int main() {
     runner.run_test("missing_vocab", test_missing_vocab());
     runner.run_test("incomplete_transpiled_bundle_fails_explicitly", test_incomplete_transpiled_bundle_fails_explicitly());
     runner.run_test("transpiled_causal_lm_completion_works", test_transpiled_causal_lm_completion_works());
+    runner.run_test("transpiled_entropy_is_normalized", test_transpiled_entropy_is_normalized());
     runner.run_test("transpiled_mtp_unavailable_fails_explicitly", test_transpiled_mtp_unavailable_fails_explicitly());
     runner.run_test("transpiled_mtp_required_without_enabled_fails_explicitly", test_transpiled_mtp_required_without_enabled_fails_explicitly());
     runner.run_test("transpiled_mtp_completion_works", test_transpiled_mtp_completion_works());

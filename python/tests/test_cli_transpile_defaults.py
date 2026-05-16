@@ -50,6 +50,15 @@ def _gemma4_multimodal_extra_args(model_dir: Path, artifact_dir: Path) -> list[s
     ]
 
 
+def test_public_convert_and_direct_transpile_dtype_defaults_are_intentional() -> None:
+    parser = cli.create_parser()
+
+    convert_args = parser.parse_args(["convert", "model"])
+
+    assert convert_args.torch_dtype == "bfloat16"
+    assert hf_model.DEFAULT_TORCH_DTYPE == "float16"
+
+
 def test_cmd_convert_transpiles_into_same_weights_folder(monkeypatch, tmp_path: Path) -> None:
     parser = cli.create_parser()
     args = parser.parse_args(["convert", "gemma4"])
@@ -326,6 +335,8 @@ def test_cmd_convert_transpiles_and_merges_assistant(monkeypatch, tmp_path: Path
         cq_calls.append(list(command))
         out_dir = Path(command[command.index("--out") + 1])
         out_dir.mkdir(parents=True, exist_ok=True)
+        if out_dir == output_dir:
+            (out_dir / "hf_config.json").write_text('{"model_type":"gemma4"}', encoding="utf-8")
         (out_dir / "vocab.txt").write_text("0\tA\n", encoding="utf-8")
         (out_dir / "merges.txt").write_text("#version: 0.2\n", encoding="utf-8")
         return 0
@@ -463,6 +474,7 @@ def test_cmd_convert_defaults_assistant_bits_to_main_bits(monkeypatch, tmp_path:
 
     def _fake_cq_main(command):
         output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "hf_config.json").write_text('{"model_type":"gemma4"}', encoding="utf-8")
         return 0
 
     monkeypatch.setattr(convert_cli, "cmd_transpile", lambda transpile_args: 0)
@@ -484,6 +496,33 @@ def test_cmd_convert_defaults_assistant_bits_to_main_bits(monkeypatch, tmp_path:
 
     assert rc == 0
     assert captured["assistant_bits"] == 3
+
+
+def test_cmd_convert_rejects_assistant_for_non_gemma4(monkeypatch, tmp_path: Path) -> None:
+    parser = cli.create_parser()
+    output_dir = tmp_path / "main"
+    args = parser.parse_args([
+        "convert",
+        "main/model",
+        str(output_dir),
+        "--assistant-model",
+        "assistant/model",
+    ])
+
+    def _fake_cq_main(command):
+        out_dir = Path(command[command.index("--out") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "hf_config.json").write_text('{"model_type":"qwen"}', encoding="utf-8")
+        return 0
+
+    transpile_calls: list[Namespace] = []
+    monkeypatch.setattr(convert_cli, "cmd_transpile", lambda transpile_args: transpile_calls.append(transpile_args) or 0)
+    monkeypatch.setattr(convert_cli, "run_cq_convert", _fake_cq_main)
+
+    rc = convert_cli.cmd_convert(args)
+
+    assert rc == 1
+    assert transpile_calls == []
 
 
 def test_package_assistant_uses_default_prompt_when_unresolved_auto_task(tmp_path: Path) -> None:

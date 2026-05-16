@@ -30,6 +30,8 @@ from cactus.transpile.audio_preprocess import generic_log_mel_features as _gener
 from cactus.transpile.audio_preprocess import load_audio_waveform as _load_audio_waveform
 from cactus.transpile.audio_preprocess import prepare_cactus_audio_features
 from cactus.transpile.audio_preprocess import prepare_native_gemma4_audio_features
+
+DEFAULT_TORCH_DTYPE = "float16"
 from cactus.transpile.capture_pytorch import capture_model
 from cactus.transpile.canonicalize.cleanup import canonicalize_exported_graph
 from cactus.transpile.component_partition import extract_component_subgraphs
@@ -2820,7 +2822,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--torch-dtype",
-        default="float16",
+        default=DEFAULT_TORCH_DTYPE,
         help="Torch dtype for model loading: float16, float32, or bfloat16.",
     )
     parser.add_argument(

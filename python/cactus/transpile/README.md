@@ -92,6 +92,10 @@ MTP is text-only in the current runtime. Requests with `mtp_required=true` and
 image or audio inputs fail with `media_not_supported`; use `mtp_enabled` without
 `mtp_required` when fallback to normal media generation is acceptable.
 
+Assistant/spec-decode bundles are packaged for the C++ completion runtime. The
+Python `run-transpiled` path executes causal LM bundles through the decoder-only
+loop and does not perform MTP draft/verify execution.
+
 ## End-To-End Timeline
 
 ## 1. Parse Args, Infer Task, Load Model Bundle

@@ -596,6 +596,8 @@ public:
         float min_p = 0.15f,
         float repetition_penalty = 1.1f);
 
+    virtual void sync_speculative_decode_context(const std::vector<uint32_t>& tokens, size_t removed_sampled_tokens);
+
     virtual void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "");
 
     virtual void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,

@@ -27,6 +27,7 @@ class FakeGraph:
     def __init__(self):
         self.next_id = 0
         self.add_clipped_input_dtypes: list[tuple[int, int]] = []
+        self.binary_input_dtypes: list[tuple[str, int, int]] = []
 
     def _tensor(self, shape: tuple[int, ...], dtype: int) -> FakeTensor:
         tensor = FakeTensor(self.next_id, shape, dtype)
@@ -55,6 +56,19 @@ class FakeGraph:
         return self._tensor(lhs.shape, lhs.dtype)
 
     def add(self, lhs: FakeTensor, rhs: FakeTensor) -> FakeTensor:
+        self.binary_input_dtypes.append(("add", lhs.dtype, rhs.dtype))
+        return self._tensor(lhs.shape, lhs.dtype)
+
+    def subtract(self, lhs: FakeTensor, rhs: FakeTensor) -> FakeTensor:
+        self.binary_input_dtypes.append(("subtract", lhs.dtype, rhs.dtype))
+        return self._tensor(lhs.shape, lhs.dtype)
+
+    def multiply(self, lhs: FakeTensor, rhs: FakeTensor) -> FakeTensor:
+        self.binary_input_dtypes.append(("multiply", lhs.dtype, rhs.dtype))
+        return self._tensor(lhs.shape, lhs.dtype)
+
+    def divide(self, lhs: FakeTensor, rhs: FakeTensor) -> FakeTensor:
+        self.binary_input_dtypes.append(("divide", lhs.dtype, rhs.dtype))
         return self._tensor(lhs.shape, lhs.dtype)
 
     def rms_norm(self, tensor: FakeTensor, weight: FakeTensor, eps: float) -> FakeTensor:
@@ -161,13 +175,15 @@ def test_scalar_binary_lowering_handles_python_values(monkeypatch):
 
 def test_mixed_tensor_binary_lowering_uses_supported_runtime_precision(monkeypatch):
     lower = _import_lower_with_fake_graph(monkeypatch)
-    graph = FakeGraph()
-    lhs = graph.input((1, 4), FakeGraph.FP16)
-    rhs = graph.input((1, 4), FakeGraph.FP32)
 
-    out = lower._lower_binary_op(graph, lhs, rhs, "add")
+    for op in ("add", "subtract", "multiply", "divide"):
+        graph = FakeGraph()
+        lhs = graph.input((1, 4), FakeGraph.FP16)
+        rhs = graph.input((1, 4), FakeGraph.FP32)
+        out = lower._lower_binary_op(graph, lhs, rhs, op)
 
-    assert out.dtype == FakeGraph.FP16
+        assert out.dtype == FakeGraph.FP16
+        assert graph.binary_input_dtypes == [(op, FakeGraph.FP16, FakeGraph.FP16)]
     sys.modules.pop("cactus.transpile.lower", None)
 
 

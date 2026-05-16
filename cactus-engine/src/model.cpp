@@ -560,7 +560,7 @@ public:
         size_t logits_node = run_decoder(gb, context_tokens_);
         std::vector<float> logits = logits_row_to_fp32(gb, logits_node, context_tokens_.empty() ? 0 : context_tokens_.size() - 1);
 
-        apply_repetition_penalty_to_logits(logits, token_history_, repetition_penalty);
+        apply_runtime_bias_to_logits(logits, token_history_, repetition_penalty);
         MtpSamplingOptions options = normalized_transpiled_sampling_options(config_, temperature, top_p, top_k, min_p);
         MtpDistribution dist = mtp_distribution_from_logits(std::move(logits), options);
         uint32_t next_token = mtp_sample_or_argmax(dist, options, random_unit_float());
@@ -571,7 +571,8 @@ public:
                     entropy -= static_cast<double>(p) * std::log(static_cast<double>(p));
                 }
             }
-            *out_entropy = static_cast<float>(entropy);
+            double max_entropy = std::log(static_cast<double>(dist.probabilities.size()));
+            *out_entropy = max_entropy > 0.0 ? static_cast<float>(entropy / max_entropy) : 0.0f;
         }
         record_sampled_token(next_token);
         return next_token;
@@ -586,6 +587,15 @@ public:
     void reset_cache() override {
         context_tokens_.clear();
         token_history_.clear();
+    }
+
+    void sync_speculative_decode_context(const std::vector<uint32_t>& tokens, size_t removed_sampled_tokens) override {
+        context_tokens_ = tokens;
+        if (removed_sampled_tokens >= token_history_.size()) {
+            token_history_.clear();
+        } else if (removed_sampled_tokens > 0) {
+            token_history_.resize(token_history_.size() - removed_sampled_tokens);
+        }
     }
 
     std::string speculative_decode_status() const override {
@@ -653,7 +663,7 @@ public:
                     assistant_graph_.get(),
                     logits_node,
                     0);
-                apply_repetition_penalty_to_logits(logits, draft_history, repetition_penalty);
+                apply_runtime_bias_to_logits(logits, draft_history, repetition_penalty);
                 MtpDistribution dist = mtp_distribution_from_logits(std::move(logits), options);
                 uint32_t token = mtp_sample_or_argmax(dist, options, rng.uniform());
                 draft.tokens.push_back(token);
@@ -678,7 +688,7 @@ public:
             std::vector<uint32_t> target_history = token_history_;
             for (size_t i = 0; i <= draft.tokens.size(); ++i) {
                 auto logits = logits_row_to_fp32(static_cast<CactusGraph*>(graph_handle_), target_logits_node, first_row + i);
-                apply_repetition_penalty_to_logits(logits, target_history, repetition_penalty);
+                apply_runtime_bias_to_logits(logits, target_history, repetition_penalty);
                 target_distributions.push_back(mtp_distribution_from_logits(std::move(logits), options));
                 if (i < draft.tokens.size()) {
                     target_history.push_back(draft.tokens[i]);
@@ -699,12 +709,29 @@ public:
                 result.tokens.push_back(token);
                 context_tokens_.push_back(token);
                 record_sampled_token(token);
+                update_tool_constraints(token);
             }
         }
         return result;
     }
 
 protected:
+    void apply_runtime_bias_to_logits(
+        std::vector<float>& logits,
+        const std::vector<uint32_t>& token_history,
+        float repetition_penalty) const {
+        auto bias = tool_constrainer_.get_bias();
+        for (const auto& [token_id, boost] : get_vocab_bias()) {
+            bias[token_id] += boost;
+        }
+        for (const auto& [token_id, boost] : bias) {
+            if (token_id < logits.size() && std::isfinite(boost)) {
+                logits[token_id] += boost;
+            }
+        }
+        apply_repetition_penalty_to_logits(logits, token_history, repetition_penalty);
+    }
+
     size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override {
         (void)use_cache;
         auto* gb = static_cast<CactusGraph*>(graph_handle_);
@@ -1550,6 +1577,8 @@ Model::SpeculativeDecodeResult Model::speculative_decode(
     float) {
     throw std::runtime_error("speculative decoding is not available for this model");
 }
+
+void Model::sync_speculative_decode_context(const std::vector<uint32_t>&, size_t) {}
 
 size_t Model::sample_token(CactusGraph* gb, size_t logits_node_id, float temperature, float top_p, size_t top_k,
                            float min_p, float repetition_penalty,

@@ -669,10 +669,14 @@ int cactus_complete(
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());
 
-        const bool use_mtp = prompt.options.mtp_enabled && !has_images && !has_audio;
+        const bool mtp_blocked_by_tools = prompt.options.force_tools && !prompt.tools.empty();
+        const bool use_mtp = prompt.options.mtp_enabled && !has_images && !has_audio && !mtp_blocked_by_tools;
         if (prompt.options.mtp_required && !use_mtp) {
-            throw std::runtime_error("MTP required but unavailable: " +
-                std::string(prompt.options.mtp_enabled ? "media_not_supported" : "disabled"));
+            std::string reason = "disabled";
+            if (prompt.options.mtp_enabled) {
+                reason = mtp_blocked_by_tools ? "tool_constraints_not_supported" : "media_not_supported";
+            }
+            throw std::runtime_error("MTP required but unavailable: " + reason);
         }
 
         if (use_mtp) {
@@ -703,6 +707,7 @@ int cactus_complete(
             auto spec_end = std::chrono::high_resolution_clock::now();
 
             std::vector<uint32_t> generated_tokens = std::move(spec.tokens);
+            size_t untrimmed_generated_count = generated_tokens.size();
             for (size_t i = 1; i <= generated_tokens.size(); ++i) {
                 std::vector<uint32_t> prefix(generated_tokens.begin(), generated_tokens.begin() + i);
                 if (matches_stop_sequence(prefix, stop_token_sequences)) {
@@ -715,6 +720,9 @@ int cactus_complete(
             handle->processed_tokens = prompt.tokens;
             handle->processed_tokens.insert(handle->processed_tokens.end(), generated_tokens.begin(), generated_tokens.end());
             handle->processed_images = prompt.images;
+            handle->model->sync_speculative_decode_context(
+                handle->processed_tokens,
+                untrimmed_generated_count - generated_tokens.size());
 
             if (callback) {
                 for (uint32_t token : generated_tokens) {
@@ -764,6 +772,9 @@ int cactus_complete(
                 spec.rejected_tokens);
 
             if (result.length() >= buffer_size) {
+                if (prompt.options.force_tools && !prompt.tools.empty()) {
+                    handle->model->clear_tool_constraints();
+                }
                 handle_error_response("Response buffer too small", response_buffer, buffer_size);
                 return -1;
             }
@@ -783,6 +794,9 @@ int cactus_complete(
             metrics.error_message = nullptr;
             metrics.function_calls_json = nullptr;
             cactus::telemetry::recordCompletion(handle->model_name.c_str(), metrics);
+            if (prompt.options.force_tools && !prompt.tools.empty()) {
+                handle->model->clear_tool_constraints();
+            }
             return static_cast<int>(result.length());
         }
 

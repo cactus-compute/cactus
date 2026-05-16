@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -110,6 +111,29 @@ def _remove_stale_transpile_artifacts(output_dir: str | Path) -> None:
         for path in root.glob(pattern):
             if path.is_file():
                 path.unlink()
+
+
+def _converted_model_type(output_dir: str | os.PathLike[str]) -> str:
+    root = Path(output_dir)
+    hf_config = root / "hf_config.json"
+    if hf_config.exists():
+        config = json.loads(hf_config.read_text(encoding="utf-8"))
+        model_type = config.get("model_type")
+        if model_type:
+            return str(model_type).strip().lower()
+
+    config_txt = root / "config.txt"
+    if config_txt.exists():
+        for line in config_txt.read_text(encoding="utf-8").splitlines():
+            if line.startswith("model_type="):
+                return line.split("=", 1)[1].strip().lower()
+    return ""
+
+
+def _supports_assistant_model(output_dir: str | os.PathLike[str], model_id: str) -> bool:
+    model_type = _converted_model_type(output_dir)
+    lowered_id = model_id.lower()
+    return model_type == "gemma4" or "gemma-4" in lowered_id or "gemma4" in lowered_id
 
 
 def run_cq_convert(command: list[str]) -> None:
@@ -237,6 +261,9 @@ def cmd_convert(args):
         assistant_model = getattr(args, "assistant_model", None)
         if assistant_model and spec.task != "causal_lm_logits":
             print_color(RED, "--assistant-model is currently supported only for causal_lm_logits bundles.")
+            return 1
+        if assistant_model and not _supports_assistant_model(output_dir, model_id):
+            print_color(RED, "--assistant-model currently supports only Gemma4 causal_lm_logits bundles.")
             return 1
         if assistant_model and component_pipeline == "auto":
             component_pipeline = "on"
