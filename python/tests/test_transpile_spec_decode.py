@@ -380,6 +380,27 @@ def test_gemma4_assistant_default_examples_match_hf_projection_width() -> None:
     assert inputs[5].shape == (1, 1, 1, 256)
 
 
+def test_gemma4_assistant_default_examples_use_model_dtype() -> None:
+    model = _FakeGemma4AssistantFamily()
+    model.dtype_probe = torch.nn.Linear(1, 1, bias=False).to(dtype=torch.bfloat16)
+
+    specs = build_component_module_specs(
+        model,
+        task="causal_lm_logits",
+        named_tensors={},
+        components=("assistant",),
+    )
+
+    assert specs is not None
+    inputs = specs[0].example_inputs
+    assert inputs[0].dtype == torch.bfloat16
+    assert inputs[1].dtype == torch.bfloat16
+    assert inputs[3].dtype == torch.bfloat16
+    assert inputs[4].dtype == torch.bfloat16
+    assert inputs[5].dtype == torch.bfloat16
+    assert inputs[6].dtype == torch.bfloat16
+
+
 def test_component_io_roles_are_logical_not_output_order_dependent() -> None:
     specs = build_component_module_specs(
         _FakeGemma4(),

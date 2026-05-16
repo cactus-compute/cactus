@@ -669,7 +669,13 @@ int cactus_complete(
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());
 
-        if (prompt.options.mtp_enabled && !has_images && !has_audio) {
+        const bool use_mtp = prompt.options.mtp_enabled && !has_images && !has_audio;
+        if (prompt.options.mtp_required && !use_mtp) {
+            throw std::runtime_error("MTP required but unavailable: " +
+                std::string(prompt.options.mtp_enabled ? "media_not_supported" : "disabled"));
+        }
+
+        if (use_mtp) {
             std::string mtp_status = handle->model->speculative_decode_status();
             if (!mtp_status.empty()) {
                 throw std::runtime_error("MTP requested but unavailable: " + mtp_status);
@@ -677,9 +683,16 @@ int cactus_complete(
 
             auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
             size_t prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
+            std::vector<uint32_t> speculative_input = prefill_result.remaining_tokens;
+            if (speculative_input.empty()) {
+                if (handle->processed_tokens.empty()) {
+                    throw std::runtime_error("Cannot generate from empty prompt");
+                }
+                speculative_input = {handle->processed_tokens.back()};
+            }
             auto spec_start = std::chrono::high_resolution_clock::now();
             auto spec = handle->model->speculative_decode(
-                prefill_result.remaining_tokens,
+                speculative_input,
                 prompt.options.max_tokens,
                 prompt.options.mtp_draft_tokens,
                 prompt.options.temperature,

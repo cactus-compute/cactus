@@ -64,7 +64,7 @@ def test_infer_task_from_config_prefers_whisper_seq2seq(monkeypatch) -> None:
     monkeypatch.setattr(
         hf_model,
         "_load_config_json",
-        lambda _: {"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]},
+        lambda *args, **kwargs: {"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]},
     )
     assert hf_model._infer_task_from_config("openai/whisper-small") == "seq2seq_transcription"
 

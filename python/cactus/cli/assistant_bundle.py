@@ -98,7 +98,7 @@ def _relocate_binding_path(
 ) -> str:
     source = _resolve_assistant_path(path_value, assistant_bundle, assistant_weights)
     if source is None:
-        return path_value
+        raise RuntimeError(f"assistant binding path does not exist: {path_value}")
     try:
         return str(source.relative_to(main_bundle))
     except ValueError:
@@ -390,6 +390,7 @@ def package_assistant_for_convert(
             cache_dir=cache_dir,
             local_files_only=local_files_only,
         )
+        prompt_text = prompt or "Hello"
         extra_args = [
             "--weights-dir",
             str(weights_dir),
@@ -398,7 +399,7 @@ def package_assistant_for_convert(
             "--task",
             "causal_lm_logits",
             "--prompt",
-            prompt,
+            prompt_text,
             "--max-new-tokens",
             str(max_new_tokens),
             "--torch-dtype",

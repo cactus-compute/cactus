@@ -351,15 +351,6 @@ bool has_string_value(const std::vector<std::string>& values, const std::string&
     return std::find(values.begin(), values.end(), expected) != values.end();
 }
 
-bool has_all_string_values(const std::vector<std::string>& values, std::initializer_list<const char*> expected) {
-    for (const char* value : expected) {
-        if (!has_string_value(values, value)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 SpecDecodeManifest parse_spec_decode_manifest_from_json(const std::string& manifest) {
     size_t spec_pos = find_json_object_field(manifest, "spec_decode");
     if (spec_pos == std::string::npos) {
@@ -630,20 +621,20 @@ public:
             std::vector<float> current_embedding = run_target_embedding(base_context.back());
             std::vector<float> previous_hidden = output_row_to_fp32(
                 target_graph,
-                output_node_for_role(decoder_logical_outputs_, output_node_ids_, "target_hidden_state"),
+                output_node_for_role(decoder_logical_outputs_, output_node_ids_, decoder_target_hidden_state_role_),
                 base_context.empty() ? 0 : base_context.size() - 1);
             std::vector<float> full_key = output_tensor_to_fp32(
                 target_graph,
-                output_node_for_role(decoder_logical_outputs_, output_node_ids_, "shared_kv.full_attention.key"));
+                output_node_for_role(decoder_logical_outputs_, output_node_ids_, decoder_shared_kv_full_key_role_));
             std::vector<float> full_value = output_tensor_to_fp32(
                 target_graph,
-                output_node_for_role(decoder_logical_outputs_, output_node_ids_, "shared_kv.full_attention.value"));
+                output_node_for_role(decoder_logical_outputs_, output_node_ids_, decoder_shared_kv_full_value_role_));
             std::vector<float> sliding_key = output_tensor_to_fp32(
                 target_graph,
-                output_node_for_role(decoder_logical_outputs_, output_node_ids_, "shared_kv.sliding_attention.key"));
+                output_node_for_role(decoder_logical_outputs_, output_node_ids_, decoder_shared_kv_sliding_key_role_));
             std::vector<float> sliding_value = output_tensor_to_fp32(
                 target_graph,
-                output_node_for_role(decoder_logical_outputs_, output_node_ids_, "shared_kv.sliding_attention.value"));
+                output_node_for_role(decoder_logical_outputs_, output_node_ids_, decoder_shared_kv_sliding_value_role_));
             MtpDraftBatch draft;
             draft.tokens.reserve(limit);
             draft.probabilities.reserve(limit);
@@ -670,7 +661,7 @@ public:
                 draft_history.push_back(token);
                 previous_hidden = output_tensor_to_fp32(
                     assistant_graph_.get(),
-                    output_node_for_role(assistant_logical_outputs_, assistant_output_node_ids_, "next_hidden_output"));
+                    output_node_for_role(assistant_logical_outputs_, assistant_output_node_ids_, assistant_next_hidden_output_role_));
                 current_embedding = run_target_embedding(token);
             }
             if (draft.tokens.empty()) {
@@ -679,7 +670,8 @@ public:
 
             std::vector<uint32_t> verify_context = base_context;
             verify_context.insert(verify_context.end(), draft.tokens.begin(), draft.tokens.end());
-            size_t target_logits_node = run_decoder(static_cast<CactusGraph*>(graph_handle_), verify_context);
+            run_decoder(static_cast<CactusGraph*>(graph_handle_), verify_context);
+            size_t target_logits_node = output_node_for_role(decoder_logical_outputs_, output_node_ids_, decoder_verifier_logits_role_);
             std::vector<MtpDistribution> target_distributions;
             target_distributions.reserve(draft.tokens.size() + 1);
             size_t first_row = base_context.empty() ? 0 : base_context.size() - 1;
@@ -738,6 +730,9 @@ protected:
         if (runtime_input_node_ids_.empty()) {
             throw std::runtime_error("transpiled causal LM bundle decoder graph has no runtime input node ids");
         }
+        if (runtime_input_node_ids_.size() != 1) {
+            throw std::runtime_error("transpiled causal LM decoder graph must expose exactly one token input");
+        }
         if (output_node_ids_.empty()) {
             throw std::runtime_error("transpiled causal LM bundle decoder graph has no output node ids");
         }
@@ -764,14 +759,18 @@ protected:
         }
         spec_decode_manifest_ = parse_spec_decode_manifest_from_json(manifest);
         decoder_logical_outputs_ = json_string_array_field(decoder_json, "logical_outputs");
-        if (!has_all_string_values(decoder_logical_outputs_, {
-                "verifier_logits",
-                "target_hidden_state",
-                "shared_kv.full_attention.key",
-                "shared_kv.full_attention.value",
-                "shared_kv.sliding_attention.key",
-                "shared_kv.sliding_attention.value",
-            })) {
+        decoder_verifier_logits_role_ = local_role_for_component(spec_decode_manifest_.target.verifier_logits, "decoder");
+        decoder_target_hidden_state_role_ = local_role_for_component(spec_decode_manifest_.target.target_hidden_state, "decoder");
+        decoder_shared_kv_full_key_role_ = local_role_for_component(spec_decode_manifest_.target.shared_kv_full_key, "decoder");
+        decoder_shared_kv_full_value_role_ = local_role_for_component(spec_decode_manifest_.target.shared_kv_full_value, "decoder");
+        decoder_shared_kv_sliding_key_role_ = local_role_for_component(spec_decode_manifest_.target.shared_kv_sliding_key, "decoder");
+        decoder_shared_kv_sliding_value_role_ = local_role_for_component(spec_decode_manifest_.target.shared_kv_sliding_value, "decoder");
+        if (!has_string_value(decoder_logical_outputs_, decoder_verifier_logits_role_) ||
+            !has_string_value(decoder_logical_outputs_, decoder_target_hidden_state_role_) ||
+            !has_string_value(decoder_logical_outputs_, decoder_shared_kv_full_key_role_) ||
+            !has_string_value(decoder_logical_outputs_, decoder_shared_kv_full_value_role_) ||
+            !has_string_value(decoder_logical_outputs_, decoder_shared_kv_sliding_key_role_) ||
+            !has_string_value(decoder_logical_outputs_, decoder_shared_kv_sliding_value_role_)) {
             speculative_status_ = "target_roles_unavailable";
             return;
         }
@@ -796,8 +795,9 @@ protected:
         }
         target_embedding_logical_inputs_ = json_string_array_field(target_embedding_json, "logical_inputs");
         target_embedding_logical_outputs_ = json_string_array_field(target_embedding_json, "logical_outputs");
+        target_embedding_output_role_ = local_role_for_component(spec_decode_manifest_.target.target_token_embedding, "target_embedding");
         if (!has_string_value(target_embedding_logical_inputs_, "current_token_ids") ||
-            !has_string_value(target_embedding_logical_outputs_, "target_token_embedding")) {
+            !has_string_value(target_embedding_logical_outputs_, target_embedding_output_role_)) {
             speculative_status_ = "target_embedding_unavailable";
             return;
         }
@@ -836,16 +836,24 @@ protected:
         }
         assistant_logical_inputs_ = json_string_array_field(assistant_json, "logical_inputs");
         assistant_logical_outputs_ = json_string_array_field(assistant_json, "logical_outputs");
-        if (!has_all_string_values(assistant_logical_inputs_, {
-                "current_token_embedding",
-                "previous_target_hidden",
-                "position",
-                "shared_kv.full_attention.key",
-                "shared_kv.full_attention.value",
-                "shared_kv.sliding_attention.key",
-                "shared_kv.sliding_attention.value",
-            }) ||
-            !has_all_string_values(assistant_logical_outputs_, {"logits_output", "next_hidden_output"})) {
+        assistant_current_token_embedding_role_ = local_role_for_component(spec_decode_manifest_.assistant.current_token_embedding, "assistant");
+        assistant_previous_target_hidden_role_ = local_role_for_component(spec_decode_manifest_.assistant.previous_target_hidden, "assistant");
+        assistant_position_role_ = local_role_for_component(spec_decode_manifest_.assistant.position, "assistant");
+        assistant_shared_kv_full_key_role_ = local_role_for_component(spec_decode_manifest_.assistant.shared_kv_full_key, "assistant");
+        assistant_shared_kv_full_value_role_ = local_role_for_component(spec_decode_manifest_.assistant.shared_kv_full_value, "assistant");
+        assistant_shared_kv_sliding_key_role_ = local_role_for_component(spec_decode_manifest_.assistant.shared_kv_sliding_key, "assistant");
+        assistant_shared_kv_sliding_value_role_ = local_role_for_component(spec_decode_manifest_.assistant.shared_kv_sliding_value, "assistant");
+        assistant_logits_output_role_ = local_role_for_component(spec_decode_manifest_.assistant.logits_output, "assistant");
+        assistant_next_hidden_output_role_ = local_role_for_component(spec_decode_manifest_.assistant.next_hidden_output, "assistant");
+        if (!has_string_value(assistant_logical_inputs_, assistant_current_token_embedding_role_) ||
+            !has_string_value(assistant_logical_inputs_, assistant_previous_target_hidden_role_) ||
+            !has_string_value(assistant_logical_inputs_, assistant_position_role_) ||
+            !has_string_value(assistant_logical_inputs_, assistant_shared_kv_full_key_role_) ||
+            !has_string_value(assistant_logical_inputs_, assistant_shared_kv_full_value_role_) ||
+            !has_string_value(assistant_logical_inputs_, assistant_shared_kv_sliding_key_role_) ||
+            !has_string_value(assistant_logical_inputs_, assistant_shared_kv_sliding_value_role_) ||
+            !has_string_value(assistant_logical_outputs_, assistant_logits_output_role_) ||
+            !has_string_value(assistant_logical_outputs_, assistant_next_hidden_output_role_)) {
             speculative_status_ = "assistant_roles_unavailable";
             return;
         }
@@ -884,6 +892,20 @@ protected:
     }
 
 private:
+    std::string local_role_for_component(const std::string& role_ref, const std::string& expected_component) const {
+        size_t colon = role_ref.find(':');
+        if (colon == std::string::npos) {
+            return role_ref;
+        }
+        if (colon == 0 || colon + 1 >= role_ref.size()) {
+            return "";
+        }
+        if (role_ref.substr(0, colon) != expected_component) {
+            return "";
+        }
+        return role_ref.substr(colon + 1);
+    }
+
     void bind_saved_constants(const std::string& component_json,
                               CactusGraph* graph,
                               std::vector<std::vector<uint8_t>>& storage,
@@ -1009,19 +1031,24 @@ private:
         if (capacity == 0) {
             throw std::runtime_error("transpiled MTP input has empty shape");
         }
+        if (values.size() != capacity) {
+            throw std::runtime_error(
+                "transpiled MTP input shape mismatch for node " + std::to_string(node_id) +
+                ": graph expects " + std::to_string(capacity) +
+                " values, runtime provided " + std::to_string(values.size()));
+        }
         if (input_buf.precision == Precision::FP32) {
-            std::vector<float> data(capacity, 0.0f);
-            std::copy(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(std::min(values.size(), capacity)), data.begin());
+            std::vector<float> data(values.begin(), values.end());
             gb->set_input(node_id, data.data(), Precision::FP32);
         } else if (input_buf.precision == Precision::FP16) {
-            std::vector<__fp16> data(capacity, __fp16(0));
-            for (size_t i = 0; i < std::min(values.size(), capacity); ++i) {
+            std::vector<__fp16> data(capacity);
+            for (size_t i = 0; i < values.size(); ++i) {
                 data[i] = __fp16(values[i]);
             }
             gb->set_input(node_id, data.data(), Precision::FP16);
         } else if (input_buf.precision == Precision::INT8) {
-            std::vector<int8_t> data(capacity, 0);
-            for (size_t i = 0; i < std::min(values.size(), capacity); ++i) {
+            std::vector<int8_t> data(capacity);
+            for (size_t i = 0; i < values.size(); ++i) {
                 data[i] = static_cast<int8_t>(values[i]);
             }
             gb->set_input(node_id, data.data(), Precision::INT8);
@@ -1039,7 +1066,7 @@ private:
         (void)output_node;
         return output_tensor_to_fp32(
             target_embedding_graph_.get(),
-            output_node_for_role(target_embedding_logical_outputs_, target_embedding_output_node_ids_, "target_token_embedding"));
+            output_node_for_role(target_embedding_logical_outputs_, target_embedding_output_node_ids_, target_embedding_output_role_));
     }
 
     size_t run_assistant_graph(const std::vector<float>& current_embedding,
@@ -1053,15 +1080,15 @@ private:
         if (!gb) {
             throw std::runtime_error("transpiled assistant graph is not initialized");
         }
-        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "current_token_embedding"), current_embedding);
-        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "previous_target_hidden"), previous_hidden);
-        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "position"), {static_cast<float>(position)});
-        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "shared_kv.full_attention.key"), full_key);
-        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "shared_kv.full_attention.value"), full_value);
-        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "shared_kv.sliding_attention.key"), sliding_key);
-        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, "shared_kv.sliding_attention.value"), sliding_value);
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, assistant_current_token_embedding_role_), current_embedding);
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, assistant_previous_target_hidden_role_), previous_hidden);
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, assistant_position_role_), {static_cast<float>(position)});
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, assistant_shared_kv_full_key_role_), full_key);
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, assistant_shared_kv_full_value_role_), full_value);
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, assistant_shared_kv_sliding_key_role_), sliding_key);
+        set_fp32_input(gb, input_node_for_role(assistant_logical_inputs_, assistant_runtime_input_node_ids_, assistant_shared_kv_sliding_value_role_), sliding_value);
         gb->execute();
-        return output_node_for_role(assistant_logical_outputs_, assistant_output_node_ids_, "logits_output");
+        return output_node_for_role(assistant_logical_outputs_, assistant_output_node_ids_, assistant_logits_output_role_);
     }
 
     size_t run_decoder(CactusGraph* gb, const std::vector<uint32_t>& tokens) {
@@ -1077,6 +1104,9 @@ private:
         }
         if (runtime_input_node_ids.empty() || output_node_ids.empty()) {
             throw std::runtime_error("transpiled causal LM decoder manifest is incomplete");
+        }
+        if (runtime_input_node_ids.size() != 1) {
+            throw std::runtime_error("transpiled causal LM decoder graph must expose exactly one token input");
         }
         if (tokens.empty()) {
             throw std::runtime_error("transpiled causal LM decoder requires non-empty input tokens");
@@ -1129,16 +1159,32 @@ private:
     std::vector<size_t> runtime_input_node_ids_;
     std::vector<size_t> output_node_ids_;
     std::vector<std::string> decoder_logical_outputs_;
+    std::string decoder_verifier_logits_role_;
+    std::string decoder_target_hidden_state_role_;
+    std::string decoder_shared_kv_full_key_role_;
+    std::string decoder_shared_kv_full_value_role_;
+    std::string decoder_shared_kv_sliding_key_role_;
+    std::string decoder_shared_kv_sliding_value_role_;
     std::unique_ptr<CactusGraph> target_embedding_graph_;
     std::vector<size_t> target_embedding_runtime_input_node_ids_;
     std::vector<size_t> target_embedding_output_node_ids_;
     std::vector<std::string> target_embedding_logical_inputs_;
     std::vector<std::string> target_embedding_logical_outputs_;
+    std::string target_embedding_output_role_;
     std::unique_ptr<CactusGraph> assistant_graph_;
     std::vector<size_t> assistant_runtime_input_node_ids_;
     std::vector<size_t> assistant_output_node_ids_;
     std::vector<std::string> assistant_logical_inputs_;
     std::vector<std::string> assistant_logical_outputs_;
+    std::string assistant_current_token_embedding_role_;
+    std::string assistant_previous_target_hidden_role_;
+    std::string assistant_shared_kv_full_key_role_;
+    std::string assistant_shared_kv_full_value_role_;
+    std::string assistant_shared_kv_sliding_key_role_;
+    std::string assistant_shared_kv_sliding_value_role_;
+    std::string assistant_position_role_;
+    std::string assistant_logits_output_role_;
+    std::string assistant_next_hidden_output_role_;
     std::vector<std::vector<uint8_t>> bound_constant_storage_;
     std::vector<std::vector<uint8_t>> target_embedding_bound_constant_storage_;
     std::vector<std::vector<uint8_t>> assistant_bound_constant_storage_;

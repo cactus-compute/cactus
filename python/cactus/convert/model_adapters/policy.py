@@ -43,7 +43,7 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
     if family == "whisper" and out.startswith("encoder.layer_"):
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "whisper encoder tensor")
     if name.endswith(".bias") or out.endswith(".bias") or ".bias." in out:
-        return TensorPolicy("fallback", "INT8", 8, component, False, "none", "bias tensor")
+        return TensorPolicy("fallback", "FP16", None, component, False, "none", "bias tensor")
     if len(shape) != 2:
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "non-2d tensor")
     if "position_embedding" in out.lower() or "pos_embed" in out.lower() or "embed_positions" in out.lower():

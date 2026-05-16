@@ -3815,6 +3815,14 @@ def _named_or_default(
     return value if value is not None else fallback
 
 
+def _to_model_float_dtype(value: torch.Tensor, dtype: torch.dtype, device: torch.device | None) -> torch.Tensor:
+    if device is not None:
+        value = value.to(device=device)
+    if torch.is_floating_point(value):
+        value = value.to(dtype=dtype)
+    return value
+
+
 def _gemma4_assistant_default_dims(model: torch.nn.Module) -> tuple[int, int, int]:
     config = getattr(model, "config", None)
     hidden_dim = getattr(config, "backbone_hidden_size", None)
@@ -3850,12 +3858,46 @@ def _build_gemma4_spec_decode_component_specs(
 
     default_hidden_dim, default_full_head_dim, default_sliding_head_dim = _gemma4_assistant_default_dims(model)
     hidden_dim = int(named_tensors.get("current_token_embedding", torch.zeros((1, 1, default_hidden_dim))).shape[-1])
-    default_embedding = torch.zeros((1, 1, hidden_dim), dtype=torch.float32)
-    default_position = torch.zeros((1, 1), dtype=torch.long)
-    default_full_shared = torch.zeros((1, 1, 1, default_full_head_dim), dtype=torch.float32)
-    default_sliding_shared = torch.zeros((1, 1, 1, default_sliding_head_dim), dtype=torch.float32)
-
     requested = tuple(components or ("decoder", "target_embedding"))
+    model_dtype = _module_floating_dtype(model) or torch.float32
+    model_device = _module_device(model) or input_ids.device
+    input_ids = input_ids.to(device=model_device, dtype=torch.long)
+    current_token_ids = current_token_ids.to(device=model_device, dtype=torch.long)
+    default_embedding = torch.zeros((1, 1, hidden_dim), dtype=model_dtype, device=model_device)
+    default_previous_hidden = default_embedding
+    default_position = torch.zeros((1, 1), dtype=torch.long, device=model_device)
+    default_full_shared = torch.zeros((1, 1, 1, default_full_head_dim), dtype=model_dtype, device=model_device)
+    default_full_value = default_full_shared
+    default_sliding_shared = torch.zeros((1, 1, 1, default_sliding_head_dim), dtype=model_dtype, device=model_device)
+    default_sliding_value = default_sliding_shared
+    model_backbone = getattr(model, "model", None)
+    can_derive_target_defaults = hasattr(model, "language_model") or hasattr(model_backbone, "language_model")
+    if "assistant" in requested and can_derive_target_defaults:
+        with torch.no_grad():
+            if "current_token_embedding" not in named_tensors:
+                default_embedding = _to_model_float_dtype(
+                    Gemma4TargetEmbeddingAdapter(model).eval()(current_token_ids),
+                    model_dtype,
+                    model_device,
+                )
+                default_previous_hidden = default_embedding
+            if any(
+                key not in named_tensors
+                for key in (
+                    "previous_target_hidden",
+                    "shared_kv.full_attention.key",
+                    "shared_kv.full_attention.value",
+                    "shared_kv.sliding_attention.key",
+                    "shared_kv.sliding_attention.value",
+                )
+            ):
+                _, hidden, full_key, full_value, sliding_key, sliding_value = Gemma4SpecDecodeDecoderAdapter(model).eval()(input_ids)
+                default_previous_hidden = hidden[:, -1:, :] if hidden.ndim >= 3 else hidden.reshape(1, 1, -1)
+                default_previous_hidden = _to_model_float_dtype(default_previous_hidden, model_dtype, model_device)
+                default_full_shared = _to_model_float_dtype(full_key, model_dtype, model_device)
+                default_full_value = _to_model_float_dtype(full_value, model_dtype, model_device)
+                default_sliding_shared = _to_model_float_dtype(sliding_key, model_dtype, model_device)
+                default_sliding_value = _to_model_float_dtype(sliding_value, model_dtype, model_device)
     specs: list[ComponentModuleSpec] = []
     common_graph_meta = {
         "task": "causal_lm_logits",
@@ -3893,13 +3935,13 @@ def _build_gemma4_spec_decode_component_specs(
         ))
     if "assistant" in requested:
         assistant_inputs = (
-            _named_or_default(named_tensors, "current_token_embedding", default_embedding),
-            _named_or_default(named_tensors, "previous_target_hidden", default_embedding),
-            _named_or_default(named_tensors, "position", default_position),
-            _named_or_default(named_tensors, "shared_kv.full_attention.key", default_full_shared),
-            _named_or_default(named_tensors, "shared_kv.full_attention.value", default_full_shared),
-            _named_or_default(named_tensors, "shared_kv.sliding_attention.key", default_sliding_shared),
-            _named_or_default(named_tensors, "shared_kv.sliding_attention.value", default_sliding_shared),
+            _to_model_float_dtype(_named_or_default(named_tensors, "current_token_embedding", default_embedding), model_dtype, model_device),
+            _to_model_float_dtype(_named_or_default(named_tensors, "previous_target_hidden", default_previous_hidden), model_dtype, model_device),
+            _named_or_default(named_tensors, "position", default_position).to(device=model_device, dtype=torch.long),
+            _to_model_float_dtype(_named_or_default(named_tensors, "shared_kv.full_attention.key", default_full_shared), model_dtype, model_device),
+            _to_model_float_dtype(_named_or_default(named_tensors, "shared_kv.full_attention.value", default_full_value), model_dtype, model_device),
+            _to_model_float_dtype(_named_or_default(named_tensors, "shared_kv.sliding_attention.key", default_sliding_shared), model_dtype, model_device),
+            _to_model_float_dtype(_named_or_default(named_tensors, "shared_kv.sliding_attention.value", default_sliding_value), model_dtype, model_device),
         )
         specs.append(ComponentModuleSpec(
             component="assistant",

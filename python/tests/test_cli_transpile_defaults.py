@@ -7,6 +7,7 @@ from pathlib import Path
 from cactus import cli
 from cactus.cli import assistant_bundle
 from cactus.cli import convert as convert_cli
+from cactus.transpile import hf_model
 
 
 def _write_gemma4_multimodal_config(output_dir: Path) -> None:
@@ -485,6 +486,72 @@ def test_cmd_convert_defaults_assistant_bits_to_main_bits(monkeypatch, tmp_path:
     assert captured["assistant_bits"] == 3
 
 
+def test_package_assistant_uses_default_prompt_when_unresolved_auto_task(tmp_path: Path) -> None:
+    main_dir = tmp_path / "main"
+    assistant_dir = main_dir / "components" / "assistant"
+    (main_dir / "components" / "decoder").mkdir(parents=True, exist_ok=True)
+    (main_dir / "components" / "target_embedding").mkdir(parents=True, exist_ok=True)
+    (main_dir / "components" / "decoder" / "graph.cactus").write_bytes(b"graph")
+    (main_dir / "components" / "target_embedding" / "graph.cactus").write_bytes(b"graph")
+    (main_dir / "components" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "task": "causal_lm_logits",
+                "component_order": ["decoder", "target_embedding"],
+                "components": [
+                    {"component": "decoder", "graph": "components/decoder/graph.cactus", "bound_constant_bindings": []},
+                    {"component": "target_embedding", "graph": "components/target_embedding/graph.cactus", "bound_constant_bindings": []},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured_extra_args: list[str] = []
+
+    def _fake_transpile(namespace: Namespace) -> int:
+        captured_extra_args.extend(namespace.extra_args)
+        (assistant_dir / "components" / "assistant").mkdir(parents=True, exist_ok=True)
+        (assistant_dir / "components" / "assistant" / "graph.cactus").write_bytes(b"graph")
+        (assistant_dir / "components" / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "task": "causal_lm_logits",
+                    "component_order": ["assistant"],
+                    "components": [
+                        {
+                            "component": "assistant",
+                            "directory": "components/assistant",
+                            "graph": "components/assistant/graph.cactus",
+                            "bound_constant_bindings": [],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0
+
+    assistant_bundle.package_assistant_for_convert(
+        cq_main=lambda _command: None,
+        cmd_transpile=_fake_transpile,
+        main_output_dir=main_dir,
+        assistant_model_id="assistant/model",
+        assistant_bits=4,
+        device="cpu",
+        prompt=None,  # type: ignore[arg-type]
+        max_new_tokens=4,
+        torch_dtype="bfloat16",
+        token=None,
+        cache_dir=None,
+        trust_remote_code=False,
+        local_files_only=False,
+    )
+
+    prompt_index = captured_extra_args.index("--prompt")
+    assert captured_extra_args[prompt_index + 1] == "Hello"
+
+
 def test_merge_assistant_bundle_rewrites_in_bundle_weight_paths(tmp_path: Path) -> None:
     main_dir = tmp_path / "main"
     assistant_bundle_dir = main_dir / "components" / "assistant"
@@ -745,6 +812,62 @@ def test_merge_assistant_bundle_rewrites_weight_embedding_and_saved_constant_bin
     }
 
 
+def test_merge_assistant_bundle_fails_on_missing_binding_path(tmp_path: Path) -> None:
+    main_dir = tmp_path / "main"
+    assistant_bundle_dir = main_dir / "components" / "assistant"
+    assistant_weights = assistant_bundle_dir / "weights"
+    for root in (main_dir, assistant_bundle_dir):
+        (root / "components" / "decoder").mkdir(parents=True, exist_ok=True)
+        (root / "components" / "decoder" / "graph.cactus").write_bytes(b"graph")
+    assistant_weights.mkdir(parents=True, exist_ok=True)
+    (main_dir / "components" / "target_embedding").mkdir(parents=True, exist_ok=True)
+    (main_dir / "components" / "target_embedding" / "graph.cactus").write_bytes(b"graph")
+    (main_dir / "components" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "task": "causal_lm_logits",
+                "component_order": ["decoder", "target_embedding"],
+                "components": [
+                    {"component": "decoder", "graph": "components/decoder/graph.cactus", "bound_constant_bindings": []},
+                    {"component": "target_embedding", "graph": "components/target_embedding/graph.cactus", "bound_constant_bindings": []},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (assistant_bundle_dir / "components" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "task": "causal_lm_logits",
+                "component_order": ["assistant"],
+                "components": [
+                        {
+                            "component": "assistant",
+                            "directory": "components/decoder",
+                            "graph": "components/decoder/graph.cactus",
+                            "bound_constant_bindings": [
+                            {"node_id": 1, "value_id": "w", "path": "missing.weights", "kind": "weight"}
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        assistant_bundle.merge_assistant_bundle(
+            main_bundle_dir=main_dir,
+            assistant_bundle_dir=assistant_bundle_dir,
+            assistant_weights_dir=assistant_weights,
+            assistant_model_id="assistant/model",
+        )
+    except RuntimeError as exc:
+        assert "assistant binding path does not exist: missing.weights" in str(exc)
+    else:
+        raise AssertionError("missing assistant binding should fail packaging")
+
+
 def test_merge_assistant_bundle_allows_assistant_without_tokenizer_files(tmp_path: Path) -> None:
     main_dir = tmp_path / "main"
     assistant_bundle_dir = main_dir / "components" / "assistant"
@@ -808,6 +931,21 @@ def test_assistant_tokenizer_compatibility_checks_json_sidecars(tmp_path: Path) 
         assert "tokenizer.json differs" in str(exc)
     else:
         raise AssertionError("tokenizer.json mismatch should fail assistant packaging")
+
+
+def test_transpile_config_detection_uses_custom_cache_dir(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "hf-cache"
+    snapshot = cache_dir / "models--org--model" / "snapshots" / "abc"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text('{"model_type":"lfm2_vl"}', encoding="utf-8")
+
+    config = hf_model._load_config_json(
+        "org/model",
+        cache_dir=str(cache_dir),
+        local_files_only=True,
+    )
+
+    assert config["model_type"] == "lfm2_vl"
 
 
 def test_cli_no_longer_registers_transpile_command() -> None:

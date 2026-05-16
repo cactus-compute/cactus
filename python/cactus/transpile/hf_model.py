@@ -77,20 +77,22 @@ def _ensure_transformers_supports_model_type(model_type: str) -> str | None:
     return _ensure_transformers_supports_profiled_model_type(model_type)
 
 
-def _resolve_local_snapshot(model_id_or_path: str) -> str | None:
+def _resolve_local_snapshot(model_id_or_path: str, *, cache_dir: str | None = None) -> str | None:
     explicit = Path(model_id_or_path)
     if explicit.exists():
         return str(explicit)
 
-    snapshots_dir = (
-        Path.home()
-        / ".cache"
-        / "huggingface"
-        / "hub"
-        / ("models--" + model_id_or_path.replace("/", "--"))
-        / "snapshots"
-    )
-    if not snapshots_dir.exists():
+    cache_roots = []
+    if cache_dir:
+        cache_roots.append(Path(cache_dir))
+    cache_roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+    snapshots_dir = None
+    for cache_root in cache_roots:
+        candidate = cache_root / ("models--" + model_id_or_path.replace("/", "--")) / "snapshots"
+        if candidate.exists():
+            snapshots_dir = candidate
+            break
+    if snapshots_dir is None:
         return None
     snapshots = sorted(path for path in snapshots_dir.iterdir() if path.is_dir())
     if not snapshots:
@@ -1100,19 +1102,32 @@ def _repair_gemma4_checkpoint_weights(model: torch.nn.Module, model_source: str)
     }
 
 
-def _load_config_json(model_id_or_path: str) -> dict[str, object]:
-    local_snapshot = _resolve_local_snapshot(model_id_or_path)
+def _load_config_json(model_id_or_path: str, *, cache_dir: str | None = None, token: str | None = None, local_files_only: bool = False) -> dict[str, object]:
+    local_snapshot = _resolve_local_snapshot(model_id_or_path, cache_dir=cache_dir)
     config_source = Path(local_snapshot) / "config.json" if local_snapshot else None
     if config_source is not None and config_source.exists():
         return json.loads(config_source.read_text())
     explicit = Path(model_id_or_path) / "config.json"
     if explicit.exists():
         return json.loads(explicit.read_text())
+    if not local_files_only:
+        try:
+            from huggingface_hub import hf_hub_download  # type: ignore
+
+            kwargs: dict[str, object] = {}
+            if cache_dir:
+                kwargs["cache_dir"] = cache_dir
+            if token:
+                kwargs["token"] = token
+            path = hf_hub_download(model_id_or_path, "config.json", local_files_only=local_files_only, **kwargs)
+            return json.loads(Path(path).read_text())
+        except Exception:
+            pass
     return {}
 
 
-def _load_optional_json(model_id_or_path: str, filename: str) -> dict[str, object]:
-    local_snapshot = _resolve_local_snapshot(model_id_or_path)
+def _load_optional_json(model_id_or_path: str, filename: str, *, cache_dir: str | None = None) -> dict[str, object]:
+    local_snapshot = _resolve_local_snapshot(model_id_or_path, cache_dir=cache_dir)
     candidate = Path(local_snapshot) / filename if local_snapshot else None
     if candidate is not None and candidate.exists():
         return json.loads(candidate.read_text())
@@ -1177,6 +1192,7 @@ def _load_gemma4_processor_fallback(
     *,
     source_candidates: list[str],
     common_kwargs: dict[str, object],
+    cache_dir: str | None = None,
 ) -> object | None:
     try:
         from transformers.models.gemma4.feature_extraction_gemma4 import Gemma4AudioFeatureExtractor  # type: ignore
@@ -1195,7 +1211,7 @@ def _load_gemma4_processor_fallback(
                 tokenizer = AutoTokenizer.from_pretrained(source, **common_kwargs)
             except Exception:
                 tokenizer = _load_gemma4_tokenizer_fallback([source])
-            processor_config = _load_optional_json(source, "processor_config.json")
+            processor_config = _load_optional_json(source, "processor_config.json", cache_dir=cache_dir)
             if tokenizer is not None and processor_config:
                 break
         except Exception:
@@ -1224,8 +1240,19 @@ def _load_gemma4_processor_fallback(
     )
 
 
-def _infer_task_from_config(model_id_or_path: str) -> str:
-    config = _load_config_json(model_id_or_path)
+def _infer_task_from_config(
+    model_id_or_path: str,
+    *,
+    cache_dir: str | None = None,
+    token: str | None = None,
+    local_files_only: bool = False,
+) -> str:
+    config = _load_config_json(
+        model_id_or_path,
+        cache_dir=cache_dir,
+        token=token,
+        local_files_only=local_files_only,
+    )
     plan = infer_component_plan_from_config(config, model_id=model_id_or_path)
     if plan is not None:
         return plan.task
@@ -2369,8 +2396,8 @@ def _prepare_lfm2_vl_multimodal_inputs(
     )
 
 
-def _load_model_source(model_id: str, *, local_files_only: bool) -> str:
-    local_snapshot = _resolve_local_snapshot(model_id)
+def _load_model_source(model_id: str, *, cache_dir: str | None, local_files_only: bool) -> str:
+    local_snapshot = _resolve_local_snapshot(model_id, cache_dir=cache_dir)
     if local_snapshot and _snapshot_has_model_weights(local_snapshot):
         return local_snapshot
     if local_snapshot and local_files_only:
@@ -2394,7 +2421,7 @@ def _load_transformers_bundle(
     local_files_only: bool,
     tokenizer_source: str | None = None,
 ):
-    config = _load_config_json(model_id)
+    config = _load_config_json(model_id, cache_dir=cache_dir, token=token, local_files_only=local_files_only)
     config_model_type = str(config.get("model_type", "") or "").lower()
     external_transformers_site_packages = _ensure_transformers_supports_model_type(config_model_type)
     patch_note = _patch_transformers_torchvision_probe()
@@ -2419,7 +2446,7 @@ def _load_transformers_bundle(
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(f"transformers is not available: {exc}") from exc
 
-    model_source = _load_model_source(model_id, local_files_only=local_files_only)
+    model_source = _load_model_source(model_id, cache_dir=cache_dir, local_files_only=local_files_only)
     source_candidates = []
     for candidate in (model_source, model_id):
         if candidate not in source_candidates:
@@ -2488,6 +2515,7 @@ def _load_transformers_bundle(
             processor = _load_gemma4_processor_fallback(
                 source_candidates=source_candidates,
                 common_kwargs=common_kwargs,
+                cache_dir=cache_dir,
             )
             if processor is not None:
                 print("note=using manual gemma4 processor fallback")
@@ -2888,8 +2916,19 @@ def main() -> int:
 
     image_files = tuple(str(path) for path in args.image_file if str(path).strip())
     if args.task == "auto":
-        inferred_task = _infer_task_from_config(args.model_id)
-        config_for_auto = _load_config_json(args.model_id)
+        cache_dir = args.cache_dir.strip() or None
+        inferred_task = _infer_task_from_config(
+            args.model_id,
+            cache_dir=cache_dir,
+            token=args.token,
+            local_files_only=args.local_files_only,
+        )
+        config_for_auto = _load_config_json(
+            args.model_id,
+            cache_dir=cache_dir,
+            token=args.token,
+            local_files_only=args.local_files_only,
+        )
         plan_for_auto = infer_component_plan_from_config(config_for_auto, model_id=args.model_id)
         has_multimodal_config = (
             plan_for_auto is not None
@@ -2915,9 +2954,10 @@ def main() -> int:
         local_files_only=args.local_files_only,
         tokenizer_source=args.tokenizer_source.strip() or None,
     )
-    preprocessor_config = _load_optional_json(model_source, "preprocessor_config.json")
+    cache_dir = args.cache_dir.strip() or None
+    preprocessor_config = _load_optional_json(model_source, "preprocessor_config.json", cache_dir=cache_dir)
     if not preprocessor_config:
-        preprocessor_config = _load_optional_json(args.model_id, "preprocessor_config.json")
+        preprocessor_config = _load_optional_json(args.model_id, "preprocessor_config.json", cache_dir=cache_dir)
     auxiliary_tokenizer = None
     if task == "ctc_logits":
         auxiliary_tokenizer = _load_optional_tokenizer(

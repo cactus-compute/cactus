@@ -200,6 +200,46 @@ static bool test_transpiled_mtp_unavailable_fails_explicitly() {
     return result < 0 && std::string(response).find("MTP requested but unavailable: unsupported_target") != std::string::npos;
 }
 
+static bool test_transpiled_mtp_required_without_enabled_fails_explicitly() {
+    std::string dir = make_temp_dir("transpiled_mtp_required_disabled");
+    fs::create_directories(dir + "/components/decoder");
+    write_file(dir + "/config.txt",
+        "model_type=qwen\nmodel_variant=default\nprecision=FP32\nnum_layers=1\nhidden_dim=8\n"
+        "ffn_intermediate_dim=16\nattention_heads=1\nattention_kv_heads=1\nattention_head_dim=8\n"
+        "vocab_size=1\nbos_token_id=0\neos_token_id=999\n");
+    write_file(dir + "/vocab.txt", "0\tA\n");
+    write_file(dir + "/merges.txt", "");
+    write_file(dir + "/tokenizer_config.txt", R"({"tokenizer_type":"bpe","vocab_format":"id_tab_token"})");
+
+    CactusGraph graph;
+    size_t input = graph.input({1, 512}, Precision::FP32);
+    size_t logits = graph.reshape(input, {1, 512, 1});
+    graph.save(dir + "/components/decoder/graph.cactus");
+    write_file(dir + "/components/manifest.json",
+        "{"
+        "\"task\":\"causal_lm_logits\","
+        "\"family\":\"test\","
+        "\"component_order\":[\"decoder\"],"
+        "\"components\":[{\"component\":\"decoder\",\"graph\":\"components/decoder/graph.cactus\","
+        "\"logical_inputs\":[\"input_ids\"],\"logical_outputs\":[\"logits\"],"
+        "\"runtime_input_node_ids\":[" + std::to_string(input) + "],"
+        "\"output_node_ids\":[" + std::to_string(logits) + "]}]"
+        "}");
+
+    cactus_model_t model = cactus_init(dir.c_str(), nullptr, false);
+    if (!model) {
+        fs::remove_all(dir);
+        return false;
+    }
+    char response[1024];
+    const char* messages = R"([{"role":"user","content":"A"}])";
+    const char* options = R"({"max_tokens":1,"mtp_required":true,"auto_handoff":false,"confidence_threshold":-1.0})";
+    int result = cactus_complete(model, messages, response, sizeof(response), options, nullptr, nullptr, nullptr, nullptr, 0);
+    cactus_destroy(model);
+    fs::remove_all(dir);
+    return result < 0 && std::string(response).find("MTP required but unavailable: disabled") != std::string::npos;
+}
+
 static bool test_transpiled_mtp_completion_works() {
     std::string dir = make_temp_dir("transpiled_mtp_completion");
     fs::create_directories(dir + "/components/decoder");
@@ -224,14 +264,14 @@ static bool test_transpiled_mtp_completion_works() {
     target_embedding_graph.save(dir + "/components/target_embedding/graph.cactus");
 
     CactusGraph assistant_graph;
-    size_t assistant_input = assistant_graph.input({1, 512}, Precision::FP32);
-    size_t assistant_prev_hidden = assistant_graph.input({1, 512}, Precision::FP32);
-    size_t assistant_position = assistant_graph.input({1, 512}, Precision::FP32);
+    size_t assistant_input = assistant_graph.input({1}, Precision::FP32);
+    size_t assistant_prev_hidden = assistant_graph.input({1}, Precision::FP32);
+    size_t assistant_position = assistant_graph.input({1}, Precision::FP32);
     size_t assistant_full_key = assistant_graph.input({1, 512}, Precision::FP32);
     size_t assistant_full_value = assistant_graph.input({1, 512}, Precision::FP32);
     size_t assistant_sliding_key = assistant_graph.input({1, 512}, Precision::FP32);
     size_t assistant_sliding_value = assistant_graph.input({1, 512}, Precision::FP32);
-    size_t assistant_logits = assistant_graph.reshape(assistant_input, {1, 512, 1});
+    size_t assistant_logits = assistant_graph.reshape(assistant_input, {1, 1, 1});
     assistant_graph.save(dir + "/components/assistant/graph.cactus");
 
     write_file(dir + "/components/manifest.json",
@@ -256,22 +296,22 @@ static bool test_transpiled_mtp_completion_works() {
         "\"components\":["
         "{\"component\":\"decoder\",\"graph\":\"components/decoder/graph.cactus\","
         "\"logical_inputs\":[\"input_ids\"],"
-        "\"logical_outputs\":[\"verifier_logits\",\"target_hidden_state\","
-        "\"shared_kv.full_attention.key\",\"shared_kv.full_attention.value\","
-        "\"shared_kv.sliding_attention.key\",\"shared_kv.sliding_attention.value\"],"
+        "\"logical_outputs\":[\"logits\",\"hidden\","
+        "\"full_key\",\"full_value\","
+        "\"sliding_key\",\"sliding_value\"],"
         "\"runtime_input_node_ids\":[" + std::to_string(target_input) + "],"
         "\"output_node_ids\":[" + std::to_string(target_logits) + "," + std::to_string(target_logits) + "," +
         std::to_string(target_logits) + "," + std::to_string(target_logits) + "," +
         std::to_string(target_logits) + "," + std::to_string(target_logits) + "]},"
         "{\"component\":\"target_embedding\",\"graph\":\"components/target_embedding/graph.cactus\","
-        "\"logical_inputs\":[\"current_token_ids\"],\"logical_outputs\":[\"target_token_embedding\"],"
+        "\"logical_inputs\":[\"current_token_ids\"],\"logical_outputs\":[\"embedding\"],"
         "\"runtime_input_node_ids\":[" + std::to_string(target_embedding_input) + "],"
         "\"output_node_ids\":[" + std::to_string(target_embedding_output) + "]},"
         "{\"component\":\"assistant\",\"graph\":\"components/assistant/graph.cactus\","
         "\"logical_inputs\":[\"current_token_embedding\",\"previous_target_hidden\",\"position\","
-        "\"shared_kv.full_attention.key\",\"shared_kv.full_attention.value\","
-        "\"shared_kv.sliding_attention.key\",\"shared_kv.sliding_attention.value\"],"
-        "\"logical_outputs\":[\"logits_output\",\"next_hidden_output\"],"
+        "\"full_key\",\"full_value\","
+        "\"sliding_key\",\"sliding_value\"],"
+        "\"logical_outputs\":[\"logits\",\"next_hidden\"],"
         "\"runtime_input_node_ids\":[" + std::to_string(assistant_input) + "," + std::to_string(assistant_prev_hidden) + "," +
         std::to_string(assistant_position) + "," + std::to_string(assistant_full_key) + "," +
         std::to_string(assistant_full_value) + "," + std::to_string(assistant_sliding_key) + "," +
@@ -347,9 +387,9 @@ static bool test_transpiled_mtp_missing_target_embedding_fails_explicitly() {
         "\"components\":["
         "{\"component\":\"decoder\",\"graph\":\"components/decoder/graph.cactus\","
         "\"logical_inputs\":[\"input_ids\"],"
-        "\"logical_outputs\":[\"verifier_logits\",\"target_hidden_state\","
-        "\"shared_kv.full_attention.key\",\"shared_kv.full_attention.value\","
-        "\"shared_kv.sliding_attention.key\",\"shared_kv.sliding_attention.value\"],"
+        "\"logical_outputs\":[\"logits\",\"hidden\","
+        "\"full_key\",\"full_value\","
+        "\"sliding_key\",\"sliding_value\"],"
         "\"runtime_input_node_ids\":[" + std::to_string(target_input) + "],"
         "\"output_node_ids\":[" + std::to_string(target_logits) + "," + std::to_string(target_logits) + "," +
         std::to_string(target_logits) + "," + std::to_string(target_logits) + "," +
@@ -556,6 +596,7 @@ int main() {
     runner.run_test("incomplete_transpiled_bundle_fails_explicitly", test_incomplete_transpiled_bundle_fails_explicitly());
     runner.run_test("transpiled_causal_lm_completion_works", test_transpiled_causal_lm_completion_works());
     runner.run_test("transpiled_mtp_unavailable_fails_explicitly", test_transpiled_mtp_unavailable_fails_explicitly());
+    runner.run_test("transpiled_mtp_required_without_enabled_fails_explicitly", test_transpiled_mtp_required_without_enabled_fails_explicitly());
     runner.run_test("transpiled_mtp_completion_works", test_transpiled_mtp_completion_works());
     runner.run_test("transpiled_mtp_missing_target_embedding_fails_explicitly", test_transpiled_mtp_missing_target_embedding_fails_explicitly());
     runner.run_test("transpiled_bundle_rebinds_saved_constant", test_transpiled_bundle_rebinds_saved_constant());

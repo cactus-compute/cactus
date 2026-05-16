@@ -84,6 +84,19 @@ namespace {
       return result;
     }
 
+    std::string precision_to_string(Precision precision) {
+      switch (precision) {
+        case Precision::INT8: return "INT8";
+        case Precision::FP16: return "FP16";
+        case Precision::FP32: return "FP32";
+        case Precision::CQ1: return "CQ1";
+        case Precision::CQ2: return "CQ2";
+        case Precision::CQ3: return "CQ3";
+        case Precision::CQ4: return "CQ4";
+      }
+      return "unknown";
+    }
+
     std::vector<uint32_t> compute_leaf_outputs(const GraphFile::SerializedGraph& sg) {
       std::unordered_set<uint32_t> node_ids;
       std::unordered_set<uint32_t> referenced;
@@ -470,7 +483,11 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
             " actual=" + shape_to_string(shape));
     }
     if (buffer.precision != precision) {
-        throw std::runtime_error("mmap weight precision mismatch for node " + std::to_string(node_id));
+        throw std::runtime_error(
+            "mmap weight precision mismatch for node " + std::to_string(node_id) +
+            ": " + resolved_filename +
+            " expected=" + precision_to_string(buffer.precision) +
+            " actual=" + precision_to_string(precision));
     }
 
     buffer.group_size = 0;

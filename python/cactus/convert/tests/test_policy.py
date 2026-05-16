@@ -53,11 +53,19 @@ def test_policy_audio_no_gptq():
     assert not p.use_gptq
 
 
-def test_policy_bias_int8():
+def test_policy_bias_fp16():
     match = cactus_name_for_tensor("model.audio_tower.output_proj.bias", "gemma4", 1)
     p = policy_for_tensor(match, (1536,), 4, "gemma4")
-    assert p.precision == "INT8"
-    assert p.bits == 8
+    assert p.precision == "FP16"
+    assert p.fallback_reason == "bias tensor"
+
+
+def test_policy_generic_biases_stay_fp16_across_families():
+    for family in ("qwen", "gemma4", "lfm2_vl", "whisper", "generic"):
+        match = cactus_name_for_tensor("decoder.layers.0.fc1.bias", family, 1)
+        p = policy_for_tensor(match, (1536,), 4, family)
+        assert p.precision == "FP16"
+        assert p.fallback_reason == "bias tensor"
 
 
 def test_policy_position_embedding_fp16():
