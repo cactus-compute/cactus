@@ -72,7 +72,14 @@ class FamilyAdapter:
             return AutoModel
         return AutoModelForCausalLM
 
-    def load_processor(self, model_id_or_path: str, *, local_files_only: bool = False):
+    def load_processor(
+        self,
+        model_id_or_path: str,
+        *,
+        local_files_only: bool = False,
+        token: str | None = None,
+        cache_dir: str | None = None,
+    ):
         patch_transformers_import_compat()
         from transformers import AutoProcessor, AutoTokenizer
 
@@ -81,6 +88,8 @@ class FamilyAdapter:
                 model_id_or_path,
                 trust_remote_code=True,
                 local_files_only=local_files_only or Path(model_id_or_path).exists(),
+                token=token,
+                cache_dir=cache_dir,
             )
         except Exception:
             try:
@@ -88,6 +97,8 @@ class FamilyAdapter:
                     model_id_or_path,
                     trust_remote_code=True,
                     local_files_only=local_files_only or Path(model_id_or_path).exists(),
+                    token=token,
+                    cache_dir=cache_dir,
                 )
             except Exception:
                 return None
@@ -435,8 +446,20 @@ class Lfm2Adapter(FamilyAdapter):
                 pass
         return AutoModelForCausalLM
 
-    def load_processor(self, model_id_or_path: str, *, local_files_only: bool = False):
-        processor = super().load_processor(model_id_or_path, local_files_only=local_files_only)
+    def load_processor(
+        self,
+        model_id_or_path: str,
+        *,
+        local_files_only: bool = False,
+        token: str | None = None,
+        cache_dir: str | None = None,
+    ):
+        processor = super().load_processor(
+            model_id_or_path,
+            local_files_only=local_files_only,
+            token=token,
+            cache_dir=cache_dir,
+        )
         if processor is not None and hasattr(processor, "tokenizer"):
             return processor
         root = Path(model_id_or_path)

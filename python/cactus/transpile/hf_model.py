@@ -255,20 +255,33 @@ def _constant_precision_to_numpy_dtype(precision: int):
     raise ValueError(f"materialized graph constants must be FP16/FP32/INT8, got precision={precision}")
 
 
+def _constant_tensor_to_numpy(value: torch.Tensor, dtype: object | None = None) -> np.ndarray:
+    tensor = value.detach().cpu()
+    if dtype == np.float16:
+        tensor = tensor.to(torch.float16)
+    elif dtype == np.float32:
+        tensor = tensor.to(torch.float32)
+    elif dtype == np.int8:
+        tensor = tensor.to(torch.int8)
+    elif tensor.dtype == torch.bfloat16:
+        tensor = tensor.to(torch.float16)
+    return tensor.numpy()
+
+
 def _write_cactus_constant_tensor(
     *,
     output_path: Path,
     value: object,
     precision: int,
 ) -> None:
+    dtype = _constant_precision_to_numpy_dtype(int(precision))
     if isinstance(value, torch.Tensor):
-        array = value.detach().cpu().numpy()
+        array = _constant_tensor_to_numpy(value, dtype)
     elif isinstance(value, np.ndarray):
         array = value
     else:
         raise TypeError(f"unsupported materialized constant type: {type(value).__name__}")
 
-    dtype = _constant_precision_to_numpy_dtype(int(precision))
     array = np.ascontiguousarray(array.astype(dtype, copy=False))
     shape = list(array.shape)
     if len(shape) > _CACTUS_EXTENDED_SHAPE_DIMS:
@@ -459,7 +472,7 @@ def _write_component_bundle(
                 if node_id is None:
                     continue
                 if isinstance(constant_value, torch.Tensor):
-                    constant_array = constant_value.detach().cpu().numpy().copy()
+                    constant_array = _constant_tensor_to_numpy(constant_value).copy()
                 elif isinstance(constant_value, np.ndarray):
                     constant_array = np.ascontiguousarray(constant_value)
                 else:

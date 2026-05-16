@@ -394,6 +394,12 @@ def test_cmd_convert_transpiles_and_merges_assistant(monkeypatch, tmp_path: Path
     manifest = json.loads((output_dir / "components" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["component_order"] == ["decoder", "target_embedding", "assistant"]
     assert manifest["spec_decode"]["method"] == "single_position_mtp"
+    assert manifest["spec_decode"]["target"]["verifier_logits"] == "verifier_logits"
+    assert manifest["spec_decode"]["target"]["target_hidden_state"] == "target_hidden_state"
+    assert manifest["spec_decode"]["target"]["target_token_embedding"] == "target_token_embedding"
+    assert manifest["spec_decode"]["assistant"]["current_token_embedding"] == "current_token_embedding"
+    assert manifest["spec_decode"]["assistant"]["logits_output"] == "logits_output"
+    assert manifest["spec_decode"]["assistant"]["next_hidden_output"] == "next_hidden_output"
     assistant = [c for c in manifest["components"] if c["component"] == "assistant"][0]
     assert assistant["graph"] == "components/assistant/components/assistant/graph.cactus"
     assert assistant["bound_constant_bindings"][0]["path"] == (

@@ -36,13 +36,23 @@ from .compat import patch_transformers_import_compat
 ALPHA = 0.25
 
 
-def _hf_cache_dir() -> str | None:
+def _hf_cache_dir(cache_dir: str | None = None) -> str | None:
     import os
 
+    if cache_dir:
+        return cache_dir
     return os.environ.get("HF_HUB_CACHE") or os.environ.get("HF_HOME") or None
 
 
-def _load_hf(model_id_or_path: str, device: str, *, load_model: bool = True, local_files_only: bool = False):
+def _load_hf(
+    model_id_or_path: str,
+    device: str,
+    *,
+    load_model: bool = True,
+    local_files_only: bool = False,
+    token: str | None = None,
+    cache_dir: str | None = None,
+):
     import logging, warnings
     logging.getLogger("transformers").setLevel(logging.ERROR)
     warnings.filterwarnings("ignore", message=".*You are using a model of type.*")
@@ -57,6 +67,8 @@ def _load_hf(model_id_or_path: str, device: str, *, load_model: bool = True, loc
             model_id_or_path,
             trust_remote_code=True,
             local_files_only=local_files_only or Path(model_id_or_path).exists(),
+            token=token,
+            cache_dir=_hf_cache_dir(cache_dir),
         )
     except Exception:
         if Path(model_id_or_path).exists():
@@ -67,14 +79,20 @@ def _load_hf(model_id_or_path: str, device: str, *, load_model: bool = True, loc
                 hf_hub_download(
                     model_id_or_path,
                     "config.json",
-                    cache_dir=_hf_cache_dir(),
+                    cache_dir=_hf_cache_dir(cache_dir),
+                    token=token,
                     local_files_only=local_files_only,
                 )
             )
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     family = detect_family(cfg, "auto")
     adapter = adapter_for_family(family)
-    processor = adapter.load_processor(model_id_or_path, local_files_only=local_files_only)
+    processor = adapter.load_processor(
+        model_id_or_path,
+        local_files_only=local_files_only,
+        token=token,
+        cache_dir=_hf_cache_dir(cache_dir),
+    )
     if not load_model:
         return cfg, processor, None
     model_cls = adapter.model_class(cfg)
@@ -88,6 +106,8 @@ def _load_hf(model_id_or_path: str, device: str, *, load_model: bool = True, loc
             trust_remote_code=True,
             low_cpu_mem_usage=True,
             local_files_only=local_files_only or Path(model_id_or_path).exists(),
+            token=token,
+            cache_dir=_hf_cache_dir(cache_dir),
         )
     except Exception:
         try:
@@ -97,6 +117,8 @@ def _load_hf(model_id_or_path: str, device: str, *, load_model: bool = True, loc
                 trust_remote_code=True,
                 low_cpu_mem_usage=True,
                 local_files_only=local_files_only or Path(model_id_or_path).exists(),
+                token=token,
+                cache_dir=_hf_cache_dir(cache_dir),
             )
         except Exception:
             model = None
@@ -135,7 +157,13 @@ def _bits_for_component(component: str, args: argparse.Namespace) -> int:
     return int(args.bits)
 
 
-def _load_checkpoint_state_dict(model_id_or_path: str, *, local_files_only: bool = False) -> dict[str, Any] | None:
+def _load_checkpoint_state_dict(
+    model_id_or_path: str,
+    *,
+    local_files_only: bool = False,
+    token: str | None = None,
+    cache_dir: str | None = None,
+) -> dict[str, Any] | None:
     root = Path(model_id_or_path)
     if not root.exists() or not root.is_dir():
         try:
@@ -145,7 +173,8 @@ def _load_checkpoint_state_dict(model_id_or_path: str, *, local_files_only: bool
                 model_file = hf_hub_download(
                     model_id_or_path,
                     "model.safetensors",
-                    cache_dir=_hf_cache_dir(),
+                    cache_dir=_hf_cache_dir(cache_dir),
+                    token=token,
                     local_files_only=local_files_only,
                 )
                 return load_file(model_file)
@@ -153,7 +182,8 @@ def _load_checkpoint_state_dict(model_id_or_path: str, *, local_files_only: bool
                 index_file = hf_hub_download(
                     model_id_or_path,
                     "model.safetensors.index.json",
-                    cache_dir=_hf_cache_dir(),
+                    cache_dir=_hf_cache_dir(cache_dir),
+                    token=token,
                     local_files_only=local_files_only,
                 )
                 index = json.loads(Path(index_file).read_text(encoding="utf-8"))
@@ -165,7 +195,8 @@ def _load_checkpoint_state_dict(model_id_or_path: str, *, local_files_only: bool
                     shard_path = hf_hub_download(
                         model_id_or_path,
                         shard,
-                        cache_dir=_hf_cache_dir(),
+                        cache_dir=_hf_cache_dir(cache_dir),
+                        token=token,
                         local_files_only=local_files_only,
                     )
                     for key, tensor in load_file(shard_path).items():
@@ -403,10 +434,17 @@ def convert(args: argparse.Namespace) -> None:
         args.device,
         load_model=needs_model,
         local_files_only=bool(args.local_files_only),
+        token=args.token,
+        cache_dir=args.cache_dir,
     )
     family = detect_family(cfg, args.model_family)
     adapter = adapter_for_family(family)
-    checkpoint_state = _load_checkpoint_state_dict(args.model, local_files_only=bool(args.local_files_only))
+    checkpoint_state = _load_checkpoint_state_dict(
+        args.model,
+        local_files_only=bool(args.local_files_only),
+        token=args.token,
+        cache_dir=args.cache_dir,
+    )
     if checkpoint_state is None:
         if model is None:
             cfg, processor, model = _load_hf(
@@ -414,6 +452,8 @@ def convert(args: argparse.Namespace) -> None:
                 args.device,
                 load_model=True,
                 local_files_only=bool(args.local_files_only),
+                token=args.token,
+                cache_dir=args.cache_dir,
             )
         if model is None:
             raise RuntimeError(f"could not load model object or checkpoint tensors from {args.model}")
@@ -612,6 +652,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--preprocessed-cache-dir")
     p.add_argument("--hessian-progress", action="store_true")
     p.add_argument("--local-files-only", action="store_true")
+    p.add_argument("--token")
+    p.add_argument("--cache-dir")
     p.set_defaults(func=convert)
     q = sub.add_parser("qdq")
     q.add_argument("input", type=Path, help="Cactus `.weights` directory or tar archive")

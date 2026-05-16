@@ -213,36 +213,36 @@ def _spec_decode_manifest(assistant_model_id: str) -> dict[str, object]:
         "method": "single_position_mtp",
         "assistant_model_id": assistant_model_id,
         "target": {
-            "verifier_logits": "decoder:logits",
-            "target_hidden_state": "decoder:hidden",
-            "target_token_embedding": "target_embedding:embedding",
+            "verifier_logits": "verifier_logits",
+            "target_hidden_state": "target_hidden_state",
+            "target_token_embedding": "target_token_embedding",
             "shared_kv": {
                 "full_attention": {
-                    "key": "decoder:shared_kv.full_attention.key",
-                    "value": "decoder:shared_kv.full_attention.value",
+                    "key": "shared_kv.full_attention.key",
+                    "value": "shared_kv.full_attention.value",
                 },
                 "sliding_attention": {
-                    "key": "decoder:shared_kv.sliding_attention.key",
-                    "value": "decoder:shared_kv.sliding_attention.value",
+                    "key": "shared_kv.sliding_attention.key",
+                    "value": "shared_kv.sliding_attention.value",
                 },
             },
         },
         "assistant": {
-            "current_token_embedding": "assistant:current_token_embedding",
-            "previous_target_hidden": "assistant:previous_target_hidden",
-            "position": "assistant:position",
+            "current_token_embedding": "current_token_embedding",
+            "previous_target_hidden": "previous_target_hidden",
+            "position": "position",
             "shared_kv": {
                 "full_attention": {
-                    "key": "assistant:shared_kv.full_attention.key",
-                    "value": "assistant:shared_kv.full_attention.value",
+                    "key": "shared_kv.full_attention.key",
+                    "value": "shared_kv.full_attention.value",
                 },
                 "sliding_attention": {
-                    "key": "assistant:shared_kv.sliding_attention.key",
-                    "value": "assistant:shared_kv.sliding_attention.value",
+                    "key": "shared_kv.sliding_attention.key",
+                    "value": "shared_kv.sliding_attention.value",
                 },
             },
-            "logits_output": "assistant:logits",
-            "next_hidden_output": "assistant:hidden",
+            "logits_output": "logits_output",
+            "next_hidden_output": "next_hidden_output",
         },
     }
 

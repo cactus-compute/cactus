@@ -216,7 +216,6 @@ def test_materialized_transpile_constants_are_cactus_tensor_files(tmp_path: Path
     assert tuple(loaded.shape) == (2, 3)
     np.testing.assert_array_equal(loaded.data.reshape(loaded.shape), expected)
 
-
 def test_stateful_decode_graphs_are_reloaded_when_bundle_cache_hits(monkeypatch, tmp_path: Path) -> None:
     manifest = {
         "components": [
@@ -369,3 +368,20 @@ def test_runtime_image_inputs_resize_to_static_square(tmp_path: Path) -> None:
 
     assert images[0].size == (256, 256)
     assert lfm_images[0].size == (256, 256)
+
+
+def test_materialized_bf16_transpile_constant_is_written_as_fp16(tmp_path: Path) -> None:
+    tensor_path = tmp_path / "constant.weights"
+    value = torch.tensor([[1.0, 2.0]], dtype=torch.bfloat16)
+
+    hf_model._write_cactus_constant_tensor(
+        output_path=tensor_path,
+        value=value,
+        precision=int(hf_model.Graph.FP16),
+    )
+
+    loaded = component_bundle_runtime._open_cactus_tensor_file(tensor_path)
+    assert loaded.precision == int(hf_model.Graph.FP16)
+    assert tuple(loaded.shape) == (1, 2)
+    assert loaded.data.dtype == np.float16
+    np.testing.assert_array_equal(loaded.data.reshape(loaded.shape), np.array([[1.0, 2.0]], dtype=np.float16))
