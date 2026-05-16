@@ -82,6 +82,16 @@ def cmd_run_transpiled(args):
 `cactus run <path>` also auto-detects transpiled bundles by looking for a
 `manifest.json` and dispatches to the same runtime path.
 
+## Runtime Limits
+
+The C++ runtime currently executes transpiled causal LM decoder and target-embedding
+components through a single token-input node. Component manifests with multiple
+decoder runtime inputs fail explicitly instead of binding only the first input.
+
+MTP is text-only in the current runtime. Requests with `mtp_required=true` and
+image or audio inputs fail with `media_not_supported`; use `mtp_enabled` without
+`mtp_required` when fallback to normal media generation is acceptable.
+
 ## End-To-End Timeline
 
 ## 1. Parse Args, Infer Task, Load Model Bundle

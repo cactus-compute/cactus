@@ -3863,12 +3863,13 @@ def _build_gemma4_spec_decode_component_specs(
     model_device = _module_device(model) or input_ids.device
     input_ids = input_ids.to(device=model_device, dtype=torch.long)
     current_token_ids = current_token_ids.to(device=model_device, dtype=torch.long)
+    default_kv_seq_len = max(1, int(input_ids.shape[1]))
     default_embedding = torch.zeros((1, 1, hidden_dim), dtype=model_dtype, device=model_device)
     default_previous_hidden = default_embedding
     default_position = torch.zeros((1, 1), dtype=torch.long, device=model_device)
-    default_full_shared = torch.zeros((1, 1, 1, default_full_head_dim), dtype=model_dtype, device=model_device)
+    default_full_shared = torch.zeros((1, 1, default_kv_seq_len, default_full_head_dim), dtype=model_dtype, device=model_device)
     default_full_value = default_full_shared
-    default_sliding_shared = torch.zeros((1, 1, 1, default_sliding_head_dim), dtype=model_dtype, device=model_device)
+    default_sliding_shared = torch.zeros((1, 1, default_kv_seq_len, default_sliding_head_dim), dtype=model_dtype, device=model_device)
     default_sliding_value = default_sliding_shared
     model_backbone = getattr(model, "model", None)
     can_derive_target_defaults = hasattr(model, "language_model") or hasattr(model_backbone, "language_model")

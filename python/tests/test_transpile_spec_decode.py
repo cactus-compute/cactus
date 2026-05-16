@@ -239,6 +239,32 @@ class _FakeGemma4Assistant(torch.nn.Module):
         )
 
 
+class _FakeAssistantBackbone(torch.nn.Module):
+    def forward(self, **kwargs):
+        return SimpleNamespace(last_hidden_state=kwargs["inputs_embeds"])
+
+
+class _FakeGemma4AssistantWithMasks(torch.nn.Module):
+    def __init__(self, hidden_size: int = 1536) -> None:
+        super().__init__()
+        self.pre_projection = torch.nn.Linear(hidden_size * 2, hidden_size, bias=False)
+        self.model = _FakeAssistantBackbone()
+        self.post_projection = torch.nn.Identity()
+        self.lm_head = torch.nn.Linear(hidden_size, 5, bias=False)
+        self.mask_sequence_lengths: list[int] = []
+
+    def create_attention_masks(self, inputs_embeds, attention_mask, shared_kv_states):
+        _ = attention_mask
+        full_key = shared_kv_states["full_attention"][0]
+        first_head = full_key[:, 0]
+        self.mask_sequence_lengths.append(int(first_head.shape[1]))
+        return torch.zeros(
+            (inputs_embeds.shape[0], 1, inputs_embeds.shape[1], first_head.shape[1]),
+            dtype=inputs_embeds.dtype,
+            device=inputs_embeds.device,
+        )
+
+
 def test_gemma4_assistant_adapter_matches_hf_single_position_contract() -> None:
     model = _FakeGemma4Assistant()
     adapter = Gemma4AssistantMTPAdapter(model)
@@ -378,6 +404,27 @@ def test_gemma4_assistant_default_examples_match_hf_projection_width() -> None:
     assert inputs[1].shape == (1, 1, 1536)
     assert inputs[3].shape == (1, 1, 1, 512)
     assert inputs[5].shape == (1, 1, 1, 256)
+
+
+def test_gemma4_assistant_only_shared_kv_defaults_follow_input_length() -> None:
+    specs = build_component_module_specs(
+        _FakeGemma4AssistantFamily(),
+        task="causal_lm_logits",
+        named_tensors={"input_ids": torch.zeros((1, 4), dtype=torch.long)},
+        components=("assistant",),
+    )
+
+    assert specs is not None
+    inputs = specs[0].example_inputs
+    assert inputs[3].shape == (1, 1, 4, 512)
+    assert inputs[4].shape == (1, 1, 4, 512)
+    assert inputs[5].shape == (1, 1, 4, 256)
+    assert inputs[6].shape == (1, 1, 4, 256)
+
+    assistant = _FakeGemma4AssistantWithMasks()
+    adapter = Gemma4AssistantMTPAdapter(assistant)
+    adapter(*inputs)
+    assert assistant.mask_sequence_lengths == [4]
 
 
 def test_gemma4_assistant_default_examples_use_model_dtype() -> None:
