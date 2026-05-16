@@ -1,0 +1,20 @@
+{
+  "models": [
+    {
+      "name": "gemma-4-e2b-it",
+      "path": "weights/gemma-4-e2b-it"
+    },
+    {
+      "name": "gemma-4-e2b-it-cq4",
+      "path": "weights/gemma-4-e2b-it-cq4"
+    },
+    {
+      "name": "qwen3-0.6b",
+      "path": "weights/qwen3-0.6b"
+    },
+    {
+      "name": "gemma-3-270m-it",
+      "path": "weights/gemma-3-270m-it"
+    }
+  ]
+}
