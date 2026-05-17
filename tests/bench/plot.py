@@ -8,7 +8,7 @@ Reads:
 Writes one PNG per graph + a combined "all_graphs.png" with all five panels.
 
 Plots use the monotonic latency envelope for each backend so the rendered
-curves show scaling shape while the CSV keeps the raw per-call timings.
+curves show scaling shape while the CSV keeps mean and p50 latencies.
 """
 
 from __future__ import annotations
@@ -28,17 +28,16 @@ except ImportError as e:
 
 # Graph spec: (csv stem, graph filter, title, y-axis label, sweep meaning).
 GRAPHS = [
-    ("matmul", "gemv_d",            "Graph 1 — GEMV (1 × d) @ (d × N)",                                "d"),
-    ("matmul", "gemm_d",            "Graph 2 — GEMM (M × d) @ (d × N), M=N=512",                       "d"),
-    ("matmul", "gemm_mn",           "Graph 3 — GEMM (M × d) @ (d × N), M=N swept, d=512",              "M=N"),
-    ("attn",   "attn_prefill_s",    "Graph 4 — Attention (S × d) @ (d × S), d=1024, h=8",              "S"),
-    ("attn",   "attn_decode_cache", "Graph 5 — Hybrid Attention (1 × d) @ (d × 1), d=1024, h=8",       "cache_len"),
+    ("matmul", "gemv_d",            "Graph 1 — Q4 GEMV (1 × d) @ (d × N)",                            "Hidden dimension (d)"),
+    ("matmul", "gemm_d",            "Graph 2 — Q4 GEMM (M × d) @ (d × N), M=N=512",                   "Hidden dimension (d)"),
+    ("matmul", "gemm_mn",           "Graph 3 — Q4 GEMM (M × d) @ (d × N), M=N swept, d=512",          "Matrix rows/cols (M=N)"),
+    ("attn",   "attn_prefill_s",    "Graph 4 — Attention FP16 (S × d) @ (d × S), d=1024, h=8",         "Sequence length (S)"),
+    ("attn",   "attn_decode_cache", "Graph 5 — Q8 Decode Attention (1 × d) @ (d × 1), d=1024, h=8",    "KV cache length (cache_len)"),
 ]
 
 # Stable backend → color mapping. Cactus stands out; the others share a muted
 # palette. Unknown backends fall back to matplotlib's default cycle.
 BACKEND_COLORS = {
-    "cactus_int8":                       "#1b9e77",
     "cactus_cq4":                        "#1b9e77",
     "cactus_prefill":                    "#1b9e77",
     "cactus_decode":                     "#1b9e77",
@@ -48,15 +47,17 @@ BACKEND_COLORS = {
     "ggml_fa_q8_decode":                 "#377eb8",
     "ggml_mm_q8_prefill":                "#377eb8",
     "ggml_mm_q8_decode":                 "#377eb8",
+    "litert_q4_fc":                      "#ff7f00",
+    "litert_ruy_int8":                   "#fdbf6f",
     "litert_neon":                       "#ff7f00",
     "litert_ruy":                        "#fdbf6f",
     "litert_ruy_prefill":                "#fdbf6f",
     "litert_ruy_decode":                 "#fdbf6f",
     "litert_neon_decode":                "#ff7f00",
-    "onnxrt_int8":                       "#e41a1c",
+    "onnxrt_q4":                         "#e41a1c",
     "onnxrt_gqa_prefill":                "#e41a1c",
     "onnxrt_gqa_decode_fp16kv":          "#e41a1c",
-    "executorch_int8":                   "#666666",
+    "executorch_q4":                     "#666666",
     "executorch_sdpa_prefill_fp32":      "#666666",
     "executorch_qsdpa_decode_int8pc":    "#666666",
 }
@@ -64,26 +65,41 @@ BACKEND_COLORS = {
 # Stable order so the legend doesn't shuffle between graphs.
 BACKEND_ORDER = list(BACKEND_COLORS.keys())
 
+BACKEND_LABELS = {
+    "cactus_cq4":                        "Cactus CQ4",
+    "cactus_prefill":                    "Cactus FP16 prefill",
+    "cactus_decode":                     "Cactus Q8 decode",
+    "ggml_q4_0":                         "ggml Q4_0",
+    "ggml_fa_q8_prefill":                "ggml FA Q8_0 prefill",
+    "ggml_fa_q8_decode":                 "ggml FA Q8_0 decode",
+    "ggml_mm_q8_prefill":                "ggml matmul Q8_0 prefill",
+    "ggml_mm_q8_decode":                 "ggml matmul Q8_0 decode",
+    "litert_q4_fc":                      "LiteRT int4 FC",
+    "litert_ruy_int8":                   "LiteRT Ruy int8",
+    "litert_neon":                       "LiteRT NEON int8 baseline",
+    "litert_ruy":                        "LiteRT Ruy int8 baseline",
+    "litert_ruy_prefill":                "LiteRT Ruy int8",
+    "litert_ruy_decode":                 "LiteRT Ruy int8",
+    "litert_neon_decode":                "LiteRT NEON int8",
+    "onnxrt_q4":                         "ONNX RT Q4 group",
+    "onnxrt_gqa_prefill":                "ONNX RT GQA prefill",
+    "onnxrt_gqa_decode_fp16kv":          "ONNX RT GQA FP16 KV",
+    "executorch_q4":                     "ExecuTorch Q4 channel",
+    "executorch_sdpa_prefill_fp32":      "ExecuTorch SDPA FP32",
+    "executorch_qsdpa_decode_int8pc":    "ExecuTorch QSDPA int8",
+}
+
 # Asterisks for backends whose precision/scheme differs from cactus's. Listed
 # in plot footnotes so the y-axis comparison stays honest.
 BACKEND_ASTERISKS = {
-    "litert_neon":                       "*",
-    "litert_ruy":                        "*",
-    "litert_ruy_prefill":                "*",
-    "litert_ruy_decode":                 "*",
-    "litert_neon_decode":                "*",
-    "executorch_int8":                   "*",
-    "executorch_qsdpa_decode_int8pc":    "*",
-    "executorch_sdpa_prefill_fp32":      "†",
-    "onnxrt_gqa_decode_fp16kv":          "‡",
-    "ggml_q4_0":                         "§",
-    "cactus_cq4":                        "§",
+    "cactus_cq4":                        "*",
+    "litert_q4_fc":                      "†",
+    "litert_ruy_int8":                   "‡",
 }
 ASTERISK_LEGEND = {
-    "*": "per-channel INT8 quant (vs cactus's group=32)",
-    "†": "FP32 (vs FP16)",
-    "‡": "FP16 KV (vs INT8 KV)",
-    "§": "4-bit weight path",
+    "*": "Cactus CQ4 uses rotor+LUT quantization to achieve the lowest observed error",
+    "†": "LiteRT int4 FC uses per-output-channel q4 weights; fewer scales than group/CQ4, faster but lower-fidelity",
+    "‡": "LiteRT Ruy uses per-output-channel int8 weights; it does not support q4 in this benchmark path",
 }
 
 
@@ -107,7 +123,9 @@ def plot_graph(ax, df: pd.DataFrame, graph_filter: str, title: str, x_label: str
         ax.set_axis_off()
         return False
 
-    sub["time_ms"] = sub["time_us"] / 1000.0
+    latency_col = "p50_us" if "p50_us" in sub.columns else "time_us"
+    latency_name = "p50" if latency_col == "p50_us" else "mean"
+    sub["time_ms"] = sub[latency_col] / 1000.0
     dims = sorted(sub["sweep_dim"].unique())
     backends = order_backends(list(sub["backend"].unique()))
 
@@ -120,16 +138,16 @@ def plot_graph(ax, df: pd.DataFrame, graph_filter: str, title: str, x_label: str
         # Drop non-positive times (log scale can't show zero/negative).
         b_data = b_data[b_data["time_ms"] > 0]
         mark = BACKEND_ASTERISKS.get(backend, "")
-        label = backend + (" " + mark if mark else "")
+        label = BACKEND_LABELS.get(backend, backend) + (" " + mark if mark else "")
         if mark:
-            asterisks_used.add(mark)
+            asterisks_used.update(mark.split())
         b_data = b_data.assign(plot_time_ms=np.maximum.accumulate(b_data["time_ms"].to_numpy()))
         ax.plot(b_data["sweep_dim"], b_data["plot_time_ms"],
                 marker="o", markersize=5, linewidth=1.8,
                 label=label, color=color_for(backend))
 
     ax.set_xlabel(x_label)
-    ax.set_ylabel("monotonic latency envelope (ms)")
+    ax.set_ylabel(f"{latency_name} monotonic latency envelope (ms)")
     ax.set_title(title, fontsize=11)
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
@@ -144,7 +162,10 @@ def plot_graph(ax, df: pd.DataFrame, graph_filter: str, title: str, x_label: str
     if asterisks_used:
         notes = [f"{k} {ASTERISK_LEGEND[k]}" for k in sorted(asterisks_used,
                                                               key=lambda x: list(ASTERISK_LEGEND).index(x))]
-        notes.append("CSV contains raw per-call timings; plotted lines use cumulative max by backend")
+        if latency_col == "p50_us":
+            notes.append("CSV time_us=mean and p50_us=median; plotted lines use p50 cumulative max by backend")
+        else:
+            notes.append("CSV lacks p50_us; plotted lines use mean cumulative max by backend")
         ax.text(0.0, -0.16, "\n".join(notes),
                 transform=ax.transAxes, fontsize=7, color="#555",
                 ha="left", va="top")

@@ -3,12 +3,17 @@
 #ifdef WITH_LITERT
 
 #include <arm_neon.h>
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <vector>
 
+#include "include/cpuinfo.h"
+#include "tflite/kernels/internal/optimized/4bit/fully_connected_common.h"
+#include "tflite/kernels/internal/optimized/fully_connected_4bit.h"
 #include "tflite/kernels/internal/optimized/neon_tensor_utils.h"
 #include "ruy/ruy.h"
 
@@ -17,12 +22,32 @@ namespace {
 static constexpr int kRuyGemvThreads = 1;
 static constexpr int kRuyGemmThreads = 4;
 
+struct Q4Weights {
+    size_t K = 0, N = 0;
+    int lhs_layout_rows = 0, lhs_layout_cols = 0;
+    int rhs_layout_rows = 0, rhs_layout_cols = 0;
+    int dst_layout_rows = 0, dst_layout_cols = 0;
+    std::vector<int8_t> q4_packed;
+    std::vector<float> weight_scales;
+    std::vector<uint8_t> prepacked_storage;
+    uint8_t* prepacked = nullptr;
+    std::vector<int8_t> input_quantized;
+    std::vector<float> input_scales;
+    std::vector<int32_t> input_offsets;
+    std::vector<int32_t> accum;
+    std::vector<float> output_buf;
+};
+
+struct Q4Activations {
+    std::vector<float> fp32;
+};
+
 struct Int8Weights {
     size_t K = 0, N = 0;
     std::vector<int8_t> int8_rowmajor;
     std::vector<float> weight_scales;
-    std::vector<float> neon_output;
     std::vector<int32_t> ruy_output;
+    std::vector<float> output_buf;
 };
 
 // Shared ruy::Context — without this, each matrix creates its own Context
@@ -38,7 +63,108 @@ static ruy::Context* get_ruy_context(int max_threads) {
     return ctx.get();
 }
 
-void* int8_prepare(const float* fp32, size_t N, size_t K) {
+static int round_up_pow2(int value, int multiple) {
+    return (value + multiple - 1) & ~(multiple - 1);
+}
+
+void* q4_prepare(const float* fp32, size_t N, size_t K) {
+    static const bool cpuinfo_ready = cpuinfo_initialize();
+    (void)cpuinfo_ready;
+
+    auto* w = new Q4Weights();
+    w->K = K;
+    w->N = N;
+    const int output_depth = static_cast<int>(N);
+    const int cols = static_cast<int>(K);
+    const int lhs_width = tflite::optimized_4bit::FilterWidth;
+    const int depth = tflite::optimized_4bit::FilterDepth;
+
+    w->lhs_layout_rows = round_up_pow2(output_depth, lhs_width);
+    w->lhs_layout_cols = round_up_pow2(cols, depth);
+    w->dst_layout_cols = w->lhs_layout_rows;
+    w->q4_packed.assign(N * ((K + 1) / 2), 0);
+    w->weight_scales.resize(N);
+
+    for (size_t n = 0; n < N; ++n) {
+        const float* row = fp32 + n * K;
+        float max_abs = 0.0f;
+        for (size_t k = 0; k < K; ++k)
+            max_abs = std::max(max_abs, std::abs(row[k]));
+        const float scale = std::max(max_abs / 7.0f, 1e-10f);
+        w->weight_scales[n] = scale;
+        for (size_t k = 0; k < K; k += 2) {
+            int q0 = static_cast<int>(std::round(row[k] / scale));
+            int q1 = (k + 1 < K) ? static_cast<int>(std::round(row[k + 1] / scale)) : 0;
+            q0 = std::max(-8, std::min(7, q0));
+            q1 = std::max(-8, std::min(7, q1));
+            w->q4_packed[n * ((K + 1) / 2) + k / 2] =
+                static_cast<int8_t>((q0 & 0x0F) | ((q1 & 0x0F) << 4));
+        }
+    }
+
+    const int weight_size = w->lhs_layout_rows * w->lhs_layout_cols / 2;
+    w->prepacked_storage.resize(weight_size + tflite::optimized_4bit::kDefaultAlignmentPadding);
+    w->prepacked = reinterpret_cast<uint8_t*>(
+        (reinterpret_cast<uintptr_t>(w->prepacked_storage.data()) +
+         tflite::optimized_4bit::kDefaultAlignmentPadding) &
+        ~static_cast<uintptr_t>(tflite::optimized_4bit::kDefaultAlignmentPadding));
+    tflite::optimized_4bit::api::Prepack(
+        w->prepacked, w->q4_packed.data(), w->lhs_layout_rows, w->lhs_layout_cols,
+        output_depth, cols, lhs_width, depth);
+    return w;
+}
+
+void* q4_prepare_act(const float* fp32, size_t M, size_t K, void*) {
+    auto* a = new Q4Activations();
+    a->fp32.assign(fp32, fp32 + M * K);
+    return a;
+}
+
+void q4_run_kernel(size_t M, size_t K, size_t N,
+                   void* weights, void* activations,
+                   const int8_t*, const float*,
+                   float* output, float*) {
+    auto* w = static_cast<Q4Weights*>(weights);
+    auto* a = static_cast<Q4Activations*>(activations);
+    if (!w || !a) return;
+
+    int rhs_width = tflite::optimized_4bit::GetMaxSupportedRows();
+    while (rhs_width > 1 && static_cast<int>(M) < rhs_width) rhs_width /= 2;
+    w->rhs_layout_rows = round_up_pow2(static_cast<int>(M), rhs_width);
+    w->rhs_layout_cols = w->lhs_layout_cols;
+    w->dst_layout_rows = w->rhs_layout_rows;
+
+    const size_t quantized_size = static_cast<size_t>(w->rhs_layout_rows) * w->rhs_layout_cols;
+    const size_t accum_size = static_cast<size_t>(w->dst_layout_rows) * w->dst_layout_cols;
+    w->input_quantized.resize(quantized_size);
+    w->input_scales.resize(w->rhs_layout_rows);
+    w->input_offsets.resize(w->rhs_layout_rows);
+    w->accum.resize(accum_size);
+    w->output_buf.resize(M * N);
+
+    tflite::optimized_4bit::api::BatchQuantizeFloats4Bit(
+        a->fp32.data(), static_cast<int>(M), static_cast<int>(K),
+        w->input_quantized.data(), w->input_scales.data(), rhs_width,
+        tflite::optimized_4bit::FilterDepth, w->input_offsets.data());
+    tflite::optimized_4bit::api::AssignBiasAndComputeOffsets(
+        w->input_offsets.data(), w->input_scales.data(), w->weight_scales.data(),
+        nullptr, w->output_buf.data(), static_cast<int>(N), static_cast<int>(M));
+    tflite::optimized_4bit::api::RunAndUnpack(
+        rhs_width, w->prepacked, w->input_quantized.data(), w->accum.data(),
+        static_cast<int>(N), static_cast<int>(M), w->lhs_layout_rows,
+        w->lhs_layout_cols, w->rhs_layout_rows, w->rhs_layout_cols,
+        w->dst_layout_rows, w->dst_layout_cols, w->output_buf.data(),
+        w->input_scales.data(), w->weight_scales.data());
+
+    if (output) std::memcpy(output, w->output_buf.data(), M * N * sizeof(float));
+}
+
+void q4_cleanup(void* weights, void* activations) {
+    delete static_cast<Q4Weights*>(weights);
+    if (activations) delete static_cast<Q4Activations*>(activations);
+}
+
+void* ruy_int8_prepare(const float* fp32, size_t N, size_t K) {
     auto* w = new Int8Weights();
     w->K = K;
     w->N = N;
@@ -48,49 +174,26 @@ void* int8_prepare(const float* fp32, size_t N, size_t K) {
     return w;
 }
 
-void int8_cleanup(void* weights, void*) {
-    delete static_cast<Int8Weights*>(weights);
-}
-
-void neon_run_kernel(size_t M, size_t /*K*/, size_t /*N*/,
-                     void* weights, void*,
-                     const int8_t* act_int8, const float* act_scales,
-                     float* output, float*) {
+void ruy_int8_run_kernel(size_t M, size_t, size_t,
+                         void* weights, void*,
+                         const int8_t* act_int8, const float* act_scales,
+                         float* output, float*) {
     auto* w = static_cast<Int8Weights*>(weights);
-    w->neon_output.resize(M * w->N);
-    std::memset(w->neon_output.data(), 0, M * w->N * sizeof(float));
-    tflite::tensor_utils::MatrixBatchVectorMultiplyAccumulate(
-        w->int8_rowmajor.data(), static_cast<int>(w->N), static_cast<int>(w->K),
-        act_int8, act_scales, static_cast<int>(M), w->neon_output.data());
+    if (!w) return;
 
-    const float* ws = w->weight_scales.data();
-    for (size_t m = 0; m < M; m++) {
-        float* row = w->neon_output.data() + m * w->N;
-        size_t n = 0;
-        for (; n + 4 <= w->N; n += 4) {
-            float32x4_t v = vld1q_f32(row + n);
-            float32x4_t s = vld1q_f32(ws + n);
-            vst1q_f32(row + n, vmulq_f32(v, s));
-        }
-        for (; n < w->N; n++) row[n] *= ws[n];
-    }
-
-    if (output) std::memcpy(output, w->neon_output.data(), M * w->N * sizeof(float));
-}
-
-static void ruy_run_kernel_impl(size_t M, Int8Weights* w,
-                                const int8_t* act_int8, ruy::Context* ctx) {
     w->ruy_output.resize(M * w->N);
 
     ruy::Matrix<int8_t> lhs;
     ruy::MakeSimpleLayout(static_cast<int>(M), static_cast<int>(w->K),
                           ruy::Order::kRowMajor, lhs.mutable_layout());
-    lhs.set_data(act_int8); lhs.set_zero_point(0);
+    lhs.set_data(act_int8);
+    lhs.set_zero_point(0);
 
     ruy::Matrix<int8_t> rhs;
     ruy::MakeSimpleLayout(static_cast<int>(w->K), static_cast<int>(w->N),
                           ruy::Order::kColMajor, rhs.mutable_layout());
-    rhs.set_data(w->int8_rowmajor.data()); rhs.set_zero_point(0);
+    rhs.set_data(w->int8_rowmajor.data());
+    rhs.set_zero_point(0);
     rhs.set_cache_policy(ruy::CachePolicy::kAlwaysCache);
 
     ruy::Matrix<int32_t> dst;
@@ -99,35 +202,31 @@ static void ruy_run_kernel_impl(size_t M, Int8Weights* w,
     dst.set_data(w->ruy_output.data());
 
     ruy::MulParams<int32_t, int32_t> mul_params;
-    ruy::Mul(lhs, rhs, mul_params, ctx, &dst);
-}
-
-void ruy_run_kernel(size_t M, size_t /*K*/, size_t /*N*/,
-                    void* weights, void*,
-                    const int8_t* act_int8, const float* act_scales,
-                    float* output, float*) {
-    auto* w = static_cast<Int8Weights*>(weights);
     int default_threads = (M <= 1) ? kRuyGemvThreads : kRuyGemmThreads;
     int threads = bench::get_effective_threads(default_threads);
-    ruy_run_kernel_impl(M, w, act_int8, get_ruy_context(threads));
+    ruy::Mul(lhs, rhs, mul_params, get_ruy_context(threads), &dst);
 
-    w->neon_output.resize(M * w->N);
+    w->output_buf.resize(M * w->N);
     const float* ws = w->weight_scales.data();
-    for (size_t m = 0; m < M; m++) {
+    for (size_t m = 0; m < M; ++m) {
         float32x4_t as = vdupq_n_f32(act_scales[m]);
         const int32_t* src = w->ruy_output.data() + m * w->N;
-        float* dst = w->neon_output.data() + m * w->N;
+        float* out = w->output_buf.data() + m * w->N;
         size_t n = 0;
         for (; n + 4 <= w->N; n += 4) {
             float32x4_t v = vcvtq_f32_s32(vld1q_s32(src + n));
             float32x4_t s = vld1q_f32(ws + n);
-            vst1q_f32(dst + n, vmulq_f32(vmulq_f32(v, as), s));
+            vst1q_f32(out + n, vmulq_f32(vmulq_f32(v, as), s));
         }
-        for (; n < w->N; n++)
-            dst[n] = static_cast<float>(src[n]) * act_scales[m] * ws[n];
+        for (; n < w->N; ++n)
+            out[n] = static_cast<float>(src[n]) * act_scales[m] * ws[n];
     }
 
-    if (output) std::memcpy(output, w->neon_output.data(), M * w->N * sizeof(float));
+    if (output) std::memcpy(output, w->output_buf.data(), M * w->N * sizeof(float));
+}
+
+void ruy_int8_cleanup(void* weights, void*) {
+    delete static_cast<Int8Weights*>(weights);
 }
 
 // LiteRT/TFLite has no fused attention op, so attention here is hand-composed
@@ -364,12 +463,12 @@ void* decode(const bench::AttnDims& d, size_t sl, size_t cl,
 
 static int reg = [] {
     bench::register_matmul_backend({
-        "litert_neon", "litert",
-        int8_prepare, nullptr, neon_run_kernel, int8_cleanup
+        "litert_q4_fc", "litert",
+        q4_prepare, q4_prepare_act, q4_run_kernel, q4_cleanup
     });
     bench::register_matmul_backend({
-        "litert_ruy", "litert",
-        int8_prepare, nullptr, ruy_run_kernel, int8_cleanup
+        "litert_ruy_int8", "litert",
+        ruy_int8_prepare, nullptr, ruy_int8_run_kernel, ruy_int8_cleanup
     });
 
     using P = bench::AttnMode;

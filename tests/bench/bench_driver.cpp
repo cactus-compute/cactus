@@ -26,6 +26,16 @@ static constexpr double kSlowMultiplier = 25.0;
 static constexpr int    kSoloWarmup     = 5;
 static constexpr int    kSoloIters      = 10;
 
+static double median_ms(std::vector<double> samples) {
+    if (samples.empty()) return 0.0;
+    const size_t mid = samples.size() / 2;
+    std::nth_element(samples.begin(), samples.begin() + mid, samples.end());
+    double hi = samples[mid];
+    if (samples.size() % 2) return hi;
+    std::nth_element(samples.begin(), samples.begin() + mid - 1, samples.end());
+    return 0.5 * (samples[mid - 1] + hi);
+}
+
 static std::vector<MatmulBackendVariant>& matmul_registry() {
     static std::vector<MatmulBackendVariant> r;
     return r;
@@ -78,7 +88,7 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
     std::ofstream csv;
     if (!opt.csv_path.empty()) {
         csv.open(opt.csv_path);
-        csv << "graph,sweep_dim,M,K,N,backend,framework,time_us,gops,nrmse,max_err\n";
+        csv << "graph,sweep_dim,M,K,N,backend,framework,time_us,p50_us,gops,nrmse,max_err\n";
     }
 
     auto configs = build_matmul_configs(opt);
@@ -97,7 +107,7 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
         bool skipped_slow = false;
         double probe_avg_ms = 0.0;
         double total_ms = 0.0;
-        int effective_iters = 0;
+        std::vector<double> samples_ms;
     };
 
     for (const auto& cfg : configs) {
@@ -218,7 +228,7 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
                                          nullptr, nullptr);
             }
             slot.total_ms = 0.0;
-            slot.effective_iters = 0;
+            slot.samples_ms.clear();
             for (int it = 0; it < kSoloIters; ++it) {
                 size_t idx = static_cast<size_t>(it) % NM;
                 double t0 = now_ms();
@@ -226,14 +236,16 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
                                          slot.entries[idx].w, slot.entries[idx].a,
                                          act.int8.data(), act.scales.data(),
                                          nullptr, nullptr);
-                slot.total_ms += now_ms() - t0;
-                slot.effective_iters++;
+                double dt = now_ms() - t0;
+                slot.total_ms += dt;
+                slot.samples_ms.push_back(dt);
             }
         }
 
         for (int w = 0; w < opt.warmup; ++w) {
             size_t idx = static_cast<size_t>(w) % NM;
-            for (auto& slot : slots) {
+            for (size_t n = 0; n < slots.size(); ++n) {
+                auto& slot = slots[(static_cast<size_t>(w) + n) % slots.size()];
                 if (!slot.prepared || slot.skipped_slow) continue;
                 slot.backend->run_kernel(M, K, N,
                                          slot.entries[idx].w, slot.entries[idx].a,
@@ -244,27 +256,31 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
 
         for (int it = 0; it < opt.iterations; ++it) {
             size_t idx = static_cast<size_t>(it) % NM;
-            for (auto& slot : slots) {
+            for (size_t n = 0; n < slots.size(); ++n) {
+                auto& slot = slots[(static_cast<size_t>(it) + n) % slots.size()];
                 if (!slot.prepared || slot.skipped_slow) continue;
                 double t0 = now_ms();
                 slot.backend->run_kernel(M, K, N,
                                          slot.entries[idx].w, slot.entries[idx].a,
                                          act.int8.data(), act.scales.data(),
                                          nullptr, nullptr);
-                slot.total_ms += now_ms() - t0;
-                slot.effective_iters++;
+                double dt = now_ms() - t0;
+                slot.total_ms += dt;
+                slot.samples_ms.push_back(dt);
             }
         }
 
         for (auto& slot : slots) {
             if (!slot.prepared) continue;
-            int iters = slot.effective_iters > 0 ? slot.effective_iters : 1;
+            int iters = slot.samples_ms.empty() ? 1 : static_cast<int>(slot.samples_ms.size());
             double avg_ms = slot.total_ms / iters;
             double avg_us = avg_ms * 1000.0;
+            double p50_us = median_ms(slot.samples_ms) * 1000.0;
             double gops = compute_matmul_gops(M, K, N, iters, slot.total_ms);
 
             std::cout << "  " << std::left << std::setw(28) << slot.backend->name
-                      << " " << std::fixed << std::setprecision(3) << avg_ms << " ms"
+                      << " mean=" << std::fixed << std::setprecision(3) << avg_ms << " ms"
+                      << " p50=" << std::setprecision(3) << (p50_us / 1000.0) << " ms"
                       << " (" << std::setprecision(2) << gops << " GOPS)"
                       << "  acc=" << (slot.acc.passed ? "PASS" : "FAIL")
                       << " nrmse=" << std::setprecision(4) << slot.acc.nrmse;
@@ -277,6 +293,7 @@ bool run_matmul_benchmark(const MatmulBenchOptions& opt) {
                     << cfg.sweep_dim << "," << M << "," << K << "," << N << ","
                     << slot.backend->name << "," << slot.backend->framework << ","
                     << std::fixed << std::setprecision(3) << avg_us << ","
+                    << std::setprecision(3) << p50_us << ","
                     << std::setprecision(3) << gops << ","
                     << std::setprecision(6) << slot.acc.nrmse << ","
                     << std::setprecision(6) << slot.acc.max_abs_error << "\n";
@@ -332,7 +349,7 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
     std::ofstream csv;
     if (!opt.csv_path.empty()) {
         csv.open(opt.csv_path);
-        csv << "graph,sweep_dim,seq_len,cache_len,head_dim,q_heads,kv_heads,backend,framework,time_us,gflops,nrmse,max_err\n";
+        csv << "graph,sweep_dim,seq_len,cache_len,head_dim,q_heads,kv_heads,backend,framework,time_us,p50_us,gflops,nrmse,max_err\n";
     }
 
     auto configs = build_attn_configs(opt);
@@ -347,7 +364,7 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
         bool skipped_slow = false;
         double probe_avg_ms = 0.0;
         double total_ms = 0.0;
-        int effective_iters = 0;
+        std::vector<double> samples_ms;
     };
 
     for (const auto& cfg : configs) {
@@ -469,19 +486,21 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
                 slot.backend->run(slot.states[idx], nullptr);
             }
             slot.total_ms = 0.0;
-            slot.effective_iters = 0;
+            slot.samples_ms.clear();
             for (int it = 0; it < kSoloIters; ++it) {
                 size_t idx = static_cast<size_t>(it) % NS;
                 double t0 = now_ms();
                 slot.backend->run(slot.states[idx], nullptr);
-                slot.total_ms += now_ms() - t0;
-                slot.effective_iters++;
+                double dt = now_ms() - t0;
+                slot.total_ms += dt;
+                slot.samples_ms.push_back(dt);
             }
         }
 
         for (int w = 0; w < opt.warmup; ++w) {
             size_t idx = static_cast<size_t>(w) % NS;
-            for (auto& slot : slots) {
+            for (size_t n = 0; n < slots.size(); ++n) {
+                auto& slot = slots[(static_cast<size_t>(w) + n) % slots.size()];
                 if (!slot.prepared || slot.skipped_slow) continue;
                 slot.backend->run(slot.states[idx], nullptr);
             }
@@ -489,25 +508,29 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
 
         for (int it = 0; it < opt.iterations; ++it) {
             size_t idx = static_cast<size_t>(it) % NS;
-            for (auto& slot : slots) {
+            for (size_t n = 0; n < slots.size(); ++n) {
+                auto& slot = slots[(static_cast<size_t>(it) + n) % slots.size()];
                 if (!slot.prepared || slot.skipped_slow) continue;
                 double t0 = now_ms();
                 slot.backend->run(slot.states[idx], nullptr);
-                slot.total_ms += now_ms() - t0;
-                slot.effective_iters++;
+                double dt = now_ms() - t0;
+                slot.total_ms += dt;
+                slot.samples_ms.push_back(dt);
             }
         }
 
         for (auto& slot : slots) {
             if (!slot.prepared) continue;
-            int iters = slot.effective_iters > 0 ? slot.effective_iters : 1;
+            int iters = slot.samples_ms.empty() ? 1 : static_cast<int>(slot.samples_ms.size());
             double avg_ms = slot.total_ms / iters;
             double avg_us = avg_ms * 1000.0;
+            double p50_us = median_ms(slot.samples_ms) * 1000.0;
             double gflops = compute_attention_gflops(dims.num_q_heads, sl, kvl,
                                                       dims.head_dim, iters, slot.total_ms);
 
             std::cout << "  " << std::left << std::setw(28) << slot.backend->name
-                      << " " << std::fixed << std::setprecision(3) << avg_ms << " ms"
+                      << " mean=" << std::fixed << std::setprecision(3) << avg_ms << " ms"
+                      << " p50=" << std::setprecision(3) << (p50_us / 1000.0) << " ms"
                       << " (" << std::setprecision(2) << gflops << " GFLOPS)"
                       << "  acc=" << (slot.acc.passed ? "PASS" : "FAIL")
                       << " nrmse=" << std::setprecision(4) << slot.acc.nrmse;
@@ -521,6 +544,7 @@ bool run_attn_benchmark(const AttnBenchOptions& opt) {
                     << dims.head_dim << "," << dims.num_q_heads << "," << dims.num_kv_heads << ","
                     << slot.backend->name << "," << slot.backend->framework << ","
                     << std::fixed << std::setprecision(3) << avg_us << ","
+                    << std::setprecision(3) << p50_us << ","
                     << std::setprecision(3) << gflops << ","
                     << std::setprecision(6) << slot.acc.nrmse << ","
                     << std::setprecision(6) << slot.acc.max_abs_error << "\n";

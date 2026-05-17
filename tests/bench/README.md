@@ -1,13 +1,13 @@
 # Cactus v2 Benchmark Suite
 
-Compares `cactus` against `llama.cpp` (ggml), LiteRT (both Ruy and the TFLite
-NEON kernels), ONNX Runtime, and ExecuTorch (XNNPACK) on the four kernels we
+Compares `cactus` against `llama.cpp` (ggml), LiteRT (TFLite int4 FC plus
+Ruy/NEON attention pieces), ONNX Runtime, and ExecuTorch (XNNPACK) on the four kernels we
 currently care about on this branch:
 
-- **GEMV** — CQ4 / INT4 Cactus Quant and backend-specific quantized variants
-- **GEMM** — CQ4 / INT4 Cactus Quant and backend-specific quantized variants
+- **Q4 GEMV** — Cactus CQ4 and backend-specific quantized variants
+- **Q4 GEMM** — Cactus CQ4 and backend-specific quantized variants
 - **Attention prefill** — FP16 fused attention
-- **Hybrid attention decode** — INT8 KV-cache, FP16 query
+- **Q8 decode attention** — quantized KV-cache, FP16 query
 
 The driver sweeps the five graphs the team needs:
 
@@ -98,10 +98,14 @@ larger than any plausible Apple Silicon SLC. This forces every iteration's
 weight load to miss to RAM, matching real inference where every layer has
 unique weights. NM is reported next to each shape in the output.
 
+The timed loop rotates backend order each iteration so first/last position in
+the round-robin does not systematically favor one backend. The CSV reports
+mean latency as `time_us` and median latency as `p50_us`.
+
 The plotter renders a monotonic latency envelope per backend (`cummax` over
-the raw latency points). The CSVs remain raw per-call timings; the PNGs use
-the envelope so the visible scaling shape does not dip when a larger shape
-lands on a more efficient backend kernel regime.
+the latency points). New CSVs plot `p50_us`; older CSVs without `p50_us` fall
+back to `time_us`. The PNGs use the envelope so the visible scaling shape does
+not dip when a larger shape lands on a more efficient backend kernel regime.
 
 ### Threading
 
@@ -119,24 +123,29 @@ plots because:
 ### What's still asymmetric (read before plotting)
 
 We've fixed warm-cache reads (NM scales to exceed SLC) and ORT's per-call
-session-creation overhead (sessions cached per (M,K,N)). Three known
+session-creation overhead (sessions cached per (M,K,N)). Four known
 asymmetries remain:
 
-1. **Mixed precision plotted on the same axis.** Cactus and ggml matmul use
-   4-bit weight paths; LiteRT, ExecuTorch, and ONNX Runtime matmul remain
-   INT8 because those benchmarked APIs are INT8-only here. ExecuTorch SDPA prefill
-   is FP32-only (no FP16 path exists in `op_sdpa.cpp`); ORT GQA decode is
-   FP16-KV (no INT8-KV op exists in ORT). Both flagged with † / ‡ in plot
-   legends. ExecuTorch is doing 2× the floating-point work cactus is;
-   ORT decode is doing higher-precision KV reads. Y-axis is wall-clock,
-   not "useful work per second."
+1. **Matmul quantization schemes differ.** Cactus matmul is Cactus CQ4;
+   it is not the original group-of-32 INT8 path. ggml uses Q4_0 block
+   quantization, ONNX Runtime uses Q4 `MatMulNBits` with block/group size 32,
+   ExecuTorch uses XNNPACK Q4 per-channel weights, and LiteRT uses TFLite's
+   optimized hybrid int4 FullyConnected path with its NEON/SDOT microkernel.
+   `litert_ruy_int8` is included as a Google-runtime reference point, but Ruy
+   does not expose a q4 matmul path here.
 
-2. **Per-channel vs per-group(32) INT8.** LiteRT and ExecuTorch use
-   per-channel scales (1 scale per row); cactus / ggml / ORT use per-group
-   scales (4 scales per 128-d row). Per-channel is faster (fewer scale
-   lookups) but coarser. Flagged with * in plot legends.
+2. **Scale granularity differs.** Cactus CQ4 stores compact rotor/LUT
+   metadata rather than row-wise or group-of-32 INT8 scales. ONNX Runtime Q4 is
+   group/block-wise with block size 32. ExecuTorch Q4, LiteRT int4 FC, and
+   LiteRT Ruy int8 are channel-wise/per-output-channel. ggml Q4_0 uses ggml's
+   fixed block format.
 
-3. **Graph-runtime per-call overhead.** ggml is a graph runtime — each
+3. **Attention precision still differs.** ExecuTorch SDPA prefill is FP32-only
+   (no FP16 path exists in `op_sdpa.cpp`); ORT GQA decode uses FP16 KV because
+   ORT does not expose a quantized-KV GQA op. These are named directly in plot
+   labels. Y-axis is wall-clock, not "useful work per second."
+
+4. **Graph-runtime per-call overhead.** ggml is a graph runtime — each
    `ggml_graph_compute` has a per-call dispatch cost (~50–100μs) that
    wouldn't exist if you were running a full LLM forward pass through
    ggml. We've cut what we can (honor `--threads`, share K/V graphs), but
@@ -160,44 +169,45 @@ asymmetries remain:
 
 `matmul_bench.csv` columns:
 ```
-graph, sweep_dim, M, K, N, backend, framework, time_us, gops, nrmse, max_err
+graph, sweep_dim, M, K, N, backend, framework, time_us, p50_us, gops, nrmse, max_err
 ```
 
 `attn_bench.csv` columns:
 ```
 graph, sweep_dim, seq_len, cache_len, head_dim, q_heads, kv_heads,
-backend, framework, time_us, gflops, nrmse, max_err
+backend, framework, time_us, p50_us, gflops, nrmse, max_err
 ```
 
 The five user-facing graphs map onto these CSVs as:
 
 | Graph (slide deck) | CSV file              | `graph` filter        | x-axis is `sweep_dim` |
 |--------------------|------------------------|-----------------------|------------------------|
-| 1 GEMV             | matmul_bench.csv       | `gemv_d`              | d                      |
-| 2 GEMM (d sweep)   | matmul_bench.csv       | `gemm_d`              | d                      |
-| 3 GEMM (M=N sweep) | matmul_bench.csv       | `gemm_mn`             | M=N                    |
-| 4 Attn prefill     | attn_bench.csv         | `attn_prefill_s`      | S                      |
-| 5 Hybrid decode    | attn_bench.csv         | `attn_decode_cache`   | cache_len              |
+| 1 Q4 GEMV          | matmul_bench.csv       | `gemv_d`              | hidden dimension (`d`) |
+| 2 Q4 GEMM (d sweep) | matmul_bench.csv      | `gemm_d`              | hidden dimension (`d`) |
+| 3 Q4 GEMM (M=N sweep) | matmul_bench.csv    | `gemm_mn`             | matrix rows/cols (`M=N`) |
+| 4 Attn prefill     | attn_bench.csv         | `attn_prefill_s`      | sequence length (`S`) |
+| 5 Q8 decode attention | attn_bench.csv      | `attn_decode_cache`   | KV cache length (`cache_len`) |
 
 ## Status of third-party backends on this branch
 
-| Backend | Matmul (graphs 1–3) | Attention prefill (graph 4) | Hybrid decode (graph 5) | Kernel kind |
+| Backend | Matmul (graphs 1–3) | Attention prefill (graph 4) | Decode attention (graph 5) | Kernel kind |
 |---------|---------------------|------------------------------|--------------------------|-------------|
-| **cactus**     | `cactus_cq4` (CQ4 / INT4 weights) | `cactus_prefill` (FP16) | `cactus_decode` (FP16 Q + INT8 KV group=32) | fused |
+| **cactus**     | `cactus_cq4` (Cactus CQ4 weights) | `cactus_prefill` (FP16) | `cactus_decode` (FP16 Q + quantized KV) | fused |
 | **ggml**       | `ggml_q4_0` (Q4_0 weights) | `ggml_fa_q8_prefill` (Q8_0 KV) / `ggml_mm_q8_prefill` (composed) | `ggml_fa_q8_decode` (Q8_0 KV) | fa_*: fused / mm_*: graph |
-| **LiteRT**     | `litert_neon`, `litert_ruy` (INT8 per-channel) | `litert_ruy_prefill` (composed) | `litert_ruy_decode`, `litert_neon_decode` (composed) | matmul-composed (no fused op) |
-| **ONNX RT**    | `onnxrt_int8` (INT8 group=32 via `MatMulNBits`) | `onnxrt_gqa_prefill` (**FP16**, GQA) | `onnxrt_gqa_decode_fp16kv` (**FP16 KV**) | fused (MlasFlashAttention) |
-| **ExecuTorch** | `executorch_int8` (INT8 per-channel via XNNPACK `qc8w`) | `executorch_sdpa_prefill_fp32` (**FP32**) | `executorch_qsdpa_decode_int8pc` (**INT8 per-channel**) | fused |
+| **LiteRT**     | `litert_q4_fc` (TFLite optimized hybrid int4 FullyConnected), `litert_ruy_int8` (Ruy int8 baseline) | `litert_ruy_prefill` (composed) | `litert_ruy_decode`, `litert_neon_decode` (composed) | matmul: optimized FC / Ruy baseline; attention: composed |
+| **ONNX RT**    | `onnxrt_q4` (Q4 group=32 via `MatMulNBits`) | `onnxrt_gqa_prefill` (**FP16**, GQA) | `onnxrt_gqa_decode_fp16kv` (**FP16 KV**) | fused (MlasFlashAttention) |
+| **ExecuTorch** | `executorch_q4` (Q4 per-channel via XNNPACK `qc4w`) | `executorch_sdpa_prefill_fp32` (**FP32**) | `executorch_qsdpa_decode_int8pc` (**INT8 per-channel**) | fused |
 
-### INT4 support in this bench
+### Matmul quantization scheme map
 
-| Backend | INT4 / CQ4 path |
-|---------|-----------------|
-| **cactus** | Yes — `cactus_cq4` uses `cactus_quant_matmul` with CQ4 / INT4 weights. |
-| **ggml** | Yes for matmul — `ggml_q4_0` uses ggml Q4_0 weights with Q8_0 activations. Attention remains Q8_0 KV in this bench. |
-| **LiteRT** | No INT4 variant registered here; Ruy/NEON paths are INT8. |
-| **ONNX RT** | No INT4 variant registered here; `MatMulNBits` is configured for 8-bit. |
-| **ExecuTorch** | No INT4 variant registered here; XNNPACK path is INT8 `qc8w`. |
+| Backend | Registered matmul path | Weight scheme | Scale granularity | Notes |
+|---------|-------------------------|---------------|-------------------|-------|
+| **cactus** | `cactus_cq4` | Cactus CQ4 | rotor/LUT metadata | Current Cactus path; not the old group-of-32 INT8 path. |
+| **ggml** | `ggml_q4_0` | Q4_0 | ggml fixed block format | Activations use ggml's Q8_0 machinery internally. |
+| **LiteRT** | `litert_q4_fc` | TFLite hybrid int4 FullyConnected | channel-wise/per-output-channel | Uses the same optimized 4-bit FC sequence as TFLite `EvalHybridDense4Bit`; the benchmark initializes cpuinfo so Apple Silicon uses the SDOT kernel. |
+| **LiteRT** | `litert_ruy_int8` | Ruy int8 baseline | channel-wise/per-output-channel | Included for Google-runtime context; Ruy does not support q4 in this benchmark path. |
+| **ONNX RT** | `onnxrt_q4` | Q4 `MatMulNBits` | group/block size 32 | Current benchmark feeds weights dynamically, so ORT may dequantize per call instead of using the prepacked constant-weight path. |
+| **ExecuTorch** | `executorch_q4` | XNNPACK `qc4w` | channel-wise/per-output-channel | Dynamic 8-bit activations with per-channel 4-bit weights. |
 
 ### How attention is implemented per backend (read this before plotting)
 
@@ -236,7 +246,7 @@ what's being compared:
 
 | Backend / variant | Prefill precision | Decode KV scheme |
 |-------------------|-------------------|------------------|
-| cactus            | FP16              | INT8 per-group(32) |
+| cactus            | FP16              | quantized KV-cache |
 | ggml `fa_q8`      | Q8_0 KV (group=32) | Q8_0 KV (group=32) |
 | ggml `mm_q8`      | matmul-composed (Q8_0 KV)  | (decode dropped — wrong output) |
 | litert `ruy_*`    | matmul-composed INT8 per-row | matmul-composed INT8 per-row |

@@ -69,7 +69,7 @@ struct XnnWeights {
 
 static void reshape(XnnWeights* w, size_t M) {
     size_t ws = 0;
-    xnn_reshape_fully_connected_nc_qd8_f32_qc8w(w->op, M, &ws, s_threadpool);
+    xnn_reshape_fully_connected_nc_qd8_f32_qc4w(w->op, M, &ws, s_threadpool);
     if (ws > w->workspace_size) {
         free(w->workspace);
         w->workspace = aligned_alloc_workspace(ws);
@@ -93,7 +93,7 @@ void run_kernel(size_t M, size_t /*K*/, size_t /*N*/,
     w->output_buf.resize(M * w->N);
     if (w->current_M != M) reshape(w, M);
     fill_qparams(w->qp_buf.data(), M, act_scales);
-    xnn_setup_fully_connected_nc_qd8_f32_qc8w(
+    xnn_setup_fully_connected_nc_qd8_f32_qc4w(
         w->op, act, w->output_buf.data(), w->workspace, w->qp_buf.data());
     xnn_run_operator(w->op, s_threadpool);
     if (output)
@@ -109,24 +109,52 @@ void cleanup(void* weights, void*) {
     }
 }
 
-void* int8_prepare(const float* fp32, size_t N, size_t K) {
+static void quantize_rows_q4(const float* src, std::vector<uint8_t>& dst,
+                             std::vector<float>& scales,
+                             size_t rows, size_t cols) {
+    const size_t packed_cols = (cols + 1) / 2;
+    dst.assign(rows * packed_cols, 0);
+    scales.resize(rows);
+
+    for (size_t r = 0; r < rows; ++r) {
+        const float* row = src + r * cols;
+        float max_abs = 0.0f;
+        for (size_t c = 0; c < cols; ++c)
+            max_abs = std::max(max_abs, std::abs(row[c]));
+        const float scale = std::max(max_abs / 7.0f, 1e-10f);
+        scales[r] = scale;
+
+        for (size_t c = 0; c < cols; c += 2) {
+            int q0 = static_cast<int>(std::round(row[c] / scale));
+            int q1 = (c + 1 < cols)
+                ? static_cast<int>(std::round(row[c + 1] / scale))
+                : 0;
+            q0 = std::max(-8, std::min(7, q0));
+            q1 = std::max(-8, std::min(7, q1));
+            dst[r * packed_cols + c / 2] =
+                static_cast<uint8_t>((q0 + 8) | ((q1 + 8) << 4));
+        }
+    }
+}
+
+void* q4_prepare(const float* fp32, size_t N, size_t K) {
     if (!ensure_init()) return nullptr;
 
-    std::vector<int8_t> qw(N * K);
+    std::vector<uint8_t> qw;
     std::vector<float> scales(N);
-    bench::quantize_rows_int8(fp32, qw.data(), scales.data(), N, K);
+    quantize_rows_q4(fp32, qw, scales, N, K);
 
     auto* w = new XnnWeights();
     w->K = K;
     w->N = N;
-    xnn_status st = xnn_create_fully_connected_nc_qd8_f32_qc8w(
+    xnn_status st = xnn_create_fully_connected_nc_qd8_f32_qc4w(
         K, N, K, N,
-        scales.data(), qw.data(), nullptr,
+        8, scales.data(), qw.data(), nullptr,
         -std::numeric_limits<float>::infinity(),
         std::numeric_limits<float>::infinity(),
         0, nullptr, &w->op);
     if (st != xnn_status_success) {
-        fprintf(stderr, "[executorch_int8] create failed (%d)\n", static_cast<int>(st));
+        fprintf(stderr, "[executorch_q4] create failed (%d)\n", static_cast<int>(st));
         delete w;
         return nullptr;
     }
@@ -135,8 +163,8 @@ void* int8_prepare(const float* fp32, size_t N, size_t K) {
 
 static int reg = [] {
     bench::register_matmul_backend({
-        "executorch_int8", "executorch",
-        int8_prepare, nullptr, run_kernel, cleanup
+        "executorch_q4", "executorch",
+        q4_prepare, nullptr, run_kernel, cleanup
     });
     return 0;
 }();

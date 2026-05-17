@@ -66,8 +66,8 @@ static Ort::MemoryInfo& get_cpu_mem() {
 
 static std::vector<uint8_t> build_model(size_t K, size_t N) {
     const size_t n_blocks = K / bench::kGroupSize;
-    const size_t b_last_dim = bench::kGroupSize;
-    const size_t zp_last_dim = n_blocks;
+    const size_t b_last_dim = bench::kGroupSize / 2;
+    const size_t zp_last_dim = (n_blocks + 1) / 2;
 
     PBuf node;
     node.fld_str(1, "A");
@@ -79,7 +79,7 @@ static std::vector<uint8_t> build_model(size_t K, size_t N) {
     node.fld_str(7, "com.microsoft");
     node.fld_ld(5, make_attr_int("K", static_cast<int64_t>(K)));
     node.fld_ld(5, make_attr_int("N", static_cast<int64_t>(N)));
-    node.fld_ld(5, make_attr_int("bits", 8));
+    node.fld_ld(5, make_attr_int("bits", 4));
     node.fld_ld(5, make_attr_int("block_size", static_cast<int64_t>(bench::kGroupSize)));
     node.fld_ld(5, make_attr_int("accuracy_level", 4));
 
@@ -93,7 +93,7 @@ static std::vector<uint8_t> build_model(size_t K, size_t N) {
 
     PBuf graph;
     graph.fld_ld(1, node);
-    graph.fld_str(2, "bench_int8");
+    graph.fld_str(2, "bench_q4");
     graph.fld_ld(11, a_vi);
     graph.fld_ld(11, b_vi);
     graph.fld_ld(11, s_vi);
@@ -193,9 +193,9 @@ void run_kernel(size_t M, size_t K, size_t N,
     if (!session) return;
     auto& mem = get_cpu_mem();
     const size_t n_blocks = K / bench::kGroupSize;
-    const size_t b_last_dim = bench::kGroupSize;
-    const size_t b_total = N * K;
-    const size_t zp_cols = n_blocks;
+    const size_t b_last_dim = bench::kGroupSize / 2;
+    const size_t b_total = N * n_blocks * b_last_dim;
+    const size_t zp_cols = (n_blocks + 1) / 2;
 
     int64_t a_shape[]  = {(int64_t)M, (int64_t)K};
     int64_t b_shape[]  = {(int64_t)N, (int64_t)n_blocks, (int64_t)b_last_dim};
@@ -225,26 +225,38 @@ void cleanup(void* weights, void* activations) {
     if (activations) delete static_cast<OrtActivations*>(activations);
 }
 
-static void pack_int8(OrtWeights* w, const float* fp32) {
+static void pack_q4(OrtWeights* w, const float* fp32) {
     size_t N = w->N, K = w->K;
-    std::vector<float> src(fp32, fp32 + N * K);
-    std::vector<int8_t> int8_vals;
-    std::vector<float> raw_scales;
-    bench::quantize_int8_per_group(src, N, K, int8_vals, raw_scales);
-
-    w->B_packed.resize(N * K);
-    for (size_t i = 0; i < N * K; i++)
-        w->B_packed[i] = static_cast<uint8_t>(static_cast<int>(int8_vals[i]) + 128);
-
-    w->scales = raw_scales;
     const size_t n_blocks = K / bench::kGroupSize;
-    w->zero_points.resize(N * n_blocks, 128);
+    const size_t packed_block = bench::kGroupSize / 2;
+    w->B_packed.assign(N * n_blocks * packed_block, 0);
+    w->scales.resize(N * n_blocks);
+    w->zero_points.resize(N * ((n_blocks + 1) / 2), 0x88);
+
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t g = 0; g < n_blocks; ++g) {
+            const size_t src_base = n * K + g * bench::kGroupSize;
+            float max_abs = 0.0f;
+            for (size_t k = 0; k < bench::kGroupSize; ++k)
+                max_abs = std::max(max_abs, std::abs(fp32[src_base + k]));
+            const float scale = std::max(max_abs / 7.0f, 1e-10f);
+            w->scales[n * n_blocks + g] = scale;
+            for (size_t k = 0; k < bench::kGroupSize; k += 2) {
+                int q0 = static_cast<int>(std::round(fp32[src_base + k] / scale));
+                int q1 = static_cast<int>(std::round(fp32[src_base + k + 1] / scale));
+                q0 = std::max(-8, std::min(7, q0));
+                q1 = std::max(-8, std::min(7, q1));
+                w->B_packed[(n * n_blocks + g) * packed_block + k / 2] =
+                    static_cast<uint8_t>((q0 + 8) | ((q1 + 8) << 4));
+            }
+        }
+    }
 }
 
-void* i8_prepare(const float* fp32, size_t N, size_t K) {
+void* q4_prepare(const float* fp32, size_t N, size_t K) {
     auto* w = new OrtWeights();
     w->K = K; w->N = N;
-    pack_int8(w, fp32);
+    pack_q4(w, fp32);
     return w;
 }
 
@@ -617,8 +629,8 @@ void gqa_cleanup(void* state) { delete static_cast<GqaState*>(state); }
 
 static int reg = [] {
     bench::register_matmul_backend({
-        "onnxrt_int8", "onnxrt",
-        i8_prepare, prepare_act, run_kernel, cleanup
+        "onnxrt_q4", "onnxrt",
+        q4_prepare, prepare_act, run_kernel, cleanup
     });
     bench::register_attn_backend({
         "onnxrt_gqa_prefill", "onnxrt", bench::AttnMode::PREFILL,

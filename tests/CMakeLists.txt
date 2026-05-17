@@ -111,6 +111,10 @@ if(WITH_LITERT)
 
     add_library(litert_kernels STATIC
         ${LITERT_DIR}/tflite/kernels/internal/optimized/neon_tensor_utils.cc
+        ${LITERT_DIR}/tflite/kernels/internal/optimized/4bit/fully_connected_reference.cc
+        ${LITERT_DIR}/tflite/kernels/internal/optimized/4bit/neon_fully_connected.cc
+        ${LITERT_DIR}/tflite/kernels/internal/optimized/4bit/neon_fully_connected_aarch64_nosdot.cc
+        ${LITERT_DIR}/tflite/kernels/internal/optimized/4bit/neon_fully_connected_aarch64_sdot.cc
         ${LITERT_DIR}/tflite/kernels/internal/optimized/cpu_check.cc
         ${LITERT_DIR}/tflite/kernels/internal/reference/portable_tensor_utils.cc
         ${LITERT_DIR}/tflite/kernels/internal/common.cc
@@ -128,7 +132,7 @@ if(WITH_LITERT)
         gemmlowp::gemmlowp
         cpuinfo::cpuinfo
     )
-    target_compile_options(litert_kernels PRIVATE -O3 -DTFLITE_WITH_RUY)
+    target_compile_options(litert_kernels PRIVATE -O3 -DTFLITE_WITH_RUY -DFC_4BIT_NEON)
     message(STATUS "LiteRT enabled from ${LITERT_DIR}")
 endif()
 
@@ -248,7 +252,7 @@ if(WITH_GGML)
 endif()
 if(WITH_LITERT)
     target_link_libraries(bench_lib PUBLIC litert_kernels)
-    target_compile_definitions(bench_lib PRIVATE WITH_LITERT)
+    target_compile_definitions(bench_lib PRIVATE WITH_LITERT FC_4BIT_NEON)
 endif()
 if(WITH_EXECUTORCH)
     target_link_libraries(bench_lib PUBLIC XNNPACK)
