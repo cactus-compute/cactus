@@ -1013,7 +1013,6 @@ def import_clamp(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int
     min_value = extract_literals(node.args[1]) if len(node.args) > 1 else None
     max_value = extract_literals(node.args[2]) if len(node.args) > 2 else None
     attrs: dict[str, object] = {}
-<<<<<<< HEAD
     inputs = [value_id(node.args[0], ctx)]
     if isinstance(min_value, (int, float)):
         attrs["min"] = float(min_value)
@@ -1029,16 +1028,6 @@ def import_clamp(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int
         id=node_id(node),
         op="clamp",
         inputs=inputs,
-=======
-    if isinstance(min_value, (int, float)):
-        attrs["min"] = float(min_value)
-    if isinstance(max_value, (int, float)):
-        attrs["max"] = float(max_value)
-    ir_node = IRNode(
-        id=node_id(node),
-        op="clamp",
-        inputs=[value_id(node.args[0], ctx)],
->>>>>>> origin/v2
         outputs=[value_id(node, ctx)],
         attrs=attrs,
         meta=_base_meta(shape, dtype, torch_op, node),

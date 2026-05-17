@@ -28,9 +28,10 @@ from cactus.transpile.graph_ir import IRGraph
 from cactus.transpile.graph_ir import IRNode
 from cactus.transpile.graph_ir import IRValue
 from cactus.transpile.media_limits import resize_static_image
+from cactus.transpile.model_profiles import profile_for_family
 from cactus.transpile.lower import transpile_preoptimized_ir
 from cactus.transpile.optimize_graph import optimize_graph
-from cactus.transpile.runtime_support import ensure_transformers_supports_gemma4
+from cactus.transpile.runtime_support import ensure_transformers_supports_profile
 from cactus.transpile.runtime_support import patch_torch_flex_attention_compat
 from cactus.transpile.runtime_support import patch_transformers_torchvision_probe
 from cactus.transpile.runtime_support import PreparedInputs
@@ -184,19 +185,15 @@ def load_saved_component_graph(
                 family = str(ir_payload.get("family", "") or "").strip().lower()
             except Exception:
                 family = ""
-    if family == "gemma4" and component_name in {
-        "vision_encoder",
-        "audio_encoder",
-        "decoder_prefill_chunk",
-        "decoder_step",
-    }:
+    profile = profile_for_family(family)
+    if profile is not None and component_name in profile.ir_replay_components:
         # Older Gemma4 media bundles can deserialize successfully while returning
         # stale media features from graph.cactus. Replaying the op IR preserves the
         # same Cactus ops and picks up runtime fixes for native media preprocessing
         # and Gemma4's tensor-valued clippable-linear bounds / split-decoder
         # sliding-attention metadata.
         prefer_saved_graph = False
-        if component_name in {"decoder_prefill_chunk", "decoder_step"}:
+        if component_name in profile.fp16_kv_cache_components:
             os.environ.setdefault("CACTUS_KV_CACHE_FP16", "1")
     if prefer_saved_graph and graph_path is not None and graph_path.exists():
         try:
@@ -311,7 +308,8 @@ def _load_component_graph_from_ir(
     else:
         family = str(ir_graph.meta.get("adapter_family") or ir_graph.meta.get("family") or "").strip().lower()
         component = str(ir_graph.meta.get("component", "") or component_entry.get("component", "") or "").strip().lower()
-        if family == "gemma4" and component in {"decoder", "decoder_step", "decoder_prefill_chunk"}:
+        profile = profile_for_family(family)
+        if profile is not None and component in profile.fp16_kv_cache_components + ("decoder",):
             optimize_graph(ir_graph)
     transpiled = transpile_preoptimized_ir(ir_graph)
     return LoadedComponentGraph(
@@ -423,26 +421,22 @@ def run_transpiled_bundle(
     resolved_weights_dir = _default_weights_dir_for_manifest(manifest, explicit=weights_dir)
     family = str(manifest.get("family", "") or "")
     task = str(manifest.get("task", "") or "")
+    profile = profile_for_family(family)
 
     include_components = runtime_include_components_for_manifest(
         family=family,
         task=task,
         manifest=manifest,
     )
-    if (
-        family == "gemma4"
-        and task == "multimodal_causal_lm_logits"
-        and prompt is not None
-        and not image_files
-        and audio_file is None
-    ):
+    if profile is not None and profile.cached_step_components and task == "multimodal_causal_lm_logits" and prompt is not None and not image_files and audio_file is None:
         manifest_components = {
             str(component_entry.get("component", "")).strip()
             for component_entry in manifest.get("components", [])
             if isinstance(component_entry, dict)
         }
-        if {"lm_encoder_step", "decoder_step"}.issubset(manifest_components):
-            include_components = {"lm_encoder_step", "decoder_step"}
+        cached_components = set(profile.cached_step_components)
+        if cached_components.issubset(manifest_components):
+            include_components = cached_components
     component_graphs, manifest = load_saved_component_graphs(
         bundle_dir_or_manifest,
         weights_dir=resolved_weights_dir,
@@ -450,7 +444,7 @@ def run_transpiled_bundle(
     )
     manifest = dict(manifest)
     manifest["_bundle_root"] = str(bundle_root)
-    if family == "parakeet_tdt" and task == "tdt_transcription":
+    if profile is not None and profile.family == "parakeet_tdt" and task == "tdt_transcription":
         if audio_file is None:
             raise ValueError("audio_file is required for Parakeet TDT component bundles")
         return _run_parakeet_tdt_bundle(
@@ -531,16 +525,19 @@ def runtime_include_components_for_manifest(
         for component_entry in manifest.get("components", [])
         if isinstance(component_entry, dict)
     }
+    profile = profile_for_family(family)
     if (
-        family == "gemma4"
+        profile is not None
+        and profile.cached_step_components
         and task == "multimodal_causal_lm_logits"
-        and {"lm_encoder_step", "decoder_step"}.issubset(manifest_components)
+        and set(profile.cached_step_components).issubset(manifest_components)
         and os.environ.get("CACTUS_TRANSPILER_DISABLE_CACHED_STEP_DECODE") != "1"
     ):
         # Older Gemma bundles may include a full static decoder. Cached decode
         # should not pay to load it when step graphs are available.
         include_components = set(manifest_components)
-        include_components.discard("decoder")
+        for component in profile.cached_step_skip_components:
+            include_components.discard(component)
         return include_components
     return None
 
@@ -1204,12 +1201,6 @@ def _execute_multimodal_component_pipeline_for_generation(
                 prompt_token_count=prompt_token_count,
             )
         outputs = execute_loaded_component(component, store)
-        if (
-            family == "gemma4"
-            and component_name == "audio_encoder"
-            and os.environ.get("CACTUS_GEMMA4_ENABLE_STALE_AUDIO_SCALE_SHIM") == "1"
-        ):
-            _normalize_gemma4_audio_encoder_outputs(store, output_names)
         outputs_by_component[component_name] = outputs
 
         if component_name in {"vision_encoder", "audio_encoder"}:
@@ -1219,32 +1210,6 @@ def _execute_multimodal_component_pipeline_for_generation(
                     feature_payload[output_name] = np.asarray(store[output_name]).copy()
 
     return store, outputs_by_component
-
-
-def _normalize_gemma4_audio_encoder_outputs(
-    store: dict[str, np.ndarray],
-    output_names: tuple[str, ...],
-) -> None:
-    """Undo stale Gemma4 audio projection scaling in older transpiled bundles.
-
-    Current HuggingFace Gemma4 returns audio embeddings directly from
-    `embed_audio`. Some earlier Cactus bundles divided those embeddings by 16
-    inside the audio_encoder graph, which makes the model behave as if audio was
-    absent. Keep this as a runtime compatibility shim: regenerated bundles that
-    already have the correct scale have stddev well above this threshold and are
-    left untouched.
-    """
-
-    for output_name in output_names:
-        value = store.get(output_name)
-        if not isinstance(value, np.ndarray) or value.size == 0:
-            continue
-        if value.ndim < 3 or int(value.shape[-1]) < 256:
-            continue
-        std = float(np.nanstd(value.astype(np.float32, copy=False)))
-        if not np.isfinite(std) or std <= 0.0 or std >= 1.0:
-            continue
-        store[output_name] = np.ascontiguousarray(value.astype(np.float32, copy=False) * 16.0).astype(value.dtype)
 
 
 def _right_align_decoder_inputs_to_static_tail(
@@ -1291,17 +1256,19 @@ def _run_multimodal_causal_lm_bundle(
     stop_sequences: tuple[str, ...],
 ) -> dict[str, object]:
     family = str(manifest.get("family", "") or "").strip().lower()
+    profile = profile_for_family(family)
+    cached_step_components = tuple(profile.cached_step_components) if profile is not None else ()
     use_cached_step_decode = (
-        family == "gemma4"
-        and "lm_encoder_step" in component_graphs
-        and "decoder_step" in component_graphs
+        bool(cached_step_components)
+        and set(cached_step_components).issubset(component_graphs)
         and os.environ.get("CACTUS_TRANSPILER_DISABLE_CACHED_STEP_DECODE") != "1"
     )
     use_chunk_prefill = use_cached_step_decode and "decoder_prefill_chunk" in component_graphs
-    use_dynamic_gemma4_media_encoder = (
-        family == "gemma4"
+    dynamic_media_step_component = profile.dynamic_media_step_component if profile is not None else None
+    use_dynamic_media_encoder = (
+        dynamic_media_step_component is not None
         and use_cached_step_decode
-        and "lm_encoder_media_step" in component_graphs
+        and dynamic_media_step_component in component_graphs
     )
     inputs_meta = manifest.get("inputs") if isinstance(manifest.get("inputs"), dict) else {}
     resolved_prompt = prompt if prompt is not None else str(inputs_meta.get("prompt", "") or "")
@@ -1331,7 +1298,7 @@ def _run_multimodal_causal_lm_bundle(
 
     has_image = bool(resolved_image_files)
     has_audio = resolved_audio is not None
-    if family == "gemma4" and not has_image and not has_audio:
+    if profile is not None and profile.family == "gemma4" and not has_image and not has_audio:
         if not use_cached_step_decode:
             raise ValueError(
                 "Gemma4 text-only execution from a multimodal bundle requires "
@@ -1346,8 +1313,9 @@ def _run_multimodal_causal_lm_bundle(
             max_new_tokens=max_new_tokens,
             stop_sequences=stop_sequences,
         )
-    if family == "lfm2_vl" and not has_image:
-        if "text_lm_encoder" not in component_graphs:
+    if profile is not None and profile.family == "lfm2_vl" and not has_image:
+        text_component = profile.text_only_component or "text_lm_encoder"
+        if text_component not in component_graphs:
             raise ValueError(
                 "LFM2-VL text-only execution requires a text_lm_encoder route; "
                 "re-run cactus convert to rebuild this bundle."
@@ -1371,7 +1339,7 @@ def _run_multimodal_causal_lm_bundle(
         encoder_components.append("audio_encoder")
     elif "audio_encoder" in component_graphs:
         skipped_encoder_components.append("audio_encoder")
-    if use_dynamic_gemma4_media_encoder:
+    if use_dynamic_media_encoder:
         required_components = tuple(encoder_components)
     elif use_cached_step_decode:
         required_components = tuple(encoder_components) + (
@@ -1386,13 +1354,13 @@ def _run_multimodal_causal_lm_bundle(
             f"{required_components!r}, missing {missing!r}"
         )
 
-    if family != "lfm2_vl":
-        external_transformers_site_packages = ensure_transformers_supports_gemma4()
-        if external_transformers_site_packages:
-            print(
-                "note=using external transformers install for gemma4 runtime: "
-                f"{external_transformers_site_packages}"
-            )
+    external_transformers_site_packages = ensure_transformers_supports_profile(profile)
+    if external_transformers_site_packages:
+        print(
+            "note=using external transformers install for "
+            f"{profile.family if profile is not None else family} runtime: "
+            f"{external_transformers_site_packages}"
+        )
     patch_transformers_torchvision_probe()
     patch_torch_flex_attention_compat()
 
@@ -1419,7 +1387,8 @@ def _run_multimodal_causal_lm_bundle(
             "Re-run cactus convert so processor files are copied into the weights folder. "
             f"Tried: {'; '.join(processor_errors)}"
         )
-    if family == "lfm2_vl":
+    preprocessor = profile.multimodal_preprocessor if profile is not None else "auto"
+    if preprocessor == "lfm2_vl":
         prepared = _prepare_lfm2_vl_multimodal_inputs_for_runtime(
             processor,
             prompt=resolved_prompt,
@@ -1429,7 +1398,6 @@ def _run_multimodal_causal_lm_bundle(
             enable_thinking_if_supported=enable_thinking,
         )
     else:
-        static_image_counts, static_audio_count = _gemma4_static_lm_encoder_media_counts(manifest)
         prepared = prepare_gemma4_multimodal_inputs(
             processor,
             prompt=resolved_prompt,
@@ -1439,14 +1407,6 @@ def _run_multimodal_causal_lm_bundle(
             system_prompt=system_prompt or "",
             enable_thinking_if_supported=enable_thinking,
             use_gemma4_chat_template=True,
-            static_image_soft_token_counts=static_image_counts,
-            static_audio_soft_token_count=static_audio_count,
-            force_static_multimodal_placeholders=(
-                family == "gemma4"
-                and bool(has_image or has_audio)
-                and not use_dynamic_gemma4_media_encoder
-                and (static_image_counts is not None or static_audio_count is not None)
-            ),
         )
 
     _attach_component_io_names(manifest, component_graphs)
@@ -1479,7 +1439,7 @@ def _run_multimodal_causal_lm_bundle(
     )
     initial_components = (
         tuple(encoder_components)
-        if use_dynamic_gemma4_media_encoder
+        if use_dynamic_media_encoder
         else (
             tuple(encoder_components) + ("lm_encoder",)
             if use_cached_step_decode
@@ -1510,7 +1470,7 @@ def _run_multimodal_causal_lm_bundle(
         fallback=unpadded_token_count,
     )
     if use_cached_step_decode:
-        if use_dynamic_gemma4_media_encoder:
+        if use_dynamic_media_encoder:
             store = _build_gemma4_dynamic_multimodal_encoder_store(
                 component_graphs=component_graphs,
                 manifest=manifest,
@@ -2989,17 +2949,19 @@ def _tokenize_bundle_prompt_for_manifest(
     enable_thinking_if_supported: bool = False,
 ) -> list[int]:
     family = str(manifest.get("family", "") or "").strip().lower()
-    if family in {"qwen", "qwen3", "qwen3_5", "qwen3.5"}:
+    profile = profile_for_family(family)
+    prompt_style = profile.prompt_style if profile is not None else "auto"
+    if prompt_style == "chatml":
         return _encode_prompt_text(
             tokenizer,
             f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n",
         )
-    if family in {"lfm2", "lfm2_vl", "lfm"}:
+    if prompt_style == "lfm_chat":
         return _encode_prompt_text(
             tokenizer,
             f"<|startoftext|><|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n",
         )
-    if family in {"gemma4", "gemma"}:
+    if prompt_style == "gemma4":
         return _encode_prompt_text(
             tokenizer,
             _build_gemma4_chat_prompt(
@@ -3155,11 +3117,8 @@ def _bundle_stop_token_ids(
         token_ids.add(int(eos_token_id))
 
     family = str(manifest.get("family", "") or "").strip().lower()
-    stop_tokens: tuple[str, ...] = ()
-    if family in {"gemma4", "gemma"}:
-        stop_tokens = ("<turn|>", "<eos>")
-    elif family in {"qwen", "qwen3", "qwen3_5", "qwen3.5"}:
-        stop_tokens = ("<|im_end|>",)
+    profile = profile_for_family(family)
+    stop_tokens = profile.stop_tokens if profile is not None else ()
 
     convert = getattr(tokenizer, "convert_tokens_to_ids", None)
     encode = getattr(tokenizer, "encode", None)
@@ -3274,63 +3233,6 @@ def _attach_component_io_names(
             )
         component._input_names = logical_inputs
         component._output_names = logical_outputs
-
-
-def _gemma4_static_lm_encoder_media_counts(
-    manifest: Mapping[str, object],
-) -> tuple[tuple[int, ...] | None, int | None]:
-    """Return placeholder counts baked into a static Gemma4 lm_encoder graph."""
-
-    bundle_root_raw = manifest.get("_bundle_root")
-    bundle_root = Path(str(bundle_root_raw)).expanduser().resolve() if bundle_root_raw else None
-    if bundle_root is None:
-        return None, None
-    for component_entry in manifest.get("components", []):
-        if not isinstance(component_entry, Mapping):
-            continue
-        if str(component_entry.get("component", "")).strip() != "lm_encoder":
-            continue
-        ir_relpath = component_entry.get("optimized_ir") or component_entry.get("raw_ir")
-        if not isinstance(ir_relpath, str) or not ir_relpath:
-            return None, None
-        try:
-            payload = json.loads((bundle_root / ir_relpath).read_text())
-            graph_payload = payload.get("graph") if isinstance(payload, Mapping) else None
-            values = graph_payload.get("values") if isinstance(graph_payload, Mapping) else None
-            nodes = graph_payload.get("nodes") if isinstance(graph_payload, Mapping) else None
-        except Exception:
-            return None, None
-        if not isinstance(values, Mapping) or not isinstance(nodes, list):
-            return None, None
-
-        image_counts: list[int] = []
-        audio_count: int | None = None
-        for node in nodes:
-            if not isinstance(node, Mapping):
-                continue
-            if node.get("op") == "view":
-                inputs = node.get("inputs")
-                outputs = node.get("outputs")
-                if (
-                    isinstance(inputs, list)
-                    and inputs == ["v_args_3"]
-                    and isinstance(outputs, list)
-                    and outputs
-                ):
-                    value = values.get(str(outputs[0]))
-                    shape = value.get("shape") if isinstance(value, Mapping) else None
-                    if isinstance(shape, list) and len(shape) >= 2:
-                        image_counts.append(int(shape[1]))
-            elif node.get("op") == "slice":
-                inputs = node.get("inputs")
-                attrs = node.get("attrs")
-                if isinstance(inputs, list) and inputs == ["v_args_4"] and isinstance(attrs, Mapping):
-                    start = int(attrs.get("start", 0) or 0)
-                    end = int(attrs.get("end", 0) or 0)
-                    if end > start:
-                        audio_count = end - start
-        return (tuple(image_counts) if image_counts else None), audio_count
-    return None, None
 
 
 def _rebind_bound_constants(

@@ -5,6 +5,10 @@ import json
 from pathlib import Path
 from typing import Mapping
 
+from cactus.transpile.model_profiles import ModelProfile
+from cactus.transpile.model_profiles import profile_for_model_id
+from cactus.transpile.model_profiles import profile_for_model_type
+
 
 @dataclass(frozen=True)
 class ComponentPlan:
@@ -13,6 +17,18 @@ class ComponentPlan:
     needs_image: bool = False
     needs_audio: bool = False
     force_component_pipeline: bool = False
+
+
+def _plan_from_profile(profile: ModelProfile) -> ComponentPlan | None:
+    if profile.default_task is None or not profile.default_components:
+        return None
+    return ComponentPlan(
+        task=profile.default_task,
+        components=profile.default_components,
+        needs_image=profile.needs_image,
+        needs_audio=profile.needs_audio,
+        force_component_pipeline=profile.force_component_pipeline,
+    )
 
 
 def _load_json(path: Path) -> dict[str, object]:
@@ -114,6 +130,10 @@ def infer_component_plan_from_config(
     model_type = _model_type(config, config_txt)
     lowered_id = model_id.lower()
     architectures = _lowered_architectures(config, config_txt)
+    profile = profile_for_model_type(model_type) or profile_for_model_id(model_id)
+    profile_plan = _plan_from_profile(profile) if profile is not None else None
+    if profile_plan is not None:
+        return profile_plan
 
     if _is_tdt_config(config, model_type, lowered_id):
         return ComponentPlan(

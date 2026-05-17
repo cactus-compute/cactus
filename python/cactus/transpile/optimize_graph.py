@@ -27,6 +27,7 @@ from cactus.transpile.graph_ir import IRNode
 from cactus.transpile.graph_ir import IRValue
 from cactus.transpile.graph_ir import verify_ir
 from cactus.transpile.model_patterns import GOLD_PATTERNS
+from cactus.transpile.model_profiles import profile_for_family
 from cactus.transpile.normalize import dtype_to_ir
 
 
@@ -1157,14 +1158,17 @@ def _materialize_ones_constant(graph: IRGraph, size: int, *, dtype: str | None, 
 
 
 def _is_gemma4_graph(graph: IRGraph) -> bool:
-    return str(graph.meta.get("adapter_family") or graph.meta.get("family") or "").lower() == "gemma4"
+    family = str(graph.meta.get("adapter_family") or graph.meta.get("family") or "").lower()
+    profile = profile_for_family(family)
+    return profile is not None and profile.family == "gemma4"
 
 
 def _is_whisper_seq2seq_decoder_graph(graph: IRGraph) -> bool:
     family = str(graph.meta.get("adapter_family") or graph.meta.get("family") or "").lower()
+    profile = profile_for_family(family)
     task = str(graph.meta.get("task") or "").lower()
     component = str(graph.meta.get("component") or "").lower()
-    return family == "whisper" and task == "seq2seq_transcription" and component == "decoder"
+    return profile is not None and profile.family == "whisper" and task == "seq2seq_transcription" and component == "decoder"
 
 
 def _prune_unused_inputs(graph: IRGraph) -> bool:

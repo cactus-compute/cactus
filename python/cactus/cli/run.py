@@ -1,10 +1,7 @@
 import os
 import platform
 import sys
-<<<<<<< HEAD
 import json
-=======
->>>>>>> origin/v2
 from pathlib import Path
 
 from .common import (
@@ -12,9 +9,10 @@ from .common import (
     _ensure_chat_binary,
     get_effective_weights_dir,
     print_color,
-    RED, GREEN,
+    RED, GREEN, YELLOW,
 )
 from .download import cmd_download
+from cactus.transpile.model_profiles import profile_for_model_type
 
 
 def _transpiled_bundle_root_from_manifest(manifest_path: Path) -> Path:
@@ -49,7 +47,6 @@ def _validate_audio_path(audio_path: str) -> str | None:
     return resolved
 
 
-<<<<<<< HEAD
 def _model_type_from_weights_dir(weights_dir: Path) -> str:
     config_json = weights_dir / "config.json"
     if config_json.exists():
@@ -71,19 +68,10 @@ def _model_type_from_weights_dir(weights_dir: Path) -> str:
 
 def _should_avoid_native_loader(weights_dir: Path) -> bool:
     model_type = _model_type_from_weights_dir(weights_dir)
-    return model_type in {
-        "gemma4",
-        "lfm2_vl",
-        "parakeet_tdt",
-        "whisper",
-        "qwen3",
-        "qwen2",
-        "qwen",
-    }
+    profile = profile_for_model_type(model_type)
+    return bool(profile and profile.avoid_native_loader)
 
 
-=======
->>>>>>> origin/v2
 def _prepare_transpiled_run_args(args, *, manifest_path: Path) -> int:
     args.bundle_dir = str(_transpiled_bundle_root_from_manifest(manifest_path))
     args._transpiled_from_run = True

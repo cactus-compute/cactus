@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 
 from .common import (
-    DEFAULT_MODEL_ID,
     PROJECT_ROOT,
     GREEN,
     RED,
@@ -18,17 +17,11 @@ from .common import (
     print_color,
 )
 from .download import get_weights_dir
+from cactus.transpile.model_profiles import model_id_alias_map
+from cactus.transpile.model_profiles import profile_for_family
 
 
-MODEL_ID_ALIASES = {
-    "gemma4": DEFAULT_MODEL_ID,
-    "gemma4-e2b": DEFAULT_MODEL_ID,
-    "parakeet": "nvidia/parakeet-tdt-0.6b-v3",
-    "parakeet-tdt": "nvidia/parakeet-tdt-0.6b-v3",
-    "whisper": "openai/whisper-small",
-    "qwen": "Qwen/Qwen3-1.7B",
-    "lfm": "LiquidAI/LFM2-VL-450M",
-}
+MODEL_ID_ALIASES = model_id_alias_map()
 
 
 def resolve_model_id_alias(model_id: str) -> str:
@@ -335,8 +328,11 @@ def _run_transpiled_interactive_chat(args, run_transpiled_bundle) -> int:
             task=str(manifest.get("task", "") or ""),
             manifest=manifest,
         )
+        family = str(manifest.get("family", "") or "").strip().lower()
+        profile = profile_for_family(family)
         if (
-            str(manifest.get("family", "") or "").strip().lower() == "gemma4"
+            profile is not None
+            and profile.cached_step_components
             and str(manifest.get("task", "") or "") == "multimodal_causal_lm_logits"
             and not getattr(args, "image", None)
             and not (getattr(args, "image_file", None) or [])
@@ -347,8 +343,9 @@ def _run_transpiled_interactive_chat(args, run_transpiled_bundle) -> int:
                 for component_entry in manifest.get("components", [])
                 if isinstance(component_entry, dict)
             }
-            if {"lm_encoder_step", "decoder_step"}.issubset(manifest_components):
-                include_components = {"lm_encoder_step", "decoder_step"}
+            cached_components = set(profile.cached_step_components)
+            if cached_components.issubset(manifest_components):
+                include_components = cached_components
         load_saved_component_graphs(
             bundle_dir,
             weights_dir=resolved_weights_dir,
