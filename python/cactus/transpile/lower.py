@@ -173,7 +173,31 @@ def _should_lower_attention_with_internal_kv_cache(ir: IRGraph, node: IRNode) ->
     if node.op not in {"attention", "scaled_dot_product_attention"}:
         return False
     component = str(ir.meta.get("component", "") or "").strip().lower()
-    return component in {"decoder_step", "decoder_prefill_chunk"}
+    if component not in {"decoder_step", "decoder_prefill_chunk"}:
+        return False
+    if len(node.inputs) < 3:
+        return False
+
+    def _sequence_dim(layout: str) -> int:
+        return 1 if layout == "bthd" else 2
+
+    q_layout = str(node.attrs.get("q_layout", node.attrs.get("qkv_layout", "bhsd")) or "bhsd").lower()
+    k_layout = str(node.attrs.get("k_layout", node.attrs.get("qkv_layout", "bhsd")) or "bhsd").lower()
+    query_value = ir.values.get(node.inputs[0])
+    key_value = ir.values.get(node.inputs[1])
+    query_shape = tuple(int(dim) for dim in (query_value.shape or ())) if query_value is not None else ()
+    key_shape = tuple(int(dim) for dim in (key_value.shape or ())) if key_value is not None else ()
+    if len(query_shape) >= 4 and len(key_shape) >= 4:
+        query_seq = int(query_shape[_sequence_dim(q_layout)])
+        key_seq = int(key_shape[_sequence_dim(k_layout)])
+        # Seq2seq decoders interleave self-attention (Q/K over the current
+        # decoder tokens) with cross-attention (Q over decoder tokens, K/V over
+        # encoder frames). Only the self-attention stream belongs in the
+        # autoregressive KV cache; cross-attention must continue to read the
+        # full encoder output every step.
+        if query_seq != key_seq:
+            return False
+    return True
 
 
 def _lower_attention_with_internal_kv_cache(
@@ -244,6 +268,87 @@ def _lower_attention_with_internal_kv_cache(
     if output_layout == "bthd":
         return [out]
     return [g.permute(out, (0, 2, 1, 3))]
+
+
+def _should_lower_conv1d_with_internal_conv_cache(ir: IRGraph, node: IRNode, x: Tensor, weight: Tensor) -> bool:
+    if not bool(ir.meta.get("use_internal_conv_cache", False)):
+        return False
+    if node.op != "conv1d":
+        return False
+    component = str(ir.meta.get("component", "") or "").strip().lower()
+    if component not in {"decoder_step", "decoder_prefill_chunk"}:
+        return False
+    stride = int(node.attrs.get("stride", 1))
+    padding = int(node.attrs.get("padding", 0))
+    dilation = int(node.attrs.get("dilation", 1))
+    groups = int(node.attrs.get("groups", 1))
+    return (
+        len(x.shape) == 3
+        and len(weight.shape) == 3
+        and int(x.shape[0]) == 1
+        and groups == int(x.shape[1]) == int(weight.shape[0])
+        and int(weight.shape[1]) == 1
+        and stride == 1
+        and dilation == 1
+        and padding == max(int(weight.shape[2]) - 1, 0)
+    )
+
+
+def _conv_cache_layer_key(ir: IRGraph, node: IRNode) -> str:
+    if len(node.inputs) > 1:
+        value = ir.values.get(node.inputs[1])
+        if value is not None and isinstance(value.meta, dict):
+            source_name = value.meta.get("source_name")
+            if isinstance(source_name, str) and source_name:
+                return source_name
+    return str(node.id)
+
+
+def _lower_conv1d_with_internal_conv_cache(
+    g: Graph,
+    ir: IRGraph,
+    env: dict[str, Any],
+    node: IRNode,
+    *,
+    x: Tensor,
+    weight: Tensor,
+    bias: Tensor | None,
+) -> list[Tensor]:
+    channels = int(x.shape[1])
+    seq_len = int(x.shape[2])
+    kernel_size = int(weight.shape[2])
+    x_nlc = g.permute(x, (0, 2, 1))
+
+    layer_key = f"conv:{_conv_cache_layer_key(ir, node)}"
+    conv_states: dict[str, Tensor] = env.setdefault("__internal_conv_cache_states", {})  # type: ignore[assignment]
+    if layer_key not in conv_states:
+        cache_state = g.conv_cache_state(kernel_size, channels)
+        conv_states[layer_key] = cache_state
+        cache_entries: list[tuple[str, Tensor, Tensor]] = env.setdefault("__internal_kv_cache_state_entries", [])  # type: ignore[assignment]
+        # Reuse the existing manifest/cache-transfer shape. Conv state is a
+        # single mutable tensor, so key/value intentionally point to the same node.
+        cache_entries.append((layer_key, cache_state, cache_state))
+    cache_state = conv_states[layer_key]
+
+    if seq_len > 1:
+        # Prefill chunks still compute the chunk output with the regular causal
+        # convolution; the cache append is the side-effect needed by later step
+        # graphs. The cache only needs the last K rows for the next token.
+        x_rows = g.reshape(x_nlc, (seq_len, channels))
+        g.conv_cache_append(x_rows, cache_state)
+        out_nlc = g.conv1d_causal(x_nlc, weight, kernel_size=kernel_size, dilation=1)
+    else:
+        x_rows = g.reshape(x_nlc, (1, channels))
+        window = g.conv_cache_append(x_rows, cache_state)
+        window_nlc = g.reshape(window, (1, kernel_size, channels))
+        out_nlc = g.conv1d_causal(window_nlc, weight, kernel_size=kernel_size, dilation=1)
+        out_nlc = g.slice(out_nlc, axis=1, start=kernel_size - 1, length=1)
+
+    if bias is not None:
+        bias_reshaped = g.reshape(bias, (1, 1, int(weight.shape[0])))
+        out_nlc, bias_reshaped = _legalize_elementwise_binary_inputs(g, out_nlc, bias_reshaped)
+        out_nlc = g.add(out_nlc, bias_reshaped)
+    return [g.permute(out_nlc, (0, 2, 1))]
 
 def _lower_constant_value(
     g: Graph,
@@ -1441,6 +1546,17 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         padding = int(node.attrs.get("padding", 0))
         dilation = int(node.attrs.get("dilation", 1))
         groups = int(node.attrs.get("groups", 1))
+
+        if _should_lower_conv1d_with_internal_conv_cache(ir, node, x, weight):
+            return _lower_conv1d_with_internal_conv_cache(
+                g,
+                ir,
+                env,
+                node,
+                x=x,
+                weight=weight,
+                bias=bias,
+            )
 
         if (
             len(x.shape) == 3

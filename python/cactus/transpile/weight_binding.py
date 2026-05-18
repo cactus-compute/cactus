@@ -113,9 +113,33 @@ def _manifest_source_aliases(name: str) -> tuple[str, ...]:
 
     _add_with_wrappers(raw)
 
+    unwrapped = raw
+    changed = True
+    while changed:
+        changed = False
+        for wrapper in ("module.model.", "adapter.model.", "module.", "adapter."):
+            if unwrapped.startswith(wrapper):
+                unwrapped = unwrapped[len(wrapper) :]
+                changed = True
+                break
+
+    if unwrapped.endswith("lm_head.weight"):
+        prefix = unwrapped[: -len("lm_head.weight")]
+        for tied_name in (
+            f"{prefix}embed_tokens.weight",
+            f"{prefix}language_model.embed_tokens.weight",
+            f"model.{prefix}embed_tokens.weight",
+            f"model.{prefix}language_model.embed_tokens.weight",
+            "embed_tokens.weight",
+            "language_model.embed_tokens.weight",
+            "model.embed_tokens.weight",
+            "model.language_model.embed_tokens.weight",
+        ):
+            _add_with_wrappers(tied_name)
+
     def _allow_multimodal_tail_alias(tail: str) -> bool:
         if tail.startswith(("audio_tower.", "vision_tower.", "embed_audio.", "embed_vision.")):
-            return os.environ.get("CACTUS_TRANSPILER_BIND_MULTIMODAL_TOWER_WEIGHTS") == "1"
+            return os.environ.get("CACTUS_TRANSPILER_BIND_MULTIMODAL_TOWER_WEIGHTS") != "0"
         return True
 
     def _add_multimodal_backbone_aliases(candidate: str) -> None:

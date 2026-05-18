@@ -351,10 +351,9 @@ void compute_conv_cache_append_node(
 
     __fp16* out = node.output_buffer.data_as<__fp16>();
     if (count < ws) {
-        std::memcpy(out, cache_data, count * hd * sizeof(__fp16));
-        if (count < ws) {
-            std::memset(out + count * hd, 0, (ws - count) * hd * sizeof(__fp16));
-        }
+        const size_t pad_rows = ws - count;
+        std::memset(out, 0, pad_rows * hd * sizeof(__fp16));
+        std::memcpy(out + pad_rows * hd, cache_data, count * hd * sizeof(__fp16));
     } else {
         size_t tail_rows = ws - head;
         if (tail_rows > 0) {

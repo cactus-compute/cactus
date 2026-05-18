@@ -108,6 +108,15 @@ class Graph:
         if rc != 0:
             raise RuntimeError(_err("graph_set_external_input failed"))
 
+    def mark_embedded_input(self, tensor):
+        if not isinstance(tensor, Tensor):
+            raise TypeError("tensor must be a Tensor")
+        if tensor.g is not self:
+            raise ValueError("tensor belongs to a different graph")
+        rc = _lib.cactus_graph_mark_embedded_input(self.h, cactus_node_t(tensor.id))
+        if rc != 0:
+            raise RuntimeError(_err("graph_mark_embedded_input failed"))
+
     def hard_reset(self):
         rc = _lib.cactus_graph_hard_reset(self.h)
         if rc != 0:

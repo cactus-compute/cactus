@@ -312,8 +312,11 @@ def _run_transpiled_once(args, run_transpiled_bundle, *, bundle_dir: str | os.Pa
 def _run_transpiled_interactive_chat(args, run_transpiled_bundle) -> int:
     bundle_dir = getattr(args, "bundle_dir", None) or getattr(args, "model_id", None)
     print(f"Loading model from {bundle_dir}...")
+    task = ""
     try:
         from cactus.transpile.component_bundle_runtime import _default_weights_dir_for_manifest
+        from cactus.transpile.component_bundle_runtime import _load_bundle_processor
+        from cactus.transpile.component_bundle_runtime import _load_bundle_tokenizer
         from cactus.transpile.component_bundle_runtime import load_component_bundle_manifest
         from cactus.transpile.component_bundle_runtime import load_saved_component_graphs
         from cactus.transpile.component_bundle_runtime import runtime_include_components_for_manifest
@@ -351,6 +354,15 @@ def _run_transpiled_interactive_chat(args, run_transpiled_bundle) -> int:
             weights_dir=resolved_weights_dir,
             include_components=include_components,
         )
+        task = str(manifest.get("task", "") or "")
+        if task == "multimodal_causal_lm_logits":
+            # Pay processor/tokenizer setup once at model load instead of once per
+            # chat turn. This keeps interactive latency focused on Cactus graph
+            # execution instead of repeated HF asset initialization.
+            _load_bundle_processor(manifest)
+            _load_bundle_tokenizer(manifest)
+        elif task in {"causal_lm_logits", "seq2seq_transcription"}:
+            _load_bundle_tokenizer(manifest)
     except Exception as exc:
         print(f"Warning: deferred graph load until first turn ({exc})", file=sys.stderr)
     print("Model loaded.")
@@ -436,9 +448,15 @@ def _run_transpiled_interactive_chat(args, run_transpiled_bundle) -> int:
             history=prompt_history,
             user_input=user_input,
         )
+        runtime_prompt = prompt
+        if task in {"seq2seq_transcription", "tdt_transcription"} and current_audio:
+            # STT bundles use model-specific decoder starts/prompts from the
+            # bundle metadata. Passing the interactive chat text here can poison
+            # Whisper-style decoders into repeating prompt tokens.
+            runtime_prompt = None
         turn_args = _copy_namespace_for_transpiled_turn(
             args,
-            prompt=prompt,
+            prompt=runtime_prompt,
             image=current_image,
             audio=current_audio,
         )

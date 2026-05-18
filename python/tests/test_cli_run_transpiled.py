@@ -200,21 +200,25 @@ def test_audio_waveform_loader_caps_duration(monkeypatch, tmp_path: Path) -> Non
     assert waveform.shape == (sample_rate // 2,)
 
 
-def test_materialized_transpile_constants_are_cactus_tensor_files(tmp_path: Path) -> None:
-    tensor_path = tmp_path / "constant.weights"
+def test_materialized_transpile_constants_embed_in_cactus_graph(tmp_path: Path) -> None:
+    graph_path = tmp_path / "constant.cactus"
     expected = np.arange(6, dtype=np.float16).reshape(2, 3)
 
-    hf_model._write_cactus_constant_tensor(
-        output_path=tensor_path,
-        value=expected,
-        precision=int(hf_model.Graph.FP16),
-    )
+    graph = hf_model.Graph()
+    constant = graph.input(expected.shape, hf_model.Graph.FP16)
+    graph.set_input(constant, expected)
+    graph.mark_embedded_input(constant)
+    graph.save(graph_path)
 
-    assert {path.name for path in tmp_path.iterdir()} == {"constant.weights"}
-    loaded = component_bundle_runtime._open_cactus_tensor_file(tensor_path)
-    assert loaded.precision == int(hf_model.Graph.FP16)
-    assert tuple(loaded.shape) == (2, 3)
-    np.testing.assert_array_equal(loaded.data.reshape(loaded.shape), expected)
+    assert {path.name for path in tmp_path.iterdir()} == {"constant.cactus"}
+    loaded_graph = hf_model.Graph.load(graph_path)
+    loaded_constant = component_bundle_runtime.Tensor(
+        loaded_graph,
+        constant.id,
+        constant.shape,
+        constant.dtype,
+    )
+    np.testing.assert_array_equal(loaded_constant.numpy(), expected)
 
 
 def test_stateful_decode_graphs_are_reloaded_when_bundle_cache_hits(monkeypatch, tmp_path: Path) -> None:

@@ -30,6 +30,7 @@ size_t CactusGraph::add_clipped(size_t a, size_t b) { return binary_broadcast_op
 size_t CactusGraph::subtract(size_t a, size_t b) { return binary_broadcast_op(OpType::SUBTRACT, a, b); }
 size_t CactusGraph::multiply(size_t a, size_t b) { return binary_broadcast_op(OpType::MULTIPLY, a, b); }
 size_t CactusGraph::divide(size_t a, size_t b) { return binary_broadcast_op(OpType::DIVIDE, a, b); }
+size_t CactusGraph::not_equal(size_t a, size_t b) { return binary_broadcast_op(OpType::NOT_EQUAL, a, b); }
 
 size_t CactusGraph::abs(size_t input) {
     const auto& input_buffer = get_output_buffer(input);
@@ -1056,6 +1057,7 @@ size_t CactusGraph::scalar_add(size_t input, float value) { return scalar_val_op
 size_t CactusGraph::scalar_subtract(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_SUBTRACT, input, value); }
 size_t CactusGraph::scalar_multiply(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_MULTIPLY, input, value); }
 size_t CactusGraph::scalar_divide(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_DIVIDE, input, value); }
+size_t CactusGraph::scalar_not_equal(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_NOT_EQUAL, input, value); }
 
 size_t CactusGraph::scalar_exp(size_t input) {
     return add_node(OpType::SCALAR_EXP, {input}, {});

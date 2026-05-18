@@ -538,27 +538,30 @@ def prepare_gemma4_multimodal_inputs(
         if audio_file:
             expected_mels = _resolve_gemma4_audio_mels(processor)
             try:
-                processor_audio = _prepare_gemma4_processor_audio_tensors(
-                    processor,
-                    audio_waveforms,
+                native_audio, native_audio_mask, native_audio_frames = prepare_native_gemma4_audio_features(
+                    audio_file,
+                    expected_mels=expected_mels,
                     torch_dtype=torch_dtype,
                     max_seconds=audio_duration_limit_seconds(),
+                    pad_to_max_seconds=True,
                 )
-                if processor_audio is None:
-                    native_audio, native_audio_mask, native_audio_frames = prepare_native_gemma4_audio_features(
-                        audio_file,
-                        expected_mels=expected_mels,
+            except Exception as exc:
+                try:
+                    processor_audio = _prepare_gemma4_processor_audio_tensors(
+                        processor,
+                        audio_waveforms,
                         torch_dtype=torch_dtype,
                         max_seconds=audio_duration_limit_seconds(),
-                        pad_to_max_seconds=True,
                     )
+                except Exception:
+                    processor_audio = None
+                if processor_audio is None:
+                    print(f"note=falling back to processor gemma4 audio prompt packing: {exc}")
+                    native_audio = None
+                    native_audio_mask = None
+                    native_audio_frames = None
                 else:
                     native_audio, native_audio_mask, native_audio_frames = processor_audio
-            except Exception as exc:
-                print(f"note=falling back to processor gemma4 audio features: {exc}")
-                native_audio = None
-                native_audio_mask = None
-                native_audio_frames = None
 
         has_native_media = (
             native_image_tensors is not None
@@ -571,34 +574,7 @@ def prepare_gemma4_multimodal_inputs(
                 )
             )
         )
-        processor_chat_prompt = None
-        if image_files or audio_file:
-            processor_chat_prompt = _build_gemma4_processor_chat_prompt(
-                processor,
-                prompt=normalized_prompt,
-                image_files=image_files,
-                audio_file=audio_file,
-                system_prompt=system_prompt,
-            )
-        if processor_chat_prompt is not None:
-            processor_prompt = processor_chat_prompt
-            batch = processor(
-                text=processor_prompt,
-                images=images or None,
-                audio=audio_waveforms or None,
-                return_tensors="pt",
-            )
-            if "mm_token_type_ids" in batch:
-                batch["token_type_ids"] = batch["mm_token_type_ids"]
-            if "image_position_ids" in batch:
-                batch["pixel_position_ids"] = batch["image_position_ids"]
-            native_audio_frames = _pad_gemma4_audio_batch_to_static_limit(
-                batch,
-                max_seconds=audio_duration_limit_seconds(),
-            )
-            if isinstance(native_audio_frames, int):
-                batch["native_audio_frames"] = native_audio_frames
-        elif has_native_media and (not audio_file or native_audio is not None):
+        if has_native_media and (not audio_file or native_audio is not None):
             image_soft_counts: tuple[int, ...] = ()
             if native_image_tensors is not None:
                 pixel_values, pixel_position_ids = native_image_tensors
@@ -652,14 +628,27 @@ def prepare_gemma4_multimodal_inputs(
                 batch["input_features_mask"] = native_audio_mask
                 batch["native_audio_frames"] = int(native_audio_frames or native_audio.shape[1])
         else:
-            processor_prompt = _build_gemma4_chat_prompt(
-                prompt=normalized_prompt,
-                image_token=image_token if isinstance(image_token, str) else None,
-                num_images=len(images),
-                audio_token=audio_token if isinstance(audio_token, str) else None,
-                num_audio_segments=len(audio_waveforms),
-                system_prompt=system_prompt,
-                enable_thinking_if_supported=enable_thinking_if_supported,
+            processor_chat_prompt = None
+            if image_files or audio_file:
+                processor_chat_prompt = _build_gemma4_processor_chat_prompt(
+                    processor,
+                    prompt=normalized_prompt,
+                    image_files=image_files,
+                    audio_file=audio_file,
+                    system_prompt=system_prompt,
+                )
+            processor_prompt = (
+                processor_chat_prompt
+                if processor_chat_prompt is not None
+                else _build_gemma4_chat_prompt(
+                    prompt=normalized_prompt,
+                    image_token=image_token if isinstance(image_token, str) else None,
+                    num_images=len(images),
+                    audio_token=audio_token if isinstance(audio_token, str) else None,
+                    num_audio_segments=len(audio_waveforms),
+                    system_prompt=system_prompt,
+                    enable_thinking_if_supported=enable_thinking_if_supported,
+                )
             )
             batch = processor(
                 text=processor_prompt,
@@ -667,6 +656,16 @@ def prepare_gemma4_multimodal_inputs(
                 audio=audio_waveforms or None,
                 return_tensors="pt",
             )
+            if "mm_token_type_ids" in batch:
+                batch["token_type_ids"] = batch["mm_token_type_ids"]
+            if "image_position_ids" in batch:
+                batch["pixel_position_ids"] = batch["image_position_ids"]
+            native_audio_frames = _pad_gemma4_audio_batch_to_static_limit(
+                batch,
+                max_seconds=audio_duration_limit_seconds(),
+            )
+            if isinstance(native_audio_frames, int):
+                batch["native_audio_frames"] = native_audio_frames
             _gemma4_split_cactus_newline_token_merges(batch)
             if native_image_tensors is not None:
                 batch["pixel_values"], batch["pixel_position_ids"] = native_image_tensors

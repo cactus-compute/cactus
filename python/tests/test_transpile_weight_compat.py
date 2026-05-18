@@ -281,15 +281,20 @@ def test_resolve_weight_binding_expands_nested_model_tower_aliases(tmp_path: Pat
     assert binding.path.endswith("vision_q.weights")
 
 
-def test_rank5_materialized_constant_uses_cactus_tensor_file(tmp_path: Path) -> None:
-    from cactus.transpile.hf_model import _write_cactus_constant_tensor
+def test_rank5_materialized_constant_embeds_in_cactus_graph(tmp_path: Path) -> None:
     from cactus.transpile.runtime_compat import Graph
+    from cactus.transpile.runtime_compat import Tensor
 
     tensor = np.zeros((1, 2, 3, 4, 5), dtype=np.float16)
-    path = tmp_path / "rank5.weights"
+    graph_path = tmp_path / "rank5.cactus"
 
-    _write_cactus_constant_tensor(output_path=path, value=tensor, precision=int(Graph.FP16))
+    graph = Graph()
+    constant = graph.input(tensor.shape, Graph.FP16)
+    graph.set_input(constant, tensor)
+    graph.mark_embedded_input(constant)
+    graph.save(graph_path)
 
-    opened = _open_cactus_tensor_file(path)
-    assert opened.shape == tensor.shape
-    assert opened.precision == int(Graph.FP16)
+    loaded = Graph.load(graph_path)
+    loaded_constant = Tensor(loaded, constant.id, constant.shape, constant.dtype)
+    np.testing.assert_array_equal(loaded_constant.numpy(), tensor)
+    assert not list(tmp_path.glob("*.weights"))

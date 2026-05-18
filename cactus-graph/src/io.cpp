@@ -20,6 +20,8 @@ namespace {
 
     constexpr uint32_t CACTUS_MAGIC = 0x54434143;
     constexpr uint32_t CACTUS_GRAPH_MAGIC = fourcc('C', 'G', 'R', 'F');
+    constexpr uint32_t CACTUS_GRAPH_VERSION_LEGACY = 4;
+    constexpr uint32_t CACTUS_GRAPH_VERSION_EMBEDDED_INPUTS = 5;
     constexpr uint32_t FLAG_ORTHOGONAL_ROTATION = 1 << 1;
     constexpr uint32_t FLAG_INTERLEAVED_4ROW = 1 << 2;
     constexpr uint32_t FLAG_EXTENDED_SHAPE = 1 << 4;
@@ -121,6 +123,16 @@ namespace {
         write_size_vector(out, node.output_shape);
         write_u32(out, static_cast<uint32_t>(node.precision));
         GraphParamIO::write_op_params(out, node.op_type, node.params);
+        if (sg.header.version >= CACTUS_GRAPH_VERSION_EMBEDDED_INPUTS) {
+            write_u32(out, node.has_embedded_data ? 1u : 0u);
+            write_u64(out, static_cast<uint64_t>(node.embedded_data.size()));
+            if (!node.embedded_data.empty()) {
+                out.write(
+                    reinterpret_cast<const char*>(node.embedded_data.data()),
+                    static_cast<std::streamsize>(node.embedded_data.size())
+                );
+            }
+        }
       }
 
       if (!out) {
@@ -174,6 +186,7 @@ namespace {
             case OpType::SUBTRACT:
             case OpType::MULTIPLY:
             case OpType::DIVIDE:
+            case OpType::NOT_EQUAL:
                 return true;
             default:
                 return false;
@@ -204,7 +217,8 @@ namespace {
         if (header.magic != CACTUS_GRAPH_MAGIC) {
             throw std::runtime_error("Invalid graph file: bad magic");
         }
-        if (header.version != 4) {
+        if (header.version != CACTUS_GRAPH_VERSION_LEGACY &&
+            header.version != CACTUS_GRAPH_VERSION_EMBEDDED_INPUTS) {
             throw std::runtime_error("Unsupported graph file version: " +
                 std::to_string(header.version));
         }
@@ -212,11 +226,11 @@ namespace {
         return header;
     }
 
-    GraphFile::NodeEntry read_node_entry(std::istream& in) {
+    GraphFile::NodeEntry read_node_entry(std::istream& in, uint32_t graph_version) {
         GraphFile::NodeEntry node;
         node.index = read_u32(in);
         uint32_t op_type_val = read_u32(in);
-        if (op_type_val > static_cast<uint32_t>(OpType::DENSE_MLP_TQ_FUSED)) {
+        if (op_type_val > static_cast<uint32_t>(OpType::SCALAR_NOT_EQUAL)) {
             throw std::runtime_error("Graph file corrupted: invalid op type");
         }
         node.op_type = static_cast<OpType>(op_type_val);
@@ -228,6 +242,20 @@ namespace {
         }
         node.precision = static_cast<Precision>(precision_val);
         GraphParamIO::read_op_params(in, node.op_type, node.params);
+        if (graph_version >= CACTUS_GRAPH_VERSION_EMBEDDED_INPUTS) {
+            node.has_embedded_data = read_u32(in) != 0;
+            uint64_t data_size = read_u64(in);
+            if (data_size > 0) {
+                node.embedded_data.resize(static_cast<size_t>(data_size));
+                in.read(
+                    reinterpret_cast<char*>(node.embedded_data.data()),
+                    static_cast<std::streamsize>(node.embedded_data.size())
+                );
+                if (!in) {
+                    throw std::runtime_error("Unexpected EOF while reading embedded graph input data");
+                }
+            }
+        }
         return node;
     }
     
@@ -236,6 +264,22 @@ namespace {
 
 void CactusGraph::save(const std::string& path) {
     GraphFile::save_graph(*this, path);
+}
+
+void CactusGraph::mark_embedded_input(size_t node_id) {
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end()) {
+        throw std::out_of_range("Unknown input node id: " + std::to_string(node_id));
+    }
+    const auto& node = *nodes_[it->second];
+    if (node.op_type != OpType::INPUT) {
+        throw std::invalid_argument("Can only embed input nodes");
+    }
+    embedded_input_node_ids_.insert(node_id);
+}
+
+bool CactusGraph::is_embedded_input(size_t node_id) const {
+    return embedded_input_node_ids_.find(node_id) != embedded_input_node_ids_.end();
 }
 
 CactusGraph CactusGraph::from_serialized(const GraphFile::SerializedGraph& sg) {
@@ -290,6 +334,17 @@ CactusGraph CactusGraph::from_serialized(const GraphFile::SerializedGraph& sg) {
 
         if (node_entry.op_type == OpType::INPUT) {
             new_node_id = graph.input(node_entry.output_shape, node_entry.precision);
+            if (node_entry.has_embedded_data) {
+                const auto& buffer = graph.get_output_buffer(new_node_id);
+                if (node_entry.embedded_data.size() != buffer.byte_size) {
+                    throw std::runtime_error(
+                        "Graph file corrupted: embedded input byte-size mismatch for node " +
+                        std::to_string(node_entry.index)
+                    );
+                }
+                graph.set_input(new_node_id, node_entry.embedded_data.data(), node_entry.precision);
+                graph.mark_embedded_input(new_node_id);
+            }
         }
         else {
             OpParams params = node_entry.params;
@@ -578,7 +633,7 @@ void save_graph(const CactusGraph& graph,
 
   SerializedGraph sg;
   sg.header.magic = CACTUS_GRAPH_MAGIC;
-  sg.header.version = 4;
+  sg.header.version = CACTUS_GRAPH_VERSION_EMBEDDED_INPUTS;
   sg.header.node_count = static_cast<uint32_t>(graph.nodes_.size());
   sg.header.flags = 0;
 
@@ -599,7 +654,28 @@ void save_graph(const CactusGraph& graph,
       entry.inputs.push_back(static_cast<uint32_t>(input_id));
     }
 
-    if (node->op_type == OpType::INPUT) {
+    if (node->op_type == OpType::INPUT && graph.is_embedded_input(node->id)) {
+      if (node->output_buffer.external_data != nullptr) {
+        throw std::runtime_error(
+            "Graph save failed: embedded input node " + std::to_string(node->id) +
+            " is backed by external data"
+        );
+      }
+      const void* data = node->output_buffer.get_data();
+      if (data == nullptr && node->output_buffer.byte_size > 0) {
+        throw std::runtime_error(
+            "Graph save failed: embedded input node " + std::to_string(node->id) +
+            " has no materialized data"
+        );
+      }
+      entry.has_embedded_data = true;
+      if (node->output_buffer.byte_size > 0) {
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        entry.embedded_data.assign(bytes, bytes + node->output_buffer.byte_size);
+      }
+    }
+
+    if (node->op_type == OpType::INPUT && !entry.has_embedded_data) {
       sg.graph_inputs.push_back(entry.index);
     }
 
@@ -626,7 +702,7 @@ SerializedGraph load_graph(const std::string& filename) {
     sg.graph_outputs = read_u32_vector(in);
     sg.nodes.reserve(sg.header.node_count);
     for (uint32_t i = 0; i < sg.header.node_count; ++i) {
-        sg.nodes.push_back(read_node_entry(in));
+        sg.nodes.push_back(read_node_entry(in, sg.header.version));
     }
 
     if (sg.nodes.size() != sg.header.node_count) {
