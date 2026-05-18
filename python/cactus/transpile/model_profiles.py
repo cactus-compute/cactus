@@ -73,7 +73,7 @@ GEMMA4_PROFILE = ModelProfile(
 LFM2_VL_PROFILE = ModelProfile(
     family="lfm2_vl",
     model_types=("lfm2_vl",),
-    multimodal_context_tokens=512,
+    multimodal_context_tokens=256,
     input_combinations=((), ("image",)),
     model_id_aliases=(("lfm", "LiquidAI/LFM2-VL-450M"),),
     model_id_markers=("lfm2-vl", "lfm-vl"),
@@ -167,14 +167,28 @@ WHISPER_PROFILE = ModelProfile(
 QWEN_PROFILE = ModelProfile(
     family="qwen",
     model_types=("qwen", "qwen2", "qwen3", "qwen3_5", "qwen3.5"),
-    model_id_aliases=(("qwen", "Qwen/Qwen3-1.7B"),),
+    multimodal_context_tokens=512,
+    input_combinations=((), ("image",)),
+    model_id_aliases=(
+        ("qwen", "Qwen/Qwen3.5-0.8B"),
+        ("qwen3.5", "Qwen/Qwen3.5-0.8B"),
+        ("qwen35", "Qwen/Qwen3.5-0.8B"),
+        ("qwen3.5-0.8b", "Qwen/Qwen3.5-0.8B"),
+        ("qwen3", "Qwen/Qwen3-1.7B"),
+    ),
     model_id_markers=("qwen",),
     family_aliases=("qwen2", "qwen3", "qwen3_5", "qwen3.5"),
     stop_tokens=("<|im_end|>",),
     avoid_native_loader=True,
-    prompt_style="chatml",
-    default_task="causal_lm_logits",
-    default_components=("decoder",),
+    cached_step_components=("decoder_step",),
+    cached_step_skip_components=("decoder",),
+    fp16_kv_cache_components=("decoder_step",),
+    prompt_style="qwen_chat",
+    multimodal_preprocessor="qwen3_5",
+    default_task="multimodal_causal_lm_logits",
+    default_components=("vision_encoder", "lm_encoder", "decoder", "lm_encoder_step", "decoder_media_step", "decoder_step"),
+    needs_image=True,
+    force_component_pipeline=True,
 )
 
 

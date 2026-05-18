@@ -1689,10 +1689,17 @@ class Lfm2VlLMEncoderStepAdapter(torch.nn.Module):
 
 
 class Lfm2VlDecoderAdapter(torch.nn.Module):
-    def __init__(self, model: torch.nn.Module, *, weights_dir: str | None = None):
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        *,
+        weights_dir: str | None = None,
+        last_token_only: bool = True,
+    ):
         super().__init__()
         self.model = model
         self.weights_dir = weights_dir
+        self.last_token_only = bool(last_token_only)
         self.backbone = _lfm2_language_backbone(model)
         self.lm_head = getattr(model, "lm_head", None)
         if not isinstance(self.lm_head, torch.nn.Module):
@@ -1732,7 +1739,9 @@ class Lfm2VlDecoderAdapter(torch.nn.Module):
             )
 
         hidden_states = self.backbone.embedding_norm(hidden_states)
-        return self.lm_head(hidden_states[:, -1:, :])
+        if self.last_token_only:
+            hidden_states = hidden_states[:, -1:, :]
+        return self.lm_head(hidden_states)
 
     def get_transpile_metadata(self):
         return {
@@ -3375,7 +3384,7 @@ class Qwen35CausalLMLogitsAdapter(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, *, pad_token_id: int | None = None):
         super().__init__()
         self.model = model
-        self.backbone = model.model
+        self.backbone = _resolve_qwen35_text_backbone(model)
         self.pad_token_id = pad_token_id if pad_token_id is not None else _resolve_model_pad_token_id(model)
         from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask  # type: ignore
 
@@ -3391,8 +3400,11 @@ class Qwen35CausalLMLogitsAdapter(torch.nn.Module):
             if self.pad_token_id is not None
             else None
         )
-        position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device)
-        position_ids = position_ids.view(1, 1, -1).expand(4, inputs_embeds.shape[0], -1)
+        base_position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).view(1, 1, -1)
+        position_ids = torch.cat(
+            (base_position_ids, base_position_ids, base_position_ids, base_position_ids),
+            dim=0,
+        )
         text_position_ids = position_ids[0]
         multimodal_position_ids = position_ids[1:]
 
@@ -3403,7 +3415,7 @@ class Qwen35CausalLMLogitsAdapter(torch.nn.Module):
             past_key_values=None,
             position_ids=text_position_ids,
         )
-        linear_attn_mask = self.backbone._update_linear_attn_mask(attention_mask, None)
+        linear_attn_mask = attention_mask
 
         hidden_states = inputs_embeds
         checkpoints: list[torch.Tensor] = []
@@ -3439,6 +3451,338 @@ class Qwen35CausalLMLogitsAdapter(torch.nn.Module):
                     adapter_family="qwen3_5",
                     adapter_type=type(self).__name__,
                     input_names=("input_ids",),
+                ),
+                "num_hidden_layers": int(self.backbone.config.num_hidden_layers),
+                "layer_types": layer_types,
+            }
+        }
+
+
+class Qwen35CausalLMStepAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module, *, pad_token_id: int | None = None):
+        super().__init__()
+        self.model = model
+        self.backbone = _resolve_qwen35_text_backbone(model)
+        self.pad_token_id = pad_token_id if pad_token_id is not None else _resolve_model_pad_token_id(model)
+        from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask  # type: ignore
+
+        self._create_causal_mask = create_causal_mask
+
+    def forward(self, input_ids: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        inputs_embeds = self.backbone.embed_tokens(input_ids)
+        text_position_ids = position_ids.to(dtype=torch.int64)
+        base_position_ids = text_position_ids.view(1, text_position_ids.shape[0], -1)
+        multimodal_position_ids = torch.cat(
+            (base_position_ids, base_position_ids, base_position_ids),
+            dim=0,
+        )
+        causal_mask = self._create_causal_mask(
+            config=self.backbone.config,
+            inputs_embeds=inputs_embeds,
+            attention_mask=None,
+            past_key_values=None,
+            position_ids=text_position_ids,
+        )
+        linear_attn_mask = None
+
+        hidden_states = inputs_embeds
+        position_embeddings = self.backbone.rotary_emb(hidden_states, multimodal_position_ids)
+        for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
+            layer_mask = linear_attn_mask if self.backbone.config.layer_types[i] == "linear_attention" else causal_mask
+            hidden_states = decoder_layer(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=layer_mask,
+                position_ids=text_position_ids,
+                past_key_values=None,
+                use_cache=False,
+            )
+
+        hidden_states = self.backbone.norm(hidden_states)
+        return self.model.lm_head(hidden_states[:, -1:, :])
+
+    def get_transpile_metadata(self):
+        layer_types = tuple(getattr(self.backbone.config, "layer_types", ()))
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.model,
+                    adapter_family="qwen3_5",
+                    adapter_type=type(self).__name__,
+                    input_names=("input_ids", "position_ids"),
+                ),
+                "num_hidden_layers": int(self.backbone.config.num_hidden_layers),
+                "layer_types": layer_types,
+            }
+        }
+
+
+def _resolve_qwen35_text_backbone(model: torch.nn.Module) -> torch.nn.Module:
+    backbone = getattr(model, "model", None)
+    language_model = getattr(backbone, "language_model", None)
+    if isinstance(language_model, torch.nn.Module):
+        return language_model
+    if isinstance(backbone, torch.nn.Module):
+        return backbone
+    raise AttributeError(f"{type(model).__name__} does not expose a Qwen3.5 text backbone")
+
+
+def _resolve_qwen35_multimodal_backbone(model: torch.nn.Module) -> torch.nn.Module:
+    backbone = getattr(model, "model", None)
+    if isinstance(backbone, torch.nn.Module) and hasattr(backbone, "visual"):
+        return backbone
+    raise AttributeError(f"{type(model).__name__} does not expose a Qwen3.5 multimodal backbone")
+
+
+class Qwen35VisionEncoderAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module, *, image_grid_thw: torch.Tensor):
+        super().__init__()
+        self.backbone = _resolve_qwen35_multimodal_backbone(model)
+        self.visual = self.backbone.visual
+        self.register_buffer("_image_grid_thw", image_grid_thw.detach().clone().to(dtype=torch.long), persistent=False)
+        with torch.no_grad():
+            rotary_pos_emb = self.visual.rot_pos_emb(self._image_grid_thw)
+            emb = torch.cat((rotary_pos_emb.reshape(rotary_pos_emb.shape[0], -1),) * 2, dim=-1)
+            self.register_buffer("_vision_cos", emb.cos(), persistent=False)
+            self.register_buffer("_vision_sin", emb.sin(), persistent=False)
+            self.register_buffer(
+                "_vision_pos_embed",
+                self.visual.fast_pos_embed_interpolate(self._image_grid_thw),
+                persistent=False,
+            )
+
+    def _vision_attention(self, attn: torch.nn.Module, hidden_states: torch.Tensor) -> torch.Tensor:
+        seq_length = hidden_states.shape[0]
+        query_states, key_states, value_states = (
+            attn.qkv(hidden_states).reshape(seq_length, 3, attn.num_heads, -1).permute(1, 0, 2, 3).unbind(0)
+        )
+        from transformers.models.qwen3_5.modeling_qwen3_5 import apply_rotary_pos_emb_vision  # type: ignore
+
+        query_states, key_states = apply_rotary_pos_emb_vision(
+            query_states,
+            key_states,
+            self._vision_cos,
+            self._vision_sin,
+        )
+        query_states = query_states.transpose(0, 1).unsqueeze(0)
+        key_states = key_states.transpose(0, 1).unsqueeze(0)
+        value_states = value_states.transpose(0, 1).unsqueeze(0)
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * float(attn.scaling)
+        attn_weights = torch.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attn_output = torch.matmul(attn_weights, value_states)
+        attn_output = attn_output.transpose(1, 2).reshape(seq_length, -1).contiguous()
+        return attn.proj(attn_output)
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        proj = self.visual.patch_embed.proj
+        patch_weight = proj.weight.reshape(int(proj.weight.shape[0]), -1)
+        hidden_states = torch.nn.functional.linear(
+            pixel_values.to(dtype=patch_weight.dtype),
+            patch_weight,
+            proj.bias,
+        )
+        hidden_states = hidden_states + self._vision_pos_embed.to(dtype=hidden_states.dtype)
+        for block in self.visual.blocks:
+            hidden_states = hidden_states + self._vision_attention(block.attn, block.norm1(hidden_states))
+            hidden_states = hidden_states + block.mlp(block.norm2(hidden_states))
+        return self.visual.merger(hidden_states)
+
+    def get_transpile_metadata(self):
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.backbone,
+                    adapter_family="qwen3_5",
+                    adapter_type=type(self).__name__,
+                    input_names=("pixel_values",),
+                ),
+            }
+        }
+
+
+class Qwen35LMEncoderAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module, *, input_ids: torch.Tensor):
+        super().__init__()
+        self.backbone = _resolve_qwen35_multimodal_backbone(model)
+        self.language_model = self.backbone.language_model
+        self.image_token_id = int(self.backbone.config.image_token_id)
+        image_positions = (input_ids[0] == self.image_token_id).nonzero(as_tuple=False).flatten()
+        if int(image_positions.numel()) <= 0:
+            raise ValueError("Qwen3.5 multimodal LM encoder requires image placeholder tokens")
+        self.image_token_start = int(image_positions[0].item())
+        self.image_token_count = int(image_positions.numel())
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        position_ids: torch.Tensor,
+        image_features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        inputs_embeds = self.language_model.embed_tokens(input_ids)
+        image_embeds = image_features.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype).reshape(
+            1,
+            self.image_token_count,
+            int(inputs_embeds.shape[-1]),
+        )
+        prefix = inputs_embeds[:, : self.image_token_start, :]
+        suffix = inputs_embeds[:, self.image_token_start + self.image_token_count :, :]
+        inputs_embeds = torch.cat((prefix, image_embeds, suffix), dim=1)
+        return inputs_embeds, attention_mask, position_ids
+
+    def get_transpile_metadata(self):
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.backbone,
+                    adapter_family="qwen3_5",
+                    adapter_type=type(self).__name__,
+                    input_names=("input_ids", "attention_mask", "position_ids", "image_features"),
+                ),
+            }
+        }
+
+
+class Qwen35EmbedsCausalLMLogitsAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module):
+        super().__init__()
+        self.model = model
+        self.backbone = _resolve_qwen35_text_backbone(model)
+        from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask  # type: ignore
+
+        self._create_causal_mask = create_causal_mask
+
+    def forward(
+        self,
+        inputs_embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
+        position_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        if position_ids.ndim == 2:
+            multimodal_position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
+            text_position_ids = position_ids
+        elif position_ids.ndim == 3 and position_ids.shape[0] == 4:
+            text_position_ids = position_ids[0]
+            multimodal_position_ids = position_ids[1:]
+        else:
+            text_position_ids = None
+            multimodal_position_ids = position_ids
+        causal_mask = self._create_causal_mask(
+            config=self.backbone.config,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            past_key_values=None,
+            position_ids=text_position_ids,
+        )
+        hidden_states = inputs_embeds
+        position_embeddings = self.backbone.rotary_emb(hidden_states, multimodal_position_ids)
+        for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
+            layer_mask = attention_mask if self.backbone.config.layer_types[i] == "linear_attention" else causal_mask
+            hidden_states = decoder_layer(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=layer_mask,
+                position_ids=text_position_ids,
+                past_key_values=None,
+                use_cache=False,
+            )
+        hidden_states = self.backbone.norm(hidden_states)
+        return self.model.lm_head(hidden_states)
+
+    def get_transpile_metadata(self):
+        layer_types = tuple(getattr(self.backbone.config, "layer_types", ()))
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.model,
+                    adapter_family="qwen3_5",
+                    adapter_type=type(self).__name__,
+                    input_names=("inputs_embeds", "attention_mask", "position_ids"),
+                ),
+                "num_hidden_layers": int(self.backbone.config.num_hidden_layers),
+                "layer_types": layer_types,
+            }
+        }
+
+
+class Qwen35LMEncoderStepAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module):
+        super().__init__()
+        self.backbone = _resolve_qwen35_text_backbone(model)
+
+    def forward(self, input_ids: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        inputs_embeds = self.backbone.embed_tokens(input_ids)
+        base_position_ids = position_ids.to(dtype=torch.int64).view(1, position_ids.shape[0], -1)
+        multimodal_position_ids = torch.cat(
+            (base_position_ids, base_position_ids, base_position_ids),
+            dim=0,
+        )
+        return inputs_embeds, multimodal_position_ids
+
+    def get_transpile_metadata(self):
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.backbone,
+                    adapter_family="qwen3_5",
+                    adapter_type=type(self).__name__,
+                    input_names=("input_ids", "position_ids"),
+                ),
+            }
+        }
+
+
+class Qwen35EmbedsCausalLMStepAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module):
+        super().__init__()
+        self.model = model
+        self.backbone = _resolve_qwen35_text_backbone(model)
+        from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask  # type: ignore
+
+        self._create_causal_mask = create_causal_mask
+
+    def forward(self, inputs_embeds: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        if position_ids.ndim == 2:
+            text_position_ids = position_ids.to(dtype=torch.int64)
+            base_position_ids = text_position_ids.view(1, text_position_ids.shape[0], -1)
+            multimodal_position_ids = torch.cat(
+                (base_position_ids, base_position_ids, base_position_ids),
+                dim=0,
+            )
+        else:
+            text_position_ids = None
+            multimodal_position_ids = position_ids.to(dtype=torch.int64)
+        causal_mask = self._create_causal_mask(
+            config=self.backbone.config,
+            inputs_embeds=inputs_embeds,
+            attention_mask=None,
+            past_key_values=None,
+            position_ids=text_position_ids,
+        )
+        hidden_states = inputs_embeds
+        position_embeddings = self.backbone.rotary_emb(hidden_states, multimodal_position_ids)
+        for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
+            layer_mask = None if self.backbone.config.layer_types[i] == "linear_attention" else causal_mask
+            hidden_states = decoder_layer(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=layer_mask,
+                position_ids=text_position_ids,
+                past_key_values=None,
+                use_cache=False,
+            )
+        hidden_states = self.backbone.norm(hidden_states)
+        return self.model.lm_head(hidden_states[:, -1:, :])
+
+    def get_transpile_metadata(self):
+        layer_types = tuple(getattr(self.backbone.config, "layer_types", ()))
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.model,
+                    adapter_family="qwen3_5",
+                    adapter_type=type(self).__name__,
+                    input_names=("inputs_embeds", "position_ids"),
                 ),
                 "num_hidden_layers": int(self.backbone.config.num_hidden_layers),
                 "layer_types": layer_types,
@@ -3522,6 +3866,292 @@ class Qwen3CausalLMLogitsAdapter(torch.nn.Module):
                 "sliding_window": None if sliding_window is None else int(sliding_window),
             }
         }
+
+
+class Qwen3CausalLMStepAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module, *, pad_token_id: int | None = None):
+        super().__init__()
+        self.model = model
+        self.backbone = model.model
+        self.pad_token_id = pad_token_id if pad_token_id is not None else _resolve_model_pad_token_id(model)
+
+    def forward(self, input_ids: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        inputs_embeds = self.backbone.embed_tokens(input_ids)
+        seq_len = int(inputs_embeds.shape[1])
+        allowed_positions = torch.ones(
+            (1, 1, seq_len, seq_len),
+            dtype=torch.bool,
+            device=inputs_embeds.device,
+        )
+        allowed_values = torch.ones(
+            (1, 1, seq_len, seq_len),
+            dtype=inputs_embeds.dtype,
+            device=inputs_embeds.device,
+        ) * 0.0
+        blocked_values = torch.ones(
+            (1, 1, seq_len, seq_len),
+            dtype=inputs_embeds.dtype,
+            device=inputs_embeds.device,
+        ) * torch.finfo(inputs_embeds.dtype).min
+        causal_mask = torch.where(allowed_positions, allowed_values, blocked_values)
+
+        hidden_states = inputs_embeds
+        text_position_ids = position_ids.to(dtype=torch.int64)
+        position_embeddings = self.backbone.rotary_emb(hidden_states, text_position_ids)
+        for decoder_layer in self.backbone.layers[: self.backbone.config.num_hidden_layers]:
+            hidden_states = decoder_layer(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=causal_mask,
+                position_ids=text_position_ids,
+                past_key_values=None,
+                use_cache=False,
+            )
+
+        hidden_states = self.backbone.norm(hidden_states)
+        return self.model.lm_head(hidden_states[:, -1:, :])
+
+    def get_transpile_metadata(self):
+        sliding_window = getattr(self.backbone.config, "sliding_window", None)
+        layer_types = list(getattr(self.backbone.config, "layer_types", []))
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.model,
+                    adapter_family="qwen3",
+                    adapter_type=type(self).__name__,
+                    input_names=("input_ids", "position_ids"),
+                ),
+                "num_hidden_layers": int(self.backbone.config.num_hidden_layers),
+                "layer_types": tuple(layer_types),
+                "sliding_window": None if sliding_window is None else int(sliding_window),
+            }
+        }
+
+
+def _build_qwen_causal_lm_component_specs(
+    model: torch.nn.Module,
+    *,
+    named_tensors: dict[str, torch.Tensor],
+    weights_dir: str | None = None,
+    components: tuple[str, ...] | None = None,
+) -> list[ComponentModuleSpec] | None:
+    input_ids = named_tensors.get("input_ids")
+    if input_ids is None:
+        return None
+    family = _family_key(model)
+    pad_token_id = _resolve_model_pad_token_id(model)
+    if family == "qwen3_5":
+        decoder = Qwen35CausalLMLogitsAdapter(model, pad_token_id=pad_token_id).eval()
+        decoder_step = Qwen35CausalLMStepAdapter(model, pad_token_id=pad_token_id).eval()
+    elif family == "qwen3":
+        decoder = Qwen3CausalLMLogitsAdapter(model, pad_token_id=pad_token_id).eval()
+        decoder_step = Qwen3CausalLMStepAdapter(model, pad_token_id=pad_token_id).eval()
+    else:
+        return None
+
+    requested = tuple(components or ("decoder", "decoder_step"))
+    requested_set = set(requested)
+    common_graph_meta = {
+        "weights_dir": weights_dir,
+        "task": "causal_lm_logits",
+        "adapter_family": family,
+    }
+    specs: list[ComponentModuleSpec] = []
+    if "decoder" in requested_set:
+        specs.append(ComponentModuleSpec(
+            component="decoder",
+            module=decoder,
+            example_inputs=(input_ids,),
+            input_keys=("input_ids",),
+            output_keys=("logits",),
+            graph_meta={**common_graph_meta, "component": "decoder"},
+            metadata={"family": family, "task": "causal_lm_logits"},
+        ))
+    if "decoder_step" in requested_set:
+        step_input_ids = input_ids[:, :1]
+        step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
+        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
+        specs.append(ComponentModuleSpec(
+            component="decoder_step",
+            module=decoder_step,
+            example_inputs=(step_input_ids, step_position_ids),
+            input_keys=("input_ids", "position_ids"),
+            output_keys=("logits",),
+            graph_meta={
+                **common_graph_meta,
+                "component": "decoder_step",
+                "use_internal_kv_cache": True,
+                "use_internal_conv_cache": True,
+                "use_internal_gated_deltanet_cache": True,
+                "max_cache_seq_len": max_cache_seq_len,
+                "cache_sink_size": 4,
+            },
+            metadata={"family": family, "task": "causal_lm_logits"},
+        ))
+    return specs
+
+
+def _build_qwen3_5_multimodal_component_specs(
+    model: torch.nn.Module,
+    *,
+    named_tensors: dict[str, torch.Tensor],
+    weights_dir: str | None,
+    components: tuple[str, ...] | None = None,
+) -> list[ComponentModuleSpec] | None:
+    input_ids = named_tensors.get("input_ids")
+    attention_mask = named_tensors.get("attention_mask")
+    position_ids = named_tensors.get("position_ids")
+    pixel_values = named_tensors.get("pixel_values")
+    image_grid_thw = named_tensors.get("image_grid_thw")
+    if not all(isinstance(value, torch.Tensor) for value in (input_ids, attention_mask, position_ids, pixel_values, image_grid_thw)):
+        return None
+
+    requested = tuple(components or (
+        "vision_encoder",
+        "lm_encoder",
+        "decoder",
+        "lm_encoder_step",
+        "decoder_media_step",
+        "decoder_step",
+    ))
+    requested_set = set(requested)
+    expanded_components: list[str] = []
+
+    def _require(component: str) -> None:
+        if component not in expanded_components:
+            expanded_components.append(component)
+
+    if "decoder" in requested_set:
+        _require("vision_encoder")
+        _require("lm_encoder")
+        _require("decoder")
+    if "lm_encoder" in requested_set:
+        _require("vision_encoder")
+        _require("lm_encoder")
+    if "vision_encoder" in requested_set:
+        _require("vision_encoder")
+    if "decoder_step" in requested_set:
+        _require("decoder_step")
+    if "decoder_media_step" in requested_set:
+        _require("decoder_media_step")
+    if "lm_encoder_step" in requested_set or "decoder_media_step" in requested_set:
+        _require("lm_encoder_step")
+
+    vision_encoder = Qwen35VisionEncoderAdapter(model, image_grid_thw=image_grid_thw).eval()
+    lm_encoder = Qwen35LMEncoderAdapter(model, input_ids=input_ids).eval()
+    decoder = Qwen35EmbedsCausalLMLogitsAdapter(model).eval()
+    lm_encoder_step = Qwen35LMEncoderStepAdapter(model).eval()
+    decoder_media_step = Qwen35EmbedsCausalLMStepAdapter(model).eval()
+    decoder_step = Qwen35CausalLMStepAdapter(model, pad_token_id=_resolve_model_pad_token_id(model)).eval()
+
+    image_features: torch.Tensor | None = None
+    decoder_inputs: tuple[torch.Tensor, ...] | None = None
+    with torch.no_grad():
+        if "vision_encoder" in expanded_components and ("lm_encoder" in expanded_components or "decoder" in expanded_components):
+            image_features = vision_encoder(pixel_values)
+        if "lm_encoder" in expanded_components or "decoder" in expanded_components:
+            if image_features is None:
+                image_features = vision_encoder(pixel_values)
+            decoder_inputs = lm_encoder(input_ids, attention_mask, position_ids, image_features)
+
+    common_graph_meta = {
+        "weights_dir": weights_dir,
+        "task": "multimodal_causal_lm_logits",
+        "adapter_family": "qwen3_5",
+    }
+    specs: list[ComponentModuleSpec] = []
+    if "vision_encoder" in expanded_components:
+        specs.append(ComponentModuleSpec(
+            component="vision_encoder",
+            module=vision_encoder,
+            example_inputs=(pixel_values,),
+            input_keys=("pixel_values",),
+            output_keys=("image_features",),
+            graph_meta={**common_graph_meta, "component": "vision_encoder"},
+            metadata={"family": "qwen3_5", "task": "multimodal_causal_lm_logits"},
+        ))
+    if "lm_encoder" in expanded_components:
+        if image_features is None:
+            raise RuntimeError("Qwen3.5 lm_encoder spec requires precomputed image features")
+        specs.append(ComponentModuleSpec(
+            component="lm_encoder",
+            module=lm_encoder,
+            example_inputs=(input_ids, attention_mask, position_ids, image_features),
+            input_keys=("input_ids", "attention_mask", "position_ids", "image_features"),
+            output_keys=("inputs_embeds", "attention_mask", "position_ids"),
+            graph_meta={**common_graph_meta, "component": "lm_encoder"},
+            metadata={"family": "qwen3_5", "task": "multimodal_causal_lm_logits"},
+        ))
+    if "decoder" in expanded_components:
+        if decoder_inputs is None:
+            raise RuntimeError("Qwen3.5 decoder spec requires precomputed decoder inputs")
+        specs.append(ComponentModuleSpec(
+            component="decoder",
+            module=decoder,
+            example_inputs=decoder_inputs,
+            input_keys=("inputs_embeds", "attention_mask", "position_ids"),
+            output_keys=("logits",),
+            graph_meta={**common_graph_meta, "component": "decoder"},
+            metadata={"family": "qwen3_5", "task": "multimodal_causal_lm_logits"},
+        ))
+    if "lm_encoder_step" in expanded_components:
+        step_input_ids = input_ids[:, :1]
+        step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
+        specs.append(ComponentModuleSpec(
+            component="lm_encoder_step",
+            module=lm_encoder_step,
+            example_inputs=(step_input_ids, step_position_ids),
+            input_keys=("input_ids", "position_ids"),
+            output_keys=("inputs_embeds", "position_ids"),
+            graph_meta={**common_graph_meta, "component": "lm_encoder_step"},
+            metadata={"family": "qwen3_5", "task": "multimodal_causal_lm_logits"},
+        ))
+    if "decoder_media_step" in expanded_components:
+        if decoder_inputs is None:
+            raise RuntimeError("Qwen3.5 decoder_media_step spec requires precomputed decoder inputs")
+        step_inputs_embeds = decoder_inputs[0][:, :1, :]
+        step_position_ids = decoder_inputs[2][:, :, :1]
+        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
+        specs.append(ComponentModuleSpec(
+            component="decoder_media_step",
+            module=decoder_media_step,
+            example_inputs=(step_inputs_embeds, step_position_ids),
+            input_keys=("inputs_embeds", "position_ids"),
+            output_keys=("logits",),
+            graph_meta={
+                **common_graph_meta,
+                "component": "decoder_media_step",
+                "use_internal_kv_cache": True,
+                "use_internal_conv_cache": True,
+                "use_internal_gated_deltanet_cache": True,
+                "max_cache_seq_len": max_cache_seq_len,
+                "cache_sink_size": 4,
+            },
+            metadata={"family": "qwen3_5", "task": "multimodal_causal_lm_logits"},
+        ))
+    if "decoder_step" in expanded_components:
+        step_input_ids = input_ids[:, :1]
+        step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
+        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
+        specs.append(ComponentModuleSpec(
+            component="decoder_step",
+            module=decoder_step,
+            example_inputs=(step_input_ids, step_position_ids),
+            input_keys=("input_ids", "position_ids"),
+            output_keys=("logits",),
+            graph_meta={
+                **common_graph_meta,
+                "component": "decoder_step",
+                "use_internal_kv_cache": True,
+                "use_internal_conv_cache": True,
+                "use_internal_gated_deltanet_cache": True,
+                "max_cache_seq_len": max_cache_seq_len,
+                "cache_sink_size": 4,
+            },
+            metadata={"family": "qwen3_5", "task": "multimodal_causal_lm_logits"},
+        ))
+    return specs
 
 
 class CTCLogitsAdapter(BoundInputAdapter):
@@ -3991,7 +4621,8 @@ def _build_lfm2_vl_multimodal_component_specs(
     lm_encoder = Lfm2VlLMEncoderAdapter(model, input_ids=input_ids, weights_dir=weights_dir).eval()
     text_lm_encoder = Lfm2VlTextLMEncoderAdapter(model, weights_dir=weights_dir).eval()
     lm_encoder_step = Lfm2VlLMEncoderStepAdapter(model, weights_dir=weights_dir).eval()
-    decoder = Lfm2VlDecoderAdapter(model, weights_dir=weights_dir).eval()
+    decoder = Lfm2VlDecoderAdapter(model, weights_dir=weights_dir, last_token_only=False).eval()
+    decoder_last_token = Lfm2VlDecoderAdapter(model, weights_dir=weights_dir, last_token_only=True).eval()
 
     image_features: torch.Tensor | None = None
     decoder_inputs: tuple[torch.Tensor, ...] | None = None
@@ -4092,7 +4723,7 @@ def _build_lfm2_vl_multimodal_component_specs(
         max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
         specs.append(ComponentModuleSpec(
             component="decoder_prefill_chunk",
-            module=decoder,
+            module=decoder_last_token,
             example_inputs=tuple(tensor[:, :prefill_chunk, ...] for tensor in decoder_inputs),
             input_keys=("inputs_embeds", "attention_mask", "position_ids"),
             output_keys=("logits",),
@@ -4114,7 +4745,7 @@ def _build_lfm2_vl_multimodal_component_specs(
         max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
         specs.append(ComponentModuleSpec(
             component="decoder_step",
-            module=decoder,
+            module=decoder_last_token,
             example_inputs=tuple(tensor[:, :1, ...] for tensor in decoder_inputs),
             input_keys=("inputs_embeds", "attention_mask", "position_ids"),
             output_keys=("logits",),
@@ -4141,6 +4772,20 @@ def build_component_module_specs(
     components: tuple[str, ...] | None = None,
 ) -> list[ComponentModuleSpec] | None:
     family = _family_key(model)
+    if family == "qwen3_5" and task == "multimodal_causal_lm_logits":
+        return _build_qwen3_5_multimodal_component_specs(
+            model,
+            named_tensors=named_tensors,
+            weights_dir=weights_dir,
+            components=components,
+        )
+    if family in {"qwen3", "qwen3_5"} and task == "causal_lm_logits":
+        return _build_qwen_causal_lm_component_specs(
+            model,
+            named_tensors=named_tensors,
+            weights_dir=weights_dir,
+            components=components,
+        )
     if family == "gemma4" and task == "multimodal_causal_lm_logits":
         return _build_gemma4_multimodal_component_specs(
             model,
@@ -4228,9 +4873,24 @@ def canonicalize_model_interface(
             )
         resolved_input_names = ("input_ids",)
     elif task == "multimodal_causal_lm_logits":
-        if family not in {"gemma4", "lfm2_vl"}:
+        if family not in {"gemma4", "lfm2_vl", "qwen3_5"}:
             raise NotImplementedError(f"{type(model).__name__} does not support task={task}")
-        if family == "lfm2_vl":
+        if family == "qwen3_5":
+            if not resolved_input_names:
+                resolved_input_names = (
+                    "input_ids",
+                    "attention_mask",
+                    "position_ids",
+                    "pixel_values",
+                    "image_grid_thw",
+                )
+            adapter_factory = lambda inner_model: BoundInputAdapter(  # type: ignore[assignment]
+                inner_model,
+                input_names=resolved_input_names,
+                family="qwen3_5",
+                metadata_task="multimodal_causal_lm_logits",
+            )
+        elif family == "lfm2_vl":
             if not resolved_input_names:
                 resolved_input_names = (
                     "input_ids",

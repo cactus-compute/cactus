@@ -1228,6 +1228,23 @@ def import_chunk(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int
     register_node(ir, ir_node, shape=shape, dtype=dtype)
 
 
+def import_unbind(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int, ...] | None, dtype: str | None, torch_op: str) -> None:
+    if len(node.args) < 1:
+        ctx.fail(f"unsupported unbind signature for {torch_op}: {node.args!r}")
+    axis = 0
+    if len(node.args) > 1 and extract_literals(node.args[1]) is not None:
+        axis = int(extract_literals(node.args[1]))
+    ir_node = IRNode(
+        id=node_id(node),
+        op="unbind",
+        inputs=[value_id(node.args[0], ctx)],
+        outputs=[value_id(node, ctx)],
+        attrs={"axis": axis},
+        meta=_base_meta(shape, dtype, torch_op, node),
+    )
+    register_node(ir, ir_node, shape=shape, dtype=dtype)
+
+
 def import_pow(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int, ...] | None, dtype: str | None, torch_op: str) -> None:
     base_literal = _extract_numeric_literal(node.args[0]) if len(node.args) > 0 else None
     attrs: dict[str, object] = {}
@@ -1827,6 +1844,8 @@ OP_IMPORTERS = {
     "cat": import_cat,
     "split_with_sizes": import_split_with_sizes,
     "chunk": import_chunk,
+    "unbind": import_unbind,
+    "aten.unbind.int": import_unbind,
     "ones": import_ones,
     "pad": import_pad,
     "pow": import_pow,

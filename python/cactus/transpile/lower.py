@@ -173,7 +173,7 @@ def _should_lower_attention_with_internal_kv_cache(ir: IRGraph, node: IRNode) ->
     if node.op not in {"attention", "scaled_dot_product_attention"}:
         return False
     component = str(ir.meta.get("component", "") or "").strip().lower()
-    if component not in {"decoder_step", "decoder_prefill_chunk"}:
+    if component not in {"decoder_step", "decoder_prefill_chunk", "decoder_media_step"}:
         return False
     if len(node.inputs) < 3:
         return False
@@ -276,7 +276,7 @@ def _should_lower_conv1d_with_internal_conv_cache(ir: IRGraph, node: IRNode, x: 
     if node.op != "conv1d":
         return False
     component = str(ir.meta.get("component", "") or "").strip().lower()
-    if component not in {"decoder_step", "decoder_prefill_chunk"}:
+    if component not in {"decoder_step", "decoder_prefill_chunk", "decoder_media_step"}:
         return False
     stride = int(node.attrs.get("stride", 1))
     padding = int(node.attrs.get("padding", 0))
@@ -349,6 +349,91 @@ def _lower_conv1d_with_internal_conv_cache(
         out_nlc, bias_reshaped = _legalize_elementwise_binary_inputs(g, out_nlc, bias_reshaped)
         out_nlc = g.add(out_nlc, bias_reshaped)
     return [g.permute(out_nlc, (0, 2, 1))]
+
+
+def _should_lower_gated_deltanet_with_internal_cache(
+    ir: IRGraph,
+    op: str,
+    *,
+    seq_len: int,
+) -> bool:
+    if not bool(ir.meta.get("use_internal_gated_deltanet_cache", False)):
+        return False
+    if op not in {"gated_deltanet_prefill", "gated_deltanet_decode"}:
+        return False
+    component = str(ir.meta.get("component", "") or "").strip().lower()
+    return component in {"decoder_step", "decoder_media_step"} and int(seq_len) == 1
+
+
+def _gated_deltanet_layer_key(ir: IRGraph, node: IRNode) -> str:
+    if len(node.inputs) > 1:
+        value = ir.values.get(node.inputs[1])
+        if value is not None and isinstance(value.meta, dict):
+            source_name = value.meta.get("source_name")
+            if isinstance(source_name, str) and source_name:
+                return source_name
+    return str(node.id)
+
+
+def _lower_gated_deltanet_initial_state(
+    g: Graph,
+    ir: IRGraph,
+    env: dict[str, Any],
+    node: IRNode,
+    *,
+    batch_size: int,
+    key_dim: int,
+    num_v_heads: int,
+    value_dim: int,
+    seq_len: int,
+    op: str,
+) -> tuple[str | None, Tensor]:
+    state_shape = (batch_size, key_dim, num_v_heads, value_dim)
+    if not _should_lower_gated_deltanet_with_internal_cache(ir, op, seq_len=seq_len):
+        return None, _materialize_constant_tensor(g, torch.zeros(state_shape, dtype=torch.float16))
+
+    layer_key = f"gdn:{_gated_deltanet_layer_key(ir, node)}"
+    gdn_states: dict[str, Tensor] = env.setdefault("__internal_gated_deltanet_cache_states", {})  # type: ignore[assignment]
+    if layer_key not in gdn_states:
+        # Unlike KV/conv caches, Gated DeltaNet state is produced as a slice of
+        # the recurrent op output. Represent the previous state as a hidden graph
+        # input and let the runtime feed back the latest output every token.
+        gdn_states[layer_key] = g.input(shape=state_shape, dtype=Graph.FP16)
+    return layer_key, gdn_states[layer_key]
+
+
+def _lower_gated_deltanet_conv1d(
+    g: Graph,
+    ir: IRGraph,
+    env: dict[str, Any],
+    node: IRNode,
+    *,
+    mixed_qkv: Tensor,
+    conv_weight: Tensor,
+    batch_size: int,
+    seq_len: int,
+    mixed_qkv_dim: int,
+    op: str,
+) -> Tensor:
+    kernel_size = int(conv_weight.shape[2])
+    if not _should_lower_gated_deltanet_with_internal_cache(ir, op, seq_len=seq_len):
+        return g.conv1d_causal(mixed_qkv, conv_weight, kernel_size=kernel_size, dilation=1)
+
+    layer_key = f"conv:gdn:{_gated_deltanet_layer_key(ir, node)}"
+    conv_states: dict[str, Tensor] = env.setdefault("__internal_conv_cache_states", {})  # type: ignore[assignment]
+    if layer_key not in conv_states:
+        cache_state = g.conv_cache_state(kernel_size, mixed_qkv_dim)
+        conv_states[layer_key] = cache_state
+        cache_entries: list[tuple[str, Tensor, Tensor]] = env.setdefault("__internal_kv_cache_state_entries", [])  # type: ignore[assignment]
+        cache_entries.append((layer_key, cache_state, cache_state))
+
+    cache_state = conv_states[layer_key]
+    x_rows = g.reshape(mixed_qkv, (batch_size * seq_len, mixed_qkv_dim))
+    window = g.conv_cache_append(x_rows, cache_state)
+    window_nlc = g.reshape(window, (batch_size, kernel_size, mixed_qkv_dim))
+    conv_out = g.conv1d_causal(window_nlc, conv_weight, kernel_size=kernel_size, dilation=1)
+    return g.slice(conv_out, axis=1, start=kernel_size - 1, length=1)
+
 
 def _lower_constant_value(
     g: Graph,
@@ -603,12 +688,18 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [g.precision_cast(y, target_dtype)]
 
     if op == "scalar_not_equal":
-        x = _ensure_scalar_math_tensor(g, _tensor(env, node.inputs[0]))
-        return [g.scalar_not_equal(x, float(node.attrs["value"]))]
+        value = float(node.attrs["value"])
+        source = _tensor(env, node.inputs[0])
+        target_dtype = Graph.FP32 if source.dtype != Graph.FP16 or abs(value) > 65504.0 else Graph.FP16
+        x = _ensure_tensor_dtype(g, source, target_dtype)
+        return [g.scalar_not_equal(x, value)]
 
     if op == "scalar_equal":
-        x = _ensure_scalar_math_tensor(g, _tensor(env, node.inputs[0]))
-        not_equal = g.scalar_not_equal(x, float(node.attrs["value"]))
+        value = float(node.attrs["value"])
+        source = _tensor(env, node.inputs[0])
+        target_dtype = Graph.FP32 if source.dtype != Graph.FP16 or abs(value) > 65504.0 else Graph.FP16
+        x = _ensure_tensor_dtype(g, source, target_dtype)
+        not_equal = g.scalar_not_equal(x, value)
         return [g.scalar_not_equal(not_equal, 1.0)]
 
     if op == "scalar_greater":
@@ -964,8 +1055,14 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         mask = node.attrs.get("mask")
         mask_tensor: Tensor | None = None
         additive_mask = bool(node.attrs.get("additive_mask", False))
+        literal_mask_is_causal = False
         if len(node.inputs) > 3:
-            mask_tensor = _tensor(env, node.inputs[3])
+            raw_mask = env.get(node.inputs[3])
+            if isinstance(raw_mask, bool):
+                literal_mask_is_causal = bool(raw_mask)
+                mask_tensor = None
+            else:
+                mask_tensor = _tensor(env, node.inputs[3])
         elif mask is not None:
             raise NotImplementedError(f"{op} with literal mask is not supported yet")
         if op == "scaled_dot_product_attention":
@@ -1009,7 +1106,7 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
             key,
             value,
             scale=_resolve_attention_scale(node, query),
-            is_causal=bool(node.attrs.get("is_causal", False)),
+            is_causal=bool(node.attrs.get("is_causal", False)) or literal_mask_is_causal,
             window_size=int(node.attrs.get("window_size", 0)),
             mask=mask_tensor,
             additive_mask=additive_mask,
@@ -1037,18 +1134,24 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
             value = g.permute(value, (0, 2, 1, 3))
         input_index += 1
         mask_tensor: Tensor | None = None
+        literal_mask_is_causal = False
         if has_mask:
-            mask_tensor = _tensor(env, node.inputs[input_index])
+            raw_mask = env.get(node.inputs[input_index])
             input_index += 1
-            mask_tensor = _ensure_fp16_tensor(g, mask_tensor)
-            mask_tensor = _normalize_attention_mask_for_cactus(g, mask_tensor, query)
+            if isinstance(raw_mask, bool):
+                literal_mask_is_causal = bool(raw_mask)
+                mask_tensor = None
+            else:
+                mask_tensor = _tensor(env, node.inputs[input_index - 1])
+                mask_tensor = _ensure_fp16_tensor(g, mask_tensor)
+                mask_tensor = _normalize_attention_mask_for_cactus(g, mask_tensor, query)
 
         attn_out = g.attention(
             query,
             key,
             value,
             scale=_resolve_attention_scale(node, query),
-            is_causal=bool(node.attrs.get("is_causal", False)),
+            is_causal=bool(node.attrs.get("is_causal", False)) or literal_mask_is_causal,
             window_size=int(node.attrs.get("window_size", 0)),
             mask=mask_tensor,
             additive_mask=bool(node.attrs.get("additive_mask", False)),
@@ -1354,6 +1457,16 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
             length = min(chunk_size, dim_size - start)
             outputs.append(g.slice(x, axis=axis, start=start, length=length))
             start += length
+        return [outputs]
+
+    if op in {"unbind", "aten.unbind.int"}:
+        x = _tensor(env, node.inputs[0])
+        axis = _normalize_dim(int(node.attrs.get("axis", 0)), len(x.shape))
+        outputs: list[Tensor] = []
+        out_shape = tuple(int(dim) for index, dim in enumerate(x.shape) if index != axis)
+        for index in range(int(x.shape[axis])):
+            piece = g.slice(x, axis=axis, start=index, length=1)
+            outputs.append(g.reshape(piece, out_shape))
         return [outputs]
 
     if op == "ones":
@@ -1765,6 +1878,9 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
     if op == "rms_norm":
         x = _tensor(env, node.inputs[0])
         weight = _tensor(env, node.inputs[1])
+        weight_offset = float(node.attrs.get("weight_offset", 0.0) or 0.0)
+        if weight_offset != 0.0:
+            weight = g.scalar_add(weight, weight_offset)
         reshape_back: tuple[int, ...] | None = None
         if len(x.shape) > 2:
             reshape_back = tuple(int(dim) for dim in x.shape)
@@ -1857,8 +1973,18 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         mixed_qkv_dim = int(qkv_weight.shape[0])
         mixed_qkv = g.reshape(mixed_qkv, (batch_size, seq_len, mixed_qkv_dim))
         if conv_weight is not None:
-            kernel_size = int(conv_weight.shape[2])
-            mixed_qkv = g.conv1d_causal(mixed_qkv, conv_weight, kernel_size=kernel_size, dilation=1)
+            mixed_qkv = _lower_gated_deltanet_conv1d(
+                g,
+                ir,
+                env,
+                node,
+                mixed_qkv=mixed_qkv,
+                conv_weight=conv_weight,
+                batch_size=batch_size,
+                seq_len=seq_len,
+                mixed_qkv_dim=mixed_qkv_dim,
+                op=op,
+            )
             mixed_qkv = g.silu(mixed_qkv)
 
         q_proj_dim = num_k_heads * key_dim
@@ -1912,15 +2038,28 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
             gate_log = g.scalar_multiply(a_softplus, -1.0)
         beta = g.sigmoid(b_logits)
 
-        initial_state = _materialize_constant_tensor(
+        cache_layer_key, initial_state = _lower_gated_deltanet_initial_state(
             g,
-            torch.zeros((batch_size, key_dim, num_v_heads, value_dim), dtype=torch.float16),
+            ir,
+            env,
+            node,
+            batch_size=batch_size,
+            key_dim=key_dim,
+            num_v_heads=num_v_heads,
+            value_dim=value_dim,
+            seq_len=seq_len,
+            op=op,
         )
 
+        deltanet_scale = 1.0 / math.sqrt(float(key_dim))
         if op == "gated_deltanet_decode":
-            deltanet_out = g.gated_deltanet_decode(q_4d, k_4d, v_4d, gate_log, beta, initial_state, 0.0)
+            deltanet_out = g.gated_deltanet_decode(q_4d, k_4d, v_4d, gate_log, beta, initial_state, deltanet_scale)
         else:
-            deltanet_out = g.gated_deltanet_prefill(q_4d, k_4d, v_4d, gate_log, beta, initial_state, chunk_size, 0.0)
+            deltanet_out = g.gated_deltanet_prefill(q_4d, k_4d, v_4d, gate_log, beta, initial_state, chunk_size, deltanet_scale)
+        if cache_layer_key is not None:
+            final_state = g.slice(deltanet_out, axis=1, start=seq_len, length=key_dim)
+            cache_entries: list[tuple[str, Tensor, Tensor]] = env.setdefault("__internal_kv_cache_state_entries", [])  # type: ignore[assignment]
+            cache_entries.append((cache_layer_key, initial_state, final_state))
 
         y_4d = g.slice(deltanet_out, axis=1, start=0, length=seq_len)
         y_2d = g.reshape(y_4d, (seq_len * num_v_heads, value_dim))

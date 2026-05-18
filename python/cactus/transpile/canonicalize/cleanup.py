@@ -300,6 +300,8 @@ def _fold_constant_node(graph: IRGraph, node: IRNode) -> bool:
     output_torch_dtype = ir_dtype_to_torch(output_value.dtype) if output_value.dtype is not None else None
 
     constant_inputs = [graph.constants.get(value_id) for value_id in node.inputs]
+    if any(_is_external_weight_constant(graph, value_id) for value_id in node.inputs):
+        return False
     if node.op == "view" and len(constant_inputs) == 1 and isinstance(constant_inputs[0], torch.Tensor):
         if output_value.shape is None:
             return False
@@ -391,6 +393,20 @@ def _fold_constant_node(graph: IRGraph, node: IRNode) -> bool:
         return materialize_constant_output(graph, node, result.to(dtype=output_torch_dtype))
 
     return False
+
+
+def _is_external_weight_constant(graph: IRGraph, value_id: str) -> bool:
+    if value_id not in graph.constants:
+        return False
+    value = graph.values.get(value_id)
+    if value is None or not isinstance(value.meta, dict):
+        return False
+    meta = value.meta
+    return (
+        str(meta.get("kind", "") or "") == "weight"
+        or bool(str(meta.get("source_name", "") or ""))
+        or bool(str(meta.get("path", "") or ""))
+    )
 
 
 def _legalize_precisions(graph: IRGraph) -> bool:

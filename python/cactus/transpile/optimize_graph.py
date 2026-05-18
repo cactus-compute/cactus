@@ -272,17 +272,12 @@ def fuse_rms_norm(graph: IRGraph) -> bool:
                 dtype=input_value.dtype,
                 suffix="rms_norm_ones",
             )
-        if float(match.weight_offset) != 0.0:
-            weight_value_id = _materialize_shifted_constant(
-                graph,
-                weight_value_id,
-                float(match.weight_offset),
-                suffix="rms_norm_scale",
-            )
-
         node.op = "rms_norm"
         node.inputs = [match.input_value_id, weight_value_id]
-        node.attrs = {"eps": float(match.eps)}
+        node.attrs = {
+            "eps": float(match.eps),
+            "weight_offset": float(match.weight_offset),
+        }
         node.kind = "semantic"
         node.meta["rms_weight_offset"] = float(match.weight_offset)
         node.meta["rms_input_value_id"] = match.input_value_id

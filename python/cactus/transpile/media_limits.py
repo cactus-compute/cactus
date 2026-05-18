@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-_DEFAULT_IMAGE_SIZE = 512
+_DEFAULT_IMAGE_SIZE = 256
 
 
 def static_image_size() -> int:
