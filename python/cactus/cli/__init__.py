@@ -66,9 +66,7 @@ def create_parser():
                                        auto-resolves Cactus-Compute CQ repo
 
     Optional flags:
-    --language-bits 1|2|3|4            language quantization bits (default: 4)
-    --vision-bits 1|2|3|4             vision quantization bits (default: 4)
-    --audio-bits 1|2|3|4              audio quantization bits (default: 4)
+    --bits 1|2|3|4                     CQ quantization bits (default: 4)
     --token <token>                    HuggingFace API token
     --reconvert                        force FP16 conversion from source
 
@@ -163,12 +161,8 @@ def create_parser():
     download_parser = subparsers.add_parser('download', help='Download CQ model files')
     download_parser.add_argument('model_id', nargs='?', default=DEFAULT_MODEL_ID,
                                  help=f'HuggingFace model ID or Cactus-Compute CQ repo (default: {DEFAULT_MODEL_ID})')
-    download_parser.add_argument('--language-bits', type=int, choices=[1, 2, 3, 4], default=4,
-                                 help='Language weight quantization bits (default: 4)')
-    download_parser.add_argument('--vision-bits', type=int, choices=[1, 2, 3, 4], default=4,
-                                 help='Vision weight quantization bits (default: 4)')
-    download_parser.add_argument('--audio-bits', type=int, choices=[1, 2, 3, 4], default=4,
-                                 help='Audio weight quantization bits (default: 4)')
+    download_parser.add_argument('--bits', type=int, choices=[1, 2, 3, 4], default=4,
+                                 help='CQ quantization bits (default: 4)')
     download_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     download_parser.add_argument('--token', help='HuggingFace API token')
     download_parser.add_argument('--reconvert', action='store_true',

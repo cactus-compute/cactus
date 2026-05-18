@@ -243,24 +243,21 @@ graph.hard_reset();
 │    --clear                           remove saved key                        │
 │                                                                              │
 │  cactus run <model>                  opens playground (auto downloads)       │
-│    --precision INT4|INT8|FP16        quantization (default: INT4)            │
 │    --token <token>                   HF token (gated models)                 │
 │    --reconvert                       force reconversion from source          │
 │                                                                              │
 │  cactus transcribe [model]           live mic transcription (parakeet-tdt-0.6b-v3) │
 │    --file <audio.wav>                transcribe file instead of mic          │
-│    --precision INT4|INT8|FP16        quantization (default: INT4)            │
 │    --token <token>                   HF token (gated models)                 │
 │    --reconvert                       force reconversion from source          │
 │                                                                              │
 │  cactus download <model>             downloads model to ./weights            │
-│    --precision INT4|INT8|FP16        quantization (default: INT4)            │
+│    --bits 1|2|3|4                    CQ quantization (default: 4)            │
 │    --token <token>                   HuggingFace API token                   │
 │    --reconvert                       force reconversion from source          │
 │                                                                              │
-│  cactus convert <model> [dir]        convert model, supports LoRA merge      │
-│    --precision INT4|INT8|FP16        quantization (default: INT4)            │
-│    --lora <path>                     LoRA adapter to merge                   │
+│  cactus convert <model> [dir]        convert model to CQ format              │
+│    --bits 1|2|3|4                    CQ quantization (default: 4)            │
 │    --token <token>                   HuggingFace API token                   │
 │                                                                              │
 │  cactus build                        build for ARM → build/libcactus.a       │
@@ -273,7 +270,6 @@ graph.hard_reset();
 │    --model <model>                   default: LFM2-VL-450M                   │
 │    --transcribe_model <model>        default: moonshine-base                 │
 │    --benchmark                       use larger models                       │
-│    --precision INT4|INT8|FP16        regenerate weights with precision       │
 │    --reconvert                       force reconversion from source          │
 │    --no-rebuild                      skip building library                   │
 │    --llm / --stt / --performance     run specific test suite                 │
