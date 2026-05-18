@@ -14,14 +14,14 @@ Supported models include Gemma 4 (E2B, E4B with vision + audio), Gemma 3/3n, Qwe
 - [Fine-tuning Guide](docs/finetuning.md): Deploying Unsloth LoRA fine-tunes to mobile devices via Cactus
 - [Compatibility](docs/compatibility.md): Runtime and weight versioning across releases
 
-## SDKs
+## Bindings
 
-- [Python](python/README.md): Python bindings via FFI with streaming, vision, audio, and graph API support
-- [Swift](apple/README.md): Swift API for iOS, macOS, and Android with XCFramework and NPU support
-- [Kotlin/Android](android/README.md): Kotlin API for Android and Kotlin Multiplatform (iOS + Android)
-- [Flutter](flutter/README.md): Dart FFI bindings for iOS, macOS, and Android
-- [Rust](rust/README.md): Raw FFI bindings auto-generated via bindgen
-- [React Native](https://github.com/cactus-compute/cactus-react-native): React Native SDK (external repo)
+- [Python](python/README.md): Python bindings via ctypes FFI
+- [Swift](bindings/swift/README.md): Swift bindings via C module map (iOS, macOS)
+- [Kotlin](bindings/kotlin/README.md): Kotlin bindings via JNI (Android) and cinterop (iOS via KMP)
+- [Flutter](bindings/flutter/README.md): Dart FFI bindings (iOS, Android)
+- [Rust](bindings/rust/README.md): Raw `extern "C"` declarations
+- [React Native](bindings/react-native/README.md): React Native bridge modules (iOS, Android)
 
 ## Blog
 
