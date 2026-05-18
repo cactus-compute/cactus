@@ -997,6 +997,22 @@ def _repair_missing_saved_ir_tensor_constant(
 
     source_name = str((value.meta or {}).get("source_name", "") or "")
     value_id = str(value.id)
+    if (
+        dtype in {torch.float16, torch.float32}
+        and (
+            source_name.endswith("rotary_emb.inv_freq")
+            or "rotary_emb_inv_freq" in value_id
+        )
+    ):
+        repaired_rope = _repair_missing_text_rope_inv_freq(
+            value=value,
+            shape=shape,
+            dtype=dtype,
+            bundle_root=bundle_root,
+            weights_dir=weights_dir,
+        )
+        if repaired_rope is not None:
+            return repaired_rope
     if "audio_tower.rel_pos_enc.inv_timescales" in source_name or "audio_tower_rel_pos_enc_inv_timescales" in value_id:
         num_timescales = int(shape[-1]) if shape else 0
         if num_timescales <= 0:
@@ -1032,6 +1048,50 @@ def _repair_missing_saved_ir_tensor_constant(
         if repaired_rope is not None:
             return repaired_rope
     return None
+
+
+def _repair_missing_text_rope_inv_freq(
+    *,
+    value: IRValue,
+    shape: tuple[int, ...],
+    dtype: torch.dtype,
+    bundle_root: Path,
+    weights_dir: str | Path | None,
+) -> torch.Tensor | None:
+    """Repair deterministic text RoPE buffers omitted from saved IR JSON.
+
+    These buffers are derived from config (`rope_theta`, head size) rather than
+    learned weights, so regenerating them keeps IR replay graph-only and avoids
+    storing ad hoc NumPy sidecars.
+    """
+
+    flat_count = int(np.prod(shape, dtype=np.int64)) if shape else 0
+    if flat_count <= 0:
+        return None
+    config = _load_bundle_config_json(bundle_root=bundle_root, weights_dir=weights_dir)
+    if not config:
+        return None
+    text_config = config.get("text_config") if isinstance(config.get("text_config"), Mapping) else config
+    if not isinstance(text_config, Mapping):
+        return None
+    head_dim = int(text_config.get("head_dim") or 0)
+    if head_dim <= 0:
+        hidden_size = int(text_config.get("hidden_size") or text_config.get("hidden_dim") or 0)
+        num_heads = int(text_config.get("num_attention_heads") or text_config.get("num_heads") or 0)
+        if hidden_size > 0 and num_heads > 0:
+            head_dim = hidden_size // num_heads
+    if head_dim <= 0 or flat_count != head_dim // 2:
+        return None
+    rope_parameters = text_config.get("rope_parameters")
+    base = float(text_config.get("rope_theta", config.get("rope_theta", 10000.0)) or 10000.0)
+    if isinstance(rope_parameters, Mapping):
+        default_params = rope_parameters.get("default")
+        if isinstance(default_params, Mapping):
+            base = float(default_params.get("rope_theta", base) or base)
+        else:
+            base = float(rope_parameters.get("rope_theta", base) or base)
+    inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / float(head_dim)))
+    return inv_freq.reshape(shape).to(dtype=dtype)
 
 
 def _repair_gemma4_missing_rope_inv_freq(
