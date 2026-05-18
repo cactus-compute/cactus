@@ -1,0 +1,3 @@
+package = cactus
+headers = cactus_ffi.h
+headerFilter = cactus_ffi.h

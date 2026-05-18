@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <string>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
@@ -562,43 +563,43 @@ public:
 
     Model();
     explicit Model(const Config& config);
-    virtual ~Model();
+    ~Model();
 
     const Config& get_config() const { return config_; }
     Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
     const std::vector<DebugNode>& get_debug_nodes() const;
 
-    virtual bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true);
-    
-    virtual bool init(CactusGraph* external_graph, const std::string& model_folder, size_t context_size,
+    bool init(const std::string& bundle_dir, size_t context_size,
               const std::string& system_prompt = "", bool do_warmup = true);
 
-    virtual uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
-                      size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
-                      float min_p = 0.15f, float repetition_penalty = 1.1f);
+    uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
+                    size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                    float min_p = 0.15f, float repetition_penalty = 1.1f);
 
-    virtual void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "");
+    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "");
 
-    virtual void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
-                                     const std::string& profile_file = "");
+    void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
+                             const std::string& profile_file = "");
 
-    virtual uint32_t decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
-                                          float temperature = -1.0f, float top_p = -1.0f,
-                                          size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
-                                          float min_p = 0.15f, float repetition_penalty = 1.1f);
+    uint32_t decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
+                                float temperature = -1.0f, float top_p = -1.0f,
+                                size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                                float min_p = 0.15f, float repetition_penalty = 1.1f);
 
-    virtual uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features, float temperature = 0.0f, float top_p = 0.0f,
-                      size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
-                      float min_p = 0.15f, float repetition_penalty = 1.1f,
-                      float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
+    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+                               float temperature = 0.0f, float top_p = 0.0f,
+                               size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                               float min_p = 0.15f, float repetition_penalty = 1.1f,
+                               float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
 
-    std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, bool normalize = false, const std::string& profile_file = "");
-    
-    virtual std::vector<float> get_image_embeddings(const std::string& image_path);
-    
-    virtual std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features);
+    std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
+                                       bool normalize = false, const std::string& profile_file = "");
 
-    virtual void reset_cache();
+    std::vector<float> get_image_embeddings(const std::string& image_path);
+
+    std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features);
+
+    void reset_cache();
     void record_sampled_token(uint32_t token) {
         if (token_history_.size() >= MAX_TOKEN_HISTORY) {
             token_history_.erase(token_history_.begin(), token_history_.begin() + (MAX_TOKEN_HISTORY / 2));
@@ -606,113 +607,73 @@ public:
         token_history_.push_back(token);
     }
 
-    double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored);
-
-
+    double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end,
+                                        size_t context, size_t* tokens_scored);
 
     void set_cache_window(size_t window_size, size_t sink_size = 4);
-    size_t get_cache_size() const;
+    size_t get_cache_size() const { return cache_total_seq_len_; }
 
     bool load_npu_prefill(const std::string& model_path);
-    bool has_npu_prefill() const;
-    size_t get_prefill_chunk_size() const;
+    bool has_npu_prefill() const { return false; }
+    size_t get_prefill_chunk_size() const { return 256; }
 
-    virtual void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
-    virtual void compact_kv_cache() {}
+    void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
+    void compact_kv_cache() {}
 
-    virtual void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
-    virtual void clear_tool_constraints();
-    virtual void update_tool_constraints(uint32_t token_id);
+    void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
+    void clear_tool_constraints();
+    void update_tool_constraints(uint32_t token_id);
 
-    void* graph_handle_;
-
-    void set_vocab_bias(const std::unordered_map<uint32_t, float>& bias) {
-        vocab_bias_ = bias;
-    }
-
-    void clear_vocab_bias() {
-        vocab_bias_.clear();
-    }
-
-    bool has_vocab_bias() const {
-        return !vocab_bias_.empty();
-    }
-
-    const std::unordered_map<uint32_t, float>& get_vocab_bias() const {
-        return vocab_bias_;
-    }
-
-protected:
-    size_t sample_token(CactusGraph* gb, size_t logits_node_id, float temperature, float top_p, size_t top_k,
-                        float min_p, float repetition_penalty,
-                        const std::unordered_map<uint32_t, float>* extra_bias = nullptr) const;
-
-    static void compute_entropy(CactusGraph* gb, size_t logits_node_id, float* out_entropy);
-
-    virtual size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) = 0;
-    
-    virtual size_t forward(const std::vector<float>& audio_features, const std::vector<uint32_t>& tokens, bool use_cache = false);
-    
-    virtual void load_weights_to_graph(CactusGraph* gb) = 0;
-    
-    virtual size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
-                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) = 0;
-    
-                          virtual size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
-                    ComputeBackend backend) const = 0;
-    virtual size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
-                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) = 0;
-    virtual std::vector<size_t> get_kv_layer_dims() const {
-        return std::vector<size_t>(config_.num_layers, config_.attention_head_dim);
-    }
-    virtual std::vector<size_t> get_kv_layer_heads() const {
-        return std::vector<size_t>(config_.num_layers, config_.attention_kv_heads);
-    }
-    virtual std::vector<size_t> get_kv_layer_windows() const {
-        return std::vector<size_t>(config_.num_layers, 0);
-    }
-    virtual void post_init() {}
-    virtual void post_execute_updates(CactusGraph*, size_t) {}
-    Config config_;
-    std::unique_ptr<Tokenizer> tokenizer_;
-
-    bool initialized_;
-    float attention_scale_;
-
-protected:
-    std::vector<size_t> graph_cache_k_nodes_;
-    std::vector<size_t> graph_cache_v_nodes_;
-    size_t cache_total_seq_len_ = 0;
-    size_t cache_window_size_ = 0;
-    size_t cache_sink_size_ = 4;
-    size_t cache_max_seq_len_ = 2048;
-    void init_graph_cache(CactusGraph* gb);
-    void invalidate_graph_cache(CactusGraph* gb);
-
-    std::string embedding_file_path_;
-    size_t embedding_node_id_;
-    std::string model_folder_path_;
-    size_t output_weight_node_id_;
-
-    mutable std::vector<DebugNode> debug_nodes_;
-
-    void capture_debug_node(uint32_t layer_idx, const std::string& name, size_t node_id) const;
-    void clear_debug_nodes();
-
-    bool init_internal(CactusGraph* gb, const std::string& model_folder, size_t context_size,
-                       const std::string& system_prompt, bool do_warmup);
-    bool owns_graph_;
-
-    std::unique_ptr<npu::NPUPrefill> npu_prefill_;
-    void prefill_npu(const std::vector<uint32_t>& tokens);
-    virtual std::vector<__fp16> get_token_embeddings(const std::vector<uint32_t>& tokens);
-
-    static constexpr size_t MAX_TOKEN_HISTORY = 128;
-    ToolCallConstrainer tool_constrainer_;
-    std::vector<uint32_t> token_history_;
+    void set_vocab_bias(const std::unordered_map<uint32_t, float>& bias) { vocab_bias_ = bias; }
+    void clear_vocab_bias() { vocab_bias_.clear(); }
+    bool has_vocab_bias() const { return !vocab_bias_.empty(); }
+    const std::unordered_map<uint32_t, float>& get_vocab_bias() const { return vocab_bias_; }
 
 private:
+    struct Binding {
+        int node_id = -1;
+        std::string path;
+    };
+
+    struct Component {
+        std::string name;
+        std::string graph_path;
+        std::vector<int> runtime_input_node_ids;
+        std::vector<std::string> logical_inputs;
+        std::vector<int> output_node_ids;
+        std::vector<std::string> logical_outputs;
+        std::vector<Binding> bindings;
+        std::unique_ptr<CactusGraph> graph;
+        std::vector<std::vector<uint8_t>> input_buffers;
+    };
+
+    bool load_manifest();
+    bool setup_tokenizer();
+    bool load_components();
+    bool bind_runtime_buffers(Component& comp);
+    void run_step(uint32_t token_id, size_t position, bool read_logits);
+    void write_int_input(Component& comp, const std::string& name, int64_t value);
+    int input_index(const Component& comp, const std::string& name) const;
+    uint32_t argmax_last_logits();
+
+    std::string bundle_dir_;
+    std::map<std::string, Component> components_;
+    Component* encoder_ = nullptr;
+    Component* decoder_ = nullptr;
+
+    Config config_;
+    std::unique_ptr<Tokenizer> tokenizer_;
+    bool initialized_ = false;
+    size_t cache_total_seq_len_ = 0;
+    size_t cache_max_seq_len_ = 4096;
+
+    static constexpr size_t MAX_TOKEN_HISTORY = 128;
+    std::vector<uint32_t> token_history_;
+
+    ToolCallConstrainer tool_constrainer_;
     std::unordered_map<uint32_t, float> vocab_bias_;
+
+    mutable std::vector<DebugNode> debug_nodes_;
 };
 
 class ConvCache {

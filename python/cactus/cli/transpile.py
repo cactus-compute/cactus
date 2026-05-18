@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import json
 import os
 import platform
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 from .common import (
     PROJECT_ROOT,
-    GREEN,
     RED,
     YELLOW,
     print_color,
@@ -174,23 +171,6 @@ def _extra_args_has_option(extra_args: list[str], option: str) -> bool:
     return any(arg == option or arg.startswith(prefix) for arg in extra_args)
 
 
-def _resolve_transpiled_manifest(path_value: str | os.PathLike[str] | None) -> Path | None:
-    if not path_value:
-        return None
-    candidate = Path(path_value).expanduser().resolve()
-    if not candidate.exists():
-        return None
-    if candidate.is_file() and candidate.name == "manifest.json":
-        return candidate
-    for manifest in (
-        candidate / "components" / "manifest.json",
-        candidate / "manifest.json",
-    ):
-        if manifest.exists():
-            return manifest
-    return None
-
-
 def _prepend_python_path(env: dict[str, str]) -> None:
     python_root = str(PROJECT_ROOT / "python")
     existing = env.get("PYTHONPATH")
@@ -240,6 +220,7 @@ def cmd_transpile(args) -> int:
     _prepend_python_path(env)
     result = subprocess.run(command, cwd=PROJECT_ROOT, env=env)
     return result.returncode
+<<<<<<< HEAD
 
 
 def cmd_run_transpiled(args) -> int:
@@ -579,3 +560,5 @@ def _print_transpiled_run_result(result: dict[str, object]) -> None:
         return
 
     print(json.dumps(result, indent=2, sort_keys=True))
+=======
+>>>>>>> origin/v2
