@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-_DEFAULT_IMAGE_SIZE = 256
+_DEFAULT_IMAGE_SIZE = 512
 
 
 def static_image_size() -> int:
@@ -20,8 +20,16 @@ def resize_static_image(image: object) -> object:
         return image
     try:
         from PIL import Image  # type: ignore
+        from PIL import ImageOps  # type: ignore
 
         resample = Image.Resampling.BILINEAR
     except AttributeError:  # pragma: no cover
         resample = Image.BILINEAR  # type: ignore[name-defined]
-    return image.resize(target, resample=resample)
+        from PIL import ImageOps  # type: ignore
+    except Exception:
+        return image.resize(target)
+
+    try:
+        return ImageOps.pad(image, target, method=resample, color=(255, 255, 255))
+    except Exception:
+        return image.resize(target, resample=resample)

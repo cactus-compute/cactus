@@ -113,6 +113,46 @@ def _manifest_source_aliases(name: str) -> tuple[str, ...]:
 
     _add_with_wrappers(raw)
 
+    def _allow_multimodal_tail_alias(tail: str) -> bool:
+        if tail.startswith(("audio_tower.", "vision_tower.", "embed_audio.", "embed_vision.")):
+            return os.environ.get("CACTUS_TRANSPILER_BIND_MULTIMODAL_TOWER_WEIGHTS") == "1"
+        return True
+
+    def _add_multimodal_backbone_aliases(candidate: str) -> None:
+        for prefix in (
+            "module.multimodal_backbone.",
+            "module.model.multimodal_backbone.",
+            "adapter.multimodal_backbone.",
+            "adapter.model.multimodal_backbone.",
+            "multimodal_backbone.",
+        ):
+            if candidate.startswith(prefix):
+                tail = candidate[len(prefix) :]
+                if not _allow_multimodal_tail_alias(tail):
+                    continue
+                _add_with_wrappers(tail)
+                _add_with_wrappers(f"model.{tail}")
+
+        for prefix in (
+            "model.audio_tower.",
+            "model.vision_tower.",
+            "model.embed_audio.",
+            "model.embed_vision.",
+            "audio_tower.",
+            "vision_tower.",
+            "embed_audio.",
+            "embed_vision.",
+        ):
+            if candidate.startswith(prefix):
+                if candidate.startswith("model."):
+                    tail = candidate[len("model.") :]
+                else:
+                    tail = candidate
+                if not _allow_multimodal_tail_alias(tail):
+                    continue
+                _add_with_wrappers(f"multimodal_backbone.{tail}")
+                _add_with_wrappers(f"module.multimodal_backbone.{tail}")
+
     for prefix in ("encoder.", "decoder.", "model.encoder.", "model.decoder."):
         if raw.startswith(prefix):
             _add_with_wrappers(raw[len(prefix) :])
@@ -133,6 +173,9 @@ def _manifest_source_aliases(name: str) -> tuple[str, ...]:
         _add_with_wrappers(tail)
         _add_with_wrappers(f"model.{tail}")
         _add_with_wrappers(f"model.language_model.{tail}")
+
+    for candidate in tuple(aliases):
+        _add_multimodal_backbone_aliases(candidate)
 
     return tuple(aliases)
 
@@ -233,7 +276,8 @@ def resolve_weight_binding(*, weights_dir: str | None, source_name: str) -> Weig
     if not root.exists():
         return None
     manifest = _load_weights_manifest(root)
-    binding = _binding_from_manifest_entry(root, source_name, manifest.get(source_name))
-    if binding is not None:
-        return binding
+    for alias in _manifest_source_aliases(source_name):
+        binding = _binding_from_manifest_entry(root, alias, manifest.get(alias))
+        if binding is not None:
+            return WeightBinding(path=binding.path, kind=binding.kind, source_name=source_name)
     return None

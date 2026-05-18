@@ -189,11 +189,19 @@ def _prepare_gemma4_native_image_tensors(
     patch_size = int(_get_processor_image_attr(processor, "patch_size", 16))
     pooling_kernel_size = int(_get_processor_image_attr(processor, "pooling_kernel_size", 3))
     max_soft_tokens = int(_get_processor_image_attr(processor, "max_soft_tokens", 280))
-    rescale_factor = float(_get_processor_image_attr(processor, "rescale_factor", 1.0 / 255.0))
-    # Native Cactus Gemma4 uses its config defaults here, even though the HF
-    # processor advertises do_normalize=False. Match the C++ path exactly.
-    image_mean = np.full((3,), 0.5, dtype=np.float32)
-    image_std = np.full((3,), 0.5, dtype=np.float32)
+    do_rescale = bool(_get_processor_image_attr(processor, "do_rescale", True))
+    do_normalize = bool(_get_processor_image_attr(processor, "do_normalize", False))
+    rescale_factor = float(_get_processor_image_attr(processor, "rescale_factor", 1.0 / 255.0)) if do_rescale else 1.0
+    image_mean = (
+        _image_channel_array(_get_processor_image_attr(processor, "image_mean", 0.0), 0.0)
+        if do_normalize
+        else np.zeros((3,), dtype=np.float32)
+    )
+    image_std = (
+        _image_channel_array(_get_processor_image_attr(processor, "image_std", 1.0), 1.0)
+        if do_normalize
+        else np.ones((3,), dtype=np.float32)
+    )
     max_patches = max_soft_tokens * pooling_kernel_size * pooling_kernel_size
     side_multiple = pooling_kernel_size * patch_size
     patch_dim = 3 * patch_size * patch_size
@@ -295,6 +303,125 @@ def _resolve_gemma4_audio_mels(processor: object, default: int = 128) -> int:
         if isinstance(value, int) and value > 0:
             return int(value)
     return default
+
+
+def _prepare_gemma4_processor_audio_tensors(
+    processor: object,
+    audio_waveforms: list[np.ndarray],
+    *,
+    torch_dtype: torch.dtype,
+    max_seconds: float | None,
+) -> tuple[torch.Tensor, torch.Tensor, int] | None:
+    if not audio_waveforms:
+        return None
+    extractor = (
+        getattr(processor, "audio_processor", None)
+        or getattr(processor, "feature_extractor", None)
+        or getattr(processor, "audio_feature_extractor", None)
+    )
+    if not callable(extractor):
+        return None
+    batch = extractor(audio_waveforms, return_tensors="pt")
+    input_features = batch.get("input_features") if hasattr(batch, "get") else None
+    input_features_mask = batch.get("input_features_mask") if hasattr(batch, "get") else None
+    if not isinstance(input_features, torch.Tensor) or not isinstance(input_features_mask, torch.Tensor):
+        return None
+    if input_features.ndim != 3 or input_features_mask.ndim != 2:
+        return None
+
+    active_frames = int(input_features_mask[0].sum().item())
+    output_frames = int(input_features.shape[1])
+    if max_seconds is not None and max_seconds > 0.0:
+        # Preserve the existing static Gemma4 graph capacity so a single bundle
+        # can accept any <=30s clip while the active mask still matches HF.
+        max_samples = int(round(16000.0 * float(max_seconds)))
+        output_frames = max(output_frames, int(np.ceil((max_samples + 640) / 160.0)) + 8)
+
+    if output_frames > int(input_features.shape[1]):
+        padded_features = torch.zeros(
+            (input_features.shape[0], output_frames, input_features.shape[2]),
+            dtype=input_features.dtype,
+        )
+        padded_mask = torch.zeros(
+            (input_features_mask.shape[0], output_frames),
+            dtype=input_features_mask.dtype,
+        )
+        padded_features[:, : input_features.shape[1], :] = input_features
+        padded_mask[:, : input_features_mask.shape[1]] = input_features_mask
+        input_features = padded_features
+        input_features_mask = padded_mask
+
+    return (
+        input_features.to(dtype=torch_dtype),
+        input_features_mask.to(dtype=torch.bool),
+        active_frames,
+    )
+
+
+def _pad_gemma4_audio_batch_to_static_limit(
+    batch: object,
+    *,
+    max_seconds: float | None,
+) -> int | None:
+    input_features = batch.get("input_features") if hasattr(batch, "get") else None
+    input_features_mask = batch.get("input_features_mask") if hasattr(batch, "get") else None
+    if not isinstance(input_features, torch.Tensor) or not isinstance(input_features_mask, torch.Tensor):
+        return None
+    active_frames = int(input_features_mask[0].sum().item())
+    if max_seconds is None or max_seconds <= 0.0:
+        return active_frames
+
+    max_samples = int(round(16000.0 * float(max_seconds)))
+    output_frames = max(
+        int(input_features.shape[1]),
+        int(np.ceil((max_samples + 640) / 160.0)) + 8,
+    )
+    if output_frames > int(input_features.shape[1]):
+        padded_features = torch.zeros(
+            (input_features.shape[0], output_frames, input_features.shape[2]),
+            dtype=input_features.dtype,
+            device=input_features.device,
+        )
+        padded_mask = torch.zeros(
+            (input_features_mask.shape[0], output_frames),
+            dtype=input_features_mask.dtype,
+            device=input_features_mask.device,
+        )
+        padded_features[:, : input_features.shape[1], :] = input_features
+        padded_mask[:, : input_features_mask.shape[1]] = input_features_mask
+        batch["input_features"] = padded_features
+        batch["input_features_mask"] = padded_mask
+    return active_frames
+
+
+def _build_gemma4_processor_chat_prompt(
+    processor: object,
+    *,
+    prompt: str,
+    image_files: tuple[str, ...],
+    audio_file: str | None,
+    system_prompt: str = "",
+) -> str | None:
+    apply_chat_template = getattr(processor, "apply_chat_template", None)
+    if not callable(apply_chat_template):
+        return None
+
+    content: list[dict[str, object]] = []
+    for image_file in image_files:
+        content.append({"type": "image", "image": str(Path(image_file).expanduser().resolve())})
+    if prompt.strip():
+        content.append({"type": "text", "text": prompt.strip()})
+    if audio_file:
+        content.append({"type": "audio", "audio": str(Path(audio_file).expanduser().resolve())})
+
+    messages: list[dict[str, object]] = []
+    if system_prompt.strip():
+        messages.append({"role": "system", "content": [{"type": "text", "text": system_prompt.strip()}]})
+    messages.append({"role": "user", "content": content or [{"type": "text", "text": prompt.strip()}]})
+    try:
+        return str(apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
+    except Exception:
+        return None
 
 
 def _build_gemma4_native_chat_prompt(
@@ -411,13 +538,22 @@ def prepare_gemma4_multimodal_inputs(
         if audio_file:
             expected_mels = _resolve_gemma4_audio_mels(processor)
             try:
-                native_audio, native_audio_mask, native_audio_frames = prepare_native_gemma4_audio_features(
-                    audio_file,
-                    expected_mels=expected_mels,
+                processor_audio = _prepare_gemma4_processor_audio_tensors(
+                    processor,
+                    audio_waveforms,
                     torch_dtype=torch_dtype,
                     max_seconds=audio_duration_limit_seconds(),
-                    pad_to_max_seconds=True,
                 )
+                if processor_audio is None:
+                    native_audio, native_audio_mask, native_audio_frames = prepare_native_gemma4_audio_features(
+                        audio_file,
+                        expected_mels=expected_mels,
+                        torch_dtype=torch_dtype,
+                        max_seconds=audio_duration_limit_seconds(),
+                        pad_to_max_seconds=True,
+                    )
+                else:
+                    native_audio, native_audio_mask, native_audio_frames = processor_audio
             except Exception as exc:
                 print(f"note=falling back to processor gemma4 audio features: {exc}")
                 native_audio = None
@@ -435,7 +571,34 @@ def prepare_gemma4_multimodal_inputs(
                 )
             )
         )
-        if has_native_media and (not audio_file or native_audio is not None):
+        processor_chat_prompt = None
+        if image_files or audio_file:
+            processor_chat_prompt = _build_gemma4_processor_chat_prompt(
+                processor,
+                prompt=normalized_prompt,
+                image_files=image_files,
+                audio_file=audio_file,
+                system_prompt=system_prompt,
+            )
+        if processor_chat_prompt is not None:
+            processor_prompt = processor_chat_prompt
+            batch = processor(
+                text=processor_prompt,
+                images=images or None,
+                audio=audio_waveforms or None,
+                return_tensors="pt",
+            )
+            if "mm_token_type_ids" in batch:
+                batch["token_type_ids"] = batch["mm_token_type_ids"]
+            if "image_position_ids" in batch:
+                batch["pixel_position_ids"] = batch["image_position_ids"]
+            native_audio_frames = _pad_gemma4_audio_batch_to_static_limit(
+                batch,
+                max_seconds=audio_duration_limit_seconds(),
+            )
+            if isinstance(native_audio_frames, int):
+                batch["native_audio_frames"] = native_audio_frames
+        elif has_native_media and (not audio_file or native_audio is not None):
             image_soft_counts: tuple[int, ...] = ()
             if native_image_tensors is not None:
                 pixel_values, pixel_position_ids = native_image_tensors

@@ -337,7 +337,7 @@ def create_parser():
                                 help='Representative image file for multimodal transpile')
     convert_parser.add_argument('--audio-file',
                                 help='Representative audio file for audio/multimodal transpile')
-    convert_parser.add_argument('--max-new-tokens', type=int, default=32,
+    convert_parser.add_argument('--max-new-tokens', type=int, default=None,
                                 help='Generation room to preallocate for causal decode graphs')
     convert_parser.add_argument('--component-pipeline', default='auto', choices=['auto', 'on', 'off'],
                                 help='Use split component graph transpilation when supported')

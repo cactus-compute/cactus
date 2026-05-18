@@ -20,11 +20,13 @@ def test_adapter_registry_preserves_family_names():
     assert adapter_for_family("lfm2").family == "lfm2"
 
 
-def test_policy_gemma4_pli_cq2():
+def test_policy_gemma4_pli_honors_requested_bits():
     name = "model.language_model.embed_tokens_per_layer.weight"
     match = cactus_name_for_tensor(name, "gemma4", 1)
     p = policy_for_tensor(match, (10, 128), 4, "gemma4")
-    assert p.precision == "CQ2"
+    assert p.precision == "CQ4"
+    assert p.bits == 4
+    assert p.rotation == "hadamard"
 
 
 def test_gemma4_adapter_disables_gptq_for_unhookable_tensors():

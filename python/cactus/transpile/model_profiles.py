@@ -78,6 +78,7 @@ LFM2_VL_PROFILE = ModelProfile(
     model_id_aliases=(("lfm", "LiquidAI/LFM2-VL-450M"),),
     model_id_markers=("lfm2-vl", "lfm-vl"),
     family_aliases=("lfm2", "lfm"),
+    stop_tokens=("<|im_end|>",),
     avoid_native_loader=True,
     prompt_style="lfm_chat",
     multimodal_preprocessor="lfm2_vl",

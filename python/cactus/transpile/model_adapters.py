@@ -112,19 +112,25 @@ def _gemma4_get_placeholder_masks(
         if accepts_kwargs or "token_type_ids" in parameters:
             kwargs["token_type_ids"] = token_type_ids
 
+    accepts_token_type_ids = "token_type_ids" in kwargs
     result = get_placeholder_mask(**kwargs)
     if not isinstance(result, tuple) or len(result) != 3:
         raise TypeError(
             "Gemma4 get_placeholder_mask must return "
-            "(text_mask, image_mask, audio_mask)"
+            "three placeholder masks"
         )
-    text_mask, image_mask, audio_mask = result
+    first_mask, second_mask, third_mask = result
     if not (
-        isinstance(text_mask, torch.Tensor)
-        and isinstance(image_mask, torch.Tensor)
-        and isinstance(audio_mask, torch.Tensor)
+        isinstance(first_mask, torch.Tensor)
+        and isinstance(second_mask, torch.Tensor)
+        and isinstance(third_mask, torch.Tensor)
     ):
         raise TypeError("Gemma4 get_placeholder_mask returned non-tensor masks")
+    if accepts_token_type_ids:
+        text_mask, image_mask, audio_mask = first_mask, second_mask, third_mask
+    else:
+        image_mask, video_mask, audio_mask = first_mask, second_mask, third_mask
+        text_mask = ~(image_mask | video_mask | audio_mask)
     return text_mask, image_mask, audio_mask
 
 
@@ -938,6 +944,10 @@ def _gemma4_compute_native_like_audio_features(
     if not callable(getattr(embed_audio, "forward", None)):
         raise TypeError("Gemma4 audio embedder is not callable")
     projected = embed_audio(inputs_embeds=audio_encodings)
+    # Native Cactus Gemma4 scales audio soft tokens before merging them into
+    # the language stream. HF leaves this implicit in its fp16 path, but the
+    # quantized Cactus decoder expects the native-scaled representation.
+    projected = projected * (1.0 / 16.0)
     # The transpiled bundle is shape-specialized from representative media.
     # Native Gemma4 audio preprocessing emits an unpadded feature tensor for
     # that media, so the post-subsampling sequence is already the real token

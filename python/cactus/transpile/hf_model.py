@@ -1050,6 +1050,8 @@ def _repair_gemma4_checkpoint_weights(model: torch.nn.Module, model_source: str)
     # Gemma4 classes use audio_tower.layers and *.linear.weight, and
     # from_pretrained already loads them correctly. Do not reload a legacy
     # remap into the current layout, because that leaves real weights missing.
+    if hasattr(audio_tower, "layers"):
+        return {"applied": False, "reason": "current HF Gemma4 layout uses audio_tower.layers"}
     if not hasattr(audio_tower, "conformer"):
         return {"applied": False, "reason": "current HF Gemma4 layout does not need legacy key remap"}
 

@@ -42,6 +42,7 @@ from cactus.transpile.runtime_compat import _lib
 from cactus.transpile.runtime_compat import cactus_node_t
 from cactus.transpile.runtime_compat import Graph
 from cactus.transpile.runtime_compat import Tensor
+from cactus.transpile.weight_binding import resolve_weight_binding
 
 
 _HEADER_SIZE = 84
@@ -549,6 +550,9 @@ def _default_weights_dir_for_manifest(
 ) -> str | Path | None:
     if explicit is not None:
         return explicit
+    bundle_root = _bundle_root_from_manifest(manifest)
+    if bundle_root is not None and (bundle_root / "weights_manifest.json").exists():
+        return bundle_root
     model_id = str(manifest.get("model_id", "") or "").strip()
     if not model_id:
         return None
@@ -738,6 +742,25 @@ def _deserialize_saved_ir_constant(
         # The lowerer ignores the constant payload when a weight binding is present
         # in IRValue metadata and re-attaches the mmap-backed tensor directly.
         return 0
+
+    source_name = str(meta.get("source_name", "") or "")
+    if (
+        source_name
+        and weights_dir is not None
+        and os.environ.get("CACTUS_TRANSPILER_REPAIR_SAVED_CONSTANT_BINDINGS") == "1"
+    ):
+        repaired_binding = resolve_weight_binding(
+            weights_dir=str(weights_dir),
+            source_name=source_name,
+        )
+        if repaired_binding is not None:
+            value.meta = {
+                **meta,
+                "path": repaired_binding.path,
+                "kind": repaired_binding.kind,
+                "source_name": source_name,
+            }
+            return 0
 
     if isinstance(binding, Mapping):
         binding_format = str(binding.get("format", "tensor_io") or "tensor_io")
@@ -1263,7 +1286,11 @@ def _run_multimodal_causal_lm_bundle(
         and set(cached_step_components).issubset(component_graphs)
         and os.environ.get("CACTUS_TRANSPILER_DISABLE_CACHED_STEP_DECODE") != "1"
     )
-    use_chunk_prefill = use_cached_step_decode and "decoder_prefill_chunk" in component_graphs
+    use_chunk_prefill = (
+        use_cached_step_decode
+        and "decoder_prefill_chunk" in component_graphs
+        and os.environ.get("CACTUS_TRANSPILER_DISABLE_CHUNK_PREFILL") != "1"
+    )
     dynamic_media_step_component = profile.dynamic_media_step_component if profile is not None else None
     use_dynamic_media_encoder = (
         dynamic_media_step_component is not None
@@ -1937,7 +1964,12 @@ def _build_gemma4_dynamic_multimodal_encoder_store(
     )
 
     image_needed = int(np.count_nonzero(token_type_ids[0, :token_count] == 1))
-    audio_needed = int(np.count_nonzero(token_type_ids[0, :token_count] == 2))
+    audio_needed = int(
+        np.count_nonzero(
+            (token_type_ids[0, :token_count] == 2)
+            | (token_type_ids[0, :token_count] == 3)
+        )
+    )
     if image_needed and (image_features is None or int(image_features.shape[1]) < image_needed):
         got = 0 if image_features is None else int(image_features.shape[1])
         raise RuntimeError(f"Gemma4 image feature count mismatch: need {image_needed}, got {got}")
@@ -1974,7 +2006,7 @@ def _build_gemma4_dynamic_multimodal_encoder_store(
         if token_type == 1 and image_features is not None:
             media_slice = image_features[:, image_index : image_index + 1, :]
             image_index += 1
-        elif token_type == 2 and audio_features is not None:
+        elif token_type in {2, 3} and audio_features is not None:
             media_slice = audio_features[:, audio_index : audio_index + 1, :]
             audio_index += 1
 
@@ -1990,7 +2022,7 @@ def _build_gemma4_dynamic_multimodal_encoder_store(
             step_per_layer_inputs = np.asarray(lm_encoder_media_step.outputs[1].numpy()).copy()
             step_position_ids = np.asarray(lm_encoder_media_step.outputs[2].numpy()).copy()
         else:
-            step_token_id = int(pad_token_id) if token_type in {1, 2} else token_id
+            step_token_id = int(pad_token_id) if token_type in {1, 2, 3} else token_id
             input_buffers["input_ids"].fill(step_token_id)
             input_buffers["position_ids"].fill(position)
             lm_encoder_step.graph.execute()
@@ -2037,6 +2069,8 @@ def _run_gemma4_cached_step_multimodal_decode(
     lm_encoder_step = component_graphs["lm_encoder_step"]
     decoder_step = component_graphs["decoder_step"]
     decoder_prefill_chunk = component_graphs.get("decoder_prefill_chunk")
+    if os.environ.get("CACTUS_TRANSPILER_DISABLE_CHUNK_PREFILL") == "1":
+        decoder_prefill_chunk = None
     stop_token_ids = _bundle_stop_token_ids(manifest=manifest, tokenizer=tokenizer)
     encoded_stop_sequences = _encode_stop_sequences(tokenizer, stop_sequences)
     requested_tokens = (
