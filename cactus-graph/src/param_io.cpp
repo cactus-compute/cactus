@@ -165,6 +165,8 @@ const Schema& op_schema(OpType op_type) {
         {OpType::SCALAR_SUBTRACT, {{ParamField::Scalar, FieldPersistence::Persistent}}},
         {OpType::SCALAR_MULTIPLY, {{ParamField::Scalar, FieldPersistence::Persistent}}},
         {OpType::SCALAR_DIVIDE, {{ParamField::Scalar, FieldPersistence::Persistent}}},
+        {OpType::SCALAR_NOT_EQUAL, {{ParamField::Scalar, FieldPersistence::Persistent}}},
+        {OpType::CLAMP, {{ParamField::Scalar, FieldPersistence::Persistent}, {ParamField::Scale, FieldPersistence::Persistent}}},
         {OpType::SOFTMAX, {{ParamField::Axis, FieldPersistence::Persistent}}},
         {OpType::SUM, {{ParamField::Axis, FieldPersistence::Persistent}}},
         {OpType::MEAN, {{ParamField::Axis, FieldPersistence::Persistent}}},

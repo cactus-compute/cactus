@@ -79,6 +79,11 @@ _lib.cactus_graph_set_external_input.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.c_void_p, ctypes.c_int32
 ]
 _lib.cactus_graph_set_external_input.restype = ctypes.c_int
+_bind_optional(
+    "cactus_graph_mark_embedded_input",
+    [cactus_graph_t, cactus_node_t],
+    ctypes.c_int,
+)
 
 _lib.cactus_graph_add.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)

@@ -3,6 +3,7 @@
 #include <cstring>
 #include <algorithm>
 #include <limits>
+#include <cstdlib>
 
 namespace {
 
@@ -66,6 +67,23 @@ inline size_t cache_buffer_size(size_t max_seq, size_t kv_heads, size_t head_dim
     return sizeof(CacheMetadata) + max_seq * kv_heads * head_dim + max_seq * kv_heads * num_groups * sizeof(float);
 }
 
+inline size_t fp16_cache_elements(size_t max_seq, size_t kv_heads, size_t head_dim) {
+    return (sizeof(CacheMetadata) / sizeof(__fp16)) + max_seq * kv_heads * head_dim;
+}
+
+inline __fp16* get_fp16_data(BufferDesc& buf) {
+    return reinterpret_cast<__fp16*>(static_cast<char*>(buf.get_data()) + sizeof(CacheMetadata));
+}
+
+inline const __fp16* get_fp16_data(const BufferDesc& buf) {
+    return reinterpret_cast<const __fp16*>(static_cast<const char*>(buf.get_data()) + sizeof(CacheMetadata));
+}
+
+inline bool use_fp16_kv_cache() {
+    const char* value = std::getenv("CACTUS_KV_CACHE_FP16");
+    return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
 } // namespace
 
 void compute_kv_cache_state_node(
@@ -78,11 +96,14 @@ void compute_kv_cache_state_node(
     size_t max_seq = node.params.max_cache_seq_len;
     size_t kv_heads = node.params.num_kv_heads;
     size_t hdim = node.params.head_dim;
-    size_t total = cache_buffer_size(max_seq, kv_heads, hdim);
+    const bool fp16_cache = use_fp16_kv_cache();
+    size_t total = fp16_cache
+        ? fp16_cache_elements(max_seq, kv_heads, hdim)
+        : cache_buffer_size(max_seq, kv_heads, hdim);
 
-    node.output_buffer = BufferDesc({total}, Precision::INT8);
+    node.output_buffer = BufferDesc({total}, fp16_cache ? Precision::FP16 : Precision::INT8);
     node.output_buffer.allocate();
-    std::memset(node.output_buffer.get_data(), 0, total);
+    std::memset(node.output_buffer.get_data(), 0, node.output_buffer.byte_size);
 
     auto* meta = get_meta(node.output_buffer);
     meta->current_seq_len = 0;
@@ -111,6 +132,36 @@ void compute_kv_cache_append_node(
     size_t new_seq_len = new_kv.total_size / (kv_heads * hdim);
     size_t int8_stride = kv_heads * hdim;
     size_t scale_stride = kv_heads * num_groups;
+
+    if (cache_buf.precision == Precision::FP16) {
+        size_t stride = kv_heads * hdim;
+        __fp16* fp16_base = get_fp16_data(cache_buf);
+        const __fp16* source = new_kv.data_as<__fp16>();
+        size_t window = node.params.window_size;
+        if (window == 0) window = max_len;
+
+        size_t new_total = current_len + new_seq_len;
+        bool needs_eviction = new_total > window;
+        if (needs_eviction) {
+            size_t remaining = window - sink - new_seq_len;
+            size_t shift_src = current_len - remaining;
+            if (remaining > 0 && shift_src > sink) {
+                std::memmove(
+                    fp16_base + sink * stride,
+                    fp16_base + shift_src * stride,
+                    remaining * stride * sizeof(__fp16));
+            }
+            size_t append_offset = window - new_seq_len;
+            std::memcpy(fp16_base + append_offset * stride, source, new_seq_len * stride * sizeof(__fp16));
+            meta->current_seq_len = window;
+        } else {
+            std::memcpy(fp16_base + current_len * stride, source, new_seq_len * stride * sizeof(__fp16));
+            meta->current_seq_len = new_total;
+        }
+
+        *node.output_buffer.data_as<float>() = static_cast<float>(meta->current_seq_len);
+        return;
+    }
 
     int8_t* int8_base = get_int8_data(cache_buf);
     float* scale_base = get_scales(cache_buf, max_len, kv_heads, hdim);
@@ -191,6 +242,25 @@ void compute_attention_cached_node(
     size_t position_offset = node.params.position_offset;
     if (position_offset == std::numeric_limits<size_t>::max()) {
         position_offset = history_len;
+    }
+
+    if (k_cache_buf.precision == Precision::FP16 || v_cache_buf.precision == Precision::FP16) {
+        cactus_attention_f16(
+            query_buf.data_as<__fp16>(),
+            get_fp16_data(k_cache_buf),
+            get_fp16_data(v_cache_buf),
+            node.output_buffer.data_as<__fp16>(),
+            batch_size, seq_len, cache_len,
+            num_q_heads, kv_heads, hdim,
+            node.params.scale,
+            nullptr,
+            position_offset,
+            node.params.window_size,
+            true,
+            false,
+            false,
+            v_hdim);
+        return;
     }
 
     cactus_attention_hybrid_int8_fp16(
@@ -281,10 +351,9 @@ void compute_conv_cache_append_node(
 
     __fp16* out = node.output_buffer.data_as<__fp16>();
     if (count < ws) {
-        std::memcpy(out, cache_data, count * hd * sizeof(__fp16));
-        if (count < ws) {
-            std::memset(out + count * hd, 0, (ws - count) * hd * sizeof(__fp16));
-        }
+        const size_t pad_rows = ws - count;
+        std::memset(out, 0, pad_rows * hd * sizeof(__fp16));
+        std::memcpy(out + pad_rows * hd, cache_data, count * hd * sizeof(__fp16));
     } else {
         size_t tail_rows = ws - head;
         if (tail_rows > 0) {

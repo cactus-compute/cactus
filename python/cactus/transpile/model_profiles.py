@@ -13,6 +13,25 @@ class ModelProfile:
     model_types: tuple[str, ...] = ()
     transformer_module: str | None = None
     multimodal_context_tokens: int | None = None
+    input_combinations: tuple[tuple[str, ...], ...] = ()
+    model_id_aliases: tuple[tuple[str, str], ...] = ()
+    model_id_markers: tuple[str, ...] = ()
+    family_aliases: tuple[str, ...] = ()
+    stop_tokens: tuple[str, ...] = ()
+    avoid_native_loader: bool = False
+    cached_step_components: tuple[str, ...] = ()
+    cached_step_skip_components: tuple[str, ...] = ()
+    dynamic_media_step_component: str | None = None
+    fp16_kv_cache_components: tuple[str, ...] = ()
+    ir_replay_components: tuple[str, ...] = ()
+    prompt_style: str = "auto"
+    multimodal_preprocessor: str = "auto"
+    text_only_component: str | None = None
+    default_task: str | None = None
+    default_components: tuple[str, ...] = ()
+    needs_image: bool = False
+    needs_audio: bool = False
+    force_component_pipeline: bool = False
     aliases: tuple[tuple[str, str], ...] = ()
     regex_aliases: tuple[tuple[str, str], ...] = ()
 
@@ -22,19 +41,72 @@ GEMMA4_PROFILE = ModelProfile(
     model_types=("gemma4",),
     transformer_module="transformers.models.gemma4.modeling_gemma4",
     multimodal_context_tokens=2048,
+    input_combinations=((), ("image",), ("audio",), ("image", "audio")),
+    model_id_aliases=(
+        ("gemma4", "google/gemma-4-E2B-it"),
+        ("gemma4-e2b", "google/gemma-4-E2B-it"),
+    ),
+    model_id_markers=("gemma-4", "gemma4"),
+    family_aliases=("gemma",),
+    stop_tokens=("<turn|>", "<eos>"),
+    avoid_native_loader=True,
+    cached_step_components=("lm_encoder_step", "decoder_step"),
+    cached_step_skip_components=("decoder",),
+    dynamic_media_step_component="lm_encoder_media_step",
+    fp16_kv_cache_components=("decoder_prefill_chunk", "decoder_step"),
+    ir_replay_components=(
+        "vision_encoder",
+        "audio_encoder",
+        "decoder_prefill_chunk",
+        "decoder_step",
+    ),
+    prompt_style="gemma4",
+    multimodal_preprocessor="gemma4",
+    default_task="multimodal_causal_lm_logits",
+    default_components=("vision_encoder", "audio_encoder", "lm_encoder", "decoder"),
+    needs_image=True,
+    needs_audio=True,
+    force_component_pipeline=True,
 )
 
 
 LFM2_VL_PROFILE = ModelProfile(
     family="lfm2_vl",
     model_types=("lfm2_vl",),
-    multimodal_context_tokens=512,
+    multimodal_context_tokens=256,
+    input_combinations=((), ("image",)),
+    model_id_aliases=(("lfm", "LiquidAI/LFM2-VL-450M"),),
+    model_id_markers=("lfm2-vl", "lfm-vl"),
+    family_aliases=("lfm2", "lfm"),
+    stop_tokens=("<|im_end|>",),
+    avoid_native_loader=True,
+    cached_step_components=("lm_encoder_step", "decoder_step"),
+    cached_step_skip_components=("decoder",),
+    fp16_kv_cache_components=("decoder_prefill_chunk", "decoder_step"),
+    ir_replay_components=("decoder_prefill_chunk", "decoder_step"),
+    prompt_style="lfm_chat",
+    multimodal_preprocessor="lfm2_vl",
+    text_only_component="text_lm_encoder",
+    default_task="multimodal_causal_lm_logits",
+    default_components=("vision_encoder", "lm_encoder", "decoder"),
+    needs_image=True,
+    force_component_pipeline=True,
 )
 
 
 PARAKEET_TDT_PROFILE = ModelProfile(
     family="parakeet_tdt",
     model_types=("parakeet_tdt",),
+    model_id_aliases=(
+        ("parakeet", "nvidia/parakeet-tdt-0.6b-v3"),
+        ("parakeet-tdt", "nvidia/parakeet-tdt-0.6b-v3"),
+    ),
+    model_id_markers=("parakeet-tdt",),
+    avoid_native_loader=True,
+    default_task="tdt_transcription",
+    default_components=("audio_encoder", "decoder"),
+    needs_audio=True,
+    force_component_pipeline=True,
     aliases=(
         ("decoder.prediction.embed.weight", "decoder.embedding.weight"),
         ("joint.enc.weight", "encoder_projector.weight"),
@@ -75,10 +147,57 @@ PARAKEET_TDT_PROFILE = ModelProfile(
 )
 
 
+WHISPER_PROFILE = ModelProfile(
+    family="whisper",
+    model_types=("whisper",),
+    model_id_aliases=(("whisper", "openai/whisper-small"),),
+    model_id_markers=("whisper",),
+    family_aliases=("whisperforconditionalgeneration",),
+    avoid_native_loader=True,
+    cached_step_components=("decoder_step",),
+    cached_step_skip_components=("decoder",),
+    fp16_kv_cache_components=("decoder_step",),
+    default_task="seq2seq_transcription",
+    default_components=("audio_encoder", "decoder"),
+    needs_audio=True,
+    force_component_pipeline=True,
+)
+
+
+QWEN_PROFILE = ModelProfile(
+    family="qwen",
+    model_types=("qwen", "qwen2", "qwen3", "qwen3_5", "qwen3.5"),
+    multimodal_context_tokens=512,
+    input_combinations=((), ("image",)),
+    model_id_aliases=(
+        ("qwen", "Qwen/Qwen3.5-0.8B"),
+        ("qwen3.5", "Qwen/Qwen3.5-0.8B"),
+        ("qwen35", "Qwen/Qwen3.5-0.8B"),
+        ("qwen3.5-0.8b", "Qwen/Qwen3.5-0.8B"),
+        ("qwen3", "Qwen/Qwen3-1.7B"),
+    ),
+    model_id_markers=("qwen",),
+    family_aliases=("qwen2", "qwen3", "qwen3_5", "qwen3.5"),
+    stop_tokens=("<|im_end|>",),
+    avoid_native_loader=True,
+    cached_step_components=("decoder_step",),
+    cached_step_skip_components=("decoder",),
+    fp16_kv_cache_components=("decoder_step",),
+    prompt_style="qwen_chat",
+    multimodal_preprocessor="qwen3_5",
+    default_task="multimodal_causal_lm_logits",
+    default_components=("vision_encoder", "lm_encoder", "decoder", "lm_encoder_step", "decoder_media_step", "decoder_step"),
+    needs_image=True,
+    force_component_pipeline=True,
+)
+
+
 PROFILES: tuple[ModelProfile, ...] = (
     GEMMA4_PROFILE,
     LFM2_VL_PROFILE,
     PARAKEET_TDT_PROFILE,
+    WHISPER_PROFILE,
+    QWEN_PROFILE,
 )
 
 
@@ -88,6 +207,37 @@ def profile_for_model_type(model_type: str) -> ModelProfile | None:
         if normalized in profile.model_types:
             return profile
     return None
+
+
+def profile_for_family(family: str) -> ModelProfile | None:
+    normalized = str(family or "").strip().lower()
+    for profile in PROFILES:
+        if normalized == profile.family or normalized in profile.family_aliases:
+            return profile
+    return None
+
+
+def profile_for_model_id(model_id: str) -> ModelProfile | None:
+    normalized = str(model_id or "").strip().lower()
+    if not normalized:
+        return None
+    alias_map = model_id_alias_map()
+    normalized = alias_map.get(normalized, normalized).lower()
+    for profile in PROFILES:
+        for _, profile_model_id in profile.model_id_aliases:
+            if normalized == profile_model_id.lower():
+                return profile
+        if any(marker and marker in normalized for marker in profile.model_id_markers):
+            return profile
+    return None
+
+
+def model_id_alias_map() -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for profile in PROFILES:
+        for alias, model_id in profile.model_id_aliases:
+            aliases[str(alias).strip().lower()] = str(model_id).strip()
+    return aliases
 
 
 def multimodal_context_tokens_for_model_type(model_type: str, default: int) -> int:

@@ -50,7 +50,12 @@ int cactus_preprocess_audio_features(
             cactus::engine::Config cfg;
             cfg.model_type = cactus::engine::Config::ModelType::GEMMA4;
             cfg.audio_input_feat_size = static_cast<uint32_t>(bins);
-            cfg.audio_soft_tokens = 188;
+            // The Python transpiled runtime shape-specializes Gemma4 audio to
+            // its requested capacity (currently capped at 30s). Do not apply
+            // the native interactive model's shorter audio_soft_tokens limit
+            // here, otherwise long-file multimodal prompts are silently
+            // truncated before they reach the graph bundle.
+            cfg.audio_soft_tokens = 0;
             cfg.audio_fft_length = 512;
             auto prepared = cactus::audio::preprocess_audio_for_gemma4(std::move(audio_samples), cfg);
             features = std::move(prepared.features);

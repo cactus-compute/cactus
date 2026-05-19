@@ -27,6 +27,7 @@ from cactus.transpile.graph_ir import IRNode
 from cactus.transpile.graph_ir import IRValue
 from cactus.transpile.graph_ir import verify_ir
 from cactus.transpile.model_patterns import GOLD_PATTERNS
+from cactus.transpile.model_profiles import profile_for_family
 from cactus.transpile.normalize import dtype_to_ir
 
 
@@ -271,17 +272,12 @@ def fuse_rms_norm(graph: IRGraph) -> bool:
                 dtype=input_value.dtype,
                 suffix="rms_norm_ones",
             )
-        if float(match.weight_offset) != 0.0:
-            weight_value_id = _materialize_shifted_constant(
-                graph,
-                weight_value_id,
-                float(match.weight_offset),
-                suffix="rms_norm_scale",
-            )
-
         node.op = "rms_norm"
         node.inputs = [match.input_value_id, weight_value_id]
-        node.attrs = {"eps": float(match.eps)}
+        node.attrs = {
+            "eps": float(match.eps),
+            "weight_offset": float(match.weight_offset),
+        }
         node.kind = "semantic"
         node.meta["rms_weight_offset"] = float(match.weight_offset)
         node.meta["rms_input_value_id"] = match.input_value_id
@@ -615,7 +611,7 @@ def normalize_gemma4_decoder_attention_semantics(graph: IRGraph) -> bool:
             if "additive_mask" in node.attrs and not bool(node.attrs.get("additive_mask", False)):
                 node.attrs.pop("additive_mask", None)
                 changed = True
-            if int(node.attrs.get("window_size", 0)) == 0:
+            if int(node.attrs.get("window_size", 0)) == 0 and not bool(graph.meta.get("use_internal_kv_cache", False)):
                 seq_len = 0
                 attention_output_shape = node.attrs.get("attention_output_shape")
                 if isinstance(attention_output_shape, (list, tuple)) and len(attention_output_shape) >= 2:
@@ -688,7 +684,7 @@ def normalize_gemma4_decoder_attention_semantics(graph: IRGraph) -> bool:
 
 def _assign_gemma4_decoder_attention_hints_from_graph_meta(graph: IRGraph) -> bool:
     component = str(graph.meta.get("component", "") or "").strip().lower()
-    if component != "decoder":
+    if component not in {"decoder", "decoder_step", "decoder_prefill_chunk"}:
         return False
 
     layer_types = _graph_layer_types(graph)
@@ -1157,14 +1153,17 @@ def _materialize_ones_constant(graph: IRGraph, size: int, *, dtype: str | None, 
 
 
 def _is_gemma4_graph(graph: IRGraph) -> bool:
-    return str(graph.meta.get("adapter_family") or graph.meta.get("family") or "").lower() == "gemma4"
+    family = str(graph.meta.get("adapter_family") or graph.meta.get("family") or "").lower()
+    profile = profile_for_family(family)
+    return profile is not None and profile.family == "gemma4"
 
 
 def _is_whisper_seq2seq_decoder_graph(graph: IRGraph) -> bool:
     family = str(graph.meta.get("adapter_family") or graph.meta.get("family") or "").lower()
+    profile = profile_for_family(family)
     task = str(graph.meta.get("task") or "").lower()
     component = str(graph.meta.get("component") or "").lower()
-    return family == "whisper" and task == "seq2seq_transcription" and component == "decoder"
+    return profile is not None and profile.family == "whisper" and task == "seq2seq_transcription" and component == "decoder"
 
 
 def _prune_unused_inputs(graph: IRGraph) -> bool:

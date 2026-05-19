@@ -344,8 +344,12 @@ bool test_conv_cache_append_basic() {
 
     __fp16* out = static_cast<__fp16*>(g.get_output(window_out));
 
+    const size_t pad_rows = ws - 2;
+    for (size_t i = 0; i < pad_rows * hd; i++) {
+        if (std::abs(static_cast<float>(out[i])) > 1e-3f) return false;
+    }
     for (size_t i = 0; i < 2 * hd; i++) {
-        if (std::abs(static_cast<float>(out[i]) - static_cast<float>(data[i])) > 1e-3f) return false;
+        if (std::abs(static_cast<float>(out[pad_rows * hd + i]) - static_cast<float>(data[i])) > 1e-3f) return false;
     }
 
     return true;

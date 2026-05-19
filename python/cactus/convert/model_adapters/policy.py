@@ -49,7 +49,9 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
     if "position_embedding" in out.lower() or "pos_embed" in out.lower() or "embed_positions" in out.lower():
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "position embedding tensor")
     if family == "gemma4" and name == "model.language_model.embed_tokens_per_layer.weight":
-        return TensorPolicy("convert", "CQ2", 2, component, False, "hadamard")
+        return TensorPolicy("convert", f"CQ{user_bits}", user_bits, component, False, "hadamard")
+    if family == "gemma4" and component in {"audio", "vision"}:
+        return TensorPolicy("fallback", "FP16", None, component, False, "none", "gemma4 media tower accuracy")
     if component == "embedding" or out in {"token_embeddings.weights", "output_weight.weights"}:
         return TensorPolicy("convert", "CQ4", 4, component, False, "orthogonal")
     if component == "audio" or component == "transcription":

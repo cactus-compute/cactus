@@ -1013,14 +1013,21 @@ def import_clamp(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int
     min_value = extract_literals(node.args[1]) if len(node.args) > 1 else None
     max_value = extract_literals(node.args[2]) if len(node.args) > 2 else None
     attrs: dict[str, object] = {}
+    inputs = [value_id(node.args[0], ctx)]
     if isinstance(min_value, (int, float)):
         attrs["min"] = float(min_value)
+    elif len(node.args) > 1 and is_fx_node(node.args[1]):
+        attrs["has_min_tensor"] = True
+        inputs.append(value_id(node.args[1], ctx))
     if isinstance(max_value, (int, float)):
         attrs["max"] = float(max_value)
+    elif len(node.args) > 2 and is_fx_node(node.args[2]):
+        attrs["has_max_tensor"] = True
+        inputs.append(value_id(node.args[2], ctx))
     ir_node = IRNode(
         id=node_id(node),
         op="clamp",
-        inputs=[value_id(node.args[0], ctx)],
+        inputs=inputs,
         outputs=[value_id(node, ctx)],
         attrs=attrs,
         meta=_base_meta(shape, dtype, torch_op, node),
@@ -1216,6 +1223,23 @@ def import_chunk(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int
         inputs=[value_id(node.args[0], ctx)],
         outputs=[value_id(node, ctx)],
         attrs={"chunks": int(chunks), "axis": axis},
+        meta=_base_meta(shape, dtype, torch_op, node),
+    )
+    register_node(ir, ir_node, shape=shape, dtype=dtype)
+
+
+def import_unbind(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int, ...] | None, dtype: str | None, torch_op: str) -> None:
+    if len(node.args) < 1:
+        ctx.fail(f"unsupported unbind signature for {torch_op}: {node.args!r}")
+    axis = 0
+    if len(node.args) > 1 and extract_literals(node.args[1]) is not None:
+        axis = int(extract_literals(node.args[1]))
+    ir_node = IRNode(
+        id=node_id(node),
+        op="unbind",
+        inputs=[value_id(node.args[0], ctx)],
+        outputs=[value_id(node, ctx)],
+        attrs={"axis": axis},
         meta=_base_meta(shape, dtype, torch_op, node),
     )
     register_node(ir, ir_node, shape=shape, dtype=dtype)
@@ -1820,6 +1844,8 @@ OP_IMPORTERS = {
     "cat": import_cat,
     "split_with_sizes": import_split_with_sizes,
     "chunk": import_chunk,
+    "unbind": import_unbind,
+    "aten.unbind.int": import_unbind,
     "ones": import_ones,
     "pad": import_pad,
     "pow": import_pow,

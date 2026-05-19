@@ -241,6 +241,8 @@ CACTUS_FFI_EXPORT int cactus_graph_set_input(
 precision);
 CACTUS_FFI_EXPORT int cactus_graph_set_external_input(
     cactus_graph_t graph, cactus_node_t node, void* data, int32_t precision);
+CACTUS_FFI_EXPORT int cactus_graph_mark_embedded_input(
+    cactus_graph_t graph, cactus_node_t node);
 
 CACTUS_FFI_EXPORT int cactus_graph_precision_cast(
     cactus_graph_t graph, cactus_node_t input, int32_t target_precision, cactus_node_t* out);
@@ -255,11 +257,14 @@ CACTUS_FFI_EXPORT int cactus_graph_multiply(cactus_graph_t graph, cactus_node_t
 a, cactus_node_t b, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_divide(cactus_graph_t graph, cactus_node_t
 a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_not_equal(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_scalar_add(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_subtract(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_multiply(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_divide(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_not_equal(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_exp(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_sqrt(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_cos(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);

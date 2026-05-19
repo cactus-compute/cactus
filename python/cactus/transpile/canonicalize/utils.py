@@ -8,6 +8,7 @@ from cactus.transpile.graph_ir import IRGraph
 from cactus.transpile.graph_ir import IRNode
 from cactus.transpile.graph_ir import IRValue
 from cactus.transpile.graph_ir import verify_ir
+from cactus.transpile.model_profiles import profile_for_family
 
 
 def normalize_dtype_name(dtype: Any) -> str | None:
@@ -216,7 +217,9 @@ def bypass_unary_node(graph: IRGraph, node: IRNode) -> bool:
 
 
 def _is_gemma4_graph(graph: IRGraph) -> bool:
-    return str(graph.meta.get("adapter_family") or graph.meta.get("family") or "").lower() == "gemma4"
+    family = str(graph.meta.get("adapter_family") or graph.meta.get("family") or "").lower()
+    profile = profile_for_family(family)
+    return profile is not None and profile.family == "gemma4"
 
 
 def _weight_binding_meta(value: IRValue | None) -> dict[str, object] | None:

@@ -1,20 +1,5 @@
-"""Tests for `cactus run <bundle_dir>` and related transpile-time helpers.
-
-The Python LM-runtime path (`cmd_run_transpiled` and the
-`component_bundle_runtime._run_*_bundle` helpers) was removed in favour of the
-C++ libcactus pipeline; the old tests that exercised those internals are gone
-along with the code. The tests below keep coverage for the still-live pieces:
-
-* `cmd_run` resolves a transpiled bundle path and shells out to the C++ `chat`
-  binary with the expected arguments.
-* Transpile-time helpers (`_add_multimodal_generation_headroom`,
-  `_write_cactus_constant_tensor`, `load_audio_waveform`,
-  `multimodal_runtime._load_image_inputs`) still behave as documented.
-"""
-
 from __future__ import annotations
 
-import struct
 from pathlib import Path
 
 import numpy as np
@@ -23,12 +8,14 @@ from scipy.io import wavfile
 
 from cactus import cli
 from cactus.cli import run as run_cli
+from cactus.cli import transpile as transpile_cli
 from cactus.transpile import audio_preprocess
-from cactus.transpile import hf_model
+from cactus.transpile import component_bundle_runtime
 from cactus.transpile import multimodal_runtime
+from cactus.transpile import hf_model
 
 
-def test_cactus_run_resolves_bundle_and_invokes_chat_binary(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_cactus_run_detects_transpiled_bundle_and_uses_main_style_audio(monkeypatch, tmp_path: Path, capsys) -> None:
     bundle_dir = tmp_path / "bundle"
     components_dir = bundle_dir / "components"
     components_dir.mkdir(parents=True)
@@ -38,24 +25,15 @@ def test_cactus_run_resolves_bundle_and_invokes_chat_binary(monkeypatch, tmp_pat
     )
     audio_file = tmp_path / "input.wav"
     audio_file.write_bytes(b"RIFF")
-    image_file = tmp_path / "input.png"
-    image_file.write_bytes(b"PNGish")
 
-    fake_chat = tmp_path / "chat"
-    fake_chat.write_text("#!/bin/sh\nexit 0\n")
-    fake_chat.chmod(0o755)
-    monkeypatch.setattr(run_cli, "_ensure_chat_binary", lambda: fake_chat)
+    calls = []
 
-    invocations: list[list[str]] = []
+    def _fake_run_transpiled(args):
+        calls.append(args)
+        print("hello from transpiled")
+        return 0
 
-    class _Completed:
-        returncode = 0
-
-    def fake_run(cmd, **_kwargs):
-        invocations.append(list(cmd))
-        return _Completed()
-
-    monkeypatch.setattr(run_cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(transpile_cli, "cmd_run_transpiled", _fake_run_transpiled)
 
     parser = cli.create_parser()
     args = parser.parse_args(
@@ -64,44 +42,126 @@ def test_cactus_run_resolves_bundle_and_invokes_chat_binary(monkeypatch, tmp_pat
             str(bundle_dir),
             "--audio",
             str(audio_file),
-            "--image",
-            str(image_file),
             "--prompt",
             "Hello",
-            "--system",
-            "Be terse.",
-            "--thinking",
         ]
     )
 
     rc = run_cli.cmd_run(args)
+
     assert rc == 0
-    assert len(invocations) == 1
-    cmd = invocations[0]
-    assert cmd[0] == str(fake_chat)
-    assert cmd[1] == str(bundle_dir)
-    flags = dict(zip(cmd[2::2], cmd[3::2]))
-    assert flags.get("--prompt") == "Hello"
-    assert flags.get("--system") == "Be terse."
-    assert flags.get("--image") == str(image_file.resolve())
-    assert flags.get("--audio") == str(audio_file.resolve())
-    assert "--thinking" in cmd
+    assert len(calls) == 1
+    forwarded = calls[0]
+    assert forwarded.bundle_dir == str(bundle_dir)
+    assert forwarded.audio == str(audio_file.resolve())
+    assert forwarded.audio_file == str(audio_file.resolve())
+    assert forwarded.prompt == "Hello"
+    assert forwarded._transpiled_from_run is True
     captured = capsys.readouterr().out
     assert "Starting Cactus Chat with model:" in captured
+    assert "hello from transpiled" in captured
 
 
-def test_cactus_run_rejects_non_bundle_path(tmp_path: Path, capsys) -> None:
-    not_a_bundle = tmp_path / "weights"
-    not_a_bundle.mkdir()
-    (not_a_bundle / "config.txt").write_text("placeholder", encoding="utf-8")
+def test_run_transpiled_human_result_prints_response(capsys) -> None:
+    transpile_cli._print_transpiled_run_result(
+        {
+            "response": "  generated text  ",
+            "transcript": "not used",
+        }
+    )
 
-    parser = cli.create_parser()
-    args = parser.parse_args(["run", str(not_a_bundle)])
+    assert capsys.readouterr().out == "generated text\n"
 
-    rc = run_cli.cmd_run(args)
-    assert rc == 1
-    err = capsys.readouterr().out + capsys.readouterr().err
-    assert "transpiled bundle" in err.lower() or "not a transpiled bundle" in err.lower()
+
+def test_run_transpiled_once_deduplicates_image_aliases(tmp_path: Path) -> None:
+    image_path = tmp_path / "input.png"
+    image_path.write_bytes(b"not really an image")
+    calls: list[dict[str, object]] = []
+
+    def fake_runner(bundle_dir, **kwargs):
+        calls.append({"bundle_dir": bundle_dir, **kwargs})
+        return {"response": "ok"}
+
+    args = type(
+        "Args",
+        (),
+        {
+            "image": str(image_path),
+            "image_file": [str(image_path)],
+            "image_files": [str(image_path)],
+            "audio": None,
+            "audio_file": None,
+            "prompt": "describe",
+            "input_ids": None,
+            "weights_dir": None,
+            "system": None,
+            "thinking": False,
+            "max_new_tokens": 1,
+            "stop_sequence": [],
+        },
+    )()
+
+    result = transpile_cli._run_transpiled_once(args, fake_runner, bundle_dir="bundle")
+
+    assert result == {"response": "ok"}
+    assert calls[0]["image_files"] == (str(image_path.resolve()),)
+
+
+def test_multimodal_decoder_inputs_right_align_to_static_tail() -> None:
+    class FakeComponent:
+        _input_names = ("inputs_embeds", "per_layer_inputs", "position_ids")
+
+    store = {
+        "inputs_embeds": np.arange(1 * 6 * 2, dtype=np.float16).reshape(1, 6, 2),
+        "per_layer_inputs": np.arange(1 * 6 * 1 * 2, dtype=np.float16).reshape(1, 6, 1, 2),
+        "position_ids": np.arange(6, dtype=np.int64).reshape(1, 6),
+    }
+    original = {key: value.copy() for key, value in store.items()}
+
+    component_bundle_runtime._right_align_decoder_inputs_to_static_tail(
+        store,
+        component=FakeComponent(),  # type: ignore[arg-type]
+        prompt_token_count=4,
+    )
+
+    assert np.all(store["inputs_embeds"][:, :2, :] == 0)
+    np.testing.assert_array_equal(store["inputs_embeds"][:, 2:, :], original["inputs_embeds"][:, :4, :])
+    assert np.all(store["per_layer_inputs"][:, :2, :, :] == 0)
+    np.testing.assert_array_equal(store["per_layer_inputs"][:, 2:, :, :], original["per_layer_inputs"][:, :4, :, :])
+    assert np.all(store["position_ids"][:, :2] == 0)
+    np.testing.assert_array_equal(store["position_ids"][:, 2:], original["position_ids"][:, :4])
+
+
+def test_static_input_padding_left_trims_overlong_token_inputs() -> None:
+    store = {
+        "input_ids": np.arange(6, dtype=np.int64).reshape(1, 6),
+        "attention_mask": np.ones((1, 6), dtype=np.int64),
+    }
+
+    component_bundle_runtime._pad_prepared_store_to_static_input_shapes(
+        store,
+        inputs_meta={"input_shapes": {"input_ids": [1, 4], "attention_mask": [1, 4]}},
+        tokenizer=None,
+    )
+
+    np.testing.assert_array_equal(store["input_ids"], np.asarray([[2, 3, 4, 5]], dtype=np.int64))
+    np.testing.assert_array_equal(store["attention_mask"], np.ones((1, 4), dtype=np.int64))
+
+
+def test_static_input_padding_trims_overlong_audio_features() -> None:
+    store = {
+        "input_features": np.ones((1, 6, 2), dtype=np.float16),
+        "input_features_mask": np.ones((1, 6), dtype=bool),
+    }
+
+    component_bundle_runtime._pad_prepared_store_to_static_input_shapes(
+        store,
+        inputs_meta={"input_shapes": {"input_features": [1, 4, 2], "input_features_mask": [1, 4]}},
+        tokenizer=None,
+    )
+
+    assert store["input_features"].shape == (1, 4, 2)
+    assert store["input_features_mask"].shape == (1, 4)
 
 
 def test_gemma4_multimodal_headroom_uses_context_floor() -> None:
@@ -140,43 +200,163 @@ def test_audio_waveform_loader_caps_duration(monkeypatch, tmp_path: Path) -> Non
     assert waveform.shape == (sample_rate // 2,)
 
 
-def test_materialized_transpile_constants_round_trip_header(tmp_path: Path) -> None:
-    """Verify `_write_cactus_constant_tensor` emits the documented binary layout.
-
-    The Python-side reader (`_open_cactus_tensor_file`) was removed along with
-    the rest of the Python LM-runtime; the C++ side now mmaps these files via
-    `cactus_graph_bind_mmap_weights`. This test still pins the on-disk format
-    so the C++ loader doesn't silently break.
-    """
-    from cactus.convert.cactus_adapters.tensor_io import CACTUS_MAGIC
-
-    tensor_path = tmp_path / "constant.weights"
+def test_materialized_transpile_constants_embed_in_cactus_graph(tmp_path: Path) -> None:
+    graph_path = tmp_path / "constant.cactus"
     expected = np.arange(6, dtype=np.float16).reshape(2, 3)
 
-    hf_model._write_cactus_constant_tensor(
-        output_path=tensor_path,
-        value=expected,
-        precision=int(hf_model.Graph.FP16),
+    graph = hf_model.Graph()
+    constant = graph.input(expected.shape, hf_model.Graph.FP16)
+    graph.set_input(constant, expected)
+    graph.mark_embedded_input(constant)
+    graph.save(graph_path)
+
+    assert {path.name for path in tmp_path.iterdir()} == {"constant.cactus"}
+    loaded_graph = hf_model.Graph.load(graph_path)
+    loaded_constant = component_bundle_runtime.Tensor(
+        loaded_graph,
+        constant.id,
+        constant.shape,
+        constant.dtype,
+    )
+    np.testing.assert_array_equal(loaded_constant.numpy(), expected)
+
+
+def test_stateful_decode_graphs_are_reloaded_when_bundle_cache_hits(monkeypatch, tmp_path: Path) -> None:
+    manifest = {
+        "components": [
+            {
+                "component": "vision_encoder",
+                "logical_inputs": ["pixel_values"],
+                "logical_outputs": ["image_features"],
+            },
+            {
+                "component": "decoder_prefill_chunk",
+                "logical_inputs": ["inputs_embeds"],
+                "logical_outputs": ["logits"],
+            },
+            {
+                "component": "decoder_step",
+                "logical_inputs": ["inputs_embeds"],
+                "logical_outputs": ["logits"],
+            },
+        ],
+    }
+    calls: list[str] = []
+
+    class FakeComponent:
+        def __init__(self, component: str):
+            self.component = component
+
+    def fake_manifest(_bundle_dir_or_manifest):
+        return tmp_path, manifest
+
+    def fake_load_saved_component_graph(*, component_entry, **_kwargs):
+        component = str(component_entry["component"])
+        calls.append(component)
+        return FakeComponent(component)
+
+    component_bundle_runtime._COMPONENT_GRAPH_CACHE.clear()
+    monkeypatch.setattr(component_bundle_runtime, "load_component_bundle_manifest", fake_manifest)
+    monkeypatch.setattr(component_bundle_runtime, "load_saved_component_graph", fake_load_saved_component_graph)
+
+    loaded, _ = component_bundle_runtime.load_saved_component_graphs(tmp_path)
+    assert set(loaded) == {"vision_encoder", "decoder_prefill_chunk", "decoder_step"}
+    assert calls == ["vision_encoder", "decoder_prefill_chunk", "decoder_step"]
+
+    calls.clear()
+    loaded, _ = component_bundle_runtime.load_saved_component_graphs(tmp_path)
+    assert set(loaded) == {"vision_encoder", "decoder_prefill_chunk", "decoder_step"}
+    assert calls == ["decoder_prefill_chunk", "decoder_step"]
+
+
+def test_skipped_component_outputs_are_seeded_as_zeros() -> None:
+    class FakeTensor:
+        dtype = component_bundle_runtime.Graph.FP16
+        shape = (1, 2, 3)
+
+    class FakeComponent:
+        component = "audio_encoder"
+        outputs = [FakeTensor()]
+        _output_names = ("audio_features",)
+
+    store: dict[str, np.ndarray] = {}
+    component_bundle_runtime._seed_skipped_component_outputs(
+        store,
+        component_graphs={"audio_encoder": FakeComponent()},  # type: ignore[dict-item]
+        component_names=("audio_encoder",),
     )
 
-    blob = tensor_path.read_bytes()
-    assert blob.startswith(CACTUS_MAGIC)
-    cursor = len(CACTUS_MAGIC)
-    (flags,) = struct.unpack_from("<I", blob, cursor); cursor += 4
-    (_alignment,) = struct.unpack_from("<I", blob, cursor); cursor += 4
-    (rank,) = struct.unpack_from("<I", blob, cursor); cursor += 4
-    shape = list(struct.unpack_from("<QQQQ", blob, cursor))
-    cursor += 32
-    (precision,) = struct.unpack_from("<I", blob, cursor); cursor += 4
-    (data_bytes,) = struct.unpack_from("<Q", blob, cursor); cursor += 8
+    assert set(store) == {"audio_features"}
+    assert store["audio_features"].shape == (1, 2, 3)
+    assert store["audio_features"].dtype == np.float16
+    assert np.all(store["audio_features"] == 0)
 
-    assert flags == 0
-    assert rank == 2
-    assert shape[:2] == [2, 3]
-    assert precision == int(hf_model.Graph.FP16)
-    assert data_bytes == expected.nbytes
-    payload = np.frombuffer(blob[-expected.nbytes:], dtype=np.float16).reshape(2, 3)
-    np.testing.assert_array_equal(payload, expected)
+
+def test_gemma4_multimodal_bundle_uses_text_only_cached_path_without_media(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_text_only(**kwargs):
+        calls.append(kwargs)
+        return {"response": "ok", "decode_mode": "cached_step_text"}
+
+    monkeypatch.setattr(component_bundle_runtime, "_run_gemma4_text_only_cached_bundle", fake_text_only)
+
+    result = component_bundle_runtime._run_multimodal_causal_lm_bundle(
+        component_graphs={
+            "lm_encoder_step": object(),  # type: ignore[dict-item]
+            "decoder_step": object(),  # type: ignore[dict-item]
+        },
+        manifest={"family": "gemma4", "task": "multimodal_causal_lm_logits", "inputs": {}},
+        prompt="Hello",
+        image_files=(),
+        audio_file=None,
+        torch_dtype=component_bundle_runtime.torch.float16,
+        system_prompt=None,
+        enable_thinking=False,
+        max_new_tokens=1,
+        stop_sequences=(),
+    )
+
+    assert result == {"response": "ok", "decode_mode": "cached_step_text"}
+    assert calls and calls[0]["prompt"] == "Hello"
+
+
+def test_gemma4_prompt_uses_chat_turn_format() -> None:
+    class FakeTokenizer:
+        def __call__(self, text, **_kwargs):
+            return {"input_ids": [ord(char) for char in text]}
+
+    ids = component_bundle_runtime._tokenize_bundle_prompt_for_manifest(
+        {"family": "gemma4"},
+        FakeTokenizer(),
+        "Hello",
+    )
+    decoded = "".join(chr(value) for value in ids)
+
+    assert decoded == "<bos><|turn>user\nHello<turn|>\n<|turn>model\n"
+
+
+def test_gemma4_stop_token_ids_include_turn_end() -> None:
+    class FakeTokenizer:
+        eos_token_id = None
+
+        def convert_tokens_to_ids(self, token):
+            return {"<turn|>": 106, "<eos>": 1}.get(token)
+
+    assert component_bundle_runtime._bundle_stop_token_ids(
+        manifest={"family": "gemma4"},
+        tokenizer=FakeTokenizer(),
+    ) == {1, 106}
+
+
+def test_media_turns_do_not_replay_text_history() -> None:
+    history = [
+        ("user", "Tell me about mountains"),
+        ("assistant", "Mountains are tall landforms." * 20),
+    ]
+
+    assert transpile_cli._history_for_transpiled_turn(history, has_media=False) is history
+    assert transpile_cli._history_for_transpiled_turn(history, has_media=True) == []
 
 
 def test_runtime_image_inputs_resize_to_static_square(tmp_path: Path) -> None:
@@ -189,4 +369,7 @@ def test_runtime_image_inputs_resize_to_static_square(tmp_path: Path) -> None:
     Image.new("RGB", (20, 40), color=(255, 0, 0)).save(image_path)
 
     images = multimodal_runtime._load_image_inputs((str(image_path),))
+    lfm_images = component_bundle_runtime._load_image_inputs_for_runtime((str(image_path),))
+
     assert images[0].size == (256, 256)
+    assert lfm_images[0].size == (256, 256)

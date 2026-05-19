@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 import ctypes
+import itertools
 import json
+import math
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -28,9 +30,10 @@ from cactus.transpile.graph_ir import IRGraph
 from cactus.transpile.graph_ir import IRNode
 from cactus.transpile.graph_ir import IRValue
 from cactus.transpile.media_limits import resize_static_image
+from cactus.transpile.model_profiles import profile_for_family
 from cactus.transpile.lower import transpile_preoptimized_ir
 from cactus.transpile.optimize_graph import optimize_graph
-from cactus.transpile.runtime_support import ensure_transformers_supports_gemma4
+from cactus.transpile.runtime_support import ensure_transformers_supports_profile
 from cactus.transpile.runtime_support import patch_torch_flex_attention_compat
 from cactus.transpile.runtime_support import patch_transformers_torchvision_probe
 from cactus.transpile.runtime_support import PreparedInputs
@@ -41,6 +44,7 @@ from cactus.transpile.runtime_compat import _lib
 from cactus.transpile.runtime_compat import cactus_node_t
 from cactus.transpile.runtime_compat import Graph
 from cactus.transpile.runtime_compat import Tensor
+from cactus.transpile.weight_binding import resolve_weight_binding
 
 
 _HEADER_SIZE = 84
@@ -55,9 +59,11 @@ _PRECISION_TO_DTYPE = {
     getattr(Graph, "CQ4", 6): np.uint8,
 }
 
-_STATEFUL_DECODE_COMPONENTS = frozenset({"decoder_prefill_chunk", "decoder_step"})
+_STATEFUL_DECODE_COMPONENTS = frozenset({"decoder_prefill_chunk", "decoder_media_step", "decoder_step"})
 _COMPONENT_GRAPH_CACHE: dict[tuple[str, str | None, str], tuple[dict[str, "LoadedComponentGraph"], dict[str, object]]] = {}
 _MULTIMODAL_ENCODER_FEATURE_CACHE: dict[tuple[str, str, tuple[str, ...], str | None], dict[str, np.ndarray]] = {}
+_TOKENIZER_CACHE: dict[tuple[str, ...], object] = {}
+_PROCESSOR_CACHE: dict[tuple[str, ...], object] = {}
 _UNBOUNDED_GENERATION_GUARD_TOKENS = 512
 
 
@@ -174,6 +180,31 @@ def load_saved_component_graph(
     has_graph = isinstance(graph_relpath, str) and bool(graph_relpath)
     graph_path = (root / str(graph_relpath)).resolve() if has_graph else None
     prefer_saved_graph = os.environ.get("CACTUS_TRANSPILER_PREFER_SAVED_GRAPH", "1") != "0"
+    family = str(component_entry.get("family", "") or component_entry.get("adapter_family", "") or "").strip().lower()
+    component_name = str(component_entry.get("component", "") or "").strip().lower()
+    if not family:
+        ir_relpath = component_entry.get("optimized_ir") or component_entry.get("raw_ir")
+        if isinstance(ir_relpath, str) and ir_relpath:
+            try:
+                ir_payload = json.loads((root / ir_relpath).read_text())
+                family = str(ir_payload.get("family", "") or "").strip().lower()
+            except Exception:
+                family = ""
+    profile = profile_for_family(family)
+    bound_constant_bindings = list(component_entry.get("bound_constant_bindings") or [])
+    has_saved_constant_bindings = any(
+        isinstance(binding, dict) and str(binding.get("kind", "")) == "saved_constant"
+        for binding in bound_constant_bindings
+    )
+    if profile is not None and component_name in profile.fp16_kv_cache_components:
+        os.environ.setdefault("CACTUS_KV_CACHE_FP16", "1")
+    if profile is not None and component_name in profile.ir_replay_components:
+        # Older Gemma4 media bundles can deserialize successfully while returning
+        # stale media features from graph.cactus. Replaying the op IR preserves the
+        # same Cactus ops and picks up runtime fixes for native media preprocessing
+        # and Gemma4's tensor-valued clippable-linear bounds / split-decoder
+        # sliding-attention metadata.
+        prefer_saved_graph = False
     if prefer_saved_graph and graph_path is not None and graph_path.exists():
         try:
             graph = Graph.load(graph_path)
@@ -186,7 +217,6 @@ def load_saved_component_graph(
                 graph._tensor_from_node(int(node_id))
                 for node_id in component_entry.get("output_node_ids", [])
             ]
-            bound_constant_bindings = list(component_entry.get("bound_constant_bindings") or [])
             bound_tensor_files = _rebind_bound_constants(
                 graph=graph,
                 bundle_root=root,
@@ -287,16 +317,23 @@ def _load_component_graph_from_ir(
     else:
         family = str(ir_graph.meta.get("adapter_family") or ir_graph.meta.get("family") or "").strip().lower()
         component = str(ir_graph.meta.get("component", "") or component_entry.get("component", "") or "").strip().lower()
-        if family == "gemma4" and component in {"decoder", "decoder_step"}:
+        profile = profile_for_family(family)
+        if profile is not None and component in profile.fp16_kv_cache_components + ("decoder",):
             optimize_graph(ir_graph)
     transpiled = transpile_preoptimized_ir(ir_graph)
+    bound_tensor_files = _rebind_bound_constants(
+        graph=transpiled.graph,
+        bundle_root=bundle_root,
+        bindings=list(transpiled.bound_constant_bindings),
+        weights_dir=weights_dir,
+    )
     return LoadedComponentGraph(
         component=str(component_entry.get("component", "unknown")),
         graph=transpiled.graph,
         runtime_inputs=list(transpiled.runtime_inputs),
         outputs=list(transpiled.outputs),
-        bound_constant_bindings=list(component_entry.get("bound_constant_bindings") or []),
-        bound_tensor_files=[],
+        bound_constant_bindings=list(transpiled.bound_constant_bindings),
+        bound_tensor_files=bound_tensor_files,
         cache_state_tensors=list(getattr(transpiled, "cache_state_tensors", [])),
     )
 
@@ -399,26 +436,88 @@ def run_transpiled_bundle(
     resolved_weights_dir = _default_weights_dir_for_manifest(manifest, explicit=weights_dir)
     family = str(manifest.get("family", "") or "")
     task = str(manifest.get("task", "") or "")
+    profile = profile_for_family(family)
 
     include_components = runtime_include_components_for_manifest(
         family=family,
         task=task,
         manifest=manifest,
     )
+    manifest_components = {
+        str(component_entry.get("component", "")).strip()
+        for component_entry in manifest.get("components", [])
+        if isinstance(component_entry, dict)
+    }
     if (
-        family == "gemma4"
+        profile is not None
+        and profile.family == "gemma4"
+        and profile.cached_step_components
+        and task == "multimodal_causal_lm_logits"
+        and prompt is not None
+        and set(profile.cached_step_components).issubset(manifest_components)
+        and os.environ.get("CACTUS_TRANSPILER_DISABLE_CACHED_STEP_DECODE") != "1"
+    ):
+        include_components = set(profile.cached_step_components)
+        for component_name in (
+            "decoder_prefill_chunk",
+            "lm_encoder_text_chunk",
+            "lm_encoder_media_step",
+            "lm_encoder_media_chunk",
+        ):
+            if component_name in manifest_components:
+                include_components.add(component_name)
+        if image_files and "vision_encoder" in manifest_components:
+            include_components.add("vision_encoder")
+        if audio_file is not None and "audio_encoder" in manifest_components:
+            include_components.add("audio_encoder")
+    if (
+        profile is not None
+        and profile.family == "qwen"
+        and task == "multimodal_causal_lm_logits"
+        and image_files
+    ):
+        if {"vision_encoder", "lm_encoder", "lm_encoder_step", "decoder_media_step"}.issubset(manifest_components):
+            include_components = {"vision_encoder", "lm_encoder", "lm_encoder_step", "decoder_media_step"}
+        else:
+            include_components = {
+                name
+                for name in ("vision_encoder", "lm_encoder", "decoder")
+                if name in manifest_components
+            }
+    if (
+        profile is not None
+        and profile.family == "lfm2_vl"
         and task == "multimodal_causal_lm_logits"
         and prompt is not None
         and not image_files
         and audio_file is None
+        and {"lm_encoder_step", "decoder_step"}.issubset(manifest_components)
+        and os.environ.get("CACTUS_TRANSPILER_DISABLE_CACHED_STEP_DECODE") != "1"
     ):
-        manifest_components = {
-            str(component_entry.get("component", "")).strip()
-            for component_entry in manifest.get("components", [])
-            if isinstance(component_entry, dict)
-        }
-        if {"lm_encoder_step", "decoder_step"}.issubset(manifest_components):
-            include_components = {"lm_encoder_step", "decoder_step"}
+        include_components = {"lm_encoder_step", "decoder_step"}
+    elif (
+        profile is not None
+        and profile.family == "lfm2_vl"
+        and task == "multimodal_causal_lm_logits"
+        and prompt is not None
+        and not image_files
+        and audio_file is None
+        and {"text_lm_encoder", "text_decoder"}.issubset(manifest_components)
+    ):
+        include_components = {"text_lm_encoder", "text_decoder"}
+    elif (
+        profile is not None
+        and profile.cached_step_components
+        and task == "causal_lm_logits"
+        and os.environ.get("CACTUS_TRANSPILER_DISABLE_CACHED_STEP_DECODE") != "1"
+    ):
+        cached_components = set(profile.cached_step_components)
+        if cached_components.issubset(manifest_components):
+            include_components = cached_components
+    elif profile is not None and profile.cached_step_components and task == "multimodal_causal_lm_logits" and prompt is not None and not image_files and audio_file is None:
+        cached_components = set(profile.cached_step_components)
+        if cached_components.issubset(manifest_components):
+            include_components = cached_components
     component_graphs, manifest = load_saved_component_graphs(
         bundle_dir_or_manifest,
         weights_dir=resolved_weights_dir,
@@ -426,7 +525,7 @@ def run_transpiled_bundle(
     )
     manifest = dict(manifest)
     manifest["_bundle_root"] = str(bundle_root)
-    if family == "parakeet_tdt" and task == "tdt_transcription":
+    if profile is not None and profile.family == "parakeet_tdt" and task == "tdt_transcription":
         if audio_file is None:
             raise ValueError("audio_file is required for Parakeet TDT component bundles")
         return _run_parakeet_tdt_bundle(
@@ -507,16 +606,19 @@ def runtime_include_components_for_manifest(
         for component_entry in manifest.get("components", [])
         if isinstance(component_entry, dict)
     }
+    profile = profile_for_family(family)
     if (
-        family == "gemma4"
-        and task == "multimodal_causal_lm_logits"
-        and {"lm_encoder_step", "decoder_step"}.issubset(manifest_components)
+        profile is not None
+        and profile.cached_step_components
+        and task in {"multimodal_causal_lm_logits", "causal_lm_logits"}
+        and set(profile.cached_step_components).issubset(manifest_components)
         and os.environ.get("CACTUS_TRANSPILER_DISABLE_CACHED_STEP_DECODE") != "1"
     ):
         # Older Gemma bundles may include a full static decoder. Cached decode
         # should not pay to load it when step graphs are available.
         include_components = set(manifest_components)
-        include_components.discard("decoder")
+        for component in profile.cached_step_skip_components:
+            include_components.discard(component)
         return include_components
     return None
 
@@ -528,6 +630,9 @@ def _default_weights_dir_for_manifest(
 ) -> str | Path | None:
     if explicit is not None:
         return explicit
+    bundle_root = _bundle_root_from_manifest(manifest)
+    if bundle_root is not None and (bundle_root / "weights_manifest.json").exists():
+        return bundle_root
     model_id = str(manifest.get("model_id", "") or "").strip()
     if not model_id:
         return None
@@ -656,6 +761,12 @@ def _deserialize_saved_ir_graph(
         order.append(node_id)
 
     constants_payload = graph_payload.get("constants")
+    _repair_saved_ir_graph_structure(
+        values=values,
+        nodes=nodes,
+        order=order,
+        constants_payload=constants_payload,
+    )
     if not isinstance(constants_payload, dict):
         raise ValueError("saved optimized IR graph is missing constants payload")
 
@@ -691,6 +802,51 @@ def _deserialize_saved_ir_graph(
     )
 
 
+def _repair_saved_ir_graph_structure(
+    *,
+    values: dict[str, IRValue],
+    nodes: dict[str, IRNode],
+    order: list[str],
+    constants_payload: object,
+) -> None:
+    """Repair deterministic helper values omitted by older IR JSON writers."""
+
+    if not isinstance(constants_payload, dict):
+        return
+    query_mask = values.get("v_and_1")
+    valid_mask = values.get("v_bitwise_not")
+    and_node = nodes.get("n_and_2")
+    if (
+        query_mask is not None
+        and valid_mask is not None
+        and and_node is not None
+        and query_mask.producer is None
+        and tuple(query_mask.shape or ())[:2] == (1, 1)
+        and tuple(query_mask.shape or ())[-1:] == (1,)
+        and "v_and_1" in and_node.inputs
+    ):
+        repair_node_id = "n_repair_v_and_1_query_mask"
+        if repair_node_id not in nodes:
+            shape = tuple(int(dim) for dim in (query_mask.shape or ()))
+            nodes[repair_node_id] = IRNode(
+                id=repair_node_id,
+                op="view",
+                inputs=["v_bitwise_not"],
+                outputs=["v_and_1"],
+                attrs={"shape": shape},
+                meta={"repair": "vision_query_attention_mask"},
+            )
+            try:
+                insert_at = order.index("n_and_2")
+            except ValueError:
+                insert_at = len(order)
+            order.insert(insert_at, repair_node_id)
+        query_mask.producer = repair_node_id
+        if repair_node_id not in valid_mask.users:
+            valid_mask.users.append(repair_node_id)
+        constants_payload.pop("v_and_1", None)
+
+
 def _deserialize_saved_ir_constant(
     *,
     value: IRValue,
@@ -713,10 +869,34 @@ def _deserialize_saved_ir_constant(
         }.get(name)
 
     meta = value.meta if isinstance(value.meta, dict) else {}
+    if isinstance(serialized, dict):
+        value_type = str(serialized.get("type", ""))
+        shape = tuple(int(dim) for dim in serialized.get("shape", []) or [])
+        if value_type in {"torch.Tensor", "numpy.ndarray"} and not shape and "data" in serialized:
+            dtype = _torch_dtype_from_name(str(serialized.get("dtype", ""))) or torch.float32
+            return torch.as_tensor(serialized.get("data"), dtype=dtype).reshape(())
+
     if isinstance(meta.get("path"), str) and isinstance(meta.get("kind"), str):
         # The lowerer ignores the constant payload when a weight binding is present
         # in IRValue metadata and re-attaches the mmap-backed tensor directly.
+        # Scalar bound constants are handled above because some ops, notably
+        # Gemma4's clippable-linears, need the min/max values at lower time.
         return 0
+
+    source_name = str(meta.get("source_name", "") or "")
+    if source_name and weights_dir is not None:
+        repaired_binding = resolve_weight_binding(
+            weights_dir=str(weights_dir),
+            source_name=source_name,
+        )
+        if repaired_binding is not None:
+            value.meta = {
+                **meta,
+                "path": repaired_binding.path,
+                "kind": repaired_binding.kind,
+                "source_name": source_name,
+            }
+            return 0
 
     if isinstance(binding, Mapping):
         binding_format = str(binding.get("format", "tensor_io") or "tensor_io")
@@ -747,10 +927,39 @@ def _deserialize_saved_ir_constant(
         value_type = str(serialized.get("type", ""))
         if value_type in {"torch.Tensor", "numpy.ndarray"}:
             shape = tuple(int(dim) for dim in serialized.get("shape", []) or [])
+            dtype = _torch_dtype_from_name(str(serialized.get("dtype", ""))) or torch.float32
+            if "data" in serialized:
+                tensor = torch.as_tensor(serialized.get("data"), dtype=dtype)
+                return tensor.reshape(shape) if shape else tensor.reshape(())
+            zero_scalar = False if dtype is torch.bool else 0
             if not shape:
-                dtype = _torch_dtype_from_name(str(serialized.get("dtype", ""))) or torch.float32
-                zero_scalar = False if dtype is torch.bool else 0
+                repaired = _repair_missing_saved_ir_scalar_constant(
+                    value=value,
+                    dtype=dtype,
+                    bundle_root=bundle_root,
+                    weights_dir=weights_dir,
+                )
+                if repaired is not None:
+                    return repaired
                 return torch.tensor(zero_scalar, dtype=dtype)
+            repaired = _repair_missing_saved_ir_tensor_constant(
+                value=value,
+                shape=shape,
+                dtype=dtype,
+                bundle_root=bundle_root,
+                weights_dir=weights_dir,
+            )
+            if repaired is not None:
+                return repaired
+            # Older bundles can contain tiny folded tensor constants whose payload
+            # was intentionally omitted because they came from shape/index helper
+            # ops instead of model weights. Only zero-fill anonymous helpers; named
+            # model/config constants must be materialized or explicitly repaired.
+            source_name = str((value.meta or {}).get("source_name", "") or "")
+            if not source_name and int(np.prod(shape, dtype=np.int64)) <= 16:
+                return torch.full(shape, zero_scalar, dtype=dtype)
+            if str(value.id).startswith("c_rms_norm_ones_"):
+                return torch.ones(shape, dtype=dtype)
             raise ValueError(
                 "saved optimized IR is missing a materialized constant payload for "
                 f"{value.id} with shape={shape}; expected a bound_constants entry"
@@ -758,6 +967,280 @@ def _deserialize_saved_ir_constant(
         return dict(serialized)
 
     return serialized
+
+
+def _repair_missing_saved_ir_scalar_constant(
+    *,
+    value: IRValue,
+    dtype: torch.dtype,
+    bundle_root: Path,
+    weights_dir: str | Path | None,
+) -> torch.Tensor | None:
+    """Repair scalar config constants omitted by older IR JSON writers."""
+
+    source_name = str((value.meta or {}).get("source_name", "") or "")
+    if source_name.endswith(".self_attn.softcap"):
+        cap = _resolve_gemma4_audio_attention_logit_cap(bundle_root=bundle_root, weights_dir=weights_dir)
+        return torch.tensor(cap, dtype=dtype)
+    return None
+
+
+def _repair_missing_saved_ir_tensor_constant(
+    *,
+    value: IRValue,
+    shape: tuple[int, ...],
+    dtype: torch.dtype,
+    bundle_root: Path,
+    weights_dir: str | Path | None,
+) -> torch.Tensor | None:
+    """Repair deterministic non-parameter buffers omitted by older IR JSON writers."""
+
+    source_name = str((value.meta or {}).get("source_name", "") or "")
+    value_id = str(value.id)
+    if (
+        dtype in {torch.float16, torch.float32}
+        and (
+            source_name.endswith("rotary_emb.inv_freq")
+            or "rotary_emb_inv_freq" in value_id
+        )
+    ):
+        repaired_rope = _repair_missing_text_rope_inv_freq(
+            value=value,
+            shape=shape,
+            dtype=dtype,
+            bundle_root=bundle_root,
+            weights_dir=weights_dir,
+        )
+        if repaired_rope is not None:
+            return repaired_rope
+    if "audio_tower.rel_pos_enc.inv_timescales" in source_name or "audio_tower_rel_pos_enc_inv_timescales" in value_id:
+        num_timescales = int(shape[-1]) if shape else 0
+        if num_timescales <= 0:
+            return None
+        max_timescale = _resolve_gemma4_audio_max_timescale(bundle_root=bundle_root, weights_dir=weights_dir)
+        increment = math.log(max_timescale) / max(num_timescales - 1, 1)
+        inv = torch.exp(torch.arange(num_timescales, dtype=torch.float32) * -increment)
+        return inv.reshape(shape).to(dtype=dtype)
+    if dtype is torch.int64 and value_id.startswith("v_unsqueeze") and len(shape) == 2:
+        if shape[1] == 1:
+            return torch.arange(shape[0], dtype=dtype).reshape(shape)
+        if shape[0] == 1:
+            return torch.arange(shape[1], dtype=dtype).reshape(shape)
+    if dtype is torch.int64 and value_id.startswith("v_unsqueeze") and len(shape) == 4:
+        if shape[:3] == (1, 1, 1):
+            return torch.arange(shape[3], dtype=dtype).reshape(shape)
+    if dtype in {torch.bool, torch.float16, torch.float32} and value_id.startswith("v_and_") and len(shape) == 4:
+        if shape[:2] == (1, 1) and shape[2] == shape[3]:
+            mask = torch.ones((shape[2], shape[3]), dtype=torch.bool).tril()
+            return mask.reshape(shape).to(dtype=dtype)
+        if shape[:2] == (1, 1) and (shape[2] == 1 or shape[3] == 1):
+            return torch.ones(shape, dtype=dtype)
+    if dtype is torch.int64 and value_id.startswith("v_inl_") and len(shape) == 2 and shape[1] == 1:
+        return torch.arange(shape[0] - 1, -1, -1, dtype=dtype).reshape(shape)
+    if dtype in {torch.float16, torch.float32} and value_id.startswith("v_inl_") and len(shape) == 3:
+        repaired_rope = _repair_gemma4_missing_rope_inv_freq(
+            value=value,
+            shape=shape,
+            dtype=dtype,
+            bundle_root=bundle_root,
+            weights_dir=weights_dir,
+        )
+        if repaired_rope is not None:
+            return repaired_rope
+    return None
+
+
+def _repair_missing_text_rope_inv_freq(
+    *,
+    value: IRValue,
+    shape: tuple[int, ...],
+    dtype: torch.dtype,
+    bundle_root: Path,
+    weights_dir: str | Path | None,
+) -> torch.Tensor | None:
+    """Repair deterministic text RoPE buffers omitted from saved IR JSON.
+
+    These buffers are derived from config (`rope_theta`, head size) rather than
+    learned weights, so regenerating them keeps IR replay graph-only and avoids
+    storing ad hoc NumPy sidecars.
+    """
+
+    flat_count = int(np.prod(shape, dtype=np.int64)) if shape else 0
+    if flat_count <= 0:
+        return None
+    config = _load_bundle_config_json(bundle_root=bundle_root, weights_dir=weights_dir)
+    if not config:
+        return None
+    text_config = config.get("text_config") if isinstance(config.get("text_config"), Mapping) else config
+    if not isinstance(text_config, Mapping):
+        return None
+    head_dim = int(text_config.get("head_dim") or 0)
+    if head_dim <= 0:
+        hidden_size = int(text_config.get("hidden_size") or text_config.get("hidden_dim") or 0)
+        num_heads = int(text_config.get("num_attention_heads") or text_config.get("num_heads") or 0)
+        if hidden_size > 0 and num_heads > 0:
+            head_dim = hidden_size // num_heads
+    if head_dim <= 0 or flat_count != head_dim // 2:
+        return None
+    rope_parameters = text_config.get("rope_parameters")
+    base = float(text_config.get("rope_theta", config.get("rope_theta", 10000.0)) or 10000.0)
+    if isinstance(rope_parameters, Mapping):
+        default_params = rope_parameters.get("default")
+        if isinstance(default_params, Mapping):
+            base = float(default_params.get("rope_theta", base) or base)
+        else:
+            base = float(rope_parameters.get("rope_theta", base) or base)
+    inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / float(head_dim)))
+    return inv_freq.reshape(shape).to(dtype=dtype)
+
+
+def _repair_gemma4_missing_rope_inv_freq(
+    *,
+    value: IRValue,
+    shape: tuple[int, ...],
+    dtype: torch.dtype,
+    bundle_root: Path,
+    weights_dir: str | Path | None,
+) -> torch.Tensor | None:
+    if len(shape) != 3 or int(shape[0]) != 1 or int(shape[2]) != 1:
+        return None
+    component = str((value.meta or {}).get("component", "") or "").strip().lower()
+    if component not in {"decoder", "decoder_step", "decoder_prefill_chunk", "vision_encoder"}:
+        return None
+    config = _load_bundle_config_json(bundle_root=bundle_root, weights_dir=weights_dir)
+    if not config:
+        return None
+    count = int(shape[1])
+    if component == "vision_encoder":
+        vision_config = config.get("vision_config")
+        if not isinstance(vision_config, Mapping):
+            return None
+        rope_parameters = vision_config.get("rope_parameters")
+        if not isinstance(rope_parameters, Mapping):
+            return None
+        base = float(rope_parameters.get("rope_theta", 100.0) or 100.0)
+        spatial_dim = max(2, count * 2)
+        inv_freq = 1.0 / (base ** (torch.arange(0, spatial_dim, 2, dtype=torch.float32) / float(spatial_dim)))
+        return inv_freq[:count].reshape(shape).to(dtype=dtype)
+
+    text_config = config.get("text_config")
+    if not isinstance(text_config, Mapping):
+        return None
+    rope_parameters = text_config.get("rope_parameters")
+    head_dim = int(text_config.get("head_dim") or 0)
+    if head_dim <= 0:
+        hidden_size = int(text_config.get("hidden_size") or text_config.get("hidden_dim") or 0)
+        num_heads = int(text_config.get("num_attention_heads") or text_config.get("num_heads") or 0)
+        if hidden_size > 0 and num_heads > 0:
+            head_dim = hidden_size // num_heads
+    global_head_dim = int(text_config.get("global_head_dim") or 0)
+    if head_dim > 0 and count == head_dim // 2 and not isinstance(rope_parameters, Mapping):
+        base = float(text_config.get("rope_theta", config.get("rope_theta", 10000.0)) or 10000.0)
+        inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / float(head_dim)))
+        return inv_freq.reshape(shape).to(dtype=dtype)
+    if not isinstance(rope_parameters, Mapping):
+        return None
+    if head_dim > 0 and count == head_dim // 2 and "sliding_attention" not in rope_parameters:
+        base = float(
+            rope_parameters.get("rope_theta", text_config.get("rope_theta", config.get("rope_theta", 10000.0)))
+            or 10000.0
+        )
+        inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / float(head_dim)))
+        return inv_freq.reshape(shape).to(dtype=dtype)
+    if head_dim > 0 and count == head_dim // 2:
+        sliding = rope_parameters.get("sliding_attention")
+        if not isinstance(sliding, Mapping):
+            return None
+        base = float(sliding.get("rope_theta", 10000.0) or 10000.0)
+        inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / float(head_dim)))
+        return inv_freq.reshape(shape).to(dtype=dtype)
+    if global_head_dim > 0 and count == global_head_dim // 2:
+        full = rope_parameters.get("full_attention")
+        if not isinstance(full, Mapping):
+            return None
+        base = float(full.get("rope_theta", 1000000.0) or 1000000.0)
+        factor = float(full.get("factor", 1.0) or 1.0)
+        rotary_factor = float(full.get("partial_rotary_factor", 1.0) or 1.0)
+        rope_angles = int(rotary_factor * global_head_dim // 2)
+        rotated = 1.0 / (
+            base ** (torch.arange(0, 2 * rope_angles, 2, dtype=torch.float32) / float(global_head_dim))
+        )
+        if rope_angles < count:
+            inv_freq = torch.cat((rotated, torch.zeros(count - rope_angles, dtype=torch.float32)), dim=0)
+        else:
+            inv_freq = rotated[:count]
+        return (inv_freq / factor).reshape(shape).to(dtype=dtype)
+    return None
+
+
+def _load_bundle_config_json(
+    *,
+    bundle_root: Path,
+    weights_dir: str | Path | None,
+) -> dict[str, object]:
+    candidates: list[Path] = []
+    if weights_dir is not None:
+        candidates.append(Path(weights_dir).expanduser().resolve() / "config.json")
+    candidates.append(bundle_root / "config.json")
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _resolve_gemma4_audio_max_timescale(
+    *,
+    bundle_root: Path,
+    weights_dir: str | Path | None,
+) -> float:
+    candidates: list[Path] = []
+    if weights_dir is not None:
+        candidates.append(Path(weights_dir).expanduser().resolve() / "config.json")
+    candidates.append(bundle_root / "config.json")
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        audio_config = payload.get("audio_config")
+        if not isinstance(audio_config, Mapping):
+            continue
+        raw = audio_config.get("rel_pos_max_timescale")
+        if isinstance(raw, (int, float)) and float(raw) > 0:
+            return float(raw)
+    return 10000.0
+
+
+def _resolve_gemma4_audio_attention_logit_cap(
+    *,
+    bundle_root: Path,
+    weights_dir: str | Path | None,
+) -> float:
+    candidates: list[Path] = []
+    if weights_dir is not None:
+        candidates.append(Path(weights_dir).expanduser().resolve() / "config.json")
+    candidates.append(bundle_root / "config.json")
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        audio_config = payload.get("audio_config")
+        if not isinstance(audio_config, Mapping):
+            continue
+        for key in ("attention_logit_cap", "conf_attention_logit_cap", "audio_logit_cap"):
+            raw = audio_config.get(key)
+            if isinstance(raw, (int, float)):
+                return float(raw)
+    return 50.0
 
 
 def execute_loaded_component_pipeline(
@@ -937,6 +1420,23 @@ def _copy_component_cache_states(
             ctypes.memmove(_tensor_data_ptr(target_tensor), _tensor_data_ptr(source_tensor), byte_size)
 
 
+def _component_cache_states_compatible(
+    source: LoadedComponentGraph,
+    target: LoadedComponentGraph,
+) -> bool:
+    source_states = list(source.cache_state_tensors)
+    target_states = list(target.cache_state_tensors)
+    if not source_states or not target_states or len(source_states) != len(target_states):
+        return False
+    for (source_layer, source_k, source_v), (target_layer, target_k, target_v) in zip(source_states, target_states, strict=True):
+        if source_layer != target_layer:
+            return False
+        for source_tensor, target_tensor in ((source_k, target_k), (source_v, target_v)):
+            if _tensor_byte_size(source_tensor) != _tensor_byte_size(target_tensor):
+                return False
+    return True
+
+
 def _copy_gemma4_decoder_inputs(
     buffers: Mapping[str, np.ndarray],
     *,
@@ -956,6 +1456,73 @@ def _copy_gemma4_decoder_inputs(
         buffers["position_ids"],
         np.asarray(position_ids, dtype=buffers["position_ids"].dtype),
     )
+
+
+def _copy_lfm2_decoder_inputs(
+    buffers: Mapping[str, np.ndarray],
+    *,
+    inputs_embeds: np.ndarray,
+    attention_mask: np.ndarray,
+    position_ids: np.ndarray,
+) -> None:
+    np.copyto(
+        buffers["inputs_embeds"],
+        np.asarray(inputs_embeds, dtype=buffers["inputs_embeds"].dtype),
+    )
+    np.copyto(
+        buffers["attention_mask"],
+        np.asarray(attention_mask, dtype=buffers["attention_mask"].dtype),
+    )
+    np.copyto(
+        buffers["position_ids"],
+        np.asarray(position_ids, dtype=buffers["position_ids"].dtype),
+    )
+
+
+def _copy_qwen_decoder_inputs(
+    buffers: Mapping[str, np.ndarray],
+    *,
+    inputs_embeds: np.ndarray,
+    position_ids: np.ndarray,
+) -> None:
+    np.copyto(
+        buffers["inputs_embeds"],
+        np.asarray(inputs_embeds, dtype=buffers["inputs_embeds"].dtype),
+    )
+    np.copyto(
+        buffers["position_ids"],
+        np.asarray(position_ids, dtype=buffers["position_ids"].dtype),
+    )
+
+
+def _bind_gated_deltanet_state_feedback(component: LoadedComponentGraph) -> dict[str, np.ndarray]:
+    """Bind hidden Gated DeltaNet state inputs and feed outputs back each step."""
+
+    buffers: dict[str, np.ndarray] = {}
+    for layer_key, state_input, _ in component.cache_state_tensors:
+        if not str(layer_key).startswith("gdn:"):
+            continue
+        buffer = np.zeros(tuple(int(dim) for dim in state_input.shape), dtype=np.float16)
+        component.graph.set_external_input(
+            state_input,
+            int(buffer.ctypes.data),
+            dtype=state_input.dtype,
+        )
+        buffers[str(layer_key)] = buffer
+    return buffers
+
+
+def _refresh_gated_deltanet_state_feedback(
+    component: LoadedComponentGraph,
+    buffers: Mapping[str, np.ndarray],
+) -> None:
+    if not buffers:
+        return
+    for layer_key, _, state_output in component.cache_state_tensors:
+        buffer = buffers.get(str(layer_key))
+        if buffer is None:
+            continue
+        np.copyto(buffer, np.asarray(state_output.numpy(), dtype=buffer.dtype))
 
 
 def _run_parakeet_tdt_bundle(
@@ -1113,7 +1680,7 @@ def _execute_multimodal_component_pipeline_for_generation(
             for output_name in output_names:
                 store[output_name] = np.ascontiguousarray(cached_features[output_name])
             continue
-        if component_name == "decoder":
+        if family not in {"lfm2_vl", "qwen"} and (component_name == "decoder" or component_name.endswith("_decoder")):
             _right_align_decoder_inputs_to_static_tail(
                 store,
                 component=component,
@@ -1175,13 +1742,24 @@ def _run_multimodal_causal_lm_bundle(
     stop_sequences: tuple[str, ...],
 ) -> dict[str, object]:
     family = str(manifest.get("family", "") or "").strip().lower()
+    profile = profile_for_family(family)
+    cached_step_components = tuple(profile.cached_step_components) if profile is not None else ()
     use_cached_step_decode = (
-        family == "gemma4"
-        and "lm_encoder_step" in component_graphs
-        and "decoder_step" in component_graphs
+        bool(cached_step_components)
+        and set(cached_step_components).issubset(component_graphs)
         and os.environ.get("CACTUS_TRANSPILER_DISABLE_CACHED_STEP_DECODE") != "1"
     )
-    use_chunk_prefill = use_cached_step_decode and "decoder_prefill_chunk" in component_graphs
+    use_chunk_prefill = (
+        use_cached_step_decode
+        and "decoder_prefill_chunk" in component_graphs
+        and os.environ.get("CACTUS_TRANSPILER_DISABLE_CHUNK_PREFILL") != "1"
+    )
+    dynamic_media_step_component = profile.dynamic_media_step_component if profile is not None else None
+    use_dynamic_media_encoder = (
+        dynamic_media_step_component is not None
+        and use_cached_step_decode
+        and dynamic_media_step_component in component_graphs
+    )
     inputs_meta = manifest.get("inputs") if isinstance(manifest.get("inputs"), dict) else {}
     resolved_prompt = prompt if prompt is not None else str(inputs_meta.get("prompt", "") or "")
     if not resolved_prompt:
@@ -1210,7 +1788,21 @@ def _run_multimodal_causal_lm_bundle(
 
     has_image = bool(resolved_image_files)
     has_audio = resolved_audio is not None
-    if family == "gemma4" and not has_image and not has_audio:
+    if profile is not None and profile.family == "qwen" and has_image:
+        use_cached_step_decode = {"lm_encoder_step", "decoder_media_step"}.issubset(component_graphs)
+        use_chunk_prefill = False
+        use_dynamic_media_encoder = False
+    if profile is not None and profile.family == "qwen" and not has_image and not has_audio:
+        return _run_causal_lm_cached_step_bundle(
+            component_graphs=component_graphs,
+            manifest=manifest,
+            prompt=resolved_prompt,
+            input_ids=None,
+            enable_thinking=enable_thinking,
+            max_new_tokens=max_new_tokens,
+            stop_sequences=stop_sequences,
+        )
+    if profile is not None and profile.family == "gemma4" and not has_image and not has_audio:
         if not use_cached_step_decode:
             raise ValueError(
                 "Gemma4 text-only execution from a multimodal bundle requires "
@@ -1221,6 +1813,30 @@ def _run_multimodal_causal_lm_bundle(
             manifest=manifest,
             prompt=resolved_prompt,
             input_ids=None,
+            enable_thinking=enable_thinking,
+            max_new_tokens=max_new_tokens,
+            stop_sequences=stop_sequences,
+        )
+    if profile is not None and profile.family == "lfm2_vl" and not has_image:
+        if {"lm_encoder_step", "decoder_step"}.issubset(component_graphs):
+            return _run_lfm2_vl_text_cached_bundle(
+                component_graphs=component_graphs,
+                manifest=manifest,
+                prompt=resolved_prompt,
+                enable_thinking=enable_thinking,
+                max_new_tokens=max_new_tokens,
+                stop_sequences=stop_sequences,
+            )
+        text_component = profile.text_only_component or "text_lm_encoder"
+        if text_component not in component_graphs:
+            raise ValueError(
+                "LFM2-VL text-only execution requires cached step graphs or a text_lm_encoder route; "
+                "re-run cactus convert to rebuild this bundle."
+            )
+        return _run_lfm2_vl_text_bundle(
+            component_graphs=component_graphs,
+            manifest=manifest,
+            prompt=resolved_prompt,
             enable_thinking=enable_thinking,
             max_new_tokens=max_new_tokens,
             stop_sequences=stop_sequences,
@@ -1236,10 +1852,9 @@ def _run_multimodal_causal_lm_bundle(
         encoder_components.append("audio_encoder")
     elif "audio_encoder" in component_graphs:
         skipped_encoder_components.append("audio_encoder")
-    if family == "lfm2_vl" and not has_image:
-        raise ValueError("provide --image or --image-file for LFM2-VL multimodal bundles")
-
-    if use_cached_step_decode:
+    if use_dynamic_media_encoder:
+        required_components = tuple(encoder_components)
+    elif use_cached_step_decode:
         required_components = tuple(encoder_components) + (
             ("lm_encoder", "decoder_prefill_chunk") if use_chunk_prefill else ("lm_encoder",)
         )
@@ -1252,40 +1867,28 @@ def _run_multimodal_causal_lm_bundle(
             f"{required_components!r}, missing {missing!r}"
         )
 
-    if family != "lfm2_vl":
-        external_transformers_site_packages = ensure_transformers_supports_gemma4()
-        if external_transformers_site_packages:
-            print(
-                "note=using external transformers install for gemma4 runtime: "
-                f"{external_transformers_site_packages}"
-            )
+    external_transformers_site_packages = ensure_transformers_supports_profile(profile)
+    if external_transformers_site_packages:
+        print(
+            "note=using external transformers install for "
+            f"{profile.family if profile is not None else family} runtime: "
+            f"{external_transformers_site_packages}"
+        )
     patch_transformers_torchvision_probe()
     patch_torch_flex_attention_compat()
 
-    from transformers import AutoProcessor
-
-    processor_sources = _pretrained_source_candidates(manifest, processor=True)
-    if not processor_sources:
-        raise ValueError("bundle manifest is missing model_source/model_id for multimodal preprocessing")
-    processor_errors: list[str] = []
-    processor = None
-    for source in processor_sources:
-        try:
-            processor = AutoProcessor.from_pretrained(
-                source,
-                local_files_only=Path(source).exists(),
-                trust_remote_code=True,
-            )
-            break
-        except Exception as exc:
-            processor_errors.append(f"{source}: {exc}")
-    if processor is None:
-        raise RuntimeError(
-            "failed to load tokenizer/processor assets for multimodal preprocessing. "
-            "Re-run cactus convert so processor files are copied into the weights folder. "
-            f"Tried: {'; '.join(processor_errors)}"
+    processor = _load_bundle_processor(manifest)
+    preprocessor = profile.multimodal_preprocessor if profile is not None else "auto"
+    if preprocessor == "qwen3_5":
+        prepared = _prepare_qwen3_5_multimodal_inputs_for_runtime(
+            processor,
+            prompt=resolved_prompt,
+            image_files=resolved_image_files,
+            torch_dtype=torch_dtype,
+            system_prompt=system_prompt or "",
+            enable_thinking_if_supported=enable_thinking,
         )
-    if family == "lfm2_vl":
+    elif preprocessor == "lfm2_vl":
         prepared = _prepare_lfm2_vl_multimodal_inputs_for_runtime(
             processor,
             prompt=resolved_prompt,
@@ -1335,9 +1938,13 @@ def _run_multimodal_causal_lm_bundle(
         component_names=tuple(skipped_encoder_components),
     )
     initial_components = (
-        tuple(encoder_components) + ("lm_encoder",)
-        if use_cached_step_decode
-        else required_components
+        tuple(encoder_components)
+        if use_dynamic_media_encoder
+        else (
+            tuple(encoder_components) + ("lm_encoder",)
+            if use_cached_step_decode
+            else required_components
+        )
     )
 
     start = time.perf_counter()
@@ -1363,6 +1970,45 @@ def _run_multimodal_causal_lm_bundle(
         fallback=unpadded_token_count,
     )
     if use_cached_step_decode:
+        profile_family = profile.family if profile is not None else ""
+        if use_dynamic_media_encoder:
+            store = _build_gemma4_dynamic_multimodal_encoder_store(
+                component_graphs=component_graphs,
+                manifest=manifest,
+                store=store,
+                tokenizer=tokenizer,
+                current_length=current_length,
+            )
+        if profile_family == "lfm2_vl":
+            return _run_lfm2_vl_cached_step_multimodal_decode(
+                component_graphs=component_graphs,
+                manifest=manifest,
+                store=store,
+                prepared_store=prepared_store,
+                tokenizer=tokenizer,
+                prompt=resolved_prompt,
+                image_files=resolved_image_files,
+                audio_file=resolved_audio,
+                current_length=current_length,
+                start=start,
+                max_new_tokens=max_new_tokens,
+                stop_sequences=stop_sequences,
+            )
+        if profile_family == "qwen":
+            return _run_qwen3_5_cached_step_multimodal_decode(
+                component_graphs=component_graphs,
+                manifest=manifest,
+                store=store,
+                prepared_store=prepared_store,
+                tokenizer=tokenizer,
+                prompt=resolved_prompt,
+                image_files=resolved_image_files,
+                audio_file=resolved_audio,
+                current_length=current_length,
+                start=start,
+                max_new_tokens=max_new_tokens,
+                stop_sequences=stop_sequences,
+            )
         return _run_gemma4_cached_step_multimodal_decode(
             component_graphs=component_graphs,
             manifest=manifest,
@@ -1388,13 +2034,26 @@ def _run_multimodal_causal_lm_bundle(
     token_budget = max(0, min(requested_tokens, max(1, available_headroom + 1)))
     stop_token_ids = _bundle_stop_token_ids(manifest=manifest, tokenizer=tokenizer)
     encoded_stop_sequences = _encode_stop_sequences(tokenizer, stop_sequences)
+    repetition_penalty = _lfm2_repetition_penalty() if family == "lfm2_vl" else 1.0
+    no_repeat_ngram_size = _lfm2_no_repeat_ngram_size() if family == "lfm2_vl" else 0
 
     for step_index in range(token_budget):
         logits = np.asarray(store["logits"], dtype=np.float32)
         logits_shape = list(logits.shape)
         if logits.ndim != 3:
             raise RuntimeError(f"expected logits with shape [batch, seq, vocab], got {list(logits.shape)}")
-        next_token_id = int(np.argmax(logits[0, -1]))
+        token_position = _multimodal_decoder_logits_token_position(
+            component_graphs.get("decoder"),
+            logits=logits,
+            current_length=current_length,
+            right_aligned=family != "lfm2_vl",
+        )
+        next_token_id = _select_next_token_with_repetition_penalty(
+            logits[0, token_position],
+            token_ids=generated_ids,
+            penalty=repetition_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+        )
         generated_ids.append(next_token_id)
         if step_index == 0:
             first_token_ms = (time.perf_counter() - start) * 1000.0
@@ -1477,6 +2136,7 @@ def _run_gemma4_text_only_cached_bundle(
 ) -> dict[str, object]:
     if "lm_encoder_step" not in component_graphs or "decoder_step" not in component_graphs:
         raise ValueError("Gemma4 text-only multimodal bundle requires lm_encoder_step and decoder_step")
+    os.environ.setdefault("CACTUS_KV_CACHE_FP16", "1")
 
     prompt_token_ids, tokenizer = _resolve_causal_lm_input_ids(
         manifest=manifest,
@@ -1543,7 +2203,7 @@ def _run_gemma4_text_only_cached_bundle(
     if logits is None:
         raise RuntimeError("Gemma4 text-only cached decoder did not produce logits")
 
-    token_position = len(prompt_token_ids)
+    next_position_id = len(prompt_token_ids)
     for step_index in range(requested_tokens):
         logits_shape = list(logits.shape)
         if logits.ndim != 3:
@@ -1566,12 +2226,12 @@ def _run_gemma4_text_only_cached_bundle(
 
         logits = _run_step_token(
             next_token_id,
-            token_position,
+            next_position_id,
             read_logits=True,
         )
         if logits is None:
             raise RuntimeError("Gemma4 text-only cached decoder did not produce decode logits")
-        token_position += 1
+        next_position_id += 1
 
     end = time.perf_counter()
     response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=True).strip()
@@ -1617,6 +2277,906 @@ def _run_gemma4_text_only_cached_bundle(
     }
 
 
+def _run_lfm2_vl_text_bundle(
+    *,
+    component_graphs: dict[str, LoadedComponentGraph],
+    manifest: dict[str, object],
+    prompt: str,
+    enable_thinking: bool,
+    max_new_tokens: int | None,
+    stop_sequences: tuple[str, ...],
+) -> dict[str, object]:
+    decoder_component_name = "text_decoder" if "text_decoder" in component_graphs else "decoder"
+    if decoder_component_name not in component_graphs or "text_lm_encoder" not in component_graphs:
+        raise ValueError("LFM2-VL text route requires text_lm_encoder and decoder components")
+
+    tokenizer = _load_bundle_tokenizer(manifest)
+    prompt_token_ids = _tokenize_bundle_prompt_for_manifest(
+        manifest,
+        tokenizer,
+        prompt,
+        enable_thinking_if_supported=enable_thinking,
+    )
+    if not prompt_token_ids:
+        raise ValueError("LFM2-VL text prompt produced no token ids")
+
+    _attach_component_io_names(manifest, component_graphs)
+    text_lm_encoder = component_graphs["text_lm_encoder"]
+    input_names = component_input_names(text_lm_encoder)
+    if input_names != ("input_ids", "attention_mask"):
+        raise ValueError(
+            "LFM2-VL text_lm_encoder must use logical inputs ('input_ids', 'attention_mask'), "
+            f"got {input_names!r}"
+        )
+    target_token_count = int(text_lm_encoder.runtime_inputs[0].shape[1])
+    if len(prompt_token_ids) > target_token_count:
+        raise ValueError(
+            f"prompt token length {len(prompt_token_ids)} exceeds transpiled text context {target_token_count}; "
+            "re-run cactus convert with a larger profile context or use a shorter prompt."
+        )
+
+    inputs_meta = manifest.get("inputs") if isinstance(manifest.get("inputs"), dict) else {}
+    padding_token_id = _resolve_bundle_padding_token_id(inputs_meta, tokenizer)
+    input_ids = np.full((1, target_token_count), padding_token_id, dtype=np.int64)
+    attention_mask = np.zeros((1, target_token_count), dtype=np.int64)
+    store: dict[str, np.ndarray] = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+    }
+    active_token_ids = list(prompt_token_ids)
+
+    def _prepare_text_window() -> int:
+        input_ids.fill(int(padding_token_id))
+        attention_mask.fill(0)
+        clipped_ids = active_token_ids[-target_token_count:]
+        if not clipped_ids:
+            return 0
+        input_ids[0, : len(clipped_ids)] = np.asarray(clipped_ids, dtype=np.int64)
+        attention_mask[0, : len(clipped_ids)] = 1
+        return len(clipped_ids)
+
+    def _run_text_window() -> int:
+        active_count = _prepare_text_window()
+        execute_loaded_component(text_lm_encoder, store)
+        position_ids = np.cumsum(attention_mask, axis=1, dtype=np.int64) - 1
+        store["position_ids"] = np.where(attention_mask > 0, position_ids, 0).astype(np.int64, copy=False)
+        execute_loaded_component(component_graphs[decoder_component_name], store)
+        return active_count
+
+    start = time.perf_counter()
+    active_count = _run_text_window()
+
+    generated_ids: list[int] = []
+    logits_shape: list[int] | None = None
+    first_token_ms = 0.0
+    requested_tokens = (
+        _UNBOUNDED_GENERATION_GUARD_TOKENS
+        if max_new_tokens is None
+        else max(0, int(max_new_tokens))
+    )
+    token_budget = max(0, requested_tokens)
+    stop_reason = "max_new_tokens"
+    stop_token_ids = _bundle_stop_token_ids(manifest=manifest, tokenizer=tokenizer)
+    encoded_stop_sequences = _encode_stop_sequences(tokenizer, stop_sequences)
+    repetition_penalty = _lfm2_repetition_penalty()
+    no_repeat_ngram_size = _lfm2_no_repeat_ngram_size()
+
+    for step_index in range(token_budget):
+        logits = np.asarray(store["logits"], dtype=np.float32)
+        logits_shape = list(logits.shape)
+        if logits.ndim != 3:
+            raise RuntimeError(f"expected logits with shape [batch, seq, vocab], got {list(logits.shape)}")
+        token_position = -1 if logits.shape[1] == 1 else max(0, min(active_count - 1, logits.shape[1] - 1))
+        next_token_id = _select_next_token_with_repetition_penalty(
+            logits[0, token_position],
+            token_ids=generated_ids,
+            penalty=repetition_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+        )
+        generated_ids.append(next_token_id)
+        if step_index == 0:
+            first_token_ms = (time.perf_counter() - start) * 1000.0
+
+        if next_token_id in stop_token_ids:
+            stop_reason = "stop_token"
+            break
+        if _trim_stop_suffix(generated_ids, encoded_stop_sequences):
+            stop_reason = "stop_sequence"
+            break
+        if step_index + 1 >= token_budget:
+            break
+        active_token_ids.append(next_token_id)
+        active_count = _run_text_window()
+
+    end = time.perf_counter()
+    response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=True).strip()
+    if not response:
+        response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=False).strip()
+    decode_time_ms = max(0.0, (end - start) * 1000.0 - first_token_ms)
+    decode_tps = (
+        ((len(generated_ids) - 1) * 1000.0) / decode_time_ms
+        if len(generated_ids) > 1 and decode_time_ms > 0.0
+        else 0.0
+    )
+    return {
+        "bundle_model_id": str(manifest.get("model_id", "") or ""),
+        "family": str(manifest.get("family", "") or ""),
+        "task": str(manifest.get("task", "") or ""),
+        "component_order": list(manifest.get("component_order", [])),
+        "route": "text",
+        "decode_mode": f"text_lm_encoder+{decoder_component_name}",
+        "prompt": prompt,
+        "input_shapes": {
+            "input_ids": list(input_ids.shape),
+            "attention_mask": list(attention_mask.shape),
+        },
+        "output_shape": logits_shape or [],
+        "total_ms": (end - start) * 1000.0,
+        "time_to_first_token_ms": first_token_ms,
+        "decode_tps": decode_tps,
+        "decode_tokens": len(generated_ids),
+        "generated_token_ids": generated_ids,
+        "response": response,
+        "stop_reason": stop_reason,
+    }
+
+
+def _run_lfm2_vl_text_cached_bundle(
+    *,
+    component_graphs: dict[str, LoadedComponentGraph],
+    manifest: dict[str, object],
+    prompt: str,
+    enable_thinking: bool,
+    max_new_tokens: int | None,
+    stop_sequences: tuple[str, ...],
+) -> dict[str, object]:
+    if "lm_encoder_step" not in component_graphs or "decoder_step" not in component_graphs:
+        raise ValueError("LFM2-VL text cached route requires lm_encoder_step and decoder_step components")
+
+    tokenizer = _load_bundle_tokenizer(manifest)
+    prompt_token_ids = _tokenize_bundle_prompt_for_manifest(
+        manifest,
+        tokenizer,
+        prompt,
+        enable_thinking_if_supported=enable_thinking,
+    )
+    if not prompt_token_ids:
+        raise ValueError("LFM2-VL text prompt produced no token ids")
+
+    _attach_component_io_names(manifest, component_graphs)
+    os.environ.setdefault("CACTUS_KV_CACHE_FP16", "1")
+
+    lm_encoder_step = component_graphs["lm_encoder_step"]
+    decoder_step = component_graphs["decoder_step"]
+    lm_encoder_input_buffers = _bind_zero_input_buffers(
+        lm_encoder_step,
+        {"input_ids": np.int64, "position_ids": np.int64},
+    )
+    decoder_dtypes = {
+        name: _PRECISION_TO_DTYPE.get(int(tensor.dtype), np.float16)
+        for name, tensor in zip(component_input_names(decoder_step), decoder_step.runtime_inputs, strict=True)
+    }
+    decoder_input_buffers = _bind_zero_input_buffers(decoder_step, decoder_dtypes)
+
+    def _run_step_token(token_id: int, position_id: int, *, read_logits: bool) -> np.ndarray | None:
+        lm_encoder_input_buffers["input_ids"].fill(int(token_id))
+        lm_encoder_input_buffers["position_ids"].fill(int(position_id))
+        lm_encoder_step.graph.execute()
+        _copy_lfm2_decoder_inputs(
+            decoder_input_buffers,
+            inputs_embeds=lm_encoder_step.outputs[0].numpy(),
+            attention_mask=lm_encoder_step.outputs[1].numpy(),
+            position_ids=lm_encoder_step.outputs[2].numpy(),
+        )
+        decoder_step.graph.execute()
+        if not read_logits:
+            return None
+        return np.asarray(decoder_step.outputs[0].numpy())
+
+    requested_tokens = (
+        _UNBOUNDED_GENERATION_GUARD_TOKENS
+        if max_new_tokens is None
+        else max(0, int(max_new_tokens))
+    )
+    stop_token_ids = _bundle_stop_token_ids(manifest=manifest, tokenizer=tokenizer)
+    encoded_stop_sequences = _encode_stop_sequences(tokenizer, stop_sequences)
+    generated_ids: list[int] = []
+    logits_shape: list[int] | None = None
+    first_token_ms = 0.0
+    stop_reason = "max_new_tokens"
+    logits: np.ndarray | None = None
+
+    start = time.perf_counter()
+    prime_start = start
+    for position_id, token_id in enumerate(prompt_token_ids):
+        logits = _run_step_token(
+            int(token_id),
+            int(position_id),
+            read_logits=position_id + 1 == len(prompt_token_ids),
+        )
+    prime_end = time.perf_counter()
+    if logits is None:
+        raise RuntimeError("LFM2-VL text cached decoder did not produce prompt logits")
+
+    token_position = len(prompt_token_ids)
+    for step_index in range(requested_tokens):
+        logits_shape = list(logits.shape)
+        if logits.ndim != 3:
+            raise RuntimeError(f"expected logits with shape [batch, seq, vocab], got {list(logits.shape)}")
+        next_token_id = int(np.argmax(logits[0, -1]))
+        generated_ids.append(next_token_id)
+        if step_index == 0:
+            first_token_ms = (time.perf_counter() - start) * 1000.0
+
+        if next_token_id in stop_token_ids:
+            stop_reason = "stop_token"
+            break
+        if _trim_stop_suffix(generated_ids, encoded_stop_sequences):
+            stop_reason = "stop_sequence"
+            break
+        if step_index + 1 >= requested_tokens:
+            if max_new_tokens is None:
+                stop_reason = "generation_guard"
+            break
+
+        logits = _run_step_token(next_token_id, token_position, read_logits=True)
+        if logits is None:
+            raise RuntimeError("LFM2-VL text cached decoder did not produce decode logits")
+        token_position += 1
+
+    end = time.perf_counter()
+    response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=True).strip()
+    if not response:
+        response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=False).strip()
+    decode_time_ms = max(0.0, (end - start) * 1000.0 - first_token_ms)
+    decode_tps = (
+        ((len(generated_ids) - 1) * 1000.0) / decode_time_ms
+        if len(generated_ids) > 1 and decode_time_ms > 0.0
+        else 0.0
+    )
+    return {
+        "bundle_model_id": str(manifest.get("model_id", "") or ""),
+        "family": str(manifest.get("family", "") or ""),
+        "task": str(manifest.get("task", "") or ""),
+        "component_order": list(manifest.get("component_order", [])),
+        "route": "text",
+        "decode_mode": "cached_step_text",
+        "prompt": prompt,
+        "output_shape": logits_shape or [],
+        "total_ms": (end - start) * 1000.0,
+        "time_to_first_token_ms": first_token_ms,
+        "cache_prime_ms": (prime_end - prime_start) * 1000.0,
+        "cache_prime_tokens": len(prompt_token_ids),
+        "decode_tps": decode_tps,
+        "decode_tokens": len(generated_ids),
+        "generated_token_ids": generated_ids,
+        "response": response,
+        "stop_reason": stop_reason,
+    }
+
+
+def _as_gemma4_feature_sequence(
+    value: np.ndarray,
+    *,
+    feature_name: str,
+) -> np.ndarray:
+    array = np.asarray(value)
+    if array.ndim == 2:
+        array = array[None, :, :]
+    if array.ndim != 3:
+        raise RuntimeError(f"Gemma4 {feature_name} must be rank 2 or 3, got shape {list(array.shape)}")
+    if int(array.shape[0]) != 1:
+        raise RuntimeError(f"Gemma4 {feature_name} currently expects batch=1, got shape {list(array.shape)}")
+    return np.ascontiguousarray(array)
+
+
+def _build_gemma4_dynamic_multimodal_encoder_store(
+    *,
+    component_graphs: dict[str, LoadedComponentGraph],
+    manifest: dict[str, object],
+    store: dict[str, np.ndarray],
+    tokenizer: object | None,
+    current_length: int,
+) -> dict[str, np.ndarray]:
+    """Build Gemma4 prompt embeddings for the media actually present this turn.
+
+    Static `lm_encoder` graphs are tied to the representative prompt used when
+    the bundle was created. The step encoder is shape-stable, so using it here
+    lets one Gemma4 bundle support text, image+text, audio+text, and
+    image+audio+text without compiling separate entrypoints.
+    """
+
+    if "lm_encoder_step" not in component_graphs:
+        raise ValueError("Gemma4 dynamic multimodal execution requires lm_encoder_step")
+    lm_encoder_step = component_graphs["lm_encoder_step"]
+    lm_encoder_media_step = component_graphs.get("lm_encoder_media_step")
+    lm_encoder_text_chunk = component_graphs.get("lm_encoder_text_chunk")
+    lm_encoder_media_chunk = component_graphs.get("lm_encoder_media_chunk")
+    inputs_meta = manifest.get("inputs") if isinstance(manifest.get("inputs"), dict) else {}
+    pad_token_id = _resolve_bundle_padding_token_id(inputs_meta, tokenizer)
+
+    input_ids = np.asarray(store.get("input_ids"))
+    token_type_ids = np.asarray(store.get("token_type_ids"))
+    if input_ids.ndim != 2 or int(input_ids.shape[0]) != 1:
+        raise RuntimeError(f"Gemma4 dynamic encoder requires input_ids shape [1, N], got {list(input_ids.shape)}")
+    if token_type_ids.ndim != 2 or token_type_ids.shape != input_ids.shape:
+        token_type_ids = np.zeros_like(input_ids, dtype=np.int64)
+
+    token_count = max(0, min(int(current_length), int(input_ids.shape[1])))
+    if token_count <= 0:
+        raise RuntimeError("Gemma4 dynamic encoder received an empty prompt")
+
+    image_features_raw = store.get("image_features")
+    audio_features_raw = store.get("audio_features")
+    image_features = (
+        _as_gemma4_feature_sequence(image_features_raw, feature_name="image_features")
+        if isinstance(image_features_raw, np.ndarray)
+        else None
+    )
+    audio_features = (
+        _as_gemma4_feature_sequence(audio_features_raw, feature_name="audio_features")
+        if isinstance(audio_features_raw, np.ndarray)
+        else None
+    )
+
+    image_needed = int(np.count_nonzero(token_type_ids[0, :token_count] == 1))
+    audio_needed = int(
+        np.count_nonzero(
+            (token_type_ids[0, :token_count] == 2)
+            | (token_type_ids[0, :token_count] == 3)
+        )
+    )
+    if image_needed and (image_features is None or int(image_features.shape[1]) < image_needed):
+        got = 0 if image_features is None else int(image_features.shape[1])
+        raise RuntimeError(f"Gemma4 image feature count mismatch: need {image_needed}, got {got}")
+    if audio_needed and (audio_features is None or int(audio_features.shape[1]) < audio_needed):
+        got = 0 if audio_features is None else int(audio_features.shape[1])
+        raise RuntimeError(f"Gemma4 audio feature count mismatch: need {audio_needed}, got {got}")
+
+    input_buffers = _bind_zero_input_buffers(
+        lm_encoder_step,
+        {"input_ids": np.int64, "position_ids": np.int64},
+    )
+    text_chunk_buffers: dict[str, np.ndarray] | None = None
+    text_chunk_tokens = 0
+    if lm_encoder_text_chunk is not None:
+        text_chunk_buffers = _bind_zero_input_buffers(
+            lm_encoder_text_chunk,
+            {"input_ids": np.int64, "position_ids": np.int64},
+        )
+        text_chunk_tokens = int(text_chunk_buffers["input_ids"].shape[1])
+
+    media_input_buffers: dict[str, np.ndarray] | None = None
+    media_chunk_buffers: dict[str, np.ndarray] | None = None
+    media_chunk_tokens = 0
+    if lm_encoder_media_step is not None:
+        media_dtype = np.float16
+        for candidate in (image_features, audio_features):
+            if isinstance(candidate, np.ndarray):
+                media_dtype = np.asarray(candidate).dtype
+                break
+        media_input_buffers = _bind_zero_input_buffers(
+            lm_encoder_media_step,
+            {"inputs_embeds": media_dtype, "input_ids": np.int64, "position_ids": np.int64},
+        )
+        if lm_encoder_media_chunk is not None:
+            media_chunk_buffers = _bind_zero_input_buffers(
+                lm_encoder_media_chunk,
+                {"inputs_embeds": media_dtype, "input_ids": np.int64, "position_ids": np.int64},
+            )
+            media_chunk_tokens = int(media_chunk_buffers["inputs_embeds"].shape[1])
+
+    input_embed_parts: list[np.ndarray] = []
+    per_layer_parts: list[np.ndarray] = []
+    position_parts: list[np.ndarray] = []
+    image_index = 0
+    audio_index = 0
+
+    def _append_encoder_outputs(raw_outputs: list[Tensor], count: int) -> None:
+        step_inputs_embeds = np.asarray(raw_outputs[0].numpy())[:, :count, ...].copy()
+        step_per_layer_inputs = np.asarray(raw_outputs[1].numpy())[:, :count, ...].copy()
+        step_position_ids = np.asarray(raw_outputs[2].numpy())[:, :count].copy()
+        input_embed_parts.append(np.ascontiguousarray(step_inputs_embeds))
+        per_layer_parts.append(np.ascontiguousarray(step_per_layer_inputs))
+        position_parts.append(np.ascontiguousarray(step_position_ids))
+
+    def _media_kind(token_type: int) -> str | None:
+        if token_type == 1 and image_features is not None:
+            return "image"
+        if token_type in {2, 3} and audio_features is not None:
+            return "audio"
+        return None
+
+    position = 0
+    while position < token_count:
+        token_type = int(token_type_ids[0, position])
+        kind = _media_kind(token_type)
+
+        if (
+            kind is None
+            and text_chunk_buffers is not None
+            and lm_encoder_text_chunk is not None
+            and text_chunk_tokens > 1
+        ):
+            run = 0
+            while (
+                position + run < token_count
+                and run < text_chunk_tokens
+                and _media_kind(int(token_type_ids[0, position + run])) is None
+            ):
+                run += 1
+            if run == text_chunk_tokens:
+                text_chunk_buffers["input_ids"][...] = input_ids[:, position : position + run]
+                text_chunk_buffers["position_ids"][...] = np.arange(
+                    position,
+                    position + run,
+                    dtype=np.int64,
+                )[None, :]
+                lm_encoder_text_chunk.graph.execute()
+                _append_encoder_outputs(lm_encoder_text_chunk.outputs, run)
+                position += run
+                continue
+
+        if (
+            kind is not None
+            and media_chunk_buffers is not None
+            and lm_encoder_media_chunk is not None
+            and media_chunk_tokens > 1
+        ):
+            run = 0
+            while (
+                position + run < token_count
+                and run < media_chunk_tokens
+                and _media_kind(int(token_type_ids[0, position + run])) == kind
+            ):
+                run += 1
+            if run == media_chunk_tokens:
+                features = image_features if kind == "image" else audio_features
+                feature_index = image_index if kind == "image" else audio_index
+                if features is not None and feature_index + run <= int(features.shape[1]):
+                    media_chunk_buffers["inputs_embeds"][...] = features[
+                        :,
+                        feature_index : feature_index + run,
+                        :,
+                    ].astype(media_chunk_buffers["inputs_embeds"].dtype, copy=False)
+                    media_chunk_buffers["input_ids"].fill(0)
+                    media_chunk_buffers["position_ids"][...] = np.arange(
+                        position,
+                        position + run,
+                        dtype=np.int64,
+                    )[None, :]
+                    lm_encoder_media_chunk.graph.execute()
+                    _append_encoder_outputs(lm_encoder_media_chunk.outputs, run)
+                    if kind == "image":
+                        image_index += run
+                    else:
+                        audio_index += run
+                    position += run
+                    continue
+
+        token_id = int(input_ids[0, position])
+        media_slice: np.ndarray | None = None
+        if token_type == 1 and image_features is not None:
+            media_slice = image_features[:, image_index : image_index + 1, :]
+            image_index += 1
+        elif token_type in {2, 3} and audio_features is not None:
+            media_slice = audio_features[:, audio_index : audio_index + 1, :]
+            audio_index += 1
+
+        if media_slice is not None and lm_encoder_media_step is not None and media_input_buffers is not None:
+            media_input_buffers["inputs_embeds"][...] = media_slice.astype(
+                media_input_buffers["inputs_embeds"].dtype,
+                copy=False,
+            )
+            media_input_buffers["input_ids"].fill(0)
+            media_input_buffers["position_ids"].fill(position)
+            lm_encoder_media_step.graph.execute()
+            step_inputs_embeds = np.asarray(lm_encoder_media_step.outputs[0].numpy()).copy()
+            step_per_layer_inputs = np.asarray(lm_encoder_media_step.outputs[1].numpy()).copy()
+            step_position_ids = np.asarray(lm_encoder_media_step.outputs[2].numpy()).copy()
+        else:
+            step_token_id = int(pad_token_id) if token_type in {1, 2, 3} else token_id
+            input_buffers["input_ids"].fill(step_token_id)
+            input_buffers["position_ids"].fill(position)
+            lm_encoder_step.graph.execute()
+            step_inputs_embeds = np.asarray(lm_encoder_step.outputs[0].numpy()).copy()
+            step_per_layer_inputs = np.asarray(lm_encoder_step.outputs[1].numpy()).copy()
+            step_position_ids = np.asarray(lm_encoder_step.outputs[2].numpy()).copy()
+            if media_slice is not None:
+                step_inputs_embeds = media_slice.astype(step_inputs_embeds.dtype, copy=False)
+
+        input_embed_parts.append(np.ascontiguousarray(step_inputs_embeds))
+        per_layer_parts.append(np.ascontiguousarray(step_per_layer_inputs))
+        position_parts.append(np.ascontiguousarray(step_position_ids))
+        position += 1
+
+    dynamic_store = dict(store)
+    dynamic_store["inputs_embeds"] = np.ascontiguousarray(np.concatenate(input_embed_parts, axis=1))
+    dynamic_store["per_layer_inputs"] = np.ascontiguousarray(np.concatenate(per_layer_parts, axis=1))
+    dynamic_store["position_ids"] = np.ascontiguousarray(np.concatenate(position_parts, axis=1))
+    return dynamic_store
+
+
+def _run_lfm2_vl_cached_step_multimodal_decode(
+    *,
+    component_graphs: dict[str, LoadedComponentGraph],
+    manifest: dict[str, object],
+    store: dict[str, np.ndarray],
+    prepared_store: dict[str, np.ndarray],
+    tokenizer: object,
+    prompt: str,
+    image_files: tuple[str, ...],
+    audio_file: str | None,
+    current_length: int,
+    start: float,
+    max_new_tokens: int | None,
+    stop_sequences: tuple[str, ...],
+) -> dict[str, object]:
+    if "lm_encoder_step" not in component_graphs or "decoder_step" not in component_graphs:
+        raise ValueError("LFM2-VL cached multimodal route requires lm_encoder_step and decoder_step")
+    os.environ.setdefault("CACTUS_KV_CACHE_FP16", "1")
+
+    lm_encoder_step = component_graphs["lm_encoder_step"]
+    decoder_step = component_graphs["decoder_step"]
+    decoder_prefill_chunk = component_graphs.get("decoder_prefill_chunk")
+    # LFM2-VL chunk prefill currently captures a larger rolling KV state than
+    # the one-token step graph accepts. Prime with decoder_step until chunk and
+    # step cache capture are unified.
+    decoder_prefill_chunk = None
+    if os.environ.get("CACTUS_TRANSPILER_DISABLE_CHUNK_PREFILL") == "1":
+        decoder_prefill_chunk = None
+
+    inputs_embeds = np.asarray(store["inputs_embeds"])
+    attention_mask = np.asarray(store["attention_mask"])
+    position_ids = np.asarray(store["position_ids"])
+    prompt_tokens = max(0, min(int(current_length), int(inputs_embeds.shape[1])))
+    if prompt_tokens <= 0:
+        raise RuntimeError("LFM2-VL cached decode requires at least one prompt token")
+
+    stop_token_ids = _bundle_stop_token_ids(manifest=manifest, tokenizer=tokenizer)
+    encoded_stop_sequences = _encode_stop_sequences(tokenizer, stop_sequences)
+    requested_tokens = (
+        _UNBOUNDED_GENERATION_GUARD_TOKENS
+        if max_new_tokens is None
+        else max(0, int(max_new_tokens))
+    )
+
+    decoder_dtypes = {
+        "inputs_embeds": inputs_embeds.dtype,
+        "attention_mask": attention_mask.dtype,
+        "position_ids": position_ids.dtype,
+    }
+    decoder_input_buffers = _bind_zero_input_buffers(decoder_step, decoder_dtypes)
+
+    def _run_decoder_step(
+        *,
+        step_inputs_embeds: np.ndarray,
+        step_attention_mask: np.ndarray,
+        step_position_ids: np.ndarray,
+        read_logits: bool,
+    ) -> np.ndarray | None:
+        _copy_lfm2_decoder_inputs(
+            decoder_input_buffers,
+            inputs_embeds=step_inputs_embeds,
+            attention_mask=step_attention_mask,
+            position_ids=step_position_ids,
+        )
+        decoder_step.graph.execute()
+        if not read_logits:
+            return None
+        return np.asarray(decoder_step.outputs[0].numpy())
+
+    lm_encoder_input_buffers = _bind_zero_input_buffers(
+        lm_encoder_step,
+        {"input_ids": np.int64, "position_ids": np.int64},
+    )
+
+    prefill_input_buffers: dict[str, np.ndarray] | None = None
+    prefill_chunk_tokens = 0
+    if decoder_prefill_chunk is not None:
+        prefill_input_buffers = _bind_zero_input_buffers(decoder_prefill_chunk, decoder_dtypes)
+        prefill_chunk_tokens = int(prefill_input_buffers["inputs_embeds"].shape[1])
+
+    logits: np.ndarray | None = None
+    prime_start = time.perf_counter()
+    token_index = 0
+    if (
+        decoder_prefill_chunk is not None
+        and prefill_input_buffers is not None
+        and prefill_chunk_tokens > 1
+        and prompt_tokens >= prefill_chunk_tokens
+    ):
+        chunked_tokens = (prompt_tokens // prefill_chunk_tokens) * prefill_chunk_tokens
+        for chunk_start in range(0, chunked_tokens, prefill_chunk_tokens):
+            chunk_end = chunk_start + prefill_chunk_tokens
+            _copy_lfm2_decoder_inputs(
+                prefill_input_buffers,
+                inputs_embeds=inputs_embeds[:, chunk_start:chunk_end, :],
+                attention_mask=attention_mask[:, chunk_start:chunk_end],
+                position_ids=position_ids[:, chunk_start:chunk_end],
+            )
+            decoder_prefill_chunk.graph.execute()
+            if chunk_end == prompt_tokens:
+                logits = np.asarray(decoder_prefill_chunk.outputs[0].numpy())
+        _copy_component_cache_states(decoder_prefill_chunk, decoder_step)
+        token_index = chunked_tokens
+
+    while token_index < prompt_tokens:
+        logits = _run_decoder_step(
+            step_inputs_embeds=inputs_embeds[:, token_index : token_index + 1, :],
+            step_attention_mask=attention_mask[:, token_index : token_index + 1],
+            step_position_ids=position_ids[:, token_index : token_index + 1],
+            read_logits=token_index + 1 == prompt_tokens,
+        )
+        token_index += 1
+    prime_end = time.perf_counter()
+
+    if logits is None:
+        raise RuntimeError("LFM2-VL cached decoder did not produce logits")
+
+    generated_ids: list[int] = []
+    logits_shape: list[int] | None = None
+    first_token_ms = 0.0
+    stop_reason = "max_new_tokens"
+    token_position = prompt_tokens
+    for step_index in range(requested_tokens):
+        logits_shape = list(logits.shape)
+        if logits.ndim != 3:
+            raise RuntimeError(f"expected logits with shape [batch, seq, vocab], got {list(logits.shape)}")
+        next_token_id = int(np.argmax(logits[0, -1]))
+        generated_ids.append(next_token_id)
+        if step_index == 0:
+            first_token_ms = (time.perf_counter() - start) * 1000.0
+
+        if next_token_id in stop_token_ids:
+            stop_reason = "stop_token"
+            break
+        if _trim_stop_suffix(generated_ids, encoded_stop_sequences):
+            stop_reason = "stop_sequence"
+            break
+        if step_index + 1 >= requested_tokens:
+            if max_new_tokens is None:
+                stop_reason = "generation_guard"
+            break
+
+        lm_encoder_input_buffers["input_ids"].fill(int(next_token_id))
+        lm_encoder_input_buffers["position_ids"].fill(int(token_position))
+        lm_encoder_step.graph.execute()
+        logits = _run_decoder_step(
+            step_inputs_embeds=lm_encoder_step.outputs[0].numpy(),
+            step_attention_mask=lm_encoder_step.outputs[1].numpy(),
+            step_position_ids=lm_encoder_step.outputs[2].numpy(),
+            read_logits=True,
+        )
+        if logits is None:
+            raise RuntimeError("LFM2-VL cached decoder did not produce decode logits")
+        token_position += 1
+
+    end = time.perf_counter()
+    response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=True).strip()
+    if not response:
+        response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=False).strip()
+    decode_time_ms = max(0.0, (end - start) * 1000.0 - first_token_ms)
+    decode_tps = (
+        ((len(generated_ids) - 1) * 1000.0) / decode_time_ms
+        if len(generated_ids) > 1 and decode_time_ms > 0.0
+        else 0.0
+    )
+    first_generated_token_id = generated_ids[0] if generated_ids else None
+    first_generated_token = (
+        _decode_generated_text(tokenizer, [first_generated_token_id], skip_special_tokens=False)
+        if first_generated_token_id is not None
+        else None
+    )
+    return {
+        "bundle_model_id": str(manifest.get("model_id", "") or ""),
+        "family": str(manifest.get("family", "") or ""),
+        "task": str(manifest.get("task", "") or ""),
+        "component_order": list(manifest.get("component_order", [])),
+        "prompt": prompt,
+        "image_files": list(image_files),
+        "audio_file": audio_file,
+        "input_shapes": {
+            name: list(np.asarray(value).shape)
+            for name, value in prepared_store.items()
+        },
+        "output_shape": logits_shape or [],
+        "total_ms": (end - start) * 1000.0,
+        "time_to_first_token_ms": first_token_ms,
+        "cache_prime_ms": (prime_end - prime_start) * 1000.0,
+        "cache_prime_tokens": prompt_tokens,
+        "cache_prime_chunk_tokens": prefill_chunk_tokens,
+        "decode_tps": decode_tps,
+        "decode_tokens": len(generated_ids),
+        "generated_token_ids": generated_ids,
+        "response": response,
+        "stop_reason": stop_reason,
+        "next_token_id": first_generated_token_id,
+        "next_token": first_generated_token,
+        "decode_mode": "cached_step",
+    }
+
+
+def _run_qwen3_5_cached_step_multimodal_decode(
+    *,
+    component_graphs: dict[str, LoadedComponentGraph],
+    manifest: dict[str, object],
+    store: dict[str, np.ndarray],
+    prepared_store: dict[str, np.ndarray],
+    tokenizer: object,
+    prompt: str,
+    image_files: tuple[str, ...],
+    audio_file: str | None,
+    current_length: int,
+    start: float,
+    max_new_tokens: int | None,
+    stop_sequences: tuple[str, ...],
+) -> dict[str, object]:
+    if "lm_encoder_step" not in component_graphs or "decoder_media_step" not in component_graphs:
+        raise ValueError("Qwen3.5 image decode requires lm_encoder_step and decoder_media_step")
+    os.environ.setdefault("CACTUS_KV_CACHE_FP16", "1")
+
+    lm_encoder_step = component_graphs["lm_encoder_step"]
+    decoder_step = component_graphs["decoder_media_step"]
+
+    inputs_embeds = np.asarray(store["inputs_embeds"])
+    position_ids = np.asarray(store["position_ids"])
+    if position_ids.ndim == 3:
+        position_token_capacity = int(position_ids.shape[2])
+    else:
+        position_token_capacity = int(position_ids.shape[1])
+    prompt_tokens = max(
+        0,
+        min(
+            int(current_length),
+            int(inputs_embeds.shape[1]),
+            position_token_capacity,
+        ),
+    )
+    if prompt_tokens <= 0:
+        raise RuntimeError("Qwen3.5 cached multimodal decode requires at least one prompt token")
+
+    stop_token_ids = _bundle_stop_token_ids(manifest=manifest, tokenizer=tokenizer)
+    encoded_stop_sequences = _encode_stop_sequences(tokenizer, stop_sequences)
+    requested_tokens = (
+        _UNBOUNDED_GENERATION_GUARD_TOKENS
+        if max_new_tokens is None
+        else max(0, int(max_new_tokens))
+    )
+
+    decoder_input_buffers = _bind_zero_input_buffers(
+        decoder_step,
+        {
+            "inputs_embeds": inputs_embeds.dtype,
+            "position_ids": position_ids.dtype,
+        },
+    )
+    gdn_state_buffers = _bind_gated_deltanet_state_feedback(decoder_step)
+
+    def _position_slice(token_index: int) -> np.ndarray:
+        if position_ids.ndim == 3:
+            return position_ids[:, :, token_index : token_index + 1]
+        return position_ids[:, token_index : token_index + 1]
+
+    def _run_decoder_step(
+        *,
+        step_inputs_embeds: np.ndarray,
+        step_position_ids: np.ndarray,
+        read_logits: bool,
+    ) -> np.ndarray | None:
+        _copy_qwen_decoder_inputs(
+            decoder_input_buffers,
+            inputs_embeds=step_inputs_embeds,
+            position_ids=step_position_ids,
+        )
+        decoder_step.graph.execute()
+        _refresh_gated_deltanet_state_feedback(decoder_step, gdn_state_buffers)
+        if not read_logits:
+            return None
+        return np.asarray(decoder_step.outputs[0].numpy())
+
+    lm_encoder_input_buffers = _bind_zero_input_buffers(
+        lm_encoder_step,
+        {"input_ids": np.int64, "position_ids": np.int64},
+    )
+
+    logits: np.ndarray | None = None
+    prime_start = time.perf_counter()
+    for token_index in range(prompt_tokens):
+        logits = _run_decoder_step(
+            step_inputs_embeds=inputs_embeds[:, token_index : token_index + 1, :],
+            step_position_ids=_position_slice(token_index),
+            read_logits=token_index + 1 == prompt_tokens,
+        )
+    prime_end = time.perf_counter()
+    if logits is None:
+        raise RuntimeError("Qwen3.5 cached multimodal decoder did not produce prompt logits")
+
+    if position_ids.ndim == 3:
+        next_position_id = int(np.max(position_ids[:, 0, prompt_tokens - 1])) + 1
+    else:
+        next_position_id = int(np.max(position_ids[0, prompt_tokens - 1])) + 1
+    generated_ids: list[int] = []
+    logits_shape: list[int] | None = None
+    first_token_ms = 0.0
+    stop_reason = "max_new_tokens"
+
+    for step_index in range(requested_tokens):
+        logits_shape = list(logits.shape)
+        if logits.ndim != 3:
+            raise RuntimeError(f"expected logits with shape [batch, seq, vocab], got {list(logits.shape)}")
+        next_token_id = int(np.argmax(logits[0, -1]))
+        generated_ids.append(next_token_id)
+        if step_index == 0:
+            first_token_ms = (time.perf_counter() - start) * 1000.0
+
+        if next_token_id in stop_token_ids:
+            stop_reason = "stop_token"
+            break
+        if _trim_stop_suffix(generated_ids, encoded_stop_sequences):
+            stop_reason = "stop_sequence"
+            break
+        if step_index + 1 >= requested_tokens:
+            if max_new_tokens is None:
+                stop_reason = "generation_guard"
+            break
+
+        lm_encoder_input_buffers["input_ids"].fill(int(next_token_id))
+        lm_encoder_input_buffers["position_ids"].fill(int(next_position_id))
+        lm_encoder_step.graph.execute()
+        logits = _run_decoder_step(
+            step_inputs_embeds=lm_encoder_step.outputs[0].numpy(),
+            step_position_ids=lm_encoder_step.outputs[1].numpy(),
+            read_logits=True,
+        )
+        if logits is None:
+            raise RuntimeError("Qwen3.5 cached multimodal decoder did not produce decode logits")
+        next_position_id += 1
+
+    end = time.perf_counter()
+    response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=True).strip()
+    if not response:
+        response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=False).strip()
+    decode_time_ms = max(0.0, (end - start) * 1000.0 - first_token_ms)
+    decode_tps = (
+        ((len(generated_ids) - 1) * 1000.0) / decode_time_ms
+        if len(generated_ids) > 1 and decode_time_ms > 0.0
+        else 0.0
+    )
+    first_generated_token_id = generated_ids[0] if generated_ids else None
+    first_generated_token = (
+        _decode_generated_text(tokenizer, [first_generated_token_id], skip_special_tokens=False)
+        if first_generated_token_id is not None
+        else None
+    )
+    return {
+        "bundle_model_id": str(manifest.get("model_id", "") or ""),
+        "family": str(manifest.get("family", "") or ""),
+        "task": str(manifest.get("task", "") or ""),
+        "component_order": list(manifest.get("component_order", [])),
+        "prompt": prompt,
+        "image_files": list(image_files),
+        "audio_file": audio_file,
+        "input_shapes": {
+            name: list(np.asarray(value).shape)
+            for name, value in prepared_store.items()
+        },
+        "output_shape": logits_shape or [],
+        "total_ms": (end - start) * 1000.0,
+        "time_to_first_token_ms": first_token_ms,
+        "cache_prime_ms": (prime_end - prime_start) * 1000.0,
+        "cache_prime_tokens": prompt_tokens,
+        "decode_tps": decode_tps,
+        "decode_tokens": len(generated_ids),
+        "generated_token_ids": generated_ids,
+        "response": response,
+        "stop_reason": stop_reason,
+        "next_token_id": first_generated_token_id,
+        "next_token": first_generated_token,
+        "decode_mode": "cached_step_multimodal",
+    }
+
+
 def _run_gemma4_cached_step_multimodal_decode(
     *,
     component_graphs: dict[str, LoadedComponentGraph],
@@ -1639,9 +3199,12 @@ def _run_gemma4_cached_step_multimodal_decode(
     token at a time through the cached attention kernel.
     """
 
+    os.environ.setdefault("CACTUS_KV_CACHE_FP16", "1")
     lm_encoder_step = component_graphs["lm_encoder_step"]
     decoder_step = component_graphs["decoder_step"]
     decoder_prefill_chunk = component_graphs.get("decoder_prefill_chunk")
+    if os.environ.get("CACTUS_TRANSPILER_DISABLE_CHUNK_PREFILL") == "1":
+        decoder_prefill_chunk = None
     stop_token_ids = _bundle_stop_token_ids(manifest=manifest, tokenizer=tokenizer)
     encoded_stop_sequences = _encode_stop_sequences(tokenizer, stop_sequences)
     requested_tokens = (
@@ -1697,6 +3260,10 @@ def _run_gemma4_cached_step_multimodal_decode(
     if decoder_prefill_chunk is not None:
         prefill_input_buffers = _bind_zero_input_buffers(decoder_prefill_chunk, decoder_dtypes)
         prefill_chunk_tokens = int(prefill_input_buffers["inputs_embeds"].shape[1])
+        if not _component_cache_states_compatible(decoder_prefill_chunk, decoder_step):
+            decoder_prefill_chunk = None
+            prefill_input_buffers = None
+            prefill_chunk_tokens = 0
 
     logits: np.ndarray | None = None
     prime_start = time.perf_counter()
@@ -1823,6 +3390,20 @@ def _static_multimodal_token_count(store: Mapping[str, np.ndarray]) -> int:
     return 0
 
 
+def _multimodal_decoder_logits_token_position(
+    component: LoadedComponentGraph | None,
+    *,
+    logits: np.ndarray,
+    current_length: int,
+    right_aligned: bool,
+) -> int:
+    if int(logits.shape[1]) <= 1:
+        return 0
+    if right_aligned and component is not None and "inputs_embeds" in component_input_names(component):
+        return int(logits.shape[1]) - 1
+    return max(0, min(int(current_length) - 1, int(logits.shape[1]) - 1))
+
+
 def _infer_multimodal_token_count(
     store: Mapping[str, np.ndarray],
     *,
@@ -1855,6 +3436,17 @@ def _append_multimodal_token_in_place(
     token_type_ids = store.get("token_type_ids")
     if isinstance(token_type_ids, np.ndarray) and token_type_ids.ndim >= 2 and current_length < token_type_ids.shape[1]:
         token_type_ids[0, current_length] = 0
+    position_ids = store.get("position_ids")
+    if (
+        isinstance(position_ids, np.ndarray)
+        and position_ids.ndim == 3
+        and int(position_ids.shape[0]) in {3, 4}
+        and int(position_ids.shape[1]) == 1
+        and current_length < int(position_ids.shape[2])
+    ):
+        previous_index = max(0, int(current_length) - 1)
+        next_position = int(np.max(position_ids[:, 0, previous_index])) + 1
+        position_ids[:, 0, current_length] = next_position
 
 
 def _load_image_inputs_for_runtime(image_files: tuple[str, ...]) -> list[object]:
@@ -1952,6 +3544,164 @@ def _prepare_lfm2_vl_multimodal_inputs_for_runtime(
     )
 
 
+def _compute_qwen3_5_position_ids_for_runtime(
+    input_ids: torch.Tensor,
+    mm_token_type_ids: torch.Tensor,
+    image_grid_thw: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    *,
+    spatial_merge_size: int = 2,
+) -> torch.Tensor:
+    position_ids = torch.zeros(
+        3,
+        int(input_ids.shape[0]),
+        int(input_ids.shape[1]),
+        dtype=input_ids.dtype,
+        device=input_ids.device,
+    )
+    image_grid_iter = iter(image_grid_thw)
+    for batch_idx in range(int(input_ids.shape[0])):
+        token_types = mm_token_type_ids[batch_idx]
+        valid_mask = attention_mask[batch_idx].bool() if attention_mask is not None else None
+        if valid_mask is not None:
+            token_types = token_types[valid_mask]
+        current_pos = 0
+        parts: list[torch.Tensor] = []
+        for modality_type, group in itertools.groupby(enumerate(token_types.tolist()), lambda item: int(item[1])):
+            group_items = list(group)
+            token_count = group_items[-1][0] - group_items[0][0] + 1
+            if int(modality_type) == 0:
+                text_positions = torch.arange(token_count, dtype=input_ids.dtype, device=input_ids.device)
+                parts.append(text_positions.view(1, -1).expand(3, -1) + current_pos)
+                current_pos += token_count
+                continue
+            grid_thw = next(image_grid_iter)
+            grid_t = int(grid_thw[0].item())
+            grid_h = int(grid_thw[1].item())
+            grid_w = int(grid_thw[2].item())
+            llm_grid_t = grid_t
+            llm_grid_h = grid_h // int(spatial_merge_size)
+            llm_grid_w = grid_w // int(spatial_merge_size)
+            image_seq_length = llm_grid_t * llm_grid_h * llm_grid_w
+            position_width = torch.arange(
+                current_pos,
+                current_pos + llm_grid_w,
+                dtype=input_ids.dtype,
+                device=input_ids.device,
+            ).repeat(llm_grid_h * llm_grid_t)
+            position_height = torch.arange(
+                current_pos,
+                current_pos + llm_grid_h,
+                dtype=input_ids.dtype,
+                device=input_ids.device,
+            ).repeat_interleave(llm_grid_w * llm_grid_t)
+            position_temporal = torch.full(
+                (image_seq_length,),
+                current_pos,
+                dtype=input_ids.dtype,
+                device=input_ids.device,
+            )
+            parts.append(torch.stack([position_temporal, position_height, position_width], dim=0))
+            current_pos += max(grid_h, grid_w) // int(spatial_merge_size)
+        if not parts:
+            continue
+        positions = torch.cat(parts, dim=1)
+        if valid_mask is not None:
+            position_ids[:, batch_idx, valid_mask] = positions.to(position_ids.device)
+        else:
+            position_ids[:, batch_idx, : positions.shape[1]] = positions.to(position_ids.device)
+    return position_ids
+
+
+def _prepare_qwen3_5_multimodal_inputs_for_runtime(
+    processor: object | None,
+    *,
+    prompt: str,
+    image_files: tuple[str, ...],
+    torch_dtype: torch.dtype,
+    system_prompt: str = "",
+    enable_thinking_if_supported: bool = False,
+) -> PreparedInputs:
+    if processor is None:
+        raise RuntimeError("Qwen3.5 multimodal bundle execution requires an AutoProcessor with image support")
+    images = _load_image_inputs_for_runtime(image_files)
+    if not images:
+        raise RuntimeError("Qwen3.5 multimodal bundle execution requires at least one --image")
+
+    user_content: list[dict[str, object]] = [{"type": "image", "image": image} for image in images]
+    user_content.append({"type": "text", "text": prompt.strip()})
+    messages: list[dict[str, object]] = []
+    normalized_system = system_prompt.strip()
+    if normalized_system:
+        messages.append({"role": "system", "content": normalized_system})
+    messages.append({"role": "user", "content": user_content})
+
+    apply_chat_template = getattr(processor, "apply_chat_template", None)
+    thinking_prefix = "<think>\n" if enable_thinking_if_supported else "<think>\n\n</think>\n\n"
+    image_placeholders = "".join("<|vision_start|><|image_pad|><|vision_end|>" for _ in images)
+    fallback_text = (
+        f"<|im_start|>user\n{image_placeholders}{prompt.strip()}<|im_end|>\n"
+        f"<|im_start|>assistant\n{thinking_prefix}"
+    )
+    if callable(apply_chat_template):
+        try:
+            batch = apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+        except ValueError as exc:
+            if "chat template" not in str(exc).lower():
+                raise
+            batch = processor(text=fallback_text, images=images, return_tensors="pt")
+    else:
+        batch = processor(text=fallback_text, images=images, return_tensors="pt")
+
+    input_ids = batch.get("input_ids") if hasattr(batch, "get") else None
+    attention_mask = batch.get("attention_mask") if hasattr(batch, "get") else None
+    mm_token_type_ids = batch.get("mm_token_type_ids") if hasattr(batch, "get") else None
+    image_grid_thw = batch.get("image_grid_thw") if hasattr(batch, "get") else None
+    if not all(isinstance(value, torch.Tensor) for value in (input_ids, attention_mask, mm_token_type_ids, image_grid_thw)):
+        raise RuntimeError("Qwen3.5 processor did not return required multimodal text/grid tensors")
+    spatial_merge_size = int(getattr(getattr(processor, "image_processor", None), "merge_size", 2) or 2)
+    batch["position_ids"] = _compute_qwen3_5_position_ids_for_runtime(
+        input_ids.to(dtype=torch.long),
+        mm_token_type_ids.to(dtype=torch.long),
+        image_grid_thw.to(dtype=torch.long),
+        attention_mask.to(dtype=torch.long),
+        spatial_merge_size=spatial_merge_size,
+    )
+
+    names = ("input_ids", "attention_mask", "position_ids", "pixel_values", "image_grid_thw")
+    tensors: list[torch.Tensor] = []
+    input_shapes: dict[str, list[int]] = {}
+    for key in names:
+        value = batch.get(key) if hasattr(batch, "get") else None
+        if not isinstance(value, torch.Tensor):
+            raise RuntimeError(f"Qwen3.5 processor did not return required tensor input: {key}")
+        if torch.is_floating_point(value):
+            value = value.to(dtype=torch_dtype)
+        else:
+            value = value.to(dtype=torch.long)
+        tensors.append(value)
+        input_shapes[key] = [int(dim) for dim in value.shape]
+
+    return PreparedInputs(
+        names=names,
+        tensors=tuple(tensors),
+        metadata={
+            "prompt": prompt,
+            "system_prompt": system_prompt,
+            "image_files": [str(Path(path).resolve()) for path in image_files],
+            "input_shapes": input_shapes,
+            "enable_thinking": bool(enable_thinking_if_supported),
+            "spatial_merge_size": spatial_merge_size,
+        },
+    )
+
+
 def _run_causal_lm_logits_bundle(
     *,
     component_graphs: dict[str, LoadedComponentGraph],
@@ -1962,6 +3712,19 @@ def _run_causal_lm_logits_bundle(
     max_new_tokens: int | None,
     stop_sequences: tuple[str, ...],
 ) -> dict[str, object]:
+    if (
+        "decoder_step" in component_graphs
+        and os.environ.get("CACTUS_TRANSPILER_DISABLE_CACHED_STEP_DECODE") != "1"
+    ):
+        return _run_causal_lm_cached_step_bundle(
+            component_graphs=component_graphs,
+            manifest=manifest,
+            prompt=prompt,
+            input_ids=input_ids,
+            enable_thinking=enable_thinking,
+            max_new_tokens=max_new_tokens,
+            stop_sequences=stop_sequences,
+        )
     if "decoder" not in component_graphs:
         raise ValueError("causal LM component bundle must include a decoder graph")
 
@@ -2109,6 +3872,342 @@ def _run_causal_lm_logits_bundle(
     }
 
 
+def _run_causal_lm_cached_step_bundle(
+    *,
+    component_graphs: dict[str, LoadedComponentGraph],
+    manifest: dict[str, object],
+    prompt: str | None,
+    input_ids: str | list[int] | tuple[int, ...] | None,
+    enable_thinking: bool,
+    max_new_tokens: int | None,
+    stop_sequences: tuple[str, ...],
+) -> dict[str, object]:
+    decoder_step = component_graphs.get("decoder_step")
+    if decoder_step is None:
+        raise ValueError("causal LM cached decode requires a decoder_step graph")
+    os.environ.setdefault("CACTUS_KV_CACHE_FP16", "1")
+
+    prompt_token_ids, tokenizer = _resolve_causal_lm_input_ids(
+        manifest=manifest,
+        prompt=prompt,
+        input_ids=input_ids,
+        enable_thinking=enable_thinking,
+    )
+    if not prompt_token_ids:
+        raise ValueError("causal LM bundle input token ids are empty")
+    if tokenizer is None:
+        try:
+            tokenizer = _load_bundle_tokenizer(manifest)
+        except Exception:
+            tokenizer = None
+
+    _attach_component_io_names(manifest, component_graphs)
+    input_names = component_input_names(decoder_step)
+    if set(input_names) != {"input_ids", "position_ids"}:
+        raise ValueError(
+            "causal LM decoder_step must accept logical inputs ('input_ids', 'position_ids'), "
+            f"got {input_names!r}"
+        )
+    input_buffers = _bind_zero_input_buffers(
+        decoder_step,
+        {"input_ids": np.int64, "position_ids": np.int64},
+    )
+    gdn_state_entries = [
+        (layer_key, state_input, state_output)
+        for layer_key, state_input, state_output in decoder_step.cache_state_tensors
+        if str(layer_key).startswith("gdn:")
+    ]
+    gdn_state_buffers: dict[str, np.ndarray] = {}
+    for layer_key, state_input, _ in gdn_state_entries:
+        buffer = np.zeros(tuple(int(dim) for dim in state_input.shape), dtype=np.float16)
+        decoder_step.graph.set_external_input(
+            state_input,
+            int(buffer.ctypes.data),
+            dtype=state_input.dtype,
+        )
+        gdn_state_buffers[str(layer_key)] = buffer
+
+    def _run_step_token(token_id: int, position_id: int, *, read_logits: bool) -> np.ndarray | None:
+        input_buffers["input_ids"].fill(int(token_id))
+        input_buffers["position_ids"].fill(int(position_id))
+        decoder_step.graph.execute()
+        for layer_key, _, state_output in gdn_state_entries:
+            np.copyto(
+                gdn_state_buffers[str(layer_key)],
+                np.asarray(state_output.numpy(), dtype=np.float16),
+            )
+        if not read_logits:
+            return None
+        return np.asarray(decoder_step.outputs[0].numpy())
+
+    requested_tokens = (
+        _UNBOUNDED_GENERATION_GUARD_TOKENS
+        if max_new_tokens is None
+        else max(0, int(max_new_tokens))
+    )
+    stop_token_ids = _bundle_stop_token_ids(manifest=manifest, tokenizer=tokenizer)
+    encoded_stop_sequences = _encode_stop_sequences(tokenizer, stop_sequences)
+    generated_ids: list[int] = []
+    logits_shape: list[int] | None = None
+    first_token_ms = 0.0
+    stop_reason = "max_new_tokens"
+    logits: np.ndarray | None = None
+
+    start = time.perf_counter()
+    prime_start = start
+    for position_id, token_id in enumerate(prompt_token_ids):
+        logits = _run_step_token(
+            int(token_id),
+            int(position_id),
+            read_logits=position_id + 1 == len(prompt_token_ids),
+        )
+    prime_end = time.perf_counter()
+    if logits is None:
+        raise RuntimeError("causal LM cached decoder did not produce prompt logits")
+
+    next_position_id = len(prompt_token_ids)
+    for step_index in range(requested_tokens):
+        logits_shape = list(logits.shape)
+        if logits.ndim != 3:
+            raise RuntimeError(f"expected logits with shape [batch, seq, vocab], got {list(logits.shape)}")
+        next_token_id = int(np.argmax(logits[0, -1]))
+        generated_ids.append(next_token_id)
+        if step_index == 0:
+            first_token_ms = (time.perf_counter() - start) * 1000.0
+
+        if next_token_id in stop_token_ids:
+            stop_reason = "stop_token"
+            break
+        if _trim_stop_suffix(generated_ids, encoded_stop_sequences):
+            stop_reason = "stop_sequence"
+            break
+        if step_index + 1 >= requested_tokens:
+            if max_new_tokens is None:
+                stop_reason = "generation_guard"
+            break
+
+        logits = _run_step_token(
+            next_token_id,
+            next_position_id,
+            read_logits=True,
+        )
+        if logits is None:
+            raise RuntimeError("causal LM cached decoder did not produce decode logits")
+        next_position_id += 1
+
+    end = time.perf_counter()
+    response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=True).strip()
+    if not response:
+        response = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=False).strip()
+    decode_time_ms = max(0.0, (end - start) * 1000.0 - first_token_ms)
+    decode_tps = (
+        ((len(generated_ids) - 1) * 1000.0) / decode_time_ms
+        if len(generated_ids) > 1 and decode_time_ms > 0.0
+        else 0.0
+    )
+    prefill_tps = (
+        (len(prompt_token_ids) * 1000.0) / first_token_ms
+        if first_token_ms > 0.0
+        else 0.0
+    )
+    first_generated_token_id = generated_ids[0] if generated_ids else None
+    first_generated_token = (
+        _decode_generated_text(tokenizer, [first_generated_token_id], skip_special_tokens=False)
+        if first_generated_token_id is not None
+        else None
+    )
+    return {
+        "bundle_model_id": str(manifest.get("model_id", "") or ""),
+        "family": str(manifest.get("family", "") or ""),
+        "task": str(manifest.get("task", "") or ""),
+        "component_order": list(manifest.get("component_order", [])),
+        "decode_mode": "cached_step",
+        "input_ids": prompt_token_ids,
+        "input_shape": [1, len(prompt_token_ids)],
+        "output_shape": logits_shape or [],
+        "decoder_ms": (end - start) * 1000.0,
+        "total_ms": (end - start) * 1000.0,
+        "time_to_first_token_ms": first_token_ms,
+        "cache_prime_ms": (prime_end - prime_start) * 1000.0,
+        "cache_prime_tokens": len(prompt_token_ids),
+        "prefill_tps": prefill_tps,
+        "decode_tps": decode_tps,
+        "decode_tokens": len(generated_ids),
+        "total_tokens": len(prompt_token_ids) + len(generated_ids),
+        "generated_token_ids": generated_ids,
+        "response": response,
+        "stop_reason": stop_reason,
+        "next_token_id": first_generated_token_id,
+        "next_token": first_generated_token,
+    }
+
+
+def _run_seq2seq_cached_step_decode(
+    *,
+    decoder_step: LoadedComponentGraph,
+    decoder_cross_kv: LoadedComponentGraph | None,
+    manifest: dict[str, object],
+    audio_file: str | Path,
+    tokenizer: object | None,
+    prompt_token_ids: list[int],
+    encoder_hidden_states: np.ndarray,
+    input_features: np.ndarray,
+    active_frames: int,
+    preprocess_start: float,
+    preprocess_end: float,
+    encoder_start: float,
+    encoder_end: float,
+    target_token_count: int,
+    token_budget: int,
+    suppress_tokens: list[int],
+    begin_suppress_tokens: list[int],
+    eos_token_id: object,
+    encoded_stop_sequences: tuple[tuple[int, ...], ...],
+    stop_reason_default: str,
+) -> dict[str, object]:
+    os.environ.setdefault("CACTUS_KV_CACHE_FP16", "1")
+
+    input_names = component_input_names(decoder_step)
+    cross_kv_store: dict[str, np.ndarray] = {}
+    decoder_start = time.perf_counter()
+    if decoder_cross_kv is not None:
+        cross_store = {"encoder_hidden_states": encoder_hidden_states}
+        execute_loaded_component(decoder_cross_kv, cross_store)
+        cross_kv_store = {
+            name: np.ascontiguousarray(value)
+            for name, value in cross_store.items()
+            if name.startswith(("cross_k_", "cross_v_")) and isinstance(value, np.ndarray)
+        }
+
+    old_step_inputs = input_names == ("decoder_input_ids", "encoder_hidden_states", "position_ids")
+    new_step_inputs = (
+        len(input_names) >= 2
+        and input_names[:2] == ("decoder_input_ids", "position_ids")
+        and all(name in cross_kv_store for name in input_names[2:])
+    )
+    if not old_step_inputs and not new_step_inputs:
+        raise ValueError(
+            "seq2seq cached decoder_step must accept logical inputs "
+            "('decoder_input_ids', 'encoder_hidden_states', 'position_ids') or "
+            "('decoder_input_ids', 'position_ids', cross_k/v...), "
+            f"got {input_names!r}"
+        )
+
+    encoder_hidden_states = np.ascontiguousarray(encoder_hidden_states)
+    runtime_inputs: list[np.ndarray] = []
+    mutable_inputs: dict[str, np.ndarray] = {}
+    for name, tensor in zip(input_names, decoder_step.runtime_inputs, strict=True):
+        if name == "decoder_input_ids":
+            value = np.zeros(tuple(int(dim) for dim in tensor.shape), dtype=np.int64)
+            mutable_inputs[name] = value
+        elif name == "position_ids":
+            value = np.zeros(tuple(int(dim) for dim in tensor.shape), dtype=np.int64)
+            mutable_inputs[name] = value
+        elif name == "encoder_hidden_states":
+            value = encoder_hidden_states
+        elif name in cross_kv_store:
+            value = cross_kv_store[name]
+        else:
+            raise RuntimeError(f"missing decoder_step input {name!r}")
+        runtime_inputs.append(value)
+    bound_inputs = decoder_step.set_external_inputs(runtime_inputs)
+    for index, name in enumerate(input_names):
+        if name in mutable_inputs:
+            mutable_inputs[name] = bound_inputs[index]
+        elif name == "encoder_hidden_states":
+            encoder_hidden_states = bound_inputs[index]
+        elif name in cross_kv_store:
+            cross_kv_store[name] = bound_inputs[index]
+    decoder_input_ids = mutable_inputs["decoder_input_ids"]
+    position_ids = mutable_inputs["position_ids"]
+
+    def _execute_step(token_id: int, position: int) -> np.ndarray:
+        decoder_input_ids.fill(int(token_id))
+        position_ids.fill(int(position))
+        outputs = decoder_step.execute()
+        if not outputs:
+            raise RuntimeError("seq2seq decoder_step graph produced no outputs")
+        logits = outputs[0].numpy()
+        if logits.ndim != 3:
+            raise RuntimeError(f"expected decoder_step logits with shape [batch, seq, vocab], got {list(logits.shape)}")
+        return np.asarray(logits)
+
+    generated_ids: list[int] = []
+    logits_shape: list[int] | None = None
+    first_token_ms = 0.0
+    stop_reason = stop_reason_default
+    logits: np.ndarray | None = None
+
+    for position, token_id in enumerate(prompt_token_ids):
+        logits = _execute_step(token_id, position)
+
+    if logits is None:
+        raise RuntimeError("seq2seq cached decoder did not produce prompt logits")
+
+    for step_index in range(token_budget):
+        logits_shape = list(logits.shape)
+        next_token_id = _select_next_token_with_suppression(
+            np.asarray(logits[0, -1]),
+            suppress_tokens=suppress_tokens,
+            begin_suppress_tokens=begin_suppress_tokens if step_index == 0 else (),
+        )
+        generated_ids.append(next_token_id)
+        if step_index == 0:
+            first_token_ms = (time.perf_counter() - decoder_start) * 1000.0
+
+        if eos_token_id is not None and next_token_id == int(eos_token_id):
+            stop_reason = "eos_token"
+            break
+        if _trim_stop_suffix(generated_ids, encoded_stop_sequences):
+            stop_reason = "stop_sequence"
+            break
+        if len(prompt_token_ids) + len(generated_ids) >= target_token_count:
+            stop_reason = "context_limit"
+            break
+        if step_index + 1 >= token_budget:
+            break
+
+        logits = _execute_step(next_token_id, len(prompt_token_ids) + step_index)
+
+    decoder_end = time.perf_counter()
+    transcript = _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=True).strip()
+    if not transcript:
+        transcript = _strip_whisper_control_tokens(
+            _decode_generated_text(tokenizer, generated_ids, skip_special_tokens=False)
+        ).strip()
+    decode_time_ms = max(0.0, (decoder_end - decoder_start) * 1000.0 - first_token_ms)
+    decode_tps = (
+        ((len(generated_ids) - 1) * 1000.0) / decode_time_ms
+        if len(generated_ids) > 1 and decode_time_ms > 0.0
+        else 0.0
+    )
+
+    return {
+        "bundle_model_id": str(manifest.get("model_id", "") or ""),
+        "family": str(manifest.get("family", "") or ""),
+        "task": str(manifest.get("task", "") or ""),
+        "audio_file": str(Path(audio_file).expanduser().resolve()),
+        "component_order": list(manifest.get("component_order", [])),
+        "active_feature_frames": active_frames,
+        "input_shape": list(input_features.shape),
+        "encoder_hidden_shape": list(encoder_hidden_states.shape),
+        "output_shape": logits_shape or [],
+        "input_ids": prompt_token_ids,
+        "generated_token_ids": generated_ids,
+        "transcript": transcript,
+        "response": transcript,
+        "preprocess_ms": (preprocess_end - preprocess_start) * 1000.0,
+        "encoder_ms": (encoder_end - encoder_start) * 1000.0,
+        "decoder_ms": (decoder_end - decoder_start) * 1000.0,
+        "total_ms": (decoder_end - preprocess_start) * 1000.0,
+        "time_to_first_token_ms": first_token_ms,
+        "decode_tps": decode_tps,
+        "decode_tokens": len(generated_ids),
+        "stop_reason": stop_reason,
+        "decode_mode": "cached_step",
+    }
+
+
 def _run_seq2seq_transcription_bundle(
     *,
     component_graphs: dict[str, LoadedComponentGraph],
@@ -2119,7 +4218,9 @@ def _run_seq2seq_transcription_bundle(
     max_new_tokens: int | None,
     stop_sequences: tuple[str, ...],
 ) -> dict[str, object]:
-    if "audio_encoder" not in component_graphs or "decoder" not in component_graphs:
+    if "audio_encoder" not in component_graphs or (
+        "decoder" not in component_graphs and "decoder_step" not in component_graphs
+    ):
         raise ValueError("seq2seq_transcription bundle must include audio_encoder and decoder graphs")
 
     inputs_meta = manifest.get("inputs")
@@ -2148,19 +4249,36 @@ def _run_seq2seq_transcription_bundle(
 
     _attach_component_io_names(manifest, component_graphs)
     encoder = component_graphs["audio_encoder"]
-    decoder = component_graphs["decoder"]
+    decoder = component_graphs.get("decoder")
+    decoder_step = component_graphs.get("decoder_step")
     encoder_inputs = component_input_names(encoder)
-    decoder_inputs = component_input_names(decoder)
     if encoder_inputs and encoder_inputs != ("input_features",):
         raise ValueError(
             "seq2seq_transcription audio_encoder must accept logical input ('input_features',), "
             f"got {encoder_inputs!r}"
         )
-    if decoder_inputs and decoder_inputs != ("decoder_input_ids", "encoder_hidden_states"):
+    decoder_inputs = component_input_names(decoder) if decoder is not None else ()
+    if decoder is not None and decoder_inputs and decoder_inputs != ("decoder_input_ids", "encoder_hidden_states"):
         raise ValueError(
             "seq2seq_transcription decoder must accept logical inputs "
             "('decoder_input_ids', 'encoder_hidden_states'), "
             f"got {decoder_inputs!r}"
+        )
+    decoder_step_inputs = component_input_names(decoder_step) if decoder_step is not None else ()
+    valid_decoder_step_inputs = (
+        decoder_step_inputs == ("decoder_input_ids", "encoder_hidden_states", "position_ids")
+        or (
+            len(decoder_step_inputs) >= 2
+            and decoder_step_inputs[:2] == ("decoder_input_ids", "position_ids")
+            and all(name.startswith(("cross_k_", "cross_v_")) for name in decoder_step_inputs[2:])
+        )
+    )
+    if decoder_step is not None and decoder_step_inputs and not valid_decoder_step_inputs:
+        raise ValueError(
+            "seq2seq_transcription decoder_step must accept logical inputs "
+            "('decoder_input_ids', 'encoder_hidden_states', 'position_ids') or "
+            "('decoder_input_ids', 'position_ids', cross_k/v...), "
+            f"got {decoder_step_inputs!r}"
         )
 
     preprocess_start = time.perf_counter()
@@ -2191,15 +4309,6 @@ def _run_seq2seq_transcription_bundle(
         )
 
     padding_token_id = _resolve_bundle_padding_token_id(inputs_meta, tokenizer)
-    input_array = np.full((1, target_token_count), padding_token_id, dtype=np.int64)
-    input_array[0, : len(prompt_token_ids)] = np.asarray(prompt_token_ids, dtype=np.int64)
-    if hasattr(decoder, "set_external_inputs"):
-        bound_decoder_inputs = decoder.set_external_inputs([input_array, encoder_hidden_states])
-        input_array = bound_decoder_inputs[0]
-        encoder_hidden_states = bound_decoder_inputs[1]
-    else:
-        decoder.set_inputs([input_array, encoder_hidden_states])
-
     available_headroom = max(0, target_token_count - len(prompt_token_ids))
     if max_new_tokens is None:
         token_budget = available_headroom if available_headroom > 0 else 1
@@ -2227,6 +4336,42 @@ def _run_seq2seq_transcription_bundle(
             if eos_int is None or int(token_id) != eos_int
         ]
         suppress_tokens = sorted(set(suppress_tokens).union(whisper_special_ids))
+
+    if decoder_step is not None and os.environ.get("CACTUS_TRANSPILER_DISABLE_SEQ2SEQ_CACHED_STEP") != "1":
+        return _run_seq2seq_cached_step_decode(
+            decoder_step=decoder_step,
+            decoder_cross_kv=component_graphs.get("decoder_cross_kv"),
+            manifest=manifest,
+            audio_file=audio_file,
+            tokenizer=tokenizer,
+            prompt_token_ids=prompt_token_ids,
+            encoder_hidden_states=encoder_hidden_states,
+            input_features=input_features,
+            active_frames=active_frames,
+            preprocess_start=preprocess_start,
+            preprocess_end=preprocess_end,
+            encoder_start=encoder_start,
+            encoder_end=encoder_end,
+            target_token_count=target_token_count,
+            token_budget=token_budget,
+            suppress_tokens=suppress_tokens,
+            begin_suppress_tokens=begin_suppress_tokens,
+            eos_token_id=eos_token_id,
+            encoded_stop_sequences=encoded_stop_sequences,
+            stop_reason_default="max_new_tokens",
+        )
+
+    if decoder is None:
+        raise ValueError("seq2seq_transcription bundle must include decoder or decoder_step graph")
+
+    input_array = np.full((1, target_token_count), padding_token_id, dtype=np.int64)
+    input_array[0, : len(prompt_token_ids)] = np.asarray(prompt_token_ids, dtype=np.int64)
+    if hasattr(decoder, "set_external_inputs"):
+        bound_decoder_inputs = decoder.set_external_inputs([input_array, encoder_hidden_states])
+        input_array = bound_decoder_inputs[0]
+        encoder_hidden_states = bound_decoder_inputs[1]
+    else:
+        decoder.set_inputs([input_array, encoder_hidden_states])
 
     generated_ids: list[int] = []
     logits_shape: list[int] | None = None
@@ -2489,24 +4634,63 @@ def _patch_missing_lzma_backport() -> str | None:
         return None
 
 
+def _load_bundle_processor(manifest: dict[str, object]):
+    _patch_missing_lzma_backport()
+    processor_sources = tuple(_pretrained_source_candidates(manifest, processor=True))
+    if not processor_sources:
+        raise ValueError("bundle manifest is missing model_source/model_id for multimodal preprocessing")
+    cached = _PROCESSOR_CACHE.get(processor_sources)
+    if cached is not None:
+        return cached
+
+    try:
+        from transformers import AutoProcessor  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(f"transformers is required for multimodal preprocessing: {exc}") from exc
+
+    processor_errors: list[str] = []
+    for source in processor_sources:
+        try:
+            processor = AutoProcessor.from_pretrained(
+                source,
+                local_files_only=Path(source).exists(),
+                trust_remote_code=True,
+            )
+            _PROCESSOR_CACHE[processor_sources] = processor
+            return processor
+        except Exception as exc:
+            processor_errors.append(f"{source}: {exc}")
+    raise RuntimeError(
+        "failed to load tokenizer/processor assets for multimodal preprocessing. "
+        "Re-run cactus convert so processor files are copied into the weights folder. "
+        f"Tried: {'; '.join(processor_errors)}"
+    )
+
+
 def _load_bundle_tokenizer(manifest: dict[str, object]):
     _patch_missing_lzma_backport()
+    tokenizer_sources = tuple(_pretrained_source_candidates(manifest, processor=False))
+    if not tokenizer_sources:
+        raise ValueError("bundle manifest is missing model_source/model_id; provide --input-ids instead")
+    cached = _TOKENIZER_CACHE.get(tokenizer_sources)
+    if cached is not None:
+        return cached
+
     try:
         from transformers import AutoTokenizer  # type: ignore
     except Exception as exc:
         raise RuntimeError(f"transformers is required to tokenize --prompt: {exc}") from exc
 
-    tokenizer_sources = _pretrained_source_candidates(manifest, processor=False)
-    if not tokenizer_sources:
-        raise ValueError("bundle manifest is missing model_source/model_id; provide --input-ids instead")
     errors: list[str] = []
     for source in tokenizer_sources:
         try:
-            return AutoTokenizer.from_pretrained(
+            tokenizer = AutoTokenizer.from_pretrained(
                 source,
                 local_files_only=Path(source).exists(),
                 trust_remote_code=True,
             )
+            _TOKENIZER_CACHE[tokenizer_sources] = tokenizer
+            return tokenizer
         except Exception as exc:
             errors.append(f"{source}: {exc}")
     raise RuntimeError(
@@ -2554,17 +4738,25 @@ def _tokenize_bundle_prompt_for_manifest(
     enable_thinking_if_supported: bool = False,
 ) -> list[int]:
     family = str(manifest.get("family", "") or "").strip().lower()
-    if family in {"qwen", "qwen3", "qwen3_5", "qwen3.5"}:
+    profile = profile_for_family(family)
+    prompt_style = profile.prompt_style if profile is not None else "auto"
+    if prompt_style == "chatml":
         return _encode_prompt_text(
             tokenizer,
             f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n",
         )
-    if family in {"lfm2", "lfm2_vl", "lfm"}:
+    if prompt_style == "lfm_chat":
         return _encode_prompt_text(
             tokenizer,
             f"<|startoftext|><|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n",
         )
-    if family in {"gemma4", "gemma"}:
+    if prompt_style == "qwen_chat":
+        thinking_prefix = "<think>\n" if enable_thinking_if_supported else "<think>\n\n</think>\n\n"
+        return _encode_prompt_text(
+            tokenizer,
+            f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n{thinking_prefix}",
+        )
+    if prompt_style == "gemma4":
         return _encode_prompt_text(
             tokenizer,
             _build_gemma4_chat_prompt(
@@ -2720,11 +4912,8 @@ def _bundle_stop_token_ids(
         token_ids.add(int(eos_token_id))
 
     family = str(manifest.get("family", "") or "").strip().lower()
-    stop_tokens: tuple[str, ...] = ()
-    if family in {"gemma4", "gemma"}:
-        stop_tokens = ("<turn|>", "<eos>")
-    elif family in {"qwen", "qwen3", "qwen3_5", "qwen3.5"}:
-        stop_tokens = ("<|im_end|>",)
+    profile = profile_for_family(family)
+    stop_tokens = profile.stop_tokens if profile is not None else ()
 
     convert = getattr(tokenizer, "convert_tokens_to_ids", None)
     encode = getattr(tokenizer, "encode", None)
@@ -2811,6 +5000,61 @@ def _select_next_token_with_suppression(
         if 0 <= token_index < vocab_size:
             masked[token_index] = -np.inf
     return int(np.argmax(masked))
+
+
+def _select_next_token_with_repetition_penalty(
+    logits: np.ndarray,
+    *,
+    token_ids: list[int] | tuple[int, ...],
+    penalty: float,
+    no_repeat_ngram_size: int = 0,
+) -> int:
+    adjusted = np.asarray(logits, dtype=np.float32).copy()
+    vocab_size = int(adjusted.shape[-1])
+    if penalty > 1.0 and token_ids:
+        for token_id in set(int(value) for value in token_ids):
+            if 0 <= token_id < vocab_size:
+                adjusted[token_id] = adjusted[token_id] / penalty if adjusted[token_id] > 0 else adjusted[token_id] * penalty
+    _mask_repeated_ngrams(adjusted, token_ids=token_ids, ngram_size=no_repeat_ngram_size)
+    return int(np.argmax(adjusted))
+
+
+def _lfm2_repetition_penalty() -> float:
+    raw_value = os.environ.get("CACTUS_LFM2_REPETITION_PENALTY", "1.25")
+    try:
+        return max(1.0, float(raw_value or "1.25"))
+    except ValueError:
+        return 1.25
+
+
+def _lfm2_no_repeat_ngram_size() -> int:
+    raw_value = os.environ.get("CACTUS_LFM2_NO_REPEAT_NGRAM", "4")
+    try:
+        return max(0, int(raw_value or "4"))
+    except ValueError:
+        return 4
+
+
+def _mask_repeated_ngrams(
+    logits: np.ndarray,
+    *,
+    token_ids: list[int] | tuple[int, ...],
+    ngram_size: int,
+) -> None:
+    if ngram_size <= 1 or len(token_ids) + 1 < ngram_size:
+        return
+    prefix_length = ngram_size - 1
+    current_prefix = tuple(int(value) for value in token_ids[-prefix_length:])
+    if len(current_prefix) != prefix_length:
+        return
+    vocab_size = int(logits.shape[-1])
+    for index in range(0, len(token_ids) - prefix_length):
+        previous_prefix = tuple(int(value) for value in token_ids[index : index + prefix_length])
+        if previous_prefix != current_prefix:
+            continue
+        blocked_token = int(token_ids[index + prefix_length])
+        if 0 <= blocked_token < vocab_size:
+            logits[blocked_token] = -np.inf
 
 
 def _strip_whisper_control_tokens(text: str) -> str:

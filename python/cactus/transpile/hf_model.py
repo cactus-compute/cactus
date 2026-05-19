@@ -3,10 +3,11 @@ from __future__ import annotations
 import argparse
 import copy
 import gc
+import itertools
 import json
 import os
 import re
-import struct
+import shutil
 import sys
 from collections.abc import Mapping
 from collections import Counter
@@ -23,9 +24,6 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from cactus.transpile.runtime_compat import Graph
-from cactus.convert.cactus_adapters.tensor_io import CACTUS_ALIGNMENT
-from cactus.convert.cactus_adapters.tensor_io import CACTUS_MAGIC
-from cactus.convert.cactus_adapters.tensor_io import compute_padding
 from cactus.transpile.audio_preprocess import generic_log_mel_features as _generic_log_mel_features
 from cactus.transpile.audio_preprocess import load_audio_waveform as _load_audio_waveform
 from cactus.transpile.audio_preprocess import prepare_cactus_audio_features
@@ -61,9 +59,6 @@ from cactus.transpile.weight_compat import ensure_binding_compatible
 
 _DEFAULT_CAUSAL_PROMPT = "The capital of France is"
 _DEFAULT_MULTIMODAL_CONTEXT_TOKENS = 2048
-_CACTUS_FLAG_EXTENDED_SHAPE = 1 << 4
-_CACTUS_BASE_HEADER_SIZE = 84
-_CACTUS_EXTENDED_SHAPE_DIMS = 8
 
 
 @dataclass
@@ -151,17 +146,23 @@ def _serialize_json_compatible(value: Any) -> Any:
     if isinstance(value, torch.dtype):
         return str(value)
     if isinstance(value, torch.Tensor):
-        return {
+        payload = {
             "type": "torch.Tensor",
             "dtype": str(value.dtype),
             "shape": list(value.shape),
         }
+        if value.numel() == 1:
+            payload["data"] = value.detach().cpu().reshape(-1)[0].item()
+        return payload
     if isinstance(value, np.ndarray):
-        return {
+        payload = {
             "type": "numpy.ndarray",
             "dtype": str(value.dtype),
             "shape": list(value.shape),
         }
+        if value.size == 1:
+            payload["data"] = np.asarray(value).reshape(-1)[0].item()
+        return payload
     if hasattr(value, "__dataclass_fields__"):
         return {
             field.name: _serialize_json_compatible(getattr(value, field.name))
@@ -229,81 +230,28 @@ def _binding_entries_by_node_id(
     return result
 
 
-def _binding_entries_by_value_id(
-    bindings: list[dict[str, object]],
-) -> dict[str, dict[str, object]]:
-    result: dict[str, dict[str, object]] = {}
-    for binding in bindings:
-        value_id = binding.get("value_id")
-        if isinstance(value_id, str) and value_id:
-            result[value_id] = binding
-    return result
+def _embed_materialized_bound_constants(transpiled_graph: TranspiledGraph) -> int:
+    """Serialize small graph-local constants into the .cactus graph itself.
 
-
-def _constant_precision_to_numpy_dtype(precision: int):
-    if int(precision) == int(Graph.FP16):
-        return np.float16
-    if int(precision) == int(Graph.FP32):
-        return np.float32
-    if int(precision) == int(Graph.INT8):
-        return np.int8
-    raise ValueError(f"materialized graph constants must be FP16/FP32/INT8, got precision={precision}")
-
-
-def _write_cactus_constant_tensor(
-    *,
-    output_path: Path,
-    value: object,
-    precision: int,
-) -> None:
-    if isinstance(value, torch.Tensor):
-        array = value.detach().cpu().numpy()
-    elif isinstance(value, np.ndarray):
-        array = value
-    else:
-        raise TypeError(f"unsupported materialized constant type: {type(value).__name__}")
-
-    dtype = _constant_precision_to_numpy_dtype(int(precision))
-    array = np.ascontiguousarray(array.astype(dtype, copy=False))
-    shape = list(array.shape)
-    if len(shape) > _CACTUS_EXTENDED_SHAPE_DIMS:
-        raise ValueError(
-            f"Cactus tensor files support at most rank {_CACTUS_EXTENDED_SHAPE_DIMS} constants, got shape={shape}"
+    CQ model weights remain external mmap files. Only materialized constants
+    without an existing weight binding are embedded.
+    """
+    existing_bindings = list(_serialize_json_compatible(transpiled_graph.bound_constant_bindings))
+    external_node_ids = set(_binding_entries_by_node_id(existing_bindings))
+    mark_embedded_input = getattr(transpiled_graph.graph, "mark_embedded_input", None)
+    if not callable(mark_embedded_input):
+        raise RuntimeError(
+            "Cactus runtime does not support embedded graph constants; rebuild with cactus build --python"
         )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("wb") as handle:
-        data = array.reshape(-1)
-        data_bytes = int(data.nbytes)
-        flags = _CACTUS_FLAG_EXTENDED_SHAPE if len(shape) > 4 else 0
-        header_size = _CACTUS_BASE_HEADER_SIZE + (32 if flags else 0)
-        handle.write(CACTUS_MAGIC)
-        handle.write(struct.pack("<I", flags))
-        handle.write(struct.pack("<I", CACTUS_ALIGNMENT))
-        handle.write(struct.pack("<I", len(shape)))
-        for index in range(4):
-            handle.write(struct.pack("<Q", int(shape[index]) if index < len(shape) else 0))
-        handle.write(struct.pack("<I", int(precision)))
-        handle.write(struct.pack("<Q", data_bytes))
-        handle.write(struct.pack("<Q", 0))  # scales_bytes
-        handle.write(struct.pack("<I", 0))  # group_size
-        handle.write(struct.pack("<I", 0))  # num_groups
-        handle.write(struct.pack("<Q", int(shape[0]) if shape else 0))
-        if flags:
-            for index in range(4, _CACTUS_EXTENDED_SHAPE_DIMS):
-                handle.write(struct.pack("<Q", int(shape[index]) if index < len(shape) else 0))
-        handle.write(compute_padding(header_size, CACTUS_ALIGNMENT))
-        handle.write(data.tobytes())
-
-
-def _constant_precision_from_array(array: np.ndarray) -> int:
-    if array.dtype == np.float16:
-        return int(Graph.FP16)
-    if array.dtype in (np.float32, np.float64, np.bool_, np.int16, np.int32, np.int64, np.uint8):
-        return int(Graph.FP32)
-    if array.dtype == np.int8:
-        return int(Graph.INT8)
-    return int(Graph.FP32)
+    embedded_count = 0
+    for constant_tensor in transpiled_graph.bound_constants:
+        node_id = int(constant_tensor.id)
+        if node_id in external_node_ids:
+            continue
+        mark_embedded_input(constant_tensor)
+        embedded_count += 1
+    return embedded_count
 
 
 def _write_graph_binding_manifest(
@@ -358,6 +306,8 @@ def _write_component_bundle(
             "decoder_prefill_chunk",
             "decoder",
             "lm_encoder_step",
+            "lm_encoder_media_step",
+            "decoder_media_step",
             "decoder_step",
             "unspecified",
         )
@@ -410,75 +360,9 @@ def _write_component_bundle(
         if transpiled_graph is not None:
             graph_relpath = Path(component) / graph_filename
             component_dir.mkdir(parents=True, exist_ok=True)
+            shutil.rmtree(component_dir / "bound_constants", ignore_errors=True)
+            _embed_materialized_bound_constants(transpiled_graph)
             transpiled_graph.graph.save(bundle_dir / graph_relpath)
-
-        materialized_constant_bindings: list[dict[str, object]] = []
-        if transpiled_graph is not None:
-            existing_bindings = list(_serialize_json_compatible(transpiled_graph.bound_constant_bindings))
-            existing_by_node_id = _binding_entries_by_node_id(existing_bindings)
-            existing_by_value_id = _binding_entries_by_value_id(existing_bindings)
-            constant_value_ids = dict(getattr(transpiled_graph, "bound_constant_value_ids", {}))
-            value_to_node_id = {value_id: node_id for node_id, value_id in constant_value_ids.items()}
-            constant_dir = component_dir / "bound_constants"
-            for constant_tensor in transpiled_graph.bound_constants:
-                node_id = int(constant_tensor.id)
-                if node_id in existing_by_node_id:
-                    continue
-                constant_dir.mkdir(parents=True, exist_ok=True)
-                constant_filename = f"node_{node_id}.weights"
-                constant_relpath = Path(component) / "bound_constants" / constant_filename
-                _write_cactus_constant_tensor(
-                    output_path=bundle_dir / constant_relpath,
-                    value=constant_tensor.numpy(),
-                    precision=int(constant_tensor.dtype),
-                )
-                materialized_constant_bindings.append(
-                    {
-                        "node_id": node_id,
-                        "value_id": str(constant_value_ids.get(node_id, f"materialized_constant_{node_id}")),
-                        "path": str((bundle_dir / constant_relpath).relative_to(artifact_dir)),
-                        "kind": "saved_constant",
-                        "source_name": str(constant_value_ids.get(node_id, f"materialized_constant_{node_id}")),
-                        "format": "tensor_io",
-                        "precision": int(constant_tensor.dtype),
-                    }
-                )
-
-            graph_constants = (optimized_graph or raw_graph).constants if (optimized_graph or raw_graph) is not None else {}
-            for value_id, constant_value in graph_constants.items():
-                if value_id in existing_by_value_id:
-                    continue
-                if any(binding.get("value_id") == value_id for binding in materialized_constant_bindings):
-                    continue
-                if isinstance(constant_value, torch.Tensor):
-                    constant_array = constant_value.detach().cpu().numpy().copy()
-                elif isinstance(constant_value, np.ndarray):
-                    constant_array = np.ascontiguousarray(constant_value)
-                else:
-                    continue
-                if value_id not in value_to_node_id:
-                    continue
-                constant_dir.mkdir(parents=True, exist_ok=True)
-                safe_value_id = re.sub(r"[^A-Za-z0-9._-]+", "_", value_id).strip("._-") or "constant"
-                constant_filename = f"{safe_value_id}.weights"
-                constant_relpath = Path(component) / "bound_constants" / constant_filename
-                precision = _constant_precision_from_array(constant_array)
-                _write_cactus_constant_tensor(
-                    output_path=bundle_dir / constant_relpath,
-                    value=constant_array,
-                    precision=precision,
-                )
-                materialized_constant_bindings.append(
-                    {
-                        "node_id": int(value_to_node_id.get(value_id, -1)),
-                        "value_id": str(value_id),
-                        "path": str((bundle_dir / constant_relpath).relative_to(artifact_dir)),
-                        "kind": "saved_constant",
-                        "source_name": str(value_id),
-                        "format": "tensor_io",
-                        "precision": int(precision),
-                    }
-                )
 
         graph_for_signature = optimized_graph or raw_graph
         if graph_for_signature is None:
@@ -508,7 +392,6 @@ def _write_component_bundle(
                 ],
                 "bound_constant_bindings": [] if transpiled_graph is None else (
                     list(_serialize_json_compatible(transpiled_graph.bound_constant_bindings))
-                    + materialized_constant_bindings
                 ),
             }
         )
@@ -878,6 +761,63 @@ def _run_component_pipeline_transpile(
             print(f"saved_result={artifact_dir / 'result.json'}")
         return 0
 
+    if task == "causal_lm_logits":
+        tokenizer_like = getattr(processor_or_tokenizer, "tokenizer", processor_or_tokenizer)
+        result_payload = {
+            "model_id": args.model_id,
+            "model_source": model_source,
+            "task": task,
+            "family": family,
+            "inputs": _serialize_json_compatible(prepared.metadata),
+            "raw_ir_nodes": raw_ir_nodes,
+            "optimized_ir_nodes": optimized_ir_nodes,
+            "weight_bindings": binding_count,
+        }
+        if "decoder" in captured_components:
+            print("execute_begin=true")
+            initial_store = {
+                name: tensor
+                for name, tensor in zip(prepared.names, prepared.tensors, strict=True)
+            }
+            store, _ = execute_component_pipeline(
+                [captured_components["decoder"]],
+                initial_store=initial_store,
+            )
+            print("execute_done=true")
+            transpiled_output = np.asarray(store["logits"])
+            transpiled_next = int(np.argmax(transpiled_output[0, -1]))
+            print(f"output_shape={list(transpiled_output.shape)}")
+            print(f"transpiled_next_token_id={transpiled_next}")
+            result_payload["output_shape"] = list(transpiled_output.shape)
+            result_payload["transpiled_next_token_id"] = transpiled_next
+            if hasattr(tokenizer_like, "decode"):
+                transpiled_token = tokenizer_like.decode([transpiled_next])
+                print(f"transpiled_next_token={transpiled_token!r}")
+                result_payload["transpiled_next_token"] = transpiled_token
+            if not args.skip_reference_compare and canonical is not None:
+                print("reference_begin=true")
+                with torch.no_grad():
+                    reference_output = canonical.module(*prepared.tensors).detach().float().cpu().numpy()
+                print("reference_done=true")
+                max_abs_diff = float(np.max(np.abs(reference_output - transpiled_output)))
+                mean_abs_diff = float(np.mean(np.abs(reference_output - transpiled_output)))
+                hf_next = int(np.argmax(reference_output[0, -1]))
+                print(f"hf_next_token_id={hf_next}")
+                print(f"logits_max_abs_diff={max_abs_diff:.6f}")
+                print(f"logits_mean_abs_diff={mean_abs_diff:.6f}")
+                result_payload["hf_next_token_id"] = hf_next
+                result_payload["max_abs_diff"] = max_abs_diff
+                result_payload["mean_abs_diff"] = mean_abs_diff
+                if hasattr(tokenizer_like, "decode"):
+                    result_payload["hf_next_token"] = tokenizer_like.decode([hf_next])
+        else:
+            result_payload["reference_compare_skipped"] = True
+            result_payload["note"] = "causal LM component bundle contains only cached decode step components"
+        if artifact_dir is not None:
+            _write_json(artifact_dir / "result.json", result_payload)
+            print(f"saved_result={artifact_dir / 'result.json'}")
+        return 0
+
     if task == "tdt_transcription":
         print("execute_begin=true")
         transpiled_decode = _run_parakeet_tdt_component_decode(
@@ -1043,6 +983,8 @@ def _repair_gemma4_checkpoint_weights(model: torch.nn.Module, model_source: str)
     # Gemma4 classes use audio_tower.layers and *.linear.weight, and
     # from_pretrained already loads them correctly. Do not reload a legacy
     # remap into the current layout, because that leaves real weights missing.
+    if hasattr(audio_tower, "layers"):
+        return {"applied": False, "reason": "current HF Gemma4 layout uses audio_tower.layers"}
     if not hasattr(audio_tower, "conformer"):
         return {"applied": False, "reason": "current HF Gemma4 layout does not need legacy key remap"}
 
@@ -1713,20 +1655,10 @@ def _resolve_graph_safe_text_padding_token_id(
     tokenizer: object | None,
     prompt_input_ids: torch.Tensor,
 ) -> int:
-    padding_token_id = _resolve_text_padding_token_id(tokenizer)
-    if padding_token_id <= 60000:
-        return padding_token_id
-
-    used_token_ids = {int(value) for value in prompt_input_ids.detach().cpu().reshape(-1).tolist()}
-    vocab_size = getattr(tokenizer, "vocab_size", None)
-    upper_bound = int(vocab_size) if isinstance(vocab_size, int) and vocab_size > 0 else 2048
-    # v2 compare fallbacks currently legalize scalar comparisons through FP16.
-    # A large HF pad token such as Qwen's 151643 overflows that path, so choose
-    # a small valid token ID that is absent from the prompt and mask it out.
-    for candidate in range(min(upper_bound, 2048)):
-        if candidate not in used_token_ids:
-            return int(candidate)
-    return 0
+    # Keep the tokenizer pad ID in the captured graph metadata. The lowerer keeps
+    # large token-id comparisons in FP32, so Qwen-style high pad IDs are safe and
+    # runtime padding stays consistent with the traced mask.
+    return _resolve_text_padding_token_id(tokenizer)
 
 
 def _prepare_text_inputs(
@@ -1806,7 +1738,21 @@ def _add_multimodal_generation_headroom(
     padded_tensors: list[torch.Tensor] = []
     for name, tensor in zip(prepared.names, prepared.tensors, strict=True):
         if (
-            name not in {"input_ids", "attention_mask", "token_type_ids"}
+            name == "position_ids"
+            and tensor.ndim == 3
+            and int(tensor.shape[1]) == 1
+            and int(tensor.shape[2]) == prompt_token_count
+        ):
+            padded = torch.zeros(
+                (int(tensor.shape[0]), 1, target_token_count),
+                dtype=tensor.dtype,
+                device=tensor.device,
+            )
+            padded[:, :, :prompt_token_count] = tensor
+            padded_tensors.append(padded)
+            continue
+        if (
+            name not in {"input_ids", "attention_mask", "token_type_ids", "mm_token_type_ids"}
             or tensor.ndim != 2
             or int(tensor.shape[0]) != 1
             or int(tensor.shape[1]) != prompt_token_count
@@ -1870,6 +1816,14 @@ _LFM2_VL_MULTIMODAL_INPUT_ORDER = (
     "pixel_values",
     "spatial_shapes",
     "pixel_attention_mask",
+)
+
+_QWEN3_5_MULTIMODAL_INPUT_ORDER = (
+    "input_ids",
+    "attention_mask",
+    "position_ids",
+    "pixel_values",
+    "image_grid_thw",
 )
 
 
@@ -2287,16 +2241,27 @@ def _prepare_lfm2_vl_multimodal_inputs(
 
     batch: Mapping[str, object]
     apply_chat_template = getattr(processor, "apply_chat_template", None)
+    thinking_prefix = "<think>\n" if enable_thinking_if_supported else "<think>\n\n</think>\n\n"
+    image_placeholders = "".join("<|vision_start|><|image_pad|><|vision_end|>" for _ in images)
+    fallback_text = (
+        f"<|im_start|>user\n{image_placeholders}{prompt.strip()}<|im_end|>\n"
+        f"<|im_start|>assistant\n{thinking_prefix}"
+    )
     if callable(apply_chat_template):
-        batch = apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-        )
+        try:
+            batch = apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+        except ValueError as exc:
+            if "chat template" not in str(exc).lower():
+                raise
+            batch = processor(text=fallback_text, images=images, return_tensors="pt")
     else:
-        batch = processor(text=prompt, images=images, return_tensors="pt")
+        batch = processor(text=fallback_text, images=images, return_tensors="pt")
 
     tensors: list[torch.Tensor] = []
     names: list[str] = []
@@ -2324,6 +2289,159 @@ def _prepare_lfm2_vl_multimodal_inputs(
             "image_files": [str(Path(path).resolve()) for path in image_files],
             "input_shapes": input_shapes,
             "enable_thinking": bool(enable_thinking_if_supported),
+        },
+    )
+
+
+def _compute_qwen3_5_position_ids(
+    input_ids: torch.Tensor,
+    mm_token_type_ids: torch.Tensor,
+    image_grid_thw: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    *,
+    spatial_merge_size: int = 2,
+) -> torch.Tensor:
+    position_ids = torch.zeros(
+        3,
+        int(input_ids.shape[0]),
+        int(input_ids.shape[1]),
+        dtype=input_ids.dtype,
+        device=input_ids.device,
+    )
+    image_grid_iter = iter(image_grid_thw)
+    for batch_idx in range(int(input_ids.shape[0])):
+        token_types = mm_token_type_ids[batch_idx]
+        valid_mask = attention_mask[batch_idx].bool() if attention_mask is not None else None
+        if valid_mask is not None:
+            token_types = token_types[valid_mask]
+
+        current_pos = 0
+        position_parts: list[torch.Tensor] = []
+        for modality_type, group in itertools.groupby(enumerate(token_types.tolist()), lambda item: int(item[1])):
+            group_items = list(group)
+            token_count = group_items[-1][0] - group_items[0][0] + 1
+            if int(modality_type) == 0:
+                part = torch.arange(token_count, dtype=input_ids.dtype, device=input_ids.device)
+                position_parts.append(part.view(1, -1).expand(3, -1) + current_pos)
+                current_pos += token_count
+                continue
+
+            grid_thw = next(image_grid_iter)
+            grid_t = int(grid_thw[0].item())
+            grid_h = int(grid_thw[1].item())
+            grid_w = int(grid_thw[2].item())
+            llm_grid_t = grid_t
+            llm_grid_h = grid_h // int(spatial_merge_size)
+            llm_grid_w = grid_w // int(spatial_merge_size)
+            image_seq_length = llm_grid_t * llm_grid_h * llm_grid_w
+            position_width = torch.arange(
+                current_pos,
+                current_pos + llm_grid_w,
+                dtype=input_ids.dtype,
+                device=input_ids.device,
+            ).repeat(llm_grid_h * llm_grid_t)
+            position_height = torch.arange(
+                current_pos,
+                current_pos + llm_grid_h,
+                dtype=input_ids.dtype,
+                device=input_ids.device,
+            ).repeat_interleave(llm_grid_w * llm_grid_t)
+            position_temporal = torch.full(
+                (image_seq_length,),
+                current_pos,
+                dtype=input_ids.dtype,
+                device=input_ids.device,
+            )
+            position_parts.append(torch.stack([position_temporal, position_height, position_width], dim=0))
+            current_pos += max(grid_h, grid_w) // int(spatial_merge_size)
+
+        if not position_parts:
+            continue
+        positions = torch.cat(position_parts, dim=1)
+        if valid_mask is not None:
+            position_ids[:, batch_idx, valid_mask] = positions.to(position_ids.device)
+        else:
+            position_ids[:, batch_idx, : positions.shape[1]] = positions.to(position_ids.device)
+    return position_ids
+
+
+def _prepare_qwen3_5_multimodal_inputs(
+    processor: object | None,
+    *,
+    prompt: str,
+    image_files: tuple[str, ...],
+    torch_dtype: torch.dtype,
+    system_prompt: str = "",
+    enable_thinking_if_supported: bool = False,
+) -> PreparedInputs:
+    if processor is None:
+        raise RuntimeError("Qwen3.5 multimodal transpile requires an AutoProcessor with image support")
+    images = _load_image_inputs(image_files)
+    if not images:
+        raise RuntimeError("Qwen3.5 multimodal transpile requires at least one --image-file")
+
+    user_content: list[dict[str, object]] = [{"type": "image", "image": image} for image in images]
+    user_content.append({"type": "text", "text": prompt.strip()})
+
+    messages: list[dict[str, object]] = []
+    normalized_system = system_prompt.strip()
+    if normalized_system:
+        messages.append({"role": "system", "content": normalized_system})
+    messages.append({"role": "user", "content": user_content})
+
+    apply_chat_template = getattr(processor, "apply_chat_template", None)
+    if callable(apply_chat_template):
+        batch = apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+    else:
+        batch = processor(text=prompt, images=images, return_tensors="pt")
+
+    input_ids = batch.get("input_ids") if hasattr(batch, "get") else None
+    attention_mask = batch.get("attention_mask") if hasattr(batch, "get") else None
+    mm_token_type_ids = batch.get("mm_token_type_ids") if hasattr(batch, "get") else None
+    image_grid_thw = batch.get("image_grid_thw") if hasattr(batch, "get") else None
+    if not all(isinstance(value, torch.Tensor) for value in (input_ids, attention_mask, mm_token_type_ids, image_grid_thw)):
+        raise RuntimeError("Qwen3.5 processor did not return required multimodal text/grid tensors")
+    spatial_merge_size = int(getattr(getattr(processor, "image_processor", None), "merge_size", 2) or 2)
+    position_ids = _compute_qwen3_5_position_ids(
+        input_ids.to(dtype=torch.long),
+        mm_token_type_ids.to(dtype=torch.long),
+        image_grid_thw.to(dtype=torch.long),
+        attention_mask.to(dtype=torch.long),
+        spatial_merge_size=spatial_merge_size,
+    )
+    batch["position_ids"] = position_ids
+
+    tensors: list[torch.Tensor] = []
+    names: list[str] = []
+    input_shapes: dict[str, list[int]] = {}
+    for key in _QWEN3_5_MULTIMODAL_INPUT_ORDER:
+        value = batch.get(key) if hasattr(batch, "get") else None
+        if not isinstance(value, torch.Tensor):
+            raise RuntimeError(f"Qwen3.5 processor did not return required tensor input: {key}")
+        if torch.is_floating_point(value):
+            value = value.to(dtype=torch_dtype)
+        else:
+            value = value.to(dtype=torch.long)
+        names.append(key)
+        tensors.append(value)
+        input_shapes[key] = [int(dim) for dim in value.shape]
+
+    return PreparedInputs(
+        names=tuple(names),
+        tensors=tuple(tensors),
+        metadata={
+            "prompt": prompt,
+            "system_prompt": system_prompt,
+            "image_files": [str(Path(path).resolve()) for path in image_files],
+            "input_shapes": input_shapes,
+            "enable_thinking": bool(enable_thinking_if_supported),
+            "spatial_merge_size": spatial_merge_size,
         },
     )
 
@@ -2406,7 +2524,7 @@ def _load_transformers_bundle(
                 f"Could not load tokenizer for {model_id}:\n"
                 + "\n".join(tokenizer_errors)
             )
-        if config_model_type == "lfm2_vl":
+        if config_model_type in {"lfm2_vl", "qwen3_5"}:
             model = AutoModelForImageTextToText.from_pretrained(
                 model_source,
                 dtype=torch_dtype,
@@ -2417,6 +2535,14 @@ def _load_transformers_bundle(
             tie_note = _tie_lfm2_vl_lm_head_if_needed(model)
             if tie_note:
                 print(f"note={tie_note}")
+        elif config_model_type == "qwen3_5" and isinstance(config.get("text_config"), dict):
+            model = AutoModelForImageTextToText.from_pretrained(
+                model_source,
+                dtype=torch_dtype,
+                device_map=None,
+                low_cpu_mem_usage=True,
+                **common_kwargs,
+            ).eval()
         else:
             model = AutoModelForCausalLM.from_pretrained(
                 model_source,
@@ -2458,7 +2584,7 @@ def _load_transformers_bundle(
                 + processor_config_hint
             )
 
-        if config_model_type == "lfm2_vl":
+        if config_model_type in {"lfm2_vl", "qwen3_5"}:
             model = AutoModelForImageTextToText.from_pretrained(
                 model_source,
                 dtype=torch_dtype,
@@ -2891,6 +3017,15 @@ def main() -> int:
                 system_prompt=args.system_prompt,
                 enable_thinking_if_supported=args.enable_thinking,
             )
+        elif config_model_type == "qwen3_5":
+            prepared = _prepare_qwen3_5_multimodal_inputs(
+                processor_or_tokenizer,
+                prompt=args.prompt,
+                image_files=image_files,
+                torch_dtype=torch_dtype,
+                system_prompt=args.system_prompt,
+                enable_thinking_if_supported=args.enable_thinking,
+            )
         else:
             prepared = _prepare_gemma4_multimodal_inputs(
                 processor_or_tokenizer,
@@ -3194,6 +3329,7 @@ def main() -> int:
                 f"{artifact_dir / 'components' / component / args.graph_filename}"
             )
         graph_path = artifact_dir / args.graph_filename
+        _embed_materialized_bound_constants(tg)
         tg.graph.save(graph_path)
         print(f"saved_graph={graph_path}")
         graph_binding_manifest_path = _write_graph_binding_manifest(

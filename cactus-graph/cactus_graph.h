@@ -113,7 +113,9 @@ enum class OpType {
     RFFT, IRFFT, MEL_FILTER_BANK, SPECTROGRAM,
     IMAGE_PREPROCESS,
     CLAMP,
-    DENSE_MLP_TQ_FUSED
+    DENSE_MLP_TQ_FUSED,
+    NOT_EQUAL,
+    SCALAR_NOT_EQUAL
 };
 
 struct PrecisionTraits {
@@ -465,12 +467,14 @@ public:
     size_t subtract(size_t input1, size_t input2);
     size_t multiply(size_t input1, size_t input2);
     size_t divide(size_t input1, size_t input2);
+    size_t not_equal(size_t input1, size_t input2);
 
 
     size_t scalar_add(size_t input, float value);
     size_t scalar_subtract(size_t input, float value);
     size_t scalar_multiply(size_t input, float value);
     size_t scalar_divide(size_t input, float value);
+    size_t scalar_not_equal(size_t input, float value);
     size_t scalar_exp(size_t input);
     size_t scalar_sqrt(size_t input);
     size_t scalar_cos(size_t input);
@@ -667,6 +671,8 @@ public:
     size_t mmap_embeddings(const std::string& filename);
     size_t mmap_weights(const std::string& filename);
     void bind_mmap_weights(size_t node_id, const std::string& filename);
+    void mark_embedded_input(size_t node_id);
+    bool is_embedded_input(size_t node_id) const;
     void release_weight_pages(size_t node_id);
     void prefetch_weight_pages(size_t node_id);
     void release_all_weight_pages();
@@ -708,6 +714,7 @@ private:
     bool prefill_mode_ = false;
     std::unordered_set<size_t> persistent_node_ids_;
     std::unordered_set<size_t> populated_node_ids_;
+    std::unordered_set<size_t> embedded_input_node_ids_;
 };
 
 namespace GraphFile {
@@ -725,6 +732,8 @@ namespace GraphFile {
         std::vector<size_t> output_shape;
         Precision precision;
         OpParams params;
+        bool has_embedded_data = false;
+        std::vector<uint8_t> embedded_data;
     };
 
     struct SerializedGraph {

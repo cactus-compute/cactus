@@ -2,7 +2,18 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
+
+namespace {
+
+bool use_fp16_kv_cache_for_builder() {
+    const char* value = std::getenv("CACTUS_KV_CACHE_FP16");
+    return value != nullptr && std::strcmp(value, "1") == 0;
+}
+
+} // namespace
 
 size_t CactusGraph::input(const std::vector<size_t>& shape, Precision precision) {
     return add_node(OpType::INPUT, {}, shape, {.output_precision = precision});
@@ -19,6 +30,7 @@ size_t CactusGraph::add_clipped(size_t a, size_t b) { return binary_broadcast_op
 size_t CactusGraph::subtract(size_t a, size_t b) { return binary_broadcast_op(OpType::SUBTRACT, a, b); }
 size_t CactusGraph::multiply(size_t a, size_t b) { return binary_broadcast_op(OpType::MULTIPLY, a, b); }
 size_t CactusGraph::divide(size_t a, size_t b) { return binary_broadcast_op(OpType::DIVIDE, a, b); }
+size_t CactusGraph::not_equal(size_t a, size_t b) { return binary_broadcast_op(OpType::NOT_EQUAL, a, b); }
 
 size_t CactusGraph::abs(size_t input) {
     const auto& input_buffer = get_output_buffer(input);
@@ -1045,6 +1057,7 @@ size_t CactusGraph::scalar_add(size_t input, float value) { return scalar_val_op
 size_t CactusGraph::scalar_subtract(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_SUBTRACT, input, value); }
 size_t CactusGraph::scalar_multiply(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_MULTIPLY, input, value); }
 size_t CactusGraph::scalar_divide(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_DIVIDE, input, value); }
+size_t CactusGraph::scalar_not_equal(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_NOT_EQUAL, input, value); }
 
 size_t CactusGraph::scalar_exp(size_t input) {
     return add_node(OpType::SCALAR_EXP, {input}, {});
@@ -1391,17 +1404,25 @@ size_t CactusGraph::weighted_stats_pool(size_t input, size_t weights) {
 
 size_t CactusGraph::kv_cache_state(size_t max_seq_len, size_t num_kv_heads, size_t head_dim,
                                     size_t window_size, size_t sink_size) {
-    size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-    size_t total_bytes = 64 + max_seq_len * num_kv_heads * head_dim +
+    bool fp16_cache = use_fp16_kv_cache_for_builder();
+    size_t total_elements = 0;
+    Precision precision = Precision::INT8;
+    if (fp16_cache) {
+        total_elements = (64 / sizeof(__fp16)) + max_seq_len * num_kv_heads * head_dim;
+        precision = Precision::FP16;
+    } else {
+        size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+        total_elements = 64 + max_seq_len * num_kv_heads * head_dim +
                          max_seq_len * num_kv_heads * num_groups * sizeof(float);
+    }
     OpParams params{};
     params.max_cache_seq_len = max_seq_len;
     params.num_kv_heads = num_kv_heads;
     params.head_dim = head_dim;
     params.window_size = window_size;
     params.cache_sink_size = sink_size;
-    params.output_precision = Precision::INT8;
-    size_t node_id = add_node(OpType::KV_CACHE_STATE, {}, {total_bytes}, params);
+    params.output_precision = precision;
+    size_t node_id = add_node(OpType::KV_CACHE_STATE, {}, {total_elements}, params);
     persistent_node_ids_.insert(node_id);
     return node_id;
 }
