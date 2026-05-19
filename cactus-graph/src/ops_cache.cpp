@@ -143,17 +143,33 @@ void compute_kv_cache_append_node(
         size_t new_total = current_len + new_seq_len;
         bool needs_eviction = new_total > window;
         if (needs_eviction) {
-            size_t remaining = window - sink - new_seq_len;
+            size_t keep_sink = std::min({sink, current_len, window});
+            size_t tail_capacity = window - keep_sink;
+            if (new_seq_len >= tail_capacity) {
+                if (tail_capacity > 0) {
+                    size_t source_offset = new_seq_len - tail_capacity;
+                    std::memcpy(
+                        fp16_base + keep_sink * stride,
+                        source + source_offset * stride,
+                        tail_capacity * stride * sizeof(__fp16));
+                }
+                meta->current_seq_len = keep_sink + tail_capacity;
+                *node.output_buffer.data_as<float>() = static_cast<float>(meta->current_seq_len);
+                return;
+            }
+
+            size_t remaining = tail_capacity - new_seq_len;
+            remaining = std::min(remaining, current_len - keep_sink);
             size_t shift_src = current_len - remaining;
-            if (remaining > 0 && shift_src > sink) {
+            if (remaining > 0 && shift_src > keep_sink) {
                 std::memmove(
-                    fp16_base + sink * stride,
+                    fp16_base + keep_sink * stride,
                     fp16_base + shift_src * stride,
                     remaining * stride * sizeof(__fp16));
             }
-            size_t append_offset = window - new_seq_len;
+            size_t append_offset = keep_sink + remaining;
             std::memcpy(fp16_base + append_offset * stride, source, new_seq_len * stride * sizeof(__fp16));
-            meta->current_seq_len = window;
+            meta->current_seq_len = append_offset + new_seq_len;
         } else {
             std::memcpy(fp16_base + current_len * stride, source, new_seq_len * stride * sizeof(__fp16));
             meta->current_seq_len = new_total;
@@ -173,26 +189,43 @@ void compute_kv_cache_append_node(
     bool needs_eviction = new_total > window;
 
     if (needs_eviction) {
-        size_t remaining = window - sink - new_seq_len;
+        size_t keep_sink = std::min({sink, current_len, window});
+        size_t tail_capacity = window - keep_sink;
+        if (new_seq_len >= tail_capacity) {
+            if (tail_capacity > 0) {
+                size_t source_offset = new_seq_len - tail_capacity;
+                cactus_quantize_kv_fp16_to_int8(
+                    new_kv.data_as<__fp16>() + source_offset * int8_stride,
+                    int8_base + keep_sink * int8_stride,
+                    scale_base + keep_sink * scale_stride,
+                    tail_capacity, kv_heads, hdim);
+            }
+            meta->current_seq_len = keep_sink + tail_capacity;
+            *node.output_buffer.data_as<float>() = static_cast<float>(meta->current_seq_len);
+            return;
+        }
+
+        size_t remaining = tail_capacity - new_seq_len;
+        remaining = std::min(remaining, current_len - keep_sink);
         size_t shift_src = current_len - remaining;
 
-        if (remaining > 0 && shift_src > sink) {
-            std::memmove(int8_base + sink * int8_stride,
+        if (remaining > 0 && shift_src > keep_sink) {
+            std::memmove(int8_base + keep_sink * int8_stride,
                          int8_base + shift_src * int8_stride,
                          remaining * int8_stride);
-            std::memmove(scale_base + sink * scale_stride,
+            std::memmove(scale_base + keep_sink * scale_stride,
                          scale_base + shift_src * scale_stride,
                          remaining * scale_stride * sizeof(float));
         }
 
-        size_t append_offset = window - new_seq_len;
+        size_t append_offset = keep_sink + remaining;
         cactus_quantize_kv_fp16_to_int8(
             new_kv.data_as<__fp16>(),
             int8_base + append_offset * int8_stride,
             scale_base + append_offset * scale_stride,
             new_seq_len, kv_heads, hdim);
 
-        meta->current_seq_len = window;
+        meta->current_seq_len = append_offset + new_seq_len;
     } else {
         cactus_quantize_kv_fp16_to_int8(
             new_kv.data_as<__fp16>(),
