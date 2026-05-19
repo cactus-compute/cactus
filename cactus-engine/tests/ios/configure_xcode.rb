@@ -29,7 +29,7 @@ def generate_app_delegate(output_path, test_files)
 #import "AppDelegate.h"
 #import <TargetConditionals.h>
 #import <unistd.h>
-#include "cactus_engine.h"
+#include "cactus.h"
 #include <string>
 
 #{extern_declarations}
@@ -169,6 +169,7 @@ static_lib_path = device_type == 'simulator' ?
 fail_with("Static library not found at: #{static_lib_path}") unless File.exist?(static_lib_path)
 puts "Using static library: #{static_lib_path}"
 
+cactus_dir = File.join(project_root, 'cactus')
 cactus_engine_dir = File.join(project_root, 'cactus-engine')
 cactus_graph_dir = File.join(project_root, 'cactus-graph')
 cactus_kernels_dir = File.join(project_root, 'cactus-kernels')
@@ -202,7 +203,7 @@ end
 
 target.build_configurations.each do |config|
   config.build_settings['HEADER_SEARCH_PATHS'] ||= ['$(inherited)']
-  [tests_root, cactus_engine_dir, cactus_graph_dir, cactus_kernels_dir].each do |path|
+  [tests_root, cactus_dir, cactus_engine_dir, cactus_graph_dir, cactus_kernels_dir].each do |path|
     config.build_settings['HEADER_SEARCH_PATHS'] << path unless config.build_settings['HEADER_SEARCH_PATHS'].include?(path)
   end
   if curl_root && !curl_root.empty?

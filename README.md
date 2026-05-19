@@ -39,7 +39,7 @@ A low-latency AI engine for mobile devices & wearables. Main features:
 ## Cactus Engine
 
 ```cpp
-#include "cactus_engine.h"
+#include "cactus.h"
 
 cactus_model_t model = cactus_init(
     "path/to/weight/folder",
@@ -94,7 +94,7 @@ Example response from Gemma3-270m
 ## Cactus Graph
 
 ```cpp
-#include "cactus_engine.h"
+#include "cactus.h"
 
 CactusGraph graph;
 auto a = graph.input({2, 3}, Precision::FP16);
