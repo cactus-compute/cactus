@@ -28,6 +28,7 @@ TokenizerRuntimeConfig::TokenizerType parse_tokenizer_type(const std::string& va
 }
 
 TokenizerRuntimeConfig::VocabFormat parse_vocab_format(const std::string& value) {
+    if (value == "id_tab_token_tab_score") return TokenizerRuntimeConfig::VocabFormat::ID_TAB_TOKEN_TAB_SCORE;
     if (value == "id_tab_token") return TokenizerRuntimeConfig::VocabFormat::ID_TAB_TOKEN;
     if (value == "line_token") return TokenizerRuntimeConfig::VocabFormat::LINE_TOKEN;
     return TokenizerRuntimeConfig::VocabFormat::UNKNOWN;

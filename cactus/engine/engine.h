@@ -278,7 +278,7 @@ struct ToolConstraintSpec {
 
 struct TokenizerRuntimeConfig {
     enum class TokenizerType { UNKNOWN, BPE, SENTENCEPIECE };
-    enum class VocabFormat { UNKNOWN, ID_TAB_TOKEN, LINE_TOKEN };
+    enum class VocabFormat { UNKNOWN, ID_TAB_TOKEN, LINE_TOKEN, ID_TAB_TOKEN_TAB_SCORE };
     enum class Normalizer { NONE, METASPACE, BYTE_LEVEL };
     enum class Decoder { NONE, REPLACE_METASPACE, BYTE_LEVEL };
 

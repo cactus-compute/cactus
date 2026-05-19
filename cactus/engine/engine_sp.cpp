@@ -1,9 +1,11 @@
 #include "engine.h"
 #include <cassert>
+#include <charconv>
 #include <cstdio>
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <system_error>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -12,6 +14,33 @@
 
 namespace cactus {
 namespace engine {
+
+namespace {
+bool try_parse_strict_float(const std::string& text, float& parsed) {
+    if (text.empty()) {
+        return false;
+    }
+
+    char* end_ptr = nullptr;
+    const float value = std::strtof(text.c_str(), &end_ptr);
+    if (end_ptr != text.c_str() + text.size()) {
+        return false;
+    }
+    parsed = value;
+    return true;
+}
+
+bool try_parse_strict_uint32(const std::string& text, uint32_t& parsed) {
+    if (text.empty()) {
+        return false;
+    }
+
+    const char* begin = text.data();
+    const char* end = begin + text.size();
+    const auto parse_result = std::from_chars(begin, end, parsed, 10);
+    return parse_result.ec == std::errc() && parse_result.ptr == end;
+}
+}
 
 SPTokenizer::SPTokenizer()
     : trie_root_(std::make_unique<TrieNode>()),
@@ -48,66 +77,68 @@ bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, con
     id_to_token_.clear();
     token_scores_.clear();
 
-    std::string first_line;
-    std::getline(vocab_stream, first_line);
-    vocab_stream.seekg(0);  
-
-    bool is_id_token_format = false;
-    if (!first_line.empty()) {
-        is_id_token_format = (std::isdigit(first_line[0]) &&
-                              first_line.find('\t') != std::string::npos);
+    TokenizerRuntimeConfig::VocabFormat vocab_format = runtime_config_.vocab_format;
+    if (vocab_format == TokenizerRuntimeConfig::VocabFormat::UNKNOWN &&
+        runtime_config_.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::SENTENCEPIECE) {
+        // Backward compatibility for legacy sentencepiece exports that omit vocab_format.
+        vocab_format = TokenizerRuntimeConfig::VocabFormat::ID_TAB_TOKEN_TAB_SCORE;
     }
-
-    if (is_id_token_format) {
-        std::string line = "";
+    if (vocab_format == TokenizerRuntimeConfig::VocabFormat::ID_TAB_TOKEN ||
+        vocab_format == TokenizerRuntimeConfig::VocabFormat::ID_TAB_TOKEN_TAB_SCORE) {
+        std::string line;
         while (std::getline(vocab_stream, line)) {
-            std::string token = "";
+            const size_t first_tab = line.find('\t');
+            if (first_tab == std::string::npos) {
+                continue;
+            }
             uint32_t id = UINT32_MAX;
-
-            std::istringstream iss(line);
-            if (iss >> id) {
-                if (std::getline(iss, token)) {
-                    if (!token.empty() && token[0] == '\t') {
-                        token = token.substr(1);
+            if (!try_parse_strict_uint32(line.substr(0, first_tab), id)) {
+                continue;
+            }
+            std::string payload = line.substr(first_tab + 1);
+            if (payload.empty()) {
+                auto last_pos = vocab_stream.tellg();
+                while (std::getline(vocab_stream, line)) {
+                    if (!line.empty()) {
+                        break;
+                    }
+                    payload += '\n';
+                    last_pos = vocab_stream.tellg();
+                }
+                vocab_stream.seekg(last_pos);
+            }
+            if (payload.empty()) {
+                continue;
+            }
+            std::string token = payload;
+            float score = -static_cast<float>(id);
+            if (vocab_format == TokenizerRuntimeConfig::VocabFormat::ID_TAB_TOKEN_TAB_SCORE) {
+                const size_t last_tab = payload.rfind('\t');
+                if (last_tab != std::string::npos) {
+                    const std::string score_str = payload.substr(last_tab + 1);
+                    float parsed_score = 0.0f;
+                    if (try_parse_strict_float(score_str, parsed_score)) {
+                        score = parsed_score;
+                        token = payload.substr(0, last_tab);
                     }
                 }
-                
-                if (token.empty()) {
-                    auto last_pos = vocab_stream.tellg();
-                    while (std::getline(vocab_stream, line)) {
-                        if (!line.empty()) {
-                            break;
-                        }
-                        token += '\n';
-                        last_pos = vocab_stream.tellg();
-                    }
-                    vocab_stream.seekg(last_pos);
-                }
             }
-            
-            if (!token.empty() && id != UINT32_MAX) {
-                float score = -static_cast<float>(id);
-                size_t tab_in_token = token.find('\t');
-                if (tab_in_token != std::string::npos) {
-                    std::string score_str = token.substr(tab_in_token + 1);
-                    if (!score_str.empty()) score = std::stof(score_str);
-                    token = token.substr(0, tab_in_token);
-                }
-                token_to_id_[token] = id;
-                if (id >= id_to_token_.size()) {
-                    id_to_token_.resize(id + 1);
-                    token_scores_.resize(id + 1, 0.0f);
-                }
-                id_to_token_[id] = token;
-                token_scores_[id] = score;
+            if (token.empty()) {
+                continue;
             }
+            token_to_id_[token] = id;
+            if (id >= id_to_token_.size()) {
+                id_to_token_.resize(id + 1);
+                token_scores_.resize(id + 1, 0.0f);
+            }
+            id_to_token_[id] = token;
+            token_scores_[id] = score;
         }
         vocab_size_ = id_to_token_.size();
-    } else {
+    } else if (vocab_format == TokenizerRuntimeConfig::VocabFormat::LINE_TOKEN) {
         std::string line;
         uint32_t id = 0;
-
-        vocab_stream.seekg(0); 
+        vocab_stream.seekg(0);
         while (std::getline(vocab_stream, line)) {
             token_to_id_[line] = id;
             id_to_token_.push_back(line);
@@ -115,10 +146,10 @@ bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, con
             id++;
         }
         vocab_size_ = id;
+    } else {
+        return false;
     }
-
     vocab_stream.close();
-    
     build_trie();
     
     std::ifstream config_stream(config_file);

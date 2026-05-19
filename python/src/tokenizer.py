@@ -505,7 +505,12 @@ def _build_sentencepiece_metadata(pieces, model_max_length):
 def _write_sentencepiece_files(output_dir, pieces, meta):
     with open(output_dir / "vocab.txt", "w", encoding="utf-8") as f:
         for i, p in enumerate(pieces):
-            f.write(f"{i}\t{p['piece']}\t{p['score']}\n")
+            token = p["piece"]
+            if ("\n" in token) or ("\r" in token):
+                f.write(f"{i}\t{token}\n")
+            else:
+                score = format(float(p["score"]), ".9g")
+                f.write(f"{i}\t{token}\t{score}\n")
 
     with open(output_dir / "merges.txt", "w", encoding="utf-8") as f:
         f.write("#version: 0.2\n")
@@ -523,6 +528,7 @@ def _write_sentencepiece_files(output_dir, pieces, meta):
         f.write("sp_add_dummy_prefix=true\nsp_remove_extra_whitespaces=true\n")
         f.write("sp_escape_whitespaces=true\nsp_byte_fallback=true\n")
         f.write("has_chat_template=false\n")
+        f.write("vocab_format=id_tab_token_tab_score\n")
         if tool_tokens:
             f.write(f"has_tool_support=true\ntool_token_count={len(tool_tokens)}\n")
 
