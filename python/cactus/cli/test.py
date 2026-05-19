@@ -4,6 +4,7 @@ import subprocess
 from .common import (
     PROJECT_ROOT,
     DEFAULT_TEST_MODEL_ID,
+    get_weights_dir,
     print_color,
     RED, YELLOW, BLUE,
 )
@@ -15,6 +16,8 @@ def cmd_test(args):
     print_color(BLUE, "Running test suite...")
     print("=" * 20)
 
+    model_id = getattr(args, 'model', DEFAULT_TEST_MODEL_ID)
+
     if getattr(args, 'ios', False) and not getattr(args, 'reconvert', False):
         print_color(
             YELLOW,
@@ -22,20 +25,18 @@ def cmd_test(args):
             "If tests fail unexpectedly, rerun with --reconvert."
         )
 
-    if getattr(args, 'reconvert', False):
-        model_id = getattr(args, 'model', DEFAULT_TEST_MODEL_ID)
-        class DownloadArgs:
-            pass
-        dl_args = DownloadArgs()
-        dl_args.model_id = model_id
-        dl_args.reconvert = True
-        dl_args.cache_dir = None
-        if args.token:
-            dl_args.token = args.token
-        if cmd_download(dl_args) != 0:
-            return 1
+    from types import SimpleNamespace
+    dl_args = SimpleNamespace(
+        model_id=model_id,
+        reconvert=getattr(args, 'reconvert', False),
+        cache_dir=None,
+        token=getattr(args, 'token', None),
+    )
+    if cmd_download(dl_args) != 0:
+        print_color(RED, "Failed to download model weights")
+        return 1
 
-    test_filter = args.only
+    test_filter = getattr(args, 'only', None)
     for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance']:
         if getattr(args, _test_name, False):
             test_filter = _test_name
@@ -57,10 +58,9 @@ def cmd_test(args):
 
     cmd = [str(test_script)]
 
-    if args.model:
-        cmd.extend(["--model", args.model])
-    if getattr(args, 'no_rebuild', False):
-        cmd.append("--no-rebuild")
+    weights_dir = get_weights_dir(model_id)
+    cmd.extend(["--model", str(weights_dir)])
+
     if args.android:
         cmd.append("--android")
     if args.ios:
