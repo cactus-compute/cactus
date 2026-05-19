@@ -29,8 +29,8 @@ endif()
 
 find_library(LOG_LIB log)
 
-add_library(cactus SHARED ${PROJECT_ROOT}/bindings/kotlin/cactus_jni.cpp)
-target_include_directories(cactus PRIVATE ${CACTUS_ENGINE_DIR} ${CACTUS_ENGINE_DIR}/src)
+add_library(cactus SHARED ${CMAKE_SOURCE_DIR}/cactus_jni.cpp)
+target_include_directories(cactus PRIVATE ${PROJECT_ROOT}/cactus ${CACTUS_ENGINE_DIR} ${CACTUS_ENGINE_DIR}/src)
 target_link_libraries(cactus PRIVATE cactus_engine cactus_graph cactus_kernels)
 target_link_libraries(cactus PRIVATE ${LOG_LIB} android)
 if(EXISTS "${CACTUS_MBEDTLS_LIBRARY}" AND EXISTS "${CACTUS_MBEDX509_LIBRARY}" AND EXISTS "${CACTUS_MBEDCRYPTO_LIBRARY}")

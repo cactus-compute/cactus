@@ -1,4 +1,0 @@
-module cactus {
-    header "cactus_engine.h"
-    export *
-}

@@ -1,13 +1,6 @@
-# Apple Build Step
+# Apple Build
 
-Builds the native Apple artifacts used by language bindings.
-
-## Outputs
-
-- `apple/libcactus-device.a` — iOS device static library
-- `apple/libcactus-simulator.a` — iOS simulator static library
-- `apple/cactus-ios.xcframework/` — iOS xcframework
-- `apple/cactus-macos.xcframework/` — macOS xcframework
+Builds `libcactus` for iOS and macOS.
 
 ## Usage
 
@@ -21,8 +14,23 @@ Or directly:
 bash apple/build.sh
 ```
 
-## Notes
+## Output
 
-- Requires macOS with Xcode, deployment target 13.0
-- Swift bindings live in [`bindings/swift/`](/bindings/swift/)
-- Vendored libcurl under `cactus-engine/libs/curl/ios/` and `cactus-engine/libs/curl/macos/`
+- `libcactus-device.a` — iOS device (arm64)
+- `libcactus-simulator.a` — iOS simulator (arm64)
+- `cactus-ios.xcframework/` — iOS XCFramework (device + simulator)
+- `cactus-macos.xcframework/` — macOS XCFramework (arm64)
+
+## Options
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BUILD_STATIC` | `true` | Build static libraries |
+| `BUILD_XCFRAMEWORK` | `true` | Build XCFrameworks |
+| `CMAKE_BUILD_TYPE` | `Release` | CMake build type |
+| `CACTUS_CURL_ROOT` | `cactus-engine/libs/curl` | Vendored libcurl path |
+
+## Requirements
+
+- Xcode with iOS SDK
+- CMake 3.10+

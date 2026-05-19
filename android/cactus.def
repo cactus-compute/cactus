@@ -1,3 +1,0 @@
-package = cactus
-headers = cactus_engine.h
-headerFilter = cactus_engine.h

@@ -1,11 +1,6 @@
-# Android Build Step
+# Android Build
 
-Builds the native Android artifacts used by language bindings.
-
-## Outputs
-
-- `android/libcactus.so` — shared library for `arm64-v8a`
-- `android/libcactus.a` — merged static archive
+Builds `libcactus` for Android (arm64-v8a).
 
 ## Usage
 
@@ -19,8 +14,21 @@ Or directly:
 bash android/build.sh
 ```
 
-## Notes
+## Output
 
-- Requires Android NDK, targets `arm64-v8a` only
-- Kotlin/JNI bindings live in [`bindings/kotlin/`](/bindings/kotlin/)
-- Vendored mbedTLS under `android/mbedtls/` and libcurl under `cactus-engine/libs/curl/android/`
+- `libcactus.so` — Shared library (JNI, for Android apps)
+- `libcactus.a` — Static library (for native test binaries)
+
+## Options
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANDROID_NDK_HOME` | Auto-detected | Android NDK path |
+| `ANDROID_PLATFORM` | `android-21` | Minimum API level |
+| `CMAKE_BUILD_TYPE` | `Release` | CMake build type |
+| `CACTUS_CURL_ROOT` | `cactus-engine/libs/curl` | Vendored libcurl path |
+
+## Requirements
+
+- Android NDK (install via Android Studio > SDK Tools > NDK)
+- CMake 3.10+
