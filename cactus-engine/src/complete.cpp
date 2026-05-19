@@ -4,6 +4,7 @@
 #include "telemetry.h"
 #include "cactus_kernels.h"
 #include "wav.h"
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -1112,6 +1113,85 @@ int cactus_score_window(
 
     } catch (const std::exception& e) {
         handle_error_response(e.what(), response_buffer, buffer_size);
+        return -1;
+    }
+}
+
+int cactus_benchmark_tokens(
+    cactus_model_t model,
+    const uint32_t* prompt_tokens,
+    size_t prompt_token_len,
+    size_t decode_token_len,
+    char* response_buffer,
+    size_t buffer_size
+) {
+    if (!model || !prompt_tokens || prompt_token_len == 0 || !response_buffer || buffer_size == 0) {
+        handle_error_response("Invalid parameters", response_buffer, buffer_size);
+        return -1;
+    }
+
+    try {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        std::vector<uint32_t> prompt(prompt_tokens, prompt_tokens + prompt_token_len);
+
+        auto start_time = std::chrono::high_resolution_clock::now();
+        double peak_ram_usage_mb = get_ram_usage_mb();
+        auto sample_peak_ram = [&]() {
+            peak_ram_usage_mb = std::max(peak_ram_usage_mb, get_ram_usage_mb());
+        };
+        handle->model->reset_cache();
+        if (decode_token_len == 0) {
+            handle->model->prefill(prompt, handle->model->get_prefill_chunk_size(), "", false);
+        } else if (prompt.size() > 1) {
+            handle->model->prefill(
+                std::vector<uint32_t>(prompt.begin(), prompt.end() - 1),
+                handle->model->get_prefill_chunk_size()
+            );
+        }
+        sample_peak_ram();
+        uint32_t next_token = decode_token_len > 0 ? handle->model->decode({prompt.back()}, 0.0f, 1.0f, 1) : 0;
+        sample_peak_ram();
+        auto first_token_time = std::chrono::high_resolution_clock::now();
+
+        size_t generated = decode_token_len > 0 ? 1 : 0;
+        while (generated < decode_token_len) {
+            next_token = handle->model->decode({next_token}, 0.0f, 1.0f, 1);
+            sample_peak_ram();
+            ++generated;
+        }
+
+        auto end_time = std::chrono::high_resolution_clock::now();
+        double ttft_ms = std::chrono::duration_cast<std::chrono::microseconds>(first_token_time - start_time).count() / 1000.0;
+        double total_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
+        double decode_ms = std::max(0.0, total_ms - ttft_ms);
+        double prefill_tps = ttft_ms > 0.0 ? (static_cast<double>(prompt_token_len) * 1000.0) / ttft_ms : 0.0;
+        double decode_tps = (generated > 1 && decode_ms > 0.0) ? (static_cast<double>(generated - 1) * 1000.0) / decode_ms : 0.0;
+
+        std::ostringstream oss;
+        oss << "{"
+            << "\"success\":true,"
+            << "\"time_to_first_token_ms\":" << std::fixed << std::setprecision(2) << ttft_ms << ","
+            << "\"total_time_ms\":" << std::fixed << std::setprecision(2) << total_ms << ","
+            << "\"prefill_tps\":" << std::fixed << std::setprecision(2) << prefill_tps << ","
+            << "\"decode_tps\":" << std::fixed << std::setprecision(2) << decode_tps << ","
+            << "\"prompt_tokens\":" << prompt_token_len << ","
+            << "\"completion_tokens\":" << generated << ","
+            << "\"peak_ram_usage_mb\":" << std::fixed << std::setprecision(2) << peak_ram_usage_mb << ","
+            << "\"ram_usage_mb\":" << std::fixed << std::setprecision(2) << get_ram_usage_mb()
+            << "}";
+
+        std::string result = oss.str();
+        if (result.size() >= buffer_size) {
+            handle_error_response("Response buffer too small", response_buffer, buffer_size);
+            return -1;
+        }
+        std::strcpy(response_buffer, result.c_str());
+        return static_cast<int>(result.size());
+    } catch (const std::exception& e) {
+        handle_error_response(e.what(), response_buffer, buffer_size);
+        return -1;
+    } catch (...) {
+        handle_error_response("Unknown error during token benchmark", response_buffer, buffer_size);
         return -1;
     }
 }

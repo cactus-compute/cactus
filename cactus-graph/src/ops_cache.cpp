@@ -239,9 +239,15 @@ void compute_attention_cached_node(
 
     size_t new_seq_len = key_new_buf.total_size / (kv_heads * hdim);
     size_t history_len = (cache_len >= new_seq_len) ? cache_len - new_seq_len : 0;
+    bool cache_only_attention = false;
     size_t position_offset = node.params.position_offset;
     if (position_offset == std::numeric_limits<size_t>::max()) {
         position_offset = history_len;
+    } else if (position_offset == std::numeric_limits<size_t>::max() - 1) {
+        position_offset = (cache_len >= seq_len) ? cache_len - seq_len : 0;
+        history_len = cache_len;
+        new_seq_len = 0;
+        cache_only_attention = true;
     }
 
     if (k_cache_buf.precision == Precision::FP16 || v_cache_buf.precision == Precision::FP16) {
@@ -263,19 +269,19 @@ void compute_attention_cached_node(
         return;
     }
 
-    cactus_attention_hybrid_int8_fp16(
-        query_buf.data_as<__fp16>(),
-        cached_keys,
-        cached_values,
-        k_scales,
-        v_scales,
-        key_new_buf.data_as<__fp16>(),
-        val_new_buf.data_as<__fp16>(),
-        node.output_buffer.data_as<__fp16>(),
-        batch_size, seq_len, history_len, seq_len,
-        num_q_heads, kv_heads, hdim,
-        node.params.scale,
-        position_offset,
+        cactus_attention_hybrid_int8_fp16(
+            query_buf.data_as<__fp16>(),
+            cached_keys,
+            cached_values,
+            k_scales,
+            v_scales,
+            key_new_buf.data_as<__fp16>(),
+            val_new_buf.data_as<__fp16>(),
+            node.output_buffer.data_as<__fp16>(),
+            batch_size, seq_len, history_len, cache_only_attention ? 0 : seq_len,
+            num_q_heads, kv_heads, hdim,
+            node.params.scale,
+            position_offset,
         true,
         node.params.window_size,
         KV_QUANT_GROUP_SIZE,

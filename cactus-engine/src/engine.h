@@ -576,7 +576,8 @@ public:
                     size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                     float min_p = 0.15f, float repetition_penalty = 1.1f);
 
-    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "");
+    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 128, const std::string& profile_file = "",
+                 bool prepare_decode = true);
 
     void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                              const std::string& profile_file = "");
@@ -615,7 +616,7 @@ public:
 
     bool load_npu_prefill(const std::string& model_path);
     bool has_npu_prefill() const { return false; }
-    size_t get_prefill_chunk_size() const { return 256; }
+    size_t get_prefill_chunk_size() const { return 128; }
 
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
@@ -635,6 +636,12 @@ private:
         std::string path;
     };
 
+    struct CacheStateBinding {
+        std::string layer_key;
+        int key_node_id = -1;
+        int value_node_id = -1;
+    };
+
     struct Component {
         std::string name;
         std::string graph_path;
@@ -643,16 +650,30 @@ private:
         std::vector<int> output_node_ids;
         std::vector<std::string> logical_outputs;
         std::vector<Binding> bindings;
+        std::vector<CacheStateBinding> cache_states;
         std::unique_ptr<CactusGraph> graph;
         std::vector<std::vector<uint8_t>> input_buffers;
     };
 
     bool load_manifest();
     bool setup_tokenizer();
-    bool load_components();
+    bool load_components(const std::unordered_set<std::string>& required_components);
     bool bind_runtime_buffers(Component& comp);
     void run_step(uint32_t token_id, size_t position, bool read_logits);
+    void run_encoder_step(uint32_t token_id, size_t position);
+    void copy_component_outputs_to_inputs(const Component& source, Component& target);
+    void copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index);
+    void copy_component_outputs_to_chunk_inputs_range(const Component& source, Component& target, size_t token_offset);
+    bool cache_states_compatible(const Component& source, const Component& target) const;
+    void copy_cache_states(const Component& source, Component& target);
+    void reset_component_cache_states(Component& comp);
+    size_t component_chunk_tokens(const Component& comp, const std::string& input_name) const;
+    size_t component_output_tokens(const Component& comp, const std::string& output_name) const;
+    size_t run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position, size_t chunk_size,
+                               bool prepare_decode);
+    void run_full_context_text();
     void write_int_input(Component& comp, const std::string& name, int64_t value);
+    void write_int_input_at(Component& comp, const std::string& name, size_t index, int64_t value);
     int input_index(const Component& comp, const std::string& name) const;
     uint32_t argmax_last_logits();
 
@@ -660,12 +681,18 @@ private:
     std::map<std::string, Component> components_;
     Component* encoder_ = nullptr;
     Component* decoder_ = nullptr;
+    Component* decoder_prefill_ = nullptr;
+    Component* prefill_encoder_ = nullptr;
+    enum class DecodeRoute { CACHED_STEP, DIRECT_DECODER_STEP, FULL_CONTEXT_TEXT };
+    DecodeRoute decode_route_ = DecodeRoute::CACHED_STEP;
 
     Config config_;
     std::unique_ptr<Tokenizer> tokenizer_;
     bool initialized_ = false;
     size_t cache_total_seq_len_ = 0;
     size_t cache_max_seq_len_ = 4096;
+    size_t last_logit_position_ = 0;
+    std::vector<uint32_t> context_tokens_;
 
     static constexpr size_t MAX_TOKEN_HISTORY = 128;
     std::vector<uint32_t> token_history_;

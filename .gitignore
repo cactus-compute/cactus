@@ -39,3 +39,14 @@ vision_activations.json
 gemma-4-eap-extras/
 .githooks/
 *.cg
+
+experiments/matrix/.build/
+experiments/matrix/.matrix_*.yaml
+experiments/matrix/logs/
+experiments/matrix/results/
+
+tests/android/build*/
+tests/android/__pycache__/
+tests/assets/
+
+third_party/
