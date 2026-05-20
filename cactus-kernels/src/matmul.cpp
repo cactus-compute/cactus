@@ -1396,7 +1396,7 @@ static void tq_preexpand_weights_interleaved(
                         uint8x8_t hi = vshr_n_u8(bytes_r, 4);
                         uint8x16_t combined = vcombine_u8(lo, hi);
                         uint8x16_t reordered = vqtbl1q_u8(combined, reorder4);
-                        exp4[r][v] = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(reordered));
+                        exp4[r][v] = vqtbl1q_s8(cb_lut, reordered);
                     }
                 }
             } else if (bits == 2) {
@@ -1408,7 +1408,7 @@ static void tq_preexpand_weights_interleaved(
                         uint8x16_t row_bytes = vqtbl1q_u8(bytes, pick_r);
                         uint8x16_t shifted = vshlq_u8(row_bytes, shifts2);
                         uint8x16_t idx = vandq_u8(shifted, mask2);
-                        exp4[r][c] = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(idx));
+                        exp4[r][c] = vqtbl1q_s8(cb_lut, idx);
                     }
                 }
             } else if (bits == 1) {
@@ -1433,7 +1433,7 @@ static void tq_preexpand_weights_interleaved(
                 }
                 for (size_t r = 0; r < 4; ++r)
                     for (uint32_t v = 0; v < n_vecs; ++v)
-                        exp4[r][v] = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(vld1q_u8(row_idx[r] + v * 16)));
+                        exp4[r][v] = vqtbl1q_s8(cb_lut, vld1q_u8(row_idx[r] + v * 16));
             } else if (bits == 3) {
                 const uint32_t chunks = gs / 4;
                 alignas(16) uint8_t row_idx[4][256];
@@ -1451,7 +1451,7 @@ static void tq_preexpand_weights_interleaved(
                 }
                 for (size_t r = 0; r < 4; ++r)
                     for (uint32_t v = 0; v < n_vecs; ++v)
-                        exp4[r][v] = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(vld1q_u8(row_idx[r] + v * 16)));
+                        exp4[r][v] = vqtbl1q_s8(cb_lut, vld1q_u8(row_idx[r] + v * 16));
             }
 
             for (size_t ni = valid_n; ni < 4; ++ni)
@@ -2133,13 +2133,13 @@ void cactus_quant_4bit_gemv_interleaved(
                         const uint8_t* c0 = (P) + (kb / 8 + 0) * 16; \
                         const uint8_t* c1 = (P) + (kb / 8 + 1) * 16; \
                         uint8x16_t b0 = vld1q_u8(c0); \
-                        int8x16_t wl0 = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(vandq_u8(b0, lo_mask))); \
-                        int8x16_t wh0 = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(vshrq_n_u8(b0, 4))); \
+                        int8x16_t wl0 = vqtbl1q_s8(cb_lut, vandq_u8(b0, lo_mask)); \
+                        int8x16_t wh0 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b0, 4)); \
                         DA = vdotq_laneq_s32(DA, wl0, a_v, 0); \
                         DB = vdotq_laneq_s32(DB, wh0, a_v, 1); \
                         uint8x16_t b1 = vld1q_u8(c1); \
-                        int8x16_t wl1 = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(vandq_u8(b1, lo_mask))); \
-                        int8x16_t wh1 = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(vshrq_n_u8(b1, 4))); \
+                        int8x16_t wl1 = vqtbl1q_s8(cb_lut, vandq_u8(b1, lo_mask)); \
+                        int8x16_t wh1 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b1, 4)); \
                         DA = vdotq_laneq_s32(DA, wl1, a_v, 2); \
                         DB = vdotq_laneq_s32(DB, wh1, a_v, 3); \
                     } while (0)
@@ -2176,13 +2176,13 @@ void cactus_quant_4bit_gemv_interleaved(
                 for (uint32_t kb = 0; kb < gs; kb += 16) {
                     int8x16_t a_v = vld1q_s8(a_grp + kb);
                     uint8x16_t b0 = vld1q_u8(p_base + (kb / 8 + 0) * 16);
-                    int8x16_t wl0 = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(vandq_u8(b0, lo_mask)));
-                    int8x16_t wh0 = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(vshrq_n_u8(b0, 4)));
+                    int8x16_t wl0 = vqtbl1q_s8(cb_lut, vandq_u8(b0, lo_mask));
+                    int8x16_t wh0 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b0, 4));
                     dot_a = vdotq_laneq_s32(dot_a, wl0, a_v, 0);
                     dot_b = vdotq_laneq_s32(dot_b, wh0, a_v, 1);
                     uint8x16_t b1 = vld1q_u8(p_base + (kb / 8 + 1) * 16);
-                    int8x16_t wl1 = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(vandq_u8(b1, lo_mask)));
-                    int8x16_t wh1 = vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(vshrq_n_u8(b1, 4)));
+                    int8x16_t wl1 = vqtbl1q_s8(cb_lut, vandq_u8(b1, lo_mask));
+                    int8x16_t wh1 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b1, 4));
                     dot_a = vdotq_laneq_s32(dot_a, wl1, a_v, 2);
                     dot_b = vdotq_laneq_s32(dot_b, wh1, a_v, 3);
                 }
@@ -2333,7 +2333,7 @@ void cactus_quant_2bit_gemv_interleaved(
                         uint8x16_t spread = vqtbl1q_u8(bytes, lookup);
                         uint8x16_t shifted = vshlq_u8(spread, shifts);
                         uint8x16_t idx = vandq_u8(shifted, idx_mask);
-                        return vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(idx));
+                        return vqtbl1q_s8(cb_lut, idx);
                     };
 
                     int8x16_t w0 = unpack_set(lookup_s0);
@@ -2425,7 +2425,7 @@ void cactus_quant_1bit_gemv_interleaved(
                         uint8x16_t spread = vqtbl1q_u8(bytes, lookup);
                         uint8x16_t shifted = vshlq_u8(spread, sh);
                         uint8x16_t idx = vandq_u8(shifted, idx_mask);
-                        return vqtbl1q_s8(cb_lut, vreinterpretq_s8_u8(idx));
+                        return vqtbl1q_s8(cb_lut, idx);
                     };
 
                     int8x16_t w0_lo = unpack_kq(lookup_s0, shifts_lo);
