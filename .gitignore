@@ -46,11 +46,16 @@ gemma-4-eap-extras/
 .githooks/
 experiments/matrix/.build/
 experiments/matrix/.matrix_*.yaml
+experiments/matrix/.tmp_matrix_*.yaml
 experiments/matrix/logs/
 experiments/matrix/results/
+experiments/matrix/parakeet_litert_export/out*/
+experiments/matrix/parakeet_litert_export/cpu_compare_*.json
 
 tests/android/build*/
 tests/android/__pycache__/
+tests/android/onnxruntime_llm_bench
+tests/build*/
 tests/assets/
 
 third_party/
