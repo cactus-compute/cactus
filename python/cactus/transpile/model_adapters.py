@@ -857,10 +857,11 @@ def _gemma4_compute_native_like_image_features(
     projection = getattr(embed_vision, "embedding_projection", None)
     if not isinstance(projection, torch.nn.Linear):
         raise TypeError("Gemma4 vision embedder is missing embedding_projection")
+    pooled_hidden = pooled_hidden.to(dtype=projection.weight.dtype)
     projected = F.linear(
         pooled_hidden,
-        projection.weight.float(),
-        None if projection.bias is None else projection.bias.float(),
+        projection.weight,
+        projection.bias,
     )
     if post_proj_norm_weight is not None and post_proj_norm_weight.numel() > 0:
         return _gemma4_rms_norm(
