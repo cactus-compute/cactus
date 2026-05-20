@@ -146,12 +146,15 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
 
     encoder_ = components_.count("lm_encoder_step") ? &components_.at("lm_encoder_step") : nullptr;
     decoder_ = components_.count("decoder_step") ? &components_.at("decoder_step") : nullptr;
-    if (!encoder_ || !decoder_) {
-        CACTUS_LOG_ERROR("model", "Bundle missing lm_encoder_step or decoder_step components");
+    const bool is_lm = (encoder_ != nullptr && decoder_ != nullptr);
+    const bool is_transcription = components_.count("audio_encoder") &&
+                                  (components_.count("decoder") || components_.count("decoder_joint"));
+    if (!is_lm && !is_transcription) {
+        CACTUS_LOG_ERROR("model", "Bundle missing required components: need lm_encoder_step+decoder_step (LM) or audio_encoder+decoder (transcription)");
         return false;
     }
-    if (!bind_runtime_buffers(*encoder_)) return false;
-    if (!bind_runtime_buffers(*decoder_)) return false;
+    if (encoder_ && !bind_runtime_buffers(*encoder_)) return false;
+    if (decoder_ && !bind_runtime_buffers(*decoder_)) return false;
 
     vision_encoder_ = components_.count("vision_encoder") ? &components_.at("vision_encoder") : nullptr;
     audio_encoder_ = components_.count("audio_encoder") ? &components_.at("audio_encoder") : nullptr;
@@ -662,10 +665,38 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                 }
             } else {
                 Gemma4ImagePreprocessed prep = preprocess_gemma4_image(path, config_);
-                write_bytes_input(*vision_encoder_, "pixel_values", prep.pixel_values.data(),
-                                  prep.pixel_values.size() * sizeof(float));
-                write_bytes_input(*vision_encoder_, "pixel_position_ids", prep.pixel_position_ids.data(),
-                                  prep.pixel_position_ids.size() * sizeof(int64_t));
+                int pv_idx = input_index(*vision_encoder_, "pixel_values");
+                if (pv_idx >= 0) {
+                    auto& pv_buf = vision_encoder_->input_buffers[pv_idx];
+                    size_t pv_node = static_cast<size_t>(vision_encoder_->runtime_input_node_ids[pv_idx]);
+                    const auto& pv_desc = vision_encoder_->graph->get_output_buffer(pv_node);
+                    write_typed_buffer(pv_buf, pv_desc.precision,
+                                       prep.pixel_values.data(),
+                                       prep.pixel_values.size() * sizeof(float),
+                                       Precision::FP32);
+                }
+                int pp_idx = input_index(*vision_encoder_, "pixel_position_ids");
+                if (pp_idx >= 0) {
+                    auto& pp_buf = vision_encoder_->input_buffers[pp_idx];
+                    size_t pp_node = static_cast<size_t>(vision_encoder_->runtime_input_node_ids[pp_idx]);
+                    const auto& pp_desc = vision_encoder_->graph->get_output_buffer(pp_node);
+                    const size_t elem = PrecisionTraits::size_of(pp_desc.precision);
+                    const size_t cap = elem ? pp_buf.size() / elem : 0;
+                    const size_t n = std::min(cap, prep.pixel_position_ids.size());
+                    for (size_t i = 0; i < n; ++i) {
+                        int64_t v = prep.pixel_position_ids[i];
+                        switch (pp_desc.precision) {
+                            case Precision::FP32: reinterpret_cast<float*>(pp_buf.data())[i] = static_cast<float>(v); break;
+                            case Precision::FP16: reinterpret_cast<__fp16*>(pp_buf.data())[i] = static_cast<__fp16>(v); break;
+                            case Precision::INT8: reinterpret_cast<int8_t*>(pp_buf.data())[i] = static_cast<int8_t>(v); break;
+                            default:
+                                if (elem == 8) reinterpret_cast<int64_t*>(pp_buf.data())[i] = v;
+                                else if (elem == 4) reinterpret_cast<int32_t*>(pp_buf.data())[i] = static_cast<int32_t>(v);
+                                break;
+                        }
+                    }
+                    if (n < cap) std::memset(pp_buf.data() + n * elem, 0, (cap - n) * elem);
+                }
             }
             vision_encoder_->graph->execute();
             for (size_t i = 0; i < vision_encoder_->output_node_ids.size()
