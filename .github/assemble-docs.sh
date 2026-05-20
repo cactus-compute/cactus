@@ -54,9 +54,7 @@ else
   echo "Warning: Could not fetch React Native README, using fallback"
 fi
 
-if [ -f rust/README.md ]; then
-  cp rust/README.md site_docs/rust/README.md
-fi
+cp bindings/rust/README.md site_docs/rust/README.md
 
 if [ -d blog ] && ls blog/*.md >/dev/null 2>&1; then
   cp blog/*.md site_docs/blog/

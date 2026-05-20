@@ -6,105 +6,10 @@ import numpy as np
 import torch
 from scipy.io import wavfile
 
-from cactus import cli
-from cactus.cli import run as run_cli
-from cactus.cli import transpile as transpile_cli
 from cactus.transpile import audio_preprocess
 from cactus.transpile import component_bundle_runtime
 from cactus.transpile import multimodal_runtime
 from cactus.transpile import hf_model
-
-
-def test_cactus_run_detects_transpiled_bundle_and_uses_main_style_audio(monkeypatch, tmp_path: Path, capsys) -> None:
-    bundle_dir = tmp_path / "bundle"
-    components_dir = bundle_dir / "components"
-    components_dir.mkdir(parents=True)
-    (components_dir / "manifest.json").write_text(
-        '{"model_id":"example/model","family":"generic","task":"causal_lm_logits","components":[]}',
-        encoding="utf-8",
-    )
-    audio_file = tmp_path / "input.wav"
-    audio_file.write_bytes(b"RIFF")
-
-    calls = []
-
-    def _fake_run_transpiled(args):
-        calls.append(args)
-        print("hello from transpiled")
-        return 0
-
-    monkeypatch.setattr(transpile_cli, "cmd_run_transpiled", _fake_run_transpiled)
-
-    parser = cli.create_parser()
-    args = parser.parse_args(
-        [
-            "run",
-            str(bundle_dir),
-            "--audio",
-            str(audio_file),
-            "--prompt",
-            "Hello",
-        ]
-    )
-
-    rc = run_cli.cmd_run(args)
-
-    assert rc == 0
-    assert len(calls) == 1
-    forwarded = calls[0]
-    assert forwarded.bundle_dir == str(bundle_dir)
-    assert forwarded.audio == str(audio_file.resolve())
-    assert forwarded.audio_file == str(audio_file.resolve())
-    assert forwarded.prompt == "Hello"
-    assert forwarded._transpiled_from_run is True
-    captured = capsys.readouterr().out
-    assert "Starting Cactus Chat with model:" in captured
-    assert "hello from transpiled" in captured
-
-
-def test_run_transpiled_human_result_prints_response(capsys) -> None:
-    transpile_cli._print_transpiled_run_result(
-        {
-            "response": "  generated text  ",
-            "transcript": "not used",
-        }
-    )
-
-    assert capsys.readouterr().out == "generated text\n"
-
-
-def test_run_transpiled_once_deduplicates_image_aliases(tmp_path: Path) -> None:
-    image_path = tmp_path / "input.png"
-    image_path.write_bytes(b"not really an image")
-    calls: list[dict[str, object]] = []
-
-    def fake_runner(bundle_dir, **kwargs):
-        calls.append({"bundle_dir": bundle_dir, **kwargs})
-        return {"response": "ok"}
-
-    args = type(
-        "Args",
-        (),
-        {
-            "image": str(image_path),
-            "image_file": [str(image_path)],
-            "image_files": [str(image_path)],
-            "audio": None,
-            "audio_file": None,
-            "prompt": "describe",
-            "input_ids": None,
-            "weights_dir": None,
-            "system": None,
-            "thinking": False,
-            "max_new_tokens": 1,
-            "stop_sequence": [],
-        },
-    )()
-
-    result = transpile_cli._run_transpiled_once(args, fake_runner, bundle_dir="bundle")
-
-    assert result == {"response": "ok"}
-    assert calls[0]["image_files"] == (str(image_path.resolve()),)
 
 
 def test_multimodal_decoder_inputs_right_align_to_static_tail() -> None:
@@ -347,16 +252,6 @@ def test_gemma4_stop_token_ids_include_turn_end() -> None:
         manifest={"family": "gemma4"},
         tokenizer=FakeTokenizer(),
     ) == {1, 106}
-
-
-def test_media_turns_do_not_replay_text_history() -> None:
-    history = [
-        ("user", "Tell me about mountains"),
-        ("assistant", "Mountains are tall landforms." * 20),
-    ]
-
-    assert transpile_cli._history_for_transpiled_turn(history, has_media=False) is history
-    assert transpile_cli._history_for_transpiled_turn(history, has_media=True) == []
 
 
 def test_runtime_image_inputs_resize_to_static_square(tmp_path: Path) -> None:

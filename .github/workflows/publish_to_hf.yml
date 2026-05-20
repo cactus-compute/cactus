@@ -94,7 +94,7 @@ jobs:
             FAILED_MODELS=()
             while read -r config; do
               model=$(echo "$config" | jq -r '.model')
-              bits=$(echo "$config" | jq -r 'if .bits | type == "array" then .bits | map(tostring) | join(" ") else (.bits // 4 | tostring) end')
+              bits=$(echo "$config" | jq -r '.bits // "4" | tostring')
               pipeline_tag=$(echo "$config" | jq -r '.pipeline_tag // ""')
               tags=$(echo "$config" | jq -r 'if .tags then .tags | join(",") else "" end')
               description=$(echo "$config" | jq -r '.description // ""')

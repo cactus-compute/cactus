@@ -1,5 +1,4 @@
 import ctypes
-from os import wait
 import numpy as np
 
 from .cactus import _err, _lib, cactus_node_t, cactus_tensor_info_t
@@ -362,21 +361,19 @@ class Graph:
         a = self._ensure_tensor(a)
         b = self._ensure_tensor(b)
         out = cactus_node_t()
-        target_dtype = int(a.dtype if output_dtype is None else output_dtype)
         rc = _lib.cactus_graph_matmul(
             self.h,
             cactus_node_t(a.id),
             cactus_node_t(b.id),
             ctypes.c_bool(bool(pretransposed_rhs)),
             ctypes.c_int32(int(backend)),
-            ctypes.c_int32(target_dtype),
             ctypes.byref(out),
         )
         if rc != 0:
             raise RuntimeError(_err("graph_matmul failed"))
         return self._tensor_from_node(out.value)
 
-    def gather(self, tensor, indices, axis=0):
+    def gather(self, tensor, indices):
         tensor = self._ensure_tensor(tensor)
         indices = self._ensure_tensor(indices)
         out = cactus_node_t()
@@ -384,7 +381,6 @@ class Graph:
             self.h,
             cactus_node_t(tensor.id),
             cactus_node_t(indices.id),
-            ctypes.c_int32(int(axis)),
             ctypes.byref(out),
         )
         if rc != 0:
