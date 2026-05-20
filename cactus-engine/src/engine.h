@@ -604,6 +604,8 @@ public:
                                float min_p = 0.15f, float repetition_penalty = 1.1f,
                                float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
 
+    std::vector<uint32_t> transcribe_parakeet_tdt(const std::vector<float>& audio_features);
+
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
                                        bool normalize = false, const std::string& profile_file = "");
 

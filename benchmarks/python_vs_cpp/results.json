@@ -1,0 +1,81 @@
+{
+  "captured_at": "2026-05-19",
+  "branch": "justin/platform-apis",
+  "machine": "Apple Silicon (arm64 NEON)",
+  "comparison": {
+    "LFM2-VL-450M text": {
+      "python_v2": {
+        "decode_tps": 149.6,
+        "ttft_ms": 320.6,
+        "total_ms": 467.7,
+        "decode_tokens": 23,
+        "response": "Hello! I'm doing well, thank you for asking. How about you? How are you doing today?"
+      },
+      "cpp_chat": {
+        "decode_tps": 144.4,
+        "ttft_ms": 117,
+        "total_ms": 262,
+        "decode_tokens": 22,
+        "ram_mb": 420.6,
+        "response": "Hello! I'm doing well, thank you for asking. How about you? How are you doing today?"
+      },
+      "notes": "Decode rates within noise. C++ TTFT is ~2.7x faster (no Python import overhead)."
+    },
+    "LFM2-VL-450M vision (test_monkey.png)": {
+      "python_v2": {
+        "decode_tps": 147.7,
+        "ttft_ms": 1036.5,
+        "total_ms": 1111.0,
+        "decode_tokens": 12,
+        "response": "A close up of a brown face with yellow eyes."
+      },
+      "cpp_chat": {
+        "decode_tps": 135.0,
+        "ttft_ms": 728,
+        "total_ms": 802,
+        "decode_tokens": 11,
+        "ram_mb": 2132.1,
+        "response": "A close up of a brown face with yellow eyes."
+      },
+      "notes": "Response byte-identical. C++ TTFT ~30% faster. Decode rates within noise."
+    },
+    "Gemma 4 E2B text": {
+      "python_v2": null,
+      "cpp_chat": {
+        "decode_tps": 29.7,
+        "ttft_ms": 1768,
+        "total_ms": 2777,
+        "decode_tokens": 31,
+        "ram_mb": 914.0,
+        "response": "I'm doing well, thank you for asking! I'm ready to assist you with whatever you need."
+      },
+      "notes": "v2 Python cannot load this bundle (missing constant payload error). C++ only baseline."
+    },
+    "Gemma 4 E2B vision (test_monkey.png)": {
+      "python_v2": null,
+      "cpp_chat": {
+        "decode_tps": 25.1,
+        "ttft_ms": 11133,
+        "total_ms": 12806,
+        "decode_tokens": 43,
+        "ram_mb": 9562.6,
+        "response": "The image is a close-up of the face of a marmoset, showing its nose and eyes. The marmoset has a prominent nose and appears to be smiling. The background is blurred green foliage."
+      },
+      "notes": "Vision encoder over 2520 patches dominates TTFT (~11s). Decode rate stable at ~25 tok/s. Response identifies marmoset correctly."
+    }
+  },
+  "blocked_paths": {
+    "Parakeet TDT transcribe": {
+      "status": "broken_engine_side",
+      "where": "Model::decode_with_audio is a stub at cactus-engine/src/model.cpp:997, calls Model::decode which dereferences null lm_encoder_step for non-LM bundles",
+      "stack": "cactus_transcribe -> Model::decode -> Model::run_step -> write_int_input(*encoder_ /*null*/, ...)",
+      "fix_scope": "~200-300 LOC: implement the TDT decode loop (audio_encoder -> per-frame predictor LSTM + joint head + duration emission) in transcribe.cpp or model.cpp"
+    }
+  },
+  "untested": [
+    "Streaming transcribe (cactus_stream_transcribe_*)",
+    "RAG query (cactus_rag_query) - needs corpus dir",
+    "VAD path (cactus_vad)",
+    "Image/audio embed (Cactus.image_embed / audio_embed) - LFM-VL embed FFI fails with EmbeddingFailed"
+  ]
+}

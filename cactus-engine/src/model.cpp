@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <dirent.h>
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -999,6 +1000,173 @@ uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens, const std
                                   float* out_entropy, float min_p, float repetition_penalty,
                                   float* /*out_token_time_start*/, float* /*out_token_time_end*/) {
     return decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
+}
+
+std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& audio_features) {
+    std::vector<uint32_t> emitted;
+
+    Component* audio_enc = components_.count("audio_encoder") ? &components_.at("audio_encoder") : nullptr;
+    Component* dec = components_.count("decoder") ? &components_.at("decoder") : nullptr;
+    if (!audio_enc || !dec) {
+        CACTUS_LOG_ERROR("model", "Parakeet TDT bundle missing audio_encoder or decoder component");
+        return emitted;
+    }
+    if (!bind_runtime_buffers(*audio_enc)) return emitted;
+    if (!bind_runtime_buffers(*dec)) return emitted;
+
+    int feat_idx = input_index(*audio_enc, "input_features");
+    if (feat_idx < 0) {
+        CACTUS_LOG_ERROR("model", "audio_encoder has no input_features input");
+        return emitted;
+    }
+    auto& feat_buf = audio_enc->input_buffers[feat_idx];
+    size_t feat_node = static_cast<size_t>(audio_enc->runtime_input_node_ids[feat_idx]);
+    const auto& feat_desc = audio_enc->graph->get_output_buffer(feat_node);
+    if (feat_desc.shape.size() != 3) {
+        CACTUS_LOG_ERROR("model", "audio_encoder expects [1, frames, mels] input shape");
+        return emitted;
+    }
+    const size_t expected_frames = feat_desc.shape[1];
+    const size_t expected_mels = feat_desc.shape[2];
+    const size_t source_frames = expected_mels > 0 ? audio_features.size() / expected_mels : 0;
+    const size_t copy_frames = std::min(source_frames, expected_frames);
+    std::vector<float> transposed(expected_frames * expected_mels, 0.0f);
+    for (size_t t = 0; t < copy_frames; ++t) {
+        for (size_t m = 0; m < expected_mels; ++m) {
+            transposed[t * expected_mels + m] = audio_features[m * source_frames + t];
+        }
+    }
+    write_typed_buffer(feat_buf, feat_desc.precision, transposed.data(),
+                       transposed.size() * sizeof(float), Precision::FP32);
+
+    audio_enc->graph->execute();
+
+    int hidden_idx = output_index(*audio_enc, "encoder_hidden_states");
+    if (hidden_idx < 0) {
+        CACTUS_LOG_ERROR("model", "audio_encoder has no encoder_hidden_states output");
+        return emitted;
+    }
+    size_t hidden_node = static_cast<size_t>(audio_enc->output_node_ids[hidden_idx]);
+    const auto& hidden_desc = audio_enc->graph->get_output_buffer(hidden_node);
+    const uint8_t* hidden_ptr = static_cast<const uint8_t*>(audio_enc->graph->get_output(hidden_node));
+    if (hidden_desc.shape.size() < 3 || hidden_ptr == nullptr) {
+        CACTUS_LOG_ERROR("model", "encoder_hidden_states must be 3D [B, T, D]");
+        return emitted;
+    }
+    const size_t T = hidden_desc.shape[1];
+    const size_t D = hidden_desc.shape[2];
+    const size_t hidden_elem = PrecisionTraits::size_of(hidden_desc.precision);
+    const size_t frame_bytes = D * hidden_elem;
+
+    auto zero_state = [&](const std::string& name) {
+        int idx = input_index(*dec, name);
+        if (idx < 0) return;
+        auto& buf = dec->input_buffers[idx];
+        std::memset(buf.data(), 0, buf.size());
+    };
+    zero_state("state_h_0");
+    zero_state("state_c_0");
+    zero_state("state_h_1");
+    zero_state("state_c_1");
+
+    std::vector<uint32_t> durations = config_.tdt_durations;
+    if (durations.empty()) {
+        for (uint32_t i = 0; i < config_.tdt_num_durations; ++i) durations.push_back(i);
+    }
+    if (durations.empty()) durations.push_back(1);
+
+    const uint32_t configured_blank = config_.tdt_blank_id;
+    uint32_t last_token = configured_blank;
+    size_t time_index = 0;
+
+    const int ef_idx = input_index(*dec, "encoder_frame");
+    const int tok_in_idx = input_index(*dec, "token_ids");
+    const int logits_idx = output_index(*dec, "step_logits");
+    if (ef_idx < 0 || tok_in_idx < 0 || logits_idx < 0) {
+        CACTUS_LOG_ERROR("model", "decoder missing encoder_frame / token_ids / step_logits ports");
+        return emitted;
+    }
+    auto& ef_buf = dec->input_buffers[ef_idx];
+    const auto& ef_desc = dec->graph->get_output_buffer(static_cast<size_t>(dec->runtime_input_node_ids[ef_idx]));
+    const size_t logits_node = static_cast<size_t>(dec->output_node_ids[logits_idx]);
+    const auto& logits_desc = dec->graph->get_output_buffer(logits_node);
+
+    const std::array<const char*, 4> state_names = {"state_h_0", "state_c_0", "state_h_1", "state_c_1"};
+
+    while (time_index < T) {
+        const uint8_t* frame_ptr = hidden_ptr + time_index * frame_bytes;
+        write_typed_buffer(ef_buf, ef_desc.precision, frame_ptr, frame_bytes, hidden_desc.precision);
+
+        size_t symbols_added = 0;
+        bool advanced = false;
+        while (symbols_added < 10) {
+            write_int_input(*dec, "token_ids", static_cast<int64_t>(last_token));
+            dec->graph->execute();
+
+            const void* logits_ptr = dec->graph->get_output(logits_node);
+            const size_t total_classes = logits_desc.shape.empty() ? 0 : logits_desc.shape.back();
+            const size_t num_durations = durations.size();
+            const size_t token_class_count = (total_classes > num_durations) ? (total_classes - num_durations) : total_classes;
+            if (token_class_count == 0) break;
+
+            auto get_logit = [&](size_t i) -> float {
+                if (logits_desc.precision == Precision::FP32) return reinterpret_cast<const float*>(logits_ptr)[i];
+                if (logits_desc.precision == Precision::FP16) return static_cast<float>(reinterpret_cast<const __fp16*>(logits_ptr)[i]);
+                return static_cast<float>(reinterpret_cast<const int8_t*>(logits_ptr)[i]);
+            };
+
+            uint32_t next_token = 0;
+            float best_token_score = -std::numeric_limits<float>::infinity();
+            for (size_t i = 0; i < token_class_count; ++i) {
+                float v = get_logit(i);
+                if (v > best_token_score) { best_token_score = v; next_token = static_cast<uint32_t>(i); }
+            }
+            uint32_t best_duration_idx = 0;
+            float best_duration_score = -std::numeric_limits<float>::infinity();
+            for (size_t i = 0; i < num_durations; ++i) {
+                float v = get_logit(token_class_count + i);
+                if (v > best_duration_score) { best_duration_score = v; best_duration_idx = static_cast<uint32_t>(i); }
+            }
+
+            const uint32_t skip = durations[std::min<uint32_t>(best_duration_idx, static_cast<uint32_t>(durations.size() - 1))];
+
+            uint32_t effective_blank = configured_blank;
+            if (effective_blank >= token_class_count) effective_blank = static_cast<uint32_t>(token_class_count - 1);
+
+            if (next_token != effective_blank) {
+                emitted.push_back(next_token);
+                last_token = next_token;
+                for (const char* state_name : state_names) {
+                    int out_idx = output_index(*dec, state_name);
+                    int in_idx = input_index(*dec, state_name);
+                    if (out_idx < 0 || in_idx < 0) continue;
+                    size_t out_node = static_cast<size_t>(dec->output_node_ids[out_idx]);
+                    const auto& out_desc = dec->graph->get_output_buffer(out_node);
+                    const void* out_ptr = dec->graph->get_output(out_node);
+                    auto& in_buf = dec->input_buffers[in_idx];
+                    size_t to_copy = std::min(out_desc.byte_size, in_buf.size());
+                    std::memcpy(in_buf.data(), out_ptr, to_copy);
+                }
+            }
+
+            ++symbols_added;
+
+            if (skip > 0) {
+                time_index += skip;
+                advanced = true;
+                break;
+            }
+            if (next_token == effective_blank) {
+                time_index += 1;
+                advanced = true;
+                break;
+            }
+        }
+
+        if (!advanced) time_index += 1;
+    }
+
+    return emitted;
 }
 
 uint32_t Model::decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& /*image_paths*/,
