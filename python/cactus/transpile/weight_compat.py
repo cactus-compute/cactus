@@ -30,7 +30,7 @@ from cactus.convert.quantization.cq import write_cq_tensor
 _HEADER_SIZE = 84
 _FLAG_EXTENDED_SHAPE = 1 << 4
 _INT8 = int(Graph.INT8)
-_INT4 = int(Graph.INT4)
+_INT4 = int(Graph.CQ1)
 
 _TOKEN_EMBEDDING_FILENAMES = {
     "token_embeddings.weights",
@@ -241,7 +241,7 @@ def _open_cactus_tensor_file(path: str | Path) -> _OpenedTensor:
         int(Graph.INT8): np.int8,
         int(Graph.FP16): np.float16,
         int(Graph.FP32): np.float32,
-        int(Graph.INT4): np.uint8,
+        int(Graph.CQ1): np.uint8,
         3: np.uint8,
         4: np.uint8,
         5: np.uint8,

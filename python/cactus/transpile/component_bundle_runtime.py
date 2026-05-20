@@ -53,7 +53,7 @@ _PRECISION_TO_DTYPE = {
     Graph.INT8: np.int8,
     Graph.FP16: np.float16,
     Graph.FP32: np.float32,
-    Graph.INT4: np.uint8,
+    Graph.CQ1: np.uint8,
     getattr(Graph, "CQ2", 4): np.uint8,
     getattr(Graph, "CQ3", 5): np.uint8,
     getattr(Graph, "CQ4", 6): np.uint8,
