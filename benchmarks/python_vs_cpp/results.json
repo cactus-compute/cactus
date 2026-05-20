@@ -1,8 +1,24 @@
 {
-  "captured_at": "2026-05-19",
+  "captured_at": "2026-05-20",
   "branch": "justin/platform-apis",
   "machine": "Apple Silicon (arm64 NEON)",
   "comparison": {
+    "Parakeet TDT 0.6B (assets/test.wav, ~15s clip)": {
+      "python_v2": {
+        "total_ms_runs": [1470, 748, 711],
+        "total_ms_warm": 730,
+        "decoder_steps": 111,
+        "encoder_ms_warm": 600,
+        "response": "Hello, hello, hello. Just um quickly testing out creating a wave file through voice memos. Um the goal is to use this wave file to test out Whisper. Hopefully, this will transcribe properly. That's all I can hope for. Alright, here we go."
+      },
+      "cpp_asr": {
+        "total_ms_runs": [1513, 679, 679],
+        "total_ms_warm": 679,
+        "decode_tokens": 88,
+        "response": "Hello, hello, hello. Just um quickly testing out creating a wave file through voice memos. Um the goal is to use this wave file to test out Whisper. Hopefully, this will transcribe properly. That's all I can hope for. Alright, here we go."
+      },
+      "notes": "Response byte-identical. C++ warm total ~7% faster; both paths share the same C++ graph kernels — Python overhead is the per-step argmax/state-copy wrapper that the C++ TDT loop replaces. Python emits more decoder_steps because it counts skipped frames too."
+    },
     "LFM2-VL-450M text": {
       "python_v2": {
         "decode_tps": 149.6,
@@ -62,14 +78,6 @@
         "response": "The image is a close-up of the face of a marmoset, showing its nose and eyes. The marmoset has a prominent nose and appears to be smiling. The background is blurred green foliage."
       },
       "notes": "Vision encoder over 2520 patches dominates TTFT (~11s). Decode rate stable at ~25 tok/s. Response identifies marmoset correctly."
-    }
-  },
-  "blocked_paths": {
-    "Parakeet TDT transcribe": {
-      "status": "broken_engine_side",
-      "where": "Model::decode_with_audio is a stub at cactus-engine/src/model.cpp:997, calls Model::decode which dereferences null lm_encoder_step for non-LM bundles",
-      "stack": "cactus_transcribe -> Model::decode -> Model::run_step -> write_int_input(*encoder_ /*null*/, ...)",
-      "fix_scope": "~200-300 LOC: implement the TDT decode loop (audio_encoder -> per-frame predictor LSTM + joint head + duration emission) in transcribe.cpp or model.cpp"
     }
   },
   "untested": [

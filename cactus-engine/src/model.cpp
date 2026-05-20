@@ -1088,10 +1088,36 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     }
     auto& ef_buf = dec->input_buffers[ef_idx];
     const auto& ef_desc = dec->graph->get_output_buffer(static_cast<size_t>(dec->runtime_input_node_ids[ef_idx]));
+    auto& tok_buf = dec->input_buffers[tok_in_idx];
+    const Precision tok_prec = dec->graph->get_output_buffer(static_cast<size_t>(dec->runtime_input_node_ids[tok_in_idx])).precision;
+    void* tok_data = tok_buf.data();
     const size_t logits_node = static_cast<size_t>(dec->output_node_ids[logits_idx]);
     const auto& logits_desc = dec->graph->get_output_buffer(logits_node);
+    const Precision logits_prec = logits_desc.precision;
+    const size_t total_classes = logits_desc.shape.empty() ? 0 : logits_desc.shape.back();
+    const size_t num_durations = durations.size();
+    const size_t token_class_count = (total_classes > num_durations) ? (total_classes - num_durations) : total_classes;
+    if (token_class_count == 0) return emitted;
+    uint32_t effective_blank = configured_blank;
+    if (effective_blank >= token_class_count) effective_blank = static_cast<uint32_t>(token_class_count - 1);
 
     const std::array<const char*, 4> state_names = {"state_h_0", "state_c_0", "state_h_1", "state_c_1"};
+    struct StateCopy { void* in_data; const void* out_ptr; size_t bytes; };
+    std::array<StateCopy, 4> state_copies{};
+    size_t state_copy_count = 0;
+    for (const char* state_name : state_names) {
+        int out_idx = output_index(*dec, state_name);
+        int in_idx = input_index(*dec, state_name);
+        if (out_idx < 0 || in_idx < 0) continue;
+        size_t out_node = static_cast<size_t>(dec->output_node_ids[out_idx]);
+        const auto& out_desc = dec->graph->get_output_buffer(out_node);
+        auto& in_buf = dec->input_buffers[in_idx];
+        state_copies[state_copy_count++] = {
+            in_buf.data(),
+            dec->graph->get_output(out_node),
+            std::min(out_desc.byte_size, in_buf.size())
+        };
+    }
 
     while (time_index < T) {
         const uint8_t* frame_ptr = hidden_ptr + time_index * frame_bytes;
@@ -1100,18 +1126,18 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         size_t symbols_added = 0;
         bool advanced = false;
         while (symbols_added < 10) {
-            write_int_input(*dec, "token_ids", static_cast<int64_t>(last_token));
+            switch (tok_prec) {
+                case Precision::FP32: *reinterpret_cast<float*>(tok_data) = static_cast<float>(last_token); break;
+                case Precision::FP16: *reinterpret_cast<__fp16*>(tok_data) = static_cast<__fp16>(last_token); break;
+                case Precision::INT8: *reinterpret_cast<int8_t*>(tok_data) = static_cast<int8_t>(last_token); break;
+                default: *reinterpret_cast<int32_t*>(tok_data) = static_cast<int32_t>(last_token); break;
+            }
             dec->graph->execute();
 
             const void* logits_ptr = dec->graph->get_output(logits_node);
-            const size_t total_classes = logits_desc.shape.empty() ? 0 : logits_desc.shape.back();
-            const size_t num_durations = durations.size();
-            const size_t token_class_count = (total_classes > num_durations) ? (total_classes - num_durations) : total_classes;
-            if (token_class_count == 0) break;
-
             auto get_logit = [&](size_t i) -> float {
-                if (logits_desc.precision == Precision::FP32) return reinterpret_cast<const float*>(logits_ptr)[i];
-                if (logits_desc.precision == Precision::FP16) return static_cast<float>(reinterpret_cast<const __fp16*>(logits_ptr)[i]);
+                if (logits_prec == Precision::FP32) return reinterpret_cast<const float*>(logits_ptr)[i];
+                if (logits_prec == Precision::FP16) return static_cast<float>(reinterpret_cast<const __fp16*>(logits_ptr)[i]);
                 return static_cast<float>(reinterpret_cast<const int8_t*>(logits_ptr)[i]);
             };
 
@@ -1130,22 +1156,11 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
 
             const uint32_t skip = durations[std::min<uint32_t>(best_duration_idx, static_cast<uint32_t>(durations.size() - 1))];
 
-            uint32_t effective_blank = configured_blank;
-            if (effective_blank >= token_class_count) effective_blank = static_cast<uint32_t>(token_class_count - 1);
-
             if (next_token != effective_blank) {
                 emitted.push_back(next_token);
                 last_token = next_token;
-                for (const char* state_name : state_names) {
-                    int out_idx = output_index(*dec, state_name);
-                    int in_idx = input_index(*dec, state_name);
-                    if (out_idx < 0 || in_idx < 0) continue;
-                    size_t out_node = static_cast<size_t>(dec->output_node_ids[out_idx]);
-                    const auto& out_desc = dec->graph->get_output_buffer(out_node);
-                    const void* out_ptr = dec->graph->get_output(out_node);
-                    auto& in_buf = dec->input_buffers[in_idx];
-                    size_t to_copy = std::min(out_desc.byte_size, in_buf.size());
-                    std::memcpy(in_buf.data(), out_ptr, to_copy);
+                for (size_t s = 0; s < state_copy_count; ++s) {
+                    std::memcpy(state_copies[s].in_data, state_copies[s].out_ptr, state_copies[s].bytes);
                 }
             }
 
