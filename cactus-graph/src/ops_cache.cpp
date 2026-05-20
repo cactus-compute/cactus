@@ -80,8 +80,11 @@ inline const __fp16* get_fp16_data(const BufferDesc& buf) {
 }
 
 inline bool use_fp16_kv_cache() {
-    const char* value = std::getenv("CACTUS_KV_CACHE_FP16");
-    return value != nullptr && std::strcmp(value, "1") == 0;
+    static const bool cached = [] {
+        const char* value = std::getenv("CACTUS_KV_CACHE_FP16");
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    }();
+    return cached;
 }
 
 } // namespace
@@ -143,16 +146,23 @@ void compute_kv_cache_append_node(
         size_t new_total = current_len + new_seq_len;
         bool needs_eviction = new_total > window;
         if (needs_eviction) {
-            size_t remaining = window - sink - new_seq_len;
-            size_t shift_src = current_len - remaining;
-            if (remaining > 0 && shift_src > sink) {
-                std::memmove(
-                    fp16_base + sink * stride,
-                    fp16_base + shift_src * stride,
-                    remaining * stride * sizeof(__fp16));
+            size_t sink_eff = std::min(sink, window);
+            if (new_seq_len >= window) {
+                size_t src_skip = new_seq_len - window;
+                std::memcpy(fp16_base, source + src_skip * stride, window * stride * sizeof(__fp16));
+            } else {
+                size_t remaining = (new_seq_len + sink_eff < window)
+                                       ? window - sink_eff - new_seq_len : 0;
+                size_t shift_src = (current_len > remaining) ? current_len - remaining : 0;
+                if (remaining > 0 && shift_src > sink_eff) {
+                    std::memmove(
+                        fp16_base + sink_eff * stride,
+                        fp16_base + shift_src * stride,
+                        remaining * stride * sizeof(__fp16));
+                }
+                size_t append_offset = window - new_seq_len;
+                std::memcpy(fp16_base + append_offset * stride, source, new_seq_len * stride * sizeof(__fp16));
             }
-            size_t append_offset = window - new_seq_len;
-            std::memcpy(fp16_base + append_offset * stride, source, new_seq_len * stride * sizeof(__fp16));
             meta->current_seq_len = window;
         } else {
             std::memcpy(fp16_base + current_len * stride, source, new_seq_len * stride * sizeof(__fp16));
@@ -173,24 +183,35 @@ void compute_kv_cache_append_node(
     bool needs_eviction = new_total > window;
 
     if (needs_eviction) {
-        size_t remaining = window - sink - new_seq_len;
-        size_t shift_src = current_len - remaining;
+        size_t sink_eff = std::min(sink, window);
+        if (new_seq_len >= window) {
+            size_t src_skip = new_seq_len - window;
+            cactus_quantize_kv_fp16_to_int8(
+                new_kv.data_as<__fp16>() + src_skip * (kv_heads * hdim),
+                int8_base,
+                scale_base,
+                window, kv_heads, hdim);
+        } else {
+            size_t remaining = (new_seq_len + sink_eff < window)
+                                   ? window - sink_eff - new_seq_len : 0;
+            size_t shift_src = (current_len > remaining) ? current_len - remaining : 0;
 
-        if (remaining > 0 && shift_src > sink) {
-            std::memmove(int8_base + sink * int8_stride,
-                         int8_base + shift_src * int8_stride,
-                         remaining * int8_stride);
-            std::memmove(scale_base + sink * scale_stride,
-                         scale_base + shift_src * scale_stride,
-                         remaining * scale_stride * sizeof(float));
+            if (remaining > 0 && shift_src > sink_eff) {
+                std::memmove(int8_base + sink_eff * int8_stride,
+                             int8_base + shift_src * int8_stride,
+                             remaining * int8_stride);
+                std::memmove(scale_base + sink_eff * scale_stride,
+                             scale_base + shift_src * scale_stride,
+                             remaining * scale_stride * sizeof(float));
+            }
+
+            size_t append_offset = window - new_seq_len;
+            cactus_quantize_kv_fp16_to_int8(
+                new_kv.data_as<__fp16>(),
+                int8_base + append_offset * int8_stride,
+                scale_base + append_offset * scale_stride,
+                new_seq_len, kv_heads, hdim);
         }
-
-        size_t append_offset = window - new_seq_len;
-        cactus_quantize_kv_fp16_to_int8(
-            new_kv.data_as<__fp16>(),
-            int8_base + append_offset * int8_stride,
-            scale_base + append_offset * scale_stride,
-            new_seq_len, kv_heads, hdim);
 
         meta->current_seq_len = window;
     } else {

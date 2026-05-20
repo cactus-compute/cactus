@@ -833,10 +833,6 @@ int cactus_complete(
             strip_thinking_from_cache(handle, generated_tokens, prompt.tokens.size());
         }
 
-        if (prompt.model_type == Config::ModelType::GEMMA4) {
-            handle->model->compact_kv_cache();
-        }
-
         auto end_time = std::chrono::high_resolution_clock::now();
         double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
 

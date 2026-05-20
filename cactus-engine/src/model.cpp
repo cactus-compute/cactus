@@ -1,5 +1,6 @@
 #include "engine.h"
 #include "cactus_graph.h"
+#include "cactus_kernels.h"
 
 #define PICOJSON_USE_INT64
 #include "picojson.h"
@@ -1201,6 +1202,20 @@ std::vector<float> Model::get_audio_embeddings(const std::vector<float>& /*mel_b
 void Model::reset_cache() {
     cache_total_seq_len_ = 0;
     token_history_.clear();
+    for (auto& kv : components_) {
+        Component& comp = kv.second;
+        if (!comp.graph) continue;
+        for (const auto& cs : comp.cache_states) {
+            for (int node_id : {cs.key_node_id, cs.value_node_id}) {
+                if (node_id < 0) continue;
+                const auto& desc = comp.graph->get_output_buffer(static_cast<size_t>(node_id));
+                if (desc.byte_size < sizeof(uint64_t) || !desc.get_data()) continue;
+                void* data = comp.graph->get_output(static_cast<size_t>(node_id));
+                if (!data) continue;
+                *static_cast<uint64_t*>(data) = 0;
+            }
+        }
+    }
 }
 
 void Model::set_cache_window(size_t /*window_size*/, size_t /*sink_size*/) {}
@@ -1212,6 +1227,84 @@ void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>&
         cache_total_seq_len_ -= total_removed;
     else
         cache_total_seq_len_ = 0;
+
+    struct CacheHeader {
+        uint64_t current_seq_len;
+        uint64_t max_seq_len;
+        uint64_t num_kv_heads;
+        uint64_t head_dim;
+        uint64_t sink_size;
+        uint64_t reserved[3];
+    };
+    constexpr size_t kHeaderBytes = 64;
+    static_assert(sizeof(CacheHeader) == kHeaderBytes, "CacheHeader layout mismatch");
+
+    auto sorted_ranges = ranges;
+    std::sort(sorted_ranges.begin(), sorted_ranges.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    for (auto& kv : components_) {
+        Component& comp = kv.second;
+        if (!comp.graph) continue;
+        for (const auto& cs : comp.cache_states) {
+            for (int node_id : {cs.key_node_id, cs.value_node_id}) {
+                if (node_id < 0) continue;
+                const auto& desc = comp.graph->get_output_buffer(static_cast<size_t>(node_id));
+                if (desc.byte_size <= kHeaderBytes || !desc.get_data()) continue;
+                void* raw = comp.graph->get_output(static_cast<size_t>(node_id));
+                if (!raw) continue;
+                auto* hdr = static_cast<CacheHeader*>(raw);
+                size_t cur = hdr->current_seq_len;
+                if (cur == 0) continue;
+                size_t kv_heads = hdr->num_kv_heads;
+                size_t hdim = hdr->head_dim;
+                if (kv_heads == 0 || hdim == 0) continue;
+                size_t token_elems = kv_heads * hdim;
+                size_t num_groups = (hdim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+                size_t token_scales = kv_heads * num_groups;
+                size_t max_seq = hdr->max_seq_len;
+
+                size_t new_len = cur;
+                if (desc.precision == Precision::FP16) {
+                    auto* base = reinterpret_cast<__fp16*>(static_cast<char*>(raw) + kHeaderBytes);
+                    for (auto it = sorted_ranges.rbegin(); it != sorted_ranges.rend(); ++it) {
+                        size_t start = it->first;
+                        if (start >= new_len) continue;
+                        size_t count = std::min(it->second, new_len - start);
+                        size_t tail_start = start + count;
+                        size_t tail_count = new_len - tail_start;
+                        if (tail_count > 0) {
+                            std::memmove(base + start * token_elems,
+                                         base + tail_start * token_elems,
+                                         tail_count * token_elems * sizeof(__fp16));
+                        }
+                        new_len -= count;
+                    }
+                } else {
+                    auto* int8_base = reinterpret_cast<int8_t*>(static_cast<char*>(raw) + kHeaderBytes);
+                    auto* scale_base = reinterpret_cast<float*>(static_cast<char*>(raw) + kHeaderBytes +
+                                                                max_seq * kv_heads * hdim);
+                    for (auto it = sorted_ranges.rbegin(); it != sorted_ranges.rend(); ++it) {
+                        size_t start = it->first;
+                        if (start >= new_len) continue;
+                        size_t count = std::min(it->second, new_len - start);
+                        size_t tail_start = start + count;
+                        size_t tail_count = new_len - tail_start;
+                        if (tail_count > 0) {
+                            std::memmove(int8_base + start * token_elems,
+                                         int8_base + tail_start * token_elems,
+                                         tail_count * token_elems);
+                            std::memmove(scale_base + start * token_scales,
+                                         scale_base + tail_start * token_scales,
+                                         tail_count * token_scales * sizeof(float));
+                        }
+                        new_len -= count;
+                    }
+                }
+                hdr->current_seq_len = new_len;
+            }
+        }
+    }
 }
 
 std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& /*tokens*/, bool /*pooled*/,
