@@ -284,7 +284,6 @@ cactus build               # default static lib
 │    --ios                             run on connected iPhone                 │
 │    --android                         run on connected Android                │
 │                                                                              │
-│  cactus list                         list all supported models               │
 │  cactus clean                        remove all build artifacts              │
 │  cactus --help                       show all commands and flags             │
 │                                                                              │

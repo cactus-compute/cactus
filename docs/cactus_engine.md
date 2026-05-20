@@ -1572,22 +1572,6 @@ int find_similar_image(cactus_model_t model, const char* query,
 }
 ```
 
-## Supported Model Types
-
-| Model Type | Text | Vision | Audio | Embeddings | Description |
-|------------|------|--------|-------|------------|-------------|
-| Qwen | ✓ | ✓ | - | ✓ | Qwen3/Qwen3.5 language and vision models |
-| Gemma4 | ✓ | ✓ | ✓ | ✓ | Google Gemma 4 multimodal (E2B, E4B) with Apple NPU |
-| Gemma | ✓ | - | - | - | Google Gemma 3 / Gemma 3n models |
-| LFM2 | ✓ | ✓ | - | ✓ | Liquid Foundation Models (incl. VL and MoE) |
-| Nomic | - | - | - | ✓ | Nomic embedding models |
-| Whisper | - | - | ✓ | ✓ | OpenAI Whisper transcription |
-| Moonshine | - | - | ✓ | ✓ | UsefulSensors Moonshine transcription |
-| Parakeet | - | - | ✓ | ✓ | Nvidia Parakeet CTC/TDT transcription |
-| PyAnnote | - | - | ✓ | - | Speaker diarization (segmentation-3.0) |
-| WeSpeaker | - | - | ✓ | - | Speaker embedding (ResNet34-LM) |
-| Silero VAD | - | - | ✓ | - | Voice activity detection |
-
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -1667,7 +1651,7 @@ cactus_log_set_callback(my_log, NULL);
 These functions configure anonymous usage telemetry sent to Cactus Compute. Telemetry is opt-out and contains no user data.
 
 ### `cactus_set_telemetry_environment`
-Identifies the SDK framework and cache directory.
+Identifies the calling framework and cache directory.
 
 ```c
 void cactus_set_telemetry_environment(const char* framework, const char* cache_location, const char* version);
