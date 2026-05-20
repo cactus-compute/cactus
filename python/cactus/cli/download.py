@@ -1,7 +1,7 @@
 """CQ archive discovery and download helpers.
 
 The resolver in this module is deliberately independent of argparse and the
-rest of the CLI. Keep this logic small and data-shaped so other SDKs can port
+rest of the CLI. Keep this logic small and data-shaped so other bindings can port
 the same model/repo/combo behavior without inheriting Python CLI details.
 """
 from __future__ import annotations

@@ -91,7 +91,7 @@ def cmd_clean(args):
     print("Removing compiled libraries and frameworks...")
 
     preserve_roots = [
-        PROJECT_ROOT / "libs" / "curl",
+        PROJECT_ROOT / "cactus-engine" / "libs" / "curl",
         PROJECT_ROOT / "android" / "mbedtls",
         PROJECT_ROOT / "libs" / "mbedtls",
     ]
@@ -211,6 +211,10 @@ def cmd_list(args):
         if size_bytes >= 1_000_000_000:
             return f"{size_bytes / 1_073_741_824:.1f} GB"
         return f"{size_bytes / 1_048_576:.0f} MB"
+
+    if not MODEL_REGISTRY:
+        print_color(YELLOW, "No model registry found (models.json missing or empty).")
+        return 0
 
     # Group models by pipeline_tag preserving order
     groups = {}
