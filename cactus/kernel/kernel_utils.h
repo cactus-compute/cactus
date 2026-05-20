@@ -130,9 +130,22 @@ namespace CactusThreading {
                 std::function<void()> task;
                 {
                     std::unique_lock<std::mutex> lock(mutex);
-                    work_available.wait(lock, [this] {
-                        return stop || !tasks.empty();
-                    });
+                    try {
+                        work_available.wait(lock, [this] {
+                            return stop || !tasks.empty();
+                        });
+                    } catch (const std::system_error&) {
+                        // libc++ on macOS can throw std::system_error from
+                        // condition_variable::wait if the underlying pthread
+                        // primitive returns a non-zero status during shutdown
+                        // races (destructor notify_all + worker wake). Treat
+                        // as a shutdown signal: re-check predicate, exit if
+                        // stopping, otherwise loop.
+                        if (stop && tasks.empty()) {
+                            return;
+                        }
+                        continue;
+                    }
 
                     if (stop && tasks.empty()) {
                         return;
