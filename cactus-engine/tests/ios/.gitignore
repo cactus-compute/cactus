@@ -1,0 +1,4 @@
+CactusTest/CactusTest.xcodeproj/*
+!CactusTest/CactusTest.xcodeproj/project.pbxproj.template
+CactusTest/CactusTest/AppDelegate.mm
+build/

@@ -808,7 +808,7 @@ def _enc(s):
 
 
 def cactus_get_last_error():
-    """Returns the last error message or None."""
+    """Returns the last error message, or None if no error."""
     result = _lib.cactus_get_last_error()
     return result.decode() if result else None
 
@@ -817,9 +817,9 @@ def _err(default):
     return cactus_get_last_error() or default
 
 
-def cactus_set_telemetry_environment(cache_location):
-    """Sets the telemetry cache directory."""
-    _lib.cactus_set_telemetry_environment(None, _enc(cache_location), None)
+def cactus_set_telemetry_environment(framework, cache_location, version):
+    """Sets telemetry environment (framework name, cache path, version)."""
+    _lib.cactus_set_telemetry_environment(_enc(framework), _enc(cache_location), _enc(version))
 
 
 def cactus_set_app_id(app_id):
@@ -833,12 +833,12 @@ def cactus_telemetry_flush():
 
 
 def cactus_telemetry_shutdown():
-    """Flushes and shuts down the telemetry subsystem."""
+    """Shuts down the telemetry subsystem."""
     _lib.cactus_telemetry_shutdown()
 
 
 def cactus_init(model_path, corpus_dir, cache_index):
-    """Initializes a model from the given path. Returns handle."""
+    """Loads a model from the given path. Returns an opaque model handle."""
     handle = _lib.cactus_init(_enc(model_path), _enc(corpus_dir), cache_index)
     if not handle:
         raise RuntimeError(_err("Failed to initialize model"))
@@ -846,22 +846,22 @@ def cactus_init(model_path, corpus_dir, cache_index):
 
 
 def cactus_destroy(model):
-    """Frees all model resources."""
+    """Frees all resources associated with the model handle."""
     _lib.cactus_destroy(model)
 
 
 def cactus_reset(model):
-    """Clears the KV cache."""
+    """Clears the KV cache, resetting the model to a fresh state."""
     _lib.cactus_reset(model)
 
 
 def cactus_stop(model):
-    """Signals the current generation to stop."""
+    """Signals the model to stop the current generation."""
     _lib.cactus_stop(model)
 
 
 def cactus_complete(model, messages_json, options_json, tools_json, callback, pcm_data=None):
-    """Runs chat completion. Returns response string."""
+    """Runs chat completion. Returns a JSON string with the response and metrics."""
     buf = ctypes.create_string_buffer(65536)
     if callback:
         def _bridge(token_bytes, token_id, _):
@@ -886,7 +886,7 @@ def cactus_complete(model, messages_json, options_json, tools_json, callback, pc
 
 
 def cactus_prefill(model, messages_json, options_json, tools_json, pcm_data=None):
-    """Prefills the KV cache with messages."""
+    """Pre-fills the KV cache with the given messages. Returns a JSON string with prefill stats."""
     buf = ctypes.create_string_buffer(65536)
     if pcm_data is not None:
         pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
@@ -901,8 +901,10 @@ def cactus_prefill(model, messages_json, options_json, tools_json, pcm_data=None
     )
     if rc < 0:
         raise RuntimeError(_err("Prefill failed"))
+    return buf.value.decode("utf-8", errors="replace")
+
 def cactus_detect_language(model, audio_path, options_json, pcm_data):
-    """Detects the spoken language in audio. Returns JSON string."""
+    """Detects the spoken language in audio. Returns a JSON string."""
     buf = ctypes.create_string_buffer(65536)
     if pcm_data is not None:
         pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
@@ -920,7 +922,7 @@ def cactus_detect_language(model, audio_path, options_json, pcm_data):
 
 
 def cactus_transcribe(model, audio_path, prompt, options_json, callback, pcm_data):
-    """Transcribes audio to text. Returns transcription string."""
+    """Transcribes audio to text. Returns a JSON string with transcription and segments."""
     buf = ctypes.create_string_buffer(65536)
     if callback:
         def _bridge(token_bytes, token_id, _):
@@ -945,7 +947,7 @@ def cactus_transcribe(model, audio_path, prompt, options_json, callback, pcm_dat
 
 
 def cactus_embed(model, text, normalize):
-    """Generates a text embedding. Returns list of floats."""
+    """Computes a text embedding. Returns a list of floats."""
     buf = (ctypes.c_float * 4096)()
     dim = ctypes.c_size_t()
     rc = _lib.cactus_embed(model, _enc(text), buf, 4096, ctypes.byref(dim), normalize)
@@ -955,7 +957,7 @@ def cactus_embed(model, text, normalize):
 
 
 def cactus_image_embed(model, image_path):
-    """Generates an image embedding. Returns list of floats."""
+    """Computes an image embedding. Returns a list of floats."""
     buf = (ctypes.c_float * 4096)()
     dim = ctypes.c_size_t()
     rc = _lib.cactus_image_embed(model, _enc(image_path), buf, 4096, ctypes.byref(dim))
@@ -965,7 +967,7 @@ def cactus_image_embed(model, image_path):
 
 
 def cactus_audio_embed(model, audio_path):
-    """Generates an audio embedding. Returns list of floats."""
+    """Computes an audio embedding. Returns a list of floats."""
     buf = (ctypes.c_float * 4096)()
     dim = ctypes.c_size_t()
     rc = _lib.cactus_audio_embed(model, _enc(audio_path), buf, 4096, ctypes.byref(dim))
@@ -975,7 +977,7 @@ def cactus_audio_embed(model, audio_path):
 
 
 def cactus_preprocess_audio_features(audio_path, model_type, mel_bins, capacity):
-    """Returns Cactus-native audio frontend features as (values, mel_bins, frames)."""
+    """Computes mel spectrogram features. Returns (values, mel_bins, frames)."""
     if not hasattr(_lib, "cactus_preprocess_audio_features"):
         raise RuntimeError("cactus_preprocess_audio_features is unavailable; rebuild with cactus build --python")
     buf = (ctypes.c_float * int(capacity))()
@@ -998,7 +1000,7 @@ def cactus_preprocess_audio_features(audio_path, model_type, mel_bins, capacity)
 
 
 def cactus_vad(model, audio_path, options_json, pcm_data):
-    """Runs voice activity detection. Returns JSON string."""
+    """Runs voice activity detection. Returns a JSON string with speech segments."""
     buf = ctypes.create_string_buffer(65536)
     if pcm_data is not None:
         pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
@@ -1016,7 +1018,7 @@ def cactus_vad(model, audio_path, options_json, pcm_data):
 
 
 def cactus_diarize(model, audio_path, options_json, pcm_data):
-    """Runs speaker diarization. Returns JSON string."""
+    """Runs speaker diarization. Returns a JSON string with per-speaker segments."""
     buf = ctypes.create_string_buffer(1 << 20)
     if pcm_data is not None:
         pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
@@ -1034,7 +1036,7 @@ def cactus_diarize(model, audio_path, options_json, pcm_data):
 
 
 def cactus_embed_speaker(model, audio_path, options_json, pcm_data, mask_weights=None):
-    """Extracts a speaker embedding vector. Returns JSON string."""
+    """Extracts a speaker embedding. Returns a JSON string."""
     buf = ctypes.create_string_buffer(65536)
     if pcm_data is not None:
         pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
@@ -1060,7 +1062,7 @@ def cactus_embed_speaker(model, audio_path, options_json, pcm_data, mask_weights
 
 
 def cactus_tokenize(model, text):
-    """Tokenizes text into token IDs. Returns list of ints."""
+    """Tokenizes text into token IDs. Returns a list of ints."""
     max_tokens = 8192
     arr = (ctypes.c_uint32 * max_tokens)()
     n = ctypes.c_size_t(0)
@@ -1071,7 +1073,7 @@ def cactus_tokenize(model, text):
 
 
 def cactus_decode_tokens(model, tokens, temperature=0.0, top_p=1.0, top_k=1):
-    """Returns the next token ID from native Cactus for exact raw token IDs."""
+    """Decodes the next token from a sequence. Returns the next token ID."""
     if not tokens:
         raise ValueError("tokens must be non-empty")
     arr = (ctypes.c_uint32 * len(tokens))(*[int(token) for token in tokens])
@@ -1091,7 +1093,7 @@ def cactus_decode_tokens(model, tokens, temperature=0.0, top_p=1.0, top_k=1):
 
 
 def cactus_score_window(model, tokens, start, end, context):
-    """Scores a window of tokens. Returns JSON string."""
+    """Scores a window of tokens. Returns a JSON string with log-probabilities."""
     buf = ctypes.create_string_buffer(65536)
     token_len = len(tokens)
     arr = (ctypes.c_uint32 * token_len)(*tokens)
@@ -1102,7 +1104,7 @@ def cactus_score_window(model, tokens, start, end, context):
 
 
 def cactus_rag_query(model, query, top_k):
-    """Queries the RAG corpus. Returns JSON string."""
+    """Queries the RAG corpus. Returns a JSON string with results."""
     buf = ctypes.create_string_buffer(65536)
     rc = _lib.cactus_rag_query(model, _enc(query), buf, len(buf), top_k)
     if rc < 0:
@@ -1111,7 +1113,7 @@ def cactus_rag_query(model, query, top_k):
 
 
 def cactus_stream_transcribe_start(model, options_json):
-    """Creates a streaming transcription session. Returns stream handle."""
+    """Starts a streaming transcription session. Returns a stream handle."""
     handle = _lib.cactus_stream_transcribe_start(model, _enc(options_json))
     if not handle:
         raise RuntimeError(_err("Failed to start stream transcription"))
@@ -1119,7 +1121,7 @@ def cactus_stream_transcribe_start(model, options_json):
 
 
 def cactus_stream_transcribe_process(stream, pcm_data):
-    """Processes a chunk of PCM audio. Returns partial text."""
+    """Feeds a PCM audio chunk to the stream. Returns partial transcription."""
     buf = ctypes.create_string_buffer(65536)
     pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
     pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
@@ -1130,7 +1132,7 @@ def cactus_stream_transcribe_process(stream, pcm_data):
 
 
 def cactus_stream_transcribe_stop(stream):
-    """Finalizes transcription. Returns final text."""
+    """Finalizes streaming transcription. Returns the final transcription."""
     buf = ctypes.create_string_buffer(65536)
     rc = _lib.cactus_stream_transcribe_stop(stream, buf, len(buf))
     if rc < 0:
@@ -1139,14 +1141,14 @@ def cactus_stream_transcribe_stop(stream):
 
 
 def cactus_index_init(index_dir, embedding_dim):
-    """Initializes a vector index in the given directory. Returns handle."""
+    """Creates a vector index. Returns an opaque index handle."""
     handle = _lib.cactus_index_init(_enc(index_dir), embedding_dim)
     if not handle:
         raise RuntimeError(_err("Failed to initialize index"))
     return handle
 
 
-def cactus_index_add(index, ids, documents, embeddings, metadatas):
+def cactus_index_add(index, ids, documents, metadatas, embeddings):
     """Adds documents with embeddings to the index."""
     count = len(ids)
     embedding_dim = len(embeddings[0]) if embeddings else 0
@@ -1176,7 +1178,7 @@ def cactus_index_add(index, ids, documents, embeddings, metadatas):
 
 
 def cactus_index_delete(index, ids):
-    """Removes documents by ID."""
+    """Removes documents from the index by ID."""
     count = len(ids)
     ids_arr = (ctypes.c_int * count)(*ids)
     rc = _lib.cactus_index_delete(index, ids_arr, count)
@@ -1185,25 +1187,22 @@ def cactus_index_delete(index, ids):
 
 
 def cactus_index_query(index, embedding, options_json):
-    """Searches the index by embedding. Returns JSON string."""
+    """Queries the index by embedding. Returns a JSON string with ids and scores."""
     result_capacity = 1000
     embedding_dim = len(embedding)
     emb_arr = (ctypes.c_float * embedding_dim)(*embedding)
     emb_ptr = ctypes.cast(emb_arr, ctypes.POINTER(ctypes.c_float))
     emb_ptr_ptr = ctypes.pointer(emb_ptr)
-
     id_buffer = (ctypes.c_int * result_capacity)()
     score_buffer = (ctypes.c_float * result_capacity)()
     id_ptr = ctypes.cast(id_buffer, ctypes.POINTER(ctypes.c_int))
     score_ptr = ctypes.cast(score_buffer, ctypes.POINTER(ctypes.c_float))
     id_size = ctypes.c_size_t(result_capacity)
     score_size = ctypes.c_size_t(result_capacity)
-    id_ptr_ptr = ctypes.pointer(id_ptr)
-    score_ptr_ptr = ctypes.pointer(score_ptr)
-
     rc = _lib.cactus_index_query(
-        index, emb_ptr_ptr, 1, embedding_dim, _enc(options_json),
-        id_ptr_ptr, ctypes.byref(id_size), score_ptr_ptr, ctypes.byref(score_size)
+        index, ctypes.pointer(emb_ptr), 1, embedding_dim, _enc(options_json),
+        ctypes.pointer(id_ptr), ctypes.byref(id_size),
+        ctypes.pointer(score_ptr), ctypes.byref(score_size)
     )
     if rc < 0:
         raise RuntimeError(_err("Index query failed"))
@@ -1217,25 +1216,18 @@ _INDEX_EMB_BUF_SIZE = 4096
 
 
 def cactus_index_get(index, ids):
-    """Retrieves documents by ID. Returns JSON string."""
+    """Retrieves documents by ID. Returns a JSON string with documents, metadata, and embeddings."""
     count = len(ids)
-    if count == 0:
-        return '{"results":[]}'
-
     ids_arr = (ctypes.c_int * count)(*ids)
-
     doc_raw = [ctypes.create_string_buffer(_INDEX_DOC_BUF_SIZE) for _ in range(count)]
     doc_ptrs = (ctypes.c_char_p * count)()
     doc_sizes = (ctypes.c_size_t * count)()
-
     meta_raw = [ctypes.create_string_buffer(_INDEX_DOC_BUF_SIZE) for _ in range(count)]
     meta_ptrs = (ctypes.c_char_p * count)()
     meta_sizes = (ctypes.c_size_t * count)()
-
     emb_raw = [(ctypes.c_float * _INDEX_EMB_BUF_SIZE)() for _ in range(count)]
     emb_ptrs = (ctypes.POINTER(ctypes.c_float) * count)()
     emb_sizes = (ctypes.c_size_t * count)()
-
     for i in range(count):
         doc_ptrs[i] = ctypes.cast(doc_raw[i], ctypes.c_char_p)
         doc_sizes[i] = _INDEX_DOC_BUF_SIZE
@@ -1243,41 +1235,37 @@ def cactus_index_get(index, ids):
         meta_sizes[i] = _INDEX_DOC_BUF_SIZE
         emb_ptrs[i] = ctypes.cast(emb_raw[i], ctypes.POINTER(ctypes.c_float))
         emb_sizes[i] = _INDEX_EMB_BUF_SIZE
-
     rc = _lib.cactus_index_get(
         index, ids_arr, count,
         doc_ptrs, doc_sizes, meta_ptrs, meta_sizes, emb_ptrs, emb_sizes
     )
     if rc < 0:
         raise RuntimeError(_err("Failed to get from index"))
-
     parts = []
     for i in range(count):
         doc = doc_raw[i].value.decode("utf-8", errors="ignore")
-        meta_bytes = meta_raw[i].value
-        meta = meta_bytes.decode("utf-8", errors="ignore") if meta_bytes else None
-        emb_dim = emb_sizes[i]
-        emb = list(emb_raw[i][:emb_dim]) if emb_dim > 0 else []
-        meta_str = f'"{meta}"' if meta is not None else "null"
+        meta = meta_raw[i].value.decode("utf-8", errors="ignore")
+        emb = list(emb_raw[i][:emb_sizes[i]])
+        meta_str = f'"{meta}"' if meta else "null"
         emb_str = "[" + ",".join(str(v) for v in emb) + "]"
         parts.append(f'{{"document":"{doc}","metadata":{meta_str},"embedding":{emb_str}}}')
     return '{"results":[' + ",".join(parts) + ']}'
 
 
 def cactus_index_compact(index):
-    """Compacts the index storage."""
+    """Compacts the index storage on disk."""
     rc = _lib.cactus_index_compact(index)
     if rc < 0:
         raise RuntimeError(_err("Failed to compact index"))
 
 
 def cactus_index_destroy(index):
-    """Frees all index resources."""
+    """Frees all resources associated with the index handle."""
     _lib.cactus_index_destroy(index)
 
 
 def cactus_log_set_level(level):
-    """Sets the log level. 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR, 4=NONE."""
+    """Sets the log level: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR, 4=NONE."""
     _lib.cactus_log_set_level(level)
 
 
@@ -1285,7 +1273,7 @@ _log_callback_ref = None
 
 
 def cactus_log_set_callback(callback):
-    """Sets a log callback. Pass None to clear. Callback signature: (level: int, component: str, message: str)."""
+    """Sets a log callback: callback(level, component, message). Pass None to clear."""
     global _log_callback_ref
     if callback is None:
         _log_callback_ref = None

@@ -91,7 +91,7 @@ def cmd_clean(args):
     print("Removing compiled libraries and frameworks...")
 
     preserve_roots = [
-        PROJECT_ROOT / "libs" / "curl",
+        PROJECT_ROOT / "cactus-engine" / "libs" / "curl",
         PROJECT_ROOT / "android" / "mbedtls",
         PROJECT_ROOT / "libs" / "mbedtls",
     ]

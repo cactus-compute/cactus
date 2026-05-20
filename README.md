@@ -13,7 +13,7 @@ A low-latency AI engine for mobile devices & wearables. Main features:
 
 - **Fast:** fastest inference on ARM CPU
 - **Low RAM:** zero-copy memory mapping ensures 10x lower RAM use than other engines
-- **Multimodal:** one SDK for speech, vision, and language models
+- **Multimodal:** one engine for speech, vision, and language models
 - **Cloud fallback:** automatically route requests to cloud models if needed
 - **Energy-efficient:** NPU-accelerated prefill
 
@@ -116,18 +116,31 @@ void* output_data = graph.get_output(result);
 graph.hard_reset(); 
 ```
 
-## API & SDK References
+## APIs
 
 | Reference | Language | Description |
 |-----------|----------|-------------|
-| [Engine API](docs/cactus_engine.md) | C | Chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, VAD, vector index, cloud handoff |
-| [Graph API](docs/cactus_graph.md) | C++ | Tensor operations, matrix multiplication, attention, normalization, activation functions |
-| [Python SDK](/python/) | Python | Mac, Linux |
-| [Swift SDK](/apple/) | Swift | iOS, macOS, tvOS, watchOS, Android |
-| [Kotlin SDK](/android/) | Kotlin | Android, iOS (via KMP) |
-| [Flutter SDK](/flutter/) | Dart | iOS, macOS, Android |
-| [Rust SDK](/rust/) | Rust | Mac, Linux |
-| [React Native](https://github.com/cactus-compute/cactus-react-native) | JavaScript | iOS, Android |
+| Engine API | C | Chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, VAD, vector index, cloud handoff |
+| Graph API | C++ | Tensor operations, matrix multiplication, attention, normalization, activation functions |
+| [Python Package](/python/) | Python | Python package and CLI |
+
+## Build
+
+```bash
+cactus build --apple       # iOS/macOS
+cactus build --android     # Android
+cactus build --python      # Python
+cactus build               # default static lib
+```
+
+## Bindings
+
+- [Swift](/bindings/swift/)
+- [Kotlin](/bindings/kotlin/)
+- [Flutter](/bindings/flutter/)
+- [React Native](/bindings/react-native/)
+- [Python](/bindings/python/)
+- [Rust](/bindings/rust/)
 
 > **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
 
@@ -263,7 +276,6 @@ graph.hard_reset();
 │  cactus build                        build for ARM → build/libcactus.a       │
 │    --apple                           Apple (iOS/macOS)                       │
 │    --android                         Android                                 │
-│    --flutter                         Flutter (all platforms)                 │
 │    --python                          shared lib for Python FFI               │
 │                                                                              │
 │  cactus test                         run unit tests and benchmarks           │

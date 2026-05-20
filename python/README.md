@@ -1,7 +1,7 @@
 ---
-title: "Cactus Python SDK"
-description: "Python bindings for Cactus on-device AI inference engine. Supports chat completion, vision, transcription, embeddings, RAG, tool calling, and streaming."
-keywords: ["Python SDK", "on-device AI", "LLM inference", "Python FFI", "embeddings", "transcription", "RAG"]
+title: "Cactus Python Package"
+description: "Python package and ctypes bindings for the Cactus on-device AI inference engine."
+keywords: ["Python package", "Python bindings", "on-device AI", "Python FFI", "embeddings", "transcription", "RAG"]
 ---
 
 # Cactus Python Package
@@ -326,7 +326,7 @@ Returns a JSON string with a `chunks` array. Each chunk has `score` (float), `so
 ```python
 index = cactus_index_init(index_dir: str, embedding_dim: int) -> int
 cactus_index_add(index: int, ids: list[int], documents: list[str],
-                 embeddings: list[list[float]], metadatas: list[str] | None)
+                 metadatas: list[str] | None, embeddings: list[list[float]])
 cactus_index_delete(index: int, ids: list[int])
 result_json = cactus_index_get(index: int, ids: list[int]) -> str
 result_json = cactus_index_query(index: int, embedding: list[float], options_json: str | None) -> str
@@ -429,10 +429,13 @@ Tests are in `python/tests/`:
 
 ## See Also
 
-- [Cactus Engine API](/docs/cactus_engine.md) — Full C API reference that the Python bindings wrap
-- [Cactus Index API](/docs/cactus_index.md) — Vector database API for RAG applications
-- [Fine-tuning Guide](/docs/finetuning.md) — Train and deploy custom LoRA fine-tunes
-- [Runtime Compatibility](/docs/compatibility.md) — Weight versioning across releases
-- [Swift SDK](/apple/) — Swift bindings for iOS/macOS
-- [Kotlin/Android SDK](/android/) — Kotlin bindings for Android
-- [Flutter SDK](/flutter/) — Dart bindings for cross-platform mobile
+- `Cactus Engine API` — Full C API reference that the Python bindings wrap
+- `Cactus Index API` — Vector database API for RAG applications
+- `Fine-tuning Guide` — Train and deploy custom LoRA fine-tunes
+- `Runtime Compatibility` — Weight versioning across releases
+- [Apple Build Step](/apple/) — Builds Apple native artifacts used by bindings
+- [Android Build Step](/android/) — Builds Android native artifacts used by bindings
+- [Swift Bindings](/bindings/swift/) — Swift C-module bindings
+- [Kotlin Bindings](/bindings/kotlin/) — Kotlin/JNI bindings
+- [Flutter Bindings](/bindings/flutter/) — Dart FFI bindings
+- [Rust Bindings](/bindings/rust/) — Raw Rust FFI declarations
