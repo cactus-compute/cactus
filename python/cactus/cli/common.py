@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import sys
 import os
-import json
 import subprocess
 import shutil
 import platform
@@ -41,11 +40,6 @@ PROJECT_ROOT = _resolve_project_root()
 DEFAULT_MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_TEST_MODEL_ID = "google/gemma-4-E2B-it"
 
-try:
-    with open(PROJECT_ROOT / "models.json", "r", encoding="utf-8") as f:
-        MODEL_REGISTRY = json.load(f)
-except Exception:
-    MODEL_REGISTRY = {}
 
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'

@@ -4,7 +4,6 @@ from pathlib import Path
 
 from .common import (
     PROJECT_ROOT,
-    MODEL_REGISTRY,
     get_weights_dir,
     print_color,
     RED, GREEN, YELLOW, BLUE, NC,
@@ -176,29 +175,9 @@ def cmd_clean(args):
 
 
 def cmd_list(args):
-    """List all supported models and their download status."""
-    PIPELINE_DISPLAY = {
-        "text-generation": "Text Generation",
-        "image-text-to-text": "Vision",
-        "automatic-speech-recognition": "Speech Recognition",
-        "feature-extraction": "Embeddings",
-        "voice-activity-detection": "Voice Activity Detection",
-    }
-    PIPELINE_ORDER = list(PIPELINE_DISPLAY.keys())
-    SHOW_TAGS = {"tools", "vision", "embed", "transcription"}
-    EMBED_ALIASES = {"text-embed", "image-embed", "speech-embed"}
-
+    """List downloaded models."""
     DIM = '\033[2m'
     BOLD = '\033[1m'
-
-    def filter_tags(tags):
-        result = set()
-        for t in tags:
-            if t in SHOW_TAGS:
-                result.add(t)
-            elif t in EMBED_ALIASES:
-                result.add("embed")
-        return sorted(result)
 
     def get_dir_size(path):
         total = 0
@@ -212,80 +191,42 @@ def cmd_list(args):
             return f"{size_bytes / 1_073_741_824:.1f} GB"
         return f"{size_bytes / 1_048_576:.0f} MB"
 
-    if not MODEL_REGISTRY:
-        print_color(YELLOW, "No model registry found (models.json missing or empty).")
+    weights_root = PROJECT_ROOT / "weights"
+    if not weights_root.exists():
+        print("\n  No models downloaded yet.")
+        print(f"  Run {GREEN}cactus download <model>{NC} to get started.\n")
         return 0
 
-    # Group models by pipeline_tag preserving order
-    groups = {}
-    for entry in MODEL_REGISTRY:
-        tag = entry["pipeline_tag"]
-        groups.setdefault(tag, []).append(entry)
-
-    # Find max model name length for alignment
-    max_name = max(len(e["model"]) for e in MODEL_REGISTRY)
-    max_tags_len = 20
-
-    only_downloaded = getattr(args, 'downloaded', False)
-
-    if only_downloaded:
-        print(f"\n {BOLD}Downloaded Models{NC}")
-    else:
-        print(f"\n {BOLD}Supported Models{NC}")
+    print(f"\n {BOLD}Downloaded Models{NC}")
     print(f" {'─' * 66}")
 
-    for ptag in PIPELINE_ORDER:
-        models = groups.get(ptag)
-        if not models:
+    found = False
+    for model_dir in sorted(weights_root.iterdir()):
+        if not model_dir.is_dir():
+            continue
+        config_path = model_dir / "config.txt"
+        if not config_path.exists():
             continue
 
-        section = PIPELINE_DISPLAY[ptag]
-        section_printed = False
+        found = True
+        model_name = model_dir.name
+        quantization = ""
+        try:
+            for line in config_path.read_text().splitlines():
+                if line.startswith("quantization="):
+                    quantization = line.split("=", 1)[1].strip()
+                    break
+        except OSError:
+            pass
 
-        for entry in models:
-            model_id = entry["model"]
-            tags = filter_tags(entry["tags"])
-            tags_str = ", ".join(tags)
+        dir_size = get_dir_size(model_dir)
+        size_str = format_size(dir_size)
+        info = f"{size_str} ({quantization})" if quantization else size_str
+        print(f" {GREEN}\u2b07{NC}  {model_name.ljust(40)}  {DIM}{info}{NC}")
 
-            weights_dir = get_weights_dir(model_id)
-            config_path = weights_dir / "config.txt"
-            downloaded = config_path.exists()
-
-            if only_downloaded and not downloaded:
-                continue
-
-            if not section_printed:
-                print(f"\n {BOLD}{section}{NC}")
-                section_printed = True
-
-            if downloaded:
-                prefix = f" {GREEN}\u2b07{NC}  "
-                # Read quantization (weight quantization level, not compute precision)
-                quantization = ""
-                try:
-                    for line in config_path.read_text().splitlines():
-                        if line.startswith("quantization="):
-                            quantization = line.split("=", 1)[1].strip()
-                            break
-                except OSError:
-                    pass
-                dir_size = get_dir_size(weights_dir)
-                size_str = format_size(dir_size)
-                if quantization:
-                    info = f"{size_str} ({quantization})"
-                else:
-                    info = size_str
-            else:
-                prefix = "    "
-                info = ""
-
-            name_pad = model_id.ljust(max_name)
-            tags_pad = tags_str.ljust(max_tags_len)
-
-            if info:
-                print(f"{prefix}{name_pad}  {DIM}{tags_pad}{NC}  {info}")
-            else:
-                print(f"{prefix}{name_pad}  {DIM}{tags_pad}{NC}")
+    if not found:
+        print(f"\n  No models downloaded yet.")
+        print(f"  Run {GREEN}cactus download <model>{NC} to get started.")
 
     print()
     return 0

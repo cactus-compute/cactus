@@ -26,25 +26,10 @@ _FFI_NAMES = frozenset({
     "cactus_get_last_error", "cactus_preprocess_audio_features",
 })
 
-_API_NAMES = frozenset({
-    "Cactus", "CactusIndex", "StreamTranscriber",
-    "Message", "CompletionOptions", "TranscriptionOptions", "VADOptions",
-    "CompletionResult", "TranscriptionResult", "VADResult", "VADSegment",
-    "IndexResult",
-    "CactusError", "InitializationFailed", "CompletionFailed",
-    "TranscriptionFailed", "EmbeddingFailed", "VADFailed",
-    "InvalidResponse", "IndexOperationFailed",
-})
-
-
 def __getattr__(name):
     if name in ("Graph", "Tensor"):
         from .bindings import graph
         return getattr(graph, name)
-
-    if name in _API_NAMES:
-        from .bindings import api
-        return getattr(api, name)
 
     if name in _FFI_NAMES:
         from .bindings import cactus

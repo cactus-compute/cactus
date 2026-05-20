@@ -270,9 +270,7 @@ def create_parser():
 
     clean_parser = subparsers.add_parser('clean', help='Remove all build artifacts')
 
-    list_parser = subparsers.add_parser('list', help='List supported models')
-    list_parser.add_argument('--downloaded', action='store_true',
-                             help='Only show downloaded models')
+    list_parser = subparsers.add_parser('list', help='List downloaded models')
 
     convert_parser = subparsers.add_parser('convert', help='Convert HuggingFace model to CQ format')
     convert_parser.add_argument('model_name', help='HuggingFace model name')
