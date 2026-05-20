@@ -1,4 +1,4 @@
 module cactus {
-    header "cactus_ffi.h"
+    header "cactus_engine.h"
     export *
 }

@@ -66,9 +66,7 @@ def create_parser():
                                        auto-resolves Cactus-Compute CQ repo
 
     Optional flags:
-    --language-bits 1|2|3|4            language quantization bits (default: 4)
-    --vision-bits 1|2|3|4             vision quantization bits (default: 4)
-    --audio-bits 1|2|3|4              audio quantization bits (default: 4)
+    --bits 1|2|3|4                     CQ quantization bits (default: 4)
     --token <token>                    HuggingFace API token
     --reconvert                        force FP16 conversion from source
 
@@ -93,7 +91,6 @@ def create_parser():
     Optional flags:
     --apple                            build for Apple (iOS/macOS)
     --android                          build for Android
-    --flutter                          build for Flutter (all platforms)
     --python                           build shared lib for Python FFI
 
   -----------------------------------------------------------------
@@ -107,7 +104,6 @@ def create_parser():
     --whisper_model <model>            default: openai/whisper-small (language detection)
     --benchmark                        use larger models (LFM2.5-VL-1.6B + nvidia/parakeet-ctc-1.1b)
     --reconvert                        force model weights reconversion from source
-    --no-rebuild                       skip building library and tests
     --llm                              run only LLM tests
     --vlm                              run only VLM tests
     --stt                              run only speech-to-text tests
@@ -163,12 +159,8 @@ def create_parser():
     download_parser = subparsers.add_parser('download', help='Download CQ model files')
     download_parser.add_argument('model_id', nargs='?', default=DEFAULT_MODEL_ID,
                                  help=f'HuggingFace model ID or Cactus-Compute CQ repo (default: {DEFAULT_MODEL_ID})')
-    download_parser.add_argument('--language-bits', type=int, choices=[1, 2, 3, 4], default=4,
-                                 help='Language weight quantization bits (default: 4)')
-    download_parser.add_argument('--vision-bits', type=int, choices=[1, 2, 3, 4], default=4,
-                                 help='Vision weight quantization bits (default: 4)')
-    download_parser.add_argument('--audio-bits', type=int, choices=[1, 2, 3, 4], default=4,
-                                 help='Audio weight quantization bits (default: 4)')
+    download_parser.add_argument('--bits', type=int, choices=[1, 2, 3, 4], default=4,
+                                 help='CQ quantization bits (default: 4)')
     download_parser.add_argument('--cache-dir', help='Cache directory for HuggingFace models')
     download_parser.add_argument('--token', help='HuggingFace API token')
     download_parser.add_argument('--reconvert', action='store_true',
@@ -179,8 +171,6 @@ def create_parser():
                               help='Build for Apple platforms (iOS/macOS)')
     build_parser.add_argument('--android', action='store_true',
                               help='Build for Android')
-    build_parser.add_argument('--flutter', action='store_true',
-                              help='Build for Flutter (iOS, macOS, Android)')
     build_parser.add_argument('--python', action='store_true',
                               help='Build shared library for Python FFI')
 
@@ -258,8 +248,6 @@ def create_parser():
     test_parser = subparsers.add_parser('test', help='Run the test suite')
     test_parser.add_argument('--model', default=DEFAULT_TEST_MODEL_ID,
                              help='Model to use for tests (default: Gemma4)')
-    test_parser.add_argument('--no-rebuild', action='store_true',
-                             help='Skip building cactus library and tests')
     test_parser.add_argument('--token', help='HuggingFace API token')
     test_parser.add_argument('--android', action='store_true',
                              help='Run tests on Android')

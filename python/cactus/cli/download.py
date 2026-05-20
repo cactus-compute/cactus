@@ -1,7 +1,7 @@
 """CQ archive discovery and download helpers.
 
 The resolver in this module is deliberately independent of argparse and the
-rest of the CLI. Keep this logic small and data-shaped so other SDKs can port
+rest of the CLI. Keep this logic small and data-shaped so other bindings can port
 the same model/repo/combo behavior without inheriting Python CLI details.
 """
 from __future__ import annotations
@@ -518,11 +518,8 @@ def cmd_download(args):
 
     if not reconvert:
         cq_repo_id = model_id if (model_id.lower().endswith('-cq') and '/' in model_id) else suggested_cq_repo(model_id)
-        requested = {"L": getattr(args, 'language_bits', 4) or 4}
-        vbits = getattr(args, 'vision_bits', None)
-        abits = getattr(args, 'audio_bits', None)
-        if vbits is not None: requested["V"] = vbits
-        if abits is not None: requested["A"] = abits
+        bits = getattr(args, 'bits', 4) or 4
+        requested = {"L": bits}
 
         try:
             archives = list_hf_cq_archives(cq_repo_id, token=token)
@@ -551,7 +548,7 @@ def cmd_download(args):
     print_color(YELLOW, f"Converting {model_id} using CQ pipeline...")
     try:
         from ..convert.cli import main as convert_main
-        bits = getattr(args, 'language_bits', 4) or 4
+        bits = getattr(args, 'bits', 4) or 4
         convert_args = ['convert', '--model', model_id, '--out', str(weights_dir), '--bits', str(bits), '--force']
         if token:
             convert_args.extend(['--token', token])
