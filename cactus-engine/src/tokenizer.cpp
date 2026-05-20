@@ -411,9 +411,19 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
 
         result += "<|im_start|>" + role + "\n";
         if (role == "user") {
+            const bool is_lfm2 = (model_type_ == ModelType::LFM2);
+            const std::string img_start = is_lfm2 ? "<|image_start|>" : "<|vision_start|>";
+            const std::string img_end = is_lfm2 ? "<|image_end|>" : "<|vision_end|>";
+            const std::string img_pad = is_lfm2 ? "<image>" : "<|image_pad|>";
+            const size_t soft_n = image_soft_token_count_ > 0 ? image_soft_token_count_ : 1;
             for (const auto& image_path : msg.images) {
                 (void)image_path;
-                result += "<|vision_start|><|image_pad|><|vision_end|>";
+                result += img_start;
+                for (size_t pad_i = 0; pad_i < soft_n; ++pad_i) {
+                    result += img_pad;
+                }
+                result += img_end;
+                if (is_lfm2) result += "\n";
             }
         }
         result += msg.content;

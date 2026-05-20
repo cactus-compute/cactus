@@ -230,7 +230,7 @@ def cmd_transcribe(args):
     if getattr(args, 'ios', False):
         return _cmd_transcribe_ios(weights_dir, audio_file, args)
 
-    asr_binary = PROJECT_ROOT / "tests" / "build" / "asr"
+    asr_binary = PROJECT_ROOT / "cactus-engine" / "tests" / "build" / "asr"
     if not asr_binary.exists():
         print_color(RED, "Error: ASR binary not built. Run 'cactus build' first.")
         return 1

@@ -212,6 +212,10 @@ def cmd_list(args):
             return f"{size_bytes / 1_073_741_824:.1f} GB"
         return f"{size_bytes / 1_048_576:.0f} MB"
 
+    if not MODEL_REGISTRY:
+        print_color(YELLOW, "No model registry found (models.json missing or empty).")
+        return 0
+
     # Group models by pipeline_tag preserving order
     groups = {}
     for entry in MODEL_REGISTRY:

@@ -2,7 +2,6 @@ import os
 import platform
 import subprocess
 import sys
-import json
 from pathlib import Path
 
 from .common import PROJECT_ROOT, print_color, RED, GREEN

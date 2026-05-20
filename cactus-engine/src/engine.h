@@ -354,6 +354,9 @@ public:
     uint32_t get_fake_token_id() const { return fake_token_id_; }
     uint32_t get_global_img_token_id() const { return global_img_token_id_; }
 
+    void set_image_soft_token_count(size_t n) { image_soft_token_count_ = n; }
+    size_t get_image_soft_token_count() const { return image_soft_token_count_; }
+
 protected:
     enum class ModelType { UNKNOWN, GEMMA4, QWEN, LFM2 };
     ModelType model_type_ = ModelType::UNKNOWN;
@@ -371,6 +374,7 @@ protected:
     uint32_t vision_pooling_kernel_size_ = 3;
     uint32_t vision_default_output_length_ = 280;
     uint32_t vision_image_size_ = 768;
+    size_t image_soft_token_count_ = 0;
     TokenizerRuntimeConfig runtime_config_;
 
     void detect_model_type(const std::string& config_path);
@@ -581,6 +585,14 @@ public:
     void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                              const std::string& profile_file = "");
 
+    void prefill_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+                            const std::string& profile_file = "");
+
+    void prefill_with_media(const std::vector<uint32_t>& tokens,
+                            const std::vector<std::string>& image_paths,
+                            const std::vector<float>& audio_features,
+                            const std::string& profile_file = "");
+
     uint32_t decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                                 float temperature = -1.0f, float top_p = -1.0f,
                                 size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
@@ -591,6 +603,8 @@ public:
                                size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                                float min_p = 0.15f, float repetition_penalty = 1.1f,
                                float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
+
+    std::vector<uint32_t> transcribe_parakeet_tdt(const std::vector<float>& audio_features);
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
                                        bool normalize = false, const std::string& profile_file = "");
@@ -635,6 +649,12 @@ private:
         std::string path;
     };
 
+    struct CacheStateEntry {
+        std::string layer_key;
+        int key_node_id = -1;
+        int value_node_id = -1;
+    };
+
     struct Component {
         std::string name;
         std::string graph_path;
@@ -645,21 +665,45 @@ private:
         std::vector<Binding> bindings;
         std::unique_ptr<CactusGraph> graph;
         std::vector<std::vector<uint8_t>> input_buffers;
+        std::vector<CacheStateEntry> cache_states;
     };
+
+    void copy_cache_state(const Component& src, Component& dst);
 
     bool load_manifest();
     bool setup_tokenizer();
     bool load_components();
     bool bind_runtime_buffers(Component& comp);
     void run_step(uint32_t token_id, size_t position, bool read_logits);
+    void run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
+                        Precision feature_precision);
+    void copy_encoder_outputs_to_decoder(const Component& enc);
     void write_int_input(Component& comp, const std::string& name, int64_t value);
+    void write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size);
     int input_index(const Component& comp, const std::string& name) const;
+    int output_index(const Component& comp, const std::string& name) const;
     uint32_t argmax_last_logits();
+    void run_vision_encoder(const std::string& image_path);
+    void run_audio_encoder(const std::vector<float>& audio_features);
+    bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
+                                const std::vector<std::string>& image_paths,
+                                const std::vector<float>& audio_features);
 
     std::string bundle_dir_;
     std::map<std::string, Component> components_;
     Component* encoder_ = nullptr;
     Component* decoder_ = nullptr;
+    Component* vision_encoder_ = nullptr;
+    Component* audio_encoder_ = nullptr;
+    Component* lm_encoder_media_step_ = nullptr;
+    Component* decoder_prefill_chunk_ = nullptr;
+    Component* lm_encoder_ = nullptr;
+
+    std::string family_;
+
+    std::map<std::string, std::vector<uint8_t>> media_features_;
+    std::map<std::string, std::vector<size_t>> media_feature_shapes_;
+    std::map<std::string, Precision> media_feature_precisions_;
 
     Config config_;
     std::unique_ptr<Tokenizer> tokenizer_;
@@ -791,6 +835,27 @@ private:
 };
 
 std::unique_ptr<Model> create_model(const std::string& model_folder);
+
+struct Gemma4ImagePreprocessed {
+    std::vector<float> pixel_values;
+    std::vector<int64_t> pixel_position_ids;
+    size_t num_patches = 0;
+    size_t max_patches = 0;
+    size_t patch_dim = 0;
+};
+
+Gemma4ImagePreprocessed preprocess_gemma4_image(const std::string& image_path, const Config& config);
+
+struct Lfm2VlImagePreprocessed {
+    std::vector<float> pixel_values;
+    std::vector<int64_t> pixel_attention_mask;
+    std::pair<int, int> spatial_shape{0, 0};
+    size_t num_patches = 0;
+    size_t patch_dim = 0;
+    size_t max_num_patches = 0;
+};
+
+Lfm2VlImagePreprocessed preprocess_lfm2_vl_image(const std::string& image_path, const Config& config);
 
 
 struct SpectrogramConfig {

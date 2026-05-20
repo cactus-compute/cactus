@@ -593,5 +593,149 @@ Siglip2Preprocessor::PreprocessedImage Siglip2Preprocessor::pad_patches(
     return result;
 }
 
+Gemma4ImagePreprocessed preprocess_gemma4_image(const std::string& image_path, const Config& config) {
+    Gemma4ImagePreprocessed result;
+
+    uint32_t patch_size_u = config.vision_patch_size ? config.vision_patch_size : 16;
+    uint32_t pooling_k_u = config.vision_pooling_kernel_size ? config.vision_pooling_kernel_size : 3;
+    uint32_t max_soft_tokens_u = config.vision_default_output_length ? config.vision_default_output_length : 280;
+    if (patch_size_u == 0 || pooling_k_u == 0 || max_soft_tokens_u == 0) {
+        throw std::runtime_error("Gemma4 image config has invalid patch/pooling/soft-token values");
+    }
+
+    const int patch_size = static_cast<int>(patch_size_u);
+    const int pooling_k = static_cast<int>(pooling_k_u);
+    const size_t max_patches = static_cast<size_t>(max_soft_tokens_u) * pooling_k * pooling_k;
+    const int side_multiple = pooling_k * patch_size;
+    const size_t patch_dim = static_cast<size_t>(3) * patch_size * patch_size;
+
+    int width = 0, height = 0, channels = 0;
+    unsigned char* raw = stbi_load(image_path.c_str(), &width, &height, &channels, 3);
+    if (!raw) {
+        throw std::runtime_error("Failed to load image: " + image_path + " - " + std::string(stbi_failure_reason()));
+    }
+    if (width <= 0 || height <= 0) {
+        stbi_image_free(raw);
+        throw std::runtime_error("Loaded image has invalid dimensions: " + image_path);
+    }
+
+    const double target_pixels = static_cast<double>(max_patches) * patch_size * patch_size;
+    const double pixel_count = std::max(1.0, static_cast<double>(width) * static_cast<double>(height));
+    const double factor = std::sqrt(target_pixels / pixel_count);
+    int target_h = static_cast<int>(std::floor(factor * height / side_multiple)) * side_multiple;
+    int target_w = static_cast<int>(std::floor(factor * width / side_multiple)) * side_multiple;
+    if (target_h == 0) target_h = side_multiple;
+    if (target_w == 0) target_w = side_multiple;
+
+    std::vector<float> resized(static_cast<size_t>(target_w) * target_h * 3);
+
+    if (target_w == width && target_h == height) {
+        for (size_t i = 0; i < resized.size(); ++i) {
+            resized[i] = static_cast<float>(raw[i]);
+        }
+    } else {
+        std::vector<float> src_float(static_cast<size_t>(width) * height * 3);
+        for (size_t i = 0; i < src_float.size(); ++i) {
+            src_float[i] = static_cast<float>(raw[i]);
+        }
+        if (!stbir_resize_float_linear(
+                src_float.data(), width, height, 0,
+                resized.data(), target_w, target_h, 0,
+                STBIR_RGB)) {
+            stbi_image_free(raw);
+            throw std::runtime_error("Failed to resize image: " + image_path);
+        }
+    }
+    stbi_image_free(raw);
+
+    const bool do_rescale = true;
+    const float rescale_factor = config.rescale_factor > 0.0f ? config.rescale_factor : (1.0f / 255.0f);
+    const bool do_normalize = false;
+    const float mean_v = do_normalize ? config.image_mean : 0.0f;
+    const float std_v = (do_normalize && config.image_std != 0.0f) ? config.image_std : 1.0f;
+
+    if (do_rescale || do_normalize) {
+        const float inv_std = 1.0f / std_v;
+        for (size_t i = 0; i < resized.size(); ++i) {
+            float v = resized[i];
+            if (do_rescale) v *= rescale_factor;
+            if (do_normalize) v = (v - mean_v) * inv_std;
+            resized[i] = v;
+        }
+    }
+
+    const int patch_h = target_h / patch_size;
+    const int patch_w = target_w / patch_size;
+    const size_t num_patches = static_cast<size_t>(patch_h) * static_cast<size_t>(patch_w);
+    if (num_patches > max_patches) {
+        throw std::runtime_error("Gemma4 native image preprocessing produced too many patches");
+    }
+
+    result.pixel_values.assign(max_patches * patch_dim, 0.0f);
+    result.pixel_position_ids.assign(max_patches * 2, -1);
+
+    for (int py = 0; py < patch_h; ++py) {
+        for (int px = 0; px < patch_w; ++px) {
+            const size_t patch_idx = static_cast<size_t>(py) * patch_w + px;
+            float* dst = result.pixel_values.data() + patch_idx * patch_dim;
+            for (int y = 0; y < patch_size; ++y) {
+                const int img_y = py * patch_size + y;
+                for (int x = 0; x < patch_size; ++x) {
+                    const int img_x = px * patch_size + x;
+                    const size_t src_off = (static_cast<size_t>(img_y) * target_w + img_x) * 3;
+                    const size_t dst_off = (static_cast<size_t>(y) * patch_size + x) * 3;
+                    dst[dst_off + 0] = resized[src_off + 0];
+                    dst[dst_off + 1] = resized[src_off + 1];
+                    dst[dst_off + 2] = resized[src_off + 2];
+                }
+            }
+            result.pixel_position_ids[patch_idx * 2 + 0] = static_cast<int64_t>(px);
+            result.pixel_position_ids[patch_idx * 2 + 1] = static_cast<int64_t>(py);
+        }
+    }
+
+    result.num_patches = num_patches;
+    result.max_patches = max_patches;
+    result.patch_dim = patch_dim;
+    return result;
+}
+
+Lfm2VlImagePreprocessed preprocess_lfm2_vl_image(const std::string& image_path, const Config& config) {
+    Siglip2Preprocessor::Config sp_cfg;
+    sp_cfg.patch_size = config.vision_patch_size ? static_cast<int>(config.vision_patch_size) : 16;
+    sp_cfg.downsample_factor = config.downsample_factor ? static_cast<int>(config.downsample_factor) : 2;
+    sp_cfg.min_tiles = config.min_tiles ? static_cast<int>(config.min_tiles) : 2;
+    sp_cfg.max_tiles = config.max_tiles ? static_cast<int>(config.max_tiles) : 10;
+    sp_cfg.use_thumbnail = config.use_thumbnail;
+    sp_cfg.min_image_tokens = config.min_image_tokens ? static_cast<int>(config.min_image_tokens) : 64;
+    sp_cfg.max_image_tokens = config.max_image_tokens ? static_cast<int>(config.max_image_tokens) : 256;
+    sp_cfg.max_num_patches = config.max_num_patches ? static_cast<int>(config.max_num_patches) : 1024;
+    sp_cfg.tile_size = config.tile_size ? static_cast<int>(config.tile_size) : 512;
+    sp_cfg.max_pixels_tolerance = config.max_pixels_tolerance > 0.0f ? config.max_pixels_tolerance : 2.0f;
+    sp_cfg.rescale_factor = config.rescale_factor > 0.0f ? config.rescale_factor : (1.0f / 255.0f);
+    sp_cfg.image_mean[0] = sp_cfg.image_mean[1] = sp_cfg.image_mean[2] = config.image_mean;
+    sp_cfg.image_std[0]  = sp_cfg.image_std[1]  = sp_cfg.image_std[2]  = config.image_std;
+    sp_cfg.do_image_splitting = false;
+    sp_cfg.do_resize = true;
+    sp_cfg.do_rescale = true;
+    sp_cfg.do_normalize = true;
+    sp_cfg.do_convert_rgb = true;
+
+    Siglip2Preprocessor pre(sp_cfg);
+    auto sp_out = pre.preprocess_from_file(image_path);
+
+    Lfm2VlImagePreprocessed result;
+    result.pixel_values = std::move(sp_out.pixel_values);
+    result.pixel_attention_mask.assign(sp_out.pixel_attention_mask.begin(),
+                                       sp_out.pixel_attention_mask.end());
+    if (!sp_out.spatial_shapes.empty()) {
+        result.spatial_shape = sp_out.spatial_shapes.front();
+    }
+    result.num_patches = static_cast<size_t>(sp_out.actual_num_patches);
+    result.patch_dim = static_cast<size_t>(sp_out.patch_dim);
+    result.max_num_patches = static_cast<size_t>(sp_cfg.max_num_patches);
+    return result;
+}
+
 } // namespace engine
 } // namespace cactus

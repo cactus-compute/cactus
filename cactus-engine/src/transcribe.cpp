@@ -270,40 +270,53 @@ int cactus_transcribe(
         double time_to_first_token = 0.0;
         float total_entropy_sum = 0.0f;
 
-        for (size_t i = 0; i < options.max_tokens; ++i) {
-            if (handle->should_stop) break;
-
-            float token_entropy = 0.0f;
-            float tok_time_start = 0.0f;
-            float tok_time_end = 0.0f;
-            uint32_t next_token = handle->model->decode_with_audio(
-                tokens, audio_features,
-                options.temperature, options.top_p, options.top_k,
-                "", &token_entropy,
-                options.min_p, options.repetition_penalty,
-                is_parakeet ? &tok_time_start : nullptr,
-                is_parakeet ? &tok_time_end : nullptr);
-
-            if (generated_tokens.empty()) {
-                auto t_first = std::chrono::high_resolution_clock::now();
-                time_to_first_token =
-                    std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
+        if (is_parakeet) {
+            generated_tokens = handle->model->transcribe_parakeet_tdt(audio_features);
+            auto t_first = std::chrono::high_resolution_clock::now();
+            time_to_first_token =
+                std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
+            final_text = tokenizer->decode(generated_tokens);
+            if (callback) {
+                for (uint32_t tok : generated_tokens) {
+                    std::string piece = tokenizer->decode({tok});
+                    callback(piece.c_str(), tok, user_data);
+                }
             }
+        } else {
+            for (size_t i = 0; i < options.max_tokens; ++i) {
+                if (handle->should_stop) break;
 
-            total_entropy_sum += token_entropy;
-            generated_tokens.push_back(next_token);
-            if (matches_stop_sequence(generated_tokens, stop_token_sequences)) {
-                break;
+                float token_entropy = 0.0f;
+                float tok_time_start = 0.0f;
+                float tok_time_end = 0.0f;
+                uint32_t next_token = handle->model->decode_with_audio(
+                    tokens, audio_features,
+                    options.temperature, options.top_p, options.top_k,
+                    "", &token_entropy,
+                    options.min_p, options.repetition_penalty,
+                    nullptr, nullptr);
+
+                if (generated_tokens.empty()) {
+                    auto t_first = std::chrono::high_resolution_clock::now();
+                    time_to_first_token =
+                        std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
+                }
+
+                total_entropy_sum += token_entropy;
+                generated_tokens.push_back(next_token);
+                if (matches_stop_sequence(generated_tokens, stop_token_sequences)) {
+                    break;
+                }
+
+                std::string piece = tokenizer->decode({next_token});
+                if (piece == "<|endoftext|>" || piece == "<|endoftranscript|>" || piece == "</s>" || piece == "<pad>") {
+                    break;
+                }
+
+                tokens.push_back(next_token);
+                final_text += piece;
+                if (callback) callback(piece.c_str(), next_token, user_data);
             }
-
-            std::string piece = tokenizer->decode({next_token});
-            if (piece == "<|endoftext|>" || piece == "<|endoftranscript|>" || piece == "</s>" || piece == "<pad>") {
-                break;
-            }
-
-            tokens.push_back(next_token);
-            final_text += piece;
-            if (callback) callback(piece.c_str(), next_token, user_data);
         }
 
         handle->model->reset_cache();

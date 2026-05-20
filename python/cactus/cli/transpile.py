@@ -8,16 +8,24 @@ import sys
 from pathlib import Path
 
 from .common import (
+    DEFAULT_MODEL_ID,
     PROJECT_ROOT,
     RED,
     YELLOW,
     print_color,
 )
 from .download import get_weights_dir
-from cactus.transpile.model_profiles import model_id_alias_map
 
 
-MODEL_ID_ALIASES = model_id_alias_map()
+MODEL_ID_ALIASES = {
+    "gemma4": DEFAULT_MODEL_ID,
+    "gemma4-e2b": DEFAULT_MODEL_ID,
+    "parakeet": "nvidia/parakeet-tdt-0.6b-v3",
+    "parakeet-tdt": "nvidia/parakeet-tdt-0.6b-v3",
+    "whisper": "openai/whisper-small",
+    "qwen": "Qwen/Qwen3-1.7B",
+    "lfm": "LiquidAI/LFM2-VL-450M",
+}
 
 
 def resolve_model_id_alias(model_id: str) -> str:
