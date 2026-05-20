@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import json
 import platform
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .common import (
@@ -220,7 +222,6 @@ def cmd_transpile(args) -> int:
     _prepend_python_path(env)
     result = subprocess.run(command, cwd=PROJECT_ROOT, env=env)
     return result.returncode
-<<<<<<< HEAD
 
 
 def cmd_run_transpiled(args) -> int:
@@ -560,5 +561,3 @@ def _print_transpiled_run_result(result: dict[str, object]) -> None:
         return
 
     print(json.dumps(result, indent=2, sort_keys=True))
-=======
->>>>>>> origin/v2
