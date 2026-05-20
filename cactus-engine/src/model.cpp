@@ -153,6 +153,17 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     if (!bind_runtime_buffers(*encoder_)) return false;
     if (!bind_runtime_buffers(*decoder_)) return false;
 
+    vision_encoder_ = components_.count("vision_encoder") ? &components_.at("vision_encoder") : nullptr;
+    audio_encoder_ = components_.count("audio_encoder") ? &components_.at("audio_encoder") : nullptr;
+    lm_encoder_media_step_ = components_.count("lm_encoder_media_step") ? &components_.at("lm_encoder_media_step") : nullptr;
+    decoder_prefill_chunk_ = components_.count("decoder_prefill_chunk") ? &components_.at("decoder_prefill_chunk") : nullptr;
+    lm_encoder_ = components_.count("lm_encoder") ? &components_.at("lm_encoder") : nullptr;
+    if (vision_encoder_ && !bind_runtime_buffers(*vision_encoder_)) return false;
+    if (audio_encoder_ && !bind_runtime_buffers(*audio_encoder_)) return false;
+    if (lm_encoder_media_step_ && !bind_runtime_buffers(*lm_encoder_media_step_)) return false;
+    if (decoder_prefill_chunk_ && !bind_runtime_buffers(*decoder_prefill_chunk_)) return false;
+    if (lm_encoder_ && !bind_runtime_buffers(*lm_encoder_)) return false;
+
     cache_max_seq_len_ = context_size;
     initialized_ = true;
     return true;
@@ -168,6 +179,9 @@ bool Model::load_manifest() {
         return false;
     }
     const auto& obj = root.get<picojson::object>();
+    if (obj.count("family") && obj.at("family").is<std::string>()) {
+        family_ = obj.at("family").get<std::string>();
+    }
     if (!obj.count("components")) return false;
     for (const auto& cv : obj.at("components").get<picojson::array>()) {
         const auto& c = cv.get<picojson::object>();
@@ -282,20 +296,166 @@ void Model::write_int_input(Component& comp, const std::string& name, int64_t va
     }
 }
 
+void Model::write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size) {
+    int idx = input_index(comp, name);
+    if (idx < 0) return;
+    auto& buf = comp.input_buffers[idx];
+    size_t to_copy = std::min(byte_size, buf.size());
+    std::memcpy(buf.data(), data, to_copy);
+    if (to_copy < buf.size()) {
+        std::memset(buf.data() + to_copy, 0, buf.size() - to_copy);
+    }
+}
+
+int Model::output_index(const Component& comp, const std::string& name) const {
+    for (size_t i = 0; i < comp.logical_outputs.size(); ++i) {
+        if (comp.logical_outputs[i] == name) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+void Model::copy_encoder_outputs_to_decoder(const Component& enc) {
+    for (size_t i = 0; i < enc.output_node_ids.size() && i < enc.logical_outputs.size(); ++i) {
+        const std::string& out_name = enc.logical_outputs[i];
+        int dst_idx = input_index(*decoder_, out_name);
+        if (dst_idx < 0) continue;
+        size_t src_node = static_cast<size_t>(enc.output_node_ids[i]);
+        const auto& src_desc = enc.graph->get_output_buffer(src_node);
+        void* src_ptr = enc.graph->get_output(src_node);
+        auto& dst_buf = decoder_->input_buffers[dst_idx];
+        size_t to_copy = std::min(src_desc.byte_size, dst_buf.size());
+        std::memcpy(dst_buf.data(), src_ptr, to_copy);
+    }
+}
+
 void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/) {
     write_int_input(*encoder_, "input_ids", static_cast<int64_t>(token_id));
     write_int_input(*encoder_, "position_ids", static_cast<int64_t>(position));
     encoder_->graph->execute();
-    for (size_t i = 0; i < encoder_->output_node_ids.size() && i < encoder_->logical_outputs.size(); ++i) {
-        const std::string& out_name = encoder_->logical_outputs[i];
-        int dst_idx = input_index(*decoder_, out_name);
-        if (dst_idx < 0) continue;
-        size_t src_node = static_cast<size_t>(encoder_->output_node_ids[i]);
-        const auto& src_desc = encoder_->graph->get_output_buffer(src_node);
-        void* src_ptr = encoder_->graph->get_output(src_node);
-        std::memcpy(decoder_->input_buffers[dst_idx].data(), src_ptr, src_desc.byte_size);
-    }
+    copy_encoder_outputs_to_decoder(*encoder_);
     decoder_->graph->execute();
+}
+
+void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
+                           Precision feature_precision) {
+    if (!lm_encoder_media_step_) {
+        run_step(static_cast<uint32_t>(config_.pad_token_id), position, false);
+        return;
+    }
+    int embeds_idx = input_index(*lm_encoder_media_step_, "inputs_embeds");
+    if (embeds_idx < 0) {
+        run_step(static_cast<uint32_t>(config_.pad_token_id), position, false);
+        return;
+    }
+    auto& embeds_buf = lm_encoder_media_step_->input_buffers[embeds_idx];
+    size_t node_id = static_cast<size_t>(lm_encoder_media_step_->runtime_input_node_ids[embeds_idx]);
+    const auto& desc = lm_encoder_media_step_->graph->get_output_buffer(node_id);
+    if (desc.precision == feature_precision) {
+        size_t to_copy = std::min(feature_row_bytes, embeds_buf.size());
+        std::memcpy(embeds_buf.data(), feature_row, to_copy);
+        if (to_copy < embeds_buf.size()) {
+            std::memset(embeds_buf.data() + to_copy, 0, embeds_buf.size() - to_copy);
+        }
+    } else {
+        size_t src_elem = PrecisionTraits::size_of(feature_precision);
+        size_t dst_elem = PrecisionTraits::size_of(desc.precision);
+        size_t src_count = src_elem ? feature_row_bytes / src_elem : 0;
+        size_t dst_count = dst_elem ? embeds_buf.size() / dst_elem : 0;
+        size_t n = std::min(src_count, dst_count);
+        auto load_float = [&](size_t i) -> float {
+            if (feature_precision == Precision::FP16) return static_cast<float>(reinterpret_cast<const __fp16*>(feature_row)[i]);
+            if (feature_precision == Precision::FP32) return reinterpret_cast<const float*>(feature_row)[i];
+            return static_cast<float>(reinterpret_cast<const int8_t*>(feature_row)[i]);
+        };
+        for (size_t i = 0; i < n; ++i) {
+            float v = load_float(i);
+            if (desc.precision == Precision::FP16) reinterpret_cast<__fp16*>(embeds_buf.data())[i] = static_cast<__fp16>(v);
+            else if (desc.precision == Precision::FP32) reinterpret_cast<float*>(embeds_buf.data())[i] = v;
+            else reinterpret_cast<int8_t*>(embeds_buf.data())[i] = static_cast<int8_t>(v);
+        }
+        if (n < dst_count) {
+            std::memset(embeds_buf.data() + n * dst_elem, 0, (dst_count - n) * dst_elem);
+        }
+    }
+    write_int_input(*lm_encoder_media_step_, "input_ids", 0);
+    write_int_input(*lm_encoder_media_step_, "position_ids", static_cast<int64_t>(position));
+    lm_encoder_media_step_->graph->execute();
+    copy_encoder_outputs_to_decoder(*lm_encoder_media_step_);
+    decoder_->graph->execute();
+}
+
+void Model::run_vision_encoder(const std::string& image_path) {
+    if (!vision_encoder_) return;
+    Gemma4ImagePreprocessed prep = preprocess_gemma4_image(image_path, config_);
+    write_bytes_input(*vision_encoder_, "pixel_values", prep.pixel_values.data(),
+                      prep.pixel_values.size() * sizeof(float));
+    write_bytes_input(*vision_encoder_, "pixel_position_ids", prep.pixel_position_ids.data(),
+                      prep.pixel_position_ids.size() * sizeof(int64_t));
+    vision_encoder_->graph->execute();
+    for (size_t i = 0; i < vision_encoder_->output_node_ids.size() && i < vision_encoder_->logical_outputs.size(); ++i) {
+        const std::string& name = vision_encoder_->logical_outputs[i];
+        size_t node_id = static_cast<size_t>(vision_encoder_->output_node_ids[i]);
+        const auto& desc = vision_encoder_->graph->get_output_buffer(node_id);
+        void* ptr = vision_encoder_->graph->get_output(node_id);
+        auto& slot = media_features_[name];
+        slot.assign(desc.byte_size, 0);
+        std::memcpy(slot.data(), ptr, desc.byte_size);
+        media_feature_shapes_[name] = desc.shape;
+        media_feature_precisions_[name] = desc.precision;
+    }
+}
+
+void Model::run_audio_encoder(const std::vector<float>& audio_features) {
+    if (!audio_encoder_) return;
+    std::vector<std::string> candidate_input_names = {"input_features", "audio_features"};
+    bool wrote = false;
+    for (const auto& name : candidate_input_names) {
+        int idx = input_index(*audio_encoder_, name);
+        if (idx < 0) continue;
+        size_t node_id = static_cast<size_t>(audio_encoder_->runtime_input_node_ids[idx]);
+        const auto& desc = audio_encoder_->graph->get_output_buffer(node_id);
+        auto& buf = audio_encoder_->input_buffers[idx];
+        if (desc.precision == Precision::FP32) {
+            size_t n = std::min(audio_features.size() * sizeof(float), buf.size());
+            std::memcpy(buf.data(), audio_features.data(), n);
+            if (n < buf.size()) std::memset(buf.data() + n, 0, buf.size() - n);
+        } else if (desc.precision == Precision::FP16) {
+            size_t n_elems = std::min(audio_features.size(), buf.size() / sizeof(__fp16));
+            __fp16* dst = reinterpret_cast<__fp16*>(buf.data());
+            for (size_t i = 0; i < n_elems; ++i) dst[i] = static_cast<__fp16>(audio_features[i]);
+            if (n_elems * sizeof(__fp16) < buf.size()) {
+                std::memset(buf.data() + n_elems * sizeof(__fp16), 0, buf.size() - n_elems * sizeof(__fp16));
+            }
+        } else {
+            size_t n_elems = std::min(audio_features.size(), buf.size());
+            int8_t* dst = reinterpret_cast<int8_t*>(buf.data());
+            for (size_t i = 0; i < n_elems; ++i) dst[i] = static_cast<int8_t>(audio_features[i]);
+            if (n_elems < buf.size()) std::memset(buf.data() + n_elems, 0, buf.size() - n_elems);
+        }
+        wrote = true;
+        break;
+    }
+    if (!wrote) {
+        CACTUS_LOG_WARN("model", "audio_encoder has no input named input_features/audio_features; skipping");
+        return;
+    }
+    int mask_idx = input_index(*audio_encoder_, "input_features_mask");
+    if (mask_idx >= 0) {
+        auto& mb = audio_encoder_->input_buffers[mask_idx];
+        std::fill(mb.begin(), mb.end(), static_cast<uint8_t>(1));
+    }
+    audio_encoder_->graph->execute();
+    for (size_t i = 0; i < audio_encoder_->output_node_ids.size() && i < audio_encoder_->logical_outputs.size(); ++i) {
+        const std::string& name = audio_encoder_->logical_outputs[i];
+        size_t node_id = static_cast<size_t>(audio_encoder_->output_node_ids[i]);
+        const auto& desc = audio_encoder_->graph->get_output_buffer(node_id);
+        void* ptr = audio_encoder_->graph->get_output(node_id);
+        auto& slot = media_features_[name];
+        slot.assign(desc.byte_size, 0);
+        std::memcpy(slot.data(), ptr, desc.byte_size);
+        media_feature_shapes_[name] = desc.shape;
+        media_feature_precisions_[name] = desc.precision;
+    }
 }
 
 uint32_t Model::argmax_last_logits() {
@@ -331,9 +491,369 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
 }
 
 void Model::prefill_with_images(const std::vector<uint32_t>& tokens,
-                                const std::vector<std::string>& /*image_paths*/,
+                                const std::vector<std::string>& image_paths,
                                 const std::string& profile_file) {
-    prefill(tokens, get_prefill_chunk_size(), profile_file);
+    prefill_with_media(tokens, image_paths, {}, profile_file);
+}
+
+void Model::prefill_with_audio(const std::vector<uint32_t>& tokens,
+                               const std::vector<float>& audio_features,
+                               const std::string& profile_file) {
+    prefill_with_media(tokens, {}, audio_features, profile_file);
+}
+
+namespace {
+
+void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
+                        const void* src_data, size_t src_bytes, Precision src_prec) {
+    if (dst_prec == src_prec) {
+        size_t to_copy = std::min(src_bytes, buf.size());
+        std::memcpy(buf.data(), src_data, to_copy);
+        if (to_copy < buf.size()) std::memset(buf.data() + to_copy, 0, buf.size() - to_copy);
+        return;
+    }
+    const size_t src_elem = PrecisionTraits::size_of(src_prec);
+    const size_t dst_elem = PrecisionTraits::size_of(dst_prec);
+    const size_t src_count = src_elem ? src_bytes / src_elem : 0;
+    const size_t dst_count = dst_elem ? buf.size() / dst_elem : 0;
+    const size_t n = std::min(src_count, dst_count);
+    auto load_float = [&](size_t i) -> float {
+        if (src_prec == Precision::FP16) return static_cast<float>(reinterpret_cast<const __fp16*>(src_data)[i]);
+        if (src_prec == Precision::FP32) return reinterpret_cast<const float*>(src_data)[i];
+        return static_cast<float>(reinterpret_cast<const int8_t*>(src_data)[i]);
+    };
+    for (size_t i = 0; i < n; ++i) {
+        float v = load_float(i);
+        if (dst_prec == Precision::FP16) reinterpret_cast<__fp16*>(buf.data())[i] = static_cast<__fp16>(v);
+        else if (dst_prec == Precision::FP32) reinterpret_cast<float*>(buf.data())[i] = v;
+        else reinterpret_cast<int8_t*>(buf.data())[i] = static_cast<int8_t>(v);
+    }
+    if (n < dst_count) {
+        std::memset(buf.data() + n * dst_elem, 0, (dst_count - n) * dst_elem);
+    }
+}
+
+void fill_int_buffer(std::vector<uint8_t>& buf, Precision prec, int64_t value, size_t count) {
+    const size_t elem = PrecisionTraits::size_of(prec);
+    const size_t cap = elem ? buf.size() / elem : 0;
+    const size_t n = std::min(cap, count);
+    for (size_t i = 0; i < n; ++i) {
+        switch (prec) {
+            case Precision::FP32: reinterpret_cast<float*>(buf.data())[i] = static_cast<float>(value); break;
+            case Precision::FP16: reinterpret_cast<__fp16*>(buf.data())[i] = static_cast<__fp16>(value); break;
+            case Precision::INT8: reinterpret_cast<int8_t*>(buf.data())[i] = static_cast<int8_t>(value); break;
+            default: reinterpret_cast<int64_t*>(buf.data())[i] = value; break;
+        }
+    }
+    if (n < cap) {
+        std::memset(buf.data() + n * elem, 0, (cap - n) * elem);
+    }
+}
+
+void write_tokens_buffer(std::vector<uint8_t>& buf, Precision prec,
+                         const std::vector<uint32_t>& tokens, size_t offset) {
+    const size_t elem = PrecisionTraits::size_of(prec);
+    const size_t cap = elem ? buf.size() / elem : 0;
+    const size_t avail = (offset < tokens.size()) ? (tokens.size() - offset) : 0;
+    const size_t n = std::min(cap, avail);
+    for (size_t i = 0; i < n; ++i) {
+        int64_t v = static_cast<int64_t>(tokens[offset + i]);
+        switch (prec) {
+            case Precision::FP32: reinterpret_cast<float*>(buf.data())[i] = static_cast<float>(v); break;
+            case Precision::FP16: reinterpret_cast<__fp16*>(buf.data())[i] = static_cast<__fp16>(v); break;
+            case Precision::INT8: reinterpret_cast<int8_t*>(buf.data())[i] = static_cast<int8_t>(v); break;
+            default: reinterpret_cast<int64_t*>(buf.data())[i] = v; break;
+        }
+    }
+    if (n < cap) {
+        std::memset(buf.data() + n * elem, 0, (cap - n) * elem);
+    }
+}
+
+} // namespace
+
+bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
+                                   const std::vector<std::string>& image_paths,
+                                   const std::vector<float>& audio_features) {
+    const bool have_images = !image_paths.empty() && vision_encoder_ != nullptr;
+    const bool have_audio = !audio_features.empty() && audio_encoder_ != nullptr;
+
+    if (have_images) {
+        for (const auto& path : image_paths) {
+            if (family_ == "lfm2_vl") {
+                Lfm2VlImagePreprocessed prep = preprocess_lfm2_vl_image(path, config_);
+                int pv_idx = input_index(*vision_encoder_, "pixel_values");
+                if (pv_idx >= 0) {
+                    auto& pv_buf = vision_encoder_->input_buffers[pv_idx];
+                    size_t pv_node = static_cast<size_t>(vision_encoder_->runtime_input_node_ids[pv_idx]);
+                    const auto& pv_desc = vision_encoder_->graph->get_output_buffer(pv_node);
+                    write_typed_buffer(pv_buf, pv_desc.precision,
+                                       prep.pixel_values.data(),
+                                       prep.pixel_values.size() * sizeof(float),
+                                       Precision::FP32);
+                }
+                int pm_idx = input_index(*vision_encoder_, "pixel_attention_mask");
+                if (pm_idx >= 0) {
+                    auto& pm_buf = vision_encoder_->input_buffers[pm_idx];
+                    size_t pm_node = static_cast<size_t>(vision_encoder_->runtime_input_node_ids[pm_idx]);
+                    const auto& pm_desc = vision_encoder_->graph->get_output_buffer(pm_node);
+                    const size_t elem = PrecisionTraits::size_of(pm_desc.precision);
+                    const size_t cap = elem ? pm_buf.size() / elem : 0;
+                    const size_t n = std::min(cap, prep.pixel_attention_mask.size());
+                    for (size_t i = 0; i < n; ++i) {
+                        int64_t v = prep.pixel_attention_mask[i];
+                        switch (pm_desc.precision) {
+                            case Precision::FP32: reinterpret_cast<float*>(pm_buf.data())[i] = static_cast<float>(v); break;
+                            case Precision::FP16: reinterpret_cast<__fp16*>(pm_buf.data())[i] = static_cast<__fp16>(v); break;
+                            case Precision::INT8: reinterpret_cast<int8_t*>(pm_buf.data())[i] = static_cast<int8_t>(v); break;
+                            default: reinterpret_cast<int64_t*>(pm_buf.data())[i] = v; break;
+                        }
+                    }
+                    if (n < cap) std::memset(pm_buf.data() + n * elem, 0, (cap - n) * elem);
+                }
+            } else {
+                Gemma4ImagePreprocessed prep = preprocess_gemma4_image(path, config_);
+                write_bytes_input(*vision_encoder_, "pixel_values", prep.pixel_values.data(),
+                                  prep.pixel_values.size() * sizeof(float));
+                write_bytes_input(*vision_encoder_, "pixel_position_ids", prep.pixel_position_ids.data(),
+                                  prep.pixel_position_ids.size() * sizeof(int64_t));
+            }
+            vision_encoder_->graph->execute();
+            for (size_t i = 0; i < vision_encoder_->output_node_ids.size()
+                              && i < vision_encoder_->logical_outputs.size(); ++i) {
+                const std::string& name = vision_encoder_->logical_outputs[i];
+                size_t node_id = static_cast<size_t>(vision_encoder_->output_node_ids[i]);
+                const auto& desc = vision_encoder_->graph->get_output_buffer(node_id);
+                void* ptr = vision_encoder_->graph->get_output(node_id);
+                auto& slot = media_features_[name];
+                slot.assign(desc.byte_size, 0);
+                std::memcpy(slot.data(), ptr, desc.byte_size);
+                media_feature_shapes_[name] = desc.shape;
+                media_feature_precisions_[name] = desc.precision;
+            }
+        }
+    }
+
+    if (have_audio) {
+        run_audio_encoder(audio_features);
+    }
+
+    {
+        int ids_idx = input_index(*lm_encoder_, "input_ids");
+        if (ids_idx >= 0) {
+            auto& ids_buf = lm_encoder_->input_buffers[ids_idx];
+            size_t ids_node = static_cast<size_t>(lm_encoder_->runtime_input_node_ids[ids_idx]);
+            const auto& ids_desc = lm_encoder_->graph->get_output_buffer(ids_node);
+            write_tokens_buffer(ids_buf, ids_desc.precision, tokens, 0);
+        }
+
+        int mask_idx = input_index(*lm_encoder_, "attention_mask");
+        if (mask_idx >= 0) {
+            auto& mb = lm_encoder_->input_buffers[mask_idx];
+            size_t mnode = static_cast<size_t>(lm_encoder_->runtime_input_node_ids[mask_idx]);
+            const auto& mdesc = lm_encoder_->graph->get_output_buffer(mnode);
+            fill_int_buffer(mb, mdesc.precision, 1, tokens.size());
+        }
+
+        for (const auto& kv : media_features_) {
+            const std::string& name = kv.first;
+            int idx = input_index(*lm_encoder_, name);
+            if (idx < 0) continue;
+            auto& dst_buf = lm_encoder_->input_buffers[idx];
+            size_t node_id = static_cast<size_t>(lm_encoder_->runtime_input_node_ids[idx]);
+            const auto& desc = lm_encoder_->graph->get_output_buffer(node_id);
+            Precision src_prec = media_feature_precisions_[name];
+            write_typed_buffer(dst_buf, desc.precision,
+                               kv.second.data(), kv.second.size(), src_prec);
+        }
+    }
+    lm_encoder_->graph->execute();
+
+    std::map<std::string, std::vector<uint8_t>> store_bytes;
+    std::map<std::string, Precision> store_prec;
+    std::map<std::string, std::vector<size_t>> store_shape;
+    for (size_t i = 0; i < lm_encoder_->output_node_ids.size()
+                      && i < lm_encoder_->logical_outputs.size(); ++i) {
+        const std::string& name = lm_encoder_->logical_outputs[i];
+        size_t node_id = static_cast<size_t>(lm_encoder_->output_node_ids[i]);
+        const auto& desc = lm_encoder_->graph->get_output_buffer(node_id);
+        void* ptr = lm_encoder_->graph->get_output(node_id);
+        auto& slot = store_bytes[name];
+        slot.assign(desc.byte_size, 0);
+        std::memcpy(slot.data(), ptr, desc.byte_size);
+        store_prec[name] = desc.precision;
+        store_shape[name] = desc.shape;
+    }
+
+    auto embeds_shape_it = store_shape.find("inputs_embeds");
+    if (embeds_shape_it == store_shape.end()) {
+        return false;
+    }
+    size_t full_seq = 0;
+    {
+        const auto& sh = embeds_shape_it->second;
+        if (sh.size() >= 3) full_seq = sh[sh.size() - 2];
+        else if (!sh.empty()) full_seq = sh[0];
+    }
+    if (full_seq == 0) return false;
+
+    size_t chunk_seq = 0;
+    {
+        int idx = input_index(*decoder_prefill_chunk_, "inputs_embeds");
+        if (idx < 0) return false;
+        size_t node_id = static_cast<size_t>(decoder_prefill_chunk_->runtime_input_node_ids[idx]);
+        const auto& desc = decoder_prefill_chunk_->graph->get_output_buffer(node_id);
+        const auto& sh = desc.shape;
+        if (sh.size() >= 3) chunk_seq = sh[sh.size() - 2];
+        else if (!sh.empty()) chunk_seq = sh[0];
+    }
+    if (chunk_seq == 0) return false;
+
+    std::map<std::string, size_t> per_pos_bytes;
+    for (const auto& kv : store_bytes) {
+        per_pos_bytes[kv.first] = kv.second.size() / full_seq;
+    }
+
+    for (size_t chunk_start = 0; chunk_start < full_seq; chunk_start += chunk_seq) {
+        size_t valid_in_chunk = std::min(chunk_seq, full_seq - chunk_start);
+        CACTUS_LOG_DEBUG("model", "decoder_prefill_chunk chunk_start=" << chunk_start
+                                  << " valid_in_chunk=" << valid_in_chunk
+                                  << " full_seq=" << full_seq);
+        for (const auto& kv : store_bytes) {
+            const std::string& name = kv.first;
+            int idx = input_index(*decoder_prefill_chunk_, name);
+            if (idx < 0) continue;
+            auto& dst_buf = decoder_prefill_chunk_->input_buffers[idx];
+            size_t node_id = static_cast<size_t>(decoder_prefill_chunk_->runtime_input_node_ids[idx]);
+            const auto& desc = decoder_prefill_chunk_->graph->get_output_buffer(node_id);
+            Precision src_prec = store_prec[name];
+            size_t src_per_pos = per_pos_bytes[name];
+            const uint8_t* src_ptr = kv.second.data() + chunk_start * src_per_pos;
+            size_t src_slice_bytes = valid_in_chunk * src_per_pos;
+            write_typed_buffer(dst_buf, desc.precision, src_ptr, src_slice_bytes, src_prec);
+        }
+        decoder_prefill_chunk_->graph->execute();
+    }
+    cache_total_seq_len_ += tokens.size();
+    return true;
+}
+
+void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
+                               const std::vector<std::string>& image_paths,
+                               const std::vector<float>& audio_features,
+                               const std::string& profile_file) {
+    if (tokens.empty()) return;
+    const bool have_images = !image_paths.empty() && vision_encoder_ != nullptr;
+    const bool have_audio = !audio_features.empty() && audio_encoder_ != nullptr;
+    if (!have_images && !have_audio) {
+        prefill(tokens, get_prefill_chunk_size(), profile_file);
+        return;
+    }
+
+    const bool can_chunk_prefill =
+        lm_encoder_ != nullptr && decoder_prefill_chunk_ != nullptr &&
+        (vision_encoder_ != nullptr || audio_encoder_ != nullptr);
+    if (can_chunk_prefill) {
+        if (run_chunk_prefill_path(tokens, image_paths, audio_features)) {
+            (void)profile_file;
+            return;
+        }
+    }
+    if (!lm_encoder_media_step_) {
+        CACTUS_LOG_WARN("model", "Bundle has neither chunk-prefill nor lm_encoder_media_step; falling back to text-only prefill");
+        prefill(tokens, get_prefill_chunk_size(), profile_file);
+        return;
+    }
+
+    if (have_images) {
+        for (const auto& path : image_paths) {
+            run_vision_encoder(path);
+        }
+    }
+    if (have_audio) {
+        run_audio_encoder(audio_features);
+    }
+
+    std::string image_feature_name;
+    Precision image_feature_prec = Precision::FP16;
+    size_t image_row_bytes = 0;
+    if (have_images) {
+        const std::vector<std::string> candidates = {"image_features", "image_embeddings", "vision_features", "inputs_embeds"};
+        for (const auto& name : candidates) {
+            if (media_features_.count(name)) { image_feature_name = name; break; }
+        }
+        if (image_feature_name.empty() && !media_features_.empty()) {
+            image_feature_name = media_features_.begin()->first;
+        }
+        if (!image_feature_name.empty()) {
+            const auto& shape = media_feature_shapes_[image_feature_name];
+            image_feature_prec = media_feature_precisions_[image_feature_name];
+            if (shape.size() >= 2) {
+                size_t rows = (shape.size() >= 3) ? shape[shape.size() - 2] : shape[0];
+                size_t total = media_features_[image_feature_name].size();
+                image_row_bytes = rows > 0 ? total / rows : total;
+            } else {
+                image_row_bytes = media_features_[image_feature_name].size();
+            }
+        }
+    }
+
+    std::string audio_feature_name;
+    Precision audio_feature_prec = Precision::FP16;
+    size_t audio_row_bytes = 0;
+    if (have_audio) {
+        const std::vector<std::string> candidates = {"audio_features", "audio_embeddings", "encoder_hidden_states", "inputs_embeds"};
+        for (const auto& name : candidates) {
+            if (media_features_.count(name) && name != image_feature_name) { audio_feature_name = name; break; }
+        }
+        if (audio_feature_name.empty()) {
+            for (const auto& kv : media_features_) {
+                if (kv.first != image_feature_name) { audio_feature_name = kv.first; break; }
+            }
+        }
+        if (!audio_feature_name.empty()) {
+            const auto& shape = media_feature_shapes_[audio_feature_name];
+            audio_feature_prec = media_feature_precisions_[audio_feature_name];
+            if (shape.size() >= 2) {
+                size_t rows = (shape.size() >= 3) ? shape[shape.size() - 2] : shape[0];
+                size_t total = media_features_[audio_feature_name].size();
+                audio_row_bytes = rows > 0 ? total / rows : total;
+            } else {
+                audio_row_bytes = media_features_[audio_feature_name].size();
+            }
+        }
+    }
+
+    size_t image_consumed = 0;
+    size_t audio_consumed = 0;
+    const uint32_t image_tok = config_.image_token_id;
+    const uint32_t audio_tok = config_.audio_token_id;
+
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        uint32_t t = tokens[i];
+        size_t pos = cache_total_seq_len_ + i;
+        if (image_tok != 0 && t == image_tok && !image_feature_name.empty() && lm_encoder_media_step_) {
+            const auto& feat = media_features_[image_feature_name];
+            const uint8_t* row = feat.data() + image_consumed * image_row_bytes;
+            if (image_consumed * image_row_bytes + image_row_bytes <= feat.size()) {
+                run_media_step(pos, row, image_row_bytes, image_feature_prec);
+                ++image_consumed;
+                continue;
+            }
+        }
+        if (audio_tok != 0 && t == audio_tok && !audio_feature_name.empty() && lm_encoder_media_step_) {
+            const auto& feat = media_features_[audio_feature_name];
+            const uint8_t* row = feat.data() + audio_consumed * audio_row_bytes;
+            if (audio_consumed * audio_row_bytes + audio_row_bytes <= feat.size()) {
+                run_media_step(pos, row, audio_row_bytes, audio_feature_prec);
+                ++audio_consumed;
+                continue;
+            }
+        }
+        run_step(t, pos, false);
+    }
+    cache_total_seq_len_ += tokens.size();
+    (void)profile_file;
 }
 
 uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*/, float /*top_p*/,

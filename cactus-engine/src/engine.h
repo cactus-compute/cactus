@@ -581,6 +581,14 @@ public:
     void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                              const std::string& profile_file = "");
 
+    void prefill_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+                            const std::string& profile_file = "");
+
+    void prefill_with_media(const std::vector<uint32_t>& tokens,
+                            const std::vector<std::string>& image_paths,
+                            const std::vector<float>& audio_features,
+                            const std::string& profile_file = "");
+
     uint32_t decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                                 float temperature = -1.0f, float top_p = -1.0f,
                                 size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
@@ -652,14 +660,35 @@ private:
     bool load_components();
     bool bind_runtime_buffers(Component& comp);
     void run_step(uint32_t token_id, size_t position, bool read_logits);
+    void run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
+                        Precision feature_precision);
+    void copy_encoder_outputs_to_decoder(const Component& enc);
     void write_int_input(Component& comp, const std::string& name, int64_t value);
+    void write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size);
     int input_index(const Component& comp, const std::string& name) const;
+    int output_index(const Component& comp, const std::string& name) const;
     uint32_t argmax_last_logits();
+    void run_vision_encoder(const std::string& image_path);
+    void run_audio_encoder(const std::vector<float>& audio_features);
+    bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
+                                const std::vector<std::string>& image_paths,
+                                const std::vector<float>& audio_features);
 
     std::string bundle_dir_;
     std::map<std::string, Component> components_;
     Component* encoder_ = nullptr;
     Component* decoder_ = nullptr;
+    Component* vision_encoder_ = nullptr;
+    Component* audio_encoder_ = nullptr;
+    Component* lm_encoder_media_step_ = nullptr;
+    Component* decoder_prefill_chunk_ = nullptr;
+    Component* lm_encoder_ = nullptr;
+
+    std::string family_;
+
+    std::map<std::string, std::vector<uint8_t>> media_features_;
+    std::map<std::string, std::vector<size_t>> media_feature_shapes_;
+    std::map<std::string, Precision> media_feature_precisions_;
 
     Config config_;
     std::unique_ptr<Tokenizer> tokenizer_;
@@ -791,6 +820,27 @@ private:
 };
 
 std::unique_ptr<Model> create_model(const std::string& model_folder);
+
+struct Gemma4ImagePreprocessed {
+    std::vector<float> pixel_values;
+    std::vector<int64_t> pixel_position_ids;
+    size_t num_patches = 0;
+    size_t max_patches = 0;
+    size_t patch_dim = 0;
+};
+
+Gemma4ImagePreprocessed preprocess_gemma4_image(const std::string& image_path, const Config& config);
+
+struct Lfm2VlImagePreprocessed {
+    std::vector<float> pixel_values;
+    std::vector<int64_t> pixel_attention_mask;
+    std::pair<int, int> spatial_shape{0, 0};
+    size_t num_patches = 0;
+    size_t patch_dim = 0;
+    size_t max_num_patches = 0;
+};
+
+Lfm2VlImagePreprocessed preprocess_lfm2_vl_image(const std::string& image_path, const Config& config);
 
 
 struct SpectrogramConfig {
