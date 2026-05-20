@@ -354,6 +354,9 @@ public:
     uint32_t get_fake_token_id() const { return fake_token_id_; }
     uint32_t get_global_img_token_id() const { return global_img_token_id_; }
 
+    void set_image_soft_token_count(size_t n) { image_soft_token_count_ = n; }
+    size_t get_image_soft_token_count() const { return image_soft_token_count_; }
+
 protected:
     enum class ModelType { UNKNOWN, GEMMA4, QWEN, LFM2 };
     ModelType model_type_ = ModelType::UNKNOWN;
@@ -371,6 +374,7 @@ protected:
     uint32_t vision_pooling_kernel_size_ = 3;
     uint32_t vision_default_output_length_ = 280;
     uint32_t vision_image_size_ = 768;
+    size_t image_soft_token_count_ = 0;
     TokenizerRuntimeConfig runtime_config_;
 
     void detect_model_type(const std::string& config_path);
@@ -643,6 +647,12 @@ private:
         std::string path;
     };
 
+    struct CacheStateEntry {
+        std::string layer_key;
+        int key_node_id = -1;
+        int value_node_id = -1;
+    };
+
     struct Component {
         std::string name;
         std::string graph_path;
@@ -653,7 +663,10 @@ private:
         std::vector<Binding> bindings;
         std::unique_ptr<CactusGraph> graph;
         std::vector<std::vector<uint8_t>> input_buffers;
+        std::vector<CacheStateEntry> cache_states;
     };
+
+    void copy_cache_state(const Component& src, Component& dst);
 
     bool load_manifest();
     bool setup_tokenizer();

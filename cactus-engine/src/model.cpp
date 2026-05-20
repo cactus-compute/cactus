@@ -164,6 +164,15 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     if (decoder_prefill_chunk_ && !bind_runtime_buffers(*decoder_prefill_chunk_)) return false;
     if (lm_encoder_ && !bind_runtime_buffers(*lm_encoder_)) return false;
 
+    if (vision_encoder_ && tokenizer_ && !vision_encoder_->output_node_ids.empty()) {
+        size_t out_node = static_cast<size_t>(vision_encoder_->output_node_ids[0]);
+        const auto& desc = vision_encoder_->graph->get_output_buffer(out_node);
+        size_t n = 0;
+        if (desc.shape.size() >= 3) n = desc.shape[desc.shape.size() - 2];
+        else if (desc.shape.size() >= 2) n = desc.shape[0];
+        if (n > 0) tokenizer_->set_image_soft_token_count(n);
+    }
+
     cache_max_seq_len_ = context_size;
     initialized_ = true;
     return true;
@@ -211,6 +220,21 @@ bool Model::load_manifest() {
                 bd.node_id = static_cast<int>(b.at("node_id").get<int64_t>());
                 bd.path = b.at("path").get<std::string>();
                 comp.bindings.push_back(std::move(bd));
+            }
+        }
+        if (c.count("cache_state_node_ids")) {
+            for (const auto& ev : c.at("cache_state_node_ids").get<picojson::array>()) {
+                if (!ev.is<picojson::object>()) continue;
+                const auto& e = ev.get<picojson::object>();
+                CacheStateEntry cs;
+                if (e.count("layer_key")) cs.layer_key = e.at("layer_key").get<std::string>();
+                if (e.count("key") && e.at("key").is<int64_t>())
+                    cs.key_node_id = static_cast<int>(e.at("key").get<int64_t>());
+                if (e.count("value") && e.at("value").is<int64_t>())
+                    cs.value_node_id = static_cast<int>(e.at("value").get<int64_t>());
+                if (cs.key_node_id >= 0 && cs.value_node_id >= 0) {
+                    comp.cache_states.push_back(std::move(cs));
+                }
             }
         }
         components_[comp.name] = std::move(comp);
@@ -572,6 +596,31 @@ void write_tokens_buffer(std::vector<uint8_t>& buf, Precision prec,
 
 } // namespace
 
+void Model::copy_cache_state(const Component& src, Component& dst) {
+    if (src.cache_states.empty() || dst.cache_states.empty()) return;
+    if (src.cache_states.size() != dst.cache_states.size()) {
+        throw std::runtime_error("cache state count mismatch between " + src.name + " and " + dst.name);
+    }
+    for (size_t i = 0; i < src.cache_states.size(); ++i) {
+        const auto& s = src.cache_states[i];
+        const auto& d = dst.cache_states[i];
+        if (s.layer_key != d.layer_key) {
+            throw std::runtime_error("cache layer mismatch: " + s.layer_key + " vs " + d.layer_key);
+        }
+        for (auto pair : {std::pair<int,int>{s.key_node_id, d.key_node_id},
+                          std::pair<int,int>{s.value_node_id, d.value_node_id}}) {
+            const auto& sd = src.graph->get_output_buffer(static_cast<size_t>(pair.first));
+            const auto& dd = dst.graph->get_output_buffer(static_cast<size_t>(pair.second));
+            if (sd.byte_size != dd.byte_size) {
+                throw std::runtime_error("cache byte size mismatch for layer " + s.layer_key);
+            }
+            std::memcpy(dst.graph->get_output(static_cast<size_t>(pair.second)),
+                        src.graph->get_output(static_cast<size_t>(pair.first)),
+                        sd.byte_size);
+        }
+    }
+}
+
 bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                    const std::vector<std::string>& image_paths,
                                    const std::vector<float>& audio_features) {
@@ -714,11 +763,36 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         per_pos_bytes[kv.first] = kv.second.size() / full_seq;
     }
 
-    for (size_t chunk_start = 0; chunk_start < full_seq; chunk_start += chunk_seq) {
-        size_t valid_in_chunk = std::min(chunk_seq, full_seq - chunk_start);
-        CACTUS_LOG_DEBUG("model", "decoder_prefill_chunk chunk_start=" << chunk_start
-                                  << " valid_in_chunk=" << valid_in_chunk
-                                  << " full_seq=" << full_seq);
+    size_t valid_seq = tokens.size();
+    auto mask_it = store_bytes.find("attention_mask");
+    if (mask_it != store_bytes.end() && per_pos_bytes.count("attention_mask")) {
+        Precision mp = store_prec["attention_mask"];
+        size_t per = per_pos_bytes["attention_mask"];
+        const uint8_t* mp_data = mask_it->second.data();
+        size_t count = 0;
+        for (size_t i = 0; i < full_seq; ++i) {
+            const uint8_t* pos = mp_data + i * per;
+            bool nonzero = false;
+            switch (mp) {
+                case Precision::INT8:
+                    nonzero = (*reinterpret_cast<const int8_t*>(pos) != 0); break;
+                case Precision::FP16:
+                    nonzero = (static_cast<float>(*reinterpret_cast<const __fp16*>(pos)) != 0.0f); break;
+                case Precision::FP32:
+                    nonzero = (*reinterpret_cast<const float*>(pos) != 0.0f); break;
+                default:
+                    if (per == 8) nonzero = (*reinterpret_cast<const int64_t*>(pos) != 0);
+                    else if (per == 4) nonzero = (*reinterpret_cast<const int32_t*>(pos) != 0);
+                    else nonzero = (*pos != 0);
+                    break;
+            }
+            if (nonzero) ++count;
+        }
+        if (count > 0) valid_seq = count;
+    }
+    valid_seq = std::min(valid_seq, full_seq);
+    const size_t whole_chunks_end = (valid_seq / chunk_seq) * chunk_seq;
+    for (size_t chunk_start = 0; chunk_start < whole_chunks_end; chunk_start += chunk_seq) {
         for (const auto& kv : store_bytes) {
             const std::string& name = kv.first;
             int idx = input_index(*decoder_prefill_chunk_, name);
@@ -729,12 +803,30 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
             Precision src_prec = store_prec[name];
             size_t src_per_pos = per_pos_bytes[name];
             const uint8_t* src_ptr = kv.second.data() + chunk_start * src_per_pos;
-            size_t src_slice_bytes = valid_in_chunk * src_per_pos;
+            size_t src_slice_bytes = chunk_seq * src_per_pos;
             write_typed_buffer(dst_buf, desc.precision, src_ptr, src_slice_bytes, src_prec);
         }
         decoder_prefill_chunk_->graph->execute();
     }
-    cache_total_seq_len_ += tokens.size();
+    if (whole_chunks_end > 0 && decoder_ != nullptr) {
+        copy_cache_state(*decoder_prefill_chunk_, *decoder_);
+    }
+    for (size_t pos = whole_chunks_end; pos < valid_seq; ++pos) {
+        for (const auto& kv : store_bytes) {
+            const std::string& name = kv.first;
+            int idx = input_index(*decoder_, name);
+            if (idx < 0) continue;
+            auto& dst_buf = decoder_->input_buffers[idx];
+            size_t node_id = static_cast<size_t>(decoder_->runtime_input_node_ids[idx]);
+            const auto& desc = decoder_->graph->get_output_buffer(node_id);
+            Precision src_prec = store_prec[name];
+            size_t src_per_pos = per_pos_bytes[name];
+            const uint8_t* src_ptr = kv.second.data() + pos * src_per_pos;
+            write_typed_buffer(dst_buf, desc.precision, src_ptr, src_per_pos, src_prec);
+        }
+        decoder_->graph->execute();
+    }
+    cache_total_seq_len_ += valid_seq;
     return true;
 }
 

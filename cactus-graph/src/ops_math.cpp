@@ -450,27 +450,8 @@ void compute_precision_cast_node(GraphNode& node, const std::vector<std::unique_
     } else if (input_buf.precision == Precision::FP16 && node.output_buffer.precision == Precision::INT8) {
         Quantization::fp16_to_int8(input_buf.data_as<__fp16>(), node.output_buffer.data_as<int8_t>(), count, 1.0f);
     } else {
-        const GraphNode* src_node = nullptr;
-        if (!node.input_ids.empty()) {
-            auto it = node_index_map.find(node.input_ids[0]);
-            if (it != node_index_map.end()) src_node = nodes[it->second].get();
-        }
-        std::string shape_str = "[";
-        for (size_t i = 0; i < input_buf.shape.size(); ++i) {
-            if (i) shape_str += ",";
-            shape_str += std::to_string(input_buf.shape[i]);
-        }
-        shape_str += "]";
-        std::string msg = "Unsupported precision conversion from " +
-            std::to_string(static_cast<int>(input_buf.precision)) +
-            " to " + std::to_string(static_cast<int>(node.output_buffer.precision)) +
-            " | cast_node_id=" + std::to_string(node.id) +
-            " src_node_id=" + (src_node ? std::to_string(src_node->id) : std::string("?")) +
-            " src_op_type=" + (src_node ? std::to_string(static_cast<int>(src_node->op_type)) : std::string("?")) +
-            " src_shape=" + shape_str +
-            " src_total=" + std::to_string(input_buf.total_size) +
-            " src_is_cq=" + std::to_string(input_buf.is_cq() ? 1 : 0) +
-            " src_group_size=" + std::to_string(input_buf.group_size);
-        throw std::runtime_error(msg);
+        throw std::runtime_error("Unsupported precision conversion from " +
+                                std::to_string(static_cast<int>(input_buf.precision)) +
+                                " to " + std::to_string(static_cast<int>(node.output_buffer.precision)));
     }
 }
