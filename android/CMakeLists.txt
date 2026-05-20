@@ -73,3 +73,23 @@ add_custom_target(cactus_static ALL
 )
 
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+add_executable(cactus_llm_bench
+    ${PROJECT_ROOT}/tests/android/cactus_llm_bench.cpp
+)
+target_include_directories(cactus_llm_bench PRIVATE ${PROJECT_ROOT}/cactus ${CACTUS_ENGINE_DIR} ${CACTUS_ENGINE_DIR}/src)
+target_compile_definitions(cactus_llm_bench PRIVATE PLATFORM_CPU_ONLY=1)
+target_compile_options(cactus_llm_bench PRIVATE -O3 -fvisibility=hidden -fvisibility-inlines-hidden)
+target_link_libraries(cactus_llm_bench PRIVATE cactus_engine cactus_graph cactus_kernels ${LOG_LIB} android)
+if(EXISTS "${CACTUS_MBEDTLS_LIBRARY}" AND EXISTS "${CACTUS_MBEDX509_LIBRARY}" AND EXISTS "${CACTUS_MBEDCRYPTO_LIBRARY}")
+    target_link_libraries(cactus_llm_bench PRIVATE
+        "${CACTUS_MBEDTLS_LIBRARY}"
+        "${CACTUS_MBEDX509_LIBRARY}"
+        "${CACTUS_MBEDCRYPTO_LIBRARY}"
+    )
+endif()
+target_link_options(cactus_llm_bench PRIVATE -Wl,-z,max-page-size=16384)
+set_target_properties(cactus_llm_bench PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
