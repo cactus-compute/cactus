@@ -179,6 +179,7 @@ namespace CactusThreading {
 #if defined(__ANDROID__)
     struct CoreTopology {
         std::vector<int> performance_cores;  
+        std::vector<int> max_performance_cores;
         std::vector<int> all_cores;
 
         static CoreTopology& get() {
@@ -232,6 +233,9 @@ namespace CactusThreading {
             for (auto& [id, cap] : core_caps) {
                 if (cap >= threshold) {
                     topo.performance_cores.push_back(id);
+                }
+                if (cap == max_cap) {
+                    topo.max_performance_cores.push_back(id);
                 }
             }
 
@@ -321,8 +325,8 @@ namespace CactusThreading {
                         const char* max_only = std::getenv("CACTUS_THREADPOOL_PIN_MAX_PERF_ONLY");
                         const char* round_robin = std::getenv("CACTUS_THREADPOOL_PIN_ROUND_ROBIN");
                         if (max_only && std::string(max_only) == "1") {
-                            int core = *std::max_element(perf.begin(), perf.end());
-                            pin_current_thread_to_cores({core});
+                            auto& max_perf = CoreTopology::get().max_performance_cores;
+                            pin_current_thread_to_cores(max_perf.empty() ? perf : max_perf);
                         } else if (round_robin && std::string(round_robin) == "1") {
                             pin_current_thread_to_cores({perf[i % perf.size()]});
                         } else {

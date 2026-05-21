@@ -182,6 +182,7 @@ The H50-H66 records below are chronological history. Any `Next Experiment Record
 - Harness validation: `experiments/matrix/results/h76_pixel_gemma512_full_core_maxperf_smoke_20260521.csv` produced Gemma 512 prefill 65.10 tok/s through `run_matrix.py` with no taskset, and notes record `android_threadpool_pin_max_perf_only=true` plus `android_bench_pin_main_max_perf=true`.
 - All-model 512 validation: `experiments/matrix/results/h77_pixel_llm512_full_core_maxperf_validation_20260521.csv` produced Gemma 63.26 tok/s, LFM 47.61 tok/s, and Qwen 32.16 tok/s at thermal status 0.
 - Implementation validation: after moving main-thread pinning into the tracked `cactus_benchmark_tokens` path, `experiments/matrix/results/h73_full_core_prefill_scheduler_20260521/gemma512_prefill_engine_main_pin_smoke.log` produced Gemma 512 prefill 62.74 tok/s with the same env policy.
+- Samsung guardrail: the worker policy now pins to all max-capacity cores, not only the highest-numbered core. This preserves Pixel as CPU7-only because Pixel capacity is `0-3=191, 4-6=741, 7=1024`, while Samsung uses CPU6+CPU7 because its topology is `0-5=741, 6-7=1024`. Same-binary Gemma 512 prefill-only smokes produced Pixel 64.35 tok/s and Samsung 178.19 tok/s at thermal status 0, compared with the old tracked Samsung full-core row of 119.26 tok/s.
 
 ## H78 Full-Core Prefill Regeneration
 
@@ -192,7 +193,7 @@ The H50-H66 records below are chronological history. Any `Next Experiment Record
   - Qwen cooled repeat: 256 33.77, 512 30.20, 1024 25.49, 2048 22.56, 4096 19.93 tok/s.
 - Manual primary CSV patch completed: 15 matching Cactus prefill rows were replaced in `experiments/matrix/results/matrix_pixel_10a_full_core.csv`. Local helper CSVs `matrix_pixel_10a_full_core_prefill_4096.csv` and `matrix_pixel_10a_full_core_prefill_upto2048.csv` were also patched.
 - Device note: Gemma and LFM rows recorded thermal status 0. The Qwen cooled repeat recorded thermal status 0 through 2048; only Qwen 4096 remains thermal status 1.
-- Decision: full-core prefill is now competitive/reasonable versus the prior Pixel Cactus rows. The remaining production choice is whether to make the max-performance-core/main-thread policy default on Tensor-class Android devices or keep it benchmark-gated.
+- Decision: full-core prefill is now competitive/reasonable versus the prior Pixel Cactus rows, and the comparison-device guardrail passed after making max-performance pinning topology-aware. The remaining production choice is whether to make the max-performance-core/main-thread policy default on Tensor-class Android devices or keep it benchmark-gated.
 
 ## Completed H50 Record
 

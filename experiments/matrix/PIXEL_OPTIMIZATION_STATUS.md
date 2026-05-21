@@ -100,6 +100,7 @@ Active goal: commit and push the fixed Pixel full-core prefill rows/docs, then d
 - H73-H76 full-core mechanism: direct Gemma 512 prefill-only was 8.74 tok/s with old no-affinity scheduling, 63.67 tok/s with CPU7 taskset, 15.02 tok/s with CPUs 4-7, 17.43 tok/s with round-robin worker pinning across 4-7, and 67.71 tok/s with max-performance-core-only workers plus main-thread CPU7 pin and no taskset. This proves the old full-core rows were dominated by heterogeneous-core work placement, not an unavoidable prefill kernel limit.
 - H79 implementation validation: main-thread pinning was moved into tracked `cactus_benchmark_tokens`; Gemma 512 no-taskset full-core smoke with the same env policy reached 62.74 tok/s.
 - H78 full-core result: `experiments/matrix/results/matrix_pixel_10a_cactus_full_core_maxperf.csv` was regenerated and the Cactus rows were patched into `experiments/matrix/results/matrix_pixel_10a_full_core.csv`. Gemma rows are 256/512/1024/2048/4096 = 69.03/61.35/52.57/41.35/37.67 tok/s. LFM rows are 43.00/41.43/38.19/34.35/28.28 tok/s. Qwen cooled-repeat rows are 33.77/30.20/25.49/22.56/19.93 tok/s; Qwen 4096 remains `thermal_status=1`.
+- H80 Samsung guardrail: `CACTUS_THREADPOOL_PIN_MAX_PERF_ONLY=1` now means all max-capacity cores, preserving Pixel as CPU7-only and using CPU6+CPU7 on Samsung. Same-binary Gemma 512 prefill-only smokes reached Pixel 64.35 tok/s and Samsung 178.19 tok/s at thermal status 0, so the full-core scheduling fix does not regress the comparison device.
 
 ## Active Ledger
 
