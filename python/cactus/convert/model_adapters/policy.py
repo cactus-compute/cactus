@@ -34,6 +34,8 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "lstm recurrent tensor")
     if family == "parakeet_tdt" and out.startswith("tdt_"):
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "tdt decoder tensor")
+    if family in {"parakeet", "parakeet_tdt"} and "self_attn_bias_" in out:
+        return TensorPolicy("fallback", "FP16", None, component, False, "none", "relative attention bias tensor")
     if family in {"parakeet", "parakeet_tdt"} and "conv_pointwise" in out and len(shape) == 3 and shape[2] == 1:
         return TensorPolicy("fallback", "INT8", 8, component, False, "none", "pointwise conv tensor")
     if "conv_depthwise.weights" in out and len(shape) == 3 and shape[1] == 1:
